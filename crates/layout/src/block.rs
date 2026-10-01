@@ -29,6 +29,14 @@
 //! contributes its top and bottom margins to one set together with the
 //! margins of the siblings around it, which is why it joins the set
 //! exactly once rather than being counted on both sides.
+//!
+//! The output is a tree (M9.1): a block box's [`Fragment`] holds its
+//! content's fragments as children, which is what clipping (M9.3) and
+//! hit testing (M9.4) walk. Coordinates are document coordinates — the
+//! initial containing block's top-left is `(0, 0)` and nothing here
+//! knows the viewport's height or scroll position; `paint` applies
+//! the scroll offset. [`DocumentLayout::height`] is what the viewport
+//! scrolls over.
 
 use style::computed::{
     BOTTOM, BorderStyle, ComputedStyle, LEFT, LengthPercentageAuto, RIGHT, TOP, TextAlign,
@@ -38,10 +46,16 @@ use text::FontCollection;
 use crate::box_tree::{BoxKind, LayoutBox};
 use crate::inline::layout_inline;
 
-/// A positioned, sized box ready for painting (roadmap M6.7) — absolute
-/// viewport coordinates (`layout::layout` is the only place translation
-/// happens; everything internal to this module works in box-relative
-/// coordinates and translates on the way back up the tree).
+/// A positioned, sized box ready for painting (roadmap M6.7), one node
+/// of the fragment tree (M9.1): a block box's fragment holds the
+/// fragments of its content as `children`. Coordinates are absolute
+/// document coordinates once [`layout_document`] returns — the initial
+/// containing block's top-left is `(0, 0)`, and content further down
+/// the page than the viewport is tall simply has a larger `y`; `paint`
+/// subtracts the scroll offset. Inside this module a fragment's
+/// `children` are relative to its own `(x, y)` until the final pass
+/// makes them absolute, so placing a box moves its whole subtree at
+/// the cost of one translation.
 #[derive(Debug, Clone)]
 pub struct Fragment {
     pub x: f32,
@@ -50,6 +64,17 @@ pub struct Fragment {
     pub h: f32,
     pub style: ComputedStyle,
     pub kind: FragmentKind,
+    /// The element this fragment belongs to, as its `FlatDom` index
+    /// (M9.4): what hit testing answers with. A text fragment names its
+    /// containing element.
+    pub node: usize,
+    /// For a text fragment, the distance from the top of its box to the
+    /// baseline at `y`: the box runs from `y - ascent` to `y - ascent +
+    /// h`, the line's own extent. Zero for a box.
+    pub ascent: f32,
+    /// The fragments of this box's content, in paint order. A text
+    /// fragment has none.
+    pub children: Vec<Fragment>,
 }
 
 #[derive(Debug, Clone)]
@@ -58,15 +83,100 @@ pub enum FragmentKind {
     /// (M6.8) paint from `style`, within `(x, y, w, h)`.
     Box,
     /// One text run; `y` is its *baseline* (matching
-    /// `paint::DisplayItem::Text`'s existing convention), not its top.
+    /// `paint::DisplayItem::Text`'s existing convention), not its top,
+    /// and `h` is the line's ascent plus descent, see
+    /// [`Fragment::ascent`].
     Text(String),
 }
 
 impl Fragment {
+    /// Moves this fragment and, since its children are relative to it
+    /// until [`layout_document`]'s final pass, its whole subtree.
     pub(crate) fn translated(mut self, dx: f32, dy: f32) -> Self {
         self.x += dx;
         self.y += dy;
         self
+    }
+
+    /// The top edge of the fragment's box: `y` for a box, the top of
+    /// the line for a text fragment.
+    pub fn top(&self) -> f32 {
+        self.y - self.ascent
+    }
+
+    /// Whether the document-space point lies within the fragment's box
+    /// (a text fragment's is its line box).
+    pub fn contains(&self, px: f32, py: f32) -> bool {
+        let top = self.top();
+        px >= self.x && px < self.x + self.w && py >= top && py < top + self.h
+    }
+}
+
+/// A laid-out document (M9.1): the fragment tree of its top-level
+/// content and the height that content occupies, which is what the
+/// viewport scrolls over.
+#[derive(Debug, Clone, Default)]
+pub struct DocumentLayout {
+    /// The top-level fragments, in document order, each with its
+    /// subtree; coordinates are absolute.
+    pub roots: Vec<Fragment>,
+    /// From the top of the initial containing block to the bottom of
+    /// the last margin: the content height plus the leading and
+    /// trailing margins the viewport materialises (no margin escapes
+    /// past the viewport). Never negative.
+    pub height: f32,
+}
+
+impl DocumentLayout {
+    /// Every fragment in paint order (preorder: a box, then its content).
+    pub fn iter(&self) -> Preorder<'_> {
+        preorder(&self.roots)
+    }
+}
+
+/// A preorder walk over fragment subtrees — iterative, so a deep tree
+/// costs heap, not stack.
+pub struct Preorder<'a> {
+    stack: Vec<&'a Fragment>,
+}
+
+/// The fragments under `roots` in paint order.
+pub fn preorder(roots: &[Fragment]) -> Preorder<'_> {
+    Preorder {
+        stack: roots.iter().rev().collect(),
+    }
+}
+
+impl<'a> Iterator for Preorder<'a> {
+    type Item = &'a Fragment;
+
+    fn next(&mut self) -> Option<&'a Fragment> {
+        let f = self.stack.pop()?;
+        self.stack.extend(f.children.iter().rev());
+        Some(f)
+    }
+}
+
+/// Takes the fragments out of their tree in paint order; each comes out
+/// with no children. The view the pre-M9 tests were written against.
+pub fn flatten(roots: Vec<Fragment>) -> Vec<Fragment> {
+    let mut out = Vec::new();
+    let mut stack: Vec<Fragment> = roots.into_iter().rev().collect();
+    while let Some(mut f) = stack.pop() {
+        let children = std::mem::take(&mut f.children);
+        stack.extend(children.into_iter().rev());
+        out.push(f);
+    }
+    out
+}
+
+/// Makes every coordinate absolute: each fragment moves by `(dx, dy)`
+/// and its children by its resulting position.
+fn make_absolute(fragments: &mut [Fragment], dx: f32, dy: f32) {
+    for f in fragments {
+        f.x += dx;
+        f.y += dy;
+        make_absolute(&mut f.children, f.x, f.y);
     }
 }
 
@@ -124,19 +234,37 @@ impl AdjoiningMargins {
 /// it resolves to the same font files, but it's a second load, not a
 /// shared handle — sharing one properly is natural M35 perf-track
 /// territory, not a v1 requirement).
-pub fn layout(boxes: &[LayoutBox], viewport_width: f32, fonts: &FontCollection) -> Vec<Fragment> {
+pub fn layout_document(
+    boxes: &[LayoutBox],
+    viewport_width: f32,
+    fonts: &FontCollection,
+) -> DocumentLayout {
     // No containing element at the document root to inherit `text-align`
     // from — `TextAlign::Left` is that property's initial value anyway.
     let children = layout_children(boxes, viewport_width, TextAlign::Left, fonts);
     // The viewport is the one context with no further ancestor to
     // escape to — `leading` *must* materialize here, exactly once, or
-    // it would just vanish (see `layout_children`'s doc).
+    // it would just vanish (see `layout_children`'s doc). So must
+    // `trailing`, below the content; when nothing materialised the two
+    // are one set, counted once.
     let shift = children.leading.resolve();
-    children
-        .fragments
-        .into_iter()
-        .map(|f| f.translated(0.0, shift))
-        .collect()
+    let height = if children.nothing_materialised {
+        shift
+    } else {
+        shift + children.content_height + children.trailing.resolve()
+    };
+    let mut roots = children.fragments;
+    make_absolute(&mut roots, 0.0, shift);
+    DocumentLayout {
+        roots,
+        height: height.max(0.0),
+    }
+}
+
+/// [`layout_document`]'s fragments in paint order without the tree —
+/// the flat view, for callers that only inspect geometry.
+pub fn layout(boxes: &[LayoutBox], viewport_width: f32, fonts: &FontCollection) -> Vec<Fragment> {
+    flatten(layout_document(boxes, viewport_width, fonts).roots)
 }
 
 /// `border-{side}-width`, but zero whenever `border-style: none` — a
@@ -209,7 +337,9 @@ fn resolve_width_and_margins(
 /// the caller (`layout_children`) translates once collapsed-margin
 /// placement among siblings is resolved.
 pub(crate) struct BlockLayout {
-    pub(crate) fragments: Vec<Fragment>,
+    /// The box's own fragment; its content's fragments are the
+    /// children, relative to the box's border-box top-left `(0, 0)`.
+    pub(crate) root: Fragment,
     /// Border-box height (margin excluded) — siblings stack purely
     /// vertically, so this is the only dimension the caller needs; the
     /// box's own width is already baked into its fragments' `w`.
@@ -258,7 +388,7 @@ pub(crate) fn layout_block(b: &LayoutBox, cb_width: f32, fonts: &FontCollection)
     if b.children.is_empty() && can_collapse_through {
         let set = own_top.join(own_bottom);
         return BlockLayout {
-            fragments: vec![box_fragment(0.0, 0.0, content_width, 0.0, &b.style)],
+            root: box_fragment(content_width, 0.0, b),
             height: 0.0,
             margin_left,
             margin_top: set,
@@ -275,15 +405,14 @@ pub(crate) fn layout_block(b: &LayoutBox, cb_width: f32, fonts: &FontCollection)
     // box's top with its bottom.
     if children.nothing_materialised && can_collapse_through {
         let set = own_top.join(children.leading).join(own_bottom);
-        let mut fragments = vec![box_fragment(0.0, 0.0, content_width, 0.0, &b.style)];
-        fragments.extend(
-            children
-                .fragments
-                .into_iter()
-                .map(|f| f.translated(content_x, 0.0)),
-        );
+        let mut root = box_fragment(content_width, 0.0, b);
+        root.children = children
+            .fragments
+            .into_iter()
+            .map(|f| f.translated(content_x, 0.0))
+            .collect();
         return BlockLayout {
-            fragments,
+            root,
             height: 0.0,
             margin_left,
             margin_top: set,
@@ -349,23 +478,16 @@ pub(crate) fn layout_block(b: &LayoutBox, cb_width: f32, fonts: &FontCollection)
     let border_box_height =
         border[TOP] + padding[TOP] + content_height + padding[BOTTOM] + border[BOTTOM];
 
-    let mut fragments = vec![box_fragment(
-        0.0,
-        0.0,
-        border_box_width,
-        border_box_height,
-        &b.style,
-    )];
+    let mut root = box_fragment(border_box_width, border_box_height, b);
     let content_y = border[TOP] + padding[TOP] + child_shift;
-    fragments.extend(
-        children
-            .fragments
-            .into_iter()
-            .map(|f| f.translated(content_x, content_y)),
-    );
+    root.children = children
+        .fragments
+        .into_iter()
+        .map(|f| f.translated(content_x, content_y))
+        .collect();
 
     BlockLayout {
-        fragments,
+        root,
         height: border_box_height,
         margin_left,
         margin_top,
@@ -374,14 +496,18 @@ pub(crate) fn layout_block(b: &LayoutBox, cb_width: f32, fonts: &FontCollection)
     }
 }
 
-fn box_fragment(x: f32, y: f32, w: f32, h: f32, style: &ComputedStyle) -> Fragment {
+/// `b`'s own box fragment at its border-box origin, no content yet.
+fn box_fragment(w: f32, h: f32, b: &LayoutBox) -> Fragment {
     Fragment {
-        x,
-        y,
+        x: 0.0,
+        y: 0.0,
         w,
         h,
-        style: style.clone(),
+        style: b.style.clone(),
         kind: FragmentKind::Box,
+        node: b.node,
+        ascent: 0.0,
+        children: Vec::new(),
     }
 }
 
@@ -461,12 +587,8 @@ fn layout_children(
                         pending = pending.join(layout.margin_top);
                         y + pending.resolve()
                     };
-                    fragments.extend(
-                        layout
-                            .fragments
-                            .into_iter()
-                            .map(|f| f.translated(layout.margin_left, box_y)),
-                    );
+                    let margin_left = layout.margin_left;
+                    fragments.push(layout.root.translated(margin_left, box_y));
                     continue;
                 }
                 if still_leading {
@@ -477,12 +599,8 @@ fn layout_children(
                     y += pending.join(layout.margin_top).resolve();
                 }
                 let child_y = y;
-                fragments.extend(
-                    layout
-                        .fragments
-                        .into_iter()
-                        .map(|f| f.translated(layout.margin_left, child_y)),
-                );
+                let margin_left = layout.margin_left;
+                fragments.push(layout.root.translated(margin_left, child_y));
                 y = child_y + layout.height;
                 pending = layout.margin_bottom;
             }
@@ -1056,5 +1174,85 @@ mod tests {
             let frags = fragments_of(Element::new(tag).text("x"), "");
             assert_eq!(box_fragments(&frags).len(), 1, "<{tag}> is a block");
         }
+    }
+
+    /// The tree form of [`fragments_of`].
+    fn document_of(root: Element, css_src: &str) -> DocumentLayout {
+        let fonts = test_fonts();
+        let doc = dom::Node::document(vec![root.into()]);
+        let sheet = css::parse_stylesheet(css_src).expect("test css is valid");
+        let styled = style::style_document(&doc, &[sheet]);
+        let boxes = crate::build_box_tree(&styled);
+        layout_document(&boxes, VIEWPORT, &fonts)
+    }
+
+    #[test]
+    fn fragments_form_a_tree_with_absolute_coordinates_and_node_ids() {
+        // <section><p>hi</p></section>: the section's fragment holds the
+        // p's, which holds the text's. Nodes: document 0, section 1, p 2.
+        let root = Element::new("section").push(Element::new("p").text("hi"));
+        let layout = document_of(root, "section { padding: 10px; } p { margin: 5px 0 0 0; }");
+        assert_eq!(layout.roots.len(), 1);
+        let section = &layout.roots[0];
+        assert_eq!(section.node, 1);
+        assert_eq!(section.children.len(), 1);
+        let p = &section.children[0];
+        assert_eq!(p.node, 2);
+        assert_eq!(
+            (p.x, p.y),
+            (10.0, 15.0),
+            "absolute: the section's padding plus the p's margin"
+        );
+        assert_eq!(p.children.len(), 1);
+        let text = &p.children[0];
+        assert!(matches!(text.kind, FragmentKind::Text(_)));
+        assert_eq!(text.node, 2, "a text fragment names its containing element");
+        let m = test_fonts().primary().metrics(16.0);
+        assert_eq!(text.y, 15.0 + m.ascent, "the baseline, absolute");
+        assert_eq!(text.ascent, m.ascent);
+        assert_eq!(text.h, m.ascent + m.descent);
+        assert_eq!(text.top(), 15.0);
+        assert!(text.contains(text.x + 1.0, 16.0));
+        assert!(!text.contains(text.x + 1.0, 14.0));
+        assert!(!text.contains(text.x - 1.0, 16.0));
+        assert!(section.contains(0.0, 0.0));
+        // The flat views are preorder: a box, then its content.
+        let order: Vec<usize> = layout.iter().map(|f| f.node).collect();
+        assert_eq!(order, vec![1, 2, 2]);
+        let flat = flatten(layout.roots.clone());
+        assert_eq!(flat.len(), 3);
+        assert!(flat.iter().all(|f| f.children.is_empty()));
+        assert_eq!((flat[1].x, flat[1].y), (10.0, 15.0));
+    }
+
+    #[test]
+    fn document_height_counts_the_leading_and_trailing_margins() {
+        // A box of fixed height with margins above and below: both
+        // materialise at the viewport, which nothing escapes past.
+        let l = document_of(
+            Element::new("div"),
+            "div { height: 100px; margin: 10px 0 30px 0; }",
+        );
+        assert_eq!(l.height, 140.0);
+        assert_eq!(l.roots[0].y, 10.0);
+        // Nothing but margins: one set, counted once.
+        let l = document_of(Element::new("div"), "div { margin: 10px 0 30px 0; }");
+        assert_eq!(l.height, 30.0);
+        // Two paragraphs under the UA sheet: 16 above, 16 between, 16 below.
+        let root = Element::new("body")
+            .push(Element::new("p").text("one"))
+            .push(Element::new("p").text("two"));
+        let l = document_of(root, "");
+        let flat = flatten(l.roots.clone());
+        let boxes = box_fragments(&flat);
+        let last = boxes[2];
+        assert_eq!(l.height, last.y + last.h + 16.0);
+        // A negative margin cannot make the document negative.
+        let l = document_of(Element::new("div"), "div { margin: -10px 0; }");
+        assert_eq!(l.height, 0.0);
+        // Nothing at all.
+        let l = layout_document(&[], VIEWPORT, &test_fonts());
+        assert_eq!(l.height, 0.0);
+        assert!(l.roots.is_empty());
     }
 }

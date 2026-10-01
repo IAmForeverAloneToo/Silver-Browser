@@ -69,6 +69,9 @@ enum InlineItem<'a> {
         /// `white-space: pre`: this word's own trailing gap is never a
         /// line-break opportunity (text flows without wrapping).
         no_wrap: bool,
+        /// The element the text belongs to (M9.4), carried into its
+        /// fragment.
+        node: usize,
     },
     /// A literal newline under `white-space: pre`/`pre-wrap`/`pre-line`
     /// — ends the current line unconditionally, however much of
@@ -77,6 +80,15 @@ enum InlineItem<'a> {
     ForcedBreak(&'a ComputedStyle),
     /// See the module doc's block-in-inline note.
     Block(&'a LayoutBox),
+}
+
+/// One word placed on the line being built, before [`flush_line`]
+/// positions it.
+struct LineWord<'a> {
+    text: &'a str,
+    width: f32,
+    style: &'a ComputedStyle,
+    node: usize,
 }
 
 /// Lays a run of inline-level boxes out into line boxes within
@@ -96,7 +108,7 @@ pub(crate) fn layout_inline(
 
     let mut fragments = Vec::new();
     let mut y = 0.0f32;
-    let mut line: Vec<(&str, f32, &ComputedStyle)> = Vec::new();
+    let mut line: Vec<LineWord<'_>> = Vec::new();
     let mut line_width = 0.0f32;
 
     for item in &flat {
@@ -106,6 +118,7 @@ pub(crate) fn layout_inline(
                 width,
                 style,
                 no_wrap,
+                node,
             } => {
                 let gap = if line.is_empty() {
                     0.0
@@ -132,7 +145,12 @@ pub(crate) fn layout_inline(
                 } else {
                     line_width += gap + width;
                 }
-                line.push((text, *width, style));
+                line.push(LineWord {
+                    text: text.as_str(),
+                    width: *width,
+                    style,
+                    node: *node,
+                });
             }
             InlineItem::ForcedBreak(style) => {
                 // `white-space: pre`/`pre-wrap`/`pre-line` (M8.4): a
@@ -178,12 +196,8 @@ pub(crate) fn layout_inline(
                     (block.margin_top.resolve(), block.margin_bottom.resolve())
                 };
                 y += above;
-                fragments.extend(
-                    block
-                        .fragments
-                        .into_iter()
-                        .map(|f| f.translated(block.margin_left, y)),
-                );
+                let margin_left = block.margin_left;
+                fragments.push(block.root.translated(margin_left, y));
                 y += block.height + below;
             }
         }
@@ -253,6 +267,7 @@ fn collect_inline_items<'a>(
                             width: measure_word(word, &b.style, fonts),
                             style: &b.style,
                             no_wrap,
+                            node: b.node,
                         });
                     }
                 }
@@ -350,7 +365,7 @@ fn measure_word(word: &str, style: &ComputedStyle, fonts: &FontCollection) -> f3
 /// always check `is_empty` themselves first, but this stays safe either
 /// way. Clears `line`/resets `line_width` for the next line.
 fn flush_line(
-    line: &mut Vec<(&str, f32, &ComputedStyle)>,
+    line: &mut Vec<LineWord<'_>>,
     line_width: f32,
     available_width: f32,
     text_align: TextAlign,
@@ -365,7 +380,7 @@ fn flush_line(
     let mut max_ascent = 0.0f32;
     let mut max_descent = 0.0f32;
     let mut max_line_gap = 0.0f32;
-    for (text, _, style) in line.iter() {
+    for word in line.iter() {
         // Per-word, not just per-size (M8.1): a word's own script may
         // resolve to a different fallback font than another word on
         // the same line, with its own vertical metrics — folding in
@@ -373,7 +388,7 @@ fn flush_line(
         // just its `font_size_px`) extends the existing "shared
         // baseline sits at the tallest metrics present" rule (M7.4) to
         // cover that, not just mixed sizes.
-        let m = fonts.metrics_for_text(text, style.font_size_px);
+        let m = fonts.metrics_for_text(word.text, word.style.font_size_px);
         max_ascent = max_ascent.max(m.ascent);
         max_descent = max_descent.max(m.descent);
         max_line_gap = max_line_gap.max(m.line_gap);
@@ -388,57 +403,82 @@ fn flush_line(
         TextAlign::Right => slack,
         TextAlign::Center => slack / 2.0,
     };
-    for (i, (text, width, style)) in line.iter().enumerate() {
+    for (i, word) in line.iter().enumerate() {
         if i > 0 {
-            x += space_width(style, fonts);
+            x += space_width(word.style, fonts);
         }
-        if style.letter_spacing != 0.0 {
+        if word.style.letter_spacing != 0.0 {
             // Per-character fragments (M8.4) — see `measure_word`'s doc
             // for why this has to shape character-by-character, same as
             // the width this word was measured with.
-            emit_letter_spaced(fragments, text, style, &mut x, baseline_y, fonts);
+            emit_letter_spaced(
+                fragments,
+                word,
+                &mut x,
+                baseline_y,
+                max_ascent,
+                max_descent,
+                fonts,
+            );
             continue;
         }
-        fragments.push(Fragment {
-            x,
-            y: baseline_y, // a text fragment's `y` is its baseline (matches `block`'s and `paint`'s convention)
-            w: *width,
-            h: style.font_size_px,
-            style: (*style).clone(),
-            kind: FragmentKind::Text(text.to_string()),
-        });
-        x += width;
+        fragments.push(text_fragment(x, baseline_y, word, max_ascent, max_descent));
+        x += word.width;
     }
 
     *y += max_ascent + max_descent + max_line_gap;
     line.clear();
 }
 
-/// Pushes one `Text` fragment per character of `text`, each advanced by
+/// A text fragment for `word` at `x` on a line whose baseline is
+/// `baseline_y` and whose text rises `ascent` above it and `descent`
+/// below: the fragment's `y` is the baseline (`block`'s and `paint`'s
+/// convention) and its box is the line's, see [`Fragment::ascent`].
+fn text_fragment(
+    x: f32,
+    baseline_y: f32,
+    word: &LineWord<'_>,
+    ascent: f32,
+    descent: f32,
+) -> Fragment {
+    Fragment {
+        x,
+        y: baseline_y,
+        w: word.width,
+        h: ascent + descent,
+        style: word.style.clone(),
+        kind: FragmentKind::Text(word.text.to_string()),
+        node: word.node,
+        ascent,
+        children: Vec::new(),
+    }
+}
+
+/// Pushes one `Text` fragment per character of `word`, each advanced by
 /// `letter-spacing` past the previous one (M8.4) — the common
 /// `letter_spacing == 0.0` case never calls this, so it costs nothing
 /// when the property isn't used.
 fn emit_letter_spaced(
     fragments: &mut Vec<Fragment>,
-    text: &str,
-    style: &ComputedStyle,
+    word: &LineWord<'_>,
     x: &mut f32,
     baseline_y: f32,
+    ascent: f32,
+    descent: f32,
     fonts: &FontCollection,
 ) {
     let mut buf = [0u8; 4];
-    for ch in text.chars() {
+    for ch in word.text.chars() {
         let ch_str = ch.encode_utf8(&mut buf);
-        let w = fonts.measure(ch_str, style.font_size_px);
-        fragments.push(Fragment {
-            x: *x,
-            y: baseline_y,
-            w,
-            h: style.font_size_px,
-            style: style.clone(),
-            kind: FragmentKind::Text(ch_str.to_string()),
-        });
-        *x += w + style.letter_spacing;
+        let w = fonts.measure(ch_str, word.style.font_size_px);
+        let one = LineWord {
+            text: ch_str,
+            width: w,
+            style: word.style,
+            node: word.node,
+        };
+        fragments.push(text_fragment(*x, baseline_y, &one, ascent, descent));
+        *x += w + word.style.letter_spacing;
     }
 }
 
@@ -460,6 +500,7 @@ mod tests {
             style,
             kind: BoxKind::Text(text.to_string()),
             children: Vec::new(),
+            node: 0,
         }
     }
 
@@ -468,6 +509,7 @@ mod tests {
             style: ComputedStyle::default(),
             kind: BoxKind::Inline,
             children,
+            node: 0,
         }
     }
 
@@ -569,6 +611,7 @@ mod tests {
             style: ComputedStyle::default(),
             kind: BoxKind::Block,
             children: Vec::new(),
+            node: 0,
         };
         let run = inline_box(vec![
             text_box("before", 16.0),
@@ -610,6 +653,7 @@ mod tests {
             style,
             kind: BoxKind::Text(text.to_string()),
             children: Vec::new(),
+            node: 0,
         }
     }
 

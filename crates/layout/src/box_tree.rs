@@ -22,6 +22,11 @@ pub struct LayoutBox {
     /// never has children).
     pub kind: BoxKind,
     pub children: Vec<LayoutBox>,
+    /// The element this box belongs to, as its `FlatDom` index (M9.4):
+    /// the generating element for an element's box, the containing
+    /// element for an anonymous text box. Hit testing answers with
+    /// this, and the fragments the box produces carry it.
+    pub node: usize,
 }
 
 /// A box's kind, per `display` (M6 v1: block/inline only — flex, grid,
@@ -63,6 +68,7 @@ fn build_children(styled: &StyledDom, idx: usize) -> Vec<LayoutBox> {
                     style: style.clone(),
                     kind,
                     children: build_children(styled, *child_idx),
+                    node: *child_idx,
                 });
             }
             FlatChild::Text(text) => {
@@ -76,6 +82,7 @@ fn build_children(styled: &StyledDom, idx: usize) -> Vec<LayoutBox> {
                     style: containing_style.clone(),
                     kind: BoxKind::Text(text.clone()),
                     children: Vec::new(),
+                    node: idx,
                 });
             }
         }
@@ -104,6 +111,11 @@ mod tests {
         assert_eq!(tree.len(), 1);
         assert_eq!(tree[0].kind, BoxKind::Block);
         assert_eq!(tree[0].children[0].kind, BoxKind::Inline);
+        // Element boxes name their element; the text box inside the
+        // span names the span, its containing element.
+        assert_eq!(tree[0].node, 1);
+        assert_eq!(tree[0].children[0].node, 2);
+        assert_eq!(tree[0].children[0].children[0].node, 2);
     }
 
     #[test]

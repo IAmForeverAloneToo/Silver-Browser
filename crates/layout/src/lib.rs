@@ -8,11 +8,15 @@
 //! `text`-measured words, baseline alignment across mixed font sizes,
 //! `text-align` — see that module's docs for its own v1 scope (no
 //! `overflow-wrap`, no bidi, block-in-inline doesn't restructure the box
-//! tree). `paint` consumes the fragment tree this crate produces.
+//! tree). The result is a [`DocumentLayout`] (M9.1): a fragment tree in
+//! document coordinates plus the content height the viewport scrolls
+//! over; `paint` consumes it, applying the scroll offset.
 
 pub mod block;
 pub mod box_tree;
 pub mod inline;
 
-pub use block::{Fragment, FragmentKind, layout};
+pub use block::{
+    DocumentLayout, Fragment, FragmentKind, Preorder, flatten, layout, layout_document, preorder,
+};
 pub use box_tree::{BoxKind, LayoutBox, build_box_tree};
