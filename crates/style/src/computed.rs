@@ -61,6 +61,10 @@ pub enum Display {
     Block,
     /// Generates an inline-level box. The initial value.
     Inline,
+    /// Generates an inline-level box that is a block container inside
+    /// (CSS2 §9.2.4, M10.4): atomic on its line, its content laid out
+    /// as a block formatting context of its own.
+    InlineBlock,
     /// Generates no box at all — the element and its descendants are
     /// skipped entirely by layout and paint.
     None,

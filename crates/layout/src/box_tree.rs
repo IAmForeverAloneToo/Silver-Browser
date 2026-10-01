@@ -34,18 +34,24 @@ pub struct LayoutBox {
     pub node: usize,
 }
 
-/// A box's kind, per `display` (M6 v1: block/inline only — flex, grid,
-/// inline-block, and so on generate real boxes only from M17 on).
+/// A box's kind, per `display` (block, inline and inline-block — flex,
+/// grid, tables and so on generate real boxes only from their own
+/// milestones on).
 ///
 /// The builder's contract (CSS2 §9.2.1.1), which `block` relies on: a
-/// [`BoxKind::Block`]'s children are all block-level ([`BoxKind::Block`]
-/// or [`BoxKind::AnonymousBlock`]); an [`BoxKind::AnonymousBlock`]'s and
-/// an [`BoxKind::Inline`]'s children are all inline-level
-/// ([`BoxKind::Inline`] or [`BoxKind::Text`]).
+/// block container's ([`BoxKind::Block`]'s or [`BoxKind::InlineBlock`]'s)
+/// children are all block-level ([`BoxKind::Block`] or
+/// [`BoxKind::AnonymousBlock`]); an [`BoxKind::AnonymousBlock`]'s and an
+/// [`BoxKind::Inline`]'s children are all inline-level
+/// ([`BoxKind::Inline`], [`BoxKind::InlineBlock`] or [`BoxKind::Text`]).
 #[derive(Debug, Clone, PartialEq)]
 pub enum BoxKind {
     Block,
     Inline,
+    /// An atomic inline-level box that is a block container inside
+    /// (CSS2 §9.2.4, M10.4): an item on its parent's line, as wide as
+    /// its margin box, its content laid out like a block's.
+    InlineBlock,
     /// An anonymous block box (CSS2 §9.2.1.1, M10.4) wrapping one run of
     /// inline-level boxes inside a block container, so that the
     /// container's children are all block-level. Its `style` inherits
@@ -58,7 +64,11 @@ pub enum BoxKind {
     /// containing [`LayoutBox`]) is a copy of the *nearest element
     /// ancestor's* — exactly how CSS defines an anonymous box's style:
     /// text has no element of its own to be styled, so it visually
-    /// takes whatever's around it.
+    /// takes whatever's around it. A run of nothing but collapsible
+    /// white space is kept where it separates inline-level content
+    /// (M10.4: it is the gap between two words, or two inline-blocks)
+    /// and dropped at the start and end of a block container's inline
+    /// run, where a line would discard it anyway (css-text-3 §4.1.3).
     Text(String),
 }
 
@@ -142,14 +152,27 @@ impl BlockContainer<'_> {
                             let inline = self.open.pop().expect("the inline just opened");
                             self.add_inline_level(inline);
                         }
+                        Display::InlineBlock => {
+                            let block = LayoutBox {
+                                style: style.clone(),
+                                kind: BoxKind::InlineBlock,
+                                children: build_block_container(styled, *child_idx),
+                                node: *child_idx,
+                            };
+                            self.add_inline_level(block);
+                        }
                     }
                 }
                 FlatChild::Text(text) => {
-                    // Runs of nothing but collapsible white space
-                    // (css-text-3 §4.1: space, tab, newline, carriage
-                    // return, form feed — a no-break space is content)
-                    // contribute no box.
-                    if text.chars().all(crate::inline::is_css_space) {
+                    // White space at the start of the run (css-text-3
+                    // §4.1: space, tab, newline, carriage return, form
+                    // feed — a no-break space is content) is dropped:
+                    // a line discards it. Elsewhere it is kept, as the
+                    // gap it is; `flush_run` drops it at the end.
+                    if self.open.is_empty()
+                        && self.run.is_empty()
+                        && text.chars().all(crate::inline::is_css_space)
+                    {
                         continue;
                     }
                     self.add_inline_level(LayoutBox {
@@ -199,8 +222,15 @@ impl BlockContainer<'_> {
         }
     }
 
-    /// Wraps the run so far, if any, in an anonymous block.
+    /// Wraps the run so far, if any, in an anonymous block. White space
+    /// at its end is dropped first: a line discards it, and a run of
+    /// nothing else is no content at all.
     fn flush_run(&mut self) {
+        while self.run.last().is_some_and(
+            |b| matches!(&b.kind, BoxKind::Text(t) if t.chars().all(crate::inline::is_css_space)),
+        ) {
+            self.run.pop();
+        }
         if self.run.is_empty() {
             return;
         }
@@ -240,6 +270,7 @@ mod tests {
         let kind = match &b.kind {
             BoxKind::Block => "block".to_string(),
             BoxKind::Inline => "inline".to_string(),
+            BoxKind::InlineBlock => "inline-block".to_string(),
             BoxKind::AnonymousBlock => "anon".to_string(),
             BoxKind::Text(t) => format!("text {t}"),
         };
@@ -541,6 +572,83 @@ mod tests {
         assert_eq!(
             shape_of(&tree[0].children),
             pairs(&[("anon", 1), ("inline", 2), ("text a", 2), ("text c", 2)])
+        );
+    }
+
+    #[test]
+    fn an_inline_block_is_inline_level_outside_and_a_block_container_inside() {
+        // <div>a<span class=ib>b<p>c</p></span>d</div>: the span sits in
+        // the div's one anonymous block like any inline-level box; its
+        // own children are block-level, "b" in an anonymous block of
+        // the span's. Nodes: div 1, span 2, p 3.
+        let root = Element::new("div")
+            .text("a")
+            .push(
+                Element::new("span")
+                    .text("b")
+                    .push(Element::new("p").text("c")),
+            )
+            .text("d");
+        let tree = build_box_tree(&styled(root, "span { display: inline-block; }"));
+        assert_eq!(
+            shape_of(&tree[0].children),
+            pairs(&[
+                ("anon", 1),
+                ("text a", 1),
+                ("inline-block", 2),
+                ("anon", 2),
+                ("text b", 2),
+                ("block", 3),
+                ("anon", 3),
+                ("text c", 3),
+                ("text d", 1),
+            ])
+        );
+        assert!(!BoxKind::InlineBlock.is_block_level());
+    }
+
+    #[test]
+    fn white_space_between_inline_level_boxes_is_kept_and_at_the_ends_dropped() {
+        // <div> <span>a</span> <span>b</span> </div>: the space between
+        // the spans is the gap between two words and stays as a text
+        // box; the spaces at the start and the end would be discarded
+        // by any line and are not built. Nodes: div 1, spans 2 and 3.
+        let root = Element::new("div")
+            .text(" ")
+            .push(Element::new("span").text("a"))
+            .text(" ")
+            .push(Element::new("span").text("b"))
+            .text(" ");
+        let tree = build_box_tree(&styled(root, ""));
+        assert_eq!(
+            shape_of(&tree[0].children),
+            pairs(&[
+                ("anon", 1),
+                ("inline", 2),
+                ("text a", 2),
+                ("text  ", 1),
+                ("inline", 3),
+                ("text b", 3),
+            ])
+        );
+        // Inside an inline element white space is kept wherever it is:
+        // `<span> </span>` between two inline-blocks is their gap.
+        let root = Element::new("div").push(Element::new("span").text(" "));
+        let tree = build_box_tree(&styled(root, ""));
+        assert_eq!(
+            shape_of(&tree[0].children),
+            pairs(&[("anon", 1), ("inline", 2), ("text  ", 2)])
+        );
+        // White space before a block, at the end of a run, is dropped
+        // with the run when nothing else is in it.
+        let root = Element::new("div")
+            .text(" ")
+            .push(Element::new("p").text("x"))
+            .text(" ");
+        let tree = build_box_tree(&styled(root, ""));
+        assert_eq!(
+            shape_of(&tree[0].children),
+            pairs(&[("block", 2), ("anon", 2), ("text x", 2)])
         );
     }
 

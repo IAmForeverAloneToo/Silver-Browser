@@ -32,13 +32,21 @@
 //!   is laid out as its inline formatting context — no margins, border
 //!   or padding of its own, the container's width — and has no fragment
 //!   of its own: its lines' fragments go into its parent's.
-//! * A box with `overflow` other than `visible` establishes a block
-//!   formatting context (CSS2 §9.4.1, M10.4): its margins do not adjoin
-//!   its children's (§8.3.1: they are not in the same formatting
-//!   context), so the first child's top margin and the last child's
-//!   bottom margin are real space inside it, and its own top and bottom
-//!   margins never adjoin each other — it is never self-collapsing. Its
-//!   own margins collapse with its siblings' as usual.
+//! * A box with `overflow` other than `visible`, and an inline-block,
+//!   establishes a block formatting context (CSS2 §9.4.1, M10.4): its
+//!   margins do not adjoin its children's (§8.3.1: they are not in the
+//!   same formatting context), so the first child's top margin and the
+//!   last child's bottom margin are real space inside it, and its own
+//!   top and bottom margins never adjoin each other — it is never
+//!   self-collapsing. Its own margins collapse with its siblings' as
+//!   usual.
+//! * An inline-block (M10.4, [`layout_inline_block`]) is a block
+//!   container laid out like any block inside, at a shrink-to-fit width
+//!   when its `width` is `auto` (CSS2 §10.3.9: `min(max(min-content,
+//!   available), max-content)`, from [`crate::intrinsic`]), its `auto`
+//!   margins zero; what the line gets is its margin box and its
+//!   baseline — its last line box's, or its bottom margin edge when it
+//!   has none or clips (§10.8.1).
 //!
 //! Margins that adjoin are carried as a set ([`AdjoiningMargins`]: the
 //! largest positive and the largest negative seen so far) and resolved
@@ -60,7 +68,8 @@
 //! scrolls over.
 
 use style::computed::{
-    BOTTOM, BoxSizing, ComputedStyle, LEFT, LengthPercentage, LengthPercentageAuto, RIGHT, TOP,
+    BOTTOM, BoxSizing, ComputedStyle, Display, LEFT, LengthPercentage, LengthPercentageAuto, RIGHT,
+    TOP,
 };
 use text::FontCollection;
 
@@ -483,14 +492,61 @@ pub(crate) struct BlockLayout {
     /// and `margin_bottom` are the same set, to be joined with the
     /// siblings' margins once, and the box has no height.
     pub(crate) self_collapsing: bool,
+    /// The baseline of the box's last line box, from its border-box
+    /// top (CSS2 §10.8.1: an inline-block's own baseline); `None` when
+    /// nothing inside made a line.
+    pub(crate) last_baseline: Option<f32>,
+}
+
+/// An inline-block laid out for its line (M10.4, M7.7): one atomic item
+/// as wide and as tall as its margin box.
+pub(crate) struct AtomicLayout {
+    /// The box's own fragment with its content's, relative to its
+    /// border-box top-left `(0, 0)`.
+    pub(crate) root: Fragment,
+    /// The margin box's width and height.
+    pub(crate) width: f32,
+    pub(crate) height: f32,
+    /// From the margin box's top to the baseline the line aligns it by.
+    pub(crate) ascent: f32,
+    /// Where the border box sits inside the margin box.
+    pub(crate) margin_left: f32,
+    pub(crate) margin_top: f32,
 }
 
 /// Whether a box with this style establishes a block formatting context
-/// of its own (CSS2 §9.4.1, M10.4): `overflow` other than `visible`.
-/// Floats, absolutely positioned boxes, inline-blocks and table cells
+/// of its own (CSS2 §9.4.1, M10.4): `overflow` other than `visible`, or
+/// an inline-block. Floats, absolutely positioned boxes and table cells
 /// do too; each arrives with its milestone.
 fn establishes_bfc(style: &ComputedStyle) -> bool {
-    style.overflow.clips()
+    style.overflow.clips() || style.display == Display::InlineBlock
+}
+
+/// A box's border and padding, resolved against its containing block's
+/// width (padding's percentages are of that width on every side, CSS2
+/// §8.4).
+struct Edges {
+    border: [f32; 4],
+    padding: [f32; 4],
+}
+
+impl Edges {
+    fn of(style: &ComputedStyle, cb_width: f32) -> Self {
+        Edges {
+            border: effective_border_width(style),
+            padding: style.padding.map(|p| p.resolve(cb_width)),
+        }
+    }
+
+    /// What the two sides take out of the width.
+    fn horizontal(&self) -> f32 {
+        self.border[LEFT] + self.border[RIGHT] + self.padding[LEFT] + self.padding[RIGHT]
+    }
+
+    /// What the two sides take out of the height.
+    fn vertical(&self) -> f32 {
+        self.border[TOP] + self.padding[TOP] + self.padding[BOTTOM] + self.border[BOTTOM]
+    }
 }
 
 /// Lays out one [`BoxKind::Block`] box (an anonymous block never comes
@@ -501,10 +557,92 @@ fn layout_block(
     cb_height: Option<f32>,
     fonts: &FontCollection,
 ) -> BlockLayout {
-    let border = effective_border_width(&b.style);
-    // Padding and vertical margins resolve a percentage against the
-    // containing block's *width* (CSS2 §8.3, §8.4).
-    let padding = b.style.padding.map(|p| p.resolve(cb_width));
+    let edges = Edges::of(&b.style, cb_width);
+    // margin-right is fully resolved here but never read again — see
+    // `BlockLayout::margin_left`'s doc for why that's correct, not an
+    // oversight.
+    let (content_width, margin_left, _margin_right) =
+        resolve_width_and_margins(&b.style, cb_width, edges.horizontal());
+    layout_block_contents(
+        b,
+        &edges,
+        cb_width,
+        cb_height,
+        content_width,
+        margin_left,
+        fonts,
+    )
+}
+
+/// Lays out one [`BoxKind::InlineBlock`] box for its line (M10.4):
+/// CSS2 §10.3.9 — `auto` margins are zero, an `auto` width is the
+/// shrink-to-fit width, `min(max(min-content, available), max-content)`
+/// with `available` the containing block's width less the box's own
+/// margins, border and padding (§10.3.5), clamped by `max-width` and
+/// `min-width` (§10.4); the content then lays out as any block's. The
+/// baseline is the last line box's, or the bottom margin edge when
+/// there is none or the box clips (§10.8.1).
+pub(crate) fn layout_inline_block(
+    b: &LayoutBox,
+    cb_width: f32,
+    cb_height: Option<f32>,
+    fonts: &FontCollection,
+) -> AtomicLayout {
+    let edges = Edges::of(&b.style, cb_width);
+    let margin = |side: usize| b.style.margin[side].resolve(cb_width, 0.0);
+    let (margin_left, margin_right) = (margin(LEFT), margin(RIGHT));
+    let (margin_top, margin_bottom) = (margin(TOP), margin(BOTTOM));
+    let c = width_constraints(&b.style, cb_width, edges.horizontal());
+    let mut content_width = match c.width {
+        Some(w) => w,
+        None => {
+            let (min_content, max_content) = crate::intrinsic::content_widths(b, fonts);
+            let available = (cb_width - margin_left - margin_right - edges.horizontal()).max(0.0);
+            min_content.max(available.min(max_content))
+        }
+    };
+    if let Some(max) = c.max {
+        content_width = content_width.min(max);
+    }
+    content_width = content_width.max(c.min);
+    let layout = layout_block_contents(
+        b,
+        &edges,
+        cb_width,
+        cb_height,
+        content_width,
+        margin_left,
+        fonts,
+    );
+    let height = margin_top + layout.height + margin_bottom;
+    let ascent = match layout.last_baseline {
+        Some(baseline) if !b.style.overflow.clips() => margin_top + baseline,
+        _ => height,
+    };
+    AtomicLayout {
+        width: margin_left + layout.root.w + margin_right,
+        root: layout.root,
+        height,
+        ascent,
+        margin_left,
+        margin_top,
+    }
+}
+
+/// The body of a block container's layout once its content width and
+/// left margin are known: its height, the stacking of its children and
+/// the margins it exposes.
+#[allow(clippy::too_many_arguments)]
+fn layout_block_contents(
+    b: &LayoutBox,
+    edges: &Edges,
+    cb_width: f32,
+    cb_height: Option<f32>,
+    content_width: f32,
+    margin_left: f32,
+    fonts: &FontCollection,
+) -> BlockLayout {
+    let Edges { border, padding } = edges;
     // What keeps this box's margins from adjoining its children's: a
     // border or padding on that side (CSS2 §8.3.1), or the box being a
     // block formatting context root, whose children are in a different
@@ -514,22 +652,17 @@ fn layout_block(
     let bfc_root = establishes_bfc(&b.style);
     let stops_top = bfc_root || border[TOP] > 0.0 || padding[TOP] > 0.0;
     let stops_bottom = bfc_root || border[BOTTOM] > 0.0 || padding[BOTTOM] > 0.0;
-    let non_content_height = border[TOP] + padding[TOP] + padding[BOTTOM] + border[BOTTOM];
+    let non_content_height = edges.vertical();
     let specified_height = definite_height(&b.style, cb_height, non_content_height);
     let (min_height, max_height) = height_bounds(&b.style, cb_height, non_content_height);
     // CSS2 §8.3.1: a box collapses its own margins through, or lets a
     // child's bottom margin escape, only with `height: auto` and
-    // `min-height: 0`.
+    // `min-height: 0`. Vertical margins resolve a percentage against
+    // the containing block's *width* (§8.3).
     let height_is_auto = specified_height.is_none() && min_height <= 0.0;
     let own_top = AdjoiningMargins::of(b.style.margin[TOP].resolve(cb_width, 0.0));
     let own_bottom = AdjoiningMargins::of(b.style.margin[BOTTOM].resolve(cb_width, 0.0));
-
-    let non_content_width = border[LEFT] + border[RIGHT] + padding[LEFT] + padding[RIGHT];
-    // margin-right is fully resolved here but never read again — see
-    // `BlockLayout::margin_left`'s doc for why that's correct, not an
-    // oversight.
-    let (content_width, margin_left, _margin_right) =
-        resolve_width_and_margins(&b.style, cb_width, non_content_width);
+    let non_content_width = edges.horizontal();
     let can_collapse_through = !stops_top && !stops_bottom && height_is_auto;
 
     // An empty block (no children, no border/padding, auto height, not
@@ -546,6 +679,7 @@ fn layout_block(
             margin_top: set,
             margin_bottom: set,
             self_collapsing: true,
+            last_baseline: None,
         };
     }
 
@@ -570,6 +704,7 @@ fn layout_block(
             margin_top: set,
             margin_bottom: set,
             self_collapsing: true,
+            last_baseline: None,
         };
     }
 
@@ -650,6 +785,7 @@ fn layout_block(
         margin_top,
         margin_bottom,
         self_collapsing: false,
+        last_baseline: children.last_baseline.map(|y| content_y + y),
     }
 }
 
@@ -702,6 +838,10 @@ struct ChildrenLayout {
     /// margin went into one set, and `leading` and `trailing` are that
     /// same set.
     nothing_materialised: bool,
+    /// The baseline of the last line box among the children, from the
+    /// first child's `y = 0` like `content_height`; `None` when none
+    /// made a line.
+    last_baseline: Option<f32>,
 }
 
 /// Stacks a block container's children (M10.4: all block-level, per the
@@ -723,6 +863,7 @@ fn layout_children(
     let mut pending = AdjoiningMargins::default();
     let mut still_leading = true;
     let mut leading = AdjoiningMargins::default();
+    let mut last_baseline = None;
 
     for child in children {
         match &child.kind {
@@ -757,20 +898,22 @@ fn layout_children(
                 }
                 let child_y = y;
                 let margin_left = layout.margin_left;
+                if let Some(baseline) = layout.last_baseline {
+                    last_baseline = Some(child_y + baseline);
+                }
                 fragments.push(layout.root.translated(margin_left, child_y));
                 y = child_y + layout.height;
                 pending = layout.margin_bottom;
             }
-            BoxKind::AnonymousBlock | BoxKind::Inline | BoxKind::Text(_) => {
+            BoxKind::AnonymousBlock | BoxKind::Inline | BoxKind::InlineBlock | BoxKind::Text(_) => {
                 // One inline formatting context (M7): the anonymous
                 // block's children wrap onto lines together.
                 let run = match child.kind {
                     BoxKind::AnonymousBlock => child.children.as_slice(),
                     _ => std::slice::from_ref(child),
                 };
-                let (run_fragments, run_height) =
-                    layout_inline(run, cb_width, child.style.text_align, fonts);
-                if run_fragments.is_empty() && run_height == 0.0 {
+                let lines = layout_inline(run, cb_width, cb_height, &child.style, fonts);
+                if lines.fragments.is_empty() && lines.height == 0.0 {
                     // No line box at all (an empty inline element):
                     // treated as not existing, so it separates no
                     // margins (CSS2 §9.4.2).
@@ -787,8 +930,11 @@ fn layout_children(
                     y += pending.resolve();
                 }
                 pending = AdjoiningMargins::default();
-                fragments.extend(run_fragments.into_iter().map(|f| f.translated(0.0, y)));
-                y += run_height;
+                if let Some(baseline) = lines.last_baseline {
+                    last_baseline = Some(y + baseline);
+                }
+                fragments.extend(lines.fragments.into_iter().map(|f| f.translated(0.0, y)));
+                y += lines.height;
             }
         }
     }
@@ -799,6 +945,7 @@ fn layout_children(
         leading,
         trailing: if still_leading { leading } else { pending },
         nothing_materialised: still_leading,
+        last_baseline,
     }
 }
 
@@ -1140,6 +1287,183 @@ mod tests {
         let boxes = box_fragments(&frags);
         let (a, o) = (boxes[1], boxes[2]);
         assert_eq!(o.y, a.y + a.h + 30.0);
+    }
+
+    #[test]
+    fn an_inline_block_shrinks_to_fit_its_content() {
+        // CSS2 §10.3.5: min(max(min-content, available), max-content).
+        let fonts = test_fonts();
+        let w = |s: &str| fonts.measure(s, 16.0);
+        let space = fonts.measure(" ", 16.0);
+        let m = fonts.primary().metrics(16.0);
+        let root = Element::new("div").push(Element::new("span").text("aa bb"));
+        let css = |width: &str| {
+            format!("div {{ margin: 0; width: {width}; }} span {{ display: inline-block; }}")
+        };
+        // Room enough: the max-content width, one line.
+        let frags = fragments_of(root.clone(), &css("500px"));
+        let ib = box_fragments(&frags)[1];
+        assert_eq!(ib.w, w("aa") + space + w("bb"));
+        assert_eq!(ib.h, m.line_height());
+        // Less room than the max-content: the available width, and the
+        // text wraps inside.
+        let frags = fragments_of(root.clone(), &css("30px"));
+        let ib = box_fragments(&frags)[1];
+        assert!(w("aa") < 30.0 && 30.0 < w("aa") + space + w("bb"));
+        assert_eq!(ib.w, 30.0);
+        assert_eq!(ib.h, 2.0 * m.line_height());
+        // Less room than the min-content: the min-content width, the
+        // box overflowing its container.
+        let frags = fragments_of(root.clone(), &css("10px"));
+        let ib = box_fragments(&frags)[1];
+        assert_eq!(ib.w, w("aa").max(w("bb")), "the widest word");
+        // A given width is used as given; auto margins are zero; the
+        // limits apply.
+        let frags = fragments_of(
+            root.clone(),
+            "div { margin: 0; } span { display: inline-block; width: 70px; margin: 0 auto; }",
+        );
+        let ib = box_fragments(&frags)[1];
+        assert_eq!((ib.x, ib.w), (0.0, 70.0));
+        let frags = fragments_of(
+            root,
+            "div { margin: 0; } span { display: inline-block; min-width: 200px; }",
+        );
+        assert_eq!(box_fragments(&frags)[1].w, 200.0);
+    }
+
+    #[test]
+    fn an_inline_block_sits_on_the_baseline_of_its_last_line() {
+        // <p>x<span class=ib>one\ntwo</span></p> with the newline
+        // preserved: the span's "two" shares the p's baseline with "x",
+        // "one" is a line above, and the line is two lines tall (CSS2
+        // §10.8.1, M7.7).
+        let fonts = test_fonts();
+        let m = fonts.primary().metrics(16.0);
+        let root = Element::new("p")
+            .text("x")
+            .push(Element::new("span").text("one\ntwo"));
+        let layout = document_of(
+            root,
+            "p { margin: 0; } span { display: inline-block; white-space: pre; }",
+        );
+        let text = |t: &str| {
+            layout
+                .iter()
+                .find(|f| matches!(&f.kind, FragmentKind::Text(x) if x == t))
+                .unwrap_or_else(|| panic!("text {t}"))
+        };
+        assert_eq!(text("two").y, text("x").y, "one baseline");
+        assert_eq!(text("one").y, text("two").y - m.line_height());
+        assert_eq!(text("x").y, m.line_height() + m.ascent);
+        assert_eq!(layout.roots[0].h, 2.0 * m.line_height());
+        let ib = &layout.roots[0].children[1];
+        assert!(matches!(ib.kind, FragmentKind::Box));
+        assert_eq!(
+            (ib.x, ib.y),
+            (fonts.measure("x", 16.0), 0.0),
+            "flush after x"
+        );
+    }
+
+    #[test]
+    fn an_inline_block_without_a_line_box_or_that_clips_sits_on_its_bottom_margin_edge() {
+        let fonts = test_fonts();
+        let m = fonts.primary().metrics(16.0);
+        // An empty 20 by 30 box with 5px margins: its bottom margin edge
+        // is on the baseline, so its border box ends 5px above it; the
+        // line is 40px above the baseline and the strut's descent below.
+        let root = Element::new("p")
+            .text("x")
+            .push(Element::new("span"))
+            .text(" y");
+        let layout = document_of(
+            root,
+            "p { margin: 0; } span { display: inline-block; width: 20px; height: 30px; margin: 5px; }",
+        );
+        let text = |t: &str| {
+            layout
+                .iter()
+                .find(|f| matches!(&f.kind, FragmentKind::Text(x) if x == t))
+                .unwrap_or_else(|| panic!("text {t}"))
+        };
+        let ib = &layout.roots[0].children[1];
+        assert_eq!(text("x").y, 40.0, "the baseline: 5 + 30 + 5 above the top");
+        assert_eq!(
+            (ib.x, ib.y, ib.w, ib.h),
+            (fonts.measure("x", 16.0) + 5.0, 5.0, 20.0, 30.0)
+        );
+        assert_eq!(
+            text("y").x,
+            ib.x + 20.0 + 5.0 + fonts.measure(" ", 16.0),
+            "the margin, then the gap"
+        );
+        assert_eq!(layout.roots[0].h, 40.0 + m.descent + m.line_gap);
+        // One that clips: its bottom margin edge too, so its text sits
+        // a descent and a line gap higher than the text outside.
+        let root = Element::new("p")
+            .text("x")
+            .push(Element::new("span").text("one"));
+        let layout = document_of(
+            root,
+            "p { margin: 0; } span { display: inline-block; overflow: hidden; }",
+        );
+        let text = |t: &str| {
+            layout
+                .iter()
+                .find(|f| matches!(&f.kind, FragmentKind::Text(x) if x == t))
+                .unwrap_or_else(|| panic!("text {t}"))
+        };
+        assert_eq!(text("one").y, text("x").y - m.descent - m.line_gap);
+    }
+
+    #[test]
+    fn inline_blocks_in_a_row_wrap_like_words_and_keep_their_margins() {
+        // Three 40px boxes, 5px margins either side, in a 100px row
+        // with no font (so no gap for the white space between them and
+        // no strut): two fit per line, the third wraps.
+        let ib = || Element::new("span");
+        let root = Element::new("div")
+            .push(ib())
+            .text(" ")
+            .push(ib())
+            .text(" ")
+            .push(ib());
+        let frags = fragments_of(
+            root,
+            "div { margin: 0; width: 100px; font-size: 0; }
+             span { display: inline-block; width: 40px; height: 10px; margin: 0 5px; }",
+        );
+        let boxes = box_fragments(&frags);
+        let at = |i: usize| (boxes[i].x, boxes[i].y);
+        assert_eq!(at(1), (5.0, 0.0));
+        assert_eq!(at(2), (55.0, 0.0));
+        assert_eq!(at(3), (5.0, 10.0));
+        assert_eq!(boxes[0].h, 20.0);
+    }
+
+    #[test]
+    fn an_inline_block_lays_its_content_out_as_a_block_container() {
+        // Margins inside stay inside (a formatting context root), a
+        // percentage width inside is of the inline-block's content
+        // width, and a nested block makes the box as wide as its
+        // widest content.
+        let frags = fragments_of(
+            Element::new("div").push(
+                Element::new("span")
+                    .push(Element::new("p").attr("class", "a"))
+                    .push(Element::new("p").attr("class", "b")),
+            ),
+            "div { margin: 0; } span { display: inline-block; padding: 2px; }
+             .a { width: 100px; height: 10px; margin: 7px 0; }
+             .b { width: 50%; height: 10px; margin: 0; }",
+        );
+        let boxes = box_fragments(&frags);
+        let (ib, a, b) = (boxes[1], boxes[2], boxes[3]);
+        assert_eq!(ib.w, 104.0, "the widest child plus the padding");
+        assert_eq!((a.x, a.y), (2.0, 2.0 + 7.0), "the margin stays inside");
+        assert_eq!((b.w, b.y), (50.0, 2.0 + 7.0 + 10.0 + 7.0));
+        assert_eq!(ib.h, 2.0 + 7.0 + 10.0 + 7.0 + 10.0 + 2.0);
     }
 
     #[test]

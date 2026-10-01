@@ -1010,6 +1010,46 @@ mod tests {
     }
 
     #[test]
+    fn inline_blocks_are_hit_and_painted_through_the_real_pipeline() {
+        // Two 50px inline-blocks on one line of a font-less row (M10.4):
+        // the pointer over the second one answers with it, over its
+        // text with it too, and the row is as tall as they are.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0; font-size: 0 }
+                    .ib { display: inline-block; width: 50px; height: 50px;
+                          background-color: #ff0000; font-size: 16px }</style>\
+             <div class=row><span class=ib id=a>a</span><span class=ib id=b>b</span></div>",
+        );
+        engine.frame(200, 100);
+        let styled = engine.styled_dom();
+        let id = |node: Option<usize>| {
+            node.and_then(|n| {
+                styled.flat.nodes[n]
+                    .attrs
+                    .iter()
+                    .find(|(k, _)| k == "id")
+                    .map(|(_, v)| v.clone())
+            })
+        };
+        assert_eq!(id(engine.hit_test(25.0, 25.0)), Some("a".to_string()));
+        assert_eq!(id(engine.hit_test(75.0, 45.0)), Some("b".to_string()));
+        assert_eq!(
+            id(engine.hit_test(52.0, 8.0)),
+            Some("b".to_string()),
+            "its text"
+        );
+        assert_eq!(id(engine.hit_test(150.0, 25.0)), None, "the row");
+        let row = boxes_of(&engine, "div");
+        assert_eq!((row[0].w, row[0].h), (800.0, 50.0));
+        let pixels = engine.frame(200, 100);
+        let px = |x: usize, y: usize| &pixels[(y * 200 + x) * 4..(y * 200 + x) * 4 + 3];
+        assert_eq!(px(10, 40), [0xff, 0x00, 0x00], "the first box's background");
+        assert_eq!(px(90, 40), [0xff, 0x00, 0x00], "the second's");
+        assert_eq!(px(150, 40), [0xff, 0xff, 0xff], "the canvas beside them");
+    }
+
+    #[test]
     fn hit_test_follows_the_scroll_offset_and_respects_clipping() {
         let mut engine = test_engine();
         engine.load_document(

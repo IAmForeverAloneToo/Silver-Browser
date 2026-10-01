@@ -24,7 +24,8 @@
 //!   are kept as written: what they are percentages of is the containing
 //!   block's, which only layout knows. `font-size: <percentage>` is of the
 //!   parent's font size and resolves here.
-//! * `display`: `block` / `inline` / `none` only (M5.1's own v1 scope).
+//! * `display`: `block` / `inline` / `inline-block` / `none` only
+//!   (M5.1's own v1 scope, plus M10.4's `inline-block`).
 //!
 //! What every property accepts: the CSS-wide keywords `inherit`,
 //! `initial` and `unset` (css-cascade-5 §7.3), resolved against the
@@ -1016,8 +1017,9 @@ fn parse_display(tokens: &[Token]) -> Option<Display> {
     match single_ident(tokens)?.to_ascii_lowercase().as_str() {
         "block" => Some(Display::Block),
         "inline" => Some(Display::Inline),
+        "inline-block" => Some(Display::InlineBlock),
         "none" => Some(Display::None),
-        _ => None, // flex/grid/inline-block/... land later
+        _ => None, // flex/grid/table/... land with their milestones
     }
 }
 
@@ -2035,6 +2037,35 @@ mod tests {
         // job, walking `display` — so a display:none subtree's children
         // still have well-defined styles.
         assert_eq!(styled.styles[span].color, Color::rgb8(255, 0, 0));
+    }
+
+    #[test]
+    fn display_parses_its_four_keywords_and_is_not_inherited() {
+        let sheets = [sheet("div { display: inline-block; }")];
+        let document = html::parse_document("<div><span>x</span></div>").unwrap();
+        let styled = style_document(&document, &sheets);
+        let index_of = |tag: &str| {
+            styled
+                .flat
+                .element_indices()
+                .find(|&i| styled.flat.nodes[i].tag == tag)
+                .expect("the element exists")
+        };
+        assert_eq!(styled.styles[index_of("div")].display, Display::InlineBlock);
+        assert_eq!(styled.styles[index_of("span")].display, Display::Inline);
+        let html = "<div><span>x</span></div>";
+        for (value, expected) in [
+            ("block", Display::Block),
+            ("inline", Display::Inline),
+            ("INLINE-BLOCK", Display::InlineBlock),
+            ("none", Display::None),
+        ] {
+            let sheets = [sheet(&format!("span {{ display: {value}; }}"))];
+            assert_eq!(style_of(html, &sheets, "span").display, expected, "{value}");
+        }
+        // An unknown keyword leaves the UA value in place.
+        let sheets = [sheet("div { display: flex; }")];
+        assert_eq!(style_of(html, &sheets, "div").display, Display::Block);
     }
 
     #[test]
