@@ -33,7 +33,6 @@ use dom::Node;
 use layout::{DocumentLayout, Fragment, FragmentKind};
 use paint::{DisplayItem, Rgba8, Viewport, paint_fragments};
 use render::{RenderBackend as _, SoftwareBackend};
-use style::computed::BorderStyle;
 use style::{CascadeContext, FontMeasure, StyledDom};
 use text::FontError;
 
@@ -42,6 +41,7 @@ const DOCUMENT_SOURCE: &str = "\
 <html>\
   <head>\
     <style>\
+      html { background-color: #1e1e2e; }\
       h1 { color: #cdd6f4; }\
       p { color: #a6adc8; }\
       .highlight { color: #f9e2af; font-size: 20px; }\
@@ -541,14 +541,10 @@ fn hit_in(fragments: &[Fragment], x: f32, y: f32, hit: &mut Option<usize>) {
 }
 
 /// Whether the point is within the box's padding box — what `overflow`
-/// clips to (CSS2 §11.1.1), the border counting as zero-width when
-/// `border-style` is `none`.
+/// clips to (CSS2 §11.1.1), a side whose style paints nothing counting
+/// as zero-width.
 fn padding_box_contains(f: &Fragment, x: f32, y: f32) -> bool {
-    let [top, right, bottom, left] = if f.style.border_style == BorderStyle::None {
-        [0.0; 4]
-    } else {
-        f.style.border_width
-    };
+    let [top, right, bottom, left] = f.style.used_border_width();
     x >= f.x + left && x < f.x + f.w - right && y >= f.y + top && y < f.y + f.h - bottom
 }
 

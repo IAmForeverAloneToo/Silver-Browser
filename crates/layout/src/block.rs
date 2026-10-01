@@ -46,8 +46,8 @@
 //! scrolls over.
 
 use style::computed::{
-    BOTTOM, BorderStyle, BoxSizing, ComputedStyle, LEFT, LengthPercentage, LengthPercentageAuto,
-    RIGHT, TOP, TextAlign,
+    BOTTOM, BoxSizing, ComputedStyle, LEFT, LengthPercentage, LengthPercentageAuto, RIGHT, TOP,
+    TextAlign,
 };
 use text::FontCollection;
 
@@ -305,16 +305,12 @@ pub fn layout(boxes: &[LayoutBox], viewport_width: f32, fonts: &FontCollection) 
     flatten(layout_document(boxes, viewport_width, fonts).roots)
 }
 
-/// `border-{side}-width`, but zero whenever `border-style: none` — a
-/// `none` border has zero width for *every* purpose, not just painting
-/// (CSS2 §8.5.3); every layout calculation reads border width through
-/// this, never `style.border_width` directly.
+/// `border-{side}-width`, but zero on a side whose style paints nothing
+/// — such a border has zero width for *every* purpose, not just
+/// painting (CSS2 §8.5.3); every layout calculation reads border width
+/// through this, never `style.border_width` directly.
 fn effective_border_width(style: &ComputedStyle) -> [f32; 4] {
-    if style.border_style == BorderStyle::None {
-        [0.0; 4]
-    } else {
-        style.border_width
-    }
+    style.used_border_width()
 }
 
 /// The specified `width`, `min-width` and `max-width` as content-box
@@ -983,6 +979,18 @@ mod tests {
         );
         let m = test_fonts().primary().metrics(16.0);
         assert_eq!(box_fragments(&frags)[1].h, m.line_height());
+    }
+
+    #[test]
+    fn a_side_whose_style_paints_nothing_takes_no_space() {
+        let frags = fragments_of(
+            Element::new("div").push(Element::new("p").text("x")),
+            "div { width: 100px; margin: 0; border-width: 5px; border-style: none solid hidden dotted; }
+             p { margin: 0; }",
+        );
+        let boxes = box_fragments(&frags);
+        let (div, p) = (boxes[0], boxes[1]);
+        assert_eq!((div.w, p.x, p.y, p.w), (110.0, 5.0, 0.0, 100.0));
     }
 
     #[test]

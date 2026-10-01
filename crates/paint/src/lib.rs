@@ -18,7 +18,7 @@
 use dom::Node;
 use layout::{Fragment, FragmentKind};
 use style::StyledDom;
-use style::computed::{BorderStyle, Color, Display};
+use style::computed::{BOTTOM, BorderStyle, Color, Display, LEFT, RIGHT, TOP};
 use style::selector_matching::FlatChild;
 
 /// An 8-bit RGBA color.
@@ -69,6 +69,13 @@ pub enum DisplayItem {
         /// Font size in px.
         size: f32,
         /// Text color.
+        color: Rgba8,
+    },
+    /// Fill a convex quadrilateral, without anti-aliasing, so that
+    /// quads sharing an edge tile it exactly: a border's mitred sides
+    /// (M10). Points in viewport coordinates, in order around the shape.
+    Quad {
+        points: [(f32, f32); 4],
         color: Rgba8,
     },
     /// Clip everything up to the matching [`DisplayItem::PopClip`] to
@@ -334,15 +341,23 @@ fn to_rgba8(c: Color) -> Rgba8 {
 /// of view. `roots` is the tree `layout::layout_document` returns; a
 /// flat list works too, as a forest of childless fragments.
 pub fn paint_fragments(roots: &[Fragment], viewport: Viewport) -> DisplayList {
+    // CSS2 §14.2: the root element's background paints the canvas, the
+    // whole viewport; when the root's is transparent, the body's — the
+    // root's first box child, in an HTML document — does instead and is
+    // not painted on the body itself. The canvas is white otherwise.
+    let canvas = canvas_background(roots);
     let mut painter = Painter {
         items: vec![DisplayItem::Rect {
             x: 0.0,
             y: 0.0,
             w: viewport.width,
             h: viewport.height,
-            color: Rgba8::rgb(0x1e, 0x1e, 0x2e),
+            color: canvas.map_or(Rgba8::rgb(0xff, 0xff, 0xff), |f| {
+                to_rgba8(f.style.background_color)
+            }),
         }],
         viewport,
+        canvas_node: canvas.map(|f| f.node),
     };
     painter.paint_all(roots);
     let mut items = painter.items;
@@ -356,17 +371,39 @@ pub fn paint_fragments(roots: &[Fragment], viewport: Viewport) -> DisplayList {
             x: 40.0,
             y: 32.0,
             size: 16.0,
-            color: Rgba8::rgb(0xa6, 0xad, 0xc8),
+            color: Rgba8::rgb(0x33, 0x33, 0x33),
         });
     }
 
     DisplayList { items }
 }
 
+/// The fragment whose background the canvas takes (CSS2 §14.2): the
+/// root element's when it has one, else the body's — the root's first
+/// box child, in an HTML document.
+fn canvas_background(roots: &[Fragment]) -> Option<&Fragment> {
+    fn is_box(f: &Fragment) -> bool {
+        matches!(f.kind, FragmentKind::Box)
+    }
+    fn with_background(f: &Fragment) -> Option<&Fragment> {
+        (f.style.background_color.a > 0.0).then_some(f)
+    }
+    let root = roots.first().filter(|f| is_box(f))?;
+    with_background(root).or_else(|| {
+        root.children
+            .iter()
+            .find(|f| is_box(f))
+            .and_then(with_background)
+    })
+}
+
 /// One walk over a fragment tree for one viewport.
 struct Painter {
     items: Vec<DisplayItem>,
     viewport: Viewport,
+    /// The element whose background became the canvas's, and so is not
+    /// painted on its own box again.
+    canvas_node: Option<usize>,
 }
 
 impl Painter {
@@ -427,7 +464,7 @@ impl Painter {
     /// A box's own background and border, in viewport coordinates.
     fn paint_box(&mut self, f: &Fragment) {
         let y = f.y - self.viewport.scroll_y;
-        if f.style.background_color.a > 0.0 {
+        if f.style.background_color.a > 0.0 && self.canvas_node != Some(f.node) {
             self.items.push(DisplayItem::Rect {
                 x: f.x,
                 y,
@@ -436,22 +473,18 @@ impl Painter {
                 color: to_rgba8(f.style.background_color),
             });
         }
-        if f.style.border_style != BorderStyle::None {
+        if f.style.border_style.iter().any(|s| s.paints()) {
             push_border(&mut self.items, f, y);
         }
     }
 }
 
 /// The padding box of a box fragment, in document coordinates: the
-/// border box inset by the border, which is zero-width when
-/// `border-style` is `none` (CSS2 §8.5.3). What `overflow` clips to
-/// (CSS2 §11.1.1).
+/// border box inset by the border, zero-width on a side whose style
+/// paints nothing (CSS2 §8.5.3). What `overflow` clips to (CSS2
+/// §11.1.1).
 fn padding_box(f: &Fragment) -> (f32, f32, f32, f32) {
-    let [top, right, bottom, left] = if f.style.border_style == BorderStyle::None {
-        [0.0; 4]
-    } else {
-        f.style.border_width
-    };
+    let [top, right, bottom, left] = f.style.used_border_width();
     (
         f.x + left,
         f.y + top,
@@ -460,14 +493,91 @@ fn padding_box(f: &Fragment) -> (f32, f32, f32, f32) {
     )
 }
 
-/// Paints a box fragment's border as four filled strips (there's no
-/// stroke/outline display-item primitive — four rects is simplest and
-/// exactly matches a solid border's actual shape, mitered corners and
-/// all, as long as adjacent strips' corners overlap, which they do here).
-/// `y` is the box's top in viewport coordinates.
+/// The colour a border's darker tone is: two thirds of each channel.
+fn darker(c: Rgba8) -> Rgba8 {
+    Rgba8 {
+        r: (c.r as u16 * 2 / 3) as u8,
+        g: (c.g as u16 * 2 / 3) as u8,
+        b: (c.b as u16 * 2 / 3) as u8,
+        a: c.a,
+    }
+}
+
+/// Paints a box fragment's border, side by side (M10). The four sides
+/// meet at mitred corners, as in CSS2 §8.5: each side is drawn as the
+/// trapezoid between the border box's edge and the padding box's,
+/// which the quads of [`band`] follow. When all four sides are solid in
+/// one colour the mitres are invisible and the sides are plain strips,
+/// which paint without the seams anti-aliased diagonals leave. `y` is
+/// the box's top in viewport coordinates.
+///
+/// Per style: `solid` is the whole band; `double` the outer and inner
+/// thirds; `dashed` and `dotted` are dashes of three times the width
+/// and dots of the width, with equal gaps, from each side's start, drawn
+/// as plain strips without the fitting adjustment real browsers make;
+/// `inset`, `outset`, `groove` and `ridge` use the colour and its
+/// darker tone — the last four are approximations, said so here.
 fn push_border(items: &mut Vec<DisplayItem>, f: &Fragment, y: f32) {
-    let [top, right, bottom, left] = f.style.border_width;
-    let color = to_rgba8(f.style.border_color);
+    let widths = f.style.used_border_width();
+    let uniform = f
+        .style
+        .border_style
+        .iter()
+        .all(|s| *s == BorderStyle::Solid)
+        && f.style
+            .border_color
+            .iter()
+            .all(|c| *c == f.style.border_color[TOP]);
+    if uniform {
+        push_solid_strips(items, f, y, widths);
+        return;
+    }
+    let geometry = (f.x, y, f.w, f.h, widths);
+    for side in [TOP, RIGHT, BOTTOM, LEFT] {
+        let width = widths[side];
+        if width <= 0.0 {
+            continue;
+        }
+        let color = to_rgba8(f.style.border_color[side]);
+        let dark = darker(color);
+        // Which tone the outer and inner halves of a 3D style get: the
+        // top and left sides of an `outset` box catch the light.
+        let lit = side == TOP || side == LEFT;
+        let quad = |a: f32, b: f32, color: Rgba8| DisplayItem::Quad {
+            points: band(side, geometry, a, b),
+            color,
+        };
+        match f.style.border_style[side] {
+            BorderStyle::None | BorderStyle::Hidden => {}
+            BorderStyle::Solid => items.push(quad(0.0, 1.0, color)),
+            BorderStyle::Double => {
+                items.push(quad(0.0, 1.0 / 3.0, color));
+                items.push(quad(2.0 / 3.0, 1.0, color));
+            }
+            BorderStyle::Dashed => push_dashes(items, side, geometry, width * 3.0, color),
+            BorderStyle::Dotted => push_dashes(items, side, geometry, width, color),
+            BorderStyle::Inset => items.push(quad(0.0, 1.0, if lit { dark } else { color })),
+            BorderStyle::Outset => items.push(quad(0.0, 1.0, if lit { color } else { dark })),
+            BorderStyle::Groove => {
+                let (outer, inner) = if lit { (dark, color) } else { (color, dark) };
+                items.push(quad(0.0, 0.5, outer));
+                items.push(quad(0.5, 1.0, inner));
+            }
+            BorderStyle::Ridge => {
+                let (outer, inner) = if lit { (color, dark) } else { (dark, color) };
+                items.push(quad(0.0, 0.5, outer));
+                items.push(quad(0.5, 1.0, inner));
+            }
+        }
+    }
+}
+
+/// The four strips of a solid border in one colour (M6.8's shape:
+/// adjacent strips overlap at the corners, which a single colour makes
+/// invisible).
+fn push_solid_strips(items: &mut Vec<DisplayItem>, f: &Fragment, y: f32, widths: [f32; 4]) {
+    let [top, right, bottom, left] = widths;
+    let color = to_rgba8(f.style.border_color[TOP]);
     if top > 0.0 {
         items.push(DisplayItem::Rect {
             x: f.x,
@@ -506,6 +616,85 @@ fn push_border(items: &mut Vec<DisplayItem>, f: &Fragment, y: f32) {
     }
 }
 
+/// The border geometry a side's bands are computed from: the border
+/// box's `(x, y, w, h)` in viewport coordinates and the four widths.
+type BorderGeometry = (f32, f32, f32, f32, [f32; 4]);
+
+/// The quad of `side`'s band between the fractions `a` and `b` of its
+/// width (0 the outer edge, 1 the inner), its ends on the mitre lines
+/// to the neighbouring sides.
+fn band(side: usize, geometry: BorderGeometry, a: f32, b: f32) -> [(f32, f32); 4] {
+    let (x, y, w, h, [top, right, bottom, left]) = geometry;
+    // The corner of the band at fraction `f` along the mitre, per side.
+    let top_left = |f: f32| (x + left * f, y + top * f);
+    let top_right = |f: f32| (x + w - right * f, y + top * f);
+    let bottom_right = |f: f32| (x + w - right * f, y + h - bottom * f);
+    let bottom_left = |f: f32| (x + left * f, y + h - bottom * f);
+    match side {
+        TOP => [top_left(a), top_right(a), top_right(b), top_left(b)],
+        RIGHT => [top_right(a), bottom_right(a), bottom_right(b), top_right(b)],
+        BOTTOM => [
+            bottom_left(a),
+            bottom_right(a),
+            bottom_right(b),
+            bottom_left(b),
+        ],
+        _ => [top_left(a), bottom_left(a), bottom_left(b), top_left(b)],
+    }
+}
+
+/// Dashes of `dash` px with `dash` px gaps along `side`'s strip, from
+/// its start (the top-left corner for the top and left sides).
+fn push_dashes(
+    items: &mut Vec<DisplayItem>,
+    side: usize,
+    geometry: BorderGeometry,
+    dash: f32,
+    color: Rgba8,
+) {
+    let (x, y, w, h, [top, right, bottom, left]) = geometry;
+    if dash.is_nan() || dash <= 0.0 {
+        return;
+    }
+    let horizontal = side == TOP || side == BOTTOM;
+    let length = if horizontal { w } else { h };
+    let mut at = 0.0;
+    while at < length {
+        let len = dash.min(length - at);
+        items.push(match side {
+            TOP => DisplayItem::Rect {
+                x: x + at,
+                y,
+                w: len,
+                h: top,
+                color,
+            },
+            BOTTOM => DisplayItem::Rect {
+                x: x + at,
+                y: y + h - bottom,
+                w: len,
+                h: bottom,
+                color,
+            },
+            RIGHT => DisplayItem::Rect {
+                x: x + w - right,
+                y: y + at,
+                w: right,
+                h: len,
+                color,
+            },
+            _ => DisplayItem::Rect {
+                x,
+                y: y + at,
+                w: left,
+                h: len,
+                color,
+            },
+        });
+        at += dash * 2.0;
+    }
+}
+
 #[cfg(test)]
 mod fragment_tests {
     use super::*;
@@ -526,10 +715,22 @@ mod fragment_tests {
         display_list_for(root, css_src, Viewport::new(VIEWPORT, 600.0))
     }
 
+    /// The fixture is wrapped in `html > body` with no margins, as the
+    /// parser would wrap a page, unless it is an `html` element itself;
+    /// the root's background is the canvas's (CSS2 §14.2), so a bare
+    /// `div` at the root would paint differently from one in a page.
     fn display_list_for(root: Element, css_src: &str, viewport: Viewport) -> DisplayList {
         let fonts = test_fonts();
+        let (root, css_src) = if root.tag == "html" {
+            (root, css_src.to_string())
+        } else {
+            (
+                Element::new("html").push(Element::new("body").push(root)),
+                format!("html, body {{ margin: 0; padding: 0 }} {css_src}"),
+            )
+        };
         let doc = dom::Node::document(vec![root.into()]);
-        let sheet = css::parse_stylesheet(css_src).expect("test css is valid");
+        let sheet = css::parse_stylesheet(&css_src).expect("test css is valid");
         let styled = style::style_document(&doc, &[sheet]);
         let boxes = layout::build_box_tree(&styled);
         let layout = layout::layout_document(&boxes, VIEWPORT, &fonts);
@@ -607,6 +808,137 @@ mod fragment_tests {
             "div { display: block; width: 100px; height: 50px; border-width: 4px; }", // no border-style
         );
         assert_eq!(rects(&list).len(), 1); // just the viewport background
+        let list = display_list_of(
+            Element::new("div"),
+            "div { display: block; width: 100px; height: 50px; border: 4px hidden red; }",
+        );
+        assert_eq!(rects(&list).len(), 1);
+    }
+
+    /// The quad items of a list.
+    fn quads(list: &DisplayList) -> Vec<([(f32, f32); 4], Rgba8)> {
+        list.items
+            .iter()
+            .filter_map(|i| match i {
+                DisplayItem::Quad { points, color } => Some((*points, *color)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn sides_of_different_colours_meet_at_mitred_corners() {
+        // A 100 by 50 box with a 10px top border and 20px left border in
+        // two colours: each side is a trapezoid between the border edge
+        // and the padding edge, meeting on the diagonal.
+        let list = display_list_of(
+            Element::new("div"),
+            "div { width: 100px; height: 50px; margin: 0; box-sizing: border-box;
+                   border-top: 10px solid #ff0000; border-left: 20px solid #0000ff;
+                   border-right: 0 solid #000000; border-bottom: 0 solid #000000; }",
+        );
+        let bands = quads(&list);
+        assert_eq!(bands.len(), 2);
+        let (top, red) = bands[0];
+        assert_eq!(red, Rgba8::rgb(255, 0, 0));
+        assert_eq!(top, [(0.0, 0.0), (100.0, 0.0), (100.0, 10.0), (20.0, 10.0)]);
+        let (left, blue) = bands[1];
+        assert_eq!(blue, Rgba8::rgb(0, 0, 255));
+        assert_eq!(left, [(0.0, 0.0), (0.0, 50.0), (20.0, 50.0), (20.0, 10.0)]);
+        // Four solid sides in one colour are the plain strips of before.
+        let list = display_list_of(
+            Element::new("div"),
+            "div { width: 100px; height: 50px; margin: 0; border: 4px solid #ff0000; }",
+        );
+        assert!(quads(&list).is_empty());
+        assert_eq!(rects(&list).len(), 5);
+    }
+
+    #[test]
+    fn double_borders_are_two_bands_and_dashes_run_along_the_side() {
+        let list = display_list_of(
+            Element::new("div"),
+            "div { width: 100px; height: 50px; margin: 0; box-sizing: border-box;
+                   border: 9px double #000000; border-bottom-style: none; border-left-style: none;
+                   border-right-style: dashed; }",
+        );
+        let quads = quads(&list);
+        // Top: the outer third and the inner third, 3px each, 3px apart.
+        assert_eq!(quads.len(), 2);
+        assert_eq!(
+            quads[0].0,
+            [(0.0, 0.0), (100.0, 0.0), (97.0, 3.0), (0.0, 3.0)]
+        );
+        assert_eq!(
+            quads[1].0,
+            [(0.0, 6.0), (94.0, 6.0), (91.0, 9.0), (0.0, 9.0)]
+        );
+        // Right: 27px dashes with 27px gaps down the 50px side: a dash
+        // at 0 and a 23px remainder at 54 — none, the side ends at 50.
+        let dashes: Vec<(f32, f32, f32, f32)> = rects(&list)
+            .iter()
+            .skip(1)
+            .filter_map(|i| match i {
+                DisplayItem::Rect { x, y, w, h, .. } => Some((*x, *y, *w, *h)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(dashes, vec![(91.0, 0.0, 9.0, 27.0)]);
+    }
+
+    #[test]
+    fn the_root_or_body_background_paints_the_canvas_once() {
+        // The html element's background fills the viewport, and is not
+        // painted on its own 0-height box again.
+        let list = display_list_of(
+            Element::new("html").push(Element::new("body").push(Element::new("p").text("x"))),
+            "html { background-color: #ff0000; margin: 0; } body { margin: 0; }",
+        );
+        let reds: Vec<_> = rects(&list)
+            .into_iter()
+            .filter(
+                |i| matches!(i, DisplayItem::Rect { color, .. } if *color == Rgba8::rgb(255, 0, 0)),
+            )
+            .collect();
+        assert_eq!(reds.len(), 1);
+        assert!(matches!(
+            reds[0],
+            DisplayItem::Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 800.0,
+                h: 600.0,
+                ..
+            }
+        ));
+        // With a transparent html, the body's background is the canvas.
+        let list = display_list_of(
+            Element::new("html").push(Element::new("body").push(Element::new("p").text("x"))),
+            "body { background-color: #00ff00; margin: 0; }",
+        );
+        let greens: Vec<_> = rects(&list)
+            .into_iter()
+            .filter(
+                |i| matches!(i, DisplayItem::Rect { color, .. } if *color == Rgba8::rgb(0, 255, 0)),
+            )
+            .collect();
+        assert_eq!(greens.len(), 1);
+        assert!(matches!(
+            greens[0],
+            DisplayItem::Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 800.0,
+                h: 600.0,
+                ..
+            }
+        ));
+        // Nothing propagates: the canvas is white.
+        let list = display_list_of(Element::new("p").text("x"), "");
+        assert!(matches!(
+            rects(&list)[0],
+            DisplayItem::Rect { color, .. } if *color == Rgba8::rgb(255, 255, 255)
+        ));
     }
 
     #[test]

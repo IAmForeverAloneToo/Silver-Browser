@@ -268,12 +268,113 @@ impl RenderBackend for SoftwareBackend {
                     }
                     self.draw_text(&mut pixmap, text, (*x, *y), *size, color, clip);
                 }
+                DisplayItem::Quad { points, color } => {
+                    let polygon = clip_polygon(points, clip);
+                    if polygon.len() < 3 {
+                        continue;
+                    }
+                    let mut pb = tiny_skia::PathBuilder::new();
+                    pb.move_to(polygon[0].0, polygon[0].1);
+                    for &(px, py) in &polygon[1..] {
+                        pb.line_to(px, py);
+                    }
+                    pb.close();
+                    let Some(path) = pb.finish() else {
+                        continue;
+                    };
+                    let mut paint = tiny_skia::Paint::default();
+                    paint.set_color(tiny_skia::Color::from_rgba8(
+                        color.r, color.g, color.b, color.a,
+                    ));
+                    // No anti-aliasing: quads that share an edge must
+                    // tile it without a seam (a border's mitres).
+                    paint.anti_alias = false;
+                    pixmap.fill_path(
+                        &path,
+                        &paint,
+                        tiny_skia::FillRule::Winding,
+                        tiny_skia::Transform::identity(),
+                        None,
+                    );
+                }
             }
         }
 
         // The pixmap's own buffer, not a copy of it.
         pixmap.take()
     }
+}
+
+/// Clips a convex polygon to `clip` (Sutherland–Hodgman against the
+/// four edges). A convex input stays convex; fewer than three points
+/// means nothing is left.
+fn clip_polygon(points: &[(f32, f32)], clip: Clip) -> Vec<(f32, f32)> {
+    let mut polygon = points.to_vec();
+    polygon = clip_against(
+        &polygon,
+        |p| p.0 >= clip.x0,
+        |a, b| intersect_x(a, b, clip.x0),
+    );
+    polygon = clip_against(
+        &polygon,
+        |p| p.0 <= clip.x1,
+        |a, b| intersect_x(a, b, clip.x1),
+    );
+    polygon = clip_against(
+        &polygon,
+        |p| p.1 >= clip.y0,
+        |a, b| intersect_y(a, b, clip.y0),
+    );
+    polygon = clip_against(
+        &polygon,
+        |p| p.1 <= clip.y1,
+        |a, b| intersect_y(a, b, clip.y1),
+    );
+    polygon
+}
+
+/// One Sutherland–Hodgman pass: the part of `input` on the `inside`
+/// side of an edge, `intersect` giving where a segment crosses it.
+fn clip_against(
+    input: &[(f32, f32)],
+    inside: impl Fn((f32, f32)) -> bool,
+    intersect: impl Fn((f32, f32), (f32, f32)) -> (f32, f32),
+) -> Vec<(f32, f32)> {
+    let mut output = Vec::with_capacity(input.len() + 1);
+    for i in 0..input.len() {
+        let current = input[i];
+        let previous = input[(i + input.len() - 1) % input.len()];
+        let (cur_in, prev_in) = (inside(current), inside(previous));
+        if cur_in {
+            if !prev_in {
+                output.push(intersect(previous, current));
+            }
+            output.push(current);
+        } else if prev_in {
+            output.push(intersect(previous, current));
+        }
+    }
+    output
+}
+
+/// Where the segment `a`-`b` crosses the vertical line `x`.
+fn intersect_x(a: (f32, f32), b: (f32, f32), x: f32) -> (f32, f32) {
+    let t = if b.0 == a.0 {
+        0.0
+    } else {
+        (x - a.0) / (b.0 - a.0)
+    };
+    (x, a.1 + (b.1 - a.1) * t)
+}
+
+/// Where the segment `a`-`b` crosses the horizontal line `y`.
+fn intersect_y(a: (f32, f32), b: (f32, f32), y: f32) -> (f32, f32) {
+    let t = if b.1 == a.1 {
+        0.0
+    } else {
+        (y - a.1) / (b.1 - a.1)
+    };
+    (a.0 + (b.0 - a.0) * t, y)
 }
 
 /// Alpha-composites a glyph mask onto the pixmap at `(base_x, base_y)`
@@ -568,6 +669,80 @@ mod tests {
         assert!(backend.cached_glyphs <= SHAPE_CACHE_GLYPHS);
         backend.clear_glyph_cache();
         assert_eq!((backend.shape_cache_len(), backend.cached_glyphs), (0, 0));
+    }
+
+    #[test]
+    fn quads_tile_without_seams_and_respect_the_clip() {
+        // Two triangles (as degenerate quads) that share the diagonal of
+        // a 10 by 10 square: every pixel is black, no seam along it.
+        let mut backend = test_backend();
+        let black = Rgba8::rgb(0, 0, 0);
+        let list = DisplayList {
+            items: vec![
+                white_frame(10.0, 10.0),
+                DisplayItem::Quad {
+                    points: [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (10.0, 10.0)],
+                    color: black,
+                },
+                DisplayItem::Quad {
+                    points: [(0.0, 0.0), (10.0, 10.0), (0.0, 10.0), (0.0, 10.0)],
+                    color: black,
+                },
+            ],
+        };
+        let buf = backend.rasterize(&list, 10, 10);
+        for y in 0..10 {
+            for x in 0..10 {
+                assert_eq!(px(&buf, 10, x, y), BLACK, "({x}, {y})");
+            }
+        }
+        // Clipped to the middle, a quad covering everything paints only
+        // there, and the polygon clipper keeps the corners right.
+        let list = DisplayList {
+            items: vec![
+                white_frame(10.0, 10.0),
+                DisplayItem::PushClip {
+                    x: 3.0,
+                    y: 3.0,
+                    w: 4.0,
+                    h: 4.0,
+                },
+                DisplayItem::Quad {
+                    points: [(-5.0, -5.0), (15.0, -5.0), (15.0, 15.0), (-5.0, 15.0)],
+                    color: black,
+                },
+                DisplayItem::PopClip,
+            ],
+        };
+        let buf = backend.rasterize(&list, 10, 10);
+        for y in 0..10 {
+            for x in 0..10 {
+                let inside = (3..7).contains(&x) && (3..7).contains(&y);
+                assert_eq!(
+                    px(&buf, 10, x, y),
+                    if inside { BLACK } else { WHITE },
+                    "({x}, {y})"
+                );
+            }
+        }
+        let clipped = clip_polygon(
+            &[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)],
+            Clip::new(2.0, 2.0, 5.0, 5.0),
+        );
+        let mut corners = clipped.clone();
+        corners.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+        assert_eq!(
+            corners,
+            vec![(2.0, 2.0), (2.0, 7.0), (7.0, 2.0), (7.0, 7.0)]
+        );
+        assert!(
+            clip_polygon(
+                &[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)],
+                Clip::new(5.0, 5.0, 1.0, 1.0)
+            )
+            .len()
+                < 3
+        );
     }
 
     #[test]

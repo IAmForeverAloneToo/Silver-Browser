@@ -66,15 +66,32 @@ pub enum Display {
     None,
 }
 
-/// `border-style` (v1 subset: enough to decide whether a border paints
-/// at all — CSS2 §8.5.3: a `none` border computes to zero width
-/// regardless of `border-width`).
+/// `border-style` (CSS2 §8.5.3, all ten values since M10). `none` and
+/// `hidden` paint nothing and compute to a zero width regardless of
+/// `border-width`; the others paint, `solid` and `double` exactly and
+/// the rest as `paint` approximates them (see its border painting).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BorderStyle {
     /// No border is painted. The initial value.
     None,
-    /// A solid border is painted.
+    /// As `none`, except in table border conflicts (M12).
+    Hidden,
     Solid,
+    Double,
+    Dashed,
+    Dotted,
+    Groove,
+    Ridge,
+    Inset,
+    Outset,
+}
+
+impl BorderStyle {
+    /// Whether this style paints anything — and so whether the side's
+    /// width counts (CSS2 §8.5.3).
+    pub fn paints(self) -> bool {
+        !matches!(self, BorderStyle::None | BorderStyle::Hidden)
+    }
 }
 
 /// `text-align` (M7.5 v1: left/right/center only — `justify` is
@@ -303,19 +320,19 @@ pub struct ComputedStyle {
     /// sides too (CSS2 §8.4), which only layout knows.
     pub padding: PaddingEdges,
     /// `border-{top,right,bottom,left}-width`, CSS pixels — not
-    /// inherited. Per `border_style` below, a `none` border always
-    /// paints as zero-width regardless of this value (CSS2 §8.5.3) —
-    /// callers that need the *painted* width should check `border_style`
-    /// first rather than reading `border_width` alone.
+    /// inherited. The initial value is `medium`, 3px. A side whose
+    /// style paints nothing has a used width of zero regardless of this
+    /// value (CSS2 §8.5.3): callers that need the width that counts
+    /// read [`ComputedStyle::used_border_width`], never this alone.
     pub border_width: Edges,
-    /// `border-color` (v1: one shared color, not per-side) — not
-    /// inherited. Defaults to `color` when unset (`currentcolor` is the
-    /// spec initial value) — resolved once the rest of the cascade for
-    /// this element has been applied, see `cascade::compute_style`.
-    pub border_color: Color,
-    /// `border-style` (v1: one shared style, not per-side) — not
-    /// inherited.
-    pub border_style: BorderStyle,
+    /// `border-{top,right,bottom,left}-color` (per side since M10) —
+    /// not inherited. Defaults to `color` when unset (`currentcolor` is
+    /// the spec initial value) — resolved once the rest of the cascade
+    /// for this element has been applied, see `cascade::compute_style`.
+    pub border_color: [Color; 4],
+    /// `border-{top,right,bottom,left}-style` (per side since M10) —
+    /// not inherited.
+    pub border_style: [BorderStyle; 4],
     /// `overflow` (M9.3) — not inherited.
     pub overflow: Overflow,
     /// `box-sizing` (M10.2) — not inherited.
@@ -353,9 +370,9 @@ impl Default for ComputedStyle {
             height: LengthPercentageAuto::Auto,
             margin: [LengthPercentageAuto::Px(0.0); 4], // margin's initial value is `0`, not `auto`
             padding: [LengthPercentage::Px(0.0); 4],
-            border_width: [0.0; 4],
-            border_color: Color::BLACK, // corrected to `color` post-cascade
-            border_style: BorderStyle::None,
+            border_width: [3.0; 4],          // `medium`
+            border_color: [Color::BLACK; 4], // corrected to `color` post-cascade
+            border_style: [BorderStyle::None; 4],
             overflow: Overflow::Visible,
             box_sizing: BoxSizing::ContentBox,
             min_width: LengthPercentage::Px(0.0),
@@ -367,6 +384,19 @@ impl Default for ComputedStyle {
 }
 
 impl ComputedStyle {
+    /// The border widths that count, per side: `border-width` where the
+    /// side's style paints, zero where it is `none` or `hidden` (CSS2
+    /// §8.5.3). What layout, paint and hit testing read.
+    pub fn used_border_width(&self) -> Edges {
+        let mut used = [0.0; 4];
+        for (side, width) in used.iter_mut().enumerate() {
+            if self.border_style[side].paints() {
+                *width = self.border_width[side];
+            }
+        }
+        used
+    }
+
     /// The starting point for a child's computed style: inherited
     /// properties carry the parent's *computed* values forward
     /// (css-cascade-5 §7.1); everything else starts at its initial
@@ -407,7 +437,10 @@ mod tests {
         assert_eq!(s.width, LengthPercentageAuto::Auto);
         assert_eq!(s.height, LengthPercentageAuto::Auto);
         assert_eq!(s.margin, [LengthPercentageAuto::Px(0.0); 4]);
-        assert_eq!(s.border_style, BorderStyle::None);
+        assert_eq!(s.border_style, [BorderStyle::None; 4]);
+        assert_eq!(s.border_width, [3.0; 4], "medium");
+        assert_eq!(s.used_border_width(), [0.0; 4], "none paints nothing");
+        assert!(!BorderStyle::Hidden.paints() && BorderStyle::Dotted.paints());
         assert_eq!(s.overflow, Overflow::Visible);
         assert!(!s.overflow.clips());
         assert_eq!(s.box_sizing, BoxSizing::ContentBox);
