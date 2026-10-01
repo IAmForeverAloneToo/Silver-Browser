@@ -810,7 +810,13 @@ fn flush_line(
                 // the border box is a margin inside it.
                 let top = baseline_y - a.ascent;
                 let width = a.width;
-                fragments.push(a.root.translated(x + a.margin_left, top + a.margin_top));
+                // The border box is a margin inside the margin box, and
+                // a relatively positioned box is moved from there (M11).
+                let (dx, dy) = a.relative;
+                fragments.push(
+                    a.root
+                        .translated(x + a.margin_left + dx, top + a.margin_top + dy),
+                );
                 x += width;
             }
         }

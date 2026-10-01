@@ -53,6 +53,10 @@ pub(crate) struct PendingFloat {
     /// Where the border box sits inside the margin box.
     pub(crate) margin_left: f32,
     pub(crate) margin_top: f32,
+    /// The move `position: relative` gives the float's fragment once
+    /// placed (CSS2 §9.4.3); the context keeps the margin box unmoved,
+    /// so nothing else is affected.
+    pub(crate) relative: (f32, f32),
     /// The containing block's content box, left and right edges, in
     /// root coordinates: what the float is placed between.
     pub(crate) cb_left: f32,
@@ -60,7 +64,8 @@ pub(crate) struct PendingFloat {
 }
 
 /// A float placed: its margin box, and its border box's top-left, in
-/// root coordinates.
+/// root coordinates — the latter where the fragment goes, moved by
+/// `position: relative` when the float has it.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PlacedFloat {
     node: usize,
@@ -213,8 +218,8 @@ impl FloatContext {
             y,
             w: f.w,
             h: f.h,
-            border_x: x + f.margin_left,
-            border_y: y + f.margin_top,
+            border_x: x + f.margin_left + f.relative.0,
+            border_y: y + f.margin_top + f.relative.1,
         });
         (x, y)
     }
@@ -320,6 +325,7 @@ mod tests {
             h,
             margin_left: 0.0,
             margin_top: 0.0,
+            relative: (0.0, 0.0),
             cb_left: 0.0,
             cb_right: 100.0,
         }

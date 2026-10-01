@@ -1560,6 +1560,27 @@ mod tests {
     }
 
     #[test]
+    fn a_relatively_positioned_box_is_painted_and_hit_where_it_moved_to() {
+        // A 50px red box moved 100px right and 10px down: its pixels
+        // and the pointer find it there, and where it was is the body.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0 }
+                    .r { position: relative; left: 100px; top: 10px; width: 50px; height: 50px;
+                         background-color: #ff0000 }</style>\
+             <div class=r id=r></div>",
+        );
+        let pixels = engine.frame(200, 100);
+        assert_eq!(px(&pixels, 200, 110, 20), [0xff, 0x00, 0x00, 0xff]);
+        assert_eq!(px(&pixels, 200, 10, 20), [0xff, 0xff, 0xff, 0xff]);
+        let r = node_by_id(&engine, "r");
+        assert_eq!(engine.hit_test(110.0, 20.0), Some(r));
+        assert_ne!(engine.hit_test(10.0, 20.0), Some(r));
+        // The page is as tall as the box in flow, not where it moved to.
+        assert_eq!(engine.layout(200.0).height, 50.0);
+    }
+
+    #[test]
     fn a_clipping_box_is_hit_on_its_border_but_scrolls_only_from_its_padding_box() {
         // A 100px scroll container with a 10px border and 300px of
         // content: the pointer on the border is over the box, since the

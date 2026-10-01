@@ -79,7 +79,7 @@
 
 use style::computed::{
     BOTTOM, BoxSizing, ComputedStyle, Display, Float, LEFT, LengthPercentage, LengthPercentageAuto,
-    RIGHT, TOP,
+    Position, RIGHT, TOP,
 };
 use text::FontCollection;
 
@@ -341,9 +341,14 @@ pub fn layout_document_in(
     let depends_on_viewport_height = viewport_height.is_some()
         && boxes.iter().any(|b| {
             let percent = |v: LengthPercentage| matches!(v, LengthPercentage::Percent(_));
-            matches!(b.style.height, LengthPercentageAuto::Percent(_))
+            let percent_or_auto =
+                |v: LengthPercentageAuto| matches!(v, LengthPercentageAuto::Percent(_));
+            percent_or_auto(b.style.height)
                 || percent(b.style.min_height)
                 || b.style.max_height.is_some_and(percent)
+                || (b.style.position == Position::Relative
+                    && (percent_or_auto(b.style.inset[TOP])
+                        || percent_or_auto(b.style.inset[BOTTOM])))
         });
     // The viewport is the one context with no further ancestor to
     // escape to — `leading` *must* materialize here, exactly once, or
@@ -592,6 +597,51 @@ pub(crate) struct AtomicLayout {
     /// Where the border box sits inside the margin box.
     pub(crate) margin_left: f32,
     pub(crate) margin_top: f32,
+    /// The move `position: relative` gives the box (M11), applied to
+    /// its fragment where it is placed; the line and the float context
+    /// see the box unmoved.
+    pub(crate) relative: (f32, f32),
+}
+
+/// The move a box with `position: relative` gets once laid out in flow
+/// (CSS2 §9.4.3): `left`, else minus `right`, both `auto` no move;
+/// `top`, else minus `bottom`. A percentage is of the containing
+/// block's width for `left` and `right`, of its height for `top` and
+/// `bottom`, and `auto` when that height is not definite (§9.3.2). The
+/// flow around the box is not affected: the move is applied to its
+/// fragment, and its subtree with it, as it is placed.
+pub(crate) fn relative_offset(
+    style: &ComputedStyle,
+    cb_width: f32,
+    cb_height: Option<f32>,
+) -> (f32, f32) {
+    if style.position != Position::Relative {
+        return (0.0, 0.0);
+    }
+    let horizontal = |v: LengthPercentageAuto| match v {
+        LengthPercentageAuto::Auto => None,
+        LengthPercentageAuto::Px(px) => Some(px),
+        LengthPercentageAuto::Percent(p) => Some(cb_width * p / 100.0),
+    };
+    let vertical = |v: LengthPercentageAuto| match v {
+        LengthPercentageAuto::Auto => None,
+        LengthPercentageAuto::Px(px) => Some(px),
+        LengthPercentageAuto::Percent(p) => cb_height.map(|h| h * p / 100.0),
+    };
+    let dx = match (
+        horizontal(style.inset[LEFT]),
+        horizontal(style.inset[RIGHT]),
+    ) {
+        (Some(left), _) => left,
+        (None, Some(right)) => -right,
+        (None, None) => 0.0,
+    };
+    let dy = match (vertical(style.inset[TOP]), vertical(style.inset[BOTTOM])) {
+        (Some(top), _) => top,
+        (None, Some(bottom)) => -bottom,
+        (None, None) => 0.0,
+    };
+    (dx, dy)
 }
 
 /// Whether a box with this style establishes a block formatting context
@@ -709,6 +759,7 @@ pub(crate) fn pending_float(
         h: atomic.height,
         margin_left: atomic.margin_left,
         margin_top: atomic.margin_top,
+        relative: atomic.relative,
         cb_left,
         cb_right: cb_left + cb_width,
     }
@@ -767,6 +818,7 @@ pub(crate) fn layout_inline_block(
         ascent,
         margin_left,
         margin_top,
+        relative: relative_offset(&b.style, cb_width, cb_height),
     }
 }
 
@@ -1264,6 +1316,10 @@ fn layout_children(
                     x,
                     separated,
                 } = place_block(child, cb_width, cb_height, floats, at, fonts);
+                // `position: relative` moves the fragment, and its
+                // subtree with it, from where the flow put it (M11).
+                let (dx, dy) = relative_offset(&child.style, cb_width, cb_height);
+                let x = x + dx;
                 if let Some(top) = separated {
                     // Clearance, or a context root moved below a float:
                     // the margins pending above resolve here (CSS2
@@ -1289,7 +1345,7 @@ fn layout_children(
                             last_baseline = Some(child_y + baseline);
                         }
                     }
-                    fragments.push(layout.root.translated(x, child_y));
+                    fragments.push(layout.root.translated(x, child_y + dy));
                     at.anchor = origin + y;
                     at.strut = pending;
                     continue;
@@ -1317,7 +1373,7 @@ fn layout_children(
                         box_y
                     };
                     at.strut = at.strut.join(layout.margin_top);
-                    fragments.push(layout.root.translated(x, box_y));
+                    fragments.push(layout.root.translated(x, box_y + dy));
                     continue;
                 }
                 let root_top = at.anchor + at.strut.join(layout.margin_top).resolve();
@@ -1336,7 +1392,7 @@ fn layout_children(
                 if let Some(baseline) = layout.last_baseline {
                     last_baseline = Some(child_y + baseline);
                 }
-                fragments.push(layout.root.translated(x, child_y));
+                fragments.push(layout.root.translated(x, child_y + dy));
                 y = child_y + layout.height;
                 pending = layout.margin_bottom;
                 at.origin.get_or_insert(root_top);
@@ -3052,5 +3108,88 @@ mod tests {
         assert_eq!((by_node(&layout, 3).x, by_node(&layout, 3).y), (0.0, 30.0));
         let o = by_node(&layout, 4);
         assert_eq!((o.x, o.y, o.w), (60.0, 0.0, 140.0));
+    }
+
+    #[test]
+    fn a_relatively_positioned_box_is_moved_with_its_content_and_the_flow_is_not() {
+        // <div><p class=r>x</p><p class=n>y</p></div>: r is laid out
+        // where it would be and then moved by its offsets, its text
+        // with it; n sits where it would have, as if r had not moved.
+        // Nodes: div 1, r 2, n 3.
+        let m = test_fonts().primary().metrics(16.0);
+        let lh = m.line_height();
+        let root = Element::new("div")
+            .push(Element::new("p").attr("class", "r").text("x"))
+            .push(Element::new("p").attr("class", "n").text("y"));
+        let css = "div, p { margin: 0; } .r { position: relative; left: 10px; top: 5px; }";
+        let layout = document_of(root.clone(), css);
+        let (r, n) = (by_node(&layout, 2), by_node(&layout, 3));
+        assert_eq!((r.x, r.y), (10.0, 5.0));
+        assert_eq!(
+            (text_of(&layout, "x").x, text_of(&layout, "x").top()),
+            (10.0, 5.0)
+        );
+        assert_eq!((n.x, n.y), (0.0, lh), "the flow is not affected");
+        assert_eq!(by_node(&layout, 1).h, 2.0 * lh);
+        // `right` and `bottom` move the other way; `left` wins over
+        // `right` when both are given (left-to-right); `auto` is no move.
+        let moved = |css: &str| {
+            let layout = document_of(root.clone(), css);
+            (by_node(&layout, 2).x, by_node(&layout, 2).y)
+        };
+        assert_eq!(
+            moved("div, p { margin: 0; } .r { position: relative; right: 10px; bottom: 5px; }"),
+            (-10.0, -5.0)
+        );
+        assert_eq!(
+            moved("div, p { margin: 0; } .r { position: relative; left: 3px; right: 10px; }"),
+            (3.0, 0.0)
+        );
+        assert_eq!(
+            moved("div, p { margin: 0; } .r { position: relative; }"),
+            (0.0, 0.0)
+        );
+        assert_eq!(
+            moved("div, p { margin: 0; } .r { left: 10px; top: 5px; }"),
+            (0.0, 0.0),
+            "static: the offsets do nothing"
+        );
+        // A percentage is of the containing block's width horizontally
+        // and of its height vertically, which is `auto` when that height
+        // is not definite.
+        assert_eq!(
+            moved("div, p { margin: 0; } .r { position: relative; left: 10%; top: 10%; }"),
+            (80.0, 0.0)
+        );
+        assert_eq!(
+            moved(
+                "div, p { margin: 0; } div { height: 200px; } .r { position: relative; top: 10%; }"
+            ),
+            (0.0, 20.0)
+        );
+        // A float first, moved from where the context put it: the line
+        // beside it is shortened as if it had not moved. On that line,
+        // in a font-less container, an inline-block is moved and the
+        // next item is not. Nodes: div 1, f 2, a 3, b 4 — the spans
+        // and the text in an anonymous block of the div.
+        let layout = document_of(
+            Element::new("div")
+                .push(Element::new("div").attr("class", "f"))
+                .push(Element::new("span").attr("class", "a"))
+                .push(Element::new("span").attr("class", "b"))
+                .text("z"),
+            "div { margin: 0; font-size: 0; }
+             span { display: inline-block; width: 20px; height: 10px; }
+             .a { position: relative; left: 5px; top: 7px; }
+             .f { float: left; width: 30px; height: 30px; position: relative; left: 100px; top: 1px; }",
+        );
+        assert_eq!((by_node(&layout, 2).x, by_node(&layout, 2).y), (100.0, 1.0));
+        assert_eq!((by_node(&layout, 3).x, by_node(&layout, 3).y), (35.0, 7.0));
+        assert_eq!((by_node(&layout, 4).x, by_node(&layout, 4).y), (50.0, 0.0));
+        assert_eq!(
+            text_of(&layout, "z").x,
+            30.0 + 40.0,
+            "beside the unmoved float, after the unmoved line"
+        );
     }
 }
