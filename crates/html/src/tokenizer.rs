@@ -50,6 +50,35 @@ pub enum Token {
 pub struct Tokenizer {
     input: Vec<char>,
     pos: usize,
+    /// Set by a start tag whose content is text up to its end tag (the
+    /// spec's RAWTEXT, RCDATA and PLAINTEXT states): the next call
+    /// reads that text as one token.
+    raw_text: Option<RawText>,
+}
+
+/// How an element's content is read as text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RawText {
+    /// Up to the end tag, no character references (`style`, `script`,
+    /// `xmp`, `iframe`, `noembed`, `noframes`).
+    Raw(String),
+    /// Up to the end tag, character references decoded (`textarea`,
+    /// `title`).
+    Escapable(String),
+    /// To the end of the input (`plaintext`).
+    ToEnd,
+}
+
+/// The raw-text state `name`'s start tag switches to, if any.
+fn raw_text_for(name: &str) -> Option<RawText> {
+    match name {
+        "style" | "script" | "xmp" | "iframe" | "noembed" | "noframes" => {
+            Some(RawText::Raw(name.to_string()))
+        }
+        "textarea" | "title" => Some(RawText::Escapable(name.to_string())),
+        "plaintext" => Some(RawText::ToEnd),
+        _ => None,
+    }
 }
 
 impl Tokenizer {
@@ -68,7 +97,11 @@ impl Tokenizer {
                 input.push(c);
             }
         }
-        Tokenizer { input, pos: 0 }
+        Tokenizer {
+            input,
+            pos: 0,
+            raw_text: None,
+        }
     }
 
     /// Returns the next token, or `None` at end of input.
@@ -79,13 +112,64 @@ impl Tokenizer {
         if self.pos >= self.input.len() {
             return None;
         }
+        if let Some(mode) = self.raw_text.take() {
+            let text = match &mode {
+                RawText::Raw(name) => self.read_raw_until_end_tag(name),
+                RawText::Escapable(name) => {
+                    decode_entities(&self.read_raw_until_end_tag(name), false)
+                }
+                RawText::ToEnd => {
+                    let rest: String = self.input[self.pos..].iter().collect();
+                    self.pos = self.input.len();
+                    rest
+                }
+            };
+            if !text.is_empty() {
+                return Some(Token::Text(text));
+            }
+            // Empty content: the end tag follows, read as any other.
+            if self.pos >= self.input.len() {
+                return None;
+            }
+        }
         if self.peek() == Some('<')
             && let Some(token) = self.read_markup_declaration()
         {
+            if let Token::StartTag { name, .. } = &token {
+                self.raw_text = raw_text_for(name);
+            }
             return Some(token);
         }
         // A '<' that starts nothing markup-ish is read as literal text.
         Some(self.read_text())
+    }
+
+    /// Reads everything up to `</name` (ASCII case-insensitive) followed
+    /// by white space, `/` or `>`, or to the end of the input, leaving
+    /// the end tag to be read next. The spec's RAWTEXT and RCDATA
+    /// states, less the script-data escape dance for `<!--` inside a
+    /// script, which this engine does not run anyway.
+    fn read_raw_until_end_tag(&mut self, name: &str) -> String {
+        let start = self.pos;
+        let name: Vec<char> = name.chars().collect();
+        while self.pos < self.input.len() {
+            if self.input[self.pos] == '<'
+                && self.input.get(self.pos + 1) == Some(&'/')
+                && name.iter().enumerate().all(|(i, c)| {
+                    self.input
+                        .get(self.pos + 2 + i)
+                        .is_some_and(|d| d.eq_ignore_ascii_case(c))
+                })
+                && matches!(
+                    self.input.get(self.pos + 2 + name.len()),
+                    None | Some('\t' | '\n' | '\u{c}' | ' ' | '/' | '>')
+                )
+            {
+                break;
+            }
+            self.pos += 1;
+        }
+        self.input[start..self.pos].iter().collect()
     }
 
     fn peek(&self) -> Option<char> {

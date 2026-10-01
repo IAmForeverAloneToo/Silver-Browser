@@ -644,14 +644,25 @@ mod tests {
                           border-width: 2px; border-style: solid; }</style>\
              <div></div>",
         );
-        let fragments = engine.fragments(800.0);
-        let div = fragments
-            .iter()
-            .find(|f| matches!(f.kind, layout::FragmentKind::Box))
-            .expect("a box fragment for the div");
+        let boxes = boxes_of(&engine, "div");
+        let div = &boxes[0];
         // border-box: 100 + 2*5 + 2*2 = 114 wide, 50 + 2*5 + 2*2 = 64
-        // tall; positioned after the 10px margin.
-        assert_eq!((div.x, div.y, div.w, div.h), (10.0, 10.0, 114.0, 64.0));
+        // tall. The implied body's 8px margin (the UA sheet) puts it at
+        // x = 18; its top margin and the div's adjoin, so y is their
+        // collapsed 10, not 18.
+        assert_eq!((div.x, div.y, div.w, div.h), (18.0, 10.0, 114.0, 64.0));
+    }
+
+    /// The box fragments of every `tag` element, in paint order.
+    fn boxes_of(engine: &Engine, tag: &str) -> Vec<layout::Fragment> {
+        let styled = engine.styled_dom();
+        engine
+            .fragments(800.0)
+            .into_iter()
+            .filter(|f| {
+                matches!(f.kind, layout::FragmentKind::Box) && styled.flat.nodes[f.node].tag == tag
+            })
+            .collect()
     }
 
     #[test]
@@ -661,11 +672,7 @@ mod tests {
             "<style>p { display: block; margin: 20px 0; }</style>\
              <p>one</p><p>two</p>",
         );
-        let fragments = engine.fragments(800.0);
-        let boxes: Vec<_> = fragments
-            .iter()
-            .filter(|f| matches!(f.kind, layout::FragmentKind::Box))
-            .collect();
+        let boxes = boxes_of(&engine, "p");
         assert_eq!(boxes.len(), 2);
         // The gap between the two border-boxes is max(20, 20) = 20, not
         // the sum (40) — `boxes[0].h` is its own real content height
@@ -895,8 +902,10 @@ mod tests {
     fn hit_test_finds_the_innermost_box_or_text_under_the_point() {
         let mut engine = test_engine();
         // outer: 0..200 x 0..100; inner: at (20, 10), 100 x 50 with text.
+        // The body's UA margin is zeroed so the numbers stay these.
         engine.load_document(
-            "<div class=outer style=\"width: 200px; height: 100px; margin: 0; padding: 10px 0 0 20px\">\
+            "<style>body { margin: 0 }</style>\
+             <div class=outer style=\"width: 200px; height: 100px; margin: 0; padding: 10px 0 0 20px\">\
                <div class=inner style=\"width: 100px; height: 50px; margin: 0\">hi</div>\
              </div>",
         );
@@ -924,9 +933,8 @@ mod tests {
         );
         // In the outer box's padding.
         assert_eq!(class(engine.hit_test(5.0, 5.0)), Some("outer".to_string()));
-        // Right of both boxes: nothing (the parser implies no html or
-        // body element around the div, so no box is that wide).
-        assert_eq!(tag(engine.hit_test(300.0, 50.0)), None);
+        // Right of both boxes: the implied body, as wide as the viewport.
+        assert_eq!(tag(engine.hit_test(300.0, 50.0)).as_deref(), Some("body"));
         // Below everything, and off the viewport: nothing.
         assert_eq!(engine.hit_test(50.0, 250.0), None);
         assert_eq!(engine.hit_test(-1.0, 5.0), None);
@@ -937,7 +945,8 @@ mod tests {
     fn hit_test_follows_the_scroll_offset_and_respects_clipping() {
         let mut engine = test_engine();
         engine.load_document(
-            "<div class=spacer style=\"height: 100px; margin: 0\"></div>\
+            "<style>body { margin: 0 }</style>\
+             <div class=spacer style=\"height: 100px; margin: 0\"></div>\
              <div class=clip style=\"height: 10px; overflow: hidden; margin: 0\">\
                <p style=\"margin: 0; font-size: 40px; width: 50px\">tall</p>\
              </div>\

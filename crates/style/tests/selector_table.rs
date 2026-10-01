@@ -24,10 +24,15 @@ fn run(cases: &[Case]) {
                     case.name, case.selector
                 )
             });
+        // The parser implies `html`, `head` and `body` around every
+        // case's markup; they are reported only where the case wrote
+        // them, so each row reads as the markup it shows.
+        let wrote = |tag: &str| case.html.contains(&format!("<{tag}"));
         let matched: Vec<&str> = flat
             .element_indices()
             .filter(|&i| style::selector_matching::matches_selector_list(&flat, i, &list))
             .map(|i| flat.nodes[i].tag.as_str())
+            .filter(|tag| !matches!(*tag, "html" | "head" | "body") || wrote(tag))
             .collect();
         assert_eq!(
             matched, case.expected,

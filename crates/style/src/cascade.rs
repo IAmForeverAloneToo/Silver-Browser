@@ -1397,8 +1397,14 @@ mod tests {
         let sheets = [sheet("div { display: none; } span { color: red; }")];
         let document = html::parse_document("<div><span>x</span></div>").unwrap();
         let styled = style_document(&document, &sheets);
-        let div = 1;
-        let span = 2;
+        let index_of = |tag: &str| {
+            styled
+                .flat
+                .element_indices()
+                .find(|&i| styled.flat.nodes[i].tag == tag)
+                .expect("the element exists")
+        };
+        let (div, span) = (index_of("div"), index_of("span"));
         assert_eq!(styled.styles[div].display, Display::None);
         // Styling doesn't itself decide what's painted — that's paint's
         // job, walking `display` — so a display:none subtree's children
