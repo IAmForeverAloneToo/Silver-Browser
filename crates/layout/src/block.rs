@@ -1649,7 +1649,17 @@ fn layout_children<'a>(
 
     for child in children {
         match &child.kind {
-            BoxKind::Block => {
+            // A table and each of its parts are laid out as the blocks
+            // they are built as inside, stacked, until `layout::table`
+            // lays a table's grid out (M12 step 3).
+            BoxKind::Block
+            | BoxKind::Table
+            | BoxKind::RowGroup(_)
+            | BoxKind::Row
+            | BoxKind::ColumnGroup { .. }
+            | BoxKind::Column { .. }
+            | BoxKind::Cell { .. }
+            | BoxKind::Caption => {
                 let BlockPlacement {
                     layout,
                     x,
@@ -2963,11 +2973,15 @@ mod tests {
         assert_eq!((boxes[0].x, boxes[0].w, boxes[0].h), (12.0, 200.0, 50.0));
 
         for tag in [
-            "section", "article", "nav", "header", "footer", "main", "form", "table",
+            "section", "article", "nav", "header", "footer", "main", "form",
         ] {
             let frags = fragments_of(Element::new(tag).text("x"), "");
             assert_eq!(box_fragments(&frags).len(), 1, "<{tag}> is a block");
         }
+        // A table is a table (M12): its text gets an anonymous row and
+        // cell, three boxes.
+        let frags = fragments_of(Element::new("table").text("x"), "");
+        assert_eq!(box_fragments(&frags).len(), 3, "<table> is a table");
     }
 
     /// The tree form of [`fragments_of`].

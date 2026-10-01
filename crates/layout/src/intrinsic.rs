@@ -78,7 +78,18 @@ pub(crate) fn content_widths(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32
     let mut floats_max = 0.0f32;
     for child in &b.children {
         let (child_min, child_max) = match child.kind {
-            BoxKind::Block | BoxKind::InlineBlock | BoxKind::Float => contribution(child, fonts),
+            // A table and its parts contribute as the blocks they are
+            // laid out as until `layout::table` (M12 step 3).
+            BoxKind::Block
+            | BoxKind::InlineBlock
+            | BoxKind::Float
+            | BoxKind::Table
+            | BoxKind::RowGroup(_)
+            | BoxKind::Row
+            | BoxKind::ColumnGroup { .. }
+            | BoxKind::Column { .. }
+            | BoxKind::Cell { .. }
+            | BoxKind::Caption => contribution(child, fonts),
             BoxKind::Absolute => (0.0, 0.0),
             BoxKind::AnonymousBlock => {
                 let items = collect_inline_items(&child.children, fonts);

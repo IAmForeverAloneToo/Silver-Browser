@@ -636,7 +636,9 @@ impl<'a> Collector<'a, '_> {
                     self.collect(&b.children);
                     self.out.push(InlineItem::Close(b));
                 }
-                BoxKind::InlineBlock => {
+                // An inline-block, or a table in a run, which is an
+                // inline table (M12): atomic on the line.
+                BoxKind::InlineBlock | BoxKind::Table => {
                     let gap_before = std::mem::take(&mut self.space_pending);
                     self.gap_placed = false;
                     self.out.push(InlineItem::Atomic { b, gap_before });
@@ -647,9 +649,17 @@ impl<'a> Collector<'a, '_> {
                 BoxKind::Float => self.out.push(InlineItem::Float(b)),
                 BoxKind::Absolute => self.out.push(InlineItem::Absolute(b)),
                 // The box tree builder hoists a block out of inline
-                // content (CSS2 §9.2.1.1), so none reaches here from a
-                // parsed document; see the module doc.
-                BoxKind::Block | BoxKind::AnonymousBlock => {}
+                // content (CSS2 §9.2.1.1) and keeps a table's parts in
+                // tables, so none reaches here from a parsed document;
+                // see the module doc.
+                BoxKind::Block
+                | BoxKind::AnonymousBlock
+                | BoxKind::RowGroup(_)
+                | BoxKind::Row
+                | BoxKind::ColumnGroup { .. }
+                | BoxKind::Column { .. }
+                | BoxKind::Cell { .. }
+                | BoxKind::Caption => {}
             }
         }
     }

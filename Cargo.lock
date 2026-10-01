@@ -786,6 +786,7 @@ version = "0.0.1"
 dependencies = [
  "css",
  "dom",
+ "html",
  "style",
  "text",
 ]
