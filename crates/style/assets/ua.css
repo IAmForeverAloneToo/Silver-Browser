@@ -3,9 +3,11 @@
  * Loaded at UA origin by `style::cascade`, below every author stylesheet
  * (see css-cascade-5 §6: UA normal < author normal < author !important
  * < UA !important). Covers the tags M5.6 names: html/body, headings,
- * paragraphs, lists, bold/italic, links, blockquotes. Sizes are rough
- * approximations of real browsers' UA sheets, not a spec (there isn't
- * one) — revisit once real pages make specific mismatches visible.
+ * paragraphs, lists, bold/italic, links, blockquotes; the block-level
+ * elements of the HTML standard; the form controls (M10.6). Sizes are
+ * rough approximations of real browsers' UA sheets, not a spec (there
+ * isn't one) — revisit once real pages make specific mismatches
+ * visible.
  *
  * font-weight/font-style aren't in the v1 ComputedStyle field set yet
  * (they land with M8/M21), so the b/strong/i/em rules below parse but
@@ -78,11 +80,52 @@ a { color: blue; }
  * `li` is a block rather than `list-item` until markers do (M21). */
 address, article, aside, caption, center, dd, details, dialog, dir, div,
 dl, dt, fieldset, figcaption, figure, footer, form, header, hgroup, hr,
-legend, listing, main, menu, nav, optgroup, option, plaintext, search,
-section, summary, table, tbody, td, tfoot, th, thead, tr, xmp {
+legend, listing, main, menu, nav, plaintext, search, section, summary,
+table, tbody, td, tfoot, th, thead, tr, xmp {
   display: block;
 }
 
 dl { margin: 16px 0; }
 dd { margin-left: 40px; }
 hr { margin: 8px 0; border-width: 1px; border-style: solid; }
+
+/* Form controls, v0 (M10.6): each is an inline-block with a border,
+ * padding and a background, so a form lays out as a row of boxes, and
+ * nothing more — no value shown, no behaviour, no focus (M26). The
+ * sizes follow the common browsers' defaults: a control's text is
+ * 13.33px; an input is twenty characters wide (`ch`, the zero's
+ * advance) and one line tall, 1.2em standing in for the line height
+ * until `line-height` lands; a textarea is twenty characters by two
+ * lines and a scroll container; a button is as wide as its label; a
+ * select is the size of an input and shows nothing, its options being
+ * hidden. The `size`, `rows` and `cols` attributes are not read. */
+input, button, select, textarea {
+  display: inline-block;
+  font-size: 13.3333px;
+  color: black;
+  letter-spacing: normal;
+  word-spacing: normal;
+  text-transform: none;
+  margin: 0;
+  padding: 1px 2px;
+  border: 1px solid #767676;
+  background-color: #ffffff;
+}
+input, select { width: 20ch; height: 1.2em; }
+textarea { width: 20ch; height: 2.4em; white-space: pre-wrap; overflow: auto; }
+button, input[type=submit i], input[type=button i], input[type=reset i] {
+  width: auto;
+  height: auto;
+  padding: 1px 6px;
+  background-color: #efefef;
+  text-align: center;
+}
+input[type=checkbox i], input[type=radio i] {
+  box-sizing: border-box;
+  width: 13px;
+  height: 13px;
+  padding: 0;
+  margin: 3px 3px 3px 4px;
+}
+input[type=hidden i] { display: none; }
+optgroup, option { display: none; }

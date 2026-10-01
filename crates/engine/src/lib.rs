@@ -1413,6 +1413,96 @@ mod tests {
     }
 
     #[test]
+    fn form_controls_lay_out_as_sized_boxes_through_the_ua_sheet() {
+        // M10.6: no author CSS at all. A row of controls on one line,
+        // each the size the UA sheet gives it, with the engine's font
+        // measuring the `ch` and the text.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0 }</style>\
+             <form><input id=i><input type=hidden id=h><input type=checkbox id=c>\
+             <button id=b>Go</button><select id=s><option>a</option></select>\
+             <textarea id=t>one\ntwo</textarea></form>",
+        );
+        engine.frame(800, 100);
+        let frags = engine.fragments(800.0);
+        let fragment = |id: &str| {
+            let node = node_by_id(&engine, id);
+            frags
+                .iter()
+                .find(|f| matches!(f.kind, layout::FragmentKind::Box) && f.node == node)
+                .cloned()
+        };
+        let near = |a: f32, b: f32| (a - b).abs() < 0.01;
+        let fonts = &engine.layout_fonts;
+        let size = 13.3333;
+        // The input: 20 zeros wide inside 2px of padding and 1px of
+        // border each side; 1.2em tall inside 1px and 1px.
+        let input = fragment("i").expect("the input's box");
+        assert!(
+            near(input.w, 20.0 * fonts.zero_advance(size) + 6.0),
+            "{}",
+            input.w
+        );
+        assert!(near(input.h, 1.2 * size + 4.0), "{}", input.h);
+        assert!(fragment("h").is_none(), "a hidden input makes no box");
+        let checkbox = fragment("c").expect("the checkbox's box");
+        assert_eq!((checkbox.w, checkbox.h), (13.0, 13.0));
+        // The button fits its label: 6px of padding and 1px of border
+        // each side of the word, one line tall.
+        let button = fragment("b").expect("the button's box");
+        assert!(
+            near(button.w, fonts.measure("Go", size) + 14.0),
+            "{}",
+            button.w
+        );
+        assert!(near(
+            button.h,
+            fonts.primary().metrics(size).line_height() + 4.0
+        ));
+        let label = frags
+            .iter()
+            .find(|f| matches!(&f.kind, layout::FragmentKind::Text(t) if t == "Go"))
+            .expect("the label is laid out");
+        assert!(label.x > button.x && label.x + label.w < button.x + button.w);
+        // The select is an input's size and shows none of its options.
+        let select = fragment("s").expect("the select's box");
+        assert_eq!((select.w, select.h), (input.w, input.h));
+        assert!(
+            !frags
+                .iter()
+                .any(|f| matches!(&f.kind, layout::FragmentKind::Text(t) if t == "a"))
+        );
+        // The textarea is two lines tall and keeps its line break.
+        let textarea = fragment("t").expect("the textarea's box");
+        assert!(near(textarea.h, 2.4 * size + 4.0), "{}", textarea.h);
+        let line = |t: &str| {
+            frags
+                .iter()
+                .find(|f| matches!(&f.kind, layout::FragmentKind::Text(x) if x == t))
+                .expect("the line")
+                .y
+        };
+        assert!(line("two") > line("one"));
+        // All on one line: every control's bottom is on the baseline.
+        let bottoms: Vec<f32> = ["i", "c", "b", "s", "t"]
+            .iter()
+            .map(|id| {
+                let f = fragment(id).unwrap();
+                f.y + f.h
+            })
+            .collect();
+        assert!(
+            near(bottoms[0], bottoms[3]),
+            "input and select: {bottoms:?}"
+        );
+        assert!(
+            bottoms[1] < bottoms[0],
+            "the checkbox has a bottom margin: {bottoms:?}"
+        );
+    }
+
+    #[test]
     fn hit_test_follows_the_scroll_offset_and_respects_clipping() {
         let mut engine = test_engine();
         engine.load_document(

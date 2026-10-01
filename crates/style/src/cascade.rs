@@ -2069,6 +2069,47 @@ mod tests {
     }
 
     #[test]
+    fn the_ua_sheet_styles_form_controls_as_boxes() {
+        // M10.6: inline-blocks with a border, padding and a background;
+        // an input twenty characters wide (no font here: `ch` is half
+        // an em of the control's 13.33px) and one line tall, a textarea
+        // two lines tall and a scroll container, a select the size of
+        // an input with its options hidden, a hidden input nothing, a
+        // checkbox a 13px box.
+        let html = "<form><input><input type=HIDDEN><input type=checkbox>\
+                    <button>Go</button><select><option>a</option></select>\
+                    <textarea>t</textarea></form>";
+        let control = |selector: &str| style_of(html, &[], selector);
+        let input = control("input:first-child");
+        assert_eq!(input.display, Display::InlineBlock);
+        assert_eq!(input.font_size_px, 13.3333);
+        assert_eq!(input.width, LengthPercentageAuto::Px(20.0 * 0.5 * 13.3333));
+        assert_eq!(input.height, LengthPercentageAuto::Px(1.2 * 13.3333));
+        assert_eq!(input.used_border_width(), [1.0; 4]);
+        assert_eq!(input.padding[TOP], LengthPercentage::Px(1.0));
+        assert_eq!(input.padding[LEFT], LengthPercentage::Px(2.0));
+        assert_eq!(input.background_color, Color::rgb8(255, 255, 255));
+        assert_eq!(
+            control("input[type=HIDDEN]").display,
+            Display::None,
+            "the UA rule matches the type whatever its case"
+        );
+        let checkbox = control("input[type=checkbox]");
+        assert_eq!(checkbox.width, LengthPercentageAuto::Px(13.0));
+        assert_eq!(checkbox.box_sizing, BoxSizing::BorderBox);
+        let button = control("button");
+        assert_eq!(button.width, LengthPercentageAuto::Auto);
+        assert_eq!(button.text_align, TextAlign::Center);
+        assert_eq!(button.background_color, Color::rgb8(0xef, 0xef, 0xef));
+        assert_eq!(control("select").width, input.width);
+        assert_eq!(control("option").display, Display::None);
+        let textarea = control("textarea");
+        assert_eq!(textarea.height, LengthPercentageAuto::Px(2.4 * 13.3333));
+        assert_eq!(textarea.white_space, WhiteSpace::PreWrap);
+        assert_eq!(textarea.overflow, Overflow::Auto);
+    }
+
+    #[test]
     fn hex_colors_all_four_lengths() {
         assert_eq!(
             parse_color(&css::tokenize("#f00")),
