@@ -4,6 +4,16 @@
 //! qualified rules. A failed parse is a hard error here; per
 //! css-syntax-3, the *caller* drops the whole rule containing the bad
 //! selector — that policy lives in the engine (M5), not in this parser.
+//!
+//! The parser works in place over the borrowed tokens with one cursor,
+//! including inside `:not()`, `:is()`, `:where()` and `:nth-child(… of
+//! S)`: nothing is copied per nesting level, so a selector that nests
+//! those a thousand deep costs a thousand frames of work, not a
+//! thousand copies of itself. Nesting past [`MAX_NESTING`] levels is a
+//! parse error, which bounds the recursion; no real stylesheet comes
+//! near it. `:is()` and `:where()` take a forgiving selector list
+//! (selectors-4 §4.2): a member that does not parse is dropped and the
+//! rest stand, where `:not()` and the rule's own list fail whole.
 
 use crate::ParseError;
 use css::Token;
@@ -13,76 +23,20 @@ use super::{
     Specificity,
 };
 
-/// Parses a comma-separated selector list from prelude tokens.
-pub fn parse_selector_list(tokens: &[Token]) -> Result<SelectorList, ParseError> {
-    let mut selectors = Vec::new();
-    let mut current: Vec<Token> = Vec::new();
-    let mut depth = 0i32;
-    for t in tokens {
-        match t {
-            // A Function token carries its '(' with it, so its matching
-            // ')' appears in the stream — count it for depth.
-            Token::Function(_) | Token::OpenParen | Token::OpenSquare => {
-                depth += 1;
-                current.push(t.clone());
-            }
-            Token::CloseParen | Token::CloseSquare => {
-                depth -= 1;
-                if depth < 0 {
-                    return Err(ParseError::InvalidSelector);
-                }
-                current.push(t.clone());
-            }
-            Token::Comma if depth == 0 => {
-                selectors.push(parse_one(&current)?);
-                current.clear();
-            }
-            _ => current.push(t.clone()),
-        }
-    }
-    if !current.is_empty() {
-        selectors.push(parse_one(&current)?);
-    }
-    if selectors.is_empty() {
-        return Err(ParseError::InvalidSelector);
-    }
-    Ok(SelectorList(selectors))
-}
+/// How deep `:not()`, `:is()`, `:where()` and `of S` may nest.
+pub const MAX_NESTING: usize = 32;
 
-/// Parses one complex selector (no top-level commas).
-fn parse_one(tokens: &[Token]) -> Result<Selector, ParseError> {
+/// Parses a comma-separated selector list from prelude tokens. A
+/// trailing comma, an empty member or an unbalanced parenthesis is an
+/// error (selectors-4 §5.1: `<complex-selector>#`, no empty members).
+pub fn parse_selector_list(tokens: &[Token]) -> Result<SelectorList, ParseError> {
     let mut c = Cursor::new(tokens);
-    c.skip_ws();
-    let (first, mut spec) = parse_compound(&mut c).ok_or(ParseError::InvalidSelector)?;
-    let mut compounds = vec![first];
-    let mut combinators = Vec::new();
-    loop {
-        let had_ws = c.skip_ws();
-        if let Some(comb) = peek_combinator(&c) {
-            c.advance();
-            c.skip_ws();
-            let (next, s) = parse_compound(&mut c).ok_or(ParseError::InvalidSelector)?;
-            spec += s;
-            combinators.push(comb);
-            compounds.push(next);
-        } else if had_ws && starts_compound(c.peek()) {
-            let (next, s) = parse_compound(&mut c).ok_or(ParseError::InvalidSelector)?;
-            spec += s;
-            combinators.push(Combinator::Descendant);
-            compounds.push(next);
-        } else {
-            break;
-        }
-    }
+    let list = parse_list(&mut c, 0, false, false)?;
     c.skip_ws();
     if !c.at_end() {
         return Err(ParseError::InvalidSelector);
     }
-    Ok(Selector {
-        compounds,
-        combinators,
-        specificity: spec,
-    })
+    Ok(list)
 }
 
 /// A peekable cursor over a token slice.
@@ -96,7 +50,7 @@ impl<'a> Cursor<'a> {
         Cursor { tokens, pos: 0 }
     }
 
-    fn peek(&self) -> Option<&Token> {
+    fn peek(&self) -> Option<&'a Token> {
         self.tokens.get(self.pos)
     }
 
@@ -116,6 +70,113 @@ impl<'a> Cursor<'a> {
         }
         self.pos > start
     }
+}
+
+/// Parses a selector list at the cursor: complex selectors separated by
+/// top-level commas, ending at the end of the tokens or, when
+/// `in_parens`, before the `)` that closes the enclosing function
+/// (left for the caller to consume). With `forgiving`, a member that
+/// fails to parse is skipped rather than failing the list, and the
+/// list may come out empty.
+fn parse_list(
+    c: &mut Cursor,
+    depth: usize,
+    in_parens: bool,
+    forgiving: bool,
+) -> Result<SelectorList, ParseError> {
+    if depth > MAX_NESTING {
+        return Err(ParseError::InvalidSelector);
+    }
+    let mut selectors = Vec::new();
+    loop {
+        c.skip_ws();
+        let start = c.pos;
+        match parse_complex(c, depth) {
+            Ok(selector) => selectors.push(selector),
+            Err(e) => {
+                if !forgiving {
+                    return Err(e);
+                }
+                c.pos = start;
+                skip_member(c);
+            }
+        }
+        c.skip_ws();
+        match c.peek() {
+            Some(Token::Comma) => {
+                c.advance();
+                c.skip_ws();
+                let at_list_end =
+                    c.at_end() || (in_parens && matches!(c.peek(), Some(Token::CloseParen)));
+                if at_list_end {
+                    if forgiving {
+                        break; // `:is(.a,)`: the empty member is dropped
+                    }
+                    return Err(ParseError::InvalidSelector);
+                }
+            }
+            Some(Token::CloseParen) if in_parens => break,
+            None => break,
+            _ => return Err(ParseError::InvalidSelector),
+        }
+    }
+    if selectors.is_empty() && !forgiving {
+        return Err(ParseError::InvalidSelector);
+    }
+    Ok(SelectorList(selectors))
+}
+
+/// Skips a forgiving list's bad member: up to, not including, the next
+/// top-level comma or the `)` that closes the list.
+fn skip_member(c: &mut Cursor) {
+    let mut depth = 0i32;
+    while let Some(t) = c.peek() {
+        match t {
+            Token::Function(_) | Token::OpenParen | Token::OpenSquare => depth += 1,
+            Token::CloseSquare => depth -= 1,
+            Token::CloseParen => {
+                if depth == 0 {
+                    return;
+                }
+                depth -= 1;
+            }
+            Token::Comma if depth == 0 => return,
+            _ => {}
+        }
+        c.advance();
+    }
+}
+
+/// Parses one complex selector at the cursor, stopping before a
+/// top-level comma, a closing `)`, or the end.
+fn parse_complex(c: &mut Cursor, depth: usize) -> Result<Selector, ParseError> {
+    c.skip_ws();
+    let (first, mut spec) = parse_compound(c, depth).ok_or(ParseError::InvalidSelector)?;
+    let mut compounds = vec![first];
+    let mut combinators = Vec::new();
+    loop {
+        let had_ws = c.skip_ws();
+        if let Some(comb) = peek_combinator(c) {
+            c.advance();
+            c.skip_ws();
+            let (next, s) = parse_compound(c, depth).ok_or(ParseError::InvalidSelector)?;
+            spec += s;
+            combinators.push(comb);
+            compounds.push(next);
+        } else if had_ws && starts_compound(c.peek()) {
+            let (next, s) = parse_compound(c, depth).ok_or(ParseError::InvalidSelector)?;
+            spec += s;
+            combinators.push(Combinator::Descendant);
+            compounds.push(next);
+        } else {
+            break;
+        }
+    }
+    Ok(Selector {
+        compounds,
+        combinators,
+        specificity: spec,
+    })
 }
 
 /// The combinator at the cursor, if any.
@@ -145,7 +206,7 @@ fn starts_compound(t: Option<&Token>) -> bool {
 
 /// Parses one compound selector (no combinators). Returns the compound
 /// and its specificity contribution.
-fn parse_compound(c: &mut Cursor) -> Option<(CompoundSelector, Specificity)> {
+fn parse_compound(c: &mut Cursor, depth: usize) -> Option<(CompoundSelector, Specificity)> {
     let mut simple: Vec<SimpleSelector> = Vec::new();
     let mut spec = Specificity::default();
     let mut seen_type = false;
@@ -198,7 +259,7 @@ fn parse_compound(c: &mut Cursor) -> Option<(CompoundSelector, Specificity)> {
                 continue; // parse_attribute consumed through `]`
             }
             Token::Colon => {
-                let pseudo = parse_pseudo(c, &mut spec)?;
+                let pseudo = parse_pseudo(c, &mut spec, depth)?;
                 simple.push(SimpleSelector::PseudoClass(pseudo));
                 continue; // parse_pseudo consumed its tokens
             }
@@ -248,8 +309,9 @@ fn parse_attribute(c: &mut Cursor) -> Option<(String, AttrOp, String, bool)> {
         _ => return None,
     };
     c.skip_ws();
-    // The value: string, ident, or number (unquoted numeric values are
-    // common in real markup, e.g. [tabindex=0]).
+    // The value: a string or an identifier (selectors-4 §6.1). A bare
+    // number (`[tabindex=0]`) is not in the grammar; browsers drop the
+    // rule, and so does this.
     let value = match c.peek() {
         Some(Token::String { value, bad: false }) => {
             let v = value.clone();
@@ -258,15 +320,6 @@ fn parse_attribute(c: &mut Cursor) -> Option<(String, AttrOp, String, bool)> {
         }
         Some(Token::Ident(s)) => {
             let v = s.clone();
-            c.advance();
-            v
-        }
-        Some(Token::Number { value, is_integer }) => {
-            let v = if *is_integer {
-                format!("{}", *value as i64)
-            } else {
-                value.to_string()
-            };
             c.advance();
             v
         }
@@ -299,7 +352,7 @@ fn parse_attribute(c: &mut Cursor) -> Option<(String, AttrOp, String, bool)> {
 /// Parses a pseudo-class; the cursor is at `:`. Updates `spec` with the
 /// specificity contribution (selectors-4 §17: `:not()`/`:is()` count
 /// the max of their arguments; `:where()` counts zero).
-fn parse_pseudo(c: &mut Cursor, spec: &mut Specificity) -> Option<PseudoClass> {
+fn parse_pseudo(c: &mut Cursor, spec: &mut Specificity, depth: usize) -> Option<PseudoClass> {
     c.advance(); // ':'
     match c.peek() {
         // Pseudo-elements (`::before` etc.) are the M16 milestone.
@@ -329,115 +382,96 @@ fn parse_pseudo(c: &mut Cursor, spec: &mut Specificity) -> Option<PseudoClass> {
         Some(Token::Function(name)) => {
             let name = name.to_lowercase();
             c.advance();
-            let args = take_paren_args(c)?;
-            match name.as_str() {
-                "not" | "is" => {
-                    let list = parse_selector_list(&args).ok()?;
+            let pc = match name.as_str() {
+                "not" => {
+                    let list = parse_list(c, depth + 1, true, false).ok()?;
                     *spec += max_specificity(&list);
-                    if name == "not" {
-                        Some(PseudoClass::Not(list))
-                    } else {
-                        Some(PseudoClass::Is(list))
-                    }
+                    PseudoClass::Not(list)
+                }
+                "is" => {
+                    let list = parse_list(c, depth + 1, true, true).ok()?;
+                    *spec += max_specificity(&list);
+                    PseudoClass::Is(list)
                 }
                 "where" => {
-                    let list = parse_selector_list(&args).ok()?;
-                    Some(PseudoClass::Where(list)) // zero specificity by design
+                    let list = parse_list(c, depth + 1, true, true).ok()?;
+                    PseudoClass::Where(list) // zero specificity by design
                 }
                 "nth-child" => {
                     *spec += Specificity(0, 1, 0);
-                    let (a, b, of) = parse_nth(&args, true)?;
-                    Some(PseudoClass::NthChild { a, b, of })
+                    let (a, b, of) = parse_nth(c, true, depth)?;
+                    PseudoClass::NthChild { a, b, of }
                 }
                 "nth-last-child" => {
                     *spec += Specificity(0, 1, 0);
                     // `of S` is M4 scope only for `:nth-child` (roadmap
                     // M4.5); `NthLastChild` has no `of` field, so reject
                     // it here rather than silently drop it.
-                    let (a, b, _of) = parse_nth(&args, false)?;
-                    Some(PseudoClass::NthLastChild { a, b })
+                    let (a, b, _of) = parse_nth(c, false, depth)?;
+                    PseudoClass::NthLastChild { a, b }
                 }
                 "nth-of-type" => {
                     *spec += Specificity(0, 1, 0);
-                    let (a, b, _) = parse_nth(&args, false)?;
-                    Some(PseudoClass::NthOfType { a, b })
+                    let (a, b, _) = parse_nth(c, false, depth)?;
+                    PseudoClass::NthOfType { a, b }
                 }
                 "nth-last-of-type" => {
                     *spec += Specificity(0, 1, 0);
-                    let (a, b, _) = parse_nth(&args, false)?;
-                    Some(PseudoClass::NthLastOfType { a, b })
+                    let (a, b, _) = parse_nth(c, false, depth)?;
+                    PseudoClass::NthLastOfType { a, b }
                 }
-                _ => None,
+                _ => return None,
+            };
+            // The function's closing `)`.
+            if !matches!(c.peek(), Some(Token::CloseParen)) {
+                return None;
             }
+            c.advance();
+            Some(pc)
         }
         _ => None,
     }
 }
 
-/// Takes the tokens between a pseudo-class's parens, stopping at the
-/// matching `)` (the Function token carried its `(` away, so depth
-/// starts at 1).
-fn take_paren_args(c: &mut Cursor) -> Option<Vec<Token>> {
-    let mut depth = 1i32;
-    let mut args = Vec::new();
+/// Parses `An+B [of S]` at the cursor (just after the function token),
+/// stopping before the closing `)`. `allow_of` selects the nth-child
+/// forms (of-type never takes `of S` per selectors-4).
+fn parse_nth(
+    c: &mut Cursor,
+    allow_of: bool,
+    depth: usize,
+) -> Option<(i32, i32, Option<Box<SelectorList>>)> {
+    // The An+B part: everything up to a top-level `of` or the `)` (a
+    // handful of tokens, copied; the selector list after `of` is not).
+    let mut head: Vec<Token> = Vec::new();
+    let mut of = false;
     while let Some(t) = c.peek() {
-        let t = t.clone();
-        c.advance();
-        match &t {
-            Token::Function(_) | Token::OpenParen => depth += 1,
-            Token::CloseParen => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(args);
-                }
-            }
-            _ => {}
-        }
-        args.push(t);
-    }
-    None // unterminated
-}
-
-/// Parses `An+B [of S]` argument tokens. `allow_of` selects the
-/// nth-child forms (of-type never takes `of S` per selectors-4).
-fn parse_nth(args: &[Token], allow_of: bool) -> Option<(i32, i32, Option<Box<SelectorList>>)> {
-    // Find the top-level `of` boundary, if any.
-    let mut depth = 0i32;
-    let mut of_pos: Option<usize> = None;
-    for (i, t) in args.iter().enumerate() {
         match t {
-            Token::Function(_) | Token::OpenParen => depth += 1,
-            Token::CloseParen => depth -= 1,
-            Token::Ident(s) if depth == 0 && s.eq_ignore_ascii_case("of") => {
-                of_pos = Some(i);
+            Token::CloseParen => break,
+            Token::Ident(s) if s.eq_ignore_ascii_case("of") => {
+                of = true;
+                c.advance();
                 break;
             }
-            _ => {}
+            Token::Function(_) | Token::OpenParen | Token::OpenSquare => return None,
+            _ => head.push(t.clone()),
         }
+        c.advance();
     }
-    let (head, of) = match of_pos {
-        Some(pos) => {
-            if !allow_of {
-                return None;
-            }
-            let rest = args[pos + 1..].to_vec();
-            if rest.is_empty() {
-                return None;
-            }
-            (
-                &args[..pos],
-                Some(Box::new(parse_selector_list(&rest).ok()?)),
-            )
-        }
-        None => (args, None),
-    };
-    let (a, b) = parse_an_b(head)?;
-    Some((a, b, of))
+    let (a, b) = parse_an_b(&head)?;
+    if !of {
+        return Some((a, b, None));
+    }
+    if !allow_of {
+        return None;
+    }
+    let list = parse_list(c, depth + 1, true, false).ok()?;
+    Some((a, b, Some(Box::new(list))))
 }
 
-/// Parses the An+B microgrammar (selectors-4 §4): `odd`, `even`,
-/// integers, `n`, `-n`, `2n`, `2n+1`, `-n+3`, with whitespace tolerated
-/// between the parts (the token stream keeps it).
+/// Parses the An+B microgrammar (selectors-4 §4, css-syntax-3 §8.2):
+/// `odd`, `even`, integers, `n`, `-n`, `2n`, `2n+1`, `-n+3`, with
+/// whitespace tolerated between the parts (the token stream keeps it).
 fn parse_an_b(tokens: &[Token]) -> Option<(i32, i32)> {
     let t: Vec<&Token> = tokens
         .iter()
@@ -460,9 +494,11 @@ fn parse_an_b(tokens: &[Token]) -> Option<(i32, i32)> {
     }
     // The `An` part: a bare `n`/`-n` ident, or a signed dimension whose
     // unit starts with `n` — either may carry a *fused* "-digits" suffix
-    // supplying `B` directly, per the tokenizer quirk below.
+    // supplying `B` directly, per the tokenizer quirk below. The checks
+    // are on bytes: an ident can start with a multi-byte character, and
+    // slicing a `str` at byte 2 would panic inside it.
     let (a, name_rest) = match t.first()? {
-        Token::Ident(s) if s.len() >= 2 && s[..2].eq_ignore_ascii_case("-n") => (-1, &s[2..]),
+        Token::Ident(s) if matches!(s.as_bytes(), [b'-', b'n' | b'N', ..]) => (-1, &s[2..]),
         Token::Ident(s) => (1, strip_n_prefix(s)?),
         Token::Dimension { value, unit } => (f64_to_i32(*value)?, strip_n_prefix(unit)?),
         _ => return None,
@@ -473,12 +509,18 @@ fn parse_an_b(tokens: &[Token]) -> Option<(i32, i32)> {
         // immediately followed by a digit (no whitespace between them,
         // e.g. "2n+1") tokenizes as one signed Number — the css
         // tokenizer only leaves the sign as its own Delim when source
-        // whitespace forced it apart (the last two arms below).
+        // whitespace forced it apart (the last two arms below), and
+        // then the number after it must be signless (§8.2's
+        // `<signless-integer>`): `n - -1` is not `n+1`.
         return match rest {
             [] => Some((a, 0)),
             [Token::Number { value, .. }] => Some((a, f64_to_i32(*value)?)),
-            [Token::Delim('+'), Token::Number { value, .. }] => Some((a, f64_to_i32(*value)?)),
-            [Token::Delim('-'), Token::Number { value, .. }] => Some((a, -f64_to_i32(*value)?)),
+            [Token::Delim('+'), Token::Number { value, .. }] if *value >= 0.0 => {
+                Some((a, f64_to_i32(*value)?))
+            }
+            [Token::Delim('-'), Token::Number { value, .. }] if *value >= 0.0 => {
+                Some((a, f64_to_i32(*value)?.checked_neg()?))
+            }
             _ => None,
         };
     }
@@ -486,11 +528,15 @@ fn parse_an_b(tokens: &[Token]) -> Option<(i32, i32)> {
     // name-continuation code point, so e.g. "n-1" or "2n-1" tokenizes as
     // ONE ident/dimension, name/unit `"n-1"`, rather than splitting the
     // way an unspaced "+B" does). It supplies B directly, so nothing may
-    // follow it.
-    if rest.is_empty() {
-        Some((a, trailing_minus_digits(name_rest)?))
-    } else {
-        None
+    // follow it. The bare `n-` form (`2n- 1`) is §8.2's
+    // `<ndash-dimension> <signless-integer>`: the digits follow as a
+    // number of their own.
+    match (name_rest, rest) {
+        ("-", [Token::Number { value, .. }]) if *value >= 0.0 => {
+            Some((a, f64_to_i32(*value)?.checked_neg()?))
+        }
+        (_, []) => Some((a, trailing_minus_digits(name_rest)?)),
+        _ => None,
     }
 }
 
@@ -717,9 +763,13 @@ mod tests {
     }
 
     #[test]
-    fn numeric_attribute_values_parse() {
+    fn numeric_attribute_values_are_not_in_the_grammar() {
+        // selectors-4 §6.1: the value is a string or an identifier.
+        // `[tabindex=0]` throws in every browser's querySelector.
+        err("[tabindex=0]");
+        err("[data-n=1e3]");
         assert_eq!(
-            ok("[tabindex=0]").0[0].compounds[0].simple,
+            ok("[tabindex='0']").0[0].compounds[0].simple,
             vec![SimpleSelector::Attribute {
                 name: "tabindex".into(),
                 op: AttrOp::Equals,
@@ -859,10 +909,12 @@ mod tests {
     }
 
     #[test]
-    fn empty_not_errors() {
+    fn empty_not_errors_but_empty_is_and_where_are_valid() {
         err(":not()");
-        err(":is()");
-        err(":where()");
+        // selectors-4 §4.2: a forgiving list may be empty; it then
+        // matches nothing (and `:where()` has no specificity to count).
+        assert!(parse(":is()").is_ok());
+        assert!(parse(":where()").is_ok());
     }
 
     #[test]
@@ -924,8 +976,11 @@ mod tests {
     fn parses_comma_lists() {
         let list = ok("a, .b, #c");
         assert_eq!(list.0.len(), 3);
-        // Whitespace and trailing commas.
-        assert_eq!(ok("a , b,").0.len(), 2);
+        assert_eq!(ok("a , b").0.len(), 2);
+        // A trailing comma is an empty member: the whole list is invalid
+        // (selectors-4 §5.1), so the rule is dropped as browsers drop it.
+        err("a , b,");
+        err("a,,b");
     }
 
     #[test]
@@ -1182,5 +1237,87 @@ mod tests {
             &ok(":NTH-CHILD(2n+1)").0[0].compounds[0].simple[0],
             SimpleSelector::PseudoClass(PseudoClass::NthChild { a: 2, b: 1, .. })
         ));
+    }
+
+    // ---- hostile input and the review's findings ---------------------------
+
+    #[test]
+    fn nested_logical_pseudo_classes_are_bounded_and_not_copied() {
+        // 5000 nested `:not(` used to clone the remaining tokens at every
+        // level (quadratic memory) and recurse once per level; now the
+        // depth cap rejects it on a small stack, and a nesting within
+        // the cap still parses.
+        let handle = std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(|| {
+                let deep = format!("{}.a{}", ":not(".repeat(5_000), ")".repeat(5_000));
+                err(&deep);
+                let within = format!(
+                    "{}.a{}",
+                    ":not(".repeat(MAX_NESTING),
+                    ")".repeat(MAX_NESTING)
+                );
+                assert!(parse(&within).is_ok());
+            })
+            .expect("thread");
+        handle.join().expect("no stack overflow");
+    }
+
+    #[test]
+    fn an_b_with_a_multibyte_character_is_rejected_not_a_panic() {
+        err(":nth-child(n日)");
+        err(":nth-child(aé)");
+        err(":nth-child(日)");
+        err(":nth-child(€n)");
+    }
+
+    #[test]
+    fn an_b_signs_must_be_followed_by_a_signless_integer() {
+        // css-syntax-3 §8.2: after a sign delim only a signless integer;
+        // `n - -2147483648` used to overflow on negation.
+        err(":nth-child(n - -2147483648)");
+        err(":nth-child(n - -1)");
+        // `n + +1` cannot be told from `n + 1`: the css tokenizer keeps
+        // no sign flag on a number token, so a doubled plus is accepted.
+    }
+
+    #[test]
+    fn an_b_ndash_dimension_then_signless_integer() {
+        let nth = |s: &str| match &ok(s).0[0].compounds[0].simple[0] {
+            SimpleSelector::PseudoClass(PseudoClass::NthChild { a, b, .. }) => (*a, *b),
+            other => panic!("expected nth-child, got {other:?}"),
+        };
+        assert_eq!(nth(":nth-child(2n- 1)"), (2, -1));
+        assert_eq!(nth(":nth-child(n- 1)"), (1, -1));
+        assert_eq!(nth(":nth-child(-n- 1)"), (-1, -1));
+        assert_eq!(nth(":nth-child(2n -1)"), (2, -1));
+    }
+
+    #[test]
+    fn is_and_where_are_forgiving_but_not_is_not() {
+        // selectors-4 §4.2: a member that fails to parse is dropped.
+        let list = ok(":is(.a, ::before)");
+        let SimpleSelector::PseudoClass(PseudoClass::Is(inner)) = &list.0[0].compounds[0].simple[0]
+        else {
+            panic!("expected :is");
+        };
+        assert_eq!(inner.0.len(), 1);
+        let list = ok(":where(.a, :nope, .b)");
+        let SimpleSelector::PseudoClass(PseudoClass::Where(inner)) =
+            &list.0[0].compounds[0].simple[0]
+        else {
+            panic!("expected :where");
+        };
+        assert_eq!(inner.0.len(), 2);
+        // All invalid is valid and matches nothing.
+        let list = ok(":is(::before)");
+        let SimpleSelector::PseudoClass(PseudoClass::Is(inner)) = &list.0[0].compounds[0].simple[0]
+        else {
+            panic!("expected :is");
+        };
+        assert!(inner.0.is_empty());
+        // `:not()` fails whole.
+        err(":not(.a, ::before)");
+        err(":not()");
     }
 }

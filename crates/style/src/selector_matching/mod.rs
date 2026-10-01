@@ -23,7 +23,7 @@ mod matcher;
 mod parse;
 
 pub use flat_dom::{FlatChild, FlatDom, FlatNode};
-pub use matcher::{matches_selector, matches_selector_list};
+pub use matcher::{Matcher, matches_selector, matches_selector_list};
 pub use parse::parse_selector_list;
 
 /// A comma-separated selector list.

@@ -68,7 +68,10 @@ pub enum FlatChild {
 }
 
 impl FlatDom {
-    /// Flattens a document.
+    /// Flattens a document. The walk keeps its own stack of child
+    /// iterators rather than recursing, so a tree of any depth is
+    /// flattened in constant stack space; the order is still preorder,
+    /// document order, text and element children interleaved as written.
     pub fn build(document: &Node) -> Self {
         let mut flat = FlatDom {
             nodes: vec![FlatNode {
@@ -85,9 +88,43 @@ impl FlatDom {
                 children: Vec::new(),
             }],
         };
+        let mut stack: Vec<(usize, std::slice::Iter<'_, Node>)> = Vec::new();
         if let Node::Document(children) = document {
-            for child in children {
-                visit_child(&mut flat, 0, child);
+            stack.push((0, children.iter()));
+        }
+        while let Some((parent, iter)) = stack.last_mut() {
+            let parent = *parent;
+            match iter.next() {
+                None => {
+                    stack.pop();
+                }
+                Some(Node::Text(t)) => {
+                    flat.nodes[parent].has_text_child = true;
+                    flat.nodes[parent]
+                        .children
+                        .push(FlatChild::Text(t.data.clone()));
+                }
+                Some(Node::Element(el)) => {
+                    let idx = flat.nodes.len();
+                    flat.nodes.push(FlatNode {
+                        tag: el.tag.clone(),
+                        attrs: el.attrs.clone(),
+                        parent: Some(parent),
+                        prev_element_sibling: None,
+                        child_elements: Vec::new(),
+                        element_index: 0,
+                        sibling_count: 0,
+                        type_index: 0,
+                        sibling_type_count: 0,
+                        has_text_child: false,
+                        children: Vec::new(),
+                    });
+                    flat.nodes[parent].child_elements.push(idx);
+                    flat.nodes[parent].children.push(FlatChild::Element(idx));
+                    stack.push((idx, el.children.iter()));
+                }
+                // A document node never nests inside another.
+                Some(Node::Document(_)) => {}
             }
         }
         flat.fixup_sibling_stats();
@@ -150,50 +187,6 @@ impl FlatDom {
             }
         }
     }
-}
-
-/// Recursively flattens elements (text nodes are noted in
-/// `has_text_child` and `children`, but never get an index of their own).
-fn walk(flat: &mut FlatDom, node: &Node, parent: Option<usize>) {
-    if let Node::Element(el) = node {
-        let idx = flat.nodes.len();
-        flat.nodes.push(FlatNode {
-            tag: el.tag.clone(),
-            attrs: el.attrs.clone(),
-            parent,
-            prev_element_sibling: None,
-            child_elements: Vec::new(),
-            element_index: 0,
-            sibling_count: 0,
-            type_index: 0,
-            sibling_type_count: 0,
-            has_text_child: false,
-            children: Vec::new(),
-        });
-        if let Some(p) = parent {
-            flat.nodes[p].child_elements.push(idx);
-            flat.nodes[p].children.push(FlatChild::Element(idx));
-        }
-        for child in &el.children {
-            visit_child(flat, idx, child);
-        }
-    }
-}
-
-/// Records `child` under `parent_idx`'s ordered [`FlatNode::children`]
-/// (a text child records its data directly; an element child is walked,
-/// which records *itself* under the parent — see `walk` above), then
-/// recurses if `child` is an element. Shared by the top-level document
-/// walk and every element's own children, so both populate `children` in
-/// exactly the same document order.
-fn visit_child(flat: &mut FlatDom, parent_idx: usize, child: &Node) {
-    if let Node::Text(t) = child {
-        flat.nodes[parent_idx].has_text_child = true;
-        flat.nodes[parent_idx]
-            .children
-            .push(FlatChild::Text(t.data.clone()));
-    }
-    walk(flat, child, Some(parent_idx));
 }
 
 #[cfg(test)]
@@ -311,5 +304,25 @@ mod tests {
                 FlatChild::Text(" after".into()),
             ]
         );
+    }
+
+    #[test]
+    fn a_very_deep_tree_flattens_on_a_small_stack() {
+        let handle = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let mut el = Element::new("div").text("leaf");
+                for _ in 0..100_000 {
+                    el = Element::new("div").push(el);
+                }
+                let doc = Node::document(vec![el.into()]);
+                let flat = FlatDom::build(&doc);
+                assert_eq!(flat.element_count(), 100_001);
+                let last = flat.nodes.len() - 1;
+                assert!(flat.nodes[last].has_text_child);
+                assert_eq!(flat.nodes[last].parent, Some(last - 1));
+            })
+            .expect("thread");
+        handle.join().expect("no stack overflow");
     }
 }

@@ -15,6 +15,18 @@
 //! * Lengths: `px` and `em` only (`%`, `rem`, `vw`/`vh`, ... land with
 //!   M10.1).
 //! * `display`: `block` / `inline` / `none` only (M5.1's own v1 scope).
+//!
+//! What every property accepts: the CSS-wide keywords `inherit`,
+//! `initial` and `unset` (css-cascade-5 §7.3), resolved against the
+//! parent's computed value or the property's initial value. What no
+//! length may be: non-finite, or beyond [`MAX_LENGTH_PX`] in magnitude
+//! (a `1e39px` would be infinity in `f32`, and infinity minus infinity
+//! is the NaN that puts text at the top-left corner); `font-size`,
+//! `padding` and `border-width` may not be negative either.
+//!
+//! The selectors of every rule are parsed once per sheet, not once per
+//! element: a thousand rules against ten thousand elements is ten
+//! million matches, which is the work, not ten million parses.
 
 use css::Token;
 use dom::Node;
@@ -24,7 +36,7 @@ use crate::computed::{
     LengthPercentageAuto, MarginEdges, RIGHT, TOP, TextAlign, TextTransform, WhiteSpace,
 };
 use crate::selector_matching::{
-    FlatChild, FlatDom, Specificity, matches_selector, parse_selector_list,
+    FlatChild, FlatDom, Matcher, SelectorList, Specificity, parse_selector_list,
 };
 
 /// The built-in default stylesheet (M5.6), compiled in — loading it is
@@ -48,38 +60,69 @@ pub struct StyledDom {
 /// (in document order) and each element's inline `style` attribute
 /// (highest precedence short of `!important` — see [`tier`]).
 pub fn style_document(document: &Node, author_sheets: &[css::Stylesheet]) -> StyledDom {
-    let flat = FlatDom::build(document);
     let ua = css::parse_stylesheet(UA_STYLESHEET_SRC)
         .expect("the built-in UA stylesheet (assets/ua.css) is valid CSS");
+    style_document_with_ua(document, &ua, author_sheets)
+}
+
+/// [`style_document`] with the user-agent stylesheet given rather than
+/// built in — what a test of the UA tiers needs, since `assets/ua.css`
+/// has no `!important` of its own to assert against.
+pub(crate) fn style_document_with_ua(
+    document: &Node,
+    ua: &css::Stylesheet,
+    author_sheets: &[css::Stylesheet],
+) -> StyledDom {
+    let flat = FlatDom::build(document);
+    let ua_rules = parse_rules(ua);
+    let author_rules: Vec<Vec<ParsedRule<'_>>> = author_sheets.iter().map(parse_rules).collect();
+    let mut matcher = Matcher::new(&flat);
     let mut styles = vec![ComputedStyle::default(); flat.nodes.len()];
-    compute_recursive(&flat, 0, &ua, author_sheets, &mut styles);
+    // Preorder with an explicit stack: an element's children are styled
+    // together, from its own finished style, before any grandchild is
+    // reached, and no depth of tree costs stack.
+    let mut pending = vec![0usize];
+    while let Some(idx) = pending.pop() {
+        let parent_style = styles[idx].clone();
+        let child_element_indices: Vec<usize> = flat.nodes[idx]
+            .children
+            .iter()
+            .filter_map(|c| match c {
+                FlatChild::Element(i) => Some(*i),
+                FlatChild::Text(_) => None,
+            })
+            .collect();
+        for &child_idx in &child_element_indices {
+            let applied =
+                declarations_for(&flat, &mut matcher, child_idx, &ua_rules, &author_rules);
+            styles[child_idx] = compute_style(&applied, &parent_style, flat.attr(child_idx, "dir"));
+        }
+        pending.extend(child_element_indices.into_iter().rev());
+    }
     StyledDom { flat, styles }
 }
 
-/// Computes styles for `idx`'s element children, then recurses — a
-/// parent's style is always finalized before any child needs it for
-/// inheritance.
-fn compute_recursive(
-    flat: &FlatDom,
-    idx: usize,
-    ua: &css::Stylesheet,
-    author_sheets: &[css::Stylesheet],
-    styles: &mut Vec<ComputedStyle>,
-) {
-    let parent_style = styles[idx].clone();
-    let child_element_indices: Vec<usize> = flat.nodes[idx]
-        .children
+/// A qualified rule with its selector list parsed, once, for the whole
+/// pass over the document. A rule whose prelude does not parse is
+/// dropped here, per css-syntax-3 (M4.10).
+struct ParsedRule<'s> {
+    list: SelectorList,
+    declarations: &'s [css::Declaration],
+}
+
+fn parse_rules(sheet: &css::Stylesheet) -> Vec<ParsedRule<'_>> {
+    sheet
+        .rules
         .iter()
-        .filter_map(|c| match c {
-            FlatChild::Element(i) => Some(*i),
-            FlatChild::Text(_) => None,
+        .filter_map(|rule| match rule {
+            css::Rule::Qualified(qr) => Some(ParsedRule {
+                list: parse_selector_list(&qr.prelude).ok()?,
+                declarations: &qr.declarations,
+            }),
+            // At-rules are skipped (see the module doc).
+            css::Rule::At(_) => None,
         })
-        .collect();
-    for child_idx in child_element_indices {
-        let applied = declarations_for(flat, child_idx, ua, author_sheets);
-        styles[child_idx] = compute_style(&applied, &parent_style, flat.attr(child_idx, "dir"));
-        compute_recursive(flat, child_idx, ua, author_sheets, styles);
-    }
+        .collect()
 }
 
 /// A declaration plus everything needed to sort it into cascade order.
@@ -123,18 +166,19 @@ fn tier(base: TierBase, important: bool) -> u8 {
 
 /// Every declaration that applies to element `idx`, tagged with its
 /// cascade key — unsorted; [`compute_style`] sorts before applying.
-fn declarations_for(
+fn declarations_for<'a>(
     flat: &FlatDom,
+    matcher: &mut Matcher<'a>,
     idx: usize,
-    ua: &css::Stylesheet,
-    author_sheets: &[css::Stylesheet],
+    ua: &'a [ParsedRule<'a>],
+    author_sheets: &'a [Vec<ParsedRule<'a>>],
 ) -> Vec<Applied> {
     let mut order = 0u32;
     let mut out = Vec::new();
-    collect_from_sheet(flat, idx, ua, TierBase::UserAgent, &mut order, &mut out);
+    collect_from_sheet(matcher, idx, ua, TierBase::UserAgent, &mut order, &mut out);
     for sheet in author_sheets {
         collect_from_sheet(
-            flat,
+            matcher,
             idx,
             sheet,
             TierBase::AuthorSheet,
@@ -162,39 +206,32 @@ fn declarations_for(
     out
 }
 
-/// Matches `sheet`'s qualified rules against element `idx`, pushing one
-/// [`Applied`] per declaration in every rule that matches. At-rules are
-/// skipped (see the module doc); an unparseable prelude drops that one
-/// rule, per css-syntax-3 — M4.10, now actually exercised end to end.
-fn collect_from_sheet(
-    flat: &FlatDom,
+/// Matches `sheet`'s rules against element `idx`, pushing one
+/// [`Applied`] per declaration in every rule that matches.
+fn collect_from_sheet<'a>(
+    matcher: &mut Matcher<'a>,
     idx: usize,
-    sheet: &css::Stylesheet,
+    sheet: &'a [ParsedRule<'a>],
     base: TierBase,
     order: &mut u32,
     out: &mut Vec<Applied>,
 ) {
-    for rule in &sheet.rules {
-        let css::Rule::Qualified(qr) = rule else {
-            continue;
-        };
-        let Ok(list) = parse_selector_list(&qr.prelude) else {
-            continue;
-        };
+    for rule in sheet {
         // A comma-separated list is cascade-equivalent to separate rules
         // sharing one declaration block — each matching branch
         // contributes independently, so the specificity that matters is
         // the highest among the branches that actually matched here.
-        let specificity = list
+        let specificity = rule
+            .list
             .0
             .iter()
-            .filter(|s| matches_selector(flat, idx, s))
+            .filter(|s| matcher.matches(idx, s))
             .map(|s| s.specificity)
             .max();
         let Some(specificity) = specificity else {
             continue;
         };
-        for decl in &qr.declarations {
+        for decl in rule.declarations {
             out.push(Applied {
                 tier: tier(base, decl.important),
                 specificity,
@@ -236,9 +273,16 @@ fn compute_style(
     // *this* element's own font-size, which itself must already be
     // final before those are processed.
     for a in &sorted {
-        if a.decl.name == "font-size"
-            && let Some(px) = parse_length_px(&a.decl.value, parent.font_size_px)
-        {
+        if a.decl.name != "font-size" {
+            continue;
+        }
+        if let Some(keyword) = css_wide_keyword(&a.decl.value) {
+            // `font-size` is inherited, so `unset` means `inherit`.
+            style.font_size_px = match keyword {
+                CssWide::Initial => ComputedStyle::default().font_size_px,
+                CssWide::Inherit | CssWide::Unset => parent.font_size_px,
+            };
+        } else if let Some(px) = parse_non_negative_length_px(&a.decl.value, parent.font_size_px) {
             style.font_size_px = px;
         }
     }
@@ -246,7 +290,7 @@ fn compute_style(
     let em_basis = style.font_size_px;
     let mut border_color_set = false;
     for a in &sorted {
-        apply_declaration(&mut style, &a.decl, em_basis, &mut border_color_set);
+        apply_declaration(&mut style, &a.decl, em_basis, parent, &mut border_color_set);
     }
     if !border_color_set {
         // `border-color`'s initial value is `currentcolor` (css-color-4
@@ -264,8 +308,13 @@ fn apply_declaration(
     style: &mut ComputedStyle,
     decl: &css::Declaration,
     em_basis: f32,
+    parent: &ComputedStyle,
     border_color_set: &mut bool,
 ) {
+    if let Some(keyword) = css_wide_keyword(&decl.value) {
+        apply_css_wide(style, &decl.name, keyword, parent, border_color_set);
+        return;
+    }
     match decl.name.as_str() {
         "color" => {
             if let Some(c) = parse_color(&decl.value) {
@@ -344,9 +393,6 @@ fn apply_declaration(
         "padding-right" => set_edge(&mut style.padding, RIGHT, &decl.value, em_basis),
         "padding-bottom" => set_edge(&mut style.padding, BOTTOM, &decl.value, em_basis),
         "padding-left" => set_edge(&mut style.padding, LEFT, &decl.value, em_basis),
-        // padding/border-width reject negative lengths per spec;
-        // `parse_length_px` doesn't enforce that yet (margin needs
-        // negatives, so the parser stays sign-agnostic) — a known v1 gap.
         "border-width" => {
             if let Some(e) = parse_box_shorthand(&decl.value, em_basis) {
                 style.border_width = e;
@@ -373,12 +419,114 @@ fn apply_declaration(
 }
 
 /// Parses and writes a single-length longhand (`padding-top`,
-/// `border-*-width`, ...); a value that fails to parse leaves that edge
-/// untouched, exactly like any other declaration this engine can't make
-/// sense of.
+/// `border-*-width`, ...); a value that fails to parse — a negative
+/// one included, which CSS2 §8.4 and §8.5.1 forbid for both — leaves
+/// that edge untouched, exactly like any other declaration this engine
+/// can't make sense of.
 fn set_edge(edges: &mut Edges, which: usize, tokens: &[Token], em_basis: f32) {
-    if let Some(v) = parse_length_px(tokens, em_basis) {
+    if let Some(v) = parse_non_negative_length_px(tokens, em_basis) {
         edges[which] = v;
+    }
+}
+
+/// The CSS-wide keywords (css-cascade-5 §7.3), which every property
+/// accepts in place of its own value.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CssWide {
+    Inherit,
+    Initial,
+    Unset,
+}
+
+fn css_wide_keyword(tokens: &[Token]) -> Option<CssWide> {
+    match single_ident(tokens)?.to_ascii_lowercase().as_str() {
+        "inherit" => Some(CssWide::Inherit),
+        "initial" => Some(CssWide::Initial),
+        "unset" => Some(CssWide::Unset),
+        _ => None,
+    }
+}
+
+/// Whether `name` is an inherited property (css-cascade-5 §7.1 and
+/// each property's own definition): what `unset` means for it.
+fn is_inherited(name: &str) -> bool {
+    matches!(
+        name,
+        "color"
+            | "font-size"
+            | "font-family"
+            | "text-align"
+            | "text-transform"
+            | "white-space"
+            | "letter-spacing"
+            | "word-spacing"
+    )
+}
+
+/// Applies `name: <keyword>`: the parent's computed value for
+/// `inherit`, the initial value for `initial`, whichever the property's
+/// inheritance says for `unset`. `font-size` is handled in the first
+/// pass of [`compute_style`] and ignored here.
+fn apply_css_wide(
+    style: &mut ComputedStyle,
+    name: &str,
+    keyword: CssWide,
+    parent: &ComputedStyle,
+    border_color_set: &mut bool,
+) {
+    let initial = ComputedStyle::default();
+    let from_parent = match keyword {
+        CssWide::Inherit => true,
+        CssWide::Initial => false,
+        CssWide::Unset => is_inherited(name),
+    };
+    let src = if from_parent { parent } else { &initial };
+    match name {
+        "color" => style.color = src.color,
+        "background-color" => style.background_color = src.background_color,
+        "font-size" => {} // the first pass, see `compute_style`
+        "font-family" => style.font_family = src.font_family.clone(),
+        "display" => style.display = src.display,
+        "text-align" => style.text_align = src.text_align,
+        "text-transform" => style.text_transform = src.text_transform,
+        "white-space" => style.white_space = src.white_space,
+        "letter-spacing" => style.letter_spacing = src.letter_spacing,
+        "word-spacing" => style.word_spacing = src.word_spacing,
+        "width" => style.width = src.width,
+        "height" => style.height = src.height,
+        "margin" => style.margin = src.margin,
+        "margin-top" => style.margin[TOP] = src.margin[TOP],
+        "margin-right" => style.margin[RIGHT] = src.margin[RIGHT],
+        "margin-bottom" => style.margin[BOTTOM] = src.margin[BOTTOM],
+        "margin-left" => style.margin[LEFT] = src.margin[LEFT],
+        "padding" => style.padding = src.padding,
+        "padding-top" => style.padding[TOP] = src.padding[TOP],
+        "padding-right" => style.padding[RIGHT] = src.padding[RIGHT],
+        "padding-bottom" => style.padding[BOTTOM] = src.padding[BOTTOM],
+        "padding-left" => style.padding[LEFT] = src.padding[LEFT],
+        "border-width" => style.border_width = src.border_width,
+        "border-top-width" => style.border_width[TOP] = src.border_width[TOP],
+        "border-right-width" => style.border_width[RIGHT] = src.border_width[RIGHT],
+        "border-bottom-width" => style.border_width[BOTTOM] = src.border_width[BOTTOM],
+        "border-left-width" => style.border_width[LEFT] = src.border_width[LEFT],
+        "border-style" => style.border_style = src.border_style,
+        "border-color" => {
+            // The parent's border color is a real color; the initial
+            // value is `currentcolor`, resolved once the cascade is done.
+            if from_parent {
+                style.border_color = parent.border_color;
+            }
+            *border_color_set = from_parent;
+        }
+        "border" => {
+            style.border_width = src.border_width;
+            style.border_style = src.border_style;
+            if from_parent {
+                style.border_color = parent.border_color;
+            }
+            *border_color_set = from_parent;
+        }
+        _ => {} // a property this engine does not know: ignored, as ever
     }
 }
 
@@ -404,14 +552,14 @@ fn expand_1_to_4<T: Copy>(values: &[T]) -> Option<[T; 4]> {
 }
 
 /// Expands the `padding`/`border-width` box shorthand. Any value that
-/// fails to parse as a length invalidates the whole shorthand (matching
-/// real CSS: a shorthand with one bad component is dropped entirely, not
-/// partially applied).
+/// fails to parse as a non-negative length invalidates the whole
+/// shorthand (matching real CSS: a shorthand with one bad component is
+/// dropped entirely, not partially applied).
 fn parse_box_shorthand(tokens: &[Token], em_basis_px: f32) -> Option<Edges> {
     let groups = split_whitespace_groups(tokens);
     let lengths: Option<Vec<f32>> = groups
         .iter()
-        .map(|g| parse_length_px(g, em_basis_px))
+        .map(|g| parse_non_negative_length_px(g, em_basis_px))
         .collect();
     expand_1_to_4(&lengths?)
 }
@@ -441,9 +589,13 @@ fn apply_border_shorthand(
     let mut width = None;
     let mut border_style = None;
     let mut color = None;
-    for g in split_whitespace_groups(tokens) {
+    let groups = split_whitespace_groups(tokens);
+    if groups.is_empty() {
+        return; // `border: ;` has no component: an invalid declaration, ignored
+    }
+    for g in groups {
         if width.is_none()
-            && let Some(w) = parse_length_px(&g, em_basis_px)
+            && let Some(w) = parse_non_negative_length_px(&g, em_basis_px)
         {
             width = Some(w);
         } else if border_style.is_none()
@@ -490,19 +642,37 @@ fn split_whitespace_groups(tokens: &[Token]) -> Vec<Vec<Token>> {
     groups
 }
 
+/// The largest length, in CSS pixels, a declaration can set in either
+/// direction. Layout arithmetic in `f32` stays finite and exact enough
+/// well past it; Blink's layout unit stops at the same figure.
+pub const MAX_LENGTH_PX: f32 = 33_554_431.0;
+
 /// A length in CSS pixels: `px` as-is, `em` relative to `em_basis_px`,
 /// or the unitless `0` (the one number CSS allows without a unit for
 /// length properties). Anything else (a nonzero unitless number, `%`,
-/// `rem`, ...) isn't v1 scope yet.
+/// `rem`, ...) isn't v1 scope yet. A non-finite value is rejected and a
+/// finite one clamped to [`MAX_LENGTH_PX`] in magnitude — see the module
+/// doc for what an infinity does to layout otherwise.
 fn parse_length_px(tokens: &[Token], em_basis_px: f32) -> Option<f32> {
-    match single_token(tokens)? {
-        Token::Dimension { value, unit } if unit.eq_ignore_ascii_case("px") => Some(*value as f32),
+    let px = match single_token(tokens)? {
+        Token::Dimension { value, unit } if unit.eq_ignore_ascii_case("px") => *value as f32,
         Token::Dimension { value, unit } if unit.eq_ignore_ascii_case("em") => {
-            Some(*value as f32 * em_basis_px)
+            *value as f32 * em_basis_px
         }
-        Token::Number { value, .. } if *value == 0.0 => Some(0.0),
-        _ => None,
+        Token::Number { value, .. } if *value == 0.0 => 0.0,
+        _ => return None,
+    };
+    if !px.is_finite() {
+        return None;
     }
+    Some(px.clamp(-MAX_LENGTH_PX, MAX_LENGTH_PX))
+}
+
+/// [`parse_length_px`] for the properties that take no negative value
+/// (`font-size`, `padding`, `border-width`): a negative one is an
+/// invalid declaration, ignored.
+fn parse_non_negative_length_px(tokens: &[Token], em_basis_px: f32) -> Option<f32> {
+    parse_length_px(tokens, em_basis_px).filter(|v| *v >= 0.0)
 }
 
 /// `auto`, or a length (`px`/`em`/unitless `0`) — used for `margin` and
@@ -739,6 +909,7 @@ fn named_color(name: &str) -> Option<Color> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::selector_matching::matches_selector;
 
     fn sheet(src: &str) -> css::Stylesheet {
         css::parse_stylesheet(src).expect("test stylesheets are valid")
@@ -800,13 +971,96 @@ mod tests {
     }
 
     #[test]
-    fn important_author_beats_important_reversed_for_normal() {
-        // Sanity check on the *reversal*: normal author beats normal UA
-        // (author { display: block } over UA's implicit inline default
-        // for a made-up tag), which is the opposite of the !important case.
-        let sheets = [sheet("made-up-tag { display: block; }")];
-        let s = style_of("<made-up-tag>x</made-up-tag>", &sheets, "made-up-tag");
-        assert_eq!(s.display, Display::Block);
+    fn author_normal_beats_ua_normal() {
+        // The UA sheet makes `p` a block; a normal author rule overrides
+        // it (the opposite of the `!important` case below).
+        let sheets = [sheet("p { display: inline; }")];
+        let s = style_of("<p>x</p>", &sheets, "p");
+        assert_eq!(s.display, Display::Inline);
+    }
+
+    #[test]
+    fn ua_important_beats_author_important() {
+        // css-cascade-5 §6.1: UA `!important` is the strongest tier of
+        // all. `assets/ua.css` uses none, so a UA sheet of the test's own
+        // stands in through `style_document_with_ua`.
+        let ua = sheet("p { color: red !important; display: block; }");
+        let author = [sheet(
+            "p { color: blue !important; display: inline !important; }",
+        )];
+        let document = html::parse_document("<p>x</p>").expect("html parsing never fails");
+        let styled = style_document_with_ua(&document, &ua, &author);
+        let p = styled
+            .flat
+            .element_indices()
+            .find(|&i| styled.flat.nodes[i].tag == "p")
+            .expect("a p");
+        assert_eq!(styled.styles[p].color, Color::rgb8(255, 0, 0));
+        // A normal UA declaration still loses to an important author one.
+        assert_eq!(styled.styles[p].display, Display::Inline);
+    }
+
+    #[test]
+    fn css_wide_keywords_resolve_against_parent_or_initial() {
+        let sheets = [sheet(
+            "div { color: red; margin: 5px; }
+             a { color: inherit; }
+             p { margin: initial; display: unset; }
+             span { color: unset; }
+             b { color: initial; }",
+        )];
+        let html = "<div><a href=x>link</a><p>para</p><span>s</span><b>bold</b></div>";
+        // `a` is UA blue; `inherit` takes the div's red instead.
+        assert_eq!(style_of(html, &sheets, "a").color, Color::rgb8(255, 0, 0));
+        // `p`'s UA margin (16px 0) resets to the initial 0.
+        assert_eq!(style_of(html, &sheets, "p").margin, px4([0.0; 4]));
+        // `display` is not inherited, so `unset` is `initial` (inline).
+        assert_eq!(style_of(html, &sheets, "p").display, Display::Inline);
+        // `color` is inherited, so `unset` is `inherit` (red).
+        assert_eq!(
+            style_of(html, &sheets, "span").color,
+            Color::rgb8(255, 0, 0)
+        );
+        // `initial` for `color` is black, whatever the parent says.
+        assert_eq!(style_of(html, &sheets, "b").color, Color::BLACK);
+        // `font-size: inherit` through the first pass.
+        let sheets = [sheet("div { font-size: 30px; } p { font-size: inherit; }")];
+        assert_eq!(
+            style_of("<div><p>x</p></div>", &sheets, "p").font_size_px,
+            30.0
+        );
+    }
+
+    #[test]
+    fn an_empty_border_value_is_ignored() {
+        let sheets = [sheet("p { border: 1px solid red; border: ; }")];
+        let s = style_of("<p>x</p>", &sheets, "p");
+        assert_eq!(s.border_width, [1.0; 4]);
+        assert_eq!(s.border_style, BorderStyle::Solid);
+        let sheets = [sheet("p { border: 1px solid red; border: !important; }")];
+        let s = style_of("<p>x</p>", &sheets, "p");
+        assert_eq!(s.border_width, [1.0; 4]);
+    }
+
+    #[test]
+    fn lengths_are_finite_bounded_and_non_negative_where_the_spec_says() {
+        let sheets = [sheet(
+            "p { margin: 0; font-size: 1e39px; padding: -5px; border-width: -1px; width: 1e30px;
+                 margin-top: -1e39px; letter-spacing: 1e20px; }",
+        )];
+        let s = style_of("<p>x</p>", &sheets, "p");
+        assert_eq!(s.font_size_px, 16.0, "an infinite font-size is ignored");
+        assert_eq!(s.padding, [0.0; 4], "negative padding is ignored");
+        assert_eq!(s.border_width, [0.0; 4], "negative border-width is ignored");
+        assert_eq!(s.width, LengthPercentageAuto::Px(MAX_LENGTH_PX));
+        assert_eq!(
+            s.margin[TOP],
+            LengthPercentageAuto::Px(0.0),
+            "an infinite margin is ignored"
+        );
+        assert_eq!(s.letter_spacing, MAX_LENGTH_PX);
+        let sheets = [sheet("p { font-size: -16px; }")];
+        assert_eq!(style_of("<p>x</p>", &sheets, "p").font_size_px, 16.0);
     }
 
     #[test]

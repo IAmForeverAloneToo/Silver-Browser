@@ -4,100 +4,243 @@
 //! walks the DOM (ancestor chain or preceding siblings) to find a
 //! context that matches the remaining compounds. Dynamic pseudo-classes
 //! (`:hover` etc.) never match until input state exists (M26).
+//!
+//! The walk is iterative, with an explicit stack of partial matches, so
+//! a selector of any length matches in constant stack; and it remembers
+//! every `(compound, element)` pair it has found to lead nowhere, so a
+//! chain of descendant combinators over a deep tree costs at most
+//! compounds times ancestors rather than the exponential retrying a
+//! naive backtrack does (`#x .a .a .a span` under forty nested `.a`
+//! used to take minutes). A [`Matcher`] holds the caches a pass over
+//! one document benefits from: the `:nth-child(… of S)` ranks per
+//! parent, which the cascade would otherwise recount for every element
+//! of a long list.
+
+use std::collections::{HashMap, HashSet};
 
 use super::flat_dom::FlatDom;
 use super::{AttrOp, Combinator, PseudoClass, Selector, SelectorList, SimpleSelector};
 
-/// Whether any selector in the list matches the element.
+/// Whether any selector in the list matches the element. A one-off;
+/// a pass over many elements wants a [`Matcher`].
 pub fn matches_selector_list(flat: &FlatDom, idx: usize, list: &SelectorList) -> bool {
-    list.0.iter().any(|s| matches_selector(flat, idx, s))
+    Matcher::new(flat).matches_list(idx, list)
 }
 
-/// Whether one complex selector matches the element.
+/// Whether one complex selector matches the element. A one-off; a pass
+/// over many elements wants a [`Matcher`].
 pub fn matches_selector(flat: &FlatDom, idx: usize, selector: &Selector) -> bool {
-    let Some(last) = selector.compounds.last() else {
-        return false;
-    };
-    if !matches_compound(flat, idx, last) {
-        return false;
-    }
-    // `compounds[compounds.len() - 1]` (the last one) just matched at
-    // `idx`; walk what's left, right to left.
-    matches_rest(flat, idx, selector.compounds.len() - 1, selector)
+    Matcher::new(flat).matches(idx, selector)
 }
 
-/// Whether the compounds before index `matched_idx` are also satisfied,
-/// given that `selector.compounds[matched_idx]` has just matched at `idx`.
-/// `combinators[i]` joins `compounds[i]` and `compounds[i + 1]`, so the
-/// combinator to use when stepping left from `matched_idx` is
-/// `combinators[matched_idx - 1]`.
-fn matches_rest(flat: &FlatDom, idx: usize, matched_idx: usize, selector: &Selector) -> bool {
-    if matched_idx == 0 {
-        return true; // compound 0 (the first) just matched; nothing left.
-    }
-    let next = &selector.compounds[matched_idx - 1];
-    match selector.combinators[matched_idx - 1] {
-        Combinator::Child => match flat.parent_element(idx) {
-            Some(p) => {
-                matches_compound(flat, p, next) && matches_rest(flat, p, matched_idx - 1, selector)
-            }
-            None => false,
-        },
-        Combinator::Descendant => {
-            let mut ancestor = flat.parent_element(idx);
-            while let Some(a) = ancestor {
-                if matches_compound(flat, a, next)
-                    && matches_rest(flat, a, matched_idx - 1, selector)
-                {
-                    return true;
-                }
-                ancestor = flat.parent_element(a);
-            }
-            false
-        }
-        Combinator::NextSibling => match flat.prev_element_sibling(idx) {
-            Some(s) => {
-                matches_compound(flat, s, next) && matches_rest(flat, s, matched_idx - 1, selector)
-            }
-            None => false,
-        },
-        Combinator::LaterSibling => {
-            let mut prev = flat.prev_element_sibling(idx);
-            while let Some(s) = prev {
-                if matches_compound(flat, s, next)
-                    && matches_rest(flat, s, matched_idx - 1, selector)
-                {
-                    return true;
-                }
-                prev = flat.prev_element_sibling(s);
-            }
-            false
+/// Matches selectors against one document. The selectors it is given
+/// must outlive it (`'a`): the `of S` cache below is keyed by where a
+/// list lives.
+pub struct Matcher<'a> {
+    flat: &'a FlatDom,
+    /// `:nth-child(An+B of S)`: for each (parent, S) seen, the rank of
+    /// every element child among the siblings that match S, or `None`
+    /// for a child that does not, computed once per parent.
+    nth_ranks: HashMap<(usize, usize), Vec<Option<u32>>>,
+}
+
+/// One partial match on the explicit stack: `selector.compounds[k]`
+/// matched at `node`, and `next` is the candidate to try next for
+/// compound `k - 1` (`None` once they are exhausted).
+struct Frame {
+    k: usize,
+    node: usize,
+    next: Option<usize>,
+}
+
+impl<'a> Matcher<'a> {
+    /// A matcher over `flat`, with empty caches.
+    pub fn new(flat: &'a FlatDom) -> Self {
+        Matcher {
+            flat,
+            nth_ranks: HashMap::new(),
         }
     }
-}
 
-/// Whether every simple selector in the compound matches.
-fn matches_compound(flat: &FlatDom, idx: usize, compound: &super::CompoundSelector) -> bool {
-    compound.simple.iter().all(|s| matches_simple(flat, idx, s))
-}
+    /// Whether any selector in the list matches the element.
+    pub fn matches_list(&mut self, idx: usize, list: &'a SelectorList) -> bool {
+        list.0.iter().any(|s| self.matches(idx, s))
+    }
 
-/// Whether one simple selector matches the element.
-fn matches_simple(flat: &FlatDom, idx: usize, simple: &SimpleSelector) -> bool {
-    let node = &flat.nodes[idx];
-    match simple {
-        SimpleSelector::Type(t) => node.tag == *t,
-        SimpleSelector::Universal => true,
-        SimpleSelector::Id(v) => flat.attr(idx, "id") == Some(v.as_str()),
-        SimpleSelector::Class(c) => flat
-            .attr(idx, "class")
-            .is_some_and(|cls| cls.split_whitespace().any(|w| w == c)),
-        SimpleSelector::Attribute {
-            name,
-            op,
-            value,
-            case_insensitive,
-        } => matches_attribute(flat, idx, name, *op, value, *case_insensitive),
-        SimpleSelector::PseudoClass(pc) => matches_pseudo_class(flat, idx, pc),
+    /// Whether one complex selector matches the element.
+    pub fn matches(&mut self, idx: usize, selector: &'a Selector) -> bool {
+        let compounds = &selector.compounds;
+        let Some(last) = compounds.last() else {
+            return false;
+        };
+        if !self.matches_compound(idx, last) {
+            return false;
+        }
+        let n = compounds.len();
+        if n == 1 {
+            return true;
+        }
+        // `(k, node)` pairs known to lead nowhere: compound `k` either
+        // does not match at `node`, or does and the compounds before it
+        // cannot be satisfied from there. Allocated only once something
+        // fails, which the common one-candidate selectors never do.
+        let mut failed: Option<HashSet<(usize, usize)>> = None;
+        let mut stack = vec![Frame {
+            k: n - 1,
+            node: idx,
+            next: self.first_candidate(selector.combinators[n - 2], idx),
+        }];
+        loop {
+            let (target, cand) = {
+                let Some(frame) = stack.last_mut() else {
+                    return false;
+                };
+                if frame.k == 0 {
+                    return true;
+                }
+                let Some(cand) = frame.next else {
+                    let frame = stack.pop().expect("the stack is not empty");
+                    failed
+                        .get_or_insert_with(HashSet::new)
+                        .insert((frame.k, frame.node));
+                    continue;
+                };
+                let comb = selector.combinators[frame.k - 1];
+                frame.next = match comb {
+                    Combinator::Child | Combinator::NextSibling => None,
+                    Combinator::Descendant => self.flat.parent_element(cand),
+                    Combinator::LaterSibling => self.flat.prev_element_sibling(cand),
+                };
+                (frame.k - 1, cand)
+            };
+            if failed.as_ref().is_some_and(|f| f.contains(&(target, cand))) {
+                continue;
+            }
+            if self.matches_compound(cand, &compounds[target]) {
+                let next = if target == 0 {
+                    None
+                } else {
+                    self.first_candidate(selector.combinators[target - 1], cand)
+                };
+                stack.push(Frame {
+                    k: target,
+                    node: cand,
+                    next,
+                });
+            } else {
+                failed
+                    .get_or_insert_with(HashSet::new)
+                    .insert((target, cand));
+            }
+        }
+    }
+
+    /// The first element to try for the compound left of `node` across
+    /// `comb`: the parent for the ancestor combinators, the previous
+    /// element sibling for the sibling ones.
+    fn first_candidate(&self, comb: Combinator, node: usize) -> Option<usize> {
+        match comb {
+            Combinator::Child | Combinator::Descendant => self.flat.parent_element(node),
+            Combinator::NextSibling | Combinator::LaterSibling => {
+                self.flat.prev_element_sibling(node)
+            }
+        }
+    }
+
+    /// Whether every simple selector in the compound matches.
+    fn matches_compound(&mut self, idx: usize, compound: &'a super::CompoundSelector) -> bool {
+        compound.simple.iter().all(|s| self.matches_simple(idx, s))
+    }
+
+    /// Whether one simple selector matches the element.
+    fn matches_simple(&mut self, idx: usize, simple: &'a SimpleSelector) -> bool {
+        let node = &self.flat.nodes[idx];
+        match simple {
+            SimpleSelector::Type(t) => node.tag == *t,
+            SimpleSelector::Universal => true,
+            SimpleSelector::Id(v) => self.flat.attr(idx, "id") == Some(v.as_str()),
+            SimpleSelector::Class(c) => self
+                .flat
+                .attr(idx, "class")
+                .is_some_and(|cls| cls.split_whitespace().any(|w| w == c)),
+            SimpleSelector::Attribute {
+                name,
+                op,
+                value,
+                case_insensitive,
+            } => matches_attribute(self.flat, idx, name, *op, value, *case_insensitive),
+            SimpleSelector::PseudoClass(pc) => self.matches_pseudo_class(idx, pc),
+        }
+    }
+
+    /// Pseudo-class semantics.
+    fn matches_pseudo_class(&mut self, idx: usize, pc: &'a PseudoClass) -> bool {
+        let node = &self.flat.nodes[idx];
+        match pc {
+            PseudoClass::FirstChild => node.element_index == 0,
+            PseudoClass::LastChild => node.element_index + 1 == node.sibling_count,
+            PseudoClass::OnlyChild => node.sibling_count == 1,
+            PseudoClass::FirstOfType => node.type_index == 0,
+            PseudoClass::LastOfType => node.type_index + 1 == node.sibling_type_count,
+            PseudoClass::OnlyOfType => node.sibling_type_count == 1,
+            // selectors-4: any text child (even whitespace) makes it non-empty.
+            PseudoClass::Empty => node.child_elements.is_empty() && !node.has_text_child,
+            PseudoClass::Root => node.parent == Some(0),
+            PseudoClass::NthChild { a, b, of } => match of {
+                None => nth_matches(*a, *b, node.element_index),
+                // selectors-4 §4: with an `of S` filter, the element must
+                // itself match S, and the An+B formula applies to its
+                // position *among only the siblings that match S* — not
+                // its plain sibling position. ("2n+1 of .x" means "every
+                // other .x", not ".x at an odd position among all
+                // siblings".)
+                Some(list) => self
+                    .rank_among(idx, list)
+                    .is_some_and(|rank| nth_matches(*a, *b, rank)),
+            },
+            PseudoClass::NthLastChild { a, b } => {
+                nth_matches(*a, *b, node.sibling_count - 1 - node.element_index)
+            }
+            PseudoClass::NthOfType { a, b } => nth_matches(*a, *b, node.type_index),
+            PseudoClass::NthLastOfType { a, b } => {
+                nth_matches(*a, *b, node.sibling_type_count - 1 - node.type_index)
+            }
+            PseudoClass::Not(list) => !self.matches_list(idx, list),
+            PseudoClass::Is(list) | PseudoClass::Where(list) => self.matches_list(idx, list),
+            // Dynamic pseudo-classes never match until input state exists (M26).
+            PseudoClass::Hover
+            | PseudoClass::Focus
+            | PseudoClass::Active
+            | PseudoClass::Visited
+            | PseudoClass::Link => false,
+        }
+    }
+
+    /// The 0-based rank of `idx` among its element siblings that match
+    /// `list` (selectors-4's `of S` filter: positions are renumbered
+    /// within the filtered set, not the full sibling list), or `None`
+    /// when `idx` itself does not match. The ranks of a parent's whole
+    /// child list are computed in one pass the first time any child
+    /// asks, so a list of n items costs n matches, not n squared.
+    fn rank_among(&mut self, idx: usize, list: &'a SelectorList) -> Option<u32> {
+        let parent = self.flat.nodes[idx].parent.unwrap_or(0);
+        let key = (parent, list as *const SelectorList as usize);
+        if !self.nth_ranks.contains_key(&key) {
+            let children = self.flat.nodes[parent].child_elements.clone();
+            let mut ranks = Vec::with_capacity(children.len());
+            let mut rank = 0u32;
+            for child in children {
+                if self.matches_list(child, list) {
+                    ranks.push(Some(rank));
+                    rank += 1;
+                } else {
+                    ranks.push(None);
+                }
+            }
+            self.nth_ranks.insert(key, ranks);
+        }
+        let position = self.flat.nodes[idx].element_index as usize;
+        self.nth_ranks[&key].get(position).copied().flatten()
     }
 }
 
@@ -125,67 +268,12 @@ fn matches_attribute(
         AttrOp::IncludeSpace => !value.is_empty() && actual.split_whitespace().any(|w| w == value),
         // `|=` is the value itself or a `value-` prefix.
         AttrOp::Dash => actual == value || actual.starts_with(&format!("{value}-")),
-        AttrOp::Prefix => actual.starts_with(&value),
-        AttrOp::Suffix => actual.ends_with(&value),
-        AttrOp::Substring => actual.contains(&value),
+        // selectors-4 §6.2: an empty value "does not represent anything"
+        // for the three substring operators.
+        AttrOp::Prefix => !value.is_empty() && actual.starts_with(&value),
+        AttrOp::Suffix => !value.is_empty() && actual.ends_with(&value),
+        AttrOp::Substring => !value.is_empty() && actual.contains(&value),
     }
-}
-
-/// Pseudo-class semantics.
-fn matches_pseudo_class(flat: &FlatDom, idx: usize, pc: &PseudoClass) -> bool {
-    let node = &flat.nodes[idx];
-    match pc {
-        PseudoClass::FirstChild => node.element_index == 0,
-        PseudoClass::LastChild => node.element_index + 1 == node.sibling_count,
-        PseudoClass::OnlyChild => node.sibling_count == 1,
-        PseudoClass::FirstOfType => node.type_index == 0,
-        PseudoClass::LastOfType => node.type_index + 1 == node.sibling_type_count,
-        PseudoClass::OnlyOfType => node.sibling_type_count == 1,
-        // selectors-4: any text child (even whitespace) makes it non-empty.
-        PseudoClass::Empty => node.child_elements.is_empty() && !node.has_text_child,
-        PseudoClass::Root => node.parent == Some(0),
-        PseudoClass::NthChild { a, b, of } => match of {
-            None => nth_matches(*a, *b, node.element_index),
-            // selectors-4 §4: with an `of S` filter, the element must
-            // itself match S, and the An+B formula applies to its
-            // position *among only the siblings that match S* — not its
-            // plain sibling position. ("2n+1 of .x" means "every other
-            // .x", not ".x at an odd position among all siblings".)
-            Some(list) => {
-                matches_selector_list(flat, idx, list)
-                    && nth_matches(*a, *b, sibling_rank_among(flat, idx, list))
-            }
-        },
-        PseudoClass::NthLastChild { a, b } => {
-            nth_matches(*a, *b, node.sibling_count - 1 - node.element_index)
-        }
-        PseudoClass::NthOfType { a, b } => nth_matches(*a, *b, node.type_index),
-        PseudoClass::NthLastOfType { a, b } => {
-            nth_matches(*a, *b, node.sibling_type_count - 1 - node.type_index)
-        }
-        PseudoClass::Not(list) => !matches_selector_list(flat, idx, list),
-        PseudoClass::Is(list) | PseudoClass::Where(list) => matches_selector_list(flat, idx, list),
-        // Dynamic pseudo-classes never match until input state exists (M26).
-        PseudoClass::Hover
-        | PseudoClass::Focus
-        | PseudoClass::Active
-        | PseudoClass::Visited
-        | PseudoClass::Link => false,
-    }
-}
-
-/// The 0-based rank of `idx` among its element siblings that also match
-/// `list` (selectors-4's `of S` filter: positions are renumbered within
-/// the filtered set, not the full sibling list). Callers only call this
-/// once `idx` itself is known to match `list`, so it is always found.
-fn sibling_rank_among(flat: &FlatDom, idx: usize, list: &SelectorList) -> u32 {
-    let parent = flat.nodes[idx].parent.unwrap_or(0);
-    flat.nodes[parent]
-        .child_elements
-        .iter()
-        .filter(|&&sibling| matches_selector_list(flat, sibling, list))
-        .position(|&sibling| sibling == idx)
-        .expect("idx must be among its own parent's children") as u32
 }
 
 /// Whether the CSS `An+B` formula matches: the element's 1-indexed sibling
@@ -771,5 +859,104 @@ mod tests {
             matched_tags(&doc, "a.x:nth-last-of-type(1)"),
             Vec::<String>::new()
         );
+    }
+
+    // ---- hostile input and the review's findings ---------------------------
+
+    #[test]
+    fn empty_substring_values_match_nothing() {
+        // selectors-4 §6.2.
+        let doc = p(vec![e("a").attr("href", "x").into(), e("a").into()]);
+        assert_eq!(matched_tags(&doc, "[href^='']"), Vec::<String>::new());
+        assert_eq!(matched_tags(&doc, "[href$='']"), Vec::<String>::new());
+        assert_eq!(matched_tags(&doc, "[href*='']"), Vec::<String>::new());
+        assert_eq!(matched_tags(&doc, "[href='']"), Vec::<String>::new());
+        assert_eq!(matched_tags(&doc, "[href]"), vec!["a"]);
+    }
+
+    #[test]
+    fn descendant_chains_do_not_backtrack_exponentially() {
+        // Forty nested `.a` and a selector of twenty `.a` compounds that
+        // can never match (the `#nope` head): a naive right-to-left walk
+        // retries every ancestor for every compound.
+        let mut inner: Node = e("span").into();
+        for _ in 0..40 {
+            inner = e("div").attr("class", "a").push(inner).into();
+        }
+        let doc = p(vec![inner]);
+        let selector = format!("#nope {} span", ".a ".repeat(20));
+        assert_eq!(matched_tags(&doc, &selector), Vec::<String>::new());
+        let selector = format!("div {} span", ".a ".repeat(20));
+        assert_eq!(matched_tags(&doc, &selector), vec!["span"]);
+    }
+
+    #[test]
+    fn a_selector_with_very_many_compounds_matches_in_constant_stack() {
+        // 20k `div > div > ... > a` against 20k nested divs, on a small
+        // stack: the walk used to recurse once per compound. (A sibling
+        // chain that long is quadratic by nature, so it is kept short.)
+        let handle = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let mut inner: Node = e("a").into();
+                for _ in 0..20_000 {
+                    inner = e("div").push(inner).into();
+                }
+                let doc = p(vec![inner]);
+                let flat = FlatDom::build(&doc);
+                let last = flat.nodes.len() - 1;
+                let selector = vec!["div"; 20_000].join(" > ") + " > a";
+                let list = parse_selector_list(&css::tokenize(&selector)).expect("valid");
+                assert!(matches_selector_list(&flat, last, &list));
+                let selector = vec!["div"; 20_001].join(" > ") + " > a";
+                let list = parse_selector_list(&css::tokenize(&selector)).expect("valid");
+                assert!(!matches_selector_list(&flat, last, &list));
+                let selector = vec!["div"; 20_000].join(" ") + " a";
+                let list = parse_selector_list(&css::tokenize(&selector)).expect("valid");
+                assert!(matches_selector_list(&flat, last, &list));
+
+                let siblings: Vec<Node> = (0..300).map(|_| e("a").into()).collect();
+                let doc = p(vec![e("div").push_children(siblings).into()]);
+                let flat = FlatDom::build(&doc);
+                let last = flat.nodes.len() - 1;
+                let selector = vec!["a"; 300].join(" ~ ");
+                let list = parse_selector_list(&css::tokenize(&selector)).expect("valid");
+                assert!(matches_selector_list(&flat, last, &list));
+                assert!(!matches_selector_list(&flat, last - 1, &list));
+            })
+            .expect("thread");
+        handle.join().expect("no stack overflow");
+    }
+
+    #[test]
+    fn nth_child_of_s_over_many_siblings_is_linear() {
+        // 20k siblings with `:nth-child(odd of .x)` used to rescan the
+        // whole sibling list for each one.
+        let siblings: Vec<Node> = (0..20_000)
+            .map(|i| {
+                e("li")
+                    .attr("class", if i % 3 == 0 { "x" } else { "y" })
+                    .into()
+            })
+            .collect();
+        let doc = p(vec![e("ul").push_children(siblings).into()]);
+        let flat = FlatDom::build(&doc);
+        let list = parse_selector_list(&css::tokenize("li:nth-child(odd of .x)")).expect("valid");
+        let mut matcher = Matcher::new(&flat);
+        let count = flat
+            .element_indices()
+            .filter(|&i| matcher.matches_list(i, &list))
+            .count();
+        // 6667 `.x` items, every other one.
+        assert_eq!(count, 3334);
+        let nested =
+            parse_selector_list(&css::tokenize("li:nth-child(odd of :nth-child(odd of .x))"))
+                .expect("valid");
+        let mut matcher = Matcher::new(&flat);
+        let count = flat
+            .element_indices()
+            .filter(|&i| matcher.matches_list(i, &nested))
+            .count();
+        assert_eq!(count, 1667);
     }
 }
