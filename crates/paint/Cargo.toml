@@ -1,0 +1,15 @@
+[package]
+name = "paint"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dom.workspace = true
+layout.workspace = true
+style.workspace = true
+
+# css: only `paint_styled_document`'s tests need to build stylesheets.
+# text: only `paint_fragments`'s tests need a FontStore for `layout::layout`.
+[dev-dependencies]
+css.workspace = true
+text.workspace = true

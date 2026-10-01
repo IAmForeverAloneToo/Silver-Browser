@@ -1,0 +1,9 @@
+[package]
+name = "random-browser"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+engine.workspace = true
+winit.workspace = true
+softbuffer.workspace = true

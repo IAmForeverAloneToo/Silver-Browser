@@ -1,0 +1,18 @@
+[package]
+name = "style"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+css.workspace = true
+dom.workspace = true
+
+# html: table-driven selector tests build fixtures from real markup
+# (tests/selector_table.rs) rather than hand-built dom::Node trees. This is
+# a downward edge (html sits below style in the layer stack) and dev-only.
+[dev-dependencies]
+html.workspace = true
+
+[[bench]]
+name = "match"
+harness = false

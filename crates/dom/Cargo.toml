@@ -1,0 +1,7 @@
+[package]
+name = "dom"
+version.workspace = true
+edition.workspace = true
+
+# Leaf crate: no dependencies. See docs/architecture.md.
+[dependencies]

@@ -1,0 +1,10 @@
+[package]
+name = "render"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+paint.workspace = true
+text.workspace = true
+tiny-skia.workspace = true
+ab_glyph.workspace = true

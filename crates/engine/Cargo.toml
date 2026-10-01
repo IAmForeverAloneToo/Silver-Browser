@@ -1,0 +1,14 @@
+[package]
+name = "engine"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+css.workspace = true
+dom.workspace = true
+html.workspace = true
+layout.workspace = true
+paint.workspace = true
+render.workspace = true
+style.workspace = true
+text.workspace = true

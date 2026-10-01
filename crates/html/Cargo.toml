@@ -1,0 +1,7 @@
+[package]
+name = "html"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dom.workspace = true

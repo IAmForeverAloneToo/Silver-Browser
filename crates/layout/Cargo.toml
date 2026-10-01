@@ -1,0 +1,13 @@
+[package]
+name = "layout"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+style.workspace = true
+text.workspace = true
+
+# dom/css: only tests need to build fixture documents and stylesheets.
+[dev-dependencies]
+dom.workspace = true
+css.workspace = true
