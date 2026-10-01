@@ -1,4 +1,4 @@
-# Random Browser — Architecture
+# Silver Browser — Architecture
 
 A hobby browser engine in Rust. Goal: a clean vertical slice now, with a
 crate architecture shaped like a real engine (Chromium/Blink-style layered
@@ -14,7 +14,7 @@ The workspace is a layered DAG. Every crate may depend ONLY on crates below
 it in this stack:
 
 ```
-shell          (bin "random-browser": windowing, event loop, browser chrome UI)
+shell          (bin "silver-browser": windowing, event loop, browser chrome UI)
  └ engine      (session glue: orchestrates net → parse → style → layout →
                 paint → render for each frame/navigation)
     ├ render  (rasterization backends: software today, wgpu GPU later)

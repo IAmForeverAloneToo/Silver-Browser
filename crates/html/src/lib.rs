@@ -55,12 +55,12 @@ mod tests {
     #[test]
     fn parses_a_small_document() {
         let doc = parse_document(
-            "<html><body><h1>Hello from Random Browser</h1><p>A hobby browser engine in Rust.</p></body></html>",
+            "<html><body><h1>Hello from Silver Browser</h1><p>A hobby browser engine in Rust.</p></body></html>",
         )
         .expect("parsing never fails");
         assert_eq!(
             doc.text_content(),
-            "Hello from Random BrowserA hobby browser engine in Rust."
+            "Hello from Silver BrowserA hobby browser engine in Rust."
         );
     }
 

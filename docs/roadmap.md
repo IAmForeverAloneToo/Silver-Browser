@@ -1,4 +1,4 @@
-# Random Browser — Master Roadmap
+# Silver Browser — Master Roadmap
 
 > Status: v1.0 · 2026-09-30 · Owner: the project (single-developer cadence unless noted)
 > This is the canonical plan. `docs/architecture.md` is the binding layering
@@ -186,7 +186,7 @@ Verified per the vertical-slice rule at each milestone: 314 tests
 workspace-wide (163 in `style`, 33 in `layout`, 27 in `text`), clippy
 clean (`-D warnings`, every target), smoke run. Toolchain: rustup
 stable MSVC, cargo 1.98.1.
-Build target dir outside OneDrive (`%LOCALAPPDATA%\random-browser\target`)
+Build target dir outside OneDrive (`%LOCALAPPDATA%\silver-browser\target`)
 — currently only by passing `CARGO_TARGET_DIR` manually each session; no
 `.cargo/config.toml` enforces this yet (worth adding before it's
 forgotten once, inside OneDrive).
@@ -672,7 +672,7 @@ since that's the concrete, testable exit criterion.
 
 ## M15 — Navigation v1 + address bar  ·  `shell`/`engine`  ·  Effort: L  ·  Depends: M14
 
-- [ ] M15.1 Navigation state machine: `about:blank`, `about:random`
+- [ ] M15.1 Navigation state machine: `about:blank`, `about:silver`
        (built-in demo), user URL entry → fetch → parse → render; error
        pages (DNS fail, TLS fail, HTTP error classes).
 - [ ] M15.2 Session history: back/forward with in-memory bfcache v1
@@ -1101,7 +1101,7 @@ process seams.
        `Content-Disposition` handling, safe default paths.
 - [ ] M37.3 Settings: startup page, search-engine selection, JS/CSP
        toggles (no-scripts mode), dark mode, engine feature flags.
-- [ ] M37.4 Error/network pages polish; `about:` pages (`about:random`
+- [ ] M37.4 Error/network pages polish; `about:` pages (`about:silver`
        = engine demo gallery — the M1 demo document graduates here).
 - [ ] M37.5 Profile system: multi-profile v1 (per-profile cookie/storage
        jars).

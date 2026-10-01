@@ -16,7 +16,7 @@ use winit::window::{Window, WindowId};
 /// Window configuration.
 const WINDOW_WIDTH: u32 = 1280;
 const WINDOW_HEIGHT: u32 = 800;
-const WINDOW_TITLE: &str = "Random Browser";
+const WINDOW_TITLE: &str = "Silver Browser";
 
 /// The browser application: window + surface + engine session.
 ///

@@ -174,7 +174,7 @@ mod tests {
     use super::*;
 
     fn sample_tree() -> Node {
-        let h1 = Element::new("h1").text("Hello from Random Browser");
+        let h1 = Element::new("h1").text("Hello from Silver Browser");
         let p = Element::new("p")
             .attr("class", "tagline")
             .text("A hobby browser engine in Rust.");
@@ -226,7 +226,7 @@ mod tests {
         let tree = sample_tree();
         assert_eq!(
             tree.text_content(),
-            "Hello from Random BrowserA hobby browser engine in Rust."
+            "Hello from Silver BrowserA hobby browser engine in Rust."
         );
     }
 
@@ -236,6 +236,6 @@ mod tests {
         assert!(printed.starts_with("document\n"));
         assert!(printed.contains("  element html\n"));
         assert!(printed.contains("    element h1\n"));
-        assert!(printed.contains("      text \"Hello from Random Browser\"\n"));
+        assert!(printed.contains("      text \"Hello from Silver Browser\"\n"));
     }
 }

@@ -39,7 +39,7 @@ const DOCUMENT_SOURCE: &str = "\
     </style>\
   </head>\
   <body>\
-    <h1>Hello from Random Browser</h1>\
+    <h1>Hello from Silver Browser</h1>\
     <p>A hobby browser engine in Rust — milestone 6:</p>\
     <p class=\"highlight\">this page is laid out by our own block formatting context — real width/margin resolution and margin collapsing, not a flat vertical list.</p>\
     <div class=\"card\">\
@@ -182,7 +182,7 @@ mod tests {
             engine
                 .document()
                 .text_content()
-                .contains("Hello from Random Browser")
+                .contains("Hello from Silver Browser")
         );
     }
 

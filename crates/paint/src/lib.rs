@@ -146,7 +146,7 @@ pub fn paint_document(root: &Node, viewport_w: f32, viewport_h: f32) -> DisplayL
     collect_text_nodes(root, &mut texts);
     texts.retain(|(_, data)| !data.trim().is_empty());
     if texts.is_empty() {
-        texts.push(("h1".to_string(), "Hello from Random Browser".to_string()));
+        texts.push(("h1".to_string(), "Hello from Silver Browser".to_string()));
     }
 
     // Stack text runs top-to-bottom, sized by their tag.
@@ -204,7 +204,7 @@ pub fn paint_styled_document(styled: &StyledDom, viewport_w: f32, viewport_h: f3
         // text): same fallback as `paint_document`, so an empty/failed
         // load is never a silently blank window.
         items.push(DisplayItem::Text {
-            text: "Hello from Random Browser".to_string(),
+            text: "Hello from Silver Browser".to_string(),
             x: TEXT_X,
             y: TOP_INSET,
             size: 16.0,
@@ -323,7 +323,7 @@ pub fn paint_fragments(fragments: &[Fragment], viewport_w: f32, viewport_h: f32)
 
     if items.len() <= 1 {
         items.push(DisplayItem::Text {
-            text: "Hello from Random Browser".to_string(),
+            text: "Hello from Silver Browser".to_string(),
             x: 40.0,
             y: 32.0,
             size: 16.0,
@@ -724,7 +724,7 @@ mod tests {
         // No visible text anywhere: the fallback heading fires.
         match list.items.get(2) {
             Some(DisplayItem::Text { text, .. }) => {
-                assert_eq!(text, "Hello from Random Browser");
+                assert_eq!(text, "Hello from Silver Browser");
             }
             other => panic!("expected fallback text, got {other:?}"),
         }

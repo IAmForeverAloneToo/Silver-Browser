@@ -1,4 +1,4 @@
-# Random Browser
+# Silver Browser
 
 A hobby browser engine in Rust — built from scratch, on neither Chromium nor
 Gecko, following a Chromium-shaped layered architecture so the project can
@@ -9,7 +9,7 @@ grow without turning into a mess.
 Once the Rust toolchain is installed:
 
 ```
-cargo run -p random-browser
+cargo run -p silver-browser
 ```
 
 Opens a window rendering a document parsed by our own HTML tokenizer
