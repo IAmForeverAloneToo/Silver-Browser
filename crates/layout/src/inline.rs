@@ -25,13 +25,11 @@
 //!   outside unbroken URLs/tokens at narrow viewports.
 //! * `text-align: justify` isn't a value this engine parses yet
 //!   (`style`'s M21 note) — only `left`/`right`/`center` reach here.
-//! * Block-in-inline (M7.6: a block box nested inside inline content,
-//!   e.g. `<span>a<div>b</div>c</span>`) doesn't restructure the box
-//!   tree into real anonymous boxes the way browsers do — it ends the
-//!   current line, lays the block out on its own at the full available
-//!   width (via `block::layout_block`, not collapsing margins with
-//!   anything outside it), and resumes a fresh line afterward. Same
-//!   observable "splits the run" effect, simpler implementation.
+//! * Block-in-inline (M7.6, `<span>a<div>b</div>c</span>`) is the box
+//!   tree builder's business since M10.4: the block is hoisted out and
+//!   the span split around it (CSS2 §9.2.1.1) before layout, so the
+//!   boxes that reach here are inline-level only. A block-level box a
+//!   hand-built tree puts inside an inline is skipped.
 //! * `white-space: pre`/`pre-wrap` preserve literal newlines as forced
 //!   breaks (and `pre` disables auto-wrap entirely), a blank line among
 //!   them included (it is a line box of the font's height, css-text-3
@@ -54,7 +52,7 @@ use std::borrow::Cow;
 use style::computed::{ComputedStyle, Direction, TextAlign, TextTransform, WhiteSpace};
 use text::FontCollection;
 
-use crate::block::{Fragment, FragmentKind, layout_block};
+use crate::block::{Fragment, FragmentKind};
 use crate::box_tree::{BoxKind, LayoutBox};
 
 /// One flattened piece of inline content, in document order.
@@ -78,8 +76,6 @@ enum InlineItem<'a> {
     /// `available_width` is left. On an empty line it *is* the line: a
     /// blank line of the text's own font height.
     ForcedBreak(&'a ComputedStyle),
-    /// See the module doc's block-in-inline note.
-    Block(&'a LayoutBox),
 }
 
 /// One word placed on the line being built, before [`flush_line`]
@@ -91,12 +87,12 @@ struct LineWord<'a> {
     node: usize,
 }
 
-/// Lays a run of inline-level boxes out into line boxes within
-/// `available_width`, returning fragments relative to the run's
-/// container's content-box top-left `(0, 0)` and the total height
-/// consumed — `block::layout_children`'s inline-run handling translates
-/// both into the container's own coordinate space, same as any block
-/// child's.
+/// Lays a run of inline-level boxes (an anonymous block's children,
+/// M10.4) out into line boxes within `available_width`, returning
+/// fragments relative to the run's container's content-box top-left
+/// `(0, 0)` and the total height consumed — `block::layout_children`
+/// translates both into the container's own coordinate space, same as
+/// any block child's.
 pub(crate) fn layout_inline(
     items: &[LayoutBox],
     available_width: f32,
@@ -175,33 +171,6 @@ pub(crate) fn layout_inline(
                 }
                 line_width = 0.0;
             }
-            InlineItem::Block(b) => {
-                flush_line(
-                    &mut line,
-                    line_width,
-                    available_width,
-                    text_align,
-                    fonts,
-                    &mut y,
-                    &mut fragments,
-                );
-                line_width = 0.0;
-
-                // The containing block's height is not known here, so a
-                // percentage height on such a block is `auto`.
-                let block = layout_block(b, available_width, None, fonts);
-                // A self-collapsing block's one margin set counts once;
-                // nothing adjoins it here, so it is simply spacing.
-                let (above, below) = if block.self_collapsing {
-                    (block.margin_top.resolve(), 0.0)
-                } else {
-                    (block.margin_top.resolve(), block.margin_bottom.resolve())
-                };
-                y += above;
-                let margin_left = block.margin_left;
-                fragments.push(block.root.translated(margin_left, y));
-                y += block.height + below;
-            }
         }
     }
     flush_line(
@@ -220,9 +189,7 @@ pub(crate) fn layout_inline(
 /// Recursively flattens an inline/text subtree into [`InlineItem`]s,
 /// applying `text-transform` and `white-space`-driven tokenization
 /// (M8.4) and measuring each word (with `letter-spacing`, M8.4) as it
-/// goes. A nested `Block` box (M7.6) is kept as its own item rather than
-/// recursed into — it isn't inline content to flow onto a line, it ends
-/// one.
+/// goes.
 fn collect_inline_items<'a>(
     boxes: &'a [LayoutBox],
     fonts: &FontCollection,
@@ -275,7 +242,10 @@ fn collect_inline_items<'a>(
                 }
             }
             BoxKind::Inline => collect_inline_items(&b.children, fonts, out),
-            BoxKind::Block => out.push(InlineItem::Block(b)),
+            // The box tree builder hoists a block out of inline content
+            // (CSS2 §9.2.1.1), so none reaches here from a parsed
+            // document; see the module doc.
+            BoxKind::Block | BoxKind::AnonymousBlock => {}
         }
     }
 }
@@ -607,39 +577,17 @@ mod tests {
     }
 
     #[test]
-    fn block_in_inline_splits_the_run_without_panicking() {
+    fn nested_inlines_flow_onto_one_line() {
         let fonts = test_fonts();
-        let block = LayoutBox {
-            style: ComputedStyle::default(),
-            kind: BoxKind::Block,
-            children: Vec::new(),
-            node: 0,
-        };
         let run = inline_box(vec![
             text_box("before", 16.0),
-            block,
+            inline_box(vec![text_box("inner", 16.0)]),
             text_box("after", 16.0),
         ]);
-        let (fragments, _height) = layout_inline(&[run], 10_000.0, TextAlign::Left, &fonts);
-
-        assert_eq!(texts_of(&fragments), vec!["before", "after"]);
-        // The embedded block contributes its own Box fragment too (M7.6).
-        assert!(
-            fragments
-                .iter()
-                .any(|f| matches!(f.kind, FragmentKind::Box))
-        );
-        let y_of = |t: &str| {
-            fragments
-                .iter()
-                .find(|f| matches!(&f.kind, FragmentKind::Text(x) if x == t))
-                .unwrap()
-                .y
-        };
-        assert!(
-            y_of("after") > y_of("before"),
-            "the block must visually separate the two text runs"
-        );
+        let (fragments, height) = layout_inline(&[run], 10_000.0, TextAlign::Left, &fonts);
+        assert_eq!(texts_of(&fragments), vec!["before", "inner", "after"]);
+        assert!(fragments.iter().all(|f| f.y == fragments[0].y));
+        assert_eq!(height, fonts.primary().metrics(16.0).line_height());
     }
 
     #[test]
