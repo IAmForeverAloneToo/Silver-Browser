@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+<head>
+<title>box-sizing: border-box beside content-box</title>
+<style>
+  html { background-color: #f4f1ea; }
+  body { margin: 0; }
+  div {
+    width: 200px;
+    height: 100px;
+    padding: 20px 10px;
+    border: 5px solid #5b3a29;
+    margin: 20px;
+    background-color: #d9a066;
+  }
+  .border { box-sizing: border-box; }
+  .content { box-sizing: content-box; }
+  .small {
+    box-sizing: border-box;
+    width: 20px;
+    height: 20px;
+    background-color: #2e5339;
+  }
+  .nested {
+    box-sizing: border-box;
+    width: 100px;
+    height: 60px;
+    padding: 10px;
+    margin: 0;
+    border-width: 2px;
+    background-color: #ffffff;
+  }
+</style>
+</head>
+<body>
+  <div class="border"></div>
+  <div class="content"></div>
+  <div class="small"></div>
+  <div class="border"><div class="nested"></div></div>
+</body>
+</html>

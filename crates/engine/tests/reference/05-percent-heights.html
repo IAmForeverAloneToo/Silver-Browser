@@ -1,0 +1,59 @@
+<!doctype html>
+<html>
+<head>
+<title>Percentage heights under a definite height</title>
+<style>
+  html { background-color: #fdf3e7; }
+  body { margin: 0; }
+  .frame {
+    width: 600px;
+    height: 400px;
+    margin: 20px;
+    padding: 10px;
+    background-color: #f2c57c;
+  }
+  .half {
+    width: 200px;
+    height: 50%;
+    background-color: #c97b2a;
+  }
+  .quarter {
+    width: 100px;
+    height: 25%;
+    margin-left: 20px;
+    background-color: #ffffff;
+  }
+  .limited {
+    width: 300px;
+    height: 80%;
+    max-height: 10%;
+    background-color: #7a3b0c;
+  }
+  .floored {
+    width: 300px;
+    height: 1%;
+    min-height: 15%;
+    margin-top: 10px;
+    background-color: #e39a4c;
+  }
+  .auto {
+    width: 400px;
+    margin: 20px;
+    background-color: #f2c57c;
+  }
+  .auto div {
+    height: 50%;
+    min-height: 30px;
+    background-color: #7a3b0c;
+  }
+</style>
+</head>
+<body>
+  <div class="frame">
+    <div class="half"><div class="quarter"></div></div>
+    <div class="limited"></div>
+    <div class="floored"></div>
+  </div>
+  <div class="auto"><div></div></div>
+</body>
+</html>

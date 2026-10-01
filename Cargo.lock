@@ -398,6 +398,7 @@ dependencies = [
  "html",
  "layout",
  "paint",
+ "png",
  "render",
  "style",
  "text",

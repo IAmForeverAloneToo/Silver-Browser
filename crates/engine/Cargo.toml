@@ -17,3 +17,6 @@ text.workspace = true
 [[bench]]
 name = "scroll"
 harness = false
+
+[dev-dependencies]
+png = "0.17"

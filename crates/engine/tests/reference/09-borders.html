@@ -1,0 +1,49 @@
+<!doctype html>
+<html>
+<head>
+<title>Borders per side, double borders, hidden sides</title>
+<style>
+  html { background-color: #f3eee8; }
+  body { margin: 0; }
+  div { width: 160px; height: 60px; margin: 20px; background-color: #e2c9a8; }
+  .sides {
+    border-style: solid;
+    border-color: #4a2c17;
+    border-top-width: 2px;
+    border-right-width: 8px;
+    border-bottom-width: 14px;
+    border-left-width: 20px;
+  }
+  .double-nine { border: 9px double #4a2c17; }
+  .double-six { border: 6px double #4a2c17; }
+  .double-mixed { border-style: double none; border-width: 6px 0 9px 0; border-color: #4a2c17; }
+  .keywords { border-style: solid; border-color: #4a2c17; border-width: thin medium thick 10px; }
+  .hidden-sides { border: 10px solid #4a2c17; border-top-style: hidden; border-bottom-style: none; }
+  .shorthands {
+    border-top: 4px solid #4a2c17;
+    border-right: 6px solid #4a2c17;
+    border-bottom: 2px solid #4a2c17;
+    border-left: 12px solid #4a2c17;
+  }
+  /* Sides of one colour only: a reference browser anti-aliases the
+     mitre between two colours, which this engine does not. */
+  .row { margin: 0; width: 800px; height: auto; font-size: 0; background-color: transparent; }
+  .row div { display: inline-block; }
+</style>
+</head>
+<body>
+  <div class="row">
+    <div class="sides"></div>
+    <div class="double-nine"></div>
+    <div class="double-six"></div>
+  </div>
+  <div class="row">
+    <div class="double-mixed"></div>
+    <div class="keywords"></div>
+    <div class="hidden-sides"></div>
+  </div>
+  <div class="row">
+    <div class="shorthands"></div>
+  </div>
+</body>
+</html>

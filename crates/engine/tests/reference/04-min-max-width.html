@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+<head>
+<title>min-width and max-width with auto margins</title>
+<style>
+  html { background-color: #f1eef3; }
+  body { margin: 0; padding: 20px 0; }
+  div { height: 40px; margin: 10px 0; background-color: #6b4c9a; }
+  .capped { max-width: 300px; margin-left: auto; margin-right: auto; }
+  .raised { width: 100px; min-width: 350px; }
+  .half { max-width: 50%; margin-left: auto; margin-right: 0; }
+  .both { width: 700px; min-width: 100px; max-width: 200px; margin-left: auto; }
+  .edged {
+    max-width: 400px;
+    margin-left: auto;
+    margin-right: auto;
+    padding: 0 30px;
+    border: 5px solid #2b1d3f;
+    background-color: #c8b6e2;
+  }
+  .frame { width: 600px; margin: 10px auto; background-color: #e3dced; }
+  .frame div { background-color: #3e2a62; }
+</style>
+</head>
+<body>
+  <div class="capped"></div>
+  <div class="raised"></div>
+  <div class="half"></div>
+  <div class="both"></div>
+  <div class="edged"></div>
+  <div class="frame">
+    <div class="capped"></div>
+    <div class="half"></div>
+  </div>
+</body>
+</html>

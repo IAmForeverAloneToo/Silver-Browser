@@ -1,0 +1,60 @@
+<!doctype html>
+<html>
+<head>
+<title>Inline-blocks in a row, bottoms on the baseline</title>
+<style>
+  html { background-color: #eaf2ec; }
+  body { margin: 0; }
+  .row {
+    font-size: 0;
+    width: 400px;
+    margin: 20px;
+    padding: 10px;
+    background-color: #c5dccb;
+  }
+  .row div {
+    display: inline-block;
+    width: 60px;
+    margin: 5px 10px;
+    border: 2px solid #1d4d2b;
+    background-color: #5c9a6b;
+  }
+  .one { height: 40px; }
+  .two { height: 70px; margin-bottom: 15px; }
+  .three { height: 20px; margin-top: 30px; }
+  .four { height: 50px; width: 80px; }
+  .five { height: 30px; }
+  .six { width: 30px; height: 30px; padding: 10px; border-width: 0; }
+  .fixed {
+    display: inline-block;
+    width: 150px;
+    height: 40px;
+    margin: 0 20px;
+    background-color: #1d4d2b;
+  }
+  .row2 { font-size: 0; width: 500px; margin: 20px; background-color: #c5dccb; }
+  .row2 .inner {
+    display: inline-block;
+    width: 100px;
+    padding: 10px;
+    background-color: #5c9a6b;
+  }
+  .row2 .inner div { height: 20px; margin: 10px 0; background-color: #ffffff; }
+</style>
+</head>
+<body>
+  <div class="row">
+    <div class="one"></div>
+    <div class="two"></div>
+    <div class="three"></div>
+    <div class="four"></div>
+    <div class="five"></div>
+    <div class="six"></div>
+  </div>
+  <div class="row2">
+    <span class="fixed"></span>
+    <span class="inner"><div></div><div></div></span>
+    <span class="fixed"></span>
+  </div>
+</body>
+</html>
