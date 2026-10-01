@@ -92,60 +92,69 @@ impl Node {
         Element::new(tag)
     }
 
-    /// Concatenated descendant text, in document order.
-    pub fn text_content(&self) -> String {
-        let mut out = String::new();
-        self.collect_text(&mut out);
-        out
+    /// The children of a document or element; a text node has none.
+    pub fn children(&self) -> &[Node] {
+        match self {
+            Node::Document(children) | Node::Element(Element { children, .. }) => children,
+            Node::Text(_) => &[],
+        }
     }
 
-    fn collect_text(&self, out: &mut String) {
-        match self {
-            Node::Document(children) | Node::Element(Element { children, .. }) => {
-                for child in children {
-                    child.collect_text(out);
-                }
+    /// Concatenated descendant text, in document order. Walks with an
+    /// explicit stack, so a tree of any depth is fine (see [`Drop`]
+    /// below for why depth is a concern at all).
+    pub fn text_content(&self) -> String {
+        let mut out = String::new();
+        let mut stack: Vec<&Node> = vec![self];
+        while let Some(node) = stack.pop() {
+            match node {
+                Node::Text(Text { data }) => out.push_str(data),
+                other => stack.extend(other.children().iter().rev()),
             }
-            Node::Text(Text { data }) => out.push_str(data),
         }
+        out
     }
 
     /// Renders an indented, human-readable dump of the tree.
     pub fn pretty_print(&self) -> String {
         let mut out = String::new();
-        self.write_pretty(&mut out, 0);
+        let mut stack: Vec<(&Node, usize)> = vec![(self, 0)];
+        while let Some((node, depth)) = stack.pop() {
+            for _ in 0..depth {
+                out.push_str("  ");
+            }
+            match node {
+                Node::Document(_) => out.push_str("document\n"),
+                Node::Element(Element { tag, attrs, .. }) => {
+                    out.push_str("element ");
+                    out.push_str(tag);
+                    for (k, v) in attrs {
+                        out.push_str(&format!(" {k}=\"{v}\""));
+                    }
+                    out.push('\n');
+                }
+                Node::Text(Text { data }) => out.push_str(&format!("text \"{data}\"\n")),
+            }
+            stack.extend(node.children().iter().rev().map(|c| (c, depth + 1)));
+        }
         out
     }
+}
 
-    fn write_pretty(&self, out: &mut String, depth: usize) {
-        let indent = "  ".repeat(depth);
-        match self {
-            Node::Document(children) => {
-                out.push_str(&indent);
-                out.push_str("document\n");
-                for child in children {
-                    child.write_pretty(out, depth + 1);
-                }
-            }
-            Node::Element(Element {
-                tag,
-                attrs,
-                children,
-            }) => {
-                out.push_str(&indent);
-                out.push_str("element ");
-                out.push_str(tag);
-                for (k, v) in attrs {
-                    out.push_str(&format!(" {k}=\"{v}\""));
-                }
-                out.push('\n');
-                for child in children {
-                    child.write_pretty(out, depth + 1);
-                }
-            }
-            Node::Text(Text { data }) => {
-                out.push_str(&indent);
-                out.push_str(&format!("text \"{data}\"\n"));
+/// Dropping an element drains its subtree into a worklist first, so a
+/// deeply nested tree is freed iteratively. The compiler-generated drop
+/// recurses once per level, and a tree a few tens of thousands of levels
+/// deep overflows the stack when it is simply let go of. The HTML parser
+/// caps nesting at 512 levels for that reason among others; this guards
+/// trees built any other way (scripting, later).
+impl Drop for Element {
+    fn drop(&mut self) {
+        let mut pending: Vec<Node> = std::mem::take(&mut self.children);
+        while let Some(node) = pending.pop() {
+            match node {
+                Node::Document(mut children) => pending.append(&mut children),
+                Node::Element(mut el) => pending.append(&mut el.children),
+                Node::Text(_) => {}
             }
         }
     }
@@ -228,6 +237,34 @@ mod tests {
             tree.text_content(),
             "Hello from Silver BrowserA hobby browser engine in Rust."
         );
+    }
+
+    #[test]
+    fn a_very_deep_tree_drops_and_walks_without_overflowing_the_stack() {
+        // Built by wrapping, which is iterative; dropped, read and
+        // printed on a thread with a small stack, which the derived
+        // recursive drop could not survive.
+        let handle = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let mut el = Element::new("b").text("leaf");
+                for _ in 0..100_000 {
+                    el = Element::new("b").push(el);
+                }
+                let tree = Node::document(vec![el.into()]);
+                assert_eq!(tree.text_content(), "leaf");
+                drop(tree);
+                // The printed form is quadratic in depth by nature (each
+                // line is indented to its depth), so print a shallower one.
+                let mut el = Element::new("b").text("leaf");
+                for _ in 0..2_000 {
+                    el = Element::new("b").push(el);
+                }
+                let tree = Node::document(vec![el.into()]);
+                assert!(tree.pretty_print().ends_with("text \"leaf\"\n"));
+            })
+            .expect("thread");
+        handle.join().expect("no stack overflow");
     }
 
     #[test]
