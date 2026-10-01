@@ -268,34 +268,16 @@ impl RenderBackend for SoftwareBackend {
                     }
                     self.draw_text(&mut pixmap, text, (*x, *y), *size, color, clip);
                 }
+                // No anti-aliasing for a quad: quads that share an
+                // edge must tile it without a seam (a border's bands in
+                // one colour). A polygon is anti-aliased: its mitres to
+                // sides of another colour blend, as a browser's do
+                // (M11), and its axis-aligned edges lie on whole pixels.
                 DisplayItem::Quad { points, color } => {
-                    let polygon = clip_polygon(points, clip);
-                    if polygon.len() < 3 {
-                        continue;
-                    }
-                    let mut pb = tiny_skia::PathBuilder::new();
-                    pb.move_to(polygon[0].0, polygon[0].1);
-                    for &(px, py) in &polygon[1..] {
-                        pb.line_to(px, py);
-                    }
-                    pb.close();
-                    let Some(path) = pb.finish() else {
-                        continue;
-                    };
-                    let mut paint = tiny_skia::Paint::default();
-                    paint.set_color(tiny_skia::Color::from_rgba8(
-                        color.r, color.g, color.b, color.a,
-                    ));
-                    // No anti-aliasing: quads that share an edge must
-                    // tile it without a seam (a border's mitres).
-                    paint.anti_alias = false;
-                    pixmap.fill_path(
-                        &path,
-                        &paint,
-                        tiny_skia::FillRule::Winding,
-                        tiny_skia::Transform::identity(),
-                        None,
-                    );
+                    fill_polygon(&mut pixmap, points, color, clip, false);
+                }
+                DisplayItem::Polygon { points, color } => {
+                    fill_polygon(&mut pixmap, points, color, clip, true);
                 }
             }
         }
@@ -305,9 +287,46 @@ impl RenderBackend for SoftwareBackend {
     }
 }
 
-/// Clips a convex polygon to `clip` (Sutherland–Hodgman against the
-/// four edges). A convex input stays convex; fewer than three points
-/// means nothing is left.
+/// Fills the polygon `points`, clipped to `clip`, with or without
+/// anti-aliasing.
+fn fill_polygon(
+    pixmap: &mut tiny_skia::Pixmap,
+    points: &[(f32, f32)],
+    color: &Rgba8,
+    clip: Clip,
+    anti_alias: bool,
+) {
+    let polygon = clip_polygon(points, clip);
+    if polygon.len() < 3 {
+        return;
+    }
+    let mut pb = tiny_skia::PathBuilder::new();
+    pb.move_to(polygon[0].0, polygon[0].1);
+    for &(px, py) in &polygon[1..] {
+        pb.line_to(px, py);
+    }
+    pb.close();
+    let Some(path) = pb.finish() else {
+        return;
+    };
+    let mut paint = tiny_skia::Paint::default();
+    paint.set_color(tiny_skia::Color::from_rgba8(
+        color.r, color.g, color.b, color.a,
+    ));
+    paint.anti_alias = anti_alias;
+    pixmap.fill_path(
+        &path,
+        &paint,
+        tiny_skia::FillRule::Winding,
+        tiny_skia::Transform::identity(),
+        None,
+    );
+}
+
+/// Clips a polygon to `clip` (Sutherland–Hodgman against the four
+/// edges). A convex input stays convex, and a simple one stays a
+/// simple fill under the winding rule; fewer than three points means
+/// nothing is left.
 fn clip_polygon(points: &[(f32, f32)], clip: Clip) -> Vec<(f32, f32)> {
     let mut polygon = points.to_vec();
     polygon = clip_against(
@@ -669,6 +688,63 @@ mod tests {
         assert!(backend.cached_glyphs <= SHAPE_CACHE_GLYPHS);
         backend.clear_glyph_cache();
         assert_eq!((backend.shape_cache_len(), backend.cached_glyphs), (0, 0));
+    }
+
+    #[test]
+    fn polygons_are_anti_aliased_where_quads_are_not() {
+        // The same triangle, half of a 10 by 10 square along its
+        // diagonal, as a quad and as a polygon: the quad's pixels are
+        // all black or white, each by its centre; the polygon's along
+        // the diagonal are the two blended, half covered, and its
+        // whole-pixel edges stay exact.
+        let mut backend = test_backend();
+        let black = Rgba8::rgb(0, 0, 0);
+        let triangle = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)];
+        let list = DisplayList {
+            items: vec![
+                white_frame(10.0, 10.0),
+                DisplayItem::Quad {
+                    points: [triangle[0], triangle[1], triangle[2], triangle[2]],
+                    color: black,
+                },
+            ],
+        };
+        let buf = backend.rasterize(&list, 10, 10);
+        for y in 0..10 {
+            for x in 0..10 {
+                let p = px(&buf, 10, x, y);
+                assert!(p == BLACK || p == WHITE, "({x}, {y}): {p:?}");
+            }
+        }
+        let list = DisplayList {
+            items: vec![
+                white_frame(10.0, 10.0),
+                DisplayItem::Polygon {
+                    points: triangle.to_vec(),
+                    color: black,
+                },
+            ],
+        };
+        let buf = backend.rasterize(&list, 10, 10);
+        assert_eq!(px(&buf, 10, 8, 2), BLACK, "well inside");
+        assert_eq!(px(&buf, 10, 2, 8), WHITE, "well outside");
+        assert_eq!(
+            px(&buf, 10, 9, 0),
+            BLACK,
+            "the edge on whole pixels is exact"
+        );
+        let on_diagonal = px(&buf, 10, 5, 5);
+        assert!(
+            on_diagonal != BLACK && on_diagonal != WHITE,
+            "blended: {on_diagonal:?}"
+        );
+        // Skia's supersampled coverage, which tiny-skia keeps, puts
+        // this pixel nearer three eighths than half: a blend, not a
+        // guess at the exact share.
+        assert!(
+            (64..=192).contains(&on_diagonal[0]),
+            "partly covered: {on_diagonal:?}"
+        );
     }
 
     #[test]
