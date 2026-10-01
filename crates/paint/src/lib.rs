@@ -3,7 +3,11 @@
 //! Owns the display-list types — the render backend's input.
 //! [`paint_fragments`] (M6.8) walks a real `layout::Fragment` tree:
 //! backgrounds and borders painted from actual box geometry, not a
-//! guess. Two earlier stopgaps remain, retained rather than deleted
+//! guess. Since M9 it paints for a [`Viewport`]: the list is in
+//! viewport coordinates (the scroll offset subtracted, M9.1), items the
+//! viewport does not meet are left out, and a box whose `overflow`
+//! clips wraps its content in a [`DisplayItem::PushClip`]/[`DisplayItem::
+//! PopClip`] pair at its padding box (M9.3). Two earlier stopgaps remain, retained rather than deleted
 //! (each milestone's own exit criteria asked for the *active* pipeline
 //! to move on, not for the previous stage's code to disappear):
 //! [`paint_document`] (M1) walks a `dom::Node` directly with hardcoded
@@ -67,6 +71,44 @@ pub enum DisplayItem {
         /// Text color.
         color: Rgba8,
     },
+    /// Clip everything up to the matching [`DisplayItem::PopClip`] to
+    /// this rectangle (M9.3), intersected with any clip already in
+    /// force. Clips nest; an unmatched pop is ignored.
+    PushClip {
+        /// Left edge, px from viewport left.
+        x: f32,
+        /// Top edge, px from viewport top.
+        y: f32,
+        /// Width in px.
+        w: f32,
+        /// Height in px.
+        h: f32,
+    },
+    /// End the innermost [`DisplayItem::PushClip`].
+    PopClip,
+}
+
+/// The window onto the document a display list is painted for (M9.1):
+/// its size, and how far down the document it is scrolled. The list's
+/// coordinates are viewport coordinates: a fragment at document `y`
+/// paints at `y - scroll_y`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Viewport {
+    pub width: f32,
+    pub height: f32,
+    /// How far the document is scrolled down, in px; never negative.
+    pub scroll_y: f32,
+}
+
+impl Viewport {
+    /// A viewport at the top of the document.
+    pub fn new(width: f32, height: f32) -> Self {
+        Viewport {
+            width,
+            height,
+            scroll_y: 0.0,
+        }
+    }
 }
 
 /// An ordered list of drawable operations.
@@ -274,54 +316,41 @@ fn to_rgba8(c: Color) -> Rgba8 {
 }
 
 /// Paints a real `layout::Fragment` tree (M6.7) into a display list for
-/// a `viewport_w` x `viewport_h` viewport — "paint v2" (roadmap M6.8):
-/// backgrounds and borders painted from actual fragment geometry (box
-/// position/size resolved by real width/margin/collapsing math), not a
-/// per-tag guess or a flat vertical list. A transparent background
-/// paints nothing (an `Rgba8` with `a: 0` would be a no-op in `render`
-/// anyway, but skipping it here avoids pushing dead display items for
-/// the overwhelming majority of boxes, which have no background at all).
-pub fn paint_fragments(fragments: &[Fragment], viewport_w: f32, viewport_h: f32) -> DisplayList {
-    let mut items = Vec::new();
-    items.push(DisplayItem::Rect {
-        x: 0.0,
-        y: 0.0,
-        w: viewport_w,
-        h: viewport_h,
-        color: Rgba8::rgb(0x1e, 0x1e, 0x2e),
-    });
+/// `viewport` — "paint v2" (roadmap M6.8): backgrounds and borders
+/// painted from actual fragment geometry (box position/size resolved by
+/// real width/margin/collapsing math), not a per-tag guess or a flat
+/// vertical list. A transparent background paints nothing (an `Rgba8`
+/// with `a: 0` would be a no-op in `render` anyway, but skipping it
+/// here avoids pushing dead display items for the overwhelming majority
+/// of boxes, which have no background at all).
+///
+/// The list is in viewport coordinates (M9.1): `viewport.scroll_y` is
+/// subtracted from every document `y`. A fragment the viewport does not
+/// meet produces no item (M9.5's cheap half: paint is proportional to
+/// the document, raster to the viewport), though its content is still
+/// walked, since content may overflow a box into view — except under
+/// a box whose `overflow` clips (M9.3), whose content is wrapped in a
+/// clip at its padding box and skipped altogether when that box is out
+/// of view. `roots` is the tree `layout::layout_document` returns; a
+/// flat list works too, as a forest of childless fragments.
+pub fn paint_fragments(roots: &[Fragment], viewport: Viewport) -> DisplayList {
+    let mut painter = Painter {
+        items: vec![DisplayItem::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: viewport.width,
+            h: viewport.height,
+            color: Rgba8::rgb(0x1e, 0x1e, 0x2e),
+        }],
+        viewport,
+    };
+    painter.paint_all(roots);
+    let mut items = painter.items;
 
-    for f in fragments {
-        match &f.kind {
-            FragmentKind::Box => {
-                if f.style.background_color.a > 0.0 {
-                    items.push(DisplayItem::Rect {
-                        x: f.x,
-                        y: f.y,
-                        w: f.w,
-                        h: f.h,
-                        color: to_rgba8(f.style.background_color),
-                    });
-                }
-                if f.style.border_style != BorderStyle::None {
-                    push_border(&mut items, f);
-                }
-            }
-            FragmentKind::Text(text) => {
-                if !text.trim().is_empty() {
-                    items.push(DisplayItem::Text {
-                        text: text.clone(),
-                        x: f.x,
-                        y: f.y, // a text fragment's `y` is already its baseline
-                        size: f.style.font_size_px,
-                        color: to_rgba8(f.style.color),
-                    });
-                }
-            }
-        }
-    }
-
-    if items.len() <= 1 {
+    // A document with nothing in it at all (an empty or failed load) is
+    // never a silently blank window. A document whose content merely
+    // lies outside this viewport is blank here, as it should be.
+    if roots.is_empty() {
         items.push(DisplayItem::Text {
             text: "Hello from Silver Browser".to_string(),
             x: 40.0,
@@ -334,17 +363,115 @@ pub fn paint_fragments(fragments: &[Fragment], viewport_w: f32, viewport_h: f32)
     DisplayList { items }
 }
 
+/// One walk over a fragment tree for one viewport.
+struct Painter {
+    items: Vec<DisplayItem>,
+    viewport: Viewport,
+}
+
+impl Painter {
+    fn paint_all(&mut self, fragments: &[Fragment]) {
+        for f in fragments {
+            self.paint(f);
+        }
+    }
+
+    /// Whether a document-space rectangle meets the viewport at all.
+    fn meets_viewport(&self, x: f32, y: f32, w: f32, h: f32) -> bool {
+        let v = self.viewport;
+        x < v.width && x + w > 0.0 && y < v.scroll_y + v.height && y + h > v.scroll_y
+    }
+
+    fn paint(&mut self, f: &Fragment) {
+        match &f.kind {
+            FragmentKind::Box => {
+                let clips = f.style.overflow.clips();
+                let in_view = self.meets_viewport(f.x, f.y, f.w, f.h);
+                if clips && !in_view {
+                    // Nothing under a clip can show where the clip
+                    // itself does not.
+                    return;
+                }
+                if in_view {
+                    self.paint_box(f);
+                }
+                if clips {
+                    let (x, y, w, h) = padding_box(f);
+                    self.items.push(DisplayItem::PushClip {
+                        x,
+                        y: y - self.viewport.scroll_y,
+                        w,
+                        h,
+                    });
+                    self.paint_all(&f.children);
+                    self.items.push(DisplayItem::PopClip);
+                } else {
+                    self.paint_all(&f.children);
+                }
+            }
+            FragmentKind::Text(text) => {
+                if !text.trim().is_empty() && self.meets_viewport(f.x, f.top(), f.w, f.h) {
+                    self.items.push(DisplayItem::Text {
+                        text: text.clone(),
+                        x: f.x,
+                        // A text fragment's `y` is already its baseline.
+                        y: f.y - self.viewport.scroll_y,
+                        size: f.style.font_size_px,
+                        color: to_rgba8(f.style.color),
+                    });
+                }
+            }
+        }
+    }
+
+    /// A box's own background and border, in viewport coordinates.
+    fn paint_box(&mut self, f: &Fragment) {
+        let y = f.y - self.viewport.scroll_y;
+        if f.style.background_color.a > 0.0 {
+            self.items.push(DisplayItem::Rect {
+                x: f.x,
+                y,
+                w: f.w,
+                h: f.h,
+                color: to_rgba8(f.style.background_color),
+            });
+        }
+        if f.style.border_style != BorderStyle::None {
+            push_border(&mut self.items, f, y);
+        }
+    }
+}
+
+/// The padding box of a box fragment, in document coordinates: the
+/// border box inset by the border, which is zero-width when
+/// `border-style` is `none` (CSS2 §8.5.3). What `overflow` clips to
+/// (CSS2 §11.1.1).
+fn padding_box(f: &Fragment) -> (f32, f32, f32, f32) {
+    let [top, right, bottom, left] = if f.style.border_style == BorderStyle::None {
+        [0.0; 4]
+    } else {
+        f.style.border_width
+    };
+    (
+        f.x + left,
+        f.y + top,
+        (f.w - left - right).max(0.0),
+        (f.h - top - bottom).max(0.0),
+    )
+}
+
 /// Paints a box fragment's border as four filled strips (there's no
 /// stroke/outline display-item primitive — four rects is simplest and
 /// exactly matches a solid border's actual shape, mitered corners and
 /// all, as long as adjacent strips' corners overlap, which they do here).
-fn push_border(items: &mut Vec<DisplayItem>, f: &Fragment) {
+/// `y` is the box's top in viewport coordinates.
+fn push_border(items: &mut Vec<DisplayItem>, f: &Fragment, y: f32) {
     let [top, right, bottom, left] = f.style.border_width;
     let color = to_rgba8(f.style.border_color);
     if top > 0.0 {
         items.push(DisplayItem::Rect {
             x: f.x,
-            y: f.y,
+            y,
             w: f.w,
             h: top,
             color,
@@ -353,7 +480,7 @@ fn push_border(items: &mut Vec<DisplayItem>, f: &Fragment) {
     if bottom > 0.0 {
         items.push(DisplayItem::Rect {
             x: f.x,
-            y: f.y + f.h - bottom,
+            y: y + f.h - bottom,
             w: f.w,
             h: bottom,
             color,
@@ -362,7 +489,7 @@ fn push_border(items: &mut Vec<DisplayItem>, f: &Fragment) {
     if left > 0.0 {
         items.push(DisplayItem::Rect {
             x: f.x,
-            y: f.y,
+            y,
             w: left,
             h: f.h,
             color,
@@ -371,7 +498,7 @@ fn push_border(items: &mut Vec<DisplayItem>, f: &Fragment) {
     if right > 0.0 {
         items.push(DisplayItem::Rect {
             x: f.x + f.w - right,
-            y: f.y,
+            y,
             w: right,
             h: f.h,
             color,
@@ -396,13 +523,17 @@ mod fragment_tests {
     /// The full `style` -> `box_tree` -> `block` -> `paint` pipeline, for
     /// one element and some CSS — exactly as `engine` drives it.
     fn display_list_of(root: Element, css_src: &str) -> DisplayList {
+        display_list_for(root, css_src, Viewport::new(VIEWPORT, 600.0))
+    }
+
+    fn display_list_for(root: Element, css_src: &str, viewport: Viewport) -> DisplayList {
         let fonts = test_fonts();
         let doc = dom::Node::document(vec![root.into()]);
         let sheet = css::parse_stylesheet(css_src).expect("test css is valid");
         let styled = style::style_document(&doc, &[sheet]);
         let boxes = layout::build_box_tree(&styled);
-        let fragments = layout::layout(&boxes, VIEWPORT, &fonts);
-        paint_fragments(&fragments, VIEWPORT, 600.0)
+        let layout = layout::layout_document(&boxes, VIEWPORT, &fonts);
+        paint_fragments(&layout.roots, viewport)
     }
 
     fn rects(list: &DisplayList) -> Vec<&DisplayItem> {
@@ -518,12 +649,156 @@ mod fragment_tests {
         let doc = dom::Node::document(vec![]);
         let styled = style::style_document(&doc, &[]);
         let boxes = layout::build_box_tree(&styled);
-        let fragments = layout::layout(&boxes, VIEWPORT, &fonts);
-        let list = paint_fragments(&fragments, VIEWPORT, 600.0);
+        let layout = layout::layout_document(&boxes, VIEWPORT, &fonts);
+        let list = paint_fragments(&layout.roots, Viewport::new(VIEWPORT, 600.0));
         assert!(
             list.items
                 .iter()
                 .any(|i| matches!(i, DisplayItem::Text { .. }))
+        );
+    }
+
+    /// `(y, h)` of every rect item after the viewport background.
+    fn rect_rows(list: &DisplayList) -> Vec<(f32, f32)> {
+        list.items
+            .iter()
+            .skip(1)
+            .filter_map(|i| match i {
+                DisplayItem::Rect { y, h, .. } => Some((*y, *h)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_scroll_offset_moves_items_up_and_culls_what_the_viewport_misses() {
+        // Three 100px boxes at document y = 0, 100, 200. A 150px-tall
+        // viewport scrolled to 120 sees the second (at -20) and the
+        // third (at 80); the first ends at 100, above the viewport.
+        let root = Element::new("div")
+            .push(Element::new("div").attr("class", "a"))
+            .push(Element::new("div").attr("class", "b"))
+            .push(Element::new("div").attr("class", "c"));
+        let css = "div { margin: 0; height: 100px; background-color: #ff0000; }
+                   div div { height: 100px; }
+                   .a, .b, .c { background-color: #00ff00; }";
+        let unscrolled = display_list_for(root.clone(), css, Viewport::new(VIEWPORT, 150.0));
+        assert_eq!(
+            rect_rows(&unscrolled),
+            vec![(0.0, 100.0), (0.0, 100.0), (100.0, 100.0)],
+            "the outer div (100 tall), a, b; c at 200 is out of view"
+        );
+        let scrolled = display_list_for(
+            root,
+            css,
+            Viewport {
+                width: VIEWPORT,
+                height: 150.0,
+                scroll_y: 120.0,
+            },
+        );
+        assert_eq!(rect_rows(&scrolled), vec![(-20.0, 100.0), (80.0, 100.0)]);
+    }
+
+    #[test]
+    fn content_overflowing_an_out_of_view_box_still_paints() {
+        // A zero-height box at the top: the viewport "misses" it (it has
+        // no area), but its text overflows below it and shows.
+        let root = Element::new("div").push(Element::new("p").text("shown"));
+        let list = display_list_of(root, "div { height: 0px; } p { margin: 0; }");
+        assert!(
+            list.items
+                .iter()
+                .any(|i| matches!(i, DisplayItem::Text { text, .. } if text == "shown"))
+        );
+    }
+
+    #[test]
+    fn an_overflow_hidden_box_wraps_its_content_in_a_clip_at_its_padding_box() {
+        let root = Element::new("div")
+            .attr("class", "clip")
+            .push(Element::new("p").text("hi"));
+        let list = display_list_of(
+            root,
+            ".clip { overflow: hidden; width: 50px; height: 20px; padding: 2px;
+                     border: 3px solid #000000; margin: 0; }
+             p { margin: 0; }",
+        );
+        let items = &list.items;
+        let push = items
+            .iter()
+            .position(|i| matches!(i, DisplayItem::PushClip { .. }))
+            .expect("a clip is pushed");
+        let pop = items
+            .iter()
+            .position(|i| matches!(i, DisplayItem::PopClip))
+            .expect("the clip is popped");
+        // The border box is 60 x 30; the padding box sits inside the
+        // 3px border: 54 x 24 at (3, 3).
+        assert!(matches!(
+            items[push],
+            DisplayItem::PushClip {
+                x: 3.0,
+                y: 3.0,
+                w: 54.0,
+                h: 24.0
+            }
+        ));
+        let text = items
+            .iter()
+            .position(|i| matches!(i, DisplayItem::Text { .. }))
+            .expect("the text paints");
+        assert!(push < text && text < pop, "the text is inside the clip");
+        // The box's own border paints outside the clip, before it.
+        assert!(
+            items[1..push]
+                .iter()
+                .filter(|i| matches!(i, DisplayItem::Rect { .. }))
+                .count()
+                >= 4
+        );
+        // `scroll` and `auto` clip the same way; `visible` pushes nothing.
+        for (value, clips) in [("scroll", true), ("auto", true), ("visible", false)] {
+            let root = Element::new("div")
+                .attr("class", "clip")
+                .push(Element::new("p").text("hi"));
+            let list = display_list_of(
+                root,
+                &format!(".clip {{ overflow: {value}; height: 20px; }}"),
+            );
+            assert_eq!(
+                list.items
+                    .iter()
+                    .any(|i| matches!(i, DisplayItem::PushClip { .. })),
+                clips,
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_clipping_box_out_of_view_is_skipped_with_its_content() {
+        // Pushed 1000px down by a spacer; the 100px viewport never
+        // meets it, so neither the clip nor the text is emitted.
+        let root = Element::new("div")
+            .push(Element::new("div").attr("class", "spacer"))
+            .push(
+                Element::new("div")
+                    .attr("class", "clip")
+                    .push(Element::new("p").text("hidden")),
+            );
+        let list = display_list_for(
+            root,
+            ".spacer { height: 1000px; } .clip { overflow: hidden; height: 50px; } p { margin: 0; }",
+            Viewport::new(VIEWPORT, 100.0),
+        );
+        assert!(
+            !list
+                .items
+                .iter()
+                .any(|i| matches!(i, DisplayItem::PushClip { .. } | DisplayItem::Text { .. })),
+            "{:?}",
+            list.items
         );
     }
 }

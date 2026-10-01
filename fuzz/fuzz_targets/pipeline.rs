@@ -1,7 +1,7 @@
 //! The whole pipeline: parse, cascade, box tree, layout at several
-//! widths, paint, raster. The bundled test font, so every machine shapes
-//! the same text; a small raster, so the time goes into the engine
-//! rather than into filling pixels.
+//! widths, paint at several scroll offsets, raster. The bundled test
+//! font, so every machine shapes the same text; a small raster, so the
+//! time goes into the engine rather than into filling pixels.
 
 #![no_main]
 
@@ -41,10 +41,17 @@ fuzz_target!(|data: &[u8]| {
     let styled = style::style_document(&doc, &sheets);
     let boxes = layout::build_box_tree(&styled);
     for width in [0.0f32, 1.0, 97.0, 800.0] {
-        let fragments = layout::layout(&boxes, width, fonts());
-        let list = paint::paint_fragments(&fragments, width, 64.0);
-        BACKEND.with(|b| {
-            let _ = b.borrow_mut().rasterize(&list, width as u32, 64);
-        });
+        let document = layout::layout_document(&boxes, width, fonts());
+        for scroll_y in [0.0f32, 30.0, document.height] {
+            let viewport = paint::Viewport {
+                width,
+                height: 64.0,
+                scroll_y,
+            };
+            let list = paint::paint_fragments(&document.roots, viewport);
+            BACKEND.with(|b| {
+                let _ = b.borrow_mut().rasterize(&list, width as u32, 64);
+            });
+        }
     }
 });
