@@ -3,7 +3,8 @@
 Roadmap M10. Written before the code, as the record of the decisions;
 what ships is described in `docs/architecture.md` "Current state" when
 the code lands. Where this note and the code later disagree, the code
-wins and this note is corrected.
+wins and this note is corrected: it has been, and §4 lists what the
+code taught.
 
 The problem: the box model of M6 is the CSS2 algorithm for one case,
 `width` and `height` in pixels on a `display: block` box with margins,
@@ -84,9 +85,12 @@ three times the width and dots of the width, from each side's start,
 without the fitting adjustment real browsers make; `groove`, `ridge`,
 `inset` and `outset` paint their two tones as the colour and the colour
 at two thirds. The last six are approximations, said so here, and no
-reference case uses them. The root element's background paints the
-canvas (CSS2 §14.2; the body's when the root's is transparent), so a
-white page is white to the edges.
+reference case uses them. Sides meet at mitred corners, each side a
+trapezoid filled without anti-aliasing so that neighbours tile without
+a seam; a reference browser anti-aliases the mitre between two colours,
+so no reference case has sides of different colours either. The root
+element's background paints the canvas (CSS2 §14.2; the body's when the
+root's is transparent), so a white page is white to the edges.
 
 **Anonymous block boxes.** The box tree builder makes every block
 container's children block-level: a run of inline-level children is
@@ -113,72 +117,116 @@ specification; this makes them so in the layout.
 block formatting context root. With `width: auto` its width is
 shrink-to-fit, `min(max(min-content, available), max-content)`, so the
 milestone adds intrinsic widths: a pass over a subtree that measures
-each word (the longest word is the min-content, the longest unbroken
-line the max-content), adds each box's horizontal padding, border and
-margins, uses a length `width` as given and treats a percentage one as
-`auto` (CSS2 §10.3.5). On the line the box is an item as wide as its
-margin box, whose ascent is the distance from its margin-box top to
-its last line box's baseline, or to its bottom margin edge when it has
-no line box (CSS2 §10.8.1); this is M7.7, vertical alignment of
-inline-blocks on the baseline, delivered with it. Other `vertical-align`
-values stay out.
+each word (the longest unbreakable piece is the min-content, the
+longest line the max-content), adds each box's horizontal padding,
+border and margins, uses a length `width` as given and treats a
+percentage one as `auto` (CSS2 §10.3.5), a percentage margin, padding
+or `min-width` as zero and a percentage `max-width` as `none`. On the
+line the box is an item as wide as its margin box, whose ascent is the
+distance from its margin-box top to its last line box's baseline, or to
+its bottom margin edge when it has no line box or clips (CSS2 §10.8.1);
+this is M7.7, vertical alignment of inline-blocks on the baseline,
+delivered with it. Other `vertical-align` values stay out.
+
+**The strut, and white space.** A line is at least as tall as its
+containing block's font, css-inline-3's root inline box: a line of small
+text, or of inline-blocks alone, has the height the container's font
+implies, as in browsers. The line gap of a font sits wholly below the
+baseline in this engine, not split as half-leading; an inline-block's
+own last line gap is inside its margin box and is not added again under
+it. White space between words is what css-text-3 §4.1.1 says: one gap
+of a space's width and a wrap opportunity where collapsible white space
+was, within a text node or across the boxes of a run, and nothing where
+none was (`a<b>b</b>` is set flush and never broken); an atomic inline
+is a wrap opportunity on both sides; white space at the start or end of
+a block container's inline run is dropped by the box tree builder,
+since a line would discard it. The old rule, a gap at every word
+boundary, was M7's simplification and could not have matched a
+reference browser's row of inline-blocks.
 
 **Elements that scroll.** A block container with `overflow: auto` or
 `scroll` is a scroll container (a `hidden` one too, scrollable only
-programmatically). Its scroll offset lives in the engine, keyed by the
-element's index, reset when a document loads; layout does not know
+programmatically). Layout records on the box's fragment the height of
+its scrollable overflow area (css-overflow-3 §2.2): the content as if
+its height were `auto`, or any descendant's box or line reaching lower
+(one inside a nested clipping box excepted), then the bottom padding,
+and never less than the padding box itself; the furthest the content
+scrolls is that height past the padding box. Its scroll offset lives in
+the engine, keyed by the element's index, reset when a document loads
+and clamped to the content at every frame; layout knows nothing else
 about it and is not rerun by a scroll. Scrollbars are overlays that
 take no space (the engine's own choice over the classic reserved gutter,
 recorded here because it is observable: a `scroll` panel's content is
-not narrowed), drawn by paint inside the padding box at its right edge
-when the container can scroll (`auto`: when its content overflows;
-`scroll`: always). Paint translates a container's content by its offset
-inside the clip; hit testing adds the offset on the way down; the wheel
-goes to the innermost scroll container under the pointer that can still
-move in that direction, then to its ancestors, then to the viewport
-(scroll chaining). Each container animates with the same fixed-tick
-lerp as the viewport. Element scrollbars are indicators, not controls,
-until M26's input work; vertical only, as the viewport is.
+not narrowed), eight pixels wide, drawn by paint inside the padding box
+at its right edge after the content when the container can scroll
+(`auto`: when its content overflows; `scroll`: always; `hidden`:
+never), the thumb shaped by the same function as the viewport's. Paint
+translates a container's content by its offset inside the clip; hit
+testing adds the offset on the way down; the wheel, handed to the
+engine at the pointer, goes to the innermost scroll container among
+the clipping boxes around the element hit that can still move in that
+direction, then to its ancestors, then to the viewport (scroll
+chaining). Each container animates with the same fixed-tick lerp as the
+viewport, and one tick advances them all. Element scrollbars are
+indicators, not controls, until M26's input work; vertical only, as the
+viewport is.
 
 **Form controls, v0.** The UA sheet makes `input`, `button`, `select`
-and `textarea` inline-blocks with a border, padding and a background:
-an input twenty characters wide (`20ch`) and one line tall, a textarea
-twenty characters by two lines, a button fitting its text, a select the
-size of an input showing nothing (its options are hidden). `type=hidden`
-displays nothing; a checkbox or radio is a thirteen-pixel box. The
-`size`, `rows` and `cols` attributes are not read yet. No behaviour.
+and `textarea` inline-blocks with a border, padding and a background,
+their text 13.33px as in the common browsers: an input twenty characters
+wide (`20ch`) and one line tall, `1.2em` standing in for the line height
+until `line-height` lands; a textarea twenty characters by two lines,
+keeping its line breaks and scrolling; a button fitting its text; a
+select the size of an input showing nothing (its options are hidden).
+`type=hidden` displays nothing; a checkbox or radio is a thirteen-pixel
+box with the browsers' margins; the `type` attribute is matched whatever
+its case. The `size`, `rows` and `cols` attributes are not read yet. No
+behaviour, and no value shown.
 
 **Acceptance against a reference browser.** Ten pages under
 `crates/engine/tests/reference/`, built of boxes only — no text, since
-text rasterizers differ by design — each giving the root element the
-viewport's size and a background. A script captures each at 800 by 600,
-device scale one, scrollbars hidden, from headless Chromium, the
-browser this build environment ships; the roadmap names Firefox, and
-the harness accepts any browser's capture, but for CSS2 box geometry
-the two agree and Chromium is what is here. An integration test renders
-each page with the engine and compares the pixels byte for byte,
-writing the engine's render and a difference image beside the build
-output when they differ. The cases: content-box margins, padding and
-borders; `box-sizing: border-box`; percentage widths, margins and
-paddings; `min-width` and `max-width` with `auto` margins; percentage
-heights under a definite height with `min-height` and `max-height`;
-margin collapsing through nested boxes with borders and padding as
-stops and empty boxes between; `overflow: hidden` clipping at the
-padding edge; inline-blocks in a row with margins, bottoms on the
-baseline; per-side borders including `double`; `vw`, `vh` and `rem`.
+text rasterizers differ by design — each giving the root element a
+background. `capture.sh` captures each at 800 by 600, device scale one,
+scrollbars hidden, sRGB, from a headless browser: the headless shell of
+the Chromium this build environment ships, whose viewport is exactly the
+window (the full browser's headless window includes its toolbar and lays
+the page out short); the roadmap names Firefox, and the harness accepts
+any browser's capture, but for CSS2 box geometry the two agree and this
+is what is here. Nothing of the browser enters the engine: the captures
+are committed as fixtures, and the browser is needed only to make new
+ones. The integration test (`tests/reference.rs`, the `png` crate as a
+dev-dependency) renders each page with the engine and compares the
+pixels byte for byte, writing the engine's render and a difference
+image under `target/reference/` when they differ. The cases: content-box
+margins, padding and borders; `box-sizing: border-box`; percentage
+widths, margins and paddings; `min-width` and `max-width` with `auto`
+margins; percentage heights under a definite height with `min-height`
+and `max-height`; margin collapsing through nested boxes with borders
+and padding as stops, an empty box between siblings and a negative
+margin; `overflow: hidden` clipping at the padding edge, nested;
+inline-blocks in a row with margins, wrapping, bottoms on the baseline;
+borders per side including `double`, hidden sides and the width
+keywords; `vw`, `vh`, `vmin`, `vmax`, `rem` and `em`. Every geometry is
+whole pixels: a browser snaps a fractional edge to a pixel where this
+engine anti-aliases it, a difference that is M11's painting work, not
+the box model's.
 
 ## 2. Not in this milestone, said rather than hidden
 
 Inline boxes' own backgrounds, padding and borders (the decoration of
 a `span`) wait for M11's painting order work. `overflow-x` and
 `overflow-y`, horizontal scrolling and the two-value `overflow` are not
-parsed. `vertical-align` beyond the baseline, `line-height`, and the
-`size`/`rows`/`cols` attributes are not read. Classic scrollbar gutters
-are not reserved. The dashed, dotted and three-dimensional border
-styles are approximations. A percentage `height` on the root element
-resolves against the viewport, as in browsers, but the body's
-percentage height against the root's `auto` height is `auto`, as in
-browsers too.
+parsed. `vertical-align` beyond the baseline, `line-height` (the strut
+is the font's own metrics), and the `size`/`rows`/`cols` attributes are
+not read. Classic scrollbar gutters are not reserved. The dashed, dotted
+and three-dimensional border styles are approximations; mitres between
+sides of different colours are not anti-aliased; a fractional edge is.
+A button input's `value` is not shown. The selector matcher does not
+know HTML's list of attributes whose values compare case-insensitively
+(`type` among them), so the UA sheet says `i` where it matters. A
+percentage `height` on the root element resolves against the viewport,
+as in browsers, but the body's percentage height against the root's
+`auto` height is `auto`, as in browsers too.
 
 ## 3. Order of work
 
@@ -193,4 +241,22 @@ heights, in layout. (4) borders per side and by style; the canvas
 background. (5) anonymous block boxes and block formatting context
 roots. (6) `inline-block`, intrinsic widths, the baseline. (7) scroll
 containers. (8) the form controls' UA rules. (9) the reference harness
-and its ten pages, and whatever they find. (10) the documents.
+and its ten pages, and whatever they find. (10) the documents. All ten
+landed on 2026-10-01, one commit each.
+
+## 4. What the code taught
+
+Four things this note did not foresee, each corrected above where it
+stands. The strut: without it a line of inline-blocks was exactly their
+height, and a browser's is not; it came with step 6. White space: M7's
+gap at every word boundary would have put a gap between adjacent
+inline-blocks that a browser sets flush, so the css-text-3 model of
+collapsible white space came with the same step, and a text run of
+nothing but white space is now kept where it is a gap. The scrollable
+height needed a definition before the engine could clamp an offset or
+paint a thumb; css-overflow-3's is on the fragment, computed by layout,
+so the engine and paint share one. The capture: the full browser's new
+headless mode makes a window of the size asked and lays the page out
+in the viewport that is left under its toolbar, 513 pixels of 600, which
+two of the ten cases caught (a box cut short, `vh` units short); the
+headless shell's viewport is the window, and the script says why.

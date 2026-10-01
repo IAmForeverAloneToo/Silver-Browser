@@ -217,10 +217,26 @@ images, the last item on T0's list, come with M23.
   stated gaps (`overflow-x`/`overflow-y`, elements that scroll — M10.5,
   horizontal scrolling, hover — M26).
 
-Verified per the vertical-slice rule at each milestone: 388 tests
-workspace-wide (178 in `style`, 44 in `layout`, 42 in `html`, 30 in
-`text`, 25 in `engine`), clippy clean (`-D warnings`, every target),
-smoke run.
+- **M10 — Box model completion** (done 2026-10-01, the first milestone
+  with a design note, `docs/design/box-model.md`, written before the
+  code and corrected to it after): the implied `html`/`head`/`body` and
+  the raw-text states in the parser (M2's debt, paid first); every unit
+  through a cascade context, percentages kept for layout; `box-sizing`,
+  `min-*`/`max-*`, percentage heights; borders per side and by style,
+  the canvas from the root; anonymous block boxes and block formatting
+  context roots; `inline-block` with intrinsic widths and the baseline
+  (M7.7), the strut and css-text-3's white space with it; scroll
+  containers with scroll chaining and overlay scrollbars; the form
+  controls as boxes; and the acceptance harness — ten box-only pages
+  captured from a headless browser, compared byte for byte, all
+  matching. See `docs/architecture.md` for the writeup and the stated
+  gaps (inline decorations and the two painting differences — M11,
+  `overflow-x`/`-y`, `line-height`, `vertical-align`).
+
+Verified per the vertical-slice rule at each milestone: 448 tests
+workspace-wide (180 in `style`, 77 in `layout`, 45 in `html`, 34 in
+`engine` with the reference harness, 31 in `text`, 26 in `paint`),
+clippy clean (`-D warnings`, every target), smoke run.
 Toolchain: 1.98.1, pinned by `rust-toolchain.toml`.
 Build target dir outside OneDrive (`%LOCALAPPDATA%\silver-browser\target`)
 — currently only by passing `CARGO_TARGET_DIR` manually each session; no
@@ -492,20 +508,17 @@ since that's the concrete, testable exit criterion.
        `text_align` (inherited) to carry it.
 - [x] M7.6 Block-in-inline v1: a block child inside inline context splits
        the run (spec edge: the reverse — inline spread across blocks — is
-       M10). Implemented without restructuring the box tree into real
-       anonymous boxes: `layout::inline` ends the current line, lays the
-       block out on its own (calling back into `block::layout_block`,
-       now `pub(crate)` for this), and resumes a fresh line after — the
-       same observable splitting effect, and critically it doesn't panic
-       on this shape of input (non-conforming HTML content-model-wise,
-       but this engine's lenient tree builder constructs it anyway, so
-       layout has to survive it regardless of what real pages "should"
-       contain).
-- [ ] M7.7 Vertical alignment of images/inline-blocks on the text
-       baseline (with M10's inline-block). Not started — correctly: this
-       item is explicitly gated on M10's `inline-block`, which doesn't
-       exist yet (M10 hasn't happened). Nothing to vertically-align yet
-       besides text, which M7.4 already baseline-aligns.
+       M10). First implemented without restructuring the box tree:
+       `layout::inline` ended the current line, laid the block out on
+       its own and resumed a fresh line after. Since M10.4 the box tree
+       builder does it the specification's way (CSS2 §9.2.1.1): the
+       block is hoisted out and the inline split around it, so its
+       margins collapse with its siblings' through the anonymous blocks.
+- [x] M7.7 Vertical alignment of images/inline-blocks on the text
+       baseline (with M10's inline-block). Done 2026-10-01 with M10.4:
+       an inline-block's baseline is its last line box's, or its bottom
+       margin edge when it has none or clips (CSS2 §10.8.1); images are
+       M14's. Other `vertical-align` values are not read.
 - [x] M7.8 Acceptance: multi-paragraph text at a narrow viewport wraps
        onto more lines than the same content at a wide one, verified at
        the full `engine` pipeline level
@@ -632,19 +645,54 @@ since that's the concrete, testable exit criterion.
 
 ## M10 — Box model completion  ·  `style`/`layout`  ·  Effort: L  ·  Depends: M6, M7
 
-- [ ] M10.1 Units: `em`, `rem`, `%` (margins/paddings vs widths vs font
+Designed before the code in `docs/design/box-model.md` (the decisions,
+the stated gaps, the order of work, and what the code taught), done
+2026-10-01 in ten commits. The parser's implied `html`/`head`/`body`
+and raw-text states came first, as M2's debt the milestone could not
+do without.
+
+- [x] M10.1 Units: `em`, `rem`, `%` (margins/paddings vs widths vs font
        sizes resolution rules), `ex`, `ch`, `vh`, `vw`, `vmin`, `vmax`.
-- [ ] M10.2 `box-sizing` (content|border-box).
-- [ ] M10.3 `min-width/max-width/min-height/max-height` incl. interaction
-       with `height:auto`.
-- [ ] M10.4 `display: inline-block`, `display: none` (skip from box tree),
-       anonymous block boxing (block-in-inline both directions).
-- [ ] M10.5 `overflow: auto|scroll` element-level scroll containers
-       (nested scrolling; hit test through scroll chains).
-- [ ] M10.6 Default form control styling v0 (`input`, `button`, `select`,
-       `textarea` render as styled boxes; no behavior yet).
-- [ ] M10.7 Acceptance: CSS box model intro pages (custom built) render
-       pixel-identical to Firefox on 10 reference cases.
+       Done 2026-10-01: a `style::CascadeContext` (viewport, and a
+       `FontMeasure` the engine lends for `ex`/`ch`); `rem` against the
+       root; percentages kept for layout, which resolves margins and
+       paddings against the containing block's width (CSS2 §8.3, §8.4)
+       and heights against a definite height only; the engine
+       recascades on a resize only when viewport units were used.
+- [x] M10.2 `box-sizing` (content|border-box). Done 2026-10-01: the given
+       sizes converted to content-box values before the CSS2 algorithms.
+- [x] M10.3 `min-width/max-width/min-height/max-height` incl. interaction
+       with `height:auto`. Done 2026-10-01: CSS2 §10.4 and §10.7, the
+       margins re-resolved for the clamped width; a box with a
+       `min-height` is never self-collapsing.
+- [x] M10.4 `display: inline-block`, `display: none` (skip from box tree),
+       anonymous block boxing (block-in-inline both directions). Done
+       2026-10-01: anonymous block boxes and hoisting in the box tree
+       builder (CSS2 §9.2.1.1), block formatting context roots;
+       `inline-block` with intrinsic widths (`layout::intrinsic`),
+       shrink-to-fit, the baseline (M7.7); the strut and css-text-3's
+       white space, which the reference cases needed. `display: none`
+       was skipped since M6.
+- [x] M10.5 `overflow: auto|scroll` element-level scroll containers
+       (nested scrolling; hit test through scroll chains). Done
+       2026-10-01: the scrollable height on the fragment (css-overflow-3
+       §2.2), offsets in the engine by element, `Engine::wheel` chaining
+       from the pointer outward to the viewport, hit testing through the
+       offsets, overlay scrollbars drawn by paint (indicators until
+       M26). `hidden` scrolls by program only.
+- [x] M10.6 Default form control styling v0 (`input`, `button`, `select`,
+       `textarea` render as styled boxes; no behavior yet). Done
+       2026-10-01 in the UA sheet; `size`/`rows`/`cols` not read, no
+       value shown.
+- [x] M10.7 Acceptance: CSS box model intro pages (custom built) render
+       pixel-identical to Firefox on 10 reference cases. Done
+       2026-10-01: `crates/engine/tests/reference/`, ten box-only pages
+       captured by `capture.sh` from a headless browser (the headless
+       shell of the Chromium this build environment ships; the harness
+       accepts any browser's capture, Firefox's included — the two agree
+       on CSS2 box geometry) into committed fixtures, compared byte for
+       byte by `tests/reference.rs`, all ten matching. Nothing of the
+       browser enters the engine.
 
 ---
 

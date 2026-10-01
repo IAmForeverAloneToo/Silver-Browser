@@ -350,5 +350,94 @@ thing the perf track meets (M13's incremental engine, M35, D7). Not in
 this milestone, said rather than hidden: `overflow-x`/`overflow-y` and
 the two-value `overflow`; elements that scroll (M10.5); horizontal
 scrolling; hover tracking (M26); anti-aliased clip edges (a clip is
-pixel-aligned at pixel centres). 388 tests workspace-wide. Still stub:
-`net`. Next milestone: box model completion (M10).
+pixel-aligned at pixel centres). 388 tests workspace-wide.
+
+Milestone 10 (Box model completion), designed in
+`docs/design/box-model.md` and built in its ten steps, one commit each.
+The parser first (M2's debt, paid here because `rem`, the UA sheet's
+`body { margin: 8px }` and every comparison with a browser need the
+same tree): the tree builder implies `html`, `head` and `body` as the
+HTML standard's insertion modes do, and the tokenizer has the raw-text
+state for `style`, `script` and the others and the escapable one for
+`textarea` and `title`. Units (M10.1): the cascade takes a
+`CascadeContext` — the viewport for `vw`/`vh`/`vmin`/`vmax`, and a
+`FontMeasure` the engine lends over its font for `ex` and `ch`, so
+`style` keeps no dependency on `text` — resolves `rem` against the root
+and all the absolute units, records whether viewport units were used
+so the engine recascades on a resize only then, and keeps percentages
+for `height`, the margins and the paddings as written; layout resolves
+margins and paddings against the containing block's width (CSS2 §8.3,
+§8.4) and heights against its height only when definite (§10.5,
+§10.7). `box-sizing: border-box` is converted to content-box values
+before the CSS2 algorithms run (M10.2); `min-*`/`max-*` clamp the
+tentative size with the margins re-resolved (M10.3), and a box with a
+`min-height` is never self-collapsing. Borders are complete: each side
+its own width, style and colour, the ten styles (`double` exact,
+`dashed`/`dotted`/`inset`/`outset`/`groove`/`ridge` approximations,
+said so in the code), sides as mitred trapezoids through a new
+`DisplayItem::Quad` the rasterizer fills without anti-aliasing so
+neighbours tile; the root element's background paints the canvas (CSS2
+§14.2, the body's when the root's is transparent), white otherwise.
+The box tree builder makes every block container's children
+block-level (CSS2 §9.2.1.1, M10.4): inline runs in anonymous blocks
+that inherit from the container and have no fragment of their own,
+blocks inside inlines hoisted out with the inline split around them;
+block layout only stacks, and M7.6's block-in-inline path in the
+inline layout is gone. A clipping box and an inline-block are block
+formatting context roots (their margins never adjoin their children's,
+never self-collapsing). `display: inline-block`: shrink-to-fit through
+a new `layout::intrinsic` pass (min-content and max-content
+contributions measured by the same item collection the line breaker
+uses), laid out as a block container, placed on the line as one item
+as wide as its margin box with its baseline the last line box's or its
+bottom margin edge (CSS2 §10.8.1, which is M7.7). Two things the
+reference cases forced on the inline layout: the strut (a line is at
+least its container's font tall, css-inline-3's root inline box; the
+line gap sits wholly below the baseline), and css-text-3's white space
+(one gap and one wrap opportunity where collapsible white space was,
+none where it was not — `a<b>b</b>` is set flush — an atomic inline a
+wrap opportunity on both sides; the box tree keeps white-space-only
+text where it is a gap and drops it at a run's ends). Elements scroll
+(M10.5): layout records on a clipping box's fragment the height of its
+scrollable overflow area (css-overflow-3 §2.2: the content as if
+`auto`, or a descendant reaching lower, then the bottom padding, at
+least the padding box) and `Fragment::max_scroll` is what it allows;
+the engine keeps each container's offset by element index, reset on
+load and clamped every frame, animated by the same fixed-tick lerp
+(`tick` advances all of them), and hands the wheel from the pointer to
+the innermost container among the clipping boxes around the element
+hit that can still move that way, then outward, then to the viewport
+(`Engine::wheel`; the shell passes the cursor); hit testing adds a
+container's offset on the way into its content; `paint_fragments_in`
+takes the offsets through a `ScrollOffsets` trait, moves a container's
+content inside its clip and draws an eight-pixel overlay scrollbar over
+the padding box's right edge when it can scroll (`scroll` always,
+`auto` with overflow, `hidden` never; the thumb shaped by the one
+function the viewport's uses, whose colours moved to `paint`). An
+overlay rather than a reserved gutter is the engine's own choice,
+recorded in the design note because it is observable. The UA sheet
+styles the form controls as inline-block boxes (M10.6): 13.33px text,
+an input `20ch` by one line (`1.2em` standing in for the line height),
+a textarea two lines and a scroll container, a button as wide as its
+label, a select the size of an input with its options hidden, a
+checkbox or radio 13px, `type=hidden` nothing; no value shown, no
+behaviour. Acceptance (M10.7): ten box-only pages under
+`crates/engine/tests/reference/`, captured by `capture.sh` at 800×600
+from a headless browser (the headless shell of the Chromium this build
+environment ships, whose viewport is exactly the window where the full
+browser's headless window includes its toolbar — which two cases
+caught) into committed PNG fixtures, and `tests/reference.rs` renders
+each with the engine and compares byte for byte, writing the render and
+a difference image under `target/reference/` on a mismatch; all ten
+match; nothing of the browser enters the engine, and the harness
+accepts any browser's capture (the roadmap names Firefox). The cases
+avoid sides of different colours (a browser anti-aliases the mitre;
+this engine does not) and fractional edges (a browser snaps them; this
+engine anti-aliases them), both M11's painting work. Not in this
+milestone, said rather than hidden: inline boxes' own backgrounds,
+padding and borders (M11); `overflow-x`/`overflow-y`, horizontal
+scrolling and the two-value `overflow`; `vertical-align` beyond the
+baseline; `line-height`; the `size`/`rows`/`cols` attributes; classic
+scrollbar gutters; HTML's case-insensitive attribute values in the
+selector matcher (the UA sheet says `i`). 448 tests workspace-wide.
+Still stub: `net`. Next milestone: floats, positioning, stacking (M11).
