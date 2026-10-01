@@ -117,6 +117,29 @@ pub enum WhiteSpace {
     PreLine,
 }
 
+/// `overflow` (M9.3 v1: the shorthand's four keywords, one value for
+/// both axes — `overflow-x`/`overflow-y` are a later refinement).
+/// Whether content is clipped is what this engine acts on today;
+/// scrolling an element of its own is M10.5, and until then `scroll`
+/// and `auto` clip exactly as `hidden` does (CSS2 §11.1.1: all three
+/// clip to the padding box; only the viewport scrolls, M9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Overflow {
+    /// Content is not clipped. The initial value.
+    Visible,
+    Hidden,
+    Scroll,
+    Auto,
+}
+
+impl Overflow {
+    /// Whether this value clips the element's content to its padding
+    /// box (every value but `visible`).
+    pub fn clips(self) -> bool {
+        self != Overflow::Visible
+    }
+}
+
 /// Text direction (M8.3) — read from the HTML `dir` attribute (there's
 /// no CSS `direction` property parsing yet; `dir` is the only source for
 /// now, applied the same way the inline `style` attribute is: a direct
@@ -255,6 +278,8 @@ pub struct ComputedStyle {
     /// `border-style` (v1: one shared style, not per-side) — not
     /// inherited.
     pub border_style: BorderStyle,
+    /// `overflow` (M9.3) — not inherited.
+    pub overflow: Overflow,
 }
 
 impl Default for ComputedStyle {
@@ -279,6 +304,7 @@ impl Default for ComputedStyle {
             border_width: [0.0; 4],
             border_color: Color::BLACK, // corrected to `color` post-cascade
             border_style: BorderStyle::None,
+            overflow: Overflow::Visible,
         }
     }
 }
@@ -325,6 +351,8 @@ mod tests {
         assert_eq!(s.height, LengthPercentageAuto::Auto);
         assert_eq!(s.margin, [LengthPercentageAuto::Px(0.0); 4]);
         assert_eq!(s.border_style, BorderStyle::None);
+        assert_eq!(s.overflow, Overflow::Visible);
+        assert!(!s.overflow.clips());
     }
 
     #[test]

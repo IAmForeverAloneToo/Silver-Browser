@@ -33,7 +33,7 @@ use dom::Node;
 
 use crate::computed::{
     BOTTOM, BorderStyle, Color, ComputedStyle, Direction, Display, Edges, LEFT,
-    LengthPercentageAuto, MarginEdges, RIGHT, TOP, TextAlign, TextTransform, WhiteSpace,
+    LengthPercentageAuto, MarginEdges, Overflow, RIGHT, TOP, TextAlign, TextTransform, WhiteSpace,
 };
 use crate::selector_matching::{
     FlatChild, FlatDom, Matcher, SelectorList, Specificity, parse_selector_list,
@@ -414,6 +414,11 @@ fn apply_declaration(
             }
         }
         "border" => apply_border_shorthand(style, &decl.value, em_basis, border_color_set),
+        "overflow" => {
+            if let Some(o) = parse_overflow(&decl.value) {
+                style.overflow = o;
+            }
+        }
         _ => {} // not in the v1 property set (or not a real property) — ignored, never an error
     }
 }
@@ -510,6 +515,7 @@ fn apply_css_wide(
         "border-bottom-width" => style.border_width[BOTTOM] = src.border_width[BOTTOM],
         "border-left-width" => style.border_width[LEFT] = src.border_width[LEFT],
         "border-style" => style.border_style = src.border_style,
+        "overflow" => style.overflow = src.overflow,
         "border-color" => {
             // The parent's border color is a real color; the initial
             // value is `currentcolor`, resolved once the cascade is done.
@@ -711,6 +717,19 @@ fn parse_display(tokens: &[Token]) -> Option<Display> {
         "inline" => Some(Display::Inline),
         "none" => Some(Display::None),
         _ => None, // flex/grid/inline-block/... land later
+    }
+}
+
+/// `overflow` (M9.3): the four keywords, one value for both axes. The
+/// two-value form of css-overflow-3 (`overflow: hidden visible`) and
+/// `clip` are not accepted yet.
+fn parse_overflow(tokens: &[Token]) -> Option<Overflow> {
+    match single_ident(tokens)?.to_ascii_lowercase().as_str() {
+        "visible" => Some(Overflow::Visible),
+        "hidden" => Some(Overflow::Hidden),
+        "scroll" => Some(Overflow::Scroll),
+        "auto" => Some(Overflow::Auto),
+        _ => None,
     }
 }
 
@@ -1175,6 +1194,55 @@ mod tests {
         let sheets = [sheet("div { text-transform: uppercase; }")];
         let s = style_of("<div><span>x</span></div>", &sheets, "span");
         assert_eq!(s.text_transform, TextTransform::Uppercase);
+    }
+
+    #[test]
+    fn overflow_parses_its_four_keywords_and_is_not_inherited() {
+        for (value, expected) in [
+            ("visible", Overflow::Visible),
+            ("hidden", Overflow::Hidden),
+            ("scroll", Overflow::Scroll),
+            ("auto", Overflow::Auto),
+            ("HIDDEN", Overflow::Hidden),
+        ] {
+            let sheets = [sheet(&format!("div {{ overflow: {value}; }}"))];
+            assert_eq!(
+                style_of("<div><p>x</p></div>", &sheets, "div").overflow,
+                expected,
+                "{value}"
+            );
+            assert_eq!(
+                style_of("<div><p>x</p></div>", &sheets, "p").overflow,
+                Overflow::Visible,
+                "overflow is not inherited ({value})"
+            );
+        }
+        // An unknown keyword (and the two-value form, not accepted yet)
+        // leaves the initial value.
+        let sheets = [sheet(
+            "div { overflow: clip; } p { overflow: hidden visible; }",
+        )];
+        assert_eq!(
+            style_of("<div><p>x</p></div>", &sheets, "div").overflow,
+            Overflow::Visible
+        );
+        assert_eq!(
+            style_of("<div><p>x</p></div>", &sheets, "p").overflow,
+            Overflow::Visible
+        );
+        // `inherit` reads the parent, `initial`/`unset` the initial value.
+        let sheets = [sheet("div { overflow: hidden; } p { overflow: inherit; }")];
+        assert_eq!(
+            style_of("<div><p>x</p></div>", &sheets, "p").overflow,
+            Overflow::Hidden
+        );
+        let sheets = [sheet(
+            "div { overflow: hidden; } p { overflow: hidden; } p { overflow: unset; }",
+        )];
+        assert_eq!(
+            style_of("<div><p>x</p></div>", &sheets, "p").overflow,
+            Overflow::Visible
+        );
     }
 
     #[test]
