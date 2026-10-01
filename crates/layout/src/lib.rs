@@ -17,6 +17,7 @@ pub mod box_tree;
 pub mod inline;
 
 pub use block::{
-    DocumentLayout, Fragment, FragmentKind, Preorder, flatten, layout, layout_document, preorder,
+    DocumentLayout, Fragment, FragmentKind, Preorder, flatten, layout, layout_document,
+    layout_document_in, preorder,
 };
 pub use box_tree::{BoxKind, LayoutBox, build_box_tree};

@@ -44,9 +44,9 @@ use css::Token;
 use dom::Node;
 
 use crate::computed::{
-    BOTTOM, BorderStyle, Color, ComputedStyle, Direction, Display, Edges, LEFT, LengthPercentage,
-    LengthPercentageAuto, MarginEdges, Overflow, PaddingEdges, RIGHT, TOP, TextAlign,
-    TextTransform, WhiteSpace,
+    BOTTOM, BorderStyle, BoxSizing, Color, ComputedStyle, Direction, Display, Edges, LEFT,
+    LengthPercentage, LengthPercentageAuto, MarginEdges, Overflow, PaddingEdges, RIGHT, TOP,
+    TextAlign, TextTransform, WhiteSpace,
 };
 use crate::selector_matching::{
     FlatChild, FlatDom, Matcher, SelectorList, Specificity, parse_selector_list,
@@ -528,6 +528,31 @@ fn apply_declaration(
                 style.overflow = o;
             }
         }
+        "box-sizing" => {
+            if let Some(b) = parse_box_sizing(&decl.value) {
+                style.box_sizing = b;
+            }
+        }
+        "min-width" => {
+            if let Some(v) = parse_non_negative_length_percentage(&decl.value, bases) {
+                style.min_width = v;
+            }
+        }
+        "min-height" => {
+            if let Some(v) = parse_non_negative_length_percentage(&decl.value, bases) {
+                style.min_height = v;
+            }
+        }
+        "max-width" => {
+            if let Some(v) = parse_max_size(&decl.value, bases) {
+                style.max_width = v;
+            }
+        }
+        "max-height" => {
+            if let Some(v) = parse_max_size(&decl.value, bases) {
+                style.max_height = v;
+            }
+        }
         _ => {} // not in the v1 property set (or not a real property) — ignored, never an error
     }
 }
@@ -637,6 +662,11 @@ fn apply_css_wide(
         "border-left-width" => style.border_width[LEFT] = src.border_width[LEFT],
         "border-style" => style.border_style = src.border_style,
         "overflow" => style.overflow = src.overflow,
+        "box-sizing" => style.box_sizing = src.box_sizing,
+        "min-width" => style.min_width = src.min_width,
+        "max-width" => style.max_width = src.max_width,
+        "min-height" => style.min_height = src.min_height,
+        "max-height" => style.max_height = src.max_height,
         "border-color" => {
             // The parent's border color is a real color; the initial
             // value is `currentcolor`, resolved once the cascade is done.
@@ -893,6 +923,25 @@ fn parse_display(tokens: &[Token]) -> Option<Display> {
         "none" => Some(Display::None),
         _ => None, // flex/grid/inline-block/... land later
     }
+}
+
+/// `box-sizing` (M10.2).
+fn parse_box_sizing(tokens: &[Token]) -> Option<BoxSizing> {
+    match single_ident(tokens)?.to_ascii_lowercase().as_str() {
+        "content-box" => Some(BoxSizing::ContentBox),
+        "border-box" => Some(BoxSizing::BorderBox),
+        _ => None,
+    }
+}
+
+/// `max-width`/`max-height` (M10.3): `none`, or a non-negative length
+/// or percentage. The outer `Option` is "parsed at all"; the inner is
+/// the value, `None` for `none`.
+fn parse_max_size(tokens: &[Token], bases: &LengthBases<'_>) -> Option<Option<LengthPercentage>> {
+    if single_ident(tokens).is_some_and(|s| s.eq_ignore_ascii_case("none")) {
+        return Some(None);
+    }
+    parse_non_negative_length_percentage(tokens, bases).map(Some)
 }
 
 /// `overflow` (M9.3): the four keywords, one value for both axes. The
@@ -1441,6 +1490,38 @@ mod tests {
         assert_eq!(
             style_of("<div><p>x</p></div>", &sheets, "p").overflow,
             Overflow::Visible
+        );
+    }
+
+    #[test]
+    fn box_sizing_and_the_min_and_max_sizes_parse() {
+        let sheets = [sheet(
+            "p { box-sizing: border-box; min-width: 10px; max-width: 50%; min-height: 2em;
+                 max-height: none; }",
+        )];
+        let s = style_of("<p>x</p>", &sheets, "p");
+        assert_eq!(s.box_sizing, BoxSizing::BorderBox);
+        assert_eq!(s.min_width, LengthPercentage::Px(10.0));
+        assert_eq!(s.max_width, Some(LengthPercentage::Percent(50.0)));
+        assert_eq!(s.min_height, LengthPercentage::Px(32.0));
+        assert_eq!(s.max_height, None);
+        // Negative sizes and unknown keywords are ignored; `max-width:
+        // none` undoes an earlier value; the properties are not
+        // inherited and take the css-wide keywords.
+        let sheets = [sheet(
+            "div { max-width: 100px; box-sizing: border-box; }
+             p { min-width: -1px; max-height: -5%; box-sizing: padding-box; max-width: 40px; }
+             p { max-width: none; }",
+        )];
+        let s = style_of("<div><p>x</p></div>", &sheets, "p");
+        assert_eq!(s.min_width, LengthPercentage::Px(0.0));
+        assert_eq!(s.max_height, None);
+        assert_eq!(s.box_sizing, BoxSizing::ContentBox);
+        assert_eq!(s.max_width, None);
+        let sheets = [sheet("div { max-width: 100px; } p { max-width: inherit; }")];
+        assert_eq!(
+            style_of("<div><p>x</p></div>", &sheets, "p").max_width,
+            Some(LengthPercentage::Px(100.0))
         );
     }
 

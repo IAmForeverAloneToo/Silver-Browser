@@ -187,7 +187,9 @@ pub(crate) fn layout_inline(
                 );
                 line_width = 0.0;
 
-                let block = layout_block(b, available_width, fonts);
+                // The containing block's height is not known here, so a
+                // percentage height on such a block is `auto`.
+                let block = layout_block(b, available_width, None, fonts);
                 // A self-collapsing block's one margin set counts once;
                 // nothing adjoins it here, so it is simply spacing.
                 let (above, below) = if block.self_collapsing {

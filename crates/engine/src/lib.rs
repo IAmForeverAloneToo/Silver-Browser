@@ -130,6 +130,9 @@ pub struct Engine {
 
 struct CachedLayout {
     width: f32,
+    /// The viewport height the layout was given; it matters only when
+    /// the layout says it depends on it.
+    height: f32,
     layout: DocumentLayout,
 }
 
@@ -267,7 +270,15 @@ impl Engine {
     pub fn fragments(&self, viewport_width: f32) -> Vec<Fragment> {
         let styled = self.cascade((viewport_width as u32, self.viewport.1));
         let boxes = layout::build_box_tree(&styled);
-        layout::layout(&boxes, viewport_width, &self.layout_fonts)
+        layout::flatten(
+            layout::layout_document_in(
+                &boxes,
+                viewport_width,
+                Some(self.viewport.1 as f32),
+                &self.layout_fonts,
+            )
+            .roots,
+        )
     }
 
     /// The cached cascade for the current viewport: recomputed when none
@@ -296,17 +307,24 @@ impl Engine {
         // A viewport change can invalidate the cascade, and with it the
         // layout — so the cascade is checked first.
         self.styled();
-        let stale = self
-            .layout
-            .as_ref()
-            .is_none_or(|cached| cached.width != viewport_width);
+        let viewport_height = self.viewport.1 as f32;
+        let stale = self.layout.as_ref().is_none_or(|cached| {
+            cached.width != viewport_width
+                || (cached.layout.depends_on_viewport_height && cached.height != viewport_height)
+        });
         if stale {
             let styled = &self.styled.as_ref().expect("just computed").styled;
             let boxes = layout::build_box_tree(styled);
-            let layout = layout::layout_document(&boxes, viewport_width, &self.layout_fonts);
+            let layout = layout::layout_document_in(
+                &boxes,
+                viewport_width,
+                Some(viewport_height),
+                &self.layout_fonts,
+            );
             self.layout_runs += 1;
             self.layout = Some(CachedLayout {
                 width: viewport_width,
+                height: viewport_height,
                 layout,
             });
         }
@@ -1101,6 +1119,30 @@ mod tests {
             engine.style_runs(),
             3,
             "no viewport unit: a taller viewport recascades nothing"
+        );
+    }
+
+    #[test]
+    fn a_root_percentage_height_follows_the_viewport_and_only_then_relays_out() {
+        let mut engine = test_engine();
+        engine.load_document("<style>html, body { height: 100%; margin: 0 }</style><p>x</p>");
+        engine.frame(200, 100);
+        assert_eq!(boxes_of(&engine, "html")[0].h, 100.0);
+        assert_eq!(engine.layout_runs(), 1);
+        engine.frame(200, 300);
+        assert_eq!(
+            engine.layout_runs(),
+            2,
+            "the height changed and the root depends on it"
+        );
+        assert_eq!(boxes_of(&engine, "body")[0].h, 300.0);
+        engine.load_document("<style>body { margin: 0 }</style><p>x</p>");
+        engine.frame(200, 100);
+        engine.frame(200, 300);
+        assert_eq!(
+            engine.layout_runs(),
+            3,
+            "no percentage height: a taller viewport relays out nothing"
         );
     }
 

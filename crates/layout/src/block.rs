@@ -14,10 +14,17 @@
 //!   produces no line box at all (an empty `<a></a>`) separates
 //!   nothing: CSS2 §9.4.2 says such a line box is to be treated as not
 //!   existing.
-//! * `height: <percentage>` isn't resolved (M6.4 defers it to M10); a
-//!   percentage `height` already failed to parse back in `style`
-//!   (M5/M6 extension), so it's never seen here — this module only ever
-//!   sees `Auto` or `Px`.
+//! * A percentage `height`, `min-height` or `max-height` resolves
+//!   against the containing block's height only when that is definite
+//!   — a length, or a percentage that itself resolved — and otherwise
+//!   counts as `auto`, `0` and `none` (CSS2 §10.5, §10.7, M10.3). The
+//!   initial containing block's height is the viewport's when
+//!   [`layout_document_in`] is given one.
+//! * `box-sizing: border-box` (M10.2) is applied before the CSS2
+//!   algorithms run: the given width, height and limits are converted
+//!   to content-box values, never below zero. `min-*` and `max-*`
+//!   (M10.3) clamp the tentative size, the margins re-resolved with the
+//!   clamped width (CSS2 §10.4, §10.7).
 //!
 //! Margins that adjoin are carried as a set ([`AdjoiningMargins`]: the
 //! largest positive and the largest negative seen so far) and resolved
@@ -39,7 +46,8 @@
 //! scrolls over.
 
 use style::computed::{
-    BOTTOM, BorderStyle, ComputedStyle, LEFT, LengthPercentageAuto, RIGHT, TOP, TextAlign,
+    BOTTOM, BorderStyle, BoxSizing, ComputedStyle, LEFT, LengthPercentage, LengthPercentageAuto,
+    RIGHT, TOP, TextAlign,
 };
 use text::FontCollection;
 
@@ -125,6 +133,10 @@ pub struct DocumentLayout {
     /// trailing margins the viewport materialises (no margin escapes
     /// past the viewport). Never negative.
     pub height: f32,
+    /// Whether a top-level box's height, min-height or max-height is a
+    /// percentage of the viewport's height (M10.3), so that this layout
+    /// is only good for the viewport height it was given.
+    pub depends_on_viewport_height: bool,
 }
 
 impl DocumentLayout {
@@ -239,9 +251,34 @@ pub fn layout_document(
     viewport_width: f32,
     fonts: &FontCollection,
 ) -> DocumentLayout {
+    layout_document_in(boxes, viewport_width, None, fonts)
+}
+
+/// [`layout_document`] with the viewport's height known, so a
+/// percentage height on a top-level box resolves against it (the
+/// initial containing block's height is the viewport's, CSS2 §10.1).
+pub fn layout_document_in(
+    boxes: &[LayoutBox],
+    viewport_width: f32,
+    viewport_height: Option<f32>,
+    fonts: &FontCollection,
+) -> DocumentLayout {
     // No containing element at the document root to inherit `text-align`
     // from — `TextAlign::Left` is that property's initial value anyway.
-    let children = layout_children(boxes, viewport_width, TextAlign::Left, fonts);
+    let children = layout_children(
+        boxes,
+        viewport_width,
+        viewport_height,
+        TextAlign::Left,
+        fonts,
+    );
+    let depends_on_viewport_height = viewport_height.is_some()
+        && boxes.iter().any(|b| {
+            let percent = |v: LengthPercentage| matches!(v, LengthPercentage::Percent(_));
+            matches!(b.style.height, LengthPercentageAuto::Percent(_))
+                || percent(b.style.min_height)
+                || b.style.max_height.is_some_and(percent)
+        });
     // The viewport is the one context with no further ancestor to
     // escape to — `leading` *must* materialize here, exactly once, or
     // it would just vanish (see `layout_children`'s doc). So must
@@ -258,6 +295,7 @@ pub fn layout_document(
     DocumentLayout {
         roots,
         height: height.max(0.0),
+        depends_on_viewport_height,
     }
 }
 
@@ -279,19 +317,68 @@ fn effective_border_width(style: &ComputedStyle) -> [f32; 4] {
     }
 }
 
-/// CSS2.1 §10.3.3: resolves `width`, `margin-left`, and `margin-right`
-/// for a normal-flow, non-replaced block box. `non_content_width` is
-/// whatever horizontal space border+padding already consume.
+/// The specified `width`, `min-width` and `max-width` as content-box
+/// widths against `cb_width` (M10.2, M10.3): a percentage resolved, and
+/// under `box-sizing: border-box` the padding and border taken out,
+/// never below zero. `width` is `None` for `auto`, `max` for `none`.
+struct WidthConstraints {
+    width: Option<f32>,
+    min: f32,
+    max: Option<f32>,
+}
+
+fn width_constraints(style: &ComputedStyle, cb_width: f32, non_content: f32) -> WidthConstraints {
+    let inner = |v: f32| match style.box_sizing {
+        BoxSizing::ContentBox => v.max(0.0),
+        BoxSizing::BorderBox => (v - non_content).max(0.0),
+    };
+    WidthConstraints {
+        width: match style.width {
+            LengthPercentageAuto::Auto => None,
+            LengthPercentageAuto::Px(v) => Some(inner(v)),
+            LengthPercentageAuto::Percent(p) => Some(inner(cb_width * p / 100.0)),
+        },
+        min: inner(style.min_width.resolve(cb_width)),
+        max: style.max_width.map(|m| inner(m.resolve(cb_width))),
+    }
+}
+
+/// CSS2.1 §10.3.3 and §10.4: resolves `width`, `margin-left`, and
+/// `margin-right` for a normal-flow, non-replaced block box, the
+/// tentative width clamped to `max-width` then `min-width` with the
+/// margins resolved again for the clamped width. `non_content_width`
+/// is whatever horizontal space border+padding already consume.
 fn resolve_width_and_margins(
     style: &ComputedStyle,
     cb_width: f32,
     non_content_width: f32,
 ) -> (f32, f32, f32) {
+    let c = width_constraints(style, cb_width, non_content_width);
+    let mut used = tentative_width(style, cb_width, non_content_width, c.width);
+    if let Some(max) = c.max
+        && used.0 > max
+    {
+        used = tentative_width(style, cb_width, non_content_width, Some(max));
+    }
+    if used.0 < c.min {
+        used = tentative_width(style, cb_width, non_content_width, Some(c.min));
+    }
+    used
+}
+
+/// CSS2.1 §10.3.3 for one value of `width` (`None` for `auto`), as the
+/// content-box width: `(width, margin_left, margin_right)`.
+fn tentative_width(
+    style: &ComputedStyle,
+    cb_width: f32,
+    non_content_width: f32,
+    width: Option<f32>,
+) -> (f32, f32, f32) {
     let avail = cb_width - non_content_width;
     let margin_left = style.margin[LEFT];
     let margin_right = style.margin[RIGHT];
 
-    if style.width.is_auto() {
+    let Some(w) = width else {
         // Unspecified margins default to 0 (not symmetrical centering —
         // that only happens when `width` itself is NOT auto); auto
         // `width` absorbs whatever's left. The used value of `width`
@@ -299,9 +386,8 @@ fn resolve_width_and_margins(
         let ml = margin_left.resolve(cb_width, 0.0);
         let mr = margin_right.resolve(cb_width, 0.0);
         return ((avail - ml - mr).max(0.0), ml, mr);
-    }
+    };
 
-    let w = style.width.resolve(cb_width, 0.0).max(0.0);
     let remaining = avail - w;
     // §10.3.3 ¶3: when the non-auto parts already exceed the containing
     // block, every `auto` margin is treated as zero (the box overflows
@@ -331,6 +417,43 @@ fn resolve_width_and_margins(
             (w, fixed_left, remaining - fixed_left)
         }
     }
+}
+
+/// The specified `height` as a content-box height, or `None` for
+/// `auto` — which a percentage of an indefinite containing-block height
+/// is too (CSS2 §10.5).
+fn definite_height(style: &ComputedStyle, cb_height: Option<f32>, non_content: f32) -> Option<f32> {
+    let inner = |v: f32| match style.box_sizing {
+        BoxSizing::ContentBox => v.max(0.0),
+        BoxSizing::BorderBox => (v - non_content).max(0.0),
+    };
+    match style.height {
+        LengthPercentageAuto::Auto => None,
+        LengthPercentageAuto::Px(v) => Some(inner(v)),
+        LengthPercentageAuto::Percent(p) => cb_height.map(|h| inner(h * p / 100.0)),
+    }
+}
+
+/// `min-height` and `max-height` as content-box heights (CSS2 §10.7):
+/// a percentage of an indefinite containing-block height is `0` and
+/// `none` respectively.
+fn height_bounds(
+    style: &ComputedStyle,
+    cb_height: Option<f32>,
+    non_content: f32,
+) -> (f32, Option<f32>) {
+    let inner = |v: f32| match style.box_sizing {
+        BoxSizing::ContentBox => v.max(0.0),
+        BoxSizing::BorderBox => (v - non_content).max(0.0),
+    };
+    let resolve = |v: LengthPercentage| match v {
+        LengthPercentage::Px(px) => Some(inner(px)),
+        LengthPercentage::Percent(p) => cb_height.map(|h| inner(h * p / 100.0)),
+    };
+    (
+        resolve(style.min_height).unwrap_or(0.0),
+        style.max_height.and_then(resolve),
+    )
 }
 
 /// One box's layout, relative to its own border-box top-left `(0, 0)` —
@@ -364,14 +487,25 @@ pub(crate) struct BlockLayout {
 /// Lays out one block box. `pub(crate)`: also called by `crate::inline`
 /// for the M7.6 block-in-inline case (a block box nested in inline
 /// content lays out the same way regardless of what's around it).
-pub(crate) fn layout_block(b: &LayoutBox, cb_width: f32, fonts: &FontCollection) -> BlockLayout {
+pub(crate) fn layout_block(
+    b: &LayoutBox,
+    cb_width: f32,
+    cb_height: Option<f32>,
+    fonts: &FontCollection,
+) -> BlockLayout {
     let border = effective_border_width(&b.style);
     // Padding and vertical margins resolve a percentage against the
     // containing block's *width* (CSS2 §8.3, §8.4).
     let padding = b.style.padding.map(|p| p.resolve(cb_width));
     let has_top_sep = border[TOP] > 0.0 || padding[TOP] > 0.0;
     let has_bottom_sep = border[BOTTOM] > 0.0 || padding[BOTTOM] > 0.0;
-    let height_is_auto = b.style.height.is_auto();
+    let non_content_height = border[TOP] + padding[TOP] + padding[BOTTOM] + border[BOTTOM];
+    let specified_height = definite_height(&b.style, cb_height, non_content_height);
+    let (min_height, max_height) = height_bounds(&b.style, cb_height, non_content_height);
+    // CSS2 §8.3.1: a box collapses its own margins through, or lets a
+    // child's bottom margin escape, only with `height: auto` and
+    // `min-height: 0`.
+    let height_is_auto = specified_height.is_none() && min_height <= 0.0;
     let own_top = AdjoiningMargins::of(b.style.margin[TOP].resolve(cb_width, 0.0));
     let own_bottom = AdjoiningMargins::of(b.style.margin[BOTTOM].resolve(cb_width, 0.0));
 
@@ -399,7 +533,13 @@ pub(crate) fn layout_block(b: &LayoutBox, cb_width: f32, fonts: &FontCollection)
         };
     }
 
-    let children = layout_children(&b.children, content_width, b.style.text_align, fonts);
+    let children = layout_children(
+        &b.children,
+        content_width,
+        specified_height,
+        b.style.text_align,
+        fonts,
+    );
     let content_x = border[LEFT] + padding[LEFT];
 
     // Every child collapsed through (empty blocks all the way down):
@@ -439,9 +579,9 @@ pub(crate) fn layout_block(b: &LayoutBox, cb_width: f32, fonts: &FontCollection)
         (0.0, own_top.join(children.leading))
     };
 
-    let content_height = match b.style.height {
-        LengthPercentageAuto::Px(h) => h,
-        _ /* Auto; a Percent is never produced yet, see the module doc */ => {
+    let content_height = match specified_height {
+        Some(h) => h,
+        None => {
             if children.nothing_materialised {
                 // Every child collapsed through: `leading` and
                 // `trailing` are one set, used exactly once. With no
@@ -469,6 +609,11 @@ pub(crate) fn layout_block(b: &LayoutBox, cb_width: f32, fonts: &FontCollection)
             }
         }
     };
+    // CSS2 §10.7: the tentative height clamped to `max-height`, then
+    // `min-height`.
+    let content_height = max_height
+        .map_or(content_height, |max| content_height.min(max))
+        .max(min_height);
 
     let margin_bottom = if has_bottom_sep || !height_is_auto {
         own_bottom
@@ -555,6 +700,7 @@ struct ChildrenLayout {
 fn layout_children(
     children: &[LayoutBox],
     cb_width: f32,
+    cb_height: Option<f32>,
     text_align: TextAlign,
     fonts: &FontCollection,
 ) -> ChildrenLayout {
@@ -571,7 +717,7 @@ fn layout_children(
     while i < children.len() {
         match &children[i].kind {
             BoxKind::Block => {
-                let layout = layout_block(&children[i], cb_width, fonts);
+                let layout = layout_block(&children[i], cb_width, cb_height, fonts);
                 i += 1;
                 if layout.self_collapsing {
                     // Its one set joins the margins around it and stays
@@ -714,6 +860,129 @@ mod tests {
         assert_eq!(text.top(), 40.0, "20px of top padding under the margin");
         let m = test_fonts().primary().metrics(16.0);
         assert_eq!(p.h, 20.0 + m.line_height() + 20.0);
+    }
+
+    #[test]
+    fn box_sizing_border_box_puts_padding_and_border_inside_the_size() {
+        let css = "div { width: 100px; height: 60px; padding: 10px; margin: 0;
+                         border: 5px solid #000000; box-sizing: border-box; }";
+        let frags = fragments_of(Element::new("div"), css);
+        assert_eq!((frags[0].w, frags[0].h), (100.0, 60.0));
+        let css = css.replace("border-box", "content-box");
+        let frags = fragments_of(Element::new("div"), &css);
+        assert_eq!((frags[0].w, frags[0].h), (130.0, 90.0));
+        // A border-box size smaller than its padding and border leaves
+        // no content, not a negative amount.
+        let frags = fragments_of(
+            Element::new("div"),
+            "div { width: 10px; height: 10px; padding: 10px; margin: 0; box-sizing: border-box; }",
+        );
+        assert_eq!((frags[0].w, frags[0].h), (20.0, 20.0));
+    }
+
+    #[test]
+    fn min_and_max_width_clamp_the_width_and_the_margins_follow() {
+        // An auto width capped by max-width, centred by its auto margins
+        // (CSS2 §10.4: the margins are resolved again for the clamped
+        // width).
+        let frags = fragments_of(
+            Element::new("div"),
+            "div { max-width: 200px; margin: 0 auto; height: 10px; }",
+        );
+        assert_eq!((frags[0].x, frags[0].w), (300.0, 200.0));
+        // min-width raises a width that is too small; a percentage
+        // max-width is of the containing block.
+        let frags = fragments_of(
+            Element::new("div"),
+            "div { width: 50px; min-width: 100px; height: 10px; margin: 0; }",
+        );
+        assert_eq!(frags[0].w, 100.0);
+        let frags = fragments_of(
+            Element::new("div"),
+            "div { max-width: 50%; margin: 0 0 0 auto; height: 10px; }",
+        );
+        assert_eq!((frags[0].x, frags[0].w), (400.0, 400.0));
+        // Under border-box the limits measure the border box too.
+        let frags = fragments_of(
+            Element::new("div"),
+            "div { max-width: 100px; padding: 10px; margin: 0; height: 0; box-sizing: border-box; }",
+        );
+        assert_eq!(frags[0].w, 100.0);
+    }
+
+    #[test]
+    fn percentage_heights_need_a_definite_containing_block_height() {
+        let root = Element::new("div").push(Element::new("p"));
+        // The parent's height is definite: 50% of 200 is 100.
+        let frags = fragments_of(
+            root.clone(),
+            "div { height: 200px; margin: 0; } p { height: 50%; margin: 0; }",
+        );
+        assert_eq!(box_fragments(&frags)[1].h, 100.0);
+        // The parent's height is auto: the child's percentage is auto
+        // too, and an empty box is nothing tall.
+        let frags = fragments_of(
+            root.clone(),
+            "div { margin: 0; } p { height: 50%; margin: 0; }",
+        );
+        assert_eq!(box_fragments(&frags)[1].h, 0.0);
+        // A chain of definite percentages resolves all the way down.
+        let frags = fragments_of(
+            Element::new("div").push(Element::new("section").push(Element::new("p"))),
+            "div { height: 400px; margin: 0; } section { height: 50%; margin: 0; } p { height: 25%; margin: 0; }",
+        );
+        assert_eq!(box_fragments(&frags)[2].h, 50.0);
+        // The viewport's height is the initial containing block's, when
+        // given; a box of that size says so.
+        let fonts = test_fonts();
+        let doc = dom::Node::document(vec![Element::new("div").into()]);
+        let sheet = css::parse_stylesheet("div { height: 50%; margin: 0; }").expect("valid");
+        let styled = style::style_document(&doc, &[sheet]);
+        let boxes = crate::build_box_tree(&styled);
+        let l = layout_document_in(&boxes, VIEWPORT, Some(600.0), &fonts);
+        assert_eq!(l.roots[0].h, 300.0);
+        assert!(l.depends_on_viewport_height);
+        let l = layout_document(&boxes, VIEWPORT, &fonts);
+        assert_eq!(l.roots[0].h, 0.0);
+        assert!(!l.depends_on_viewport_height);
+    }
+
+    #[test]
+    fn min_and_max_height_clamp_the_height_and_a_min_height_stops_self_collapsing() {
+        // An empty box with a min-height has that height and keeps its
+        // own margins apart: the following paragraph sits below it.
+        let root = Element::new("div")
+            .push(Element::new("div").attr("class", "a"))
+            .push(Element::new("p").text("x"));
+        let frags = fragments_of(
+            root,
+            "div, p { margin: 0; } .a { min-height: 50px; margin: 10px 0; } p { margin: 0; }",
+        );
+        let boxes = box_fragments(&frags);
+        let (a, p) = (boxes[1], boxes[2]);
+        assert_eq!((a.y, a.h), (10.0, 50.0));
+        assert_eq!(p.y, 70.0, "10 above, 50 tall, 10 below");
+        // max-height clamps an auto height; the content overflows.
+        let frags = fragments_of(
+            Element::new("div").text("one two"),
+            "div { max-height: 5px; margin: 0; }",
+        );
+        assert_eq!(frags[0].h, 5.0);
+        // A definite height is clamped too, and under border-box the
+        // limit measures the border box.
+        let frags = fragments_of(
+            Element::new("div"),
+            "div { height: 500px; max-height: 100px; padding: 10px; margin: 0; box-sizing: border-box; }",
+        );
+        assert_eq!(frags[0].h, 100.0);
+        // A percentage limit under an auto parent is no limit.
+        let root = Element::new("div").push(Element::new("p").text("x"));
+        let frags = fragments_of(
+            root,
+            "div { margin: 0; } p { max-height: 10%; min-height: 50%; margin: 0; }",
+        );
+        let m = test_fonts().primary().metrics(16.0);
+        assert_eq!(box_fragments(&frags)[1].h, m.line_height());
     }
 
     #[test]

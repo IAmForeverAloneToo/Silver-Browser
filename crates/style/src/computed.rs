@@ -140,6 +140,16 @@ impl Overflow {
     }
 }
 
+/// `box-sizing` (css-sizing-3 §4.1, M10.2): which box the `width`,
+/// `height` and the min and max sizes measure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoxSizing {
+    /// The content box. The initial value.
+    ContentBox,
+    /// The border box: padding and border are inside the given size.
+    BorderBox,
+}
+
 /// Text direction (M8.3) — read from the HTML `dir` attribute (there's
 /// no CSS `direction` property parsing yet; `dir` is the only source for
 /// now, applied the same way the inline `style` attribute is: a direct
@@ -308,6 +318,20 @@ pub struct ComputedStyle {
     pub border_style: BorderStyle,
     /// `overflow` (M9.3) — not inherited.
     pub overflow: Overflow,
+    /// `box-sizing` (M10.2) — not inherited.
+    pub box_sizing: BoxSizing,
+    /// `min-width` (M10.3) — not inherited; a percentage of the
+    /// containing block's width. The initial value is `0`.
+    pub min_width: LengthPercentage,
+    /// `max-width` (M10.3) — not inherited; `None` is the initial
+    /// `none`.
+    pub max_width: Option<LengthPercentage>,
+    /// `min-height` (M10.3) — not inherited; a percentage of the
+    /// containing block's height when that is definite, else `0`.
+    pub min_height: LengthPercentage,
+    /// `max-height` (M10.3) — not inherited; `None` is `none`, and so
+    /// is a percentage of an indefinite containing-block height.
+    pub max_height: Option<LengthPercentage>,
 }
 
 impl Default for ComputedStyle {
@@ -333,6 +357,11 @@ impl Default for ComputedStyle {
             border_color: Color::BLACK, // corrected to `color` post-cascade
             border_style: BorderStyle::None,
             overflow: Overflow::Visible,
+            box_sizing: BoxSizing::ContentBox,
+            min_width: LengthPercentage::Px(0.0),
+            max_width: None,
+            min_height: LengthPercentage::Px(0.0),
+            max_height: None,
         }
     }
 }
@@ -381,6 +410,11 @@ mod tests {
         assert_eq!(s.border_style, BorderStyle::None);
         assert_eq!(s.overflow, Overflow::Visible);
         assert!(!s.overflow.clips());
+        assert_eq!(s.box_sizing, BoxSizing::ContentBox);
+        assert_eq!(s.min_width, LengthPercentage::Px(0.0));
+        assert_eq!(s.max_width, None);
+        assert_eq!(s.min_height, LengthPercentage::Px(0.0));
+        assert_eq!(s.max_height, None);
     }
 
     #[test]
