@@ -121,8 +121,9 @@ pub struct Fragment {
     /// at least the padding box's own height. Zero for any other
     /// fragment. [`Fragment::max_scroll`] is what it allows.
     pub scroll_height: f32,
-    /// The fragments of this box's content, in paint order. A text
-    /// fragment has none.
+    /// The fragments of this box's content, in tree order: the paint
+    /// order is the walk's (M11.6, in `paint`). A text fragment has
+    /// none.
     pub children: Vec<Fragment>,
 }
 
@@ -203,7 +204,7 @@ pub struct DocumentLayout {
 }
 
 impl DocumentLayout {
-    /// Every fragment in paint order (preorder: a box, then its content).
+    /// Every fragment in tree order (preorder: a box, then its content).
     pub fn iter(&self) -> Preorder<'_> {
         preorder(&self.roots)
     }
@@ -215,7 +216,7 @@ pub struct Preorder<'a> {
     stack: Vec<&'a Fragment>,
 }
 
-/// The fragments under `roots` in paint order.
+/// The fragments under `roots` in tree order.
 pub fn preorder(roots: &[Fragment]) -> Preorder<'_> {
     Preorder {
         stack: roots.iter().rev().collect(),
@@ -232,7 +233,7 @@ impl<'a> Iterator for Preorder<'a> {
     }
 }
 
-/// Takes the fragments out of their tree in paint order; each comes out
+/// Takes the fragments out of their tree in tree order; each comes out
 /// with no children. The view the pre-M9 tests were written against.
 pub fn flatten(roots: Vec<Fragment>) -> Vec<Fragment> {
     let mut out = Vec::new();
@@ -400,7 +401,7 @@ pub fn layout_document_in(
     }
 }
 
-/// [`layout_document`]'s fragments in paint order without the tree —
+/// [`layout_document`]'s fragments in tree order without the tree —
 /// the flat view, for callers that only inspect geometry.
 pub fn layout(boxes: &[LayoutBox], viewport_width: f32, fonts: &FontCollection) -> Vec<Fragment> {
     flatten(layout_document(boxes, viewport_width, fonts).roots)

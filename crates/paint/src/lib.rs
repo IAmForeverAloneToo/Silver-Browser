@@ -30,7 +30,7 @@ use std::collections::HashMap;
 use dom::Node;
 use layout::{Fragment, FragmentKind};
 use style::StyledDom;
-use style::computed::{BOTTOM, BorderStyle, Color, Display, LEFT, Overflow, RIGHT, TOP};
+use style::computed::{BOTTOM, BorderStyle, Color, Display, LEFT, RIGHT, TOP};
 use style::selector_matching::FlatChild;
 
 pub use order::{Rect, Step, padding_box, paint_order};
@@ -508,18 +508,13 @@ fn canvas_background(roots: &[Fragment]) -> Option<&Fragment> {
 }
 
 /// A scroll container's overlay scrollbar (M10.5) over the right edge
-/// of its padding box `rect`, in viewport coordinates, when it can
-/// scroll: `overflow: scroll` always, `auto` only with content past
-/// the box, `hidden` never.
+/// of its padding box `rect`, in viewport coordinates. The walk says
+/// which boxes have one: `overflow: scroll` always, `auto` only with
+/// content past the box, `hidden` never.
 fn push_scrollbar(items: &mut Vec<DisplayItem>, f: &Fragment, rect: Rect, offset: f32) {
     let max = f.max_scroll();
-    let shows = match f.style.overflow {
-        Overflow::Scroll => true,
-        Overflow::Auto => max > 0.0,
-        Overflow::Hidden | Overflow::Visible => false,
-    };
     let Rect { x, y, w, h } = rect;
-    if !shows || w < ELEMENT_SCROLLBAR_WIDTH || h <= 0.0 {
+    if w < ELEMENT_SCROLLBAR_WIDTH || h <= 0.0 {
         return;
     }
     let bar_x = x + w - ELEMENT_SCROLLBAR_WIDTH;
@@ -1134,33 +1129,47 @@ mod fragment_tests {
              p { margin: 0; }",
         );
         let items = &list.items;
-        let push = items
+        let first_push = items
             .iter()
             .position(|i| matches!(i, DisplayItem::PushClip { .. }))
             .expect("a clip is pushed");
-        let pop = items
-            .iter()
-            .position(|i| matches!(i, DisplayItem::PopClip))
-            .expect("the clip is popped");
-        // The border box is 60 x 30; the padding box sits inside the
-        // 3px border: 54 x 24 at (3, 3).
-        assert!(matches!(
-            items[push],
-            DisplayItem::PushClip {
-                x: 3.0,
-                y: 3.0,
-                w: 54.0,
-                h: 24.0
-            }
-        ));
         let text = items
             .iter()
             .position(|i| matches!(i, DisplayItem::Text { .. }))
             .expect("the text paints");
-        assert!(push < text && text < pop, "the text is inside the clip");
+        // The text is inside a clip: the inline pass opens the clip
+        // around it (the blocks pass opened it around the p's box).
+        let push = items[..text]
+            .iter()
+            .rposition(|i| matches!(i, DisplayItem::PushClip { .. }))
+            .expect("the clip is pushed before the text");
+        let pop = text
+            + items[text..]
+                .iter()
+                .position(|i| matches!(i, DisplayItem::PopClip))
+                .expect("the clip is popped after the text");
+        assert!(
+            !items[push..pop]
+                .iter()
+                .any(|i| matches!(i, DisplayItem::PopClip)),
+            "the text is inside the clip"
+        );
+        // The border box is 60 x 30; the padding box sits inside the
+        // 3px border: 54 x 24 at (3, 3).
+        for at in [first_push, push] {
+            assert!(matches!(
+                items[at],
+                DisplayItem::PushClip {
+                    x: 3.0,
+                    y: 3.0,
+                    w: 54.0,
+                    h: 24.0
+                }
+            ));
+        }
         // The box's own border paints outside the clip, before it.
         assert!(
-            items[1..push]
+            items[1..first_push]
                 .iter()
                 .filter(|i| matches!(i, DisplayItem::Rect { .. }))
                 .count()
@@ -1245,9 +1254,16 @@ mod fragment_tests {
         let pop = list
             .items
             .iter()
-            .position(|i| matches!(i, DisplayItem::PopClip))
+            .rposition(|i| matches!(i, DisplayItem::PopClip))
             .unwrap();
-        assert!(track < pop);
+        let blue = list
+            .items
+            .iter()
+            .position(
+                |i| matches!(i, DisplayItem::Rect { color, .. } if *color == Rgba8::rgb(0, 0, 255)),
+            )
+            .unwrap();
+        assert!(blue < track && track < pop);
         assert!(matches!(
             list.items[track],
             DisplayItem::Rect {

@@ -1,11 +1,29 @@
-//! The paint order (M11.6, step 2 of `docs/design/floats-positioning.md`):
-//! one walk over the fragment tree that says what is painted, where, in
-//! which order and under which clip. [`paint_fragments_in`](crate::
-//! paint_fragments_in) turns the steps into display items, and the
-//! engine's hit test reads the same steps — the last one under the
-//! pointer is the element hit — so paint order and hit order have one
-//! definition. Until stacking contexts land the order is tree order,
-//! which is CSS2 Appendix E's for content in normal flow.
+//! The paint order (M11.6, steps 2 and 8 of
+//! `docs/design/floats-positioning.md`): one walk over the fragment
+//! tree that says what is painted, where, in which order and under
+//! which clip. [`paint_fragments_in`](crate::paint_fragments_in) turns
+//! the steps into display items, and the engine's hit test reads the
+//! same steps — the last one under the pointer is the element hit — so
+//! paint order and hit order have one definition.
+//!
+//! The order is CSS2 Appendix E's. The root element's box is the root
+//! stacking context, and a positioned box whose `z-index` is not `auto`
+//! makes one of its own. Within a stacking context: its own background
+//! and border; the stacking contexts in it with a negative `z-index`,
+//! in `z-index` then tree order; then its in-flow content in three
+//! passes over the tree — the backgrounds and borders of its block-level
+//! boxes, then its floats, then its inline-level content, text and
+//! inline-blocks; then its positioned descendants with `z-index: auto`
+//! or `0`, in tree order; and the stacking contexts with a positive
+//! `z-index`, in `z-index` then tree order. A float, an inline-block and
+//! a positioned box with `z-index: auto` are painted as units, each its
+//! own background then its content in the three passes, as if it were a
+//! stacking context, except that the positioned boxes and stacking
+//! contexts inside it belong to the real stacking context around it. A
+//! box painted out of tree order is still under the clips and scroll
+//! offsets of its ancestors in the fragment tree, which are those of
+//! its containing block's: the walk closes the clips in force down to
+//! the ones it shares and opens its own around it.
 //!
 //! Every rectangle a step carries is in viewport coordinates: the
 //! viewport's scroll offset and, inside a scroll container, its offset
@@ -16,10 +34,14 @@
 //! innermost. Content the viewport cannot show is left out: a box or a
 //! line it does not meet has no step, and a clipping box it does not
 //! meet is skipped with its whole subtree, since nothing under a clip
-//! can show where the clip does not.
+//! can show where the clip does not; a clip with no step inside it is
+//! left out too.
 
 use layout::{Fragment, FragmentKind};
-use style::computed::{BOTTOM, ComputedStyle, LEFT, LengthPercentageAuto, Position, RIGHT, TOP};
+use style::computed::{
+    BOTTOM, ComputedStyle, Display, Float, LEFT, LengthPercentageAuto, Overflow, Position, RIGHT,
+    TOP,
+};
 
 use crate::{ScrollOffsets, Viewport};
 
@@ -110,7 +132,7 @@ pub fn paint_order<'a>(
         },
         dx: 0.0,
         dy: -viewport.scroll_y,
-        clip: None,
+        chain: Vec::new(),
         offsets,
     };
     // The roots' containing block is the initial one: as wide as the
@@ -121,12 +143,28 @@ pub fn paint_order<'a>(
         w: viewport.width,
         h: f32::INFINITY,
     };
-    walk.all(roots, initial);
+    match roots.split_first() {
+        // The first root is the root element's box, the root stacking
+        // context; the roots after it — the boxes the initial
+        // containing block positions and the fixed ones (M11) — are
+        // positioned descendants of the root element that layout moved
+        // out of its subtree, and belong to its stacking context.
+        Some((root, rest)) if matches!(root.kind, FragmentKind::Box) => {
+            walk.stacking(root, initial, rest);
+        }
+        // Not a box tree at all: whatever is there, in flow.
+        Some(_) => {
+            for phase in PHASES {
+                walk.phase(roots, initial, phase);
+            }
+        }
+        None => {}
+    }
     walk.steps
 }
 
 /// The walk's state: where the document is relative to the viewport,
-/// and the clip in force.
+/// and the clips in force.
 struct Walk<'a, 'o> {
     steps: Vec<Step<'a>>,
     viewport: Rect,
@@ -137,19 +175,85 @@ struct Walk<'a, 'o> {
     /// offset and the offsets of the scroll containers being walked
     /// into, negated, and the shifts of the sticky boxes.
     dy: f32,
-    /// The effective clip in force, if any.
-    clip: Option<Rect>,
+    /// The clips in force, outermost first: each clipping box being
+    /// walked into, with its effective clip rectangle.
+    chain: Vec<(usize, Rect)>,
     offsets: &'o dyn ScrollOffsets,
 }
 
+/// A positioned descendant of a stacking context, taken out of tree
+/// order to be painted at its layer (CSS2 Appendix E), with the walk's
+/// state where the tree has it: the clips and scroll offsets of its
+/// ancestors there, and its containing block for a sticky shift.
+struct Positioned<'a> {
+    f: &'a Fragment,
+    containing: Rect,
+    chain: Vec<(usize, Rect)>,
+    dx: f32,
+    dy: f32,
+}
+
+impl Positioned<'_> {
+    /// Its `z-index`, `auto` counting as `0` for the order of the
+    /// layers.
+    fn z(&self) -> i32 {
+        self.f.style.z_index.unwrap_or(0)
+    }
+}
+
+/// Appendix E's passes over the in-flow content of a stacking context,
+/// in order: the backgrounds and borders of its block-level boxes, its
+/// floats, its inline-level content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Blocks,
+    Floats,
+    Inlines,
+}
+
+const PHASES: [Phase; 3] = [Phase::Blocks, Phase::Floats, Phase::Inlines];
+
+/// What a box is to the order.
+enum Kind {
+    /// Painted at a layer of the stacking context it belongs to.
+    Positioned,
+    /// Painted as a unit in the floats pass.
+    Float,
+    /// Painted as a unit in the inline pass.
+    InlineBlock,
+    /// In flow and block-level: its own background in the blocks pass,
+    /// its content in every pass.
+    Block,
+}
+
+fn kind_of(f: &Fragment) -> Kind {
+    if f.style.position.is_positioned() {
+        Kind::Positioned
+    } else if f.style.float != Float::None {
+        Kind::Float
+    } else if f.style.display == Display::InlineBlock {
+        Kind::InlineBlock
+    } else {
+        Kind::Block
+    }
+}
+
+/// Which steps a clipping box's content is wrapped in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Emit {
+    /// None: the clip is only tracked.
+    Nothing,
+    /// The clip's push and pop.
+    Clip,
+    /// The clip's push and pop, with the box's scrollbar before the
+    /// pop.
+    ClipAndScrollbar,
+}
+
 impl<'a> Walk<'a, '_> {
-    /// Walks `fragments`, children of a box whose padding box is
-    /// `containing` in viewport coordinates: what a sticky one among
-    /// them is kept inside.
-    fn all(&mut self, fragments: &'a [Fragment], containing: Rect) {
-        for f in fragments {
-            self.one(f, containing);
-        }
+    /// The effective clip in force, if any.
+    fn clip(&self) -> Option<Rect> {
+        self.chain.last().map(|(_, rect)| *rect)
     }
 
     /// A fragment's box in viewport coordinates.
@@ -162,89 +266,288 @@ impl<'a> Walk<'a, '_> {
         }
     }
 
-    fn one(&mut self, f: &'a Fragment, containing: Rect) {
-        // A `position: fixed` box (M11), a root of the document's
-        // fragments by layout, is placed against the viewport and does
-        // not scroll with the document: its subtree is walked with the
-        // viewport's offset left out.
-        if f.style.position == Position::Fixed {
-            let scrolled = self.dy;
-            self.dy = 0.0;
-            self.one_in_place(f, containing);
-            self.dy = scrolled;
-        } else {
-            self.one_in_place(f, containing);
-        }
-    }
-
-    fn one_in_place(&mut self, f: &'a Fragment, containing: Rect) {
-        match &f.kind {
-            FragmentKind::Box => {
-                // A `position: sticky` box (M11) is shifted, its subtree
-                // with it, to keep its insets from the edges of the
-                // visible part of its scrollport — the innermost clip,
-                // else the viewport — within its containing block.
-                let (sx, sy) = if f.style.position == Position::Sticky {
-                    let scrollport = self.clip.unwrap_or(self.viewport);
-                    sticky_shift(&f.style, self.rect_of(f), containing, scrollport)
-                } else {
-                    (0.0, 0.0)
-                };
-                self.dx += sx;
-                self.dy += sy;
-                self.box_in_place(f);
-                self.dx -= sx;
-                self.dy -= sy;
-            }
-            FragmentKind::Text(_) => {
-                let rect = self.rect_of(f);
-                if rect.meets(&self.viewport) {
-                    self.steps.push(Step::Text {
-                        fragment: f,
-                        rect,
-                        baseline: f.y + self.dy,
-                    });
-                }
-            }
-        }
-    }
-
-    /// A box's steps, with the shifts in force.
-    fn box_in_place(&mut self, f: &'a Fragment) {
+    /// A fragment's own step — a box's background and border, a text
+    /// run — when the viewport meets it.
+    fn own(&mut self, f: &'a Fragment) {
         let rect = self.rect_of(f);
-        let clips = f.style.overflow.clips();
-        let in_view = rect.meets(&self.viewport);
-        if clips && !in_view {
+        if !rect.meets(&self.viewport) {
             return;
         }
-        if in_view {
-            self.steps.push(Step::Box { fragment: f, rect });
+        self.steps.push(match f.kind {
+            FragmentKind::Box => Step::Box { fragment: f, rect },
+            FragmentKind::Text(_) => Step::Text {
+                fragment: f,
+                rect,
+                baseline: f.y + self.dy,
+            },
+        });
+    }
+
+    /// Runs `body` with the shifts the box `f` gets in force, for it
+    /// and its subtree. A `position: fixed` box (M11), a root of the
+    /// document's fragments by layout, is placed against the viewport
+    /// and does not scroll with the document: the viewport's offset is
+    /// left out. A `position: sticky` box is shifted to keep its insets
+    /// from the edges of the visible part of its scrollport — the
+    /// innermost clip, else the viewport — within its containing block,
+    /// whose padding box is `containing`.
+    fn shifted(&mut self, f: &'a Fragment, containing: Rect, body: impl FnOnce(&mut Self)) {
+        let (dx, dy) = (self.dx, self.dy);
+        match f.style.position {
+            Position::Fixed => self.dy = 0.0,
+            Position::Sticky => {
+                let scrollport = self.clip().unwrap_or(self.viewport);
+                let (sx, sy) = sticky_shift(&f.style, self.rect_of(f), containing, scrollport);
+                self.dx += sx;
+                self.dy += sy;
+            }
+            Position::Static | Position::Relative | Position::Absolute => {}
+        }
+        body(self);
+        self.dx = dx;
+        self.dy = dy;
+    }
+
+    /// Runs `body` over the content of the box `f`, given its padding
+    /// box, the containing block of what is inside: under its clip and
+    /// scrolled by its offset when it clips (CSS2 §11.1.1), with the
+    /// clip's steps and its scrollbar's as `emit` says. Not at all when
+    /// the box clips and the viewport does not meet it: nothing under
+    /// its clip can show. A clip with no step inside it is left out.
+    fn content(&mut self, f: &'a Fragment, emit: Emit, body: impl FnOnce(&mut Self, Rect)) {
+        let rect = self.rect_of(f);
+        let clips = f.style.overflow.clips();
+        if clips && !rect.meets(&self.viewport) {
+            return;
         }
         let padding_box = padding_box(f, rect);
         if !clips {
-            self.all(&f.children, padding_box);
+            body(self, padding_box);
             return;
         }
-        let effective = match self.clip {
+        let effective = match self.clip() {
             Some(outer) => outer.intersect(&padding_box),
             None => padding_box,
         };
-        self.steps.push(Step::PushClip {
-            node: f.node,
-            rect: effective,
-        });
-        let outer_clip = self.clip.replace(effective);
+        let mark = self.steps.len();
+        if emit != Emit::Nothing {
+            self.steps.push(Step::PushClip {
+                node: f.node,
+                rect: effective,
+            });
+        }
+        self.chain.push((f.node, effective));
         let offset = self.offsets.offset(f.node);
         self.dy -= offset;
-        self.all(&f.children, padding_box);
+        body(self, padding_box);
         self.dy += offset;
-        self.clip = outer_clip;
-        self.steps.push(Step::Scrollbar {
-            fragment: f,
-            rect: padding_box,
-            offset,
+        self.chain.pop();
+        if emit == Emit::ClipAndScrollbar && shows_scrollbar(f) {
+            self.steps.push(Step::Scrollbar {
+                fragment: f,
+                rect: padding_box,
+                offset,
+            });
+        }
+        if emit != Emit::Nothing {
+            if self.steps.len() == mark + 1 {
+                self.steps.pop();
+            } else {
+                self.steps.push(Step::PopClip);
+            }
+        }
+    }
+
+    /// A box painted as a stacking context (CSS2 Appendix E): its own
+    /// step; then, under its clip, the stacking contexts in it with a
+    /// negative `z-index`, in `z-index` then tree order; its in-flow
+    /// content in the three passes; its positioned descendants with
+    /// `z-index: auto` or `0`, in tree order, an `auto` one as a unit, a
+    /// `0` one a stacking context; and the stacking contexts with a
+    /// positive `z-index`, in `z-index` then tree order. `extra` are
+    /// further positioned descendants outside its subtree, after it in
+    /// tree order: the roots layout moved out of the root element's.
+    fn stacking(&mut self, f: &'a Fragment, containing: Rect, extra: &'a [Fragment]) {
+        self.shifted(f, containing, |w| {
+            w.own(f);
+            let mut positioned = Vec::new();
+            w.content(f, Emit::Nothing, |w, padding| {
+                w.collect(&f.children, padding, &mut positioned);
+            });
+            w.collect(extra, containing, &mut positioned);
+            w.content(f, Emit::ClipAndScrollbar, |w, padding| {
+                w.layers(&f.children, padding, positioned);
+            });
         });
-        self.steps.push(Step::PopClip);
+    }
+
+    /// Gathers the positioned boxes among `fragments` and their
+    /// descendants in tree order, each with the walk's state where the
+    /// tree has it, into `out`: a stacking context's own positioned
+    /// descendants (Appendix E). The walk goes through everything but a
+    /// stacking context, whose positioned descendants are its own.
+    fn collect(
+        &mut self,
+        fragments: &'a [Fragment],
+        containing: Rect,
+        out: &mut Vec<Positioned<'a>>,
+    ) {
+        for f in fragments {
+            if !matches!(f.kind, FragmentKind::Box) {
+                continue;
+            }
+            if f.style.position.is_positioned() {
+                out.push(Positioned {
+                    f,
+                    containing,
+                    chain: self.chain.clone(),
+                    dx: self.dx,
+                    dy: self.dy,
+                });
+                if f.style.z_index.is_some() {
+                    continue;
+                }
+            }
+            self.shifted(f, containing, |w| {
+                w.content(f, Emit::Nothing, |w, padding| {
+                    w.collect(&f.children, padding, out);
+                });
+            });
+        }
+    }
+
+    /// The layers of a stacking context's content (Appendix E), `children`
+    /// its in-flow content and `positioned` its positioned descendants
+    /// in tree order.
+    fn layers(
+        &mut self,
+        children: &'a [Fragment],
+        containing: Rect,
+        mut positioned: Vec<Positioned<'a>>,
+    ) {
+        // A stable sort keeps tree order within one `z-index`; `auto`
+        // and `0` share the middle.
+        positioned.sort_by_key(Positioned::z);
+        let mut positioned = positioned.into_iter().peekable();
+        while let Some(p) = positioned.next_if(|p| p.z() < 0) {
+            self.positioned(p);
+        }
+        for phase in PHASES {
+            self.phase(children, containing, phase);
+        }
+        for p in positioned {
+            self.positioned(p);
+        }
+    }
+
+    /// One pass over in-flow content: the fragments in tree order, each
+    /// as the pass has it, through the content of every in-flow
+    /// block-level box.
+    fn phase(&mut self, fragments: &'a [Fragment], containing: Rect, phase: Phase) {
+        for f in fragments {
+            match f.kind {
+                FragmentKind::Text(_) => {
+                    if phase == Phase::Inlines {
+                        self.own(f);
+                    }
+                }
+                FragmentKind::Box => match kind_of(f) {
+                    Kind::Positioned => {}
+                    Kind::Float => {
+                        if phase == Phase::Floats {
+                            self.unit(f, containing);
+                        }
+                    }
+                    Kind::InlineBlock => {
+                        if phase == Phase::Inlines {
+                            self.unit(f, containing);
+                        }
+                    }
+                    Kind::Block => {
+                        if phase == Phase::Blocks {
+                            self.own(f);
+                        }
+                        // The scrollbar goes over the content, after the
+                        // last pass.
+                        let emit = if phase == Phase::Inlines {
+                            Emit::ClipAndScrollbar
+                        } else {
+                            Emit::Clip
+                        };
+                        self.content(f, emit, |w, padding| w.phase(&f.children, padding, phase));
+                    }
+                },
+            }
+        }
+    }
+
+    /// A box painted as a unit, as if it made a stacking context
+    /// (Appendix E's floats, inline-blocks and positioned boxes with
+    /// `z-index: auto`): its own step, then its content in the three
+    /// passes — except the positioned boxes and stacking contexts inside
+    /// it, which belong to the real stacking context around it and are
+    /// painted at their layers there.
+    fn unit(&mut self, f: &'a Fragment, containing: Rect) {
+        self.shifted(f, containing, |w| {
+            w.own(f);
+            w.content(f, Emit::ClipAndScrollbar, |w, padding| {
+                for phase in PHASES {
+                    w.phase(&f.children, padding, phase);
+                }
+            });
+        });
+    }
+
+    /// Paints a positioned descendant at its layer, under the clips and
+    /// offsets the tree gives it: the clips in force are closed down to
+    /// those it shares, its own opened around it, and the walk's put
+    /// back after. A stacking context is painted as one, any other
+    /// positioned box as a unit.
+    fn positioned(&mut self, p: Positioned<'a>) {
+        let current = std::mem::replace(&mut self.chain, p.chain);
+        let shared = current
+            .iter()
+            .zip(&self.chain)
+            .take_while(|(a, b)| a == b)
+            .count();
+        for _ in shared..current.len() {
+            self.steps.push(Step::PopClip);
+        }
+        let mark = self.steps.len();
+        for &(node, rect) in &self.chain[shared..] {
+            self.steps.push(Step::PushClip { node, rect });
+        }
+        let opened = self.chain.len() - shared;
+        let (dx, dy) = (self.dx, self.dy);
+        (self.dx, self.dy) = (p.dx, p.dy);
+        if p.f.style.z_index.is_some() {
+            self.stacking(p.f, p.containing, &[]);
+        } else {
+            self.unit(p.f, p.containing);
+        }
+        (self.dx, self.dy) = (dx, dy);
+        if self.steps.len() == mark + opened {
+            // Nothing of it shows: its clips are left out with it.
+            self.steps.truncate(mark);
+        } else {
+            for _ in 0..opened {
+                self.steps.push(Step::PopClip);
+            }
+        }
+        for &(node, rect) in &current[shared..] {
+            self.steps.push(Step::PushClip { node, rect });
+        }
+        self.chain = current;
+    }
+}
+
+/// Whether a clipping box shows a scrollbar (M10.5): `overflow:
+/// scroll` always, `auto` when there is something to scroll.
+fn shows_scrollbar(f: &Fragment) -> bool {
+    match f.style.overflow {
+        Overflow::Scroll => true,
+        Overflow::Auto => f.max_scroll() > 0.0,
+        Overflow::Hidden | Overflow::Visible => false,
     }
 }
 
@@ -361,11 +664,14 @@ mod tests {
     }
 
     #[test]
-    fn the_order_is_tree_order_with_clips_around_a_clipping_box_content() {
+    fn block_backgrounds_come_before_inline_content_each_pass_under_the_clip() {
         // <div><p>a</p><div class=c><p>b</p></div></div>, the clipping
         // box 50px tall with a 5px border: nodes div 1, p 2, div.c 3,
-        // p 4. The text is a child of the p's fragment; the clip wraps
-        // the clipping box's content, after its own background step.
+        // p 4. The text is a child of the p's fragment. The root div is
+        // the stacking context: the blocks pass paints every box's
+        // background in tree order, the inline pass every text, and
+        // each pass wraps the clipping box's content in its clip, after
+        // its own background step. `overflow: hidden` has no scrollbar.
         let layout = layout_of(
             Element::new("div").push(Element::new("p").text("a")).push(
                 Element::new("div")
@@ -376,18 +682,19 @@ mod tests {
         );
         let m = test_fonts().primary().metrics(16.0);
         let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
-        let line = m.line_height();
+        let clip = format!("clip 3 5 {} 100 50", m.line_height() + 5.0);
         assert_eq!(
             names(&steps),
             vec![
                 "box 1".to_string(),
                 "box 2".to_string(),
-                "text a".to_string(),
                 "box 3".to_string(),
-                format!("clip 3 5 {} 100 50", line + 5.0),
+                clip.clone(),
                 "box 4".to_string(),
+                "pop".to_string(),
+                "text a".to_string(),
+                clip,
                 "text b".to_string(),
-                "scrollbar 0".to_string(),
                 "pop".to_string(),
             ]
         );
@@ -438,7 +745,19 @@ mod tests {
                 }
             }
         ));
-        assert!(matches!(steps[4], Step::Scrollbar { offset: 30.0, .. }));
+        // The scrollbar is painted over the content, in the last pass.
+        assert_eq!(
+            names(&steps)[2..],
+            [
+                "clip 2 0 -20 800 100",
+                "box 3",
+                "pop",
+                "clip 2 0 -20 800 100",
+                "scrollbar 30",
+                "pop"
+            ]
+            .map(String::from)
+        );
     }
 
     #[test]
@@ -472,9 +791,12 @@ mod tests {
                 _ => None,
             })
             .collect();
+        // The blocks pass opens the outer clip around the inner's box
+        // and leaves the inner's own out, nothing being inside it in
+        // that pass; the inline pass opens both around the text.
         assert_eq!(
             clips,
-            vec![(2, 50.0), (3, 50.0)],
+            vec![(2, 50.0), (2, 50.0), (3, 50.0)],
             "the inner clip is cut to the outer"
         );
         assert!(
@@ -482,7 +804,166 @@ mod tests {
             "{:?}",
             names(&steps)
         );
-        assert_eq!(names(&steps).iter().filter(|n| *n == "pop").count(), 2);
+        assert_eq!(names(&steps).iter().filter(|n| *n == "pop").count(), 3);
+    }
+
+    #[test]
+    fn positioned_boxes_paint_after_the_in_flow_content_with_their_content() {
+        // <div><div class=p>x</div><div class=b>y</div></div> with .p
+        // relative: nodes div 1, p 2, b 3. The positioned box is a unit
+        // at the root stacking context's positioned layer, after every
+        // in-flow box and text; its own text goes with it.
+        let layout = layout_of(
+            Element::new("div")
+                .push(Element::new("div").attr("class", "p").text("x"))
+                .push(Element::new("div").attr("class", "b").text("y")),
+            "div { margin: 0; } .p { position: relative; }",
+        );
+        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+        assert_eq!(
+            names(&steps),
+            ["box 1", "box 3", "text y", "box 2", "text x"].map(String::from)
+        );
+        // An absolute box the initial containing block positions is a
+        // root of the layout after the root element's, and paints at
+        // the root stacking context's positioned layer all the same.
+        let layout = layout_of(
+            Element::new("div")
+                .push(Element::new("div").attr("class", "a").text("x"))
+                .push(Element::new("div").attr("class", "b").text("y")),
+            "div { margin: 0; } .a { position: absolute; }",
+        );
+        assert_eq!(layout.roots.len(), 2);
+        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+        assert_eq!(
+            names(&steps),
+            ["box 1", "box 3", "text y", "box 2", "text x"].map(String::from)
+        );
+    }
+
+    #[test]
+    fn floats_paint_after_block_backgrounds_and_before_inline_content() {
+        // <div><div class=f>f</div><div class=b>b</div></div> with .f
+        // floated: nodes div 1, f 2, b 3. The float is a unit in the
+        // floats pass: after the block's background, before its text.
+        let layout = layout_of(
+            Element::new("div")
+                .push(Element::new("div").attr("class", "f").text("f"))
+                .push(Element::new("div").attr("class", "b").text("b")),
+            "div { margin: 0; } .f { float: left; width: 50px; }",
+        );
+        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+        assert_eq!(
+            names(&steps),
+            ["box 1", "box 3", "box 2", "text f", "text b"].map(String::from)
+        );
+    }
+
+    #[test]
+    fn z_index_orders_the_layers_and_a_stacking_context_keeps_its_own() {
+        // Six positioned siblings: nodes div 1, then n (z -1) 2, b (in
+        // flow) 3, p (z 2) 4, q (z 1) 5, z (z 0) 6, a (auto) 7. Negative
+        // first, after the root's own background; the in-flow box; 0
+        // and auto together in tree order; then positive in z order.
+        let positioned = |class: &str| Element::new("div").attr("class", class);
+        let layout = layout_of(
+            Element::new("div")
+                .push(positioned("n"))
+                .push(positioned("b"))
+                .push(positioned("p"))
+                .push(positioned("q"))
+                .push(positioned("z"))
+                .push(positioned("a")),
+            "div { margin: 0; height: 10px; }
+             .n { position: relative; z-index: -1; }
+             .p { position: relative; z-index: 2; }
+             .q { position: relative; z-index: 1; }
+             .z { position: relative; z-index: 0; }
+             .a { position: relative; }",
+        );
+        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+        assert_eq!(
+            names(&steps),
+            [
+                "box 1", "box 2", "box 3", "box 6", "box 7", "box 5", "box 4"
+            ]
+            .map(String::from)
+        );
+        // A stacking context takes its own positioned descendants: the
+        // negative child of .c (z 1) paints inside .c, before .d (z 2).
+        // Nodes div 1, c 2, i 3, d 4.
+        let layout = layout_of(
+            Element::new("div")
+                .push(positioned("c").push(positioned("i")))
+                .push(positioned("d")),
+            "div { margin: 0; height: 10px; }
+             .c { position: relative; z-index: 1; }
+             .i { position: absolute; z-index: -1; width: 10px; }
+             .d { position: relative; z-index: 2; }",
+        );
+        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+        assert_eq!(
+            names(&steps),
+            ["box 1", "box 2", "box 3", "box 4"].map(String::from)
+        );
+        // A positioned box with `z-index: auto` does not: its negative
+        // child belongs to the root's stacking context and paints
+        // before everything in flow, its parent included. Nodes div 1,
+        // p 2, i 3, b 4.
+        let layout = layout_of(
+            Element::new("div")
+                .push(positioned("p").push(positioned("i")))
+                .push(positioned("b")),
+            "div { margin: 0; height: 10px; }
+             .p { position: relative; }
+             .i { position: relative; z-index: -1; }",
+        );
+        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+        assert_eq!(
+            names(&steps),
+            ["box 1", "box 3", "box 4", "box 2"].map(String::from)
+        );
+    }
+
+    #[test]
+    fn a_positioned_box_in_a_clipping_box_paints_under_that_clip_at_its_layer() {
+        // <div><div class=o><div class=p></div></div><div class=b></div>
+        // </div>, .o clipping, .p relative: nodes div 1, o 2, p 3, b 4.
+        // In the in-flow passes the clipping box has nothing to show
+        // and its clip is left out; at the positioned layer the clip
+        // is opened around the positioned box.
+        let layout = layout_of(
+            Element::new("div")
+                .push(
+                    Element::new("div")
+                        .attr("class", "o")
+                        .push(Element::new("div").attr("class", "p")),
+                )
+                .push(Element::new("div").attr("class", "b")),
+            "div { margin: 0; height: 10px; } .o { overflow: hidden; height: 50px; }
+             .p { position: relative; }",
+        );
+        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+        assert_eq!(
+            names(&steps),
+            [
+                "box 1",
+                "box 2",
+                "box 4",
+                "clip 2 0 0 800 50",
+                "box 3",
+                "pop"
+            ]
+            .map(String::from)
+        );
+        // Out of view, nothing of it shows and its clips are left out
+        // with it.
+        let viewport = Viewport {
+            width: 800.0,
+            height: 600.0,
+            scroll_y: 1000.0,
+        };
+        assert!(paint_order(&layout.roots, viewport, &()).is_empty());
     }
 
     #[test]

@@ -293,7 +293,7 @@ impl Engine {
 
     /// Lays the current document out against a `viewport_width`-wide
     /// initial containing block (M6.6) and returns its fragments in
-    /// paint order, flat — a fresh computation for inspection; the
+    /// tree order, flat — a fresh computation for inspection; the
     /// frame pipeline uses [`Engine::layout`].
     pub fn fragments(&self, viewport_width: f32) -> Vec<Fragment> {
         let styled = self.cascade((viewport_width as u32, self.viewport.1));
@@ -895,7 +895,7 @@ mod tests {
         assert_eq!((div.x, div.y, div.w, div.h), (18.0, 10.0, 114.0, 64.0));
     }
 
-    /// The box fragments of every `tag` element, in paint order.
+    /// The box fragments of every `tag` element, in tree order.
     fn boxes_of(engine: &Engine, tag: &str) -> Vec<layout::Fragment> {
         let styled = engine.styled_dom();
         engine
@@ -1530,11 +1530,10 @@ mod tests {
     fn floats_are_laid_out_painted_and_hit_through_the_real_pipeline() {
         // A red 50px left float, then a paragraph: the paragraph's text
         // starts beside the float, the float's pixels are red, and the
-        // pointer over it answers with the float; the page is as tall
-        // as the float, more than its one line (M11). Over the part of
-        // the float the paragraph's line box also covers, the paragraph
-        // answers until the paint order puts floats over in-flow boxes
-        // (CSS2 Appendix E, step 8 of the design note).
+        // pointer over it answers with the float — over the part the
+        // paragraph's box also covers too, floats being painted over
+        // in-flow boxes (CSS2 Appendix E); the page is as tall as the
+        // float, more than its one line (M11).
         let mut engine = test_engine();
         engine.load_document(
             "<style>body { margin: 0 }
@@ -1549,6 +1548,11 @@ mod tests {
         let f = node_by_id(&engine, "f");
         let p = node_by_id(&engine, "p");
         assert_eq!(engine.hit_test(10.0, 40.0), Some(f));
+        assert_eq!(
+            engine.hit_test(10.0, 5.0),
+            Some(f),
+            "under the paragraph's line"
+        );
         assert_eq!(engine.hit_test(60.0, 5.0), Some(p));
         let text = engine
             .fragments(200.0)
@@ -1662,16 +1666,14 @@ mod tests {
         assert_ne!(engine.hit_test(10.0, 15.0), Some(s));
         // Inside a scroll container, the container's padding box is the
         // scrollport: the header stays at its top as its content
-        // scrolls. The tall div starts 40px below the header so that,
-        // scrolled by 30, the point tested is over the header alone:
-        // a positioned box's place above the in-flow content that
-        // follows it in tree order is step 8's.
+        // scrolls, and is hit there, being positioned and so painted
+        // over the tall div that scrolled up under it (CSS2 Appendix E).
         let mut engine = test_engine();
         engine.load_document(
             "<style>body { margin: 0 }
                     .o { overflow: auto; height: 60px }
                     .s { position: sticky; top: 0; height: 20px; background-color: #ff0000 }
-                    .t { height: 200px; margin-top: 40px }</style>\
+                    .t { height: 200px }</style>\
              <div class=o id=o><div class=s id=s></div><div class=t></div></div>",
         );
         engine.frame(200, 100);
@@ -1682,6 +1684,45 @@ mod tests {
         assert_eq!(engine.hit_test(10.0, 10.0), Some(s));
         assert_eq!(px(&pixels, 200, 10, 40), white);
         assert_ne!(engine.hit_test(10.0, 40.0), Some(s));
+    }
+
+    #[test]
+    fn z_index_decides_what_is_painted_and_hit_where_positioned_boxes_overlap() {
+        // Three absolute boxes at the top left and an in-flow black
+        // strip (CSS2 Appendix E, M11): a red 50px one with z-index 2
+        // over a blue 100px one with 1, though the blue comes later in
+        // tree order; a green 20px strip with -1 under the in-flow
+        // content but over the canvas. Pixels and the pointer agree.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0 }
+                    .a, .b, .n { position: absolute; top: 0; left: 0 }
+                    .a { width: 50px; height: 50px; background-color: #ff0000; z-index: 2 }
+                    .b { width: 100px; height: 100px; background-color: #0000ff; z-index: 1 }
+                    .n { width: 200px; height: 20px; background-color: #00ff00; z-index: -1 }
+                    .t { height: 10px; background-color: #000000 }</style>\
+             <div class=a id=a></div><div class=b id=b></div><div class=n id=n></div>\
+             <div class=t id=t></div>",
+        );
+        let pixels = engine.frame(200, 100);
+        let (a, b) = (node_by_id(&engine, "a"), node_by_id(&engine, "b"));
+        let (n, t) = (node_by_id(&engine, "n"), node_by_id(&engine, "t"));
+        assert_eq!(
+            px(&pixels, 200, 10, 10),
+            [0xff, 0x00, 0x00, 0xff],
+            "red over blue"
+        );
+        assert_eq!(engine.hit_test(10.0, 10.0), Some(a));
+        assert_eq!(px(&pixels, 200, 75, 75), [0x00, 0x00, 0xff, 0xff]);
+        assert_eq!(engine.hit_test(75.0, 75.0), Some(b));
+        assert_eq!(
+            px(&pixels, 200, 150, 5),
+            [0x00, 0x00, 0x00, 0xff],
+            "in flow over a negative z-index"
+        );
+        assert_eq!(engine.hit_test(150.0, 5.0), Some(t));
+        assert_eq!(px(&pixels, 200, 150, 15), [0x00, 0xff, 0x00, 0xff]);
+        assert_eq!(engine.hit_test(150.0, 15.0), Some(n));
     }
 
     #[test]
