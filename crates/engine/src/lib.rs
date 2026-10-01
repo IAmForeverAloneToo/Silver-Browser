@@ -44,7 +44,8 @@ use std::collections::HashMap;
 use dom::Node;
 use layout::{DocumentLayout, Fragment, FragmentKind};
 use paint::{
-    DisplayItem, SCROLLBAR_THUMB, SCROLLBAR_TRACK, Viewport, paint_fragments_in, scrollbar_thumb,
+    DisplayItem, Rect, SCROLLBAR_THUMB, SCROLLBAR_TRACK, Step, Viewport, padding_box,
+    paint_fragments_in, paint_order, scrollbar_thumb,
 };
 use render::{RenderBackend as _, SoftwareBackend};
 use style::computed::Overflow;
@@ -615,24 +616,65 @@ impl Engine {
     }
 
     /// The element under the viewport point and the clipping boxes
-    /// around it, outermost first (the box itself last, when it clips):
-    /// what [`Engine::hit_test`] answers with and what the wheel chains
-    /// through (M10.5). Each scroll container's offset is added to the
-    /// point on the way into its content.
+    /// around it, outermost first (the box itself last, when the point
+    /// is inside its padding box): what [`Engine::hit_test`] answers
+    /// with and what the wheel chains through (M10.5).
+    ///
+    /// The steps of [`paint_order`] are read in paint order and the last
+    /// one under the point wins (M11): a box's or a text's step counts
+    /// when its rectangle holds the point and so does the innermost clip
+    /// in force, since content clipped away is not hit. The steps are
+    /// in viewport coordinates with every scroll offset applied, so the
+    /// point is compared as it is. A scrollbar step is passed over: the
+    /// bar is an indicator over its container, not a control.
     fn hit(&mut self, x: f32, y: f32) -> Option<(usize, Vec<usize>)> {
-        let (width, _) = self.viewport;
+        let (width, height) = self.viewport;
         if width == 0 || !x.is_finite() || !y.is_finite() {
             return None;
         }
-        let py = y + self.scroll_y;
         let offsets: HashMap<usize, f32> = self
             .element_scroll
             .iter()
             .map(|(node, scroll)| (*node, scroll.y))
             .collect();
+        let viewport = Viewport {
+            width: width as f32,
+            height: height as f32,
+            scroll_y: self.scroll_y,
+        };
         let layout = self.layout(width as f32);
+        // The clips in force, outermost first: the chain around a hit.
+        let mut clips: Vec<(usize, Rect)> = Vec::new();
+        let under = |rect: &Rect, clips: &[(usize, Rect)]| {
+            rect.contains(x, y) && clips.last().is_none_or(|(_, clip)| clip.contains(x, y))
+        };
+        let chain = |clips: &[(usize, Rect)]| clips.iter().map(|(node, _)| *node).collect();
         let mut hit = None;
-        hit_in(&layout.roots, x, py, &offsets, &mut Vec::new(), &mut hit);
+        for step in paint_order(&layout.roots, viewport, &offsets) {
+            match step {
+                Step::Box { fragment, rect } => {
+                    if under(&rect, &clips) {
+                        let mut chain: Vec<usize> = chain(&clips);
+                        if fragment.style.overflow.clips()
+                            && padding_box(fragment, rect).contains(x, y)
+                        {
+                            chain.push(fragment.node);
+                        }
+                        hit = Some((fragment.node, chain));
+                    }
+                }
+                Step::Text { fragment, rect, .. } => {
+                    if under(&rect, &clips) {
+                        hit = Some((fragment.node, chain(&clips)));
+                    }
+                }
+                Step::PushClip { node, rect } => clips.push((node, rect)),
+                Step::PopClip => {
+                    clips.pop();
+                }
+                Step::Scrollbar { .. } => {}
+            }
+        }
         hit
     }
 
@@ -650,53 +692,6 @@ impl Engine {
                 return Some(href.clone());
             }
             node = flat.parent_element(node)?;
-        }
-    }
-}
-
-/// Finds the last fragment in paint order containing the document
-/// point, descending into every box whose content could be at the
-/// point: all of them, unless the box clips, in which case only when
-/// the point is inside its padding box — and then with the box's scroll
-/// offset added to the point (M10.5), the box joining `chain`, the
-/// clipping boxes around the content being searched. A hit records the
-/// chain around it.
-fn hit_in(
-    fragments: &[Fragment],
-    x: f32,
-    y: f32,
-    offsets: &HashMap<usize, f32>,
-    chain: &mut Vec<usize>,
-    hit: &mut Option<(usize, Vec<usize>)>,
-) {
-    for f in fragments {
-        match f.kind {
-            FragmentKind::Box => {
-                let clips = f.style.overflow.clips();
-                if clips && !padding_box_contains(f, x, y) {
-                    continue;
-                }
-                if clips {
-                    chain.push(f.node);
-                }
-                if f.contains(x, y) {
-                    *hit = Some((f.node, chain.clone()));
-                }
-                let offset = if clips {
-                    offsets.get(&f.node).copied().unwrap_or(0.0)
-                } else {
-                    0.0
-                };
-                hit_in(&f.children, x, y + offset, offsets, chain, hit);
-                if clips {
-                    chain.pop();
-                }
-            }
-            FragmentKind::Text(_) => {
-                if f.contains(x, y) {
-                    *hit = Some((f.node, chain.clone()));
-                }
-            }
         }
     }
 }
@@ -725,14 +720,6 @@ fn approach(y: &mut f32, target: f32) -> bool {
     }
     *y += remaining * SCROLL_TICK_FRACTION;
     true
-}
-
-/// Whether the point is within the box's padding box — what `overflow`
-/// clips to (CSS2 §11.1.1), a side whose style paints nothing counting
-/// as zero-width.
-fn padding_box_contains(f: &Fragment, x: f32, y: f32) -> bool {
-    let [top, right, bottom, left] = f.style.used_border_width();
-    x >= f.x + left && x < f.x + f.w - right && y >= f.y + top && y < f.y + f.h - bottom
 }
 
 /// Collects the concatenated text of every `<style>` element in the
@@ -1537,6 +1524,44 @@ mod tests {
         // The 40px text line extends past the 10px box, but is clipped
         // there: viewport y 20 (document 120) is the tail, not the text.
         assert_eq!(name(engine.hit_test(5.0, 20.0)), Some("tail".to_string()));
+    }
+
+    #[test]
+    fn a_clipping_box_is_hit_on_its_border_but_scrolls_only_from_its_padding_box() {
+        // A 100px scroll container with a 10px border and 300px of
+        // content: the pointer on the border is over the box, since the
+        // border is the box's own (what its step paints), but the wheel
+        // there does not scroll it, the border lying outside what clips
+        // and scrolls (CSS2 §11.1.1); inside the padding box, the
+        // content is hit and the wheel scrolls the box.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0 }
+                    .s { overflow: auto; height: 100px; width: 100px; margin: 0;
+                         border: 10px solid #000000 }
+                    .t { height: 300px; margin: 0 }</style>\
+             <div class=s id=s><p class=t id=t></p></div>",
+        );
+        engine.frame(200, 200);
+        let s = node_by_id(&engine, "s");
+        let t = node_by_id(&engine, "t");
+        assert_eq!(engine.hit_test(5.0, 50.0), Some(s), "on the left border");
+        assert_eq!(engine.hit_test(50.0, 5.0), Some(s), "on the top border");
+        assert_eq!(engine.hit_test(50.0, 50.0), Some(t), "inside: the content");
+        assert_eq!(engine.hit_test(115.0, 50.0), Some(s), "on the right border");
+        engine.wheel(5.0, 50.0, 40.0);
+        assert_eq!(
+            engine.element_scroll_target(s),
+            0.0,
+            "the border scrolls nothing"
+        );
+        assert_eq!(
+            engine.scroll_target(),
+            0.0,
+            "and the page has nothing to scroll"
+        );
+        engine.wheel(50.0, 50.0, 40.0);
+        assert_eq!(engine.element_scroll_target(s), 40.0);
     }
 
     #[test]

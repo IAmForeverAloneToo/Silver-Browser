@@ -11,13 +11,19 @@
 //! a scroll container: [`paint_fragments_in`] takes each one's scroll
 //! offset ([`ScrollOffsets`]), moves its content up by it inside the
 //! clip, and draws an overlay scrollbar over its padding box's right
-//! edge when it can scroll. Two earlier stopgaps remain, retained rather than deleted
+//! edge when it can scroll. Since M11 the walk itself lives in [`order`]:
+//! [`paint_order`] lists the steps — boxes, texts, clips, scrollbars —
+//! in viewport coordinates, and this module only turns them into
+//! display items, while the engine's hit test reads the same steps
+//! backwards. Two earlier stopgaps remain, retained rather than deleted
 //! (each milestone's own exit criteria asked for the *active* pipeline
 //! to move on, not for the previous stage's code to disappear):
 //! [`paint_document`] (M1) walks a `dom::Node` directly with hardcoded
 //! per-tag presentation, and [`paint_styled_document`] (M5) walks a
 //! `style::StyledDom` with real cascaded colors/font-sizes but still no
 //! real box model.
+
+pub mod order;
 
 use std::collections::HashMap;
 
@@ -26,6 +32,8 @@ use layout::{Fragment, FragmentKind};
 use style::StyledDom;
 use style::computed::{BOTTOM, BorderStyle, Color, Display, LEFT, Overflow, RIGHT, TOP};
 use style::selector_matching::FlatChild;
+
+pub use order::{Rect, Step, padding_box, paint_order};
 
 /// The scrollbar track's colour, the viewport's and an element's alike.
 pub const SCROLLBAR_TRACK: Rgba8 = Rgba8::rgb(0x31, 0x32, 0x44);
@@ -406,7 +414,9 @@ pub fn paint_fragments(roots: &[Fragment], viewport: Viewport) -> DisplayList {
 /// when its content overflows, `hidden` never — an overlay scrollbar is
 /// drawn over its padding box's right edge, after its content, as an
 /// indicator that takes no space from it (vertical only, like the
-/// viewport's; a control from M26).
+/// viewport's; a control from M26). The list follows [`paint_order`]
+/// step for step (M11): what is painted, where and in which order is
+/// decided there, once for painting and hit testing both.
 pub fn paint_fragments_in(
     roots: &[Fragment],
     viewport: Viewport,
@@ -417,23 +427,48 @@ pub fn paint_fragments_in(
     // root's first box child, in an HTML document — does instead and is
     // not painted on the body itself. The canvas is white otherwise.
     let canvas = canvas_background(roots);
-    let mut painter = Painter {
-        items: vec![DisplayItem::Rect {
-            x: 0.0,
-            y: 0.0,
-            w: viewport.width,
-            h: viewport.height,
-            color: canvas.map_or(Rgba8::rgb(0xff, 0xff, 0xff), |f| {
-                to_rgba8(f.style.background_color)
+    let canvas_node = canvas.map(|f| f.node);
+    let mut items = vec![DisplayItem::Rect {
+        x: 0.0,
+        y: 0.0,
+        w: viewport.width,
+        h: viewport.height,
+        color: canvas.map_or(Rgba8::rgb(0xff, 0xff, 0xff), |f| {
+            to_rgba8(f.style.background_color)
+        }),
+    }];
+    for step in paint_order(roots, viewport, offsets) {
+        match step {
+            Step::Box { fragment, rect } => push_box(&mut items, fragment, rect, canvas_node),
+            Step::Text {
+                fragment, baseline, ..
+            } => {
+                if let FragmentKind::Text(text) = &fragment.kind
+                    && !text.trim().is_empty()
+                {
+                    items.push(DisplayItem::Text {
+                        text: text.clone(),
+                        x: fragment.x,
+                        y: baseline,
+                        size: fragment.style.font_size_px,
+                        color: to_rgba8(fragment.style.color),
+                    });
+                }
+            }
+            Step::PushClip { rect, .. } => items.push(DisplayItem::PushClip {
+                x: rect.x,
+                y: rect.y,
+                w: rect.w,
+                h: rect.h,
             }),
-        }],
-        viewport,
-        dy: -viewport.scroll_y,
-        offsets,
-        canvas_node: canvas.map(|f| f.node),
-    };
-    painter.paint_all(roots);
-    let mut items = painter.items;
+            Step::PopClip => items.push(DisplayItem::PopClip),
+            Step::Scrollbar {
+                fragment,
+                rect,
+                offset,
+            } => push_scrollbar(&mut items, fragment, rect, offset),
+        }
+    }
 
     // A document with nothing in it at all (an empty or failed load) is
     // never a silently blank window. A document whose content merely
@@ -470,142 +505,55 @@ fn canvas_background(roots: &[Fragment]) -> Option<&Fragment> {
     })
 }
 
-/// One walk over a fragment tree for one viewport.
-struct Painter<'a> {
-    items: Vec<DisplayItem>,
-    viewport: Viewport,
-    /// From a document `y` to the viewport's: the viewport's scroll
-    /// offset and, inside a scroll container, its offset too (M10.5),
-    /// negated.
-    dy: f32,
-    offsets: &'a dyn ScrollOffsets,
-    /// The element whose background became the canvas's, and so is not
-    /// painted on its own box again.
-    canvas_node: Option<usize>,
+/// A scroll container's overlay scrollbar (M10.5) over the right edge
+/// of its padding box `rect`, in viewport coordinates, when it can
+/// scroll: `overflow: scroll` always, `auto` only with content past
+/// the box, `hidden` never.
+fn push_scrollbar(items: &mut Vec<DisplayItem>, f: &Fragment, rect: Rect, offset: f32) {
+    let max = f.max_scroll();
+    let shows = match f.style.overflow {
+        Overflow::Scroll => true,
+        Overflow::Auto => max > 0.0,
+        Overflow::Hidden | Overflow::Visible => false,
+    };
+    let Rect { x, y, w, h } = rect;
+    if !shows || w < ELEMENT_SCROLLBAR_WIDTH || h <= 0.0 {
+        return;
+    }
+    let bar_x = x + w - ELEMENT_SCROLLBAR_WIDTH;
+    items.push(DisplayItem::Rect {
+        x: bar_x,
+        y,
+        w: ELEMENT_SCROLLBAR_WIDTH,
+        h,
+        color: SCROLLBAR_TRACK,
+    });
+    let (thumb_y, thumb_h) = scrollbar_thumb(h, max, offset);
+    items.push(DisplayItem::Rect {
+        x: bar_x + 1.0,
+        y: y + thumb_y,
+        w: ELEMENT_SCROLLBAR_WIDTH - 2.0,
+        h: thumb_h,
+        color: SCROLLBAR_THUMB,
+    });
 }
 
-impl Painter<'_> {
-    fn paint_all(&mut self, fragments: &[Fragment]) {
-        for f in fragments {
-            self.paint(f);
-        }
-    }
-
-    /// Whether a document-space rectangle, as scrolled so far, meets
-    /// the viewport at all.
-    fn meets_viewport(&self, x: f32, y: f32, w: f32, h: f32) -> bool {
-        let v = self.viewport;
-        let y = y + self.dy;
-        x < v.width && x + w > 0.0 && y < v.height && y + h > 0.0
-    }
-
-    fn paint(&mut self, f: &Fragment) {
-        match &f.kind {
-            FragmentKind::Box => {
-                let clips = f.style.overflow.clips();
-                let in_view = self.meets_viewport(f.x, f.y, f.w, f.h);
-                if clips && !in_view {
-                    // Nothing under a clip can show where the clip
-                    // itself does not.
-                    return;
-                }
-                if in_view {
-                    self.paint_box(f);
-                }
-                if clips {
-                    let (x, y, w, h) = padding_box(f);
-                    let y = y + self.dy;
-                    self.items.push(DisplayItem::PushClip { x, y, w, h });
-                    // The content is scrolled; the box, its clip and its
-                    // scrollbar are not.
-                    let offset = self.offsets.offset(f.node);
-                    self.dy -= offset;
-                    self.paint_all(&f.children);
-                    self.dy += offset;
-                    self.push_scrollbar(f, (x, y, w, h), offset);
-                    self.items.push(DisplayItem::PopClip);
-                } else {
-                    self.paint_all(&f.children);
-                }
-            }
-            FragmentKind::Text(text) => {
-                if !text.trim().is_empty() && self.meets_viewport(f.x, f.top(), f.w, f.h) {
-                    self.items.push(DisplayItem::Text {
-                        text: text.clone(),
-                        x: f.x,
-                        // A text fragment's `y` is already its baseline.
-                        y: f.y + self.dy,
-                        size: f.style.font_size_px,
-                        color: to_rgba8(f.style.color),
-                    });
-                }
-            }
-        }
-    }
-
-    /// A scroll container's overlay scrollbar (M10.5) over the right
-    /// edge of its padding box `(x, y, w, h)`, in viewport coordinates,
-    /// when it can scroll: `overflow: scroll` always, `auto` only with
-    /// content past the box, `hidden` never.
-    fn push_scrollbar(&mut self, f: &Fragment, padding_box: (f32, f32, f32, f32), offset: f32) {
-        let max = f.max_scroll();
-        let shows = match f.style.overflow {
-            Overflow::Scroll => true,
-            Overflow::Auto => max > 0.0,
-            Overflow::Hidden | Overflow::Visible => false,
-        };
-        let (x, y, w, h) = padding_box;
-        if !shows || w < ELEMENT_SCROLLBAR_WIDTH || h <= 0.0 {
-            return;
-        }
-        let bar_x = x + w - ELEMENT_SCROLLBAR_WIDTH;
-        self.items.push(DisplayItem::Rect {
-            x: bar_x,
-            y,
-            w: ELEMENT_SCROLLBAR_WIDTH,
-            h,
-            color: SCROLLBAR_TRACK,
-        });
-        let (thumb_y, thumb_h) = scrollbar_thumb(h, max, offset);
-        self.items.push(DisplayItem::Rect {
-            x: bar_x + 1.0,
-            y: y + thumb_y,
-            w: ELEMENT_SCROLLBAR_WIDTH - 2.0,
-            h: thumb_h,
-            color: SCROLLBAR_THUMB,
+/// A box's own background and border over its border box `rect`, in
+/// viewport coordinates. `canvas_node` is the element whose background
+/// became the canvas's (CSS2 §14.2), not painted on its own box again.
+fn push_box(items: &mut Vec<DisplayItem>, f: &Fragment, rect: Rect, canvas_node: Option<usize>) {
+    if f.style.background_color.a > 0.0 && canvas_node != Some(f.node) {
+        items.push(DisplayItem::Rect {
+            x: rect.x,
+            y: rect.y,
+            w: rect.w,
+            h: rect.h,
+            color: to_rgba8(f.style.background_color),
         });
     }
-
-    /// A box's own background and border, in viewport coordinates.
-    fn paint_box(&mut self, f: &Fragment) {
-        let y = f.y + self.dy;
-        if f.style.background_color.a > 0.0 && self.canvas_node != Some(f.node) {
-            self.items.push(DisplayItem::Rect {
-                x: f.x,
-                y,
-                w: f.w,
-                h: f.h,
-                color: to_rgba8(f.style.background_color),
-            });
-        }
-        if f.style.border_style.iter().any(|s| s.paints()) {
-            push_border(&mut self.items, f, y);
-        }
+    if f.style.border_style.iter().any(|s| s.paints()) {
+        push_border(items, f, rect.y);
     }
-}
-
-/// The padding box of a box fragment, in document coordinates: the
-/// border box inset by the border, zero-width on a side whose style
-/// paints nothing (CSS2 §8.5.3). What `overflow` clips to (CSS2
-/// §11.1.1).
-fn padding_box(f: &Fragment) -> (f32, f32, f32, f32) {
-    let [top, right, bottom, left] = f.style.used_border_width();
-    (
-        f.x + left,
-        f.y + top,
-        (f.w - left - right).max(0.0),
-        (f.h - top - bottom).max(0.0),
-    )
 }
 
 /// The colour a border's darker tone is: two thirds of each channel.
