@@ -182,10 +182,28 @@ tag-styled, not cascade-styled — T0 solidifies at M9).
   for the fuller writeup, including the documented scope cuts (bidi
   "level 1"; CJK-only fallback).
 
-Verified per the vertical-slice rule at each milestone: 314 tests
-workspace-wide (163 in `style`, 33 in `layout`, 27 in `text`), clippy
-clean (`-D warnings`, every target), smoke run. Toolchain: rustup
-stable MSVC, cargo 1.98.1.
+- **Review of M0–M8** (done 2026-10-01): before M9, the finished
+  milestones were read for defects crate by crate and the parsers were
+  fuzzed. Real defects in every layer, all fixed with regression tests
+  and none changing a milestone's scope: three ways for a page to abort
+  the process (nesting depth in `html` and `dom`; glyph masks and frame
+  buffers sized from a hostile `font-size` or window), exponential
+  selector matching and quadratic paths in the tokenizers and the tree
+  builder, HTML conformance gaps (entities, bogus comments, implied end
+  tags, `<pre>`), CSS nesting that lost the rules after a block,
+  `inherit`/`initial`/`unset` unimplemented, a UA sheet that did not
+  make `<div>` a block, pairwise margin collapsing that was wrong for
+  three margins or an empty box, and 66 of the 95 text-dependent tests
+  passing vacuously on a machine without a system font (`text` now
+  bundles DejaVu Sans for the tests). The bounds introduced and the
+  items deferred to the milestones they belong to are listed in
+  `docs/architecture.md` "Current state". The fuzz targets live under
+  `fuzz/` and run in CI (T2.1 started, T2.3 in its short form).
+
+Verified per the vertical-slice rule at each milestone: 370 tests
+workspace-wide (177 in `style`, 42 in `layout`, 42 in `html`, 30 in
+`text`), clippy clean (`-D warnings`, every target), smoke run.
+Toolchain: 1.98.1, pinned by `rust-toolchain.toml`.
 Build target dir outside OneDrive (`%LOCALAPPDATA%\silver-browser\target`)
 — currently only by passing `CARGO_TARGET_DIR` manually each session; no
 `.cargo/config.toml` enforces this yet (worth adding before it's
@@ -1167,9 +1185,15 @@ gold-plate unstarted work.
 - [ ] T2.1 cargo-fuzz targets: `url_parse` (M14), `css_tokenize` (M3 —
        start now), `css_parse` (M3), `selector_parse` (M4),
        `html_tokenizer` + `html_parse` (M2), `font_data` (M1).
+       Started 2026-10-01: `fuzz/` has `html_parse`, `css_stylesheet`
+       (tokenizer, stylesheet and style attribute), `selector_parse`,
+       `style_document` and `pipeline`; `url_parse` and `font_data`
+       wait for their milestones.
 - [ ] T2.2 Seed corpora from WPT + real-site captures; corpus committed.
 - [ ] T2.3 Coverage-guided runs in CI nightly; crash → reproducer test
-       before anything else.
+       before anything else. Since 2026-10-01 CI runs every target for a
+       minute a push and half an hour weekly, the corpus carried in the
+       actions cache.
 - [ ] T2.4 Structured fuzzing for the JS boundary (M24+): API call
        sequences, not just strings.
 

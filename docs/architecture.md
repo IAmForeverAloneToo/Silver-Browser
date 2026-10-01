@@ -229,3 +229,66 @@ and `engine` each gained their own M5-specific tests, including the
 M5.9 acceptance scenario at the full-pipeline level (a color-changing
 rule visibly changes the rendered frame buffer). Still stubs: `layout`,
 `net`. Next milestone: box tree + block layout v1 (M6).
+
+Review of M0–M8 (2026-10-01): before M9 started, the finished
+milestones were read for defects crate by crate and the parsers were
+fuzzed. Real defects turned up in every layer; all are fixed with
+regression tests, and no milestone's scope changed. The bounds this
+introduced are the ones hostile input now meets. `html` caps nesting
+at `MAX_DEPTH` (512; an element opened past it closes the innermost
+one first, so the tree keeps its shape and a page of 100,000 nested
+`<div>`s no longer aborts the process), and `dom` drops and walks
+trees iteratively. `css` bounds at-rule nesting (`MAX_NESTING`, 128;
+deeper blocks are kept raw), `style` bounds selector nesting
+(`MAX_NESTING`, 32), and the cascade parses every selector once per
+stylesheet rather than once per element. `FlatDom::build`, the
+cascade's walk and the matcher are iterative; the matcher memoises
+the `(compound, element)` pairs that lead nowhere, so a chain of
+descendant combinators over a deep tree is polynomial rather than
+exponential, and `:nth-child(… of S)` ranks a parent's children once
+(`Matcher`). Lengths are finite and clamped to `MAX_LENGTH_PX`
+(2^25 − 1), and are dropped where the spec forbids a negative one.
+`text::rasterize_glyph` refuses a mask over `MAX_MASK_PIXELS` and a
+non-finite or non-positive size; `render` refuses a frame over
+`MAX_FRAME_PIXELS` and bounds its glyph-mask cache (64 MiB, cleared per
+document); the shell presents nothing rather than an empty buffer.
+Conformance: the HTML tokenizer handles numeric references without a
+`;`, the windows-1252 remap, the legacy named references and the
+attribute exception, `<?…>` as a bogus comment, abrupt comments, CR/LF
+normalisation and `<pre>`'s leading newline; the tree builder implies
+end tags for `li`, `dd`/`dt`, `option`, table rows and cells and `p`
+with the spec's scopes, and honours `/>` only on void and foreign
+elements. The CSS tokenizer preprocesses its input (css-syntax-3
+§3.3); the parser keeps the rules after a nested block and recovers
+from a `{}` block inside a declaration. Selectors reject a trailing
+comma and a numeric attribute value, treat `:is()` and `:where()` as
+forgiving, and apply selectors-4 §6.2 to an empty substring value;
+`An+B` survives multibyte input, handles signs and the `n-` form. The
+cascade resolves `inherit`, `initial` and `unset`, ignores an empty
+`border`, and rejects negative padding, border width and font size.
+The UA sheet makes `div` and the other block-level HTML elements
+blocks (a page of `<div>`s laid out as inline content before). Margin
+collapsing carries adjoining margins as a set (`AdjoiningMargins`,
+largest positive and largest negative), so three margins of mixed sign
+and a self-collapsing box resolve per CSS2 §8.3.1 instead of pairwise;
+an empty inline no longer separates margins; over-constrained `auto`
+margins are zero; an overflowing line is start-aligned whatever
+`text-align` says; blank lines in `pre` take a line each; a no-break
+space is part of its word; `bidi_reorder` keeps every paragraph.
+Tests: 66 of the 95 tests in `layout`, `paint`, `render`, `engine` and
+`text` returned early on a machine without a system font and so passed
+vacuously. `text` now bundles DejaVu Sans (`fonts/`, under the
+Bitstream Vera licence beside it) as `text::TEST_FONT`; every test
+measures the same font on every machine, and a missing font is a
+failure. 370 tests workspace-wide. Fuzzing: five cargo-fuzz targets
+under `fuzz/` (`html_parse`, `css_stylesheet`, `selector_parse`,
+`style_document`, `pipeline`), run on every push and weekly in CI,
+clean after the fixes. Noted for the milestones they belong to, not
+fixed here: `rustybuzz` re-parses the face on every shape or measure
+call (M9.6's bench decides whether that matters); a text fragment's
+`y` is its baseline and `h` the font size, which M9.4's hit testing
+will need as ascent plus descent; layout recursion is bounded only by
+the parser's depth cap (a tree built by script is M25's concern);
+`rustybuzz` and `ttf-parser` are unmaintained (RUSTSEC-2026-0192 and
+RUSTSEC-2026-0206, acknowledged in `deny.toml`), which decision D7
+takes up.
