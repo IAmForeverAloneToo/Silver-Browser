@@ -13,3 +13,7 @@ paint.workspace = true
 render.workspace = true
 style.workspace = true
 text.workspace = true
+
+[[bench]]
+name = "scroll"
+harness = false
