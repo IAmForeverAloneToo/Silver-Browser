@@ -33,13 +33,19 @@
 //!   anything outside it), and resumes a fresh line afterward. Same
 //!   observable "splits the run" effect, simpler implementation.
 //! * `white-space: pre`/`pre-wrap` preserve literal newlines as forced
-//!   breaks (and `pre` disables auto-wrap entirely) but *don't* preserve
-//!   runs of plain spaces/tabs at their literal width — those still
-//!   collapse to a single breakable gap, same as `normal`. Getting
-//!   multi-space runs to render at their true width needs measuring
-//!   whitespace itself, not just words; the common real reason to reach
-//!   for `white-space: pre` — preserving *line breaks* in something
-//!   like a code block — works correctly without that refinement.
+//!   breaks (and `pre` disables auto-wrap entirely), a blank line among
+//!   them included (it is a line box of the font's height, css-text-3
+//!   §4.1.3), but *don't* preserve runs of plain spaces/tabs at their
+//!   literal width — those still collapse to a single breakable gap,
+//!   same as `normal`. Getting multi-space runs to render at their true
+//!   width needs measuring whitespace itself, not just words; the
+//!   common real reason to reach for `white-space: pre` — preserving
+//!   *line breaks* in something like a code block — works correctly
+//!   without that refinement.
+//! * Collapsible white space is what css-text-3 §4.1 says it is: the
+//!   space, tab, newline, carriage return and form feed. A no-break
+//!   space is a character of the word it is in, measured and drawn
+//!   with it, never a break opportunity.
 //! * `line-height` and vertical-align of replaced content are M8/M42
 //!   territory.
 
@@ -66,8 +72,9 @@ enum InlineItem<'a> {
     },
     /// A literal newline under `white-space: pre`/`pre-wrap`/`pre-line`
     /// — ends the current line unconditionally, however much of
-    /// `available_width` is left.
-    ForcedBreak,
+    /// `available_width` is left. On an empty line it *is* the line: a
+    /// blank line of the text's own font height.
+    ForcedBreak(&'a ComputedStyle),
     /// See the module doc's block-in-inline note.
     Block(&'a LayoutBox),
 }
@@ -127,18 +134,27 @@ pub(crate) fn layout_inline(
                 }
                 line.push((text, *width, style));
             }
-            InlineItem::ForcedBreak => {
+            InlineItem::ForcedBreak(style) => {
                 // `white-space: pre`/`pre-wrap`/`pre-line` (M8.4): a
-                // literal newline ends the line unconditionally.
-                flush_line(
-                    &mut line,
-                    line_width,
-                    available_width,
-                    text_align,
-                    fonts,
-                    &mut y,
-                    &mut fragments,
-                );
+                // literal newline ends the line unconditionally. A
+                // break on an empty line is a blank line, as tall as
+                // the strut of the text it is in (css-text-3 §4.1.3) —
+                // a code block's blank lines are not nothing.
+                if line.is_empty() {
+                    y += fonts
+                        .metrics_for_text(" ", style.font_size_px)
+                        .line_height();
+                } else {
+                    flush_line(
+                        &mut line,
+                        line_width,
+                        available_width,
+                        text_align,
+                        fonts,
+                        &mut y,
+                        &mut fragments,
+                    );
+                }
                 line_width = 0.0;
             }
             InlineItem::Block(b) => {
@@ -154,14 +170,21 @@ pub(crate) fn layout_inline(
                 line_width = 0.0;
 
                 let block = layout_block(b, available_width, fonts);
-                y += block.margin_top;
+                // A self-collapsing block's one margin set counts once;
+                // nothing adjoins it here, so it is simply spacing.
+                let (above, below) = if block.self_collapsing {
+                    (block.margin_top.resolve(), 0.0)
+                } else {
+                    (block.margin_top.resolve(), block.margin_bottom.resolve())
+                };
+                y += above;
                 fragments.extend(
                     block
                         .fragments
                         .into_iter()
                         .map(|f| f.translated(block.margin_left, y)),
                 );
-                y += block.height + block.margin_bottom;
+                y += block.height + below;
             }
         }
     }
@@ -212,7 +235,7 @@ fn collect_inline_items<'a>(
                 let base_direction = to_text_direction(b.style.direction);
                 for (i, line) in lines.into_iter().enumerate() {
                     if i > 0 && preserves_newlines {
-                        out.push(InlineItem::ForcedBreak);
+                        out.push(InlineItem::ForcedBreak(&b.style));
                     }
                     // Bidi reordering (M8.3), one paragraph per literal
                     // line. `direction` is always a definite Ltr/Rtl by
@@ -224,7 +247,7 @@ fn collect_inline_items<'a>(
                     // direction only follows content when nothing set
                     // it, which this engine doesn't yet do.
                     let reordered = text::bidi_reorder(line, Some(base_direction));
-                    for word in reordered.split_whitespace() {
+                    for word in split_css_spaces(&reordered) {
                         out.push(InlineItem::Word {
                             text: word.to_string(),
                             width: measure_word(word, &b.style, fonts),
@@ -238,6 +261,18 @@ fn collect_inline_items<'a>(
             BoxKind::Block => out.push(InlineItem::Block(b)),
         }
     }
+}
+
+/// css-text-3 §4.1's collapsible white space: space, tab, line feed,
+/// carriage return, form feed — not Unicode's `White_Space`, which
+/// would make a no-break space breakable and collapsible.
+pub(crate) fn is_css_space(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{c}')
+}
+
+/// The words of `text`, split at css-text-3 collapsible white space.
+fn split_css_spaces(text: &str) -> impl Iterator<Item = &str> {
+    text.split(is_css_space).filter(|w| !w.is_empty())
 }
 
 /// `style::computed::Direction` → `text::Direction` (M8.3): `text` sits
@@ -345,10 +380,13 @@ fn flush_line(
     }
     let baseline_y = *y + max_ascent;
 
+    // css-text-3 §7.1: contents too long for the line box are
+    // start-aligned, never pushed left past its edge.
+    let slack = (available_width - line_width).max(0.0);
     let mut x = match text_align {
         TextAlign::Left => 0.0,
-        TextAlign::Right => available_width - line_width,
-        TextAlign::Center => (available_width - line_width) / 2.0,
+        TextAlign::Right => slack,
+        TextAlign::Center => slack / 2.0,
     };
     for (i, (text, width, style)) in line.iter().enumerate() {
         if i > 0 {
@@ -408,6 +446,11 @@ fn emit_letter_spaced(
 mod tests {
     use super::*;
 
+    /// The bundled test font, so that every machine measures the same.
+    fn test_fonts() -> FontCollection {
+        FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0).expect("the bundled font parses")
+    }
+
     fn text_box(text: &str, font_size_px: f32) -> LayoutBox {
         let style = ComputedStyle {
             font_size_px,
@@ -440,9 +483,7 @@ mod tests {
 
     #[test]
     fn single_word_fits_on_one_line() {
-        let Ok(fonts) = FontCollection::new() else {
-            return;
-        };
+        let fonts = test_fonts();
         let (fragments, height) =
             layout_inline(&[text_box("hello", 16.0)], 1000.0, TextAlign::Left, &fonts);
         assert_eq!(fragments.len(), 1);
@@ -451,13 +492,9 @@ mod tests {
 
     #[test]
     fn narrow_width_wraps_each_word_onto_its_own_line() {
-        let Ok(fonts) = FontCollection::new() else {
-            return;
-        };
+        let fonts = test_fonts();
         let word_width = fonts.measure("aaaa", 16.0);
-        if word_width <= 0.0 {
-            return; // no measurable glyphs for this system font
-        }
+        assert!(word_width > 0.0);
         let items = [text_box("aaaa bbbb cccc", 16.0)];
         // Just over one word wide: a second word never fits alongside it.
         let (fragments, height) = layout_inline(&items, word_width + 1.0, TextAlign::Left, &fonts);
@@ -470,9 +507,7 @@ mod tests {
 
     #[test]
     fn wide_enough_width_keeps_words_on_one_line() {
-        let Ok(fonts) = FontCollection::new() else {
-            return;
-        };
+        let fonts = test_fonts();
         let items = [text_box("aaaa bbbb cccc", 16.0)];
         let (fragments, _height) = layout_inline(&items, 10_000.0, TextAlign::Left, &fonts);
         assert_eq!(texts_of(&fragments), vec!["aaaa", "bbbb", "cccc"]);
@@ -482,9 +517,7 @@ mod tests {
 
     #[test]
     fn mixed_font_sizes_on_one_line_share_a_baseline() {
-        let Ok(fonts) = FontCollection::new() else {
-            return;
-        };
+        let fonts = test_fonts();
         let items = [text_box("small", 10.0), text_box("BIG", 40.0)];
         let (fragments, height) = layout_inline(&items, 10_000.0, TextAlign::Left, &fonts);
         assert_eq!(fragments.len(), 2);
@@ -508,13 +541,9 @@ mod tests {
 
     #[test]
     fn text_align_left_right_and_center() {
-        let Ok(fonts) = FontCollection::new() else {
-            return;
-        };
+        let fonts = test_fonts();
         let width = fonts.measure("hi", 16.0);
-        if width <= 0.0 {
-            return;
-        }
+        assert!(width > 0.0);
         let available = 1000.0;
 
         let (left, _) = layout_inline(&[text_box("hi", 16.0)], available, TextAlign::Left, &fonts);
@@ -535,9 +564,7 @@ mod tests {
 
     #[test]
     fn block_in_inline_splits_the_run_without_panicking() {
-        let Ok(fonts) = FontCollection::new() else {
-            return;
-        };
+        let fonts = test_fonts();
         let block = LayoutBox {
             style: ComputedStyle::default(),
             kind: BoxKind::Block,
@@ -572,9 +599,7 @@ mod tests {
 
     #[test]
     fn empty_input_produces_no_fragments_and_zero_height() {
-        let Ok(fonts) = FontCollection::new() else {
-            return;
-        };
+        let fonts = test_fonts();
         let (fragments, height) = layout_inline(&[], 100.0, TextAlign::Left, &fonts);
         assert!(fragments.is_empty());
         assert_eq!(height, 0.0);
@@ -590,9 +615,7 @@ mod tests {
 
     #[test]
     fn text_transform_uppercase_and_capitalize() {
-        let Ok(fonts) = FontCollection::new() else {
-            return;
-        };
+        let fonts = test_fonts();
         let style = |t| ComputedStyle {
             text_transform: t,
             ..ComputedStyle::default()
@@ -623,9 +646,7 @@ mod tests {
 
     #[test]
     fn white_space_pre_line_preserves_newlines_as_forced_breaks() {
-        let Ok(fonts) = FontCollection::new() else {
-            return;
-        };
+        let fonts = test_fonts();
         let style = ComputedStyle {
             white_space: WhiteSpace::PreLine,
             ..ComputedStyle::default()
@@ -654,9 +675,7 @@ mod tests {
 
     #[test]
     fn white_space_normal_does_not_break_on_newlines() {
-        let Ok(fonts) = FontCollection::new() else {
-            return;
-        };
+        let fonts = test_fonts();
         // The default (`Normal`) — a literal newline is just ordinary
         // collapsible whitespace, not a forced break.
         let (fragments, _) =
@@ -667,13 +686,9 @@ mod tests {
 
     #[test]
     fn white_space_pre_never_wraps_even_when_too_narrow() {
-        let Ok(fonts) = FontCollection::new() else {
-            return;
-        };
+        let fonts = test_fonts();
         let word_width = fonts.measure("aaaa", 16.0);
-        if word_width <= 0.0 {
-            return;
-        }
+        assert!(word_width > 0.0);
         let style = ComputedStyle {
             white_space: WhiteSpace::Pre,
             font_size_px: 16.0,
@@ -695,9 +710,7 @@ mod tests {
 
     #[test]
     fn word_spacing_adds_extra_gap_between_words_not_within_them() {
-        let Ok(fonts) = FontCollection::new() else {
-            return;
-        };
+        let fonts = test_fonts();
         let normal = ComputedStyle {
             font_size_px: 16.0,
             ..ComputedStyle::default()
@@ -730,9 +743,7 @@ mod tests {
 
     #[test]
     fn letter_spacing_adds_gaps_between_characters_and_splits_fragments() {
-        let Ok(fonts) = FontCollection::new() else {
-            return;
-        };
+        let fonts = test_fonts();
         let style = ComputedStyle {
             font_size_px: 16.0,
             letter_spacing: 5.0,
@@ -752,9 +763,7 @@ mod tests {
 
     #[test]
     fn letter_spacing_zero_keeps_one_fragment_per_word() {
-        let Ok(fonts) = FontCollection::new() else {
-            return;
-        };
+        let fonts = test_fonts();
         // The common case: no per-character splitting when the property
         // isn't used at all.
         let (fragments, _) = layout_inline(
@@ -768,9 +777,7 @@ mod tests {
 
     #[test]
     fn bidi_reorders_mixed_direction_text_before_layout() {
-        let Ok(fonts) = FontCollection::new() else {
-            return;
-        };
+        let fonts = test_fonts();
         // M8.6 acceptance: "a mixed LTR/RTL paragraph with an embedded
         // number and punctuation orders correctly" — Hebrew with an
         // embedded English word, a number, and a comma, under an
@@ -822,5 +829,92 @@ mod tests {
             p1 < p2 && p2 < p3,
             "digits must stay in forward order within {joined:?}"
         );
+    }
+
+    #[test]
+    fn an_overflowing_line_is_start_aligned_whatever_text_align_says() {
+        // css-text-3 §7.1: too long to fit means start-aligned, not
+        // pushed to a negative x.
+        let fonts = test_fonts();
+        for align in [TextAlign::Right, TextAlign::Center] {
+            let (frags, _) = layout_inline(
+                &[text_box("supercalifragilistic", 16.0)],
+                20.0,
+                align,
+                &fonts,
+            );
+            assert_eq!(frags[0].x, 0.0, "{align:?}");
+        }
+    }
+
+    #[test]
+    fn blank_lines_in_preformatted_text_take_a_line_each() {
+        let fonts = test_fonts();
+        let line_height = fonts.primary().metrics(16.0).line_height();
+        for ws in [WhiteSpace::Pre, WhiteSpace::PreWrap, WhiteSpace::PreLine] {
+            let style = ComputedStyle {
+                white_space: ws,
+                font_size_px: 16.0,
+                ..ComputedStyle::default()
+            };
+            let (frags, height) = layout_inline(
+                &[styled_text_box("a\n\nb", style)],
+                10_000.0,
+                TextAlign::Left,
+                &fonts,
+            );
+            assert_eq!(texts_of(&frags), vec!["a", "b"]);
+            assert_eq!(
+                frags[1].y - frags[0].y,
+                2.0 * line_height,
+                "{ws:?}: one blank line between"
+            );
+            assert_eq!(height, 3.0 * line_height, "{ws:?}");
+        }
+        // A trailing newline adds no line: `<pre>a\n</pre>` is one line.
+        let style = ComputedStyle {
+            white_space: WhiteSpace::Pre,
+            font_size_px: 16.0,
+            ..ComputedStyle::default()
+        };
+        let (_, height) = layout_inline(
+            &[styled_text_box("a\n", style)],
+            10_000.0,
+            TextAlign::Left,
+            &fonts,
+        );
+        assert_eq!(height, line_height);
+    }
+
+    #[test]
+    fn a_no_break_space_is_part_of_its_word() {
+        let fonts = test_fonts();
+        // "a\u{a0}b" is one word: never split, never collapsed.
+        let a = fonts.measure("a", 16.0);
+        let (frags, _) = layout_inline(
+            &[text_box("a\u{a0}b", 16.0)],
+            a + 1.0,
+            TextAlign::Left,
+            &fonts,
+        );
+        assert_eq!(texts_of(&frags), vec!["a\u{a0}b"]);
+        assert_eq!(frags[0].w, fonts.measure("a\u{a0}b", 16.0));
+        // Around ordinary spaces it stays a word of its own.
+        let (frags, _) = layout_inline(
+            &[text_box("a \u{a0} b", 16.0)],
+            10_000.0,
+            TextAlign::Left,
+            &fonts,
+        );
+        assert_eq!(texts_of(&frags), vec!["a", "\u{a0}", "b"]);
+        // A spacer paragraph of one no-break space is a line tall.
+        let (frags, height) = layout_inline(
+            &[text_box("\u{a0}", 16.0)],
+            10_000.0,
+            TextAlign::Left,
+            &fonts,
+        );
+        assert_eq!(frags.len(), 1);
+        assert_eq!(height, fonts.primary().metrics(16.0).line_height());
     }
 }

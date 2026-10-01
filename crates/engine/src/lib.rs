@@ -63,20 +63,29 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// Creates a session rendering the built-in document.
+    /// Creates a session rendering the built-in document, with the
+    /// system's fonts.
     pub fn new() -> Result<Self, FontError> {
+        Ok(Self::with_fonts(text::FontCollection::new()?))
+    }
+
+    /// Creates a session rendering the built-in document, with fonts
+    /// already loaded (a test's bundled font, say). Layout and the
+    /// rasterizer share the collection by cloning its handles.
+    pub fn with_fonts(fonts: text::FontCollection) -> Self {
         let mut engine = Engine {
-            backend: SoftwareBackend::new()?,
-            layout_fonts: text::FontCollection::new()?,
+            backend: SoftwareBackend::with_fonts(fonts.clone()),
+            layout_fonts: fonts,
             document: Node::document(Vec::new()),
             stylesheets: Vec::new(),
         };
         engine.load_document(DOCUMENT_SOURCE);
-        Ok(engine)
+        engine
     }
 
     /// Replaces the session document by parsing HTML `source`, including
-    /// any `<style>` elements (parsed into stylesheets).
+    /// any `<style>` elements (parsed into stylesheets). The glyph cache
+    /// starts over: the sizes the new document draws are its own.
     pub fn load_document(&mut self, source: &str) {
         if let Ok(document) = html::parse_document(source) {
             let stylesheets = style_texts(&document)
@@ -85,6 +94,7 @@ impl Engine {
                 .collect();
             self.document = document;
             self.stylesheets = stylesheets;
+            self.backend.clear_glyph_cache();
         }
     }
 
@@ -114,11 +124,16 @@ impl Engine {
     }
 
     /// Renders the current document into an RGBA8 framebuffer for a
-    /// `width` x `height` viewport.
+    /// `width` x `height` viewport. A viewport over
+    /// `render::MAX_FRAME_PIXELS` gets an empty buffer rather than an
+    /// allocation the machine cannot make.
     ///
     /// A pure function of (document, stylesheets, size): no platform
     /// state, no side effects outside the backend's caches.
     pub fn frame(&mut self, width: u32, height: u32) -> Vec<u8> {
+        if width as u64 * height as u64 > render::MAX_FRAME_PIXELS {
+            return Vec::new();
+        }
         let fragments = self.fragments(width as f32);
         let list = paint_fragments(&fragments, width as f32, height as f32);
         self.backend.rasterize(&list, width, height)
@@ -164,20 +179,26 @@ fn style_texts(document: &Node) -> Vec<String> {
 mod tests {
     use super::*;
 
+    /// An engine over the bundled test font: the same text metrics on
+    /// every machine, and a machine without fonts still runs the tests
+    /// rather than passing them on nothing.
+    fn test_engine() -> Engine {
+        Engine::with_fonts(
+            text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
+                .expect("the bundled font parses"),
+        )
+    }
+
     #[test]
     fn frame_produces_full_size_buffer() {
-        let Ok(mut engine) = Engine::new() else {
-            return; // No system font on this machine.
-        };
+        let mut engine = test_engine();
         let buf = engine.frame(64, 32);
         assert_eq!(buf.len(), 64 * 32 * 4);
     }
 
     #[test]
     fn builtin_document_parses_to_expected_text() {
-        let Ok(engine) = Engine::new() else {
-            return;
-        };
+        let engine = test_engine();
         assert!(
             engine
                 .document()
@@ -188,18 +209,14 @@ mod tests {
 
     #[test]
     fn loading_a_document_replaces_the_tree() {
-        let Ok(mut engine) = Engine::new() else {
-            return;
-        };
+        let mut engine = test_engine();
         engine.load_document("<h1>Alpha</h1>");
         assert_eq!(engine.document().text_content(), "Alpha");
     }
 
     #[test]
     fn different_documents_render_differently() {
-        let Ok(mut engine) = Engine::new() else {
-            return;
-        };
+        let mut engine = test_engine();
         let before = engine.frame(128, 256);
         engine.load_document("<p>XX</p>");
         let after = engine.frame(128, 256);
@@ -208,9 +225,7 @@ mod tests {
 
     #[test]
     fn builtin_style_element_parses_into_stylesheet() {
-        let Ok(engine) = Engine::new() else {
-            return;
-        };
+        let engine = test_engine();
         assert_eq!(engine.stylesheets().len(), 1);
         let rules = engine.stylesheets()[0].rules.len();
         assert!(rules >= 2, "expected at least h1 and p rules, got {rules}");
@@ -218,9 +233,7 @@ mod tests {
 
     #[test]
     fn loading_a_document_replaces_stylesheets() {
-        let Ok(mut engine) = Engine::new() else {
-            return;
-        };
+        let mut engine = test_engine();
         assert!(!engine.stylesheets().is_empty());
         engine.load_document("<p>no styles here</p>");
         assert!(engine.stylesheets().is_empty());
@@ -228,9 +241,7 @@ mod tests {
 
     #[test]
     fn style_elements_accumulate_into_sheets() {
-        let Ok(mut engine) = Engine::new() else {
-            return;
-        };
+        let mut engine = test_engine();
         engine.load_document(
             "<style>p { color: red; }</style><p>x</p><style>p { margin: 0; }</style>",
         );
@@ -241,9 +252,7 @@ mod tests {
 
     #[test]
     fn deleting_the_style_block_still_yields_ua_styling() {
-        let Ok(mut engine) = Engine::new() else {
-            return;
-        };
+        let mut engine = test_engine();
         // No `<style>` at all: zero author stylesheets, but the cascade
         // always includes the built-in UA sheet underneath.
         engine.load_document("<html><body><h1>Title</h1><p>Body</p></body></html>");
@@ -263,9 +272,7 @@ mod tests {
     fn adding_a_color_rule_visibly_changes_rendered_pixels() {
         // The literal M5.9 acceptance scenario: a screenshot-diff v0 —
         // compare frame buffers before and after a color-changing rule.
-        let Ok(mut engine) = Engine::new() else {
-            return;
-        };
+        let mut engine = test_engine();
         engine.load_document("<p>Some text to render</p>");
         let before = engine.frame(200, 100);
         engine.load_document("<style>p { color: red; }</style><p>Some text to render</p>");
@@ -278,9 +285,7 @@ mod tests {
 
     #[test]
     fn display_none_removes_the_element_from_the_frame() {
-        let Ok(mut engine) = Engine::new() else {
-            return;
-        };
+        let mut engine = test_engine();
         engine.load_document("<p>Visible</p>");
         let with_p = engine.frame(200, 100);
         engine.load_document("<style>p { display: none; }</style><p>Visible</p>");
@@ -292,9 +297,7 @@ mod tests {
 
     #[test]
     fn fragments_resolve_real_box_model_geometry() {
-        let Ok(mut engine) = Engine::new() else {
-            return;
-        };
+        let mut engine = test_engine();
         engine.load_document(
             "<style>div { display: block; width: 100px; height: 50px;
                           margin: 10px; padding: 5px;
@@ -313,9 +316,7 @@ mod tests {
 
     #[test]
     fn adjacent_margins_collapse_through_the_real_pipeline() {
-        let Ok(mut engine) = Engine::new() else {
-            return;
-        };
+        let mut engine = test_engine();
         engine.load_document(
             "<style>p { display: block; margin: 20px 0; }</style>\
              <p>one</p><p>two</p>",
@@ -334,9 +335,7 @@ mod tests {
 
     #[test]
     fn builtin_document_renders_the_card_background_and_border() {
-        let Ok(engine) = Engine::new() else {
-            return;
-        };
+        let engine = test_engine();
         let fragments = engine.fragments(800.0);
         let has_card_background = fragments.iter().any(|f| {
             matches!(f.kind, layout::FragmentKind::Box) && f.style.background_color.a > 0.0
@@ -351,9 +350,7 @@ mod tests {
 
     #[test]
     fn narrow_viewport_wraps_text_onto_more_lines_than_a_wide_one() {
-        let Ok(mut engine) = Engine::new() else {
-            return;
-        };
+        let mut engine = test_engine();
         engine
             .load_document("<p>one two three four five six seven eight nine ten eleven twelve</p>");
         // f32 isn't `Ord` (NaN), so count distinct baselines by rounding
@@ -383,9 +380,7 @@ mod tests {
 
     #[test]
     fn text_align_center_shifts_text_right_of_a_left_aligned_equivalent() {
-        let Ok(mut engine) = Engine::new() else {
-            return;
-        };
+        let mut engine = test_engine();
         engine.load_document("<p>hi</p>");
         let left_x = engine
             .fragments(800.0)
@@ -406,5 +401,36 @@ mod tests {
             center_x > left_x,
             "centered text should start further right than left-aligned text"
         );
+    }
+
+    #[test]
+    fn a_frame_past_the_pixel_cap_is_empty_rather_than_gigabytes() {
+        let mut engine = test_engine();
+        assert!(engine.frame(100_000, 100_000).is_empty());
+        assert_eq!(engine.frame(64, 32).len(), 64 * 32 * 4);
+    }
+
+    #[test]
+    fn a_hostile_font_size_renders_without_taking_the_process_down() {
+        // 1e9px used to overflow the mask arithmetic (debug) or ask for
+        // gigabytes (release); 1e39px is infinity in f32.
+        let mut engine = test_engine();
+        for size in ["1e9px", "1e39px", "50000px", "-16px"] {
+            engine.load_document(&format!("<p style=\"font-size:{size};margin:0\">M</p>"));
+            assert_eq!(engine.frame(200, 100).len(), 200 * 100 * 4, "{size}");
+        }
+    }
+
+    #[test]
+    fn non_finite_lengths_do_not_put_text_at_the_corner() {
+        // `1e39px` margins used to collapse to NaN and every fragment
+        // landed at y = NaN, which the rasterizer drew at the top-left.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<div style=\"margin-top:1e39px;margin-bottom:-1e39px\"></div><p style=\"margin:0\">hi</p>",
+        );
+        for f in engine.fragments(800.0) {
+            assert!(f.x.is_finite() && f.y.is_finite(), "{f:?}");
+        }
     }
 }

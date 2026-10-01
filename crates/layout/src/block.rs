@@ -10,11 +10,25 @@
 //!   Floats, positioning, and tables are M11/M12.
 //! * Margins never collapse *through* an inline formatting context —
 //!   it always "separates" a block's margin-top/bottom from its
-//!   siblings', same as a border or padding would.
+//!   siblings', same as a border or padding would. An inline run that
+//!   produces no line box at all (an empty `<a></a>`) separates
+//!   nothing: CSS2 §9.4.2 says such a line box is to be treated as not
+//!   existing.
 //! * `height: <percentage>` isn't resolved (M6.4 defers it to M10); a
 //!   percentage `height` already failed to parse back in `style`
 //!   (M5/M6 extension), so it's never seen here — this module only ever
 //!   sees `Auto` or `Px`.
+//!
+//! Margins that adjoin are carried as a set ([`AdjoiningMargins`]: the
+//! largest positive and the largest negative seen so far) and resolved
+//! to one value only where the set closes — at a border or padding, a
+//! line box, or the viewport. CSS2 §8.3.1's formula (max positive minus
+//! max absolute negative) is over the whole set, and folding it two at
+//! a time gives the wrong answer for three margins of mixed sign. A
+//! self-collapsing box (empty, no border or padding, `height: auto`)
+//! contributes its top and bottom margins to one set together with the
+//! margins of the siblings around it, which is why it joins the set
+//! exactly once rather than being counted on both sides.
 
 use style::computed::{
     BOTTOM, BorderStyle, ComputedStyle, LEFT, LengthPercentageAuto, RIGHT, TOP, TextAlign,
@@ -56,6 +70,47 @@ impl Fragment {
     }
 }
 
+/// A set of adjoining vertical margins (CSS2 §8.3.1), not yet resolved:
+/// the largest positive margin and the largest magnitude among the
+/// negative ones. `resolve` gives the collapsed margin the set stands
+/// for.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct AdjoiningMargins {
+    positive: f32,
+    negative: f32,
+}
+
+impl AdjoiningMargins {
+    /// A set of one margin.
+    pub(crate) fn of(margin: f32) -> Self {
+        if margin >= 0.0 {
+            AdjoiningMargins {
+                positive: margin,
+                negative: 0.0,
+            }
+        } else {
+            AdjoiningMargins {
+                positive: 0.0,
+                negative: -margin,
+            }
+        }
+    }
+
+    /// The union of two adjoining sets.
+    pub(crate) fn join(self, other: Self) -> Self {
+        AdjoiningMargins {
+            positive: self.positive.max(other.positive),
+            negative: self.negative.max(other.negative),
+        }
+    }
+
+    /// CSS2 §8.3.1: the collapsed margin is the greatest positive
+    /// margin minus the greatest absolute negative one.
+    pub(crate) fn resolve(self) -> f32 {
+        self.positive - self.negative
+    }
+}
+
 /// Lays out `boxes` (the document's top-level content) against the
 /// initial containing block — the viewport (M6.6) — and returns their
 /// fragments in absolute, viewport-relative coordinates. `fonts` is what
@@ -74,12 +129,13 @@ pub fn layout(boxes: &[LayoutBox], viewport_width: f32, fonts: &FontCollection) 
     // from — `TextAlign::Left` is that property's initial value anyway.
     let children = layout_children(boxes, viewport_width, TextAlign::Left, fonts);
     // The viewport is the one context with no further ancestor to
-    // escape to — `leading_margin` *must* materialize here, exactly
-    // once, or it would just vanish (see `layout_children`'s doc).
+    // escape to — `leading` *must* materialize here, exactly once, or
+    // it would just vanish (see `layout_children`'s doc).
+    let shift = children.leading.resolve();
     children
         .fragments
         .into_iter()
-        .map(|f| f.translated(0.0, children.leading_margin))
+        .map(|f| f.translated(0.0, shift))
         .collect()
 }
 
@@ -93,18 +149,6 @@ fn effective_border_width(style: &ComputedStyle) -> [f32; 4] {
     } else {
         style.border_width
     }
-}
-
-/// CSS2 §8.3.1's adjoining-margins formula: the greatest of the positive
-/// margins, minus the greatest absolute value among the negative ones
-/// (if all margins are non-negative, this is just their max; the
-/// "collapsing *through*" cases — an empty block, or escaping past a
-/// border/padding-free parent — are built out of repeated pairwise
-/// calls to this, not a separate algorithm).
-fn collapse_margins(a: f32, b: f32) -> f32 {
-    let positive = a.max(0.0).max(b.max(0.0));
-    let negative = (-a).max(0.0).max((-b).max(0.0));
-    positive - negative
 }
 
 /// CSS2.1 §10.3.3: resolves `width`, `margin-left`, and `margin-right`
@@ -131,21 +175,32 @@ fn resolve_width_and_margins(
 
     let w = style.width.resolve(cb_width, 0.0).max(0.0);
     let remaining = avail - w;
+    // §10.3.3 ¶3: when the non-auto parts already exceed the containing
+    // block, every `auto` margin is treated as zero (the box overflows
+    // to the right), and the over-constrained rule below recomputes
+    // margin-right.
+    let fixed_left = if margin_left.is_auto() {
+        0.0
+    } else {
+        margin_left.resolve(cb_width, 0.0)
+    };
+    let fixed_right = if margin_right.is_auto() {
+        0.0
+    } else {
+        margin_right.resolve(cb_width, 0.0)
+    };
+    let overflows = fixed_left + fixed_right > remaining;
     match (margin_left.is_auto(), margin_right.is_auto()) {
-        (true, true) => {
+        (true, true) if !overflows => {
             let half = remaining / 2.0; // M6.3: auto-centering
             (w, half, half)
         }
-        (true, false) => {
-            let mr = margin_right.resolve(cb_width, 0.0);
-            (w, remaining - mr, mr)
-        }
-        (false, true) | (false, false) => {
-            // Over-constrained (both specified): per the ltr rule,
-            // margin-right is recomputed regardless of its specified
-            // value, as if it alone were auto.
-            let ml = margin_left.resolve(cb_width, 0.0);
-            (w, ml, remaining - ml)
+        (true, false) if !overflows => (w, remaining - fixed_right, fixed_right),
+        _ => {
+            // Over-constrained (both specified, or overflowing): per the
+            // ltr rule, margin-right is recomputed regardless of its
+            // specified value, as if it alone were auto.
+            (w, fixed_left, remaining - fixed_left)
         }
     }
 }
@@ -165,10 +220,15 @@ pub(crate) struct BlockLayout {
     /// `resolve_width_and_margins` call and never consulted again.
     pub(crate) margin_left: f32,
     /// This box's margin-top/bottom *as exposed to its siblings* —
-    /// collapsed with its first/last child's (one level: see the module
-    /// doc), or with each other if the box is empty (CSS2 §8.3.1).
-    pub(crate) margin_top: f32,
-    pub(crate) margin_bottom: f32,
+    /// joined with its first/last child's where those escape (CSS2
+    /// §8.3.1), as a still-open adjoining set.
+    pub(crate) margin_top: AdjoiningMargins,
+    pub(crate) margin_bottom: AdjoiningMargins,
+    /// The box's top and bottom margins adjoin each other (an empty
+    /// box, or one whose every child collapsed through): `margin_top`
+    /// and `margin_bottom` are the same set, to be joined with the
+    /// siblings' margins once, and the box has no height.
+    pub(crate) self_collapsing: bool,
 }
 
 /// Lays out one block box. `pub(crate)`: also called by `crate::inline`
@@ -180,6 +240,8 @@ pub(crate) fn layout_block(b: &LayoutBox, cb_width: f32, fonts: &FontCollection)
     let has_top_sep = border[TOP] > 0.0 || padding[TOP] > 0.0;
     let has_bottom_sep = border[BOTTOM] > 0.0 || padding[BOTTOM] > 0.0;
     let height_is_auto = b.style.height.is_auto();
+    let own_top = AdjoiningMargins::of(b.style.margin[TOP].resolve(0.0, 0.0));
+    let own_bottom = AdjoiningMargins::of(b.style.margin[BOTTOM].resolve(0.0, 0.0));
 
     let non_content_width = border[LEFT] + border[RIGHT] + padding[LEFT] + padding[RIGHT];
     // margin-right is fully resolved here but never read again — see
@@ -187,73 +249,100 @@ pub(crate) fn layout_block(b: &LayoutBox, cb_width: f32, fonts: &FontCollection)
     // oversight.
     let (content_width, margin_left, _margin_right) =
         resolve_width_and_margins(&b.style, cb_width, non_content_width);
+    let can_collapse_through = !has_top_sep && !has_bottom_sep && height_is_auto;
 
     // An empty block (no children, no border/padding, auto height):
     // its own margin-top and margin-bottom collapse with *each other*,
-    // escaping through as a single value on both sides at once — as if
+    // escaping through as a single set on both sides at once — as if
     // the box weren't there at all, margin-wise (CSS2 §8.3.1).
-    if b.children.is_empty() && !has_top_sep && !has_bottom_sep && height_is_auto {
-        let collapsed = collapse_margins(
-            b.style.margin[TOP].resolve(0.0, 0.0),
-            b.style.margin[BOTTOM].resolve(0.0, 0.0),
-        );
+    if b.children.is_empty() && can_collapse_through {
+        let set = own_top.join(own_bottom);
         return BlockLayout {
             fragments: vec![box_fragment(0.0, 0.0, content_width, 0.0, &b.style)],
             height: 0.0,
             margin_left,
-            margin_top: collapsed,
-            margin_bottom: collapsed,
+            margin_top: set,
+            margin_bottom: set,
+            self_collapsing: true,
         };
     }
 
     let children = layout_children(&b.children, content_width, b.style.text_align, fonts);
+    let content_x = border[LEFT] + padding[LEFT];
 
-    // `layout_children` never materializes the *leading* margin itself
+    // Every child collapsed through (empty blocks all the way down):
+    // their one set and this box's own margins adjoin, and so does the
+    // box's top with its bottom.
+    if children.nothing_materialised && can_collapse_through {
+        let set = own_top.join(children.leading).join(own_bottom);
+        let mut fragments = vec![box_fragment(0.0, 0.0, content_width, 0.0, &b.style)];
+        fragments.extend(
+            children
+                .fragments
+                .into_iter()
+                .map(|f| f.translated(content_x, 0.0)),
+        );
+        return BlockLayout {
+            fragments,
+            height: 0.0,
+            margin_left,
+            margin_top: set,
+            margin_bottom: set,
+            self_collapsing: true,
+        };
+    }
+
+    // `layout_children` never materializes the *leading* set itself
     // (see its doc) — it's this box's job to decide, now that it knows
-    // its own separation, whether that margin becomes real space just
+    // its own separation, whether that set becomes real space just
     // inside its own border/padding-top (`child_shift`, when there's a
     // border/padding to stop the escape) or keeps escaping outward,
-    // combined with this box's own margin-top (when there isn't). This
+    // joined with this box's own margin-top (when there isn't). This
     // is the step a naive "always materialize inside the parent" design
     // gets wrong: that double-counts the escaping case, because the
     // SAME margin would then also get re-applied one level up, when
     // *this* box gets positioned among *its* own siblings.
     let (child_shift, margin_top) = if has_top_sep {
-        (
-            children.leading_margin,
-            b.style.margin[TOP].resolve(0.0, 0.0),
-        )
+        (children.leading.resolve(), own_top)
     } else {
-        (
-            0.0,
-            collapse_margins(
-                b.style.margin[TOP].resolve(0.0, 0.0),
-                children.leading_margin,
-            ),
-        )
+        (0.0, own_top.join(children.leading))
     };
 
     let content_height = match b.style.height {
         LengthPercentageAuto::Px(h) => h,
         _ /* Auto; a Percent is never produced yet, see the module doc */ => {
-            let base = children.content_height + child_shift;
-            if has_bottom_sep {
-                // The last child's margin-bottom doesn't escape — it
-                // becomes real space above the padding/border.
-                base + children.trailing_margin
+            if children.nothing_materialised {
+                // Every child collapsed through: `leading` and
+                // `trailing` are one set, used exactly once. With no
+                // top separation it escaped through the top (joined
+                // into `margin_top` above); with no bottom separation
+                // it escapes through the bottom (joined into
+                // `margin_bottom` below) and the content height is
+                // zero (CSS2 §10.6.3, last case) even though the empty
+                // box itself sits past the gap; only with both does it
+                // become the gap inside, counted once.
+                if has_top_sep && has_bottom_sep {
+                    child_shift
+                } else {
+                    0.0
+                }
             } else {
-                base
+                let base = children.content_height + child_shift;
+                if has_bottom_sep {
+                    // The last child's margin-bottom doesn't escape — it
+                    // becomes real space above the padding/border.
+                    base + children.trailing.resolve()
+                } else {
+                    base
+                }
             }
         }
     };
 
     let margin_bottom = if has_bottom_sep || !height_is_auto {
-        b.style.margin[BOTTOM].resolve(0.0, 0.0)
+        own_bottom
     } else {
-        collapse_margins(
-            b.style.margin[BOTTOM].resolve(0.0, 0.0),
-            children.trailing_margin,
-        )
+        own_bottom.join(children.trailing)
     };
 
     let border_box_width = content_width + non_content_width;
@@ -267,7 +356,6 @@ pub(crate) fn layout_block(b: &LayoutBox, cb_width: f32, fonts: &FontCollection)
         border_box_height,
         &b.style,
     )];
-    let content_x = border[LEFT] + padding[LEFT];
     let content_y = border[TOP] + padding[TOP] + child_shift;
     fragments.extend(
         children
@@ -282,6 +370,7 @@ pub(crate) fn layout_block(b: &LayoutBox, cb_width: f32, fonts: &FontCollection)
         margin_left,
         margin_top,
         margin_bottom,
+        self_collapsing: false,
     }
 }
 
@@ -299,33 +388,37 @@ fn box_fragment(x: f32, y: f32, w: f32, h: f32, style: &ComputedStyle) -> Fragme
 /// The result of stacking a sequence of sibling boxes in normal flow.
 struct ChildrenLayout {
     /// Every descendant's fragment, relative to the *parent's*
-    /// content-box top-left `(0, 0)` — *not* counting `leading_margin`
-    /// (see that field's doc): the first child sits at relative `y = 0`
+    /// content-box top-left `(0, 0)` — *not* counting `leading` (see
+    /// that field's doc): the first child sits at relative `y = 0`
     /// regardless of its own margin-top.
     fragments: Vec<Fragment>,
     /// Content height counting from the first child's `y = 0` — i.e.
-    /// also not counting `leading_margin` — and not counting any
-    /// trailing collapsible margin either (the caller decides whether
-    /// *that* one becomes real space or escapes further).
+    /// also not counting `leading` — and not counting any trailing
+    /// collapsible margin either (the caller decides whether *that* one
+    /// becomes real space or escapes further).
     content_height: f32,
-    /// The first child's margin-top (already collapsed with whatever of
-    /// *its* own children escaped, recursively) — deliberately **not**
-    /// baked into `fragments`' positions or `content_height`. Whether it
-    /// ever becomes real space depends on information only the caller
-    /// has (its own border/padding): a parent with top separation turns
-    /// it into a gap just inside its content-box top; a parent without
-    /// one collapses it with its *own* margin-top and keeps escaping.
+    /// The set of margins that escape past the first child's top
+    /// (its own margin-top, joined with whatever of *its* children
+    /// escaped, recursively, and with every self-collapsing box in
+    /// front of the first real one) — deliberately **not** baked into
+    /// `fragments`' positions or `content_height`. Whether it ever
+    /// becomes real space depends on information only the caller has
+    /// (its own border/padding): a parent with top separation turns it
+    /// into a gap just inside its content-box top; a parent without
+    /// one joins it with its *own* margin-top and keeps escaping.
     /// Materializing it here unconditionally would double-count it the
     /// moment it keeps escaping — it would show up once when the
     /// escaping value is eventually placed, *and* again as this
-    /// already-baked-in internal gap. Zero when there are no children
-    /// (nothing to expose) — safe, since `collapse_margins(x, 0.0) == x`
-    /// for any `x`, so a parent combining it with its own margin-top is
-    /// unaffected either way.
-    leading_margin: f32,
-    /// The last child's margin-bottom, exposed the same way, for
-    /// parent/last-child collapsing.
-    trailing_margin: f32,
+    /// already-baked-in internal gap. Empty when there are no children
+    /// (nothing to expose).
+    leading: AdjoiningMargins,
+    /// The set of margins that escape past the last child's bottom,
+    /// exposed the same way, for parent/last-child collapsing.
+    trailing: AdjoiningMargins,
+    /// No child produced a line box or a box with height: every
+    /// margin went into one set, and `leading` and `trailing` are that
+    /// same set.
+    nothing_materialised: bool,
 }
 
 /// `text_align` is the containing block's own — it governs how *its*
@@ -339,25 +432,49 @@ fn layout_children(
 ) -> ChildrenLayout {
     let mut fragments = Vec::new();
     let mut y = 0.0f32;
-    // A margin collapsed-but-not-yet-materialized BETWEEN two siblings
-    // (never the leading one, which `still_leading` routes to
-    // `leading_margin` instead, never adding it to `y`).
-    let mut pending_margin = 0.0f32;
+    // The set of margins adjoining BETWEEN two siblings, not yet
+    // materialized (never the leading one, which `still_leading` routes
+    // to `leading` instead, never adding it to `y`).
+    let mut pending = AdjoiningMargins::default();
     let mut still_leading = true;
-    let mut leading_margin = 0.0f32;
+    let mut leading = AdjoiningMargins::default();
 
     let mut i = 0;
     while i < children.len() {
         match &children[i].kind {
             BoxKind::Block => {
                 let layout = layout_block(&children[i], cb_width, fonts);
+                i += 1;
+                if layout.self_collapsing {
+                    // Its one set joins the margins around it and stays
+                    // open; the box itself has no height. Its fragment
+                    // sits where the set so far resolves — at the
+                    // parent's content top while the set is still
+                    // escaping (CSS2 §8.3.1: same top border edge as the
+                    // parent). Nothing paints or hits a zero-height box
+                    // with no border or padding, so the exact position
+                    // is unobservable; the set is what matters.
+                    let box_y = if still_leading {
+                        leading = leading.join(layout.margin_top);
+                        y
+                    } else {
+                        pending = pending.join(layout.margin_top);
+                        y + pending.resolve()
+                    };
+                    fragments.extend(
+                        layout
+                            .fragments
+                            .into_iter()
+                            .map(|f| f.translated(layout.margin_left, box_y)),
+                    );
+                    continue;
+                }
                 if still_leading {
-                    leading_margin = layout.margin_top;
+                    leading = leading.join(layout.margin_top);
                     still_leading = false;
-                    // `y` stays at 0 — see `leading_margin`'s doc.
+                    // `y` stays at 0 — see `leading`'s doc.
                 } else {
-                    pending_margin = collapse_margins(pending_margin, layout.margin_top);
-                    y += pending_margin;
+                    y += pending.join(layout.margin_top).resolve();
                 }
                 let child_y = y;
                 fragments.extend(
@@ -367,22 +484,9 @@ fn layout_children(
                         .map(|f| f.translated(layout.margin_left, child_y)),
                 );
                 y = child_y + layout.height;
-                pending_margin = layout.margin_bottom;
-                i += 1;
+                pending = layout.margin_bottom;
             }
             BoxKind::Inline | BoxKind::Text(_) => {
-                // Inline/text content always separates (margins never
-                // collapse through it, same as a border/padding would)
-                // — flush whatever's pending (or stop a still-leading
-                // escape dead, materializing nothing since there was
-                // never a border/padding to place it against).
-                if still_leading {
-                    still_leading = false; // leading_margin stays 0: nothing escapes past real content
-                } else {
-                    y += pending_margin;
-                }
-                pending_margin = 0.0;
-
                 // M7: the *whole* run of consecutive inline-level
                 // siblings shares one inline formatting context (they
                 // can wrap onto the same lines together) — collect it
@@ -395,6 +499,23 @@ fn layout_children(
                 }
                 let (run_fragments, run_height) =
                     layout_inline(&children[start..i], cb_width, text_align, fonts);
+                if run_fragments.is_empty() && run_height == 0.0 {
+                    // No line box at all (an empty inline element):
+                    // treated as not existing, so it separates no
+                    // margins (CSS2 §9.4.2).
+                    continue;
+                }
+                // Inline/text content always separates (margins never
+                // collapse through it, same as a border/padding would)
+                // — flush whatever's pending (or stop a still-leading
+                // escape dead, materializing nothing since there was
+                // never a border/padding to place it against).
+                if still_leading {
+                    still_leading = false; // `leading` stays as joined so far: nothing escapes past real content
+                } else {
+                    y += pending.resolve();
+                }
+                pending = AdjoiningMargins::default();
                 fragments.extend(run_fragments.into_iter().map(|f| f.translated(0.0, y)));
                 y += run_height;
             }
@@ -404,8 +525,9 @@ fn layout_children(
     ChildrenLayout {
         fragments,
         content_height: y,
-        leading_margin,
-        trailing_margin: pending_margin,
+        leading,
+        trailing: if still_leading { leading } else { pending },
+        nothing_materialised: still_leading,
     }
 }
 
@@ -416,20 +538,23 @@ mod tests {
 
     const VIEWPORT: f32 = 800.0;
 
+    /// The bundled test font, so that every machine measures the same
+    /// and no test is skipped for want of a system font.
+    fn test_fonts() -> FontCollection {
+        FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0).expect("the bundled font parses")
+    }
+
     /// Builds the box tree for `root` under `css_src` and lays it out
     /// against [`VIEWPORT`] — the full `style` -> `box_tree` -> `block`
     /// pipeline, exactly as `engine` will drive it (M6.7's integration
-    /// point, exercised at the unit level here). `None` on machines with
-    /// no usable system font (M7's text measurement needs one) — callers
-    /// skip the test entirely in that case, same pattern `text`'s own
-    /// tests use.
-    fn fragments_of(root: Element, css_src: &str) -> Option<Vec<Fragment>> {
-        let fonts = FontCollection::new().ok()?;
+    /// point, exercised at the unit level here).
+    fn fragments_of(root: Element, css_src: &str) -> Vec<Fragment> {
+        let fonts = test_fonts();
         let doc = dom::Node::document(vec![root.into()]);
         let sheet = css::parse_stylesheet(css_src).expect("test css is valid");
         let styled = style::style_document(&doc, &[sheet]);
         let boxes = crate::build_box_tree(&styled);
-        Some(layout(&boxes, VIEWPORT, &fonts))
+        layout(&boxes, VIEWPORT, &fonts)
     }
 
     fn box_fragments(frags: &[Fragment]) -> Vec<&Fragment> {
@@ -441,9 +566,7 @@ mod tests {
 
     #[test]
     fn empty_auto_block_fills_width_and_has_zero_height() {
-        let Some(frags) = fragments_of(Element::new("div"), "div { display: block; }") else {
-            return;
-        };
+        let frags = fragments_of(Element::new("div"), "div { display: block; }");
         assert_eq!(frags.len(), 1);
         let f = &frags[0];
         assert_eq!((f.x, f.y, f.w, f.h), (0.0, 0.0, VIEWPORT, 0.0));
@@ -456,7 +579,7 @@ mod tests {
         // ltr rule applies to margin-right internally, but that's not
         // independently observable here; only margin-LEFT shows up in
         // `x`, which is what this checks).
-        let Some(frags) = fragments_of(
+        let frags = fragments_of(
             Element::new("div"),
             "div {
                 display: block;
@@ -465,9 +588,7 @@ mod tests {
                 padding: 5px;
                 border-width: 3px; border-style: solid;
             }",
-        ) else {
-            return;
-        };
+        );
         assert_eq!(frags.len(), 1);
         let f = &frags[0];
         // border-box: width = 200 + 2*5 (padding) + 2*3 (border) = 216;
@@ -477,24 +598,20 @@ mod tests {
 
     #[test]
     fn auto_width_fills_remaining_space_after_margins() {
-        let Some(frags) = fragments_of(
+        let frags = fragments_of(
             Element::new("div"),
             "div { display: block; margin: 0 50px; }", // width: auto (initial)
-        ) else {
-            return;
-        };
+        );
         assert_eq!(frags[0].w, VIEWPORT - 100.0);
         assert_eq!(frags[0].x, 50.0);
     }
 
     #[test]
     fn margin_auto_both_sides_centers() {
-        let Some(frags) = fragments_of(
+        let frags = fragments_of(
             Element::new("div"),
             "div { display: block; width: 200px; margin: 0 auto; }",
-        ) else {
-            return;
-        };
+        );
         let f = &frags[0];
         assert_eq!(f.w, 200.0);
         assert_eq!(f.x, (VIEWPORT - 200.0) / 2.0);
@@ -502,12 +619,10 @@ mod tests {
 
     #[test]
     fn margin_auto_one_side_pushes_to_the_other_edge() {
-        let Some(frags) = fragments_of(
+        let frags = fragments_of(
             Element::new("div"),
             "div { display: block; width: 200px; margin-left: auto; margin-right: 0px; }",
-        ) else {
-            return;
-        };
+        );
         // auto absorbs all remaining space on its own side.
         assert_eq!(frags[0].x, VIEWPORT - 200.0);
     }
@@ -517,13 +632,11 @@ mod tests {
         let root = Element::new("div")
             .push(Element::new("p").attr("class", "a"))
             .push(Element::new("p").attr("class", "b"));
-        let Some(frags) = fragments_of(
+        let frags = fragments_of(
             root,
             "div { display: block; } p { display: block; padding: 1px; }
              .a { margin: 10px 0 20px 0; } .b { margin: 30px 0 0 0; }",
-        ) else {
-            return;
-        };
+        );
         let boxes = box_fragments(&frags);
         // div, p.a, p.b. `padding: 1px` keeps a/b from self-collapsing
         // (CSS2 §8.3.1's *other* collapsing case — tested on its own in
@@ -544,13 +657,11 @@ mod tests {
         let root = Element::new("div")
             .push(Element::new("p").attr("class", "a"))
             .push(Element::new("p").attr("class", "b"));
-        let Some(frags) = fragments_of(
+        let frags = fragments_of(
             root,
             "div { display: block; } p { display: block; padding: 1px; }
              .a { margin-bottom: 30px; } .b { margin-top: -10px; }",
-        ) else {
-            return;
-        };
+        );
         let boxes = box_fragments(&frags);
         let (a, b) = (boxes[1], boxes[2]);
         // collapse(30, -10) = max(30,0) - max(0,10) = 20.
@@ -566,13 +677,11 @@ mod tests {
         // div and p ending up flush with each other, not 25 (div's
         // escaped margin) + 25 (p's own, re-applied inside div) = 50.
         let root = Element::new("div").push(Element::new("p"));
-        let Some(frags) = fragments_of(
+        let frags = fragments_of(
             root,
             "div { display: block; margin-top: 5px; }
              p { display: block; margin-top: 25px; }",
-        ) else {
-            return;
-        };
+        );
         let boxes = box_fragments(&frags);
         let (div, p) = (boxes[0], boxes[1]);
         assert_eq!(div.y, 25.0, "the collapsed (max) margin, not div's own 5px");
@@ -582,13 +691,11 @@ mod tests {
     #[test]
     fn parent_with_top_padding_stops_the_collapse() {
         let root = Element::new("div").push(Element::new("p"));
-        let Some(frags) = fragments_of(
+        let frags = fragments_of(
             root,
             "div { display: block; margin-top: 5px; padding-top: 2px; }
              p { display: block; margin-top: 25px; }",
-        ) else {
-            return;
-        };
+        );
         let boxes = box_fragments(&frags);
         let (div, p) = (boxes[0], boxes[1]);
         assert_eq!(
@@ -607,7 +714,7 @@ mod tests {
         let root = Element::new("outer")
             .push(Element::new("div").push(Element::new("p")))
             .push(Element::new("div"));
-        let Some(frags) = fragments_of(
+        let frags = fragments_of(
             root,
             // `margin: 0` resets `p`'s UA margin (ua.css's `p { margin:
             // 16px 0; }` would otherwise still apply to margin-top,
@@ -622,9 +729,7 @@ mod tests {
              p { padding: 1px; }
              div:first-child { margin-bottom: 5px; }
              div:first-child p { margin-bottom: 25px; }",
-        ) else {
-            return;
-        };
+        );
         let boxes = box_fragments(&frags);
         // outer, div#1, p, div#2
         assert_eq!(boxes.len(), 4);
@@ -643,12 +748,10 @@ mod tests {
 
     #[test]
     fn empty_block_self_collapses_top_and_bottom() {
-        let Some(frags) = fragments_of(
+        let frags = fragments_of(
             Element::new("div"),
             "div { display: block; margin-top: 10px; margin-bottom: 30px; }",
-        ) else {
-            return;
-        };
+        );
         // Nothing follows, so only the top (leading) margin is
         // observable at the viewport boundary — but it must be the
         // *collapsed* value (max(10,30)=30), not just margin-top (10).
@@ -657,18 +760,14 @@ mod tests {
 
     #[test]
     fn text_run_produces_a_baseline_positioned_fragment() {
-        let Some(fonts) = FontCollection::new().ok() else {
-            return;
-        };
-        let Some(frags) = fragments_of(
+        let fonts = test_fonts();
+        let frags = fragments_of(
             Element::new("p").text("hello"),
             // `margin: 0` resets ua.css's `p { margin: 16px 0; }` —
             // this test is about the baseline/color relationship, not
             // margins, so keep the fixture independent of them.
             "p { display: block; margin: 0; color: #ff0000; font-size: 20px; }",
-        ) else {
-            return;
-        };
+        );
         let text = frags
             .iter()
             .find(|f| matches!(f.kind, FragmentKind::Text(_)));
@@ -690,13 +789,11 @@ mod tests {
         let root = Element::new("div")
             .push(Element::new("p").attr("class", "gone").text("x"))
             .push(Element::new("p").attr("class", "shown").text("y"));
-        let Some(frags) = fragments_of(
+        let frags = fragments_of(
             root,
             "div, p { display: block; }
              .gone { display: none; margin: 100px; }",
-        ) else {
-            return;
-        };
+        );
         let boxes = box_fragments(&frags);
         // div + the one visible p — the hidden one contributes no box
         // (not even a zero-size placeholder) and no margin at all.
@@ -705,9 +802,7 @@ mod tests {
 
     #[test]
     fn two_level_document_with_margins_padding_and_borders() {
-        let Some(fonts) = FontCollection::new().ok() else {
-            return;
-        };
+        let fonts = test_fonts();
         // M6.10/M7.8: a fuller acceptance case combining several
         // features at once, still hand-computed exactly — using the
         // *actual* loaded font's metrics for the text parts, same as
@@ -717,15 +812,13 @@ mod tests {
                 .push(Element::new("h1").text("Title"))
                 .push(Element::new("p").text("Body")),
         );
-        let Some(frags) = fragments_of(
+        let frags = fragments_of(
             root,
             "section, article, h1, p { display: block; margin: 0; padding: 0; }
              article { padding: 10px; border-width: 2px; border-style: solid; }
              h1 { font-size: 30px; margin-bottom: 15px; }
              p { font-size: 10px; }",
-        ) else {
-            return;
-        };
+        );
         let boxes = box_fragments(&frags);
         let texts: Vec<&Fragment> = frags
             .iter()
@@ -758,5 +851,210 @@ mod tests {
             p_text.y,
             12.0 + h1_metrics.line_height() + 15.0 + p_metrics.ascent
         );
+    }
+
+    #[test]
+    fn an_empty_block_between_siblings_joins_one_margin_set_not_two() {
+        // <p>one</p><p></p><p>two</p> with 10px margins all round: the
+        // empty p's top and bottom margins and its neighbours' all
+        // adjoin as one set, so "two" sits 10px below "one", not 20 (an
+        // earlier version folded the empty box's margin in twice, once
+        // as its top and once as its bottom).
+        let root = Element::new("div")
+            .push(Element::new("p").text("one"))
+            .push(Element::new("p"))
+            .push(Element::new("p").text("two"));
+        let frags = fragments_of(root, "div, p { display: block; } p { margin: 10px 0; }");
+        let boxes = box_fragments(&frags);
+        assert_eq!(boxes.len(), 4);
+        let (first, empty, second) = (boxes[1], boxes[2], boxes[3]);
+        assert_eq!(first.y, 10.0);
+        assert_eq!(empty.h, 0.0);
+        assert_eq!(
+            second.y,
+            first.y + first.h + 10.0,
+            "one collapsed margin between the paragraphs, not two"
+        );
+
+        // The same page under the UA sheet alone (`p { margin: 16px 0 }`).
+        let root = Element::new("body")
+            .push(Element::new("p").text("one"))
+            .push(Element::new("p"))
+            .push(Element::new("p").text("two"));
+        let frags = fragments_of(root, "");
+        let boxes = box_fragments(&frags);
+        let (first, second) = (boxes[1], boxes[3]);
+        assert_eq!(second.y, first.y + first.h + 16.0);
+    }
+
+    #[test]
+    fn three_adjoining_margins_of_mixed_sign_collapse_as_one_set() {
+        // CSS2 §8.3.1: the collapsed margin is the largest positive
+        // minus the largest absolute negative over the WHOLE set.
+        // {30, -25, 10} resolves to 30 - 25 = 5. Folding pairwise gives
+        // collapse(collapse(30, -25), 10) = collapse(5, 10) = 10 (wrong)
+        // or, in the other order, collapse(30, collapse(-25, 10)) =
+        // collapse(30, -15) = 15 (also wrong).
+        let root = Element::new("div")
+            .push(Element::new("p").attr("class", "a").text("a"))
+            .push(Element::new("p").attr("class", "e"))
+            .push(Element::new("p").attr("class", "b").text("b"));
+        let frags = fragments_of(
+            root,
+            "div, p { display: block; margin: 0; }
+             .a { margin-bottom: 30px; } .e { margin: -25px 0 0 0; } .b { margin-top: 10px; }",
+        );
+        let boxes = box_fragments(&frags);
+        let (a, b) = (boxes[1], boxes[3]);
+        assert_eq!(
+            b.y,
+            a.y + a.h + 5.0,
+            "a's 30, the empty box's -25 and b's 10 as one set"
+        );
+
+        // The same three margins meeting parent-first-child style: a
+        // parent with margin-top 30 whose first child is an empty block
+        // with margin-top -25 and margin-bottom 10.
+        let root = Element::new("div")
+            .push(Element::new("p").attr("class", "e"))
+            .push(Element::new("p").text("b"));
+        let frags = fragments_of(
+            root,
+            "div, p { display: block; margin: 0; }
+             div { margin-top: 30px; } .e { margin: -25px 0 10px 0; }",
+        );
+        let boxes = box_fragments(&frags);
+        let (div, b) = (boxes[0], boxes[2]);
+        assert_eq!(div.y, 5.0, "the set escapes to the viewport as one value");
+        assert_eq!(
+            b.y, 5.0,
+            "flush with the parent: nothing materialises inside"
+        );
+    }
+
+    #[test]
+    fn a_collapsed_through_set_inside_a_padded_parent_counts_once() {
+        // The parent has padding on both sides, so the empty child's
+        // margins neither escape nor collapse with the parent's: they
+        // collapse with EACH OTHER (one 20px gap), which is the whole
+        // content height — not 20 for the top and 20 again for the
+        // bottom (CSS2 §8.3.1, §10.6.3).
+        let root = Element::new("div").push(Element::new("p"));
+        let frags = fragments_of(
+            root,
+            "div, p { display: block; margin: 0; }
+             div { padding: 10px; } p { margin: 20px 0; }",
+        );
+        let boxes = box_fragments(&frags);
+        let (div, p) = (boxes[0], boxes[1]);
+        assert_eq!(div.h, 10.0 + 20.0 + 10.0);
+        assert_eq!(
+            p.y,
+            10.0 + 20.0,
+            "past the gap, as if it had a bottom border"
+        );
+
+        // Padding on top only: the set collapses through to the parent's
+        // bottom margin instead. The parent's content height is zero
+        // (§10.6.3's last case) and the following sibling sits one
+        // collapsed margin below the parent's padding.
+        let root = Element::new("div")
+            .push(
+                Element::new("div")
+                    .attr("class", "p")
+                    .push(Element::new("p")),
+            )
+            .push(Element::new("div").attr("class", "n").text("next"));
+        let frags = fragments_of(
+            root,
+            "div, p { display: block; margin: 0; }
+             .p { padding-top: 10px; } p { margin: 20px 0; }",
+        );
+        let boxes = box_fragments(&frags);
+        let (padded, next) = (boxes[1], boxes[3]);
+        assert_eq!(padded.h, 10.0);
+        assert_eq!(next.y, 10.0 + 20.0);
+
+        // Padding at the bottom only: the set escapes through the top
+        // and joins the parent's own margin-top.
+        let root = Element::new("div").push(Element::new("p"));
+        let frags = fragments_of(
+            root,
+            "div, p { display: block; margin: 0; }
+             div { padding-bottom: 10px; } p { margin: 20px 0; }",
+        );
+        let boxes = box_fragments(&frags);
+        let div = boxes[0];
+        assert_eq!((div.y, div.h), (20.0, 10.0));
+    }
+
+    #[test]
+    fn an_inline_with_no_line_box_does_not_separate_margins() {
+        // <div style="margin-bottom: 30px"></div><a></a><p style="margin-top: 30px">
+        // An empty inline element produces no line box, and CSS2 §9.4.2
+        // says such a line box is treated as not existing — so the
+        // margins either side of it still adjoin.
+        let root = Element::new("div")
+            .push(Element::new("div").attr("class", "top"))
+            .push(Element::new("a"))
+            .push(Element::new("p").text("x"));
+        let frags = fragments_of(
+            root,
+            "div, p { display: block; margin: 0; } a { display: inline; }
+             .top { margin-bottom: 30px; } p { margin-top: 30px; }",
+        );
+        let boxes = box_fragments(&frags);
+        // outer div, .top, p (an inline with nothing in it has no box fragment)
+        assert_eq!(boxes.len(), 3);
+        let (outer, top, p) = (boxes[0], boxes[1], boxes[2]);
+        assert_eq!(outer.y, 30.0, "the whole set escapes to the viewport");
+        assert_eq!(top.y, 30.0);
+        assert_eq!(p.y, 30.0, "flush: the empty inline separated nothing");
+    }
+
+    #[test]
+    fn over_constrained_auto_margins_are_zero_not_negative() {
+        // width + the non-auto margin already exceed the containing
+        // block (CSS2.1 §10.3.3): every `auto` becomes zero and the box
+        // overflows to the right, rather than `auto` absorbing a
+        // negative amount and pulling the box off the left edge.
+        let frags = fragments_of(
+            Element::new("div"),
+            "div { display: block; width: 900px; margin: 0 auto; }",
+        );
+        assert_eq!((frags[0].x, frags[0].w), (0.0, 900.0));
+
+        let frags = fragments_of(
+            Element::new("div"),
+            "div { display: block; width: 900px; margin-left: auto; margin-right: 0px; }",
+        );
+        assert_eq!(frags[0].x, 0.0);
+
+        let frags = fragments_of(
+            Element::new("div"),
+            "div { display: block; width: 900px; margin-left: 20px; margin-right: auto; }",
+        );
+        assert_eq!(frags[0].x, 20.0);
+    }
+
+    #[test]
+    fn a_div_is_a_block_by_the_ua_sheet_alone() {
+        // No author `display: block` anywhere: the UA sheet alone must
+        // make the common containers blocks, or a page of <div>s (and
+        // every HTML5 sectioning element) lays out as inline content.
+        let frags = fragments_of(
+            Element::new("div").attr("style", "width: 200px; height: 50px; margin-left: 12px"),
+            "",
+        );
+        let boxes = box_fragments(&frags);
+        assert_eq!(boxes.len(), 1);
+        assert_eq!((boxes[0].x, boxes[0].w, boxes[0].h), (12.0, 200.0, 50.0));
+
+        for tag in [
+            "section", "article", "nav", "header", "footer", "main", "form", "table",
+        ] {
+            let frags = fragments_of(Element::new(tag).text("x"), "");
+            assert_eq!(box_fragments(&frags).len(), 1, "<{tag}> is a block");
+        }
     }
 }

@@ -66,10 +66,10 @@ fn build_children(styled: &StyledDom, idx: usize) -> Vec<LayoutBox> {
                 });
             }
             FlatChild::Text(text) => {
-                // Whitespace-only runs contribute no box (a v1
-                // simplification — real whitespace collapsing per CSS
-                // Text §3 is M7/M8 scope).
-                if text.trim().is_empty() {
+                // Runs of nothing but collapsible white space (css-text-3
+                // §4.1: space, tab, newline, carriage return, form feed —
+                // a no-break space is content) contribute no box.
+                if text.chars().all(crate::inline::is_css_space) {
                     continue;
                 }
                 out.push(LayoutBox {
@@ -135,5 +135,9 @@ mod tests {
         let root = Element::new("div").text("   \n  ");
         let tree = build_box_tree(&styled(root, ""));
         assert!(tree[0].children.is_empty());
+        // A no-break space is content, not white space.
+        let root = Element::new("div").text("\u{a0}");
+        let tree = build_box_tree(&styled(root, ""));
+        assert_eq!(tree[0].children.len(), 1);
     }
 }

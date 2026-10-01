@@ -386,18 +386,23 @@ mod fragment_tests {
 
     const VIEWPORT: f32 = 800.0;
 
+    /// The bundled test font, so that every machine measures the same
+    /// and no test is skipped for want of a system font.
+    fn test_fonts() -> text::FontCollection {
+        text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
+            .expect("the bundled font parses")
+    }
+
     /// The full `style` -> `box_tree` -> `block` -> `paint` pipeline, for
-    /// one element and some CSS — exactly as `engine` drives it. `None`
-    /// on machines with no usable system font (M7's text measurement
-    /// needs one) — callers skip the test entirely in that case.
-    fn display_list_of(root: Element, css_src: &str) -> Option<DisplayList> {
-        let fonts = text::FontCollection::new().ok()?;
+    /// one element and some CSS — exactly as `engine` drives it.
+    fn display_list_of(root: Element, css_src: &str) -> DisplayList {
+        let fonts = test_fonts();
         let doc = dom::Node::document(vec![root.into()]);
         let sheet = css::parse_stylesheet(css_src).expect("test css is valid");
         let styled = style::style_document(&doc, &[sheet]);
         let boxes = layout::build_box_tree(&styled);
         let fragments = layout::layout(&boxes, VIEWPORT, &fonts);
-        Some(paint_fragments(&fragments, VIEWPORT, 600.0))
+        paint_fragments(&fragments, VIEWPORT, 600.0)
     }
 
     fn rects(list: &DisplayList) -> Vec<&DisplayItem> {
@@ -409,12 +414,10 @@ mod fragment_tests {
 
     #[test]
     fn background_color_paints_a_rect_at_the_fragment_geometry() {
-        let Some(list) = display_list_of(
+        let list = display_list_of(
             Element::new("div"),
             "div { display: block; width: 100px; height: 50px; background-color: #ff0000; }",
-        ) else {
-            return;
-        };
+        );
         let backgrounds: Vec<&DisplayItem> = rects(&list)
             .into_iter()
             .filter(
@@ -432,25 +435,21 @@ mod fragment_tests {
 
     #[test]
     fn transparent_background_paints_nothing() {
-        let Some(list) = display_list_of(
+        let list = display_list_of(
             Element::new("div"),
             "div { display: block; width: 100px; height: 50px; }", // background-color: initial = transparent
-        ) else {
-            return;
-        };
+        );
         // Just the viewport background rect — no second rect for the div.
         assert_eq!(rects(&list).len(), 1);
     }
 
     #[test]
     fn border_paints_four_strips_at_the_box_edges() {
-        let Some(list) = display_list_of(
+        let list = display_list_of(
             Element::new("div"),
             "div { display: block; width: 100px; height: 50px; margin: 0;
                    border-width: 4px; border-style: solid; border-color: #00ff00; }",
-        ) else {
-            return;
-        };
+        );
         let green: Vec<&DisplayItem> = rects(&list)
             .into_iter()
             .filter(
@@ -472,26 +471,20 @@ mod fragment_tests {
 
     #[test]
     fn border_style_none_paints_no_border_even_with_width_set() {
-        let Some(list) = display_list_of(
+        let list = display_list_of(
             Element::new("div"),
             "div { display: block; width: 100px; height: 50px; border-width: 4px; }", // no border-style
-        ) else {
-            return;
-        };
+        );
         assert_eq!(rects(&list).len(), 1); // just the viewport background
     }
 
     #[test]
     fn text_fragment_paints_at_its_baseline() {
-        let Ok(fonts) = text::FontCollection::new() else {
-            return;
-        };
-        let Some(list) = display_list_of(
+        let fonts = test_fonts();
+        let list = display_list_of(
             Element::new("p").text("hi"),
             "p { display: block; margin: 0; color: #0000ff; font-size: 12px; }",
-        ) else {
-            return;
-        };
+        );
         let texts: Vec<&DisplayItem> = list
             .items
             .iter()
@@ -521,9 +514,7 @@ mod fragment_tests {
 
     #[test]
     fn empty_document_falls_back_to_hint_text() {
-        let Ok(fonts) = text::FontCollection::new() else {
-            return;
-        };
+        let fonts = test_fonts();
         let doc = dom::Node::document(vec![]);
         let styled = style::style_document(&doc, &[]);
         let boxes = layout::build_box_tree(&styled);

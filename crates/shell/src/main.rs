@@ -65,6 +65,10 @@ impl Browser {
         }
 
         let rgba = engine.frame(size.width, size.height);
+        if rgba.is_empty() {
+            // Past the engine's frame cap: the last frame stays shown.
+            return;
+        }
         match surface.buffer_mut() {
             Ok(mut buffer) => {
                 // softbuffer buffers are 0RGB u32 (native endian);
