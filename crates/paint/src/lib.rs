@@ -7,7 +7,11 @@
 //! viewport coordinates (the scroll offset subtracted, M9.1), items the
 //! viewport does not meet are left out, and a box whose `overflow`
 //! clips wraps its content in a [`DisplayItem::PushClip`]/[`DisplayItem::
-//! PopClip`] pair at its padding box (M9.3). Two earlier stopgaps remain, retained rather than deleted
+//! PopClip`] pair at its padding box (M9.3). Since M10.5 such a box is
+//! a scroll container: [`paint_fragments_in`] takes each one's scroll
+//! offset ([`ScrollOffsets`]), moves its content up by it inside the
+//! clip, and draws an overlay scrollbar over its padding box's right
+//! edge when it can scroll. Two earlier stopgaps remain, retained rather than deleted
 //! (each milestone's own exit criteria asked for the *active* pipeline
 //! to move on, not for the previous stage's code to disappear):
 //! [`paint_document`] (M1) walks a `dom::Node` directly with hardcoded
@@ -15,11 +19,62 @@
 //! `style::StyledDom` with real cascaded colors/font-sizes but still no
 //! real box model.
 
+use std::collections::HashMap;
+
 use dom::Node;
 use layout::{Fragment, FragmentKind};
 use style::StyledDom;
-use style::computed::{BOTTOM, BorderStyle, Color, Display, LEFT, RIGHT, TOP};
+use style::computed::{BOTTOM, BorderStyle, Color, Display, LEFT, Overflow, RIGHT, TOP};
 use style::selector_matching::FlatChild;
+
+/// The scrollbar track's colour, the viewport's and an element's alike.
+pub const SCROLLBAR_TRACK: Rgba8 = Rgba8::rgb(0x31, 0x32, 0x44);
+/// The scrollbar thumb's colour.
+pub const SCROLLBAR_THUMB: Rgba8 = Rgba8::rgb(0x6c, 0x70, 0x86);
+/// A scrollbar thumb never gets shorter than this, however long the
+/// content, so it stays something a pointer can see and grab.
+pub const SCROLLBAR_MIN_THUMB: f32 = 24.0;
+/// The width of a scroll container's overlay scrollbar (M10.5), drawn
+/// over the right edge of its padding box; it takes no space from the
+/// content.
+pub const ELEMENT_SCROLLBAR_WIDTH: f32 = 8.0;
+
+/// Where each scroll container (M10.5) is scrolled to, by its element's
+/// `FlatDom` index: zero for one not scrolled. The engine keeps the
+/// offsets; `()` is a document scrolled nowhere.
+pub trait ScrollOffsets {
+    fn offset(&self, node: usize) -> f32;
+}
+
+impl ScrollOffsets for () {
+    fn offset(&self, _node: usize) -> f32 {
+        0.0
+    }
+}
+
+impl ScrollOffsets for HashMap<usize, f32> {
+    fn offset(&self, node: usize) -> f32 {
+        self.get(&node).copied().unwrap_or(0.0)
+    }
+}
+
+/// A scrollbar thumb's top and height within a track `track` px long,
+/// for content that scrolls `max_scroll` px past it and is scrolled to
+/// `offset`: the thumb is the track's share of the whole, never shorter
+/// than [`SCROLLBAR_MIN_THUMB`] nor longer than the track, placed in
+/// proportion to the offset. The viewport's scrollbar (the engine's)
+/// and an element's (M10.5) are the same shape.
+pub fn scrollbar_thumb(track: f32, max_scroll: f32, offset: f32) -> (f32, f32) {
+    let thumb_h = (track * track / (track + max_scroll))
+        .max(SCROLLBAR_MIN_THUMB)
+        .min(track);
+    let thumb_y = if max_scroll > 0.0 {
+        (track - thumb_h) * (offset / max_scroll).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (thumb_y, thumb_h)
+}
 
 /// An 8-bit RGBA color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -339,8 +394,24 @@ fn to_rgba8(c: Color) -> Rgba8 {
 /// a box whose `overflow` clips (M9.3), whose content is wrapped in a
 /// clip at its padding box and skipped altogether when that box is out
 /// of view. `roots` is the tree `layout::layout_document` returns; a
-/// flat list works too, as a forest of childless fragments.
+/// flat list works too, as a forest of childless fragments. No scroll
+/// container is scrolled; [`paint_fragments_in`] takes their offsets.
 pub fn paint_fragments(roots: &[Fragment], viewport: Viewport) -> DisplayList {
+    paint_fragments_in(roots, viewport, &())
+}
+
+/// [`paint_fragments`] with each scroll container (M10.5) scrolled as
+/// `offsets` says: its content is moved up by its offset inside its
+/// clip, and when it can scroll — `overflow: scroll` always, `auto`
+/// when its content overflows, `hidden` never — an overlay scrollbar is
+/// drawn over its padding box's right edge, after its content, as an
+/// indicator that takes no space from it (vertical only, like the
+/// viewport's; a control from M26).
+pub fn paint_fragments_in(
+    roots: &[Fragment],
+    viewport: Viewport,
+    offsets: &dyn ScrollOffsets,
+) -> DisplayList {
     // CSS2 §14.2: the root element's background paints the canvas, the
     // whole viewport; when the root's is transparent, the body's — the
     // root's first box child, in an HTML document — does instead and is
@@ -357,6 +428,8 @@ pub fn paint_fragments(roots: &[Fragment], viewport: Viewport) -> DisplayList {
             }),
         }],
         viewport,
+        dy: -viewport.scroll_y,
+        offsets,
         canvas_node: canvas.map(|f| f.node),
     };
     painter.paint_all(roots);
@@ -398,25 +471,32 @@ fn canvas_background(roots: &[Fragment]) -> Option<&Fragment> {
 }
 
 /// One walk over a fragment tree for one viewport.
-struct Painter {
+struct Painter<'a> {
     items: Vec<DisplayItem>,
     viewport: Viewport,
+    /// From a document `y` to the viewport's: the viewport's scroll
+    /// offset and, inside a scroll container, its offset too (M10.5),
+    /// negated.
+    dy: f32,
+    offsets: &'a dyn ScrollOffsets,
     /// The element whose background became the canvas's, and so is not
     /// painted on its own box again.
     canvas_node: Option<usize>,
 }
 
-impl Painter {
+impl Painter<'_> {
     fn paint_all(&mut self, fragments: &[Fragment]) {
         for f in fragments {
             self.paint(f);
         }
     }
 
-    /// Whether a document-space rectangle meets the viewport at all.
+    /// Whether a document-space rectangle, as scrolled so far, meets
+    /// the viewport at all.
     fn meets_viewport(&self, x: f32, y: f32, w: f32, h: f32) -> bool {
         let v = self.viewport;
-        x < v.width && x + w > 0.0 && y < v.scroll_y + v.height && y + h > v.scroll_y
+        let y = y + self.dy;
+        x < v.width && x + w > 0.0 && y < v.height && y + h > 0.0
     }
 
     fn paint(&mut self, f: &Fragment) {
@@ -434,13 +514,15 @@ impl Painter {
                 }
                 if clips {
                     let (x, y, w, h) = padding_box(f);
-                    self.items.push(DisplayItem::PushClip {
-                        x,
-                        y: y - self.viewport.scroll_y,
-                        w,
-                        h,
-                    });
+                    let y = y + self.dy;
+                    self.items.push(DisplayItem::PushClip { x, y, w, h });
+                    // The content is scrolled; the box, its clip and its
+                    // scrollbar are not.
+                    let offset = self.offsets.offset(f.node);
+                    self.dy -= offset;
                     self.paint_all(&f.children);
+                    self.dy += offset;
+                    self.push_scrollbar(f, (x, y, w, h), offset);
                     self.items.push(DisplayItem::PopClip);
                 } else {
                     self.paint_all(&f.children);
@@ -452,7 +534,7 @@ impl Painter {
                         text: text.clone(),
                         x: f.x,
                         // A text fragment's `y` is already its baseline.
-                        y: f.y - self.viewport.scroll_y,
+                        y: f.y + self.dy,
                         size: f.style.font_size_px,
                         color: to_rgba8(f.style.color),
                     });
@@ -461,9 +543,42 @@ impl Painter {
         }
     }
 
+    /// A scroll container's overlay scrollbar (M10.5) over the right
+    /// edge of its padding box `(x, y, w, h)`, in viewport coordinates,
+    /// when it can scroll: `overflow: scroll` always, `auto` only with
+    /// content past the box, `hidden` never.
+    fn push_scrollbar(&mut self, f: &Fragment, padding_box: (f32, f32, f32, f32), offset: f32) {
+        let max = f.max_scroll();
+        let shows = match f.style.overflow {
+            Overflow::Scroll => true,
+            Overflow::Auto => max > 0.0,
+            Overflow::Hidden | Overflow::Visible => false,
+        };
+        let (x, y, w, h) = padding_box;
+        if !shows || w < ELEMENT_SCROLLBAR_WIDTH || h <= 0.0 {
+            return;
+        }
+        let bar_x = x + w - ELEMENT_SCROLLBAR_WIDTH;
+        self.items.push(DisplayItem::Rect {
+            x: bar_x,
+            y,
+            w: ELEMENT_SCROLLBAR_WIDTH,
+            h,
+            color: SCROLLBAR_TRACK,
+        });
+        let (thumb_y, thumb_h) = scrollbar_thumb(h, max, offset);
+        self.items.push(DisplayItem::Rect {
+            x: bar_x + 1.0,
+            y: y + thumb_y,
+            w: ELEMENT_SCROLLBAR_WIDTH - 2.0,
+            h: thumb_h,
+            color: SCROLLBAR_THUMB,
+        });
+    }
+
     /// A box's own background and border, in viewport coordinates.
     fn paint_box(&mut self, f: &Fragment) {
-        let y = f.y - self.viewport.scroll_y;
+        let y = f.y + self.dy;
         if f.style.background_color.a > 0.0 && self.canvas_node != Some(f.node) {
             self.items.push(DisplayItem::Rect {
                 x: f.x,
@@ -720,6 +835,17 @@ mod fragment_tests {
     /// the root's background is the canvas's (CSS2 §14.2), so a bare
     /// `div` at the root would paint differently from one in a page.
     fn display_list_for(root: Element, css_src: &str, viewport: Viewport) -> DisplayList {
+        display_list_scrolled(root, css_src, viewport, &())
+    }
+
+    /// [`display_list_for`] with scroll containers scrolled (M10.5).
+    /// Nodes: html 1, body 2, the fixture's root 3.
+    fn display_list_scrolled(
+        root: Element,
+        css_src: &str,
+        viewport: Viewport,
+        offsets: &dyn ScrollOffsets,
+    ) -> DisplayList {
         let fonts = test_fonts();
         let (root, css_src) = if root.tag == "html" {
             (root, css_src.to_string())
@@ -734,7 +860,7 @@ mod fragment_tests {
         let styled = style::style_document(&doc, &[sheet]);
         let boxes = layout::build_box_tree(&styled);
         let layout = layout::layout_document(&boxes, VIEWPORT, &fonts);
-        paint_fragments(&layout.roots, viewport)
+        paint_fragments_in(&layout.roots, viewport, offsets)
     }
 
     fn rects(list: &DisplayList) -> Vec<&DisplayItem> {
@@ -1106,6 +1232,119 @@ mod fragment_tests {
                 "{value}"
             );
         }
+    }
+
+    #[test]
+    fn a_scroll_container_paints_its_content_moved_up_by_its_offset() {
+        // A 50px box with a red 30px child and a blue 100px one,
+        // scrolled by 20: the red box's rect is at y -20 and the blue
+        // one's at 10, while the clip stays where the box is. Nodes:
+        // html 1, body 2, the box 3.
+        let root = Element::new("div")
+            .attr("class", "s")
+            .push(Element::new("p").attr("class", "r"))
+            .push(Element::new("p").attr("class", "b"));
+        let css = ".s { overflow: auto; height: 50px; width: 100px; }
+                   .r { height: 30px; margin: 0; background-color: #ff0000; }
+                   .b { height: 100px; margin: 0; background-color: #0000ff; }";
+        let offsets: HashMap<usize, f32> = [(3, 20.0)].into_iter().collect();
+        let list = display_list_scrolled(root, css, Viewport::new(VIEWPORT, 600.0), &offsets);
+        let rect_y = |color: Rgba8| {
+            list.items.iter().find_map(|i| match i {
+                DisplayItem::Rect { y, color: c, .. } if *c == color => Some(*y),
+                _ => None,
+            })
+        };
+        assert_eq!(rect_y(Rgba8::rgb(255, 0, 0)), Some(-20.0));
+        assert_eq!(rect_y(Rgba8::rgb(0, 0, 255)), Some(10.0));
+        // Scrolled past the top of the viewport, the red box is culled
+        // like anything else out of view.
+        let offsets: HashMap<usize, f32> = [(3, 40.0)].into_iter().collect();
+        let culled = display_list_scrolled(
+            Element::new("div")
+                .attr("class", "s")
+                .push(Element::new("p").attr("class", "r"))
+                .push(Element::new("p").attr("class", "b")),
+            css,
+            Viewport::new(VIEWPORT, 600.0),
+            &offsets,
+        );
+        assert!(!culled.items.iter().any(
+            |i| matches!(i, DisplayItem::Rect { color, .. } if *color == Rgba8::rgb(255, 0, 0))
+        ));
+        assert!(matches!(
+            list.items
+                .iter()
+                .find(|i| matches!(i, DisplayItem::PushClip { .. })),
+            Some(DisplayItem::PushClip {
+                y: 0.0,
+                h: 50.0,
+                ..
+            })
+        ));
+        // The overlay scrollbar, inside the clip after the content: the
+        // 8px track at the padding box's right edge, the thumb in
+        // proportion (50 of 130 is 19px, raised to 24; 20 of 80 down
+        // the 26px of travel is 6.5).
+        let track = list
+            .items
+            .iter()
+            .position(|i| matches!(i, DisplayItem::Rect { color, .. } if *color == SCROLLBAR_TRACK))
+            .expect("a track");
+        let pop = list
+            .items
+            .iter()
+            .position(|i| matches!(i, DisplayItem::PopClip))
+            .unwrap();
+        assert!(track < pop);
+        assert!(matches!(
+            list.items[track],
+            DisplayItem::Rect {
+                x: 92.0,
+                y: 0.0,
+                w: 8.0,
+                h: 50.0,
+                ..
+            }
+        ));
+        assert!(matches!(
+            list.items[track + 1],
+            DisplayItem::Rect {
+                x: 93.0,
+                y: 6.5,
+                w: 6.0,
+                h: 24.0,
+                color: SCROLLBAR_THUMB
+            }
+        ));
+    }
+
+    #[test]
+    fn a_scrollbar_is_drawn_only_where_the_box_can_scroll() {
+        let has_track = |value: &str, child_height: &str| {
+            let root = Element::new("div")
+                .attr("class", "s")
+                .push(Element::new("p"));
+            let list = display_list_of(
+                root,
+                &format!(
+                    ".s {{ overflow: {value}; height: 50px; width: 100px; }}
+                     p {{ height: {child_height}; margin: 0; }}"
+                ),
+            );
+            list.items
+                .iter()
+                .any(|i| matches!(i, DisplayItem::Rect { color, .. } if *color == SCROLLBAR_TRACK))
+        };
+        assert!(has_track("auto", "200px"));
+        assert!(!has_track("auto", "20px"), "auto: nothing overflows");
+        assert!(has_track("scroll", "20px"), "scroll: always");
+        assert!(!has_track("hidden", "200px"), "hidden: never");
+        assert!(!has_track("visible", "200px"));
+        // `scroll` with nothing to scroll: the thumb fills the track.
+        assert_eq!(scrollbar_thumb(50.0, 0.0, 0.0), (0.0, 50.0));
+        assert_eq!(scrollbar_thumb(50.0, 80.0, 80.0), (26.0, 24.0));
+        assert_eq!(scrollbar_thumb(500.0, 500.0, 250.0), (125.0, 250.0));
     }
 
     #[test]

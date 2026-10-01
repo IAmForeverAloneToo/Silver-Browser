@@ -3,9 +3,10 @@
 //! Owns the window, the event loop, and the present pipeline (winit +
 //! softbuffer). All rendering decisions live in `engine`; this file
 //! pumps frames to the screen and turns input into engine calls (M9):
-//! the wheel, the keys and the scrollbar into scrolling, a click into a
-//! hit test. A scroll animates over frames, so a redraw that leaves the
-//! engine mid-animation asks for the next one.
+//! the wheel (at the pointer, so a scroll container under it takes it
+//! first, M10.5), the keys and the scrollbar into scrolling, a click
+//! into a hit test. A scroll animates over frames, so a redraw that
+//! leaves the engine mid-animation asks for the next one.
 
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -245,13 +246,16 @@ impl ApplicationHandler for Browser {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 // Positive deltas reveal content above (the content
-                // moves down), so the scroll offset decreases.
+                // moves down), so the scroll offset decreases. The
+                // engine chains the turn from the scroll container under
+                // the pointer out to the viewport (M10.5).
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, lines) => -lines * LINE_PX,
                     MouseScrollDelta::PixelDelta(p) => -p.y as f32,
                 };
+                let (x, y) = self.cursor;
                 if let Some(engine) = self.engine.as_mut() {
-                    engine.scroll_by(dy);
+                    engine.wheel(x, y, dy);
                 }
                 window.request_redraw();
             }

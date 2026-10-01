@@ -686,6 +686,7 @@ fn text_fragment(
         kind: FragmentKind::Text(word.text.to_string()),
         node: word.node,
         ascent,
+        scroll_height: 0.0,
         children: Vec::new(),
     }
 }

@@ -102,6 +102,14 @@ pub struct Fragment {
     /// baseline at `y`: the box runs from `y - ascent` to `y - ascent +
     /// h`, the line's own extent. Zero for a box.
     pub ascent: f32,
+    /// For a box whose `overflow` clips (a scroll container, M10.5),
+    /// the height of its scrollable overflow area from its padding
+    /// box's top (css-overflow-3 §2.2): its content as if its height
+    /// were `auto`, or any descendant's box or line reaching lower (one
+    /// inside a nested clipping box excepted), then its bottom padding;
+    /// at least the padding box's own height. Zero for any other
+    /// fragment. [`Fragment::max_scroll`] is what it allows.
+    pub scroll_height: f32,
     /// The fragments of this box's content, in paint order. A text
     /// fragment has none.
     pub children: Vec<Fragment>,
@@ -140,6 +148,28 @@ impl Fragment {
         let top = self.top();
         px >= self.x && px < self.x + self.w && py >= top && py < top + self.h
     }
+
+    /// How far a scroll container's content can scroll (M10.5): its
+    /// [`Fragment::scroll_height`] past its padding box's height, never
+    /// negative — and zero for a box that does not clip, or a text.
+    pub fn max_scroll(&self) -> f32 {
+        let [top, _, bottom, _] = self.style.used_border_width();
+        (self.scroll_height - (self.h - top - bottom)).max(0.0)
+    }
+}
+
+/// The bottom edge of `f`'s box, or of anything inside it reaching
+/// lower, relative to the origin `f`'s own coordinates are in. Content
+/// inside a box that clips does not count: its overflow is its own.
+fn extent_bottom(f: &Fragment) -> f32 {
+    let own = f.top() + f.h;
+    if f.style.overflow.clips() {
+        return own;
+    }
+    f.children
+        .iter()
+        .map(|c| f.y + extent_bottom(c))
+        .fold(own, f32::max)
 }
 
 /// A laid-out document (M9.1): the fragment tree of its top-level
@@ -724,38 +754,36 @@ fn layout_block_contents(
         (0.0, own_top.join(children.leading))
     };
 
-    let content_height = match specified_height {
-        Some(h) => h,
-        None => {
-            if children.nothing_materialised {
-                // Every child collapsed through: `leading` and
-                // `trailing` are one set, used exactly once. With no
-                // top separation it escaped through the top (joined
-                // into `margin_top` above); with no bottom separation
-                // it escapes through the bottom (joined into
-                // `margin_bottom` below) and the content height is
-                // zero (CSS2 §10.6.3, last case) even though the empty
-                // box itself sits past the gap; only with both does it
-                // become the gap inside, counted once.
-                if stops_top && stops_bottom {
-                    child_shift
-                } else {
-                    0.0
-                }
-            } else {
-                let base = children.content_height + child_shift;
-                if stops_bottom {
-                    // The last child's margin-bottom doesn't escape — it
-                    // becomes real space above the padding/border.
-                    base + children.trailing.resolve()
-                } else {
-                    base
-                }
-            }
+    // The content's height when `height` is `auto` (CSS2 §10.6.3): what
+    // the box is unless told otherwise, and what a scroll container's
+    // content scrolls over regardless.
+    let auto_content_height = if children.nothing_materialised {
+        // Every child collapsed through: `leading` and `trailing` are
+        // one set, used exactly once. With no top separation it
+        // escaped through the top (joined into `margin_top` above);
+        // with no bottom separation it escapes through the bottom
+        // (joined into `margin_bottom` below) and the content height
+        // is zero (§10.6.3, last case) even though the empty box
+        // itself sits past the gap; only with both does it become the
+        // gap inside, counted once.
+        if stops_top && stops_bottom {
+            child_shift
+        } else {
+            0.0
+        }
+    } else {
+        let base = children.content_height + child_shift;
+        if stops_bottom {
+            // The last child's margin-bottom doesn't escape — it
+            // becomes real space above the padding/border.
+            base + children.trailing.resolve()
+        } else {
+            base
         }
     };
     // CSS2 §10.7: the tentative height clamped to `max-height`, then
     // `min-height`.
+    let content_height = specified_height.unwrap_or(auto_content_height);
     let content_height = max_height
         .map_or(content_height, |max| content_height.min(max))
         .max(min_height);
@@ -771,6 +799,23 @@ fn layout_block_contents(
         border[TOP] + padding[TOP] + content_height + padding[BOTTOM] + border[BOTTOM];
 
     let mut root = box_fragment(border_box_width, border_box_height, b);
+    if b.style.overflow.clips() {
+        // The scrollable overflow area (M10.5, see `Fragment::
+        // scroll_height`): the content as if the height were auto, or
+        // a descendant reaching lower, from the padding box's top to
+        // the bottom padding's end, and never less than the padding
+        // box itself. The children are still relative to the first
+        // child's top, `child_shift` below the content box's.
+        let extent = children
+            .fragments
+            .iter()
+            .map(extent_bottom)
+            .fold(0.0, f32::max)
+            + child_shift;
+        let padding_box = padding[TOP] + content_height + padding[BOTTOM];
+        root.scroll_height =
+            (padding[TOP] + auto_content_height.max(extent) + padding[BOTTOM]).max(padding_box);
+    }
     let content_y = border[TOP] + padding[TOP] + child_shift;
     root.children = children
         .fragments
@@ -800,6 +845,7 @@ fn box_fragment(w: f32, h: f32, b: &LayoutBox) -> Fragment {
         kind: FragmentKind::Box,
         node: b.node,
         ascent: 0.0,
+        scroll_height: 0.0,
         children: Vec::new(),
     }
 }
@@ -1464,6 +1510,74 @@ mod tests {
         assert_eq!((a.x, a.y), (2.0, 2.0 + 7.0), "the margin stays inside");
         assert_eq!((b.w, b.y), (50.0, 2.0 + 7.0 + 10.0 + 7.0));
         assert_eq!(ib.h, 2.0 + 7.0 + 10.0 + 7.0 + 10.0 + 2.0);
+    }
+
+    #[test]
+    fn a_clipping_box_records_how_far_its_content_scrolls() {
+        // A 50px box with 10px of padding: its padding box is 70px. A
+        // 100px child reaches 120 from the padding box's top, with the
+        // bottom padding after it.
+        let s = |inner: &str| {
+            format!(
+                "div {{ margin: 0; }} .s {{ overflow: auto; height: 50px; padding: 10px; }} {inner}"
+            )
+        };
+        let frags = fragments_of(
+            Element::new("div")
+                .attr("class", "s")
+                .push(Element::new("p")),
+            &s("p { margin: 0; height: 100px; }"),
+        );
+        let b = box_fragments(&frags)[0];
+        assert_eq!((b.scroll_height, b.max_scroll()), (120.0, 50.0));
+        // Content that fits: the padding box itself, nothing to scroll.
+        let frags = fragments_of(
+            Element::new("div")
+                .attr("class", "s")
+                .push(Element::new("p")),
+            &s("p { margin: 0; height: 20px; }"),
+        );
+        let b = box_fragments(&frags)[0];
+        assert_eq!((b.scroll_height, b.max_scroll()), (70.0, 0.0));
+        // The last child's bottom margin stays inside a formatting
+        // context root and scrolls with it.
+        let frags = fragments_of(
+            Element::new("div")
+                .attr("class", "s")
+                .push(Element::new("p")),
+            &s("p { margin: 0 0 30px 0; height: 100px; }"),
+        );
+        assert_eq!(box_fragments(&frags)[0].scroll_height, 150.0);
+        // A descendant overflowing a child with a fixed height reaches
+        // lower than the content height says.
+        let frags = fragments_of(
+            Element::new("div")
+                .attr("class", "s")
+                .push(Element::new("p").push(Element::new("span"))),
+            &s("p { margin: 0; height: 10px; } span { display: block; height: 80px; }"),
+        );
+        assert_eq!(box_fragments(&frags)[0].scroll_height, 100.0);
+        // Unless that child clips: its overflow is its own.
+        let frags = fragments_of(
+            Element::new("div")
+                .attr("class", "s")
+                .push(Element::new("p").push(Element::new("span"))),
+            &s(
+                "p { margin: 0; height: 10px; overflow: hidden; } span { display: block; height: 80px; }",
+            ),
+        );
+        assert_eq!(box_fragments(&frags)[0].scroll_height, 70.0);
+        // A box that does not clip records nothing and scrolls nowhere;
+        // text neither.
+        let frags = fragments_of(
+            Element::new("div").push(Element::new("p").text("x")),
+            "div { height: 5px; margin: 0; }",
+        );
+        assert!(
+            frags
+                .iter()
+                .all(|f| f.scroll_height == 0.0 && f.max_scroll() == 0.0)
+        );
     }
 
     #[test]

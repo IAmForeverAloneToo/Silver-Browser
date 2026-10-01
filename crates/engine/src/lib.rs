@@ -28,11 +28,26 @@
 //! `FlatDom` index of the element under a viewport point, the
 //! groundwork for M26's events; [`Engine::link_at`] walks up from it to
 //! the nearest `<a href>`.
+//!
+//! Elements scroll too (M10.5): a box whose `overflow` is `auto` or
+//! `scroll` is a scroll container (a `hidden` one as well, by program
+//! only), its offset kept here by the element's index and reset when a
+//! document loads — layout knows nothing of it, paint moves the content
+//! inside the clip, hit testing adds it on the way down. The wheel
+//! ([`Engine::wheel`]) goes to the innermost container under the pointer
+//! that can still move that way, then to its ancestors, then to the
+//! viewport: scroll chaining. Each container animates with the same
+//! fixed-tick lerp as the viewport.
+
+use std::collections::HashMap;
 
 use dom::Node;
 use layout::{DocumentLayout, Fragment, FragmentKind};
-use paint::{DisplayItem, Rgba8, Viewport, paint_fragments};
+use paint::{
+    DisplayItem, SCROLLBAR_THUMB, SCROLLBAR_TRACK, Viewport, paint_fragments_in, scrollbar_thumb,
+};
 use render::{RenderBackend as _, SoftwareBackend};
+use style::computed::Overflow;
 use style::{CascadeContext, FontMeasure, StyledDom};
 use text::FontError;
 
@@ -55,6 +70,7 @@ const DOCUMENT_SOURCE: &str = "\
         background-color: #313244;\
       }\
       .clipped { height: 40px; overflow: hidden; }\
+      .scrolls { height: 60px; overflow: auto; }\
       a { color: #89b4fa; }\
     </style>\
   </head>\
@@ -67,6 +83,10 @@ const DOCUMENT_SOURCE: &str = "\
     </div>\
     <div class=\"card clipped\">\
       <p>This card is 40px tall with overflow: hidden, so this second sentence is clipped away at its padding edge rather than painted over whatever follows. The clip is a rectangle in the display list (M9.3).</p>\
+    </div>\
+    <div class=\"card scrolls\">\
+      <p>This card is 60px tall with overflow: auto, so it scrolls on its own: turn the wheel over it and its content moves inside the clip, with the overlay scrollbar at its right edge showing where it is (M10.5). At the end of its content the wheel goes on to the page, which is scroll chaining.</p>\
+      <p>A second paragraph, to give the card something more to scroll through.</p>\
     </div>\
     <p>Scroll with the wheel, the arrow keys, Page Up and Page Down, Home and End, the space bar, or by dragging the scrollbar at the right (M9.2). Click <a href=\"about:silver\">this link</a> and the engine finds the anchor under the pointer (M9.4; the shell only prints it — navigation is M15).</p>\
     <p>The paragraphs below only exist to make the page taller than the window.</p>\
@@ -91,11 +111,6 @@ const SCROLL_TICK_FRACTION: f32 = 1.0 / 3.0;
 const SCROLL_SNAP_PX: f32 = 0.5;
 /// The scrollbar track's width, in px, at the viewport's right edge.
 pub const SCROLLBAR_WIDTH: f32 = 12.0;
-/// The scrollbar thumb never gets shorter than this, however long the
-/// document, so it stays something a pointer can grab.
-const SCROLLBAR_MIN_THUMB: f32 = 24.0;
-const SCROLLBAR_TRACK: Rgba8 = Rgba8::rgb(0x31, 0x32, 0x44);
-const SCROLLBAR_THUMB: Rgba8 = Rgba8::rgb(0x6c, 0x70, 0x86);
 
 /// A browsing session: one document, its stylesheets, its scroll
 /// position and its rasterizer.
@@ -126,6 +141,16 @@ pub struct Engine {
     /// The scroll offset shown, and the one being approached.
     scroll_y: f32,
     scroll_target: f32,
+    /// Each scroll container's offset (M10.5), by its element's
+    /// `FlatDom` index; one never scrolled has no entry.
+    element_scroll: HashMap<usize, ElementScroll>,
+}
+
+/// A scroll container's offset shown, and the one being approached.
+#[derive(Debug, Clone, Copy, Default)]
+struct ElementScroll {
+    y: f32,
+    target: f32,
 }
 
 struct CachedLayout {
@@ -204,6 +229,7 @@ impl Engine {
             viewport: (0, 0),
             scroll_y: 0.0,
             scroll_target: 0.0,
+            element_scroll: HashMap::new(),
         };
         engine.load_document(DOCUMENT_SOURCE);
         engine
@@ -225,6 +251,7 @@ impl Engine {
             self.layout = None;
             self.scroll_y = 0.0;
             self.scroll_target = 0.0;
+            self.element_scroll.clear();
             self.backend.clear_glyph_cache();
         }
     }
@@ -350,10 +377,25 @@ impl Engine {
         }
         self.viewport = (width, height);
         // The document may be shorter at this width than where the
-        // offset was.
+        // offset was; so may a scroll container's content.
         let max = self.max_scroll();
         self.scroll_target = self.scroll_target.clamp(0.0, max);
         self.scroll_y = self.scroll_y.clamp(0.0, max);
+        let mut elements = std::mem::take(&mut self.element_scroll);
+        {
+            let layout = self.layout(width as f32);
+            for (node, scroll) in elements.iter_mut() {
+                let max = fragment_of(&layout.roots, *node).map_or(0.0, Fragment::max_scroll);
+                scroll.target = scroll.target.clamp(0.0, max);
+                scroll.y = scroll.y.clamp(0.0, max);
+            }
+        }
+        self.element_scroll = elements;
+        let offsets: HashMap<usize, f32> = self
+            .element_scroll
+            .iter()
+            .map(|(node, scroll)| (*node, scroll.y))
+            .collect();
         let viewport = Viewport {
             width: width as f32,
             height: height as f32,
@@ -361,7 +403,7 @@ impl Engine {
         };
         let scrollbar = self.scrollbar();
         let layout = self.layout(width as f32);
-        let mut list = paint_fragments(&layout.roots, viewport);
+        let mut list = paint_fragments_in(&layout.roots, viewport, &offsets);
         if let Some(bar) = scrollbar {
             list.items.push(DisplayItem::Rect {
                 x: bar.x,
@@ -439,18 +481,17 @@ impl Engine {
         self.set_scroll(f.clamp(0.0, 1.0) * max);
     }
 
-    /// Advances the scroll animation one frame: the shown offset moves
-    /// [`SCROLL_TICK_FRACTION`] of the way to the target, landing on it
+    /// Advances the scroll animations one frame: each shown offset, the
+    /// viewport's and every scroll container's, moves
+    /// [`SCROLL_TICK_FRACTION`] of the way to its target, landing on it
     /// within [`SCROLL_SNAP_PX`]. Returns whether another frame is
-    /// wanted (the offset has not reached the target).
+    /// wanted (an offset has not reached its target).
     pub fn tick(&mut self) -> bool {
-        let remaining = self.scroll_target - self.scroll_y;
-        if remaining.abs() <= SCROLL_SNAP_PX {
-            self.scroll_y = self.scroll_target;
-            return false;
+        let mut moving = approach(&mut self.scroll_y, self.scroll_target);
+        for scroll in self.element_scroll.values_mut() {
+            moving |= approach(&mut scroll.y, scroll.target);
         }
-        self.scroll_y += remaining * SCROLL_TICK_FRACTION;
-        true
+        moving
     }
 
     /// The scrollbar for the last frame's viewport, or `None` when the
@@ -462,11 +503,7 @@ impl Engine {
             return None;
         }
         let (width, height) = (width as f32, height as f32);
-        let document_height = max + height;
-        let thumb_h = (height * height / document_height)
-            .max(SCROLLBAR_MIN_THUMB)
-            .min(height);
-        let thumb_y = (height - thumb_h) * (self.scroll_y / max);
+        let (thumb_y, thumb_h) = scrollbar_thumb(height, max, self.scroll_y);
         Some(Scrollbar {
             x: width - SCROLLBAR_WIDTH,
             w: SCROLLBAR_WIDTH,
@@ -474,6 +511,94 @@ impl Engine {
             thumb_y,
             thumb_h,
         })
+    }
+
+    // ---- Element scrolling (M10.5) ------------------------------------------
+
+    /// The scroll offset a scroll container shows, in px: zero for an
+    /// element never scrolled, or not a scroll container at all.
+    pub fn element_scroll(&self, node: usize) -> f32 {
+        self.element_scroll.get(&node).map_or(0.0, |s| s.y)
+    }
+
+    /// The offset a scroll container is approaching.
+    pub fn element_scroll_target(&self, node: usize) -> f32 {
+        self.element_scroll.get(&node).map_or(0.0, |s| s.target)
+    }
+
+    /// The furthest the element's content can scroll in the last
+    /// frame's layout: its scrollable height past its padding box
+    /// (`layout::Fragment::max_scroll`); zero for an element that is
+    /// not a scroll container, or before the first frame.
+    pub fn element_max_scroll(&mut self, node: usize) -> f32 {
+        let (width, _) = self.viewport;
+        if width == 0 {
+            return 0.0;
+        }
+        fragment_of(&self.layout(width as f32).roots, node).map_or(0.0, Fragment::max_scroll)
+    }
+
+    /// Scrolls the element's content to offset `y`, animated over the
+    /// next ticks and clamped to its content, as [`Engine::scroll_to`]
+    /// does for the viewport; a NaN is ignored. An `overflow: hidden`
+    /// box scrolls this way too, by program only (CSS2 §11.1.1).
+    pub fn scroll_element_to(&mut self, node: usize, y: f32) {
+        if y.is_nan() {
+            return;
+        }
+        let max = self.element_max_scroll(node);
+        self.element_scroll.entry(node).or_default().target = y.clamp(0.0, max);
+    }
+
+    /// Scrolls the element's content by `dy` px (down when positive),
+    /// animated over the next ticks.
+    pub fn scroll_element_by(&mut self, node: usize, dy: f32) {
+        let target = self.element_scroll_target(node) + dy;
+        self.scroll_element_to(node, target);
+    }
+
+    /// Jumps the element's content to offset `y` at once, no animation.
+    pub fn set_element_scroll(&mut self, node: usize, y: f32) {
+        self.scroll_element_to(node, y);
+        if let Some(scroll) = self.element_scroll.get_mut(&node) {
+            scroll.y = scroll.target;
+        }
+    }
+
+    /// A wheel turn of `dy` px (down when positive) at the viewport
+    /// point `(x, y)`: scroll chaining — the innermost scroll container
+    /// under the pointer whose target can still move that way takes it,
+    /// else the next one out, else the viewport. Only `overflow: auto`
+    /// and `scroll` containers take the wheel.
+    pub fn wheel(&mut self, x: f32, y: f32, dy: f32) {
+        if !dy.is_finite() || dy == 0.0 {
+            return;
+        }
+        for node in self.scroll_chain_at(x, y).into_iter().rev() {
+            let max = self.element_max_scroll(node);
+            let target = self.element_scroll_target(node);
+            if (dy > 0.0 && target < max) || (dy < 0.0 && target > 0.0) {
+                self.scroll_element_by(node, dy);
+                return;
+            }
+        }
+        self.scroll_by(dy);
+    }
+
+    /// The scroll containers that take the wheel under the viewport
+    /// point, outermost first: the ones around the element hit there.
+    fn scroll_chain_at(&mut self, x: f32, y: f32) -> Vec<usize> {
+        let Some((_, chain)) = self.hit(x, y) else {
+            return Vec::new();
+        };
+        let layout = self.layout(self.viewport.0 as f32);
+        chain
+            .into_iter()
+            .filter(|node| {
+                fragment_of(&layout.roots, *node)
+                    .is_some_and(|f| matches!(f.style.overflow, Overflow::Auto | Overflow::Scroll))
+            })
+            .collect()
     }
 
     // ---- Hit testing (M9.4) -------------------------------------------------
@@ -486,14 +611,28 @@ impl Engine {
     /// — the viewport background, or the scrollbar, which the shell
     /// checks first.
     pub fn hit_test(&mut self, x: f32, y: f32) -> Option<usize> {
+        self.hit(x, y).map(|(node, _)| node)
+    }
+
+    /// The element under the viewport point and the clipping boxes
+    /// around it, outermost first (the box itself last, when it clips):
+    /// what [`Engine::hit_test`] answers with and what the wheel chains
+    /// through (M10.5). Each scroll container's offset is added to the
+    /// point on the way into its content.
+    fn hit(&mut self, x: f32, y: f32) -> Option<(usize, Vec<usize>)> {
         let (width, _) = self.viewport;
         if width == 0 || !x.is_finite() || !y.is_finite() {
             return None;
         }
         let py = y + self.scroll_y;
+        let offsets: HashMap<usize, f32> = self
+            .element_scroll
+            .iter()
+            .map(|(node, scroll)| (*node, scroll.y))
+            .collect();
         let layout = self.layout(width as f32);
         let mut hit = None;
-        hit_in(&layout.roots, x, py, &mut hit);
+        hit_in(&layout.roots, x, py, &offsets, &mut Vec::new(), &mut hit);
         hit
     }
 
@@ -518,26 +657,74 @@ impl Engine {
 /// Finds the last fragment in paint order containing the document
 /// point, descending into every box whose content could be at the
 /// point: all of them, unless the box clips, in which case only when
-/// the point is inside its padding box.
-fn hit_in(fragments: &[Fragment], x: f32, y: f32, hit: &mut Option<usize>) {
+/// the point is inside its padding box — and then with the box's scroll
+/// offset added to the point (M10.5), the box joining `chain`, the
+/// clipping boxes around the content being searched. A hit records the
+/// chain around it.
+fn hit_in(
+    fragments: &[Fragment],
+    x: f32,
+    y: f32,
+    offsets: &HashMap<usize, f32>,
+    chain: &mut Vec<usize>,
+    hit: &mut Option<(usize, Vec<usize>)>,
+) {
     for f in fragments {
         match f.kind {
             FragmentKind::Box => {
-                if f.style.overflow.clips() && !padding_box_contains(f, x, y) {
+                let clips = f.style.overflow.clips();
+                if clips && !padding_box_contains(f, x, y) {
                     continue;
                 }
-                if f.contains(x, y) {
-                    *hit = Some(f.node);
+                if clips {
+                    chain.push(f.node);
                 }
-                hit_in(&f.children, x, y, hit);
+                if f.contains(x, y) {
+                    *hit = Some((f.node, chain.clone()));
+                }
+                let offset = if clips {
+                    offsets.get(&f.node).copied().unwrap_or(0.0)
+                } else {
+                    0.0
+                };
+                hit_in(&f.children, x, y + offset, offsets, chain, hit);
+                if clips {
+                    chain.pop();
+                }
             }
             FragmentKind::Text(_) => {
                 if f.contains(x, y) {
-                    *hit = Some(f.node);
+                    *hit = Some((f.node, chain.clone()));
                 }
             }
         }
     }
+}
+
+/// The box fragment of the element `node`, if it has one.
+fn fragment_of(fragments: &[Fragment], node: usize) -> Option<&Fragment> {
+    for f in fragments {
+        if matches!(f.kind, FragmentKind::Box) && f.node == node {
+            return Some(f);
+        }
+        if let Some(found) = fragment_of(&f.children, node) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// One tick of a scroll animation: `y` moves [`SCROLL_TICK_FRACTION`]
+/// of the way to `target`, landing on it within [`SCROLL_SNAP_PX`].
+/// Returns whether it is still short of the target.
+fn approach(y: &mut f32, target: f32) -> bool {
+    let remaining = target - *y;
+    if remaining.abs() <= SCROLL_SNAP_PX {
+        *y = target;
+        return false;
+    }
+    *y += remaining * SCROLL_TICK_FRACTION;
+    true
 }
 
 /// Whether the point is within the box's padding box — what `overflow`
@@ -1049,6 +1236,182 @@ mod tests {
         assert_eq!(px(150, 40), [0xff, 0xff, 0xff], "the canvas beside them");
     }
 
+    /// The `FlatDom` index of the element with `id`.
+    fn node_by_id(engine: &Engine, id: &str) -> usize {
+        let styled = engine.styled_dom();
+        styled
+            .flat
+            .element_indices()
+            .find(|&i| {
+                styled.flat.nodes[i]
+                    .attrs
+                    .iter()
+                    .any(|(k, v)| k == "id" && v == id)
+            })
+            .unwrap_or_else(|| panic!("an element with id {id}"))
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_container_under_the_pointer_then_its_ancestors_then_the_viewport() {
+        // An outer 50px scroll container holding an inner one and a
+        // 200px block, then another 200px block below: the inner
+        // scrolls 150, the outer 200, the viewport 150.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0 } .s { overflow: auto; height: 50px; margin: 0 }
+                    .tall { height: 200px; margin: 0 }</style>\
+             <div class=s id=outer><div class=s id=inner><div class=tall></div></div>\
+               <div class=tall></div></div>\
+             <div class=tall></div>",
+        );
+        engine.frame(200, 100);
+        let (outer, inner) = (node_by_id(&engine, "outer"), node_by_id(&engine, "inner"));
+        assert_eq!(engine.element_max_scroll(inner), 150.0);
+        assert_eq!(engine.element_max_scroll(outer), 200.0);
+        assert_eq!(engine.max_scroll(), 150.0);
+        // Over the inner box: it takes the turn.
+        engine.wheel(10.0, 5.0, 40.0);
+        assert_eq!(engine.element_scroll_target(inner), 40.0);
+        assert_eq!(engine.element_scroll_target(outer), 0.0);
+        assert_eq!(engine.scroll_target(), 0.0);
+        // Three more reach its end, the last clamped (160 to 150).
+        for _ in 0..3 {
+            engine.wheel(10.0, 5.0, 40.0);
+        }
+        assert_eq!(engine.element_scroll_target(inner), 150.0);
+        // The next goes to the outer, the inner being at its end.
+        engine.wheel(10.0, 5.0, 40.0);
+        assert_eq!(engine.element_scroll_target(outer), 40.0);
+        assert_eq!(engine.element_scroll_target(inner), 150.0);
+        // With both at their ends, the viewport takes it.
+        engine.scroll_element_to(outer, 1e9);
+        assert_eq!(engine.element_scroll_target(outer), 200.0);
+        engine.wheel(10.0, 5.0, 40.0);
+        assert_eq!(engine.scroll_target(), 40.0);
+        // Back up: the inner can still move that way.
+        engine.wheel(10.0, 5.0, -40.0);
+        assert_eq!(engine.element_scroll_target(inner), 110.0);
+        assert_eq!(engine.scroll_target(), 40.0);
+        // Over no scroll container: the viewport.
+        engine.wheel(10.0, 90.0, 40.0);
+        assert_eq!(engine.scroll_target(), 80.0);
+        // A turn of nothing, or of nonsense, does nothing.
+        engine.wheel(10.0, 5.0, 0.0);
+        engine.wheel(10.0, 5.0, f32::NAN);
+        assert_eq!(engine.element_scroll_target(inner), 110.0);
+        assert_eq!(engine.scroll_target(), 80.0);
+    }
+
+    #[test]
+    fn a_scrolled_container_shows_and_hits_its_content_further_down() {
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0 }
+                    .s { overflow: auto; height: 50px; width: 100px; margin: 0 }
+                    .r { height: 30px; margin: 0; background-color: #ff0000 }
+                    .b { height: 100px; margin: 0; background-color: #0000ff }</style>\
+             <div class=s id=s><p class=r id=r></p><p class=b id=b></p></div>",
+        );
+        let id = |engine: &Engine, node: Option<usize>| {
+            let styled = engine.styled_dom();
+            node.and_then(|n| {
+                styled.flat.nodes[n]
+                    .attrs
+                    .iter()
+                    .find(|(k, _)| k == "id")
+                    .map(|(_, v)| v.clone())
+            })
+        };
+        let red = [0xff, 0x00, 0x00, 0xff];
+        let blue = [0x00, 0x00, 0xff, 0xff];
+        let top = engine.frame(200, 100);
+        let s = node_by_id(&engine, "s");
+        assert_eq!(px(&top, 200, 10, 10), red);
+        let hit = engine.hit_test(10.0, 10.0);
+        assert_eq!(id(&engine, hit), Some("r".to_string()));
+        assert_eq!(engine.element_max_scroll(s), 80.0);
+
+        engine.set_element_scroll(s, 30.0);
+        assert_eq!(engine.element_scroll(s), 30.0);
+        let scrolled = engine.frame(200, 100);
+        assert_eq!(
+            px(&scrolled, 200, 10, 10),
+            blue,
+            "the blue box moved up to the top"
+        );
+        let hit = engine.hit_test(10.0, 10.0);
+        assert_eq!(id(&engine, hit), Some("b".to_string()));
+        assert_eq!(
+            px(&scrolled, 200, 10, 60),
+            [0xff, 0xff, 0xff, 0xff],
+            "below the box the content is clipped: the canvas"
+        );
+        // The overlay scrollbar at the padding box's right edge: the
+        // track column, and the thumb 24px tall from 9.75 down.
+        assert_eq!(px(&scrolled, 200, 95, 2), [0x31, 0x32, 0x44, 0xff]);
+        assert_eq!(px(&scrolled, 200, 95, 20), [0x6c, 0x70, 0x86, 0xff]);
+        assert_eq!(px(&scrolled, 200, 95, 45), [0x31, 0x32, 0x44, 0xff]);
+
+        // Animated like the viewport: the shown offset approaches the
+        // target over ticks, and a tick reports it.
+        engine.scroll_element_to(s, 80.0);
+        assert_eq!(engine.element_scroll(s), 30.0);
+        let mut ticks = 0;
+        while engine.tick() {
+            ticks += 1;
+            assert!(ticks < 100);
+        }
+        assert!(ticks >= 3);
+        assert_eq!(engine.element_scroll(s), 80.0);
+        // Past the end: clamped; a NaN: ignored; an element that is no
+        // container: nowhere.
+        engine.scroll_element_by(s, 1e9);
+        assert_eq!(engine.element_scroll_target(s), 80.0);
+        engine.scroll_element_to(s, f32::NAN);
+        assert_eq!(engine.element_scroll_target(s), 80.0);
+        let r = node_by_id(&engine, "r");
+        engine.scroll_element_to(r, 10.0);
+        assert_eq!(
+            (
+                engine.element_max_scroll(r),
+                engine.element_scroll_target(r)
+            ),
+            (0.0, 0.0)
+        );
+        // A new document starts every container at the top.
+        engine.load_document("<p>x</p>");
+        assert_eq!(engine.element_scroll(s), 0.0);
+    }
+
+    #[test]
+    fn an_offset_is_clamped_when_the_content_gets_shorter_and_hidden_scrolls_by_program_only() {
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0 } .s { overflow: hidden; height: 20px; margin: 0 }
+                    .c { height: 100vw; margin: 0 }</style>\
+             <div class=s id=s><div class=c></div></div>\
+             <div style=\"height: 500px; margin: 0\"></div>",
+        );
+        engine.frame(100, 100);
+        let s = node_by_id(&engine, "s");
+        assert_eq!(engine.element_max_scroll(s), 80.0);
+        // `hidden` ignores the wheel: the viewport scrolls instead.
+        engine.wheel(5.0, 5.0, 40.0);
+        assert_eq!(engine.element_scroll_target(s), 0.0);
+        assert_eq!(engine.scroll_target(), 40.0);
+        // But scrolls by program.
+        engine.set_element_scroll(s, 80.0);
+        assert_eq!(engine.element_scroll(s), 80.0);
+        // At a narrower viewport the content is 10px tall: nothing to
+        // scroll, and the offset is clamped at the next frame.
+        engine.frame(10, 100);
+        assert_eq!(engine.element_max_scroll(s), 0.0);
+        assert_eq!(
+            (engine.element_scroll(s), engine.element_scroll_target(s)),
+            (0.0, 0.0)
+        );
+    }
+
     #[test]
     fn hit_test_follows_the_scroll_offset_and_respects_clipping() {
         let mut engine = test_engine();
@@ -1218,7 +1581,7 @@ mod tests {
             (200.0 - SCROLLBAR_WIDTH, SCROLLBAR_WIDTH, 100.0)
         );
         assert_eq!(bar.thumb_y, 0.0);
-        assert!(bar.thumb_h >= SCROLLBAR_MIN_THUMB && bar.thumb_h < 100.0);
+        assert!(bar.thumb_h >= paint::SCROLLBAR_MIN_THUMB && bar.thumb_h < 100.0);
         assert!(bar.contains(195.0, 50.0) && !bar.contains(100.0, 50.0));
         assert!(bar.thumb_contains(195.0, 1.0) && !bar.thumb_contains(195.0, 99.0));
         engine.scroll_to_fraction(1.0);
