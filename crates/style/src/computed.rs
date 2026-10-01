@@ -461,12 +461,20 @@ impl Default for ComputedStyle {
 impl ComputedStyle {
     /// The border widths that count, per side: `border-width` where the
     /// side's style paints, zero where it is `none` or `hidden` (CSS2
-    /// §8.5.3). What layout, paint and hit testing read.
+    /// §8.5.3), and whole device pixels either way (css-backgrounds-3
+    /// §4.1): a fractional width is rounded down, one between zero and
+    /// a pixel up to one, as the reference browser has it (M11). What
+    /// layout, paint and hit testing read.
     pub fn used_border_width(&self) -> Edges {
         let mut used = [0.0; 4];
         for (side, width) in used.iter_mut().enumerate() {
             if self.border_style[side].paints() {
-                *width = self.border_width[side];
+                let specified = self.border_width[side];
+                *width = if specified > 0.0 {
+                    specified.floor().max(1.0)
+                } else {
+                    0.0
+                };
             }
         }
         used

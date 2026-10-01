@@ -1,0 +1,39 @@
+<!doctype html>
+<html>
+<head>
+<title>Absolute positioning: every combination of offsets, width and height; the static position; a nested containing block</title>
+<style>
+  html { background-color: #f0f3ea; }
+  body { margin: 0; }
+  .cb { position: relative; width: 360px; height: 240px; margin: 20px; padding: 20px; border: 10px solid #556b2f; background-color: #eef2e6; }
+  .cb div { position: absolute; background-color: #8fa85a; }
+  .tl { left: 10px; top: 10px; width: 60px; height: 40px; }
+  .br { right: 10px; bottom: 10px; width: 60px; height: 40px; }
+  .lr { left: 100px; right: 100px; top: 70px; height: 30px; background-color: #6b8e23; }
+  .tb { top: 120px; bottom: 60px; left: 10px; width: 40px; background-color: #6b8e23; }
+  .over { left: 300px; right: 10px; width: 50px; top: 10px; height: 20px; background-color: #3d5214; }
+  .pct { left: 50%; top: 50%; width: 25%; height: 10%; background-color: #3d5214; }
+  .flow { position: static; height: 50px; margin: 0 0 10px; width: 120px; background-color: #c5d1a5; }
+  .static { width: 80px; height: 30px; background-color: #556b2f; }
+  .inner { left: 150px; top: 150px; width: 120px; height: 80px; padding: 10px; background-color: #b7c48f; }
+  .leaf { right: 0; bottom: 0; width: 30px; height: 30px; background-color: #ffffff; }
+  .icb { position: absolute; right: 20px; top: 20px; width: 40px; height: 40px; background-color: #556b2f; }
+  .icb2 { position: absolute; left: 500px; top: 100px; width: 40px; height: 40px; background-color: #8fa85a; }
+</style>
+</head>
+<body>
+  <div class="cb">
+    <div class="tl"></div>
+    <div class="br"></div>
+    <div class="lr"></div>
+    <div class="tb"></div>
+    <div class="over"></div>
+    <div class="pct"></div>
+    <div class="flow"></div>
+    <div class="static"></div>
+    <div class="inner"><div class="leaf"></div></div>
+  </div>
+  <div class="icb"></div>
+  <div class="icb2"></div>
+</body>
+</html>

@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+<head>
+<title>Stacking: negative, auto, zero and positive z-index, a nested stacking context, floats between in-flow backgrounds and positioned boxes</title>
+<style>
+  html { background-color: #f0eef4; }
+  body { margin: 0; }
+  .ctx { position: relative; z-index: 0; width: 400px; height: 200px; margin: 20px; background-color: #e8e4f0; }
+  .ctx div { position: absolute; }
+  .early { z-index: 2; left: 10px; top: 120px; width: 150px; height: 60px; background-color: #2a1a44; }
+  .neg { z-index: -1; left: 20px; top: 20px; width: 200px; height: 100px; background-color: #6b4c9a; }
+  .flow { position: static; height: 60px; margin: 40px 0 0 60px; width: 200px; background-color: #b8a4d4; }
+  .auto { left: 100px; top: 80px; width: 120px; height: 80px; background-color: #3f2a63; }
+  .zero { z-index: 0; left: 160px; top: 100px; width: 120px; height: 80px; background-color: #8c6cc0; }
+  .pos { z-index: 1; left: 220px; top: 60px; width: 100px; height: 60px; background-color: #d2c4e8; }
+  .nested { z-index: 1; left: 120px; top: 100px; width: 80px; height: 80px; background-color: #a890cc; }
+  .deep { z-index: 99; left: -60px; top: 50px; width: 60px; height: 60px; background-color: #ffffff; }
+  .ctx2 { position: relative; width: 400px; height: 160px; margin: 20px; background-color: #e8e4f0; }
+  .fl { float: left; width: 100px; height: 100px; margin: 0 0 0 20px; background-color: #6b4c9a; }
+  .under { height: 50px; margin: 30px 0 0 0; background-color: #b8a4d4; }
+  .abs { position: absolute; left: 60px; top: 50px; width: 100px; height: 100px; background-color: #d2c4e8; }
+  .none { position: relative; left: 200px; top: -40px; width: 100px; height: 60px; background-color: #3f2a63; }
+  .negroot { position: absolute; z-index: -1; left: 240px; top: 10px; width: 120px; height: 120px; background-color: #ffffff; }
+</style>
+</head>
+<body>
+  <div class="ctx">
+    <div class="early"></div>
+    <div class="neg"></div>
+    <div class="flow"></div>
+    <div class="auto"></div>
+    <div class="zero"></div>
+    <div class="pos"></div>
+    <div class="nested"><div class="deep"></div></div>
+  </div>
+  <div class="ctx2">
+    <div class="negroot"></div>
+    <div class="fl"></div>
+    <div class="under"></div>
+    <div class="abs"></div>
+    <div class="none"></div>
+  </div>
+</body>
+</html>

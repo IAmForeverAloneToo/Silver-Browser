@@ -1736,7 +1736,15 @@ fn layout_children<'a>(
                 absolutes.extend(carried(layout.absolutes, x, child_y + dy));
                 y = child_y + layout.height;
                 pending = layout.margin_bottom;
-                at.origin.get_or_insert(root_top);
+                if at.origin.is_none() {
+                    // The margins above a box that is not self-collapsing
+                    // end at its top (CSS2 §8.3.1): the flow position
+                    // resolves there, and a float still waiting — met
+                    // before the box, or inside it before any content —
+                    // is placed level with it.
+                    floats.resolve_pending(root_top);
+                    at.origin = Some(root_top);
+                }
                 at.anchor = root_top + layout.height;
                 at.strut = pending;
             }

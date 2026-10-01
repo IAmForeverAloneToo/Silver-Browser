@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+<head>
+<title>A block formatting context root beside a float: narrowed, or dropped below when it does not fit</title>
+<style>
+  html { background-color: #f6eeee; }
+  body { margin: 0; }
+  .box { width: 400px; margin: 20px; background-color: #f3e9e9; }
+  .f { float: left; width: 120px; height: 90px; margin: 0 10px 0 0; background-color: #8a3b3b; }
+  .dodge { overflow: hidden; height: 60px; margin: 10px 0; background-color: #d98c8c; }
+  .wide { overflow: hidden; width: 300px; height: 40px; background-color: #b85c5c; }
+  .after { height: 30px; background-color: #e8b4b4; }
+  .right .f { float: right; margin: 0 0 0 10px; }
+  .right .ib { font-size: 0; }
+  .right .ib span { display: inline-block; overflow: hidden; width: 240px; height: 50px; background-color: #d98c8c; }
+</style>
+</head>
+<body>
+  <div class="box">
+    <div class="f"></div>
+    <div class="dodge"></div>
+    <div class="wide"></div>
+    <div class="after"></div>
+  </div>
+  <div class="box right">
+    <div class="f"></div>
+    <div class="dodge"></div>
+    <div class="ib"><span></span><span></span></div>
+  </div>
+</body>
+</html>

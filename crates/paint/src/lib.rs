@@ -566,20 +566,18 @@ fn snapped(rect: Rect) -> Rect {
 
 /// A box's own background and border over its border box `rect`, in
 /// viewport coordinates, snapped to whole pixels: the border box's
-/// edges and the padding box's each on their own, so a border's width
-/// is whole too, and at least a pixel where the style gives it any.
-/// `canvas_node` is the element whose background the canvas already
-/// took (CSS2 §14.2), which is not painted on its own box again.
+/// edges and the padding box's each on their own, which keeps the
+/// border's widths, whole pixels already, as they are. `canvas_node`
+/// is the element whose background the canvas already took (CSS2
+/// §14.2), which is not painted on its own box again.
 fn push_box(items: &mut Vec<DisplayItem>, f: &Fragment, rect: Rect, canvas_node: Option<usize>) {
     let outer = snapped(rect);
     let inner = snapped(padding_box(f, rect));
-    let used = f.style.used_border_width();
-    let least = |side: usize| if used[side] > 0.0 { 1.0 } else { 0.0 };
     let widths = [
-        (inner.y - outer.y).max(least(TOP)),
-        (outer.x + outer.w - (inner.x + inner.w)).max(least(RIGHT)),
-        (outer.y + outer.h - (inner.y + inner.h)).max(least(BOTTOM)),
-        (inner.x - outer.x).max(least(LEFT)),
+        (inner.y - outer.y).max(0.0),
+        (outer.x + outer.w - (inner.x + inner.w)).max(0.0),
+        (outer.y + outer.h - (inner.y + inner.h)).max(0.0),
+        (inner.x - outer.x).max(0.0),
     ];
     if f.style.background_color.a > 0.0 && canvas_node != Some(f.node) {
         items.push(DisplayItem::Rect {
@@ -613,8 +611,11 @@ fn darker(c: Rgba8) -> Rgba8 {
 /// invisible and the sides are plain strips, which paint without seams.
 /// Otherwise a run of neighbouring sides whose band is one colour is
 /// one polygon, drawn anti-aliased, so that only the mitres between
-/// sides of different colours blend, as a browser draws them (M11);
-/// four such sides are four plain quads, their mitres invisible too.
+/// sides of different colours blend, as a browser draws them (M11):
+/// the first run takes its corners whole, and each run after it is cut
+/// along the mitre to its neighbour, so that a mitre's pixels blend the
+/// two sides' colours and nothing behind them. Four such sides are four
+/// plain quads, their mitres invisible too.
 ///
 /// Per style: `solid` is the whole band; `double` the outer and inner
 /// thirds; `dashed` and `dotted` are dashes of three times the width
@@ -697,26 +698,36 @@ fn push_border(items: &mut Vec<DisplayItem>, f: &Fragment, rect: Rect, widths: [
             }
             continue;
         };
-        let mut run: Vec<usize> = Vec::new();
-        let mut flush = |run: &mut Vec<usize>| {
-            if let Some(band) = run.first().and_then(|&side| band_of(side)) {
-                items.push(DisplayItem::Polygon {
-                    points: run_polygon(run, geometry, band.a, band.b),
-                    color: band.color,
-                });
-            }
-            run.clear();
-        };
+        let mut runs: Vec<Vec<usize>> = Vec::new();
         for i in 0..4 {
             let side = (start + i) % 4;
-            if band_of(side).is_none() || (!run.is_empty() && !continues(side)) {
-                flush(&mut run);
+            if band_of(side).is_none() {
+                continue;
             }
-            if band_of(side).is_some() {
-                run.push(side);
+            match runs.last_mut() {
+                Some(run) if continues(side) => run.push(side),
+                _ => runs.push(vec![side]),
             }
         }
-        flush(&mut run);
+        let count = runs.len();
+        for (i, run) in runs.iter().enumerate() {
+            let Some(band) = band_of(run[0]) else {
+                continue;
+            };
+            // A run's end is cut where the side beyond it has a band of
+            // this slot, which a run painted before this one holds: the
+            // run before it at its start, and at the last run's end the
+            // first run, round the corner.
+            let (first, last) = (run[0], run[run.len() - 1]);
+            let cuts = (
+                i > 0 && band_of((first + 3) % 4).is_some(),
+                i + 1 == count && band_of((last + 1) % 4).is_some(),
+            );
+            items.push(DisplayItem::Polygon {
+                points: run_polygon(run, geometry, band.a, band.b, cuts),
+                color: band.color,
+            });
+        }
     }
 }
 
@@ -778,45 +789,79 @@ fn push_solid_strips(items: &mut Vec<DisplayItem>, f: &Fragment, rect: Rect, wid
 /// box's `(x, y, w, h)` in viewport coordinates and the four widths.
 type BorderGeometry = (f32, f32, f32, f32, [f32; 4]);
 
-/// The two ends of `side`'s band edge at fraction `f` of the widths
-/// along the mitres (0 the outer edge, 1 the inner), clockwise: the
-/// top side runs left to right, the right side downwards, and so on.
-fn corners(side: usize, geometry: BorderGeometry, f: f32) -> ((f32, f32), (f32, f32)) {
+/// A point on `side`'s band edge at fraction `own` of the side's width
+/// (0 the outer edge, 1 the inner), at the side's start or end, where
+/// the neighbouring side's width is taken at fraction `other`:
+/// `other == own` is the point on the mitre line, `other` at the
+/// band's outer fraction the corner of the band's plain rectangle. The
+/// sides run clockwise: the top side left to right, the right side
+/// downwards, and so on.
+fn edge_point(
+    side: usize,
+    geometry: BorderGeometry,
+    own: f32,
+    other: f32,
+    start: bool,
+) -> (f32, f32) {
     let (x, y, w, h, [top, right, bottom, left]) = geometry;
-    let top_left = (x + left * f, y + top * f);
-    let top_right = (x + w - right * f, y + top * f);
-    let bottom_right = (x + w - right * f, y + h - bottom * f);
-    let bottom_left = (x + left * f, y + h - bottom * f);
-    match side {
-        TOP => (top_left, top_right),
-        RIGHT => (top_right, bottom_right),
-        BOTTOM => (bottom_right, bottom_left),
-        _ => (bottom_left, top_left),
+    match (side, start) {
+        (TOP, true) => (x + left * other, y + top * own),
+        (TOP, false) => (x + w - right * other, y + top * own),
+        (RIGHT, true) => (x + w - right * own, y + top * other),
+        (RIGHT, false) => (x + w - right * own, y + h - bottom * other),
+        (BOTTOM, true) => (x + w - right * other, y + h - bottom * own),
+        (BOTTOM, false) => (x + left * other, y + h - bottom * own),
+        (_, true) => (x + left * own, y + h - bottom * other),
+        (_, false) => (x + left * own, y + top * other),
     }
 }
 
 /// The quad of `side`'s band between the fractions `a` and `b` of its
 /// width, its ends on the mitre lines to the neighbouring sides.
 fn quad(side: usize, geometry: BorderGeometry, a: f32, b: f32) -> [(f32, f32); 4] {
-    let (outer_start, outer_end) = corners(side, geometry, a);
-    let (inner_start, inner_end) = corners(side, geometry, b);
-    [outer_start, outer_end, inner_end, inner_start]
+    [
+        edge_point(side, geometry, a, a, true),
+        edge_point(side, geometry, a, a, false),
+        edge_point(side, geometry, b, b, false),
+        edge_point(side, geometry, b, b, true),
+    ]
 }
 
 /// The polygon of the band between the fractions `a` and `b` along
 /// `sides`, neighbours in clockwise order: its outer edge along them,
-/// then its inner edge back.
-fn run_polygon(sides: &[usize], geometry: BorderGeometry, a: f32, b: f32) -> Vec<(f32, f32)> {
+/// then its inner edge back. `cuts` says whether its start and its end
+/// are cut along the mitre to the neighbouring side; an end not cut
+/// takes the whole corner, out to the band's outer fraction.
+fn run_polygon(
+    sides: &[usize],
+    geometry: BorderGeometry,
+    a: f32,
+    b: f32,
+    (cut_start, cut_end): (bool, bool),
+) -> Vec<(f32, f32)> {
+    let (first, last) = (sides[0], sides[sides.len() - 1]);
     let mut points = Vec::with_capacity(2 * sides.len() + 2);
-    let (first, _) = corners(sides[0], geometry, a);
-    points.push(first);
+    points.push(edge_point(first, geometry, a, a, true));
     for &side in sides {
-        points.push(corners(side, geometry, a).1);
+        points.push(edge_point(side, geometry, a, a, false));
     }
-    for &side in sides.iter().rev() {
-        points.push(corners(side, geometry, b).1);
+    points.push(edge_point(
+        last,
+        geometry,
+        b,
+        if cut_end { b } else { a },
+        false,
+    ));
+    for &side in sides.iter().rev().skip(1) {
+        points.push(edge_point(side, geometry, b, b, false));
     }
-    points.push(corners(sides[0], geometry, b).0);
+    points.push(edge_point(
+        first,
+        geometry,
+        b,
+        if cut_start { b } else { a },
+        true,
+    ));
     points
 }
 
@@ -1039,11 +1084,13 @@ mod fragment_tests {
         );
         let bands = polygons(&list);
         assert_eq!(bands.len(), 2);
+        // The top side is painted first and takes the corner whole; the
+        // left side, after it, is cut along the mitre.
         let (top, red) = &bands[0];
         assert_eq!(*red, Rgba8::rgb(255, 0, 0));
         assert_eq!(
             *top,
-            vec![(0.0, 0.0), (100.0, 0.0), (100.0, 10.0), (20.0, 10.0)]
+            vec![(0.0, 0.0), (100.0, 0.0), (100.0, 10.0), (0.0, 10.0)]
         );
         let (left, blue) = &bands[1];
         assert_eq!(*blue, Rgba8::rgb(0, 0, 255));
@@ -1065,8 +1112,9 @@ mod fragment_tests {
     fn neighbouring_sides_of_one_colour_are_one_shape_and_four_are_quads() {
         // Top and left red, right and bottom blue: two L-shaped
         // polygons, the blue one first (the cycle starts where the
-        // colour changes), each six points around its outer and inner
-        // edges, meeting at the top-right and bottom-left mitres only.
+        // colour changes) with its corners whole, the red one cut along
+        // the top-right and bottom-left mitres, each six points around
+        // its outer and inner edges.
         let list = display_list_of(
             Element::new("div"),
             "div { width: 100px; height: 50px; margin: 0; box-sizing: border-box;
@@ -1081,9 +1129,9 @@ mod fragment_tests {
                 (100.0, 0.0),
                 (100.0, 50.0),
                 (0.0, 50.0),
-                (4.0, 46.0),
+                (0.0, 46.0),
                 (96.0, 46.0),
-                (96.0, 4.0)
+                (96.0, 0.0)
             ]
         );
         assert_eq!(shapes[1].1, Rgba8::rgb(255, 0, 0));
@@ -1124,11 +1172,12 @@ mod fragment_tests {
     #[test]
     fn box_edges_are_snapped_to_whole_pixels_when_painted() {
         // A box 10.4px in, 20.3px wide and 10.6px tall inside a 1.5px
-        // border: its border box runs from 10.4 to 33.7 and 0 to 13.6,
-        // its padding box from 11.9 to 32.2 and 1.5 to 12.1. Painted,
-        // each edge is on the pixel nearest it: the background over 10
-        // to 34 and 0 to 14, the strips two pixels wide, the padding
-        // box from 12 to 32 and 2 to 12. Layout keeps the fractions.
+        // border, a pixel wide once used: its border box runs from 10.4
+        // to 32.7 and 0 to 12.6, its padding box from 11.4 to 31.7 and
+        // 1 to 11.6. Painted, each edge is on the pixel nearest it: the
+        // background over 10 to 33 and 0 to 13, the strips a pixel
+        // wide, the padding box from 11 to 32 and 1 to 12. Layout keeps
+        // the box's fractions.
         let list = display_list_of(
             Element::new("div"),
             "div { margin: 0 0 0 10.4px; width: 20.3px; height: 10.6px;
@@ -1146,14 +1195,14 @@ mod fragment_tests {
         assert_eq!(
             boxes,
             vec![
-                (10.0, 0.0, 24.0, 14.0, blue),
-                (10.0, 0.0, 24.0, 2.0, red),
-                (10.0, 12.0, 24.0, 2.0, red),
-                (10.0, 0.0, 2.0, 14.0, red),
-                (32.0, 0.0, 2.0, 14.0, red),
+                (10.0, 0.0, 23.0, 13.0, blue),
+                (10.0, 0.0, 23.0, 1.0, red),
+                (10.0, 12.0, 23.0, 1.0, red),
+                (10.0, 0.0, 1.0, 13.0, red),
+                (32.0, 0.0, 1.0, 13.0, red),
             ]
         );
-        // A border thinner than half a pixel still paints a pixel.
+        // A border thinner than a pixel is a pixel wide.
         let list = display_list_of(
             Element::new("div"),
             "div { margin: 0; width: 20px; height: 10px; border: 0.2px solid #ff0000; }",
@@ -1192,15 +1241,16 @@ mod fragment_tests {
         );
         let bands = polygons(&list);
         // Top: the outer third and the inner third, 3px each, 3px apart,
-        // each a shape of its own beside the dashed and missing sides.
+        // each a shape of its own beside the dashed and missing sides,
+        // and the first run of its band, so with its corners whole.
         assert_eq!(bands.len(), 2);
         assert_eq!(
             bands[0].0,
-            vec![(0.0, 0.0), (100.0, 0.0), (97.0, 3.0), (0.0, 3.0)]
+            vec![(0.0, 0.0), (100.0, 0.0), (100.0, 3.0), (0.0, 3.0)]
         );
         assert_eq!(
             bands[1].0,
-            vec![(0.0, 6.0), (94.0, 6.0), (91.0, 9.0), (0.0, 9.0)]
+            vec![(0.0, 6.0), (94.0, 6.0), (94.0, 9.0), (0.0, 9.0)]
         );
         // Right: 27px dashes with 27px gaps down the 50px side: a dash
         // at 0 and a 23px remainder at 54 — none, the side ends at 50.

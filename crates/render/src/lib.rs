@@ -270,14 +270,16 @@ impl RenderBackend for SoftwareBackend {
                 }
                 // No anti-aliasing for a quad: quads that share an
                 // edge must tile it without a seam (a border's bands in
-                // one colour). A polygon is anti-aliased: its mitres to
-                // sides of another colour blend, as a browser's do
-                // (M11), and its axis-aligned edges lie on whole pixels.
+                // one colour). A polygon is anti-aliased by the exact
+                // area of each pixel it covers: its mitres to sides of
+                // another colour blend by their share of the pixel, as
+                // a browser's do (M11), and its axis-aligned edges lie
+                // on whole pixels, where the area is all or nothing.
                 DisplayItem::Quad { points, color } => {
-                    fill_polygon(&mut pixmap, points, color, clip, false);
+                    fill_polygon(&mut pixmap, points, color, clip);
                 }
                 DisplayItem::Polygon { points, color } => {
-                    fill_polygon(&mut pixmap, points, color, clip, true);
+                    fill_polygon_by_area(&mut pixmap, points, color, clip);
                 }
             }
         }
@@ -287,15 +289,9 @@ impl RenderBackend for SoftwareBackend {
     }
 }
 
-/// Fills the polygon `points`, clipped to `clip`, with or without
-/// anti-aliasing.
-fn fill_polygon(
-    pixmap: &mut tiny_skia::Pixmap,
-    points: &[(f32, f32)],
-    color: &Rgba8,
-    clip: Clip,
-    anti_alias: bool,
-) {
+/// Fills the polygon `points`, clipped to `clip`, without
+/// anti-aliasing: a pixel is painted when its centre is inside.
+fn fill_polygon(pixmap: &mut tiny_skia::Pixmap, points: &[(f32, f32)], color: &Rgba8, clip: Clip) {
     let polygon = clip_polygon(points, clip);
     if polygon.len() < 3 {
         return;
@@ -313,7 +309,7 @@ fn fill_polygon(
     paint.set_color(tiny_skia::Color::from_rgba8(
         color.r, color.g, color.b, color.a,
     ));
-    paint.anti_alias = anti_alias;
+    paint.anti_alias = false;
     pixmap.fill_path(
         &path,
         &paint,
@@ -321,6 +317,152 @@ fn fill_polygon(
         tiny_skia::Transform::identity(),
         None,
     );
+}
+
+/// Fills the simple polygon `points`, clipped to `clip`, anti-aliased
+/// by exact area: each pixel takes the colour in the share of it the
+/// polygon covers, blended over what is there. The coverage comes from
+/// the signed-area accumulation of the polygon's edges (the way font
+/// rasterizers compute it): every edge adds, to the pixels of each row
+/// it crosses, the area it sweeps and the cover it carries to the
+/// pixels right of it, and a running sum along the row gives each
+/// pixel's covered area, exact for a polygon that does not cross
+/// itself whichever way it winds.
+fn fill_polygon_by_area(
+    pixmap: &mut tiny_skia::Pixmap,
+    points: &[(f32, f32)],
+    color: &Rgba8,
+    clip: Clip,
+) {
+    let polygon = clip_polygon(points, clip);
+    if polygon.len() < 3 || polygon.iter().any(|p| !p.0.is_finite() || !p.1.is_finite()) {
+        return;
+    }
+    let (pw, ph) = (pixmap.width() as i64, pixmap.height() as i64);
+    // The pixels the polygon can touch: its bounds, within the frame.
+    let min_x = polygon
+        .iter()
+        .map(|p| p.0)
+        .fold(f32::INFINITY, f32::min)
+        .floor() as i64;
+    let min_y = polygon
+        .iter()
+        .map(|p| p.1)
+        .fold(f32::INFINITY, f32::min)
+        .floor() as i64;
+    let max_x = polygon
+        .iter()
+        .map(|p| p.0)
+        .fold(f32::NEG_INFINITY, f32::max)
+        .ceil() as i64;
+    let max_y = polygon
+        .iter()
+        .map(|p| p.1)
+        .fold(f32::NEG_INFINITY, f32::max)
+        .ceil() as i64;
+    let (x0, y0) = (min_x.max(0), min_y.max(0));
+    let (x1, y1) = (max_x.min(pw), max_y.min(ph));
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+    let (bw, bh) = ((x1 - x0) as usize, (y1 - y0) as usize);
+    // One extra column: an edge's cover spills into the pixel after it.
+    let stride = bw + 2;
+    let mut acc = vec![0.0f32; stride * bh];
+    for i in 0..polygon.len() {
+        let (ax, ay) = polygon[i];
+        let (bx, by) = polygon[(i + 1) % polygon.len()];
+        accumulate_edge(
+            &mut acc,
+            stride,
+            bh,
+            (ax - x0 as f32, ay - y0 as f32),
+            (bx - x0 as f32, by - y0 as f32),
+        );
+    }
+    let data = pixmap.data_mut();
+    for row in 0..bh {
+        let mut sum = 0.0f32;
+        for col in 0..bw {
+            sum += acc[row * stride + col];
+            let coverage = sum.abs().min(1.0);
+            if coverage <= 0.0 {
+                continue;
+            }
+            let idx = ((y0 + row as i64) * pw + x0 + col as i64) as usize * 4;
+            let a = coverage * color.a as f32 / 255.0;
+            data[idx] = (data[idx] as f32 * (1.0 - a) + color.r as f32 * a).round() as u8;
+            data[idx + 1] = (data[idx + 1] as f32 * (1.0 - a) + color.g as f32 * a).round() as u8;
+            data[idx + 2] = (data[idx + 2] as f32 * (1.0 - a) + color.b as f32 * a).round() as u8;
+        }
+    }
+}
+
+/// Adds one edge of a polygon to the accumulation buffer `acc` of
+/// `stride` columns and `height` rows, in that buffer's coordinates:
+/// for each row the edge crosses, the signed area it sweeps across the
+/// pixels it passes through, so that the running sum along the row is
+/// the covered area of each pixel. Points left of the buffer are
+/// clamped to its left edge, which keeps their cover and drops the area
+/// outside, and rows above or below it are skipped.
+fn accumulate_edge(acc: &mut [f32], stride: usize, height: usize, p0: (f32, f32), p1: (f32, f32)) {
+    if (p0.1 - p1.1).abs() <= f32::EPSILON {
+        return;
+    }
+    let (dir, (x0, y0), (x1, y1)) = if p0.1 < p1.1 {
+        (1.0, p0, p1)
+    } else {
+        (-1.0, p1, p0)
+    };
+    let dxdy = (x1 - x0) / (y1 - y0);
+    let mut x = x0;
+    if y0 < 0.0 {
+        x -= y0 * dxdy;
+    }
+    let first_row = y0.max(0.0).floor() as usize;
+    let last_row = (y1.ceil().max(0.0) as usize).min(height);
+    let right = (stride - 1) as f32;
+    for row in first_row..last_row {
+        let line = row * stride;
+        let dy = ((row + 1) as f32).min(y1) - (row as f32).max(y0);
+        let xnext = x + dxdy * dy;
+        let d = dy * dir;
+        let (xa, xb) = if x < xnext { (x, xnext) } else { (xnext, x) };
+        let (xa, xb) = (xa.clamp(0.0, right), xb.clamp(0.0, right));
+        let xa_floor = xa.floor();
+        let xa_i = xa_floor as usize;
+        let xb_ceil = xb.ceil();
+        let xb_i = (xb_ceil as usize).min(stride - 1);
+        if xb_i <= xa_i + 1 {
+            // Within one pixel column: its area left of the edge's
+            // middle goes to it, the rest carries to the next.
+            let xmf = 0.5 * (xa + xb) - xa_floor;
+            acc[line + xa_i] += d - d * xmf;
+            acc[line + xa_i + 1] += d * xmf;
+        } else {
+            // Across several columns: the triangles at each end and
+            // the parallelogram slices between.
+            let s = (xb - xa).recip();
+            let xaf = xa - xa_floor;
+            let a0 = 0.5 * s * (1.0 - xaf) * (1.0 - xaf);
+            let xbf = xb - xb_ceil + 1.0;
+            let am = 0.5 * s * xbf * xbf;
+            acc[line + xa_i] += d * a0;
+            if xb_i == xa_i + 2 {
+                acc[line + xa_i + 1] += d * (1.0 - a0 - am);
+            } else {
+                let a1 = s * (1.5 - xaf);
+                acc[line + xa_i + 1] += d * (a1 - a0);
+                for col in xa_i + 2..xb_i - 1 {
+                    acc[line + col] += d * s;
+                }
+                let a2 = a1 + (xb_i - xa_i - 3) as f32 * s;
+                acc[line + xb_i - 1] += d * (1.0 - a2 - am);
+            }
+            acc[line + xb_i] += d * am;
+        }
+        x = xnext;
+    }
 }
 
 /// Clips a polygon to `clip` (Sutherland–Hodgman against the four
@@ -695,8 +837,8 @@ mod tests {
         // The same triangle, half of a 10 by 10 square along its
         // diagonal, as a quad and as a polygon: the quad's pixels are
         // all black or white, each by its centre; the polygon's along
-        // the diagonal are the two blended, half covered, and its
-        // whole-pixel edges stay exact.
+        // the diagonal are the two blended by the exact area covered,
+        // half, and its whole-pixel edges stay exact.
         let mut backend = test_backend();
         let black = Rgba8::rgb(0, 0, 0);
         let triangle = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)];
@@ -733,18 +875,34 @@ mod tests {
             BLACK,
             "the edge on whole pixels is exact"
         );
-        let on_diagonal = px(&buf, 10, 5, 5);
-        assert!(
-            on_diagonal != BLACK && on_diagonal != WHITE,
-            "blended: {on_diagonal:?}"
-        );
-        // Skia's supersampled coverage, which tiny-skia keeps, puts
-        // this pixel nearer three eighths than half: a blend, not a
-        // guess at the exact share.
-        assert!(
-            (64..=192).contains(&on_diagonal[0]),
-            "partly covered: {on_diagonal:?}"
-        );
+        for (x, y) in [(5, 5), (2, 2), (8, 8)] {
+            assert_eq!(
+                px(&buf, 10, x, y),
+                [128, 128, 128, 0xff],
+                "({x}, {y}) half covered"
+            );
+        }
+        // A pixel the edge crosses off its diagonal takes its exact
+        // share: along the edge of the triangle (0, 0), (10, 0),
+        // (10, 5), a slope of one half, the pixels alternate a quarter
+        // and three quarters covered.
+        let list = DisplayList {
+            items: vec![
+                white_frame(10.0, 10.0),
+                DisplayItem::Polygon {
+                    points: vec![(0.0, 0.0), (10.0, 0.0), (10.0, 5.0)],
+                    color: black,
+                },
+            ],
+        };
+        let buf = backend.rasterize(&list, 10, 10);
+        for (x, y, value) in [(0, 0, 191), (1, 0, 64), (2, 1, 191), (3, 1, 64), (2, 0, 0)] {
+            assert_eq!(
+                px(&buf, 10, x, y),
+                [value, value, value, 0xff],
+                "({x}, {y})"
+            );
+        }
     }
 
     #[test]

@@ -1,0 +1,39 @@
+<!doctype html>
+<html>
+<head>
+<title>Fractional lengths snapped to pixels, and borders in several colours with anti-aliased mitres</title>
+<meta name="reference-tolerance" content="2">
+<style>
+  /* The mitres between two colours blend the sides by the exact area
+     each covers of the pixel, as the reference browser does; its last
+     bit of blending arithmetic differs by a unit or two per channel,
+     which the tolerance above allows for, on those pixels alone. A
+     double border in two colours is not here: the browser lets the
+     background through the mitres of its bands, which this engine does
+     not (docs/design/floats-positioning.md). */
+  html { background-color: #f2f3f4; }
+  body { margin: 0; }
+  div { background-color: #ecf0f1; }
+  .a { margin: 10.3px 0 0 10.6px; width: 120.6px; height: 40.4px; border: 5.5px solid; border-color: #c0392b #2980b9 #27ae60 #f1c40f; }
+  .b { margin: 7.7px 0 0 10.6px; width: 120.6px; height: 40.4px; border: 9px double #8e44ad; }
+  .c { margin: 9.5px 0 0 10.5px; width: 99.5px; height: 20.5px; background-color: #34495e; }
+  .d { margin: 0.4px 0 0 10.5px; width: 99.5px; height: 20.5px; background-color: #7f8c8d; }
+  .e { margin: 12.2px 0 0 10.6px; width: 160.3px; height: 50.6px; padding: 4.4px; border-style: solid; border-width: 1.5px 3.5px 2.5px 0.5px; border-color: #e67e22 #1abc9c #9b59b6 #2c3e50; }
+  .e div { height: 100%; background-color: #bdc3c7; }
+  .f { margin: 10px 0 0 10px; width: 100px; height: 40px; border-style: solid; border-width: 12px 24px; border-color: #c0392b #2980b9; }
+  .g { margin: 10px 0 0 10px; width: 100px; height: 40px; border: 10px solid #27ae60; border-left-color: #f1c40f; }
+  .row { font-size: 0; background-color: transparent; }
+  .row div { display: inline-block; margin: 10px 0 0 10.25px; width: 30.5px; height: 30.5px; background-color: #34495e; }
+</style>
+</head>
+<body>
+  <div class="a"></div>
+  <div class="b"></div>
+  <div class="c"></div>
+  <div class="d"></div>
+  <div class="e"><div></div></div>
+  <div class="f"></div>
+  <div class="g"></div>
+  <div class="row"><div></div><div></div><div></div><div></div></div>
+</body>
+</html>

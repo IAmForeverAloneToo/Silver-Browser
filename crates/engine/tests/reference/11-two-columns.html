@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+<title>The classic two-column layout: a left and a right float, a cleared footer</title>
+<style>
+  html { background-color: #f4f1ea; }
+  body { margin: 0; }
+  .page { width: 600px; margin: 20px; background-color: #e6dfd0; }
+  .header { height: 50px; margin: 0 0 10px 0; background-color: #7a5c3e; }
+  .side { float: left; width: 150px; height: 220px; margin: 0 10px 0 0; background-color: #b08a5b; }
+  .main { float: right; width: 400px; height: 180px; background-color: #d4b483; }
+  .main .inner { margin: 20px; height: 60px; background-color: #ffffff; }
+  .main .second { margin: 0 20px; height: 40px; background-color: #a2763f; }
+  .footer { clear: both; height: 40px; margin: 10px 0 0 0; background-color: #7a5c3e; }
+</style>
+</head>
+<body>
+  <div class="page">
+    <div class="header"></div>
+    <div class="side"></div>
+    <div class="main"><div class="inner"></div><div class="second"></div></div>
+    <div class="footer"></div>
+  </div>
+</body>
+</html>

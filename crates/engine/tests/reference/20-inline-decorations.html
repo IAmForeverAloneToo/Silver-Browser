@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+<title>An inline element's padding, border and background around inline-blocks, across two lines</title>
+<style>
+  html { background-color: #fdf6e3; }
+  body { margin: 0; }
+  .box { width: 300px; margin: 20px; padding: 10px; font-size: 0; background-color: #f5edd6; }
+  .box .ib { display: inline-block; width: 70px; height: 40px; margin: 0 5px; background-color: #b58900; }
+  .deco { padding: 8px 12px; border: 3px solid #268bd2; background-color: #eee8d5; }
+  .plain { padding: 0 6px; background-color: #d33682; }
+  .wide { width: 500px; margin: 20px; padding: 10px; font-size: 0; background-color: #f5edd6; }
+  .wide .ib { height: 24px; }
+  .sides { padding: 4px 20px; border-style: solid; border-width: 2px 6px 2px 10px; border-color: #859900; background-color: #e3e9c2; }
+  .nested { padding: 6px; border: 2px solid #cb4b16; }
+</style>
+</head>
+<body>
+  <div class="box">
+    <span class="deco"><span class="ib"></span><span class="ib"></span><span class="ib"></span><span class="ib"></span><span class="ib"></span></span>
+  </div>
+  <div class="wide">
+    <span class="ib"></span><span class="sides"><span class="ib"></span><span class="nested"><span class="ib"></span></span></span><span class="ib"></span><span class="plain"><span class="ib"></span></span>
+  </div>
+</body>
+</html>

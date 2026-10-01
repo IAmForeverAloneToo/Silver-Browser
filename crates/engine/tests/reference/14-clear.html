@@ -1,0 +1,35 @@
+<!doctype html>
+<html>
+<head>
+<title>clear on each side, with margins before and after the cleared box</title>
+<style>
+  html { background-color: #eef3e8; }
+  body { margin: 0; }
+  .box { width: 400px; margin: 20px; background-color: #e3ecdc; }
+  .f { float: left; width: 100px; height: 60px; background-color: #4a7c3f; }
+  .fr { float: right; width: 100px; height: 100px; background-color: #2d5a27; }
+  .a { clear: left; height: 30px; margin: 15px 0; background-color: #9cc48f; }
+  .b { clear: right; height: 30px; margin: 20px 0 10px; background-color: #6b9e5e; }
+  .c { clear: both; height: 30px; margin: 10px 0; background-color: #c9deb9; }
+  .tall { float: left; width: 80px; height: 150px; background-color: #4a7c3f; }
+  .plain { height: 30px; margin: 10px 0; background-color: #c9deb9; }
+  .far { clear: left; height: 30px; margin: 40px 0 0; background-color: #9cc48f; }
+  .last { height: 20px; margin: 30px 0 0; background-color: #6b9e5e; }
+</style>
+</head>
+<body>
+  <div class="box">
+    <div class="f"></div>
+    <div class="fr"></div>
+    <div class="a"></div>
+    <div class="b"></div>
+    <div class="c"></div>
+  </div>
+  <div class="box">
+    <div class="tall"></div>
+    <div class="plain"></div>
+    <div class="far"></div>
+    <div class="last"></div>
+  </div>
+</body>
+</html>

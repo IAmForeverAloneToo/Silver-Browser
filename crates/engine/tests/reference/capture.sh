@@ -3,7 +3,8 @@
 # PNG beside it: 800 by 600, device scale one, scrollbars hidden, sRGB.
 # These are the fixtures tests/reference.rs compares the engine's render
 # with, byte for byte, so they are committed; run this again only when a
-# page changes, and look at the result before committing it.
+# page changes, and look at the result before committing it. Pages named
+# as arguments are captured alone; with none, every page is.
 #
 # The browser is $BROWSER, else `chrome-headless-shell` on the PATH: the
 # headless shell lays the page out in a viewport exactly the window's
@@ -15,7 +16,7 @@
 set -eu
 cd "$(dirname "$0")"
 browser=${BROWSER:-chrome-headless-shell}
-for page in *.html; do
+for page in "${@:-*.html}"; do
   "$browser" --disable-gpu --hide-scrollbars --force-device-scale-factor=1 \
     --force-color-profile=srgb --window-size=800,600 ${BROWSER_FLAGS:-} \
     --screenshot="$PWD/${page%.html}.png" "file://$PWD/$page"
