@@ -12,8 +12,9 @@
 //! and border; the stacking contexts in it with a negative `z-index`,
 //! in `z-index` then tree order; then its in-flow content in three
 //! passes over the tree — the backgrounds and borders of its block-level
-//! boxes, then its floats, then its inline-level content, text and
-//! inline-blocks; then its positioned descendants with `z-index: auto`
+//! boxes, then its floats, then its inline-level content, inline boxes'
+//! backgrounds and borders, text and inline-blocks; then its positioned
+//! descendants with `z-index: auto`
 //! or `0`, in tree order; and the stacking contexts with a positive
 //! `z-index`, in `z-index` then tree order. A float, an inline-block and
 //! a positioned box with `z-index: auto` are painted as units, each its
@@ -274,7 +275,7 @@ impl<'a> Walk<'a, '_> {
             return;
         }
         self.steps.push(match f.kind {
-            FragmentKind::Box => Step::Box { fragment: f, rect },
+            FragmentKind::Box | FragmentKind::InlineBox => Step::Box { fragment: f, rect },
             FragmentKind::Text(_) => Step::Text {
                 fragment: f,
                 rect,
@@ -316,7 +317,7 @@ impl<'a> Walk<'a, '_> {
     /// its clip can show. A clip with no step inside it is left out.
     fn content(&mut self, f: &'a Fragment, emit: Emit, body: impl FnOnce(&mut Self, Rect)) {
         let rect = self.rect_of(f);
-        let clips = f.style.overflow.clips();
+        let clips = f.clips();
         if clips && !rect.meets(&self.viewport) {
             return;
         }
@@ -393,7 +394,7 @@ impl<'a> Walk<'a, '_> {
         out: &mut Vec<Positioned<'a>>,
     ) {
         for f in fragments {
-            if !matches!(f.kind, FragmentKind::Box) {
+            if !matches!(f.kind, FragmentKind::Box | FragmentKind::InlineBox) {
                 continue;
             }
             if f.style.position.is_positioned() {
@@ -449,6 +450,16 @@ impl<'a> Walk<'a, '_> {
                 FragmentKind::Text(_) => {
                     if phase == Phase::Inlines {
                         self.own(f);
+                    }
+                }
+                // An inline element's box on a line (M11.6) and all it
+                // holds are inline-level content: its background and
+                // border, then its items; a positioned one is painted
+                // at its layer.
+                FragmentKind::InlineBox => {
+                    if phase == Phase::Inlines && !f.style.position.is_positioned() {
+                        self.own(f);
+                        self.phase(&f.children, containing, phase);
                     }
                 }
                 FragmentKind::Box => match kind_of(f) {
@@ -652,7 +663,7 @@ mod tests {
                 Step::Box { fragment, .. } => format!("box {}", fragment.node),
                 Step::Text { fragment, .. } => match &fragment.kind {
                     FragmentKind::Text(t) => format!("text {t}"),
-                    FragmentKind::Box => unreachable!(),
+                    FragmentKind::Box | FragmentKind::InlineBox => unreachable!(),
                 },
                 Step::PushClip { node, rect } => {
                     format!("clip {node} {} {} {} {}", rect.x, rect.y, rect.w, rect.h)
@@ -1115,6 +1126,24 @@ mod tests {
             rects(290.0),
             (-10.0, -10.0),
             "held by the container's bottom"
+        );
+    }
+
+    #[test]
+    fn an_inline_box_paints_before_its_text_in_the_inline_pass() {
+        // <div><span>x</span> y</div>: nodes div 1, span 2. The span's
+        // background and border step comes in the inline pass, right
+        // before its text; the div's own text follows.
+        let layout = layout_of(
+            Element::new("div")
+                .push(Element::new("span").text("x"))
+                .text(" y"),
+            "div { margin: 0; } span { background-color: #f00; }",
+        );
+        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+        assert_eq!(
+            names(&steps),
+            ["box 1", "box 2", "text x", "text y"].map(String::from)
         );
     }
 

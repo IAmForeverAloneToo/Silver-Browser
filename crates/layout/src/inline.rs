@@ -27,9 +27,23 @@
 //! two words, within a text node or across the boxes of a run, is one
 //! gap of a space's width and a soft wrap opportunity; where there was
 //! none, as in `a<b>b</b>`, the words are set flush and never broken
-//! apart. An atomic inline is a wrap opportunity on both sides
-//! regardless. Collapsible white space at the start or end of a line
-//! is discarded.
+//! apart: when the second does not fit, both move to the next line
+//! together, back to the last wrap opportunity on the line, as one
+//! unbreakable piece (CSS2 §9.4.2). An atomic inline is a wrap
+//! opportunity on both sides regardless. Collapsible white space at
+//! the start or end of a line is discarded.
+//!
+//! Inline elements (CSS2 §10.8, M11.6): an inline element gets a
+//! [`FragmentKind::InlineBox`] fragment per line it appears on, holding
+//! that line's items inside it. Its start edge — left margin, border
+//! and padding — takes room on the line it starts on and its end edge
+//! on the line it ends on (`box-decoration-break: slice`, the only
+//! value); the start edge takes the gap and wrap opportunity a word
+//! there would and is glued to what follows it, the end edge is glued
+//! to what precedes it. Collapsible white space at the end of an
+//! inline element is rendered after its end edge, not inside it: a
+//! stated approximation. An empty inline element with edges of some
+//! width makes a line; one without makes none (CSS2 §9.4.2).
 //!
 //! Floats (CSS2 §9.5, M11): a line box beside floats runs between the
 //! floats overlapping it — [`FloatContext::space`] for the line's top
@@ -80,12 +94,15 @@
 
 use std::borrow::Cow;
 
-use style::computed::{ComputedStyle, Direction, TextAlign, TextTransform, WhiteSpace};
+use style::computed::{
+    BOTTOM, BorderStyle, ComputedStyle, Direction, LEFT, RIGHT, TOP, TextAlign, TextTransform,
+    WhiteSpace,
+};
 use text::{FontCollection, FontMetrics};
 
 use crate::block::{
-    AtomicLayout, Deferred, Fragment, FragmentKind, carried, layout_float, layout_inline_block,
-    pending_float,
+    AtomicLayout, Deferred, Edges, Fragment, FragmentKind, carried, layout_float,
+    layout_inline_block, pending_float, relative_offset,
 };
 use crate::box_tree::{BoxKind, LayoutBox};
 use crate::float::{At, FloatContext, PendingFloat};
@@ -133,6 +150,14 @@ pub(crate) enum InlineItem<'a> {
     /// current x on it (CSS2 §10.3.7's approximation), and it waits for
     /// its containing block.
     Absolute(&'a LayoutBox),
+    /// The start of an inline element (M11.6): its left margin, border
+    /// and padding, which take room on the line it starts on. It takes
+    /// the gap and wrap opportunity a word there would have, and what
+    /// follows it is glued to it.
+    Open { b: &'a LayoutBox, gap_before: bool },
+    /// The end of an inline element: its right padding, border and
+    /// margin, on the line it ends on, glued to what precedes it.
+    Close(&'a LayoutBox),
 }
 
 /// One word placed on the line being built, before [`flush_line`]
@@ -152,6 +177,15 @@ struct LineWord<'i> {
 enum LineItem<'a, 'i> {
     Word(LineWord<'i>),
     Atomic(Box<AtomicLayout<'a>>),
+    /// An inline element's start edge, as wide as its left margin,
+    /// border and padding (M11.6).
+    Open(&'a LayoutBox, f32),
+    /// An inline element's end edge, as wide as its right padding,
+    /// border and margin.
+    Close(&'a LayoutBox, f32),
+    /// An absolutely positioned box met here (M11): no width, its
+    /// static position taken where the line puts it.
+    Absolute(&'a LayoutBox),
 }
 
 impl LineItem<'_, '_> {
@@ -159,6 +193,8 @@ impl LineItem<'_, '_> {
         match self {
             LineItem::Word(w) => w.width,
             LineItem::Atomic(a) => a.width,
+            LineItem::Open(_, edge) | LineItem::Close(_, edge) => *edge,
+            LineItem::Absolute(_) => 0.0,
         }
     }
 
@@ -167,15 +203,25 @@ impl LineItem<'_, '_> {
         match self {
             LineItem::Word(w) => w.style,
             LineItem::Atomic(a) => &a.root.style,
+            LineItem::Open(b, _) | LineItem::Close(b, _) | LineItem::Absolute(b) => &b.style,
         }
+    }
+
+    /// Whether the item is content: a word or an atomic inline, which
+    /// a gap can stand before and which makes a line box a line (CSS2
+    /// §9.4.2). An inline box's edge is not, nor is an absolutely
+    /// positioned box.
+    fn is_content(&self) -> bool {
+        matches!(self, LineItem::Word(_) | LineItem::Atomic(_))
     }
 }
 
 /// An item's place on the line as it is being built: whether a gap
-/// precedes it.
+/// precedes it, and whether the line may break before it.
 struct Placed<'a, 'i> {
     item: LineItem<'a, 'i>,
     gap_before: bool,
+    can_break: bool,
 }
 
 /// The lines of one inline formatting context.
@@ -229,6 +275,8 @@ pub(crate) fn layout_inline<'a>(
         fonts,
         line: Vec::new(),
         line_width: 0.0,
+        has_content: false,
+        open: Vec::new(),
         y: 0.0,
         fragments: Vec::new(),
         last_baseline: None,
@@ -265,20 +313,30 @@ pub(crate) fn layout_inline<'a>(
                 after_atomic = true;
             }
             InlineItem::Float(b) => lines.float(b),
-            InlineItem::Absolute(b) => lines.absolute(b),
+            InlineItem::Absolute(b) => lines.place(LineItem::Absolute(b), false, false),
+            InlineItem::Open { b, gap_before } => {
+                let (start, _) = edge_widths(&b.style, cb_width);
+                let can_break =
+                    b.style.white_space != WhiteSpace::Pre && (*gap_before || after_atomic);
+                lines.place(LineItem::Open(b, start), *gap_before, can_break);
+                after_atomic = false;
+            }
+            InlineItem::Close(b) => {
+                let (_, end) = edge_widths(&b.style, cb_width);
+                lines.place(LineItem::Close(b, end), false, false);
+            }
             InlineItem::ForcedBreak(style) => {
                 // `white-space: pre`/`pre-wrap`/`pre-line` (M8.4): a
                 // literal newline ends the line unconditionally. A
-                // break on an empty line is a blank line, as tall as
-                // the strut and the text it is in (css-text-3 §4.1.3) —
-                // a code block's blank lines are not nothing.
-                if lines.line.is_empty() {
+                // break on a line with nothing on it is a blank line,
+                // as tall as the strut and the text it is in
+                // (css-text-3 §4.1.3) — a code block's blank lines are
+                // not nothing.
+                if !lines.flush() {
                     lines.start_line();
                     let m = join(lines.strut, fonts.metrics_for_text(" ", style.font_size_px));
                     lines.last_baseline = Some(lines.y + m.ascent);
                     lines.y += m.line_height();
-                } else {
-                    lines.flush();
                 }
                 after_atomic = false;
             }
@@ -319,6 +377,12 @@ struct Lines<'a, 'i, 'f, 'c> {
     fonts: &'f FontCollection,
     line: Vec<Placed<'a, 'i>>,
     line_width: f32,
+    /// Whether the line in progress has content on it — a word or an
+    /// atomic inline — which a gap can follow.
+    has_content: bool,
+    /// The inline elements open when the line in progress started,
+    /// outermost first (M11.6): continued from the line before, sliced.
+    open: Vec<&'a LayoutBox>,
     /// The top of the line in progress.
     y: f32,
     fragments: Vec<Fragment>,
@@ -379,7 +443,9 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
                 }
             }
         }
-        let gap = if self.line.is_empty() || !gap_before {
+        // A gap stands between two pieces of content: none before the
+        // first on the line, and an inline box's edge is not content.
+        let gap = if !self.has_content || !gap_before {
             0.0
         } else {
             space_width(item.style(), self.fonts)
@@ -387,19 +453,43 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
         // Greedy line breaking at a soft-wrap opportunity (M7.3): if
         // this item doesn't fit, start a new line — unless the line is
         // still empty (a solo word wider than `available_width` just
-        // overflows; see the module doc's overflow-wrap note) or no
-        // break is allowed before it (glued to the word before, or
-        // `white-space: pre`, M8.4).
-        if can_break
-            && !self.line.is_empty()
-            && self.line_width + gap + item.width() > self.available_width
-        {
-            self.flush();
-            self.place(item, gap_before, can_break);
-            return;
+        // overflows; see the module doc's overflow-wrap note).
+        if !self.line.is_empty() && self.line_width + gap + item.width() > self.available_width {
+            if can_break {
+                self.flush();
+                self.place(item, gap_before, can_break);
+                return;
+            }
+            // No break is allowed before it (glued to the word before,
+            // after an inline box's start edge, or `white-space: pre`,
+            // M8.4): the item is part of the unbreakable piece that
+            // ends the line, which moves to the next line whole, back
+            // to the last wrap opportunity on this one (CSS2 §9.4.2) —
+            // when there is one past the line's start; a piece that is
+            // the whole line overflows.
+            if let Some(at) = self
+                .line
+                .iter()
+                .rposition(|p| p.can_break)
+                .filter(|at| *at > 0)
+            {
+                let tail: Vec<Placed<'a, 'i>> = self.line.drain(at..).collect();
+                (self.line_width, self.has_content) = measure_line(&self.line, self.fonts);
+                self.flush();
+                for p in tail {
+                    self.place(p.item, p.gap_before, p.can_break);
+                }
+                self.place(item, gap_before, can_break);
+                return;
+            }
         }
+        self.has_content |= item.is_content();
         self.line_width += gap + item.width();
-        self.line.push(Placed { item, gap_before });
+        self.line.push(Placed {
+            item,
+            gap_before,
+            can_break,
+        });
     }
 
     /// A float met in the run (M11): placed at the line in progress's
@@ -430,23 +520,6 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
         }
     }
 
-    /// An absolutely positioned box met in the run (M11): its static
-    /// position is where an inline box would have gone — the current
-    /// x on the line in progress (its start, on an empty line) and the
-    /// line's top — and it waits for its containing block. A float
-    /// still waiting beside it is placed first when the line is the
-    /// run's first, like an inline box would have had it placed.
-    fn absolute(&mut self, b: &'a LayoutBox) {
-        if self.line.is_empty() {
-            self.start_line();
-        }
-        self.absolutes.push(Deferred {
-            b,
-            x: self.line_left + self.line_width,
-            y: self.y,
-        });
-    }
-
     /// Places the floats that waited for the line just ended, at its
     /// bottom.
     fn place_deferred(&mut self) {
@@ -456,8 +529,9 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
         }
     }
 
-    /// Ends the line in progress, if there is one.
-    fn flush(&mut self) {
+    /// Ends the line in progress, if there is one: whether a line was
+    /// made of it.
+    fn flush(&mut self) -> bool {
         let baseline = flush_line(
             &mut self.line,
             self.line_width,
@@ -466,14 +540,47 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
             self.text_align,
             &self.strut,
             self.fonts,
+            (self.cb_width, self.cb_height),
             &mut self.y,
             &mut self.fragments,
             &mut self.absolutes,
+            &mut self.open,
         );
         self.last_baseline = baseline.or(self.last_baseline);
         self.line_width = 0.0;
+        self.has_content = false;
         self.place_deferred();
+        baseline.is_some()
     }
+}
+
+/// The width of a line's items with the gaps between them, and whether
+/// any is content: what [`Lines::place`] keeps as it goes, measured
+/// again for a line cut short.
+fn measure_line(line: &[Placed<'_, '_>], fonts: &FontCollection) -> (f32, bool) {
+    let mut width = 0.0;
+    let mut has_content = false;
+    for p in line {
+        if has_content && p.gap_before {
+            width += space_width(p.item.style(), fonts);
+        }
+        width += p.item.width();
+        has_content |= p.item.is_content();
+    }
+    (width, has_content)
+}
+
+/// The room an inline element's start edge takes on the line it starts
+/// on — its left margin, border and padding — and its end edge on the
+/// line it ends on (CSS2 §10.8; css-break-4's `box-decoration-break:
+/// slice`, the only value). An `auto` margin is zero on an inline.
+fn edge_widths(style: &ComputedStyle, cb_width: f32) -> (f32, f32) {
+    let edges = Edges::of(style, cb_width);
+    let margin = |side: usize| style.margin[side].resolve(cb_width, 0.0);
+    (
+        margin(LEFT) + edges.border[LEFT] + edges.padding[LEFT],
+        edges.padding[RIGHT] + edges.border[RIGHT] + margin(RIGHT),
+    )
 }
 
 /// The larger of two sets of metrics, side by side.
@@ -499,6 +606,7 @@ pub(crate) fn collect_inline_items<'a>(
         fonts,
         out: Vec::new(),
         space_pending: false,
+        gap_placed: false,
     };
     collector.collect(boxes);
     collector.out
@@ -510,6 +618,10 @@ struct Collector<'a, 'f> {
     /// Collapsible white space has been seen since the last item: the
     /// next item gets a gap before it.
     space_pending: bool,
+    /// An inline element's start edge took a gap and no content has
+    /// followed it: white space seen now collapses into that gap
+    /// (css-text-3 §4.1.1, across the boundary of the inline).
+    gap_placed: bool,
 }
 
 impl<'a> Collector<'a, '_> {
@@ -517,9 +629,16 @@ impl<'a> Collector<'a, '_> {
         for b in boxes {
             match &b.kind {
                 BoxKind::Text(text) => self.text(b, text),
-                BoxKind::Inline => self.collect(&b.children),
+                BoxKind::Inline => {
+                    let gap_before = std::mem::take(&mut self.space_pending);
+                    self.gap_placed |= gap_before;
+                    self.out.push(InlineItem::Open { b, gap_before });
+                    self.collect(&b.children);
+                    self.out.push(InlineItem::Close(b));
+                }
                 BoxKind::InlineBlock => {
                     let gap_before = std::mem::take(&mut self.space_pending);
+                    self.gap_placed = false;
                     self.out.push(InlineItem::Atomic { b, gap_before });
                 }
                 // A float or an absolutely positioned box is invisible
@@ -556,8 +675,9 @@ impl<'a> Collector<'a, '_> {
                 if preserves_newlines {
                     self.out.push(InlineItem::ForcedBreak(&b.style));
                     self.space_pending = false;
+                    self.gap_placed = false;
                 } else {
-                    self.space_pending = true;
+                    self.space_pending = !self.gap_placed;
                 }
             }
             if line.is_empty() {
@@ -581,7 +701,7 @@ impl<'a> Collector<'a, '_> {
                     if let Some((start, gap_before)) = word.take() {
                         self.word(b, &reordered[start..i], no_wrap, gap_before);
                     }
-                    self.space_pending = true;
+                    self.space_pending = !self.gap_placed;
                 } else if word.is_none() {
                     word = Some((i, std::mem::take(&mut self.space_pending)));
                 }
@@ -593,6 +713,7 @@ impl<'a> Collector<'a, '_> {
     }
 
     fn word(&mut self, b: &'a LayoutBox, text: &str, no_wrap: bool, gap_before: bool) {
+        self.gap_placed = false;
         self.out.push(InlineItem::Word {
             text: text.to_string(),
             width: measure_word(text, &b.style, self.fonts),
@@ -663,6 +784,30 @@ pub(crate) fn run_intrinsic_widths(items: &[InlineItem<'_>], fonts: &FontCollect
                 line += float_max;
             }
             InlineItem::Absolute(_) => {}
+            // An inline element's edges (M11.6) are measured against a
+            // zero containing block, as a percentage padding or margin
+            // contributes nothing to an intrinsic size (css-sizing-3
+            // §5.2.1). The start edge is where a word would break and
+            // glues what follows; the end edge glues to what precedes.
+            InlineItem::Open { b, gap_before } => {
+                let (edge, _) = edge_widths(&b.style, 0.0);
+                let gap = if line_empty || !gap_before {
+                    0.0
+                } else {
+                    space_width(&b.style, fonts)
+                };
+                let can_break = b.style.white_space != WhiteSpace::Pre
+                    && !line_empty
+                    && (*gap_before || after_atomic);
+                piece = if can_break { edge } else { piece + gap + edge };
+                line += gap + edge;
+                after_atomic = false;
+            }
+            InlineItem::Close(b) => {
+                let (_, edge) = edge_widths(&b.style, 0.0);
+                piece += edge;
+                line += edge;
+            }
             InlineItem::ForcedBreak(_) => {
                 line = 0.0;
                 piece = 0.0;
@@ -759,9 +904,17 @@ fn measure_word(word: &str, style: &ComputedStyle, fonts: &FontCollection) -> f3
 /// counted among them) and pushes their fragments, honoring
 /// `text_align` (M7.5) for the line's starting x within the line box,
 /// which starts `line_left` from the content box's left edge and is
-/// `available_width` wide (shortened beside floats, M11). Returns the
-/// line's baseline, or `None` for an empty line, which is no line at
-/// all. Clears `line` for the next line.
+/// `available_width` wide (shortened beside floats, M11). The items of
+/// an inline element go into its [`FragmentKind::InlineBox`] fragment
+/// for the line (M11.6); `open` holds the inline elements open when the
+/// line starts, outermost first, and is left holding those open when
+/// it ends. `cb` is the containing block's width and definite height,
+/// for the inline elements' edges and offsets. Returns the line's
+/// baseline, or `None` for a line that is no line at all: nothing on
+/// it, or no content and no inline box edge of any width (CSS2
+/// §9.4.2), which takes no room — an absolutely positioned box met on
+/// it still gets its static position there. Clears `line` for the next
+/// line.
 #[allow(clippy::too_many_arguments)]
 fn flush_line<'a>(
     line: &mut Vec<Placed<'a, '_>>,
@@ -771,20 +924,25 @@ fn flush_line<'a>(
     text_align: TextAlign,
     strut: &FontMetrics,
     fonts: &FontCollection,
+    cb: (f32, Option<f32>),
     y: &mut f32,
     fragments: &mut Vec<Fragment>,
     absolutes: &mut Vec<Deferred<'a>>,
+    open: &mut Vec<&'a LayoutBox>,
 ) -> Option<f32> {
     if line.is_empty() {
         return None;
     }
+    let makes_line = line_width > 0.0 || line.iter().any(|p| p.item.is_content());
 
     // Above the baseline: the tallest ascent. Below it: the deepest
     // extent — a text's descent and its line gap under it (the gap is
     // all below the baseline in this engine's `line-height: normal`,
     // not split as half-leading), an inline-block's margin box past its
     // baseline — which is where an inline-block's own last line gap
-    // already is, so it is not added again under it.
+    // already is, so it is not added again under it. An inline box's
+    // edges add nothing: its vertical padding and border are drawn
+    // without changing the line's height (CSS2 §10.8).
     let mut max_ascent = strut.ascent;
     let mut max_descent = strut.descent;
     let mut max_below = strut.descent + strut.line_gap;
@@ -808,6 +966,7 @@ fn flush_line<'a>(
                 max_ascent = max_ascent.max(a.ascent);
                 max_below = max_below.max(a.height - a.ascent);
             }
+            LineItem::Open(..) | LineItem::Close(..) | LineItem::Absolute(_) => {}
         }
     }
     let baseline_y = *y + max_ascent;
@@ -821,19 +980,50 @@ fn flush_line<'a>(
             TextAlign::Right => slack,
             TextAlign::Center => slack / 2.0,
         };
+    if !makes_line {
+        // No line: the inline elements' edges are kept track of, an
+        // absolutely positioned box gets its static position at the
+        // line's start, and nothing else comes of it.
+        for placed in line.drain(..) {
+            match placed.item {
+                LineItem::Open(b, _) => open.push(b),
+                LineItem::Close(..) => {
+                    open.pop();
+                }
+                LineItem::Absolute(b) => absolutes.push(Deferred { b, x, y: *y }),
+                LineItem::Word(_) | LineItem::Atomic(_) => {}
+            }
+        }
+        return None;
+    }
+    // The inline elements open on the line, outermost first, each with
+    // the fragments of its content on the line so far; the ones open
+    // when the line started continue from the line's start, sliced.
+    let mut stack: Vec<OpenInline<'a>> = open
+        .iter()
+        .map(|b| OpenInline {
+            b,
+            x,
+            starts: false,
+            children: Vec::new(),
+            absolutes_from: absolutes.len(),
+        })
+        .collect();
+    let mut next_open = open.clone();
     for (i, placed) in line.drain(..).enumerate() {
         if i > 0 && placed.gap_before {
             x += space_width(placed.item.style(), fonts);
         }
         match placed.item {
             LineItem::Word(word) => {
+                let into = innermost(&mut stack, fragments);
                 if word.style.letter_spacing != 0.0 {
                     // Per-character fragments (M8.4) — see
                     // `measure_word`'s doc for why this has to shape
                     // character-by-character, same as the width this
                     // word was measured with.
                     emit_letter_spaced(
-                        fragments,
+                        into,
                         &word,
                         &mut x,
                         baseline_y,
@@ -843,7 +1033,7 @@ fn flush_line<'a>(
                     );
                     continue;
                 }
-                fragments.push(text_fragment(x, baseline_y, &word, max_ascent, max_descent));
+                into.push(text_fragment(x, baseline_y, &word, max_ascent, max_descent));
                 x += word.width;
             }
             LineItem::Atomic(a) => {
@@ -857,17 +1047,145 @@ fn flush_line<'a>(
                 let (dx, dy) = a.relative;
                 let (bx, by) = (x + a.margin_left + dx, top + a.margin_top + dy);
                 let a = *a;
-                fragments.push(a.root.translated(bx, by));
+                innermost(&mut stack, fragments).push(a.root.translated(bx, by));
                 absolutes.extend(carried(a.absolutes, bx, by));
                 x += width;
             }
+            LineItem::Open(b, edge) => {
+                next_open.push(b);
+                stack.push(OpenInline {
+                    b,
+                    x,
+                    starts: true,
+                    children: Vec::new(),
+                    absolutes_from: absolutes.len(),
+                });
+                x += edge;
+            }
+            LineItem::Close(_, edge) => {
+                x += edge;
+                next_open.pop();
+                // The collector opens and closes in pairs; a close
+                // with nothing open is a hand-built tree's, and is
+                // nothing.
+                let Some(inline) = stack.pop() else {
+                    continue;
+                };
+                let fragment = close_inline(inline, x, true, baseline_y, fonts, cb, absolutes);
+                innermost(&mut stack, fragments).push(fragment);
+            }
+            LineItem::Absolute(b) => absolutes.push(Deferred { b, x, y: *y }),
         }
     }
-
+    // The inline elements still open are sliced at the line's end: no
+    // end edge on this line.
+    while let Some(inline) = stack.pop() {
+        let fragment = close_inline(inline, x, false, baseline_y, fonts, cb, absolutes);
+        innermost(&mut stack, fragments).push(fragment);
+    }
+    *open = next_open;
     *y += max_ascent + max_below;
     Some(baseline_y)
 }
 
+/// An inline element open on the line being flushed, with the
+/// fragments of its content on the line so far.
+struct OpenInline<'a> {
+    b: &'a LayoutBox,
+    /// Where it starts on the line: before its start edge when it
+    /// starts here, else the line's start.
+    x: f32,
+    /// Whether the element starts on this line, with its start edge;
+    /// else it continues from the line before, sliced.
+    starts: bool,
+    children: Vec<Fragment>,
+    /// The absolutely positioned boxes met inside it on this line
+    /// begin here in the run's list.
+    absolutes_from: usize,
+}
+
+/// Where the next fragment of the line goes: into the innermost open
+/// inline element's box, else the line's own list.
+fn innermost<'s>(
+    stack: &'s mut [OpenInline<'_>],
+    fragments: &'s mut Vec<Fragment>,
+) -> &'s mut Vec<Fragment> {
+    match stack.last_mut() {
+        Some(inline) => &mut inline.children,
+        None => fragments,
+    }
+}
+
+/// The [`FragmentKind::InlineBox`] fragment of `inline` on the line
+/// being flushed, ending at `x`: after its end edge when `ends`, else
+/// sliced at the line's end (CSS2 §10.8; css-break-4's
+/// `box-decoration-break: slice`). Its content area runs from the
+/// line's baseline up by its font's ascent and down by its descent
+/// (CSS2 §10.6.1), its padding and border around that, the vertical
+/// ones without changing the line's height; a side sliced off has no
+/// border in the fragment's style, so none is painted there. Its
+/// children are made relative to it, as [`layout_document`]'s final
+/// pass expects, and a relatively positioned inline element is moved
+/// as a whole (CSS2 §9.4.3), the absolutely positioned boxes met inside
+/// it on this line with it.
+///
+/// [`layout_document`]: crate::layout_document
+fn close_inline<'a>(
+    inline: OpenInline<'a>,
+    x: f32,
+    ends: bool,
+    baseline_y: f32,
+    fonts: &FontCollection,
+    (cb_width, cb_height): (f32, Option<f32>),
+    absolutes: &mut [Deferred<'a>],
+) -> Fragment {
+    let b = inline.b;
+    let edges = Edges::of(&b.style, cb_width);
+    let margin = |side: usize| b.style.margin[side].resolve(cb_width, 0.0);
+    let m = fonts.metrics_for_text(" ", b.style.font_size_px);
+    let left = if inline.starts {
+        inline.x + margin(LEFT)
+    } else {
+        inline.x
+    };
+    let right = if ends { x - margin(RIGHT) } else { x };
+    let top = baseline_y - m.ascent - edges.padding[TOP] - edges.border[TOP];
+    let height = edges.border[TOP]
+        + edges.padding[TOP]
+        + m.ascent
+        + m.descent
+        + edges.padding[BOTTOM]
+        + edges.border[BOTTOM];
+    let mut style = b.style.clone();
+    if !inline.starts {
+        style.border_style[LEFT] = BorderStyle::None;
+    }
+    if !ends {
+        style.border_style[RIGHT] = BorderStyle::None;
+    }
+    let (dx, dy) = relative_offset(&b.style, cb_width, cb_height);
+    let mut children = inline.children;
+    for c in &mut children {
+        c.x -= left;
+        c.y -= top;
+    }
+    for d in &mut absolutes[inline.absolutes_from..] {
+        d.x += dx;
+        d.y += dy;
+    }
+    Fragment {
+        x: left + dx,
+        y: top + dy,
+        w: (right - left).max(0.0),
+        h: height,
+        style,
+        kind: FragmentKind::InlineBox,
+        node: b.node,
+        ascent: 0.0,
+        scroll_height: 0.0,
+        children,
+    }
+}
 /// A text fragment for `word` at `x` on a line whose baseline is
 /// `baseline_y` and whose text rises `ascent` above it and `descent`
 /// below: the fragment's `y` is the baseline (`block`'s and `paint`'s
@@ -982,9 +1300,27 @@ mod tests {
             .iter()
             .filter_map(|f| match &f.kind {
                 FragmentKind::Text(t) => Some(t.as_str()),
-                FragmentKind::Box => None,
+                FragmentKind::Box | FragmentKind::InlineBox => None,
             })
             .collect()
+    }
+
+    /// The text fragments under `fragments` in tree order, each with
+    /// the coordinates it has in the run: an inline element's text is
+    /// inside its box fragment (M11.6), relative to it.
+    fn texts(fragments: &[Fragment]) -> Vec<Fragment> {
+        fn walk(fragments: &[Fragment], dx: f32, dy: f32, out: &mut Vec<Fragment>) {
+            for f in fragments {
+                match f.kind {
+                    FragmentKind::Text(_) => out.push(f.clone().translated(dx, dy)),
+                    FragmentKind::InlineBox => walk(&f.children, dx + f.x, dy + f.y, out),
+                    FragmentKind::Box => {}
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(fragments, 0.0, 0.0, &mut out);
+        out
     }
 
     #[test]
@@ -1088,6 +1424,7 @@ mod tests {
             text_box("after", 16.0),
         ]);
         let (fragments, height) = lay(&[run], 10_000.0, TextAlign::Left, &fonts);
+        let fragments = texts(&fragments);
         assert_eq!(texts_of(&fragments), vec!["before", "inner", "after"]);
         assert!(fragments.iter().all(|f| f.y == fragments[0].y));
         assert_eq!(height, fonts.primary().metrics(16.0).line_height());
@@ -1105,6 +1442,7 @@ mod tests {
             text_box(" c", 16.0),
         ];
         let (fragments, _) = lay(&run, 10_000.0, TextAlign::Left, &fonts);
+        let fragments = texts(&fragments);
         assert_eq!(texts_of(&fragments), vec!["a", "b", "c"]);
         assert_eq!(fragments[1].x, fragments[0].x + fragments[0].w, "flush");
         assert_eq!(
@@ -1114,6 +1452,7 @@ mod tests {
         );
         // Narrow: "ab" stays together on the first line, "c" wraps.
         let (fragments, height) = lay(&run, 1.0, TextAlign::Left, &fonts);
+        let fragments = texts(&fragments);
         assert_eq!(fragments[0].y, fragments[1].y);
         assert_eq!(
             fragments[2].y,

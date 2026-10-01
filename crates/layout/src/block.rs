@@ -123,7 +123,7 @@ pub struct Fragment {
     pub scroll_height: f32,
     /// The fragments of this box's content, in tree order: the paint
     /// order is the walk's (M11.6, in `paint`). A text fragment has
-    /// none.
+    /// none; an inline box's are its line's items inside it.
     pub children: Vec<Fragment>,
 }
 
@@ -137,6 +137,21 @@ pub enum FragmentKind {
     /// and `h` is the line's ascent plus descent, see
     /// [`Fragment::ascent`].
     Text(String),
+    /// An inline element's box on one line (CSS2 §10.8, M11.6): one per
+    /// line box the element appears on, holding the text, inline-block
+    /// and nested inline fragments of that line inside it. `(x, y, w,
+    /// h)` is its border box: the content area from the line's baseline
+    /// up by the element's font ascent and down by its descent (CSS2
+    /// §10.6.1), horizontally from its first item to its last, with its
+    /// padding and border around it — the vertical ones without
+    /// changing the line's height. A line break slices it
+    /// (`box-decoration-break: slice`, the only value): the fragment on
+    /// a line the element does not start on has no left margin,
+    /// border or padding, and one on a line it does not end on no right
+    /// ones, a sliced side's border being `none` in the fragment's
+    /// `style`. Its background and border paint from `style` within
+    /// its border box, like a block's; `overflow` does not apply to it.
+    InlineBox,
 }
 
 impl Fragment {
@@ -152,6 +167,13 @@ impl Fragment {
     /// the line for a text fragment.
     pub fn top(&self) -> f32 {
         self.y - self.ascent
+    }
+
+    /// Whether the fragment clips its content (CSS2 §11.1.1, M9.3): a
+    /// block-level or inline-block box whose `overflow` says so. An
+    /// inline box's `overflow` does not apply, nor does a text's.
+    pub fn clips(&self) -> bool {
+        matches!(self.kind, FragmentKind::Box) && self.style.overflow.clips()
     }
 
     /// Whether the document-space point lies within the fragment's box
@@ -175,7 +197,7 @@ impl Fragment {
 /// inside a box that clips does not count: its overflow is its own.
 fn extent_bottom(f: &Fragment) -> f32 {
     let own = f.top() + f.h;
-    if f.style.overflow.clips() {
+    if f.clips() {
         return own;
     }
     f.children
@@ -729,13 +751,13 @@ pub(crate) enum Content<'c> {
 /// A box's border and padding, resolved against its containing block's
 /// width (padding's percentages are of that width on every side, CSS2
 /// §8.4).
-struct Edges {
-    border: [f32; 4],
-    padding: [f32; 4],
+pub(crate) struct Edges {
+    pub(crate) border: [f32; 4],
+    pub(crate) padding: [f32; 4],
 }
 
 impl Edges {
-    fn of(style: &ComputedStyle, cb_width: f32) -> Self {
+    pub(crate) fn of(style: &ComputedStyle, cb_width: f32) -> Self {
         Edges {
             border: effective_border_width(style),
             padding: style.padding.map(|p| p.resolve(cb_width)),
@@ -3865,5 +3887,189 @@ mod tests {
         assert_eq!(a.h, 180.0);
         assert_eq!(text_of(&layout, "x").top(), 10.0);
         assert!(lh > 0.0);
+    }
+
+    /// Every inline box fragment (M11.6) in the document, in tree
+    /// order: one per line each inline element appears on.
+    fn inline_boxes(layout: &DocumentLayout) -> Vec<Fragment> {
+        layout
+            .iter()
+            .filter(|f| matches!(f.kind, FragmentKind::InlineBox))
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn an_inline_element_has_a_box_on_its_line_around_its_items() {
+        // <p><span>ab</span></p>, the span with 5px of horizontal
+        // padding, a 2px border and 3px margins: the text starts after
+        // the start edge, inside the span's box, whose border box lies
+        // within the margins and around the content area — above the
+        // line's top by the border, which does not change the line.
+        let layout = document_of(
+            Element::new("p").push(Element::new("span").text("ab")),
+            "p { margin: 0 } span { padding: 0 5px; border: 2px solid #000; margin: 0 3px }",
+        );
+        let fonts = test_fonts();
+        let m = fonts.primary().metrics(16.0);
+        let ab = fonts.measure("ab", 16.0);
+        let text = text_of(&layout, "ab");
+        assert_eq!((text.x, text.y), (10.0, m.ascent));
+        let boxes = inline_boxes(&layout);
+        assert_eq!(boxes.len(), 1);
+        let b = &boxes[0];
+        assert_eq!(b.node, text.node);
+        assert_eq!((b.x, b.w), (3.0, 14.0 + ab));
+        assert_eq!((b.y, b.h), (-2.0, 2.0 + m.ascent + m.descent + 2.0));
+        assert_eq!(b.children.len(), 1, "the text is inside it");
+        assert_eq!(
+            b.children[0].x, 10.0,
+            "absolute, as the final pass leaves it"
+        );
+        assert_eq!(layout.height, m.line_height());
+    }
+
+    #[test]
+    fn an_inline_element_across_two_lines_is_sliced_at_the_break() {
+        // The p just too narrow for both words beside the start edge:
+        // the span's first box has its start edge and no end edge, the
+        // second the reverse, and the sliced sides have no border.
+        let fonts = test_fonts();
+        let (aaaa, bbbb) = (fonts.measure("aaaa", 16.0), fonts.measure("bbbb", 16.0));
+        let width = 10.0 + aaaa + fonts.measure(" ", 16.0) + bbbb - 1.0;
+        let layout = document_of(
+            Element::new("p").push(Element::new("span").text("aaaa bbbb")),
+            &format!(
+                "p {{ margin: 0; width: {width}px }}
+                 span {{ padding: 0 5px; border: 2px solid #000; margin: 0 3px }}"
+            ),
+        );
+        let m = fonts.primary().metrics(16.0);
+        let boxes = inline_boxes(&layout);
+        assert_eq!(boxes.len(), 2);
+        let (first, second) = (&boxes[0], &boxes[1]);
+        use style::computed::BorderStyle;
+        assert_eq!((first.x, first.w), (3.0, 7.0 + aaaa));
+        assert_eq!(first.style.border_style[LEFT], BorderStyle::Solid);
+        assert_eq!(first.style.border_style[RIGHT], BorderStyle::None);
+        assert_eq!((second.x, second.w), (0.0, bbbb + 7.0));
+        assert_eq!(second.y, first.y + m.line_height());
+        assert_eq!(second.style.border_style[LEFT], BorderStyle::None);
+        assert_eq!(second.style.border_style[RIGHT], BorderStyle::Solid);
+        assert_eq!(
+            text_of(&layout, "bbbb").x,
+            0.0,
+            "no start edge on the second line"
+        );
+    }
+
+    #[test]
+    fn white_space_at_an_inline_elements_edges_collapses_to_one_gap() {
+        let fonts = test_fonts();
+        let (a, b, sp) = (
+            fonts.measure("a", 16.0),
+            fonts.measure("b", 16.0),
+            fonts.measure(" ", 16.0),
+        );
+        // `a <span>b</span> c`: a gap before the span and one after it.
+        let layout = document_of(
+            Element::new("p")
+                .text("a ")
+                .push(Element::new("span").text("b"))
+                .text(" c"),
+            "p { margin: 0 }",
+        );
+        assert_eq!(text_of(&layout, "b").x, a + sp);
+        assert_eq!(text_of(&layout, "c").x, a + sp + b + sp);
+        // `a <span> b</span>`: the space inside collapses into the gap
+        // before the span (css-text-3 §4.1.1).
+        let layout = document_of(
+            Element::new("p")
+                .text("a ")
+                .push(Element::new("span").text(" b")),
+            "p { margin: 0 }",
+        );
+        assert_eq!(text_of(&layout, "b").x, a + sp);
+        // `<span>a </span>b`: the space at the end of the span is the
+        // gap before `b`, rendered after the span's end edge.
+        let layout = document_of(
+            Element::new("p")
+                .push(Element::new("span").text("a "))
+                .text("b"),
+            "p { margin: 0 } span { padding-right: 4px }",
+        );
+        assert_eq!(text_of(&layout, "b").x, a + 4.0 + sp);
+        assert_eq!(inline_boxes(&layout)[0].w, a + 4.0);
+    }
+
+    #[test]
+    fn an_unbreakable_piece_moves_to_the_next_line_whole() {
+        let fonts = test_fonts();
+        let m = fonts.primary().metrics(16.0);
+        let w = |t: &str| fonts.measure(t, 16.0);
+        // `aa <span>bbbb</span>` just too narrow for both: the span,
+        // glued to its word, starts on the second line with it and has
+        // no box on the first.
+        let width = w("aa") + w(" ") + w("bbbb") - 1.0;
+        let layout = document_of(
+            Element::new("p")
+                .text("aa ")
+                .push(Element::new("span").text("bbbb")),
+            &format!("p {{ margin: 0; width: {width}px }}"),
+        );
+        assert_eq!(text_of(&layout, "aa").y, m.ascent);
+        let bbbb = text_of(&layout, "bbbb");
+        assert_eq!((bbbb.x, bbbb.y), (0.0, m.ascent + m.line_height()));
+        let boxes = inline_boxes(&layout);
+        assert_eq!(boxes.len(), 1);
+        assert_eq!(boxes[0].y, m.line_height());
+        // `aa <b>xx</b>yy`: `xx` and `yy` are one piece, set flush;
+        // when `yy` does not fit, the piece moves back to the gap.
+        let width = w("aa") + w(" ") + w("xx") + w("yy") - 1.0;
+        let layout = document_of(
+            Element::new("p")
+                .text("aa ")
+                .push(Element::new("b").text("xx"))
+                .text("yy"),
+            &format!("p {{ margin: 0; width: {width}px }}"),
+        );
+        let (xx, yy) = (text_of(&layout, "xx"), text_of(&layout, "yy"));
+        assert_eq!((xx.x, xx.y), (0.0, m.ascent + m.line_height()));
+        assert_eq!((yy.x, yy.y), (w("xx"), m.ascent + m.line_height()));
+        assert_eq!(layout.height, 2.0 * m.line_height());
+    }
+
+    #[test]
+    fn a_relatively_positioned_inline_element_moves_with_its_text() {
+        let layout = document_of(
+            Element::new("p").push(Element::new("span").text("ab")),
+            "p { margin: 0 } span { position: relative; left: 5px; top: 2px }",
+        );
+        let m = test_fonts().primary().metrics(16.0);
+        let b = &inline_boxes(&layout)[0];
+        assert_eq!((b.x, b.y), (5.0, 2.0));
+        let text = text_of(&layout, "ab");
+        assert_eq!((text.x, text.y), (5.0, m.ascent + 2.0));
+        assert_eq!(layout.height, m.line_height(), "the flow is not affected");
+    }
+
+    #[test]
+    fn an_empty_inline_element_makes_a_line_only_with_edges_of_some_width() {
+        // CSS2 §9.4.2: a line box with nothing in it but an inline
+        // element without margins, padding or borders is no line.
+        let layout = document_of(
+            Element::new("p").push(Element::new("span")),
+            "p { margin: 0 }",
+        );
+        assert_eq!(layout.height, 0.0);
+        assert!(inline_boxes(&layout).is_empty());
+        let layout = document_of(
+            Element::new("p").push(Element::new("span")),
+            "p { margin: 0 } span { padding: 0 5px }",
+        );
+        let m = test_fonts().primary().metrics(16.0);
+        assert_eq!(layout.height, m.line_height());
+        let b = &inline_boxes(&layout)[0];
+        assert_eq!((b.x, b.w, b.h), (0.0, 10.0, m.ascent + m.descent));
     }
 }

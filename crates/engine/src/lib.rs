@@ -655,9 +655,7 @@ impl Engine {
                 Step::Box { fragment, rect } => {
                     if under(&rect, &clips) {
                         let mut chain: Vec<usize> = chain(&clips);
-                        if fragment.style.overflow.clips()
-                            && padding_box(fragment, rect).contains(x, y)
-                        {
+                        if fragment.clips() && padding_box(fragment, rect).contains(x, y) {
                             chain.push(fragment.node);
                         }
                         hit = Some((fragment.node, chain));
@@ -951,7 +949,7 @@ mod tests {
                 .iter()
                 .filter_map(|f| match f.kind {
                     layout::FragmentKind::Text(_) => Some(f.y.round() as i32),
-                    layout::FragmentKind::Box => None,
+                    layout::FragmentKind::Box | layout::FragmentKind::InlineBox => None,
                 })
                 .collect();
             ys.sort_unstable();
@@ -1723,6 +1721,33 @@ mod tests {
         assert_eq!(engine.hit_test(150.0, 5.0), Some(t));
         assert_eq!(px(&pixels, 200, 150, 15), [0x00, 0xff, 0x00, 0xff]);
         assert_eq!(engine.hit_test(150.0, 15.0), Some(n));
+    }
+
+    #[test]
+    fn an_inline_element_paints_its_background_and_is_hit_over_its_padding() {
+        // <p><a href=/t>b</a></p>, the link with 10px of horizontal
+        // padding and a red background (M11.6): its padding is red, is
+        // the link for the pointer and for a click, and ends with its
+        // content area, the rest of the line below being the
+        // paragraph's.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0 } p { margin: 0 }
+                    a { padding: 0 10px; background-color: #ff0000 }</style>\
+             <p id=p><a href=\"/t\" id=a>b</a></p>",
+        );
+        let pixels = engine.frame(200, 100);
+        let (p, a) = (node_by_id(&engine, "p"), node_by_id(&engine, "a"));
+        assert_eq!(px(&pixels, 200, 5, 8), [0xff, 0x00, 0x00, 0xff]);
+        assert_eq!(engine.hit_test(5.0, 8.0), Some(a));
+        assert_eq!(engine.link_at(5.0, 8.0).as_deref(), Some("/t"));
+        assert_eq!(
+            px(&pixels, 200, 5, 18),
+            [0xff, 0xff, 0xff, 0xff],
+            "below the content area"
+        );
+        assert_eq!(engine.hit_test(5.0, 18.0), Some(p));
+        assert_eq!(engine.hit_test(12.0, 8.0), Some(a), "over its text");
     }
 
     #[test]
