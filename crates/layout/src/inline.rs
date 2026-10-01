@@ -31,6 +31,22 @@
 //! regardless. Collapsible white space at the start or end of a line
 //! is discarded.
 //!
+//! Floats (CSS2 §9.5, M11): a line box beside floats runs between the
+//! floats overlapping it — [`FloatContext::space`] for the line's top
+//! and the strut's height, asked when the line starts, and asked again
+//! when the line moves or a float joins it; `text-align` works within
+//! the shortened line. A line that nothing fits in beside the floats
+//! moves down to the next height at which a float ends and tries
+//! again; with no float beside it, it overflows as it always has. A
+//! float met in the run is placed at the current line's top when its
+//! margin box fits in what is left of the line, which the line is then
+//! shortened by, else below the line once its height is known, where
+//! the next line avoids it; met before the run's first line while the
+//! flow position is still unresolved, it waits for that line. The
+//! line's height for the query is the strut's: a float the line grows
+//! into through a taller item is not re-checked (the design note says
+//! so; a browser relays the line).
+//!
 //! Scope, deliberately, matching the milestones' own "v1":
 //!
 //! * `overflow-wrap: break-word` (a single word wider than the
@@ -67,8 +83,11 @@ use std::borrow::Cow;
 use style::computed::{ComputedStyle, Direction, TextAlign, TextTransform, WhiteSpace};
 use text::{FontCollection, FontMetrics};
 
-use crate::block::{AtomicLayout, Fragment, FragmentKind, layout_inline_block};
+use crate::block::{
+    AtomicLayout, Fragment, FragmentKind, layout_float, layout_inline_block, pending_float,
+};
 use crate::box_tree::{BoxKind, LayoutBox};
+use crate::float::{At, FloatContext, PendingFloat};
 
 /// One flattened piece of inline content, in document order.
 pub(crate) enum InlineItem<'a> {
@@ -103,6 +122,10 @@ pub(crate) enum InlineItem<'a> {
         /// inline either way.
         gap_before: bool,
     },
+    /// A float met in the run (M11): out of flow, placed by the float
+    /// context beside the line it is met on, and invisible to the
+    /// words around it — neither a gap nor a wrap opportunity.
+    Float(&'a LayoutBox),
 }
 
 /// One word placed on the line being built, before [`flush_line`]
@@ -158,24 +181,36 @@ pub(crate) struct InlineLayout {
 }
 
 /// Lays a run of inline-level boxes (an anonymous block's children,
-/// M10.4) out into line boxes within `available_width`, returning
-/// fragments relative to the run's container's content-box top-left
-/// `(0, 0)` and the total height consumed — `block::layout_children`
-/// translates both into the container's own coordinate space, same as
-/// any block child's. `container` is the run's own style (the
-/// anonymous block's): its `text-align` aligns the lines, its font is
-/// the strut. `cb_height` is the containing block's height when
-/// definite, for a percentage height on an inline-block.
+/// M10.4) out into line boxes within `cb_width`, the containing
+/// block's content width, returning fragments relative to the run's
+/// container's content-box top-left `(0, 0)` and the total height
+/// consumed — `block::layout_children` translates both into the
+/// container's own coordinate space, same as any block child's.
+/// `container` is the run's own style (the anonymous block's): its
+/// `text-align` aligns the lines, its font is the strut. `cb_height` is
+/// the containing block's height when definite, for a percentage
+/// height on an inline-block. `floats` and `at` are the float context
+/// the run is in and where the run's top is in it (M11): the lines are
+/// shortened beside the floats, and floats met in the run are placed.
 pub(crate) fn layout_inline(
     items: &[LayoutBox],
-    available_width: f32,
+    cb_width: f32,
     cb_height: Option<f32>,
     container: &ComputedStyle,
+    floats: &mut FloatContext,
+    at: At,
     fonts: &FontCollection,
 ) -> InlineLayout {
     let flat = collect_inline_items(items, fonts);
     let mut lines = Lines {
-        available_width,
+        cb_width,
+        cb_height,
+        cb_left: at.x,
+        top: at.position(),
+        resolved: at.origin.is_some(),
+        floats,
+        line_left: 0.0,
+        available_width: cb_width,
         text_align: container.text_align,
         strut: fonts.metrics_for_text(" ", container.font_size_px),
         fonts,
@@ -184,6 +219,7 @@ pub(crate) fn layout_inline(
         y: 0.0,
         fragments: Vec::new(),
         last_baseline: None,
+        deferred: Vec::new(),
     };
     // The item before was an atomic inline: a wrap opportunity follows
     // it whether or not white space does.
@@ -210,10 +246,11 @@ pub(crate) fn layout_inline(
                 after_atomic = false;
             }
             InlineItem::Atomic { b, gap_before } => {
-                let atomic = layout_inline_block(b, available_width, cb_height, fonts);
+                let atomic = layout_inline_block(b, cb_width, cb_height, fonts);
                 lines.place(LineItem::Atomic(Box::new(atomic)), *gap_before, true);
                 after_atomic = true;
             }
+            InlineItem::Float(b) => lines.float(b),
             InlineItem::ForcedBreak(style) => {
                 // `white-space: pre`/`pre-wrap`/`pre-line` (M8.4): a
                 // literal newline ends the line unconditionally. A
@@ -221,6 +258,7 @@ pub(crate) fn layout_inline(
                 // the strut and the text it is in (css-text-3 §4.1.3) —
                 // a code block's blank lines are not nothing.
                 if lines.line.is_empty() {
+                    lines.start_line();
                     let m = join(lines.strut, fonts.metrics_for_text(" ", style.font_size_px));
                     lines.last_baseline = Some(lines.y + m.ascent);
                     lines.y += m.line_height();
@@ -242,7 +280,22 @@ pub(crate) fn layout_inline(
 
 /// The lines of one run as they are built: the line in progress and
 /// the fragments of the lines before it.
-struct Lines<'a, 'f> {
+struct Lines<'a, 'f, 'c> {
+    /// The containing block's content width, and height when definite.
+    cb_width: f32,
+    cb_height: Option<f32>,
+    /// The containing block's content box's left edge, and the run's
+    /// top, in the float context's coordinates (M11).
+    cb_left: f32,
+    top: f32,
+    /// Whether the flow position is known: content before the run, or
+    /// the run's first line, resolved it. Until then a float met on an
+    /// empty line waits.
+    resolved: bool,
+    floats: &'c mut FloatContext,
+    /// Where the line in progress starts, from the content box's left
+    /// edge, and how wide it may be: the room beside the floats.
+    line_left: f32,
     available_width: f32,
     text_align: TextAlign,
     /// The containing block's own font metrics, the least any line is.
@@ -254,12 +307,59 @@ struct Lines<'a, 'f> {
     y: f32,
     fragments: Vec<Fragment>,
     last_baseline: Option<f32>,
+    /// Floats met on the line in progress that did not fit beside it,
+    /// placed below it once its height is known.
+    deferred: Vec<PendingFloat>,
 }
 
-impl<'a> Lines<'a, '_> {
+impl<'a> Lines<'a, '_, '_> {
+    /// The line in progress's top in the float context's coordinates.
+    fn line_top(&self) -> f32 {
+        self.top + self.y
+    }
+
+    /// Begins a line at `y`: the flow position is resolved, so a float
+    /// waiting for it is placed first, and the line gets the room
+    /// beside the floats at its top for the strut's height.
+    fn start_line(&mut self) {
+        if !self.resolved {
+            self.floats.resolve_pending(self.line_top());
+            self.resolved = true;
+        }
+        self.measure_room();
+    }
+
+    /// Takes the room beside the floats for the line in progress.
+    fn measure_room(&mut self) {
+        let (left, right) = self.floats.space(
+            self.line_top(),
+            self.strut.line_height(),
+            self.cb_left,
+            self.cb_left + self.cb_width,
+        );
+        self.line_left = left - self.cb_left;
+        self.available_width = (right - left).max(0.0);
+    }
+
     /// Puts `item` on the line in progress, or on a new one when it
     /// does not fit and a break before it is allowed.
     fn place(&mut self, item: LineItem<'a>, gap_before: bool, can_break: bool) {
+        if self.line.is_empty() {
+            self.start_line();
+            // Nothing fits beside the floats: move the line down to
+            // where a float ends and try again, until the item fits
+            // or no float is beside it, where it overflows as a line
+            // too narrow for a word always has (CSS2 §9.5).
+            while item.width() > self.available_width && self.available_width < self.cb_width {
+                match self.floats.next_bottom(self.line_top()) {
+                    Some(bottom) if bottom > self.line_top() => {
+                        self.y = bottom - self.top;
+                        self.measure_room();
+                    }
+                    _ => break,
+                }
+            }
+        }
         let gap = if self.line.is_empty() || !gap_before {
             0.0
         } else {
@@ -276,11 +376,48 @@ impl<'a> Lines<'a, '_> {
             && self.line_width + gap + item.width() > self.available_width
         {
             self.flush();
-            self.line_width = item.width();
-        } else {
-            self.line_width += gap + item.width();
+            self.place(item, gap_before, can_break);
+            return;
         }
+        self.line_width += gap + item.width();
         self.line.push(Placed { item, gap_before });
+    }
+
+    /// A float met in the run (M11): placed at the line in progress's
+    /// top when it fits in what is left of the line — the line is then
+    /// shortened by it, its content moved beside it, unless the float
+    /// context put it lower — or below the line once that ends; on an
+    /// empty line, at the line's top, or held while the flow position
+    /// is unresolved. Its fragment goes in its place, positioned by the
+    /// root's `attach_floats`.
+    fn float(&mut self, b: &'a LayoutBox) {
+        let atomic = layout_float(b, self.cb_width, self.cb_height, self.fonts);
+        let float = pending_float(b, &atomic, self.cb_left, self.cb_width);
+        self.fragments.push(atomic.root);
+        if self.line.is_empty() {
+            if self.resolved {
+                self.floats.place(float, self.line_top());
+            } else {
+                self.floats.defer(float);
+            }
+        } else if self.line_width + float.w <= self.available_width {
+            // Beside the line, which is measured again: no narrower
+            // than the content on it, by the check above; or lower,
+            // past other floats, where the room is as it was.
+            self.floats.place(float, self.line_top());
+            self.measure_room();
+        } else {
+            self.deferred.push(float);
+        }
+    }
+
+    /// Places the floats that waited for the line just ended, at its
+    /// bottom.
+    fn place_deferred(&mut self) {
+        let top = self.line_top();
+        for float in std::mem::take(&mut self.deferred) {
+            self.floats.place(float, top);
+        }
     }
 
     /// Ends the line in progress, if there is one.
@@ -288,6 +425,7 @@ impl<'a> Lines<'a, '_> {
         let baseline = flush_line(
             &mut self.line,
             self.line_width,
+            self.line_left,
             self.available_width,
             self.text_align,
             &self.strut,
@@ -297,6 +435,7 @@ impl<'a> Lines<'a, '_> {
         );
         self.last_baseline = baseline.or(self.last_baseline);
         self.line_width = 0.0;
+        self.place_deferred();
     }
 }
 
@@ -346,6 +485,9 @@ impl<'a> Collector<'a, '_> {
                     let gap_before = std::mem::take(&mut self.space_pending);
                     self.out.push(InlineItem::Atomic { b, gap_before });
                 }
+                // A float is invisible to the white space around it: a
+                // gap pending before it is still pending after it.
+                BoxKind::Float => self.out.push(InlineItem::Float(b)),
                 // The box tree builder hoists a block out of inline
                 // content (CSS2 §9.2.1.1), so none reaches here from a
                 // parsed document; see the module doc.
@@ -428,7 +570,10 @@ impl<'a> Collector<'a, '_> {
 /// width; M10.4): the widest unbreakable piece — a word, the words a
 /// preserved space or no space joins, an atomic inline's min-content
 /// contribution — and the widest line when nothing but a forced break
-/// breaks one. The same rules [`layout_inline`] breaks by.
+/// breaks one. The same rules [`layout_inline`] breaks by. A float in
+/// the run (M11) is a piece of its own for the min-content width, and
+/// widens the line it is met on by its max-content contribution, as
+/// it would sit beside the line's content.
 pub(crate) fn run_intrinsic_widths(items: &[InlineItem<'_>], fonts: &FontCollection) -> (f32, f32) {
     let mut min = 0.0f32;
     let mut max = 0.0f32;
@@ -472,6 +617,11 @@ pub(crate) fn run_intrinsic_widths(items: &[InlineItem<'_>], fonts: &FontCollect
                 line += gap + piece_max;
                 line_empty = false;
                 after_atomic = true;
+            }
+            InlineItem::Float(b) => {
+                let (float_min, float_max) = crate::intrinsic::contribution(b, fonts);
+                min = min.max(float_min);
+                line += float_max;
             }
             InlineItem::ForcedBreak(_) => {
                 line = 0.0;
@@ -567,13 +717,16 @@ fn measure_word(word: &str, style: &ComputedStyle, fonts: &FontCollection) -> f3
 /// the baseline to the deepest extent below it, a text's descent plus
 /// its line gap or an inline-block's rest of its margin box, the strut
 /// counted among them) and pushes their fragments, honoring
-/// `text_align` (M7.5) for the line's starting x. Returns the line's
-/// baseline, or `None` for an empty line, which is no line at all.
-/// Clears `line` for the next line.
+/// `text_align` (M7.5) for the line's starting x within the line box,
+/// which starts `line_left` from the content box's left edge and is
+/// `available_width` wide (shortened beside floats, M11). Returns the
+/// line's baseline, or `None` for an empty line, which is no line at
+/// all. Clears `line` for the next line.
 #[allow(clippy::too_many_arguments)]
 fn flush_line(
     line: &mut Vec<Placed<'_>>,
     line_width: f32,
+    line_left: f32,
     available_width: f32,
     text_align: TextAlign,
     strut: &FontMetrics,
@@ -621,11 +774,12 @@ fn flush_line(
     // css-text-3 §7.1: contents too long for the line box are
     // start-aligned, never pushed left past its edge.
     let slack = (available_width - line_width).max(0.0);
-    let mut x = match text_align {
-        TextAlign::Left => 0.0,
-        TextAlign::Right => slack,
-        TextAlign::Center => slack / 2.0,
-    };
+    let mut x = line_left
+        + match text_align {
+            TextAlign::Left => 0.0,
+            TextAlign::Right => slack,
+            TextAlign::Center => slack / 2.0,
+        };
     for (i, placed) in line.drain(..).enumerate() {
         if i > 0 && placed.gap_before {
             x += space_width(placed.item.style(), fonts);
@@ -740,7 +894,16 @@ mod tests {
             text_align: align,
             ..ComputedStyle::default()
         };
-        let l = layout_inline(items, available_width, None, &container, fonts);
+        let mut floats = FloatContext::default();
+        let l = layout_inline(
+            items,
+            available_width,
+            None,
+            &container,
+            &mut floats,
+            At::root(),
+            fonts,
+        );
         (l.fragments, l.height)
     }
 

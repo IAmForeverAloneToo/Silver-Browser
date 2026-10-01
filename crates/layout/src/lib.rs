@@ -16,6 +16,7 @@
 
 pub mod block;
 pub mod box_tree;
+mod float;
 pub mod inline;
 mod intrinsic;
 

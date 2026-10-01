@@ -47,6 +47,16 @@
 //!   margins zero; what the line gets is its margin box and its
 //!   baseline — its last line box's, or its bottom margin edge when it
 //!   has none or clips (§10.8.1).
+//! * A float (M11, [`crate::float`]) is sized as an inline-block is and
+//!   placed by its block formatting context's float context at the
+//!   flow position it is met at, after the margins resolved so far; it
+//!   takes no room in the flow, and the lines of the context are
+//!   shortened beside it ([`crate::inline`]). A context root's `auto`
+//!   height reaches the lowest float in it (CSS2 §10.6.7); any other
+//!   block's ignores floats, which overflow it. The flow position is
+//!   tracked in the root's coordinates ([`At`]) alongside the relative
+//!   positions below, which still decide where every fragment goes;
+//!   the two agree because both resolve the same sets of margins.
 //!
 //! Margins that adjoin are carried as a set ([`AdjoiningMargins`]: the
 //! largest positive and the largest negative seen so far) and resolved
@@ -68,12 +78,13 @@
 //! scrolls over.
 
 use style::computed::{
-    BOTTOM, BoxSizing, ComputedStyle, Display, LEFT, LengthPercentage, LengthPercentageAuto, RIGHT,
-    TOP,
+    BOTTOM, BoxSizing, ComputedStyle, Display, Float, LEFT, LengthPercentage, LengthPercentageAuto,
+    RIGHT, TOP,
 };
 use text::FontCollection;
 
 use crate::box_tree::{BoxKind, LayoutBox};
+use crate::float::{At, FloatContext, PendingFloat, attach_floats};
 use crate::inline::layout_inline;
 
 /// A positioned, sized box ready for painting (roadmap M6.7), one node
@@ -315,7 +326,18 @@ pub fn layout_document_in(
     viewport_height: Option<f32>,
     fonts: &FontCollection,
 ) -> DocumentLayout {
-    let children = layout_children(boxes, viewport_width, viewport_height, fonts);
+    // The initial containing block is the outermost block formatting
+    // context: its float context is the document's, and its content
+    // top is the root of the coordinates floats are placed in.
+    let mut floats = FloatContext::default();
+    let children = layout_children(
+        boxes,
+        viewport_width,
+        viewport_height,
+        &mut floats,
+        At::root(),
+        fonts,
+    );
     let depends_on_viewport_height = viewport_height.is_some()
         && boxes.iter().any(|b| {
             let percent = |v: LengthPercentage| matches!(v, LengthPercentage::Percent(_));
@@ -325,17 +347,26 @@ pub fn layout_document_in(
         });
     // The viewport is the one context with no further ancestor to
     // escape to — `leading` *must* materialize here, exactly once, or
-    // it would just vanish (see `layout_children`'s doc). So must
-    // `trailing`, below the content; when nothing materialised the two
-    // are one set, counted once.
-    let shift = children.leading.resolve();
+    // it would just vanish (see `layout_children`'s doc). With content
+    // it is already in the content's positions and comes back empty;
+    // without, it is the set every box collapsed through, the height
+    // of the page, each box sitting where its own top margin put it.
+    // So must `trailing`, below the content. A float still waiting for
+    // the flow position at the end is placed where the content would
+    // have been.
+    floats.resolve_pending(children.end.position());
     let height = if children.nothing_materialised {
-        shift
+        children.leading.resolve()
     } else {
-        shift + children.content_height + children.trailing.resolve()
+        children.content_height + children.trailing.resolve()
     };
+    // A page ending in a float is as tall as the float (CSS2 §10.6.7).
+    let height = floats.lowest_bottom().map_or(height, |b| height.max(b));
     let mut roots = children.fragments;
-    make_absolute(&mut roots, 0.0, shift);
+    // The floats' fragments get their positions while every fragment
+    // is still relative to its parent, as the attaching assumes.
+    attach_floats(&mut roots, floats.placed(), 0.0, 0.0, 0.0, 0.0);
+    make_absolute(&mut roots, 0.0, 0.0);
     DocumentLayout {
         roots,
         height: height.max(0.0),
@@ -517,6 +548,12 @@ pub(crate) struct BlockLayout {
     /// §8.3.1), as a still-open adjoining set.
     pub(crate) margin_top: AdjoiningMargins,
     pub(crate) margin_bottom: AdjoiningMargins,
+    /// The margins above the box's top border edge: `margin_top`, or
+    /// for a self-collapsing box the set without its own bottom margin,
+    /// since its top border edge is "the same as it would have been if
+    /// the element had a non-zero bottom border" (CSS2 §8.3.1) — which
+    /// a float inside it makes observable (M11).
+    pub(crate) top_edge: AdjoiningMargins,
     /// The box's top and bottom margins adjoin each other (an empty
     /// box, or one whose every child collapsed through): `margin_top`
     /// and `margin_bottom` are the same set, to be joined with the
@@ -545,11 +582,23 @@ pub(crate) struct AtomicLayout {
 }
 
 /// Whether a box with this style establishes a block formatting context
-/// of its own (CSS2 §9.4.1, M10.4): `overflow` other than `visible`, or
-/// an inline-block. Floats, absolutely positioned boxes and table cells
-/// do too; each arrives with its milestone.
-fn establishes_bfc(style: &ComputedStyle) -> bool {
-    style.overflow.clips() || style.display == Display::InlineBlock
+/// of its own (CSS2 §9.4.1, M10.4): `overflow` other than `visible`, an
+/// inline-block, or a float (M11). Absolutely positioned boxes and
+/// table cells do too; each arrives with its milestone.
+pub(crate) fn establishes_bfc(style: &ComputedStyle) -> bool {
+    style.overflow.clips() || style.display == Display::InlineBlock || style.float != Float::None
+}
+
+/// The float context a block container's content is laid out in: a
+/// fresh one of its own when the container is a block formatting
+/// context root, else its parent's, with where the container's margin
+/// position is in it.
+pub(crate) enum Content<'c> {
+    Root,
+    In {
+        floats: &'c mut FloatContext,
+        at: At,
+    },
 }
 
 /// A box's border and padding, resolved against its containing block's
@@ -580,11 +629,14 @@ impl Edges {
 }
 
 /// Lays out one [`BoxKind::Block`] box (an anonymous block never comes
-/// here: [`layout_children`] lays its lines out directly).
+/// here: [`layout_children`] lays its lines out directly) in the float
+/// context `floats`, met at `at`.
 fn layout_block(
     b: &LayoutBox,
     cb_width: f32,
     cb_height: Option<f32>,
+    floats: &mut FloatContext,
+    at: At,
     fonts: &FontCollection,
 ) -> BlockLayout {
     let edges = Edges::of(&b.style, cb_width);
@@ -593,6 +645,11 @@ fn layout_block(
     // oversight.
     let (content_width, margin_left, _margin_right) =
         resolve_width_and_margins(&b.style, cb_width, edges.horizontal());
+    let content = if establishes_bfc(&b.style) {
+        Content::Root
+    } else {
+        Content::In { floats, at }
+    };
     layout_block_contents(
         b,
         &edges,
@@ -600,8 +657,44 @@ fn layout_block(
         cb_height,
         content_width,
         margin_left,
+        content,
         fonts,
     )
+}
+
+/// Lays out one [`BoxKind::Float`] box (M11): sized as an inline-block
+/// is — shrink-to-fit when its `width` is `auto` (CSS2 §10.3.5),
+/// `auto` margins zero — its content a block formatting context of its
+/// own. Where it goes is the caller's: the margin box the result
+/// describes is placed by the float context.
+pub(crate) fn layout_float(
+    b: &LayoutBox,
+    cb_width: f32,
+    cb_height: Option<f32>,
+    fonts: &FontCollection,
+) -> AtomicLayout {
+    layout_inline_block(b, cb_width, cb_height, fonts)
+}
+
+/// The float the atomic layout of `b` describes, for a containing
+/// block whose content box runs from `cb_left` for `cb_width` in root
+/// coordinates.
+pub(crate) fn pending_float(
+    b: &LayoutBox,
+    atomic: &AtomicLayout,
+    cb_left: f32,
+    cb_width: f32,
+) -> PendingFloat {
+    PendingFloat {
+        node: b.node,
+        side: b.style.float,
+        w: atomic.width,
+        h: atomic.height,
+        margin_left: atomic.margin_left,
+        margin_top: atomic.margin_top,
+        cb_left,
+        cb_right: cb_left + cb_width,
+    }
 }
 
 /// Lays out one [`BoxKind::InlineBlock`] box for its line (M10.4):
@@ -642,6 +735,7 @@ pub(crate) fn layout_inline_block(
         cb_height,
         content_width,
         margin_left,
+        Content::Root,
         fonts,
     );
     let height = margin_top + layout.height + margin_bottom;
@@ -661,7 +755,8 @@ pub(crate) fn layout_inline_block(
 
 /// The body of a block container's layout once its content width and
 /// left margin are known: its height, the stacking of its children and
-/// the margins it exposes.
+/// the margins it exposes. `content` says which float context the
+/// children are laid out in (M11).
 #[allow(clippy::too_many_arguments)]
 fn layout_block_contents(
     b: &LayoutBox,
@@ -670,6 +765,7 @@ fn layout_block_contents(
     cb_height: Option<f32>,
     content_width: f32,
     margin_left: f32,
+    content: Content<'_>,
     fonts: &FontCollection,
 ) -> BlockLayout {
     let Edges { border, padding } = edges;
@@ -694,6 +790,7 @@ fn layout_block_contents(
     let own_bottom = AdjoiningMargins::of(b.style.margin[BOTTOM].resolve(cb_width, 0.0));
     let non_content_width = edges.horizontal();
     let can_collapse_through = !stops_top && !stops_bottom && height_is_auto;
+    let content_x = border[LEFT] + padding[LEFT];
 
     // An empty block (no children, no border/padding, auto height, not
     // a formatting context root): its own margin-top and margin-bottom
@@ -708,19 +805,63 @@ fn layout_block_contents(
             margin_left,
             margin_top: set,
             margin_bottom: set,
+            top_edge: own_top,
             self_collapsing: true,
             last_baseline: None,
         };
     }
 
-    let children = layout_children(&b.children, content_width, specified_height, fonts);
-    let content_x = border[LEFT] + padding[LEFT];
+    // Where the children are in the float context's coordinates (M11):
+    // a root's content box is the origin of a fresh context; otherwise
+    // the box's content box is at its own left edges from the parent's,
+    // and its top is known once the margins above it have resolved —
+    // at once when this box's top edge separates them from its
+    // children's (its own margin joins the pending set, which resolves
+    // at its top border edge), else when the first content below does.
+    let mut own_floats = FloatContext::default();
+    let (floats, at) = match content {
+        Content::Root => (&mut own_floats, At::root()),
+        Content::In { floats, at } => {
+            let x = at.x + margin_left + content_x;
+            let at = if stops_top {
+                let top = at.anchor + at.strut.join(own_top).resolve() + border[TOP] + padding[TOP];
+                At {
+                    x,
+                    origin: Some(top),
+                    anchor: top,
+                    strut: AdjoiningMargins::default(),
+                }
+            } else {
+                At {
+                    x,
+                    origin: None,
+                    anchor: at.anchor,
+                    strut: at.strut.join(own_top),
+                }
+            };
+            (floats, at)
+        }
+    };
+    let children = layout_children(
+        &b.children,
+        content_width,
+        specified_height,
+        floats,
+        at,
+        fonts,
+    );
+    if bfc_root {
+        // A float still waiting at the end of its context is placed
+        // where the content would have been.
+        floats.resolve_pending(children.end.position());
+    }
 
     // Every child collapsed through (empty blocks all the way down):
     // their one set and this box's own margins adjoin, and so does the
     // box's top with its bottom.
     if children.nothing_materialised && can_collapse_through {
-        let set = own_top.join(children.leading).join(own_bottom);
+        let top_edge = own_top.join(children.leading);
+        let set = top_edge.join(own_bottom);
         let mut root = box_fragment(content_width, 0.0, b);
         root.children = children
             .fragments
@@ -733,21 +874,23 @@ fn layout_block_contents(
             margin_left,
             margin_top: set,
             margin_bottom: set,
+            top_edge,
             self_collapsing: true,
             last_baseline: None,
         };
     }
 
-    // `layout_children` never materializes the *leading* set itself
-    // (see its doc) — it's this box's job to decide, now that it knows
-    // its own separation, whether that set becomes real space just
-    // inside its own border/padding-top (`child_shift`, when there's a
-    // border/padding to stop the escape) or keeps escaping outward,
-    // joined with this box's own margin-top (when there isn't). This
-    // is the step a naive "always materialize inside the parent" design
-    // gets wrong: that double-counts the escaping case, because the
-    // SAME margin would then also get re-applied one level up, when
-    // *this* box gets positioned among *its* own siblings.
+    // `layout_children` materializes the *leading* set itself only when
+    // this box's top separates it (then it is already in the content's
+    // positions and `leading` comes back empty) or when nothing in the
+    // content did (then it is the gap the content would have followed,
+    // `child_shift`, and the content height when the bottom separates
+    // too). Otherwise it keeps escaping outward, joined with this box's
+    // own margin-top. This is the step a naive "always materialize
+    // inside the parent" design gets wrong: that double-counts the
+    // escaping case, because the SAME margin would then also get
+    // re-applied one level up, when *this* box gets positioned among
+    // *its* own siblings.
     let (child_shift, margin_top) = if stops_top {
         (children.leading.resolve(), own_top)
     } else {
@@ -781,6 +924,13 @@ fn layout_block_contents(
             base
         }
     };
+    // A block formatting context root's content reaches down to the
+    // bottom margin edge of the lowest float in it (CSS2 §10.6.7); any
+    // other block's ignores its floats, which overflow it.
+    let auto_content_height = match floats.lowest_bottom() {
+        Some(bottom) if bfc_root => auto_content_height.max(bottom),
+        _ => auto_content_height,
+    };
     // CSS2 §10.7: the tentative height clamped to `max-height`, then
     // `min-height`.
     let content_height = specified_height.unwrap_or(auto_content_height);
@@ -799,29 +949,40 @@ fn layout_block_contents(
         border[TOP] + padding[TOP] + content_height + padding[BOTTOM] + border[BOTTOM];
 
     let mut root = box_fragment(border_box_width, border_box_height, b);
-    if b.style.overflow.clips() {
-        // The scrollable overflow area (M10.5, see `Fragment::
-        // scroll_height`): the content as if the height were auto, or
-        // a descendant reaching lower, from the padding box's top to
-        // the bottom padding's end, and never less than the padding
-        // box itself. The children are still relative to the first
-        // child's top, `child_shift` below the content box's.
-        let extent = children
-            .fragments
-            .iter()
-            .map(extent_bottom)
-            .fold(0.0, f32::max)
-            + child_shift;
-        let padding_box = padding[TOP] + content_height + padding[BOTTOM];
-        root.scroll_height =
-            (padding[TOP] + auto_content_height.max(extent) + padding[BOTTOM]).max(padding_box);
-    }
-    let content_y = border[TOP] + padding[TOP] + child_shift;
+    // The content's positions are from the content top: the leading
+    // set, where it is this box's, is in them already (or, with nothing
+    // materialised, is the gap the self-collapsing boxes sit above).
+    let content_y = border[TOP] + padding[TOP];
     root.children = children
         .fragments
         .into_iter()
         .map(|f| f.translated(content_x, content_y))
         .collect();
+    if bfc_root {
+        // The floats of this context get their positions, under
+        // whichever box of the context holds their fragment.
+        attach_floats(
+            &mut root.children,
+            own_floats.placed(),
+            0.0,
+            0.0,
+            content_x,
+            border[TOP] + padding[TOP],
+        );
+    }
+    if b.style.overflow.clips() {
+        // The scrollable overflow area (M10.5, see `Fragment::
+        // scroll_height`): the content as if the height were auto, or
+        // a descendant reaching lower, from the padding box's top to
+        // the bottom padding's end, and never less than the padding
+        // box itself.
+        let extent = root.children.iter().map(extent_bottom).fold(0.0, f32::max)
+            - border[TOP]
+            - padding[TOP];
+        let padding_box = padding[TOP] + content_height + padding[BOTTOM];
+        root.scroll_height =
+            (padding[TOP] + auto_content_height.max(extent) + padding[BOTTOM]).max(padding_box);
+    }
 
     BlockLayout {
         root,
@@ -829,6 +990,7 @@ fn layout_block_contents(
         margin_left,
         margin_top,
         margin_bottom,
+        top_edge: margin_top,
         self_collapsing: false,
         last_baseline: children.last_baseline.map(|y| content_y + y),
     }
@@ -888,57 +1050,89 @@ struct ChildrenLayout {
     /// first child's `y = 0` like `content_height`; `None` when none
     /// made a line.
     last_baseline: Option<f32>,
+    /// The flow position after the last child, in the float context's
+    /// coordinates (M11): where a float met next would go.
+    end: At,
 }
 
 /// Stacks a block container's children (M10.4: all block-level, per the
 /// box tree builder's contract — an inline-level box that a hand-built
-/// tree puts here is laid out as a run of one). An anonymous block is
-/// its inline formatting context: its lines, aligned per its own
-/// inherited `text-align` (M7.5), at the container's full width.
+/// tree puts here is laid out as a run of one; a float, M11, is placed
+/// in the float context at the flow position it is met at and takes no
+/// room). An anonymous block is its inline formatting context: its
+/// lines, aligned per its own inherited `text-align` (M7.5), at the
+/// container's full width, shortened beside floats.
+///
+/// `at` is the container's content box in its float context (M11):
+/// its top is resolved when the container's top edge separates its
+/// margins from its children's — then the leading set of margins is
+/// materialised here, below the content top, and comes back empty —
+/// and unresolved otherwise, when the leading set escapes to the
+/// caller and the first content's top is `y = 0`. In both the content's
+/// positions are relative to the content top, and the float context's
+/// positions, kept in `at`, say the same in the root's coordinates.
 fn layout_children(
     children: &[LayoutBox],
     cb_width: f32,
     cb_height: Option<f32>,
+    floats: &mut FloatContext,
+    at: At,
     fonts: &FontCollection,
 ) -> ChildrenLayout {
     let mut fragments = Vec::new();
     let mut y = 0.0f32;
     // The set of margins adjoining BETWEEN two siblings, not yet
     // materialized (never the leading one, which `still_leading` routes
-    // to `leading` instead, never adding it to `y`).
+    // to `leading` instead).
     let mut pending = AdjoiningMargins::default();
     let mut still_leading = true;
     let mut leading = AdjoiningMargins::default();
     let mut last_baseline = None;
+    // The content top is resolved: the leading set is this container's
+    // to materialise, at the first content's top.
+    let top_resolved = at.origin.is_some();
+    let mut at = at;
 
     for child in children {
         match &child.kind {
             BoxKind::Block => {
-                let layout = layout_block(child, cb_width, cb_height, fonts);
+                let layout = layout_block(child, cb_width, cb_height, floats, at, fonts);
                 if layout.self_collapsing {
                     // Its one set joins the margins around it and stays
-                    // open; the box itself has no height. Its fragment
-                    // sits where the set so far resolves — at the
-                    // parent's content top while the set is still
-                    // escaping (CSS2 §8.3.1: same top border edge as the
-                    // parent). Nothing paints or hits a zero-height box
-                    // with no border or padding, so the exact position
-                    // is unobservable; the set is what matters.
+                    // open; the box itself has no height. Its top border
+                    // edge is where its top margin, with the margins
+                    // pending before it, resolves to (CSS2 §8.3.1: as if
+                    // it had a bottom border), and the parent's content
+                    // top while the set is still escaping there (the
+                    // same top border edge as the parent's); a float
+                    // inside it is what makes the position observable.
                     let box_y = if still_leading {
+                        let box_y = if top_resolved {
+                            leading.join(layout.top_edge).resolve()
+                        } else {
+                            0.0
+                        };
                         leading = leading.join(layout.margin_top);
-                        y
+                        box_y
                     } else {
+                        let box_y = y + pending.join(layout.top_edge).resolve();
                         pending = pending.join(layout.margin_top);
-                        y + pending.resolve()
+                        box_y
                     };
+                    at.strut = at.strut.join(layout.margin_top);
                     let margin_left = layout.margin_left;
                     fragments.push(layout.root.translated(margin_left, box_y));
                     continue;
                 }
+                let root_top = at.anchor + at.strut.join(layout.margin_top).resolve();
                 if still_leading {
                     leading = leading.join(layout.margin_top);
                     still_leading = false;
-                    // `y` stays at 0 — see `leading`'s doc.
+                    if top_resolved {
+                        y = leading.resolve();
+                        leading = AdjoiningMargins::default();
+                    }
+                    // Else `y` stays at 0 — see `leading`'s doc.
                 } else {
                     y += pending.join(layout.margin_top).resolve();
                 }
@@ -950,19 +1144,42 @@ fn layout_children(
                 fragments.push(layout.root.translated(margin_left, child_y));
                 y = child_y + layout.height;
                 pending = layout.margin_bottom;
+                at.origin.get_or_insert(root_top);
+                at.anchor = root_top + layout.height;
+                at.strut = pending;
+            }
+            BoxKind::Float => {
+                // Out of flow: sized as an inline-block, placed at the
+                // flow position after the margins resolved so far — or
+                // held until that position is known — and the flow goes
+                // on as if it were not there. Its fragment is pushed in
+                // its place and positioned by the root's `attach_floats`.
+                let atomic = layout_float(child, cb_width, cb_height, fonts);
+                let float = pending_float(child, &atomic, at.x, cb_width);
+                if at.origin.is_some() {
+                    floats.place(float, at.position());
+                } else {
+                    floats.defer(float);
+                }
+                fragments.push(atomic.root);
             }
             BoxKind::AnonymousBlock | BoxKind::Inline | BoxKind::InlineBlock | BoxKind::Text(_) => {
                 // One inline formatting context (M7): the anonymous
-                // block's children wrap onto lines together.
+                // block's children wrap onto lines together, from the
+                // flow position down.
                 let run = match child.kind {
                     BoxKind::AnonymousBlock => child.children.as_slice(),
                     _ => std::slice::from_ref(child),
                 };
-                let lines = layout_inline(run, cb_width, cb_height, &child.style, fonts);
-                if lines.fragments.is_empty() && lines.height == 0.0 {
-                    // No line box at all (an empty inline element):
-                    // treated as not existing, so it separates no
-                    // margins (CSS2 §9.4.2).
+                let root_top = at.position();
+                let lines =
+                    layout_inline(run, cb_width, cb_height, &child.style, floats, at, fonts);
+                if lines.last_baseline.is_none() {
+                    // No line box at all (an empty inline element, or
+                    // floats alone): treated as not existing, so it
+                    // separates no margins (CSS2 §9.4.2). A float's
+                    // fragment still goes in its place.
+                    fragments.extend(lines.fragments);
                     continue;
                 }
                 // A line box always separates (margins never collapse
@@ -971,7 +1188,13 @@ fn layout_children(
                 // dead, materializing nothing since there was never a
                 // border/padding to place it against).
                 if still_leading {
-                    still_leading = false; // `leading` stays as joined so far: nothing escapes past real content
+                    still_leading = false;
+                    if top_resolved {
+                        y = leading.resolve();
+                        leading = AdjoiningMargins::default();
+                    }
+                    // Else `leading` stays as joined so far: nothing
+                    // escapes past real content.
                 } else {
                     y += pending.resolve();
                 }
@@ -981,6 +1204,9 @@ fn layout_children(
                 }
                 fragments.extend(lines.fragments.into_iter().map(|f| f.translated(0.0, y)));
                 y += lines.height;
+                at.origin.get_or_insert(root_top);
+                at.anchor = root_top + lines.height;
+                at.strut = pending;
             }
         }
     }
@@ -992,6 +1218,7 @@ fn layout_children(
         trailing: if still_leading { leading } else { pending },
         nothing_materialised: still_leading,
         last_baseline,
+        end: at,
     }
 }
 
@@ -1789,10 +2016,17 @@ mod tests {
             Element::new("div"),
             "div { display: block; margin-top: 10px; margin-bottom: 30px; }",
         );
-        // Nothing follows, so only the top (leading) margin is
-        // observable at the viewport boundary — but it must be the
-        // *collapsed* value (max(10,30)=30), not just margin-top (10).
-        assert_eq!(frags[0].y, 30.0);
+        // The box's top border edge is where it would be if it had a
+        // bottom border (CSS2 §8.3.1): below its own top margin, 10;
+        // the margins collapse through it to one set of 30, which is
+        // the page's height (M11 made the edge observable, through a
+        // float inside such a box; before, the box sat at 30).
+        assert_eq!(frags[0].y, 10.0);
+        let l = document_of(
+            Element::new("div"),
+            "div { display: block; margin-top: 10px; margin-bottom: 30px; }",
+        );
+        assert_eq!(l.height, 30.0);
     }
 
     #[test]
@@ -2173,5 +2407,280 @@ mod tests {
         let l = layout_document(&[], VIEWPORT, &test_fonts());
         assert_eq!(l.height, 0.0);
         assert!(l.roots.is_empty());
+    }
+
+    /// The box fragment of the element with `class`, anywhere in the
+    /// tree, by the class attribute's node: the test knows its nodes.
+    fn by_node(layout: &DocumentLayout, node: usize) -> Fragment {
+        layout
+            .iter()
+            .find(|f| matches!(f.kind, FragmentKind::Box) && f.node == node)
+            .unwrap_or_else(|| panic!("box of node {node}"))
+            .clone()
+    }
+
+    fn text_of(layout: &DocumentLayout, t: &str) -> Fragment {
+        layout
+            .iter()
+            .find(|f| matches!(&f.kind, FragmentKind::Text(x) if x == t))
+            .unwrap_or_else(|| panic!("text {t}"))
+            .clone()
+    }
+
+    #[test]
+    fn a_float_between_blocks_sits_at_the_flow_position_and_takes_no_room() {
+        // <div><p class=a>x</p><div class=f></div><p class=b>y</p></div>
+        // with a 10px margin under a and a 30px one over b: the float's
+        // top is after a's margin (the margins resolved so far), b's
+        // after the collapsed 30, with its line shortened by the float;
+        // the div, no context root, is as tall as its two paragraphs,
+        // the float overflowing it; the page reaches the float's bottom
+        // margin edge (CSS2 §10.6.7). Nodes: div 1, a 2, f 3, b 4.
+        let m = test_fonts().primary().metrics(16.0);
+        let lh = m.line_height();
+        let root = Element::new("div")
+            .push(Element::new("p").attr("class", "a").text("x"))
+            .push(Element::new("div").attr("class", "f"))
+            .push(Element::new("p").attr("class", "b").text("y"));
+        let layout = document_of(
+            root,
+            "div, p { margin: 0; } .a { margin-bottom: 10px; } .b { margin-top: 30px; }
+             .f { float: left; width: 50px; height: 40px; margin: 2px 4px; }",
+        );
+        let (div, a, f, b) = (
+            by_node(&layout, 1),
+            by_node(&layout, 2),
+            by_node(&layout, 3),
+            by_node(&layout, 4),
+        );
+        assert_eq!((a.y, a.h), (0.0, lh));
+        assert_eq!((f.x, f.y, f.w, f.h), (4.0, lh + 10.0 + 2.0, 50.0, 40.0));
+        assert_eq!(b.y, lh + 30.0);
+        assert_eq!(
+            text_of(&layout, "y").x,
+            58.0,
+            "beside the float's margin box"
+        );
+        assert_eq!(text_of(&layout, "x").x, 0.0);
+        assert_eq!(div.h, lh + 30.0 + lh, "the float adds nothing");
+        assert_eq!(
+            layout.height,
+            lh + 10.0 + 44.0,
+            "the page reaches the float"
+        );
+        assert_eq!(
+            div.children.iter().map(|c| c.node).collect::<Vec<_>>(),
+            vec![2, 3, 4],
+            "the float's fragment is where its element is"
+        );
+    }
+
+    #[test]
+    fn a_context_root_reaches_its_floats_and_its_lines_run_between_them() {
+        // An overflow box 200px wide with a left float (50 by 40) and a
+        // right one (60 by 20), then a row of five 30px inline-blocks
+        // in a font-less paragraph: three fit on the first line in the
+        // 90px between the floats, two on the next; the box is as tall
+        // as the left float (CSS2 §10.6.7). Nodes: div.o 1, l 2, r 3,
+        // p 4, spans 5..9.
+        let mut p = Element::new("p");
+        for _ in 0..5 {
+            p = p.push(Element::new("span"));
+        }
+        let root = Element::new("div")
+            .attr("class", "o")
+            .push(Element::new("div").attr("class", "l"))
+            .push(Element::new("div").attr("class", "r"))
+            .push(p);
+        let layout = document_of(
+            root,
+            ".o { overflow: hidden; width: 200px; margin: 0; font-size: 0; }
+             .l { float: left; width: 50px; height: 40px; }
+             .r { float: right; width: 60px; height: 20px; }
+             p { margin: 0; } span { display: inline-block; width: 30px; height: 10px; }",
+        );
+        let o = by_node(&layout, 1);
+        assert_eq!(o.h, 40.0);
+        assert_eq!((by_node(&layout, 2).x, by_node(&layout, 2).y), (0.0, 0.0));
+        assert_eq!((by_node(&layout, 3).x, by_node(&layout, 3).y), (140.0, 0.0));
+        let at = |node: usize| (by_node(&layout, node).x, by_node(&layout, node).y);
+        assert_eq!(at(5), (50.0, 0.0));
+        assert_eq!(at(6), (80.0, 0.0));
+        assert_eq!(at(7), (110.0, 0.0));
+        assert_eq!(at(8), (50.0, 10.0), "the next line, still beside both");
+        assert_eq!(at(9), (80.0, 10.0));
+        // The lines are the paragraph's: 20px of them.
+        assert_eq!(by_node(&layout, 4).h, 20.0);
+        // A scroll container's scrollable height counts its floats.
+        let layout = document_of(
+            Element::new("div")
+                .attr("class", "s")
+                .push(Element::new("div").attr("class", "f")),
+            ".s { overflow: auto; height: 10px; margin: 0; } .f { float: left; height: 50px; width: 10px; }",
+        );
+        assert_eq!(by_node(&layout, 1).scroll_height, 50.0);
+    }
+
+    #[test]
+    fn a_line_that_fits_nothing_beside_the_floats_moves_below_them() {
+        // A 100px box with an 80px float: a 50px inline-block does not
+        // fit in the 20px beside it and goes below, at the left edge;
+        // one wider than the box itself overflows there as always.
+        // Nodes: div 1, f 2, p 3, spans 4 and 5.
+        let root = Element::new("div")
+            .push(Element::new("div").attr("class", "f"))
+            .push(
+                Element::new("p")
+                    .push(Element::new("span").attr("class", "a"))
+                    .push(Element::new("span").attr("class", "b")),
+            );
+        let layout = document_of(
+            root,
+            "div { width: 100px; margin: 0; font-size: 0; } p { margin: 0; }
+             .f { float: left; width: 80px; height: 30px; }
+             span { display: inline-block; height: 10px; }
+             .a { width: 50px; } .b { width: 150px; }",
+        );
+        assert_eq!((by_node(&layout, 4).x, by_node(&layout, 4).y), (0.0, 30.0));
+        assert_eq!((by_node(&layout, 5).x, by_node(&layout, 5).y), (0.0, 40.0));
+    }
+
+    #[test]
+    fn a_float_in_a_run_shortens_its_line_or_goes_below_it() {
+        // <p><span class=a/><div class=f/><span class=b/><span class=c/></p>
+        // 200px wide, font-less: the float (50 by 20) fits in what is
+        // left of the line after a (100), so it is placed at the line's
+        // top and the line's content moves beside it; b (40) still
+        // fits; c (80) does not and starts the next line, which at 10
+        // is still beside the float. Nodes: p 1, a 2, f 3, b 4, c 5.
+        let root = Element::new("p")
+            .push(Element::new("span").attr("class", "a"))
+            .push(Element::new("div").attr("class", "f"))
+            .push(Element::new("span").attr("class", "b"))
+            .push(Element::new("span").attr("class", "c"));
+        let css = "p { width: 200px; margin: 0; font-size: 0; }
+                   span { display: inline-block; height: 10px; }
+                   .a { width: 100px; } .b { width: 40px; } .c { width: 80px; }
+                   .f { float: left; width: 50px; height: 20px; }";
+        let layout = document_of(root.clone(), css);
+        let at = |node: usize| (by_node(&layout, node).x, by_node(&layout, node).y);
+        assert_eq!(at(3), (0.0, 0.0), "the float at the line's left");
+        assert_eq!(at(2), (50.0, 0.0), "a, moved beside it");
+        assert_eq!(at(4), (150.0, 0.0));
+        assert_eq!(at(5), (50.0, 10.0));
+        assert_eq!(by_node(&layout, 1).h, 20.0);
+        // Too wide for what is left of the line (150 > 100): placed
+        // below the line once its height is known, where the next line
+        // avoids it — and the line it was met on keeps its full width.
+        let layout = document_of(
+            root,
+            &css.replace("width: 50px; height: 20px", "width: 150px; height: 20px"),
+        );
+        let at = |node: usize| (by_node(&layout, node).x, by_node(&layout, node).y);
+        assert_eq!(at(2), (0.0, 0.0));
+        assert_eq!(at(4), (100.0, 0.0), "b still on the first line");
+        assert_eq!(at(3), (0.0, 10.0), "the float under the first line");
+        assert_eq!(at(5), (0.0, 30.0), "c fits in neither 50px beside it");
+    }
+
+    #[test]
+    fn a_float_in_an_empty_block_waits_for_the_content_that_resolves_its_position() {
+        // <div><p class=a>x</p><div class=w><div class=f/></div><p class=b>y</p></div>
+        // The wrapper has no border, padding or content: the margins
+        // around it collapse through it, 10 under a with 30 over b, and
+        // its float is placed only when b's line resolves where the
+        // collapsing ends — level with b, as in browsers. The wrapper's
+        // own top edge is where its top margin alone would put it (CSS2
+        // §8.3.1). Nodes: div 1, a 2, w 3, f 4, b 5.
+        let m = test_fonts().primary().metrics(16.0);
+        let lh = m.line_height();
+        let root = Element::new("div")
+            .push(Element::new("p").attr("class", "a").text("x"))
+            .push(
+                Element::new("div")
+                    .attr("class", "w")
+                    .push(Element::new("div").attr("class", "f")),
+            )
+            .push(Element::new("p").attr("class", "b").text("y"));
+        let layout = document_of(
+            root,
+            "div, p { margin: 0; } .a { margin-bottom: 10px; } .b { margin-top: 30px; }
+             .f { float: left; width: 20px; height: 20px; }",
+        );
+        let (w, f, b) = (
+            by_node(&layout, 3),
+            by_node(&layout, 4),
+            by_node(&layout, 5),
+        );
+        assert_eq!(b.y, lh + 30.0);
+        assert_eq!((f.x, f.y), (0.0, lh + 30.0), "level with b");
+        assert_eq!(text_of(&layout, "y").x, 20.0, "b's line is shortened");
+        assert_eq!((w.y, w.h), (lh + 10.0, 0.0));
+        assert_eq!(w.children.len(), 1, "the float's fragment is the wrapper's");
+        // Nothing resolves it before its context ends: it is placed
+        // where the content would have been, and the root reaches it.
+        let layout = document_of(
+            Element::new("div").attr("class", "o").push(
+                Element::new("div")
+                    .attr("class", "w")
+                    .push(Element::new("div").attr("class", "f")),
+            ),
+            ".o { overflow: hidden; margin: 0; } .w { margin: 0; }
+             .f { float: left; width: 20px; height: 20px; }",
+        );
+        assert_eq!((by_node(&layout, 3).y, by_node(&layout, 1).h), (0.0, 20.0));
+        // At the page's end, likewise: the page is as tall as the float.
+        let layout = document_of(
+            Element::new("div")
+                .attr("class", "w")
+                .push(Element::new("div").attr("class", "f")),
+            ".w { margin: 5px 0; } .f { float: left; width: 20px; height: 20px; }",
+        );
+        assert_eq!(by_node(&layout, 2).y, 5.0);
+        assert_eq!(layout.height, 25.0);
+    }
+
+    #[test]
+    fn a_float_is_a_context_of_its_own_and_shrinks_to_fit() {
+        // A float holding a float: the inner one is placed in the outer
+        // float's own context, which the outer float's width shrinks to
+        // and its height reaches; the paragraph's line in the outer
+        // context is shortened by the outer float alone. Nodes: div.o 1,
+        // f 2, g 3, p 4.
+        let root = Element::new("div")
+            .attr("class", "o")
+            .push(
+                Element::new("div")
+                    .attr("class", "f")
+                    .push(Element::new("div").attr("class", "g")),
+            )
+            .push(Element::new("p").text("x"));
+        let layout = document_of(
+            root,
+            ".o { overflow: hidden; margin: 0; } p { margin: 0; }
+             .f { float: left; padding: 3px; } .g { float: left; width: 10px; height: 10px; }",
+        );
+        let (f, g) = (by_node(&layout, 2), by_node(&layout, 3));
+        assert_eq!((f.x, f.y, f.w, f.h), (0.0, 0.0, 16.0, 16.0));
+        assert_eq!((g.x, g.y), (3.0, 3.0));
+        assert_eq!(text_of(&layout, "x").x, 16.0);
+        assert_eq!(f.children.len(), 1);
+        // An inline-block shrinks around its float and the text beside
+        // it: the float's width plus the text's, on one line.
+        let fonts = test_fonts();
+        let root = Element::new("div").push(
+            Element::new("span")
+                .push(Element::new("div").attr("class", "f"))
+                .text("aa"),
+        );
+        let layout = document_of(
+            root,
+            "div { margin: 0; } span { display: inline-block; }
+             .f { float: left; width: 30px; height: 5px; }",
+        );
+        let ib = by_node(&layout, 2);
+        assert_eq!(ib.w, 30.0 + fonts.measure("aa", 16.0));
+        assert_eq!(text_of(&layout, "aa").x, 30.0);
+        assert_eq!(text_of(&layout, "aa").top(), 0.0);
     }
 }

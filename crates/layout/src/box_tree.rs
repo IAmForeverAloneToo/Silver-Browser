@@ -6,9 +6,12 @@
 //! children are block-level: a run of inline-level children is wrapped
 //! in one, and a block-level box found inside an inline element is
 //! hoisted up to the containing block with its inline ancestors split
-//! around it.
+//! around it. A float (M11) keeps its place in the tree, where its
+//! element is: inline-level content when it occurs in a run or an
+//! inline element, which it does not split, a block-level child when
+//! it occurs between blocks.
 
-use style::computed::Display;
+use style::computed::{Display, Float};
 use style::selector_matching::FlatChild;
 use style::{ComputedStyle, StyledDom};
 
@@ -39,11 +42,12 @@ pub struct LayoutBox {
 /// milestones on).
 ///
 /// The builder's contract (CSS2 §9.2.1.1), which `block` relies on: a
-/// block container's ([`BoxKind::Block`]'s or [`BoxKind::InlineBlock`]'s)
-/// children are all block-level ([`BoxKind::Block`] or
-/// [`BoxKind::AnonymousBlock`]); an [`BoxKind::AnonymousBlock`]'s and an
-/// [`BoxKind::Inline`]'s children are all inline-level
-/// ([`BoxKind::Inline`], [`BoxKind::InlineBlock`] or [`BoxKind::Text`]).
+/// block container's ([`BoxKind::Block`]'s, [`BoxKind::InlineBlock`]'s
+/// or [`BoxKind::Float`]'s) children are all block-level
+/// ([`BoxKind::Block`] or [`BoxKind::AnonymousBlock`]) or floats; an
+/// [`BoxKind::AnonymousBlock`]'s and an [`BoxKind::Inline`]'s children
+/// are all inline-level ([`BoxKind::Inline`], [`BoxKind::InlineBlock`]
+/// or [`BoxKind::Text`]) or floats.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BoxKind {
     Block,
@@ -52,6 +56,15 @@ pub enum BoxKind {
     /// (CSS2 §9.2.4, M10.4): an item on its parent's line, as wide as
     /// its margin box, its content laid out like a block's.
     InlineBlock,
+    /// A floated box (CSS2 §9.5, M11): out of flow, a block container
+    /// inside and a block formatting context root, sized like an
+    /// inline-block and placed by the float context of the formatting
+    /// context it is in. Its `style.float` says which side. It sits
+    /// where its element is: in a run or an inline element when met
+    /// there, placed when its line is laid out; among a block
+    /// container's children when met between blocks, placed at the
+    /// flow position it is met at.
+    Float,
     /// An anonymous block box (CSS2 §9.2.1.1, M10.4) wrapping one run of
     /// inline-level boxes inside a block container, so that the
     /// container's children are all block-level. Its `style` inherits
@@ -74,7 +87,8 @@ pub enum BoxKind {
 
 impl BoxKind {
     /// Whether a box of this kind is block-level: a child of a block
-    /// container, stacked vertically by `block::layout_children`.
+    /// container, stacked vertically by `block::layout_children`. A
+    /// float is neither block-level nor inline-level: it is out of flow.
     pub fn is_block_level(&self) -> bool {
         matches!(self, BoxKind::Block | BoxKind::AnonymousBlock)
     }
@@ -132,6 +146,24 @@ impl BlockContainer<'_> {
                     let style = &styled.styles[*child_idx];
                     match style.display {
                         Display::None => {} // the element AND its subtree: no box at all
+                        // A float computes to `display: block` (CSS2 §9.7,
+                        // the cascade's rule) and is a block container
+                        // inside; outside it is out of flow, and goes
+                        // where it is met: into the run or inline open
+                        // around it, else among the container's blocks.
+                        Display::Block if style.float != Float::None => {
+                            let float = LayoutBox {
+                                style: style.clone(),
+                                kind: BoxKind::Float,
+                                children: build_block_container(styled, *child_idx),
+                                node: *child_idx,
+                            };
+                            if self.open.is_empty() && self.run.is_empty() {
+                                self.out.push(float);
+                            } else {
+                                self.add_inline_level(float);
+                            }
+                        }
                         Display::Block => {
                             let block = LayoutBox {
                                 style: style.clone(),
@@ -271,6 +303,7 @@ mod tests {
             BoxKind::Block => "block".to_string(),
             BoxKind::Inline => "inline".to_string(),
             BoxKind::InlineBlock => "inline-block".to_string(),
+            BoxKind::Float => "float".to_string(),
             BoxKind::AnonymousBlock => "anon".to_string(),
             BoxKind::Text(t) => format!("text {t}"),
         };
@@ -650,6 +683,68 @@ mod tests {
             shape_of(&tree[0].children),
             pairs(&[("block", 2), ("anon", 2), ("text x", 2)])
         );
+    }
+
+    #[test]
+    fn a_float_stays_where_it_is_met_and_splits_nothing() {
+        // <div><p>a</p><div class=f>f</div><p>b</p></div>: between
+        // blocks, the float is a child of the div like them. Nodes:
+        // div 1, p 2, div.f 3, p 4.
+        let root = Element::new("div")
+            .push(Element::new("p").text("a"))
+            .push(Element::new("div").attr("class", "f").text("f"))
+            .push(Element::new("p").text("b"));
+        let tree = build_box_tree(&styled(root, ".f { float: left; }"));
+        let kinds: Vec<(String, usize)> = shape_of(&tree[0].children)
+            .into_iter()
+            .filter(|(k, _)| !k.starts_with("text"))
+            .collect();
+        assert_eq!(
+            kinds,
+            pairs(&[
+                ("block", 2),
+                ("anon", 2),
+                ("float", 3),
+                ("anon", 3),
+                ("block", 4),
+                ("anon", 4),
+            ])
+        );
+        // <div>a<span>b<div class=f>f</div>c</span>d</div>: in the run,
+        // inside the span, the float is inline-level content of the span
+        // and does not split it (only an in-flow block does, CSS2
+        // §9.2.1.1). Nodes: div 1, span 2, div.f 3.
+        let root = Element::new("div").text("a").push(
+            Element::new("span")
+                .text("b")
+                .push(Element::new("div").attr("class", "f").text("f"))
+                .text("c"),
+        );
+        let tree = build_box_tree(&styled(root, ".f { float: right; }"));
+        assert_eq!(
+            shape_of(&tree[0].children),
+            pairs(&[
+                ("anon", 1),
+                ("text a", 1),
+                ("inline", 2),
+                ("text b", 2),
+                ("float", 3),
+                ("anon", 3),
+                ("text f", 3),
+                ("text c", 2),
+            ])
+        );
+        // A float first, then text: the float is met with the run still
+        // empty, so it is a child of the div and the text's run follows.
+        let root = Element::new("div")
+            .push(Element::new("div").attr("class", "f"))
+            .text("x");
+        let tree = build_box_tree(&styled(root, ".f { float: left; }"));
+        assert_eq!(
+            shape_of(&tree[0].children),
+            pairs(&[("float", 2), ("anon", 1), ("text x", 1)])
+        );
+        assert!(!BoxKind::Float.is_block_level());
     }
 
     #[test]

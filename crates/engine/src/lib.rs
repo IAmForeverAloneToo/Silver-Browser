@@ -1527,6 +1527,39 @@ mod tests {
     }
 
     #[test]
+    fn floats_are_laid_out_painted_and_hit_through_the_real_pipeline() {
+        // A red 50px left float, then a paragraph: the paragraph's text
+        // starts beside the float, the float's pixels are red, and the
+        // pointer over it answers with the float; the page is as tall
+        // as the float, more than its one line (M11). Over the part of
+        // the float the paragraph's line box also covers, the paragraph
+        // answers until the paint order puts floats over in-flow boxes
+        // (CSS2 Appendix E, step 8 of the design note).
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0 }
+                    .f { float: left; width: 50px; height: 50px; background-color: #ff0000 }
+                    p { margin: 0 }</style>\
+             <div class=f id=f></div><p id=p>beside</p>",
+        );
+        let pixels = engine.frame(200, 100);
+        assert_eq!(px(&pixels, 200, 10, 10), [0xff, 0x00, 0x00, 0xff]);
+        assert_eq!(px(&pixels, 200, 10, 45), [0xff, 0x00, 0x00, 0xff]);
+        assert_eq!(px(&pixels, 200, 150, 45), [0xff, 0xff, 0xff, 0xff]);
+        let f = node_by_id(&engine, "f");
+        let p = node_by_id(&engine, "p");
+        assert_eq!(engine.hit_test(10.0, 40.0), Some(f));
+        assert_eq!(engine.hit_test(60.0, 5.0), Some(p));
+        let text = engine
+            .fragments(200.0)
+            .into_iter()
+            .find(|fr| matches!(&fr.kind, layout::FragmentKind::Text(t) if t == "beside"))
+            .expect("the text is laid out");
+        assert_eq!(text.x, 50.0);
+        assert_eq!(engine.layout(200.0).height, 50.0);
+    }
+
+    #[test]
     fn a_clipping_box_is_hit_on_its_border_but_scrolls_only_from_its_padding_box() {
         // A 100px scroll container with a 10px border and 300px of
         // content: the pointer on the border is over the box, since the

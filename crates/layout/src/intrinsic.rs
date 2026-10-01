@@ -64,13 +64,21 @@ pub(crate) fn contribution(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32) 
 
 /// The `(min-content, max-content)` widths of a block container's
 /// content: the widest contribution among its block-level children,
-/// an anonymous block's being its inline run's.
+/// an anonymous block's being its inline run's. The floats among them
+/// (M11) are pieces of their own for the min-content width, and for
+/// the max-content width sit side by side with each other and with
+/// the widest in-flow child, since at that width nothing wraps and
+/// every line runs beside them (css-sizing-3 §5.1.2's summing of
+/// adjacent floats, taken for all the floats of the container: a
+/// float below content that has ended it would not add, a case this
+/// over-estimates).
 pub(crate) fn content_widths(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32) {
     let mut min = 0.0f32;
-    let mut max = 0.0f32;
+    let mut in_flow_max = 0.0f32;
+    let mut floats_max = 0.0f32;
     for child in &b.children {
         let (child_min, child_max) = match child.kind {
-            BoxKind::Block | BoxKind::InlineBlock => contribution(child, fonts),
+            BoxKind::Block | BoxKind::InlineBlock | BoxKind::Float => contribution(child, fonts),
             BoxKind::AnonymousBlock => {
                 let items = collect_inline_items(&child.children, fonts);
                 run_intrinsic_widths(&items, fonts)
@@ -82,9 +90,13 @@ pub(crate) fn content_widths(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32
             }
         };
         min = min.max(child_min);
-        max = max.max(child_max);
+        if child.kind == BoxKind::Float {
+            floats_max += child_max;
+        } else {
+            in_flow_max = in_flow_max.max(child_max);
+        }
     }
-    (min, max)
+    (min, floats_max + in_flow_max)
 }
 
 #[cfg(test)]
@@ -180,5 +192,38 @@ mod tests {
         let (min, max) = content_widths(&t[0], &fonts);
         assert_eq!(min, w("aaaa"));
         assert_eq!(max, w("aaaa") + fonts.measure(" ", 16.0) + w("bb"));
+    }
+
+    #[test]
+    fn floats_sit_beside_the_content_for_the_max_content_width() {
+        let fonts = test_fonts();
+        let w = |s: &str| fonts.measure(s, 16.0);
+        // Two floats and a paragraph: at the max-content width the
+        // floats stand side by side and the paragraph's line runs
+        // beside them; the min-content width is the widest piece.
+        let t = tree(
+            Element::new("div")
+                .push(Element::new("div").attr("class", "f"))
+                .push(Element::new("div").attr("class", "g"))
+                .push(Element::new("p").text("aaaa bb")),
+            ".f { float: left; width: 30px; } .g { float: right; width: 20px; } p { margin: 0; }",
+        );
+        let (min, max) = content_widths(&t[0], &fonts);
+        assert_eq!(min, w("aaaa").max(30.0));
+        assert_eq!(
+            max,
+            30.0 + 20.0 + w("aaaa") + fonts.measure(" ", 16.0) + w("bb")
+        );
+        // A float met in a run widens that run's line too.
+        let t = tree(
+            Element::new("div")
+                .text("aaaa ")
+                .push(Element::new("div").attr("class", "f"))
+                .text(" bb"),
+            ".f { float: left; width: 30px; }",
+        );
+        let (min, max) = content_widths(&t[0], &fonts);
+        assert_eq!(min, w("aaaa").max(30.0));
+        assert_eq!(max, w("aaaa") + fonts.measure(" ", 16.0) + w("bb") + 30.0);
     }
 }
