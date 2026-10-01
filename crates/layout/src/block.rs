@@ -419,20 +419,27 @@ fn width_constraints(style: &ComputedStyle, cb_width: f32, non_content: f32) -> 
 /// tentative width clamped to `max-width` then `min-width` with the
 /// margins resolved again for the clamped width. `non_content_width`
 /// is whatever horizontal space border+padding already consume.
+/// Percentages are of `cb_width`; the room the margin box fills is
+/// `available_width` — the containing block's width, or for a block
+/// formatting context root beside floats the room between them (CSS2
+/// §9.5, M11).
 fn resolve_width_and_margins(
     style: &ComputedStyle,
     cb_width: f32,
+    available_width: f32,
     non_content_width: f32,
 ) -> (f32, f32, f32) {
     let c = width_constraints(style, cb_width, non_content_width);
-    let mut used = tentative_width(style, cb_width, non_content_width, c.width);
+    let tentative =
+        |width| tentative_width(style, cb_width, available_width, non_content_width, width);
+    let mut used = tentative(c.width);
     if let Some(max) = c.max
         && used.0 > max
     {
-        used = tentative_width(style, cb_width, non_content_width, Some(max));
+        used = tentative(Some(max));
     }
     if used.0 < c.min {
-        used = tentative_width(style, cb_width, non_content_width, Some(c.min));
+        used = tentative(Some(c.min));
     }
     used
 }
@@ -442,10 +449,11 @@ fn resolve_width_and_margins(
 fn tentative_width(
     style: &ComputedStyle,
     cb_width: f32,
+    available_width: f32,
     non_content_width: f32,
     width: Option<f32>,
 ) -> (f32, f32, f32) {
-    let avail = cb_width - non_content_width;
+    let avail = available_width - non_content_width;
     let margin_left = style.margin[LEFT];
     let margin_right = style.margin[RIGHT];
 
@@ -554,6 +562,11 @@ pub(crate) struct BlockLayout {
     /// the element had a non-zero bottom border" (CSS2 §8.3.1) — which
     /// a float inside it makes observable (M11).
     pub(crate) top_edge: AdjoiningMargins,
+    /// The margins below the box's bottom border edge the same way:
+    /// `margin_bottom`, or for a self-collapsing box the set without
+    /// its own top margin — what follows a self-collapsing box given
+    /// clearance (CSS2 §9.5.2), whose top set is materialised above it.
+    pub(crate) bottom_edge: AdjoiningMargins,
     /// The box's top and bottom margins adjoin each other (an empty
     /// box, or one whose every child collapsed through): `margin_top`
     /// and `margin_bottom` are the same set, to be joined with the
@@ -630,10 +643,13 @@ impl Edges {
 
 /// Lays out one [`BoxKind::Block`] box (an anonymous block never comes
 /// here: [`layout_children`] lays its lines out directly) in the float
-/// context `floats`, met at `at`.
+/// context `floats`, met at `at`, its margin box filling
+/// `available_width` of the containing block (its whole width, or the
+/// room between floats for a context root, M11).
 fn layout_block(
     b: &LayoutBox,
     cb_width: f32,
+    available_width: f32,
     cb_height: Option<f32>,
     floats: &mut FloatContext,
     at: At,
@@ -644,7 +660,7 @@ fn layout_block(
     // `BlockLayout::margin_left`'s doc for why that's correct, not an
     // oversight.
     let (content_width, margin_left, _margin_right) =
-        resolve_width_and_margins(&b.style, cb_width, edges.horizontal());
+        resolve_width_and_margins(&b.style, cb_width, available_width, edges.horizontal());
     let content = if establishes_bfc(&b.style) {
         Content::Root
     } else {
@@ -688,6 +704,7 @@ pub(crate) fn pending_float(
     PendingFloat {
         node: b.node,
         side: b.style.float,
+        clear: b.style.clear,
         w: atomic.width,
         h: atomic.height,
         margin_left: atomic.margin_left,
@@ -806,6 +823,7 @@ fn layout_block_contents(
             margin_top: set,
             margin_bottom: set,
             top_edge: own_top,
+            bottom_edge: own_bottom,
             self_collapsing: true,
             last_baseline: None,
         };
@@ -875,6 +893,7 @@ fn layout_block_contents(
             margin_top: set,
             margin_bottom: set,
             top_edge,
+            bottom_edge: children.trailing.join(own_bottom),
             self_collapsing: true,
             last_baseline: None,
         };
@@ -991,8 +1010,152 @@ fn layout_block_contents(
         margin_top,
         margin_bottom,
         top_edge: margin_top,
+        bottom_edge: margin_bottom,
         self_collapsing: false,
         last_baseline: children.last_baseline.map(|y| content_y + y),
+    }
+}
+
+/// A block-level child laid out and placed horizontally among its
+/// container's children (M11): where its top goes when clearance or a
+/// float moved it, and where its left edge is.
+struct BlockPlacement {
+    layout: BlockLayout,
+    /// The border box's left edge from the content box's: the box's
+    /// left margin, plus the room a context root left to a float.
+    x: f32,
+    /// `Some(top)`, the border box's top in root coordinates, when
+    /// clearance (CSS2 §9.5.2) or a context root's move below a float
+    /// (§9.5) put it there: the margins pending above it resolve and
+    /// stop there, and its own top margin lies below the gap. `None`
+    /// when the box's margins collapse with its siblings' as usual.
+    separated: Option<f32>,
+}
+
+/// Whether a box's top edge separates its margins from its children's
+/// (CSS2 §8.3.1): a context root, or a top border or padding.
+fn separates_top(style: &ComputedStyle, cb_width: f32) -> bool {
+    let edges = Edges::of(style, cb_width);
+    establishes_bfc(style) || edges.border[TOP] > 0.0 || edges.padding[TOP] > 0.0
+}
+
+/// Lays out a [`BoxKind::Block`] child of a container whose content
+/// box is at `at` and places it against the floats (M11): with
+/// clearance when its `clear` names floats its hypothetical top border
+/// edge is not past (CSS2 §9.5.2 — the top is put level with the
+/// lowest such float's bottom margin edge), and, for a block
+/// formatting context root, in the room between the floats at its top
+/// (§9.5: its border box must not overlap a float's margin box): as
+/// far left as that room allows, its `auto` width the room's, moved
+/// down to the next height at which a float ends when it does not fit
+/// — a box too wide for a room with no float beside it overflows, as
+/// in normal flow. The room must hold the box's whole height: when a
+/// float lower down narrows it, the narrower room is tried at the same
+/// top, so a wider float below a narrow one is still avoided.
+///
+/// A float waiting for the flow position is placed before a box that
+/// resolves it: a box whose `clear` names such a float cannot collapse
+/// its margins past it, so the position resolves above the box's own
+/// margin, where the margins pending so far end (as clearance would
+/// have it); a box whose top edge separates its margins resolves it at
+/// its hypothetical top.
+fn place_block(
+    child: &LayoutBox,
+    cb_width: f32,
+    cb_height: Option<f32>,
+    floats: &mut FloatContext,
+    at: At,
+    fonts: &FontCollection,
+) -> BlockPlacement {
+    let root = establishes_bfc(&child.style);
+    let own_top = AdjoiningMargins::of(child.style.margin[TOP].resolve(cb_width, 0.0));
+    if at.origin.is_none() {
+        if floats.waits_to_be_cleared(child.style.clear) {
+            floats.resolve_pending(at.anchor + at.strut.resolve());
+        } else if separates_top(&child.style, cb_width) {
+            floats.resolve_pending(at.anchor + at.strut.join(own_top).resolve());
+        }
+    }
+    if !root || floats.is_empty() {
+        let layout = layout_block(child, cb_width, cb_width, cb_height, floats, at, fonts);
+        let above = if layout.self_collapsing {
+            layout.top_edge
+        } else {
+            layout.margin_top
+        };
+        let hypothetical = at.anchor + at.strut.join(above).resolve();
+        let Some(top) = floats
+            .clear_bottom(child.style.clear)
+            .filter(|bottom| hypothetical < *bottom)
+        else {
+            return BlockPlacement {
+                x: layout.margin_left,
+                layout,
+                separated: None,
+            };
+        };
+        // Clearance: the box's top border edge is at `top`, the margins
+        // above it — its own, and what escaped from its first child —
+        // inside the clearance. Its content was laid out as if at the
+        // hypothetical top; a root's content does not depend on where
+        // the box is, an empty box has none, any other's does (its
+        // lines beside floats, its own floats), so it is laid out
+        // again from where it really is: the pending margins put so
+        // that joining the box's resolve to its top.
+        let layout = if root || layout.self_collapsing {
+            layout
+        } else {
+            let inside = At {
+                x: at.x,
+                origin: None,
+                anchor: top - above.resolve(),
+                strut: above,
+            };
+            layout_block(child, cb_width, cb_width, cb_height, floats, inside, fonts)
+        };
+        return BlockPlacement {
+            x: layout.margin_left,
+            layout,
+            separated: Some(top),
+        };
+    }
+    // A context root's top is its own margin's, no child's escaping
+    // through it; from there, the first room that holds it.
+    let hypothetical = at.anchor + at.strut.join(own_top).resolve();
+    let mut top = floats
+        .clear_bottom(child.style.clear)
+        .map_or(hypothetical, |bottom| hypothetical.max(bottom));
+    let (cb_left, cb_right) = (at.x, at.x + cb_width);
+    loop {
+        let (mut left, mut right) = floats.space(top, 0.0, cb_left, cb_right);
+        let fitted = loop {
+            let room = right - left;
+            let layout = layout_block(child, cb_width, room, cb_height, floats, at, fonts);
+            let alone = left == cb_left && right == cb_right;
+            if !alone && layout.margin_left + layout.root.w > room {
+                break None;
+            }
+            let (lower_left, lower_right) = floats.space(top, layout.height, cb_left, cb_right);
+            if lower_left == left && lower_right == right {
+                break Some(BlockPlacement {
+                    x: left - cb_left + layout.margin_left,
+                    layout,
+                    separated: (top > hypothetical).then_some(top),
+                });
+            }
+            // A float lower down narrows the room: try that room.
+            left = lower_left;
+            right = lower_right;
+        };
+        if let Some(placement) = fitted {
+            return placement;
+        }
+        match floats.next_bottom(top) {
+            Some(bottom) if bottom > top => top = bottom,
+            // Nothing ends below, so no float was beside the box: the
+            // room was the whole block, where a box always fits.
+            _ => unreachable!("a room with a float in it has a float ending below it"),
+        }
     }
 }
 
@@ -1096,7 +1259,41 @@ fn layout_children(
     for child in children {
         match &child.kind {
             BoxKind::Block => {
-                let layout = layout_block(child, cb_width, cb_height, floats, at, fonts);
+                let BlockPlacement {
+                    layout,
+                    x,
+                    separated,
+                } = place_block(child, cb_width, cb_height, floats, at, fonts);
+                if let Some(top) = separated {
+                    // Clearance, or a context root moved below a float:
+                    // the margins pending above resolve here (CSS2
+                    // §9.5.2: clearance inhibits margin collapsing), the
+                    // box's own top margin lies below them, and its top
+                    // border edge is at `top`. A self-collapsing box so
+                    // placed is not self-collapsing for the margins
+                    // above it; only its bottom set goes on.
+                    let base = at.anchor + at.strut.resolve();
+                    let origin = *at.origin.get_or_insert(base);
+                    let child_y = top - origin;
+                    still_leading = false;
+                    // A float still waiting — inside an empty cleared
+                    // box, say — is placed at the resolved position.
+                    floats.resolve_pending(top);
+                    if layout.self_collapsing {
+                        y = child_y;
+                        pending = layout.bottom_edge;
+                    } else {
+                        y = child_y + layout.height;
+                        pending = layout.margin_bottom;
+                        if let Some(baseline) = layout.last_baseline {
+                            last_baseline = Some(child_y + baseline);
+                        }
+                    }
+                    fragments.push(layout.root.translated(x, child_y));
+                    at.anchor = origin + y;
+                    at.strut = pending;
+                    continue;
+                }
                 if layout.self_collapsing {
                     // Its one set joins the margins around it and stays
                     // open; the box itself has no height. Its top border
@@ -1120,8 +1317,7 @@ fn layout_children(
                         box_y
                     };
                     at.strut = at.strut.join(layout.margin_top);
-                    let margin_left = layout.margin_left;
-                    fragments.push(layout.root.translated(margin_left, box_y));
+                    fragments.push(layout.root.translated(x, box_y));
                     continue;
                 }
                 let root_top = at.anchor + at.strut.join(layout.margin_top).resolve();
@@ -1137,11 +1333,10 @@ fn layout_children(
                     y += pending.join(layout.margin_top).resolve();
                 }
                 let child_y = y;
-                let margin_left = layout.margin_left;
                 if let Some(baseline) = layout.last_baseline {
                     last_baseline = Some(child_y + baseline);
                 }
-                fragments.push(layout.root.translated(margin_left, child_y));
+                fragments.push(layout.root.translated(x, child_y));
                 y = child_y + layout.height;
                 pending = layout.margin_bottom;
                 at.origin.get_or_insert(root_top);
@@ -2682,5 +2877,180 @@ mod tests {
         assert_eq!(ib.w, 30.0 + fonts.measure("aa", 16.0));
         assert_eq!(text_of(&layout, "aa").x, 30.0);
         assert_eq!(text_of(&layout, "aa").top(), 0.0);
+    }
+
+    #[test]
+    fn clear_puts_a_block_below_the_floats_it_names_and_ends_the_collapsing() {
+        // A left float 60 tall and a right one 20 tall, then paragraphs:
+        // a beside both; b with `clear: right` would be at the line
+        // height, not past the right float, so it gets clearance down to
+        // 20, still beside the left float; c with `clear: left` and a
+        // 5px margin would be at 20 + line + 5, and goes to 60, its
+        // margin inside the clearance; d's 50px margin collapses with
+        // c's bottom one as usual. Nodes: div 1, f 2, g 3, a 4, b 5,
+        // c 6, d 7.
+        let m = test_fonts().primary().metrics(16.0);
+        let lh = m.line_height();
+        let root = Element::new("div")
+            .push(Element::new("div").attr("class", "f"))
+            .push(Element::new("div").attr("class", "g"))
+            .push(Element::new("p").attr("class", "a").text("x"))
+            .push(Element::new("p").attr("class", "b").text("y"))
+            .push(Element::new("p").attr("class", "c").text("z"))
+            .push(Element::new("p").attr("class", "d").text("w"));
+        let layout = document_of(
+            root,
+            "div, p { margin: 0; }
+             .f { float: left; width: 30px; height: 60px; }
+             .g { float: right; width: 30px; height: 20px; }
+             .b { clear: right; } .c { clear: left; margin-top: 5px; }
+             .d { margin-top: 50px; }",
+        );
+        let top = |node: usize| by_node(&layout, node).y;
+        assert_eq!(top(4), 0.0);
+        assert_eq!(text_of(&layout, "x").x, 30.0);
+        assert_eq!(top(5), 20.0, "cleared past the right float");
+        assert_eq!(text_of(&layout, "y").x, 30.0, "still beside the left one");
+        assert_eq!(top(6), 60.0, "cleared past the left float, margin inside");
+        assert_eq!(text_of(&layout, "z").x, 0.0);
+        assert_eq!(top(7), 60.0 + lh + 50.0);
+        assert_eq!(by_node(&layout, 1).h, 60.0 + lh + 50.0 + lh);
+        // Already past the float: no clearance, the margins collapse as
+        // they always did (a's 0 with b's 5).
+        let layout = document_of(
+            Element::new("div")
+                .push(Element::new("div").attr("class", "f"))
+                .push(Element::new("p").attr("class", "a").text("x"))
+                .push(Element::new("p").attr("class", "b").text("y")),
+            "div, p { margin: 0; } .f { float: left; width: 30px; height: 10px; }
+             .b { clear: left; margin-top: 5px; }",
+        );
+        assert_eq!(by_node(&layout, 4).y, lh + 5.0);
+        // A self-collapsing box given clearance is not self-collapsing
+        // for the margins above it: its top set stops at the float's
+        // bottom, and only its bottom margin goes on to collapse with
+        // the next paragraph's. The float waits for the flow position
+        // when the box comes, which the box resolves above its own
+        // margin: the float is at the container's top. Nodes: div 1,
+        // f 2, e 3, p 4.
+        let layout = document_of(
+            Element::new("div")
+                .push(Element::new("div").attr("class", "f"))
+                .push(Element::new("div").attr("class", "e"))
+                .push(Element::new("p").text("y")),
+            "div, p { margin: 0; } .f { float: left; width: 30px; height: 60px; }
+             .e { clear: both; margin: 10px 0; } p { margin-top: 30px; }",
+        );
+        assert_eq!((by_node(&layout, 3).y, by_node(&layout, 3).h), (60.0, 0.0));
+        assert_eq!(
+            by_node(&layout, 4).y,
+            90.0,
+            "max(10, 30) below the cleared box"
+        );
+        assert_eq!(by_node(&layout, 1).h, 90.0 + lh);
+        // Clearance also ends the collapsing through a parent's top: the
+        // wrapper's 10px margin collapses through the container's top
+        // and the cleared child's 20px does not, so the container, the
+        // wrapper and the float waiting for the position are at 10,
+        // and the cleared child below the float at 50, its margin
+        // inside the clearance. Nodes: div 1, f 2, w 3, c 4.
+        let layout = document_of(
+            Element::new("div")
+                .push(Element::new("div").attr("class", "f"))
+                .push(
+                    Element::new("div")
+                        .attr("class", "w")
+                        .push(Element::new("p").attr("class", "c").text("z")),
+                ),
+            "div, p { margin: 0; } .f { float: left; width: 30px; height: 40px; }
+             .w { margin-top: 10px; } .c { clear: left; margin-top: 20px; }",
+        );
+        assert_eq!(by_node(&layout, 1).y, 10.0);
+        assert_eq!(by_node(&layout, 2).y, 10.0, "the float, with the container");
+        assert_eq!(
+            by_node(&layout, 3).y,
+            10.0,
+            "the wrapper's own margin alone"
+        );
+        assert_eq!(
+            by_node(&layout, 4).y,
+            50.0,
+            "the cleared child, below the float"
+        );
+        assert_eq!(by_node(&layout, 3).h, 40.0 + lh);
+    }
+
+    #[test]
+    fn a_context_root_beside_floats_takes_the_room_left_or_moves_below() {
+        // A 200px container with a 50 by 40 left float and an overflow
+        // box: the box's border box keeps out of the float (CSS2 §9.5),
+        // its `auto` width the room beside it; a left margin lies
+        // inside that room; a box too wide for the room goes below the
+        // float at its full width. Nodes: div 1, f 2, o 3.
+        let root = Element::new("div")
+            .push(Element::new("div").attr("class", "f"))
+            .push(Element::new("div").attr("class", "o"));
+        let css = "div { margin: 0; width: 200px; }
+                   .f { float: left; width: 50px; height: 40px; }
+                   .o { overflow: hidden; width: auto; height: 20px; }";
+        let at = |layout: &DocumentLayout| {
+            let o = by_node(layout, 3);
+            (o.x, o.y, o.w)
+        };
+        assert_eq!(at(&document_of(root.clone(), css)), (50.0, 0.0, 150.0));
+        assert_eq!(
+            at(&document_of(
+                root.clone(),
+                &format!("{css} .o {{ margin-left: 10px; }}")
+            )),
+            (60.0, 0.0, 140.0)
+        );
+        assert_eq!(
+            at(&document_of(
+                root.clone(),
+                &format!("{css} .o {{ width: 180px; }}")
+            )),
+            (0.0, 40.0, 180.0)
+        );
+        assert_eq!(
+            at(&document_of(
+                root.clone(),
+                &css.replace("float: left", "float: right")
+            )),
+            (0.0, 0.0, 150.0)
+        );
+        // Moved below a float, the box is placed like a cleared one:
+        // the margins above it resolve there, its own below them. Here
+        // a paragraph with a 10px bottom margin precedes it: the box
+        // would be at the line height plus 10, beside the float, where
+        // its 180px do not fit, so it goes to the float's bottom.
+        // Nodes: div 1, f 2, a 3, o 4.
+        let m = test_fonts().primary().metrics(16.0);
+        let lh = m.line_height();
+        let layout = document_of(
+            Element::new("div")
+                .push(Element::new("div").attr("class", "f"))
+                .push(Element::new("p").attr("class", "a").text("x"))
+                .push(Element::new("div").attr("class", "o")),
+            &format!("{css} p {{ margin: 0 0 10px 0; }} .o {{ width: 180px; margin-top: 5px; }}"),
+        );
+        assert!(lh + 10.0 < 40.0);
+        assert_eq!(by_node(&layout, 4).y, 40.0);
+        // A wider float below a narrow one: the room at the box's top is
+        // not the room for its whole height, so the narrower room is
+        // taken. Nodes: div 1, f 2, g 3, o 4.
+        let layout = document_of(
+            Element::new("div")
+                .push(Element::new("div").attr("class", "f"))
+                .push(Element::new("div").attr("class", "g"))
+                .push(Element::new("div").attr("class", "o")),
+            "div { margin: 0; width: 200px; }
+             .f { float: left; width: 50px; height: 30px; }
+             .g { float: left; width: 60px; height: 20px; clear: left; }
+             .o { overflow: hidden; height: 50px; width: auto; }",
+        );
+        assert_eq!((by_node(&layout, 3).x, by_node(&layout, 3).y), (0.0, 30.0));
+        let o = by_node(&layout, 4);
+        assert_eq!((o.x, o.y, o.w), (60.0, 0.0, 140.0));
     }
 }

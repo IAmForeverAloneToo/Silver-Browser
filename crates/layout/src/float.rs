@@ -25,7 +25,7 @@
 //! only after its parent's fragment is built, every float fragment is
 //! positioned at the end of the root's layout by [`attach_floats`].
 
-use style::computed::Float;
+use style::computed::{Clear, Float};
 
 use crate::block::{AdjoiningMargins, Fragment, FragmentKind};
 
@@ -45,6 +45,8 @@ pub(crate) struct PendingFloat {
     /// The float's element, which its fragment carries.
     pub(crate) node: usize,
     pub(crate) side: Float,
+    /// The floats it goes below (CSS2 §9.5.2 on a float).
+    pub(crate) clear: Clear,
     /// The margin box's size.
     pub(crate) w: f32,
     pub(crate) h: f32,
@@ -129,9 +131,44 @@ impl FloatContext {
         self.placed.iter().map(PlacedFloat::bottom).reduce(f32::max)
     }
 
+    /// The bottom margin edge of the lowest float a box with `clear`
+    /// must be below (CSS2 §9.5.2): the left floats, the right ones,
+    /// or all; `None` with nothing to clear.
+    pub(crate) fn clear_bottom(&self, clear: Clear) -> Option<f32> {
+        self.placed
+            .iter()
+            .filter(|p| match clear {
+                Clear::None => false,
+                Clear::Left => p.side == Float::Left,
+                Clear::Right => p.side == Float::Right,
+                Clear::Both => true,
+            })
+            .map(PlacedFloat::bottom)
+            .reduce(f32::max)
+    }
+
+    /// Whether any float is placed: with none, nothing dodges or
+    /// clears.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.placed.is_empty()
+    }
+
+    /// Whether a float still waiting for the flow position is one a
+    /// box with `clear` would have to be below: such a box resolves the
+    /// position, since it cannot collapse its margins past them.
+    pub(crate) fn waits_to_be_cleared(&self, clear: Clear) -> bool {
+        self.pending.iter().any(|f| match clear {
+            Clear::None => false,
+            Clear::Left => f.side == Float::Left,
+            Clear::Right => f.side == Float::Right,
+            Clear::Both => true,
+        })
+    }
+
     /// Places `f` with its margin box's top at `top` or as high below
     /// it as CSS2 §9.5.1 allows, and records it. Its top is never
-    /// above an earlier float's (rule 5); its side edge is at the
+    /// above an earlier float's (rule 5), nor above the bottom of the
+    /// floats its `clear` names (§9.5.2); its side edge is at the
     /// containing block's edge, or past the earlier floats of its side
     /// in the band (rules 1, 2 and 3); when the room between the two
     /// sides' floats is narrower than the float, it moves down to the
@@ -141,6 +178,7 @@ impl FloatContext {
     /// it is placed at the block's edge and overflows (rule 7).
     /// Returns the margin box's top-left.
     pub(crate) fn place(&mut self, f: PendingFloat, top: f32) -> (f32, f32) {
+        let top = self.clear_bottom(f.clear).map_or(top, |b| top.max(b));
         let mut y = self.placed.iter().map(|p| p.y).fold(top, f32::max);
         let (x, y) = loop {
             let (left, right) = self.space(y, f.h, f.cb_left, f.cb_right);
@@ -277,6 +315,7 @@ mod tests {
         PendingFloat {
             node: 0,
             side,
+            clear: Clear::None,
             w,
             h,
             margin_left: 0.0,
@@ -351,6 +390,27 @@ mod tests {
         assert_eq!(ctx.space(60.0, 0.0, 0.0, 100.0), (0.0, 100.0));
         assert_eq!(ctx.lowest_bottom(), Some(60.0));
         assert_eq!(FloatContext::default().lowest_bottom(), None);
+    }
+
+    #[test]
+    fn a_float_with_clear_goes_below_the_floats_it_names() {
+        let mut ctx = FloatContext::default();
+        ctx.place(float(Float::Left, 10.0, 30.0), 0.0);
+        ctx.place(float(Float::Right, 10.0, 50.0), 0.0);
+        assert_eq!(ctx.clear_bottom(Clear::None), None);
+        assert_eq!(ctx.clear_bottom(Clear::Left), Some(30.0));
+        assert_eq!(ctx.clear_bottom(Clear::Right), Some(50.0));
+        assert_eq!(ctx.clear_bottom(Clear::Both), Some(50.0));
+        let cleared = |clear: Clear| PendingFloat {
+            clear,
+            ..float(Float::Left, 10.0, 10.0)
+        };
+        assert_eq!(ctx.place(cleared(Clear::Left), 0.0), (0.0, 30.0));
+        assert_eq!(ctx.place(cleared(Clear::Both), 0.0), (0.0, 50.0));
+        // Already past them: placed where it is met.
+        assert_eq!(ctx.place(cleared(Clear::Both), 70.0), (0.0, 70.0));
+        assert!(!ctx.is_empty());
+        assert!(FloatContext::default().is_empty());
     }
 
     #[test]
