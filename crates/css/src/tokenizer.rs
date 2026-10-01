@@ -18,6 +18,11 @@
 //! * Surrogates, code point 0, and out-of-range escapes all become
 //!   U+FFFD (as the spec requires).
 //!
+//! The input is preprocessed as §3.3 says before any of that: CR, FF and
+//! CRLF become LF and NUL becomes U+FFFD, so a sheet written with Windows
+//! line endings has the same line continuations and bad-string recovery
+//! as one written with LF.
+//!
 //! The tokenizer never panics on any input, and never allocates beyond
 //! the token values it returns.
 
@@ -109,9 +114,25 @@ pub struct Tokenizer {
 }
 
 impl Tokenizer {
-    /// Creates a tokenizer over `source`.
+    /// Creates a tokenizer over `source`, applying the css-syntax-3 §3.3
+    /// input preprocessing: CRLF, CR and FF become LF, NUL becomes
+    /// U+FFFD.
     pub fn new(source: &str) -> Self {
-        let input: Vec<char> = source.chars().collect();
+        let mut input = Vec::with_capacity(source.len());
+        let mut chars = source.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '\r' => {
+                    if chars.peek() == Some(&'\n') {
+                        chars.next();
+                    }
+                    input.push('\n');
+                }
+                '\u{c}' => input.push('\n'),
+                '\0' => input.push('\u{FFFD}'),
+                other => input.push(other),
+            }
+        }
         let len = input.len();
         Tokenizer { input, len, pos: 0 }
     }
@@ -782,6 +803,44 @@ break""#
                 Token::CloseCurly,
             ]
         );
+    }
+
+    #[test]
+    fn input_is_preprocessed_per_section_3_3() {
+        // CRLF: a line continuation inside a string, and a bad string
+        // at a bare CR, the same as with LF.
+        assert_eq!(
+            tokenize("\"a\\\r\nb\""),
+            vec![Token::String {
+                value: "ab".into(),
+                bad: false
+            }]
+        );
+        assert_eq!(
+            tokenize("\"a\rb\""),
+            vec![
+                Token::String {
+                    value: "a".into(),
+                    bad: true
+                },
+                Token::Whitespace,
+                Token::Ident("b".into()),
+                Token::String {
+                    value: String::new(),
+                    bad: false
+                },
+            ]
+        );
+        // FF is a newline too; NUL is U+FFFD inside a name.
+        assert_eq!(
+            tokenize("a\u{c}b"),
+            vec![
+                Token::Ident("a".into()),
+                Token::Whitespace,
+                Token::Ident("b".into())
+            ]
+        );
+        assert_eq!(tokenize("a\0b"), vec![Token::Ident("a\u{FFFD}b".into())]);
     }
 
     #[test]

@@ -15,6 +15,15 @@
 //! Preludes (selector text, at-rule conditions) are kept as token
 //! vectors — the selector engine (future `style` crate) consumes them
 //! directly, the same way Blink keeps selector tokens.
+//!
+//! Two things keep hostile input linear and bounded. Blocks nest at
+//! most [`MAX_NESTING`] deep: past that, a known at-rule's block is kept
+//! raw like an unknown one's, so a megabyte of `@media{` cannot recurse
+//! the parser off its stack. And a `{}` block met where a declaration
+//! was expected (CSS nesting, which every shipping browser parses) is
+//! consumed to its matching `}` and dropped, so the rule after it is
+//! still seen; a `}` in a nested rule's prelude ends that rule and the
+//! enclosing block rather than being swallowed into the prelude.
 
 use std::collections::VecDeque;
 
@@ -105,14 +114,14 @@ impl TokenStream {
 pub fn parse_stylesheet(input: &str) -> Result<Stylesheet, crate::ParseError> {
     let mut stream = TokenStream::new(tokenize(input));
     Ok(Stylesheet {
-        rules: parse_rules(&mut stream, true),
+        rules: parse_rules(&mut stream, true, 0),
     })
 }
 
 /// Parses a `style` attribute's contents (declaration list only).
 pub fn parse_style_attribute(input: &str) -> Result<Vec<Declaration>, crate::ParseError> {
     let mut stream = TokenStream::new(tokenize(input));
-    Ok(parse_declarations(&mut stream))
+    Ok(parse_declarations(&mut stream, 0))
 }
 
 /// At-rule names whose blocks contain nested rules.
@@ -121,8 +130,14 @@ const NESTED_RULE_AT: [&str; 5] = ["media", "supports", "layer", "container", "s
 /// At-rule names whose blocks contain declarations.
 const DECLARATION_AT: [&str; 4] = ["font-face", "page", "property", "counter-style"];
 
+/// How deep blocks may nest before a block is kept raw rather than
+/// parsed. Real sheets nest a handful of levels; the parser recurses
+/// once per level, and this is what bounds that recursion.
+pub const MAX_NESTING: usize = 128;
+
 /// Parses rules until EOF (top level) or an upcoming `}` (nested).
-fn parse_rules(stream: &mut TokenStream, top: bool) -> Vec<Rule> {
+/// `depth` is how many blocks enclose this rule list.
+fn parse_rules(stream: &mut TokenStream, top: bool, depth: usize) -> Vec<Rule> {
     let mut rules = Vec::new();
     loop {
         match stream.next() {
@@ -140,9 +155,11 @@ fn parse_rules(stream: &mut TokenStream, top: bool) -> Vec<Rule> {
                 stream.reconsume(Token::CloseCurly);
                 return rules;
             }
-            Some(Token::AtKeyword(name)) => rules.push(Rule::At(parse_at_rule(stream, name))),
+            Some(Token::AtKeyword(name)) => {
+                rules.push(Rule::At(parse_at_rule(stream, name, depth)));
+            }
             Some(first) => {
-                if let Some(rule) = parse_qualified_rule(stream, first) {
+                if let Some(rule) = parse_qualified_rule(stream, first, !top, depth) {
                     rules.push(Rule::Qualified(rule));
                 }
             }
@@ -151,24 +168,24 @@ fn parse_rules(stream: &mut TokenStream, top: bool) -> Vec<Rule> {
 }
 
 /// Parses one at-rule; the name has been consumed.
-fn parse_at_rule(stream: &mut TokenStream, name: String) -> AtRule {
+fn parse_at_rule(stream: &mut TokenStream, name: String, depth: usize) -> AtRule {
     let mut prelude = Vec::new();
     let mut block = None;
-    let mut depth = 0i32;
+    let mut paren_depth = 0i32;
     loop {
         match stream.next() {
             None => break,
-            Some(Token::Semicolon) if depth == 0 => break,
-            Some(Token::OpenCurly) if depth == 0 => {
-                block = Some(parse_at_block(stream, &name));
+            Some(Token::Semicolon) if paren_depth == 0 => break,
+            Some(Token::OpenCurly) if paren_depth == 0 => {
+                block = Some(parse_at_block(stream, &name, depth));
                 break;
             }
             Some(t @ (Token::OpenParen | Token::OpenSquare)) => {
-                depth += 1;
+                paren_depth += 1;
                 prelude.push(t);
             }
             Some(t @ (Token::CloseParen | Token::CloseSquare)) => {
-                depth = (depth - 1).max(0);
+                paren_depth = (paren_depth - 1).max(0);
                 prelude.push(t);
             }
             Some(t) => prelude.push(t),
@@ -183,14 +200,19 @@ fn parse_at_rule(stream: &mut TokenStream, name: String) -> AtRule {
 }
 
 /// Parses the body of an at-rule block; the `{` has been consumed.
-fn parse_at_block(stream: &mut TokenStream, name: &str) -> Block {
+/// `depth` is the nesting of the block being opened.
+fn parse_at_block(stream: &mut TokenStream, name: &str, depth: usize) -> Block {
     let lname = name.to_lowercase();
+    if depth >= MAX_NESTING {
+        // Too deep to parse: kept whole, like an unknown at-rule's block.
+        return Block::Raw(take_raw_block(stream));
+    }
     if NESTED_RULE_AT.contains(&lname.as_str()) {
-        let rules = parse_rules(stream, false);
+        let rules = parse_rules(stream, false, depth + 1);
         consume_close_curly(stream);
         Block::Rules(rules)
     } else if DECLARATION_AT.contains(&lname.as_str()) {
-        let declarations = parse_declarations(stream);
+        let declarations = parse_declarations(stream, depth + 1);
         consume_close_curly(stream);
         Block::Declarations(declarations)
     } else {
@@ -200,27 +222,39 @@ fn parse_at_block(stream: &mut TokenStream, name: &str) -> Block {
 }
 
 /// Parses a qualified rule; `first` is the first prelude token.
-/// Returns `None` when EOF arrived before the `{`.
-fn parse_qualified_rule(stream: &mut TokenStream, first: Token) -> Option<QualifiedRule> {
+/// Returns `None` when EOF arrived before the `{`, or, in a nested rule
+/// list, when a `}` ends the enclosing block first (the spec's "consume
+/// a qualified rule" with `nested` set: the `}` is reconsumed for the
+/// caller, which ends its block on it).
+fn parse_qualified_rule(
+    stream: &mut TokenStream,
+    first: Token,
+    nested: bool,
+    depth: usize,
+) -> Option<QualifiedRule> {
     let mut prelude = vec![first];
-    let mut depth = 0i32;
+    let mut paren_depth = 0i32;
     loop {
         match stream.next() {
             None => return None, // EOF before '{': discard the rule
-            Some(Token::OpenCurly) if depth == 0 => break,
+            Some(Token::OpenCurly) if paren_depth == 0 => break,
+            Some(Token::CloseCurly) if nested && paren_depth == 0 => {
+                stream.reconsume(Token::CloseCurly);
+                return None;
+            }
             Some(t @ (Token::OpenParen | Token::OpenSquare)) => {
-                depth += 1;
+                paren_depth += 1;
                 prelude.push(t);
             }
             Some(t @ (Token::CloseParen | Token::CloseSquare)) => {
-                depth = (depth - 1).max(0);
+                paren_depth = (paren_depth - 1).max(0);
                 prelude.push(t);
             }
             Some(t) => prelude.push(t),
         }
     }
     trim_ws(&mut prelude);
-    let declarations = parse_declarations(stream);
+    let declarations = parse_declarations(stream, depth + 1);
     consume_close_curly(stream);
     Some(QualifiedRule {
         prelude,
@@ -229,7 +263,8 @@ fn parse_qualified_rule(stream: &mut TokenStream, first: Token) -> Option<Qualif
 }
 
 /// Parses declarations until `}` (reconsumed for the caller) or EOF.
-fn parse_declarations(stream: &mut TokenStream) -> Vec<Declaration> {
+/// `depth` is the nesting of the block the declarations are in.
+fn parse_declarations(stream: &mut TokenStream, depth: usize) -> Vec<Declaration> {
     let mut declarations = Vec::new();
     loop {
         match stream.next() {
@@ -247,7 +282,7 @@ fn parse_declarations(stream: &mut TokenStream) -> Vec<Declaration> {
             Some(Token::AtKeyword(name)) => {
                 // At-rules inside declaration blocks are consumed and
                 // ignored for now.
-                let _ = parse_at_rule(stream, name);
+                let _ = parse_at_rule(stream, name, depth);
             }
             Some(Token::Ident(name)) => {
                 if let Some(declaration) = parse_declaration(stream, name) {
@@ -259,7 +294,13 @@ fn parse_declarations(stream: &mut TokenStream) -> Vec<Declaration> {
     }
 }
 
-/// Parses one declaration; the property name has been consumed.
+/// Parses one declaration; the property name has been consumed. A `{}`
+/// block in the value means this was a nested rule, not a declaration
+/// (`a { color: red } b { ... }` without a `;` reads as `color: red }
+/// b {`-nothing, but `& b { ... }` reads as a declaration named `&`...
+/// no: as the `&` delim, which [`skip_until_delimiter`] handles; the
+/// case here is `x: y { ... }`): the block is consumed to its `}` and
+/// the declaration dropped, so what follows is parsed afresh.
 fn parse_declaration(stream: &mut TokenStream, name: String) -> Option<Declaration> {
     match stream.next() {
         Some(Token::Colon) => {}
@@ -271,21 +312,25 @@ fn parse_declaration(stream: &mut TokenStream, name: String) -> Option<Declarati
         }
     }
     let mut value = Vec::new();
-    let mut depth = 0i32;
+    let mut paren_depth = 0i32;
     loop {
         match stream.next() {
             None => break,
-            Some(Token::Semicolon) if depth == 0 => break,
-            Some(Token::CloseCurly) if depth == 0 => {
+            Some(Token::Semicolon) if paren_depth == 0 => break,
+            Some(Token::CloseCurly) if paren_depth == 0 => {
                 stream.reconsume(Token::CloseCurly);
                 break;
             }
+            Some(Token::OpenCurly) if paren_depth == 0 => {
+                let _ = take_raw_block(stream);
+                return None;
+            }
             Some(t @ (Token::OpenParen | Token::OpenSquare)) => {
-                depth += 1;
+                paren_depth += 1;
                 value.push(t);
             }
             Some(t @ (Token::CloseParen | Token::CloseSquare)) => {
-                depth = (depth - 1).max(0);
+                paren_depth = (paren_depth - 1).max(0);
                 value.push(t);
             }
             Some(t) => value.push(t),
@@ -325,7 +370,10 @@ fn strip_important(value: &mut Vec<Token>) -> bool {
 }
 
 /// Skips tokens until `;`, `}` (reconsumed), or EOF, staying balanced
-/// inside `(...)` and `[...]`.
+/// inside `(...)` and `[...]`. A `{` at the top level is a nested rule's
+/// block (`& b { ... }` inside a declaration list): it is consumed to
+/// its matching `}` and the skip ends there, so the declaration after
+/// the block is read as one.
 fn skip_until_delimiter(stream: &mut TokenStream, first: Token) {
     let mut depth = 0i32;
     let mut pending = Some(first);
@@ -336,6 +384,10 @@ fn skip_until_delimiter(stream: &mut TokenStream, first: Token) {
             Token::Semicolon if depth == 0 => return,
             Token::CloseCurly if depth == 0 => {
                 stream.reconsume(Token::CloseCurly);
+                return;
+            }
+            Token::OpenCurly if depth == 0 => {
+                let _ = take_raw_block(stream);
                 return;
             }
             _ => {}
@@ -373,11 +425,15 @@ fn consume_close_curly(stream: &mut TokenStream) {
     }
 }
 
-/// Trims leading/trailing whitespace tokens.
+/// Trims leading/trailing whitespace tokens. Comments split a run of
+/// whitespace into several tokens, so a value can start with thousands
+/// of them; they go in one drain, not one `remove(0)` each.
 fn trim_ws(tokens: &mut Vec<Token>) {
-    while matches!(tokens.first(), Some(Token::Whitespace)) {
-        tokens.remove(0);
-    }
+    let leading = tokens
+        .iter()
+        .take_while(|t| matches!(t, Token::Whitespace))
+        .count();
+    tokens.drain(..leading);
     while matches!(tokens.last(), Some(Token::Whitespace)) {
         tokens.pop();
     }
@@ -569,6 +625,91 @@ mod tests {
                 Token::CloseParen,
             ]
         );
+    }
+
+    #[test]
+    fn a_nested_rule_inside_a_declaration_block_does_not_eat_the_next_rule() {
+        // CSS nesting: the `& b { ... }` block is skipped, `color: blue`
+        // after it is still a declaration of `a`, and `p` is still a rule.
+        let sheet =
+            parse_stylesheet("a { & b { color: red } color: blue } p { color: green }").unwrap();
+        assert_eq!(sheet.rules.len(), 2);
+        let Rule::Qualified(a) = &sheet.rules[0] else {
+            panic!("expected a qualified rule");
+        };
+        assert_eq!(a.prelude, vec![Token::Ident("a".into())]);
+        assert_eq!(a.declarations.len(), 1);
+        assert_eq!(a.declarations[0].value, vec![Token::Ident("blue".into())]);
+        let Rule::Qualified(p) = &sheet.rules[1] else {
+            panic!("expected a qualified rule");
+        };
+        assert_eq!(p.prelude, vec![Token::Ident("p".into())]);
+        assert_eq!(p.declarations[0].value, vec![Token::Ident("green".into())]);
+
+        // A block in a declaration's value is the same case.
+        let sheet = parse_stylesheet("a { x: y { z } color: blue } p { color: green }").unwrap();
+        assert_eq!(sheet.rules.len(), 2);
+    }
+
+    #[test]
+    fn a_close_curly_in_a_nested_prelude_ends_the_enclosing_block() {
+        let sheet =
+            parse_stylesheet("@media screen { .x { color: red; } .y } p { color: green }").unwrap();
+        assert_eq!(sheet.rules.len(), 2);
+        let Rule::At(at) = &sheet.rules[0] else {
+            panic!("expected an at-rule");
+        };
+        let Some(Block::Rules(rules)) = &at.block else {
+            panic!("expected a rules block");
+        };
+        assert_eq!(rules.len(), 1, "the dangling `.y` is dropped, nothing else");
+        let Rule::Qualified(p) = &sheet.rules[1] else {
+            panic!("expected a qualified rule");
+        };
+        assert_eq!(p.prelude, vec![Token::Ident("p".into())]);
+    }
+
+    #[test]
+    fn nesting_past_the_cap_is_kept_raw_rather_than_recursed_into() {
+        // 20k nested `@media{` used to overflow the stack; on a small
+        // stack even a few thousand would. Past MAX_NESTING the block is
+        // raw, so the depth of parsing is bounded whatever the input.
+        let handle = std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(|| {
+                let source = "@media{".repeat(20_000) + "a{color:red}" + &"}".repeat(20_000);
+                let sheet = parse_stylesheet(&source).unwrap();
+                let mut depth = 0;
+                let mut rules = &sheet.rules;
+                loop {
+                    let [Rule::At(at)] = rules.as_slice() else {
+                        panic!("one at-rule per level");
+                    };
+                    match &at.block {
+                        Some(Block::Rules(inner)) => {
+                            depth += 1;
+                            rules = inner;
+                        }
+                        Some(Block::Raw(_)) => break,
+                        other => panic!("unexpected block {other:?}"),
+                    }
+                }
+                assert_eq!(depth, MAX_NESTING);
+            })
+            .expect("thread");
+        handle.join().expect("no stack overflow");
+    }
+
+    #[test]
+    fn many_whitespace_tokens_before_a_value_are_trimmed_in_one_pass() {
+        // Comments split whitespace into separate tokens; trimming
+        // used to remove them from the front one at a time.
+        let source = format!("a{{color:{}red}}", "/**/ ".repeat(100_000));
+        let sheet = parse_stylesheet(&source).unwrap();
+        let Rule::Qualified(rule) = &sheet.rules[0] else {
+            panic!("expected a qualified rule");
+        };
+        assert_eq!(rule.declarations[0].value, vec![Token::Ident("red".into())]);
     }
 
     #[test]
