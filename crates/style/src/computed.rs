@@ -171,6 +171,57 @@ pub enum BoxSizing {
     BorderBox,
 }
 
+/// `float` (CSS2 §9.5.1, M11.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Float {
+    /// In flow. The initial value.
+    None,
+    Left,
+    Right,
+}
+
+/// `clear` (CSS2 §9.5.2, M11.1): which floats a box must be below.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Clear {
+    /// The initial value.
+    None,
+    Left,
+    Right,
+    Both,
+}
+
+/// `position` (CSS2 §9.3.1 and css-position-3 for `sticky`, M11.3 to
+/// M11.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Position {
+    /// In flow, the offsets ignored. The initial value.
+    Static,
+    /// In flow, then moved by the offsets.
+    Relative,
+    /// Out of flow, against the nearest positioned ancestor's padding
+    /// box or the initial containing block.
+    Absolute,
+    /// Out of flow, against the viewport, not scrolling with the document.
+    Fixed,
+    /// In flow, shifted to keep its offsets from the scrollport's edges
+    /// while its containing block allows.
+    Sticky,
+}
+
+impl Position {
+    /// Whether a box with this value is positioned (CSS2 §9.3.1): it
+    /// is the containing block of its absolutely positioned descendants
+    /// and takes part in stacking (M11.6).
+    pub fn is_positioned(self) -> bool {
+        self != Position::Static
+    }
+
+    /// Whether a box with this value is taken out of the normal flow.
+    pub fn is_out_of_flow(self) -> bool {
+        matches!(self, Position::Absolute | Position::Fixed)
+    }
+}
+
 /// Text direction (M8.3) — read from the HTML `dir` attribute (there's
 /// no CSS `direction` property parsing yet; `dir` is the only source for
 /// now, applied the same way the inline `style` attribute is: a direct
@@ -353,6 +404,21 @@ pub struct ComputedStyle {
     /// `max-height` (M10.3) — not inherited; `None` is `none`, and so
     /// is a percentage of an indefinite containing-block height.
     pub max_height: Option<LengthPercentage>,
+    /// `float` (M11.1) — not inherited. `none` on an absolutely
+    /// positioned box whatever was written (CSS2 §9.7).
+    pub float: Float,
+    /// `clear` (M11.1) — not inherited.
+    pub clear: Clear,
+    /// `position` (M11.3 to M11.5) — not inherited.
+    pub position: Position,
+    /// `top`, `right`, `bottom` and `left` (M11.3), in that order like
+    /// every edge array — not inherited; kept as written, since a
+    /// percentage is of the containing block's height for `top` and
+    /// `bottom` and of its width for `left` and `right` (CSS2 §9.3.2),
+    /// which only layout knows. `auto` is the initial value.
+    pub inset: MarginEdges,
+    /// `z-index` (M11.6) — not inherited; `None` is `auto`.
+    pub z_index: Option<i32>,
 }
 
 impl Default for ComputedStyle {
@@ -383,6 +449,11 @@ impl Default for ComputedStyle {
             max_width: None,
             min_height: LengthPercentage::Px(0.0),
             max_height: None,
+            float: Float::None,
+            clear: Clear::None,
+            position: Position::Static,
+            inset: [LengthPercentageAuto::Auto; 4],
+            z_index: None,
         }
     }
 }
@@ -452,6 +523,14 @@ mod tests {
         assert_eq!(s.max_width, None);
         assert_eq!(s.min_height, LengthPercentage::Px(0.0));
         assert_eq!(s.max_height, None);
+        assert_eq!(s.float, Float::None);
+        assert_eq!(s.clear, Clear::None);
+        assert_eq!(s.position, Position::Static);
+        assert!(!s.position.is_positioned() && !s.position.is_out_of_flow());
+        assert!(Position::Relative.is_positioned() && !Position::Relative.is_out_of_flow());
+        assert!(Position::Fixed.is_positioned() && Position::Fixed.is_out_of_flow());
+        assert_eq!(s.inset, [LengthPercentageAuto::Auto; 4]);
+        assert_eq!(s.z_index, None);
     }
 
     #[test]

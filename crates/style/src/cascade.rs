@@ -26,6 +26,11 @@
 //!   parent's font size and resolves here.
 //! * `display`: `block` / `inline` / `inline-block` / `none` only
 //!   (M5.1's own v1 scope, plus M10.4's `inline-block`).
+//! * `float`, `clear`, `position`, `top`/`right`/`bottom`/`left` and
+//!   `z-index` (M11), with CSS2 §9.7's computed-value rules applied
+//!   after the longhands: an absolutely positioned box does not float,
+//!   and an inline-level box that floats or is absolutely positioned
+//!   computes to `block`.
 //!
 //! What every property accepts: the CSS-wide keywords `inherit`,
 //! `initial` and `unset` (css-cascade-5 §7.3), resolved against the
@@ -45,9 +50,9 @@ use css::Token;
 use dom::Node;
 
 use crate::computed::{
-    BOTTOM, BorderStyle, BoxSizing, Color, ComputedStyle, Direction, Display, Edges, LEFT,
-    LengthPercentage, LengthPercentageAuto, MarginEdges, Overflow, PaddingEdges, RIGHT, TOP,
-    TextAlign, TextTransform, WhiteSpace,
+    BOTTOM, BorderStyle, BoxSizing, Clear, Color, ComputedStyle, Direction, Display, Edges, Float,
+    LEFT, LengthPercentage, LengthPercentageAuto, MarginEdges, Overflow, PaddingEdges, Position,
+    RIGHT, TOP, TextAlign, TextTransform, WhiteSpace,
 };
 use crate::selector_matching::{
     FlatChild, FlatDom, Matcher, SelectorList, Specificity, parse_selector_list,
@@ -409,6 +414,20 @@ fn compute_style(
             *color = style.color;
         }
     }
+    // CSS2 §9.7, the relationships between `display`, `position` and
+    // `float` (M11): an absolutely positioned box does not float, and
+    // a float or an absolutely positioned box that is inline-level
+    // becomes a block, so the box tree sees a block container. (The
+    // root element's `float` is `none` too; the box tree builder keeps
+    // the top-level boxes in flow.)
+    if style.position.is_out_of_flow() {
+        style.float = Float::None;
+    }
+    if (style.float != Float::None || style.position.is_out_of_flow())
+        && matches!(style.display, Display::Inline | Display::InlineBlock)
+    {
+        style.display = Display::Block;
+    }
     style
 }
 
@@ -553,6 +572,33 @@ fn apply_declaration(
         "overflow" => {
             if let Some(o) = parse_overflow(&decl.value) {
                 style.overflow = o;
+            }
+        }
+        "float" => {
+            if let Some(f) = parse_float(&decl.value) {
+                style.float = f;
+            }
+        }
+        "clear" => {
+            if let Some(c) = parse_clear(&decl.value) {
+                style.clear = c;
+            }
+        }
+        "position" => {
+            if let Some(p) = parse_position(&decl.value) {
+                style.position = p;
+            }
+        }
+        "top" | "right" | "bottom" | "left" => {
+            // Kept as written (M11.3): a percentage is of the containing
+            // block's height or width, which only layout knows.
+            if let Some(v) = parse_length_percentage_or_auto(&decl.value, bases) {
+                style.inset[edge_index(&decl.name)] = v;
+            }
+        }
+        "z-index" => {
+            if let Some(z) = parse_z_index(&decl.value) {
+                style.z_index = z;
             }
         }
         "box-sizing" => {
@@ -772,6 +818,14 @@ fn apply_css_wide(
         "max-width" => style.max_width = src.max_width,
         "min-height" => style.min_height = src.min_height,
         "max-height" => style.max_height = src.max_height,
+        "float" => style.float = src.float,
+        "clear" => style.clear = src.clear,
+        "position" => style.position = src.position,
+        "top" | "right" | "bottom" | "left" => {
+            let side = edge_index(name);
+            style.inset[side] = src.inset[side];
+        }
+        "z-index" => style.z_index = src.z_index,
         "border-color" => {
             // The parent's border color is a real color; the initial
             // value is `currentcolor`, resolved once the cascade is done.
@@ -1020,6 +1074,63 @@ fn parse_display(tokens: &[Token]) -> Option<Display> {
         "inline-block" => Some(Display::InlineBlock),
         "none" => Some(Display::None),
         _ => None, // flex/grid/table/... land with their milestones
+    }
+}
+
+/// The edge array index of `top`, `right`, `bottom` or `left`.
+fn edge_index(name: &str) -> usize {
+    match name {
+        "top" => TOP,
+        "right" => RIGHT,
+        "bottom" => BOTTOM,
+        _ => LEFT,
+    }
+}
+
+/// `float` (M11.1).
+fn parse_float(tokens: &[Token]) -> Option<Float> {
+    match single_ident(tokens)?.to_ascii_lowercase().as_str() {
+        "none" => Some(Float::None),
+        "left" => Some(Float::Left),
+        "right" => Some(Float::Right),
+        _ => None, // `inline-start`/`inline-end` are css-logical's, not parsed
+    }
+}
+
+/// `clear` (M11.1).
+fn parse_clear(tokens: &[Token]) -> Option<Clear> {
+    match single_ident(tokens)?.to_ascii_lowercase().as_str() {
+        "none" => Some(Clear::None),
+        "left" => Some(Clear::Left),
+        "right" => Some(Clear::Right),
+        "both" => Some(Clear::Both),
+        _ => None,
+    }
+}
+
+/// `position` (M11.3 to M11.5).
+fn parse_position(tokens: &[Token]) -> Option<Position> {
+    match single_ident(tokens)?.to_ascii_lowercase().as_str() {
+        "static" => Some(Position::Static),
+        "relative" => Some(Position::Relative),
+        "absolute" => Some(Position::Absolute),
+        "fixed" => Some(Position::Fixed),
+        "sticky" => Some(Position::Sticky),
+        _ => None,
+    }
+}
+
+/// `z-index` (M11.6): `auto`, or an integer; `Some(None)` is `auto`.
+fn parse_z_index(tokens: &[Token]) -> Option<Option<i32>> {
+    if is_auto(tokens) {
+        return Some(None);
+    }
+    match single_token(tokens)? {
+        Token::Number {
+            value,
+            is_integer: true,
+        } if *value >= i32::MIN as f64 && *value <= i32::MAX as f64 => Some(Some(*value as i32)),
+        _ => None,
     }
 }
 
@@ -1554,6 +1665,100 @@ mod tests {
         let sheets = [sheet("div { text-transform: uppercase; }")];
         let s = style_of("<div><span>x</span></div>", &sheets, "span");
         assert_eq!(s.text_transform, TextTransform::Uppercase);
+    }
+
+    #[test]
+    fn positioning_properties_parse_and_are_not_inherited() {
+        let html = "<div><p>x</p></div>";
+        let sheets = [sheet(
+            "div { float: left; clear: both; position: relative; top: 10px; right: 5%;
+                   bottom: auto; left: 2em; z-index: 3; }",
+        )];
+        let div = style_of(html, &sheets, "div");
+        assert_eq!(div.float, Float::Left);
+        assert_eq!(div.clear, Clear::Both);
+        assert_eq!(div.position, Position::Relative);
+        assert_eq!(div.inset[TOP], LengthPercentageAuto::Px(10.0));
+        assert_eq!(div.inset[RIGHT], LengthPercentageAuto::Percent(5.0));
+        assert_eq!(div.inset[BOTTOM], LengthPercentageAuto::Auto);
+        assert_eq!(div.inset[LEFT], LengthPercentageAuto::Px(32.0));
+        assert_eq!(div.z_index, Some(3));
+        let p = style_of(html, &sheets, "p");
+        assert_eq!(p.float, Float::None);
+        assert_eq!(p.clear, Clear::None);
+        assert_eq!(p.position, Position::Static);
+        assert_eq!(p.inset, [LengthPercentageAuto::Auto; 4]);
+        assert_eq!(p.z_index, None);
+        // Every keyword, whatever its case; an unknown one leaves the
+        // value alone; `z-index` takes an integer or `auto`, nothing
+        // else.
+        for (value, expected) in [
+            ("none", Position::Static),
+            ("RELATIVE", Position::Relative),
+            ("absolute", Position::Absolute),
+            ("fixed", Position::Fixed),
+            ("sticky", Position::Sticky),
+            ("stuck", Position::Static),
+        ] {
+            let sheets = [sheet(&format!("p {{ position: {value}; }}"))];
+            assert_eq!(style_of(html, &sheets, "p").position, expected, "{value}");
+        }
+        for (value, expected) in [
+            ("none", Clear::None),
+            ("LEFT", Clear::Left),
+            ("right", Clear::Right),
+            ("both", Clear::Both),
+            ("all", Clear::None),
+        ] {
+            let sheets = [sheet(&format!("p {{ clear: {value}; }}"))];
+            assert_eq!(style_of(html, &sheets, "p").clear, expected, "{value}");
+        }
+        for (value, expected) in [
+            ("auto", None),
+            ("-1", Some(-1)),
+            ("0", Some(0)),
+            ("2147483647", Some(i32::MAX)),
+            ("1.5", None),
+            ("1e10", None),
+            ("10px", None),
+        ] {
+            let sheets = [sheet(&format!("p {{ z-index: {value}; }}"))];
+            assert_eq!(style_of(html, &sheets, "p").z_index, expected, "{value}");
+        }
+        // The css-wide keywords.
+        let sheets = [sheet(
+            "div { position: absolute; top: 4px; z-index: 2; }
+             p { position: inherit; top: inherit; z-index: inherit; }",
+        )];
+        let p = style_of(html, &sheets, "p");
+        assert_eq!(p.position, Position::Absolute);
+        assert_eq!(p.inset[TOP], LengthPercentageAuto::Px(4.0));
+        assert_eq!(p.z_index, Some(2));
+        let sheets = [sheet(
+            "p { float: right; float: unset; clear: left; clear: initial; }",
+        )];
+        let p = style_of(html, &sheets, "p");
+        assert_eq!((p.float, p.clear), (Float::None, Clear::None));
+    }
+
+    #[test]
+    fn floats_and_absolutely_positioned_boxes_follow_css2_section_9_7() {
+        // An absolutely positioned box does not float; a float or an
+        // absolutely positioned box that is inline-level is a block.
+        let html = "<div><span>x</span></div>";
+        let span = |css: &str| style_of(html, &[sheet(css)], "span");
+        let s = span("span { float: left; }");
+        assert_eq!((s.float, s.display), (Float::Left, Display::Block));
+        let s = span("span { position: absolute; float: right; }");
+        assert_eq!((s.float, s.display), (Float::None, Display::Block));
+        let s = span("span { position: fixed; display: inline-block; }");
+        assert_eq!(s.display, Display::Block);
+        // A relatively positioned inline stays inline; a float that is
+        // `display: none` stays none.
+        let s = span("span { position: relative; }");
+        assert_eq!(s.display, Display::Inline);
+        let s = span("span { float: left; display: none; }");
+        assert_eq!(s.display, Display::None);
     }
 
     #[test]
