@@ -424,7 +424,10 @@ fn parse_nth(args: &[Token], allow_of: bool) -> Option<(i32, i32, Option<Box<Sel
             if rest.is_empty() {
                 return None;
             }
-            (&args[..pos], Some(Box::new(parse_selector_list(&rest).ok()?)))
+            (
+                &args[..pos],
+                Some(Box::new(parse_selector_list(&rest).ok()?)),
+            )
         }
         None => (args, None),
     };
@@ -755,14 +758,8 @@ mod tests {
 
     #[test]
     fn parses_siblings() {
-        assert_eq!(
-            ok("a + b").0[0].combinators,
-            vec![Combinator::NextSibling]
-        );
-        assert_eq!(
-            ok("a ~ b").0[0].combinators,
-            vec![Combinator::LaterSibling]
-        );
+        assert_eq!(ok("a + b").0[0].combinators, vec![Combinator::NextSibling]);
+        assert_eq!(ok("a ~ b").0[0].combinators, vec![Combinator::LaterSibling]);
     }
 
     #[test]
@@ -1152,7 +1149,10 @@ mod tests {
 
     #[test]
     fn pseudo_class_function_args_tolerate_surrounding_whitespace() {
-        assert_eq!(ok(":not( .a )").0[0].compounds[0].simple[0], ok(":not(.a)").0[0].compounds[0].simple[0]);
+        assert_eq!(
+            ok(":not( .a )").0[0].compounds[0].simple[0],
+            ok(":not(.a)").0[0].compounds[0].simple[0]
+        );
         assert_eq!(
             ok(":nth-child( 2n + 1 )").0[0].compounds[0].simple[0],
             ok(":nth-child(2n+1)").0[0].compounds[0].simple[0]
@@ -1162,7 +1162,9 @@ mod tests {
     #[test]
     fn nth_child_of_filter_accepts_a_comma_separated_filter() {
         let of_len = |sel: &str| match &ok(sel).0[0].compounds[0].simple[0] {
-            SimpleSelector::PseudoClass(PseudoClass::NthChild { of: Some(list), .. }) => list.0.len(),
+            SimpleSelector::PseudoClass(PseudoClass::NthChild { of: Some(list), .. }) => {
+                list.0.len()
+            }
             other => panic!("expected nth-child with `of`, got {other:?}"),
         };
         assert_eq!(of_len(":nth-child(1 of .a, .b, #c)"), 3);
@@ -1172,7 +1174,10 @@ mod tests {
     fn pseudo_class_name_is_ascii_case_insensitive_for_functions() {
         // Function names, like bare pseudo-class names, are
         // case-insensitive (selectors-4 keywords are ASCII case-insensitive).
-        assert!(ok(":NOT(.a)").0[0].compounds[0].simple[0] == ok(":not(.a)").0[0].compounds[0].simple[0]);
+        assert!(
+            ok(":NOT(.a)").0[0].compounds[0].simple[0]
+                == ok(":not(.a)").0[0].compounds[0].simple[0]
+        );
         assert!(matches!(
             &ok(":NTH-CHILD(2n+1)").0[0].compounds[0].simple[0],
             SimpleSelector::PseudoClass(PseudoClass::NthChild { a: 2, b: 1, .. })

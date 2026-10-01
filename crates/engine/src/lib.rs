@@ -178,7 +178,12 @@ mod tests {
         let Ok(engine) = Engine::new() else {
             return;
         };
-        assert!(engine.document().text_content().contains("Hello from Random Browser"));
+        assert!(
+            engine
+                .document()
+                .text_content()
+                .contains("Hello from Random Browser")
+        );
     }
 
     #[test]
@@ -265,7 +270,10 @@ mod tests {
         let before = engine.frame(200, 100);
         engine.load_document("<style>p { color: red; }</style><p>Some text to render</p>");
         let after = engine.frame(200, 100);
-        assert_ne!(before, after, "changing `color` must change the rendered pixels");
+        assert_ne!(
+            before, after,
+            "changing `color` must change the rendered pixels"
+        );
     }
 
     #[test]
@@ -313,8 +321,10 @@ mod tests {
              <p>one</p><p>two</p>",
         );
         let fragments = engine.fragments(800.0);
-        let boxes: Vec<_> =
-            fragments.iter().filter(|f| matches!(f.kind, layout::FragmentKind::Box)).collect();
+        let boxes: Vec<_> = fragments
+            .iter()
+            .filter(|f| matches!(f.kind, layout::FragmentKind::Box))
+            .collect();
         assert_eq!(boxes.len(), 2);
         // The gap between the two border-boxes is max(20, 20) = 20, not
         // the sum (40) — `boxes[0].h` is its own real content height
@@ -331,7 +341,10 @@ mod tests {
         let has_card_background = fragments.iter().any(|f| {
             matches!(f.kind, layout::FragmentKind::Box) && f.style.background_color.a > 0.0
         });
-        assert!(has_card_background, "the built-in demo's .card background should paint (M6.8)");
+        assert!(
+            has_card_background,
+            "the built-in demo's .card background should paint (M6.8)"
+        );
     }
 
     // ---- M7 acceptance (roadmap M7.8) --------------------------------------
@@ -341,9 +354,8 @@ mod tests {
         let Ok(mut engine) = Engine::new() else {
             return;
         };
-        engine.load_document(
-            "<p>one two three four five six seven eight nine ten eleven twelve</p>",
-        );
+        engine
+            .load_document("<p>one two three four five six seven eight nine ten eleven twelve</p>");
         // f32 isn't `Ord` (NaN), so count distinct baselines by rounding
         // to whole pixels and deduping, rather than putting raw floats
         // in a set.
@@ -390,6 +402,9 @@ mod tests {
             .map(|f| f.x)
             .expect("a text fragment");
 
-        assert!(center_x > left_x, "centered text should start further right than left-aligned text");
+        assert!(
+            center_x > left_x,
+            "centered text should start further right than left-aligned text"
+        );
     }
 }

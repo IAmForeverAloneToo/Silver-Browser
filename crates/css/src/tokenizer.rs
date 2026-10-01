@@ -314,7 +314,10 @@ impl Tokenizer {
                 self.pos += 1; // one optional whitespace after the digits
             }
             let digits: String = self.input[start..end].iter().collect();
-            match u32::from_str_radix(&digits, 16).ok().and_then(char::from_u32) {
+            match u32::from_str_radix(&digits, 16)
+                .ok()
+                .and_then(char::from_u32)
+            {
                 Some('\0') | None => '\u{FFFD}',
                 Some(c) => c,
             }
@@ -374,9 +377,7 @@ impl Tokenizer {
         while self.peek().is_some_and(|c| c.is_ascii_digit()) {
             self.pos += 1;
         }
-        if self.peek() == Some('.')
-            && matches!(self.peek_at(1), Some(d) if d.is_ascii_digit())
-        {
+        if self.peek() == Some('.') && matches!(self.peek_at(1), Some(d) if d.is_ascii_digit()) {
             self.pos += 1;
             while self.peek().is_some_and(|c| c.is_ascii_digit()) {
                 self.pos += 1;
@@ -415,10 +416,16 @@ impl Tokenizer {
             self.pos += 1;
         }
         match self.peek() {
-            None => Token::Url { value: String::new(), bad: true },
+            None => Token::Url {
+                value: String::new(),
+                bad: true,
+            },
             Some(')') => {
                 self.pos += 1;
-                Token::Url { value: String::new(), bad: false }
+                Token::Url {
+                    value: String::new(),
+                    bad: false,
+                }
             }
             Some(q @ ('"' | '\'')) => {
                 let (value, bad) = match self.consume_string(q) {
@@ -495,7 +502,10 @@ impl Tokenizer {
                 }
             }
         }
-        Token::Url { value: String::new(), bad: true }
+        Token::Url {
+            value: String::new(),
+            bad: true,
+        }
     }
 }
 
@@ -580,9 +590,15 @@ mod tests {
         assert_eq!(
             tokenize("#fff #123"),
             vec![
-                Token::Hash { value: "fff".into(), is_id: true },
+                Token::Hash {
+                    value: "fff".into(),
+                    is_id: true
+                },
                 Token::Whitespace,
-                Token::Hash { value: "123".into(), is_id: false },
+                Token::Hash {
+                    value: "123".into(),
+                    is_id: false
+                },
             ]
         );
     }
@@ -590,14 +606,25 @@ mod tests {
     #[test]
     fn strings_with_escapes() {
         assert_eq!(
-            tokenize(r#""hi there" 'a\'b' "line\
-break""#),
+            tokenize(
+                r#""hi there" 'a\'b' "line\
+break""#
+            ),
             vec![
-                Token::String { value: "hi there".into(), bad: false },
+                Token::String {
+                    value: "hi there".into(),
+                    bad: false
+                },
                 Token::Whitespace,
-                Token::String { value: "a'b".into(), bad: false },
+                Token::String {
+                    value: "a'b".into(),
+                    bad: false
+                },
                 Token::Whitespace,
-                Token::String { value: "linebreak".into(), bad: false },
+                Token::String {
+                    value: "linebreak".into(),
+                    bad: false
+                },
             ]
         );
     }
@@ -607,7 +634,10 @@ break""#),
         assert_eq!(
             tokenize("\"ab\ncd"),
             vec![
-                Token::String { value: "ab".into(), bad: true },
+                Token::String {
+                    value: "ab".into(),
+                    bad: true
+                },
                 Token::Whitespace,
                 Token::Ident("cd".into()),
             ]
@@ -619,11 +649,20 @@ break""#),
         assert_eq!(
             tokenize("url(a/b.png) url( 'q' ) url(a b)"),
             vec![
-                Token::Url { value: "a/b.png".into(), bad: false },
+                Token::Url {
+                    value: "a/b.png".into(),
+                    bad: false
+                },
                 Token::Whitespace,
-                Token::Url { value: "q".into(), bad: false },
+                Token::Url {
+                    value: "q".into(),
+                    bad: false
+                },
                 Token::Whitespace,
-                Token::Url { value: String::new(), bad: true },
+                Token::Url {
+                    value: String::new(),
+                    bad: true
+                },
             ]
         );
     }
@@ -632,7 +671,10 @@ break""#),
     fn url_with_escaped_paren() {
         assert_eq!(
             tokenize(r"url(a\)b)"),
-            vec![Token::Url { value: "a)b".into(), bad: false }]
+            vec![Token::Url {
+                value: "a)b".into(),
+                bad: false
+            }]
         );
     }
 
@@ -641,21 +683,42 @@ break""#),
         assert_eq!(
             tokenize("1 2.5 -3 .5 50% 10px 1e3 -2.5em"),
             vec![
-                Token::Number { value: 1.0, is_integer: true },
+                Token::Number {
+                    value: 1.0,
+                    is_integer: true
+                },
                 Token::Whitespace,
-                Token::Number { value: 2.5, is_integer: false },
+                Token::Number {
+                    value: 2.5,
+                    is_integer: false
+                },
                 Token::Whitespace,
-                Token::Number { value: -3.0, is_integer: true },
+                Token::Number {
+                    value: -3.0,
+                    is_integer: true
+                },
                 Token::Whitespace,
-                Token::Number { value: 0.5, is_integer: false },
+                Token::Number {
+                    value: 0.5,
+                    is_integer: false
+                },
                 Token::Whitespace,
                 Token::Percentage { value: 50.0 },
                 Token::Whitespace,
-                Token::Dimension { value: 10.0, unit: "px".into() },
+                Token::Dimension {
+                    value: 10.0,
+                    unit: "px".into()
+                },
                 Token::Whitespace,
-                Token::Number { value: 1000.0, is_integer: false },
+                Token::Number {
+                    value: 1000.0,
+                    is_integer: false
+                },
                 Token::Whitespace,
-                Token::Dimension { value: -2.5, unit: "em".into() },
+                Token::Dimension {
+                    value: -2.5,
+                    unit: "em".into()
+                },
             ]
         );
     }
@@ -697,7 +760,10 @@ break""#),
     fn escapes_in_idents() {
         // \41 is 'A'
         assert_eq!(tokenize(r"\41 bc"), vec![Token::Ident("Abc".into())]);
-        assert_eq!(tokenize(r"\@literal"), vec![Token::Ident("@literal".into())]);
+        assert_eq!(
+            tokenize(r"\@literal"),
+            vec![Token::Ident("@literal".into())]
+        );
     }
 
     #[test]
@@ -728,7 +794,10 @@ break""#),
         assert_eq!(tokenize("/* no end"), Vec::<Token>::new());
         assert_eq!(
             tokenize("\"abc"),
-            vec![Token::String { value: "abc".into(), bad: false }]
+            vec![Token::String {
+                value: "abc".into(),
+                bad: false
+            }]
         );
     }
 }

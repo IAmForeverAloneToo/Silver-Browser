@@ -49,7 +49,9 @@ pub mod computed;
 /// grammar and its documented omissions.
 pub mod selector_matching;
 
-pub use selector_matching::{matches_selector, matches_selector_list, parse_selector_list, FlatDom};
+pub use selector_matching::{
+    FlatDom, matches_selector, matches_selector_list, parse_selector_list,
+};
 
-pub use cascade::{style_document, StyledDom};
+pub use cascade::{StyledDom, style_document};
 pub use computed::ComputedStyle;

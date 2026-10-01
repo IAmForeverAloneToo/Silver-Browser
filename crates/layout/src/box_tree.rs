@@ -97,7 +97,10 @@ mod tests {
     #[test]
     fn block_and_inline_elements_get_matching_box_kinds() {
         let root = Element::new("div").push(Element::new("span").text("x"));
-        let tree = build_box_tree(&styled(root, "div { display: block; } span { display: inline; }"));
+        let tree = build_box_tree(&styled(
+            root,
+            "div { display: block; } span { display: inline; }",
+        ));
         assert_eq!(tree.len(), 1);
         assert_eq!(tree[0].kind, BoxKind::Block);
         assert_eq!(tree[0].children[0].kind, BoxKind::Inline);
@@ -121,7 +124,10 @@ mod tests {
             BoxKind::Text(t) => assert_eq!(t, "hello"),
             other => panic!("expected a text box, got {other:?}"),
         }
-        assert_eq!(tree[0].children[0].style.color, style::computed::Color::rgb8(255, 0, 0));
+        assert_eq!(
+            tree[0].children[0].style.color,
+            style::computed::Color::rgb8(255, 0, 0)
+        );
     }
 
     #[test]

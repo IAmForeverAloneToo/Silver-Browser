@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use paint::{DisplayItem, DisplayList, Rgba8};
-use text::{rasterize_glyph, FontCollection, FontError, GlyphMask, Script};
+use text::{FontCollection, FontError, GlyphMask, Script, rasterize_glyph};
 
 /// A rasterizer: display list + viewport size in, framebuffer out.
 pub trait RenderBackend {
@@ -50,12 +50,20 @@ impl SoftwareBackend {
 
     fn mask_for(&mut self, script: Script, glyph_id: u16, size: f32) -> &GlyphMask {
         let key = (script, glyph_id, size.to_bits());
-        self.masks
-            .entry(key)
-            .or_insert_with(|| rasterize_glyph(self.fonts.font_for(script).glyph_font(), glyph_id, size))
+        self.masks.entry(key).or_insert_with(|| {
+            rasterize_glyph(self.fonts.font_for(script).glyph_font(), glyph_id, size)
+        })
     }
 
-    fn draw_text(&mut self, pixmap: &mut tiny_skia::Pixmap, text: &str, x: f32, y: f32, size: f32, color: &Rgba8) {
+    fn draw_text(
+        &mut self,
+        pixmap: &mut tiny_skia::Pixmap,
+        text: &str,
+        x: f32,
+        y: f32,
+        size: f32,
+        color: &Rgba8,
+    ) {
         // Itemized + per-script fallback-dispatched (M8.1), not always
         // the one primary font — see `FontCollection::shape`'s doc.
         let glyphs = self.fonts.shape(text, size);
@@ -94,7 +102,13 @@ impl RenderBackend for SoftwareBackend {
                         None,
                     );
                 }
-                DisplayItem::Text { text, x, y, size, color } => {
+                DisplayItem::Text {
+                    text,
+                    x,
+                    y,
+                    size,
+                    color,
+                } => {
                     self.draw_text(&mut pixmap, text, *x, *y, *size, color);
                 }
             }
@@ -106,7 +120,13 @@ impl RenderBackend for SoftwareBackend {
 
 /// Alpha-composites a glyph mask onto the pixmap at `(base_x, base_y)`
 /// (the mask's top-left, in pixel coordinates).
-fn blit_mask(pixmap: &mut tiny_skia::Pixmap, mask: &GlyphMask, color: &Rgba8, base_x: f32, base_y: f32) {
+fn blit_mask(
+    pixmap: &mut tiny_skia::Pixmap,
+    mask: &GlyphMask,
+    color: &Rgba8,
+    base_x: f32,
+    base_y: f32,
+) {
     if mask.width == 0 || mask.height == 0 {
         return;
     }
@@ -114,7 +134,11 @@ fn blit_mask(pixmap: &mut tiny_skia::Pixmap, mask: &GlyphMask, color: &Rgba8, ba
     let ph = pixmap.height() as i64;
     let origin_x = base_x.floor() as i64;
     let origin_y = base_y.floor() as i64;
-    if origin_x >= pw || origin_y >= ph || origin_x + mask.width as i64 <= 0 || origin_y + mask.height as i64 <= 0 {
+    if origin_x >= pw
+        || origin_y >= ph
+        || origin_x + mask.width as i64 <= 0
+        || origin_y + mask.height as i64 <= 0
+    {
         return;
     }
 
@@ -158,8 +182,20 @@ mod tests {
         };
         let list = DisplayList {
             items: vec![
-                DisplayItem::Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0, color: Rgba8::rgb(0x11, 0x22, 0x33) },
-                DisplayItem::Rect { x: 4.0, y: 4.0, w: 2.0, h: 2.0, color: Rgba8::rgb(0xff, 0xff, 0xff) },
+                DisplayItem::Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 10.0,
+                    h: 10.0,
+                    color: Rgba8::rgb(0x11, 0x22, 0x33),
+                },
+                DisplayItem::Rect {
+                    x: 4.0,
+                    y: 4.0,
+                    w: 2.0,
+                    h: 2.0,
+                    color: Rgba8::rgb(0xff, 0xff, 0xff),
+                },
             ],
         };
         let buf = backend.rasterize(&list, 10, 10);
@@ -192,6 +228,10 @@ mod tests {
         };
         backend.mask_for(Script::Latin, 1, 16.0);
         backend.mask_for(Script::Han, 1, 16.0);
-        assert_eq!(backend.masks.len(), 2, "same (glyph_id, size) from two scripts must not share a cache slot");
+        assert_eq!(
+            backend.masks.len(),
+            2,
+            "same (glyph_id, size) from two scripts must not share a cache slot"
+        );
     }
 }

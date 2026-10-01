@@ -20,10 +20,12 @@ use css::Token;
 use dom::Node;
 
 use crate::computed::{
-    BorderStyle, Color, ComputedStyle, Direction, Display, Edges, LengthPercentageAuto,
-    MarginEdges, TextAlign, TextTransform, WhiteSpace, BOTTOM, LEFT, RIGHT, TOP,
+    BOTTOM, BorderStyle, Color, ComputedStyle, Direction, Display, Edges, LEFT,
+    LengthPercentageAuto, MarginEdges, RIGHT, TOP, TextAlign, TextTransform, WhiteSpace,
 };
-use crate::selector_matching::{matches_selector, parse_selector_list, FlatChild, FlatDom, Specificity};
+use crate::selector_matching::{
+    FlatChild, FlatDom, Specificity, matches_selector, parse_selector_list,
+};
 
 /// The built-in default stylesheet (M5.6), compiled in — loading it is
 /// not resource fetching (no I/O at runtime), so it doesn't bend the
@@ -131,7 +133,14 @@ fn declarations_for(
     let mut out = Vec::new();
     collect_from_sheet(flat, idx, ua, TierBase::UserAgent, &mut order, &mut out);
     for sheet in author_sheets {
-        collect_from_sheet(flat, idx, sheet, TierBase::AuthorSheet, &mut order, &mut out);
+        collect_from_sheet(
+            flat,
+            idx,
+            sheet,
+            TierBase::AuthorSheet,
+            &mut order,
+            &mut out,
+        );
     }
     if let Some(style_attr) = flat.attr(idx, "style")
         && let Ok(decls) = css::parse_style_attribute(style_attr)
@@ -166,8 +175,12 @@ fn collect_from_sheet(
     out: &mut Vec<Applied>,
 ) {
     for rule in &sheet.rules {
-        let css::Rule::Qualified(qr) = rule else { continue };
-        let Ok(list) = parse_selector_list(&qr.prelude) else { continue };
+        let css::Rule::Qualified(qr) = rule else {
+            continue;
+        };
+        let Ok(list) = parse_selector_list(&qr.prelude) else {
+            continue;
+        };
         // A comma-separated list is cascade-equivalent to separate rules
         // sharing one declaration block — each matching branch
         // contributes independently, so the specificity that matters is
@@ -178,7 +191,9 @@ fn collect_from_sheet(
             .filter(|s| matches_selector(flat, idx, s))
             .map(|s| s.specificity)
             .max();
-        let Some(specificity) = specificity else { continue };
+        let Some(specificity) = specificity else {
+            continue;
+        };
         for decl in &qr.declarations {
             out.push(Applied {
                 tier: tier(base, decl.important),
@@ -193,7 +208,11 @@ fn collect_from_sheet(
 
 /// Sorts `applied` into cascade order and folds it into a fresh
 /// `ComputedStyle` inherited from `parent`.
-fn compute_style(applied: &[Applied], parent: &ComputedStyle, dir_attr: Option<&str>) -> ComputedStyle {
+fn compute_style(
+    applied: &[Applied],
+    parent: &ComputedStyle,
+    dir_attr: Option<&str>,
+) -> ComputedStyle {
     let mut sorted: Vec<&Applied> = applied.iter().collect();
     sorted.sort_by_key(|a| (a.tier, a.specificity, a.order));
 
@@ -241,7 +260,12 @@ fn compute_style(applied: &[Applied], parent: &ComputedStyle, dir_attr: Option<&
 /// (never erroring on) any property name or value this engine doesn't
 /// understand yet — the M3 forward-compatibility pattern: a browser
 /// encounters unsupported properties on every real page, constantly.
-fn apply_declaration(style: &mut ComputedStyle, decl: &css::Declaration, em_basis: f32, border_color_set: &mut bool) {
+fn apply_declaration(
+    style: &mut ComputedStyle,
+    decl: &css::Declaration,
+    em_basis: f32,
+    border_color_set: &mut bool,
+) {
     match decl.name.as_str() {
         "color" => {
             if let Some(c) = parse_color(&decl.value) {
@@ -385,8 +409,10 @@ fn expand_1_to_4<T: Copy>(values: &[T]) -> Option<[T; 4]> {
 /// partially applied).
 fn parse_box_shorthand(tokens: &[Token], em_basis_px: f32) -> Option<Edges> {
     let groups = split_whitespace_groups(tokens);
-    let lengths: Option<Vec<f32>> =
-        groups.iter().map(|g| parse_length_px(g, em_basis_px)).collect();
+    let lengths: Option<Vec<f32>> = groups
+        .iter()
+        .map(|g| parse_length_px(g, em_basis_px))
+        .collect();
     expand_1_to_4(&lengths?)
 }
 
@@ -394,8 +420,10 @@ fn parse_box_shorthand(tokens: &[Token], em_basis_px: f32) -> Option<Edges> {
 /// but each value may also be `auto`.
 fn parse_margin_shorthand(tokens: &[Token], em_basis_px: f32) -> Option<MarginEdges> {
     let groups = split_whitespace_groups(tokens);
-    let values: Option<Vec<LengthPercentageAuto>> =
-        groups.iter().map(|g| parse_length_or_auto(g, em_basis_px)).collect();
+    let values: Option<Vec<LengthPercentageAuto>> = groups
+        .iter()
+        .map(|g| parse_length_or_auto(g, em_basis_px))
+        .collect();
     expand_1_to_4(&values?)
 }
 
@@ -414,11 +442,17 @@ fn apply_border_shorthand(
     let mut border_style = None;
     let mut color = None;
     for g in split_whitespace_groups(tokens) {
-        if width.is_none() && let Some(w) = parse_length_px(&g, em_basis_px) {
+        if width.is_none()
+            && let Some(w) = parse_length_px(&g, em_basis_px)
+        {
             width = Some(w);
-        } else if border_style.is_none() && let Some(s) = parse_border_style(&g) {
+        } else if border_style.is_none()
+            && let Some(s) = parse_border_style(&g)
+        {
             border_style = Some(s);
-        } else if color.is_none() && let Some(c) = parse_color(&g) {
+        } else if color.is_none()
+            && let Some(c) = parse_color(&g)
+        {
             color = Some(c);
         } else {
             return; // an unrecognized (or repeated) part: drop the whole shorthand
@@ -484,7 +518,10 @@ fn parse_length_or_auto(tokens: &[Token], em_basis_px: f32) -> Option<LengthPerc
 
 /// `auto`, a length, or a percentage — used for `width` (M6.2's explicit
 /// scope: "auto, fixed px, percentage of containing block").
-fn parse_length_percentage_or_auto(tokens: &[Token], em_basis_px: f32) -> Option<LengthPercentageAuto> {
+fn parse_length_percentage_or_auto(
+    tokens: &[Token],
+    em_basis_px: f32,
+) -> Option<LengthPercentageAuto> {
     if is_auto(tokens) {
         return Some(LengthPercentageAuto::Auto);
     }
@@ -643,10 +680,30 @@ fn parse_hex_color(hex: &str) -> Option<Color> {
         Some((hi * 16 + lo) as f32 / 255.0)
     };
     match hex.len() {
-        3 => Some(Color { r: one(0)?, g: one(1)?, b: one(2)?, a: 1.0 }),
-        4 => Some(Color { r: one(0)?, g: one(1)?, b: one(2)?, a: one(3)? }),
-        6 => Some(Color { r: two(0)?, g: two(2)?, b: two(4)?, a: 1.0 }),
-        8 => Some(Color { r: two(0)?, g: two(2)?, b: two(4)?, a: two(6)? }),
+        3 => Some(Color {
+            r: one(0)?,
+            g: one(1)?,
+            b: one(2)?,
+            a: 1.0,
+        }),
+        4 => Some(Color {
+            r: one(0)?,
+            g: one(1)?,
+            b: one(2)?,
+            a: one(3)?,
+        }),
+        6 => Some(Color {
+            r: two(0)?,
+            g: two(2)?,
+            b: two(4)?,
+            a: 1.0,
+        }),
+        8 => Some(Color {
+            r: two(0)?,
+            g: two(2)?,
+            b: two(4)?,
+            a: two(6)?,
+        }),
         _ => None,
     }
 }
@@ -801,7 +858,10 @@ mod tests {
         // `padding`/`border-width`'s shorthand (`margin`'s own, which
         // additionally allows `auto` per value, is tested separately
         // below).
-        assert_eq!(parse_box_shorthand(&css::tokenize("10px"), 16.0), Some([10.0; 4]));
+        assert_eq!(
+            parse_box_shorthand(&css::tokenize("10px"), 16.0),
+            Some([10.0; 4])
+        );
         assert_eq!(
             parse_box_shorthand(&css::tokenize("10px 20px"), 16.0),
             Some([10.0, 20.0, 10.0, 20.0])
@@ -814,7 +874,10 @@ mod tests {
             parse_box_shorthand(&css::tokenize("10px 20px 30px 40px"), 16.0),
             Some([10.0, 20.0, 30.0, 40.0])
         );
-        assert_eq!(parse_box_shorthand(&css::tokenize("10px 20px 30px 40px 50px"), 16.0), None);
+        assert_eq!(
+            parse_box_shorthand(&css::tokenize("10px 20px 30px 40px 50px"), 16.0),
+            None
+        );
     }
 
     #[test]
@@ -869,26 +932,41 @@ mod tests {
             ("pre-line", WhiteSpace::PreLine),
         ] {
             let sheets = [sheet(&format!("p {{ white-space: {value}; }}"))];
-            assert_eq!(style_of("<p>x</p>", &sheets, "p").white_space, expected, "{value}");
+            assert_eq!(
+                style_of("<p>x</p>", &sheets, "p").white_space,
+                expected,
+                "{value}"
+            );
         }
     }
 
     #[test]
     fn letter_and_word_spacing_accept_lengths_and_normal() {
-        let sheets = [sheet("p { letter-spacing: 2px; word-spacing: 1em; font-size: 10px; }")];
+        let sheets = [sheet(
+            "p { letter-spacing: 2px; word-spacing: 1em; font-size: 10px; }",
+        )];
         let s = style_of("<p>x</p>", &sheets, "p");
         assert_eq!(s.letter_spacing, 2.0);
         assert_eq!(s.word_spacing, 10.0); // 1em at font-size: 10px
 
-        let sheets = [sheet("div { letter-spacing: 5px; } p { letter-spacing: normal; }")];
+        let sheets = [sheet(
+            "div { letter-spacing: 5px; } p { letter-spacing: normal; }",
+        )];
         let s = style_of("<div><p>x</p></div>", &sheets, "p");
-        assert_eq!(s.letter_spacing, 0.0, "`normal` resets, it doesn't just fail to parse");
+        assert_eq!(
+            s.letter_spacing, 0.0,
+            "`normal` resets, it doesn't just fail to parse"
+        );
     }
 
     #[test]
     fn dir_attribute_sets_direction_and_inherits() {
         let s = style_of(r#"<div dir="rtl"><span>x</span></div>"#, &[], "span");
-        assert_eq!(s.direction, Direction::Rtl, "inherited from the div's dir attribute");
+        assert_eq!(
+            s.direction,
+            Direction::Rtl,
+            "inherited from the div's dir attribute"
+        );
 
         let s = style_of(r#"<p dir="ltr">x</p>"#, &[], "p");
         assert_eq!(s.direction, Direction::Ltr);
@@ -905,22 +983,34 @@ mod tests {
         assert_eq!(auto.width, LengthPercentageAuto::Auto); // initial value
 
         let sheets = [sheet("p { width: 200px; }")];
-        assert_eq!(style_of("<p>x</p>", &sheets, "p").width, LengthPercentageAuto::Px(200.0));
+        assert_eq!(
+            style_of("<p>x</p>", &sheets, "p").width,
+            LengthPercentageAuto::Px(200.0)
+        );
 
         let sheets = [sheet("p { width: 50%; }")];
-        assert_eq!(style_of("<p>x</p>", &sheets, "p").width, LengthPercentageAuto::Percent(50.0));
+        assert_eq!(
+            style_of("<p>x</p>", &sheets, "p").width,
+            LengthPercentageAuto::Percent(50.0)
+        );
     }
 
     #[test]
     fn height_accepts_auto_and_px_but_not_percent_yet() {
         let sheets = [sheet("p { height: 300px; }")];
-        assert_eq!(style_of("<p>x</p>", &sheets, "p").height, LengthPercentageAuto::Px(300.0));
+        assert_eq!(
+            style_of("<p>x</p>", &sheets, "p").height,
+            LengthPercentageAuto::Px(300.0)
+        );
 
         // A `%` height is unrecognized *value* syntax for now (M10 adds
         // it) — ignored, per the forward-compatibility pattern, not an
         // error; the property keeps its initial value.
         let sheets = [sheet("p { height: 50%; }")];
-        assert_eq!(style_of("<p>x</p>", &sheets, "p").height, LengthPercentageAuto::Auto);
+        assert_eq!(
+            style_of("<p>x</p>", &sheets, "p").height,
+            LengthPercentageAuto::Auto
+        );
     }
 
     #[test]
@@ -959,7 +1049,9 @@ mod tests {
 
     #[test]
     fn unrecognized_properties_and_values_are_ignored_not_errors() {
-        let sheets = [sheet("p { transform: rotate(5deg); color: red; margin: banana; }")];
+        let sheets = [sheet(
+            "p { transform: rotate(5deg); color: red; margin: banana; }",
+        )];
         let s = style_of("<p>x</p>", &sheets, "p");
         assert_eq!(s.color, Color::rgb8(255, 0, 0)); // the recognized one still applied
         // The bad value didn't override — `<p>` keeps ua.css's margin,
@@ -994,18 +1086,31 @@ mod tests {
 
     #[test]
     fn hex_colors_all_four_lengths() {
-        assert_eq!(parse_color(&css::tokenize("#f00")), Some(Color::rgb8(255, 0, 0)));
+        assert_eq!(
+            parse_color(&css::tokenize("#f00")),
+            Some(Color::rgb8(255, 0, 0))
+        );
         assert_eq!(
             parse_color(&css::tokenize("#ff0000")),
             Some(Color::rgb8(255, 0, 0))
         );
         assert_eq!(
             parse_color(&css::tokenize("#f00f")),
-            Some(Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 })
+            Some(Color {
+                r: 1.0,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0
+            })
         );
         assert_eq!(
             parse_color(&css::tokenize("#ff000080")),
-            Some(Color { r: 1.0, g: 0.0, b: 0.0, a: 128.0 / 255.0 })
+            Some(Color {
+                r: 1.0,
+                g: 0.0,
+                b: 0.0,
+                a: 128.0 / 255.0
+            })
         );
         assert_eq!(parse_color(&css::tokenize("#ggg")), None);
         assert_eq!(parse_color(&css::tokenize("#ff")), None); // invalid length
@@ -1013,7 +1118,10 @@ mod tests {
 
     #[test]
     fn named_colors_are_case_insensitive() {
-        assert_eq!(parse_color(&css::tokenize("RED")), Some(Color::rgb8(255, 0, 0)));
+        assert_eq!(
+            parse_color(&css::tokenize("RED")),
+            Some(Color::rgb8(255, 0, 0))
+        );
         assert_eq!(parse_color(&css::tokenize("CornflowerBlue")), None); // not in the small set — documented gap
     }
 
@@ -1060,7 +1168,11 @@ mod tests {
         for tag in ["head", "style", "script", "title", "meta", "link"] {
             let html = format!("<{tag}>x</{tag}>");
             let s = style_of(&html, &[], tag);
-            assert_eq!(s.display, Display::None, "{tag} should default to display:none");
+            assert_eq!(
+                s.display,
+                Display::None,
+                "{tag} should default to display:none"
+            );
         }
     }
 

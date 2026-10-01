@@ -12,7 +12,7 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use dom::{Element, Node};
-use style::selector_matching::{parse_selector_list, FlatDom};
+use style::selector_matching::{FlatDom, parse_selector_list};
 
 const TARGET_ELEMENTS: usize = 10_000;
 const TARGET_SELECTORS: usize = 1_000;
@@ -76,7 +76,9 @@ fn main() {
 
     let selectors: Vec<_> = synthetic_selector_sources(TARGET_SELECTORS)
         .iter()
-        .map(|src| parse_selector_list(&css::tokenize(src)).expect("all templates are valid selectors"))
+        .map(|src| {
+            parse_selector_list(&css::tokenize(src)).expect("all templates are valid selectors")
+        })
         .collect();
 
     let start = Instant::now();

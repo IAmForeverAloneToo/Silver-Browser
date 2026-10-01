@@ -413,7 +413,10 @@ mod tests {
     #[test]
     fn comments_and_doctype() {
         assert_eq!(tokenize("<!-- hi -->"), vec![Token::Comment(" hi ".into())]);
-        assert_eq!(tokenize("<!DOCTYPE html>"), vec![Token::Doctype("html".into())]);
+        assert_eq!(
+            tokenize("<!DOCTYPE html>"),
+            vec![Token::Doctype("html".into())]
+        );
     }
 
     #[test]
@@ -429,7 +432,10 @@ mod tests {
             vec![text("Fish & Chips <3 AB\u{a0}!")]
         );
         // Unknown or malformed references stay literal.
-        assert_eq!(tokenize("&nope; &#; &#x; &"), vec![text("&nope; &#; &#x; &")]);
+        assert_eq!(
+            tokenize("&nope; &#; &#x; &"),
+            vec![text("&nope; &#; &#x; &")]
+        );
     }
 
     #[test]

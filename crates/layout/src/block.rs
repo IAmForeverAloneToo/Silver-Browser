@@ -17,7 +17,7 @@
 //!   sees `Auto` or `Px`.
 
 use style::computed::{
-    BorderStyle, ComputedStyle, LengthPercentageAuto, TextAlign, BOTTOM, LEFT, RIGHT, TOP,
+    BOTTOM, BorderStyle, ComputedStyle, LEFT, LengthPercentageAuto, RIGHT, TOP, TextAlign,
 };
 use text::FontCollection;
 
@@ -193,7 +193,10 @@ pub(crate) fn layout_block(b: &LayoutBox, cb_width: f32, fonts: &FontCollection)
     // escaping through as a single value on both sides at once — as if
     // the box weren't there at all, margin-wise (CSS2 §8.3.1).
     if b.children.is_empty() && !has_top_sep && !has_bottom_sep && height_is_auto {
-        let collapsed = collapse_margins(b.style.margin[TOP].resolve(0.0, 0.0), b.style.margin[BOTTOM].resolve(0.0, 0.0));
+        let collapsed = collapse_margins(
+            b.style.margin[TOP].resolve(0.0, 0.0),
+            b.style.margin[BOTTOM].resolve(0.0, 0.0),
+        );
         return BlockLayout {
             fragments: vec![box_fragment(0.0, 0.0, content_width, 0.0, &b.style)],
             height: 0.0,
@@ -216,9 +219,18 @@ pub(crate) fn layout_block(b: &LayoutBox, cb_width: f32, fonts: &FontCollection)
     // SAME margin would then also get re-applied one level up, when
     // *this* box gets positioned among *its* own siblings.
     let (child_shift, margin_top) = if has_top_sep {
-        (children.leading_margin, b.style.margin[TOP].resolve(0.0, 0.0))
+        (
+            children.leading_margin,
+            b.style.margin[TOP].resolve(0.0, 0.0),
+        )
     } else {
-        (0.0, collapse_margins(b.style.margin[TOP].resolve(0.0, 0.0), children.leading_margin))
+        (
+            0.0,
+            collapse_margins(
+                b.style.margin[TOP].resolve(0.0, 0.0),
+                children.leading_margin,
+            ),
+        )
     };
 
     let content_height = match b.style.height {
@@ -238,22 +250,50 @@ pub(crate) fn layout_block(b: &LayoutBox, cb_width: f32, fonts: &FontCollection)
     let margin_bottom = if has_bottom_sep || !height_is_auto {
         b.style.margin[BOTTOM].resolve(0.0, 0.0)
     } else {
-        collapse_margins(b.style.margin[BOTTOM].resolve(0.0, 0.0), children.trailing_margin)
+        collapse_margins(
+            b.style.margin[BOTTOM].resolve(0.0, 0.0),
+            children.trailing_margin,
+        )
     };
 
     let border_box_width = content_width + non_content_width;
-    let border_box_height = border[TOP] + padding[TOP] + content_height + padding[BOTTOM] + border[BOTTOM];
+    let border_box_height =
+        border[TOP] + padding[TOP] + content_height + padding[BOTTOM] + border[BOTTOM];
 
-    let mut fragments = vec![box_fragment(0.0, 0.0, border_box_width, border_box_height, &b.style)];
+    let mut fragments = vec![box_fragment(
+        0.0,
+        0.0,
+        border_box_width,
+        border_box_height,
+        &b.style,
+    )];
     let content_x = border[LEFT] + padding[LEFT];
     let content_y = border[TOP] + padding[TOP] + child_shift;
-    fragments.extend(children.fragments.into_iter().map(|f| f.translated(content_x, content_y)));
+    fragments.extend(
+        children
+            .fragments
+            .into_iter()
+            .map(|f| f.translated(content_x, content_y)),
+    );
 
-    BlockLayout { fragments, height: border_box_height, margin_left, margin_top, margin_bottom }
+    BlockLayout {
+        fragments,
+        height: border_box_height,
+        margin_left,
+        margin_top,
+        margin_bottom,
+    }
 }
 
 fn box_fragment(x: f32, y: f32, w: f32, h: f32, style: &ComputedStyle) -> Fragment {
-    Fragment { x, y, w, h, style: style.clone(), kind: FragmentKind::Box }
+    Fragment {
+        x,
+        y,
+        w,
+        h,
+        style: style.clone(),
+        kind: FragmentKind::Box,
+    }
 }
 
 /// The result of stacking a sequence of sibling boxes in normal flow.
@@ -361,7 +401,12 @@ fn layout_children(
         }
     }
 
-    ChildrenLayout { fragments, content_height: y, leading_margin, trailing_margin: pending_margin }
+    ChildrenLayout {
+        fragments,
+        content_height: y,
+        leading_margin,
+        trailing_margin: pending_margin,
+    }
 }
 
 #[cfg(test)]
@@ -388,7 +433,10 @@ mod tests {
     }
 
     fn box_fragments(frags: &[Fragment]) -> Vec<&Fragment> {
-        frags.iter().filter(|f| matches!(f.kind, FragmentKind::Box)).collect()
+        frags
+            .iter()
+            .filter(|f| matches!(f.kind, FragmentKind::Box))
+            .collect()
     }
 
     #[test]
@@ -543,7 +591,10 @@ mod tests {
         };
         let boxes = box_fragments(&frags);
         let (div, p) = (boxes[0], boxes[1]);
-        assert_eq!(div.y, 5.0, "div's own margin, uncollapsed — padding stops it");
+        assert_eq!(
+            div.y, 5.0,
+            "div's own margin, uncollapsed — padding stops it"
+        );
         // p sits inside div: div's padding-top (2) + p's own margin-top
         // (25, now a real internal gap, not an escaping one).
         assert_eq!(p.y, div.y + 2.0 + 25.0);
@@ -618,7 +669,9 @@ mod tests {
         ) else {
             return;
         };
-        let text = frags.iter().find(|f| matches!(f.kind, FragmentKind::Text(_)));
+        let text = frags
+            .iter()
+            .find(|f| matches!(f.kind, FragmentKind::Text(_)));
         let f = text.expect("a text fragment");
         match &f.kind {
             FragmentKind::Text(t) => assert_eq!(t, "hello"),
@@ -674,8 +727,10 @@ mod tests {
             return;
         };
         let boxes = box_fragments(&frags);
-        let texts: Vec<&Fragment> =
-            frags.iter().filter(|f| matches!(f.kind, FragmentKind::Text(_))).collect();
+        let texts: Vec<&Fragment> = frags
+            .iter()
+            .filter(|f| matches!(f.kind, FragmentKind::Text(_)))
+            .collect();
         // section, article, h1, p: every block box gets its own Box
         // fragment regardless of margin/border/padding collapsing —
         // collapsing only affects *position*, never whether a box
@@ -688,11 +743,20 @@ mod tests {
         // h1's line height/baseline, h1's own font-size (30px).
         let h1_metrics = fonts.primary().metrics(30.0);
         // h1's text baseline: inside article's border(2)+padding(10) = 12.
-        let h1_text = texts.iter().find(|f| matches!(&f.kind, FragmentKind::Text(t) if t == "Title")).unwrap();
+        let h1_text = texts
+            .iter()
+            .find(|f| matches!(&f.kind, FragmentKind::Text(t) if t == "Title"))
+            .unwrap();
         assert_eq!(h1_text.y, 12.0 + h1_metrics.ascent);
         // p's text baseline: after h1's full line box + h1's own margin-bottom (15) + article's padding-top (already counted above, not again).
         let p_metrics = fonts.primary().metrics(10.0);
-        let p_text = texts.iter().find(|f| matches!(&f.kind, FragmentKind::Text(t) if t == "Body")).unwrap();
-        assert_eq!(p_text.y, 12.0 + h1_metrics.line_height() + 15.0 + p_metrics.ascent);
+        let p_text = texts
+            .iter()
+            .find(|f| matches!(&f.kind, FragmentKind::Text(t) if t == "Body"))
+            .unwrap();
+        assert_eq!(
+            p_text.y,
+            12.0 + h1_metrics.line_height() + 15.0 + p_metrics.ascent
+        );
     }
 }

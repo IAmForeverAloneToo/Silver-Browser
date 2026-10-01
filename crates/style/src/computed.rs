@@ -29,14 +29,29 @@ impl Color {
     /// An opaque color from 0–255 channels (convenience for the named
     /// and hex-color tables).
     pub const fn rgb8(r: u8, g: u8, b: u8) -> Self {
-        Color { r: r as f32 / 255.0, g: g as f32 / 255.0, b: b as f32 / 255.0, a: 1.0 }
+        Color {
+            r: r as f32 / 255.0,
+            g: g as f32 / 255.0,
+            b: b as f32 / 255.0,
+            a: 1.0,
+        }
     }
 
     /// Fully transparent black — `background-color`'s initial value.
-    pub const TRANSPARENT: Color = Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
+    pub const TRANSPARENT: Color = Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 0.0,
+    };
 
     /// Opaque black — the conventional UA default for `color`.
-    pub const BLACK: Color = Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 };
+    pub const BLACK: Color = Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 1.0,
+    };
 }
 
 /// `display` (css-display-3, v1 subset: box generation only).
@@ -342,7 +357,10 @@ mod tests {
     fn length_percentage_auto_resolves_each_variant() {
         assert_eq!(LengthPercentageAuto::Auto.resolve(200.0, 42.0), 42.0);
         assert_eq!(LengthPercentageAuto::Px(10.0).resolve(200.0, 42.0), 10.0);
-        assert_eq!(LengthPercentageAuto::Percent(50.0).resolve(200.0, 42.0), 100.0);
+        assert_eq!(
+            LengthPercentageAuto::Percent(50.0).resolve(200.0, 42.0),
+            100.0
+        );
         assert!(LengthPercentageAuto::Auto.is_auto());
         assert!(!LengthPercentageAuto::Px(0.0).is_auto());
     }

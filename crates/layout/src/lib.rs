@@ -14,5 +14,5 @@ pub mod block;
 pub mod box_tree;
 pub mod inline;
 
-pub use block::{layout, Fragment, FragmentKind};
-pub use box_tree::{build_box_tree, BoxKind, LayoutBox};
+pub use block::{Fragment, FragmentKind, layout};
+pub use box_tree::{BoxKind, LayoutBox, build_box_tree};

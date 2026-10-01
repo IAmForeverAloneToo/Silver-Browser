@@ -15,8 +15,8 @@ pub mod parser;
 pub mod tokenizer;
 
 pub use parser::{
-    parse_style_attribute, parse_stylesheet, AtRule, Block, Declaration, QualifiedRule, Rule,
-    Stylesheet,
+    AtRule, Block, Declaration, QualifiedRule, Rule, Stylesheet, parse_style_attribute,
+    parse_stylesheet,
 };
 pub use tokenizer::{Token, Tokenizer, tokenize};
 
@@ -47,9 +47,8 @@ mod tests {
 
     #[test]
     fn end_to_end_small_sheet() {
-        let sheet =
-            parse_stylesheet("body { margin: 0; } @media print { body { color: black; } }")
-                .expect("never fails");
+        let sheet = parse_stylesheet("body { margin: 0; } @media print { body { color: black; } }")
+            .expect("never fails");
         assert_eq!(sheet.rules.len(), 2);
         let Rule::Qualified(rule) = &sheet.rules[0] else {
             panic!("expected a qualified rule");

@@ -134,19 +134,13 @@ impl FlatDom {
             for (i, &c) in child_list.iter().enumerate() {
                 self.nodes[c].element_index = i as u32;
                 self.nodes[c].sibling_count = child_list.len() as u32;
-                self.nodes[c].prev_element_sibling = if i > 0 {
-                    Some(child_list[i - 1])
-                } else {
-                    None
-                };
+                self.nodes[c].prev_element_sibling =
+                    if i > 0 { Some(child_list[i - 1]) } else { None };
             }
             // Group by tag for the -of-type indices.
             let mut by_tag: HashMap<String, Vec<usize>> = HashMap::new();
             for &c in &child_list {
-                by_tag
-                    .entry(self.nodes[c].tag.clone())
-                    .or_default()
-                    .push(c);
+                by_tag.entry(self.nodes[c].tag.clone()).or_default().push(c);
             }
             for group in by_tag.values() {
                 for (ti, &c) in group.iter().enumerate() {
@@ -209,9 +203,11 @@ mod tests {
 
     #[test]
     fn build_counts_elements_and_skips_text() {
-        let doc = Node::document(vec![Element::new("div")
-            .push(Element::new("p").text("hi"))
-            .into()]);
+        let doc = Node::document(vec![
+            Element::new("div")
+                .push(Element::new("p").text("hi"))
+                .into(),
+        ]);
         let flat = FlatDom::build(&doc);
         // virtual root + div + p
         assert_eq!(flat.element_count(), 2);
@@ -219,9 +215,7 @@ mod tests {
 
     #[test]
     fn parent_child_links() {
-        let doc = Node::document(vec![Element::new("div")
-            .push(Element::new("p"))
-            .into()]);
+        let doc = Node::document(vec![Element::new("div").push(Element::new("p")).into()]);
         let flat = FlatDom::build(&doc);
         let div = 1;
         let p = 2;
@@ -233,12 +227,14 @@ mod tests {
     #[test]
     fn sibling_stats_and_text_skipping() {
         // <div> <a/> text <b/> <b/> </div>
-        let doc = Node::document(vec![Element::new("div")
-            .push(Element::new("a"))
-            .text(" between ")
-            .push(Element::new("b"))
-            .push(Element::new("b"))
-            .into()]);
+        let doc = Node::document(vec![
+            Element::new("div")
+                .push(Element::new("a"))
+                .text(" between ")
+                .push(Element::new("b"))
+                .push(Element::new("b"))
+                .into(),
+        ]);
         let flat = FlatDom::build(&doc);
         let (a, b1, b2) = (2, 3, 4);
         assert_eq!(flat.nodes[a].element_index, 0);
@@ -267,9 +263,7 @@ mod tests {
 
     #[test]
     fn attribute_lookup() {
-        let doc = Node::document(vec![Element::new("p")
-            .attr("class", "a b")
-            .into()]);
+        let doc = Node::document(vec![Element::new("p").attr("class", "a b").into()]);
         let flat = FlatDom::build(&doc);
         assert_eq!(flat.attr(1, "class"), Some("a b"));
         assert_eq!(flat.attr(1, "id"), None);
@@ -280,11 +274,13 @@ mod tests {
         // <p>A<b>B</b>C</p> — the whole point of `children` (unlike
         // `child_elements`) is that "A" comes before <b>, which comes
         // before "C", exactly as written.
-        let doc = Node::document(vec![Element::new("p")
-            .text("A")
-            .push(Element::new("b").text("B"))
-            .text("C")
-            .into()]);
+        let doc = Node::document(vec![
+            Element::new("p")
+                .text("A")
+                .push(Element::new("b").text("B"))
+                .text("C")
+                .into(),
+        ]);
         let flat = FlatDom::build(&doc);
         let p = 1;
         let b = 2;

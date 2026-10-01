@@ -12,15 +12,43 @@ use dom::{Element, Node};
 
 /// Elements that never have children (never pushed onto the open stack).
 const VOID_ELEMENTS: [&str; 14] = [
-    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param",
-    "source", "track", "wbr",
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source",
+    "track", "wbr",
 ];
 
 /// Start tags that imply the end of an open `p` element.
 const CLOSES_P: [&str; 31] = [
-    "address", "article", "aside", "blockquote", "details", "div", "dl", "fieldset",
-    "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header",
-    "hgroup", "hr", "li", "main", "menu", "nav", "ol", "p", "pre", "section", "table", "ul",
+    "address",
+    "article",
+    "aside",
+    "blockquote",
+    "details",
+    "div",
+    "dl",
+    "fieldset",
+    "figcaption",
+    "figure",
+    "footer",
+    "form",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "header",
+    "hgroup",
+    "hr",
+    "li",
+    "main",
+    "menu",
+    "nav",
+    "ol",
+    "p",
+    "pre",
+    "section",
+    "table",
+    "ul",
 ];
 
 /// Builds a DOM tree from a token stream.

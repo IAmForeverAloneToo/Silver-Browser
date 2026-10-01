@@ -43,9 +43,15 @@ impl Browser {
     /// Renders one frame and presents it. Failures skip the frame (logged)
     /// rather than taking the process down.
     fn draw(&mut self) {
-        let Some(window) = self.window.as_ref() else { return };
-        let Some(surface) = self.surface.as_mut() else { return };
-        let Some(engine) = self.engine.as_mut() else { return };
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        let Some(surface) = self.surface.as_mut() else {
+            return;
+        };
+        let Some(engine) = self.engine.as_mut() else {
+            return;
+        };
 
         let size = window.inner_size();
         let (Some(w), Some(h)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) else {
@@ -116,7 +122,12 @@ impl ApplicationHandler for Browser {
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _window_id: WindowId, event: WindowEvent) {
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: WindowId,
+        event: WindowEvent,
+    ) {
         let Some(window) = self.window.as_ref() else {
             return;
         };
@@ -127,9 +138,10 @@ impl ApplicationHandler for Browser {
                 if let (Some(w), Some(h)) =
                     (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
                     && let Some(surface) = self.surface.as_mut()
-                        && let Err(e) = surface.resize(w, h) {
-                            eprintln!("surface resize failed: {e}");
-                        }
+                    && let Err(e) = surface.resize(w, h)
+                {
+                    eprintln!("surface resize failed: {e}");
+                }
                 window.request_redraw();
             }
             _ => {}

@@ -48,7 +48,7 @@ use std::borrow::Cow;
 use style::computed::{ComputedStyle, Direction, TextAlign, TextTransform, WhiteSpace};
 use text::FontCollection;
 
-use crate::block::{layout_block, Fragment, FragmentKind};
+use crate::block::{Fragment, FragmentKind, layout_block};
 use crate::box_tree::{BoxKind, LayoutBox};
 
 /// One flattened piece of inline content, in document order.
@@ -94,8 +94,17 @@ pub(crate) fn layout_inline(
 
     for item in &flat {
         match item {
-            InlineItem::Word { text, width, style, no_wrap } => {
-                let gap = if line.is_empty() { 0.0 } else { space_width(style, fonts) };
+            InlineItem::Word {
+                text,
+                width,
+                style,
+                no_wrap,
+            } => {
+                let gap = if line.is_empty() {
+                    0.0
+                } else {
+                    space_width(style, fonts)
+                };
                 // Greedy line breaking at a soft-wrap opportunity
                 // (M7.3): if this word doesn't fit, start a new line —
                 // unless the line is still empty (a solo word wider
@@ -103,7 +112,15 @@ pub(crate) fn layout_inline(
                 // module doc's overflow-wrap note) or this word's own
                 // `white-space: pre` forbids wrapping before it (M8.4).
                 if !no_wrap && !line.is_empty() && line_width + gap + width > available_width {
-                    flush_line(&mut line, line_width, available_width, text_align, fonts, &mut y, &mut fragments);
+                    flush_line(
+                        &mut line,
+                        line_width,
+                        available_width,
+                        text_align,
+                        fonts,
+                        &mut y,
+                        &mut fragments,
+                    );
                     line_width = *width;
                 } else {
                     line_width += gap + width;
@@ -113,21 +130,50 @@ pub(crate) fn layout_inline(
             InlineItem::ForcedBreak => {
                 // `white-space: pre`/`pre-wrap`/`pre-line` (M8.4): a
                 // literal newline ends the line unconditionally.
-                flush_line(&mut line, line_width, available_width, text_align, fonts, &mut y, &mut fragments);
+                flush_line(
+                    &mut line,
+                    line_width,
+                    available_width,
+                    text_align,
+                    fonts,
+                    &mut y,
+                    &mut fragments,
+                );
                 line_width = 0.0;
             }
             InlineItem::Block(b) => {
-                flush_line(&mut line, line_width, available_width, text_align, fonts, &mut y, &mut fragments);
+                flush_line(
+                    &mut line,
+                    line_width,
+                    available_width,
+                    text_align,
+                    fonts,
+                    &mut y,
+                    &mut fragments,
+                );
                 line_width = 0.0;
 
                 let block = layout_block(b, available_width, fonts);
                 y += block.margin_top;
-                fragments.extend(block.fragments.into_iter().map(|f| f.translated(block.margin_left, y)));
+                fragments.extend(
+                    block
+                        .fragments
+                        .into_iter()
+                        .map(|f| f.translated(block.margin_left, y)),
+                );
                 y += block.height + block.margin_bottom;
             }
         }
     }
-    flush_line(&mut line, line_width, available_width, text_align, fonts, &mut y, &mut fragments);
+    flush_line(
+        &mut line,
+        line_width,
+        available_width,
+        text_align,
+        fonts,
+        &mut y,
+        &mut fragments,
+    );
 
     (fragments, y)
 }
@@ -138,7 +184,11 @@ pub(crate) fn layout_inline(
 /// goes. A nested `Block` box (M7.6) is kept as its own item rather than
 /// recursed into — it isn't inline content to flow onto a line, it ends
 /// one.
-fn collect_inline_items<'a>(boxes: &'a [LayoutBox], fonts: &FontCollection, out: &mut Vec<InlineItem<'a>>) {
+fn collect_inline_items<'a>(
+    boxes: &'a [LayoutBox],
+    fonts: &FontCollection,
+    out: &mut Vec<InlineItem<'a>>,
+) {
     for b in boxes {
         match &b.kind {
             BoxKind::Text(text) => {
@@ -359,12 +409,23 @@ mod tests {
     use super::*;
 
     fn text_box(text: &str, font_size_px: f32) -> LayoutBox {
-        let style = ComputedStyle { font_size_px, ..ComputedStyle::default() };
-        LayoutBox { style, kind: BoxKind::Text(text.to_string()), children: Vec::new() }
+        let style = ComputedStyle {
+            font_size_px,
+            ..ComputedStyle::default()
+        };
+        LayoutBox {
+            style,
+            kind: BoxKind::Text(text.to_string()),
+            children: Vec::new(),
+        }
     }
 
     fn inline_box(children: Vec<LayoutBox>) -> LayoutBox {
-        LayoutBox { style: ComputedStyle::default(), kind: BoxKind::Inline, children }
+        LayoutBox {
+            style: ComputedStyle::default(),
+            kind: BoxKind::Inline,
+            children,
+        }
     }
 
     fn texts_of(fragments: &[Fragment]) -> Vec<&str> {
@@ -382,7 +443,8 @@ mod tests {
         let Ok(fonts) = FontCollection::new() else {
             return;
         };
-        let (fragments, height) = layout_inline(&[text_box("hello", 16.0)], 1000.0, TextAlign::Left, &fonts);
+        let (fragments, height) =
+            layout_inline(&[text_box("hello", 16.0)], 1000.0, TextAlign::Left, &fonts);
         assert_eq!(fragments.len(), 1);
         assert_eq!(height, fonts.primary().metrics(16.0).line_height());
     }
@@ -426,7 +488,10 @@ mod tests {
         let items = [text_box("small", 10.0), text_box("BIG", 40.0)];
         let (fragments, height) = layout_inline(&items, 10_000.0, TextAlign::Left, &fonts);
         assert_eq!(fragments.len(), 2);
-        assert_eq!(fragments[0].y, fragments[1].y, "mixed sizes on one line must share a baseline");
+        assert_eq!(
+            fragments[0].y, fragments[1].y,
+            "mixed sizes on one line must share a baseline"
+        );
 
         let small = fonts.primary().metrics(10.0);
         let big = fonts.primary().metrics(40.0);
@@ -435,7 +500,9 @@ mod tests {
         // M7.1: line height is the max ascent + max descent + max line-gap.
         assert_eq!(
             height,
-            big.ascent.max(small.ascent) + big.descent.max(small.descent) + big.line_gap.max(small.line_gap)
+            big.ascent.max(small.ascent)
+                + big.descent.max(small.descent)
+                + big.line_gap.max(small.line_gap)
         );
     }
 
@@ -453,10 +520,16 @@ mod tests {
         let (left, _) = layout_inline(&[text_box("hi", 16.0)], available, TextAlign::Left, &fonts);
         assert_eq!(left[0].x, 0.0);
 
-        let (right, _) = layout_inline(&[text_box("hi", 16.0)], available, TextAlign::Right, &fonts);
+        let (right, _) =
+            layout_inline(&[text_box("hi", 16.0)], available, TextAlign::Right, &fonts);
         assert_eq!(right[0].x, available - width);
 
-        let (center, _) = layout_inline(&[text_box("hi", 16.0)], available, TextAlign::Center, &fonts);
+        let (center, _) = layout_inline(
+            &[text_box("hi", 16.0)],
+            available,
+            TextAlign::Center,
+            &fonts,
+        );
         assert_eq!(center[0].x, (available - width) / 2.0);
     }
 
@@ -465,15 +538,36 @@ mod tests {
         let Ok(fonts) = FontCollection::new() else {
             return;
         };
-        let block = LayoutBox { style: ComputedStyle::default(), kind: BoxKind::Block, children: Vec::new() };
-        let run = inline_box(vec![text_box("before", 16.0), block, text_box("after", 16.0)]);
+        let block = LayoutBox {
+            style: ComputedStyle::default(),
+            kind: BoxKind::Block,
+            children: Vec::new(),
+        };
+        let run = inline_box(vec![
+            text_box("before", 16.0),
+            block,
+            text_box("after", 16.0),
+        ]);
         let (fragments, _height) = layout_inline(&[run], 10_000.0, TextAlign::Left, &fonts);
 
         assert_eq!(texts_of(&fragments), vec!["before", "after"]);
         // The embedded block contributes its own Box fragment too (M7.6).
-        assert!(fragments.iter().any(|f| matches!(f.kind, FragmentKind::Box)));
-        let y_of = |t: &str| fragments.iter().find(|f| matches!(&f.kind, FragmentKind::Text(x) if x == t)).unwrap().y;
-        assert!(y_of("after") > y_of("before"), "the block must visually separate the two text runs");
+        assert!(
+            fragments
+                .iter()
+                .any(|f| matches!(f.kind, FragmentKind::Box))
+        );
+        let y_of = |t: &str| {
+            fragments
+                .iter()
+                .find(|f| matches!(&f.kind, FragmentKind::Text(x) if x == t))
+                .unwrap()
+                .y
+        };
+        assert!(
+            y_of("after") > y_of("before"),
+            "the block must visually separate the two text runs"
+        );
     }
 
     #[test]
@@ -487,7 +581,11 @@ mod tests {
     }
 
     fn styled_text_box(text: &str, style: ComputedStyle) -> LayoutBox {
-        LayoutBox { style, kind: BoxKind::Text(text.to_string()), children: Vec::new() }
+        LayoutBox {
+            style,
+            kind: BoxKind::Text(text.to_string()),
+            children: Vec::new(),
+        }
     }
 
     #[test]
@@ -495,12 +593,31 @@ mod tests {
         let Ok(fonts) = FontCollection::new() else {
             return;
         };
-        let style = |t| ComputedStyle { text_transform: t, ..ComputedStyle::default() };
+        let style = |t| ComputedStyle {
+            text_transform: t,
+            ..ComputedStyle::default()
+        };
 
-        let (up, _) = layout_inline(&[styled_text_box("hello world", style(TextTransform::Uppercase))], 10_000.0, TextAlign::Left, &fonts);
+        let (up, _) = layout_inline(
+            &[styled_text_box(
+                "hello world",
+                style(TextTransform::Uppercase),
+            )],
+            10_000.0,
+            TextAlign::Left,
+            &fonts,
+        );
         assert_eq!(texts_of(&up), vec!["HELLO", "WORLD"]);
 
-        let (cap, _) = layout_inline(&[styled_text_box("hello world", style(TextTransform::Capitalize))], 10_000.0, TextAlign::Left, &fonts);
+        let (cap, _) = layout_inline(
+            &[styled_text_box(
+                "hello world",
+                style(TextTransform::Capitalize),
+            )],
+            10_000.0,
+            TextAlign::Left,
+            &fonts,
+        );
         assert_eq!(texts_of(&cap), vec!["Hello", "World"]);
     }
 
@@ -509,14 +626,27 @@ mod tests {
         let Ok(fonts) = FontCollection::new() else {
             return;
         };
-        let style = ComputedStyle { white_space: WhiteSpace::PreLine, ..ComputedStyle::default() };
-        let (fragments, _) =
-            layout_inline(&[styled_text_box("a b\nc d", style)], 10_000.0, TextAlign::Left, &fonts);
+        let style = ComputedStyle {
+            white_space: WhiteSpace::PreLine,
+            ..ComputedStyle::default()
+        };
+        let (fragments, _) = layout_inline(
+            &[styled_text_box("a b\nc d", style)],
+            10_000.0,
+            TextAlign::Left,
+            &fonts,
+        );
         assert_eq!(texts_of(&fragments), vec!["a", "b", "c", "d"]);
         // "a b" and "c d" land on different lines (the newline forces a
         // break) even though `available_width` is huge — unlike
         // `normal`, where this input would all fit on one line.
-        let line_of = |t: &str| fragments.iter().find(|f| matches!(&f.kind, FragmentKind::Text(x) if x == t)).unwrap().y;
+        let line_of = |t: &str| {
+            fragments
+                .iter()
+                .find(|f| matches!(&f.kind, FragmentKind::Text(x) if x == t))
+                .unwrap()
+                .y
+        };
         assert_eq!(line_of("a"), line_of("b"));
         assert_ne!(line_of("b"), line_of("c"));
         assert_eq!(line_of("c"), line_of("d"));
@@ -544,7 +674,11 @@ mod tests {
         if word_width <= 0.0 {
             return;
         }
-        let style = ComputedStyle { white_space: WhiteSpace::Pre, font_size_px: 16.0, ..ComputedStyle::default() };
+        let style = ComputedStyle {
+            white_space: WhiteSpace::Pre,
+            font_size_px: 16.0,
+            ..ComputedStyle::default()
+        };
         // Same narrow width that forces 3 separate lines under `normal`
         // (see `narrow_width_wraps_each_word_onto_its_own_line`) — under
         // `pre`, it must still be exactly one line.
@@ -564,11 +698,28 @@ mod tests {
         let Ok(fonts) = FontCollection::new() else {
             return;
         };
-        let normal = ComputedStyle { font_size_px: 16.0, ..ComputedStyle::default() };
-        let spaced = ComputedStyle { font_size_px: 16.0, word_spacing: 20.0, ..ComputedStyle::default() };
+        let normal = ComputedStyle {
+            font_size_px: 16.0,
+            ..ComputedStyle::default()
+        };
+        let spaced = ComputedStyle {
+            font_size_px: 16.0,
+            word_spacing: 20.0,
+            ..ComputedStyle::default()
+        };
 
-        let (base, _) = layout_inline(&[styled_text_box("aa bb", normal.clone())], 10_000.0, TextAlign::Left, &fonts);
-        let (wide, _) = layout_inline(&[styled_text_box("aa bb", spaced)], 10_000.0, TextAlign::Left, &fonts);
+        let (base, _) = layout_inline(
+            &[styled_text_box("aa bb", normal.clone())],
+            10_000.0,
+            TextAlign::Left,
+            &fonts,
+        );
+        let (wide, _) = layout_inline(
+            &[styled_text_box("aa bb", spaced)],
+            10_000.0,
+            TextAlign::Left,
+            &fonts,
+        );
 
         let gap = |frags: &[Fragment]| frags[1].x - (frags[0].x + frags[0].w);
         // The extra gap between words is exactly `word-spacing` more
@@ -582,8 +733,17 @@ mod tests {
         let Ok(fonts) = FontCollection::new() else {
             return;
         };
-        let style = ComputedStyle { font_size_px: 16.0, letter_spacing: 5.0, ..ComputedStyle::default() };
-        let (fragments, _) = layout_inline(&[styled_text_box("ab", style)], 10_000.0, TextAlign::Left, &fonts);
+        let style = ComputedStyle {
+            font_size_px: 16.0,
+            letter_spacing: 5.0,
+            ..ComputedStyle::default()
+        };
+        let (fragments, _) = layout_inline(
+            &[styled_text_box("ab", style)],
+            10_000.0,
+            TextAlign::Left,
+            &fonts,
+        );
         // One fragment per character, not one for the whole word.
         assert_eq!(texts_of(&fragments), vec!["a", "b"]);
         let gap = fragments[1].x - (fragments[0].x + fragments[0].w);
@@ -597,7 +757,12 @@ mod tests {
         };
         // The common case: no per-character splitting when the property
         // isn't used at all.
-        let (fragments, _) = layout_inline(&[text_box("hello", 16.0)], 10_000.0, TextAlign::Left, &fonts);
+        let (fragments, _) = layout_inline(
+            &[text_box("hello", 16.0)],
+            10_000.0,
+            TextAlign::Left,
+            &fonts,
+        );
         assert_eq!(texts_of(&fragments), vec!["hello"]);
     }
 
@@ -612,8 +777,17 @@ mod tests {
         // explicit `direction: rtl` (as `<html dir="rtl">` would
         // compute down to every descendant via inheritance).
         let text = "שלום world, 123 עולם";
-        let style = ComputedStyle { direction: Direction::Rtl, font_size_px: 16.0, ..ComputedStyle::default() };
-        let (fragments, _) = layout_inline(&[styled_text_box(text, style)], 10_000.0, TextAlign::Left, &fonts);
+        let style = ComputedStyle {
+            direction: Direction::Rtl,
+            font_size_px: 16.0,
+            ..ComputedStyle::default()
+        };
+        let (fragments, _) = layout_inline(
+            &[styled_text_box(text, style)],
+            10_000.0,
+            TextAlign::Left,
+            &fonts,
+        );
         let words = texts_of(&fragments);
 
         // Derive the expected word sequence from the same `bidi_reorder`
@@ -640,7 +814,13 @@ mod tests {
         let joined = words.join(" ");
         let pos = |c: char| joined.find(c);
         let (p1, p2, p3) = (pos('1'), pos('2'), pos('3'));
-        assert!(p1.is_some() && p2.is_some() && p3.is_some(), "all digits present in {joined:?}");
-        assert!(p1 < p2 && p2 < p3, "digits must stay in forward order within {joined:?}");
+        assert!(
+            p1.is_some() && p2.is_some() && p3.is_some(),
+            "all digits present in {joined:?}"
+        );
+        assert!(
+            p1 < p2 && p2 < p3,
+            "digits must stay in forward order within {joined:?}"
+        );
     }
 }

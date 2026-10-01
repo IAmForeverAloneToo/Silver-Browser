@@ -19,7 +19,10 @@ fn run(cases: &[Case]) {
         let flat = style::selector_matching::FlatDom::build(&doc);
         let list = style::selector_matching::parse_selector_list(&css::tokenize(case.selector))
             .unwrap_or_else(|e| {
-                panic!("case {:?}: selector {:?} must parse: {e}", case.name, case.selector)
+                panic!(
+                    "case {:?}: selector {:?} must parse: {e}",
+                    case.name, case.selector
+                )
             });
         let matched: Vec<&str> = flat
             .element_indices()
@@ -37,59 +40,204 @@ fn run(cases: &[Case]) {
 #[test]
 fn simple_selectors_table() {
     run(&[
-        Case { name: "type", html: "<div><p>x</p><span>y</span></div>", selector: "p", expected: &["p"] },
-        Case { name: "universal", html: "<div><p>x</p></div>", selector: "*", expected: &["div", "p"] },
-        Case { name: "class", html: "<p class='a'>x</p><p class='b'>y</p>", selector: ".a", expected: &["p"] },
-        Case { name: "id", html: "<p id='x'>a</p><p id='y'>b</p>", selector: "#y", expected: &["p"] },
-        Case { name: "compound", html: "<p class='a'>x</p><div class='a'>y</div>", selector: "div.a", expected: &["div"] },
-        Case { name: "type_case_insensitive", html: "<DIV></DIV>", selector: "div", expected: &["div"] },
-        Case { name: "no_match", html: "<p>x</p>", selector: "span", expected: &[] },
+        Case {
+            name: "type",
+            html: "<div><p>x</p><span>y</span></div>",
+            selector: "p",
+            expected: &["p"],
+        },
+        Case {
+            name: "universal",
+            html: "<div><p>x</p></div>",
+            selector: "*",
+            expected: &["div", "p"],
+        },
+        Case {
+            name: "class",
+            html: "<p class='a'>x</p><p class='b'>y</p>",
+            selector: ".a",
+            expected: &["p"],
+        },
+        Case {
+            name: "id",
+            html: "<p id='x'>a</p><p id='y'>b</p>",
+            selector: "#y",
+            expected: &["p"],
+        },
+        Case {
+            name: "compound",
+            html: "<p class='a'>x</p><div class='a'>y</div>",
+            selector: "div.a",
+            expected: &["div"],
+        },
+        Case {
+            name: "type_case_insensitive",
+            html: "<DIV></DIV>",
+            selector: "div",
+            expected: &["div"],
+        },
+        Case {
+            name: "no_match",
+            html: "<p>x</p>",
+            selector: "span",
+            expected: &[],
+        },
     ]);
 }
 
 #[test]
 fn combinator_table() {
     run(&[
-        Case { name: "descendant", html: "<div><section><p>x</p></section></div>", selector: "div p", expected: &["p"] },
-        Case { name: "child", html: "<div><p>x</p></div>", selector: "div > p", expected: &["p"] },
-        Case { name: "child_excludes_grandchild", html: "<div><section><p>x</p></section></div>", selector: "div > p", expected: &[] },
-        Case { name: "next_sibling", html: "<ul><li>a</li><li>b</li><li>c</li></ul>", selector: "li + li", expected: &["li", "li"] },
-        Case { name: "later_sibling", html: "<ul><li class='m'>a</li><li>b</li><li>c</li></ul>", selector: ".m ~ li", expected: &["li", "li"] },
-        Case { name: "chained", html: "<div><section><article><p>x</p></article></section></div>", selector: "div section > article p", expected: &["p"] },
+        Case {
+            name: "descendant",
+            html: "<div><section><p>x</p></section></div>",
+            selector: "div p",
+            expected: &["p"],
+        },
+        Case {
+            name: "child",
+            html: "<div><p>x</p></div>",
+            selector: "div > p",
+            expected: &["p"],
+        },
+        Case {
+            name: "child_excludes_grandchild",
+            html: "<div><section><p>x</p></section></div>",
+            selector: "div > p",
+            expected: &[],
+        },
+        Case {
+            name: "next_sibling",
+            html: "<ul><li>a</li><li>b</li><li>c</li></ul>",
+            selector: "li + li",
+            expected: &["li", "li"],
+        },
+        Case {
+            name: "later_sibling",
+            html: "<ul><li class='m'>a</li><li>b</li><li>c</li></ul>",
+            selector: ".m ~ li",
+            expected: &["li", "li"],
+        },
+        Case {
+            name: "chained",
+            html: "<div><section><article><p>x</p></article></section></div>",
+            selector: "div section > article p",
+            expected: &["p"],
+        },
     ]);
 }
 
 #[test]
 fn attribute_selector_table() {
     run(&[
-        Case { name: "exists", html: "<input disabled><input>", selector: "[disabled]", expected: &["input"] },
-        Case { name: "equals", html: "<a href='x'>a</a><a href='y'>b</a>", selector: "[href=x]", expected: &["a"] },
-        Case { name: "prefix", html: "<a href='https://a'>a</a><a href='mailto:b'>b</a>", selector: "[href^=https]", expected: &["a"] },
-        Case { name: "suffix", html: "<img src='a.png'><img src='b.gif'>", selector: "[src$='.png']", expected: &["img"] },
-        Case { name: "substring", html: "<a href='x-mid-y'>a</a><a href='z'>b</a>", selector: "[href*=mid]", expected: &["a"] },
-        Case { name: "case_insensitive_flag", html: "<p data-x='ABC'>a</p>", selector: "[data-x=abc i]", expected: &["p"] },
+        Case {
+            name: "exists",
+            html: "<input disabled><input>",
+            selector: "[disabled]",
+            expected: &["input"],
+        },
+        Case {
+            name: "equals",
+            html: "<a href='x'>a</a><a href='y'>b</a>",
+            selector: "[href=x]",
+            expected: &["a"],
+        },
+        Case {
+            name: "prefix",
+            html: "<a href='https://a'>a</a><a href='mailto:b'>b</a>",
+            selector: "[href^=https]",
+            expected: &["a"],
+        },
+        Case {
+            name: "suffix",
+            html: "<img src='a.png'><img src='b.gif'>",
+            selector: "[src$='.png']",
+            expected: &["img"],
+        },
+        Case {
+            name: "substring",
+            html: "<a href='x-mid-y'>a</a><a href='z'>b</a>",
+            selector: "[href*=mid]",
+            expected: &["a"],
+        },
+        Case {
+            name: "case_insensitive_flag",
+            html: "<p data-x='ABC'>a</p>",
+            selector: "[data-x=abc i]",
+            expected: &["p"],
+        },
     ]);
 }
 
 #[test]
 fn structural_pseudo_class_table() {
     run(&[
-        Case { name: "first_child", html: "<ul><li>a</li><li>b</li></ul>", selector: "li:first-child", expected: &["li"] },
-        Case { name: "last_child", html: "<ul><li>a</li><li>b</li></ul>", selector: "li:last-child", expected: &["li"] },
-        Case { name: "nth_child_odd", html: "<ul><li>1</li><li>2</li><li>3</li><li>4</li></ul>", selector: "li:nth-child(odd)", expected: &["li", "li"] },
-        Case { name: "only_child", html: "<div><p>solo</p></div><div><p>a</p><p>b</p></div>", selector: "p:only-child", expected: &["p"] },
-        Case { name: "empty", html: "<div></div><div>text</div>", selector: "div:empty", expected: &["div"] },
-        Case { name: "root", html: "<html><body><p>x</p></body></html>", selector: ":root", expected: &["html"] },
+        Case {
+            name: "first_child",
+            html: "<ul><li>a</li><li>b</li></ul>",
+            selector: "li:first-child",
+            expected: &["li"],
+        },
+        Case {
+            name: "last_child",
+            html: "<ul><li>a</li><li>b</li></ul>",
+            selector: "li:last-child",
+            expected: &["li"],
+        },
+        Case {
+            name: "nth_child_odd",
+            html: "<ul><li>1</li><li>2</li><li>3</li><li>4</li></ul>",
+            selector: "li:nth-child(odd)",
+            expected: &["li", "li"],
+        },
+        Case {
+            name: "only_child",
+            html: "<div><p>solo</p></div><div><p>a</p><p>b</p></div>",
+            selector: "p:only-child",
+            expected: &["p"],
+        },
+        Case {
+            name: "empty",
+            html: "<div></div><div>text</div>",
+            selector: "div:empty",
+            expected: &["div"],
+        },
+        Case {
+            name: "root",
+            html: "<html><body><p>x</p></body></html>",
+            selector: ":root",
+            expected: &["html"],
+        },
     ]);
 }
 
 #[test]
 fn logical_pseudo_class_table() {
     run(&[
-        Case { name: "not", html: "<p class='a'>x</p><p>y</p>", selector: "p:not(.a)", expected: &["p"] },
-        Case { name: "is", html: "<div>x</div><span>y</span><p>z</p>", selector: ":is(div, span)", expected: &["div", "span"] },
-        Case { name: "where_zero_specificity_still_matches", html: "<p id='x'>a</p>", selector: ":where(#x)", expected: &["p"] },
-        Case { name: "not_with_descendant", html: "<div><p>a</p></div><p>b</p>", selector: "p:not(div p)", expected: &["p"] },
+        Case {
+            name: "not",
+            html: "<p class='a'>x</p><p>y</p>",
+            selector: "p:not(.a)",
+            expected: &["p"],
+        },
+        Case {
+            name: "is",
+            html: "<div>x</div><span>y</span><p>z</p>",
+            selector: ":is(div, span)",
+            expected: &["div", "span"],
+        },
+        Case {
+            name: "where_zero_specificity_still_matches",
+            html: "<p id='x'>a</p>",
+            selector: ":where(#x)",
+            expected: &["p"],
+        },
+        Case {
+            name: "not_with_descendant",
+            html: "<div><p>a</p></div><p>b</p>",
+            selector: "p:not(div p)",
+            expected: &["p"],
+        },
     ]);
 }
 

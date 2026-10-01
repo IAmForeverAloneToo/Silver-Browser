@@ -127,7 +127,11 @@ impl Node {
                     child.write_pretty(out, depth + 1);
                 }
             }
-            Node::Element(Element { tag, attrs, children }) => {
+            Node::Element(Element {
+                tag,
+                attrs,
+                children,
+            }) => {
                 out.push_str(&indent);
                 out.push_str("element ");
                 out.push_str(tag);
@@ -208,7 +212,9 @@ mod tests {
 
     #[test]
     fn push_children_appends_in_order() {
-        let items: Vec<Node> = (0..3).map(|i| Element::new("li").text(i.to_string()).into()).collect();
+        let items: Vec<Node> = (0..3)
+            .map(|i| Element::new("li").text(i.to_string()).into())
+            .collect();
         let ul = Element::new("ul").push_children(items);
         assert_eq!(ul.children.len(), 3);
         assert_eq!(ul.children[0].text_content(), "0");

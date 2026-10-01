@@ -13,9 +13,9 @@
 
 use dom::Node;
 use layout::{Fragment, FragmentKind};
+use style::StyledDom;
 use style::computed::{BorderStyle, Color, Display};
 use style::selector_matching::FlatChild;
-use style::StyledDom;
 
 /// An 8-bit RGBA color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -221,7 +221,12 @@ pub fn paint_styled_document(styled: &StyledDom, viewport_w: f32, viewport_h: f3
 /// recursing into element children, applying `margin` top/bottom as
 /// simple additive vertical spacing (no collapsing, no box model — a
 /// placeholder for the real thing layout builds in M6).
-fn paint_flat_children(styled: &StyledDom, idx: usize, items: &mut Vec<DisplayItem>, cursor_y: &mut f32) {
+fn paint_flat_children(
+    styled: &StyledDom,
+    idx: usize,
+    items: &mut Vec<DisplayItem>,
+    cursor_y: &mut f32,
+) {
     for child in &styled.flat.nodes[idx].children {
         match child {
             FlatChild::Element(child_idx) => {
@@ -260,7 +265,12 @@ fn paint_flat_children(styled: &StyledDom, idx: usize, items: &mut Vec<DisplayIt
 /// to their producer), so this is the one place that boundary is crossed.
 fn to_rgba8(c: Color) -> Rgba8 {
     let scale = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-    Rgba8 { r: scale(c.r), g: scale(c.g), b: scale(c.b), a: scale(c.a) }
+    Rgba8 {
+        r: scale(c.r),
+        g: scale(c.g),
+        b: scale(c.b),
+        a: scale(c.a),
+    }
 }
 
 /// Paints a real `layout::Fragment` tree (M6.7) into a display list for
@@ -332,16 +342,40 @@ fn push_border(items: &mut Vec<DisplayItem>, f: &Fragment) {
     let [top, right, bottom, left] = f.style.border_width;
     let color = to_rgba8(f.style.border_color);
     if top > 0.0 {
-        items.push(DisplayItem::Rect { x: f.x, y: f.y, w: f.w, h: top, color });
+        items.push(DisplayItem::Rect {
+            x: f.x,
+            y: f.y,
+            w: f.w,
+            h: top,
+            color,
+        });
     }
     if bottom > 0.0 {
-        items.push(DisplayItem::Rect { x: f.x, y: f.y + f.h - bottom, w: f.w, h: bottom, color });
+        items.push(DisplayItem::Rect {
+            x: f.x,
+            y: f.y + f.h - bottom,
+            w: f.w,
+            h: bottom,
+            color,
+        });
     }
     if left > 0.0 {
-        items.push(DisplayItem::Rect { x: f.x, y: f.y, w: left, h: f.h, color });
+        items.push(DisplayItem::Rect {
+            x: f.x,
+            y: f.y,
+            w: left,
+            h: f.h,
+            color,
+        });
     }
     if right > 0.0 {
-        items.push(DisplayItem::Rect { x: f.x + f.w - right, y: f.y, w: right, h: f.h, color });
+        items.push(DisplayItem::Rect {
+            x: f.x + f.w - right,
+            y: f.y,
+            w: right,
+            h: f.h,
+            color,
+        });
     }
 }
 
@@ -367,7 +401,10 @@ mod fragment_tests {
     }
 
     fn rects(list: &DisplayList) -> Vec<&DisplayItem> {
-        list.items.iter().filter(|i| matches!(i, DisplayItem::Rect { .. })).collect()
+        list.items
+            .iter()
+            .filter(|i| matches!(i, DisplayItem::Rect { .. }))
+            .collect()
     }
 
     #[test]
@@ -380,11 +417,15 @@ mod fragment_tests {
         };
         let backgrounds: Vec<&DisplayItem> = rects(&list)
             .into_iter()
-            .filter(|i| matches!(i, DisplayItem::Rect { color, .. } if *color == Rgba8::rgb(255, 0, 0)))
+            .filter(
+                |i| matches!(i, DisplayItem::Rect { color, .. } if *color == Rgba8::rgb(255, 0, 0)),
+            )
             .collect();
         assert_eq!(backgrounds.len(), 1);
         match backgrounds[0] {
-            DisplayItem::Rect { x, y, w, h, .. } => assert_eq!((*x, *y, *w, *h), (0.0, 0.0, 100.0, 50.0)),
+            DisplayItem::Rect { x, y, w, h, .. } => {
+                assert_eq!((*x, *y, *w, *h), (0.0, 0.0, 100.0, 50.0))
+            }
             _ => unreachable!(),
         }
     }
@@ -412,12 +453,16 @@ mod fragment_tests {
         };
         let green: Vec<&DisplayItem> = rects(&list)
             .into_iter()
-            .filter(|i| matches!(i, DisplayItem::Rect { color, .. } if *color == Rgba8::rgb(0, 255, 0)))
+            .filter(
+                |i| matches!(i, DisplayItem::Rect { color, .. } if *color == Rgba8::rgb(0, 255, 0)),
+            )
             .collect();
         assert_eq!(green.len(), 4); // top, bottom, left, right
         // Border-box is 100+8=108 wide, 50+8=58 tall (border adds to content).
         let has = |want: (f32, f32, f32, f32)| {
-            green.iter().any(|i| matches!(i, DisplayItem::Rect { x, y, w, h, .. } if (*x, *y, *w, *h) == want))
+            green.iter().any(
+                |i| matches!(i, DisplayItem::Rect { x, y, w, h, .. } if (*x, *y, *w, *h) == want),
+            )
         };
         assert!(has((0.0, 0.0, 108.0, 4.0)), "top strip");
         assert!(has((0.0, 54.0, 108.0, 4.0)), "bottom strip");
@@ -447,15 +492,27 @@ mod fragment_tests {
         ) else {
             return;
         };
-        let texts: Vec<&DisplayItem> =
-            list.items.iter().filter(|i| matches!(i, DisplayItem::Text { .. })).collect();
+        let texts: Vec<&DisplayItem> = list
+            .items
+            .iter()
+            .filter(|i| matches!(i, DisplayItem::Text { .. }))
+            .collect();
         assert_eq!(texts.len(), 1);
         match texts[0] {
-            DisplayItem::Text { text, x, y, size, color } => {
+            DisplayItem::Text {
+                text,
+                x,
+                y,
+                size,
+                color,
+            } => {
                 assert_eq!(text, "hi");
                 // The baseline is the font's own ascent at this size
                 // (M7.1/M7.4) — not simply the font-size.
-                assert_eq!((*x, *y, *size), (0.0, fonts.primary().metrics(12.0).ascent, 12.0));
+                assert_eq!(
+                    (*x, *y, *size),
+                    (0.0, fonts.primary().metrics(12.0).ascent, 12.0)
+                );
                 assert_eq!(*color, Rgba8::rgb(0, 0, 255));
             }
             _ => unreachable!(),
@@ -472,7 +529,11 @@ mod fragment_tests {
         let boxes = layout::build_box_tree(&styled);
         let fragments = layout::layout(&boxes, VIEWPORT, &fonts);
         let list = paint_fragments(&fragments, VIEWPORT, 600.0);
-        assert!(list.items.iter().any(|i| matches!(i, DisplayItem::Text { .. })));
+        assert!(
+            list.items
+                .iter()
+                .any(|i| matches!(i, DisplayItem::Text { .. }))
+        );
     }
 }
 
@@ -489,7 +550,10 @@ mod styled_tests {
     }
 
     fn text_items(list: &DisplayList) -> Vec<&DisplayItem> {
-        list.items.iter().filter(|i| matches!(i, DisplayItem::Text { .. })).collect()
+        list.items
+            .iter()
+            .filter(|i| matches!(i, DisplayItem::Text { .. }))
+            .collect()
     }
 
     #[test]
@@ -561,7 +625,11 @@ mod styled_tests {
         let doc = dom::Node::document(vec![]);
         let styled = style::style_document(&doc, &[]);
         let list = paint_styled_document(&styled, 100.0, 100.0);
-        assert!(text_items(&list).iter().any(|i| matches!(i, DisplayItem::Text { .. })));
+        assert!(
+            text_items(&list)
+                .iter()
+                .any(|i| matches!(i, DisplayItem::Text { .. }))
+        );
     }
 
     #[test]
@@ -569,7 +637,14 @@ mod styled_tests {
         let root = Element::new("p").text("x");
         let styled = styled_from(root, "");
         let list = paint_styled_document(&styled, 800.0, 600.0);
-        assert!(matches!(list.items[0], DisplayItem::Rect { w: 800.0, h: 600.0, .. }));
+        assert!(matches!(
+            list.items[0],
+            DisplayItem::Rect {
+                w: 800.0,
+                h: 600.0,
+                ..
+            }
+        ));
         assert!(matches!(list.items[1], DisplayItem::Rect { w: 4.0, .. }));
     }
 }
@@ -607,7 +682,9 @@ mod tests {
     fn empty_document_gets_fallback_text() {
         let list = paint_document(&Node::document(vec![]), 100.0, 100.0);
         assert!(
-            list.items.iter().any(|i| matches!(i, DisplayItem::Text { .. })),
+            list.items
+                .iter()
+                .any(|i| matches!(i, DisplayItem::Text { .. })),
             "expected a fallback text item"
         );
     }
@@ -626,8 +703,12 @@ mod tests {
             .collect();
         match (texts[0], texts[1]) {
             (
-                DisplayItem::Text { size: s1, y: y1, .. },
-                DisplayItem::Text { size: s2, y: y2, .. },
+                DisplayItem::Text {
+                    size: s1, y: y1, ..
+                },
+                DisplayItem::Text {
+                    size: s2, y: y2, ..
+                },
             ) => {
                 assert_eq!((*s1, *s2), (28.0, 16.0));
                 assert!(*y2 > *y1, "body must render below the heading");

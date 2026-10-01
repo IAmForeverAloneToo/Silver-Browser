@@ -83,7 +83,13 @@ pub struct GlyphMask {
 impl GlyphMask {
     /// An empty mask (e.g. for blank glyphs).
     pub fn empty() -> Self {
-        GlyphMask { width: 0, height: 0, left: 0, top: 0, coverage: Vec::new() }
+        GlyphMask {
+            width: 0,
+            height: 0,
+            left: 0,
+            top: 0,
+            coverage: Vec::new(),
+        }
     }
 }
 
@@ -175,7 +181,9 @@ impl FontStore {
             return Err(FontError::NoFontFound);
         };
 
-        match db.with_face_data(face_id, |data, index| FontStore::from_bytes(data.to_vec(), index)) {
+        match db.with_face_data(face_id, |data, index| {
+            FontStore::from_bytes(data.to_vec(), index)
+        }) {
             Some(result) => result,
             None => Err(FontError::NoFontFound),
         }
@@ -209,7 +217,11 @@ impl FontStore {
             ttf.typographic_line_gap(),
         ) {
             (Some(a), Some(d), gap) => (a as f32, (-d as f32).max(0.0), gap.unwrap_or(0) as f32),
-            _ => (ttf.ascender() as f32, (-ttf.descender() as f32).max(0.0), ttf.line_gap() as f32),
+            _ => (
+                ttf.ascender() as f32,
+                (-ttf.descender() as f32).max(0.0),
+                ttf.line_gap() as f32,
+            ),
         };
         let line_gap_units = line_gap_units.max(0.0);
 
@@ -275,7 +287,11 @@ impl FontStore {
             return 0.0;
         };
         let scale = font_size_px / self.units_per_em;
-        shaped.glyph_positions().iter().map(|pos| pos.x_advance as f32 * scale).sum()
+        shaped
+            .glyph_positions()
+            .iter()
+            .map(|pos| pos.x_advance as f32 * scale)
+            .sum()
     }
 
     /// Shared rustybuzz plumbing for [`FontStore::shape`] and
@@ -330,7 +346,13 @@ pub fn rasterize_glyph(font: &ab_glyph::FontArc, glyph_id: u16, size_px: f32) ->
         }
     });
 
-    GlyphMask { width, height, left, top, coverage }
+    GlyphMask {
+        width,
+        height,
+        left,
+        top,
+        coverage,
+    }
 }
 
 /// Splits `text` into maximal same-script runs (roadmap M8.1's
@@ -366,7 +388,11 @@ pub fn itemize(text: &str) -> Vec<(Range<usize>, Script)> {
         // lets a real script arriving after leading digits/punctuation
         // retroactively claim the run below, instead of splitting off
         // what's seen so far into a separate, pointless `Common` run.
-        if s == run_script || s == Script::Common || s == Script::Inherited || run_script == Script::Common {
+        if s == run_script
+            || s == Script::Common
+            || s == Script::Inherited
+            || run_script == Script::Common
+        {
             if run_script == Script::Common && s != Script::Common && s != Script::Inherited {
                 run_script = s;
             }
@@ -403,15 +429,29 @@ pub fn itemize(text: &str) -> Vec<(Range<usize>, Script)> {
 /// for them.
 fn fallback_families_for(script: Script) -> Option<&'static [&'static str]> {
     match script {
-        Script::Han => {
-            Some(&["Microsoft YaHei", "SimSun", "PingFang SC", "Noto Sans CJK SC", "Noto Sans SC", "Noto Sans CJK"])
-        }
-        Script::Hiragana | Script::Katakana => {
-            Some(&["Yu Gothic", "MS Gothic", "Hiragino Sans", "Noto Sans CJK JP", "Noto Sans JP", "Noto Sans CJK"])
-        }
-        Script::Hangul => {
-            Some(&["Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans CJK KR", "Noto Sans KR", "Noto Sans CJK"])
-        }
+        Script::Han => Some(&[
+            "Microsoft YaHei",
+            "SimSun",
+            "PingFang SC",
+            "Noto Sans CJK SC",
+            "Noto Sans SC",
+            "Noto Sans CJK",
+        ]),
+        Script::Hiragana | Script::Katakana => Some(&[
+            "Yu Gothic",
+            "MS Gothic",
+            "Hiragino Sans",
+            "Noto Sans CJK JP",
+            "Noto Sans JP",
+            "Noto Sans CJK",
+        ]),
+        Script::Hangul => Some(&[
+            "Malgun Gothic",
+            "Apple SD Gothic Neo",
+            "Noto Sans CJK KR",
+            "Noto Sans KR",
+            "Noto Sans CJK",
+        ]),
         _ => None,
     }
 }
@@ -443,7 +483,12 @@ impl FontCollection {
         let primary = FontStore::query(&db, &["Segoe UI", "DejaVu Sans", "Helvetica", "Arial"])?;
 
         let mut fallbacks = HashMap::new();
-        for script in [Script::Han, Script::Hiragana, Script::Katakana, Script::Hangul] {
+        for script in [
+            Script::Han,
+            Script::Hiragana,
+            Script::Katakana,
+            Script::Hangul,
+        ] {
             if let Some(families) = fallback_families_for(script)
                 && let Ok(store) = FontStore::query(&db, families)
             {
@@ -473,7 +518,13 @@ impl FontCollection {
     /// instead of it so a CJK word's measured width (and therefore
     /// line-wrapping) reflects the font it'll actually be shown in.
     pub fn measure(&self, text: &str, font_size_px: f32) -> f32 {
-        itemize(text).iter().map(|(range, script)| self.font_for(*script).measure(&text[range.clone()], font_size_px)).sum()
+        itemize(text)
+            .iter()
+            .map(|(range, script)| {
+                self.font_for(*script)
+                    .measure(&text[range.clone()], font_size_px)
+            })
+            .sum()
     }
 
     /// The line-height-relevant metrics across *every* script actually
@@ -493,14 +544,21 @@ impl FontCollection {
     /// zero-initialized fold starting point, so composing this via
     /// `.max()` across words never needs a special empty case.
     pub fn metrics_for_text(&self, text: &str, font_size_px: f32) -> FontMetrics {
-        itemize(text).iter().map(|(_, script)| self.font_for(*script).metrics(font_size_px)).fold(
-            FontMetrics { ascent: 0.0, descent: 0.0, line_gap: 0.0 },
-            |acc, m| FontMetrics {
-                ascent: acc.ascent.max(m.ascent),
-                descent: acc.descent.max(m.descent),
-                line_gap: acc.line_gap.max(m.line_gap),
-            },
-        )
+        itemize(text)
+            .iter()
+            .map(|(_, script)| self.font_for(*script).metrics(font_size_px))
+            .fold(
+                FontMetrics {
+                    ascent: 0.0,
+                    descent: 0.0,
+                    line_gap: 0.0,
+                },
+                |acc, m| FontMetrics {
+                    ascent: acc.ascent.max(m.ascent),
+                    descent: acc.descent.max(m.descent),
+                    line_gap: acc.line_gap.max(m.line_gap),
+                },
+            )
     }
 
     /// Shapes `text` at `font_size_px`, itemizing it into per-script
@@ -522,7 +580,14 @@ impl FontCollection {
             let font = self.font_for(script);
             let run_text = &text[range];
             for g in font.shape(run_text, font_size_px) {
-                out.push((script, ShapedGlyph { glyph_id: g.glyph_id, x: g.x + pen_x, y: g.y }));
+                out.push((
+                    script,
+                    ShapedGlyph {
+                        glyph_id: g.glyph_id,
+                        x: g.x + pen_x,
+                        y: g.y,
+                    },
+                ));
             }
             pen_x += font.measure(run_text, font_size_px);
         }
@@ -618,7 +683,10 @@ mod tests {
         let advance = store.measure("Hello", 28.0);
         // Same band as `shape_hello_advances_reasonably` above — both
         // describe the same text at the same size.
-        assert!(advance > 20.0 && advance < 300.0, "suspicious total advance: {advance}px");
+        assert!(
+            advance > 20.0 && advance < 300.0,
+            "suspicious total advance: {advance}px"
+        );
     }
 
     #[test]
@@ -629,7 +697,10 @@ mod tests {
         let at_10 = store.measure("word", 10.0);
         let at_20 = store.measure("word", 20.0);
         if at_10 > 0.0 {
-            assert!((at_20 - at_10 * 2.0).abs() < 0.01, "{at_20} should be ~2x {at_10}");
+            assert!(
+                (at_20 - at_10 * 2.0).abs() < 0.01,
+                "{at_20} should be ~2x {at_10}"
+            );
         }
     }
 
@@ -643,8 +714,14 @@ mod tests {
         assert!(small.ascent >= 0.0);
         assert!(small.descent >= 0.0);
         assert!(small.line_gap >= 0.0);
-        assert!(big.ascent > small.ascent, "ascent should grow with font size");
-        assert_eq!(small.line_height(), small.ascent + small.descent + small.line_gap);
+        assert!(
+            big.ascent > small.ascent,
+            "ascent should grow with font size"
+        );
+        assert_eq!(
+            small.line_height(),
+            small.ascent + small.descent + small.line_gap
+        );
     }
 
     #[test]
@@ -705,15 +782,33 @@ mod tests {
 
     #[test]
     fn fallback_families_cover_the_scoped_cjk_scripts() {
-        for script in [Script::Han, Script::Hiragana, Script::Katakana, Script::Hangul] {
-            assert!(fallback_families_for(script).is_some(), "{script:?} should have a fallback list");
+        for script in [
+            Script::Han,
+            Script::Hiragana,
+            Script::Katakana,
+            Script::Hangul,
+        ] {
+            assert!(
+                fallback_families_for(script).is_some(),
+                "{script:?} should have a fallback list"
+            );
         }
     }
 
     #[test]
     fn fallback_families_has_no_entry_outside_the_scoped_scripts() {
-        for script in [Script::Latin, Script::Common, Script::Cyrillic, Script::Greek, Script::Arabic, Script::Hebrew] {
-            assert!(fallback_families_for(script).is_none(), "{script:?} should fall through to the primary font");
+        for script in [
+            Script::Latin,
+            Script::Common,
+            Script::Cyrillic,
+            Script::Greek,
+            Script::Arabic,
+            Script::Hebrew,
+        ] {
+            assert!(
+                fallback_families_for(script).is_none(),
+                "{script:?} should fall through to the primary font"
+            );
         }
     }
 
@@ -725,7 +820,10 @@ mod tests {
         // Latin has no fallback entry, so `FontCollection::measure`
         // must agree exactly with plain `FontStore::measure` on the
         // primary font.
-        assert_eq!(fonts.measure("hello world", 16.0), fonts.primary().measure("hello world", 16.0));
+        assert_eq!(
+            fonts.measure("hello world", 16.0),
+            fonts.primary().measure("hello world", 16.0)
+        );
     }
 
     #[test]
@@ -752,7 +850,10 @@ mod tests {
         let Ok(fonts) = FontCollection::new() else {
             return;
         };
-        assert_eq!(fonts.metrics_for_text("hello", 16.0), fonts.primary().metrics(16.0));
+        assert_eq!(
+            fonts.metrics_for_text("hello", 16.0),
+            fonts.primary().metrics(16.0)
+        );
     }
 
     #[test]
@@ -771,7 +872,11 @@ mod tests {
         let Ok(fonts) = FontCollection::new() else {
             return;
         };
-        let via_collection: Vec<ShapedGlyph> = fonts.shape("hello", 16.0).into_iter().map(|(_, g)| g).collect();
+        let via_collection: Vec<ShapedGlyph> = fonts
+            .shape("hello", 16.0)
+            .into_iter()
+            .map(|(_, g)| g)
+            .collect();
         assert_eq!(via_collection, fonts.primary().shape("hello", 16.0));
     }
 
@@ -789,8 +894,16 @@ mod tests {
         // character (an unsupported one still maps to *some* glyph,
         // typically `.notdef`), so every shaped glyph must carry one of
         // exactly those two tags, with at least one of each present.
-        assert!(glyphs.iter().all(|(s, _)| *s == Script::Latin || *s == Script::Han), "{glyphs:?}");
-        assert!(glyphs.iter().any(|(s, _)| *s == Script::Latin), "{glyphs:?}");
+        assert!(
+            glyphs
+                .iter()
+                .all(|(s, _)| *s == Script::Latin || *s == Script::Han),
+            "{glyphs:?}"
+        );
+        assert!(
+            glyphs.iter().any(|(s, _)| *s == Script::Latin),
+            "{glyphs:?}"
+        );
         assert!(glyphs.iter().any(|(s, _)| *s == Script::Han), "{glyphs:?}");
     }
 
@@ -811,13 +924,19 @@ mod tests {
         // just carried across the run boundary: the last glyph's own
         // pen-start must land strictly before the text's total
         // measured width, not reset back near 0 by a dropped offset.
-        assert!(last_x < width, "last glyph (x={last_x}) must start before the total width ({width})");
+        assert!(
+            last_x < width,
+            "last glyph (x={last_x}) must start before the total width ({width})"
+        );
     }
 
     #[test]
     fn bidi_reorder_leaves_pure_ltr_text_unchanged() {
         assert_eq!(bidi_reorder("hello world", None), "hello world");
-        assert_eq!(bidi_reorder("hello world", Some(Direction::Ltr)), "hello world");
+        assert_eq!(
+            bidi_reorder("hello world", Some(Direction::Ltr)),
+            "hello world"
+        );
     }
 
     #[test]
@@ -836,7 +955,10 @@ mod tests {
         // `None` (no explicit `dir`) must resolve the same way as
         // explicit `Rtl` for text that *is* unambiguously RTL — that's
         // what UAX#9's first-strong detection (P2/P3) is for.
-        assert_eq!(bidi_reorder(hebrew, None), bidi_reorder(hebrew, Some(Direction::Rtl)));
+        assert_eq!(
+            bidi_reorder(hebrew, None),
+            bidi_reorder(hebrew, Some(Direction::Rtl))
+        );
     }
 
     #[test]
@@ -848,8 +970,14 @@ mod tests {
         let out = bidi_reorder(mixed, Some(Direction::Rtl));
         let find = |s: &str, needle: char| s.find(needle);
         let (p1, p2, p3) = (find(&out, '1'), find(&out, '2'), find(&out, '3'));
-        assert!(p1.is_some() && p2.is_some() && p3.is_some(), "all three digits present: {out:?}");
-        assert!(p1 < p2 && p2 < p3, "digits must stay in forward order within {out:?}");
+        assert!(
+            p1.is_some() && p2.is_some() && p3.is_some(),
+            "all three digits present: {out:?}"
+        );
+        assert!(
+            p1 < p2 && p2 < p3,
+            "digits must stay in forward order within {out:?}"
+        );
     }
 
     #[test]

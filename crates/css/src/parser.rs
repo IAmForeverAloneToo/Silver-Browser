@@ -18,7 +18,7 @@
 
 use std::collections::VecDeque;
 
-use crate::tokenizer::{tokenize, Token};
+use crate::tokenizer::{Token, tokenize};
 
 /// A parsed stylesheet.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -127,7 +127,10 @@ fn parse_rules(stream: &mut TokenStream, top: bool) -> Vec<Rule> {
     loop {
         match stream.next() {
             None => return rules,
-            Some(Token::Whitespace) | Some(Token::Cdo) | Some(Token::Cdc) | Some(Token::Semicolon) => {
+            Some(Token::Whitespace)
+            | Some(Token::Cdo)
+            | Some(Token::Cdc)
+            | Some(Token::Semicolon) => {
                 continue;
             }
             Some(Token::CloseCurly) => {
@@ -172,7 +175,11 @@ fn parse_at_rule(stream: &mut TokenStream, name: String) -> AtRule {
         }
     }
     trim_ws(&mut prelude);
-    AtRule { name, prelude, block }
+    AtRule {
+        name,
+        prelude,
+        block,
+    }
 }
 
 /// Parses the body of an at-rule block; the `{` has been consumed.
@@ -231,7 +238,10 @@ fn parse_declarations(stream: &mut TokenStream) -> Vec<Declaration> {
                 stream.reconsume(Token::CloseCurly);
                 return declarations;
             }
-            Some(Token::Whitespace) | Some(Token::Semicolon) | Some(Token::Cdo) | Some(Token::Cdc) => {
+            Some(Token::Whitespace)
+            | Some(Token::Semicolon)
+            | Some(Token::Cdo)
+            | Some(Token::Cdc) => {
                 continue;
             }
             Some(Token::AtKeyword(name)) => {
@@ -394,8 +404,7 @@ mod tests {
 
     #[test]
     fn important_multiple_declarations_and_functions() {
-        let sheet =
-            parse_stylesheet("p { margin: 0 auto !important; FONT-SIZE: 12px; }").unwrap();
+        let sheet = parse_stylesheet("p { margin: 0 auto !important; FONT-SIZE: 12px; }").unwrap();
         let Rule::Qualified(rule) = &sheet.rules[0] else {
             panic!("expected a qualified rule");
         };
@@ -405,7 +414,10 @@ mod tests {
         assert_eq!(
             rule.declarations[0].value,
             vec![
-                Token::Number { value: 0.0, is_integer: true },
+                Token::Number {
+                    value: 0.0,
+                    is_integer: true
+                },
                 Token::Whitespace,
                 Token::Ident("auto".into()),
             ]
@@ -414,7 +426,10 @@ mod tests {
         assert!(!rule.declarations[1].important);
         assert_eq!(
             rule.declarations[1].value,
-            vec![Token::Dimension { value: 12.0, unit: "px".into() }]
+            vec![Token::Dimension {
+                value: 12.0,
+                unit: "px".into()
+            }]
         );
     }
 
@@ -432,7 +447,10 @@ mod tests {
                 Token::Whitespace,
                 Token::Delim('-'),
                 Token::Whitespace,
-                Token::Dimension { value: 10.0, unit: "px".into() },
+                Token::Dimension {
+                    value: 10.0,
+                    unit: "px".into()
+                },
                 Token::CloseParen,
             ]
         );
@@ -452,7 +470,10 @@ mod tests {
                 Token::Ident("min-width".into()),
                 Token::Colon,
                 Token::Whitespace,
-                Token::Dimension { value: 600.0, unit: "px".into() },
+                Token::Dimension {
+                    value: 600.0,
+                    unit: "px".into()
+                },
                 Token::CloseParen,
             ]
         );
@@ -472,7 +493,10 @@ mod tests {
         assert!(at.block.is_none());
         assert_eq!(
             at.prelude,
-            vec![Token::Url { value: "x.css".into(), bad: false }]
+            vec![Token::Url {
+                value: "x.css".into(),
+                bad: false
+            }]
         );
     }
 
@@ -554,7 +578,10 @@ mod tests {
         assert_eq!(decls[1].name, "width");
         assert_eq!(
             decls[1].value,
-            vec![Token::Dimension { value: 10.0, unit: "px".into() }]
+            vec![Token::Dimension {
+                value: 10.0,
+                unit: "px".into()
+            }]
         );
     }
 }
