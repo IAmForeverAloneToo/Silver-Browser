@@ -292,3 +292,63 @@ the parser's depth cap (a tree built by script is M25's concern);
 `rustybuzz` and `ttf-parser` are unmaintained (RUSTSEC-2026-0192 and
 RUSTSEC-2026-0206, acknowledged in `deny.toml`), which decision D7
 takes up.
+
+Milestone 9 (Viewport, scrolling, clipping): layout's output is a tree
+(M9.1): a block box's `Fragment` holds its content's fragments as
+`children`, every fragment carries the `FlatDom` index of its element
+(`node`; a text fragment names its containing element), and a text
+fragment's box is its line (`y` stays the baseline, `ascent` says where
+the top is, `h` is ascent plus descent). `layout::layout_document`
+returns `DocumentLayout { roots, height }` in document coordinates (the
+initial containing block's top-left is `(0, 0)`), the height counting
+the leading and trailing margins the viewport materialises; the flat
+`layout` view remains for inspection. `paint::paint_fragments` paints
+for a `Viewport { width, height, scroll_y }`: items are in viewport
+coordinates, a fragment the viewport does not meet produces none (its
+content is still walked, since content overflows), and a box whose
+`overflow` clips wraps its content in `PushClip`/`PopClip` at its
+padding box (M9.3) — `hidden`, `scroll` and `auto` all clip (CSS2
+§11.1.1) until an element can scroll on its own (M10.5), the two-value
+form is not parsed yet, and a clipping box out of view is skipped with
+its content. `render::SoftwareBackend` keeps a clip stack: rects are
+intersected, glyph blits touch only pixels whose centre is inside, an
+unmatched pop is ignored. Scrolling lives in `Engine` (M9.2): a target
+offset clamped to the document, approached a third of the remaining
+distance per `tick` (the roadmap's fixed-tick lerp; no clock involved),
+through `scroll_by`, `scroll_to`, `set_scroll` and `scroll_to_fraction`,
+vertical only (documents are laid out to the viewport width; a wider
+word overflows to the right, M7's stated gap). The scrollbar is
+in-engine chrome (decision D9): drawn into the frame after the document
+when it is taller than the viewport, and its geometry
+(`Engine::scrollbar`) is what the shell maps a press or a drag through.
+The shell turns the wheel (a notch is 40px), the arrow keys, Page
+Up/Down, Home/End and the space bar into scrolls — keys were not in
+M9.2's words, but cost twenty lines and are the only scrolling without
+a mouse — and a left click into `Engine::link_at` (M9.4), which prints
+the href (following it is M15). Hit testing is `Engine::hit_test`: the
+last fragment in paint order whose box contains the point, descending
+past a clipping box only when the point is inside its padding box; the
+groundwork for M26's hover. The cascade is computed once per document
+and the layout once per (document, viewport width) (M9.5), and
+`Engine::layout_runs` proves that a scroll, a hit test and a taller
+viewport rerun paint and raster only. Measured (M9.6,
+`crates/engine/benches/scroll.rs`: 128 paragraphs, 8061px, ten
+viewports of 800px, 120 frames of 40px at 1280×800): the first profile
+of a debug frame was 670ms, almost all of it shaping the same 624 text
+runs again every frame (the text stack parses the face on every call,
+decision D7's item), so `SoftwareBackend` now caches shaped runs by
+(text, size) beside its glyph masks, bounded at a million glyphs and
+emptied with them. With that: 2.0ms a frame in release (490fps), 8.7ms
+on the debug build (115fps) with dependencies optimised, 15.7ms (64fps)
+with nothing optimised at all. The workspace's dev profile now builds
+dependencies at `opt-level = 3`: not for the scroll budget, which the
+cache meets either way, but for layout, which shapes every word to
+measure it and takes 170ms for that page with optimised dependencies
+and eight seconds without — a debug build has to be usable. Layout's
+own cost (160ms in release: a face parse per measured word) is the next
+thing the perf track meets (M13's incremental engine, M35, D7). Not in
+this milestone, said rather than hidden: `overflow-x`/`overflow-y` and
+the two-value `overflow`; elements that scroll (M10.5); horizontal
+scrolling; hover tracking (M26); anti-aliased clip edges (a clip is
+pixel-aligned at pixel centres). 388 tests workspace-wide. Still stub:
+`net`. Next milestone: box model completion (M10).

@@ -75,8 +75,9 @@ below T3 is a checkpoint on the way there; T4–T5 are optional
 continuations the engine has to *earn* (by surviving real usage), not
 scope commitments. When this document says "the goal", it means T3.
 
-Current status: **T0 achieved at M3** (HTML + CSS parse; painting is
-tag-styled, not cascade-styled — T0 solidifies at M9).
+Current status: **T0 achieved at M3** (HTML + CSS parse), and since M9
+painting is cascade-styled over a real layout that scrolls and clips;
+images, the last item on T0's list, come with M23.
 
 ### 1.3 Non-goals (explicit)
 
@@ -88,7 +89,7 @@ tag-styled, not cascade-styled — T0 solidifies at M9).
 
 ---
 
-## 2. Current state (M0–M8)
+## 2. Current state (M0–M9)
 
 - **M0 — Scaffold** (done 2026-09-30): 11-crate workspace, layer DAG,
   `docs/architecture.md` contract.
@@ -200,9 +201,26 @@ tag-styled, not cascade-styled — T0 solidifies at M9).
   `docs/architecture.md` "Current state". The fuzz targets live under
   `fuzz/` and run in CI (T2.1 started, T2.3 in its short form).
 
-Verified per the vertical-slice rule at each milestone: 370 tests
-workspace-wide (177 in `style`, 42 in `layout`, 42 in `html`, 30 in
-`text`), clippy clean (`-D warnings`, every target), smoke run.
+- **M9 — Viewport, scrolling, clipping** (done 2026-10-01): the fragment
+  tree in document coordinates with element indices and line boxes
+  (`layout::DocumentLayout`); the scroll offset applied at paint, with
+  out-of-view items culled; `overflow` clipping as clip rects in the
+  display list and a clip stack in `render`; scrolling and a drawn
+  scrollbar in the engine (fixed-tick lerp; wheel, keys and scrollbar
+  in the shell); hit testing and `link_at`; the cascade and the layout
+  cached so a scroll reruns paint and raster only; and the M9.6 bench,
+  8.7ms a frame on the debug build (115fps), 2.0ms in release. The one
+  real finding on the way: shaping was most of a frame (the face parsed
+  per call, D7's item), fixed with a shaped-run cache in `render`;
+  layout's own cost (160ms for the bench page) is next for the perf
+  track. See `docs/architecture.md` for the fuller writeup and the
+  stated gaps (`overflow-x`/`overflow-y`, elements that scroll — M10.5,
+  horizontal scrolling, hover — M26).
+
+Verified per the vertical-slice rule at each milestone: 388 tests
+workspace-wide (178 in `style`, 44 in `layout`, 42 in `html`, 30 in
+`text`, 25 in `engine`), clippy clean (`-D warnings`, every target),
+smoke run.
 Toolchain: 1.98.1, pinned by `rust-toolchain.toml`.
 Build target dir outside OneDrive (`%LOCALAPPDATA%\silver-browser\target`)
 — currently only by passing `CARGO_TARGET_DIR` manually each session; no
@@ -577,18 +595,38 @@ since that's the concrete, testable exit criterion.
 
 ## M9 — Viewport, scrolling, clipping  ·  `shell`/`render`/`engine`  ·  Effort: M  ·  Depends: M6
 
-- [ ] M9.1 Document coordinate system; viewport offset (scroll position)
-       applied at paint time.
-- [ ] M9.2 Wheel/scrollbar input → scroll offset; smooth scroll basic
-       (fixed-tick lerp; compositor-smooth later M19).
-- [ ] M9.3 `overflow: hidden|visible` clipping (clip rects in the display
-       list; scroll containers v1 = document root only).
-- [ ] M9.4 Hit testing v1: (x, y) → element for link clicks + hover
-       ( groundwork for M26).
-- [ ] M9.5 Full-frame presentation pipeline: restyle → layout → paint →
+- [x] M9.1 Document coordinate system; viewport offset (scroll position)
+       applied at paint time. Done 2026-10-01: `layout::DocumentLayout`
+       (a fragment tree in document coordinates, each fragment with its
+       element's index, plus the content height), `paint::Viewport`
+       with `scroll_y` subtracted at paint and out-of-view items culled.
+- [x] M9.2 Wheel/scrollbar input → scroll offset; smooth scroll basic
+       (fixed-tick lerp; compositor-smooth later M19). Done 2026-10-01:
+       `Engine::scroll_by`/`scroll_to`/`tick`; the scrollbar is drawn by
+       the engine (D9) and dragged through `Engine::scrollbar`; the keys
+       too (arrows, Page Up/Down, Home/End, space).
+- [x] M9.3 `overflow: hidden|visible` clipping (clip rects in the display
+       list; scroll containers v1 = document root only). Done
+       2026-10-01: `overflow` parsed (one value; `scroll`/`auto` clip
+       like `hidden` until M10.5), `PushClip`/`PopClip` at the padding
+       box, a clip stack in `render`.
+- [x] M9.4 Hit testing v1: (x, y) → element for link clicks + hover
+       ( groundwork for M26). Done 2026-10-01: `Engine::hit_test` and
+       `link_at`; the shell prints the href on click (navigation is
+       M15); hover is M26's to wire.
+- [x] M9.5 Full-frame presentation pipeline: restyle → layout → paint →
        raster on scroll without re-layout (scroll-only invalidation).
-- [ ] M9.6 Acceptance: a 10× viewport-height document scrolls at 60fps on
-       the debug build (measure; record in `benches/scroll`).
+       Done 2026-10-01: the cascade cached per document, the layout per
+       (document, width), `Engine::layout_runs` proving it; shaped runs
+       cached in `render` across frames.
+- [x] M9.6 Acceptance: a 10× viewport-height document scrolls at 60fps on
+       the debug build (measure; record in `benches/scroll`). Done
+       2026-10-01, `crates/engine/benches/scroll.rs` (128 paragraphs,
+       8061px, 120 frames of 40px at 1280×800): 8.7ms/frame (115fps) on
+       the debug build with dependencies optimised (the dev profile now
+       does), 15.7ms (64fps) with nothing optimised, 2.0ms (490fps) in
+       release. Layout itself is 170ms (debug) / 160ms (release) for
+       that page — a face parse per measured word, D7's and M35's item.
 
 ---
 
