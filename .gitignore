@@ -3,3 +3,8 @@
 .vscode/
 .idea/
 Thumbs.db
+
+# Fuzzing: build output, crashes and the corpus libfuzzer grows
+fuzz/target
+fuzz/artifacts
+fuzz/corpus

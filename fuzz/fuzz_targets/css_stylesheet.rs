@@ -1,0 +1,15 @@
+//! The CSS tokenizer, the stylesheet parser and the `style` attribute
+//! parser on arbitrary text.
+
+#![no_main]
+
+use libfuzzer_sys::fuzz_target;
+
+fuzz_target!(|data: &[u8]| {
+    let Ok(s) = std::str::from_utf8(data) else {
+        return;
+    };
+    let _ = css::tokenize(s);
+    let _ = css::parse_stylesheet(s);
+    let _ = css::parse_style_attribute(s);
+});

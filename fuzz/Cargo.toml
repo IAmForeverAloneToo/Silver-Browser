@@ -1,0 +1,62 @@
+# Fuzz targets for everything that parses text from a page: the HTML
+# parser, the CSS tokenizer and parser, the selector parser, the cascade,
+# and the whole pipeline through to a raster. Not a workspace member:
+# libfuzzer needs nightly, and the normal build must not.
+# `cargo +nightly fuzz run <target>` from the repository root; CI runs
+# each target for a short while on every push and for longer weekly.
+
+[package]
+name = "silver-browser-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "AGPL-3.0-only"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+css = { path = "../crates/css" }
+dom = { path = "../crates/dom" }
+html = { path = "../crates/html" }
+layout = { path = "../crates/layout" }
+paint = { path = "../crates/paint" }
+render = { path = "../crates/render" }
+style = { path = "../crates/style" }
+text = { path = "../crates/text" }
+
+[[bin]]
+name = "html_parse"
+path = "fuzz_targets/html_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "css_stylesheet"
+path = "fuzz_targets/css_stylesheet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "selector_parse"
+path = "fuzz_targets/selector_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "style_document"
+path = "fuzz_targets/style_document.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pipeline"
+path = "fuzz_targets/pipeline.rs"
+test = false
+doc = false
+bench = false

@@ -7,7 +7,16 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Sunday at 04:17 UTC: the fuzz targets get a long run against the corpus
+  # they have grown, which a minute a push never reaches.
+  schedule:
+    - cron: "17 4 * * 0"
   workflow_dispatch:
+    inputs:
+      fuzz_seconds:
+        description: How long each fuzz target runs, in seconds
+        required: false
+        default: "60"
 
 permissions:
   contents: read
@@ -26,6 +35,9 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fmt --all -- --check
+      # The fuzz targets are their own crate rather than a workspace
+      # member, so `--all` above does not reach them.
+      - run: cargo fmt --manifest-path fuzz/Cargo.toml -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   audit:
@@ -46,11 +58,15 @@ jobs:
         with:
           tool: cargo-audit@0.22.2
       - run: cargo audit --file Cargo.lock
+      # The fuzz targets have their own lockfile and their own tree; it is
+      # not in a release, but a vulnerability there is still worth knowing
+      # about.
+      - run: cargo audit --file fuzz/Cargo.lock
 
   test:
-    # The engine's tests shape and measure real text, so each runner
-    # needs a font the text crate can find (Segoe UI, DejaVu Sans,
-    # Helvetica or Arial); every runner image ships one of them.
+    # The tests shape, measure and draw the font the text crate bundles
+    # for them, so no runner needs a system font and every runner
+    # measures the same.
     name: test (${{ matrix.os }})
     strategy:
       fail-fast: false
@@ -63,3 +79,59 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo build --workspace --all-targets --locked
       - run: cargo test --workspace --locked
+
+  fuzz:
+    name: fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    # A minute from an empty corpus explores very little, so each target's
+    # corpus is carried between runs in the actions cache and every run
+    # starts from what the last one found. The weekly run gets half an
+    # hour a target on top of that; a cache entry no run has restored for
+    # a week is evicted, and the corpus then starts from nothing again,
+    # which costs coverage but never correctness.
+    # The repository pins the stable toolchain in rust-toolchain.toml, which
+    # would override the nightly installed below for cargo-fuzz's own build
+    # and make its -Z sanitizer flags fail. RUSTUP_TOOLCHAIN wins over the
+    # file, so every cargo/rustc call in this job uses nightly.
+    env:
+      RUSTUP_TOOLCHAIN: nightly
+      # The prebuilt cargo-fuzz is a static musl binary and takes its own
+      # build triple as the default target; musl has no std installed here
+      # and cannot use the address sanitizer, so the target is named.
+      FUZZ_TARGET_TRIPLE: x86_64-unknown-linux-gnu
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [html_parse, css_stylesheet, selector_parse, style_document, pipeline]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
+        with:
+          toolchain: nightly
+      - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
+        with:
+          tool: cargo-fuzz@0.13.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: fuzz
+      # The inputs earlier runs found. The key carries the run number so
+      # every run saves a new entry, and the prefix restores the newest
+      # matching one; libfuzzer minimises the directory as it goes, so it
+      # does not grow without bound.
+      - uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      - name: Fuzz
+        env:
+          SECONDS_PER_TARGET: ${{ inputs.fuzz_seconds || (github.event_name == 'schedule' && 1800 || 60) }}
+        run: |
+          mkdir -p fuzz/corpus/${{ matrix.target }}
+          cargo fuzz run --target "$FUZZ_TARGET_TRIPLE" ${{ matrix.target }} \
+            -- -max_total_time="$SECONDS_PER_TARGET" -max_len=4096 -rss_limit_mb=2048
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: fuzz-${{ matrix.target }}-crash
+          path: fuzz/artifacts
