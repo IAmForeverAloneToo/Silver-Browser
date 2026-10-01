@@ -366,8 +366,29 @@ pub fn layout_document_in(
         children.content_height + children.trailing.resolve()
     };
     // A page ending in a float is as tall as the float (CSS2 §10.6.7).
-    let height = floats.lowest_bottom().map_or(height, |b| height.max(b));
+    let mut height = floats.lowest_bottom().map_or(height, |b| height.max(b));
     let mut roots = children.fragments;
+    // The absolutely positioned boxes no positioned ancestor took are
+    // the initial containing block's — the viewport's rectangle at the
+    // document's top — and so is every `position: fixed` box, those
+    // met inside the others included (M11). Their fragments are the
+    // document's last roots; a fixed one is not scrolled with the
+    // document (`paint` leaves the viewport's offset out of it), an
+    // absolute one is, and the page reaches down to it.
+    let mut waiting = children.absolutes;
+    let mut depends_on_viewport_height = depends_on_viewport_height;
+    while !waiting.is_empty() {
+        for d in std::mem::take(&mut waiting) {
+            depends_on_viewport_height |= viewport_height.is_some() && uses_cb_height(&d.b.style);
+            let (fragment, fixed) =
+                layout_absolute(d.b, d.x, d.y, viewport_width, viewport_height, fonts);
+            if d.b.style.position == Position::Absolute {
+                height = height.max(fragment.y + fragment.h);
+            }
+            roots.push(fragment);
+            waiting.extend(fixed);
+        }
+    }
     // The floats' fragments get their positions while every fragment
     // is still relative to its parent, as the attaching assumes.
     attach_floats(&mut roots, floats.placed(), 0.0, 0.0, 0.0, 0.0);
@@ -540,10 +561,42 @@ fn height_bounds(
     )
 }
 
+/// An absolutely positioned box met in flow (M11), on its way up to
+/// its containing block: the box, and the static position of its
+/// margin box's top-left (CSS2 §10.3.7, §10.6.4: where the box would
+/// have been in flow), relative to the fragment carrying it — a
+/// [`BlockLayout`]'s or [`AtomicLayout`]'s border box, a
+/// [`ChildrenLayout`]'s or `InlineLayout`'s content-box origin — and
+/// moved along as that fragment is placed, until the nearest positioned
+/// ancestor (or the initial containing block; the viewport, for
+/// `position: fixed`) lays it out against its padding box.
+pub(crate) struct Deferred<'a> {
+    pub(crate) b: &'a LayoutBox,
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+}
+
+impl Deferred<'_> {
+    /// The same box carried by a fragment placed at `(dx, dy)` in the
+    /// one it was relative to.
+    pub(crate) fn moved(self, dx: f32, dy: f32) -> Self {
+        Deferred {
+            b: self.b,
+            x: self.x + dx,
+            y: self.y + dy,
+        }
+    }
+}
+
+/// Every box of `list` moved by `(dx, dy)`.
+pub(crate) fn carried<'a>(list: Vec<Deferred<'a>>, dx: f32, dy: f32) -> Vec<Deferred<'a>> {
+    list.into_iter().map(|d| d.moved(dx, dy)).collect()
+}
+
 /// One box's layout, relative to its own border-box top-left `(0, 0)` —
 /// the caller (`layout_children`) translates once collapsed-margin
 /// placement among siblings is resolved.
-pub(crate) struct BlockLayout {
+pub(crate) struct BlockLayout<'a> {
     /// The box's own fragment; its content's fragments are the
     /// children, relative to the box's border-box top-left `(0, 0)`.
     pub(crate) root: Fragment,
@@ -581,11 +634,14 @@ pub(crate) struct BlockLayout {
     /// top (CSS2 §10.8.1: an inline-block's own baseline); `None` when
     /// nothing inside made a line.
     pub(crate) last_baseline: Option<f32>,
+    /// The absolutely positioned boxes met inside whose containing
+    /// block is further up (M11), relative to the border box.
+    pub(crate) absolutes: Vec<Deferred<'a>>,
 }
 
 /// An inline-block laid out for its line (M10.4, M7.7): one atomic item
 /// as wide and as tall as its margin box.
-pub(crate) struct AtomicLayout {
+pub(crate) struct AtomicLayout<'a> {
     /// The box's own fragment with its content's, relative to its
     /// border-box top-left `(0, 0)`.
     pub(crate) root: Fragment,
@@ -601,6 +657,8 @@ pub(crate) struct AtomicLayout {
     /// its fragment where it is placed; the line and the float context
     /// see the box unmoved.
     pub(crate) relative: (f32, f32),
+    /// As [`BlockLayout::absolutes`], relative to the border box.
+    pub(crate) absolutes: Vec<Deferred<'a>>,
 }
 
 /// The move a box with `position: relative` gets once laid out in flow
@@ -646,10 +704,13 @@ pub(crate) fn relative_offset(
 
 /// Whether a box with this style establishes a block formatting context
 /// of its own (CSS2 §9.4.1, M10.4): `overflow` other than `visible`, an
-/// inline-block, or a float (M11). Absolutely positioned boxes and
-/// table cells do too; each arrives with its milestone.
+/// inline-block, a float or an absolutely positioned box (M11). Table
+/// cells do too; they arrive with their milestone.
 pub(crate) fn establishes_bfc(style: &ComputedStyle) -> bool {
-    style.overflow.clips() || style.display == Display::InlineBlock || style.float != Float::None
+    style.overflow.clips()
+        || style.display == Display::InlineBlock
+        || style.float != Float::None
+        || style.position.is_out_of_flow()
 }
 
 /// The float context a block container's content is laid out in: a
@@ -696,15 +757,15 @@ impl Edges {
 /// context `floats`, met at `at`, its margin box filling
 /// `available_width` of the containing block (its whole width, or the
 /// room between floats for a context root, M11).
-fn layout_block(
-    b: &LayoutBox,
+fn layout_block<'a>(
+    b: &'a LayoutBox,
     cb_width: f32,
     available_width: f32,
     cb_height: Option<f32>,
     floats: &mut FloatContext,
     at: At,
     fonts: &FontCollection,
-) -> BlockLayout {
+) -> BlockLayout<'a> {
     let edges = Edges::of(&b.style, cb_width);
     // margin-right is fully resolved here but never read again — see
     // `BlockLayout::margin_left`'s doc for why that's correct, not an
@@ -733,12 +794,12 @@ fn layout_block(
 /// `auto` margins zero — its content a block formatting context of its
 /// own. Where it goes is the caller's: the margin box the result
 /// describes is placed by the float context.
-pub(crate) fn layout_float(
-    b: &LayoutBox,
+pub(crate) fn layout_float<'a>(
+    b: &'a LayoutBox,
     cb_width: f32,
     cb_height: Option<f32>,
     fonts: &FontCollection,
-) -> AtomicLayout {
+) -> AtomicLayout<'a> {
     layout_inline_block(b, cb_width, cb_height, fonts)
 }
 
@@ -747,7 +808,7 @@ pub(crate) fn layout_float(
 /// coordinates.
 pub(crate) fn pending_float(
     b: &LayoutBox,
-    atomic: &AtomicLayout,
+    atomic: &AtomicLayout<'_>,
     cb_left: f32,
     cb_width: f32,
 ) -> PendingFloat {
@@ -773,12 +834,12 @@ pub(crate) fn pending_float(
 /// `min-width` (§10.4); the content then lays out as any block's. The
 /// baseline is the last line box's, or the bottom margin edge when
 /// there is none or the box clips (§10.8.1).
-pub(crate) fn layout_inline_block(
-    b: &LayoutBox,
+pub(crate) fn layout_inline_block<'a>(
+    b: &'a LayoutBox,
     cb_width: f32,
     cb_height: Option<f32>,
     fonts: &FontCollection,
-) -> AtomicLayout {
+) -> AtomicLayout<'a> {
     let edges = Edges::of(&b.style, cb_width);
     let margin = |side: usize| b.style.margin[side].resolve(cb_width, 0.0);
     let (margin_left, margin_right) = (margin(LEFT), margin(RIGHT));
@@ -819,6 +880,7 @@ pub(crate) fn layout_inline_block(
         margin_left,
         margin_top,
         relative: relative_offset(&b.style, cb_width, cb_height),
+        absolutes: layout.absolutes,
     }
 }
 
@@ -827,8 +889,8 @@ pub(crate) fn layout_inline_block(
 /// the margins it exposes. `content` says which float context the
 /// children are laid out in (M11).
 #[allow(clippy::too_many_arguments)]
-fn layout_block_contents(
-    b: &LayoutBox,
+fn layout_block_contents<'a>(
+    b: &'a LayoutBox,
     edges: &Edges,
     cb_width: f32,
     cb_height: Option<f32>,
@@ -836,7 +898,7 @@ fn layout_block_contents(
     margin_left: f32,
     content: Content<'_>,
     fonts: &FontCollection,
-) -> BlockLayout {
+) -> BlockLayout<'a> {
     let Edges { border, padding } = edges;
     // What keeps this box's margins from adjoining its children's: a
     // border or padding on that side (CSS2 §8.3.1), or the box being a
@@ -869,7 +931,7 @@ fn layout_block_contents(
     if b.children.is_empty() && can_collapse_through {
         let set = own_top.join(own_bottom);
         return BlockLayout {
-            root: box_fragment(content_width, 0.0, b),
+            root: box_fragment(content_width + non_content_width, 0.0, b),
             height: 0.0,
             margin_left,
             margin_top: set,
@@ -878,6 +940,7 @@ fn layout_block_contents(
             bottom_edge: own_bottom,
             self_collapsing: true,
             last_baseline: None,
+            absolutes: Vec::new(),
         };
     }
 
@@ -932,12 +995,19 @@ fn layout_block_contents(
     if children.nothing_materialised && can_collapse_through {
         let top_edge = own_top.join(children.leading);
         let set = top_edge.join(own_bottom);
-        let mut root = box_fragment(content_width, 0.0, b);
+        let mut root = box_fragment(content_width + non_content_width, 0.0, b);
         root.children = children
             .fragments
             .into_iter()
             .map(|f| f.translated(content_x, 0.0))
             .collect();
+        let absolutes = settle_absolutes(
+            b,
+            &mut root,
+            border,
+            carried(children.absolutes, content_x, 0.0),
+            fonts,
+        );
         return BlockLayout {
             root,
             height: 0.0,
@@ -948,6 +1018,7 @@ fn layout_block_contents(
             bottom_edge: children.trailing.join(own_bottom),
             self_collapsing: true,
             last_baseline: None,
+            absolutes,
         };
     }
 
@@ -1041,6 +1112,15 @@ fn layout_block_contents(
             border[TOP] + padding[TOP],
         );
     }
+    // The absolutely positioned boxes met inside: laid out here when
+    // this box is their containing block, carried up otherwise (M11).
+    let absolutes = settle_absolutes(
+        b,
+        &mut root,
+        border,
+        carried(children.absolutes, content_x, content_y),
+        fonts,
+    );
     if b.style.overflow.clips() {
         // The scrollable overflow area (M10.5, see `Fragment::
         // scroll_height`): the content as if the height were auto, or
@@ -1065,14 +1145,245 @@ fn layout_block_contents(
         bottom_edge: margin_bottom,
         self_collapsing: false,
         last_baseline: children.last_baseline.map(|y| content_y + y),
+        absolutes,
     }
+}
+
+/// Settles the absolutely positioned boxes carried up to `b`, whose
+/// fragment `root` is built and whose border widths are `border`
+/// (M11). A positioned box is the containing block of the `position:
+/// absolute` boxes below it (CSS2 §10.1): each is laid out against its
+/// padding box, from the static position carried, and its fragment
+/// goes under `root` after the in-flow content — so an `overflow`
+/// box between the two does not clip it, and a scroll container
+/// between them does not scroll it. A `position: fixed` box, and
+/// anything carried by a box that is not positioned, goes on up;
+/// returned relative to `root`'s border box.
+fn settle_absolutes<'a>(
+    b: &LayoutBox,
+    root: &mut Fragment,
+    border: &[f32; 4],
+    absolutes: Vec<Deferred<'a>>,
+    fonts: &FontCollection,
+) -> Vec<Deferred<'a>> {
+    if !b.style.position.is_positioned() {
+        return absolutes;
+    }
+    let (mine, mut up): (Vec<_>, Vec<_>) = absolutes
+        .into_iter()
+        .partition(|d| d.b.style.position == Position::Absolute);
+    let padding_w = (root.w - border[LEFT] - border[RIGHT]).max(0.0);
+    let padding_h = (root.h - border[TOP] - border[BOTTOM]).max(0.0);
+    for d in mine {
+        let (fragment, fixed) = layout_absolute(
+            d.b,
+            d.x - border[LEFT],
+            d.y - border[TOP],
+            padding_w,
+            Some(padding_h),
+            fonts,
+        );
+        up.extend(carried(fixed, border[LEFT], border[TOP]));
+        root.children
+            .push(fragment.translated(border[LEFT], border[TOP]));
+    }
+    up
+}
+
+/// A `<length-percentage> | auto` inset or margin as a used value:
+/// `None` for `auto`, a percentage of `of` — or `auto` too when `of`,
+/// a containing block's height, is not known (CSS2 §9.3.2, §10.5).
+fn used(v: LengthPercentageAuto, of: Option<f32>) -> Option<f32> {
+    match v {
+        LengthPercentageAuto::Auto => None,
+        LengthPercentageAuto::Px(px) => Some(px),
+        LengthPercentageAuto::Percent(p) => of.map(|base| base * p / 100.0),
+    }
+}
+
+/// Whether an absolutely positioned box's layout against the initial
+/// containing block depends on the viewport's height: a percentage
+/// `top`, `height`, `min-height` or `max-height`, or a `bottom` that
+/// is not `auto`.
+fn uses_cb_height(style: &ComputedStyle) -> bool {
+    let percent = |v: LengthPercentage| matches!(v, LengthPercentage::Percent(_));
+    matches!(style.inset[TOP], LengthPercentageAuto::Percent(_))
+        || !style.inset[BOTTOM].is_auto()
+        || matches!(style.height, LengthPercentageAuto::Percent(_))
+        || percent(style.min_height)
+        || style.max_height.is_some_and(percent)
+}
+
+/// Lays out an absolutely positioned box (M11) against its containing
+/// block's padding box, `cb_width` by `cb_height` — `None` when the
+/// height is not known, the initial containing block's without a
+/// viewport height, which makes `bottom` and a percentage `top` or
+/// height `auto` — from the static position `(sx, sy)` its margin box
+/// would have had in flow, in the padding box's coordinates. Returns
+/// the box's fragment positioned there, with its content, and the
+/// `position: fixed` boxes met inside, relative to the padding box.
+///
+/// Width is CSS2 §10.3.7: `left`, `width` and `right` all `auto` is a
+/// shrink-to-fit width at the static position; one `auto` among them
+/// is solved from the other two, `auto` margins zero; none `auto`
+/// solves the margins — both `auto` centres the box, one `auto` takes
+/// the rest — and ignores `right` when over-constrained (this engine
+/// being left-to-right throughout). `min-width` and `max-width` clamp
+/// the width with the edge solved again (§10.4). Height is §10.6.4 the
+/// same way with `top`, `height` and `bottom`, an `auto` height the
+/// content's, `bottom` ignored when over-constrained, `min-height` and
+/// `max-height` clamping (§10.7). The box is a block formatting context
+/// root; its content's percentages are of the padding box.
+fn layout_absolute<'a>(
+    b: &'a LayoutBox,
+    sx: f32,
+    sy: f32,
+    cb_width: f32,
+    cb_height: Option<f32>,
+    fonts: &FontCollection,
+) -> (Fragment, Vec<Deferred<'a>>) {
+    let style = &b.style;
+    let edges = Edges::of(style, cb_width);
+    let horizontal_edges = edges.horizontal();
+    let vertical_edges = edges.vertical();
+    let (left, right) = (
+        used(style.inset[LEFT], Some(cb_width)),
+        used(style.inset[RIGHT], Some(cb_width)),
+    );
+    let (top, bottom) = (
+        used(style.inset[TOP], cb_height),
+        used(style.inset[BOTTOM], cb_height),
+    );
+    // Margins: a percentage is of the containing block's width on every
+    // side (CSS2 §8.3).
+    let margin = |side: usize| used(style.margin[side], Some(cb_width));
+    let (margin_left, margin_right) = (margin(LEFT), margin(RIGHT));
+    let (margin_top, margin_bottom) = (margin(TOP), margin(BOTTOM));
+
+    // §10.3.7, for one value of `width` (`None` for `auto`): the left
+    // edge, the content width and the two margins.
+    let c = width_constraints(style, cb_width, horizontal_edges);
+    let shrink = |available: f32| {
+        let (min_content, max_content) = crate::intrinsic::content_widths(b, fonts);
+        min_content.max(available.max(0.0).min(max_content))
+    };
+    let solve_width = |width: Option<f32>| -> (f32, f32, f32, f32) {
+        let ml = margin_left.unwrap_or(0.0);
+        let mr = margin_right.unwrap_or(0.0);
+        match (left, width, right) {
+            (None, None, None) => {
+                let w = shrink(cb_width - sx - ml - horizontal_edges - mr);
+                (sx, w, ml, mr)
+            }
+            (Some(l), Some(w), Some(r)) => {
+                let rest = cb_width - l - horizontal_edges - w - r;
+                match (margin_left, margin_right) {
+                    (None, None) if rest >= 0.0 => (l, w, rest / 2.0, rest / 2.0),
+                    (None, None) => (l, w, 0.0, rest),
+                    (None, Some(mr)) => (l, w, rest - mr, mr),
+                    (Some(ml), None) => (l, w, ml, rest - ml),
+                    // Over-constrained: `right` is ignored.
+                    (Some(ml), Some(_)) => (l, w, ml, rest - ml),
+                }
+            }
+            (None, None, Some(r)) => {
+                let w = shrink(cb_width - r - mr - horizontal_edges - ml);
+                (cb_width - r - mr - horizontal_edges - w - ml, w, ml, mr)
+            }
+            (None, Some(w), None) => (sx, w, ml, mr),
+            (Some(l), None, None) => {
+                let w = shrink(cb_width - l - ml - horizontal_edges - mr);
+                (l, w, ml, mr)
+            }
+            (None, Some(w), Some(r)) => (cb_width - r - mr - horizontal_edges - w - ml, w, ml, mr),
+            (Some(l), None, Some(r)) => {
+                let w = (cb_width - l - ml - horizontal_edges - mr - r).max(0.0);
+                (l, w, ml, mr)
+            }
+            (Some(l), Some(w), None) => (l, w, ml, mr),
+        }
+    };
+    let mut solved = solve_width(c.width);
+    if let Some(max) = c.max
+        && solved.1 > max
+    {
+        solved = solve_width(Some(max));
+    }
+    if solved.1 < c.min {
+        solved = solve_width(Some(c.min));
+    }
+    let (left, content_width, margin_left, _margin_right) = solved;
+
+    // The content, as a block formatting context root's, with the
+    // style's own height (or the content's); the box's used height
+    // may then come from `top` and `bottom` instead.
+    let layout = layout_block_contents(
+        b,
+        &edges,
+        cb_width,
+        cb_height,
+        content_width,
+        margin_left,
+        Content::Root,
+        fonts,
+    );
+    let mut fragment = layout.root;
+    let specified_height = definite_height(style, cb_height, vertical_edges);
+    let (min_height, max_height) = height_bounds(style, cb_height, vertical_edges);
+    // §10.6.4: the top edge, the border-box height and the margins.
+    let solve_height = |height: Option<f32>| -> (f32, f32, f32, f32) {
+        let mt = margin_top.unwrap_or(0.0);
+        let mb = margin_bottom.unwrap_or(0.0);
+        let content = |h: Option<f32>| h.unwrap_or(fragment.h - vertical_edges) + vertical_edges;
+        match (top, height, bottom, cb_height) {
+            (Some(t), Some(h), Some(btm), Some(cb_h)) => {
+                let h = h + vertical_edges;
+                let rest = cb_h - t - h - btm;
+                match (margin_top, margin_bottom) {
+                    (None, None) if rest >= 0.0 => (t, h, rest / 2.0, rest / 2.0),
+                    (None, None) => (t, h, 0.0, rest),
+                    (None, Some(mb)) => (t, h, rest - mb, mb),
+                    (Some(mt), None) => (t, h, mt, rest - mt),
+                    // Over-constrained: `bottom` is ignored.
+                    (Some(mt), Some(_)) => (t, h, mt, rest - mt),
+                }
+            }
+            (Some(t), None, Some(btm), Some(cb_h)) => {
+                let h = (cb_h - t - mt - mb - btm).max(0.0);
+                (t, h, mt, mb)
+            }
+            (None, h, Some(btm), Some(cb_h)) => {
+                let h = content(h);
+                (cb_h - btm - mb - h - mt, h, mt, mb)
+            }
+            (Some(t), h, _, _) => (t, content(h), mt, mb),
+            (None, h, _, _) => (sy, content(h), mt, mb),
+        }
+    };
+    let mut solved = solve_height(specified_height);
+    let clamp = |border_height: f32| {
+        let content = border_height - vertical_edges;
+        let content = max_height
+            .map_or(content, |max| content.min(max))
+            .max(min_height);
+        content + vertical_edges
+    };
+    if clamp(solved.1) != solved.1 {
+        solved = solve_height(Some(clamp(solved.1) - vertical_edges));
+    }
+    let (top, border_height, margin_top, _margin_bottom) = solved;
+    fragment.h = border_height.max(0.0);
+    fragment.x = left + margin_left;
+    fragment.y = top + margin_top;
+    let fixed = carried(layout.absolutes, fragment.x, fragment.y);
+    (fragment, fixed)
 }
 
 /// A block-level child laid out and placed horizontally among its
 /// container's children (M11): where its top goes when clearance or a
 /// float moved it, and where its left edge is.
-struct BlockPlacement {
-    layout: BlockLayout,
+struct BlockPlacement<'a> {
+    layout: BlockLayout<'a>,
     /// The border box's left edge from the content box's: the box's
     /// left margin, plus the room a context root left to a float.
     x: f32,
@@ -1111,14 +1422,14 @@ fn separates_top(style: &ComputedStyle, cb_width: f32) -> bool {
 /// margin, where the margins pending so far end (as clearance would
 /// have it); a box whose top edge separates its margins resolves it at
 /// its hypothetical top.
-fn place_block(
-    child: &LayoutBox,
+fn place_block<'a>(
+    child: &'a LayoutBox,
     cb_width: f32,
     cb_height: Option<f32>,
     floats: &mut FloatContext,
     at: At,
     fonts: &FontCollection,
-) -> BlockPlacement {
+) -> BlockPlacement<'a> {
     let root = establishes_bfc(&child.style);
     let own_top = AdjoiningMargins::of(child.style.margin[TOP].resolve(cb_width, 0.0));
     if at.origin.is_none() {
@@ -1228,7 +1539,7 @@ fn box_fragment(w: f32, h: f32, b: &LayoutBox) -> Fragment {
 }
 
 /// The result of stacking a sequence of sibling boxes in normal flow.
-struct ChildrenLayout {
+struct ChildrenLayout<'a> {
     /// Every descendant's fragment, relative to the *parent's*
     /// content-box top-left `(0, 0)` — *not* counting `leading` (see
     /// that field's doc): the first child sits at relative `y = 0`
@@ -1268,6 +1579,9 @@ struct ChildrenLayout {
     /// The flow position after the last child, in the float context's
     /// coordinates (M11): where a float met next would go.
     end: At,
+    /// The absolutely positioned boxes met among the children or
+    /// carried up by them (M11), relative to the content-box origin.
+    absolutes: Vec<Deferred<'a>>,
 }
 
 /// Stacks a block container's children (M10.4: all block-level, per the
@@ -1286,15 +1600,16 @@ struct ChildrenLayout {
 /// caller and the first content's top is `y = 0`. In both the content's
 /// positions are relative to the content top, and the float context's
 /// positions, kept in `at`, say the same in the root's coordinates.
-fn layout_children(
-    children: &[LayoutBox],
+fn layout_children<'a>(
+    children: &'a [LayoutBox],
     cb_width: f32,
     cb_height: Option<f32>,
     floats: &mut FloatContext,
     at: At,
     fonts: &FontCollection,
-) -> ChildrenLayout {
+) -> ChildrenLayout<'a> {
     let mut fragments = Vec::new();
+    let mut absolutes: Vec<Deferred<'a>> = Vec::new();
     let mut y = 0.0f32;
     // The set of margins adjoining BETWEEN two siblings, not yet
     // materialized (never the leading one, which `still_leading` routes
@@ -1346,6 +1661,7 @@ fn layout_children(
                         }
                     }
                     fragments.push(layout.root.translated(x, child_y + dy));
+                    absolutes.extend(carried(layout.absolutes, x, child_y + dy));
                     at.anchor = origin + y;
                     at.strut = pending;
                     continue;
@@ -1374,6 +1690,7 @@ fn layout_children(
                     };
                     at.strut = at.strut.join(layout.margin_top);
                     fragments.push(layout.root.translated(x, box_y + dy));
+                    absolutes.extend(carried(layout.absolutes, x, box_y + dy));
                     continue;
                 }
                 let root_top = at.anchor + at.strut.join(layout.margin_top).resolve();
@@ -1393,6 +1710,7 @@ fn layout_children(
                     last_baseline = Some(child_y + baseline);
                 }
                 fragments.push(layout.root.translated(x, child_y + dy));
+                absolutes.extend(carried(layout.absolutes, x, child_y + dy));
                 y = child_y + layout.height;
                 pending = layout.margin_bottom;
                 at.origin.get_or_insert(root_top);
@@ -1405,14 +1723,44 @@ fn layout_children(
                 // held until that position is known — and the flow goes
                 // on as if it were not there. Its fragment is pushed in
                 // its place and positioned by the root's `attach_floats`.
+                // The absolutely positioned boxes it carries are moved
+                // to where it was placed — or, while it waits, to where
+                // it will be placed in the common case, the content top.
                 let atomic = layout_float(child, cb_width, cb_height, fonts);
                 let float = pending_float(child, &atomic, at.x, cb_width);
-                if at.origin.is_some() {
-                    floats.place(float, at.position());
-                } else {
-                    floats.defer(float);
-                }
+                let (fx, fy) = match at.origin {
+                    Some(origin) => {
+                        let (px, py) = floats.place(float, at.position());
+                        (px - at.x, py - origin)
+                    }
+                    None => {
+                        floats.defer(float);
+                        (0.0, 0.0)
+                    }
+                };
+                let (dx, dy) = atomic.relative;
+                absolutes.extend(carried(
+                    atomic.absolutes,
+                    fx + atomic.margin_left + dx,
+                    fy + atomic.margin_top + dy,
+                ));
                 fragments.push(atomic.root);
+            }
+            BoxKind::Absolute => {
+                // Out of flow, waiting for its containing block: its
+                // static position is the flow position it is met at,
+                // after the margins resolved so far (as a self-collapsing
+                // box's top edge is), at the content box's left.
+                let flow_y = if still_leading {
+                    if top_resolved { leading.resolve() } else { 0.0 }
+                } else {
+                    y + pending.resolve()
+                };
+                absolutes.push(Deferred {
+                    b: child,
+                    x: 0.0,
+                    y: flow_y,
+                });
             }
             BoxKind::AnonymousBlock | BoxKind::Inline | BoxKind::InlineBlock | BoxKind::Text(_) => {
                 // One inline formatting context (M7): the anonymous
@@ -1429,8 +1777,16 @@ fn layout_children(
                     // No line box at all (an empty inline element, or
                     // floats alone): treated as not existing, so it
                     // separates no margins (CSS2 §9.4.2). A float's
-                    // fragment still goes in its place.
+                    // fragment still goes in its place, and an
+                    // absolutely positioned box's static position is
+                    // the flow position, as a self-collapsing box's.
+                    let flow_y = if still_leading {
+                        if top_resolved { leading.resolve() } else { 0.0 }
+                    } else {
+                        y + pending.resolve()
+                    };
                     fragments.extend(lines.fragments);
+                    absolutes.extend(carried(lines.absolutes, 0.0, flow_y));
                     continue;
                 }
                 // A line box always separates (margins never collapse
@@ -1454,6 +1810,7 @@ fn layout_children(
                     last_baseline = Some(y + baseline);
                 }
                 fragments.extend(lines.fragments.into_iter().map(|f| f.translated(0.0, y)));
+                absolutes.extend(carried(lines.absolutes, 0.0, y));
                 y += lines.height;
                 at.origin.get_or_insert(root_top);
                 at.anchor = root_top + lines.height;
@@ -1470,6 +1827,7 @@ fn layout_children(
         nothing_materialised: still_leading,
         last_baseline,
         end: at,
+        absolutes,
     }
 }
 
@@ -3191,5 +3549,320 @@ mod tests {
             30.0 + 40.0,
             "beside the unmoved float, after the unmoved line"
         );
+    }
+
+    /// The box fragment of `node` and the fragment holding it: its
+    /// parent in the tree, or `None` at the root.
+    fn parent_of(layout: &DocumentLayout, node: usize) -> Option<usize> {
+        fn find(
+            fragments: &[Fragment],
+            node: usize,
+            parent: Option<usize>,
+        ) -> Option<Option<usize>> {
+            for f in fragments {
+                if matches!(f.kind, FragmentKind::Box) && f.node == node {
+                    return Some(parent);
+                }
+                if let Some(found) = find(&f.children, node, Some(f.node)) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        find(&layout.roots, node, None).unwrap_or_else(|| panic!("box of node {node}"))
+    }
+
+    #[test]
+    fn an_absolutely_positioned_box_is_laid_out_against_its_containing_block() {
+        // <div class=c><p>x</p><div class=a>y</div><p>z</p></div> with
+        // the container positioned, 200 by 100 with a 10px border: the
+        // box takes no room (z follows x), its offsets are from the
+        // container's padding box, and its fragment is the container's
+        // last, under it in the tree. Nodes: c 1, p 2, a 3, p 4.
+        let m = test_fonts().primary().metrics(16.0);
+        let lh = m.line_height();
+        let root = Element::new("div")
+            .attr("class", "c")
+            .push(Element::new("p").text("x"))
+            .push(Element::new("div").attr("class", "a").text("y"))
+            .push(Element::new("p").text("z"));
+        let css = ".c { position: relative; width: 200px; height: 100px; margin: 0;
+                        border: 10px solid #000000; }
+                   p { margin: 0; }
+                   .a { position: absolute; left: 20px; top: 30px; width: 50px; height: 40px; }";
+        let layout = document_of(root.clone(), css);
+        let a = by_node(&layout, 3);
+        assert_eq!((a.x, a.y, a.w, a.h), (30.0, 40.0, 50.0, 40.0));
+        assert_eq!(by_node(&layout, 4).y, 10.0 + lh, "z right after x");
+        assert_eq!(parent_of(&layout, 3), Some(1));
+        let c = by_node(&layout, 1);
+        assert_eq!(
+            c.children.last().map(|f| f.node),
+            Some(3),
+            "after the content"
+        );
+        assert_eq!(text_of(&layout, "y").x, 30.0);
+        // `right` and `bottom` measure from the padding box's far edges;
+        // `auto` width with both edges given is what is left between.
+        let at = |css: &str| {
+            let layout = document_of(root.clone(), css);
+            let a = by_node(&layout, 3);
+            (a.x, a.y, a.w, a.h)
+        };
+        let base = ".c { position: relative; width: 200px; height: 100px; margin: 0;
+                         border: 10px solid #000000; } p { margin: 0; }";
+        assert_eq!(
+            at(&format!(
+                "{base} .a {{ position: absolute; right: 20px; bottom: 10px; width: 50px; height: 40px; }}"
+            )),
+            (
+                10.0 + 200.0 - 20.0 - 50.0,
+                10.0 + 100.0 - 10.0 - 40.0,
+                50.0,
+                40.0
+            )
+        );
+        assert_eq!(
+            at(&format!(
+                "{base} .a {{ position: absolute; left: 20px; right: 30px; top: 5px; bottom: 15px; }}"
+            )),
+            (30.0, 15.0, 150.0, 80.0)
+        );
+        // Over-constrained: `right` and `bottom` are ignored; `auto`
+        // margins on both sides centre the box.
+        assert_eq!(
+            at(&format!(
+                "{base} .a {{ position: absolute; left: 20px; right: 30px; width: 50px;
+                                       top: 5px; bottom: 15px; height: 10px; }}"
+            )),
+            (30.0, 15.0, 50.0, 10.0)
+        );
+        assert_eq!(
+            at(&format!(
+                "{base} .a {{ position: absolute; left: 0; right: 0; width: 50px;
+                                       margin: 0 auto; top: 0; bottom: 0; height: 10px; }}"
+            )),
+            (10.0 + 75.0, 10.0, 50.0, 10.0)
+        );
+        // Percentages are of the padding box; a percentage top is of
+        // its height, which a positioned ancestor always has.
+        assert_eq!(
+            at(&format!(
+                "{base} .a {{ position: absolute; left: 10%; top: 50%; width: 25%; height: 10%; }}"
+            )),
+            (30.0, 60.0, 50.0, 10.0)
+        );
+    }
+
+    #[test]
+    fn the_static_position_is_where_the_box_would_have_been_in_flow() {
+        // All offsets `auto`: the box sits where it was met, after the
+        // margins resolved so far, at the content box's left, at a
+        // shrink-to-fit width; a `width` alone keeps the static
+        // position; `left` alone uses the static top.
+        let m = test_fonts().primary().metrics(16.0);
+        let lh = m.line_height();
+        let fonts = test_fonts();
+        let root = Element::new("div")
+            .attr("class", "c")
+            .push(Element::new("p").attr("class", "p").text("x"))
+            .push(Element::new("div").attr("class", "a").text("yy"))
+            .push(Element::new("p").text("z"));
+        let base = ".c { position: relative; width: 200px; margin: 0; padding: 5px; }
+                    p { margin: 0; } .p { margin-bottom: 20px; }";
+        let at = |css: &str| {
+            let layout = document_of(root.clone(), css);
+            let a = by_node(&layout, 3);
+            (a.x, a.y, a.w)
+        };
+        assert_eq!(
+            at(&format!("{base} .a {{ position: absolute; }}")),
+            (5.0, 5.0 + lh + 20.0, fonts.measure("yy", 16.0))
+        );
+        assert_eq!(
+            at(&format!("{base} .a {{ position: absolute; width: 30px; }}")),
+            (5.0, 5.0 + lh + 20.0, 30.0)
+        );
+        assert_eq!(
+            at(&format!(
+                "{base} .a {{ position: absolute; left: 50px; width: 30px; }}"
+            )),
+            (50.0, 5.0 + lh + 20.0, 30.0),
+            "left is from the padding box, which starts at the border box's edge"
+        );
+        assert_eq!(
+            at(&format!("{base} .a {{ position: absolute; top: 1px; }}")),
+            (5.0, 1.0, fonts.measure("yy", 16.0)),
+            "top from the padding box's top, left the static one"
+        );
+        // The margins around the box collapse as if it were not there:
+        // z sits 20px below x, and the box's static top is after that
+        // margin, the flow position when it was met.
+        let layout = document_of(
+            root.clone(),
+            &format!("{base} .a {{ position: absolute; }}"),
+        );
+        assert_eq!(by_node(&layout, 4).y, 5.0 + lh + 20.0);
+        // Met in a run, the static position is the current x on the
+        // line and the line's top; the words around it flow on. Nodes:
+        // c 1, p 2, a 3 (in the p's run).
+        let layout = document_of(
+            Element::new("div").attr("class", "c").push(
+                Element::new("p")
+                    .text("aa ")
+                    .push(Element::new("div").attr("class", "a").text("y"))
+                    .text("bb"),
+            ),
+            ".c { position: relative; margin: 0; } p { margin: 0; }
+             .a { position: absolute; }",
+        );
+        let a = by_node(&layout, 3);
+        let aa = fonts.measure("aa", 16.0);
+        assert_eq!((a.x, a.y), (aa, 0.0));
+        assert_eq!(
+            text_of(&layout, "bb").x,
+            aa + fonts.measure(" ", 16.0),
+            "one gap, the box between the words being out of flow"
+        );
+        // Inside an empty, unpositioned wrapper, the static position is
+        // the flow position after the margins resolved so far — the
+        // wrapper's own 10px, not the paragraph's 30px that collapses
+        // with it later, as browsers have it — and the box is carried
+        // up to the positioned container. Nodes: c 1, w 2, a 3, p 4.
+        let layout = document_of(
+            Element::new("div")
+                .attr("class", "c")
+                .push(
+                    Element::new("div")
+                        .attr("class", "w")
+                        .push(Element::new("div").attr("class", "a")),
+                )
+                .push(Element::new("p").text("z")),
+            ".c { position: relative; margin: 0; padding: 5px; } .w { margin-top: 10px; }
+             p { margin: 30px 0 0 0; } .a { position: absolute; width: 10px; height: 10px; }",
+        );
+        assert_eq!(by_node(&layout, 3).y, 5.0 + 10.0);
+        assert_eq!(
+            by_node(&layout, 4).y,
+            5.0 + 30.0,
+            "the paragraph after the collapsed margins"
+        );
+        assert_eq!(parent_of(&layout, 3), Some(1));
+    }
+
+    #[test]
+    fn the_initial_containing_block_takes_the_rest_and_fixed_boxes_go_to_the_root() {
+        // No positioned ancestor: the viewport is the containing block,
+        // the fragment a root of the document after the content, and
+        // the page reaches down to the box; a scroll container between
+        // does not get it. Nodes: s 1, a 2 — then f 3 in the second
+        // document.
+        let fonts = test_fonts();
+        let doc = |css: &str, root: Element| {
+            let docu = dom::Node::document(vec![root.into()]);
+            let sheet = css::parse_stylesheet(css).expect("test css is valid");
+            let styled = style::style_document(&docu, &[sheet]);
+            let boxes = crate::build_box_tree(&styled);
+            layout_document_in(&boxes, VIEWPORT, Some(600.0), &fonts)
+        };
+        let root = Element::new("div")
+            .attr("class", "s")
+            .push(Element::new("div").attr("class", "a"));
+        let layout = doc(
+            ".s { overflow: auto; height: 50px; margin: 0; }
+             .a { position: absolute; right: 100px; top: 700px; width: 50px; height: 20px; }",
+            root.clone(),
+        );
+        let a = by_node(&layout, 2);
+        assert_eq!((a.x, a.y, a.w, a.h), (650.0, 700.0, 50.0, 20.0));
+        assert_eq!(parent_of(&layout, 2), None);
+        assert_eq!(layout.roots.last().map(|f| f.node), Some(2));
+        assert_eq!(layout.height, 720.0, "the page reaches the box");
+        assert_eq!(
+            by_node(&layout, 1).scroll_height,
+            50.0,
+            "not the container's"
+        );
+        assert!(!layout.depends_on_viewport_height);
+        // `bottom` is from the viewport's bottom, and makes the layout
+        // depend on the viewport's height; a fixed box is a root too,
+        // placed the same way, and does not make the page taller.
+        let layout = doc(
+            ".s { overflow: auto; height: 50px; margin: 0; }
+             .a { position: fixed; bottom: 0; left: 0; width: 50px; height: 20px; }",
+            root.clone(),
+        );
+        assert_eq!((by_node(&layout, 2).x, by_node(&layout, 2).y), (0.0, 580.0));
+        assert_eq!(parent_of(&layout, 2), None);
+        assert_eq!(layout.height, 50.0);
+        assert!(layout.depends_on_viewport_height);
+        // A fixed box inside an absolutely positioned one goes to the
+        // root all the same, from a static position carried through.
+        // Nodes: s 1, a 2, f 3.
+        let layout = doc(
+            ".s { overflow: auto; height: 50px; margin: 0; }
+             .a { position: absolute; left: 100px; top: 100px; width: 50px; height: 20px; }
+             .f { position: fixed; width: 10px; height: 10px; }",
+            Element::new("div").attr("class", "s").push(
+                Element::new("div")
+                    .attr("class", "a")
+                    .push(Element::new("div").attr("class", "f")),
+            ),
+        );
+        assert_eq!(
+            (by_node(&layout, 3).x, by_node(&layout, 3).y),
+            (100.0, 100.0)
+        );
+        assert_eq!(parent_of(&layout, 3), None);
+        assert_eq!(parent_of(&layout, 2), None);
+        // Without a viewport height, `bottom` cannot be used: the static
+        // top instead, and a percentage top is `auto`.
+        let layout = document_of(
+            Element::new("div")
+                .attr("class", "a")
+                .push(Element::new("p").text("x")),
+            ".a { position: absolute; bottom: 0; top: 10%; width: 50px; height: 20px; margin: 0; }
+             p { margin: 0; }",
+        );
+        assert_eq!(by_node(&layout, 1).y, 0.0);
+        assert!(!layout.depends_on_viewport_height);
+    }
+
+    #[test]
+    fn an_absolutely_positioned_box_is_a_context_root_with_the_content_laid_out_inside() {
+        // Its content is laid out at the solved width, its own floats
+        // in its own context, its height the content's when `auto`;
+        // `height` from `top` and `bottom` leaves the content where it
+        // is. Nodes: c 1, a 2, f 3, p 4.
+        let m = test_fonts().primary().metrics(16.0);
+        let lh = m.line_height();
+        let root = Element::new("div").attr("class", "c").push(
+            Element::new("div")
+                .attr("class", "a")
+                .push(Element::new("div").attr("class", "f"))
+                .push(Element::new("p").text("x")),
+        );
+        let layout = document_of(
+            root.clone(),
+            ".c { position: relative; width: 300px; height: 200px; margin: 0; }
+             .a { position: absolute; left: 10px; top: 10px; width: 100px; padding: 5px; }
+             .f { float: left; width: 20px; height: 50px; } p { margin: 0; }",
+        );
+        let a = by_node(&layout, 2);
+        assert_eq!((a.x, a.y, a.w), (10.0, 10.0, 110.0));
+        assert_eq!(a.h, 5.0 + 50.0 + 5.0, "reaches its float");
+        assert_eq!(by_node(&layout, 3).x, 15.0);
+        assert_eq!(text_of(&layout, "x").x, 35.0, "beside the float");
+        assert_eq!(text_of(&layout, "x").top(), 15.0);
+        let layout = document_of(
+            root,
+            ".c { position: relative; width: 300px; height: 200px; margin: 0; }
+             .a { position: absolute; left: 10px; top: 10px; bottom: 10px; width: 100px; }
+             .f { float: left; width: 20px; height: 50px; } p { margin: 0; }",
+        );
+        let a = by_node(&layout, 2);
+        assert_eq!(a.h, 180.0);
+        assert_eq!(text_of(&layout, "x").top(), 10.0);
+        assert!(lh > 0.0);
     }
 }

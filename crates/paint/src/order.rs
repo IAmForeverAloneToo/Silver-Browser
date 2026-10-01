@@ -17,6 +17,7 @@
 //! clip can show where the clip does not.
 
 use layout::{Fragment, FragmentKind};
+use style::computed::Position;
 
 use crate::{ScrollOffsets, Viewport};
 
@@ -145,6 +146,21 @@ impl<'a> Walk<'a, '_> {
     }
 
     fn one(&mut self, f: &'a Fragment) {
+        // A `position: fixed` box (M11), a root of the document's
+        // fragments by layout, is placed against the viewport and does
+        // not scroll with the document: its subtree is walked with the
+        // viewport's offset left out.
+        if f.style.position == Position::Fixed {
+            let scrolled = self.dy;
+            self.dy = 0.0;
+            self.one_in_place(f);
+            self.dy = scrolled;
+        } else {
+            self.one_in_place(f);
+        }
+    }
+
+    fn one_in_place(&mut self, f: &'a Fragment) {
         match &f.kind {
             FragmentKind::Box => {
                 let rect = self.rect_of(f);

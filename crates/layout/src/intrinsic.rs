@@ -79,6 +79,7 @@ pub(crate) fn content_widths(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32
     for child in &b.children {
         let (child_min, child_max) = match child.kind {
             BoxKind::Block | BoxKind::InlineBlock | BoxKind::Float => contribution(child, fonts),
+            BoxKind::Absolute => (0.0, 0.0),
             BoxKind::AnonymousBlock => {
                 let items = collect_inline_items(&child.children, fonts);
                 run_intrinsic_widths(&items, fonts)
@@ -90,10 +91,11 @@ pub(crate) fn content_widths(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32
             }
         };
         min = min.max(child_min);
-        if child.kind == BoxKind::Float {
-            floats_max += child_max;
-        } else {
-            in_flow_max = in_flow_max.max(child_max);
+        match child.kind {
+            BoxKind::Float => floats_max += child_max,
+            // Out of flow and beside nothing: no contribution.
+            BoxKind::Absolute => {}
+            _ => in_flow_max = in_flow_max.max(child_max),
         }
     }
     (min, floats_max + in_flow_max)

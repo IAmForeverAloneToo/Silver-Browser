@@ -84,7 +84,8 @@ use style::computed::{ComputedStyle, Direction, TextAlign, TextTransform, WhiteS
 use text::{FontCollection, FontMetrics};
 
 use crate::block::{
-    AtomicLayout, Fragment, FragmentKind, layout_float, layout_inline_block, pending_float,
+    AtomicLayout, Deferred, Fragment, FragmentKind, carried, layout_float, layout_inline_block,
+    pending_float,
 };
 use crate::box_tree::{BoxKind, LayoutBox};
 use crate::float::{At, FloatContext, PendingFloat};
@@ -126,25 +127,34 @@ pub(crate) enum InlineItem<'a> {
     /// context beside the line it is met on, and invisible to the
     /// words around it — neither a gap nor a wrap opportunity.
     Float(&'a LayoutBox),
+    /// An absolutely positioned box met in the run (M11): out of flow,
+    /// invisible to the words around it; its static position is where
+    /// an inline box would have gone, the current line's top and the
+    /// current x on it (CSS2 §10.3.7's approximation), and it waits for
+    /// its containing block.
+    Absolute(&'a LayoutBox),
 }
 
 /// One word placed on the line being built, before [`flush_line`]
-/// positions it.
-struct LineWord<'a> {
-    text: &'a str,
+/// positions it. It borrows the run's [`InlineItem`]s (`'i`), which
+/// live for the layout of the run only.
+struct LineWord<'i> {
+    text: &'i str,
     width: f32,
-    style: &'a ComputedStyle,
+    style: &'i ComputedStyle,
     node: usize,
 }
 
 /// One item on the line being built. The atomic's layout is boxed: it
-/// carries a fragment subtree, many times a word's size.
-enum LineItem<'a> {
-    Word(LineWord<'a>),
-    Atomic(Box<AtomicLayout>),
+/// carries a fragment subtree, many times a word's size — and the
+/// absolutely positioned boxes it carries borrow the box tree (`'a`),
+/// which outlives the run.
+enum LineItem<'a, 'i> {
+    Word(LineWord<'i>),
+    Atomic(Box<AtomicLayout<'a>>),
 }
 
-impl LineItem<'_> {
+impl LineItem<'_, '_> {
     fn width(&self) -> f32 {
         match self {
             LineItem::Word(w) => w.width,
@@ -163,13 +173,13 @@ impl LineItem<'_> {
 
 /// An item's place on the line as it is being built: whether a gap
 /// precedes it.
-struct Placed<'a> {
-    item: LineItem<'a>,
+struct Placed<'a, 'i> {
+    item: LineItem<'a, 'i>,
     gap_before: bool,
 }
 
 /// The lines of one inline formatting context.
-pub(crate) struct InlineLayout {
+pub(crate) struct InlineLayout<'a> {
     /// Relative to the run's container's content-box top-left `(0, 0)`.
     pub(crate) fragments: Vec<Fragment>,
     /// The height of the lines together.
@@ -178,6 +188,9 @@ pub(crate) struct InlineLayout {
     /// §10.8.1: what an inline-block's own baseline is), `None` when no
     /// line was made.
     pub(crate) last_baseline: Option<f32>,
+    /// The absolutely positioned boxes met in the run or carried by its
+    /// inline-blocks and floats (M11), relative to the run's top-left.
+    pub(crate) absolutes: Vec<Deferred<'a>>,
 }
 
 /// Lays a run of inline-level boxes (an anonymous block's children,
@@ -192,15 +205,15 @@ pub(crate) struct InlineLayout {
 /// height on an inline-block. `floats` and `at` are the float context
 /// the run is in and where the run's top is in it (M11): the lines are
 /// shortened beside the floats, and floats met in the run are placed.
-pub(crate) fn layout_inline(
-    items: &[LayoutBox],
+pub(crate) fn layout_inline<'a>(
+    items: &'a [LayoutBox],
     cb_width: f32,
     cb_height: Option<f32>,
     container: &ComputedStyle,
     floats: &mut FloatContext,
     at: At,
     fonts: &FontCollection,
-) -> InlineLayout {
+) -> InlineLayout<'a> {
     let flat = collect_inline_items(items, fonts);
     let mut lines = Lines {
         cb_width,
@@ -220,6 +233,7 @@ pub(crate) fn layout_inline(
         fragments: Vec::new(),
         last_baseline: None,
         deferred: Vec::new(),
+        absolutes: Vec::new(),
     };
     // The item before was an atomic inline: a wrap opportunity follows
     // it whether or not white space does.
@@ -251,6 +265,7 @@ pub(crate) fn layout_inline(
                 after_atomic = true;
             }
             InlineItem::Float(b) => lines.float(b),
+            InlineItem::Absolute(b) => lines.absolute(b),
             InlineItem::ForcedBreak(style) => {
                 // `white-space: pre`/`pre-wrap`/`pre-line` (M8.4): a
                 // literal newline ends the line unconditionally. A
@@ -275,12 +290,13 @@ pub(crate) fn layout_inline(
         fragments: lines.fragments,
         height: lines.y,
         last_baseline: lines.last_baseline,
+        absolutes: lines.absolutes,
     }
 }
 
 /// The lines of one run as they are built: the line in progress and
 /// the fragments of the lines before it.
-struct Lines<'a, 'f, 'c> {
+struct Lines<'a, 'i, 'f, 'c> {
     /// The containing block's content width, and height when definite.
     cb_width: f32,
     cb_height: Option<f32>,
@@ -301,7 +317,7 @@ struct Lines<'a, 'f, 'c> {
     /// The containing block's own font metrics, the least any line is.
     strut: FontMetrics,
     fonts: &'f FontCollection,
-    line: Vec<Placed<'a>>,
+    line: Vec<Placed<'a, 'i>>,
     line_width: f32,
     /// The top of the line in progress.
     y: f32,
@@ -310,9 +326,12 @@ struct Lines<'a, 'f, 'c> {
     /// Floats met on the line in progress that did not fit beside it,
     /// placed below it once its height is known.
     deferred: Vec<PendingFloat>,
+    /// The absolutely positioned boxes met so far (M11), relative to
+    /// the run's top-left.
+    absolutes: Vec<Deferred<'a>>,
 }
 
-impl<'a> Lines<'a, '_, '_> {
+impl<'a, 'i> Lines<'a, 'i, '_, '_> {
     /// The line in progress's top in the float context's coordinates.
     fn line_top(&self) -> f32 {
         self.top + self.y
@@ -343,7 +362,7 @@ impl<'a> Lines<'a, '_, '_> {
 
     /// Puts `item` on the line in progress, or on a new one when it
     /// does not fit and a break before it is allowed.
-    fn place(&mut self, item: LineItem<'a>, gap_before: bool, can_break: bool) {
+    fn place(&mut self, item: LineItem<'a, 'i>, gap_before: bool, can_break: bool) {
         if self.line.is_empty() {
             self.start_line();
             // Nothing fits beside the floats: move the line down to
@@ -411,6 +430,23 @@ impl<'a> Lines<'a, '_, '_> {
         }
     }
 
+    /// An absolutely positioned box met in the run (M11): its static
+    /// position is where an inline box would have gone — the current
+    /// x on the line in progress (its start, on an empty line) and the
+    /// line's top — and it waits for its containing block. A float
+    /// still waiting beside it is placed first when the line is the
+    /// run's first, like an inline box would have had it placed.
+    fn absolute(&mut self, b: &'a LayoutBox) {
+        if self.line.is_empty() {
+            self.start_line();
+        }
+        self.absolutes.push(Deferred {
+            b,
+            x: self.line_left + self.line_width,
+            y: self.y,
+        });
+    }
+
     /// Places the floats that waited for the line just ended, at its
     /// bottom.
     fn place_deferred(&mut self) {
@@ -432,6 +468,7 @@ impl<'a> Lines<'a, '_, '_> {
             self.fonts,
             &mut self.y,
             &mut self.fragments,
+            &mut self.absolutes,
         );
         self.last_baseline = baseline.or(self.last_baseline);
         self.line_width = 0.0;
@@ -485,9 +522,11 @@ impl<'a> Collector<'a, '_> {
                     let gap_before = std::mem::take(&mut self.space_pending);
                     self.out.push(InlineItem::Atomic { b, gap_before });
                 }
-                // A float is invisible to the white space around it: a
-                // gap pending before it is still pending after it.
+                // A float or an absolutely positioned box is invisible
+                // to the white space around it: a gap pending before it
+                // is still pending after it.
                 BoxKind::Float => self.out.push(InlineItem::Float(b)),
+                BoxKind::Absolute => self.out.push(InlineItem::Absolute(b)),
                 // The box tree builder hoists a block out of inline
                 // content (CSS2 §9.2.1.1), so none reaches here from a
                 // parsed document; see the module doc.
@@ -623,6 +662,7 @@ pub(crate) fn run_intrinsic_widths(items: &[InlineItem<'_>], fonts: &FontCollect
                 min = min.max(float_min);
                 line += float_max;
             }
+            InlineItem::Absolute(_) => {}
             InlineItem::ForcedBreak(_) => {
                 line = 0.0;
                 piece = 0.0;
@@ -723,8 +763,8 @@ fn measure_word(word: &str, style: &ComputedStyle, fonts: &FontCollection) -> f3
 /// line's baseline, or `None` for an empty line, which is no line at
 /// all. Clears `line` for the next line.
 #[allow(clippy::too_many_arguments)]
-fn flush_line(
-    line: &mut Vec<Placed<'_>>,
+fn flush_line<'a>(
+    line: &mut Vec<Placed<'a, '_>>,
     line_width: f32,
     line_left: f32,
     available_width: f32,
@@ -733,6 +773,7 @@ fn flush_line(
     fonts: &FontCollection,
     y: &mut f32,
     fragments: &mut Vec<Fragment>,
+    absolutes: &mut Vec<Deferred<'a>>,
 ) -> Option<f32> {
     if line.is_empty() {
         return None;
@@ -811,12 +852,13 @@ fn flush_line(
                 let top = baseline_y - a.ascent;
                 let width = a.width;
                 // The border box is a margin inside the margin box, and
-                // a relatively positioned box is moved from there (M11).
+                // a relatively positioned box is moved from there (M11);
+                // the absolutely positioned boxes it carries go with it.
                 let (dx, dy) = a.relative;
-                fragments.push(
-                    a.root
-                        .translated(x + a.margin_left + dx, top + a.margin_top + dy),
-                );
+                let (bx, by) = (x + a.margin_left + dx, top + a.margin_top + dy);
+                let a = *a;
+                fragments.push(a.root.translated(bx, by));
+                absolutes.extend(carried(a.absolutes, bx, by));
                 x += width;
             }
         }

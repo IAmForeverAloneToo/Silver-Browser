@@ -1581,6 +1581,49 @@ mod tests {
     }
 
     #[test]
+    fn a_fixed_box_stays_put_under_scroll_and_an_absolute_one_scrolls_with_the_page() {
+        // A tall page with a red fixed box at the viewport's bottom
+        // right and a blue absolutely positioned box 150px down: both
+        // are painted and hit where they are; scrolled by 100, the
+        // fixed one has not moved and the absolute one is 100px higher,
+        // while the page's height counts the absolute one only.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0 }
+                    .tall { height: 1000px }
+                    .f { position: fixed; right: 10px; bottom: 10px; width: 30px; height: 30px;
+                         background-color: #ff0000 }
+                    .a { position: absolute; left: 20px; top: 150px; width: 30px; height: 30px;
+                         background-color: #0000ff }</style>\
+             <div class=tall></div><div class=f id=f></div><div class=a id=a></div>",
+        );
+        let pixels = engine.frame(200, 100);
+        let (f, a) = (node_by_id(&engine, "f"), node_by_id(&engine, "a"));
+        assert_eq!(px(&pixels, 200, 170, 70), [0xff, 0x00, 0x00, 0xff]);
+        assert_eq!(engine.hit_test(170.0, 70.0), Some(f));
+        assert_ne!(
+            engine.hit_test(30.0, 60.0),
+            Some(a),
+            "the absolute box is below the fold: the tall div is there"
+        );
+        engine.set_scroll(100.0);
+        let pixels = engine.frame(200, 100);
+        assert_eq!(
+            px(&pixels, 200, 170, 70),
+            [0xff, 0x00, 0x00, 0xff],
+            "fixed: unmoved"
+        );
+        assert_eq!(engine.hit_test(170.0, 70.0), Some(f));
+        assert_eq!(
+            px(&pixels, 200, 30, 60),
+            [0x00, 0x00, 0xff, 0xff],
+            "absolute: scrolled up"
+        );
+        assert_eq!(engine.hit_test(30.0, 60.0), Some(a));
+        assert_eq!(engine.layout(200.0).height, 1000.0);
+    }
+
+    #[test]
     fn a_clipping_box_is_hit_on_its_border_but_scrolls_only_from_its_padding_box() {
         // A 100px scroll container with a 10px border and 300px of
         // content: the pointer on the border is over the box, since the

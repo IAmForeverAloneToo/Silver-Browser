@@ -6,10 +6,10 @@
 //! children are block-level: a run of inline-level children is wrapped
 //! in one, and a block-level box found inside an inline element is
 //! hoisted up to the containing block with its inline ancestors split
-//! around it. A float (M11) keeps its place in the tree, where its
-//! element is: inline-level content when it occurs in a run or an
-//! inline element, which it does not split, a block-level child when
-//! it occurs between blocks.
+//! around it. A float or an absolutely positioned box (M11) keeps its
+//! place in the tree, where its element is: inline-level content when
+//! it occurs in a run or an inline element, which it does not split, a
+//! block-level child when it occurs between blocks.
 
 use style::computed::{Display, Float};
 use style::selector_matching::FlatChild;
@@ -42,12 +42,13 @@ pub struct LayoutBox {
 /// milestones on).
 ///
 /// The builder's contract (CSS2 §9.2.1.1), which `block` relies on: a
-/// block container's ([`BoxKind::Block`]'s, [`BoxKind::InlineBlock`]'s
-/// or [`BoxKind::Float`]'s) children are all block-level
-/// ([`BoxKind::Block`] or [`BoxKind::AnonymousBlock`]) or floats; an
+/// block container's ([`BoxKind::Block`]'s, [`BoxKind::InlineBlock`]'s,
+/// [`BoxKind::Float`]'s or [`BoxKind::Absolute`]'s) children are all
+/// block-level ([`BoxKind::Block`] or [`BoxKind::AnonymousBlock`]) or
+/// out of flow ([`BoxKind::Float`], [`BoxKind::Absolute`]); an
 /// [`BoxKind::AnonymousBlock`]'s and an [`BoxKind::Inline`]'s children
 /// are all inline-level ([`BoxKind::Inline`], [`BoxKind::InlineBlock`]
-/// or [`BoxKind::Text`]) or floats.
+/// or [`BoxKind::Text`]) or out of flow.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BoxKind {
     Block,
@@ -65,6 +66,14 @@ pub enum BoxKind {
     /// container's children when met between blocks, placed at the
     /// flow position it is met at.
     Float,
+    /// An absolutely positioned box (CSS2 §9.6, M11: `position:
+    /// absolute` or `fixed`, which `style.position` says): out of
+    /// flow, a block container inside and a block formatting context
+    /// root, laid out against its containing block — the nearest
+    /// positioned ancestor's padding box, or the initial containing
+    /// block; the viewport for `fixed` — once that is known, from the
+    /// static position it is met at.
+    Absolute,
     /// An anonymous block box (CSS2 §9.2.1.1, M10.4) wrapping one run of
     /// inline-level boxes inside a block container, so that the
     /// container's children are all block-level. Its `style` inherits
@@ -146,22 +155,30 @@ impl BlockContainer<'_> {
                     let style = &styled.styles[*child_idx];
                     match style.display {
                         Display::None => {} // the element AND its subtree: no box at all
-                        // A float computes to `display: block` (CSS2 §9.7,
-                        // the cascade's rule) and is a block container
-                        // inside; outside it is out of flow, and goes
-                        // where it is met: into the run or inline open
-                        // around it, else among the container's blocks.
-                        Display::Block if style.float != Float::None => {
-                            let float = LayoutBox {
+                        // A float or an absolutely positioned box computes
+                        // to `display: block` (CSS2 §9.7, the cascade's
+                        // rule) and is a block container inside; outside
+                        // it is out of flow, and goes where it is met:
+                        // into the run or inline open around it, else
+                        // among the container's blocks.
+                        Display::Block
+                            if style.float != Float::None || style.position.is_out_of_flow() =>
+                        {
+                            let kind = if style.position.is_out_of_flow() {
+                                BoxKind::Absolute
+                            } else {
+                                BoxKind::Float
+                            };
+                            let out_of_flow = LayoutBox {
                                 style: style.clone(),
-                                kind: BoxKind::Float,
+                                kind,
                                 children: build_block_container(styled, *child_idx),
                                 node: *child_idx,
                             };
                             if self.open.is_empty() && self.run.is_empty() {
-                                self.out.push(float);
+                                self.out.push(out_of_flow);
                             } else {
-                                self.add_inline_level(float);
+                                self.add_inline_level(out_of_flow);
                             }
                         }
                         Display::Block => {
@@ -304,6 +321,7 @@ mod tests {
             BoxKind::Inline => "inline".to_string(),
             BoxKind::InlineBlock => "inline-block".to_string(),
             BoxKind::Float => "float".to_string(),
+            BoxKind::Absolute => "absolute".to_string(),
             BoxKind::AnonymousBlock => "anon".to_string(),
             BoxKind::Text(t) => format!("text {t}"),
         };
@@ -745,6 +763,35 @@ mod tests {
             pairs(&[("float", 2), ("anon", 1), ("text x", 1)])
         );
         assert!(!BoxKind::Float.is_block_level());
+        // An absolutely positioned box the same way, a float no more
+        // (CSS2 §9.7). Nodes: div 1, span 2, div.a 3.
+        let root = Element::new("div").text("a").push(
+            Element::new("span")
+                .text("b")
+                .push(Element::new("div").attr("class", "a").text("f")),
+        );
+        let tree = build_box_tree(&styled(root, ".a { position: absolute; float: left; }"));
+        assert_eq!(
+            shape_of(&tree[0].children),
+            pairs(&[
+                ("anon", 1),
+                ("text a", 1),
+                ("inline", 2),
+                ("text b", 2),
+                ("absolute", 3),
+                ("anon", 3),
+                ("text f", 3),
+            ])
+        );
+        let root = Element::new("div")
+            .push(Element::new("div").attr("class", "a"))
+            .push(Element::new("p").text("x"));
+        let tree = build_box_tree(&styled(root, ".a { position: fixed; }"));
+        assert_eq!(
+            shape_of(&tree[0].children),
+            pairs(&[("absolute", 2), ("block", 3), ("anon", 3), ("text x", 3)])
+        );
+        assert!(!BoxKind::Absolute.is_block_level());
     }
 
     #[test]
