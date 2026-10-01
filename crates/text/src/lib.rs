@@ -116,7 +116,9 @@ impl FontMetrics {
     }
 }
 
-/// A loaded system font, ready for shaping and rasterization.
+/// A loaded font, ready for shaping and rasterization. Cloning shares
+/// the face data (an `Arc`) rather than copying it.
+#[derive(Clone)]
 pub struct FontStore {
     /// Raw face data.
     raw: Arc<Vec<u8>>,
@@ -304,12 +306,22 @@ impl FontStore {
     }
 }
 
+/// The most pixels one glyph mask may hold: a glyph drawn at a size
+/// where a single letter is 4096 pixels on a side. Past it the glyph
+/// is not drawn, rather than the mask's allocation (a 50,000-pixel
+/// font asks for gigabytes per letter) taking the process down.
+pub const MAX_MASK_PIXELS: u64 = 4096 * 4096;
+
 /// Rasterizes one glyph of `font` at `size_px` into an alpha mask.
 ///
 /// The mask is positioned relative to the baseline at the pen position
 /// (`left`/`top` carry the placement offsets). Returns an empty mask for
-/// blank or unoutlineable glyphs.
+/// blank or unoutlineable glyphs, for a size that is not a finite
+/// positive number, and for a glyph larger than [`MAX_MASK_PIXELS`].
 pub fn rasterize_glyph(font: &ab_glyph::FontArc, glyph_id: u16, size_px: f32) -> GlyphMask {
+    if !size_px.is_finite() || size_px <= 0.0 {
+        return GlyphMask::empty();
+    }
     let glyph = Glyph {
         id: GlyphId(glyph_id),
         scale: size_px.into(),
@@ -320,15 +332,29 @@ pub fn rasterize_glyph(font: &ab_glyph::FontArc, glyph_id: u16, size_px: f32) ->
     };
 
     let bounds = outlined.px_bounds();
-    let left = bounds.min.x.floor() as i32;
-    let top = bounds.min.y.floor() as i32;
-    let width = (bounds.max.x.ceil() as i32 - left).max(0) as u32;
-    let height = (bounds.max.y.ceil() as i32 - top).max(0) as u32;
-    if width == 0 || height == 0 {
+    if !(bounds.min.x.is_finite()
+        && bounds.min.y.is_finite()
+        && bounds.max.x.is_finite()
+        && bounds.max.y.is_finite())
+    {
         return GlyphMask::empty();
     }
+    // Bounds are measured in `f64` and `i64`: `as i32` would saturate
+    // and then wrap in the subtraction for a glyph wider than two
+    // billion pixels, which a hostile font size can ask for.
+    let left_i64 = (bounds.min.x as f64).floor() as i64;
+    let top_i64 = (bounds.min.y as f64).floor() as i64;
+    let width_i64 = ((bounds.max.x as f64).ceil() as i64 - left_i64).max(0);
+    let height_i64 = ((bounds.max.y as f64).ceil() as i64 - top_i64).max(0);
+    if width_i64 == 0 || height_i64 == 0 || width_i64 * height_i64 > MAX_MASK_PIXELS as i64 {
+        return GlyphMask::empty();
+    }
+    let (Ok(left), Ok(top)) = (i32::try_from(left_i64), i32::try_from(top_i64)) else {
+        return GlyphMask::empty();
+    };
+    let (width, height) = (width_i64 as u32, height_i64 as u32);
 
-    let mut coverage = vec![0u8; (width * height) as usize];
+    let mut coverage = vec![0u8; width as usize * height as usize];
     // draw() reports u32 coordinates RELATIVE to the glyph's bounding box
     // (not absolute), so reconstruct absolute positions via the bbox min
     // before indexing the mask.
@@ -469,12 +495,24 @@ fn fallback_families_for(script: Script) -> Option<&'static [&'static str]> {
 /// error — [`FontCollection::font_for`] just returns the primary font
 /// for that script, same as if M8.1 didn't exist; this mirrors
 /// `FontStore::shape`'s own "never panics on what it can't do" stance.
+#[derive(Clone)]
 pub struct FontCollection {
     primary: FontStore,
     fallbacks: HashMap<Script, FontStore>,
 }
 
 impl FontCollection {
+    /// A collection of one font, from its face data, with no per-script
+    /// fallbacks: what a test wants, so that it measures and draws the
+    /// same font on every machine rather than whichever system font
+    /// [`FontCollection::new`] finds there.
+    pub fn from_bytes(data: Vec<u8>, index: u32) -> Result<Self, FontError> {
+        Ok(FontCollection {
+            primary: FontStore::from_bytes(data, index)?,
+            fallbacks: HashMap::new(),
+        })
+    }
+
     /// Loads the primary font (same search as [`FontStore::new`]) plus
     /// whatever per-script fallbacks are available on this system.
     pub fn new() -> Result<Self, FontError> {
@@ -625,6 +663,11 @@ pub enum Direction {
 /// one embedded opposite-direction run, within what ends up as a
 /// single text node), not guaranteed correct across arbitrary nested
 /// differently-styled spans within one bidi run.
+///
+/// `unicode-bidi` splits the text into paragraphs at every Bidi class B
+/// character (LF, CR, NEL, U+2029 and the information separators), and
+/// each paragraph is reordered on its own; nothing after the first one
+/// is dropped.
 pub fn bidi_reorder(text: &str, base_direction: Option<Direction>) -> String {
     if text.is_empty() {
         return String::new();
@@ -634,22 +677,37 @@ pub fn bidi_reorder(text: &str, base_direction: Option<Direction>) -> String {
         Direction::Rtl => unicode_bidi::Level::rtl(),
     });
     let info = unicode_bidi::BidiInfo::new(text, level);
-    let Some(para) = info.paragraphs.first() else {
+    if info.paragraphs.is_empty() {
         return text.to_string(); // no strong/explicit content at all
-    };
-    info.reorder_line(para, para.range.clone()).into_owned()
+    }
+    info.paragraphs
+        .iter()
+        .map(|para| info.reorder_line(para, para.range.clone()))
+        .collect()
 }
+
+/// The face data of DejaVu Sans, bundled under `fonts/` for the tests of
+/// this crate and of the crates above it: every test measures and draws
+/// the same font on every machine, and a machine without system fonts
+/// still runs them. Not part of the library's own font loading.
+#[doc(hidden)]
+pub const TEST_FONT: &[u8] = include_bytes!("../fonts/DejaVuSans.ttf");
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn test_store() -> FontStore {
+        FontStore::from_bytes(TEST_FONT.to_vec(), 0).expect("the bundled test font parses")
+    }
+
+    fn test_fonts() -> FontCollection {
+        FontCollection::from_bytes(TEST_FONT.to_vec(), 0).expect("the bundled test font parses")
+    }
+
     #[test]
     fn shape_hello_advances_reasonably() {
-        let Ok(store) = FontStore::new() else {
-            // No system font on this machine: nothing to assert against.
-            return;
-        };
+        let store = test_store();
         let glyphs = store.shape("Hello", 28.0);
         assert!(!glyphs.is_empty(), "shaping produced no glyphs");
         let advance = glyphs.last().map(|g| g.x).unwrap_or(0.0);
@@ -663,9 +721,7 @@ mod tests {
 
     #[test]
     fn measure_is_at_least_as_wide_as_shapes_last_glyph_start() {
-        let Ok(store) = FontStore::new() else {
-            return;
-        };
+        let store = test_store();
         let glyphs = store.shape("Hello", 28.0);
         let last = glyphs.last().expect("non-empty");
         // `shape`'s `ShapedGlyph.x` is where that glyph's pen *starts* —
@@ -677,9 +733,7 @@ mod tests {
 
     #[test]
     fn measure_hello_is_in_the_same_reasonable_band_as_shape() {
-        let Ok(store) = FontStore::new() else {
-            return;
-        };
+        let store = test_store();
         let advance = store.measure("Hello", 28.0);
         // Same band as `shape_hello_advances_reasonably` above — both
         // describe the same text at the same size.
@@ -691,9 +745,7 @@ mod tests {
 
     #[test]
     fn measure_scales_linearly_with_font_size() {
-        let Ok(store) = FontStore::new() else {
-            return;
-        };
+        let store = test_store();
         let at_10 = store.measure("word", 10.0);
         let at_20 = store.measure("word", 20.0);
         if at_10 > 0.0 {
@@ -706,9 +758,7 @@ mod tests {
 
     #[test]
     fn metrics_scale_with_font_size_and_are_non_negative() {
-        let Ok(store) = FontStore::new() else {
-            return;
-        };
+        let store = test_store();
         let small = store.metrics(10.0);
         let big = store.metrics(20.0);
         assert!(small.ascent >= 0.0);
@@ -814,9 +864,7 @@ mod tests {
 
     #[test]
     fn font_collection_measure_matches_primary_for_pure_latin_text() {
-        let Ok(fonts) = FontCollection::new() else {
-            return;
-        };
+        let fonts = test_fonts();
         // Latin has no fallback entry, so `FontCollection::measure`
         // must agree exactly with plain `FontStore::measure` on the
         // primary font.
@@ -828,9 +876,7 @@ mod tests {
 
     #[test]
     fn font_collection_measure_sums_per_run_widths_with_the_right_font_each() {
-        let Ok(fonts) = FontCollection::new() else {
-            return;
-        };
+        let fonts = test_fonts();
         let text = "hello世界";
         // Independently assembled from the same public building blocks
         // `FontCollection::measure` itself uses, so this still catches
@@ -847,9 +893,7 @@ mod tests {
 
     #[test]
     fn font_collection_metrics_for_text_matches_primary_for_pure_latin_text() {
-        let Ok(fonts) = FontCollection::new() else {
-            return;
-        };
+        let fonts = test_fonts();
         assert_eq!(
             fonts.metrics_for_text("hello", 16.0),
             fonts.primary().metrics(16.0)
@@ -858,9 +902,7 @@ mod tests {
 
     #[test]
     fn font_collection_metrics_for_text_is_zeroed_for_empty_input() {
-        let Ok(fonts) = FontCollection::new() else {
-            return;
-        };
+        let fonts = test_fonts();
         let m = fonts.metrics_for_text("", 16.0);
         assert_eq!(m.ascent, 0.0);
         assert_eq!(m.descent, 0.0);
@@ -869,9 +911,7 @@ mod tests {
 
     #[test]
     fn font_collection_shape_matches_primary_for_pure_latin_text() {
-        let Ok(fonts) = FontCollection::new() else {
-            return;
-        };
+        let fonts = test_fonts();
         let via_collection: Vec<ShapedGlyph> = fonts
             .shape("hello", 16.0)
             .into_iter()
@@ -882,9 +922,7 @@ mod tests {
 
     #[test]
     fn font_collection_shape_tags_each_glyph_with_its_run_script() {
-        let Ok(fonts) = FontCollection::new() else {
-            return;
-        };
+        let fonts = test_fonts();
         let glyphs = fonts.shape("hello世界", 16.0);
         if glyphs.is_empty() {
             return; // no measurable glyphs for this system font
@@ -909,9 +947,7 @@ mod tests {
 
     #[test]
     fn font_collection_shape_continues_the_pen_position_across_runs() {
-        let Ok(fonts) = FontCollection::new() else {
-            return;
-        };
+        let fonts = test_fonts();
         let width = fonts.measure("hello世界", 16.0);
         if width <= 0.0 {
             return;
@@ -988,9 +1024,7 @@ mod tests {
 
     #[test]
     fn rasterize_nonblank_glyph_has_coverage() {
-        let Ok(store) = FontStore::new() else {
-            return;
-        };
+        let store = test_store();
         let glyphs = store.shape("A", 28.0);
         let Some(g) = glyphs.first() else {
             return;
@@ -1001,5 +1035,47 @@ mod tests {
             mask.coverage.iter().any(|&a| a > 0),
             "glyph mask has no coverage"
         );
+    }
+
+    #[test]
+    fn a_system_font_loads_or_the_machine_has_none_installed() {
+        // The one test that asks the system: a machine with any font
+        // at all must find one. The others use the bundled font.
+        match FontCollection::new() {
+            Ok(fonts) => assert!(fonts.primary().measure("x", 16.0) > 0.0),
+            Err(FontError::NoFontFound) => {
+                eprintln!("no system font installed; the bundled font covers the rest")
+            }
+            Err(e) => panic!("a system font was found but failed to load: {e}"),
+        }
+    }
+
+    #[test]
+    fn rasterize_refuses_sizes_that_would_allocate_gigabytes() {
+        let store = test_store();
+        let glyph_id = store.shape("M", 16.0)[0].glyph_id;
+        for size in [1e9, 50_000.0, f32::INFINITY, f32::NAN, -16.0, 0.0] {
+            let mask = rasterize_glyph(store.glyph_font(), glyph_id, size);
+            assert_eq!(mask.width, 0, "size {size}");
+            assert!(mask.coverage.is_empty(), "size {size}");
+        }
+        // A large but affordable size still draws.
+        let mask = rasterize_glyph(store.glyph_font(), glyph_id, 1000.0);
+        assert!(mask.width > 100 && (mask.width as u64) * (mask.height as u64) <= MAX_MASK_PIXELS);
+    }
+
+    #[test]
+    fn bidi_reorder_keeps_every_paragraph() {
+        // Every Bidi class B character starts a new paragraph; the text
+        // after it used to be dropped.
+        for sep in ['\n', '\r', '\u{85}', '\u{2029}', '\u{1c}'] {
+            let text = format!("one{sep}two three");
+            assert_eq!(
+                bidi_reorder(&text, Some(Direction::Ltr)),
+                text,
+                "separator {sep:?}"
+            );
+        }
+        assert_eq!(bidi_reorder("one\u{2029}two", None), "one\u{2029}two");
     }
 }
