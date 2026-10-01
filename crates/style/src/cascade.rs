@@ -24,13 +24,18 @@
 //!   are kept as written: what they are percentages of is the containing
 //!   block's, which only layout knows. `font-size: <percentage>` is of the
 //!   parent's font size and resolves here.
-//! * `display`: `block` / `inline` / `inline-block` / `none` only
-//!   (M5.1's own v1 scope, plus M10.4's `inline-block`).
+//! * `display`: `block`, `inline`, `inline-block` and `none` (M5.1's
+//!   own v1 scope, plus M10.4's `inline-block`), and the table values
+//!   of CSS2 §17.2 (M12). `flex` and `grid` land with their milestones.
 //! * `float`, `clear`, `position`, `top`/`right`/`bottom`/`left` and
 //!   `z-index` (M11), with CSS2 §9.7's computed-value rules applied
 //!   after the longhands: an absolutely positioned box does not float,
-//!   and an inline-level box that floats or is absolutely positioned
-//!   computes to `block`.
+//!   and a box that floats or is absolutely positioned computes to the
+//!   block-level `display` of §9.7's table ([`Display::blockified`]).
+//! * The table properties (M12): `table-layout`, `border-collapse`,
+//!   `border-spacing`, `caption-side`, `empty-cells` and
+//!   `vertical-align`, the last parsed in full though read on table
+//!   cells alone.
 //!
 //! What every property accepts: the CSS-wide keywords `inherit`,
 //! `initial` and `unset` (css-cascade-5 §7.3), resolved against the
@@ -50,9 +55,10 @@ use css::Token;
 use dom::Node;
 
 use crate::computed::{
-    BOTTOM, BorderStyle, BoxSizing, Clear, Color, ComputedStyle, Direction, Display, Edges, Float,
-    LEFT, LengthPercentage, LengthPercentageAuto, MarginEdges, Overflow, PaddingEdges, Position,
-    RIGHT, TOP, TextAlign, TextTransform, WhiteSpace,
+    BOTTOM, BorderCollapse, BorderSpacing, BorderStyle, BoxSizing, CaptionSide, Clear, Color,
+    ComputedStyle, Direction, Display, Edges, EmptyCells, Float, LEFT, LengthPercentage,
+    LengthPercentageAuto, MarginEdges, Overflow, PaddingEdges, Position, RIGHT, TOP, TableLayout,
+    TextAlign, TextTransform, VerticalAlign, WhiteSpace,
 };
 use crate::selector_matching::{
     FlatChild, FlatDom, Matcher, SelectorList, Specificity, parse_selector_list,
@@ -416,17 +422,16 @@ fn compute_style(
     }
     // CSS2 §9.7, the relationships between `display`, `position` and
     // `float` (M11): an absolutely positioned box does not float, and
-    // a float or an absolutely positioned box that is inline-level
-    // becomes a block, so the box tree sees a block container. (The
-    // root element's `float` is `none` too; the box tree builder keeps
-    // the top-level boxes in flow.)
+    // a float or an absolutely positioned box takes the block-level
+    // `display` of §9.7's table (M12: an inline table becomes a table,
+    // a table-internal box a block), so the box tree sees a block
+    // container or a table. (The root element's `float` is `none` too;
+    // the box tree builder keeps the top-level boxes in flow.)
     if style.position.is_out_of_flow() {
         style.float = Float::None;
     }
-    if (style.float != Float::None || style.position.is_out_of_flow())
-        && matches!(style.display, Display::Inline | Display::InlineBlock)
-    {
-        style.display = Display::Block;
+    if style.float != Float::None || style.position.is_out_of_flow() {
+        style.display = style.display.blockified();
     }
     style
 }
@@ -626,6 +631,36 @@ fn apply_declaration(
                 style.max_height = v;
             }
         }
+        "table-layout" => {
+            if let Some(t) = parse_table_layout(&decl.value) {
+                style.table_layout = t;
+            }
+        }
+        "border-collapse" => {
+            if let Some(b) = parse_border_collapse(&decl.value) {
+                style.border_collapse = b;
+            }
+        }
+        "border-spacing" => {
+            if let Some(s) = parse_border_spacing(&decl.value, bases) {
+                style.border_spacing = s;
+            }
+        }
+        "caption-side" => {
+            if let Some(c) = parse_caption_side(&decl.value) {
+                style.caption_side = c;
+            }
+        }
+        "empty-cells" => {
+            if let Some(e) = parse_empty_cells(&decl.value) {
+                style.empty_cells = e;
+            }
+        }
+        "vertical-align" => {
+            if let Some(v) = parse_vertical_align(&decl.value, bases) {
+                style.vertical_align = v;
+            }
+        }
         _ => {} // not in the v1 property set (or not a real property) — ignored, never an error
     }
 }
@@ -732,6 +767,10 @@ fn is_inherited(name: &str) -> bool {
             | "white-space"
             | "letter-spacing"
             | "word-spacing"
+            | "border-collapse"
+            | "border-spacing"
+            | "caption-side"
+            | "empty-cells"
     )
 }
 
@@ -826,6 +865,12 @@ fn apply_css_wide(
             style.inset[side] = src.inset[side];
         }
         "z-index" => style.z_index = src.z_index,
+        "table-layout" => style.table_layout = src.table_layout,
+        "border-collapse" => style.border_collapse = src.border_collapse,
+        "border-spacing" => style.border_spacing = src.border_spacing,
+        "caption-side" => style.caption_side = src.caption_side,
+        "empty-cells" => style.empty_cells = src.empty_cells,
+        "vertical-align" => style.vertical_align = src.vertical_align,
         "border-color" => {
             // The parent's border color is a real color; the initial
             // value is `currentcolor`, resolved once the cascade is done.
@@ -1073,8 +1118,101 @@ fn parse_display(tokens: &[Token]) -> Option<Display> {
         "inline" => Some(Display::Inline),
         "inline-block" => Some(Display::InlineBlock),
         "none" => Some(Display::None),
-        _ => None, // flex/grid/table/... land with their milestones
+        "table" => Some(Display::Table),
+        "inline-table" => Some(Display::InlineTable),
+        "table-row-group" => Some(Display::TableRowGroup),
+        "table-header-group" => Some(Display::TableHeaderGroup),
+        "table-footer-group" => Some(Display::TableFooterGroup),
+        "table-row" => Some(Display::TableRow),
+        "table-column-group" => Some(Display::TableColumnGroup),
+        "table-column" => Some(Display::TableColumn),
+        "table-cell" => Some(Display::TableCell),
+        "table-caption" => Some(Display::TableCaption),
+        _ => None, // flex/grid/list-item/... land with their milestones
     }
+}
+
+/// `table-layout` (M12).
+fn parse_table_layout(tokens: &[Token]) -> Option<TableLayout> {
+    match single_ident(tokens)?.to_ascii_lowercase().as_str() {
+        "auto" => Some(TableLayout::Auto),
+        "fixed" => Some(TableLayout::Fixed),
+        _ => None,
+    }
+}
+
+/// `border-collapse` (M12).
+fn parse_border_collapse(tokens: &[Token]) -> Option<BorderCollapse> {
+    match single_ident(tokens)?.to_ascii_lowercase().as_str() {
+        "separate" => Some(BorderCollapse::Separate),
+        "collapse" => Some(BorderCollapse::Collapse),
+        _ => None,
+    }
+}
+
+/// `border-spacing` (M12): one or two non-negative lengths, horizontal
+/// then vertical, one value standing for both (CSS2 §17.6.1). No
+/// percentage.
+fn parse_border_spacing(tokens: &[Token], bases: &LengthBases<'_>) -> Option<BorderSpacing> {
+    let groups = split_whitespace_groups(tokens);
+    let (horizontal, vertical) = match groups.as_slice() {
+        [one] => {
+            let v = parse_non_negative_length_px(one, bases)?;
+            (v, v)
+        }
+        [first, second] => (
+            parse_non_negative_length_px(first, bases)?,
+            parse_non_negative_length_px(second, bases)?,
+        ),
+        _ => return None,
+    };
+    Some(BorderSpacing {
+        horizontal,
+        vertical,
+    })
+}
+
+/// `caption-side` (M12): `top` or `bottom`; css-logical's `inline-start`
+/// and `inline-end` are not accepted.
+fn parse_caption_side(tokens: &[Token]) -> Option<CaptionSide> {
+    match single_ident(tokens)?.to_ascii_lowercase().as_str() {
+        "top" => Some(CaptionSide::Top),
+        "bottom" => Some(CaptionSide::Bottom),
+        _ => None,
+    }
+}
+
+/// `empty-cells` (M12).
+fn parse_empty_cells(tokens: &[Token]) -> Option<EmptyCells> {
+    match single_ident(tokens)?.to_ascii_lowercase().as_str() {
+        "show" => Some(EmptyCells::Show),
+        "hide" => Some(EmptyCells::Hide),
+        _ => None,
+    }
+}
+
+/// `vertical-align` (M12): the eight keywords of CSS2 §10.8.1, a
+/// length (negative allowed) or a percentage, the last kept as written
+/// since it is of the line height.
+fn parse_vertical_align(tokens: &[Token], bases: &LengthBases<'_>) -> Option<VerticalAlign> {
+    if let Some(ident) = single_ident(tokens) {
+        return match ident.to_ascii_lowercase().as_str() {
+            "baseline" => Some(VerticalAlign::Baseline),
+            "sub" => Some(VerticalAlign::Sub),
+            "super" => Some(VerticalAlign::Super),
+            "top" => Some(VerticalAlign::Top),
+            "text-top" => Some(VerticalAlign::TextTop),
+            "middle" => Some(VerticalAlign::Middle),
+            "bottom" => Some(VerticalAlign::Bottom),
+            "text-bottom" => Some(VerticalAlign::TextBottom),
+            _ => None,
+        };
+    }
+    if let Some(Token::Percentage { value }) = single_token(tokens) {
+        let p = *value as f32;
+        return p.is_finite().then_some(VerticalAlign::Percent(p));
+    }
+    parse_length_px(tokens, bases).map(VerticalAlign::Length)
 }
 
 /// The edge array index of `top`, `right`, `bottom` or `left`.
@@ -1759,6 +1897,19 @@ mod tests {
         assert_eq!(s.display, Display::Inline);
         let s = span("span { float: left; display: none; }");
         assert_eq!(s.display, Display::None);
+        // §9.7's table for the table values (M12): an inline table
+        // becomes a table, a table-internal box a block, a table stays
+        // a table, and none of it applies to a box in flow.
+        let s = span("span { float: left; display: inline-table; }");
+        assert_eq!(s.display, Display::Table);
+        let s = span("span { position: absolute; display: table-cell; }");
+        assert_eq!(s.display, Display::Block);
+        let s = span("span { float: right; display: table-row-group; }");
+        assert_eq!(s.display, Display::Block);
+        let s = span("span { float: right; display: table; }");
+        assert_eq!(s.display, Display::Table);
+        let s = span("span { position: relative; display: table-cell; }");
+        assert_eq!(s.display, Display::TableCell);
     }
 
     #[test]
@@ -2245,7 +2396,7 @@ mod tests {
     }
 
     #[test]
-    fn display_parses_its_four_keywords_and_is_not_inherited() {
+    fn display_parses_its_keywords_and_is_not_inherited() {
         let sheets = [sheet("div { display: inline-block; }")];
         let document = html::parse_document("<div><span>x</span></div>").unwrap();
         let styled = style_document(&document, &sheets);
@@ -2264,6 +2415,16 @@ mod tests {
             ("inline", Display::Inline),
             ("INLINE-BLOCK", Display::InlineBlock),
             ("none", Display::None),
+            ("table", Display::Table),
+            ("inline-table", Display::InlineTable),
+            ("table-row-group", Display::TableRowGroup),
+            ("table-header-group", Display::TableHeaderGroup),
+            ("table-footer-group", Display::TableFooterGroup),
+            ("table-row", Display::TableRow),
+            ("table-column-group", Display::TableColumnGroup),
+            ("table-column", Display::TableColumn),
+            ("Table-Cell", Display::TableCell),
+            ("table-caption", Display::TableCaption),
         ] {
             let sheets = [sheet(&format!("span {{ display: {value}; }}"))];
             assert_eq!(style_of(html, &sheets, "span").display, expected, "{value}");
@@ -2271,6 +2432,198 @@ mod tests {
         // An unknown keyword leaves the UA value in place.
         let sheets = [sheet("div { display: flex; }")];
         assert_eq!(style_of(html, &sheets, "div").display, Display::Block);
+    }
+
+    #[test]
+    fn table_properties_parse_and_inherit_as_the_specification_says() {
+        let html = "<div><p>x</p></div>";
+        let pair = |css: &str| {
+            let sheets = [sheet(css)];
+            (style_of(html, &sheets, "div"), style_of(html, &sheets, "p"))
+        };
+        // `table-layout`: not inherited.
+        let (div, p) = pair("div { table-layout: FIXED; }");
+        assert_eq!(div.table_layout, TableLayout::Fixed);
+        assert_eq!(p.table_layout, TableLayout::Auto);
+        let (div, _) = pair("div { table-layout: fixed; table-layout: auto; }");
+        assert_eq!(div.table_layout, TableLayout::Auto);
+        let (div, _) = pair("div { table-layout: fixed; table-layout: tight; }");
+        assert_eq!(
+            div.table_layout,
+            TableLayout::Fixed,
+            "an unknown value is ignored"
+        );
+        // `border-collapse`: inherited.
+        let (div, p) = pair("div { border-collapse: collapse; }");
+        assert_eq!(div.border_collapse, BorderCollapse::Collapse);
+        assert_eq!(p.border_collapse, BorderCollapse::Collapse);
+        let (_, p) = pair("div { border-collapse: collapse; } p { border-collapse: separate; }");
+        assert_eq!(p.border_collapse, BorderCollapse::Separate);
+        // `border-spacing`: one length for both, or horizontal then
+        // vertical; `em` of the element's own font size; never negative,
+        // never a percentage; inherited.
+        let spacing = |h: f32, v: f32| BorderSpacing {
+            horizontal: h,
+            vertical: v,
+        };
+        let (div, p) = pair("div { border-spacing: 3px; }");
+        assert_eq!(div.border_spacing, spacing(3.0, 3.0));
+        assert_eq!(p.border_spacing, spacing(3.0, 3.0));
+        let (div, _) = pair("div { border-spacing: 4px 0; }");
+        assert_eq!(div.border_spacing, spacing(4.0, 0.0));
+        let (div, _) = pair("div { font-size: 10px; border-spacing: 1em 0.5em; }");
+        assert_eq!(div.border_spacing, spacing(10.0, 5.0));
+        for bad in ["-1px", "2px -1px", "10%", "1px 2px 3px", "auto"] {
+            let (div, _) = pair(&format!(
+                "div {{ border-spacing: 3px; border-spacing: {bad}; }}"
+            ));
+            assert_eq!(div.border_spacing, spacing(3.0, 3.0), "{bad} is ignored");
+        }
+        // `caption-side`: `top` or `bottom`; inherited.
+        let (div, p) = pair("div { caption-side: bottom; }");
+        assert_eq!(div.caption_side, CaptionSide::Bottom);
+        assert_eq!(p.caption_side, CaptionSide::Bottom);
+        let (div, _) = pair("div { caption-side: bottom; caption-side: left; }");
+        assert_eq!(
+            div.caption_side,
+            CaptionSide::Bottom,
+            "CSS2's `left` is not a value"
+        );
+        // `empty-cells`: inherited.
+        let (div, p) = pair("div { empty-cells: hide; }");
+        assert_eq!(div.empty_cells, EmptyCells::Hide);
+        assert_eq!(p.empty_cells, EmptyCells::Hide);
+        let (_, p) = pair("div { empty-cells: hide; } p { empty-cells: show; }");
+        assert_eq!(p.empty_cells, EmptyCells::Show);
+        // `vertical-align`: every keyword, a length, a percentage; not
+        // inherited.
+        for (value, expected) in [
+            ("baseline", VerticalAlign::Baseline),
+            ("sub", VerticalAlign::Sub),
+            ("super", VerticalAlign::Super),
+            ("top", VerticalAlign::Top),
+            ("text-top", VerticalAlign::TextTop),
+            ("MIDDLE", VerticalAlign::Middle),
+            ("bottom", VerticalAlign::Bottom),
+            ("text-bottom", VerticalAlign::TextBottom),
+            ("3px", VerticalAlign::Length(3.0)),
+            ("-0.5em", VerticalAlign::Length(-8.0)),
+            ("0", VerticalAlign::Length(0.0)),
+            ("25%", VerticalAlign::Percent(25.0)),
+            ("-10%", VerticalAlign::Percent(-10.0)),
+        ] {
+            let (div, p) = pair(&format!("div {{ vertical-align: {value}; }}"));
+            assert_eq!(div.vertical_align, expected, "{value}");
+            assert_eq!(
+                p.vertical_align,
+                VerticalAlign::Baseline,
+                "not inherited ({value})"
+            );
+        }
+        let (div, _) = pair("div { vertical-align: top; vertical-align: center; }");
+        assert_eq!(
+            div.vertical_align,
+            VerticalAlign::Top,
+            "`center` is not a value"
+        );
+        // The CSS-wide keywords: `unset` is `inherit` for the four
+        // inherited properties and `initial` for the other two.
+        let (_, p) = pair(
+            "div { table-layout: fixed; border-collapse: collapse; border-spacing: 5px;
+                   caption-side: bottom; empty-cells: hide; vertical-align: middle; }
+             p { table-layout: unset; border-collapse: unset; border-spacing: unset;
+                 caption-side: unset; empty-cells: unset; vertical-align: unset; }",
+        );
+        assert_eq!(p.table_layout, TableLayout::Auto);
+        assert_eq!(p.border_collapse, BorderCollapse::Collapse);
+        assert_eq!(p.border_spacing, spacing(5.0, 5.0));
+        assert_eq!(p.caption_side, CaptionSide::Bottom);
+        assert_eq!(p.empty_cells, EmptyCells::Hide);
+        assert_eq!(p.vertical_align, VerticalAlign::Baseline);
+        let (_, p) = pair(
+            "div { table-layout: fixed; border-collapse: collapse; border-spacing: 5px;
+                   caption-side: bottom; empty-cells: hide; vertical-align: middle; }
+             p { table-layout: inherit; border-collapse: initial; border-spacing: initial;
+                 caption-side: initial; empty-cells: initial; vertical-align: inherit; }",
+        );
+        assert_eq!(p.table_layout, TableLayout::Fixed);
+        assert_eq!(p.border_collapse, BorderCollapse::Separate);
+        assert_eq!(p.border_spacing, spacing(0.0, 0.0));
+        assert_eq!(p.caption_side, CaptionSide::Top);
+        assert_eq!(p.empty_cells, EmptyCells::Show);
+        assert_eq!(p.vertical_align, VerticalAlign::Middle);
+    }
+
+    #[test]
+    fn the_ua_sheet_styles_tables_as_the_html_standard_does() {
+        let html = "<table><caption>c</caption><colgroup><col></colgroup>\
+                    <thead><tr><th>h</th></tr></thead>\
+                    <tbody><tr><td>d</td></tr></tbody>\
+                    <tfoot><tr><td>f</td></tr></tfoot></table>\
+                    <table><tr><td>bare</td></tr></table>\
+                    <div><div class=cell>css</div></div>";
+        let sheets = [sheet(
+            "table { border-color: red; } .cell { display: table-cell; }",
+        )];
+        let of = |selector: &str| style_of(html, &sheets, selector);
+        for (selector, expected) in [
+            ("table", Display::Table),
+            ("caption", Display::TableCaption),
+            ("colgroup", Display::TableColumnGroup),
+            ("col", Display::TableColumn),
+            ("thead", Display::TableHeaderGroup),
+            ("tbody", Display::TableRowGroup),
+            ("tfoot", Display::TableFooterGroup),
+            ("tr", Display::TableRow),
+            ("th", Display::TableCell),
+            ("td", Display::TableCell),
+        ] {
+            assert_eq!(of(selector).display, expected, "{selector}");
+        }
+        let table = of("table");
+        assert_eq!(table.box_sizing, BoxSizing::BorderBox);
+        assert_eq!(table.border_collapse, BorderCollapse::Separate);
+        assert_eq!(
+            table.border_spacing,
+            BorderSpacing {
+                horizontal: 2.0,
+                vertical: 2.0
+            }
+        );
+        assert_eq!(table.table_layout, TableLayout::Auto);
+        let td = of("tbody td");
+        assert_eq!(td.padding, [LengthPercentage::Px(1.0); 4]);
+        assert_eq!(td.text_align, TextAlign::Left);
+        assert_eq!(of("th").text_align, TextAlign::Center);
+        assert_eq!(of("th").padding, td.padding);
+        assert_eq!(of("caption").text_align, TextAlign::Center);
+        // An HTML cell is centred vertically: the row group says
+        // `middle`, and `tr`, `td` and `th` inherit it, a row directly in
+        // the table included (this parser inserts no `tbody`); a CSS
+        // table cell sits on the baseline.
+        for selector in [
+            "thead", "tbody", "tfoot", "thead tr", "th", "tbody td", "tfoot td",
+        ] {
+            assert_eq!(
+                of(selector).vertical_align,
+                VerticalAlign::Middle,
+                "{selector}"
+            );
+        }
+        assert_eq!(of("table > tr").vertical_align, VerticalAlign::Middle);
+        assert_eq!(of("table > tr > td").vertical_align, VerticalAlign::Middle);
+        assert_eq!(of(".cell").vertical_align, VerticalAlign::Baseline);
+        assert_eq!(of(".cell").padding, [LengthPercentage::Px(0.0); 4]);
+        // Row groups and rows take the table's border colour; a cell
+        // keeps `currentcolor`.
+        let red = Color::rgb8(255, 0, 0);
+        assert_eq!(of("tbody").border_color, [red; 4]);
+        assert_eq!(of("tbody tr").border_color, [red; 4]);
+        assert_eq!(td.border_color, [Color::BLACK; 4]);
+        // The caption and the column boxes have no padding or border of
+        // their own from the sheet.
+        assert_eq!(of("caption").padding, [LengthPercentage::Px(0.0); 4]);
+        assert_eq!(of("col").used_border_width(), [0.0; 4]);
     }
 
     #[test]

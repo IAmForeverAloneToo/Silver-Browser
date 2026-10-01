@@ -54,7 +54,8 @@ impl Color {
     };
 }
 
-/// `display` (css-display-3, v1 subset: box generation only).
+/// `display` (css-display-3, the box-generation values of CSS2 §9.2.4
+/// and the table values of §17.2, M12).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Display {
     /// Generates a block-level box.
@@ -68,6 +69,135 @@ pub enum Display {
     /// Generates no box at all — the element and its descendants are
     /// skipped entirely by layout and paint.
     None,
+    /// A block-level table (CSS2 §17.2).
+    Table,
+    /// An inline-level table: atomic on its line like an inline-block.
+    InlineTable,
+    /// A group of rows: `tbody`.
+    TableRowGroup,
+    /// A group of rows displayed before every other row: `thead`.
+    TableHeaderGroup,
+    /// A group of rows displayed after every other row: `tfoot`.
+    TableFooterGroup,
+    /// A row of cells: `tr`.
+    TableRow,
+    /// A group of columns: `colgroup`.
+    TableColumnGroup,
+    /// A column: `col`. Its box holds no content, only a column of the
+    /// grid.
+    TableColumn,
+    /// A cell: `td`, `th`.
+    TableCell,
+    /// A table's caption: `caption`.
+    TableCaption,
+}
+
+impl Display {
+    /// Whether this value is an atomic inline-level box (CSS2 §9.2.2):
+    /// an inline-block or an inline table, one item on its line and a
+    /// formatting context of its own inside.
+    pub fn is_atomic_inline(self) -> bool {
+        matches!(self, Display::InlineBlock | Display::InlineTable)
+    }
+
+    /// The value a float or an absolutely positioned box computes to
+    /// (CSS2 §9.7's table, css-display-3 §2.7's blockification): an
+    /// inline table becomes a table; an inline box, an inline-block and
+    /// every table-internal box become a block; a block, a table and
+    /// `none` stay what they are.
+    pub fn blockified(self) -> Display {
+        match self {
+            Display::Block | Display::Table | Display::None => self,
+            Display::InlineTable => Display::Table,
+            Display::Inline
+            | Display::InlineBlock
+            | Display::TableRowGroup
+            | Display::TableHeaderGroup
+            | Display::TableFooterGroup
+            | Display::TableRow
+            | Display::TableColumnGroup
+            | Display::TableColumn
+            | Display::TableCell
+            | Display::TableCaption => Display::Block,
+        }
+    }
+}
+
+/// `table-layout` (CSS2 §17.5.2, M12): which algorithm sizes a table's
+/// columns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TableLayout {
+    /// The automatic algorithm, from the cells' content. The initial
+    /// value.
+    Auto,
+    /// The fixed algorithm, from the table's width and the first row.
+    Fixed,
+}
+
+/// `border-collapse` (CSS2 §17.6, M12): which border model a table
+/// uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BorderCollapse {
+    /// Every cell has its own border, `border-spacing` between them.
+    /// The initial value.
+    Separate,
+    /// Adjacent borders are merged into one, by §17.6.2's conflict
+    /// rules.
+    Collapse,
+}
+
+/// `border-spacing` (CSS2 §17.6.1, M12): the distance between adjacent
+/// cells' borders in the separated model, in CSS pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BorderSpacing {
+    /// Between columns, and between the table's border and its first
+    /// and last columns.
+    pub horizontal: f32,
+    /// Between rows, and between the table's border and its first and
+    /// last rows.
+    pub vertical: f32,
+}
+
+/// `caption-side` (CSS2 §17.4.1, M12): where a table's caption goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptionSide {
+    /// Above the table box. The initial value.
+    Top,
+    /// Below it.
+    Bottom,
+}
+
+/// `empty-cells` (CSS2 §17.6.1.1, M12): whether a cell with no content
+/// paints its background and borders in the separated model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmptyCells {
+    /// It does. The initial value.
+    Show,
+    /// It paints nothing.
+    Hide,
+}
+
+/// `vertical-align` (CSS2 §10.8.1 and §17.5.3, M12), parsed in full.
+/// This engine reads it on table cells alone, where `top`, `middle`
+/// and `bottom` align the cell in its row as §17.5.3 says and every
+/// other value is `baseline`, as §17.5.3 says too; its meaning on
+/// inline boxes is M42's.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum VerticalAlign {
+    /// The initial value.
+    Baseline,
+    Sub,
+    Super,
+    Top,
+    TextTop,
+    Middle,
+    Bottom,
+    TextBottom,
+    /// A length, in CSS pixels: the baseline raised by it (negative,
+    /// lowered).
+    Length(f32),
+    /// A percentage of the line height, as written.
+    Percent(f32),
 }
 
 /// `border-style` (CSS2 §8.5.3, all ten values since M10). `none` and
@@ -419,6 +549,20 @@ pub struct ComputedStyle {
     pub inset: MarginEdges,
     /// `z-index` (M11.6) — not inherited; `None` is `auto`.
     pub z_index: Option<i32>,
+    /// `table-layout` (M12) — not inherited.
+    pub table_layout: TableLayout,
+    /// `border-collapse` (M12) — inherited.
+    pub border_collapse: BorderCollapse,
+    /// `border-spacing` (M12) — inherited. The initial value is `0`.
+    pub border_spacing: BorderSpacing,
+    /// `caption-side` (M12) — inherited.
+    pub caption_side: CaptionSide,
+    /// `empty-cells` (M12) — inherited.
+    pub empty_cells: EmptyCells,
+    /// `vertical-align` (M12) — not inherited; the UA sheet's `inherit`
+    /// on `tr`, `td` and `th` is what carries a row group's `middle`
+    /// down to an HTML cell.
+    pub vertical_align: VerticalAlign,
 }
 
 impl Default for ComputedStyle {
@@ -454,6 +598,15 @@ impl Default for ComputedStyle {
             position: Position::Static,
             inset: [LengthPercentageAuto::Auto; 4],
             z_index: None,
+            table_layout: TableLayout::Auto,
+            border_collapse: BorderCollapse::Separate,
+            border_spacing: BorderSpacing {
+                horizontal: 0.0,
+                vertical: 0.0,
+            },
+            caption_side: CaptionSide::Top,
+            empty_cells: EmptyCells::Show,
+            vertical_align: VerticalAlign::Baseline,
         }
     }
 }
@@ -496,6 +649,10 @@ impl ComputedStyle {
             letter_spacing: parent.letter_spacing,
             word_spacing: parent.word_spacing,
             direction: parent.direction,
+            border_collapse: parent.border_collapse,
+            border_spacing: parent.border_spacing,
+            caption_side: parent.caption_side,
+            empty_cells: parent.empty_cells,
             ..ComputedStyle::default()
         }
     }
@@ -539,6 +696,15 @@ mod tests {
         assert!(Position::Fixed.is_positioned() && Position::Fixed.is_out_of_flow());
         assert_eq!(s.inset, [LengthPercentageAuto::Auto; 4]);
         assert_eq!(s.z_index, None);
+        assert_eq!(s.table_layout, TableLayout::Auto);
+        assert_eq!(s.border_collapse, BorderCollapse::Separate);
+        assert_eq!(
+            (s.border_spacing.horizontal, s.border_spacing.vertical),
+            (0.0, 0.0)
+        );
+        assert_eq!(s.caption_side, CaptionSide::Top);
+        assert_eq!(s.empty_cells, EmptyCells::Show);
+        assert_eq!(s.vertical_align, VerticalAlign::Baseline);
     }
 
     #[test]
@@ -549,6 +715,15 @@ mod tests {
             text_align: TextAlign::Center,
             background_color: Color::rgb8(0, 255, 0), // not inherited
             display: Display::Block,                  // not inherited
+            border_collapse: BorderCollapse::Collapse,
+            border_spacing: BorderSpacing {
+                horizontal: 3.0,
+                vertical: 4.0,
+            },
+            caption_side: CaptionSide::Bottom,
+            empty_cells: EmptyCells::Hide,
+            table_layout: TableLayout::Fixed,      // not inherited
+            vertical_align: VerticalAlign::Middle, // not inherited
             ..ComputedStyle::default()
         };
 
@@ -561,10 +736,42 @@ mod tests {
         assert_eq!(child.letter_spacing, parent.letter_spacing);
         assert_eq!(child.word_spacing, parent.word_spacing);
         assert_eq!(child.direction, parent.direction);
+        assert_eq!(child.border_collapse, BorderCollapse::Collapse);
+        assert_eq!(child.border_spacing, parent.border_spacing);
+        assert_eq!(child.caption_side, CaptionSide::Bottom);
+        assert_eq!(child.empty_cells, EmptyCells::Hide);
         // Non-inherited properties reset to their initial value, not the
         // parent's — a block parent's child doesn't become block-by-default.
         assert_eq!(child.background_color, Color::TRANSPARENT);
         assert_eq!(child.display, Display::Inline);
+        assert_eq!(child.table_layout, TableLayout::Auto);
+        assert_eq!(child.vertical_align, VerticalAlign::Baseline);
+    }
+
+    #[test]
+    fn display_knows_its_atomic_inlines_and_blockifies_as_css2_section_9_7_says() {
+        assert!(Display::InlineBlock.is_atomic_inline());
+        assert!(Display::InlineTable.is_atomic_inline());
+        assert!(!Display::Inline.is_atomic_inline());
+        assert!(!Display::Table.is_atomic_inline());
+        for (value, expected) in [
+            (Display::Block, Display::Block),
+            (Display::Inline, Display::Block),
+            (Display::InlineBlock, Display::Block),
+            (Display::None, Display::None),
+            (Display::Table, Display::Table),
+            (Display::InlineTable, Display::Table),
+            (Display::TableRowGroup, Display::Block),
+            (Display::TableHeaderGroup, Display::Block),
+            (Display::TableFooterGroup, Display::Block),
+            (Display::TableRow, Display::Block),
+            (Display::TableColumnGroup, Display::Block),
+            (Display::TableColumn, Display::Block),
+            (Display::TableCell, Display::Block),
+            (Display::TableCaption, Display::Block),
+        ] {
+            assert_eq!(value.blockified(), expected, "{value:?}");
+        }
     }
 
     #[test]

@@ -78,7 +78,7 @@
 //! scrolls over.
 
 use style::computed::{
-    BOTTOM, BoxSizing, ComputedStyle, Display, Float, LEFT, LengthPercentage, LengthPercentageAuto,
+    BOTTOM, BoxSizing, ComputedStyle, Float, LEFT, LengthPercentage, LengthPercentageAuto,
     Position, RIGHT, TOP,
 };
 use text::FontCollection;
@@ -727,11 +727,12 @@ pub(crate) fn relative_offset(
 
 /// Whether a box with this style establishes a block formatting context
 /// of its own (CSS2 §9.4.1, M10.4): `overflow` other than `visible`, an
-/// inline-block, a float or an absolutely positioned box (M11). Table
-/// cells do too; they arrive with their milestone.
+/// atomic inline (an inline-block, an inline table), a float or an
+/// absolutely positioned box (M11). Table cells and captions do too;
+/// they arrive with their box kinds (M12).
 pub(crate) fn establishes_bfc(style: &ComputedStyle) -> bool {
     style.overflow.clips()
-        || style.display == Display::InlineBlock
+        || style.display.is_atomic_inline()
         || style.float != Float::None
         || style.position.is_out_of_flow()
 }

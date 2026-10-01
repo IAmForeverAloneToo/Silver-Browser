@@ -40,8 +40,7 @@
 
 use layout::{Fragment, FragmentKind};
 use style::computed::{
-    BOTTOM, ComputedStyle, Display, Float, LEFT, LengthPercentageAuto, Overflow, Position, RIGHT,
-    TOP,
+    BOTTOM, ComputedStyle, Float, LEFT, LengthPercentageAuto, Overflow, Position, RIGHT, TOP,
 };
 
 use crate::{ScrollOffsets, Viewport};
@@ -232,7 +231,7 @@ fn kind_of(f: &Fragment) -> Kind {
         Kind::Positioned
     } else if f.style.float != Float::None {
         Kind::Float
-    } else if f.style.display == Display::InlineBlock {
+    } else if f.style.display.is_atomic_inline() {
         Kind::InlineBlock
     } else {
         Kind::Block

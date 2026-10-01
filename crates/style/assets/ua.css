@@ -75,19 +75,50 @@ a { color: blue; }
 /* The rest of the HTML standard's block-level elements (HTML §15.3.1,
  * "Flow content"), which were missing: without this rule a <div> is an
  * inline box, so its width, height, margins and backgrounds do not
- * apply and every <div><p> pair takes the block-in-inline path. The
- * table parts are plain blocks until the table model lands (M12);
- * `li` is a block rather than `list-item` until markers do (M21). */
-address, article, aside, caption, center, dd, details, dialog, dir, div,
-dl, dt, fieldset, figcaption, figure, footer, form, header, hgroup, hr,
-legend, listing, main, menu, nav, plaintext, search, section, summary,
-table, tbody, td, tfoot, th, thead, tr, xmp {
+ * apply and every <div><p> pair takes the block-in-inline path. `li`
+ * is a block rather than `list-item` until markers do (M21). */
+address, article, aside, center, dd, details, dialog, dir, div, dl, dt,
+fieldset, figcaption, figure, footer, form, header, hgroup, hr, legend,
+listing, main, menu, nav, plaintext, search, section, summary, xmp {
   display: block;
 }
 
 dl { margin: 16px 0; }
 dd { margin-left: 40px; }
 hr { margin: 8px 0; border-width: 1px; border-style: solid; }
+
+/* Tables (HTML §15.3.9, M12): CSS2 §17.2's display values for the
+ * table elements, and the standard's own defaults. The `vertical-align`
+ * pair is why an HTML cell is centred vertically by default while a
+ * CSS table cell sits on the baseline: a row group is `middle`, and
+ * `tr`, `td` and `th` inherit it. The `center` on `th` stands in for
+ * the standard's internal value that yields to an inherited
+ * alignment; `font-weight` is parsed and not acted on until M21. The
+ * `[hidden]` rules, `visibility: collapse` and the presentational
+ * attributes are not here (docs/design/tables.md, section 2). */
+table { display: table; }
+caption { display: table-caption; }
+colgroup { display: table-column-group; }
+col { display: table-column; }
+thead { display: table-header-group; }
+tbody { display: table-row-group; }
+tfoot { display: table-footer-group; }
+tr { display: table-row; }
+td, th { display: table-cell; }
+
+table {
+  box-sizing: border-box;
+  border-spacing: 2px;
+  border-collapse: separate;
+}
+td, th { padding: 1px; }
+th { font-weight: bold; text-align: center; }
+
+caption { text-align: center; }
+thead, tbody, tfoot, table > tr { vertical-align: middle; }
+tr, td, th { vertical-align: inherit; }
+
+thead, tbody, tfoot, tr { border-color: inherit; }
 
 /* Form controls, v0 (M10.6): each is an inline-block with a border,
  * padding and a background, so a form lays out as a row of boxes, and

@@ -156,12 +156,12 @@ impl BlockContainer<'_> {
                     match style.display {
                         Display::None => {} // the element AND its subtree: no box at all
                         // A float or an absolutely positioned box computes
-                        // to `display: block` (CSS2 §9.7, the cascade's
-                        // rule) and is a block container inside; outside
-                        // it is out of flow, and goes where it is met:
-                        // into the run or inline open around it, else
+                        // to a block-level `display` (CSS2 §9.7, the
+                        // cascade's rule) and is a block container inside;
+                        // outside it is out of flow, and goes where it is
+                        // met: into the run or inline open around it, else
                         // among the container's blocks.
-                        Display::Block
+                        Display::Block | Display::Table
                             if style.float != Float::None || style.position.is_out_of_flow() =>
                         {
                             let kind = if style.position.is_out_of_flow() {
@@ -181,7 +181,21 @@ impl BlockContainer<'_> {
                                 self.add_inline_level(out_of_flow);
                             }
                         }
-                        Display::Block => {
+                        // Until the table box kinds land (M12 step 2), a
+                        // table and each of its internal boxes are block
+                        // containers, as the UA sheet made them before the
+                        // display values arrived, and an inline table is an
+                        // inline-block.
+                        Display::Block
+                        | Display::Table
+                        | Display::TableRowGroup
+                        | Display::TableHeaderGroup
+                        | Display::TableFooterGroup
+                        | Display::TableRow
+                        | Display::TableColumnGroup
+                        | Display::TableColumn
+                        | Display::TableCell
+                        | Display::TableCaption => {
                             let block = LayoutBox {
                                 style: style.clone(),
                                 kind: BoxKind::Block,
@@ -201,7 +215,7 @@ impl BlockContainer<'_> {
                             let inline = self.open.pop().expect("the inline just opened");
                             self.add_inline_level(inline);
                         }
-                        Display::InlineBlock => {
+                        Display::InlineBlock | Display::InlineTable => {
                             let block = LayoutBox {
                                 style: style.clone(),
                                 kind: BoxKind::InlineBlock,
