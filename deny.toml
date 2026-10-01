@@ -1,0 +1,69 @@
+# cargo-deny configuration: security advisories, licences, duplicate
+# crates and dependency sources. Run locally with `cargo deny check`.
+
+[graph]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
+
+[advisories]
+version = 2
+yanked = "deny"
+# The text stack rests on two crates whose author has declared them
+# unmaintained. They are the shaping and font-parsing engine of this
+# project (roadmap decision D7), so moving off them is a design decision
+# with a note of its own, not a line here; until it is taken, the two
+# advisories are acknowledged rather than fail every build, and a
+# vulnerability in either would still be a separate advisory that fails.
+ignore = [
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained; the font parser behind text, pending roadmap decision D7" },
+    { id = "RUSTSEC-2026-0206", reason = "rustybuzz is unmaintained; the shaper behind text, pending roadmap decision D7" },
+]
+
+[licenses]
+version = 2
+confidence-threshold = 0.8
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "BSL-1.0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+    "OFL-1.1",
+    "AGPL-3.0-only",
+]
+
+[bans]
+# A crate in the tree twice is more code in the binary and one more
+# thing to track advisories for. Every duplicate below is upstream's to
+# converge (the windowing and font crates pinning older generations of
+# the same crate), so each is skipped by name rather than by version,
+# and the versions move without touching this file. What the deny
+# catches is a new name joining the list: a duplicate this repository
+# introduced, which wants a look before it is accepted.
+multiple-versions = "deny"
+wildcards = "allow"
+skip = [
+    { name = "bitflags" },
+    { name = "linux-raw-sys" },
+    { name = "miniz_oxide" },
+    { name = "objc2" },
+    { name = "objc2-foundation" },
+    { name = "rustix" },
+    { name = "syn" },
+    { name = "windows-sys" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
