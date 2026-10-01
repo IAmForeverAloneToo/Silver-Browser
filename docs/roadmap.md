@@ -233,10 +233,27 @@ images, the last item on T0's list, come with M23.
   gaps (inline decorations and the two painting differences — M11,
   `overflow-x`/`-y`, `line-height`, `vertical-align`).
 
-Verified per the vertical-slice rule at each milestone: 448 tests
-workspace-wide (180 in `style`, 77 in `layout`, 45 in `html`, 34 in
-`engine` with the reference harness, 31 in `text`, 26 in `paint`),
-clippy clean (`-D warnings`, every target), smoke run.
+- **M11 — Floats, positioning, stacking** (done 2026-10-01, designed in
+  `docs/design/floats-positioning.md` and built in its twelve steps):
+  the properties with CSS2 §9.7's rules; one paint-order walk read by
+  paint and by hit testing; floats in a context per block formatting
+  context, placed by §9.5.1 with lines shortened beside them, clearance
+  and the dodge of a context root; relative, absolute, fixed and sticky
+  positioning; CSS2 Appendix E's stacking order with `z-index`; an
+  inline element's box per line with its padding, border and
+  background, and unbreakable pieces in the line breaker; box edges
+  snapped to pixels, border widths whole, mitres between colours
+  blended by exact area; and eleven more reference pages, twenty-one
+  matching the headless browser, one within a declared tolerance of two
+  at its mitres. See `docs/architecture.md` for the writeup and the
+  stated gaps (`line-height`, `vertical-align`, nested sticky, the
+  browser's last bit of mitre blending, a double border in two colours).
+
+Verified per the vertical-slice rule at each milestone: 497 tests
+workspace-wide (182 in `style`, 103 in `layout`, 45 in `html`, 41 in
+`engine` with the reference harness, 39 in `paint`, 32 in `css`, 31 in
+`text`, 11 in `render`), clippy clean (`-D warnings`, every target),
+fuzz targets clean, smoke run.
 Toolchain: 1.98.1, pinned by `rust-toolchain.toml`.
 Build target dir outside OneDrive (`%LOCALAPPDATA%\silver-browser\target`)
 — currently only by passing `CARGO_TARGET_DIR` manually each session; no
@@ -698,18 +715,62 @@ do without.
 
 ## M11 — Floats, positioning, stacking  ·  `layout`/`paint`  ·  Effort: XL  ·  Depends: M10
 
-- [ ] M11.1 Floats: `float: left|right`, line shortening, `clear`
-       (clearance computation per CSS2 §9.5).
-- [ ] M11.2 Block formatting contexts around floats (the "BFC dodge").
-- [ ] M11.3 `position: relative` (offsets, paint-time only).
-- [ ] M11.4 `position: absolute` (containing block resolution, static
-       position, shrink-to-fit width per CSS2 §10.3.7).
-- [ ] M11.5 `position: fixed|sticky` (sticky = scroll-driven constraints,
-       v1 without nested scroll edge cases).
-- [ ] M11.6 `z-index`, stacking contexts, paint order per CSS2 Appendix E
-       (negative z, floats, inline, positioned).
-- [ ] M11.7 Acceptance: classic two-column float layout + absolutely
-       positioned overlays render correctly; stacking order tests.
+Designed in `docs/design/floats-positioning.md`, written before the
+code and corrected to it after; built in its twelve steps on
+2026-10-01, one commit each.
+
+- [x] M11.1 Floats: `float: left|right`, line shortening, `clear`
+       (clearance computation per CSS2 §9.5). Done 2026-10-01: the
+       properties with §9.7's computed-value rules; a float context
+       per block formatting context (`layout::float`), placement by
+       §9.5.1 in order, a float waiting while the margins above it
+       collapse and placed level with what resolves the flow position;
+       lines run between the floats overlapping them; a context root's
+       `auto` height reaches its lowest float (§10.6.7); clearance per
+       §9.5.2, the margins above a cleared box resolved and its own
+       inside the clearance.
+- [x] M11.2 Block formatting contexts around floats (the "BFC dodge").
+       Done 2026-10-01: a context root takes the room between the floats
+       at its top, its `auto` width that room's, and moves down when it
+       does not fit.
+- [x] M11.3 `position: relative` (offsets, paint-time only). Done
+       2026-10-01: the fragment and its subtree moved as the box is
+       placed, in layout rather than paint so that hit testing and an
+       absolutely positioned descendant see the moved box; an inline
+       element's line boxes move each with their content.
+- [x] M11.4 `position: absolute` (containing block resolution, static
+       position, shrink-to-fit width per CSS2 §10.3.7). Done 2026-10-01:
+       the static position recorded in flow and carried up to the
+       nearest positioned ancestor's padding box, §10.3.7 and §10.6.4
+       solved there, the fragment under the containing block's after
+       the in-flow content; the initial containing block takes the rest.
+- [x] M11.5 `position: fixed|sticky` (sticky = scroll-driven constraints,
+       v1 without nested scroll edge cases). Done 2026-10-01: a fixed
+       box is a root of the document's fragments painted and hit with
+       the viewport's offset left out; a sticky box is laid out in flow
+       and shifted in the paint-order walk to keep its insets from the
+       visible edge of its nearest scrollport within its containing
+       block (the parent's padding box, the border box kept inside it).
+- [x] M11.6 `z-index`, stacking contexts, paint order per CSS2 Appendix E
+       (negative z, floats, inline, positioned). Done 2026-10-01: one
+       walk (`paint::order`) read by paint and by hit testing; the root
+       and each positioned box with a `z-index` not `auto` a stacking
+       context; its positioned descendants gathered once, then the
+       negative layer, three passes over the in-flow content, the
+       `auto`/`0` layer and the positive layer; an inline element's box
+       per line with its decorations in the inline pass; box edges
+       snapped to pixels, border widths used whole, mitres between
+       colours blended by the exact area each side covers.
+- [x] M11.7 Acceptance: classic two-column float layout + absolutely
+       positioned overlays render correctly; stacking order tests. Done
+       2026-10-01: eleven more pages under `crates/engine/tests/reference/`
+       (two columns, floats beside rows, placement, clear, the dodge,
+       relative, absolute, fixed, stacking, inline decorations,
+       fractional lengths with multi-colour borders), all twenty-one
+       matching the headless browser's captures, the last within a
+       declared tolerance of two at its mitres, every other exact;
+       fixed under scroll, sticky and hits through the stacking order
+       are engine tests. The pages found three defects, fixed.
 
 ---
 

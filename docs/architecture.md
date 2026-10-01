@@ -441,3 +441,106 @@ baseline; `line-height`; the `size`/`rows`/`cols` attributes; classic
 scrollbar gutters; HTML's case-insensitive attribute values in the
 selector matcher (the UA sheet says `i`). 448 tests workspace-wide.
 Still stub: `net`. Next milestone: floats, positioning, stacking (M11).
+
+Milestone 11 (Floats, positioning, stacking), designed in
+`docs/design/floats-positioning.md` and built in its twelve steps, one
+commit each. The properties first (M11's step 1): `float`, `clear`,
+`position`, `top`/`right`/`bottom`/`left` and `z-index` in the cascade
+with CSS2 §9.7's computed-value rules. Then the paint-order walk
+(`paint::order`, step 2): one walk over the fragment tree yields the
+steps — a box's background and border, a text run, a clip, a
+scrollbar — with every rectangle in viewport coordinates, and both
+`paint_fragments_in` and the engine's hit test read it, the last step
+under the pointer being the element hit, so paint order and hit order
+have one definition. Floats (M11.1): an out-of-flow box keeps its
+place in the box tree (`BoxKind::Float`, `BoxKind::Absolute`), a
+`layout::float::FloatContext` per block formatting context holds the
+floats placed in it as margin boxes in the root's coordinates, and
+`At` carries each box's position in that context down the recursion;
+placement is CSS2 §9.5.1's rules in order, a float met while the
+margins above it are still collapsing waits and is placed level with
+what resolves the flow position (the first line, the top of the next
+box that is not self-collapsing or whose top edge separates its
+margins, the base of a box that clears it, or the context's end), a
+float in a run is placed beside its line when it fits and below it
+otherwise, lines run between the floats overlapping them, and a
+context root's `auto` height reaches its lowest float's bottom
+(§10.6.7). Float fragments stay under their parent and
+`attach_floats` moves them to where the context put them. Clearance
+(§9.5.2) puts a cleared box's top border edge level with the lowest
+relevant float's bottom margin edge, the margins above it resolved and
+its own inside the clearance, and a context root beside a float takes
+the room between the floats at its top, moving down when it does not
+fit (M11.2). `position: relative` (M11.3) moves the fragment and its
+subtree as it is placed. `position: absolute` and `fixed` (M11.4):
+layout records the static position where it meets the box and carries
+it up (`Deferred`) until the nearest positioned ancestor's padding box
+is known, lays it out there by §10.3.7 and §10.6.4 (shrink-to-fit, one
+`auto` solved, over-constrained ignoring `right`/`bottom`), and hangs
+its fragment under the containing block's after the in-flow content,
+which is what makes an `overflow` box between the two neither clip nor
+scroll it; the initial containing block takes the rest, fixed boxes
+among them as the document's last roots, which the walk paints with
+the viewport's offset left out. `position: sticky` (M11.5) is laid
+out in flow and shifted in the walk by `paint::order::sticky_shift`,
+keeping each inset that is not `auto` from the visible edge of its
+nearest scrollport within its containing block (the parent's padding
+box, the border box kept inside it: two stated approximations), the
+subtree moving with it. Stacking (M11.6): the walk is CSS2 Appendix E
+— the root element and each positioned box with a `z-index` not
+`auto` are stacking contexts; one silent pass gathers a context's
+positioned descendants with the clips and scroll offsets of their
+ancestors in the fragment tree; the negative layer, three passes over
+the in-flow content (block-level backgrounds, floats, inline-level
+content), the `auto`/`0` layer and the positive layer follow, floats,
+inline-blocks and `auto` boxes as units; a box painted out of tree
+order has the clips in force closed down to the ones it shares and
+its own opened around it, and a clip with nothing inside is left out.
+Inline elements get a `FragmentKind::InlineBox` per line holding that
+line's items (step 9): the content area from the baseline by the
+font's ascent and descent (§10.6.1) with padding and border around it,
+the vertical ones not changing the line; the start and end edges take
+room on the lines the element starts and ends on, sliced in between
+(`box-decoration-break: slice`), the start edge taking a word's gap
+and wrap opportunity and gluing what follows, and the line breaker
+moves an unbreakable piece whole to the next line, back to the last
+wrap opportunity — before, a glued word overflowed. The two pixel
+rules (step 10): a box's edges are snapped to whole pixels where its
+background, border and clip are painted (each edge on its own, half
+up, layout keeping its fractions); a border's width is used as whole
+pixels, rounded down and never below one where the style gives any
+(css-backgrounds-3 §4.1, as the reference browser has it), a used
+value and so layout's; and a mitre between two colours blends the two
+sides by the exact area each covers of the pixel — a run of
+neighbouring sides in one colour is one `DisplayItem::Polygon`, the
+first run painted with its corners whole and the runs after it cut
+along the mitre, and `render` fills a polygon by signed-area
+accumulation (`fill_polygon_by_area`), tiny-skia's supersampling
+putting five eighths where the browser has one half; four sides
+sharing a band stay plain quads. Acceptance (M11.7): eleven more
+pages under `crates/engine/tests/reference/`, captured by the same
+headless shell (which reproduces the M10 fixtures byte for byte), all
+twenty-one matching; `capture.sh` takes page names; a page may declare
+a per-channel tolerance in a `meta` element, which the fractional and
+multi-colour page alone does (two, for the last bit of the browser's
+blending at mitres, reported by the test) and every other page is
+exact. The pages found three things, fixed: floats before a box with
+collapsing margins waited for the context's end; fractional border
+widths were rounded to edges rather than floored; and the mitre's
+coverage. Fixed under scroll, sticky and hit testing through the
+stacking order are engine tests. Not in this milestone, said rather
+than hidden: `line-height` and `vertical-align` beyond the baseline;
+a line that grows into a float after it started is not relaid; `inset`,
+`float: inline-start`/`inline-end` and `box-decoration-break: clone`
+are not parsed; `direction: rtl` does not change the over-constrained
+rules; sticky in nested scrollers and `fixed` inside a transformed
+ancestor (M19); opacity and transforms as stacking contexts (M19);
+text positions are not snapped; absolutely positioned boxes do not
+shrink-to-fit against their containing block's height; floats do not
+affect margin collapsing beyond clearance; collapsible white space at
+the end of an inline element is rendered after its end edge; a scroll
+container that is not a stacking context has its scrollbar painted
+under its positioned descendants; a double border in two colours blends
+its mitres from the bands' colours alone where the browser lets the
+background through; the browser's last bit of mitre blending. 497
+tests workspace-wide. Still stub: `net`. Next milestone: tables (M12).
