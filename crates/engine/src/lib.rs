@@ -33,8 +33,8 @@ use dom::Node;
 use layout::{DocumentLayout, Fragment, FragmentKind};
 use paint::{DisplayItem, Rgba8, Viewport, paint_fragments};
 use render::{RenderBackend as _, SoftwareBackend};
-use style::StyledDom;
 use style::computed::BorderStyle;
+use style::{CascadeContext, FontMeasure, StyledDom};
 use text::FontError;
 
 /// The document rendered when no other is loaded.
@@ -110,8 +110,12 @@ pub struct Engine {
     document: Node,
     stylesheets: Vec<css::Stylesheet>,
     /// The cascade of the current document, computed on first use and
-    /// dropped when a document loads.
-    styled: Option<StyledDom>,
+    /// dropped when a document loads, or when the viewport changes and
+    /// the document used viewport units (M10.1).
+    styled: Option<CachedStyle>,
+    /// How many cascades have run: what proves a resize without
+    /// viewport units does not.
+    style_runs: u64,
     /// The layout of the current document for one viewport width,
     /// dropped when a document loads or the width changes (M9.5).
     layout: Option<CachedLayout>,
@@ -127,6 +131,25 @@ pub struct Engine {
 struct CachedLayout {
     width: f32,
     layout: DocumentLayout,
+}
+
+struct CachedStyle {
+    /// The viewport the cascade resolved its units against.
+    viewport: (u32, u32),
+    styled: StyledDom,
+}
+
+/// The engine's fonts, lent to the cascade for `ex` and `ch`.
+struct FontMeasurer<'a>(&'a text::FontCollection);
+
+impl FontMeasure for FontMeasurer<'_> {
+    fn x_height(&self, font_size_px: f32) -> f32 {
+        self.0.x_height(font_size_px)
+    }
+
+    fn zero_advance(&self, font_size_px: f32) -> f32 {
+        self.0.zero_advance(font_size_px)
+    }
 }
 
 /// The scrollbar's geometry for the last frame (M9.2), in viewport
@@ -172,6 +195,7 @@ impl Engine {
             document: Node::document(Vec::new()),
             stylesheets: Vec::new(),
             styled: None,
+            style_runs: 0,
             layout: None,
             layout_runs: 0,
             viewport: (0, 0),
@@ -214,10 +238,26 @@ impl Engine {
 
     /// Cascades the current document and its stylesheets into a
     /// `StyledDom` (built-in UA stylesheet included automatically — see
-    /// `style::style_document`). A fresh computation for inspection;
-    /// the frame pipeline uses the cached one.
+    /// `style::style_document_in`), against the last frame's viewport
+    /// and the engine's fonts. A fresh computation for inspection; the
+    /// frame pipeline uses the cached one.
     pub fn styled_dom(&self) -> StyledDom {
-        style::style_document(&self.document, &self.stylesheets)
+        self.cascade(self.viewport)
+    }
+
+    fn cascade(&self, viewport: (u32, u32)) -> StyledDom {
+        let fonts = FontMeasurer(&self.layout_fonts);
+        let context = CascadeContext {
+            viewport_width: viewport.0 as f32,
+            viewport_height: viewport.1 as f32,
+            fonts: Some(&fonts),
+        };
+        style::style_document_in(&self.document, &self.stylesheets, &context)
+    }
+
+    /// How many cascades this session has run.
+    pub fn style_runs(&self) -> u64 {
+        self.style_runs
     }
 
     /// Lays the current document out against a `viewport_width`-wide
@@ -225,29 +265,43 @@ impl Engine {
     /// paint order, flat — a fresh computation for inspection; the
     /// frame pipeline uses [`Engine::layout`].
     pub fn fragments(&self, viewport_width: f32) -> Vec<Fragment> {
-        let styled = self.styled_dom();
+        let styled = self.cascade((viewport_width as u32, self.viewport.1));
         let boxes = layout::build_box_tree(&styled);
         layout::layout(&boxes, viewport_width, &self.layout_fonts)
     }
 
+    /// The cached cascade for the current viewport: recomputed when none
+    /// is cached, or when the viewport changed and the document's styles
+    /// depend on it (M10.1). A recomputation drops the cached layout.
     fn styled(&mut self) -> &StyledDom {
-        if self.styled.is_none() {
-            self.styled = Some(self.styled_dom());
+        let stale = self.styled.as_ref().is_none_or(|cached| {
+            cached.styled.uses_viewport_units && cached.viewport != self.viewport
+        });
+        if stale {
+            let styled = self.cascade(self.viewport);
+            self.style_runs += 1;
+            self.layout = None;
+            self.styled = Some(CachedStyle {
+                viewport: self.viewport,
+                styled,
+            });
         }
-        self.styled.as_ref().expect("just computed")
+        &self.styled.as_ref().expect("just computed").styled
     }
 
     /// The document's layout for `viewport_width`, computed once per
     /// document and width (M9.5) and reused by every frame, scroll and
     /// hit test at that width.
     pub fn layout(&mut self, viewport_width: f32) -> &DocumentLayout {
+        // A viewport change can invalidate the cascade, and with it the
+        // layout — so the cascade is checked first.
+        self.styled();
         let stale = self
             .layout
             .as_ref()
             .is_none_or(|cached| cached.width != viewport_width);
         if stale {
-            self.styled();
-            let styled = self.styled.as_ref().expect("just computed");
+            let styled = &self.styled.as_ref().expect("just computed").styled;
             let boxes = layout::build_box_tree(styled);
             let layout = layout::layout_document(&boxes, viewport_width, &self.layout_fonts);
             self.layout_runs += 1;
@@ -1002,6 +1056,74 @@ mod tests {
         );
         assert_eq!(engine.link_at(plain.x + 1.0, plain.top() + 1.0), None);
         assert_eq!(engine.link_at(1.0, 90.0), None);
+    }
+
+    #[test]
+    fn viewport_units_recascade_only_when_the_document_uses_them() {
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0 }</style><div style=\"height: 50vh; width: 25vw\"></div>",
+        );
+        // The div's size in the engine's own cached layout at the
+        // frame's width (`boxes_of` would lay out afresh at 800px).
+        fn div_size(engine: &mut Engine) -> (f32, f32) {
+            let styled = engine.styled_dom();
+            let div = styled
+                .flat
+                .element_indices()
+                .find(|&i| styled.flat.nodes[i].tag == "div")
+                .expect("the div");
+            let f = engine
+                .layout(200.0)
+                .iter()
+                .find(|f| f.node == div)
+                .expect("the div's fragment");
+            (f.w, f.h)
+        }
+        engine.frame(200, 100);
+        assert_eq!(div_size(&mut engine), (50.0, 50.0));
+        assert_eq!(engine.style_runs(), 1);
+        engine.frame(200, 200);
+        assert_eq!(engine.style_runs(), 2, "the height changed and vh was used");
+        assert_eq!(engine.layout_runs(), 2, "and the layout with it");
+        assert_eq!(div_size(&mut engine), (50.0, 100.0));
+        engine.frame(200, 200);
+        assert_eq!(
+            engine.style_runs(),
+            2,
+            "the same viewport: nothing recomputed"
+        );
+
+        engine.load_document("<style>body { margin: 0 }</style><div style=\"height: 50px\"></div>");
+        engine.frame(200, 100);
+        engine.frame(200, 300);
+        assert_eq!(
+            engine.style_runs(),
+            3,
+            "no viewport unit: a taller viewport recascades nothing"
+        );
+    }
+
+    #[test]
+    fn rem_ex_and_ch_resolve_through_the_engine_fonts() {
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>html { font-size: 20px } body { margin: 0 } \
+                    p { margin: 0; padding: 1rem 2ch 1ex 0; font-size: 16px }</style><p>x</p>",
+        );
+        engine.frame(400, 100);
+        let styled = engine.styled_dom();
+        let p = styled
+            .flat
+            .element_indices()
+            .find(|&i| styled.flat.nodes[i].tag == "p")
+            .expect("the p");
+        let padding = styled.styles[p].padding;
+        let fonts = &engine.layout_fonts;
+        use style::computed::LengthPercentage::Px;
+        assert_eq!(padding[0], Px(20.0), "1rem of the root's 20px");
+        assert_eq!(padding[1], Px(2.0 * fonts.zero_advance(16.0)));
+        assert_eq!(padding[2], Px(fonts.x_height(16.0)));
     }
 
     #[test]

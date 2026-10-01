@@ -131,6 +131,8 @@ pub struct FontStore {
     ascender_units: f32,
     descender_units: f32,
     line_gap_units: f32,
+    /// The OS/2 table's x-height, in font units, when the font gives one.
+    x_height_units: Option<f32>,
     /// ab_glyph handle for outline rasterization.
     glyph_font: ab_glyph::FontArc,
 }
@@ -226,6 +228,7 @@ impl FontStore {
             ),
         };
         let line_gap_units = line_gap_units.max(0.0);
+        let x_height_units = ttf.x_height().map(f32::from).filter(|x| *x > 0.0);
 
         // TODO(M2): honor non-zero indices for .ttc collections in ab_glyph.
         let glyph_font =
@@ -237,8 +240,44 @@ impl FontStore {
             ascender_units,
             descender_units,
             line_gap_units,
+            x_height_units,
             glyph_font,
         })
+    }
+
+    /// The x-height at `font_size_px`, the height of a lowercase `x`
+    /// above the baseline (what CSS's `ex` is): the OS/2 table's figure
+    /// when the font gives one, else the `x` glyph's own outline, else
+    /// half the font size, the fallback css-values-4 allows when nothing
+    /// better is known.
+    pub fn x_height(&self, font_size_px: f32) -> f32 {
+        if let Some(units) = self.x_height_units {
+            return units * font_size_px / self.units_per_em;
+        }
+        let id = self.glyph_font.glyph_id('x');
+        if id.0 != 0
+            && let Some(outline) = self
+                .glyph_font
+                .outline_glyph(id.with_scale(font_size_px.max(0.0)))
+        {
+            // Outline coordinates grow downward, the baseline at zero.
+            let top = -outline.px_bounds().min.y;
+            if top.is_finite() && top > 0.0 {
+                return top;
+            }
+        }
+        font_size_px * 0.5
+    }
+
+    /// The advance of the digit zero at `font_size_px` (what CSS's `ch`
+    /// is); half the font size when the font has no zero.
+    pub fn zero_advance(&self, font_size_px: f32) -> f32 {
+        let advance = self.measure("0", font_size_px);
+        if advance > 0.0 {
+            advance
+        } else {
+            font_size_px * 0.5
+        }
     }
 
     /// The ab_glyph handle, for glyph rasterization.
@@ -563,6 +602,18 @@ impl FontCollection {
                     .measure(&text[range.clone()], font_size_px)
             })
             .sum()
+    }
+
+    /// The primary font's x-height at `font_size_px` (see
+    /// [`FontStore::x_height`]).
+    pub fn x_height(&self, font_size_px: f32) -> f32 {
+        self.primary().x_height(font_size_px)
+    }
+
+    /// The primary font's advance for the digit zero at `font_size_px`
+    /// (see [`FontStore::zero_advance`]).
+    pub fn zero_advance(&self, font_size_px: f32) -> f32 {
+        self.primary().zero_advance(font_size_px)
     }
 
     /// The line-height-relevant metrics across *every* script actually
@@ -1048,6 +1099,22 @@ mod tests {
             }
             Err(e) => panic!("a system font was found but failed to load: {e}"),
         }
+    }
+
+    #[test]
+    fn x_height_and_zero_advance_come_from_the_font() {
+        // DejaVu Sans: an x-height a little over half the em (the OS/2
+        // table says 1120 of 2048 units), and a zero as wide as `measure`
+        // says. Both scale with the size.
+        let fonts = test_fonts();
+        let ex = fonts.x_height(16.0);
+        assert!((8.0..10.4).contains(&ex), "{ex}");
+        assert_eq!(fonts.x_height(32.0), ex * 2.0);
+        assert_eq!(fonts.zero_advance(16.0), fonts.measure("0", 16.0));
+        assert!(fonts.zero_advance(16.0) > 0.0);
+        // A hostile size does not break either.
+        assert!(fonts.x_height(0.0) >= 0.0);
+        assert!(fonts.zero_advance(-1.0).is_finite());
     }
 
     #[test]

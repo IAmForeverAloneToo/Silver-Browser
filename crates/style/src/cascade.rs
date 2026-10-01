@@ -12,8 +12,18 @@
 //! * Colors: hex (`#rgb`/`#rgba`/`#rrggbb`/`#rrggbbaa`) and a small,
 //!   high-confidence named-color set — not the full CSS Color 148-name
 //!   table, and not `rgb()`/`hsl()` functions yet.
-//! * Lengths: `px` and `em` only (`%`, `rem`, `vw`/`vh`, ... land with
-//!   M10.1).
+//! * Lengths (M10.1): `px`, the absolute units (`in`, `cm`, `mm`, `q`,
+//!   `pt`, `pc`), `em`, `rem`, `ex`, `ch`, and the viewport units `vw`,
+//!   `vh`, `vmin`, `vmax`. The relative ones resolve here, against the
+//!   [`CascadeContext`] the caller gives: the viewport for the viewport
+//!   units (zero when none is given, and [`StyledDom::uses_viewport_units`]
+//!   says whether any were met, so a caller can recascade on a viewport
+//!   change only when it matters), and a [`FontMeasure`] for `ex` and
+//!   `ch` (half an em each without one, the fallbacks css-values-4
+//!   allows). Percentages for `width`, `height`, `margin` and `padding`
+//!   are kept as written: what they are percentages of is the containing
+//!   block's, which only layout knows. `font-size: <percentage>` is of the
+//!   parent's font size and resolves here.
 //! * `display`: `block` / `inline` / `none` only (M5.1's own v1 scope).
 //!
 //! What every property accepts: the CSS-wide keywords `inherit`,
@@ -28,12 +38,15 @@
 //! element: a thousand rules against ten thousand elements is ten
 //! million matches, which is the work, not ten million parses.
 
+use std::cell::Cell;
+
 use css::Token;
 use dom::Node;
 
 use crate::computed::{
-    BOTTOM, BorderStyle, Color, ComputedStyle, Direction, Display, Edges, LEFT,
-    LengthPercentageAuto, MarginEdges, Overflow, RIGHT, TOP, TextAlign, TextTransform, WhiteSpace,
+    BOTTOM, BorderStyle, Color, ComputedStyle, Direction, Display, Edges, LEFT, LengthPercentage,
+    LengthPercentageAuto, MarginEdges, Overflow, PaddingEdges, RIGHT, TOP, TextAlign,
+    TextTransform, WhiteSpace,
 };
 use crate::selector_matching::{
     FlatChild, FlatDom, Matcher, SelectorList, Specificity, parse_selector_list,
@@ -53,31 +66,76 @@ pub struct StyledDom {
     pub flat: FlatDom,
     /// Parallel to `flat.nodes` — `styles[i]` is `flat.nodes[i]`'s style.
     pub styles: Vec<ComputedStyle>,
+    /// Whether any declaration used a viewport unit (`vw`, `vh`, `vmin`,
+    /// `vmax`), so that these styles depend on the viewport the cascade
+    /// was given and must be recomputed when it changes (M10.1).
+    pub uses_viewport_units: bool,
+}
+
+/// What the font can say about itself, for the units that need it:
+/// `ex` (the x-height) and `ch` (the advance of `0`). `style` has no
+/// font of its own (the layering contract: `text` is a sibling, not a
+/// dependency), so the caller lends one through this trait; without
+/// one, both units fall back to half an em (css-values-4 §6.1.1).
+pub trait FontMeasure {
+    /// The x-height, in CSS pixels, of the font at `font_size_px`.
+    fn x_height(&self, font_size_px: f32) -> f32;
+    /// The advance, in CSS pixels, of the digit zero at `font_size_px`.
+    fn zero_advance(&self, font_size_px: f32) -> f32;
+}
+
+/// What the cascade resolves relative units against (M10.1).
+#[derive(Clone, Copy, Default)]
+pub struct CascadeContext<'a> {
+    /// The viewport's size in CSS pixels, for `vw`, `vh`, `vmin` and
+    /// `vmax`. Zero when unknown: those units then resolve to zero.
+    pub viewport_width: f32,
+    pub viewport_height: f32,
+    /// The font measures for `ex` and `ch`, or `None` for the fallbacks.
+    pub fonts: Option<&'a dyn FontMeasure>,
 }
 
 /// Resolves computed styles for every element in `document`, cascading
 /// the built-in UA stylesheet (lowest precedence) under `author_sheets`
 /// (in document order) and each element's inline `style` attribute
-/// (highest precedence short of `!important` — see [`tier`]).
+/// (highest precedence short of `!important` — see [`tier`]), with no
+/// viewport and no font (see [`CascadeContext`]): what a test or a
+/// fuzz target wants. The engine uses [`style_document_in`].
 pub fn style_document(document: &Node, author_sheets: &[css::Stylesheet]) -> StyledDom {
-    let ua = css::parse_stylesheet(UA_STYLESHEET_SRC)
-        .expect("the built-in UA stylesheet (assets/ua.css) is valid CSS");
-    style_document_with_ua(document, &ua, author_sheets)
+    style_document_in(document, author_sheets, &CascadeContext::default())
 }
 
-/// [`style_document`] with the user-agent stylesheet given rather than
-/// built in — what a test of the UA tiers needs, since `assets/ua.css`
-/// has no `!important` of its own to assert against.
+/// [`style_document`] resolving the viewport and font units against
+/// `context`.
+pub fn style_document_in(
+    document: &Node,
+    author_sheets: &[css::Stylesheet],
+    context: &CascadeContext<'_>,
+) -> StyledDom {
+    let ua = css::parse_stylesheet(UA_STYLESHEET_SRC)
+        .expect("the built-in UA stylesheet (assets/ua.css) is valid CSS");
+    style_document_with_ua(document, &ua, author_sheets, context)
+}
+
+/// [`style_document_in`] with the user-agent stylesheet given rather
+/// than built in — what a test of the UA tiers needs, since
+/// `assets/ua.css` has no `!important` of its own to assert against.
 pub(crate) fn style_document_with_ua(
     document: &Node,
     ua: &css::Stylesheet,
     author_sheets: &[css::Stylesheet],
+    context: &CascadeContext<'_>,
 ) -> StyledDom {
     let flat = FlatDom::build(document);
     let ua_rules = parse_rules(ua);
     let author_rules: Vec<Vec<ParsedRule<'_>>> = author_sheets.iter().map(parse_rules).collect();
     let mut matcher = Matcher::new(&flat);
     let mut styles = vec![ComputedStyle::default(); flat.nodes.len()];
+    let viewport_used = Cell::new(false);
+    // `rem` is the root element's font size: known once the root (the
+    // first element under the document) is styled, and the initial
+    // value for the root itself.
+    let mut root_font_size: Option<f32> = None;
     // Preorder with an explicit stack: an element's children are styled
     // together, from its own finished style, before any grandchild is
     // reached, and no depth of tree costs stack.
@@ -95,11 +153,48 @@ pub(crate) fn style_document_with_ua(
         for &child_idx in &child_element_indices {
             let applied =
                 declarations_for(&flat, &mut matcher, child_idx, &ua_rules, &author_rules);
-            styles[child_idx] = compute_style(&applied, &parent_style, flat.attr(child_idx, "dir"));
+            let resolution = Resolution {
+                rem: root_font_size.unwrap_or(ComputedStyle::default().font_size_px),
+                context,
+                viewport_used: &viewport_used,
+            };
+            styles[child_idx] = compute_style(
+                &applied,
+                &parent_style,
+                flat.attr(child_idx, "dir"),
+                &resolution,
+            );
+            if root_font_size.is_none() {
+                root_font_size = Some(styles[child_idx].font_size_px);
+            }
         }
         pending.extend(child_element_indices.into_iter().rev());
     }
-    StyledDom { flat, styles }
+    StyledDom {
+        flat,
+        styles,
+        uses_viewport_units: viewport_used.get(),
+    }
+}
+
+/// What one document's relative units resolve against, beyond the
+/// element's own font size.
+#[derive(Clone, Copy)]
+struct Resolution<'a> {
+    /// The root element's font size, for `rem`.
+    rem: f32,
+    context: &'a CascadeContext<'a>,
+    /// Set when a viewport unit is met.
+    viewport_used: &'a Cell<bool>,
+}
+
+/// The bases a length in one element's declarations resolves against:
+/// `em` is the element's own font size, except for `font-size` itself,
+/// where it is the parent's.
+#[derive(Clone, Copy)]
+struct LengthBases<'a> {
+    em: f32,
+    resolution: &'a Resolution<'a>,
 }
 
 /// A qualified rule with its selector list parsed, once, for the whole
@@ -249,6 +344,7 @@ fn compute_style(
     applied: &[Applied],
     parent: &ComputedStyle,
     dir_attr: Option<&str>,
+    resolution: &Resolution<'_>,
 ) -> ComputedStyle {
     let mut sorted: Vec<&Applied> = applied.iter().collect();
     sorted.sort_by_key(|a| (a.tier, a.specificity, a.order));
@@ -271,7 +367,12 @@ fn compute_style(
 
     // `font-size` first: every other length's `em` resolves against
     // *this* element's own font-size, which itself must already be
-    // final before those are processed.
+    // final before those are processed. Its own `em` (and `%`) is the
+    // parent's font size.
+    let parent_bases = LengthBases {
+        em: parent.font_size_px,
+        resolution,
+    };
     for a in &sorted {
         if a.decl.name != "font-size" {
             continue;
@@ -282,15 +383,23 @@ fn compute_style(
                 CssWide::Initial => ComputedStyle::default().font_size_px,
                 CssWide::Inherit | CssWide::Unset => parent.font_size_px,
             };
-        } else if let Some(px) = parse_non_negative_length_px(&a.decl.value, parent.font_size_px) {
+        } else if let Some(Token::Percentage { value }) = single_token(&a.decl.value) {
+            let px = *value as f32 / 100.0 * parent.font_size_px;
+            if px.is_finite() && px >= 0.0 {
+                style.font_size_px = px.min(MAX_LENGTH_PX);
+            }
+        } else if let Some(px) = parse_non_negative_length_px(&a.decl.value, &parent_bases) {
             style.font_size_px = px;
         }
     }
 
-    let em_basis = style.font_size_px;
+    let bases = LengthBases {
+        em: style.font_size_px,
+        resolution,
+    };
     let mut border_color_set = false;
     for a in &sorted {
-        apply_declaration(&mut style, &a.decl, em_basis, parent, &mut border_color_set);
+        apply_declaration(&mut style, &a.decl, &bases, parent, &mut border_color_set);
     }
     if !border_color_set {
         // `border-color`'s initial value is `currentcolor` (css-color-4
@@ -307,7 +416,7 @@ fn compute_style(
 fn apply_declaration(
     style: &mut ComputedStyle,
     decl: &css::Declaration,
-    em_basis: f32,
+    bases: &LengthBases<'_>,
     parent: &ComputedStyle,
     border_color_set: &mut bool,
 ) {
@@ -353,55 +462,55 @@ fn apply_declaration(
             }
         }
         "letter-spacing" => {
-            if let Some(v) = parse_spacing(&decl.value, em_basis) {
+            if let Some(v) = parse_spacing(&decl.value, bases) {
                 style.letter_spacing = v;
             }
         }
         "word-spacing" => {
-            if let Some(v) = parse_spacing(&decl.value, em_basis) {
+            if let Some(v) = parse_spacing(&decl.value, bases) {
                 style.word_spacing = v;
             }
         }
         "width" => {
-            if let Some(w) = parse_length_percentage_or_auto(&decl.value, em_basis) {
+            if let Some(w) = parse_length_percentage_or_auto(&decl.value, bases) {
                 style.width = w;
             }
         }
         "height" => {
-            // `<percentage>` deliberately isn't accepted here yet
-            // (roadmap M6.4 defers percentage heights to M10) —
-            // `parse_length_or_auto` only ever produces `Auto`/`Px`.
-            if let Some(h) = parse_length_or_auto(&decl.value, em_basis) {
+            // A percentage is kept as one (M10.1); layout resolves it
+            // against the containing block's height when that is
+            // definite, and treats it as `auto` otherwise (CSS2 §10.5).
+            if let Some(h) = parse_length_percentage_or_auto(&decl.value, bases) {
                 style.height = h;
             }
         }
         "margin" => {
-            if let Some(e) = parse_margin_shorthand(&decl.value, em_basis) {
+            if let Some(e) = parse_margin_shorthand(&decl.value, bases) {
                 style.margin = e;
             }
         }
-        "margin-top" => set_margin_edge(&mut style.margin, TOP, &decl.value, em_basis),
-        "margin-right" => set_margin_edge(&mut style.margin, RIGHT, &decl.value, em_basis),
-        "margin-bottom" => set_margin_edge(&mut style.margin, BOTTOM, &decl.value, em_basis),
-        "margin-left" => set_margin_edge(&mut style.margin, LEFT, &decl.value, em_basis),
+        "margin-top" => set_margin_edge(&mut style.margin, TOP, &decl.value, bases),
+        "margin-right" => set_margin_edge(&mut style.margin, RIGHT, &decl.value, bases),
+        "margin-bottom" => set_margin_edge(&mut style.margin, BOTTOM, &decl.value, bases),
+        "margin-left" => set_margin_edge(&mut style.margin, LEFT, &decl.value, bases),
         "padding" => {
-            if let Some(e) = parse_box_shorthand(&decl.value, em_basis) {
+            if let Some(e) = parse_padding_shorthand(&decl.value, bases) {
                 style.padding = e;
             }
         }
-        "padding-top" => set_edge(&mut style.padding, TOP, &decl.value, em_basis),
-        "padding-right" => set_edge(&mut style.padding, RIGHT, &decl.value, em_basis),
-        "padding-bottom" => set_edge(&mut style.padding, BOTTOM, &decl.value, em_basis),
-        "padding-left" => set_edge(&mut style.padding, LEFT, &decl.value, em_basis),
+        "padding-top" => set_padding_edge(&mut style.padding, TOP, &decl.value, bases),
+        "padding-right" => set_padding_edge(&mut style.padding, RIGHT, &decl.value, bases),
+        "padding-bottom" => set_padding_edge(&mut style.padding, BOTTOM, &decl.value, bases),
+        "padding-left" => set_padding_edge(&mut style.padding, LEFT, &decl.value, bases),
         "border-width" => {
-            if let Some(e) = parse_box_shorthand(&decl.value, em_basis) {
+            if let Some(e) = parse_box_shorthand(&decl.value, bases) {
                 style.border_width = e;
             }
         }
-        "border-top-width" => set_edge(&mut style.border_width, TOP, &decl.value, em_basis),
-        "border-right-width" => set_edge(&mut style.border_width, RIGHT, &decl.value, em_basis),
-        "border-bottom-width" => set_edge(&mut style.border_width, BOTTOM, &decl.value, em_basis),
-        "border-left-width" => set_edge(&mut style.border_width, LEFT, &decl.value, em_basis),
+        "border-top-width" => set_edge(&mut style.border_width, TOP, &decl.value, bases),
+        "border-right-width" => set_edge(&mut style.border_width, RIGHT, &decl.value, bases),
+        "border-bottom-width" => set_edge(&mut style.border_width, BOTTOM, &decl.value, bases),
+        "border-left-width" => set_edge(&mut style.border_width, LEFT, &decl.value, bases),
         "border-color" => {
             if let Some(c) = parse_color(&decl.value) {
                 style.border_color = c;
@@ -413,7 +522,7 @@ fn apply_declaration(
                 style.border_style = s;
             }
         }
-        "border" => apply_border_shorthand(style, &decl.value, em_basis, border_color_set),
+        "border" => apply_border_shorthand(style, &decl.value, bases, border_color_set),
         "overflow" => {
             if let Some(o) = parse_overflow(&decl.value) {
                 style.overflow = o;
@@ -423,13 +532,25 @@ fn apply_declaration(
     }
 }
 
-/// Parses and writes a single-length longhand (`padding-top`,
-/// `border-*-width`, ...); a value that fails to parse — a negative
-/// one included, which CSS2 §8.4 and §8.5.1 forbid for both — leaves
-/// that edge untouched, exactly like any other declaration this engine
-/// can't make sense of.
-fn set_edge(edges: &mut Edges, which: usize, tokens: &[Token], em_basis: f32) {
-    if let Some(v) = parse_non_negative_length_px(tokens, em_basis) {
+/// Parses and writes a single-length longhand (`border-*-width`); a
+/// value that fails to parse — a negative one included, which CSS2
+/// §8.5.1 forbids — leaves that edge untouched, exactly like any other
+/// declaration this engine can't make sense of.
+fn set_edge(edges: &mut Edges, which: usize, tokens: &[Token], bases: &LengthBases<'_>) {
+    if let Some(v) = parse_non_negative_length_px(tokens, bases) {
+        edges[which] = v;
+    }
+}
+
+/// Like [`set_edge`], for a `padding-*` longhand, which also takes a
+/// percentage (CSS2 §8.4: never negative either).
+fn set_padding_edge(
+    edges: &mut PaddingEdges,
+    which: usize,
+    tokens: &[Token],
+    bases: &LengthBases<'_>,
+) {
+    if let Some(v) = parse_non_negative_length_percentage(tokens, bases) {
         edges[which] = v;
     }
 }
@@ -538,8 +659,13 @@ fn apply_css_wide(
 
 /// Like [`set_edge`], for a `margin-*` longhand (which additionally
 /// accepts `auto`).
-fn set_margin_edge(edges: &mut MarginEdges, which: usize, tokens: &[Token], em_basis: f32) {
-    if let Some(v) = parse_length_or_auto(tokens, em_basis) {
+fn set_margin_edge(
+    edges: &mut MarginEdges,
+    which: usize,
+    tokens: &[Token],
+    bases: &LengthBases<'_>,
+) {
+    if let Some(v) = parse_length_percentage_or_auto(tokens, bases) {
         edges[which] = v;
     }
 }
@@ -557,26 +683,37 @@ fn expand_1_to_4<T: Copy>(values: &[T]) -> Option<[T; 4]> {
     }
 }
 
-/// Expands the `padding`/`border-width` box shorthand. Any value that
-/// fails to parse as a non-negative length invalidates the whole
-/// shorthand (matching real CSS: a shorthand with one bad component is
-/// dropped entirely, not partially applied).
-fn parse_box_shorthand(tokens: &[Token], em_basis_px: f32) -> Option<Edges> {
+/// Expands the `border-width` box shorthand. Any value that fails to
+/// parse as a non-negative length invalidates the whole shorthand
+/// (matching real CSS: a shorthand with one bad component is dropped
+/// entirely, not partially applied).
+fn parse_box_shorthand(tokens: &[Token], bases: &LengthBases<'_>) -> Option<Edges> {
     let groups = split_whitespace_groups(tokens);
     let lengths: Option<Vec<f32>> = groups
         .iter()
-        .map(|g| parse_non_negative_length_px(g, em_basis_px))
+        .map(|g| parse_non_negative_length_px(g, bases))
         .collect();
     expand_1_to_4(&lengths?)
 }
 
-/// Expands the `margin` box shorthand — like [`parse_box_shorthand`),
-/// but each value may also be `auto`.
-fn parse_margin_shorthand(tokens: &[Token], em_basis_px: f32) -> Option<MarginEdges> {
+/// Expands the `padding` box shorthand — like [`parse_box_shorthand`],
+/// but each value may also be a percentage.
+fn parse_padding_shorthand(tokens: &[Token], bases: &LengthBases<'_>) -> Option<PaddingEdges> {
+    let groups = split_whitespace_groups(tokens);
+    let values: Option<Vec<LengthPercentage>> = groups
+        .iter()
+        .map(|g| parse_non_negative_length_percentage(g, bases))
+        .collect();
+    expand_1_to_4(&values?)
+}
+
+/// Expands the `margin` box shorthand — like [`parse_box_shorthand`],
+/// but each value may also be a percentage or `auto`.
+fn parse_margin_shorthand(tokens: &[Token], bases: &LengthBases<'_>) -> Option<MarginEdges> {
     let groups = split_whitespace_groups(tokens);
     let values: Option<Vec<LengthPercentageAuto>> = groups
         .iter()
-        .map(|g| parse_length_or_auto(g, em_basis_px))
+        .map(|g| parse_length_percentage_or_auto(g, bases))
         .collect();
     expand_1_to_4(&values?)
 }
@@ -589,7 +726,7 @@ fn parse_margin_shorthand(tokens: &[Token], em_basis_px: f32) -> Option<MarginEd
 fn apply_border_shorthand(
     style: &mut ComputedStyle,
     tokens: &[Token],
-    em_basis_px: f32,
+    bases: &LengthBases<'_>,
     border_color_set: &mut bool,
 ) {
     let mut width = None;
@@ -601,7 +738,7 @@ fn apply_border_shorthand(
     }
     for g in groups {
         if width.is_none()
-            && let Some(w) = parse_non_negative_length_px(&g, em_basis_px)
+            && let Some(w) = parse_non_negative_length_px(&g, bases)
         {
             width = Some(w);
         } else if border_style.is_none()
@@ -653,17 +790,52 @@ fn split_whitespace_groups(tokens: &[Token]) -> Vec<Vec<Token>> {
 /// well past it; Blink's layout unit stops at the same figure.
 pub const MAX_LENGTH_PX: f32 = 33_554_431.0;
 
-/// A length in CSS pixels: `px` as-is, `em` relative to `em_basis_px`,
-/// or the unitless `0` (the one number CSS allows without a unit for
-/// length properties). Anything else (a nonzero unitless number, `%`,
-/// `rem`, ...) isn't v1 scope yet. A non-finite value is rejected and a
-/// finite one clamped to [`MAX_LENGTH_PX`] in magnitude — see the module
-/// doc for what an infinity does to layout otherwise.
-fn parse_length_px(tokens: &[Token], em_basis_px: f32) -> Option<f32> {
+/// A length in CSS pixels (css-values-4 §6): the absolute units, the
+/// font-relative `em`, `rem`, `ex` and `ch`, the viewport-percentage
+/// `vw`, `vh`, `vmin` and `vmax`, or the unitless `0` (the one number
+/// CSS allows without a unit for length properties). Anything else (a
+/// nonzero unitless number, a percentage, an unknown unit) is not a
+/// length. A non-finite value is rejected and a finite one clamped to
+/// [`MAX_LENGTH_PX`] in magnitude — see the module doc for what an
+/// infinity does to layout otherwise.
+fn parse_length_px(tokens: &[Token], bases: &LengthBases<'_>) -> Option<f32> {
     let px = match single_token(tokens)? {
-        Token::Dimension { value, unit } if unit.eq_ignore_ascii_case("px") => *value as f32,
-        Token::Dimension { value, unit } if unit.eq_ignore_ascii_case("em") => {
-            *value as f32 * em_basis_px
+        Token::Dimension { value, unit } => {
+            let value = *value as f32;
+            let r = bases.resolution;
+            let (vw, vh) = (r.context.viewport_width, r.context.viewport_height);
+            let viewport = |fraction: f32| {
+                r.viewport_used.set(true);
+                fraction * value / 100.0
+            };
+            match unit.to_ascii_lowercase().as_str() {
+                "px" => value,
+                "in" => value * 96.0,
+                "cm" => value * 96.0 / 2.54,
+                "mm" => value * 96.0 / 25.4,
+                "q" => value * 96.0 / 25.4 / 4.0,
+                "pt" => value * 96.0 / 72.0,
+                "pc" => value * 16.0,
+                "em" => value * bases.em,
+                "rem" => value * r.rem,
+                "ex" => {
+                    value
+                        * r.context
+                            .fonts
+                            .map_or(bases.em * 0.5, |f| f.x_height(bases.em))
+                }
+                "ch" => {
+                    value
+                        * r.context
+                            .fonts
+                            .map_or(bases.em * 0.5, |f| f.zero_advance(bases.em))
+                }
+                "vw" => viewport(vw),
+                "vh" => viewport(vh),
+                "vmin" => viewport(vw.min(vh)),
+                "vmax" => viewport(vw.max(vh)),
+                _ => return None,
+            }
         }
         Token::Number { value, .. } if *value == 0.0 => 0.0,
         _ => return None,
@@ -677,34 +849,37 @@ fn parse_length_px(tokens: &[Token], em_basis_px: f32) -> Option<f32> {
 /// [`parse_length_px`] for the properties that take no negative value
 /// (`font-size`, `padding`, `border-width`): a negative one is an
 /// invalid declaration, ignored.
-fn parse_non_negative_length_px(tokens: &[Token], em_basis_px: f32) -> Option<f32> {
-    parse_length_px(tokens, em_basis_px).filter(|v| *v >= 0.0)
+fn parse_non_negative_length_px(tokens: &[Token], bases: &LengthBases<'_>) -> Option<f32> {
+    parse_length_px(tokens, bases).filter(|v| *v >= 0.0)
 }
 
-/// `auto`, or a length (`px`/`em`/unitless `0`) — used for `margin` and
-/// `height`. Neither accepts `<percentage>` yet (deferred to M10 —
-/// margin-percentage alongside percentage heights, kept to a matching
-/// scope rather than implementing one and not the other).
-fn parse_length_or_auto(tokens: &[Token], em_basis_px: f32) -> Option<LengthPercentageAuto> {
-    if is_auto(tokens) {
-        return Some(LengthPercentageAuto::Auto);
+/// A non-negative length or percentage, kept as written — `padding`.
+fn parse_non_negative_length_percentage(
+    tokens: &[Token],
+    bases: &LengthBases<'_>,
+) -> Option<LengthPercentage> {
+    if let Some(Token::Percentage { value }) = single_token(tokens) {
+        let p = *value as f32;
+        return (p.is_finite() && p >= 0.0).then_some(LengthPercentage::Percent(p));
     }
-    parse_length_px(tokens, em_basis_px).map(LengthPercentageAuto::Px)
+    parse_non_negative_length_px(tokens, bases).map(LengthPercentage::Px)
 }
 
-/// `auto`, a length, or a percentage — used for `width` (M6.2's explicit
-/// scope: "auto, fixed px, percentage of containing block").
+/// `auto`, a length, or a percentage — `width`, `height` and the
+/// margins (M10.1). A percentage is kept as written for layout to
+/// resolve against the containing block.
 fn parse_length_percentage_or_auto(
     tokens: &[Token],
-    em_basis_px: f32,
+    bases: &LengthBases<'_>,
 ) -> Option<LengthPercentageAuto> {
     if is_auto(tokens) {
         return Some(LengthPercentageAuto::Auto);
     }
     if let Some(Token::Percentage { value }) = single_token(tokens) {
-        return Some(LengthPercentageAuto::Percent(*value as f32));
+        let p = *value as f32;
+        return p.is_finite().then_some(LengthPercentageAuto::Percent(p));
     }
-    parse_length_px(tokens, em_basis_px).map(LengthPercentageAuto::Px)
+    parse_length_px(tokens, bases).map(LengthPercentageAuto::Px)
 }
 
 fn is_auto(tokens: &[Token]) -> bool {
@@ -764,11 +939,11 @@ fn parse_white_space(tokens: &[Token]) -> Option<WhiteSpace> {
 
 /// `normal` (resets to `0`) or a length — `letter-spacing`/`word-spacing`
 /// share this grammar.
-fn parse_spacing(tokens: &[Token], em_basis_px: f32) -> Option<f32> {
+fn parse_spacing(tokens: &[Token], bases: &LengthBases<'_>) -> Option<f32> {
     if is_normal(tokens) {
         return Some(0.0);
     }
-    parse_length_px(tokens, em_basis_px)
+    parse_length_px(tokens, bases)
 }
 
 fn is_normal(tokens: &[Token]) -> bool {
@@ -928,10 +1103,30 @@ fn named_color(name: &str) -> Option<Color> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::selector_matching::matches_selector;
+    use crate::selector_matching::{matches_selector, matches_selector_list};
 
     fn sheet(src: &str) -> css::Stylesheet {
         css::parse_stylesheet(src).expect("test stylesheets are valid")
+    }
+
+    /// Runs `f` with the length bases of a 16px element whose root is
+    /// 16px, in an 800 by 600 viewport, with no font.
+    fn with_bases<R>(f: impl FnOnce(&LengthBases<'_>) -> R) -> R {
+        let context = CascadeContext {
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            fonts: None,
+        };
+        let viewport_used = Cell::new(false);
+        let resolution = Resolution {
+            rem: 16.0,
+            context: &context,
+            viewport_used: &viewport_used,
+        };
+        f(&LengthBases {
+            em: 16.0,
+            resolution: &resolution,
+        })
     }
 
     /// Styles `html` and returns the computed style of the element found
@@ -1008,7 +1203,7 @@ mod tests {
             "p { color: blue !important; display: inline !important; }",
         )];
         let document = html::parse_document("<p>x</p>").expect("html parsing never fails");
-        let styled = style_document_with_ua(&document, &ua, &author);
+        let styled = style_document_with_ua(&document, &ua, &author, &CascadeContext::default());
         let p = styled
             .flat
             .element_indices()
@@ -1069,7 +1264,11 @@ mod tests {
         )];
         let s = style_of("<p>x</p>", &sheets, "p");
         assert_eq!(s.font_size_px, 16.0, "an infinite font-size is ignored");
-        assert_eq!(s.padding, [0.0; 4], "negative padding is ignored");
+        assert_eq!(
+            s.padding,
+            [LengthPercentage::Px(0.0); 4],
+            "negative padding is ignored"
+        );
         assert_eq!(s.border_width, [0.0; 4], "negative border-width is ignored");
         assert_eq!(s.width, LengthPercentageAuto::Px(MAX_LENGTH_PX));
         assert_eq!(
@@ -1132,23 +1331,23 @@ mod tests {
         // additionally allows `auto` per value, is tested separately
         // below).
         assert_eq!(
-            parse_box_shorthand(&css::tokenize("10px"), 16.0),
+            with_bases(|b| parse_box_shorthand(&css::tokenize("10px"), b)),
             Some([10.0; 4])
         );
         assert_eq!(
-            parse_box_shorthand(&css::tokenize("10px 20px"), 16.0),
+            with_bases(|b| parse_box_shorthand(&css::tokenize("10px 20px"), b)),
             Some([10.0, 20.0, 10.0, 20.0])
         );
         assert_eq!(
-            parse_box_shorthand(&css::tokenize("10px 20px 30px"), 16.0),
+            with_bases(|b| parse_box_shorthand(&css::tokenize("10px 20px 30px"), b)),
             Some([10.0, 20.0, 30.0, 20.0])
         );
         assert_eq!(
-            parse_box_shorthand(&css::tokenize("10px 20px 30px 40px"), 16.0),
+            with_bases(|b| parse_box_shorthand(&css::tokenize("10px 20px 30px 40px"), b)),
             Some([10.0, 20.0, 30.0, 40.0])
         );
         assert_eq!(
-            parse_box_shorthand(&css::tokenize("10px 20px 30px 40px 50px"), 16.0),
+            with_bases(|b| parse_box_shorthand(&css::tokenize("10px 20px 30px 40px 50px"), b)),
             None
         );
     }
@@ -1157,11 +1356,11 @@ mod tests {
     fn margin_shorthand_expands_and_allows_auto_per_value() {
         use LengthPercentageAuto::{Auto, Px};
         assert_eq!(
-            parse_margin_shorthand(&css::tokenize("10px auto"), 16.0),
+            with_bases(|b| parse_margin_shorthand(&css::tokenize("10px auto"), b)),
             Some([Px(10.0), Auto, Px(10.0), Auto])
         );
         assert_eq!(
-            parse_margin_shorthand(&css::tokenize("0 auto"), 16.0),
+            with_bases(|b| parse_margin_shorthand(&css::tokenize("0 auto"), b)),
             Some([Px(0.0), Auto, Px(0.0), Auto])
         );
     }
@@ -1318,20 +1517,176 @@ mod tests {
     }
 
     #[test]
-    fn height_accepts_auto_and_px_but_not_percent_yet() {
+    fn height_margins_and_padding_keep_percentages_for_layout() {
         let sheets = [sheet("p { height: 300px; }")];
         assert_eq!(
             style_of("<p>x</p>", &sheets, "p").height,
             LengthPercentageAuto::Px(300.0)
         );
-
-        // A `%` height is unrecognized *value* syntax for now (M10 adds
-        // it) — ignored, per the forward-compatibility pattern, not an
-        // error; the property keeps its initial value.
-        let sheets = [sheet("p { height: 50%; }")];
+        // A percentage is kept as written (M10.1): only layout knows the
+        // containing block it is a percentage of.
+        let sheets = [sheet(
+            "p { height: 50%; margin: 5% auto; padding: 10% 2px; }",
+        )];
+        let s = style_of("<p>x</p>", &sheets, "p");
+        assert_eq!(s.height, LengthPercentageAuto::Percent(50.0));
         assert_eq!(
-            style_of("<p>x</p>", &sheets, "p").height,
-            LengthPercentageAuto::Auto
+            s.margin,
+            [
+                LengthPercentageAuto::Percent(5.0),
+                LengthPercentageAuto::Auto,
+                LengthPercentageAuto::Percent(5.0),
+                LengthPercentageAuto::Auto,
+            ]
+        );
+        assert_eq!(
+            s.padding,
+            [
+                LengthPercentage::Percent(10.0),
+                LengthPercentage::Px(2.0),
+                LengthPercentage::Percent(10.0),
+                LengthPercentage::Px(2.0),
+            ]
+        );
+        // Padding takes no negative percentage; a margin may be negative.
+        let sheets = [sheet("p { padding: -5%; margin: -5%; }")];
+        let s = style_of("<p>x</p>", &sheets, "p");
+        assert_eq!(s.padding, [LengthPercentage::Px(0.0); 4]);
+        assert_eq!(s.margin[TOP], LengthPercentageAuto::Percent(-5.0));
+    }
+
+    /// A font that answers `ex` with 0.4em and `ch` with 0.6em, so a
+    /// test can tell the trait's answer from the fallbacks.
+    struct StubFont;
+
+    impl FontMeasure for StubFont {
+        fn x_height(&self, font_size_px: f32) -> f32 {
+            font_size_px * 0.4
+        }
+
+        fn zero_advance(&self, font_size_px: f32) -> f32 {
+            font_size_px * 0.6
+        }
+    }
+
+    /// [`style_of`] with a cascade context.
+    fn style_of_in(
+        html: &str,
+        sheets: &[css::Stylesheet],
+        selector: &str,
+        context: &CascadeContext<'_>,
+    ) -> ComputedStyle {
+        let document = html::parse_document(html).expect("html parsing never fails");
+        let styled = style_document_in(&document, sheets, context);
+        let list = parse_selector_list(&css::tokenize(selector)).expect("valid selector");
+        styled
+            .flat
+            .element_indices()
+            .find(|&i| matches_selector_list(&styled.flat, i, &list))
+            .map(|i| styled.styles[i].clone())
+            .expect("the selector matches an element")
+    }
+
+    #[test]
+    fn relative_units_resolve_against_the_context() {
+        let context = CascadeContext {
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            fonts: Some(&StubFont),
+        };
+        let sheets = [sheet(
+            "html { font-size: 20px }
+             p { font-size: 10px; margin: 2rem 1ex 1ch 1em; padding: 10vw 10vh 10vmin 10vmax;
+                 width: 1in; letter-spacing: 12pt; }",
+        )];
+        let s = style_of_in("<p>x</p>", &sheets, "p", &context);
+        use LengthPercentageAuto::Px;
+        assert_eq!(
+            s.margin,
+            [Px(40.0), Px(4.0), Px(6.0), Px(10.0)],
+            "rem of the root's 20px, ex and ch from the font, em of its own 10px"
+        );
+        assert_eq!(
+            s.padding,
+            [
+                LengthPercentage::Px(80.0),
+                LengthPercentage::Px(60.0),
+                LengthPercentage::Px(60.0),
+                LengthPercentage::Px(80.0),
+            ],
+            "vw, vh, vmin, vmax of 800 by 600"
+        );
+        assert_eq!(s.width, Px(96.0), "an inch is 96px");
+        assert_eq!(s.letter_spacing, 16.0, "12pt is 16px");
+        for (value, px) in [
+            ("2.54cm", 96.0),
+            ("25.4mm", 96.0),
+            ("40q", 96.0 / 2.54),
+            ("1pc", 16.0),
+        ] {
+            let sheets = [sheet(&format!("p {{ width: {value} }}"))];
+            let w = style_of_in("<p>x</p>", &sheets, "p", &context).width;
+            let LengthPercentageAuto::Px(got) = w else {
+                panic!("{value} is a length");
+            };
+            assert!((got - px).abs() < 1e-3, "{value}: {got} != {px}");
+        }
+    }
+
+    #[test]
+    fn rem_is_the_root_font_size_and_the_initial_value_on_the_root() {
+        let sheets = [sheet(
+            "html { font-size: 2rem } body { margin: 1rem } p { font-size: 150% }",
+        )];
+        assert_eq!(
+            style_of("<p>x</p>", &sheets, "html").font_size_px,
+            32.0,
+            "on the root, rem is the initial 16px"
+        );
+        assert_eq!(
+            style_of("<p>x</p>", &sheets, "body").margin[TOP],
+            LengthPercentageAuto::Px(32.0)
+        );
+        assert_eq!(
+            style_of("<p>x</p>", &sheets, "p").font_size_px,
+            24.0,
+            "a percentage font size is of the parent's (the body's UA 16px)"
+        );
+    }
+
+    #[test]
+    fn viewport_and_font_units_fall_back_without_a_context_and_say_when_used() {
+        // No context: the viewport is zero and the font units are half
+        // an em (css-values-4 §6.1.1's fallbacks).
+        let sheets = [sheet("p { width: 10vw; margin: 1ex 1ch 0 0 }")];
+        let document = html::parse_document("<p>x</p>").expect("parses");
+        let styled = style_document(&document, &sheets);
+        assert!(styled.uses_viewport_units);
+        let p = styled
+            .flat
+            .element_indices()
+            .find(|&i| styled.flat.nodes[i].tag == "p")
+            .expect("the p");
+        assert_eq!(styled.styles[p].width, LengthPercentageAuto::Px(0.0));
+        assert_eq!(styled.styles[p].margin[TOP], LengthPercentageAuto::Px(8.0));
+        assert_eq!(
+            styled.styles[p].margin[RIGHT],
+            LengthPercentageAuto::Px(8.0)
+        );
+        // A document without viewport units says so, so a resize need
+        // not recascade it.
+        let sheets = [sheet("p { width: 10em; margin: 1rem }")];
+        let styled = style_document(&document, &sheets);
+        assert!(!styled.uses_viewport_units);
+        // A unit nobody knows is not a length; an infinite one is
+        // rejected even through a viewport unit.
+        let sheets = [sheet("p { width: 10furlong; margin-top: 1e39vw }")];
+        let s = style_of("<p>x</p>", &sheets, "p");
+        assert_eq!(s.width, LengthPercentageAuto::Auto);
+        assert_eq!(
+            s.margin[TOP],
+            LengthPercentageAuto::Px(16.0),
+            "the UA sheet's margin stands"
         );
     }
 
@@ -1471,9 +1826,18 @@ mod tests {
 
     #[test]
     fn zero_length_needs_no_unit_but_nonzero_does() {
-        assert_eq!(parse_length_px(&css::tokenize("0"), 16.0), Some(0.0));
-        assert_eq!(parse_length_px(&css::tokenize("5"), 16.0), None);
-        assert_eq!(parse_length_px(&css::tokenize("5px"), 16.0), Some(5.0));
+        assert_eq!(
+            with_bases(|b| parse_length_px(&css::tokenize("0"), b)),
+            Some(0.0)
+        );
+        assert_eq!(
+            with_bases(|b| parse_length_px(&css::tokenize("5"), b)),
+            None
+        );
+        assert_eq!(
+            with_bases(|b| parse_length_px(&css::tokenize("5px"), b)),
+            Some(5.0)
+        );
     }
 
     #[test]

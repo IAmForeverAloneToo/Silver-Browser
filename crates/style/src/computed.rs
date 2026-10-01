@@ -186,6 +186,28 @@ impl LengthPercentageAuto {
     }
 }
 
+/// A `<length-percentage>` (css-values-4 §6.3), kept as written until
+/// layout resolves the percentage against the containing block (M10.1):
+/// `padding` and the min and max sizes take this.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LengthPercentage {
+    /// An absolute length, in CSS pixels.
+    Px(f32),
+    /// A percentage, as written (`50%` is `Percent(50.0)`).
+    Percent(f32),
+}
+
+impl LengthPercentage {
+    /// Resolves against `basis`, the containing-block dimension the
+    /// property's percentage refers to.
+    pub fn resolve(&self, basis: f32) -> f32 {
+        match self {
+            LengthPercentage::Px(v) => *v,
+            LengthPercentage::Percent(p) => basis * p / 100.0,
+        }
+    }
+}
+
 /// The box-model edges, one value per side, in CSS's `top, right,
 /// bottom, left` order (matches `margin`/`padding`/`border-width`
 /// shorthand order, so parsing and storage share one shape).
@@ -193,6 +215,10 @@ pub type Edges = [f32; 4];
 
 /// Like [`Edges`], but for `margin`, whose values can be `auto`.
 pub type MarginEdges = [LengthPercentageAuto; 4];
+
+/// Like [`Edges`], but for `padding`, whose values can be percentages
+/// (of the containing block's width, every side; CSS2 §8.4).
+pub type PaddingEdges = [LengthPercentage; 4];
 
 /// Index into an [`Edges`] array for the top edge (the rest follow the
 /// same clockwise order: right, bottom, left).
@@ -262,8 +288,10 @@ pub struct ComputedStyle {
     /// `padding`/`border-width`, `margin` accepts `auto` (M6.3's
     /// auto-centering).
     pub margin: MarginEdges,
-    /// `padding-{top,right,bottom,left}`, CSS pixels — not inherited.
-    pub padding: Edges,
+    /// `padding-{top,right,bottom,left}` — not inherited. A percentage
+    /// resolves against the containing block's *width*, for the vertical
+    /// sides too (CSS2 §8.4), which only layout knows.
+    pub padding: PaddingEdges,
     /// `border-{top,right,bottom,left}-width`, CSS pixels — not
     /// inherited. Per `border_style` below, a `none` border always
     /// paints as zero-width regardless of this value (CSS2 §8.5.3) —
@@ -300,7 +328,7 @@ impl Default for ComputedStyle {
             width: LengthPercentageAuto::Auto,
             height: LengthPercentageAuto::Auto,
             margin: [LengthPercentageAuto::Px(0.0); 4], // margin's initial value is `0`, not `auto`
-            padding: [0.0; 4],
+            padding: [LengthPercentage::Px(0.0); 4],
             border_width: [0.0; 4],
             border_color: Color::BLACK, // corrected to `color` post-cascade
             border_style: BorderStyle::None,
@@ -379,6 +407,12 @@ mod tests {
         // parent's — a block parent's child doesn't become block-by-default.
         assert_eq!(child.background_color, Color::TRANSPARENT);
         assert_eq!(child.display, Display::Inline);
+    }
+
+    #[test]
+    fn length_percentage_resolves_each_variant() {
+        assert_eq!(LengthPercentage::Px(10.0).resolve(200.0), 10.0);
+        assert_eq!(LengthPercentage::Percent(25.0).resolve(200.0), 50.0);
     }
 
     #[test]

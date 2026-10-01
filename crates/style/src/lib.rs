@@ -53,5 +53,5 @@ pub use selector_matching::{
     FlatDom, matches_selector, matches_selector_list, parse_selector_list,
 };
 
-pub use cascade::{StyledDom, style_document};
+pub use cascade::{CascadeContext, FontMeasure, StyledDom, style_document, style_document_in};
 pub use computed::ComputedStyle;

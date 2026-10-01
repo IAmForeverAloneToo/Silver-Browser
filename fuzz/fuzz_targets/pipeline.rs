@@ -38,9 +38,14 @@ fuzz_target!(|data: &[u8]| {
     if let Ok(sheet) = css::parse_stylesheet(s) {
         sheets.push(sheet);
     }
-    let styled = style::style_document(&doc, &sheets);
-    let boxes = layout::build_box_tree(&styled);
     for width in [0.0f32, 1.0, 97.0, 800.0] {
+        let context = style::CascadeContext {
+            viewport_width: width,
+            viewport_height: 64.0,
+            fonts: None,
+        };
+        let styled = style::style_document_in(&doc, &sheets, &context);
+        let boxes = layout::build_box_tree(&styled);
         let document = layout::layout_document(&boxes, width, fonts());
         for scroll_y in [0.0f32, 30.0, document.height] {
             let viewport = paint::Viewport {

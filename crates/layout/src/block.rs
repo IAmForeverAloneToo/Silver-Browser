@@ -366,12 +366,14 @@ pub(crate) struct BlockLayout {
 /// content lays out the same way regardless of what's around it).
 pub(crate) fn layout_block(b: &LayoutBox, cb_width: f32, fonts: &FontCollection) -> BlockLayout {
     let border = effective_border_width(&b.style);
-    let padding = b.style.padding;
+    // Padding and vertical margins resolve a percentage against the
+    // containing block's *width* (CSS2 §8.3, §8.4).
+    let padding = b.style.padding.map(|p| p.resolve(cb_width));
     let has_top_sep = border[TOP] > 0.0 || padding[TOP] > 0.0;
     let has_bottom_sep = border[BOTTOM] > 0.0 || padding[BOTTOM] > 0.0;
     let height_is_auto = b.style.height.is_auto();
-    let own_top = AdjoiningMargins::of(b.style.margin[TOP].resolve(0.0, 0.0));
-    let own_bottom = AdjoiningMargins::of(b.style.margin[BOTTOM].resolve(0.0, 0.0));
+    let own_top = AdjoiningMargins::of(b.style.margin[TOP].resolve(cb_width, 0.0));
+    let own_bottom = AdjoiningMargins::of(b.style.margin[BOTTOM].resolve(cb_width, 0.0));
 
     let non_content_width = border[LEFT] + border[RIGHT] + padding[LEFT] + padding[RIGHT];
     // margin-right is fully resolved here but never read again — see
@@ -688,6 +690,30 @@ mod tests {
         assert_eq!(frags.len(), 1);
         let f = &frags[0];
         assert_eq!((f.x, f.y, f.w, f.h), (0.0, 0.0, VIEWPORT, 0.0));
+    }
+
+    #[test]
+    fn padding_and_vertical_margin_percentages_use_the_containing_block_width() {
+        // CSS2 §8.3 and §8.4: every margin and padding percentage, the
+        // vertical ones included, is of the containing block's width —
+        // here 200px, so 10% is 20px on all four sides.
+        let root = Element::new("div").push(Element::new("p").text("x"));
+        let frags = fragments_of(
+            root,
+            "div { width: 200px; margin: 0; } p { margin: 10% 0 5% 0; padding: 10%; }",
+        );
+        let boxes = box_fragments(&frags);
+        let (div, p) = (boxes[0], boxes[1]);
+        assert_eq!(div.y, 20.0, "p's 10% top margin escapes through the div");
+        assert_eq!((p.x, p.y, p.w), (0.0, 20.0, 200.0));
+        let text = frags
+            .iter()
+            .find(|f| matches!(f.kind, FragmentKind::Text(_)))
+            .expect("the text");
+        assert_eq!(text.x, 20.0, "20px of left padding");
+        assert_eq!(text.top(), 40.0, "20px of top padding under the margin");
+        let m = test_fonts().primary().metrics(16.0);
+        assert_eq!(p.h, 20.0 + m.line_height() + 20.0);
     }
 
     #[test]
