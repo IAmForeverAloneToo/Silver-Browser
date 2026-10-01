@@ -336,7 +336,38 @@ roots' heights. (4) Clearance, and the dodge. (5) Relative positioning.
 position, §10.3.7 and §10.6.4, the fixed layer. (7) Sticky. (8) Stacking
 contexts and `z-index` in the walk. (9) Inline box fragments and their
 decorations. (10) The two pixel rules. (11) The reference pages, and
-whatever they find. (12) The documents. Done in that order on
-2026-10-01, a commit each; step 11 found the float that waited for the
-context's end, the border widths and the mitre's coverage, which steps
-3 and 10's paragraphs above now state as the code has them.
+whatever they find. (12) The documents. All twelve landed on
+2026-10-01, one commit each.
+
+## 4. What the code taught
+
+Seven things this note did not foresee, each corrected above where it
+stands. A float met while the margins above it still collapse: the
+note had it placed "after the margins resolved so far", and the code
+had it wait for the first content, which left a float before a box
+with no content, or inside a box with a height and nothing else, at
+the context's end — three reference pages showed their floats below
+everything; the margins above a box that is not self-collapsing end at
+its top, and the float is placed level with it. The border width is a
+used value: the pixel rule as written snapped a border's edges and
+would have made a 5.5px border six pixels, where the reference browser
+rounds the width down to five and lays the box out that much smaller,
+so the rounding is in `used_border_width`, which layout reads. The
+mitre: "anti-aliased, as a browser draws it" turned out to mean the
+exact area each side covers of the pixel, blended with nothing behind
+— tiny-skia's supersampling put five eighths where the browser has
+one half, and two polygons each anti-aliased let the background
+through — so the first run of sides takes its corners whole, the
+later ones are cut, and `render` fills the polygon by signed area;
+the browser's last bit of blending stays a unit or two away, and its
+double borders in two colours let the background through after all,
+both said in the acceptance paragraph. The unbreakable piece: an
+inline element's start edge glues to its first word, so a link at the
+end of a line would have overflowed where the browser wraps it, and
+the line breaker now moves such a piece whole, which `a<b>b</b>` had
+always wanted. Sticky's containing block is the parent's padding box
+and the border box is what is kept inside it, not the content box and
+the margin box. An inline element is hit over its border box, like a
+block. And a scroll container that is not a stacking context paints
+its scrollbar at the end of the inline pass, under positioned content
+inside it, which the walk's passes made the place for it.
