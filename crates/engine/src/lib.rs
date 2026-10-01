@@ -1624,6 +1624,67 @@ mod tests {
     }
 
     #[test]
+    fn a_sticky_box_keeps_its_inset_from_its_scrollport_within_its_container() {
+        // A 300px container holding a red 20px sticky header with
+        // `top: 0`, then a tall div. Unscrolled, the header is at the
+        // top; scrolled by 100 it is held at the viewport's top;
+        // scrolled by 290 the container's bottom is at 10 and holds the
+        // header 10px up, half gone. Painting and hit testing agree at
+        // every step.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0 }
+                    .c { height: 300px }
+                    .s { position: sticky; top: 0; height: 20px; background-color: #ff0000 }
+                    .tall { height: 1000px }</style>\
+             <div class=c><div class=s id=s></div></div><div class=tall></div>",
+        );
+        let red = [0xff, 0x00, 0x00, 0xff];
+        let white = [0xff, 0xff, 0xff, 0xff];
+        let pixels = engine.frame(200, 100);
+        let s = node_by_id(&engine, "s");
+        assert_eq!(px(&pixels, 200, 10, 10), red);
+        assert_eq!(engine.hit_test(10.0, 10.0), Some(s));
+        engine.set_scroll(100.0);
+        let pixels = engine.frame(200, 100);
+        assert_eq!(px(&pixels, 200, 10, 10), red, "held at the top");
+        assert_eq!(px(&pixels, 200, 10, 30), white);
+        assert_eq!(engine.hit_test(10.0, 10.0), Some(s));
+        engine.set_scroll(290.0);
+        let pixels = engine.frame(200, 100);
+        assert_eq!(
+            px(&pixels, 200, 10, 5),
+            red,
+            "held by the container's bottom"
+        );
+        assert_eq!(px(&pixels, 200, 10, 15), white);
+        assert_eq!(engine.hit_test(10.0, 5.0), Some(s));
+        assert_ne!(engine.hit_test(10.0, 15.0), Some(s));
+        // Inside a scroll container, the container's padding box is the
+        // scrollport: the header stays at its top as its content
+        // scrolls. The tall div starts 40px below the header so that,
+        // scrolled by 30, the point tested is over the header alone:
+        // a positioned box's place above the in-flow content that
+        // follows it in tree order is step 8's.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0 }
+                    .o { overflow: auto; height: 60px }
+                    .s { position: sticky; top: 0; height: 20px; background-color: #ff0000 }
+                    .t { height: 200px; margin-top: 40px }</style>\
+             <div class=o id=o><div class=s id=s></div><div class=t></div></div>",
+        );
+        engine.frame(200, 100);
+        let (o, s) = (node_by_id(&engine, "o"), node_by_id(&engine, "s"));
+        engine.set_element_scroll(o, 30.0);
+        let pixels = engine.frame(200, 100);
+        assert_eq!(px(&pixels, 200, 10, 10), red, "held at the container's top");
+        assert_eq!(engine.hit_test(10.0, 10.0), Some(s));
+        assert_eq!(px(&pixels, 200, 10, 40), white);
+        assert_ne!(engine.hit_test(10.0, 40.0), Some(s));
+    }
+
+    #[test]
     fn a_clipping_box_is_hit_on_its_border_but_scrolls_only_from_its_padding_box() {
         // A 100px scroll container with a 10px border and 300px of
         // content: the pointer on the border is over the box, since the

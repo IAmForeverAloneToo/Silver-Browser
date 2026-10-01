@@ -441,14 +441,16 @@ pub fn paint_fragments_in(
         match step {
             Step::Box { fragment, rect } => push_box(&mut items, fragment, rect, canvas_node),
             Step::Text {
-                fragment, baseline, ..
+                fragment,
+                rect,
+                baseline,
             } => {
                 if let FragmentKind::Text(text) = &fragment.kind
                     && !text.trim().is_empty()
                 {
                     items.push(DisplayItem::Text {
                         text: text.clone(),
-                        x: fragment.x,
+                        x: rect.x,
                         y: baseline,
                         size: fragment.style.font_size_px,
                         color: to_rgba8(fragment.style.color),
@@ -552,7 +554,7 @@ fn push_box(items: &mut Vec<DisplayItem>, f: &Fragment, rect: Rect, canvas_node:
         });
     }
     if f.style.border_style.iter().any(|s| s.paints()) {
-        push_border(items, f, rect.y);
+        push_border(items, f, rect.x, rect.y);
     }
 }
 
@@ -579,8 +581,9 @@ fn darker(c: Rgba8) -> Rgba8 {
 /// and dots of the width, with equal gaps, from each side's start, drawn
 /// as plain strips without the fitting adjustment real browsers make;
 /// `inset`, `outset`, `groove` and `ridge` use the colour and its
-/// darker tone — the last four are approximations, said so here.
-fn push_border(items: &mut Vec<DisplayItem>, f: &Fragment, y: f32) {
+/// darker tone — the last four are approximations, said so here. `x`
+/// and `y` are the box's top-left in viewport coordinates.
+fn push_border(items: &mut Vec<DisplayItem>, f: &Fragment, x: f32, y: f32) {
     let widths = f.style.used_border_width();
     let uniform = f
         .style
@@ -592,10 +595,10 @@ fn push_border(items: &mut Vec<DisplayItem>, f: &Fragment, y: f32) {
             .iter()
             .all(|c| *c == f.style.border_color[TOP]);
     if uniform {
-        push_solid_strips(items, f, y, widths);
+        push_solid_strips(items, f, x, y, widths);
         return;
     }
-    let geometry = (f.x, y, f.w, f.h, widths);
+    let geometry = (x, y, f.w, f.h, widths);
     for side in [TOP, RIGHT, BOTTOM, LEFT] {
         let width = widths[side];
         if width <= 0.0 {
@@ -638,12 +641,12 @@ fn push_border(items: &mut Vec<DisplayItem>, f: &Fragment, y: f32) {
 /// The four strips of a solid border in one colour (M6.8's shape:
 /// adjacent strips overlap at the corners, which a single colour makes
 /// invisible).
-fn push_solid_strips(items: &mut Vec<DisplayItem>, f: &Fragment, y: f32, widths: [f32; 4]) {
+fn push_solid_strips(items: &mut Vec<DisplayItem>, f: &Fragment, x: f32, y: f32, widths: [f32; 4]) {
     let [top, right, bottom, left] = widths;
     let color = to_rgba8(f.style.border_color[TOP]);
     if top > 0.0 {
         items.push(DisplayItem::Rect {
-            x: f.x,
+            x,
             y,
             w: f.w,
             h: top,
@@ -652,7 +655,7 @@ fn push_solid_strips(items: &mut Vec<DisplayItem>, f: &Fragment, y: f32, widths:
     }
     if bottom > 0.0 {
         items.push(DisplayItem::Rect {
-            x: f.x,
+            x,
             y: y + f.h - bottom,
             w: f.w,
             h: bottom,
@@ -661,7 +664,7 @@ fn push_solid_strips(items: &mut Vec<DisplayItem>, f: &Fragment, y: f32, widths:
     }
     if left > 0.0 {
         items.push(DisplayItem::Rect {
-            x: f.x,
+            x,
             y,
             w: left,
             h: f.h,
@@ -670,7 +673,7 @@ fn push_solid_strips(items: &mut Vec<DisplayItem>, f: &Fragment, y: f32, widths:
     }
     if right > 0.0 {
         items.push(DisplayItem::Rect {
-            x: f.x + f.w - right,
+            x: x + f.w - right,
             y,
             w: right,
             h: f.h,
