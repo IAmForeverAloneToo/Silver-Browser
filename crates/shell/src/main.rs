@@ -1,22 +1,28 @@
 //! The shell: the only crate that talks to the OS.
 //!
 //! Owns the window, the event loop, and the present pipeline (winit +
-//! softbuffer). All rendering decisions live in `engine`; this file just
-//! pumps frames to the screen.
+//! softbuffer). All rendering decisions live in `engine`; this file
+//! pumps frames to the screen and turns input into engine calls (M9):
+//! the wheel, the keys and the scrollbar into scrolling, a click into a
+//! hit test. A scroll animates over frames, so a redraw that leaves the
+//! engine mid-animation asks for the next one.
 
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use engine::Engine;
 use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
+use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
 /// Window configuration.
 const WINDOW_WIDTH: u32 = 1280;
 const WINDOW_HEIGHT: u32 = 800;
 const WINDOW_TITLE: &str = "Silver Browser";
+/// One wheel notch, or one arrow key, scrolls this far.
+const LINE_PX: f32 = 40.0;
 
 /// The browser application: window + surface + engine session.
 ///
@@ -28,6 +34,11 @@ struct Browser {
     context: Option<softbuffer::Context<Arc<Window>>>,
     surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
     engine: Option<Engine>,
+    /// The pointer's last position, in window pixels.
+    cursor: (f32, f32),
+    /// While the scrollbar's thumb is held: how far below the thumb's
+    /// top the pointer grabbed it, so the thumb follows without jumping.
+    thumb_grab: Option<f32>,
 }
 
 impl Browser {
@@ -37,6 +48,8 @@ impl Browser {
             context: None,
             surface: None,
             engine,
+            cursor: (0.0, 0.0),
+            thumb_grab: None,
         }
     }
 
@@ -82,6 +95,80 @@ impl Browser {
                 }
             }
             Err(e) => eprintln!("buffer acquisition failed: {e}"),
+        }
+    }
+
+    /// The window's height in pixels, for page-sized scrolls.
+    fn viewport_height(&self) -> f32 {
+        self.window
+            .as_ref()
+            .map_or(WINDOW_HEIGHT as f32, |w| w.inner_size().height as f32)
+    }
+
+    /// A page is the viewport less one line, so a line of context stays.
+    fn page_px(&self) -> f32 {
+        (self.viewport_height() - LINE_PX).max(LINE_PX)
+    }
+
+    /// A key press that scrolls (M9.2). Returns whether it did.
+    fn key_scroll(&mut self, key: &Key) -> bool {
+        let page = self.page_px();
+        let Some(engine) = self.engine.as_mut() else {
+            return false;
+        };
+        match key {
+            Key::Named(NamedKey::ArrowDown) => engine.scroll_by(LINE_PX),
+            Key::Named(NamedKey::ArrowUp) => engine.scroll_by(-LINE_PX),
+            Key::Named(NamedKey::PageDown | NamedKey::Space) => engine.scroll_by(page),
+            Key::Named(NamedKey::PageUp) => engine.scroll_by(-page),
+            Key::Named(NamedKey::Home) => engine.scroll_to(0.0),
+            Key::Named(NamedKey::End) => engine.scroll_to(f32::INFINITY),
+            _ => return false,
+        }
+        true
+    }
+
+    /// The left button pressed at the pointer: grabs the scrollbar's
+    /// thumb, jumps a page from its track, or hit-tests the document
+    /// for a link (M9.4; following it is M15).
+    fn press(&mut self) {
+        let (x, y) = self.cursor;
+        let page = self.page_px();
+        let Some(engine) = self.engine.as_mut() else {
+            return;
+        };
+        if let Some(bar) = engine.scrollbar()
+            && bar.contains(x, y)
+        {
+            if bar.thumb_contains(x, y) {
+                self.thumb_grab = Some(y - bar.thumb_y);
+            } else if y < bar.thumb_y {
+                engine.scroll_by(-page);
+            } else {
+                engine.scroll_by(page);
+            }
+            return;
+        }
+        if let Some(href) = engine.link_at(x, y) {
+            println!("link: {href}");
+        }
+    }
+
+    /// The pointer moved while the thumb is held: the thumb follows it.
+    fn drag(&mut self) {
+        let Some(grab) = self.thumb_grab else {
+            return;
+        };
+        let (_, y) = self.cursor;
+        let Some(engine) = self.engine.as_mut() else {
+            return;
+        };
+        let Some(bar) = engine.scrollbar() else {
+            return;
+        };
+        let travel = bar.h - bar.thumb_h;
+        if travel > 0.0 {
+            engine.scroll_to_fraction((y - grab) / travel);
         }
     }
 }
@@ -132,12 +219,20 @@ impl ApplicationHandler for Browser {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
-        let Some(window) = self.window.as_ref() else {
+        let Some(window) = self.window.clone() else {
             return;
         };
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::RedrawRequested => self.draw(),
+            WindowEvent::RedrawRequested => {
+                // One animation step per frame; while the scroll has
+                // not settled, the next frame is wanted.
+                let animating = self.engine.as_mut().is_some_and(Engine::tick);
+                self.draw();
+                if animating {
+                    window.request_redraw();
+                }
+            }
             WindowEvent::Resized(size) => {
                 if let (Some(w), Some(h)) =
                     (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
@@ -148,6 +243,45 @@ impl ApplicationHandler for Browser {
                 }
                 window.request_redraw();
             }
+            WindowEvent::MouseWheel { delta, .. } => {
+                // Positive deltas reveal content above (the content
+                // moves down), so the scroll offset decreases.
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_, lines) => -lines * LINE_PX,
+                    MouseScrollDelta::PixelDelta(p) => -p.y as f32,
+                };
+                if let Some(engine) = self.engine.as_mut() {
+                    engine.scroll_by(dy);
+                }
+                window.request_redraw();
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = (position.x as f32, position.y as f32);
+                if self.thumb_grab.is_some() {
+                    self.drag();
+                    window.request_redraw();
+                }
+            }
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => match state {
+                ElementState::Pressed => {
+                    self.press();
+                    window.request_redraw();
+                }
+                ElementState::Released => self.thumb_grab = None,
+            },
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } if self.key_scroll(&logical_key) => window.request_redraw(),
             _ => {}
         }
     }
