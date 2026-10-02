@@ -38,6 +38,16 @@ unicode-bidi = "0.3"
 unicode-script = "0.5"
 # UTS #46 for the URL parser's domains (D17; docs/design/net.md).
 idna = "1.1"
+# TLS for https: (D4; docs/design/net.md): rustls over the aws-lc-rs
+# provider, which has the X25519MLKEM768 key exchange, and Mozilla's
+# root program compiled in.
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12", "prefer-post-quantum"] }
+webpki-roots = "1"
+# gzip and deflate content codings, pure Rust over miniz_oxide.
+flate2 = "1"
+# Certificates the tests' TLS server presents, made when they run, with
+# the same cryptography provider as rustls.
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs"] }
 
 # Dependencies are optimised even in the dev profile: the rasterizer,
 # the shaper and the font parser are not what a debug build is for

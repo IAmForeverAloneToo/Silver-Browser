@@ -4,10 +4,19 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# The scripted HTTP and HTTPS server tests use, for crates whose tests
+# fetch from one (the engine's).
+test-server = []
+
 [dependencies]
 encoding.workspace = true
+flate2.workspace = true
 idna.workspace = true
+rustls.workspace = true
+webpki-roots.workspace = true
 
 [dev-dependencies]
+rcgen.workspace = true
 # The tests read web-platform-tests' data files, which are JSON.
 serde_json = "1"

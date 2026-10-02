@@ -55,6 +55,7 @@ multiple-versions = "deny"
 wildcards = "allow"
 skip = [
     { name = "bitflags" },
+    { name = "getrandom" },
     { name = "linux-raw-sys" },
     { name = "miniz_oxide" },
     { name = "objc2" },
