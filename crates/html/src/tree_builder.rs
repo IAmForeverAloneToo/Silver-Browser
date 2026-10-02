@@ -44,7 +44,7 @@ use crate::tokenizer::Token;
 use dom::{Element, Node};
 
 /// The most elements that may be open at once.
-pub const MAX_DEPTH: usize = 512;
+pub const MAX_DEPTH: usize = dom::MAX_DEPTH;
 
 /// Elements that never have children (never pushed onto the open stack).
 const VOID_ELEMENTS: [&str; 14] = [

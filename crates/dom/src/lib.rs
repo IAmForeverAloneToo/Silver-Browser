@@ -1,9 +1,22 @@
 //! The document object model — the leaf crate of the engine.
 //!
-//! Owns the node tree that `html` produces, `style` decorates, and `paint`
-//! walks. See `docs/architecture.md` for the layering contract.
+//! Two forms of a tree. [`Node`] is an owned tree, the literal the
+//! parser hands out and tests build with [`Element`]'s builder. The
+//! live document is [`Document`] (M13): every node in an arena, named by
+//! a [`NodeId`] that survives changes around it, changed through the
+//! DOM's operations, each change recorded in a journal for the stages
+//! after the DOM. [`Document::from_node`] and [`Document::to_node`]
+//! convert between the two. See `docs/architecture.md` for the layering
+//! contract and `docs/design/incremental.md` for the live document.
 
 use std::fmt;
+
+mod document;
+
+pub use document::{
+    Change, Children, Document, MAX_DEPTH, MAX_JOURNAL, MAX_NODES, MutationError, NodeData, NodeId,
+    Subtree,
+};
 
 /// A text node's payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
