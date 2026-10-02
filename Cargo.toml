@@ -48,6 +48,10 @@ rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", 
 webpki-roots = "1"
 # gzip and deflate content codings, pure Rust over miniz_oxide.
 flate2 = "1"
+# The OS's clipboard, for the address field (docs/design/navigation.md,
+# "The clipboard and input methods"): text only, so without the image
+# support its default features bring.
+arboard = { version = "3", default-features = false }
 # Waiting on a socket that another thread can interrupt: the abort of a
 # fetch wakes its waiting read or write on every OS, where shutting a
 # socket down from another thread does not on Windows.

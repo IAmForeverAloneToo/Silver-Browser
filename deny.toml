@@ -47,10 +47,12 @@ allow = [
 # A crate in the tree twice is more code in the binary and one more
 # thing to track advisories for. Every duplicate below is upstream's to
 # converge (the windowing and font crates pinning older generations of
-# the same crate), so each is skipped by name rather than by version,
-# and the versions move without touching this file. What the deny
-# catches is a new name joining the list: a duplicate this repository
-# introduced, which wants a look before it is accepted.
+# the same crate, and the clipboard crate a newer generation of the
+# macOS bindings than the windowing crate's), so each is skipped by
+# name rather than by version, and the versions move without touching
+# this file. What the deny catches is a new name joining the list: a
+# duplicate this repository introduced, which wants a look before it is
+# accepted.
 multiple-versions = "deny"
 wildcards = "allow"
 skip = [
@@ -59,6 +61,7 @@ skip = [
     { name = "linux-raw-sys" },
     { name = "miniz_oxide" },
     { name = "objc2" },
+    { name = "objc2-app-kit" },
     { name = "objc2-foundation" },
     { name = "rustix" },
     { name = "syn" },

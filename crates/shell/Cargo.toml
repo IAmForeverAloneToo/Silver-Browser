@@ -6,5 +6,12 @@ license.workspace = true
 
 [dependencies]
 engine.workspace = true
+ui.workspace = true
 winit.workspace = true
 softbuffer.workspace = true
+arboard.workspace = true
+
+[dev-dependencies]
+# The scripted server, and the bundled font, the session's tests run on.
+net = { workspace = true, features = ["test-server"] }
+text.workspace = true

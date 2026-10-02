@@ -477,6 +477,12 @@ impl Engine {
         }
     }
 
+    /// The fonts the engine draws with, for the browser's own interface
+    /// to draw with too (M15): a clone shares their handles.
+    pub fn fonts(&self) -> &text::FontCollection {
+        &self.layout_fonts
+    }
+
     /// Replaces the session document by parsing HTML `source` and
     /// installing it as [`Engine::set_document`] does. A source the
     /// parser refuses leaves the session as it was.

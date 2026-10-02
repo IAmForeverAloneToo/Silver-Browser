@@ -1,21 +1,30 @@
-//! The shell: the crate that talks to the OS for windows and input;
-//! `net` alone opens connections and reads resources by URL.
+//! The shell: the crate that talks to the OS for windows, input and
+//! the clipboard; `net` alone opens connections and reads resources by
+//! URL.
 //!
 //! Owns the window, the event loop, and the present pipeline (winit +
-//! softbuffer). All rendering decisions live in `engine`; this file
-//! pumps frames to the screen and turns input into engine calls (M9):
-//! the wheel (at the pointer, so a scroll container under it takes it
-//! first, M10.5), the keys and the scrollbar into scrolling, a click
-//! into a hit test. Each frame is drawn for the time on the shell's
-//! clock (M13.4), and a frame is asked for only when the engine wants
+//! softbuffer). What the window shows and what input does to it is the
+//! session's (`session.rs`): the toolbar above the page, the status
+//! bubble over it, and the keys (`keys.rs`), the pointer, the input
+//! method and the clipboard made calls on the engine and the toolbar
+//! (M15, docs/design/navigation.md). This file takes winit's events into
+//! the session's own types, presents its frames, and gives the window
+//! the title, the pointer's shape and the input method's state the
+//! session asks for. Each frame is drawn for the time on the shell's
+//! clock (M13.4), and a frame is asked for only when the session wants
 //! one: after input that changed something, or while a scroll animates.
 //!
 //! It runs as `silver-browser [URL or path]` (M14, docs/design/net.md,
 //! "The shell"): an argument naming an existing file loads that file,
-//! and any other must be an absolute URL; with none, `about:silver`
-//! shows (M15). Each finished fetch wakes the event loop with a user
-//! event, on which the engine takes what arrived; a load that fails
-//! shows the engine's error page, and is reported on standard error.
+//! and any other goes through the address field's rules; with none,
+//! `about:silver` shows with the address field focused (M15). Each
+//! finished fetch wakes the event loop with a user event, on which the
+//! engine takes what arrived; a load the command line asked for that
+//! fails shows the engine's error page, and is reported on standard
+//! error.
+
+mod keys;
+mod session;
 
 use std::ffi::OsString;
 use std::num::NonZeroU32;
@@ -24,25 +33,26 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use engine::address::Address;
-use engine::{Engine, FrameTime, Link, LoadState, Url};
+use engine::{Engine, FrameTime, Url};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::dpi::{PhysicalPosition, PhysicalSize};
+use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
-use winit::keyboard::{Key, NamedKey};
-use winit::window::{Window, WindowId};
+use winit::keyboard::NamedKey;
+use winit::window::{CursorIcon, Window, WindowId};
+
+use keys::{Key, Modifiers, Platform};
+use session::{Button, Clipboard, Session, Shape};
 
 /// Window configuration.
 const WINDOW_WIDTH: u32 = 1280;
 const WINDOW_HEIGHT: u32 = 800;
-const WINDOW_TITLE: &str = "Silver Browser";
-/// One wheel notch, or one arrow key, scrolls this far.
-const LINE_PX: f32 = 40.0;
 
 /// The user event a finished fetch wakes the event loop with.
 #[derive(Debug, Clone, Copy)]
 struct NetworkWake;
 
-/// The browser application: window + surface + engine session.
+/// The browser application: window + surface + the session.
 ///
 /// The window lives behind an `Arc` because softbuffer's `Context` and
 /// `Surface` each hold their own handle to it (raw-window-handle 0.6
@@ -51,34 +61,33 @@ struct Browser {
     window: Option<Arc<Window>>,
     context: Option<softbuffer::Context<Arc<Window>>>,
     surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
-    engine: Option<Engine>,
-    /// The pointer's last position, in window pixels.
-    cursor: (f32, f32),
-    /// While the scrollbar's thumb is held: how far below the thumb's
-    /// top the pointer grabbed it, so the thumb follows without jumping.
-    thumb_grab: Option<f32>,
-    /// The clock frames are drawn by: the time since the browser began.
+    session: Session,
+    /// The clock frames are drawn by and clicks counted on: the time
+    /// since the browser began.
     start: Instant,
-    /// The URL the command line asked for, until its load fails or its
-    /// page is shown.
-    loading: Option<Url>,
-    /// The link the left button was pressed on: released on the same
-    /// one, the press is a click, which follows it (M15).
-    pressed_link: Option<Link>,
+    /// What the window was last given, so that it is given only what
+    /// changed.
+    shown: Shown,
+}
+
+/// The window's state the session decides.
+#[derive(Debug, Default, PartialEq)]
+struct Shown {
+    title: String,
+    shape: Option<Shape>,
+    /// Whether the input method is on, and where the caret is.
+    ime: Option<Option<(i32, i32, u32, u32)>>,
 }
 
 impl Browser {
-    fn new(engine: Option<Engine>, loading: Option<Url>) -> Self {
+    fn new(session: Session) -> Self {
         Browser {
             window: None,
             context: None,
             surface: None,
-            engine,
-            cursor: (0.0, 0.0),
-            thumb_grab: None,
+            session,
             start: Instant::now(),
-            loading,
-            pressed_link: None,
+            shown: Shown::default(),
         }
     }
 
@@ -91,35 +100,20 @@ impl Browser {
         let Some(surface) = self.surface.as_mut() else {
             return;
         };
-        let Some(engine) = self.engine.as_mut() else {
-            return;
-        };
-
         let size = window.inner_size();
         let (Some(w), Some(h)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) else {
             return; // Zero-sized window (e.g. minimized).
         };
-
         // TODO(M2): only resize on size changes, not every frame.
         if let Err(e) = surface.resize(w, h) {
             eprintln!("surface resize failed: {e}");
             return;
         }
-
-        let time = FrameTime::at(self.start.elapsed());
-        let rgba = engine.frame_at(size.width, size.height, time);
-        if rgba.is_empty() {
-            // Past the engine's frame cap: the last frame stays shown.
-            return;
-        }
         match surface.buffer_mut() {
             Ok(mut buffer) => {
-                // softbuffer buffers are 0RGB u32 (native endian);
-                // convert from our RGBA8 bytes, assuming opaque pixels.
-                let (pixels, _remainder) = rgba.as_chunks::<4>();
-                for (dst, [r, g, b, _a]) in buffer.iter_mut().zip(pixels) {
-                    *dst = (*r as u32) << 16 | (*g as u32) << 8 | *b as u32;
-                }
+                let time = FrameTime::at(self.start.elapsed());
+                self.session
+                    .draw(size.width, size.height, time, &mut buffer);
                 if let Err(e) = buffer.present() {
                     eprintln!("present failed: {e}");
                 }
@@ -128,136 +122,55 @@ impl Browser {
         }
     }
 
-    /// Asks for a frame when the engine wants one.
-    fn redraw_if_wanted(&self, window: &Window) {
-        if self.engine.as_ref().is_some_and(Engine::needs_frame) {
+    /// Gives the window what the session now asks for — its title, the
+    /// pointer's shape, the input method — and asks for a frame when
+    /// the session wants one; prints what is to be reported.
+    fn update(&mut self, window: &Window) {
+        for report in self.session.take_reports() {
+            eprintln!("silver-browser: {report}");
+        }
+        if self.session.title() != self.shown.title {
+            self.shown.title = self.session.title().to_owned();
+            window.set_title(&self.shown.title);
+        }
+        let shape = self.session.shape();
+        if self.shown.shape != Some(shape) {
+            self.shown.shape = Some(shape);
+            window.set_cursor(match shape {
+                Shape::Arrow => CursorIcon::Default,
+                Shape::Hand => CursorIcon::Pointer,
+                Shape::Text => CursorIcon::Text,
+            });
+        }
+        let ime = self.session.ime_area().map(|(x, y, w, h)| {
+            (
+                x.round() as i32,
+                y.round() as i32,
+                w.ceil().max(1.0) as u32,
+                h.ceil() as u32,
+            )
+        });
+        let before = self.shown.ime.replace(ime);
+        if before.is_none_or(|before| before.is_some() != ime.is_some()) {
+            window.set_ime_allowed(ime.is_some());
+        }
+        if let Some((x, y, w, h)) = ime
+            && before != Some(ime)
+        {
+            window.set_ime_cursor_area(PhysicalPosition::new(x, y), PhysicalSize::new(w, h));
+        }
+        if self.session.needs_frame() {
             window.request_redraw();
-        }
-    }
-
-    /// The window's height in pixels, for page-sized scrolls.
-    fn viewport_height(&self) -> f32 {
-        self.window
-            .as_ref()
-            .map_or(WINDOW_HEIGHT as f32, |w| w.inner_size().height as f32)
-    }
-
-    /// A page is the viewport less one line, so a line of context stays.
-    fn page_px(&self) -> f32 {
-        (self.viewport_height() - LINE_PX).max(LINE_PX)
-    }
-
-    /// A key press that scrolls (M9.2). Returns whether it did.
-    fn key_scroll(&mut self, key: &Key) -> bool {
-        let page = self.page_px();
-        let Some(engine) = self.engine.as_mut() else {
-            return false;
-        };
-        match key {
-            Key::Named(NamedKey::ArrowDown) => engine.scroll_by(LINE_PX),
-            Key::Named(NamedKey::ArrowUp) => engine.scroll_by(-LINE_PX),
-            Key::Named(NamedKey::PageDown | NamedKey::Space) => engine.scroll_by(page),
-            Key::Named(NamedKey::PageUp) => engine.scroll_by(-page),
-            Key::Named(NamedKey::Home) => engine.scroll_to(0.0),
-            Key::Named(NamedKey::End) => engine.scroll_to(f32::INFINITY),
-            _ => return false,
-        }
-        true
-    }
-
-    /// The left button pressed at the pointer: grabs the scrollbar's
-    /// thumb, jumps a page from its track, or notes the link under it,
-    /// which the release follows if it is over the same link.
-    fn press(&mut self) {
-        let (x, y) = self.cursor;
-        let page = self.page_px();
-        let Some(engine) = self.engine.as_mut() else {
-            return;
-        };
-        if let Some(bar) = engine.scrollbar()
-            && bar.contains(x, y)
-        {
-            if bar.thumb_contains(x, y) {
-                self.thumb_grab = Some(y - bar.thumb_y);
-            } else if y < bar.thumb_y {
-                engine.scroll_by(-page);
-            } else {
-                engine.scroll_by(page);
-            }
-            return;
-        }
-        self.pressed_link = engine.link_at(x, y);
-    }
-
-    /// The left button released at the pointer: a press and a release on
-    /// the same link are a click, which follows it (HTML's activation
-    /// behaviour).
-    fn release(&mut self) {
-        self.thumb_grab = None;
-        let (x, y) = self.cursor;
-        let Some(pressed) = self.pressed_link.take() else {
-            return;
-        };
-        let Some(engine) = self.engine.as_mut() else {
-            return;
-        };
-        if engine
-            .link_at(x, y)
-            .is_some_and(|link| link.node() == pressed.node())
-        {
-            engine.follow_link(&pressed);
-            if let Some(notice) = engine.take_notice() {
-                eprintln!("silver-browser: {notice}");
-            }
-        }
-    }
-
-    /// The pointer moved while the thumb is held: the thumb follows it.
-    fn drag(&mut self) {
-        let Some(grab) = self.thumb_grab else {
-            return;
-        };
-        let (_, y) = self.cursor;
-        let Some(engine) = self.engine.as_mut() else {
-            return;
-        };
-        let Some(bar) = engine.scrollbar() else {
-            return;
-        };
-        let travel = bar.h - bar.thumb_h;
-        if travel > 0.0 {
-            engine.scroll_to_fraction((y - grab) / travel);
         }
     }
 }
 
 impl ApplicationHandler<NetworkWake> for Browser {
-    /// A fetch finished: the engine takes what arrived. A failed load is
-    /// reported, as the error page the engine shows says; a page shown in
-    /// an encoding the engine cannot decode yet is reported too.
+    /// A fetch finished: the engine takes what arrived.
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, _wake: NetworkWake) {
-        let Some(engine) = self.engine.as_mut() else {
-            return;
-        };
-        engine.poll_network();
-        if let Some(notice) = engine.take_notice() {
-            eprintln!("silver-browser: {notice}");
-        }
-        if let LoadState::Failed(error) = engine.load_state().clone() {
-            if let Some(url) = self.loading.take() {
-                eprintln!("silver-browser: {url}: {error}");
-            }
-        } else if let Some(url) = engine.url()
-            && self.loading.take().is_some()
-            && let Some(encoding) = engine.undecodable_encoding()
-        {
-            eprintln!(
-                "silver-browser: {url} is in {encoding}, which this version cannot decode; \
-                 it is shown as UTF-8"
-            );
-        }
+        self.session.network();
         if let Some(window) = self.window.clone() {
-            self.redraw_if_wanted(&window);
+            self.update(&window);
         }
     }
 
@@ -267,8 +180,8 @@ impl ApplicationHandler<NetworkWake> for Browser {
         }
 
         let attributes = Window::default_attributes()
-            .with_title(WINDOW_TITLE)
-            .with_inner_size(winit::dpi::PhysicalSize::new(WINDOW_WIDTH, WINDOW_HEIGHT))
+            .with_title(self.session.title())
+            .with_inner_size(PhysicalSize::new(WINDOW_WIDTH, WINDOW_HEIGHT))
             .with_resizable(true);
 
         match event_loop.create_window(attributes) {
@@ -277,10 +190,13 @@ impl ApplicationHandler<NetworkWake> for Browser {
                 match softbuffer::Context::new(window.clone()) {
                     Ok(context) => match softbuffer::Surface::new(&context, window.clone()) {
                         Ok(surface) => {
+                            let size = window.inner_size();
+                            self.session.resized(size.width, size.height);
                             self.context = Some(context);
                             self.surface = Some(surface);
-                            self.window = Some(window);
-                            self.window.as_ref().expect("just set").request_redraw();
+                            self.window = Some(window.clone());
+                            self.update(&window);
+                            window.request_redraw();
                         }
                         Err(e) => {
                             eprintln!("softbuffer surface creation failed: {e}");
@@ -310,13 +226,11 @@ impl ApplicationHandler<NetworkWake> for Browser {
             return;
         };
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::RedrawRequested => {
-                // While a scroll has not settled, the next frame is
-                // wanted, which the engine advances by the time passed.
-                self.draw();
-                self.redraw_if_wanted(&window);
+            WindowEvent::CloseRequested => {
+                event_loop.exit();
+                return;
             }
+            WindowEvent::RedrawRequested => self.draw(),
             WindowEvent::Resized(size) => {
                 if let (Some(w), Some(h)) =
                     (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
@@ -325,55 +239,136 @@ impl ApplicationHandler<NetworkWake> for Browser {
                 {
                     eprintln!("surface resize failed: {e}");
                 }
+                self.session.resized(size.width, size.height);
                 window.request_redraw();
             }
-            WindowEvent::MouseWheel { delta, .. } => {
-                // Positive deltas reveal content above (the content
-                // moves down), so the scroll offset decreases. The
-                // engine chains the turn from the scroll container under
-                // the pointer out to the viewport (M10.5).
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, lines) => -lines * LINE_PX,
-                    MouseScrollDelta::PixelDelta(p) => -p.y as f32,
-                };
-                let (x, y) = self.cursor;
-                if let Some(engine) = self.engine.as_mut() {
-                    engine.wheel(x, y, dy);
-                }
-                self.redraw_if_wanted(&window);
+            WindowEvent::ModifiersChanged(modifiers) => {
+                let state = modifiers.state();
+                self.session.modifiers(Modifiers {
+                    shift: state.shift_key(),
+                    ctrl: state.control_key(),
+                    alt: state.alt_key(),
+                    logo: state.super_key(),
+                });
             }
-            WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = (position.x as f32, position.y as f32);
-                if self.thumb_grab.is_some() {
-                    self.drag();
-                    self.redraw_if_wanted(&window);
-                }
-            }
-            WindowEvent::MouseInput {
-                state,
-                button: MouseButton::Left,
-                ..
-            } => match state {
-                ElementState::Pressed => {
-                    self.press();
-                    self.redraw_if_wanted(&window);
-                }
-                ElementState::Released => {
-                    self.release();
-                    self.redraw_if_wanted(&window);
-                }
-            },
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
                         logical_key,
+                        text,
                         state: ElementState::Pressed,
                         ..
                     },
                 ..
-            } if self.key_scroll(&logical_key) => self.redraw_if_wanted(&window),
-            _ => {}
+            } => {
+                if let Some(key) = key_of(&logical_key) {
+                    self.session.key(key, text.as_deref());
+                }
+            }
+            WindowEvent::Ime(ime) => match ime {
+                Ime::Preedit(text, _) => self.session.preedit(&text),
+                Ime::Commit(text) => self.session.commit(&text),
+                Ime::Enabled | Ime::Disabled => self.session.preedit(""),
+            },
+            WindowEvent::MouseWheel { delta, .. } => {
+                // Positive deltas reveal content above (the content
+                // moves down), so the scroll offset decreases.
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_, lines) => -lines * session::LINE_PX,
+                    MouseScrollDelta::PixelDelta(p) => -p.y as f32,
+                };
+                self.session.wheel(dy);
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.session
+                    .pointer_moved(position.x as f32, position.y as f32);
+            }
+            WindowEvent::CursorLeft { .. } => self.session.pointer_left(),
+            WindowEvent::MouseInput { state, button, .. } => {
+                let button = match button {
+                    MouseButton::Left => Button::Left,
+                    MouseButton::Back => Button::Back,
+                    MouseButton::Forward => Button::Forward,
+                    _ => Button::Other,
+                };
+                match state {
+                    ElementState::Pressed => self.session.press(button, self.start.elapsed()),
+                    ElementState::Released => self.session.release(button),
+                }
+            }
+            _ => return,
         }
+        self.update(&window);
+    }
+}
+
+/// The session's key for winit's, or nothing for a modifier key, whose
+/// state comes on its own.
+fn key_of(key: &winit::keyboard::Key) -> Option<Key> {
+    use winit::keyboard::Key as Winit;
+    Some(match key {
+        Winit::Named(named) => match named {
+            NamedKey::Enter => Key::Enter,
+            NamedKey::Escape => Key::Escape,
+            NamedKey::Backspace => Key::Backspace,
+            NamedKey::Delete => Key::Delete,
+            NamedKey::Insert => Key::Insert,
+            NamedKey::ArrowLeft => Key::Left,
+            NamedKey::ArrowRight => Key::Right,
+            NamedKey::ArrowUp => Key::Up,
+            NamedKey::ArrowDown => Key::Down,
+            NamedKey::Home => Key::Home,
+            NamedKey::End => Key::End,
+            NamedKey::PageUp => Key::PageUp,
+            NamedKey::PageDown => Key::PageDown,
+            NamedKey::Space => Key::Space,
+            NamedKey::F5 => Key::F5,
+            NamedKey::F6 => Key::F6,
+            NamedKey::Shift
+            | NamedKey::Control
+            | NamedKey::Alt
+            | NamedKey::AltGraph
+            | NamedKey::Super
+            | NamedKey::Meta
+            | NamedKey::Hyper
+            | NamedKey::Fn
+            | NamedKey::FnLock
+            | NamedKey::CapsLock
+            | NamedKey::NumLock
+            | NamedKey::ScrollLock
+            | NamedKey::Symbol
+            | NamedKey::SymbolLock => return None,
+            _ => Key::Other,
+        },
+        Winit::Character(text) => Key::Char(text.to_string()),
+        Winit::Unidentified(_) | Winit::Dead(_) => Key::Other,
+    })
+}
+
+/// The OS's clipboard, through `arboard`, opened when first used and
+/// kept open: on X11 what was copied lasts as long as the clipboard
+/// that copied it, unless a clipboard manager takes it.
+#[derive(Default)]
+struct SystemClipboard(Option<arboard::Clipboard>);
+
+impl SystemClipboard {
+    fn open(&mut self) -> Result<&mut arboard::Clipboard, String> {
+        if self.0.is_none() {
+            self.0 = Some(arboard::Clipboard::new().map_err(|error| error.to_string())?);
+        }
+        self.0.as_mut().ok_or_else(|| "it did not open".to_owned())
+    }
+}
+
+impl Clipboard for SystemClipboard {
+    fn get(&mut self) -> Result<String, String> {
+        self.open()?.get_text().map_err(|error| error.to_string())
+    }
+
+    fn set(&mut self, text: &str) -> Result<(), String> {
+        self.open()?
+            .set_text(text)
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -442,10 +437,10 @@ fn main() {
         // An event loop gone has no one to wake.
         let _ = proxy.send_event(NetworkWake);
     });
-    let about_silver = || Url::parse("about:silver").expect("about:silver parses");
-    engine.navigate(start.clone().unwrap_or_else(about_silver));
+    let clipboard = Box::new(SystemClipboard::default());
+    let session = Session::new(engine, clipboard, Platform::current(), start);
 
-    let mut browser = Browser::new(Some(engine), start);
+    let mut browser = Browser::new(session);
     if event_loop.run_app(&mut browser).is_err() {
         std::process::exit(1);
     }
