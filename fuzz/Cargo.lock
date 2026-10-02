@@ -185,6 +185,7 @@ dependencies = [
 name = "layout"
 version = "0.0.1"
 dependencies = [
+ "dom",
  "style",
  "text",
 ]

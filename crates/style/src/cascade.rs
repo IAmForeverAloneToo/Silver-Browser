@@ -1,8 +1,7 @@
 //! The cascade: origin sorting, specificity, inheritance, and property
 //! parsing — turning a [`dom::Document`] plus its stylesheets into
-//! [`Styles`], each element's computed style by its [`NodeId`] (roadmap
-//! M5, M13). [`StyledDom`] is the preorder view of the same results the
-//! box tree reads until it moves onto the document.
+//! [`Styles`], each element's computed style by its [`dom::NodeId`]
+//! (roadmap M5, M13).
 //!
 //! Scope of this milestone, deliberately:
 //!
@@ -33,7 +32,8 @@
 //!   `z-index` (M11), with CSS2 §9.7's computed-value rules applied
 //!   after the longhands: an absolutely positioned box does not float,
 //!   and a box that floats or is absolutely positioned computes to the
-//!   block-level `display` of §9.7's table ([`Display::blockified`]).
+//!   block-level `display` of §9.7's table
+//!   ([`crate::computed::Display::blockified`]).
 //! * The table properties (M12): `table-layout`, `border-collapse`,
 //!   `border-spacing`, `caption-side`, `empty-cells` and
 //!   `vertical-align`, the last parsed in full though read on table
@@ -42,10 +42,11 @@
 //! What every property accepts: the CSS-wide keywords `inherit`,
 //! `initial` and `unset` (css-cascade-5 §7.3), resolved against the
 //! parent's computed value or the property's initial value. What no
-//! length may be: non-finite, or beyond [`MAX_LENGTH_PX`] in magnitude
-//! (a `1e39px` would be infinity in `f32`, and infinity minus infinity
-//! is the NaN that puts text at the top-left corner); `font-size`,
-//! `padding` and `border-width` may not be negative either.
+//! length may be: non-finite, or beyond
+//! [`crate::cascade::MAX_LENGTH_PX`] in magnitude (a `1e39px` would be
+//! infinity in `f32`, and infinity minus infinity is the NaN that puts
+//! text at the top-left corner); `font-size`, `padding` and
+//! `border-width` may not be negative either.
 //!
 //! The selectors of every rule are parsed once per sheet, not once per
 //! element: a thousand rules against ten thousand elements is ten
@@ -57,7 +58,7 @@ use std::cell::Cell;
 use std::sync::OnceLock;
 
 use css::Token;
-use dom::{Document, Node, NodeId};
+use dom::{Document, NodeId};
 
 use crate::computed::{
     BOTTOM, BorderCollapse, BorderSpacing, BorderStyle, BoxSizing, CaptionSide, Clear, Color,
@@ -65,7 +66,7 @@ use crate::computed::{
     LengthPercentageAuto, MarginEdges, Overflow, PaddingEdges, Position, RIGHT, TOP, TableLayout,
     TextAlign, TextTransform, VerticalAlign, WhiteSpace,
 };
-use crate::selector_matching::{FlatDom, Matcher, SelectorList, Specificity, parse_selector_list};
+use crate::selector_matching::{Matcher, SelectorList, Specificity, parse_selector_list};
 
 /// The built-in default stylesheet (M5.6), compiled in — loading it is
 /// not resource fetching (no I/O at runtime), so it doesn't bend the
@@ -106,44 +107,6 @@ impl Styles {
     }
 }
 
-/// A `FlatDom` with each node's [`ComputedStyle`] resolved alongside it:
-/// `styles[i]` is the computed style for `flat.nodes[i]`, including
-/// index 0 (the virtual document root — never itself painted, but real
-/// top-level elements inherit from its always-initial-values style).
-///
-/// It is the preorder view of a cascade's [`Styles`], which the box tree
-/// reads until it moves onto the document (M13).
-pub struct StyledDom {
-    /// The structural view.
-    pub flat: FlatDom,
-    /// Parallel to `flat.nodes` — `styles[i]` is `flat.nodes[i]`'s style.
-    pub styles: Vec<ComputedStyle>,
-    /// As [`Styles::uses_viewport_units`].
-    pub uses_viewport_units: bool,
-}
-
-impl StyledDom {
-    /// The view of `styles`, computed for `document`: its elements in
-    /// tree order, which is the order `FlatDom::from_document` numbers
-    /// them in.
-    fn view(document: &Document, styles: &Styles) -> Self {
-        let flat = FlatDom::from_document(document);
-        let mut flat_styles = Vec::with_capacity(flat.nodes.len());
-        flat_styles.push(ComputedStyle::default());
-        flat_styles.extend(
-            document
-                .subtree(document.root())
-                .filter(|&id| document.is_element(id))
-                .map(|id| styles.get(id).cloned().unwrap_or_default()),
-        );
-        StyledDom {
-            flat,
-            styles: flat_styles,
-            uses_viewport_units: styles.uses_viewport_units,
-        }
-    }
-}
-
 /// What the font can say about itself, for the units that need it:
 /// `ex` (the x-height) and `ch` (the advance of `0`). `style` has no
 /// font of its own (the layering contract: `text` is a sibling, not a
@@ -167,52 +130,14 @@ pub struct CascadeContext<'a> {
     pub fonts: Option<&'a dyn FontMeasure>,
 }
 
-/// Resolves computed styles for every element in `document`, cascading
-/// the built-in UA stylesheet (lowest precedence) under `author_sheets`
-/// (in document order) and each element's inline `style` attribute
-/// (highest precedence short of `!important` — see [`tier`]), with no
-/// viewport and no font (see [`CascadeContext`]): what a test or a
-/// fuzz target wants. The engine uses [`style_document_in`].
-pub fn style_document(document: &Node, author_sheets: &[css::Stylesheet]) -> StyledDom {
-    style_document_in(document, author_sheets, &CascadeContext::default())
-}
-
-/// [`style_document`] resolving the viewport and font units against
-/// `context`.
-pub fn style_document_in(
-    document: &Node,
-    author_sheets: &[css::Stylesheet],
-    context: &CascadeContext<'_>,
-) -> StyledDom {
-    let document = Document::from_node(document);
-    StyledDom::view(
-        &document,
-        &cascade_document(&document, author_sheets, context),
-    )
-}
-
-/// [`style_document_in`] with the user-agent stylesheet given rather
-/// than built in — what a test of the UA tiers needs, since
-/// `assets/ua.css` has no `!important` of its own to assert against.
-#[cfg(test)]
-pub(crate) fn style_document_with_ua(
-    document: &Node,
-    ua: &css::Stylesheet,
-    author_sheets: &[css::Stylesheet],
-    context: &CascadeContext<'_>,
-) -> StyledDom {
-    let document = Document::from_node(document);
-    let ua_rules = parse_rules(ua);
-    StyledDom::view(
-        &document,
-        &cascade_with_ua(&document, &ua_rules, author_sheets, context),
-    )
-}
-
 /// Resolves the computed style of every element under `document`'s
 /// root, cascading the built-in UA stylesheet (lowest precedence) under
 /// `author_sheets` (in document order) and each element's inline
-/// `style` attribute, against `context`.
+/// `style` attribute (highest precedence short of `!important` — see
+/// [`tier`]), with the viewport and font units resolved against
+/// `context`. `CascadeContext::default()`, no viewport and no font, is
+/// what a test or a fuzz target wants. An element outside the tree, a
+/// detached one, is not styled.
 pub fn cascade_document(
     document: &Document,
     author_sheets: &[css::Stylesheet],
@@ -1645,6 +1570,14 @@ mod tests {
             .unwrap_or_else(|| panic!("no element matched {selector:?}"))
     }
 
+    /// The first element named `tag`, in tree order.
+    fn first(document: &Document, tag: &str) -> NodeId {
+        document
+            .subtree(document.root())
+            .find(|&id| document.tag(id) == Some(tag))
+            .unwrap_or_else(|| panic!("no {tag}"))
+    }
+
     #[test]
     fn styles_are_kept_by_node_and_answer_nothing_for_text_detached_or_stale_nodes() {
         let node = html::parse_document("<p class=a>x</p><p>y</p>").expect("never fails");
@@ -1670,17 +1603,6 @@ mod tests {
             None,
             "a text node has no style of its own"
         );
-        // The view the box tree reads holds the same styles in tree order.
-        let view = style_document(
-            &node,
-            &[css::parse_stylesheet(".a { color: #ff0000 }").unwrap()],
-        );
-        let flat_p: Vec<usize> = view
-            .flat
-            .element_indices()
-            .filter(|&i| view.flat.nodes[i].tag == "p")
-            .collect();
-        assert_eq!(view.styles[flat_p[0]], *styles.get(paragraphs[0]).unwrap());
         // A node created after the cascade has none, nor does a new node
         // in the slot of one freed since: the styles are a record of the
         // nodes the cascade saw, and a slot's generation tells them apart.
@@ -1753,21 +1675,18 @@ mod tests {
     fn ua_important_beats_author_important() {
         // css-cascade-5 §6.1: UA `!important` is the strongest tier of
         // all. `assets/ua.css` uses none, so a UA sheet of the test's own
-        // stands in through `style_document_with_ua`.
+        // stands in through `cascade_with_ua`.
         let ua = sheet("p { color: red !important; display: block; }");
         let author = [sheet(
             "p { color: blue !important; display: inline !important; }",
         )];
-        let document = html::parse_document("<p>x</p>").expect("html parsing never fails");
-        let styled = style_document_with_ua(&document, &ua, &author, &CascadeContext::default());
-        let p = styled
-            .flat
-            .element_indices()
-            .find(|&i| styled.flat.nodes[i].tag == "p")
-            .expect("a p");
-        assert_eq!(styled.styles[p].color, Color::rgb8(255, 0, 0));
+        let document = Document::from_node(&html::parse_document("<p>x</p>").expect("never fails"));
+        let ua_rules = parse_rules(&ua);
+        let styles = cascade_with_ua(&document, &ua_rules, &author, &CascadeContext::default());
+        let p = styles.get(first(&document, "p")).expect("styled");
+        assert_eq!(p.color, Color::rgb8(255, 0, 0));
         // A normal UA declaration still loses to an important author one.
-        assert_eq!(styled.styles[p].display, Display::Inline);
+        assert_eq!(p.display, Display::Inline);
     }
 
     #[test]
@@ -2359,25 +2278,18 @@ mod tests {
         // No context: the viewport is zero and the font units are half
         // an em (css-values-4 §6.1.1's fallbacks).
         let sheets = [sheet("p { width: 10vw; margin: 1ex 1ch 0 0 }")];
-        let document = html::parse_document("<p>x</p>").expect("parses");
-        let styled = style_document(&document, &sheets);
-        assert!(styled.uses_viewport_units);
-        let p = styled
-            .flat
-            .element_indices()
-            .find(|&i| styled.flat.nodes[i].tag == "p")
-            .expect("the p");
-        assert_eq!(styled.styles[p].width, LengthPercentageAuto::Px(0.0));
-        assert_eq!(styled.styles[p].margin[TOP], LengthPercentageAuto::Px(8.0));
-        assert_eq!(
-            styled.styles[p].margin[RIGHT],
-            LengthPercentageAuto::Px(8.0)
-        );
+        let document = Document::from_node(&html::parse_document("<p>x</p>").expect("parses"));
+        let styles = cascade_document(&document, &sheets, &CascadeContext::default());
+        assert!(styles.uses_viewport_units);
+        let p = styles.get(first(&document, "p")).expect("styled");
+        assert_eq!(p.width, LengthPercentageAuto::Px(0.0));
+        assert_eq!(p.margin[TOP], LengthPercentageAuto::Px(8.0));
+        assert_eq!(p.margin[RIGHT], LengthPercentageAuto::Px(8.0));
         // A document without viewport units says so, so a resize need
         // not recascade it.
         let sheets = [sheet("p { width: 10em; margin: 1rem }")];
-        let styled = style_document(&document, &sheets);
-        assert!(!styled.uses_viewport_units);
+        let styles = cascade_document(&document, &sheets, &CascadeContext::default());
+        assert!(!styles.uses_viewport_units);
         // A unit nobody knows is not a length; an infinite one is
         // rejected even through a viewport unit.
         let sheets = [sheet("p { width: 10furlong; margin-top: 1e39vw }")];
@@ -2529,37 +2441,26 @@ mod tests {
     #[test]
     fn display_none_is_recorded_but_children_still_get_styles() {
         let sheets = [sheet("div { display: none; } span { color: red; }")];
-        let document = html::parse_document("<div><span>x</span></div>").unwrap();
-        let styled = style_document(&document, &sheets);
-        let index_of = |tag: &str| {
-            styled
-                .flat
-                .element_indices()
-                .find(|&i| styled.flat.nodes[i].tag == tag)
-                .expect("the element exists")
-        };
-        let (div, span) = (index_of("div"), index_of("span"));
-        assert_eq!(styled.styles[div].display, Display::None);
+        let document =
+            Document::from_node(&html::parse_document("<div><span>x</span></div>").unwrap());
+        let styles = cascade_document(&document, &sheets, &CascadeContext::default());
+        let style = |tag: &str| styles.get(first(&document, tag)).expect("styled");
+        assert_eq!(style("div").display, Display::None);
         // Styling doesn't itself decide what's painted — that's paint's
         // job, walking `display` — so a display:none subtree's children
         // still have well-defined styles.
-        assert_eq!(styled.styles[span].color, Color::rgb8(255, 0, 0));
+        assert_eq!(style("span").color, Color::rgb8(255, 0, 0));
     }
 
     #[test]
     fn display_parses_its_keywords_and_is_not_inherited() {
         let sheets = [sheet("div { display: inline-block; }")];
-        let document = html::parse_document("<div><span>x</span></div>").unwrap();
-        let styled = style_document(&document, &sheets);
-        let index_of = |tag: &str| {
-            styled
-                .flat
-                .element_indices()
-                .find(|&i| styled.flat.nodes[i].tag == tag)
-                .expect("the element exists")
-        };
-        assert_eq!(styled.styles[index_of("div")].display, Display::InlineBlock);
-        assert_eq!(styled.styles[index_of("span")].display, Display::Inline);
+        let document =
+            Document::from_node(&html::parse_document("<div><span>x</span></div>").unwrap());
+        let styles = cascade_document(&document, &sheets, &CascadeContext::default());
+        let style = |tag: &str| styles.get(first(&document, tag)).expect("styled");
+        assert_eq!(style("div").display, Display::InlineBlock);
+        assert_eq!(style("span").display, Display::Inline);
         let html = "<div><span>x</span></div>";
         for (value, expected) in [
             ("block", Display::Block),

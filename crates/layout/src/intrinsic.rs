@@ -152,7 +152,7 @@ mod tests {
     fn tree(root: Element, css: &str) -> Vec<LayoutBox> {
         let doc = dom::Node::document(vec![root.into()]);
         let sheet = css::parse_stylesheet(css).expect("test css is valid");
-        crate::build_box_tree(&style::style_document(&doc, &[sheet]))
+        crate::testing::boxes_of(&doc, &[sheet]).1
     }
 
     #[test]

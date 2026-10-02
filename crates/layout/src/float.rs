@@ -25,6 +25,7 @@
 //! only after its parent's fragment is built, every float fragment is
 //! positioned at the end of the root's layout by [`attach_floats`].
 
+use dom::NodeId;
 use style::computed::{Clear, Float};
 
 use crate::block::{AdjoiningMargins, Fragment, FragmentKind};
@@ -43,7 +44,7 @@ pub(crate) struct FloatContext {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PendingFloat {
     /// The float's element, which its fragment carries.
-    pub(crate) node: usize,
+    pub(crate) node: NodeId,
     pub(crate) side: Float,
     /// The floats it goes below (CSS2 §9.5.2 on a float).
     pub(crate) clear: Clear,
@@ -68,7 +69,7 @@ pub(crate) struct PendingFloat {
 /// `position: relative` when the float has it.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PlacedFloat {
-    node: usize,
+    node: NodeId,
     side: Float,
     x: f32,
     y: f32,
@@ -318,7 +319,7 @@ mod tests {
 
     fn float(side: Float, w: f32, h: f32) -> PendingFloat {
         PendingFloat {
-            node: 0,
+            node: crate::testing::no_node(),
             side,
             clear: Clear::None,
             w,

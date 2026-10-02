@@ -31,9 +31,10 @@ fuzz_target!(|data: &[u8]| {
     if s.len() > 4096 {
         return;
     }
-    let Ok(doc) = html::parse_document(s) else {
+    let Ok(parsed) = html::parse_document(s) else {
         return;
     };
+    let doc = dom::Document::from_node(&parsed);
     let mut sheets = Vec::new();
     if let Ok(sheet) = css::parse_stylesheet(s) {
         sheets.push(sheet);
@@ -44,8 +45,8 @@ fuzz_target!(|data: &[u8]| {
             viewport_height: 64.0,
             fonts: None,
         };
-        let styled = style::style_document_in(&doc, &sheets, &context);
-        let boxes = layout::build_box_tree(&styled);
+        let styles = style::cascade_document(&doc, &sheets, &context);
+        let boxes = layout::build_box_tree(&doc, &styles);
         let document = layout::layout_document(&boxes, width, fonts());
         for scroll_y in [0.0f32, 30.0, document.height] {
             let viewport = paint::Viewport {

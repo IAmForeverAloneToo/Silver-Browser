@@ -94,6 +94,7 @@
 
 use std::borrow::Cow;
 
+use dom::NodeId;
 use style::computed::{
     BOTTOM, BorderStyle, ComputedStyle, Direction, LEFT, RIGHT, TOP, TextAlign, TextTransform,
     WhiteSpace,
@@ -125,7 +126,7 @@ pub(crate) enum InlineItem<'a> {
         gap_before: bool,
         /// The element the text belongs to (M9.4), carried into its
         /// fragment.
-        node: usize,
+        node: NodeId,
     },
     /// A literal newline under `white-space: pre`/`pre-wrap`/`pre-line`
     /// — ends the current line unconditionally, however much of
@@ -167,7 +168,7 @@ struct LineWord<'i> {
     text: &'i str,
     width: f32,
     style: &'i ComputedStyle,
-    node: usize,
+    node: NodeId,
 }
 
 /// One item on the line being built. The atomic's layout is boxed: it
@@ -1300,7 +1301,7 @@ mod tests {
             style,
             kind: BoxKind::Text(text.to_string()),
             children: Vec::new(),
-            node: 0,
+            node: crate::testing::no_node(),
         }
     }
 
@@ -1309,7 +1310,7 @@ mod tests {
             style: ComputedStyle::default(),
             kind: BoxKind::Inline,
             children,
-            node: 0,
+            node: crate::testing::no_node(),
         }
     }
 
@@ -1504,7 +1505,7 @@ mod tests {
             style,
             kind: BoxKind::Text(text.to_string()),
             children: Vec::new(),
-            node: 0,
+            node: crate::testing::no_node(),
         }
     }
 

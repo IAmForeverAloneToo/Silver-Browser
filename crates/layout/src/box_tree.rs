@@ -1,5 +1,5 @@
-//! The box tree: a `style::StyledDom` in, a tree of [`LayoutBox`]es out
-//! (roadmap M6.1) — one box per element that generates one (`display:
+//! The box tree: a `dom::Document` and its `style::Styles` in, a tree
+//! of [`LayoutBox`]es out (roadmap M6.1, M13) — one box per element that generates one (`display:
 //! none` generates none, and skips its whole subtree, per spec), plus an
 //! anonymous box per non-blank text run, plus (M10.4) the anonymous
 //! block boxes CSS2 §9.2.1.1 requires so that every block container's
@@ -16,9 +16,9 @@
 //! outside a cell an anonymous cell, and table parts outside a table an
 //! anonymous table — an inline one inside an inline element.
 
+use dom::{Document, NodeData, NodeId};
 use style::computed::{CaptionSide, Display, Float};
-use style::selector_matching::{FlatChild, FlatDom};
-use style::{ComputedStyle, StyledDom};
+use style::{ComputedStyle, Styles};
 
 /// One node in the box tree.
 #[derive(Debug, Clone)]
@@ -35,11 +35,12 @@ pub struct LayoutBox {
     /// never has children).
     pub kind: BoxKind,
     pub children: Vec<LayoutBox>,
-    /// The element this box belongs to, as its `FlatDom` index (M9.4):
-    /// the generating element for an element's box, the containing
-    /// element for an anonymous text, block or table box. Hit testing
-    /// answers with this, and the fragments the box produces carry it.
-    pub node: usize,
+    /// The node this box belongs to (M9.4, M13): the generating element
+    /// for an element's box, the containing element for an anonymous
+    /// text, block or table box — the document node for one at the top
+    /// level. Hit testing answers with this, and the fragments the box
+    /// produces carry it.
+    pub node: NodeId,
 }
 
 /// A box's kind, per `display` (block, inline, inline-block and the
@@ -187,33 +188,69 @@ impl LayoutBox {
     }
 }
 
-/// Builds the box tree for all of `styled`'s top-level content (the
-/// document's direct children — there's no single root box for them,
+/// Builds the box tree for all of `document`'s top-level content (the
+/// document node's children — there's no single root box for them,
 /// they're laid out as if they were children of the viewport itself,
-/// see `block::layout`). The document node is the block container of
-/// the top-level content: an inline run at the top goes into an
-/// anonymous block inheriting from the document's (initial-valued)
-/// style.
-pub fn build_box_tree(styled: &StyledDom) -> Vec<LayoutBox> {
-    build_block_container(styled, 0)
+/// see `block::layout`), from the computed `styles` a cascade of the
+/// document gave. The document node is the block container of the
+/// top-level content: an inline run at the top goes into an anonymous
+/// block inheriting from the document's (initial-valued) style. An
+/// element `styles` has no style for generates no box, nor does
+/// anything under it, as if it were `display: none`.
+pub fn build_box_tree(document: &Document, styles: &Styles) -> Vec<LayoutBox> {
+    let styled = Styled { document, styles };
+    build_block_container(&styled, document.root())
+}
+
+/// What the builder reads: the document, and its styles by node.
+struct Styled<'a> {
+    document: &'a Document,
+    styles: &'a Styles,
+}
+
+impl<'a> Styled<'a> {
+    /// The computed style of `node`: an element's, or the document
+    /// node's; `None` for one the cascade did not style.
+    fn style(&self, node: NodeId) -> Option<&'a ComputedStyle> {
+        self.styles.get(node)
+    }
+
+    /// The style of a text box in `node`: a copy of `node`'s own, or
+    /// the initial values when it has none.
+    fn style_or_initial(&self, node: NodeId) -> ComputedStyle {
+        self.style(node).cloned().unwrap_or_default()
+    }
+
+    /// The style of an anonymous box in `node`: inherited from `node`'s
+    /// own, every other property initial; the initial values throughout
+    /// when `node` has no style.
+    fn inherited_from(&self, node: NodeId) -> ComputedStyle {
+        self.style(node)
+            .map_or_else(ComputedStyle::default, ComputedStyle::inherited_from)
+    }
+
+    /// `node`'s children, in document order.
+    fn children(&self, node: NodeId) -> Vec<NodeId> {
+        self.document.children(node).collect()
+    }
 }
 
 /// The block-level children of the block container `idx` generates
-/// (CSS2 §9.2.1.1): its element children in document order, each
-/// inline-level run wrapped in an anonymous block, each block found
-/// inside an inline child hoisted out to this level.
-fn build_block_container(styled: &StyledDom, idx: usize) -> Vec<LayoutBox> {
-    build_block_container_of(styled, idx, &styled.flat.nodes[idx].children)
+/// (CSS2 §9.2.1.1): its children in document order, each inline-level
+/// run wrapped in an anonymous block, each block found inside an inline
+/// child hoisted out to this level.
+fn build_block_container(styled: &Styled<'_>, idx: NodeId) -> Vec<LayoutBox> {
+    build_block_container_of(styled, idx, &styled.children(idx))
 }
 
-/// [`build_block_container`] for `children`, a slice of the children of
+/// [`build_block_container`] for `children`, some of the children of
 /// the element `idx`: what an anonymous cell holds (§17.2.1), built as
 /// the block container it is, with `idx` as the element its anonymous
 /// boxes name and inherit from.
 fn build_block_container_of(
-    styled: &StyledDom,
-    idx: usize,
-    children: &[FlatChild],
+    styled: &Styled<'_>,
+    idx: NodeId,
+    children: &[NodeId],
 ) -> Vec<LayoutBox> {
     let mut container = BlockContainer {
         styled,
@@ -230,8 +267,8 @@ fn build_block_container_of(
 /// it belongs to, every other property initial (so no margin, padding,
 /// border, background or size of its own), and the `display` it is
 /// generated with.
-fn anonymous_style(styled: &StyledDom, node: usize, display: Display) -> ComputedStyle {
-    let mut style = ComputedStyle::inherited_from(&styled.styles[node]);
+fn anonymous_style(styled: &Styled<'_>, node: NodeId, display: Display) -> ComputedStyle {
+    let mut style = styled.inherited_from(node);
     style.display = display;
     style
 }
@@ -260,9 +297,9 @@ fn needs_a_table(display: Display) -> bool {
 /// open around the position being built — which is what a block found
 /// inside them is hoisted out of, and what is reopened after it.
 struct BlockContainer<'a> {
-    styled: &'a StyledDom,
+    styled: &'a Styled<'a>,
     /// The container's element: what its anonymous boxes name.
-    node: usize,
+    node: NodeId,
     out: Vec<LayoutBox>,
     run: Vec<LayoutBox>,
     open: Vec<LayoutBox>,
@@ -281,22 +318,27 @@ impl BlockContainer<'_> {
     /// Adds the boxes of `children`, the children of the element
     /// `parent`, in document order, to whatever is innermost: the open
     /// inline chain, else the run.
-    fn add_children(&mut self, parent: usize, children: &[FlatChild]) {
+    fn add_children(&mut self, parent: NodeId, children: &[NodeId]) {
         let styled = self.styled;
         // Table-internal boxes and captions met here, whose parent is a
         // block container or an inline element, are collected into an
         // anonymous table (§17.2.1); white space between them is
         // dropped, as the browsers do, and anything else ends the run.
         let mut misplaced: Vec<Misplaced> = Vec::new();
-        for child in children {
-            match child {
-                FlatChild::Element(child_idx) => {
-                    let style = &styled.styles[*child_idx];
+        for &child in children {
+            match styled.document.data(child) {
+                Some(NodeData::Element { .. }) => {
+                    // No style, which the cascade gives every element in
+                    // the tree, or `display: none`: the element AND its
+                    // subtree generate no box at all.
+                    let Some(style) = styled.style(child) else {
+                        continue;
+                    };
                     if style.display == Display::None {
-                        continue; // the element AND its subtree: no box at all
+                        continue;
                     }
                     if needs_a_table(style.display) {
-                        self.collect_misplaced(&mut misplaced, *child_idx);
+                        self.collect_misplaced(&mut misplaced, child, style);
                         continue;
                     }
                     self.flush_misplaced(parent, &mut misplaced);
@@ -317,15 +359,15 @@ impl BlockContainer<'_> {
                                 BoxKind::Float
                             };
                             let children = if style.display == Display::Table {
-                                build_table(styled, *child_idx)
+                                build_table(styled, child)
                             } else {
-                                build_block_container(styled, *child_idx)
+                                build_block_container(styled, child)
                             };
                             let out_of_flow = LayoutBox {
                                 style: style.clone(),
                                 kind,
                                 children,
-                                node: *child_idx,
+                                node: child,
                             };
                             if self.open.is_empty() && self.run.is_empty() {
                                 self.out.push(out_of_flow);
@@ -337,8 +379,8 @@ impl BlockContainer<'_> {
                             let block = LayoutBox {
                                 style: style.clone(),
                                 kind: BoxKind::Block,
-                                children: build_block_container(styled, *child_idx),
-                                node: *child_idx,
+                                children: build_block_container(styled, child),
+                                node: child,
                             };
                             self.add_block(block);
                         }
@@ -346,8 +388,8 @@ impl BlockContainer<'_> {
                             let table = LayoutBox {
                                 style: style.clone(),
                                 kind: BoxKind::Table,
-                                children: build_table(styled, *child_idx),
-                                node: *child_idx,
+                                children: build_table(styled, child),
+                                node: child,
                             };
                             self.add_block(table);
                         }
@@ -356,9 +398,9 @@ impl BlockContainer<'_> {
                                 style: style.clone(),
                                 kind: BoxKind::Inline,
                                 children: Vec::new(),
-                                node: *child_idx,
+                                node: child,
                             });
-                            self.add_children(*child_idx, &styled.flat.nodes[*child_idx].children);
+                            self.add_children(child, &styled.children(child));
                             let inline = self.open.pop().expect("the inline just opened");
                             self.add_inline_level(inline);
                         }
@@ -366,8 +408,8 @@ impl BlockContainer<'_> {
                             let block = LayoutBox {
                                 style: style.clone(),
                                 kind: BoxKind::InlineBlock,
-                                children: build_block_container(styled, *child_idx),
-                                node: *child_idx,
+                                children: build_block_container(styled, child),
+                                node: child,
                             };
                             self.add_inline_level(block);
                         }
@@ -375,8 +417,8 @@ impl BlockContainer<'_> {
                             let table = LayoutBox {
                                 style: style.clone(),
                                 kind: BoxKind::Table,
-                                children: build_table(styled, *child_idx),
-                                node: *child_idx,
+                                children: build_table(styled, child),
+                                node: child,
                             };
                             self.add_inline_level(table);
                         }
@@ -391,7 +433,7 @@ impl BlockContainer<'_> {
                         | Display::TableCaption => unreachable!("handled above"),
                     }
                 }
-                FlatChild::Text(text) => {
+                Some(NodeData::Text(text)) => {
                     let white_space = text.chars().all(crate::inline::is_css_space);
                     if white_space && !misplaced.is_empty() {
                         continue; // between two table parts: no content
@@ -406,26 +448,33 @@ impl BlockContainer<'_> {
                         continue;
                     }
                     self.add_inline_level(LayoutBox {
-                        style: styled.styles[parent].clone(),
+                        style: styled.style_or_initial(parent),
                         kind: BoxKind::Text(text.clone()),
                         children: Vec::new(),
                         node: parent,
                     });
                 }
+                // The document node is no one's child; a stale id is no
+                // node at all.
+                Some(NodeData::Document) | None => {}
             }
         }
         self.flush_misplaced(parent, &mut misplaced);
     }
 
-    /// Collects the table-internal element `idx`, met where its parent
-    /// is not a table part, for the anonymous table that will wrap it
-    /// and its consecutive table-internal siblings (§17.2.1): a cell
-    /// joins the anonymous row of the cells just before it, or starts
-    /// one; a row, a row group, a column, a column group or a caption is
-    /// built as itself.
-    fn collect_misplaced(&mut self, misplaced: &mut Vec<Misplaced>, idx: usize) {
+    /// Collects the table-internal element `idx`, with the computed
+    /// `style`, met where its parent is not a table part, for the
+    /// anonymous table that will wrap it and its consecutive
+    /// table-internal siblings (§17.2.1): a cell joins the anonymous row
+    /// of the cells just before it, or starts one; a row, a row group, a
+    /// column, a column group or a caption is built as itself.
+    fn collect_misplaced(
+        &mut self,
+        misplaced: &mut Vec<Misplaced>,
+        idx: NodeId,
+        style: &ComputedStyle,
+    ) {
         let styled = self.styled;
-        let style = &styled.styles[idx];
         if style.display == Display::TableCell {
             let cell = build_cell(styled, idx);
             match misplaced.last_mut() {
@@ -433,7 +482,9 @@ impl BlockContainer<'_> {
                 _ => misplaced.push(Misplaced::Cells(vec![cell])),
             }
         } else {
-            misplaced.push(Misplaced::Proper(Box::new(build_table_part(styled, idx))));
+            misplaced.push(Misplaced::Proper(Box::new(build_table_part(
+                styled, idx, style,
+            ))));
         }
     }
 
@@ -442,7 +493,7 @@ impl BlockContainer<'_> {
     /// content of the inline element `parent` when one is open, else a
     /// block-level table among the container's blocks (§17.2.1: "if the
     /// parent is an inline box, the anonymous box is an inline-table").
-    fn flush_misplaced(&mut self, parent: usize, misplaced: &mut Vec<Misplaced>) {
+    fn flush_misplaced(&mut self, parent: NodeId, misplaced: &mut Vec<Misplaced>) {
         if misplaced.is_empty() {
             return;
         }
@@ -489,7 +540,7 @@ impl BlockContainer<'_> {
     /// keep the inline elements' style and node, and either may end up
     /// empty.
     fn add_block(&mut self, block: LayoutBox) {
-        let chain: Vec<(ComputedStyle, usize)> = self
+        let chain: Vec<(ComputedStyle, NodeId)> = self
             .open
             .iter()
             .map(|b| (b.style.clone(), b.node))
@@ -523,7 +574,7 @@ impl BlockContainer<'_> {
         }
         let children = std::mem::take(&mut self.run);
         self.out.push(LayoutBox {
-            style: ComputedStyle::inherited_from(&self.styled.styles[self.node]),
+            style: self.styled.inherited_from(self.node),
             kind: BoxKind::AnonymousBlock,
             children,
             node: self.node,
@@ -540,11 +591,11 @@ impl BlockContainer<'_> {
     }
 }
 
-/// The box of the element `idx`, whose `display` is one of the table
-/// values other than a cell: a row, a row group, a column, a column
-/// group or a caption, with its children built as the kind requires.
-fn build_table_part(styled: &StyledDom, idx: usize) -> LayoutBox {
-    let style = &styled.styles[idx];
+/// The box of the element `idx` with the computed `style`, whose
+/// `display` is one of the table values other than a cell: a row, a row
+/// group, a column, a column group or a caption, with its children
+/// built as the kind requires.
+fn build_table_part(styled: &Styled<'_>, idx: NodeId, style: &ComputedStyle) -> LayoutBox {
     let (kind, children) = match style.display {
         Display::TableRow => (BoxKind::Row, build_row(styled, idx)),
         Display::TableRowGroup => (
@@ -562,19 +613,19 @@ fn build_table_part(styled: &StyledDom, idx: usize) -> LayoutBox {
         Display::TableColumnGroup => {
             // Its column children, and nothing else (§17.2.1: any other
             // child of a column group is treated as `display: none`).
-            let columns = styled.flat.nodes[idx]
-                .children
-                .iter()
-                .filter_map(|child| match child {
-                    FlatChild::Element(c) if styled.styles[*c].display == Display::TableColumn => {
-                        Some(build_column(styled, *c))
-                    }
-                    _ => None,
+            let columns = styled
+                .document
+                .element_children(idx)
+                .filter(|&c| {
+                    styled
+                        .style(c)
+                        .is_some_and(|s| s.display == Display::TableColumn)
                 })
+                .map(|c| build_column(styled, c))
                 .collect();
             (
                 BoxKind::ColumnGroup {
-                    span: column_span(&styled.flat, idx),
+                    span: column_span(styled.document, idx),
                 },
                 columns,
             )
@@ -593,11 +644,11 @@ fn build_table_part(styled: &StyledDom, idx: usize) -> LayoutBox {
 
 /// A column box: `span` columns of the grid, no children whatever the
 /// element holds (§17.2.1).
-fn build_column(styled: &StyledDom, idx: usize) -> LayoutBox {
+fn build_column(styled: &Styled<'_>, idx: NodeId) -> LayoutBox {
     LayoutBox {
-        style: styled.styles[idx].clone(),
+        style: styled.style_or_initial(idx),
         kind: BoxKind::Column {
-            span: column_span(&styled.flat, idx),
+            span: column_span(styled.document, idx),
         },
         children: Vec::new(),
         node: idx,
@@ -606,10 +657,10 @@ fn build_column(styled: &StyledDom, idx: usize) -> LayoutBox {
 
 /// A cell box: a block container inside, its spans from the HTML
 /// attributes.
-fn build_cell(styled: &StyledDom, idx: usize) -> LayoutBox {
-    let (colspan, rowspan) = cell_spans(&styled.flat, idx);
+fn build_cell(styled: &Styled<'_>, idx: NodeId) -> LayoutBox {
+    let (colspan, rowspan) = cell_spans(styled.document, idx);
     LayoutBox {
-        style: styled.styles[idx].clone(),
+        style: styled.style_or_initial(idx),
         kind: BoxKind::Cell { colspan, rowspan },
         children: build_block_container(styled, idx),
         node: idx,
@@ -617,7 +668,7 @@ fn build_cell(styled: &StyledDom, idx: usize) -> LayoutBox {
 }
 
 /// An anonymous row holding `cells`, in the element `node`.
-fn anonymous_row(styled: &StyledDom, node: usize, cells: Vec<LayoutBox>) -> LayoutBox {
+fn anonymous_row(styled: &Styled<'_>, node: NodeId, cells: Vec<LayoutBox>) -> LayoutBox {
     LayoutBox {
         style: anonymous_style(styled, node, Display::TableRow),
         kind: BoxKind::Row,
@@ -631,7 +682,7 @@ fn anonymous_row(styled: &StyledDom, node: usize, cells: Vec<LayoutBox>) -> Layo
 /// and rows as themselves; its cells, and any other content, in
 /// anonymous rows — consecutive ones in the same row, a cell as itself
 /// in it and the rest in anonymous cells.
-fn build_table(styled: &StyledDom, idx: usize) -> Vec<LayoutBox> {
+fn build_table(styled: &Styled<'_>, idx: NodeId) -> Vec<LayoutBox> {
     order_table_children(rows_and_parts(styled, idx, |display| {
         matches!(
             display,
@@ -648,7 +699,7 @@ fn build_table(styled: &StyledDom, idx: usize) -> Vec<LayoutBox> {
 
 /// The rows of a row group: the element's rows as themselves, and
 /// anything else in anonymous rows as in a table.
-fn build_row_group(styled: &StyledDom, idx: usize) -> Vec<LayoutBox> {
+fn build_row_group(styled: &Styled<'_>, idx: NodeId) -> Vec<LayoutBox> {
     rows_and_parts(styled, idx, |display| display == Display::TableRow)
 }
 
@@ -658,35 +709,36 @@ fn build_row_group(styled: &StyledDom, idx: usize) -> Vec<LayoutBox> {
 /// into an anonymous row, consecutive ones into the same row, white
 /// space between parts dropped (§17.2.1's steps 1 and 2).
 fn rows_and_parts(
-    styled: &StyledDom,
-    idx: usize,
+    styled: &Styled<'_>,
+    idx: NodeId,
     proper: impl Fn(Display) -> bool,
 ) -> Vec<LayoutBox> {
     let mut parts = Vec::new();
-    let mut row_run: Vec<RowItem<'_>> = Vec::new();
-    let flush = |parts: &mut Vec<LayoutBox>, row_run: &mut Vec<RowItem<'_>>| {
+    let mut row_run: Vec<RowItem> = Vec::new();
+    let flush = |parts: &mut Vec<LayoutBox>, row_run: &mut Vec<RowItem>| {
         let cells = cells_of(styled, idx, std::mem::take(row_run));
         if !cells.is_empty() {
             parts.push(anonymous_row(styled, idx, cells));
         }
     };
-    for child in &styled.flat.nodes[idx].children {
-        match child {
-            FlatChild::Element(c) => {
-                let display = styled.styles[*c].display;
-                if display == Display::None {
-                    continue;
-                }
-                if proper(display) {
-                    flush(&mut parts, &mut row_run);
-                    parts.push(build_table_part(styled, *c));
-                } else if display == Display::TableCell {
-                    row_run.push(RowItem::Cell(Box::new(build_cell(styled, *c))));
-                } else {
-                    row_run.push(RowItem::Content(child));
-                }
+    for child in styled.document.children(idx) {
+        if styled.document.is_element(child) {
+            let Some(style) = styled.style(child) else {
+                continue;
+            };
+            if style.display == Display::None {
+                continue;
             }
-            FlatChild::Text(_) => row_run.push(RowItem::Content(child)),
+            if proper(style.display) {
+                flush(&mut parts, &mut row_run);
+                parts.push(build_table_part(styled, child, style));
+            } else if style.display == Display::TableCell {
+                row_run.push(RowItem::Cell(Box::new(build_cell(styled, child))));
+            } else {
+                row_run.push(RowItem::Content(child));
+            }
+        } else {
+            row_run.push(RowItem::Content(child));
         }
     }
     flush(&mut parts, &mut row_run);
@@ -695,17 +747,19 @@ fn rows_and_parts(
 
 /// The cells of the row `idx`: the element's cells as themselves, and
 /// anything else in anonymous cells, consecutive ones in the same cell.
-fn build_row(styled: &StyledDom, idx: usize) -> Vec<LayoutBox> {
-    let items = styled.flat.nodes[idx]
-        .children
-        .iter()
-        .filter_map(|child| match child {
-            FlatChild::Element(c) => match styled.styles[*c].display {
+fn build_row(styled: &Styled<'_>, idx: NodeId) -> Vec<LayoutBox> {
+    let items = styled
+        .document
+        .children(idx)
+        .filter_map(|child| {
+            if !styled.document.is_element(child) {
+                return Some(RowItem::Content(child));
+            }
+            match styled.style(child)?.display {
                 Display::None => None,
-                Display::TableCell => Some(RowItem::Cell(Box::new(build_cell(styled, *c)))),
+                Display::TableCell => Some(RowItem::Cell(Box::new(build_cell(styled, child)))),
                 _ => Some(RowItem::Content(child)),
-            },
-            FlatChild::Text(_) => Some(RowItem::Content(child)),
+            }
         })
         .collect();
     cells_of(styled, idx, items)
@@ -713,23 +767,25 @@ fn build_row(styled: &StyledDom, idx: usize) -> Vec<LayoutBox> {
 
 /// One child of a row, or of the anonymous row a table's or row
 /// group's stray children get: a cell, or content for an anonymous
-/// cell.
-enum RowItem<'a> {
+/// cell — a child node, an element or text.
+enum RowItem {
     Cell(Box<LayoutBox>),
-    Content(&'a FlatChild),
+    Content(NodeId),
 }
 
 /// The cells `items` make, in the element `node`: a cell as itself; a
 /// run of consecutive content in one anonymous cell, built as the
 /// block container a cell is; a run of nothing but white space in none
 /// (§17.2.1 step 1: white space between table parts is no content).
-fn cells_of(styled: &StyledDom, node: usize, items: Vec<RowItem<'_>>) -> Vec<LayoutBox> {
+fn cells_of(styled: &Styled<'_>, node: NodeId, items: Vec<RowItem>) -> Vec<LayoutBox> {
     let mut cells = Vec::new();
-    let mut content: Vec<FlatChild> = Vec::new();
-    let flush = |cells: &mut Vec<LayoutBox>, content: &mut Vec<FlatChild>| {
-        let only_white_space = content.iter().all(|child| match child {
-            FlatChild::Text(text) => text.chars().all(crate::inline::is_css_space),
-            FlatChild::Element(_) => false,
+    let mut content: Vec<NodeId> = Vec::new();
+    let flush = |cells: &mut Vec<LayoutBox>, content: &mut Vec<NodeId>| {
+        let only_white_space = content.iter().all(|&child| {
+            styled
+                .document
+                .text(child)
+                .is_some_and(|text| text.chars().all(crate::inline::is_css_space))
         });
         let content = std::mem::take(content);
         if only_white_space {
@@ -751,7 +807,7 @@ fn cells_of(styled: &StyledDom, node: usize, items: Vec<RowItem<'_>>) -> Vec<Lay
                 flush(&mut cells, &mut content);
                 cells.push(*cell);
             }
-            RowItem::Content(child) => content.push(child.clone()),
+            RowItem::Content(child) => content.push(child),
         }
     }
     flush(&mut cells, &mut content);
@@ -828,17 +884,17 @@ fn html_non_negative_integer(value: &str) -> Option<u64> {
 /// and at most 1000; `rowspan` is 1 when absent or unparsable, zero
 /// meaning to the end of the row group, and at most 65534. An element
 /// of any other name is one cell of the grid whatever it says.
-fn cell_spans(flat: &FlatDom, idx: usize) -> (u32, u32) {
-    if !matches!(flat.nodes[idx].tag.as_str(), "td" | "th") {
+fn cell_spans(document: &Document, idx: NodeId) -> (u32, u32) {
+    if !matches!(document.tag(idx), Some("td" | "th")) {
         return (1, 1);
     }
-    let colspan = flat
+    let colspan = document
         .attr(idx, "colspan")
         .and_then(html_non_negative_integer)
         .filter(|v| *v != 0)
         .unwrap_or(1)
         .min(1000);
-    let rowspan = flat
+    let rowspan = document
         .attr(idx, "rowspan")
         .and_then(html_non_negative_integer)
         .unwrap_or(1)
@@ -848,11 +904,12 @@ fn cell_spans(flat: &FlatDom, idx: usize) -> (u32, u32) {
 
 /// A `col` or `colgroup` element's `span`: 1 when absent, unparsable
 /// or zero, at most 1000; 1 for an element of any other name.
-fn column_span(flat: &FlatDom, idx: usize) -> u32 {
-    if !matches!(flat.nodes[idx].tag.as_str(), "col" | "colgroup") {
+fn column_span(document: &Document, idx: NodeId) -> u32 {
+    if !matches!(document.tag(idx), Some("col" | "colgroup")) {
         return 1;
     }
-    flat.attr(idx, "span")
+    document
+        .attr(idx, "span")
         .and_then(html_non_negative_integer)
         .filter(|v| *v != 0)
         .unwrap_or(1)
@@ -862,86 +919,114 @@ fn column_span(flat: &FlatDom, idx: usize) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{boxes_of, number};
     use dom::Element;
 
-    fn styled(root: Element, css_src: &str) -> StyledDom {
+    /// A box tree and the document it was built from, whose nodes the
+    /// tests name by their [`number`].
+    struct Tree {
+        document: dom::Document,
+        boxes: Vec<LayoutBox>,
+    }
+
+    impl std::ops::Deref for Tree {
+        type Target = [LayoutBox];
+
+        fn deref(&self) -> &[LayoutBox] {
+            &self.boxes
+        }
+    }
+
+    impl Tree {
+        /// `node`'s number in the tree's document.
+        fn number(&self, node: NodeId) -> usize {
+            number(&self.document, node)
+        }
+
+        /// `boxes`' subtrees as `(kind, node)` pairs in preorder, a text
+        /// box's kind spelled as its text, for assertions on structure.
+        fn shape_of(&self, boxes: &[LayoutBox]) -> Vec<(String, usize)> {
+            let mut out = Vec::new();
+            for b in boxes {
+                self.shape(b, &mut out);
+            }
+            out
+        }
+
+        fn shape(&self, b: &LayoutBox, out: &mut Vec<(String, usize)>) {
+            let kind = match &b.kind {
+                BoxKind::Block => "block".to_string(),
+                BoxKind::Inline => "inline".to_string(),
+                BoxKind::InlineBlock => "inline-block".to_string(),
+                BoxKind::Float => "float".to_string(),
+                BoxKind::Absolute => "absolute".to_string(),
+                BoxKind::AnonymousBlock => "anon".to_string(),
+                BoxKind::Text(t) => format!("text {t}"),
+                BoxKind::Table if b.style.display == Display::InlineTable => {
+                    "inline-table".to_string()
+                }
+                BoxKind::Table => "table".to_string(),
+                BoxKind::RowGroup(RowGroupKind::Header) => "header".to_string(),
+                BoxKind::RowGroup(RowGroupKind::Body) => "body".to_string(),
+                BoxKind::RowGroup(RowGroupKind::Footer) => "footer".to_string(),
+                BoxKind::Row => "row".to_string(),
+                BoxKind::ColumnGroup { span } => format!("colgroup {span}"),
+                BoxKind::Column { span } => format!("col {span}"),
+                BoxKind::Cell { colspan, rowspan } => format!("cell {colspan}x{rowspan}"),
+                BoxKind::Caption => "caption".to_string(),
+            };
+            out.push((kind, self.number(b.node)));
+            for c in &b.children {
+                self.shape(c, out);
+            }
+        }
+
+        /// [`Tree::shape_of`] without the text boxes.
+        fn boxes_of(&self, boxes: &[LayoutBox]) -> Vec<(String, usize)> {
+            self.shape_of(boxes)
+                .into_iter()
+                .filter(|(k, _)| !k.starts_with("text"))
+                .collect()
+        }
+
+        /// The body's box in a [`tree_of`] tree.
+        fn body(&self) -> &LayoutBox {
+            let body = &self.boxes[0].children[0];
+            assert_eq!(
+                (body.kind.clone(), self.number(body.node)),
+                (BoxKind::Block, 3)
+            );
+            body
+        }
+    }
+
+    /// The box tree of a document holding `root`, under `css_src`.
+    fn built(root: Element, css_src: &str) -> Tree {
         let doc = dom::Node::document(vec![root.into()]);
         let sheet = css::parse_stylesheet(css_src).expect("test css is valid");
-        style::style_document(&doc, &[sheet])
+        let (document, boxes) = boxes_of(&doc, &[sheet]);
+        Tree { document, boxes }
     }
 
     /// The box tree of the document `html` parses to: the parser implies
     /// `html`, `head` and `body`, so the tree is the html box, whose one
     /// child is the body's (the head generates no box). Nodes: html 1,
     /// head 2, body 3, then the markup's elements from 4.
-    fn tree_of(html: &str, css_src: &str) -> Vec<LayoutBox> {
+    fn tree_of(html: &str, css_src: &str) -> Tree {
         let doc = html::parse_document(html).expect("html parsing never fails");
         let sheet = css::parse_stylesheet(css_src).expect("test css is valid");
-        build_box_tree(&style::style_document(&doc, &[sheet]))
-    }
-
-    /// The body's box in a [`tree_of`] tree.
-    fn body_of(tree: &[LayoutBox]) -> &LayoutBox {
-        let body = &tree[0].children[0];
-        assert_eq!((body.kind.clone(), body.node), (BoxKind::Block, 3));
-        body
-    }
-
-    /// `b`'s subtree as `(kind, node)` pairs in preorder, a text box's
-    /// kind spelled as its text, for assertions on structure.
-    fn shape(b: &LayoutBox, out: &mut Vec<(String, usize)>) {
-        let kind = match &b.kind {
-            BoxKind::Block => "block".to_string(),
-            BoxKind::Inline => "inline".to_string(),
-            BoxKind::InlineBlock => "inline-block".to_string(),
-            BoxKind::Float => "float".to_string(),
-            BoxKind::Absolute => "absolute".to_string(),
-            BoxKind::AnonymousBlock => "anon".to_string(),
-            BoxKind::Text(t) => format!("text {t}"),
-            BoxKind::Table if b.style.display == Display::InlineTable => "inline-table".to_string(),
-            BoxKind::Table => "table".to_string(),
-            BoxKind::RowGroup(RowGroupKind::Header) => "header".to_string(),
-            BoxKind::RowGroup(RowGroupKind::Body) => "body".to_string(),
-            BoxKind::RowGroup(RowGroupKind::Footer) => "footer".to_string(),
-            BoxKind::Row => "row".to_string(),
-            BoxKind::ColumnGroup { span } => format!("colgroup {span}"),
-            BoxKind::Column { span } => format!("col {span}"),
-            BoxKind::Cell { colspan, rowspan } => format!("cell {colspan}x{rowspan}"),
-            BoxKind::Caption => "caption".to_string(),
-        };
-        out.push((kind, b.node));
-        for c in &b.children {
-            shape(c, out);
-        }
-    }
-
-    fn shape_of(tree: &[LayoutBox]) -> Vec<(String, usize)> {
-        let mut out = Vec::new();
-        for b in tree {
-            shape(b, &mut out);
-        }
-        out
+        let (document, boxes) = boxes_of(&doc, &[sheet]);
+        Tree { document, boxes }
     }
 
     fn pairs(items: &[(&str, usize)]) -> Vec<(String, usize)> {
         items.iter().map(|(k, n)| (k.to_string(), *n)).collect()
     }
 
-    /// [`shape_of`] without the text boxes.
-    fn boxes_of(tree: &[LayoutBox]) -> Vec<(String, usize)> {
-        shape_of(tree)
-            .into_iter()
-            .filter(|(k, _)| !k.starts_with("text"))
-            .collect()
-    }
-
     #[test]
     fn block_and_inline_elements_get_matching_box_kinds() {
         let root = Element::new("div").push(Element::new("span").text("x"));
-        let tree = build_box_tree(&styled(
-            root,
-            "div { display: block; } span { display: inline; }",
-        ));
+        let tree = built(root, "div { display: block; } span { display: inline; }");
         assert_eq!(tree.len(), 1);
         assert_eq!(tree[0].kind, BoxKind::Block);
         // The span is inline-level content of the div, so it sits in an
@@ -951,10 +1036,10 @@ mod tests {
         assert_eq!(anon.children[0].kind, BoxKind::Inline);
         // Element boxes name their element; the text box inside the
         // span names the span, its containing element.
-        assert_eq!(tree[0].node, 1);
-        assert_eq!(anon.node, 1);
-        assert_eq!(anon.children[0].node, 2);
-        assert_eq!(anon.children[0].children[0].node, 2);
+        assert_eq!(tree.number(tree[0].node), 1);
+        assert_eq!(tree.number(anon.node), 1);
+        assert_eq!(tree.number(anon.children[0].node), 2);
+        assert_eq!(tree.number(anon.children[0].children[0].node), 2);
     }
 
     #[test]
@@ -962,10 +1047,10 @@ mod tests {
         let root = Element::new("div")
             .push(Element::new("p").text("hidden").attr("class", "gone"))
             .push(Element::new("span").text("shown"));
-        let tree = build_box_tree(&styled(root, "p { display: none; }"));
+        let tree = built(root, "p { display: none; }");
         assert_eq!(tree[0].children.len(), 1); // the p is gone entirely, not just empty
         assert_eq!(
-            shape_of(&tree[0].children),
+            tree.shape_of(&tree[0].children),
             pairs(&[("anon", 1), ("inline", 3), ("text shown", 3)])
         );
     }
@@ -973,7 +1058,7 @@ mod tests {
     #[test]
     fn text_runs_become_anonymous_boxes_carrying_the_parent_style() {
         let root = Element::new("p").text("hello");
-        let tree = build_box_tree(&styled(root, "p { color: #ff0000; }"));
+        let tree = built(root, "p { color: #ff0000; }");
         let text = &tree[0].children[0].children[0];
         match &text.kind {
             BoxKind::Text(t) => assert_eq!(t, "hello"),
@@ -985,13 +1070,13 @@ mod tests {
     #[test]
     fn whitespace_only_text_produces_no_box() {
         let root = Element::new("div").text("   \n  ");
-        let tree = build_box_tree(&styled(root, ""));
+        let tree = built(root, "");
         assert!(tree[0].children.is_empty(), "not even an anonymous block");
         // A no-break space is content, not white space.
         let root = Element::new("div").text("\u{a0}");
-        let tree = build_box_tree(&styled(root, ""));
+        let tree = built(root, "");
         assert_eq!(
-            shape_of(&tree[0].children),
+            tree.shape_of(&tree[0].children),
             pairs(&[("anon", 1), ("text \u{a0}", 1)])
         );
     }
@@ -1006,9 +1091,9 @@ mod tests {
             .text("c")
             .push(Element::new("span").text("d"))
             .push(Element::new("p").text("e"));
-        let tree = build_box_tree(&styled(root, ""));
+        let tree = built(root, "");
         assert_eq!(
-            shape_of(&tree[0].children),
+            tree.shape_of(&tree[0].children),
             pairs(&[
                 ("anon", 1),
                 ("text a", 1),
@@ -1030,11 +1115,11 @@ mod tests {
     #[test]
     fn an_anonymous_block_inherits_from_its_container_and_nothing_else() {
         let root = Element::new("div").text("x");
-        let tree = build_box_tree(&styled(
+        let tree = built(
             root,
             "div { color: #ff0000; text-align: center; padding: 10px; margin: 5px;
                    border: 2px solid #000000; background-color: #00ff00; width: 50px; }",
-        ));
+        );
         let anon = &tree[0].children[0];
         assert_eq!(anon.kind, BoxKind::AnonymousBlock);
         let s = &anon.style;
@@ -1059,9 +1144,9 @@ mod tests {
                 .push(Element::new("p").text("b"))
                 .text("c"),
         );
-        let tree = build_box_tree(&styled(root, "span { color: #0000ff; }"));
+        let tree = built(root, "span { color: #0000ff; }");
         assert_eq!(
-            shape_of(&tree[0].children),
+            tree.shape_of(&tree[0].children),
             pairs(&[
                 ("anon", 1),
                 ("inline", 2),
@@ -1096,9 +1181,9 @@ mod tests {
                 )
                 .text("d"),
         );
-        let tree = build_box_tree(&styled(root, ""));
+        let tree = built(root, "");
         assert_eq!(
-            shape_of(&tree[0].children),
+            tree.shape_of(&tree[0].children),
             pairs(&[
                 ("anon", 1),
                 ("inline", 2),
@@ -1124,9 +1209,9 @@ mod tests {
         // §9.4.2), so they cost nothing and the structure stays
         // uniform. Nodes: div 1, span 2, p 3.
         let root = Element::new("div").push(Element::new("span").push(Element::new("p").text("b")));
-        let tree = build_box_tree(&styled(root, ""));
+        let tree = built(root, "");
         assert_eq!(
-            shape_of(&tree[0].children),
+            tree.shape_of(&tree[0].children),
             pairs(&[
                 ("anon", 1),
                 ("inline", 2),
@@ -1151,9 +1236,9 @@ mod tests {
                 .push(Element::new("p").text("d"))
                 .text("e"),
         );
-        let tree = build_box_tree(&styled(root, ""));
+        let tree = built(root, "");
         assert_eq!(
-            boxes_of(&tree[0].children),
+            tree.boxes_of(&tree[0].children),
             pairs(&[
                 ("anon", 1),
                 ("inline", 2),
@@ -1181,11 +1266,11 @@ mod tests {
                     .push(Element::new("p").text("y")),
             ),
         );
-        let tree = build_box_tree(&styled(root, ""));
+        let tree = built(root, "");
         let p = &tree[0].children[1];
-        assert_eq!((p.kind.clone(), p.node), (BoxKind::Block, 3));
+        assert_eq!((p.kind.clone(), tree.number(p.node)), (BoxKind::Block, 3));
         assert_eq!(
-            shape_of(&p.children),
+            tree.shape_of(&p.children),
             pairs(&[
                 ("anon", 3),
                 ("inline", 4),
@@ -1207,9 +1292,9 @@ mod tests {
                 .push(Element::new("p").text("b"))
                 .text("c"),
         );
-        let tree = build_box_tree(&styled(root, "p { display: none; }"));
+        let tree = built(root, "p { display: none; }");
         assert_eq!(
-            shape_of(&tree[0].children),
+            tree.shape_of(&tree[0].children),
             pairs(&[("anon", 1), ("inline", 2), ("text a", 2), ("text c", 2)])
         );
     }
@@ -1228,9 +1313,9 @@ mod tests {
                     .push(Element::new("p").text("c")),
             )
             .text("d");
-        let tree = build_box_tree(&styled(root, "span { display: inline-block; }"));
+        let tree = built(root, "span { display: inline-block; }");
         assert_eq!(
-            shape_of(&tree[0].children),
+            tree.shape_of(&tree[0].children),
             pairs(&[
                 ("anon", 1),
                 ("text a", 1),
@@ -1258,9 +1343,9 @@ mod tests {
             .text(" ")
             .push(Element::new("span").text("b"))
             .text(" ");
-        let tree = build_box_tree(&styled(root, ""));
+        let tree = built(root, "");
         assert_eq!(
-            shape_of(&tree[0].children),
+            tree.shape_of(&tree[0].children),
             pairs(&[
                 ("anon", 1),
                 ("inline", 2),
@@ -1273,9 +1358,9 @@ mod tests {
         // Inside an inline element white space is kept wherever it is:
         // `<span> </span>` between two inline-blocks is their gap.
         let root = Element::new("div").push(Element::new("span").text(" "));
-        let tree = build_box_tree(&styled(root, ""));
+        let tree = built(root, "");
         assert_eq!(
-            shape_of(&tree[0].children),
+            tree.shape_of(&tree[0].children),
             pairs(&[("anon", 1), ("inline", 2), ("text  ", 2)])
         );
         // White space before a block, at the end of a run, is dropped
@@ -1284,9 +1369,9 @@ mod tests {
             .text(" ")
             .push(Element::new("p").text("x"))
             .text(" ");
-        let tree = build_box_tree(&styled(root, ""));
+        let tree = built(root, "");
         assert_eq!(
-            shape_of(&tree[0].children),
+            tree.shape_of(&tree[0].children),
             pairs(&[("block", 2), ("anon", 2), ("text x", 2)])
         );
     }
@@ -1300,9 +1385,9 @@ mod tests {
             .push(Element::new("p").text("a"))
             .push(Element::new("div").attr("class", "f").text("f"))
             .push(Element::new("p").text("b"));
-        let tree = build_box_tree(&styled(root, ".f { float: left; }"));
+        let tree = built(root, ".f { float: left; }");
         assert_eq!(
-            boxes_of(&tree[0].children),
+            tree.boxes_of(&tree[0].children),
             pairs(&[
                 ("block", 2),
                 ("anon", 2),
@@ -1323,9 +1408,9 @@ mod tests {
                 .push(Element::new("div").attr("class", "f").text("f"))
                 .text("c"),
         );
-        let tree = build_box_tree(&styled(root, ".f { float: right; }"));
+        let tree = built(root, ".f { float: right; }");
         assert_eq!(
-            shape_of(&tree[0].children),
+            tree.shape_of(&tree[0].children),
             pairs(&[
                 ("anon", 1),
                 ("text a", 1),
@@ -1342,9 +1427,9 @@ mod tests {
         let root = Element::new("div")
             .push(Element::new("div").attr("class", "f"))
             .text("x");
-        let tree = build_box_tree(&styled(root, ".f { float: left; }"));
+        let tree = built(root, ".f { float: left; }");
         assert_eq!(
-            shape_of(&tree[0].children),
+            tree.shape_of(&tree[0].children),
             pairs(&[("float", 2), ("anon", 1), ("text x", 1)])
         );
         // An absolutely positioned box the same way, a float no more
@@ -1354,9 +1439,9 @@ mod tests {
                 .text("b")
                 .push(Element::new("div").attr("class", "a").text("f")),
         );
-        let tree = build_box_tree(&styled(root, ".a { position: absolute; float: left; }"));
+        let tree = built(root, ".a { position: absolute; float: left; }");
         assert_eq!(
-            shape_of(&tree[0].children),
+            tree.shape_of(&tree[0].children),
             pairs(&[
                 ("anon", 1),
                 ("text a", 1),
@@ -1370,9 +1455,9 @@ mod tests {
         let root = Element::new("div")
             .push(Element::new("div").attr("class", "a"))
             .push(Element::new("p").text("x"));
-        let tree = build_box_tree(&styled(root, ".a { position: fixed; }"));
+        let tree = built(root, ".a { position: fixed; }");
         assert_eq!(
-            shape_of(&tree[0].children),
+            tree.shape_of(&tree[0].children),
             pairs(&[("absolute", 2), ("block", 3), ("anon", 3), ("text x", 3)])
         );
         assert!(!tree[0].children[0].is_block_level());
@@ -1382,9 +1467,9 @@ mod tests {
     fn top_level_inline_content_goes_into_an_anonymous_block_of_the_document() {
         // A hand-built document whose root element is inline: the
         // document node (0) is the block container.
-        let tree = build_box_tree(&styled(Element::new("span").text("x"), ""));
+        let tree = built(Element::new("span").text("x"), "");
         assert_eq!(
-            shape_of(&tree),
+            tree.shape_of(&tree),
             pairs(&[("anon", 0), ("inline", 1), ("text x", 1)])
         );
     }
@@ -1402,10 +1487,13 @@ mod tests {
              <tfoot><tr><td>f</td></tr></tfoot></table>",
             "",
         );
-        let body = body_of(&tree);
-        assert_eq!((body.kind.clone(), body.node), (BoxKind::Block, 3));
+        let body = tree.body();
         assert_eq!(
-            boxes_of(&body.children),
+            (body.kind.clone(), tree.number(body.node)),
+            (BoxKind::Block, 3)
+        );
+        assert_eq!(
+            tree.boxes_of(&body.children),
             pairs(&[
                 ("table", 4),
                 ("caption", 5),
@@ -1436,7 +1524,7 @@ mod tests {
         );
         // The white space between the parts made no box anywhere.
         assert!(
-            shape_of(&body.children)
+            tree.shape_of(&body.children)
                 .iter()
                 .all(|(k, _)| !k.starts_with("text ") || k.trim() != "text")
         );
@@ -1454,11 +1542,16 @@ mod tests {
              <tr><td>r</td></tr></table>",
             "",
         );
-        let table = &body_of(&tree).children[0];
+        let table = &tree.body().children[0];
         let parts: Vec<(String, usize)> = table
             .children
             .iter()
-            .map(|c| (shape_of(std::slice::from_ref(c))[0].0.clone(), c.node))
+            .map(|c| {
+                (
+                    tree.shape_of(std::slice::from_ref(c))[0].0.clone(),
+                    tree.number(c.node),
+                )
+            })
             .collect();
         assert_eq!(
             parts,
@@ -1476,7 +1569,7 @@ mod tests {
              <tbody><tr><td>3</td></tr></tbody></table>",
             "",
         );
-        let table = &body_of(&tree).children[0];
+        let table = &tree.body().children[0];
         let kinds: Vec<BoxKind> = table.children.iter().map(|c| c.kind.clone()).collect();
         assert_eq!(
             kinds,
@@ -1487,10 +1580,15 @@ mod tests {
             ]
         );
         assert_eq!(
-            table.children[0].node, 8,
+            tree.number(table.children[0].node),
+            8,
             "the second footer, as a body group"
         );
-        assert_eq!(table.children[2].node, 5, "the first footer, last");
+        assert_eq!(
+            tree.number(table.children[2].node),
+            5,
+            "the first footer, last"
+        );
     }
 
     #[test]
@@ -1505,11 +1603,16 @@ mod tests {
              <tr><td>x</td></tr><colgroup></colgroup></table>",
             "table { caption-side: top; } .b { caption-side: bottom; }",
         );
-        let table = &body_of(&tree).children[0];
+        let table = &tree.body().children[0];
         let parts: Vec<(String, usize)> = table
             .children
             .iter()
-            .map(|c| (shape_of(std::slice::from_ref(c))[0].0.clone(), c.node))
+            .map(|c| {
+                (
+                    tree.shape_of(std::slice::from_ref(c))[0].0.clone(),
+                    tree.number(c.node),
+                )
+            })
             .collect();
         assert_eq!(
             parts,
@@ -1533,9 +1636,9 @@ mod tests {
              <tbody><td>e</td></tbody></table>",
             "table { color: #ff0000; }",
         );
-        let table = &body_of(&tree).children[0];
+        let table = &tree.body().children[0];
         assert_eq!(
-            boxes_of(&table.children),
+            tree.boxes_of(&table.children),
             pairs(&[
                 ("row", 4),
                 ("cell 1x1", 5),
@@ -1580,9 +1683,9 @@ mod tests {
              <table><p>para</p></table>",
             "",
         );
-        let body = body_of(&tree);
+        let body = tree.body();
         assert_eq!(
-            shape_of(&body.children),
+            tree.shape_of(&body.children),
             pairs(&[
                 ("table", 4),
                 ("row", 5),
@@ -1629,9 +1732,9 @@ mod tests {
              <tr> <span>x</span> <span>y</span> </tr> </table>",
             "",
         );
-        let table = &body_of(&tree).children[0];
+        let table = &tree.body().children[0];
         assert_eq!(
-            shape_of(&table.children),
+            tree.shape_of(&table.children),
             pairs(&[
                 ("body", 5),
                 ("row", 6),
@@ -1667,9 +1770,9 @@ mod tests {
             ".c { display: table-cell; } .r { display: table-row; }
              .g { display: table-row-group; } div { color: #0000ff; }",
         );
-        let div = &body_of(&tree).children[0];
+        let div = &tree.body().children[0];
         assert_eq!(
-            boxes_of(&div.children),
+            tree.boxes_of(&div.children),
             pairs(&[
                 ("table", 4),
                 ("row", 4),
@@ -1710,7 +1813,7 @@ mod tests {
             "<div><div class=c colspan=3 rowspan=2>a</div></div>",
             ".c { display: table-cell; }",
         );
-        let cell = &body_of(&tree).children[0].children[0].children[0].children[0];
+        let cell = &tree.body().children[0].children[0].children[0].children[0];
         assert_eq!(
             cell.kind,
             BoxKind::Cell {
@@ -1730,9 +1833,9 @@ mod tests {
             "<div>a<span>b<em class=c>c</em> <em class=c>d</em>e</span></div>",
             ".c { display: table-cell; }",
         );
-        let div = &body_of(&tree).children[0];
+        let div = &tree.body().children[0];
         assert_eq!(
-            shape_of(&div.children),
+            tree.shape_of(&div.children),
             pairs(&[
                 ("anon", 4),
                 ("text a", 4),
@@ -1761,9 +1864,9 @@ mod tests {
             "<div>a<table class=i><tr><td>x</td></tr></table>b</div>",
             ".i { display: inline-table; }",
         );
-        let div = &body_of(&tree).children[0];
+        let div = &tree.body().children[0];
         assert_eq!(
-            shape_of(&div.children),
+            tree.shape_of(&div.children),
             pairs(&[
                 ("anon", 4),
                 ("text a", 4),
@@ -1791,9 +1894,9 @@ mod tests {
             ".f { float: left; } .a { position: absolute; }
              .i { display: inline-table; float: right; }",
         );
-        let div = &body_of(&tree).children[0];
+        let div = &tree.body().children[0];
         assert_eq!(
-            boxes_of(&div.children),
+            tree.boxes_of(&div.children),
             pairs(&[
                 ("float", 5),
                 ("row", 6),
@@ -1820,9 +1923,9 @@ mod tests {
             "<div><table><tr><div class=f>f</div><td>x</td></tr></table></div>",
             ".f { float: left; }",
         );
-        let table = &body_of(&tree).children[0].children[0];
+        let table = &tree.body().children[0].children[0];
         assert_eq!(
-            boxes_of(&table.children),
+            tree.boxes_of(&table.children),
             pairs(&[
                 ("row", 6),
                 ("cell 1x1", 6),
@@ -1845,9 +1948,9 @@ mod tests {
              <colgroup><col><col span=3></colgroup><tr><td>c</td></tr></table>",
             "",
         );
-        let table = &body_of(&tree).children[0];
+        let table = &tree.body().children[0];
         assert_eq!(
-            boxes_of(&table.children),
+            tree.boxes_of(&table.children),
             pairs(&[
                 ("colgroup 4", 5),
                 ("col 1", 6),
@@ -1875,7 +1978,7 @@ mod tests {
             ("colspan=-0", (1, 1)),
         ] {
             let tree = tree_of(&format!("<table><tr><td {attrs}>x</td></tr></table>"), "");
-            let cell = &body_of(&tree).children[0].children[0].children[0];
+            let cell = &tree.body().children[0].children[0].children[0];
             assert_eq!(
                 cell.kind,
                 BoxKind::Cell {
@@ -1890,7 +1993,7 @@ mod tests {
                 &format!("<table><col {attr}><tr><td>x</td></tr></table>"),
                 "",
             );
-            let col = &body_of(&tree).children[0].children[0];
+            let col = &tree.body().children[0].children[0];
             assert_eq!(col.kind, BoxKind::Column { span: expected }, "{attr}");
         }
         assert_eq!(html_non_negative_integer("  12abc"), Some(12));

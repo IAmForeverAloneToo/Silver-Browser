@@ -3,11 +3,13 @@
 //! `Engine` owns the session state — the document, its stylesheets, the
 //! scroll position (M9) and the render backend — and drives the
 //! per-frame pipeline (`style` -> `layout` -> `paint` -> `render`).
-//! Documents enter as HTML source through `html::parse_document`;
-//! `<style>` element contents are parsed into [`css::Stylesheet`]s and
-//! cascaded by `style::style_document` (M5) into a `style::StyledDom`;
-//! `layout::build_box_tree` + `layout::layout_document` (M6, M9.1)
-//! resolve that into a real, positioned fragment tree in document
+//! Documents enter as HTML source through `html::parse_document` and
+//! are held as a [`dom::Document`] (M13), whose nodes keep their
+//! [`NodeId`]s; `<style>` element contents are parsed into
+//! [`css::Stylesheet`]s and cascaded by `style::cascade_document` (M5)
+//! into `style::Styles`; `layout::build_box_tree` +
+//! `layout::layout_document` (M6, M9.1) resolve the document and its
+//! styles into a real, positioned fragment tree in document
 //! coordinates — actual box-model geometry (width/margin resolution,
 //! margin collapsing), not a per-tag guess or a flat vertical list —
 //! which `paint::paint_fragments` consumes each frame for the current
@@ -25,13 +27,13 @@
 //! in-engine chrome (decision D9): drawn into the frame after the
 //! document, its geometry exposed through [`Engine::scrollbar`] for the
 //! shell to map presses and drags. Hit testing (M9.4) answers with the
-//! `FlatDom` index of the element under a viewport point, the
-//! groundwork for M26's events; [`Engine::link_at`] walks up from it to
-//! the nearest `<a href>`.
+//! [`NodeId`] of the element under a viewport point, the groundwork for
+//! M26's events; [`Engine::link_at`] walks the document's parent links
+//! up from it to the nearest `<a href>`.
 //!
 //! Elements scroll too (M10.5): a box whose `overflow` is `auto` or
 //! `scroll` is a scroll container (a `hidden` one as well, by program
-//! only), its offset kept here by the element's index and reset when a
+//! only), its offset kept here by the element's id and reset when a
 //! document loads — layout knows nothing of it, paint moves the content
 //! inside the clip, hit testing adds it on the way down. The wheel
 //! ([`Engine::wheel`]) goes to the innermost container under the pointer
@@ -41,7 +43,7 @@
 
 use std::collections::HashMap;
 
-use dom::Node;
+use dom::{Document, NodeId};
 use layout::{DocumentLayout, Fragment, FragmentKind};
 use paint::{
     DisplayItem, Rect, SCROLLBAR_THUMB, SCROLLBAR_TRACK, Step, Viewport, padding_box,
@@ -49,7 +51,7 @@ use paint::{
 };
 use render::{RenderBackend as _, SoftwareBackend};
 use style::computed::Overflow;
-use style::{CascadeContext, FontMeasure, StyledDom};
+use style::{CascadeContext, FontMeasure, Styles};
 use text::FontError;
 
 /// The document rendered when no other is loaded.
@@ -123,7 +125,7 @@ pub struct Engine {
     /// redo per frame. The backend holds a clone of the same collection
     /// (a `FontCollection` clones by sharing its face data).
     layout_fonts: text::FontCollection,
-    document: Node,
+    document: Document,
     stylesheets: Vec<css::Stylesheet>,
     /// The cascade of the current document, computed on first use and
     /// dropped when a document loads, or when the viewport changes and
@@ -142,9 +144,9 @@ pub struct Engine {
     /// The scroll offset shown, and the one being approached.
     scroll_y: f32,
     scroll_target: f32,
-    /// Each scroll container's offset (M10.5), by its element's
-    /// `FlatDom` index; one never scrolled has no entry.
-    element_scroll: HashMap<usize, ElementScroll>,
+    /// Each scroll container's offset (M10.5), by its element's id; one
+    /// never scrolled has no entry.
+    element_scroll: HashMap<NodeId, ElementScroll>,
 }
 
 /// A scroll container's offset shown, and the one being approached.
@@ -165,7 +167,7 @@ struct CachedLayout {
 struct CachedStyle {
     /// The viewport the cascade resolved its units against.
     viewport: (u32, u32),
-    styled: StyledDom,
+    styles: Styles,
 }
 
 /// The engine's fonts, lent to the cascade for `ex` and `ch`.
@@ -221,7 +223,7 @@ impl Engine {
         let mut engine = Engine {
             backend: SoftwareBackend::with_fonts(fonts.clone()),
             layout_fonts: fonts,
-            document: Node::document(Vec::new()),
+            document: Document::new(),
             stylesheets: Vec::new(),
             styled: None,
             style_runs: 0,
@@ -241,7 +243,8 @@ impl Engine {
     /// layout caches and the glyph cache start over, and the new
     /// document starts at the top.
     pub fn load_document(&mut self, source: &str) {
-        if let Ok(document) = html::parse_document(source) {
+        if let Ok(parsed) = html::parse_document(source) {
+            let document = Document::from_node(&parsed);
             let stylesheets = style_texts(&document)
                 .iter()
                 .filter_map(|text| css::parse_stylesheet(text).ok())
@@ -258,7 +261,7 @@ impl Engine {
     }
 
     /// The current document (for inspection and tests).
-    pub fn document(&self) -> &Node {
+    pub fn document(&self) -> &Document {
         &self.document
     }
 
@@ -267,23 +270,24 @@ impl Engine {
         &self.stylesheets
     }
 
-    /// Cascades the current document and its stylesheets into a
-    /// `StyledDom` (built-in UA stylesheet included automatically — see
-    /// `style::style_document_in`), against the last frame's viewport
-    /// and the engine's fonts. A fresh computation for inspection; the
-    /// frame pipeline uses the cached one.
-    pub fn styled_dom(&self) -> StyledDom {
+    /// Cascades the current document and its stylesheets into its
+    /// elements' computed styles, by node (built-in UA stylesheet
+    /// included automatically — see `style::cascade_document`), against
+    /// the last frame's viewport and the engine's fonts. A fresh
+    /// computation for inspection; the frame pipeline uses the cached
+    /// one.
+    pub fn styles(&self) -> Styles {
         self.cascade(self.viewport)
     }
 
-    fn cascade(&self, viewport: (u32, u32)) -> StyledDom {
+    fn cascade(&self, viewport: (u32, u32)) -> Styles {
         let fonts = FontMeasurer(&self.layout_fonts);
         let context = CascadeContext {
             viewport_width: viewport.0 as f32,
             viewport_height: viewport.1 as f32,
             fonts: Some(&fonts),
         };
-        style::style_document_in(&self.document, &self.stylesheets, &context)
+        style::cascade_document(&self.document, &self.stylesheets, &context)
     }
 
     /// How many cascades this session has run.
@@ -296,8 +300,8 @@ impl Engine {
     /// tree order, flat — a fresh computation for inspection; the
     /// frame pipeline uses [`Engine::layout`].
     pub fn fragments(&self, viewport_width: f32) -> Vec<Fragment> {
-        let styled = self.cascade((viewport_width as u32, self.viewport.1));
-        let boxes = layout::build_box_tree(&styled);
+        let styles = self.cascade((viewport_width as u32, self.viewport.1));
+        let boxes = layout::build_box_tree(&self.document, &styles);
         layout::flatten(
             layout::layout_document_in(
                 &boxes,
@@ -312,20 +316,20 @@ impl Engine {
     /// The cached cascade for the current viewport: recomputed when none
     /// is cached, or when the viewport changed and the document's styles
     /// depend on it (M10.1). A recomputation drops the cached layout.
-    fn styled(&mut self) -> &StyledDom {
+    fn cached_styles(&mut self) -> &Styles {
         let stale = self.styled.as_ref().is_none_or(|cached| {
-            cached.styled.uses_viewport_units && cached.viewport != self.viewport
+            cached.styles.uses_viewport_units && cached.viewport != self.viewport
         });
         if stale {
-            let styled = self.cascade(self.viewport);
+            let styles = self.cascade(self.viewport);
             self.style_runs += 1;
             self.layout = None;
             self.styled = Some(CachedStyle {
                 viewport: self.viewport,
-                styled,
+                styles,
             });
         }
-        &self.styled.as_ref().expect("just computed").styled
+        &self.styled.as_ref().expect("just computed").styles
     }
 
     /// The document's layout for `viewport_width`, computed once per
@@ -334,15 +338,15 @@ impl Engine {
     pub fn layout(&mut self, viewport_width: f32) -> &DocumentLayout {
         // A viewport change can invalidate the cascade, and with it the
         // layout — so the cascade is checked first.
-        self.styled();
+        self.cached_styles();
         let viewport_height = self.viewport.1 as f32;
         let stale = self.layout.as_ref().is_none_or(|cached| {
             cached.width != viewport_width
                 || (cached.layout.depends_on_viewport_height && cached.height != viewport_height)
         });
         if stale {
-            let styled = &self.styled.as_ref().expect("just computed").styled;
-            let boxes = layout::build_box_tree(styled);
+            let styles = &self.styled.as_ref().expect("just computed").styles;
+            let boxes = layout::build_box_tree(&self.document, styles);
             let layout = layout::layout_document_in(
                 &boxes,
                 viewport_width,
@@ -392,7 +396,7 @@ impl Engine {
             }
         }
         self.element_scroll = elements;
-        let offsets: HashMap<usize, f32> = self
+        let offsets: HashMap<NodeId, f32> = self
             .element_scroll
             .iter()
             .map(|(node, scroll)| (*node, scroll.y))
@@ -518,12 +522,12 @@ impl Engine {
 
     /// The scroll offset a scroll container shows, in px: zero for an
     /// element never scrolled, or not a scroll container at all.
-    pub fn element_scroll(&self, node: usize) -> f32 {
+    pub fn element_scroll(&self, node: NodeId) -> f32 {
         self.element_scroll.get(&node).map_or(0.0, |s| s.y)
     }
 
     /// The offset a scroll container is approaching.
-    pub fn element_scroll_target(&self, node: usize) -> f32 {
+    pub fn element_scroll_target(&self, node: NodeId) -> f32 {
         self.element_scroll.get(&node).map_or(0.0, |s| s.target)
     }
 
@@ -531,7 +535,7 @@ impl Engine {
     /// frame's layout: its scrollable height past its padding box
     /// (`layout::Fragment::max_scroll`); zero for an element that is
     /// not a scroll container, or before the first frame.
-    pub fn element_max_scroll(&mut self, node: usize) -> f32 {
+    pub fn element_max_scroll(&mut self, node: NodeId) -> f32 {
         let (width, _) = self.viewport;
         if width == 0 {
             return 0.0;
@@ -543,7 +547,7 @@ impl Engine {
     /// next ticks and clamped to its content, as [`Engine::scroll_to`]
     /// does for the viewport; a NaN is ignored. An `overflow: hidden`
     /// box scrolls this way too, by program only (CSS2 §11.1.1).
-    pub fn scroll_element_to(&mut self, node: usize, y: f32) {
+    pub fn scroll_element_to(&mut self, node: NodeId, y: f32) {
         if y.is_nan() {
             return;
         }
@@ -553,13 +557,13 @@ impl Engine {
 
     /// Scrolls the element's content by `dy` px (down when positive),
     /// animated over the next ticks.
-    pub fn scroll_element_by(&mut self, node: usize, dy: f32) {
+    pub fn scroll_element_by(&mut self, node: NodeId, dy: f32) {
         let target = self.element_scroll_target(node) + dy;
         self.scroll_element_to(node, target);
     }
 
     /// Jumps the element's content to offset `y` at once, no animation.
-    pub fn set_element_scroll(&mut self, node: usize, y: f32) {
+    pub fn set_element_scroll(&mut self, node: NodeId, y: f32) {
         self.scroll_element_to(node, y);
         if let Some(scroll) = self.element_scroll.get_mut(&node) {
             scroll.y = scroll.target;
@@ -588,7 +592,7 @@ impl Engine {
 
     /// The scroll containers that take the wheel under the viewport
     /// point, outermost first: the ones around the element hit there.
-    fn scroll_chain_at(&mut self, x: f32, y: f32) -> Vec<usize> {
+    fn scroll_chain_at(&mut self, x: f32, y: f32) -> Vec<NodeId> {
         let Some((_, chain)) = self.hit(x, y) else {
             return Vec::new();
         };
@@ -604,14 +608,15 @@ impl Engine {
 
     // ---- Hit testing (M9.4) -------------------------------------------------
 
-    /// The element under the viewport point `(x, y)` at the current
-    /// scroll offset, as its `FlatDom` index: the last fragment in paint
-    /// order whose box contains the point (a text fragment's box is its
-    /// line, and answers with its containing element). Content clipped
+    /// The node under the viewport point `(x, y)` at the current scroll
+    /// offset: the last fragment in paint order whose box contains the
+    /// point (a text fragment's box is its line, and answers with its
+    /// containing element; an anonymous box's with the element it
+    /// names, or the document node at the top level). Content clipped
     /// away by an ancestor's `overflow` is not hit. `None` over nothing
     /// — the viewport background, or the scrollbar, which the shell
     /// checks first.
-    pub fn hit_test(&mut self, x: f32, y: f32) -> Option<usize> {
+    pub fn hit_test(&mut self, x: f32, y: f32) -> Option<NodeId> {
         self.hit(x, y).map(|(node, _)| node)
     }
 
@@ -627,12 +632,12 @@ impl Engine {
     /// in viewport coordinates with every scroll offset applied, so the
     /// point is compared as it is. A scrollbar step is passed over: the
     /// bar is an indicator over its container, not a control.
-    fn hit(&mut self, x: f32, y: f32) -> Option<(usize, Vec<usize>)> {
+    fn hit(&mut self, x: f32, y: f32) -> Option<(NodeId, Vec<NodeId>)> {
         let (width, height) = self.viewport;
         if width == 0 || !x.is_finite() || !y.is_finite() {
             return None;
         }
-        let offsets: HashMap<usize, f32> = self
+        let offsets: HashMap<NodeId, f32> = self
             .element_scroll
             .iter()
             .map(|(node, scroll)| (*node, scroll.y))
@@ -644,17 +649,17 @@ impl Engine {
         };
         let layout = self.layout(width as f32);
         // The clips in force, outermost first: the chain around a hit.
-        let mut clips: Vec<(usize, Rect)> = Vec::new();
-        let under = |rect: &Rect, clips: &[(usize, Rect)]| {
+        let mut clips: Vec<(NodeId, Rect)> = Vec::new();
+        let under = |rect: &Rect, clips: &[(NodeId, Rect)]| {
             rect.contains(x, y) && clips.last().is_none_or(|(_, clip)| clip.contains(x, y))
         };
-        let chain = |clips: &[(usize, Rect)]| clips.iter().map(|(node, _)| *node).collect();
+        let chain = |clips: &[(NodeId, Rect)]| clips.iter().map(|(node, _)| *node).collect();
         let mut hit = None;
         for step in paint_order(&layout.roots, viewport, &offsets) {
             match step {
                 Step::Box { fragment, rect } => {
                     if under(&rect, &clips) {
-                        let mut chain: Vec<usize> = chain(&clips);
+                        let mut chain: Vec<NodeId> = chain(&clips);
                         if fragment.clips() && padding_box(fragment, rect).contains(x, y) {
                             chain.push(fragment.node);
                         }
@@ -680,22 +685,20 @@ impl Engine {
     /// the viewport point, if any (M9.4's "link clicks"; following it
     /// is M15's navigation).
     pub fn link_at(&mut self, x: f32, y: f32) -> Option<String> {
-        let mut node = self.hit_test(x, y)?;
-        let flat = &self.styled().flat;
-        loop {
-            let n = &flat.nodes[node];
-            if n.tag == "a"
-                && let Some((_, href)) = n.attrs.iter().find(|(name, _)| name == "href")
-            {
-                return Some(href.clone());
+        let hit = self.hit_test(x, y)?;
+        let document = &self.document;
+        std::iter::successors(Some(hit), |&node| document.parent_element(node)).find_map(|node| {
+            if document.tag(node) == Some("a") {
+                document.attr(node, "href").map(str::to_string)
+            } else {
+                None
             }
-            node = flat.parent_element(node)?;
-        }
+        })
     }
 }
 
 /// The box fragment of the element `node`, if it has one.
-fn fragment_of(fragments: &[Fragment], node: usize) -> Option<&Fragment> {
+fn fragment_of(fragments: &[Fragment], node: NodeId) -> Option<&Fragment> {
     for f in fragments {
         if matches!(f.kind, FragmentKind::Box) && f.node == node {
             return Some(f);
@@ -721,37 +724,26 @@ fn approach(y: &mut f32, target: f32) -> bool {
 }
 
 /// Collects the concatenated text of every `<style>` element in the
-/// document, in document order.
-fn style_texts(document: &Node) -> Vec<String> {
+/// document, in document order: each one's text children. An element
+/// under a `<style>`, which the parser never puts there, is not looked
+/// into. Iterative, at any depth.
+fn style_texts(document: &Document) -> Vec<String> {
     let mut out = Vec::new();
-    fn walk(node: &Node, out: &mut Vec<String>) {
-        match node {
-            Node::Document(children) => {
-                for child in children {
-                    walk(child, out);
-                }
+    let mut pending = vec![document.root()];
+    while let Some(node) = pending.pop() {
+        if document.tag(node) == Some("style") {
+            let text: String = document
+                .children(node)
+                .filter_map(|child| document.text(child))
+                .collect();
+            if !text.trim().is_empty() {
+                out.push(text);
             }
-            Node::Element(el) => {
-                if el.tag == "style" {
-                    let mut text = String::new();
-                    for child in &el.children {
-                        if let Node::Text(t) = child {
-                            text.push_str(&t.data);
-                        }
-                    }
-                    if !text.trim().is_empty() {
-                        out.push(text);
-                    }
-                    return; // no nested style elements
-                }
-                for child in &el.children {
-                    walk(child, out);
-                }
-            }
-            Node::Text(_) => {}
+            continue; // no nested style elements
         }
+        let children: Vec<NodeId> = document.element_children(node).collect();
+        pending.extend(children.into_iter().rev());
     }
-    walk(document, &mut out);
     out
 }
 
@@ -782,7 +774,7 @@ mod tests {
         assert!(
             engine
                 .document()
-                .text_content()
+                .text_content(engine.document().root())
                 .contains("Hello from Silver Browser")
         );
     }
@@ -791,7 +783,10 @@ mod tests {
     fn loading_a_document_replaces_the_tree() {
         let mut engine = test_engine();
         engine.load_document("<h1>Alpha</h1>");
-        assert_eq!(engine.document().text_content(), "Alpha");
+        assert_eq!(
+            engine.document().text_content(engine.document().root()),
+            "Alpha"
+        );
     }
 
     #[test]
@@ -837,15 +832,11 @@ mod tests {
         // always includes the built-in UA sheet underneath.
         engine.load_document("<html><body><h1>Title</h1><p>Body</p></body></html>");
         assert!(engine.stylesheets().is_empty());
-        let styled = engine.styled_dom();
-        let h1 = styled
-            .flat
-            .element_indices()
-            .find(|&i| styled.flat.nodes[i].tag == "h1")
-            .expect("an h1 element exists");
+        let styles = engine.styles();
+        let h1 = styles.get(first(&engine, "h1")).expect("the h1 is styled");
         // ua.css: `h1 { display: block; font-size: 32px; ... }`.
-        assert_eq!(styled.styles[h1].display, style::computed::Display::Block);
-        assert_eq!(styled.styles[h1].font_size_px, 32.0);
+        assert_eq!(h1.display, style::computed::Display::Block);
+        assert_eq!(h1.font_size_px, 32.0);
     }
 
     #[test]
@@ -895,14 +886,24 @@ mod tests {
 
     /// The box fragments of every `tag` element, in tree order.
     fn boxes_of(engine: &Engine, tag: &str) -> Vec<layout::Fragment> {
-        let styled = engine.styled_dom();
+        let document = engine.document();
         engine
             .fragments(800.0)
             .into_iter()
             .filter(|f| {
-                matches!(f.kind, layout::FragmentKind::Box) && styled.flat.nodes[f.node].tag == tag
+                matches!(f.kind, layout::FragmentKind::Box) && document.tag(f.node) == Some(tag)
             })
             .collect()
+    }
+
+    /// The first element named `tag` in the engine's document, in tree
+    /// order.
+    fn first(engine: &Engine, tag: &str) -> NodeId {
+        let document = engine.document();
+        document
+            .subtree(document.root())
+            .find(|&node| document.tag(node) == Some(tag))
+            .unwrap_or_else(|| panic!("a {tag} element"))
     }
 
     #[test]
@@ -1150,17 +1151,10 @@ mod tests {
              </div>",
         );
         engine.frame(400, 300);
-        let styled = engine.styled_dom();
-        let tag = |node: Option<usize>| node.map(|n| styled.flat.nodes[n].tag.clone());
-        let class = |node: Option<usize>| {
-            node.and_then(|n| {
-                styled.flat.nodes[n]
-                    .attrs
-                    .iter()
-                    .find(|(k, _)| k == "class")
-                    .map(|(_, v)| v.clone())
-            })
-        };
+        let document = engine.document().clone();
+        let tag = |node: Option<NodeId>| node.and_then(|n| document.tag(n).map(str::to_string));
+        let class =
+            |node: Option<NodeId>| node.and_then(|n| document.attr(n, "class").map(str::to_string));
         // On the inner box's text line.
         assert_eq!(
             class(engine.hit_test(25.0, 15.0)),
@@ -1194,16 +1188,9 @@ mod tests {
              <div class=row><span class=ib id=a>a</span><span class=ib id=b>b</span></div>",
         );
         engine.frame(200, 100);
-        let styled = engine.styled_dom();
-        let id = |node: Option<usize>| {
-            node.and_then(|n| {
-                styled.flat.nodes[n]
-                    .attrs
-                    .iter()
-                    .find(|(k, _)| k == "id")
-                    .map(|(_, v)| v.clone())
-            })
-        };
+        let document = engine.document().clone();
+        let id =
+            |node: Option<NodeId>| node.and_then(|n| document.attr(n, "id").map(str::to_string));
         assert_eq!(id(engine.hit_test(25.0, 25.0)), Some("a".to_string()));
         assert_eq!(id(engine.hit_test(75.0, 45.0)), Some("b".to_string()));
         assert_eq!(
@@ -1221,18 +1208,12 @@ mod tests {
         assert_eq!(px(150, 40), [0xff, 0xff, 0xff], "the canvas beside them");
     }
 
-    /// The `FlatDom` index of the element with `id`.
-    fn node_by_id(engine: &Engine, id: &str) -> usize {
-        let styled = engine.styled_dom();
-        styled
-            .flat
-            .element_indices()
-            .find(|&i| {
-                styled.flat.nodes[i]
-                    .attrs
-                    .iter()
-                    .any(|(k, v)| k == "id" && v == id)
-            })
+    /// The element with `id`.
+    fn node_by_id(engine: &Engine, id: &str) -> NodeId {
+        let document = engine.document();
+        document
+            .subtree(document.root())
+            .find(|&node| document.attr(node, "id") == Some(id))
             .unwrap_or_else(|| panic!("an element with id {id}"))
     }
 
@@ -1297,15 +1278,8 @@ mod tests {
                     .b { height: 100px; margin: 0; background-color: #0000ff }</style>\
              <div class=s id=s><p class=r id=r></p><p class=b id=b></p></div>",
         );
-        let id = |engine: &Engine, node: Option<usize>| {
-            let styled = engine.styled_dom();
-            node.and_then(|n| {
-                styled.flat.nodes[n]
-                    .attrs
-                    .iter()
-                    .find(|(k, _)| k == "id")
-                    .map(|(_, v)| v.clone())
-            })
+        let id = |engine: &Engine, node: Option<NodeId>| {
+            node.and_then(|n| engine.document().attr(n, "id").map(str::to_string))
         };
         let red = [0xff, 0x00, 0x00, 0xff];
         let blue = [0x00, 0x00, 0xff, 0xff];
@@ -1499,15 +1473,14 @@ mod tests {
              <div class=tail style=\"height: 1000px; margin: 0\"></div>",
         );
         engine.frame(200, 100);
-        let styled = engine.styled_dom();
-        let name = |node: Option<usize>| {
+        let document = engine.document().clone();
+        let name = |node: Option<NodeId>| {
             node.map(|n| {
-                let n = &styled.flat.nodes[n];
-                n.attrs
-                    .iter()
-                    .find(|(k, _)| k == "class")
-                    .map(|(_, v)| v.clone())
-                    .unwrap_or_else(|| n.tag.clone())
+                document
+                    .attr(n, "class")
+                    .or(document.tag(n))
+                    .unwrap_or_default()
+                    .to_string()
             })
         };
         // The clipping box is at document y 100..110, off the unscrolled
@@ -1922,12 +1895,7 @@ mod tests {
         // The div's size in the engine's own cached layout at the
         // frame's width (`boxes_of` would lay out afresh at 800px).
         fn div_size(engine: &mut Engine) -> (f32, f32) {
-            let styled = engine.styled_dom();
-            let div = styled
-                .flat
-                .element_indices()
-                .find(|&i| styled.flat.nodes[i].tag == "div")
-                .expect("the div");
+            let div = first(engine, "div");
             let f = engine
                 .layout(200.0)
                 .iter()
@@ -1991,13 +1959,8 @@ mod tests {
                     p { margin: 0; padding: 1rem 2ch 1ex 0; font-size: 16px }</style><p>x</p>",
         );
         engine.frame(400, 100);
-        let styled = engine.styled_dom();
-        let p = styled
-            .flat
-            .element_indices()
-            .find(|&i| styled.flat.nodes[i].tag == "p")
-            .expect("the p");
-        let padding = styled.styles[p].padding;
+        let styles = engine.styles();
+        let padding = styles.get(first(&engine, "p")).expect("styled").padding;
         let fonts = &engine.layout_fonts;
         use style::computed::LengthPercentage::Px;
         assert_eq!(padding[0], Px(20.0), "1rem of the root's 20px");

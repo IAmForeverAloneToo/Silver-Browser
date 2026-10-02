@@ -20,18 +20,17 @@
 //! to move on, not for the previous stage's code to disappear):
 //! [`paint_document`] (M1) walks a `dom::Node` directly with hardcoded
 //! per-tag presentation, and [`paint_styled_document`] (M5) walks a
-//! `style::StyledDom` with real cascaded colors/font-sizes but still no
-//! real box model.
+//! `dom::Document` with its `style::Styles`, real cascaded
+//! colors/font-sizes but still no real box model.
 
 pub mod order;
 
 use std::collections::HashMap;
 
-use dom::Node;
+use dom::{Document, Node, NodeData, NodeId};
 use layout::{Fragment, FragmentKind};
-use style::StyledDom;
+use style::Styles;
 use style::computed::{BOTTOM, BorderStyle, Color, Display, LEFT, RIGHT, TOP};
-use style::selector_matching::FlatChild;
 
 pub use order::{Rect, Step, padding_box, paint_order};
 
@@ -48,20 +47,20 @@ pub const SCROLLBAR_MIN_THUMB: f32 = 24.0;
 pub const ELEMENT_SCROLLBAR_WIDTH: f32 = 8.0;
 
 /// Where each scroll container (M10.5) is scrolled to, by its element's
-/// `FlatDom` index: zero for one not scrolled. The engine keeps the
+/// [`NodeId`] (M13): zero for one not scrolled. The engine keeps the
 /// offsets; `()` is a document scrolled nowhere.
 pub trait ScrollOffsets {
-    fn offset(&self, node: usize) -> f32;
+    fn offset(&self, node: NodeId) -> f32;
 }
 
 impl ScrollOffsets for () {
-    fn offset(&self, _node: usize) -> f32 {
+    fn offset(&self, _node: NodeId) -> f32 {
         0.0
     }
 }
 
-impl ScrollOffsets for HashMap<usize, f32> {
-    fn offset(&self, node: usize) -> f32 {
+impl ScrollOffsets for HashMap<NodeId, f32> {
+    fn offset(&self, node: NodeId) -> f32 {
         self.get(&node).copied().unwrap_or(0.0)
     }
 }
@@ -294,14 +293,20 @@ const TEXT_X: f32 = 40.0;
 /// Where the first line's baseline sits.
 const TOP_INSET: f32 = 32.0;
 
-/// Paints a [`StyledDom`] (M5's cascade output) into a display list for
-/// a `viewport_w` x `viewport_h` viewport: the same dark background +
-/// accent bar chrome as [`paint_document`], then every text run in
-/// document order, sized and colored by *its own* cascaded style rather
-/// than a per-tag lookup table — real user CSS visibly changes the
-/// screen here (roadmap M5's exit criterion). `display: none` skips an
-/// element and everything under it, per spec.
-pub fn paint_styled_document(styled: &StyledDom, viewport_w: f32, viewport_h: f32) -> DisplayList {
+/// Paints `document` with its cascaded `styles` (M5's cascade output)
+/// into a display list for a `viewport_w` x `viewport_h` viewport: the
+/// same dark background + accent bar chrome as [`paint_document`], then
+/// every text run in document order, sized and colored by *its own*
+/// cascaded style rather than a per-tag lookup table — real user CSS
+/// visibly changes the screen here (roadmap M5's exit criterion).
+/// `display: none` skips an element and everything under it, per spec,
+/// and so does having no style in `styles`.
+pub fn paint_styled_document(
+    document: &Document,
+    styles: &Styles,
+    viewport_w: f32,
+    viewport_h: f32,
+) -> DisplayList {
     let mut items = Vec::new();
     items.push(DisplayItem::Rect {
         x: 0.0,
@@ -319,7 +324,7 @@ pub fn paint_styled_document(styled: &StyledDom, viewport_w: f32, viewport_h: f3
     });
 
     let mut cursor_y = TOP_INSET;
-    paint_flat_children(styled, 0, &mut items, &mut cursor_y);
+    paint_children(document, styles, document.root(), &mut items, &mut cursor_y);
 
     if items.len() <= 2 {
         // Nothing at all rendered (e.g. a document with no visible
@@ -343,16 +348,19 @@ pub fn paint_styled_document(styled: &StyledDom, viewport_w: f32, viewport_h: f3
 /// recursing into element children, applying `margin` top/bottom as
 /// simple additive vertical spacing (no collapsing, no box model — a
 /// placeholder for the real thing layout builds in M6).
-fn paint_flat_children(
-    styled: &StyledDom,
-    idx: usize,
+fn paint_children(
+    document: &Document,
+    styles: &Styles,
+    idx: NodeId,
     items: &mut Vec<DisplayItem>,
     cursor_y: &mut f32,
 ) {
-    for child in &styled.flat.nodes[idx].children {
-        match child {
-            FlatChild::Element(child_idx) => {
-                let style = &styled.styles[*child_idx];
+    for child in document.children(idx) {
+        match document.data(child) {
+            Some(NodeData::Element { .. }) => {
+                let Some(style) = styles.get(child) else {
+                    continue; // never styled: nothing to paint it with
+                };
                 if style.display == Display::None {
                     continue; // the element and its whole subtree: skipped
                 }
@@ -361,14 +369,16 @@ fn paint_flat_children(
                 // centering needs `layout`'s box-width math, M6) — treat
                 // it as 0 here, same as an unset margin.
                 *cursor_y += style.margin[style::computed::TOP].resolve(0.0, 0.0);
-                paint_flat_children(styled, *child_idx, items, cursor_y);
+                paint_children(document, styles, child, items, cursor_y);
                 *cursor_y += style.margin[style::computed::BOTTOM].resolve(0.0, 0.0);
             }
-            FlatChild::Text(text) => {
+            Some(NodeData::Text(text)) => {
                 if text.trim().is_empty() {
                     continue;
                 }
-                let style = &styled.styles[idx];
+                let Some(style) = styles.get(idx) else {
+                    continue;
+                };
                 items.push(DisplayItem::Text {
                     text: text.clone(),
                     x: TEXT_X,
@@ -378,6 +388,7 @@ fn paint_flat_children(
                 });
                 *cursor_y += style.font_size_px * 1.6; // matches paint_document's line spacing
             }
+            Some(NodeData::Document) | None => {}
         }
     }
 }
@@ -570,7 +581,7 @@ fn snapped(rect: Rect) -> Rect {
 /// border's widths, whole pixels already, as they are. `canvas_node`
 /// is the element whose background the canvas already took (CSS2
 /// §14.2), which is not painted on its own box again.
-fn push_box(items: &mut Vec<DisplayItem>, f: &Fragment, rect: Rect, canvas_node: Option<usize>) {
+fn push_box(items: &mut Vec<DisplayItem>, f: &Fragment, rect: Rect, canvas_node: Option<NodeId>) {
     let outer = snapped(rect);
     let inner = snapped(padding_box(f, rect));
     let widths = [
@@ -918,8 +929,90 @@ fn push_dashes(
 }
 
 #[cfg(test)]
+mod testing {
+    //! What the unit tests share: the pipeline from a tree to its styles
+    //! and layout, and the numbers the tests name nodes by.
+
+    use std::ops::Deref;
+
+    use dom::{Document, Node, NodeId};
+    use style::Styles;
+
+    /// A document and its styles.
+    pub(crate) struct Styled {
+        pub(crate) document: Document,
+        pub(crate) styles: Styles,
+    }
+
+    /// The document `node` describes, cascaded under the UA sheet and
+    /// `sheets` with no viewport and no font.
+    pub(crate) fn styled(node: &Node, sheets: &[css::Stylesheet]) -> Styled {
+        let document = Document::from_node(node);
+        let styles = style::cascade_document(&document, sheets, &style::CascadeContext::default());
+        Styled { document, styles }
+    }
+
+    /// A layout and the document it was laid out from, so that a test
+    /// can name a fragment's node by its number: 0 for the document
+    /// node, then the elements from 1 in tree order — the numbering
+    /// nodes had before they had ids (M13), which the tests were
+    /// written in.
+    pub(crate) struct Laid {
+        pub(crate) document: Document,
+        pub(crate) layout: layout::DocumentLayout,
+    }
+
+    /// `node`'s document cascaded under `sheets`, its box tree laid out
+    /// `width` px wide with `fonts`.
+    pub(crate) fn laid_out(
+        node: &Node,
+        sheets: &[css::Stylesheet],
+        width: f32,
+        fonts: &text::FontCollection,
+    ) -> Laid {
+        let Styled { document, styles } = styled(node, sheets);
+        let boxes = layout::build_box_tree(&document, &styles);
+        let layout = layout::layout_document(&boxes, width, fonts);
+        Laid { document, layout }
+    }
+
+    impl Laid {
+        /// The document node and the elements, in tree order.
+        fn numbered(&self) -> impl Iterator<Item = NodeId> + '_ {
+            let document = &self.document;
+            document
+                .subtree(document.root())
+                .filter(|&id| id == document.root() || document.is_element(id))
+        }
+
+        /// The number the tests name `node` by.
+        pub(crate) fn number(&self, node: NodeId) -> usize {
+            self.numbered()
+                .position(|id| id == node)
+                .unwrap_or_else(|| panic!("{node} is not numbered in the document"))
+        }
+
+        /// The node numbered `number`.
+        pub(crate) fn element(&self, number: usize) -> NodeId {
+            self.numbered()
+                .nth(number)
+                .unwrap_or_else(|| panic!("no node is numbered {number}"))
+        }
+    }
+
+    impl Deref for Laid {
+        type Target = layout::DocumentLayout;
+
+        fn deref(&self) -> &layout::DocumentLayout {
+            &self.layout
+        }
+    }
+}
+
+#[cfg(test)]
 mod fragment_tests {
     use super::*;
+    use crate::testing::laid_out;
     use dom::Element;
 
     const VIEWPORT: f32 = 800.0;
@@ -942,16 +1035,16 @@ mod fragment_tests {
     /// the root's background is the canvas's (CSS2 §14.2), so a bare
     /// `div` at the root would paint differently from one in a page.
     fn display_list_for(root: Element, css_src: &str, viewport: Viewport) -> DisplayList {
-        display_list_scrolled(root, css_src, viewport, &())
+        display_list_scrolled(root, css_src, viewport, &[])
     }
 
-    /// [`display_list_for`] with scroll containers scrolled (M10.5).
-    /// Nodes: html 1, body 2, the fixture's root 3.
+    /// [`display_list_for`] with scroll containers scrolled (M10.5), by
+    /// node number. Nodes: html 1, body 2, the fixture's root 3.
     fn display_list_scrolled(
         root: Element,
         css_src: &str,
         viewport: Viewport,
-        offsets: &dyn ScrollOffsets,
+        offsets: &[(usize, f32)],
     ) -> DisplayList {
         let fonts = test_fonts();
         let (root, css_src) = if root.tag == "html" {
@@ -964,10 +1057,12 @@ mod fragment_tests {
         };
         let doc = dom::Node::document(vec![root.into()]);
         let sheet = css::parse_stylesheet(&css_src).expect("test css is valid");
-        let styled = style::style_document(&doc, &[sheet]);
-        let boxes = layout::build_box_tree(&styled);
-        let layout = layout::layout_document(&boxes, VIEWPORT, &fonts);
-        paint_fragments_in(&layout.roots, viewport, offsets)
+        let layout = laid_out(&doc, &[sheet], VIEWPORT, &fonts);
+        let offsets: HashMap<NodeId, f32> = offsets
+            .iter()
+            .map(|&(node, offset)| (layout.element(node), offset))
+            .collect();
+        paint_fragments_in(&layout.roots, viewport, &offsets)
     }
 
     fn rects(list: &DisplayList) -> Vec<&DisplayItem> {
@@ -1358,9 +1453,7 @@ mod fragment_tests {
     fn empty_document_falls_back_to_hint_text() {
         let fonts = test_fonts();
         let doc = dom::Node::document(vec![]);
-        let styled = style::style_document(&doc, &[]);
-        let boxes = layout::build_box_tree(&styled);
-        let layout = layout::layout_document(&boxes, VIEWPORT, &fonts);
+        let layout = laid_out(&doc, &[], VIEWPORT, &fonts);
         let list = paint_fragments(&layout.roots, Viewport::new(VIEWPORT, 600.0));
         assert!(
             list.items
@@ -1514,7 +1607,7 @@ mod fragment_tests {
         let css = ".s { overflow: auto; height: 50px; width: 100px; }
                    .r { height: 30px; margin: 0; background-color: #ff0000; }
                    .b { height: 100px; margin: 0; background-color: #0000ff; }";
-        let offsets: HashMap<usize, f32> = [(3, 20.0)].into_iter().collect();
+        let offsets = [(3, 20.0)];
         let list = display_list_scrolled(root, css, Viewport::new(VIEWPORT, 600.0), &offsets);
         let rect_y = |color: Rgba8| {
             list.items.iter().find_map(|i| match i {
@@ -1526,7 +1619,7 @@ mod fragment_tests {
         assert_eq!(rect_y(Rgba8::rgb(0, 0, 255)), Some(10.0));
         // Scrolled past the top of the viewport, the red box is culled
         // like anything else out of view.
-        let offsets: HashMap<usize, f32> = [(3, 40.0)].into_iter().collect();
+        let offsets = [(3, 40.0)];
         let culled = display_list_scrolled(
             Element::new("div")
                 .attr("class", "s")
@@ -1651,13 +1744,15 @@ mod fragment_tests {
 #[cfg(test)]
 mod styled_tests {
     use super::*;
+    use crate::testing::{Styled, styled};
     use dom::Element;
 
-    /// Builds a `StyledDom` from an already-built element and CSS source.
-    fn styled_from(root: Element, css_src: &str) -> StyledDom {
+    /// A document holding an already-built element, cascaded under CSS
+    /// source.
+    fn styled_from(root: Element, css_src: &str) -> Styled {
         let doc = dom::Node::document(vec![root.into()]);
         let sheet = css::parse_stylesheet(css_src).expect("test css is valid");
-        style::style_document(&doc, &[sheet])
+        styled(&doc, &[sheet])
     }
 
     fn text_items(list: &DisplayList) -> Vec<&DisplayItem> {
@@ -1671,7 +1766,7 @@ mod styled_tests {
     fn cascaded_color_reaches_the_display_list() {
         let root = Element::new("p").text("hello");
         let styled = styled_from(root, "p { color: #ff0000; }");
-        let list = paint_styled_document(&styled, 800.0, 600.0);
+        let list = paint_styled_document(&styled.document, &styled.styles, 800.0, 600.0);
         let texts = text_items(&list);
         assert_eq!(texts.len(), 1);
         match texts[0] {
@@ -1687,7 +1782,7 @@ mod styled_tests {
     fn cascaded_font_size_reaches_the_display_list() {
         let root = Element::new("p").text("hi");
         let styled = styled_from(root, "p { font-size: 40px; }");
-        let list = paint_styled_document(&styled, 800.0, 600.0);
+        let list = paint_styled_document(&styled.document, &styled.styles, 800.0, 600.0);
         match text_items(&list)[0] {
             DisplayItem::Text { size, .. } => assert_eq!(*size, 40.0),
             other => panic!("expected text, got {other:?}"),
@@ -1700,7 +1795,7 @@ mod styled_tests {
             .push(Element::new("p").text("hidden"))
             .push(Element::new("span").text("visible"));
         let styled = styled_from(root, "p { display: none; }");
-        let list = paint_styled_document(&styled, 800.0, 600.0);
+        let list = paint_styled_document(&styled.document, &styled.styles, 800.0, 600.0);
         let texts: Vec<&str> = text_items(&list)
             .into_iter()
             .filter_map(|i| match i {
@@ -1717,7 +1812,7 @@ mod styled_tests {
             .push(Element::new("p").text("first"))
             .push(Element::new("p").text("second"));
         let styled = styled_from(root, "p { margin: 50px 0; font-size: 10px; }");
-        let list = paint_styled_document(&styled, 800.0, 600.0);
+        let list = paint_styled_document(&styled.document, &styled.styles, 800.0, 600.0);
         let texts = text_items(&list);
         let ys: Vec<f32> = texts
             .iter()
@@ -1734,8 +1829,8 @@ mod styled_tests {
     #[test]
     fn empty_document_falls_back_to_hint_text() {
         let doc = dom::Node::document(vec![]);
-        let styled = style::style_document(&doc, &[]);
-        let list = paint_styled_document(&styled, 100.0, 100.0);
+        let styled = styled(&doc, &[]);
+        let list = paint_styled_document(&styled.document, &styled.styles, 100.0, 100.0);
         assert!(
             text_items(&list)
                 .iter()
@@ -1747,7 +1842,7 @@ mod styled_tests {
     fn background_and_accent_chrome_still_present() {
         let root = Element::new("p").text("x");
         let styled = styled_from(root, "");
-        let list = paint_styled_document(&styled, 800.0, 600.0);
+        let list = paint_styled_document(&styled.document, &styled.styles, 800.0, 600.0);
         assert!(matches!(
             list.items[0],
             DisplayItem::Rect {

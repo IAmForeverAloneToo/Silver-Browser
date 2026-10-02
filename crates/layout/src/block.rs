@@ -77,6 +77,7 @@
 //! the scroll offset. [`DocumentLayout::height`] is what the viewport
 //! scrolls over.
 
+use dom::NodeId;
 use style::computed::{
     BOTTOM, BoxSizing, ComputedStyle, Display, Float, LEFT, LengthPercentage, LengthPercentageAuto,
     Position, RIGHT, TOP,
@@ -105,10 +106,11 @@ pub struct Fragment {
     pub h: f32,
     pub style: ComputedStyle,
     pub kind: FragmentKind,
-    /// The element this fragment belongs to, as its `FlatDom` index
-    /// (M9.4): what hit testing answers with. A text fragment names its
-    /// containing element.
-    pub node: usize,
+    /// The node this fragment belongs to (M9.4, M13): what hit testing
+    /// answers with. A text fragment names its containing element, and
+    /// an anonymous box's fragment the element its box names — the
+    /// document node at the top level.
+    pub node: NodeId,
     /// For a text fragment, the distance from the top of its box to the
     /// baseline at `y`: the box runs from `y - ascent` to `y - ascent +
     /// h`, the line's own extent. Zero for a box.
@@ -2039,6 +2041,7 @@ fn layout_children<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{Laid, boxes_of, no_node};
     use dom::Element;
 
     const VIEWPORT: f32 = 800.0;
@@ -2057,8 +2060,7 @@ mod tests {
         let fonts = test_fonts();
         let doc = dom::Node::document(vec![root.into()]);
         let sheet = css::parse_stylesheet(css_src).expect("test css is valid");
-        let styled = style::style_document(&doc, &[sheet]);
-        let boxes = crate::build_box_tree(&styled);
+        let (_, boxes) = boxes_of(&doc, &[sheet]);
         layout(&boxes, VIEWPORT, &fonts)
     }
 
@@ -2176,8 +2178,7 @@ mod tests {
         let fonts = test_fonts();
         let doc = dom::Node::document(vec![Element::new("div").into()]);
         let sheet = css::parse_stylesheet("div { height: 50%; margin: 0; }").expect("valid");
-        let styled = style::style_document(&doc, &[sheet]);
-        let boxes = crate::build_box_tree(&styled);
+        let (_, boxes) = boxes_of(&doc, &[sheet]);
         let l = layout_document_in(&boxes, VIEWPORT, Some(600.0), &fonts);
         assert_eq!(l.roots[0].h, 300.0);
         assert!(l.depends_on_viewport_height);
@@ -2257,7 +2258,11 @@ mod tests {
         // The anonymous blocks and the empty inline halves produce no
         // fragment: the outer div's children are a, b and c.
         let outer = &layout.roots[0];
-        let kinds: Vec<usize> = outer.children.iter().map(|f| f.node).collect();
+        let kinds: Vec<usize> = outer
+            .children
+            .iter()
+            .map(|f| layout.number(f.node))
+            .collect();
         assert_eq!(
             kinds,
             vec![2, 4, 5],
@@ -2300,7 +2305,7 @@ mod tests {
             .iter()
             .find(|f| matches!(f.kind, FragmentKind::Box))
             .expect("the p's box, a child of the div");
-        assert_eq!(p.node, 3);
+        assert_eq!(layout.number(p.node), 3);
         assert_eq!(p.y, m.line_height(), "below the line holding a");
         assert_eq!(text("b").top(), p.y);
         assert_eq!(text("c").top(), p.y + p.h, "the line after the p");
@@ -2630,7 +2635,7 @@ mod tests {
             style: ComputedStyle::default(),
             kind: BoxKind::Text("x".to_string()),
             children: Vec::new(),
-            node: 0,
+            node: no_node(),
         };
         let block = LayoutBox {
             style: ComputedStyle {
@@ -2639,7 +2644,7 @@ mod tests {
             },
             kind: BoxKind::Block,
             children: vec![text],
-            node: 0,
+            node: no_node(),
         };
         let layout = layout_document(&[block], VIEWPORT, &fonts);
         let m = fonts.primary().metrics(16.0);
@@ -3147,14 +3152,14 @@ mod tests {
         assert_eq!(box_fragments(&frags).len(), 4, "<table> is a table");
     }
 
-    /// The tree form of [`fragments_of`].
-    fn document_of(root: Element, css_src: &str) -> DocumentLayout {
+    /// The tree form of [`fragments_of`], with its document.
+    fn document_of(root: Element, css_src: &str) -> Laid {
         let fonts = test_fonts();
         let doc = dom::Node::document(vec![root.into()]);
         let sheet = css::parse_stylesheet(css_src).expect("test css is valid");
-        let styled = style::style_document(&doc, &[sheet]);
-        let boxes = crate::build_box_tree(&styled);
-        layout_document(&boxes, VIEWPORT, &fonts)
+        let (document, boxes) = boxes_of(&doc, &[sheet]);
+        let layout = layout_document(&boxes, VIEWPORT, &fonts);
+        Laid { document, layout }
     }
 
     #[test]
@@ -3165,10 +3170,10 @@ mod tests {
         let layout = document_of(root, "section { padding: 10px; } p { margin: 5px 0 0 0; }");
         assert_eq!(layout.roots.len(), 1);
         let section = &layout.roots[0];
-        assert_eq!(section.node, 1);
+        assert_eq!(layout.number(section.node), 1);
         assert_eq!(section.children.len(), 1);
         let p = &section.children[0];
-        assert_eq!(p.node, 2);
+        assert_eq!(layout.number(p.node), 2);
         assert_eq!(
             (p.x, p.y),
             (10.0, 15.0),
@@ -3177,7 +3182,11 @@ mod tests {
         assert_eq!(p.children.len(), 1);
         let text = &p.children[0];
         assert!(matches!(text.kind, FragmentKind::Text(_)));
-        assert_eq!(text.node, 2, "a text fragment names its containing element");
+        assert_eq!(
+            layout.number(text.node),
+            2,
+            "a text fragment names its containing element"
+        );
         let m = test_fonts().primary().metrics(16.0);
         assert_eq!(text.y, 15.0 + m.ascent, "the baseline, absolute");
         assert_eq!(text.ascent, m.ascent);
@@ -3188,7 +3197,7 @@ mod tests {
         assert!(!text.contains(text.x - 1.0, 16.0));
         assert!(section.contains(0.0, 0.0));
         // The flat views are preorder: a box, then its content.
-        let order: Vec<usize> = layout.iter().map(|f| f.node).collect();
+        let order: Vec<usize> = layout.iter().map(|f| layout.number(f.node)).collect();
         assert_eq!(order, vec![1, 2, 2]);
         let flat = flatten(layout.roots.clone());
         assert_eq!(flat.len(), 3);
@@ -3229,10 +3238,11 @@ mod tests {
 
     /// The box fragment of the element with `class`, anywhere in the
     /// tree, by the class attribute's node: the test knows its nodes.
-    fn by_node(layout: &DocumentLayout, node: usize) -> Fragment {
+    fn by_node(layout: &Laid, node: usize) -> Fragment {
+        let id = layout.element(node);
         layout
             .iter()
-            .find(|f| matches!(f.kind, FragmentKind::Box) && f.node == node)
+            .find(|f| matches!(f.kind, FragmentKind::Box) && f.node == id)
             .unwrap_or_else(|| panic!("box of node {node}"))
             .clone()
     }
@@ -3287,7 +3297,10 @@ mod tests {
             "the page reaches the float"
         );
         assert_eq!(
-            div.children.iter().map(|c| c.node).collect::<Vec<_>>(),
+            div.children
+                .iter()
+                .map(|c| layout.number(c.node))
+                .collect::<Vec<_>>(),
             vec![2, 3, 4],
             "the float's fragment is where its element is"
         );
@@ -3616,7 +3629,7 @@ mod tests {
         let css = "div { margin: 0; width: 200px; }
                    .f { float: left; width: 50px; height: 40px; }
                    .o { overflow: hidden; width: auto; height: 20px; }";
-        let at = |layout: &DocumentLayout| {
+        let at = |layout: &Laid| {
             let o = by_node(layout, 3);
             (o.x, o.y, o.w)
         };
@@ -3762,12 +3775,12 @@ mod tests {
 
     /// The box fragment of `node` and the fragment holding it: its
     /// parent in the tree, or `None` at the root.
-    fn parent_of(layout: &DocumentLayout, node: usize) -> Option<usize> {
+    fn parent_of(layout: &Laid, node: usize) -> Option<usize> {
         fn find(
             fragments: &[Fragment],
-            node: usize,
-            parent: Option<usize>,
-        ) -> Option<Option<usize>> {
+            node: NodeId,
+            parent: Option<NodeId>,
+        ) -> Option<Option<NodeId>> {
             for f in fragments {
                 if matches!(f.kind, FragmentKind::Box) && f.node == node {
                     return Some(parent);
@@ -3778,7 +3791,9 @@ mod tests {
             }
             None
         }
-        find(&layout.roots, node, None).unwrap_or_else(|| panic!("box of node {node}"))
+        find(&layout.roots, layout.element(node), None)
+            .unwrap_or_else(|| panic!("box of node {node}"))
+            .map(|parent| layout.number(parent))
     }
 
     #[test]
@@ -3806,7 +3821,7 @@ mod tests {
         assert_eq!(parent_of(&layout, 3), Some(1));
         let c = by_node(&layout, 1);
         assert_eq!(
-            c.children.last().map(|f| f.node),
+            c.children.last().map(|f| layout.number(f.node)),
             Some(3),
             "after the content"
         );
@@ -3970,9 +3985,9 @@ mod tests {
         let doc = |css: &str, root: Element| {
             let docu = dom::Node::document(vec![root.into()]);
             let sheet = css::parse_stylesheet(css).expect("test css is valid");
-            let styled = style::style_document(&docu, &[sheet]);
-            let boxes = crate::build_box_tree(&styled);
-            layout_document_in(&boxes, VIEWPORT, Some(600.0), &fonts)
+            let (document, boxes) = boxes_of(&docu, &[sheet]);
+            let layout = layout_document_in(&boxes, VIEWPORT, Some(600.0), &fonts);
+            Laid { document, layout }
         };
         let root = Element::new("div")
             .attr("class", "s")
@@ -3985,7 +4000,7 @@ mod tests {
         let a = by_node(&layout, 2);
         assert_eq!((a.x, a.y, a.w, a.h), (650.0, 700.0, 50.0, 20.0));
         assert_eq!(parent_of(&layout, 2), None);
-        assert_eq!(layout.roots.last().map(|f| f.node), Some(2));
+        assert_eq!(layout.roots.last().map(|f| layout.number(f.node)), Some(2));
         assert_eq!(layout.height, 720.0, "the page reaches the box");
         assert_eq!(
             by_node(&layout, 1).scroll_height,

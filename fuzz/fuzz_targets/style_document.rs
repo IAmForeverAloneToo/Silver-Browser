@@ -10,12 +10,13 @@ fuzz_target!(|data: &[u8]| {
     let Ok(s) = std::str::from_utf8(data) else {
         return;
     };
-    let Ok(doc) = html::parse_document(s) else {
+    let Ok(parsed) = html::parse_document(s) else {
         return;
     };
+    let doc = dom::Document::from_node(&parsed);
     let mut sheets = Vec::new();
     if let Ok(sheet) = css::parse_stylesheet(s) {
         sheets.push(sheet);
     }
-    let _ = style::style_document(&doc, &sheets);
+    let _ = style::cascade_document(&doc, &sheets, &style::CascadeContext::default());
 });

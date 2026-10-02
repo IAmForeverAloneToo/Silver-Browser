@@ -1,14 +1,13 @@
 //! Style: selector matching, the cascade, and computed values.
 //!
 //! [`selector_matching`] (M4) parses selector-list preludes from
-//! `css::Token` slices and matches them against a `dom::Node` tree.
-//! [`cascade`] (M5) uses it to turn a `dom::Node` tree plus parsed
-//! stylesheets into a [`cascade::StyledDom`]: every element's
-//! [`computed::ComputedStyle`], cascaded from the built-in UA
-//! stylesheet, the given author stylesheets, and inline `style`
-//! attributes, with inheritance resolved. `layout` (M6) is the next
-//! consumer down the pipeline — for now `paint` reads `StyledDom`
-//! directly (see `paint::paint_styled_document`).
+//! `css::Token` slices and matches them against the elements of a
+//! [`dom::Document`]. [`cascade`] (M5) uses it to turn a document plus
+//! parsed stylesheets into [`Styles`]: every element's
+//! [`computed::ComputedStyle`] by its [`dom::NodeId`] (M13), cascaded
+//! from the built-in UA stylesheet, the given author stylesheets, and
+//! inline `style` attributes, with inheritance resolved. `layout` (M6)
+//! builds its box tree from the document and those styles.
 
 use std::fmt;
 
@@ -44,17 +43,12 @@ pub mod computed;
 /// Selector matching: does a selector match an element?
 ///
 /// The selectors-4 subset this engine supports, a right-to-left matcher
-/// against a flattened DOM view, and selector-list parsing over
+/// over a [`dom::Document`]'s elements, and selector-list parsing over
 /// `css::Token` slices. See the module docs for the exact supported
 /// grammar and its documented omissions.
 pub mod selector_matching;
 
-pub use selector_matching::{
-    FlatDom, matches_selector, matches_selector_list, parse_selector_list,
-};
+pub use selector_matching::{matches_selector, matches_selector_list, parse_selector_list};
 
-pub use cascade::{
-    CascadeContext, FontMeasure, StyledDom, Styles, cascade_document, style_document,
-    style_document_in,
-};
+pub use cascade::{CascadeContext, FontMeasure, Styles, cascade_document};
 pub use computed::ComputedStyle;

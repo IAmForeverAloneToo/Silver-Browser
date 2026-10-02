@@ -18,11 +18,9 @@
 //! exactly as css-syntax-3 prescribes: pseudo-elements (M16),
 //! namespaces (`|`), and anything unknown.
 
-mod flat_dom;
 mod matcher;
 mod parse;
 
-pub use flat_dom::{FlatChild, FlatDom, FlatNode};
 pub use matcher::{Matcher, matches_selector, matches_selector_list};
 pub use parse::parse_selector_list;
 

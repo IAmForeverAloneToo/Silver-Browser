@@ -38,6 +38,7 @@
 //! can show where the clip does not; a clip with no step inside it is
 //! left out too.
 
+use dom::NodeId;
 use layout::{Fragment, FragmentKind};
 use style::computed::{
     BOTTOM, ComputedStyle, Float, LEFT, LengthPercentageAuto, Overflow, Position, RIGHT, TOP,
@@ -102,7 +103,7 @@ pub enum Step<'a> {
     /// with the clips around it (CSS2 §11.1.1). The clipping box's
     /// content is scrolled by its offset; the box, its clip and its
     /// scrollbar are not.
-    PushClip { node: usize, rect: Rect },
+    PushClip { node: NodeId, rect: Rect },
     /// The end of the innermost [`Step::PushClip`].
     PopClip,
     /// A scroll container's place for its overlay scrollbar (M10.5):
@@ -177,7 +178,7 @@ struct Walk<'a, 'o> {
     dy: f32,
     /// The clips in force, outermost first: each clipping box being
     /// walked into, with its effective clip rectangle.
-    chain: Vec<(usize, Rect)>,
+    chain: Vec<(NodeId, Rect)>,
     offsets: &'o dyn ScrollOffsets,
 }
 
@@ -188,7 +189,7 @@ struct Walk<'a, 'o> {
 struct Positioned<'a> {
     f: &'a Fragment,
     containing: Rect,
-    chain: Vec<(usize, Rect)>,
+    chain: Vec<(NodeId, Rect)>,
     dx: f32,
     dy: f32,
 }
@@ -637,6 +638,7 @@ pub fn padding_box(f: &Fragment, rect: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{Laid, laid_out};
     use dom::Element;
 
     fn test_fonts() -> text::FontCollection {
@@ -645,26 +647,25 @@ mod tests {
     }
 
     /// The fragment tree of `root` under `css`, laid out at 800px.
-    fn layout_of(root: Element, css: &str) -> layout::DocumentLayout {
+    fn layout_of(root: Element, css: &str) -> Laid {
         let doc = dom::Node::document(vec![root.into()]);
         let sheet = css::parse_stylesheet(css).expect("test css is valid");
-        let styled = style::style_document(&doc, &[sheet]);
-        let boxes = layout::build_box_tree(&styled);
-        layout::layout_document(&boxes, 800.0, &test_fonts())
+        laid_out(&doc, &[sheet], 800.0, &test_fonts())
     }
 
-    /// The steps as short names, with the node for a box and the clip
-    /// rectangle for a push.
-    fn names(steps: &[Step<'_>]) -> Vec<String> {
+    /// The steps as short names, with the node's number for a box and a
+    /// push, and the clip rectangle for a push.
+    fn names(layout: &Laid, steps: &[Step<'_>]) -> Vec<String> {
         steps
             .iter()
             .map(|s| match s {
-                Step::Box { fragment, .. } => format!("box {}", fragment.node),
+                Step::Box { fragment, .. } => format!("box {}", layout.number(fragment.node)),
                 Step::Text { fragment, .. } => match &fragment.kind {
                     FragmentKind::Text(t) => format!("text {t}"),
                     FragmentKind::Box | FragmentKind::InlineBox => unreachable!(),
                 },
                 Step::PushClip { node, rect } => {
+                    let node = layout.number(*node);
                     format!("clip {node} {} {} {} {}", rect.x, rect.y, rect.w, rect.h)
                 }
                 Step::PopClip => "pop".to_string(),
@@ -694,7 +695,7 @@ mod tests {
         let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
         let clip = format!("clip 3 5 {} 100 50", m.line_height() + 5.0);
         assert_eq!(
-            names(&steps),
+            names(&layout, &steps),
             vec![
                 "box 1".to_string(),
                 "box 2".to_string(),
@@ -726,7 +727,8 @@ mod tests {
             ),
             "div, p { margin: 0; } .s { overflow: auto; height: 100px; } .t { height: 200px; }",
         );
-        let offsets: std::collections::HashMap<usize, f32> = [(2, 30.0)].into_iter().collect();
+        let offsets: std::collections::HashMap<NodeId, f32> =
+            [(layout.element(2), 30.0)].into_iter().collect();
         let viewport = Viewport {
             width: 800.0,
             height: 600.0,
@@ -737,7 +739,9 @@ mod tests {
             steps
                 .iter()
                 .find_map(|s| match s {
-                    Step::Box { fragment, rect } if fragment.node == node => Some(*rect),
+                    Step::Box { fragment, rect } if layout.number(fragment.node) == node => {
+                        Some(*rect)
+                    }
                     _ => None,
                 })
                 .expect("the box has a step")
@@ -747,17 +751,17 @@ mod tests {
         assert!(matches!(
             steps[2],
             Step::PushClip {
-                node: 2,
+                node,
                 rect: Rect {
                     y: -20.0,
                     h: 100.0,
                     ..
                 }
-            }
+            } if layout.number(node) == 2
         ));
         // The scrollbar is painted over the content, in the last pass.
         assert_eq!(
-            names(&steps)[2..],
+            names(&layout, &steps)[2..],
             [
                 "clip 2 0 -20 800 100",
                 "box 3",
@@ -797,7 +801,7 @@ mod tests {
         let clips: Vec<(usize, f32)> = steps
             .iter()
             .filter_map(|s| match s {
-                Step::PushClip { node, rect } => Some((*node, rect.h)),
+                Step::PushClip { node, rect } => Some((layout.number(*node), rect.h)),
                 _ => None,
             })
             .collect();
@@ -810,11 +814,17 @@ mod tests {
             "the inner clip is cut to the outer"
         );
         assert!(
-            !names(&steps).iter().any(|n| n.contains("far")),
+            !names(&layout, &steps).iter().any(|n| n.contains("far")),
             "{:?}",
-            names(&steps)
+            names(&layout, &steps)
         );
-        assert_eq!(names(&steps).iter().filter(|n| *n == "pop").count(), 3);
+        assert_eq!(
+            names(&layout, &steps)
+                .iter()
+                .filter(|n| *n == "pop")
+                .count(),
+            3
+        );
     }
 
     #[test]
@@ -831,7 +841,7 @@ mod tests {
         );
         let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
         assert_eq!(
-            names(&steps),
+            names(&layout, &steps),
             ["box 1", "box 3", "text y", "box 2", "text x"].map(String::from)
         );
         // An absolute box the initial containing block positions is a
@@ -846,7 +856,7 @@ mod tests {
         assert_eq!(layout.roots.len(), 2);
         let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
         assert_eq!(
-            names(&steps),
+            names(&layout, &steps),
             ["box 1", "box 3", "text y", "box 2", "text x"].map(String::from)
         );
     }
@@ -864,7 +874,7 @@ mod tests {
         );
         let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
         assert_eq!(
-            names(&steps),
+            names(&layout, &steps),
             ["box 1", "box 3", "box 2", "text f", "text b"].map(String::from)
         );
     }
@@ -893,7 +903,7 @@ mod tests {
         );
         let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
         assert_eq!(
-            names(&steps),
+            names(&layout, &steps),
             [
                 "box 1", "box 2", "box 3", "box 6", "box 7", "box 5", "box 4"
             ]
@@ -913,7 +923,7 @@ mod tests {
         );
         let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
         assert_eq!(
-            names(&steps),
+            names(&layout, &steps),
             ["box 1", "box 2", "box 3", "box 4"].map(String::from)
         );
         // A positioned box with `z-index: auto` does not: its negative
@@ -930,7 +940,7 @@ mod tests {
         );
         let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
         assert_eq!(
-            names(&steps),
+            names(&layout, &steps),
             ["box 1", "box 3", "box 4", "box 2"].map(String::from)
         );
     }
@@ -955,7 +965,7 @@ mod tests {
         );
         let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
         assert_eq!(
-            names(&steps),
+            names(&layout, &steps),
             [
                 "box 1",
                 "box 2",
@@ -1106,7 +1116,9 @@ mod tests {
             let s = steps
                 .iter()
                 .find_map(|st| match st {
-                    Step::Box { fragment, rect } if fragment.node == 2 => Some(rect.y),
+                    Step::Box { fragment, rect } if layout.number(fragment.node) == 2 => {
+                        Some(rect.y)
+                    }
                     _ => None,
                 })
                 .expect("the sticky box");
@@ -1141,7 +1153,7 @@ mod tests {
         );
         let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
         assert_eq!(
-            names(&steps),
+            names(&layout, &steps),
             ["box 1", "box 2", "text x", "text y"].map(String::from)
         );
     }

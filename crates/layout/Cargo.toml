@@ -5,14 +5,13 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+dom.workspace = true
 style.workspace = true
 text.workspace = true
 
-# dom/css: only tests need to build fixture documents and stylesheets;
-# html: the box tree tests build table fixtures from real markup (M12),
-# a downward edge (html sits below layout in the layer stack) and
-# dev-only.
+# css: only tests need to build fixture stylesheets; html: the box tree
+# tests build table fixtures from real markup (M12), a downward edge
+# (html sits below layout in the layer stack) and dev-only.
 [dev-dependencies]
-dom.workspace = true
 css.workspace = true
 html.workspace = true

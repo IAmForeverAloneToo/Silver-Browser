@@ -1992,7 +1992,8 @@ fn inner_style(style: &ComputedStyle) -> ComputedStyle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block::{DocumentLayout, FragmentKind, layout_document};
+    use crate::block::{FragmentKind, layout_document};
+    use crate::testing::{Laid, boxes_of};
     use style::computed::{LengthPercentage, VerticalAlign};
 
     const VIEWPORT: f32 = 800.0;
@@ -2004,28 +2005,30 @@ mod tests {
     /// The document `html` parses to, styled under `css` and laid out
     /// against an 800px viewport. The parser implies html, head and
     /// body: nodes html 1, head 2, body 3, the markup's from 4.
-    fn document_of(html: &str, css: &str) -> DocumentLayout {
+    fn document_of(html: &str, css: &str) -> Laid {
         let fonts = test_fonts();
         let doc = html::parse_document(html).expect("html parsing never fails");
         let sheet = css::parse_stylesheet(css).expect("test css is valid");
-        let styled = style::style_document(&doc, &[sheet]);
-        let boxes = crate::build_box_tree(&styled);
-        layout_document(&boxes, VIEWPORT, &fonts)
+        let (document, boxes) = boxes_of(&doc, &[sheet]);
+        let layout = layout_document(&boxes, VIEWPORT, &fonts);
+        Laid { document, layout }
     }
 
     /// The first fragment in tree order for the node `node`.
-    fn fragment_of(layout: &DocumentLayout, node: usize) -> &Fragment {
+    fn fragment_of(layout: &Laid, node: usize) -> &Fragment {
+        let id = layout.element(node);
         layout
             .iter()
-            .find(|f| f.node == node && matches!(f.kind, FragmentKind::Box))
+            .find(|f| f.node == id && matches!(f.kind, FragmentKind::Box))
             .unwrap_or_else(|| panic!("a box fragment for node {node}"))
     }
 
     /// Every box fragment of `node`, in tree order.
-    fn fragments_of(layout: &DocumentLayout, node: usize) -> Vec<&Fragment> {
+    fn fragments_of(layout: &Laid, node: usize) -> Vec<&Fragment> {
+        let id = layout.element(node);
         layout
             .iter()
-            .filter(|f| f.node == node && matches!(f.kind, FragmentKind::Box))
+            .filter(|f| f.node == id && matches!(f.kind, FragmentKind::Box))
             .collect()
     }
 
@@ -2222,7 +2225,7 @@ mod tests {
         let order: Vec<usize> = layout
             .iter()
             .filter(|f| matches!(f.kind, FragmentKind::Box))
-            .map(|f| f.node)
+            .map(|f| layout.number(f.node))
             .collect();
         let first = |node: usize| order.iter().position(|n| *n == node).unwrap();
         let last = |node: usize| order.iter().rposition(|n| *n == node).unwrap();
@@ -2320,7 +2323,7 @@ mod tests {
         .b40 { width: 40px; height: 10px; }";
 
     /// The x and the width of the fragments of `nodes`.
-    fn columns_of(layout: &DocumentLayout, nodes: &[usize]) -> Vec<(f32, f32)> {
+    fn columns_of(layout: &Laid, nodes: &[usize]) -> Vec<(f32, f32)> {
         nodes
             .iter()
             .map(|&n| {
@@ -2869,7 +2872,7 @@ mod tests {
     }
 
     /// The heights of the row fragments of `nodes`.
-    fn heights_of(layout: &DocumentLayout, nodes: &[usize]) -> Vec<f32> {
+    fn heights_of(layout: &Laid, nodes: &[usize]) -> Vec<f32> {
         nodes.iter().map(|&n| fragment_of(layout, n).h).collect()
     }
 
