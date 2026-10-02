@@ -560,3 +560,385 @@ fn a_traversal_to_a_document_fetched_again_takes_the_url_it_redirects_to() {
     assert_eq!(at_path(&tab.engine).as_deref(), Some("/moved"));
     assert!(!tab.engine.can_go_back() && tab.engine.can_go_forward());
 }
+
+// ---- What a response becomes ----------------------------------------------
+
+/// The text of the document shown.
+fn all_text(engine: &Engine) -> String {
+    text(engine)
+}
+
+/// The tags of the document's elements, in tree order.
+fn tags(engine: &Engine) -> Vec<String> {
+    let document = engine.document();
+    document
+        .subtree(document.root())
+        .filter_map(|node| document.tag(node).map(str::to_owned))
+        .collect()
+}
+
+/// The `<title>`'s text, as the browser's pages set it.
+fn title_text(engine: &Engine) -> String {
+    let document = engine.document();
+    document
+        .subtree(document.root())
+        .find(|&node| document.tag(node) == Some("title"))
+        .map(|node| document.text_content(node))
+        .unwrap_or_default()
+}
+
+fn failed(engine: &Engine) -> bool {
+    matches!(engine.load_state(), LoadState::Failed(_))
+}
+
+#[test]
+fn text_types_are_shown_as_text_documents() {
+    let server = serve(|path| {
+        let (kind, body): (&str, &[u8]) = match path {
+            "/plain" => ("text/plain", b"a <b>bold</b> & more\r\nnext\rlast"),
+            "/json" => ("application/json", b"{\"a\": [1, 2]}"),
+            "/script" => ("text/javascript", b"let a = 1 < 2;"),
+            // No sniffing for CSS: a NUL stays, and is replaced.
+            "/style" => ("text/css", b"p { color: red }\0"),
+            "/feed" => ("application/rss+xml", b"<rss><channel/></rss>"),
+            "/captions" => ("text/vtt", b"WEBVTT"),
+            "/latin" => ("text/plain;charset=windows-1252", b"caf\xe9"),
+            _ => return None,
+        };
+        Some(Reply::ok(kind, body))
+    });
+    let mut tab = Tab::new();
+    tab.load(server.url("/plain"));
+    assert_eq!(tags(&tab.engine), ["html", "head", "style", "body", "pre"]);
+    let document = tab.engine.document();
+    let pre = document
+        .subtree(document.root())
+        .find(|&node| document.tag(node) == Some("pre"))
+        .unwrap();
+    assert_eq!(
+        document.text_content(pre),
+        "a <b>bold</b> & more\nnext\nlast"
+    );
+    // HTML lets the user agent add a style: a long line wraps.
+    let white_space = tab.engine.styles().get(pre).unwrap().white_space;
+    assert_eq!(white_space, style::computed::WhiteSpace::PreWrap);
+    assert_eq!(tab.engine.load_state(), &LoadState::Loaded);
+
+    for (path, shown) in [
+        ("/json", "{\"a\": [1, 2]}"),
+        ("/script", "let a = 1 < 2;"),
+        ("/style", "p { color: red }\u{FFFD}"),
+        ("/feed", "<rss><channel/></rss>"),
+        ("/captions", "WEBVTT"),
+        ("/latin", "café"),
+    ] {
+        tab.load(server.url(path));
+        assert!(tags(&tab.engine).ends_with(&["pre".to_owned()]), "{path}");
+        assert!(all_text(&tab.engine).ends_with(shown), "{path}");
+    }
+    assert_eq!(tab.engine.history.len(), 7);
+}
+
+#[test]
+fn xhtml_goes_through_the_html_parser() {
+    let server = serve(|path| {
+        (path == "/page.xhtml").then(|| {
+            Reply::ok(
+                "application/xhtml+xml",
+                b"<html xmlns=\"http://www.w3.org/1999/xhtml\"><body><p>XHTML</p></body></html>",
+            )
+        })
+    });
+    let mut tab = Tab::new();
+    tab.load(server.url("/page.xhtml"));
+    assert_eq!(shown(&tab.engine), "XHTML");
+}
+
+#[test]
+fn a_204_or_a_205_leaves_the_page_and_the_history_as_they_were() {
+    let server = serve(|path| match path {
+        "/a" => Some(page("a")),
+        "/none" => Some(Reply::with_fields(204, &[], b"")),
+        "/reset" => Some(Reply::with_fields(205, &[], b"")),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.load(server.url("/a"));
+    for path in ["/none", "/reset"] {
+        tab.load(server.url(path));
+        assert_eq!(shown(&tab.engine), "a 0", "{path}");
+        assert_eq!(at_path(&tab.engine).as_deref(), Some("/a"));
+        assert_eq!(tab.engine.history.len(), 1);
+        assert_eq!(tab.engine.load_state(), &LoadState::Loaded);
+        assert_eq!(tab.engine.take_notice(), None);
+    }
+}
+
+#[test]
+fn a_download_leaves_the_page_shown_with_a_notice() {
+    let server = serve(|path| match path {
+        "/a" => Some(page("a")),
+        "/report" => Some(Reply::with_fields(
+            200,
+            &[
+                ("Content-Type", "text/html"),
+                ("Content-Disposition", " ATTACHMENT; filename=report.html"),
+            ],
+            b"<p>report</p>",
+        )),
+        "/archive" => Some(Reply::ok("application/zip", b"PK\x03\x04")),
+        "/paper" => Some(Reply::ok("application/pdf", b"%PDF-1.7")),
+        "/inline" => Some(Reply::with_fields(
+            200,
+            &[
+                ("Content-Type", "text/html"),
+                ("Content-Disposition", "inline"),
+            ],
+            b"<p>inline 0</p>",
+        )),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.load(server.url("/a"));
+    for (path, essence) in [
+        ("/report", "text/html"),
+        ("/archive", "application/zip"),
+        ("/paper", "application/pdf"),
+    ] {
+        tab.load(server.url(path));
+        assert_eq!(shown(&tab.engine), "a 0", "{path}");
+        assert_eq!(tab.engine.history.len(), 1);
+        assert_eq!(tab.engine.load_state(), &LoadState::Loaded);
+        let notice = tab.engine.take_notice().expect("a notice");
+        assert!(
+            notice.contains(path) && notice.contains(essence),
+            "{notice}"
+        );
+        assert_eq!(tab.engine.take_notice(), None, "told once");
+    }
+    // Any other disposition shows the document.
+    tab.load(server.url("/inline"));
+    assert_eq!(shown(&tab.engine), "inline 0");
+}
+
+#[test]
+fn an_image_is_a_page_saying_it_cannot_be_shown_yet() {
+    let server = serve(|path| match path {
+        "/a" => Some(page("a")),
+        "/photo" => Some(Reply::ok("image/png", b"\x89PNG\r\n\x1a\n")),
+        "/song" => Some(Reply::ok("audio/ogg", b"OggS")),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.load(server.url("/a"));
+    tab.load(server.url("/photo"));
+    assert_eq!(at_path(&tab.engine).as_deref(), Some("/photo"));
+    assert!(all_text(&tab.engine).contains("This is a image/png file"));
+    assert_eq!(tab.engine.load_state(), &LoadState::Loaded);
+    tab.load(server.url("/song"));
+    assert!(all_text(&tab.engine).contains("audio/ogg"));
+    // A page the browser made is asked for again, not kept.
+    tab.engine.go_back();
+    tab.settle();
+    assert_eq!(asked(&server, "/photo"), 2);
+}
+
+#[test]
+fn an_error_status_is_the_sites_page_unless_it_sent_nothing() {
+    let server = serve(|path| match path {
+        "/missing" => Some(Reply::with_fields(
+            404,
+            &[("Content-Type", "text/html")],
+            b"<p>Not here</p>",
+        )),
+        "/empty" => Some(Reply::Send(
+            b"HTTP/1.1 503 <b>Busy</b> & away\r\nContent-Length: 0\r\n\r\n".to_vec(),
+        )),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.load(server.url("/missing"));
+    assert_eq!(all_text(&tab.engine), "Not here");
+    assert_eq!(tab.engine.load_state(), &LoadState::Loaded);
+    tab.load(server.url("/empty"));
+    assert_eq!(at_path(&tab.engine).as_deref(), Some("/empty"));
+    assert!(all_text(&tab.engine).contains("HTTP 503 <b>Busy</b> & away"));
+    assert!(
+        !tags(&tab.engine).contains(&"b".to_owned()),
+        "text, not markup"
+    );
+    assert_eq!(
+        title_text(&tab.engine),
+        "127.0.0.1 — HTTP 503 <b>Busy</b> & away"
+    );
+    assert_eq!(tab.engine.load_state(), &LoadState::Loaded);
+}
+
+#[test]
+fn a_network_error_shows_an_error_page_under_the_url_that_failed() {
+    let server = pages();
+    let closed_port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let mut tab = Tab::new();
+    tab.load(server.url("/a"));
+
+    let nowhere = Url::parse("http://nowhere.invalid/page").unwrap();
+    tab.load(nowhere.clone());
+    assert_eq!(tab.engine.url(), Some(&nowhere));
+    assert!(matches!(
+        tab.engine.load_state(),
+        LoadState::Failed(crate::LoadError::Network(crate::NetworkError::Resolve(_)))
+    ));
+    assert_eq!(title_text(&tab.engine), "Can't find nowhere.invalid");
+    assert!(all_text(&tab.engine).contains("http://nowhere.invalid/page"));
+    assert_eq!(tab.engine.history.len(), 2, "an entry like any other");
+
+    let refused = Url::parse(&format!("http://127.0.0.1:{closed_port}/")).unwrap();
+    tab.load(refused.clone());
+    assert!(failed(&tab.engine));
+    assert_eq!(title_text(&tab.engine), "Can't reach 127.0.0.1");
+
+    let file = Url::parse("file:///no/such/file/anywhere.html").unwrap();
+    tab.load(file);
+    assert_eq!(title_text(&tab.engine), "Can't open this file");
+
+    let bad = Url::parse("data:text/html;base64,%%%").unwrap();
+    tab.load(bad);
+    assert!(failed(&tab.engine), "{:?}", tab.engine.load_state());
+
+    // Back leaves an error page; one gone back to is fetched again, and
+    // fails again; the entry before them is as it was.
+    tab.engine.go_back();
+    tab.settle();
+    tab.engine.go_back();
+    tab.settle();
+    assert_eq!(tab.engine.url(), Some(&refused));
+    assert!(failed(&tab.engine));
+    for _ in 0..2 {
+        tab.engine.go_back();
+        tab.settle();
+    }
+    assert_eq!(shown(&tab.engine), "a 0");
+    assert_eq!(tab.engine.load_state(), &LoadState::Loaded);
+}
+
+#[test]
+fn a_certificate_from_a_root_not_trusted_is_an_error_with_no_way_past() {
+    let authority = net::test_server::TestAuthority::new();
+    let server = TestServer::tls(
+        authority.server(&["127.0.0.1"], net::test_server::VALID),
+        |_| page("secret"),
+    );
+    let mut tab = Tab::new();
+    tab.load(server.url("/"));
+    assert!(matches!(
+        tab.engine.load_state(),
+        LoadState::Failed(crate::LoadError::Network(crate::NetworkError::Tls(
+            net::TlsFailure::UnknownIssuer
+        )))
+    ));
+    assert_eq!(
+        title_text(&tab.engine),
+        "Can't connect securely to 127.0.0.1"
+    );
+    let said = all_text(&tab.engine);
+    assert!(
+        said.contains("not issued by an authority this browser trusts"),
+        "{said}"
+    );
+    assert!(said.contains("there is no way past this"), "{said}");
+    assert!(
+        !tags(&tab.engine).contains(&"a".to_owned()),
+        "nothing to click through"
+    );
+}
+
+#[test]
+fn a_reload_of_an_error_page_tries_the_url_again() {
+    let up = Arc::new(AtomicBool::new(false));
+    let server = {
+        let up = up.clone();
+        serve(move |path| match path {
+            "/flaky" if up.load(Ordering::SeqCst) => Some(page("flaky")),
+            "/flaky" => Some(Reply::Close),
+            _ => None,
+        })
+    };
+    let mut tab = Tab::new();
+    tab.load(server.url("/flaky"));
+    assert!(failed(&tab.engine));
+    up.store(true, Ordering::SeqCst);
+    tab.engine.reload();
+    tab.settle();
+    assert_eq!(shown(&tab.engine), "flaky 0");
+    assert_eq!(tab.engine.load_state(), &LoadState::Loaded);
+    assert_eq!(tab.engine.history.len(), 1);
+}
+
+#[test]
+fn stopping_on_an_error_page_leaves_it_failed() {
+    let server = serve(|path| (path == "/gone").then_some(Reply::Close));
+    let mut tab = Tab::new();
+    tab.load(server.url("/gone"));
+    assert!(failed(&tab.engine));
+    tab.engine.stop();
+    assert!(failed(&tab.engine));
+}
+
+#[test]
+fn about_silver_is_the_browsers_own_page_and_fetches_nothing() {
+    let mut tab = Tab::new();
+    let about = Url::parse("about:silver").unwrap();
+    tab.engine.navigate(about.clone());
+    // Made at once, with nothing to wait for.
+    assert_eq!(tab.engine.url(), Some(&about));
+    assert_eq!(tab.engine.load_state(), &LoadState::Loaded);
+    assert!(all_text(&tab.engine).contains("Hello from Silver Browser"));
+    assert_eq!(tab.engine.network.in_flight(), 0);
+    assert!(
+        !tab.engine.can_go_back(),
+        "it replaced the initial about:blank"
+    );
+    tab.engine.navigate(about.clone());
+    assert_eq!(
+        tab.engine.history.len(),
+        1,
+        "a navigation to it again replaces it"
+    );
+    tab.engine.reload();
+    assert_eq!(tab.engine.load_state(), &LoadState::Loaded);
+    assert!(all_text(&tab.engine).contains("Hello from Silver Browser"));
+}
+
+#[test]
+fn about_blank_is_empty_and_any_other_about_page_is_an_error() {
+    let mut tab = Tab::new();
+    tab.engine.navigate(Url::parse("about:silver").unwrap());
+    tab.load(Url::parse("about:blank").unwrap());
+    assert_eq!(all_text(&tab.engine), "");
+    assert_eq!(tab.engine.load_state(), &LoadState::Loaded);
+    assert_eq!(tab.engine.history.len(), 2);
+    let nothing = Url::parse("about:nothing").unwrap();
+    tab.engine.navigate(nothing.clone());
+    assert_eq!(tab.engine.url(), Some(&nothing));
+    assert!(failed(&tab.engine));
+    assert_eq!(title_text(&tab.engine), "No page at about:nothing");
+}
+
+#[test]
+fn a_timeout_is_an_error_page() {
+    let server = serve(|path| (path == "/slow").then_some(Reply::Hang));
+    let mut tab = Tab::new();
+    let mut config = net::transport::Config::default();
+    config.read_timeout = std::time::Duration::from_millis(200);
+    tab.engine.set_network(crate::Client::new(config));
+    tab.load(server.url("/slow"));
+    assert!(matches!(
+        tab.engine.load_state(),
+        LoadState::Failed(crate::LoadError::Network(crate::NetworkError::Timeout))
+    ));
+    assert!(all_text(&tab.engine).contains("took too long to answer"));
+}

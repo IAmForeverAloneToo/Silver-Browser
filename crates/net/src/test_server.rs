@@ -11,6 +11,11 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use rcgen::{
+    BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair, KeyUsagePurpose,
+    date_time_ymd,
+};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::{ServerConfig, ServerConnection, StreamOwned};
 
 use crate::Url;
@@ -392,5 +397,70 @@ fn fill(shared: &Shared, stream: &mut ServerStream, buffered: &mut Vec<u8>) -> i
             buffered.extend_from_slice(&chunk[..n]);
             Ok(true)
         }
+    }
+}
+
+/// Years a certificate is valid over that cover any day a test runs.
+pub const VALID: (i32, i32) = (2000, 3000);
+
+/// A certificate authority made for one test, and certificates it
+/// issues.
+pub struct TestAuthority {
+    params: CertificateParams,
+    key: KeyPair,
+    /// The root's certificate, for a client to trust.
+    pub root: CertificateDer<'static>,
+}
+
+impl TestAuthority {
+    pub fn new() -> TestAuthority {
+        let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
+        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        params
+            .distinguished_name
+            .push(DnType::CommonName, "Silver Browser test root");
+        params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+        let key = KeyPair::generate().unwrap();
+        let root = params.self_signed(&key).unwrap().der().clone();
+        TestAuthority { params, key, root }
+    }
+
+    /// A server configuration presenting a certificate for `names`,
+    /// valid over the given years.
+    pub fn server(&self, names: &[&str], years: (i32, i32)) -> Arc<ServerConfig> {
+        self.server_speaking(names, years, rustls::DEFAULT_VERSIONS)
+    }
+
+    /// As [`TestAuthority::server`], speaking only `versions` of TLS.
+    pub fn server_speaking(
+        &self,
+        names: &[&str],
+        years: (i32, i32),
+        versions: &[&'static rustls::SupportedProtocolVersion],
+    ) -> Arc<ServerConfig> {
+        let mut params =
+            CertificateParams::new(names.iter().map(|n| n.to_string()).collect::<Vec<_>>())
+                .unwrap();
+        params.not_before = date_time_ymd(years.0, 1, 1);
+        params.not_after = date_time_ymd(years.1, 1, 1);
+        let key = KeyPair::generate().unwrap();
+        let issuer = Issuer::from_params(&self.params, &self.key);
+        let leaf = params.signed_by(&key, &issuer).unwrap().der().clone();
+        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der()));
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let mut config = ServerConfig::builder_with_provider(provider)
+            .with_protocol_versions(versions)
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(vec![leaf], key)
+            .unwrap();
+        config.alpn_protocols = vec![b"http/1.1".to_vec()];
+        Arc::new(config)
+    }
+}
+
+impl Default for TestAuthority {
+    fn default() -> TestAuthority {
+        TestAuthority::new()
     }
 }

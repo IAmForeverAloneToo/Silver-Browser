@@ -82,6 +82,7 @@
 pub mod differential;
 mod loader;
 mod navigation;
+mod pages;
 #[cfg(test)]
 mod testing;
 
@@ -103,58 +104,6 @@ use render::{RenderBackend as _, SoftwareBackend};
 use style::computed::Overflow;
 use style::{CascadeContext, FontMeasure, Styles, Stylesheets};
 use text::FontError;
-
-/// The document rendered when no other is loaded.
-const DOCUMENT_SOURCE: &str = "\
-<html>\
-  <head>\
-    <style>\
-      html { background-color: #1e1e2e; }\
-      h1 { color: #cdd6f4; }\
-      p { color: #a6adc8; }\
-      .highlight { color: #f9e2af; font-size: 20px; }\
-      .card {\
-        display: block;\
-        margin: 16px 0;\
-        padding: 12px;\
-        border-width: 2px;\
-        border-style: solid;\
-        border-color: #89b4fa;\
-        background-color: #313244;\
-      }\
-      .clipped { height: 40px; overflow: hidden; }\
-      .scrolls { height: 60px; overflow: auto; }\
-      a { color: #89b4fa; }\
-    </style>\
-  </head>\
-  <body>\
-    <h1>Hello from Silver Browser</h1>\
-    <p>A hobby browser engine in Rust — milestone 9:</p>\
-    <p class=\"highlight\">this page is laid out by our own block formatting context — real width/margin resolution and margin collapsing, not a flat vertical list.</p>\
-    <div class=\"card\">\
-      <p>This card's background and border are painted from real fragment geometry (M6.8) — the box model actually exists now.</p>\
-    </div>\
-    <div class=\"card clipped\">\
-      <p>This card is 40px tall with overflow: hidden, so this second sentence is clipped away at its padding edge rather than painted over whatever follows. The clip is a rectangle in the display list (M9.3).</p>\
-    </div>\
-    <div class=\"card scrolls\">\
-      <p>This card is 60px tall with overflow: auto, so it scrolls on its own: turn the wheel over it and its content moves inside the clip, with the overlay scrollbar at its right edge showing where it is (M10.5). At the end of its content the wheel goes on to the page, which is scroll chaining.</p>\
-      <p>A second paragraph, to give the card something more to scroll through.</p>\
-    </div>\
-    <p>Scroll with the wheel, the arrow keys, Page Up and Page Down, Home and End, the space bar, or by dragging the scrollbar at the right (M9.2). Click <a href=\"about:silver\">this link</a> and the engine finds the anchor under the pointer (M9.4; the shell only prints it — navigation is M15).</p>\
-    <p>The paragraphs below only exist to make the page taller than the window.</p>\
-    <p>One. The quick brown fox jumps over the lazy dog, and the layout is cached across scrolls (M9.5): only paint and raster run again.</p>\
-    <p>Two. The quick brown fox jumps over the lazy dog.</p>\
-    <p>Three. The quick brown fox jumps over the lazy dog.</p>\
-    <p>Four. The quick brown fox jumps over the lazy dog.</p>\
-    <p>Five. The quick brown fox jumps over the lazy dog.</p>\
-    <p>Six. The quick brown fox jumps over the lazy dog.</p>\
-    <p>Seven. The quick brown fox jumps over the lazy dog.</p>\
-    <p>Eight. The quick brown fox jumps over the lazy dog.</p>\
-    <p>Nine. The quick brown fox jumps over the lazy dog.</p>\
-    <p>Ten. The end of the page.</p>\
-  </body>\
-</html>";
 
 /// How much of the remaining distance to the scroll target the scroll
 /// animation covers in one frame of sixty a second, [`FRAME_BUDGET`]
@@ -233,6 +182,9 @@ pub struct Engine {
     /// way.
     navigation: Option<Navigation>,
     load_state: LoadState,
+    /// What the user should be told of a navigation that showed no page:
+    /// a download not saved (M15).
+    notice: Option<String>,
     /// The number the next page is given.
     next_page: PageId,
     /// Where the next frames scroll the viewport to, once there is a
@@ -305,8 +257,11 @@ struct Shown {
     /// navigation replaces (HTML's "is initial about:blank").
     initial: bool,
     /// Whether the back-forward cache may keep the document when it is
-    /// left: HTML's "salvageable", which aborting its fetches ends.
+    /// left: HTML's "salvageable", which aborting its fetches ends. No
+    /// page the browser made is kept.
     salvageable: bool,
+    /// For an error page, the error it says.
+    failure: Option<LoadError>,
 }
 
 impl Shown {
@@ -328,13 +283,15 @@ impl Shown {
             element_scroll: HashMap::new(),
             initial: false,
             salvageable: true,
+            failure: None,
         }
     }
 }
 
-/// A navigation under way: its document's load, and what showing it
-/// does to the session history.
+/// A navigation under way: the URL navigated to, its document's load,
+/// and what showing it does to the session history.
 struct Navigation {
+    url: Url,
     incoming: Incoming,
     handling: Handling,
 }
@@ -448,6 +405,7 @@ impl Engine {
             network,
             navigation: None,
             load_state: LoadState::Loaded,
+            notice: None,
             next_page: 1,
             goal: None,
             style_runs: 0,
@@ -461,12 +419,6 @@ impl Engine {
             drawn_scroll_y: 0.0,
             changed: true,
         }
-    }
-
-    /// Shows the built-in page as a document given to the engine: what
-    /// the shell shows when its load fails, until M15's error pages.
-    pub fn show_built_in_page(&mut self) {
-        self.load_document(DOCUMENT_SOURCE);
     }
 
     /// Replaces the session document by parsing HTML `source` and
@@ -551,17 +503,62 @@ impl Engine {
         self.start_navigation(url, handling);
     }
 
-    /// Fetches `url`'s document, for `handling` once it is shown.
+    /// Fetches `url`'s document, for `handling` once it is shown. The
+    /// browser's own `about:` pages are made at once instead: HTML leaves
+    /// every `about:` URL but `about:blank` to the user agent, and this
+    /// one has `about:silver`, and an error page for any other.
     fn start_navigation(&mut self, url: Url, handling: Handling) {
         self.cancel_navigation();
+        if url.scheme() == "about" && url.path_str() != "blank" {
+            let shown = if url.path_str() == "silver" {
+                let mut page = Page::fetched(
+                    self.new_page_id(),
+                    url.clone(),
+                    encoding::UTF_8,
+                    None,
+                    net::AddressSpace::Public,
+                );
+                let document = parsed_or_empty(pages::ABOUT_SILVER);
+                page.begin(&document, &mut self.network);
+                let mut shown = Shown::new(document, page);
+                shown.salvageable = false;
+                shown
+            } else {
+                let error = LoadError::Network(NetworkError::BadScheme("about".to_owned()));
+                self.made(pages::error(&url, &error), Some(error))
+            };
+            self.commit(shown, Some(url), handling);
+            return;
+        }
         let id = self.new_page_id();
-        let request = net::Request::get(url, net::Destination::Document);
+        let request = net::Request::get(url.clone(), net::Destination::Document);
         self.network.fetch(id, Target::Document, request);
         self.navigation = Some(Navigation {
+            url,
             incoming: Incoming::Fetching(id),
             handling,
         });
         self.load_state = LoadState::Loading;
+    }
+
+    /// A page the browser made, `document`, with no URL of its own so
+    /// that nothing in it resolves against the URL it is shown under,
+    /// and never kept by the back-forward cache; `failure` for an error
+    /// page.
+    fn made(&mut self, document: Document, failure: Option<LoadError>) -> Shown {
+        let mut page = Page::given(self.new_page_id());
+        page.begin(&document, &mut self.network);
+        let mut shown = Shown::new(document, page);
+        shown.salvageable = false;
+        shown.failure = failure;
+        shown
+    }
+
+    /// What the user should be told of the latest navigation that
+    /// showed no page, once: a download this version cannot save. The
+    /// shell shows it in the status bubble.
+    pub fn take_notice(&mut self) -> Option<String> {
+        self.notice.take()
     }
 
     /// Aborts the navigation under way, if there is one.
@@ -700,8 +697,12 @@ impl Engine {
     }
 
     /// Takes the response to the document fetch of the navigation under
-    /// way: the navigation fails, or the document is parsed and its
-    /// stylesheets fetched.
+    /// way (docs/design/navigation.md, "What a response becomes"): a
+    /// network error shows an error page; a document is parsed and its
+    /// stylesheets fetched; an error status with nothing in it, or a type
+    /// this version cannot show, shows the browser's page saying so; a
+    /// download or a 204 or 205 ends the navigation with the page shown
+    /// as it was.
     fn document_arrived(&mut self, page: PageId, result: Result<net::Response, LoadError>) {
         let Some(navigation) = self.navigation.take() else {
             return;
@@ -710,33 +711,48 @@ impl Engine {
             self.navigation = Some(navigation);
             return;
         }
-        let parsed = result.and_then(|response| {
-            let parsed = loader::document_from(&response)?;
-            let address_space = response.address_space.unwrap_or(net::AddressSpace::Public);
-            Ok((
-                parsed.document,
-                Page::fetched(
-                    page,
-                    response.url().clone(),
-                    parsed.encoding,
-                    parsed.undecodable,
-                    address_space,
-                ),
-            ))
-        });
-        match parsed {
-            Ok((document, mut incoming)) => {
-                incoming.begin(&document, &mut self.network);
+        let Navigation { url, handling, .. } = navigation;
+        let response = match result {
+            Ok(response) => response,
+            Err(error) => {
+                let shown = self.made(pages::error(&url, &error), Some(error));
+                self.commit(shown, Some(url), handling);
+                return;
+            }
+        };
+        let at = response.url().clone();
+        match loader::outcome(&response) {
+            loader::Outcome::Document(parsed) => {
+                let address_space = response.address_space.unwrap_or(net::AddressSpace::Public);
+                let mut incoming =
+                    Page::fetched(page, at, parsed.encoding, parsed.undecodable, address_space);
+                incoming.begin(&parsed.document, &mut self.network);
                 self.navigation = Some(Navigation {
+                    url,
                     incoming: Incoming::Waiting {
                         page: Box::new(incoming),
-                        document: Box::new(document),
+                        document: Box::new(parsed.document),
                     },
-                    handling: navigation.handling,
+                    handling,
                 });
                 self.commit_if_ready();
             }
-            Err(error) => self.load_state = LoadState::Failed(error),
+            loader::Outcome::Status => {
+                let document = pages::status(&at, response.status, &response.status_message);
+                let shown = self.made(document, None);
+                self.commit(shown, Some(at), handling);
+            }
+            loader::Outcome::Unshowable(essence) => {
+                let shown = self.made(pages::unshowable(&at, &essence), None);
+                self.commit(shown, Some(at), handling);
+            }
+            loader::Outcome::Download(essence) => {
+                self.notice = Some(format!(
+                    "Not saved: {at} is a {essence} file, and saving files comes in a later version"
+                ));
+                self.settle_load_state();
+            }
+            loader::Outcome::Nothing => self.settle_load_state(),
         }
     }
 
@@ -754,19 +770,21 @@ impl Engine {
         let Some(Navigation {
             incoming: Incoming::Waiting { page, document },
             handling,
+            ..
         }) = self.navigation.take()
         else {
             unreachable!("checked above");
         };
-        self.commit(*document, *page, handling);
+        let url = page.url().cloned();
+        self.commit(Shown::new(*document, *page), url, handling);
     }
 
-    /// Shows a navigation's document, and puts it in the session history
-    /// as `handling` says: in a new entry pushed or put in the current
-    /// one's place, the document left kept or dropped; or in the entry
-    /// reloaded or traversed to, at its saved scroll position.
-    fn commit(&mut self, document: Document, page: Page, handling: Handling) {
-        let url = page.url().cloned();
+    /// Shows a navigation's document, `shown`, at `url`, and puts it in
+    /// the session history as `handling` says: in a new entry pushed or
+    /// put in the current one's place, the document left kept or
+    /// dropped; or in the entry reloaded or traversed to, at its saved
+    /// scroll position.
+    fn commit(&mut self, shown: Shown, url: Option<Url>, handling: Handling) {
         self.history.current_mut().scroll = self.shown.scroll_target;
         let left_state = self.history.current().state;
         let mut goal = None;
@@ -791,7 +809,7 @@ impl Engine {
                 goal = Some(ScrollGoal::Offset(entry.scroll));
             }
         }
-        let left = self.show(Shown::new(document, page));
+        let left = self.show(shown);
         if handling == Handling::Reload {
             // The entry's state has the new document; the old one is
             // gone, not kept.
@@ -815,10 +833,13 @@ impl Engine {
     }
 
     /// The load state as the document shown and the navigation under way
-    /// make it, after a document is shown or a load stopped.
+    /// make it, after a document is shown or a load stopped: failed while
+    /// an error page is shown.
     fn settle_load_state(&mut self) {
         self.load_state = if self.navigation.is_some() || !self.shown.page.settled() {
             LoadState::Loading
+        } else if let Some(failure) = &self.shown.failure {
+            LoadState::Failed(failure.clone())
         } else {
             LoadState::Loaded
         };
@@ -838,8 +859,9 @@ impl Engine {
         }
     }
 
-    /// Where the latest navigation stands. A document given to the
-    /// engine, and the initial `about:blank`, are loaded.
+    /// Where the latest navigation stands: failed while the error page
+    /// it ended in is shown. A document given to the engine, and the
+    /// initial `about:blank`, are loaded.
     pub fn load_state(&self) -> &LoadState {
         &self.load_state
     }
@@ -1612,7 +1634,7 @@ mod tests {
     /// A test engine showing the built-in page.
     fn builtin_engine() -> Engine {
         let mut engine = test_engine();
-        engine.load_document(DOCUMENT_SOURCE);
+        engine.load_document(pages::ABOUT_SILVER);
         engine
     }
 

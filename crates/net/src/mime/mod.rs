@@ -189,6 +189,37 @@ impl MimeType {
     pub fn is_audio_or_video(&self) -> bool {
         matches!(self.type_name(), "audio" | "video") || self.essence == "application/ogg"
     }
+
+    /// A JavaScript MIME type: one of the sixteen essences MIME Sniffing
+    /// §4.6 lists.
+    pub fn is_javascript(&self) -> bool {
+        matches!(
+            self.essence.as_str(),
+            "application/ecmascript"
+                | "application/javascript"
+                | "application/x-ecmascript"
+                | "application/x-javascript"
+                | "text/ecmascript"
+                | "text/javascript"
+                | "text/javascript1.0"
+                | "text/javascript1.1"
+                | "text/javascript1.2"
+                | "text/javascript1.3"
+                | "text/javascript1.4"
+                | "text/javascript1.5"
+                | "text/jscript"
+                | "text/livescript"
+                | "text/x-ecmascript"
+                | "text/x-javascript"
+        )
+    }
+
+    /// A JSON MIME type: a subtype ending in `+json`, or `application/json`
+    /// or `text/json` (MIME Sniffing §4.6).
+    pub fn is_json(&self) -> bool {
+        self.subtype().ends_with("+json")
+            || matches!(self.essence.as_str(), "application/json" | "text/json")
+    }
 }
 
 /// *Serialize a MIME type* (§4.5). A value that is not a non-empty token
@@ -389,6 +420,19 @@ mod tests {
         assert!(t("video/webm").is_audio_or_video());
         assert!(t("application/ogg").is_audio_or_video());
         assert!(!t("application/octet-stream").is_audio_or_video());
+        for js in [
+            "text/javascript",
+            "application/x-ecmascript",
+            "text/JavaScript1.5",
+        ] {
+            assert!(t(js).is_javascript(), "{js}");
+        }
+        assert!(!t("text/javascript2.0").is_javascript());
+        assert!(!t("application/json").is_javascript());
+        for json in ["application/json", "text/json", "application/ld+json"] {
+            assert!(t(json).is_json(), "{json}");
+        }
+        assert!(!t("application/jsonx").is_json());
     }
 
     #[test]

@@ -6,14 +6,16 @@ license.workspace = true
 
 [features]
 # The scripted HTTP and HTTPS server tests use, for crates whose tests
-# fetch from one (the engine's).
-test-server = []
+# fetch from one (the engine's), with the certificate authority that
+# issues its certificates.
+test-server = ["dep:rcgen"]
 
 [dependencies]
 encoding.workspace = true
 flate2.workspace = true
 idna.workspace = true
 mio.workspace = true
+rcgen = { workspace = true, optional = true }
 rustls.workspace = true
 webpki-roots.workspace = true
 

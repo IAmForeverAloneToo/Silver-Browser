@@ -9,16 +9,12 @@ use std::time::{Duration, Instant};
 
 use flate2::Compression;
 use flate2::write::GzEncoder;
-use rcgen::{
-    BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair, KeyUsagePurpose,
-    date_time_ymd,
-};
+
 use rustls::ServerConfig;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
 use super::*;
 use crate::TlsFailure;
-use crate::test_server::{Reply, ServerRequest, TestServer};
+use crate::test_server::{Reply, ServerRequest, TestAuthority, TestServer};
 
 fn transport() -> Transport {
     Transport::new(Config::default())
@@ -507,62 +503,7 @@ fn the_tls_configuration() {
     assert!(!config.enable_early_data);
 }
 
-/// A certificate authority made for one test, and certificates it
-/// issues.
-struct TestAuthority {
-    params: CertificateParams,
-    key: KeyPair,
-    root: CertificateDer<'static>,
-}
-
-impl TestAuthority {
-    fn new() -> TestAuthority {
-        let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
-        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-        params
-            .distinguished_name
-            .push(DnType::CommonName, "Silver Browser test root");
-        params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
-        let key = KeyPair::generate().unwrap();
-        let root = params.self_signed(&key).unwrap().der().clone();
-        TestAuthority { params, key, root }
-    }
-
-    /// A server configuration presenting a certificate for `names`,
-    /// valid over the given years.
-    fn server(&self, names: &[&str], years: (i32, i32)) -> Arc<ServerConfig> {
-        self.server_speaking(names, years, rustls::DEFAULT_VERSIONS)
-    }
-
-    /// As [`TestAuthority::server`], speaking only `versions` of TLS.
-    fn server_speaking(
-        &self,
-        names: &[&str],
-        years: (i32, i32),
-        versions: &[&'static rustls::SupportedProtocolVersion],
-    ) -> Arc<ServerConfig> {
-        let mut params =
-            CertificateParams::new(names.iter().map(|n| n.to_string()).collect::<Vec<_>>())
-                .unwrap();
-        params.not_before = date_time_ymd(years.0, 1, 1);
-        params.not_after = date_time_ymd(years.1, 1, 1);
-        let key = KeyPair::generate().unwrap();
-        let issuer = Issuer::from_params(&self.params, &self.key);
-        let leaf = params.signed_by(&key, &issuer).unwrap().der().clone();
-        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der()));
-        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-        let mut config = ServerConfig::builder_with_provider(provider)
-            .with_protocol_versions(versions)
-            .unwrap()
-            .with_no_client_auth()
-            .with_single_cert(vec![leaf], key)
-            .unwrap();
-        config.alpn_protocols = vec![b"http/1.1".to_vec()];
-        Arc::new(config)
-    }
-}
-
-const VALID: (i32, i32) = (2000, 3000);
+use crate::test_server::VALID;
 
 #[test]
 fn both_versions_of_tls_are_spoken() {

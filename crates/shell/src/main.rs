@@ -12,11 +12,10 @@
 //!
 //! It runs as `silver-browser [URL or path]` (M14, docs/design/net.md,
 //! "The shell"): an argument naming an existing file loads that file,
-//! and any other must be an absolute URL; with none, the built-in page
-//! shows. While the load runs the window shows an empty page. Each
-//! finished fetch wakes the event loop with a user event, on which the
-//! engine takes what arrived; a load that fails is reported on standard
-//! error, and the built-in page shows instead.
+//! and any other must be an absolute URL; with none, `about:silver`
+//! shows (M15). Each finished fetch wakes the event loop with a user
+//! event, on which the engine takes what arrived; a load that fails
+//! shows the engine's error page, and is reported on standard error.
 
 use std::ffi::OsString;
 use std::num::NonZeroU32;
@@ -208,18 +207,20 @@ impl Browser {
 
 impl ApplicationHandler<NetworkWake> for Browser {
     /// A fetch finished: the engine takes what arrived. A failed load is
-    /// reported, and the built-in page shown in its place; a page shown
-    /// in an encoding the engine cannot decode yet is reported too.
+    /// reported, as the error page the engine shows says; a page shown in
+    /// an encoding the engine cannot decode yet is reported too.
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, _wake: NetworkWake) {
         let Some(engine) = self.engine.as_mut() else {
             return;
         };
         engine.poll_network();
+        if let Some(notice) = engine.take_notice() {
+            eprintln!("silver-browser: {notice}");
+        }
         if let LoadState::Failed(error) = engine.load_state().clone() {
             if let Some(url) = self.loading.take() {
                 eprintln!("silver-browser: {url}: {error}");
             }
-            engine.show_built_in_page();
         } else if let Some(url) = engine.url()
             && self.loading.take().is_some()
             && let Some(encoding) = engine.undecodable_encoding()
@@ -347,7 +348,7 @@ impl ApplicationHandler<NetworkWake> for Browser {
     }
 }
 
-/// What the command line asks to show: `None` for the built-in page, or
+/// What the command line asks to show: `None` for `about:silver`, or
 /// the URL to load. An argument naming an existing file is that file's
 /// `file:` URL, and any other must parse as an absolute URL. The file
 /// comes first: on Windows, `C:\page.html` parses as a URL too, of the
@@ -398,17 +399,16 @@ fn main() {
         }
     };
 
-    if let Some(url) = &start {
-        // The proxy is sent across threads but need not be shared
-        // between them on every platform, so a lock makes it so.
-        let proxy = Mutex::new(event_loop.create_proxy());
-        engine.set_waker(move || {
-            let proxy = proxy.lock().unwrap_or_else(PoisonError::into_inner);
-            // An event loop gone has no one to wake.
-            let _ = proxy.send_event(NetworkWake);
-        });
-        engine.navigate(url.clone());
-    }
+    // The proxy is sent across threads but need not be shared between
+    // them on every platform, so a lock makes it so.
+    let proxy = Mutex::new(event_loop.create_proxy());
+    engine.set_waker(move || {
+        let proxy = proxy.lock().unwrap_or_else(PoisonError::into_inner);
+        // An event loop gone has no one to wake.
+        let _ = proxy.send_event(NetworkWake);
+    });
+    let about_silver = || Url::parse("about:silver").expect("about:silver parses");
+    engine.navigate(start.clone().unwrap_or_else(about_silver));
 
     let mut browser = Browser::new(Some(engine), start);
     if event_loop.run_app(&mut browser).is_err() {

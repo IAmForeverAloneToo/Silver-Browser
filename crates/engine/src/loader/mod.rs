@@ -32,7 +32,7 @@ pub(crate) type PageId = u64;
 /// A fetch's number.
 pub(crate) type FetchId = u64;
 
-/// Where the latest load stands.
+/// Where the latest navigation stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoadState {
     /// A document is on its way, or the document shown still has
@@ -41,19 +41,16 @@ pub enum LoadState {
     /// The document shown is all there: each of its stylesheets arrived,
     /// or failed and is left out.
     Loaded,
-    /// The latest load failed, and the document shown is the one before.
+    /// The navigation failed, and the page shown is the error page that
+    /// says so, under the URL that failed (M15).
     Failed(LoadError),
 }
 
-/// Why a load failed.
+/// Why a navigation failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoadError {
     /// The fetch gave no response.
     Network(NetworkError),
-    /// The response is not a document the engine shows: its computed
-    /// MIME type is not HTML. What to show for text, images and
-    /// downloads is navigation's to decide (M15.1).
-    Unsupported(String),
     /// No thread could be started to fetch on, or the fetch's thread
     /// failed.
     Lost,
@@ -63,7 +60,6 @@ impl fmt::Display for LoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             LoadError::Network(error) => error.fmt(f),
-            LoadError::Unsupported(mime_type) => write!(f, "{mime_type} is not shown"),
             LoadError::Lost => f.write_str("the fetch's thread failed"),
         }
     }
@@ -224,32 +220,98 @@ pub(crate) struct Parsed {
     pub(crate) undecodable: Option<Encoding>,
 }
 
-/// The document a response holds. Its computed MIME type (MIME Sniffing
-/// §7) must be HTML; a status that is not ok is still a document, shown
-/// as the server sent it.
-pub(crate) fn document_from(response: &Response) -> Result<Parsed, LoadError> {
-    let computed = net::mime::sniff::computed_type(
-        response.mime_type.as_ref(),
-        net::mime::sniff::check_for_apache_bug(&response.headers),
-        net::mime::determine_nosniff(&response.headers),
-        &response.body,
-    );
-    if !computed.is_html() {
-        return Err(LoadError::Unsupported(
-            String::from_utf8_lossy(&computed.to_bytes()).into_owned(),
-        ));
+/// What a navigation's response becomes (docs/design/navigation.md,
+/// "What a response becomes"), in HTML's order.
+pub(crate) enum Outcome {
+    /// A document to show: HTML, or text made into a document.
+    Document(Parsed),
+    /// An error status with an empty body: the browser's page naming it.
+    Status,
+    /// An image, audio or video, of this essence, which this version
+    /// cannot show yet: the browser's page saying so.
+    Unshowable(String),
+    /// A download, of this essence, which this version cannot save: the
+    /// page shown stays.
+    Download(String),
+    /// A 204 or 205: nothing is shown, and the page shown stays.
+    Nothing,
+}
+
+/// What `response`, to a navigation, becomes:
+///
+/// - a `Content-Disposition` of type `attachment` is a download;
+/// - a 204 or a 205 shows nothing;
+/// - an error status with an empty body has nothing to show;
+/// - otherwise its computed MIME type (MIME Sniffing §7) decides, as
+///   HTML's "load a document" does: HTML, and XHTML through the HTML
+///   parser, is parsed; text, JavaScript, JSON and the other XML types
+///   are a text document; images, audio and video cannot be shown yet;
+///   anything else is handed to external software, a download.
+pub(crate) fn outcome(response: &Response) -> Outcome {
+    if is_attachment(response) {
+        return Outcome::Download(computed_type(response).essence().to_owned());
     }
+    if matches!(response.status, 204 | 205) {
+        return Outcome::Nothing;
+    }
+    if !response.ok() && response.body.is_empty() {
+        return Outcome::Status;
+    }
+    let computed = computed_type(response);
     let transport = response
         .mime_type
         .as_ref()
         .and_then(|mime_type| mime_type.parameter("charset"))
         .and_then(Encoding::for_label);
-    let decoded = html::parse_document_from_bytes(&response.body, transport);
-    Ok(Parsed {
-        document: Document::from_node(&decoded.document),
-        encoding: decoded.encoding,
-        undecodable: decoded.undecodable,
-    })
+    let essence = computed.essence();
+    if computed.is_html() || essence == "application/xhtml+xml" {
+        let decoded = html::parse_document_from_bytes(&response.body, transport);
+        Outcome::Document(Parsed {
+            document: Document::from_node(&decoded.document),
+            encoding: decoded.encoding,
+            undecodable: decoded.undecodable,
+        })
+    } else if computed.is_xml()
+        || computed.is_javascript()
+        || computed.is_json()
+        || matches!(essence, "text/css" | "text/plain" | "text/vtt")
+    {
+        // HTML feeds a text document's bytes to its parser, so they are
+        // decoded as a document's are.
+        let (encoding, _) = html::encoding_sniffing::sniff(&response.body, transport);
+        let (text, decoded_with) = encoding::decode(&response.body, encoding);
+        Outcome::Document(Parsed {
+            document: crate::pages::text(&text),
+            encoding: decoded_with,
+            undecodable: (!encoding.can_decode()).then_some(encoding),
+        })
+    } else if computed.is_image() || computed.is_audio_or_video() {
+        Outcome::Unshowable(essence.to_owned())
+    } else {
+        Outcome::Download(essence.to_owned())
+    }
+}
+
+/// The response's computed MIME type (MIME Sniffing §7).
+fn computed_type(response: &Response) -> net::MimeType {
+    net::mime::sniff::computed_type(
+        response.mime_type.as_ref(),
+        net::mime::sniff::check_for_apache_bug(&response.headers),
+        net::mime::determine_nosniff(&response.headers),
+        &response.body,
+    )
+}
+
+/// Whether the response's `Content-Disposition` has the disposition
+/// type `attachment` (RFC 6266 §4.2, matched without regard to case).
+fn is_attachment(response: &Response) -> bool {
+    response
+        .headers
+        .get(b"Content-Disposition")
+        .is_some_and(|value| {
+            let kind = value.split(|&byte| byte == b';').next().unwrap_or_default();
+            kind.trim_ascii().eq_ignore_ascii_case(b"attachment")
+        })
 }
 
 /// A load whose document is not shown yet.

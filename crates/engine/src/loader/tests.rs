@@ -509,44 +509,6 @@ fn a_link_removed_before_its_sheet_arrives_is_aborted() {
 }
 
 #[test]
-fn a_document_that_is_not_html_fails_as_unsupported_and_the_page_stays() {
-    let server = serve(|path| match path {
-        "/text" => Some(Reply::ok("text/plain", b"just text")),
-        "/missing.html" => Some(Reply::with_fields(
-            404,
-            &[("Content-Type", "text/html")],
-            b"<p>Not here</p>",
-        )),
-        "/closed" => Some(Reply::Close),
-        _ => None,
-    });
-    let mut tab = Tab::new();
-    tab.load(server.url("/text"));
-    assert_eq!(
-        tab.engine.load_state(),
-        &LoadState::Failed(LoadError::Unsupported("text/plain".into()))
-    );
-    assert_eq!(
-        tab.engine.url().map(Url::as_str),
-        Some("about:blank"),
-        "the page shown stays"
-    );
-
-    // An error status is still a document.
-    tab.load(server.url("/missing.html"));
-    assert_eq!(tab.engine.load_state(), &LoadState::Loaded);
-    assert_eq!(text(&tab.engine), "Not here");
-
-    // A network error leaves that document in place.
-    tab.load(server.url("/closed"));
-    assert!(matches!(
-        tab.engine.load_state(),
-        LoadState::Failed(LoadError::Network(_))
-    ));
-    assert_eq!(tab.engine.url(), Some(&server.url("/missing.html")));
-}
-
-#[test]
 fn a_redirected_document_is_at_its_last_url() {
     let server = serve(|path| match path {
         "/old" => Some(Reply::with_fields(
@@ -810,20 +772,9 @@ fn an_aborted_fetch_ends_its_thread_and_its_result_is_not_taken() {
 
 #[test]
 fn every_load_error_says_something() {
-    let said: Vec<String> = [
-        LoadError::Network(NetworkError::Timeout),
-        LoadError::Unsupported("text/plain".into()),
-        LoadError::Lost,
-    ]
-    .iter()
-    .map(ToString::to_string)
-    .collect();
-    assert_eq!(
-        said,
-        [
-            "timed out",
-            "text/plain is not shown",
-            "the fetch's thread failed"
-        ]
-    );
+    let said: Vec<String> = [LoadError::Network(NetworkError::Timeout), LoadError::Lost]
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(said, ["timed out", "the fetch's thread failed"]);
 }
