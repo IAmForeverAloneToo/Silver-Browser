@@ -5,16 +5,18 @@
 //! is no way to go on anyway.
 
 use std::io;
-use std::net::{IpAddr, TcpStream};
+use std::net::IpAddr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use mio::net::TcpStream;
 use rustls::pki_types::{CertificateDer, ServerName};
 use rustls::{CertificateError, ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 
 use crate::Host;
 use crate::error::{AbortHandle, NetworkError, TlsFailure};
 
-use super::stream::is_timeout;
+use super::stream::Waiter;
 
 /// The client configuration every `https:` connection shares, so that
 /// its session cache is shared too. `extra_roots` are trusted beside
@@ -51,27 +53,37 @@ fn server_name(host: &Host) -> Result<ServerName<'static>, NetworkError> {
     }
 }
 
-/// Runs the TLS handshake over `tcp`, whose reads and writes already
-/// have their timeouts. `abort` shuts the socket down meanwhile.
+/// Runs the TLS handshake over `tcp`, non-blocking and watched by
+/// `waiter`. `timeout` without progress ends it, and `abort` wakes the
+/// wait.
 pub(crate) fn handshake(
     config: &Arc<ClientConfig>,
     host: &Host,
     mut tcp: TcpStream,
+    waiter: &mut Waiter,
+    timeout: Duration,
     abort: &AbortHandle,
 ) -> Result<StreamOwned<ClientConnection, TcpStream>, NetworkError> {
     let mut connection = ClientConnection::new(config.clone(), server_name(host)?)
         .map_err(|e| NetworkError::Tls(failure(&e)))?;
-    let _watch = abort
-        .watch(&tcp)
-        .map_err(|e| NetworkError::Connect(e.to_string()))?;
+    let _watch = abort.watch(waiter.waker());
+    let mut deadline = Instant::now() + timeout;
     while connection.is_handshaking() {
-        let result = connection.complete_io(&mut tcp);
         if abort.is_aborted() {
             return Err(NetworkError::Aborted);
         }
-        match result {
-            Ok(_) => {}
-            Err(e) if is_timeout(&e) => return Err(NetworkError::Timeout),
+        match connection.complete_io(&mut tcp) {
+            Ok(_) => deadline = Instant::now() + timeout,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                let now = Instant::now();
+                if now >= deadline {
+                    return Err(NetworkError::Timeout);
+                }
+                waiter
+                    .wait(deadline - now)
+                    .map_err(|e| NetworkError::Io(e.to_string()))?;
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
             Err(e) => return Err(io_failure(e)),
         }
     }
@@ -112,23 +124,53 @@ pub(crate) fn failure(error: &rustls::Error) -> TlsFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transport::stream::non_blocking;
     use std::net::{Ipv4Addr, TcpListener};
-    use std::time::{Duration, Instant};
+    use std::thread;
+
+    /// A handshake with a listener the kernel connects to and nobody
+    /// answers.
+    fn silent(timeout: Duration, abort: &AbortHandle) -> Result<(), NetworkError> {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let tcp = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let mut tcp = non_blocking(tcp).unwrap();
+        let mut waiter = Waiter::new(&mut tcp).unwrap();
+        let host = Host::Ipv4(Ipv4Addr::LOCALHOST);
+        handshake(&client_config(&[]), &host, tcp, &mut waiter, timeout, abort).map(drop)
+    }
 
     #[test]
-    fn an_abort_before_the_handshake_ends_it_at_once() {
-        // A listener that the kernel connects to, and nobody answers.
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let tcp = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-        tcp.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
-        tcp.set_write_timeout(Some(Duration::from_secs(30)))
-            .unwrap();
+    fn a_silent_server_times_the_handshake_out() {
+        let started = Instant::now();
+        let result = silent(Duration::from_millis(500), &AbortHandle::new());
+        assert_eq!(result, Err(NetworkError::Timeout));
+        assert!(started.elapsed() >= Duration::from_millis(500));
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn an_abort_ends_a_handshake_at_once() {
+        // Before it starts...
         let abort = AbortHandle::new();
         abort.abort();
         let started = Instant::now();
-        let host = Host::Ipv4(Ipv4Addr::LOCALHOST);
-        let result = handshake(&client_config(&[]), &host, tcp, &abort);
-        assert_eq!(result.err(), Some(NetworkError::Aborted));
+        assert_eq!(
+            silent(Duration::from_secs(60), &abort),
+            Err(NetworkError::Aborted)
+        );
+        assert!(started.elapsed() < Duration::from_millis(1500));
+        // ...and while it waits.
+        let abort = AbortHandle::new();
+        let aborter = abort.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(300));
+            aborter.abort();
+        });
+        let started = Instant::now();
+        assert_eq!(
+            silent(Duration::from_secs(60), &abort),
+            Err(NetworkError::Aborted)
+        );
         assert!(
             started.elapsed() < Duration::from_millis(1500),
             "{:?}",

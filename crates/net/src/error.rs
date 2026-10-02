@@ -2,10 +2,10 @@
 //! that stops one on purpose.
 
 use std::fmt;
-use std::io;
-use std::net::{Shutdown, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+use mio::Waker;
 
 use crate::address_space::AddressSpace;
 use crate::http::Malformed;
@@ -123,8 +123,8 @@ impl fmt::Display for NetworkError {
 impl std::error::Error for NetworkError {}
 
 /// Stops a fetch. Aborting sets a flag that every step of the fetch
-/// looks at, and shuts down the connection the fetch is using, which
-/// ends a read or write waiting on it at once. Resolving a name,
+/// looks at, and wakes the poll of the connection the fetch is using,
+/// which ends a read or write waiting on it at once. Resolving a name,
 /// connecting and waiting for a free connection look at the flag every
 /// quarter of a second. Clones share the one abort.
 #[derive(Debug, Clone, Default)]
@@ -136,12 +136,12 @@ struct Abort {
     watched: Mutex<Watched>,
 }
 
-/// The sockets fetches holding the handle are using, each with the
-/// number its [`Watch`] goes by.
+/// The wakers of the connections fetches holding the handle are using,
+/// each with the number its [`Watch`] goes by.
 #[derive(Debug, Default)]
 struct Watched {
     next: u64,
-    sockets: Vec<(u64, TcpStream)>,
+    wakers: Vec<(u64, Arc<Waker>)>,
 }
 
 impl AbortHandle {
@@ -152,12 +152,11 @@ impl AbortHandle {
 
     /// Aborts every fetch holding a clone of this handle.
     pub fn abort(&self) {
-        // The flag first: whatever the shutdown makes a waiting call
-        // return, the fetch sees it was aborted.
+        // The flag first: a wait the waker ends looks at it.
         self.0.aborted.store(true, Ordering::SeqCst);
-        for (_, socket) in &self.watched().sockets {
-            // A connection already closed has nothing to stop.
-            let _ = socket.shutdown(Shutdown::Both);
+        for (_, waker) in &self.watched().wakers {
+            // A poll already gone has nothing to wake.
+            let _ = waker.wake();
         }
     }
 
@@ -166,21 +165,20 @@ impl AbortHandle {
         self.0.aborted.load(Ordering::SeqCst)
     }
 
-    /// Watches `socket` while the returned guard lives: an abort shuts
-    /// it down, and one that came before shuts it down at once.
-    pub(crate) fn watch(&self, socket: &TcpStream) -> io::Result<Watch> {
-        let clone = socket.try_clone()?;
+    /// Watches a connection's poll while the returned guard lives: an
+    /// abort wakes it, and one that came before wakes it at once.
+    pub(crate) fn watch(&self, waker: &Arc<Waker>) -> Watch {
         let mut watched = self.watched();
         if self.is_aborted() {
-            let _ = clone.shutdown(Shutdown::Both);
+            let _ = waker.wake();
         }
         let id = watched.next;
         watched.next += 1;
-        watched.sockets.push((id, clone));
-        Ok(Watch {
+        watched.wakers.push((id, waker.clone()));
+        Watch {
             abort: self.clone(),
             id,
-        })
+        }
     }
 
     fn watched(&self) -> MutexGuard<'_, Watched> {
@@ -191,8 +189,8 @@ impl AbortHandle {
     }
 }
 
-/// A socket an [`AbortHandle`] shuts down if it aborts, until this is
-/// dropped.
+/// A connection's poll that an [`AbortHandle`] wakes if it aborts, until
+/// this is dropped.
 #[derive(Debug)]
 pub(crate) struct Watch {
     abort: AbortHandle,
@@ -204,7 +202,7 @@ impl Drop for Watch {
         let id = self.id;
         self.abort
             .watched()
-            .sockets
+            .wakers
             .retain(|(watched, _)| *watched != id);
     }
 }
@@ -224,16 +222,43 @@ mod tests {
 
     #[test]
     fn a_watch_lasts_as_long_as_its_guard() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let socket = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let poll = mio::Poll::new().unwrap();
+        let waker = Arc::new(Waker::new(poll.registry(), mio::Token(0)).unwrap());
         let handle = AbortHandle::new();
-        let first = handle.watch(&socket).unwrap();
-        let second = handle.clone().watch(&socket).unwrap();
-        assert_eq!(handle.watched().sockets.len(), 2);
+        let first = handle.watch(&waker);
+        let second = handle.clone().watch(&waker);
+        assert_eq!(handle.watched().wakers.len(), 2);
         drop(first);
-        assert_eq!(handle.watched().sockets.len(), 1);
+        assert_eq!(handle.watched().wakers.len(), 1);
         drop(second);
-        assert!(handle.watched().sockets.is_empty());
+        assert!(handle.watched().wakers.is_empty());
+    }
+
+    #[test]
+    fn an_abort_wakes_the_polls_it_watches() {
+        let mut poll = mio::Poll::new().unwrap();
+        let waker = Arc::new(Waker::new(poll.registry(), mio::Token(7)).unwrap());
+        let handle = AbortHandle::new();
+        let _watch = handle.watch(&waker);
+        handle.abort();
+        let mut events = mio::Events::with_capacity(1);
+        poll.poll(&mut events, Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        assert_eq!(
+            events.iter().map(|e| e.token()).collect::<Vec<_>>(),
+            [mio::Token(7)]
+        );
+        // A watch begun after the abort is woken at once. (A poll has
+        // one waker at most.)
+        let mut poll = mio::Poll::new().unwrap();
+        let late = Arc::new(Waker::new(poll.registry(), mio::Token(8)).unwrap());
+        let _late = handle.watch(&late);
+        poll.poll(&mut events, Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        assert_eq!(
+            events.iter().map(|e| e.token()).collect::<Vec<_>>(),
+            [mio::Token(8)]
+        );
     }
 
     #[test]

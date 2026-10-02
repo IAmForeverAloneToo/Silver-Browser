@@ -1,16 +1,20 @@
-//! A connection's byte stream: TCP, or TLS over TCP. A read or a write
-//! waits at most the socket's own timeout, and one that runs out ends
-//! the connection's use. An abort shuts the socket down, which ends a
-//! read or write waiting on it at once.
-//!
-//! Nothing here retries an operation whose timeout ran out: Windows
-//! leaves such a socket in an indeterminate state, which may have lost
-//! data (setsockopt, SO_RCVTIMEO and SO_SNDTIMEO).
+//! A connection's byte stream: TCP, or TLS over TCP, on a non-blocking
+//! socket. A read or a write that cannot go on waits for the socket in
+//! a poll of the connection's own, which the abort of the fetch using it
+//! wakes. So an abort ends a waiting read or write at once on every OS:
+//! shutting a socket down from another thread does not end a call
+//! blocked on it on Windows. A wait that runs out of time ends the
+//! connection's use; the socket's own timeouts are not used, as Windows
+//! leaves a socket whose send or receive timed out in an indeterminate
+//! state.
 
 use std::fmt;
 use std::io::{self, Read, Write};
-use std::net::TcpStream;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use mio::net::TcpStream;
+use mio::{Events, Interest, Poll, Token, Waker};
 use rustls::{ClientConnection, StreamOwned};
 
 use crate::error::{AbortHandle, Watch};
@@ -32,13 +36,45 @@ pub(crate) fn is_abort(error: &io::Error) -> bool {
     error.get_ref().is_some_and(|inner| inner.is::<Aborted>())
 }
 
-/// Whether `error` is a socket timeout running out: Unix says the call
-/// would block, Windows that it timed out.
-pub(crate) fn is_timeout(error: &io::Error) -> bool {
-    matches!(
-        error.kind(),
-        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-    )
+const SOCKET: Token = Token(0);
+const WAKE: Token = Token(1);
+
+/// A connection's poll: it waits for the socket to be ready, or for the
+/// waker an abort uses.
+pub(crate) struct Waiter {
+    poll: Poll,
+    events: Events,
+    waker: Arc<Waker>,
+}
+
+impl Waiter {
+    /// A poll watching `tcp` for both directions, and its waker.
+    pub(crate) fn new(tcp: &mut TcpStream) -> io::Result<Waiter> {
+        let poll = Poll::new()?;
+        poll.registry()
+            .register(tcp, SOCKET, Interest::READABLE | Interest::WRITABLE)?;
+        let waker = Arc::new(Waker::new(poll.registry(), WAKE)?);
+        Ok(Waiter {
+            poll,
+            events: Events::with_capacity(4),
+            waker,
+        })
+    }
+
+    /// What an abort wakes this poll with.
+    pub(crate) fn waker(&self) -> &Arc<Waker> {
+        &self.waker
+    }
+
+    /// Waits at most `timeout` for the socket to change or the waker to
+    /// be woken. The caller tries again and looks at the clock and the
+    /// abort itself: readiness is a hint, and a wait may end early.
+    pub(crate) fn wait(&mut self, timeout: Duration) -> io::Result<()> {
+        match self.poll.poll(&mut self.events, Some(timeout)) {
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => Ok(()),
+            other => other,
+        }
+    }
 }
 
 pub(crate) enum Socket {
@@ -48,7 +84,7 @@ pub(crate) enum Socket {
 
 impl Socket {
     /// The TCP stream underneath.
-    pub(crate) fn tcp(&self) -> &TcpStream {
+    fn tcp(&self) -> &TcpStream {
         match self {
             Socket::Plain(tcp) => tcp,
             Socket::Tls(tls) => &tls.sock,
@@ -56,28 +92,34 @@ impl Socket {
     }
 }
 
-/// A connection's stream, and the fetch using it, if one is.
+/// A connection's stream, its poll, and the fetch using it, if one is.
 pub(crate) struct Stream {
     socket: Socket,
+    waiter: Waiter,
+    /// How long a read or write may wait for the socket.
+    timeout: Duration,
     /// The abort handle of the fetch the stream is lent to, and the
-    /// watch through which that abort shuts the socket down.
+    /// watch through which that abort wakes the poll.
     user: Option<(AbortHandle, Watch)>,
 }
 
 impl Stream {
-    /// `socket`, whose TCP stream already has its read and write
-    /// timeouts.
-    pub(crate) fn new(socket: Socket) -> Stream {
-        Stream { socket, user: None }
+    /// `socket`, non-blocking and watched by `waiter`.
+    pub(crate) fn new(socket: Socket, waiter: Waiter, timeout: Duration) -> Stream {
+        Stream {
+            socket,
+            waiter,
+            timeout,
+            user: None,
+        }
     }
 
-    /// Lends the stream to a fetch: its abort shuts the socket down
-    /// from now on, and ends the reads and writes.
-    pub(crate) fn lend(&mut self, abort: &AbortHandle) -> io::Result<()> {
+    /// Lends the stream to a fetch: its abort ends the reads and writes
+    /// from now on.
+    pub(crate) fn lend(&mut self, abort: &AbortHandle) {
         self.user = None;
-        let watch = abort.watch(self.socket.tcp())?;
+        let watch = abort.watch(self.waiter.waker());
         self.user = Some((abort.clone(), watch));
-        Ok(())
     }
 
     /// Takes the stream back from its fetch, before it waits in the pool:
@@ -92,20 +134,25 @@ impl Stream {
             .is_some_and(|(abort, _)| abort.is_aborted())
     }
 
-    /// Runs `op` on the socket. An abort shuts the socket down, so
-    /// whatever the call then returned, the fetch was aborted; a
-    /// timeout that ran out is told apart from other errors.
-    fn io<T>(&mut self, op: impl FnOnce(&mut Socket) -> io::Result<T>) -> io::Result<T> {
-        if self.aborted() {
-            return Err(io::Error::other(Aborted));
-        }
-        let result = op(&mut self.socket);
-        if self.aborted() {
-            return Err(io::Error::other(Aborted));
-        }
-        match result {
-            Err(e) if is_timeout(&e) => Err(io::ErrorKind::TimedOut.into()),
-            other => other,
+    /// Runs `op` on the socket until it does not need to wait, waiting
+    /// for the socket between tries: at most the stream's timeout in all,
+    /// and no longer than the fetch's abort.
+    fn io<T>(&mut self, mut op: impl FnMut(&mut Socket) -> io::Result<T>) -> io::Result<T> {
+        let deadline = Instant::now() + self.timeout;
+        loop {
+            if self.aborted() {
+                return Err(io::Error::other(Aborted));
+            }
+            match op(&mut self.socket) {
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                other => return other,
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(io::ErrorKind::TimedOut.into());
+            }
+            self.waiter.wait(deadline - now)?;
         }
     }
 
@@ -123,12 +170,7 @@ impl Stream {
                 _ => return false,
             }
         }
-        let tcp = self.socket.tcp();
-        if tcp.set_nonblocking(true).is_err() {
-            return false;
-        }
-        let idle = matches!(tcp.peek(&mut [0]), Err(e) if e.kind() == io::ErrorKind::WouldBlock);
-        tcp.set_nonblocking(false).is_ok() && idle
+        matches!(self.socket.tcp().peek(&mut [0]), Err(e) if e.kind() == io::ErrorKind::WouldBlock)
     }
 }
 
@@ -157,22 +199,27 @@ impl Write for Stream {
     }
 }
 
+/// `tcp`, made non-blocking for a [`Waiter`].
+pub(crate) fn non_blocking(tcp: std::net::TcpStream) -> io::Result<TcpStream> {
+    tcp.set_nonblocking(true)?;
+    Ok(TcpStream::from_std(tcp))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::net::TcpListener;
     use std::thread;
-    use std::time::{Duration, Instant};
 
     /// A connected pair: the client side as a `Stream` whose reads and
     /// writes wait `timeout`, and the server's end.
-    fn pair(timeout: Duration) -> (Stream, TcpStream) {
+    fn pair(timeout: Duration) -> (Stream, std::net::TcpStream) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-        client.set_read_timeout(Some(timeout)).unwrap();
-        client.set_write_timeout(Some(timeout)).unwrap();
+        let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         let (server, _) = listener.accept().unwrap();
-        (Stream::new(Socket::Plain(client)), server)
+        let mut client = non_blocking(client).unwrap();
+        let waiter = Waiter::new(&mut client).unwrap();
+        (Stream::new(Socket::Plain(client), waiter, timeout), server)
     }
 
     /// An abort handle that aborts itself after `after`.
@@ -210,7 +257,7 @@ mod tests {
         let started = Instant::now();
         let error = stream.read(&mut [0; 8]).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-        assert!(started.elapsed() >= Duration::from_millis(500));
+        assert!(started.elapsed() >= Duration::from_millis(600));
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 
@@ -224,8 +271,7 @@ mod tests {
     #[test]
     fn an_abort_ends_a_waiting_read_at_once() {
         let (mut stream, _server) = pair(Duration::from_secs(60));
-        let abort = aborted_after(Duration::from_millis(300));
-        stream.lend(&abort).unwrap();
+        stream.lend(&aborted_after(Duration::from_millis(300)));
         let started = Instant::now();
         let error = stream.read(&mut [0; 8]).unwrap_err();
         assert!(is_abort(&error), "{error:?}");
@@ -236,15 +282,9 @@ mod tests {
     #[test]
     fn an_abort_ends_a_waiting_write_at_once() {
         let (mut stream, _server) = pair(Duration::from_secs(60));
-        let abort = AbortHandle::new();
-        stream.lend(&abort).unwrap();
-        // Fill the buffers first, then abort while a write waits.
-        let aborter = abort.clone();
+        // The buffers fill at once; the abort comes while a write waits.
+        stream.lend(&aborted_after(Duration::from_millis(1500)));
         let started = Instant::now();
-        thread::spawn(move || {
-            thread::sleep(Duration::from_millis(1500));
-            aborter.abort();
-        });
         let error = write_until_stuck(&mut stream);
         assert!(is_abort(&error), "{error:?}");
         assert!(started.elapsed() < Duration::from_millis(1500) + PROMPTLY);
@@ -255,7 +295,7 @@ mod tests {
         let (mut stream, _server) = pair(Duration::from_secs(60));
         let abort = AbortHandle::new();
         abort.abort();
-        stream.lend(&abort).unwrap();
+        stream.lend(&abort);
         let started = Instant::now();
         assert!(stream.read(&mut [0; 8]).is_err_and(|e| is_abort(&e)));
         assert!(started.elapsed() < PROMPTLY);
@@ -265,7 +305,7 @@ mod tests {
     fn a_released_stream_is_not_aborted_with_its_fetch() {
         let (mut stream, mut server) = pair(Duration::from_secs(5));
         let abort = AbortHandle::new();
-        stream.lend(&abort).unwrap();
+        stream.lend(&abort);
         stream.release();
         abort.abort();
         server.write_all(b"still here").unwrap();
@@ -273,14 +313,14 @@ mod tests {
         stream.read_exact(&mut buf).unwrap();
         assert_eq!(&buf, b"still here");
         // A later loan to another fetch works as the first.
-        stream.lend(&AbortHandle::new()).unwrap();
+        stream.lend(&AbortHandle::new());
         stream.write_all(b"x").unwrap();
     }
 
     #[test]
     fn bytes_arrive_while_a_read_waits() {
         let (mut stream, mut server) = pair(Duration::from_secs(60));
-        stream.lend(&AbortHandle::new()).unwrap();
+        stream.lend(&AbortHandle::new());
         thread::spawn(move || {
             thread::sleep(Duration::from_millis(400));
             server.write_all(b"late").unwrap();
@@ -294,14 +334,13 @@ mod tests {
     fn an_idle_connection_is_looked_at_before_reuse() {
         let (mut stream, _server) = pair(Duration::from_millis(600));
         assert!(stream.is_idle_and_open());
-        // Looking leaves the socket blocking: a read waits its timeout,
-        // where a non-blocking one would fail at once.
+        // Looking takes nothing: a read still waits its time.
         let started = Instant::now();
         assert_eq!(
             stream.read(&mut [0; 8]).unwrap_err().kind(),
             io::ErrorKind::TimedOut
         );
-        assert!(started.elapsed() >= Duration::from_millis(500));
+        assert!(started.elapsed() >= Duration::from_millis(600));
         // Anything the server sends unasked makes it unusable...
         let (mut stream, mut server) = pair(Duration::from_secs(5));
         assert!(stream.is_idle_and_open());

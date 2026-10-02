@@ -45,6 +45,10 @@ rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", 
 webpki-roots = "1"
 # gzip and deflate content codings, pure Rust over miniz_oxide.
 flate2 = "1"
+# Waiting on a socket that another thread can interrupt: the abort of a
+# fetch wakes its waiting read or write on every OS, where shutting a
+# socket down from another thread does not on Windows.
+mio = { version = "1", features = ["net", "os-poll"] }
 # Certificates the tests' TLS server presents, made when they run, with
 # the same cryptography provider as rustls.
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs"] }

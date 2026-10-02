@@ -13,6 +13,7 @@ test-server = []
 encoding.workspace = true
 flate2.workspace = true
 idna.workspace = true
+mio.workspace = true
 rustls.workspace = true
 webpki-roots.workspace = true
 

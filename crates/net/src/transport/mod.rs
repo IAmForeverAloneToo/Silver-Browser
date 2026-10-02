@@ -24,7 +24,7 @@ use crate::headers::HeaderList;
 use crate::http::{self, Limits, ReadError, RequestMessage, Response};
 
 use pool::{Connection, OriginKey, Pool};
-use stream::{Socket, Stream};
+use stream::{Socket, Stream, Waiter};
 
 /// How long the attempts to connect to a host may take together.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -225,15 +225,11 @@ impl Transport {
                     target: connection.space,
                 });
             }
-            let result = match connection.reader.get_mut().lend(exchange.abort) {
+            connection.reader.get_mut().lend(exchange.abort);
+            let result = match http::write_request(connection.reader.get_mut(), &message) {
                 Err(e) => Err(Failure::Send(e)),
-                Ok(()) => match http::write_request(connection.reader.get_mut(), &message) {
-                    Err(e) => Err(Failure::Send(e)),
-                    Ok(()) => {
-                        http::read_response(&mut connection.reader, to_head, self.config.limits)
-                            .map_err(Failure::Read)
-                    }
-                },
+                Ok(()) => http::read_response(&mut connection.reader, to_head, self.config.limits)
+                    .map_err(Failure::Read),
             };
             connection.reader.get_mut().release();
             match result {
@@ -294,16 +290,25 @@ impl Transport {
             connect::connect(&addresses, allowed, self.config.connect_timeout, abort)?;
         let setup =
             |result: io::Result<()>| result.map_err(|e| NetworkError::Connect(e.to_string()));
-        setup(tcp.set_read_timeout(Some(self.config.read_timeout)))?;
-        setup(tcp.set_write_timeout(Some(self.config.read_timeout)))?;
         setup(tcp.set_nodelay(true))?;
+        let mut tcp =
+            stream::non_blocking(tcp).map_err(|e| NetworkError::Connect(e.to_string()))?;
+        let mut waiter = Waiter::new(&mut tcp).map_err(|e| NetworkError::Connect(e.to_string()))?;
+        let timeout = self.config.read_timeout;
         let socket = if url.scheme() == "https" {
-            Socket::Tls(Box::new(tls::handshake(&self.tls, host, tcp, abort)?))
+            Socket::Tls(Box::new(tls::handshake(
+                &self.tls,
+                host,
+                tcp,
+                &mut waiter,
+                timeout,
+                abort,
+            )?))
         } else {
             Socket::Plain(tcp)
         };
         Ok(Connection {
-            reader: BufReader::new(Stream::new(socket)),
+            reader: BufReader::new(Stream::new(socket, waiter, timeout)),
             space: AddressSpace::of(address.ip()),
         })
     }

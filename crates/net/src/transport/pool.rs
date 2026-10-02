@@ -221,7 +221,7 @@ fn reap(shared: Weak<Shared>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::stream::Socket;
+    use crate::transport::stream::{Socket, Waiter, non_blocking};
     use std::net::{TcpListener, TcpStream};
 
     /// A pooled connection to a listener of its own, and the server's
@@ -230,7 +230,9 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         let (server, _) = listener.accept().unwrap();
-        let stream = Stream::new(Socket::Plain(client));
+        let mut client = non_blocking(client).unwrap();
+        let waiter = Waiter::new(&mut client).unwrap();
+        let stream = Stream::new(Socket::Plain(client), waiter, Duration::from_secs(60));
         let connection = Connection {
             reader: BufReader::new(stream),
             space: AddressSpace::Loopback,
