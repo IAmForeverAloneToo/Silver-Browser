@@ -387,19 +387,13 @@ fn scratch(name: &str) -> PathBuf {
 
 /// The `file:` URL of an absolute path, on Unix or Windows.
 fn file_url(path: &Path) -> Url {
-    let path = path
-        .to_str()
-        .unwrap()
-        .replace('\\', "/")
-        .replace(' ', "%20");
-    let path = path.trim_start_matches('/');
-    url(&format!("file:///{path}"))
+    Url::from_file_path(path).expect("an absolute UTF-8 path")
 }
 
 #[test]
 fn files_are_read_and_typed() {
     let dir = scratch("files");
-    let files: [(&str, &[u8], &str); 11] = [
+    let files: [(&str, &[u8], &str); 12] = [
         ("a.html", b"<p>hi", "text/html"),
         ("b.HTM", b"<p>hi", "text/html"),
         // Which sniffing would call text/plain.
@@ -413,6 +407,9 @@ fn files_are_read_and_typed() {
         ("page", b"<!DOCTYPE html><p>hi", "text/html"),
         ("blob.bin", b"\x00\x01\x02", "application/octet-stream"),
         ("with space.txt", b"spaced", "text/plain"),
+        // What a URL would read otherwise, named as from_file_path names
+        // it, and read back as the same file.
+        ("odd #1 100%.txt", b"odd", "text/plain"),
     ];
     for (name, body, essence) in files {
         let path = dir.join(name);

@@ -1,4 +1,5 @@
-//! The shell: the only crate that talks to the OS.
+//! The shell: the crate that talks to the OS for windows and input;
+//! `net` alone opens connections and reads resources by URL.
 //!
 //! Owns the window, the event loop, and the present pipeline (winit +
 //! softbuffer). All rendering decisions live in `engine`; this file
@@ -8,12 +9,22 @@
 //! into a hit test. Each frame is drawn for the time on the shell's
 //! clock (M13.4), and a frame is asked for only when the engine wants
 //! one: after input that changed something, or while a scroll animates.
+//!
+//! It runs as `silver-browser [URL or path]` (M14, docs/design/net.md,
+//! "The shell"): an argument naming an existing file loads that file,
+//! and any other must be an absolute URL; with none, the built-in page
+//! shows. While the load runs the window shows an empty page. Each
+//! finished fetch wakes the event loop with a user event, on which the
+//! engine takes what arrived; a load that fails is reported on standard
+//! error, and the built-in page shows instead.
 
+use std::ffi::OsString;
 use std::num::NonZeroU32;
-use std::sync::Arc;
+use std::path::Path;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
-use engine::{Engine, FrameTime};
+use engine::{Engine, FrameTime, LoadState, Url};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -26,6 +37,10 @@ const WINDOW_HEIGHT: u32 = 800;
 const WINDOW_TITLE: &str = "Silver Browser";
 /// One wheel notch, or one arrow key, scrolls this far.
 const LINE_PX: f32 = 40.0;
+
+/// The user event a finished fetch wakes the event loop with.
+#[derive(Debug, Clone, Copy)]
+struct NetworkWake;
 
 /// The browser application: window + surface + engine session.
 ///
@@ -44,10 +59,12 @@ struct Browser {
     thumb_grab: Option<f32>,
     /// The clock frames are drawn by: the time since the browser began.
     start: Instant,
+    /// The URL the command line asked for, until its load fails.
+    loading: Option<Url>,
 }
 
 impl Browser {
-    fn new(engine: Option<Engine>) -> Self {
+    fn new(engine: Option<Engine>, loading: Option<Url>) -> Self {
         Browser {
             window: None,
             context: None,
@@ -56,6 +73,7 @@ impl Browser {
             cursor: (0.0, 0.0),
             thumb_grab: None,
             start: Instant::now(),
+            loading,
         }
     }
 
@@ -187,7 +205,25 @@ impl Browser {
     }
 }
 
-impl ApplicationHandler for Browser {
+impl ApplicationHandler<NetworkWake> for Browser {
+    /// A fetch finished: the engine takes what arrived. A failed load is
+    /// reported, and the built-in page shown in its place.
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _wake: NetworkWake) {
+        let Some(engine) = self.engine.as_mut() else {
+            return;
+        };
+        engine.poll_network();
+        if let LoadState::Failed(error) = engine.load_state().clone() {
+            if let Some(url) = self.loading.take() {
+                eprintln!("silver-browser: {url}: {error}");
+            }
+            engine.show_built_in_page();
+        }
+        if let Some(window) = self.window.clone() {
+            self.redraw_if_wanted(&window);
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return; // Already running (e.g. resume after suspend).
@@ -301,16 +337,50 @@ impl ApplicationHandler for Browser {
     }
 }
 
+/// What the command line asks to show: `None` for the built-in page, or
+/// the URL to load. An argument naming an existing file is that file's
+/// `file:` URL, and any other must parse as an absolute URL. The file
+/// comes first: on Windows, `C:\page.html` parses as a URL too, of the
+/// scheme `c`.
+fn start_page(mut args: impl Iterator<Item = OsString>) -> Result<Option<Url>, String> {
+    let Some(arg) = args.next() else {
+        return Ok(None);
+    };
+    if args.next().is_some() {
+        return Err("one URL or path at most".to_owned());
+    }
+    let path = Path::new(&arg);
+    if path.exists() {
+        let absolute =
+            std::fs::canonicalize(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        return Url::from_file_path(&absolute)
+            .map(Some)
+            .ok_or_else(|| format!("{}: no file: URL names this path", path.display()));
+    }
+    let not_found = || format!("{}: not a URL, and no such file", path.display());
+    let text = arg.to_str().ok_or_else(not_found)?;
+    Url::parse(text).map(Some).map_err(|_| not_found())
+}
+
 fn main() {
-    let engine = match Engine::new() {
-        Ok(engine) => Some(engine),
+    let start = match start_page(std::env::args_os().skip(1)) {
+        Ok(start) => start,
+        Err(message) => {
+            eprintln!("silver-browser: {message}");
+            eprintln!("usage: silver-browser [URL or path]");
+            std::process::exit(2);
+        }
+    };
+
+    let mut engine = match Engine::new() {
+        Ok(engine) => engine,
         Err(e) => {
             eprintln!("engine initialization failed: {e}");
             return;
         }
     };
 
-    let event_loop = match EventLoop::new() {
+    let event_loop = match EventLoop::<NetworkWake>::with_user_event().build() {
         Ok(event_loop) => event_loop,
         Err(e) => {
             eprintln!("event loop creation failed: {e}");
@@ -318,8 +388,66 @@ fn main() {
         }
     };
 
-    let mut browser = Browser::new(engine);
+    if let Some(url) = &start {
+        // The proxy is sent across threads but need not be shared
+        // between them on every platform, so a lock makes it so.
+        let proxy = Mutex::new(event_loop.create_proxy());
+        engine.set_waker(move || {
+            let proxy = proxy.lock().unwrap_or_else(PoisonError::into_inner);
+            // An event loop gone has no one to wake.
+            let _ = proxy.send_event(NetworkWake);
+        });
+        engine.load_document("");
+        engine.load(url.clone());
+    }
+
+    let mut browser = Browser::new(Some(engine), start);
     if event_loop.run_app(&mut browser).is_err() {
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn start(args: &[&str]) -> Result<Option<Url>, String> {
+        start_page(args.iter().map(OsString::from))
+    }
+
+    #[test]
+    fn no_argument_shows_the_built_in_page() {
+        assert_eq!(start(&[]), Ok(None));
+    }
+
+    #[test]
+    fn an_absolute_url_is_loaded() {
+        assert_eq!(
+            start(&["https://example.com/a?b#c"]),
+            Ok(Some(Url::parse("https://example.com/a?b#c").unwrap()))
+        );
+    }
+
+    #[test]
+    fn an_existing_file_is_loaded_by_its_file_url() {
+        let dir = std::env::temp_dir().join(format!("silver-shell-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a page#1.html");
+        std::fs::write(&file, "<p>x</p>").unwrap();
+        let url = start(&[file.to_str().unwrap()]).unwrap().unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(url.scheme(), "file");
+        assert!(
+            url.as_str().ends_with("/a%20page%231.html"),
+            "{}",
+            url.as_str()
+        );
+        assert_eq!(url.fragment(), None);
+    }
+
+    #[test]
+    fn anything_else_is_refused() {
+        assert!(start(&["no such page.html"]).is_err());
+        assert!(start(&["https://example.com/", "https://example.org/"]).is_err());
     }
 }

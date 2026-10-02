@@ -145,6 +145,47 @@ impl Url {
         }
     }
 
+    /// The `file:` URL of an absolute path, which `file:` fetching reads
+    /// back as the same path. Each component is percent-encoded where
+    /// the URL parser would read it otherwise: `%`, `#` and `?`,
+    /// separators, `|`, which can stand for a drive letter's colon, and
+    /// space and the C0 controls, which the parser strips or trims.
+    /// `None` for a relative path, one that is not UTF-8, or on Windows
+    /// one that does not begin with a drive letter.
+    pub fn from_file_path(path: &std::path::Path) -> Option<Url> {
+        use std::path::{Component, Prefix};
+        if !path.is_absolute() {
+            return None;
+        }
+        let mut input = String::from("file://");
+        for component in path.components() {
+            match component {
+                Component::Prefix(prefix) => match prefix.kind() {
+                    Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => {
+                        input.push('/');
+                        input.push(char::from(letter));
+                        input.push(':');
+                    }
+                    _ => return None,
+                },
+                Component::RootDir => {}
+                Component::CurDir => input.push_str("/."),
+                Component::ParentDir => input.push_str("/.."),
+                Component::Normal(segment) => {
+                    input.push('/');
+                    for c in segment.to_str()?.chars() {
+                        if c <= ' ' || matches!(c, '%' | '#' | '?' | '/' | '\\' | '|') {
+                            input.push_str(&format!("%{:02X}", u32::from(c)));
+                        } else {
+                            input.push(c);
+                        }
+                    }
+                }
+            }
+        }
+        Url::parse(&input).ok()
+    }
+
     /// The serialization (URL Standard §4.5).
     pub fn as_str(&self) -> &str {
         &self.serialization
@@ -403,6 +444,43 @@ mod tests {
         Url::parse(input)
             .map(|u| u.to_string())
             .unwrap_or_else(|e| format!("error: {e:?}"))
+    }
+
+    #[test]
+    fn a_file_path_becomes_the_file_url_that_names_it() {
+        let (root, prefix) = if cfg!(windows) {
+            ("C:\\", "file:///C:/")
+        } else {
+            ("/", "file:///")
+        };
+        let path = std::path::Path::new(root)
+            .join("srv")
+            .join("a b")
+            .join("c#d%e?f|g\u{1}\u{e9}.html");
+        assert_eq!(
+            Url::from_file_path(&path).map(|url| url.to_string()),
+            Some(format!("{prefix}srv/a%20b/c%23d%25e%3Ff%7Cg%01%C3%A9.html"))
+        );
+        // The directories . and .. are resolved as the URL parser does.
+        let dotted = std::path::Path::new(root).join("a").join("..").join("b");
+        assert_eq!(
+            Url::from_file_path(&dotted).map(|url| url.to_string()),
+            Some(format!("{prefix}b"))
+        );
+        assert_eq!(Url::from_file_path(std::path::Path::new("relative")), None);
+        if cfg!(windows) {
+            // A verbatim drive path is its drive path; a share is not a
+            // file: URL this engine reads.
+            assert_eq!(
+                Url::from_file_path(std::path::Path::new(r"\\?\C:\a\b.html"))
+                    .map(|url| url.to_string()),
+                Some("file:///C:/a/b.html".to_owned())
+            );
+            assert_eq!(
+                Url::from_file_path(std::path::Path::new(r"\\server\share\a.html")),
+                None
+            );
+        }
     }
 
     #[test]

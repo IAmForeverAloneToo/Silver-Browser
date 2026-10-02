@@ -39,6 +39,16 @@ jobs:
       # member, so `--all` above does not reach them.
       - run: cargo fmt --manifest-path fuzz/Cargo.toml -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # T3.4: only `net` opens network connections and speaks TLS
+      # (docs/design/net.md, "The layering contract").
+      - name: network code only in net
+        run: |
+          if grep -rnwE 'TcpStream|UdpSocket|ToSocketAddrs|rustls' \
+              --include='*.rs' --include='Cargo.toml' crates fuzz \
+              | grep -v '^crates/net/'; then
+            echo "::error::network code outside crates/net"
+            exit 1
+          fi
 
   audit:
     name: advisories + licenses

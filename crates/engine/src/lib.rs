@@ -378,6 +378,12 @@ impl Engine {
         engine
     }
 
+    /// Shows the built-in page, as a new engine does: what the shell
+    /// shows when it is given nothing to load, or its load fails.
+    pub fn show_built_in_page(&mut self) {
+        self.load_document(DOCUMENT_SOURCE);
+    }
+
     /// Replaces the session document by parsing HTML `source` and
     /// installing it as [`Engine::set_document`] does. A source the
     /// parser refuses leaves the session as it was.
