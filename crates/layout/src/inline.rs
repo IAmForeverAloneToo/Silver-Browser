@@ -1302,6 +1302,7 @@ mod tests {
             kind: BoxKind::Text(text.to_string()),
             children: Vec::new(),
             node: crate::testing::no_node(),
+            anonymous: true,
         }
     }
 
@@ -1311,6 +1312,7 @@ mod tests {
             kind: BoxKind::Inline,
             children,
             node: crate::testing::no_node(),
+            anonymous: false,
         }
     }
 
@@ -1506,6 +1508,7 @@ mod tests {
             kind: BoxKind::Text(text.to_string()),
             children: Vec::new(),
             node: crate::testing::no_node(),
+            anonymous: true,
         }
     }
 

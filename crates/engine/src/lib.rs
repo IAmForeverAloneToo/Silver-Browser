@@ -23,8 +23,10 @@
 //! counts the layouts actually done, so a test can prove it. The
 //! document changes in place through [`Engine::mutate`] (M13.5), which
 //! reads the document's journal afterwards: a change is seen by the
-//! next frame, which restyles the elements it reaches (M13.1) and, for
-//! now, lays the whole document out again. Scrolling
+//! next frame, which restyles the elements it reaches (M13.1) and lays
+//! out the boxes it reaches, taking the others from the layout cache
+//! (M13.2); [`Engine::boxes_laid_out`] and [`Engine::boxes_reused`]
+//! count which. Scrolling
 //! (M9.2) is a target the frame approaches a fixed fraction per
 //! [`Engine::tick`] — the "fixed-tick lerp" of the roadmap, no clock
 //! involved; compositor-smooth scrolling is M19. The scrollbar is
@@ -50,7 +52,7 @@ pub mod differential;
 use std::collections::HashMap;
 
 use dom::{Change, Document, NodeId};
-use layout::{DocumentLayout, Fragment, FragmentKind};
+use layout::{DocumentLayout, Fragment, FragmentKind, LayoutCache};
 use paint::{
     DisplayItem, Rect, SCROLLBAR_THUMB, SCROLLBAR_TRACK, Step, Viewport, padding_box,
     paint_fragments_in, paint_order, scrollbar_thumb,
@@ -156,6 +158,15 @@ pub struct Engine {
     layout: Option<CachedLayout>,
     /// How many layouts have run: what proves a scroll does not.
     layout_runs: u64,
+    /// The boxes' layouts the next layout may take rather than redo
+    /// (M13.2): forgotten where a change reaches, and all of them when
+    /// a document loads or is cascaded whole.
+    layout_cache: LayoutCache,
+    /// How many boxes placed in flow the layouts have laid out, and how
+    /// many they took from the cache instead: what proves a change lays
+    /// out what it reaches and no more.
+    boxes_laid_out: u64,
+    boxes_reused: u64,
     /// The last frame's size: what scrolling is clamped to.
     viewport: (u32, u32),
     /// The scroll offset shown, and the one being approached.
@@ -251,6 +262,9 @@ impl Engine {
             restyled_elements: 0,
             layout: None,
             layout_runs: 0,
+            layout_cache: LayoutCache::new(),
+            boxes_laid_out: 0,
+            boxes_reused: 0,
             viewport: (0, 0),
             scroll_y: 0.0,
             scroll_target: 0.0,
@@ -272,7 +286,8 @@ impl Engine {
 
     /// Makes `document` the session document (M13.5): its `<style>`
     /// elements are parsed into stylesheets, the cascade and layout
-    /// caches and the glyph cache start over, every scroll offset is
+    /// caches, the layout cache's boxes among them, and the glyph cache
+    /// start over, every scroll offset is
     /// dropped and the document starts at the top. Its journal of
     /// changes is emptied, since the engine has seen nothing of it yet.
     pub fn set_document(&mut self, mut document: Document) {
@@ -283,6 +298,7 @@ impl Engine {
         self.styled = None;
         self.pending.clear();
         self.layout = None;
+        self.layout_cache.clear();
         self.scroll_y = 0.0;
         self.scroll_target = 0.0;
         self.element_scroll.clear();
@@ -299,10 +315,11 @@ impl Engine {
     /// and returns what `f` returns (M13.5). The engine then reads the
     /// document's journal. When it records any change, the `<style>`
     /// elements' text is read again and, if it changed, the stylesheets
-    /// are parsed again and the next frame cascades the whole document;
-    /// otherwise the next frame restyles the elements the changes reach
-    /// (M13.1). The next frame lays the document out afresh, the scroll
-    /// offsets of freed elements are dropped, and
+    /// are parsed again and the next frame cascades the whole document
+    /// and lays it out afresh; otherwise the next frame restyles the
+    /// elements the changes reach (M13.1) and lays out the boxes the
+    /// changes and those restyles reach (M13.2). The scroll offsets of
+    /// freed elements are dropped, and
     /// [`Engine::needs_frame`] says a frame is wanted; the document's
     /// own scroll offset stays, clamped to the new layout by the next
     /// frame. When it records none — a value set to the one already
@@ -407,7 +424,10 @@ impl Engine {
     /// The cached cascade for the current viewport: computed whole when
     /// none is cached, or when the viewport changed and the document's
     /// styles depend on it (M10.1); restyled when the document changed
-    /// since (M13.1). Either drops the cached layout.
+    /// since (M13.1). Either drops the cached layout, and brings the
+    /// layout cache up to date: emptied by a whole cascade, its entries
+    /// the changes and the restyled elements reach forgotten by a
+    /// restyle (M13.2).
     fn cached_styles(&mut self) -> &Styles {
         let stale = self.styled.as_ref().is_none_or(|cached| {
             cached.styles.uses_viewport_units && cached.viewport != self.viewport
@@ -417,6 +437,7 @@ impl Engine {
             self.style_runs += 1;
             self.pending.clear();
             self.layout = None;
+            self.layout_cache.clear();
             self.styled = Some(CachedStyle {
                 viewport: self.viewport,
                 styles,
@@ -438,8 +459,11 @@ impl Engine {
             cached.viewport = self.viewport;
             if restyle.full {
                 self.style_runs += 1;
+                self.layout_cache.clear();
             } else {
                 self.restyled_elements += restyle.computed as u64;
+                self.layout_cache
+                    .invalidate(&self.document, &changes, &restyle.changed);
             }
             self.layout = None;
         }
@@ -448,7 +472,8 @@ impl Engine {
 
     /// The document's layout for `viewport_width`, computed once per
     /// document and width (M9.5) and reused by every frame, scroll and
-    /// hit test at that width.
+    /// hit test at that width. Computing it takes from the layout cache
+    /// what the changes since did not reach (M13.2).
     pub fn layout(&mut self, viewport_width: f32) -> &DocumentLayout {
         // A viewport change can invalidate the cascade, and with it the
         // layout — so the cascade is checked first.
@@ -461,13 +486,17 @@ impl Engine {
         if stale {
             let styles = &self.styled.as_ref().expect("just computed").styles;
             let boxes = layout::build_box_tree(&self.document, styles);
-            let layout = layout::layout_document_in(
+            let layout = layout::layout_document_cached(
                 &boxes,
                 viewport_width,
                 Some(viewport_height),
                 &self.layout_fonts,
+                &self.layout_cache,
             );
             self.layout_runs += 1;
+            let (laid_out, reused) = self.layout_cache.counts();
+            self.boxes_laid_out += laid_out as u64;
+            self.boxes_reused += reused as u64;
             self.layout = Some(CachedLayout {
                 width: viewport_width,
                 height: viewport_height,
@@ -480,6 +509,20 @@ impl Engine {
     /// How many layouts this session has run.
     pub fn layout_runs(&self) -> u64 {
         self.layout_runs
+    }
+
+    /// How many boxes placed in flow this session's layouts have laid
+    /// out (M13.2): those a change reached, or that the layout cache
+    /// could not hold.
+    pub fn boxes_laid_out(&self) -> u64 {
+        self.boxes_laid_out
+    }
+
+    /// How many boxes placed in flow this session's layouts have taken
+    /// from the layout cache, each with its subtree, instead of laying
+    /// them out (M13.2).
+    pub fn boxes_reused(&self) -> u64 {
+        self.boxes_reused
     }
 
     /// Renders the current document into an RGBA8 framebuffer for a
@@ -2240,6 +2283,51 @@ mod tests {
         assert_eq!(engine.style_runs(), runs + 1);
     }
 
+    #[test]
+    fn appending_a_paragraph_to_a_long_page_lays_out_it_and_its_ancestors_alone() {
+        // After the first frame, appending a paragraph lays out the new
+        // paragraph and the boxes around it that changed, the body and
+        // the root, and takes every other from the layout cache (M13.2).
+        let mut engine = test_engine();
+        let mut page = String::from("<style>p { margin: 0 }</style>");
+        for i in 0..100 {
+            page.push_str(&format!("<p>{i}</p>"));
+        }
+        engine.load_document(&page);
+        engine.frame(200, 100);
+        // The root, the body and the paragraphs; the head has no box.
+        assert_eq!((engine.boxes_laid_out(), engine.boxes_reused()), (102, 0));
+        let body = first(&engine, "body");
+        engine.mutate(|document| {
+            let p = document.create_element("p").expect("an element");
+            let text = document.create_text("new").expect("a text node");
+            document.append_child(p, text).expect("appended");
+            document.append_child(body, p).expect("appended");
+        });
+        engine.frame(200, 100);
+        assert_eq!((engine.boxes_laid_out(), engine.boxes_reused()), (105, 100));
+        // A text change: its paragraph and the two above it.
+        let p = first(&engine, "p");
+        let text = engine.document().first_child(p).expect("a text node");
+        engine
+            .mutate(|document| document.set_text(text, "changed"))
+            .expect("a text node");
+        engine.frame(200, 100);
+        assert_eq!((engine.boxes_laid_out(), engine.boxes_reused()), (108, 200));
+        // A new stylesheet cascades the document whole, and lays it out
+        // whole: the cache is emptied with the cascade.
+        let style = first(&engine, "style");
+        let sheet = engine.document().first_child(style).expect("the sheet");
+        engine
+            .mutate(|document| document.set_text(sheet, "p { margin: 1px }"))
+            .expect("a text node");
+        engine.frame(200, 100);
+        assert_eq!((engine.boxes_laid_out(), engine.boxes_reused()), (211, 200));
+        // A new width: every paragraph's containing block is new.
+        engine.frame(300, 100);
+        assert_eq!((engine.boxes_laid_out(), engine.boxes_reused()), (314, 200));
+    }
+
     /// A page with something of every kind the mutations reach: styled
     /// blocks and inlines, a float, a positioned box, an inline-block,
     /// a table and a scroll container, under selectors that make most
@@ -2267,45 +2355,84 @@ mod tests {
         <table><tr><td>1</td><td colspan=2>2</td></tr><tr><td>3</td></tr></table>\
         <div style=\"overflow: auto; height: 30px\"><p>scroll</p><p>more</p><p>and more</p></div>";
 
+    /// A page whose boxes the layout cache can hold (M13.2): blocks
+    /// nested a few deep, a table with a spanning cell, an anonymous
+    /// table, absolutely positioned boxes settled by a positioned
+    /// ancestor near and far, and its one float inside a context root
+    /// of its own, so that until a mutation makes another nothing in
+    /// the page's own context meets a float.
+    const NESTED_PAGE: &str = "<style>\
+          body { margin: 4px; font-size: 10px }\
+          .a { padding: 2px; background-color: #eee }\
+          .b { float: left; width: 30px; height: 10px; background-color: #0a0 }\
+          .c { position: relative; top: 3px; border: 1px solid #00f }\
+          section { margin: 3px 0; border-left: 2px solid #888 }\
+          .cell { display: table-cell; padding: 1px; border: 1px solid #c0c }\
+          .abs { position: absolute; top: 2px; right: 3px; width: 8px; height: 8px; background-color: #f80 }\
+          td { padding: 1px; border: 1px solid #000 }\
+          :empty { min-height: 2px; background-color: #ccc }\
+        </style>\
+        <section><div class=a><p>one <b>two</b></p><div><p>deep</p><p class=c>er<span class=abs></span></p></div></div>\
+        <div><span class=cell>cell</span><span class=cell>next</span></div></section>\
+        <section class=c><p>held <span class=abs></span></p><div><div><p>three levels</p></div></div></section>\
+        <table><tr><td>1</td><td>2</td><td>3</td></tr><tr><td colspan=2>4</td><td>5</td></tr></table>\
+        <div style=\"overflow: hidden\"><span class=b></span><p>beside</p><p>below</p></div>\
+        <ul><li>x</li><li>y</li></ul>";
+
     #[test]
     fn after_random_mutations_the_engine_shows_what_a_fresh_engine_shows() {
         // Seeded runs of random mutations, each compared after every
         // step with a fresh engine's full pass over the document as it
-        // stands (M13's differential check): today's engine recomputes
-        // everything, so this is the baseline each incremental stage
-        // will have to keep.
+        // stands (M13's differential check): what the engine restyles
+        // and lays out again, and what it keeps, must come to what a
+        // full pass computes.
         let mut fresh = test_engine();
-        for seed in 1..=8u64 {
-            let mut engine = test_engine();
-            engine.load_document(DIFFERENTIAL_PAGE);
-            let mut mutator = differential::Mutator::new(engine.document());
-            let mut rng = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15);
-            let mut changed = 0;
-            for step in 0..50 {
-                // xorshift64: a sequence a failing seed replays.
-                let script: Vec<u8> = (0..6)
-                    .map(|_| {
-                        rng ^= rng << 13;
-                        rng ^= rng >> 7;
-                        rng ^= rng << 17;
-                        (rng >> 32) as u8
-                    })
-                    .collect();
-                engine.mutate(|document| mutator.step(document, &mut script.as_slice()));
-                changed += usize::from(engine.needs_frame());
-                if step % 10 == 5 {
-                    engine.set_scroll(step as f32 * 2.0);
-                }
-                if let Err(difference) =
-                    differential::compare_with_fresh(&mut engine, &mut fresh, 160, 120)
-                {
-                    panic!("seed {seed}, step {step}: {difference}");
-                }
-            }
+        for (name, page) in [("first", DIFFERENTIAL_PAGE), ("nested", NESTED_PAGE)] {
+            let changed: usize = (1..=8)
+                .map(|seed| mutate_and_compare(&mut fresh, name, page, seed))
+                .sum();
+            // Enough of the steps did something, over all the runs.
             assert!(
-                changed >= 15,
-                "seed {seed}: only {changed} steps changed anything"
+                changed >= 8 * 15,
+                "{name} page: only {changed} steps changed anything"
             );
         }
+    }
+
+    /// Fifty random mutations of `page` from `seed`, each followed by
+    /// the differential check against `fresh`; returns how many changed
+    /// anything.
+    fn mutate_and_compare(fresh: &mut Engine, name: &str, page: &str, seed: u64) -> usize {
+        let mut engine = test_engine();
+        engine.load_document(page);
+        let mut mutator = differential::Mutator::new(engine.document());
+        let mut rng = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        let mut changed = 0;
+        for step in 0..50 {
+            // xorshift64: a sequence a failing seed replays.
+            let script: Vec<u8> = (0..6)
+                .map(|_| {
+                    rng ^= rng << 13;
+                    rng ^= rng >> 7;
+                    rng ^= rng << 17;
+                    (rng >> 32) as u8
+                })
+                .collect();
+            engine.mutate(|document| mutator.step(document, &mut script.as_slice()));
+            changed += usize::from(engine.needs_frame());
+            if step % 10 == 5 {
+                engine.set_scroll(step as f32 * 2.0);
+            }
+            if let Err(difference) = differential::compare_with_fresh(&mut engine, fresh, 160, 120)
+            {
+                panic!("{name} page, seed {seed}, step {step}: {difference}");
+            }
+        }
+        // The layout cache was put to use.
+        assert!(
+            engine.boxes_reused() > 0,
+            "{name} page, seed {seed}: no box reused"
+        );
+        changed
     }
 }

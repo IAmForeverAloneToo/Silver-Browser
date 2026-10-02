@@ -13,10 +13,14 @@
 //! its own v1 scope (no `overflow-wrap`). The result is a
 //! [`DocumentLayout`] (M9.1): a fragment tree in document coordinates
 //! plus the content height the viewport scrolls over; `paint` consumes
-//! it, applying the scroll offset.
+//! it, applying the scroll offset. A [`LayoutCache`] (M13.2) keeps
+//! block boxes' layouts from one pass to the next, so that a pass after
+//! a change to the document lays out what the change reached and
+//! reuses the rest.
 
 pub mod block;
 pub mod box_tree;
+mod cache;
 mod float;
 pub mod inline;
 mod intrinsic;
@@ -24,9 +28,10 @@ mod table;
 
 pub use block::{
     DocumentLayout, Fragment, FragmentKind, Preorder, flatten, layout, layout_document,
-    layout_document_in, preorder,
+    layout_document_cached, layout_document_in, preorder,
 };
 pub use box_tree::{BoxKind, LayoutBox, RowGroupKind, build_box_tree};
+pub use cache::LayoutCache;
 
 #[cfg(test)]
 pub(crate) mod testing {

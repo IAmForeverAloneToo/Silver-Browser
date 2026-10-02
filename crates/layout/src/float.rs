@@ -159,6 +159,13 @@ impl FloatContext {
         self.placed.is_empty()
     }
 
+    /// Whether the context holds no float at all, placed or waiting: a
+    /// box laid out in it then neither meets a float nor is moved by
+    /// one, which the layout cache relies on (M13.2).
+    pub(crate) fn is_untouched(&self) -> bool {
+        self.placed.is_empty() && self.pending.is_empty()
+    }
+
     /// Whether a float still waiting for the flow position is one a
     /// box with `clear` would have to be below: such a box resolves the
     /// position, since it cannot collapse its margins past them.

@@ -85,6 +85,7 @@ use style::computed::{
 use text::FontCollection;
 
 use crate::box_tree::{BoxKind, LayoutBox};
+use crate::cache::{Held, Inputs, LayoutCache};
 use crate::float::{At, FloatContext, PendingFloat, attach_floats};
 use crate::inline::layout_inline;
 
@@ -365,6 +366,32 @@ pub fn layout_document_in(
     viewport_height: Option<f32>,
     fonts: &FontCollection,
 ) -> DocumentLayout {
+    layout_document_with(boxes, viewport_width, viewport_height, fonts, None)
+}
+
+/// [`layout_document_in`] taking from `cache` what the passes before
+/// kept and keeping what this one may leave for the next (M13.2, see
+/// [`crate::cache`]). `boxes` must be built from the document `cache`
+/// was last brought up to date for, by [`LayoutCache::invalidate`]; the
+/// result is then what [`layout_document_in`] gives.
+pub fn layout_document_cached(
+    boxes: &[LayoutBox],
+    viewport_width: f32,
+    viewport_height: Option<f32>,
+    fonts: &FontCollection,
+    cache: &LayoutCache,
+) -> DocumentLayout {
+    cache.begin_pass();
+    layout_document_with(boxes, viewport_width, viewport_height, fonts, Some(cache))
+}
+
+fn layout_document_with(
+    boxes: &[LayoutBox],
+    viewport_width: f32,
+    viewport_height: Option<f32>,
+    fonts: &FontCollection,
+    cache: Option<&LayoutCache>,
+) -> DocumentLayout {
     // The initial containing block is the outermost block formatting
     // context: its float context is the document's, and its content
     // top is the root of the coordinates floats are placed in.
@@ -376,6 +403,7 @@ pub fn layout_document_in(
         &mut floats,
         At::root(),
         fonts,
+        cache,
     );
     let depends_on_viewport_height = viewport_height.is_some()
         && boxes.iter().any(|b| {
@@ -730,6 +758,10 @@ pub(crate) struct BlockLayout<'a> {
     /// a context root's floats included): what a table row takes from
     /// a cell whose `height` is only a minimum (M12).
     pub(crate) auto_content_height: f32,
+    /// The children whose fragments the layout cache holds under their
+    /// nodes (M13.2): taken from it or kept in it as this box was laid
+    /// out, by their places among `root`'s children.
+    pub(crate) held: Vec<Held>,
 }
 
 /// An inline-block laid out for its line (M10.4, M7.7): one atomic item
@@ -876,7 +908,9 @@ impl Edges {
 /// here: [`layout_children`] lays its lines out directly) in the float
 /// context `floats`, met at `at`, its margin box filling
 /// `available_width` of the containing block (its whole width, or the
-/// room between floats for a context root, M11).
+/// room between floats for a context root, M11). `cache` goes to the
+/// boxes placed in flow inside it (M13.2).
+#[allow(clippy::too_many_arguments)]
 fn layout_block<'a>(
     b: &'a LayoutBox,
     cb_width: f32,
@@ -885,6 +919,7 @@ fn layout_block<'a>(
     floats: &mut FloatContext,
     at: At,
     fonts: &FontCollection,
+    cache: Option<&LayoutCache>,
 ) -> BlockLayout<'a> {
     let edges = Edges::of_box(b, cb_width);
     // margin-right is fully resolved here but never read again — see
@@ -909,6 +944,7 @@ fn layout_block<'a>(
         margin_left,
         content,
         fonts,
+        cache,
     )
 }
 
@@ -926,6 +962,7 @@ fn layout_contents<'a>(
     margin_left: f32,
     content: Content<'_>,
     fonts: &FontCollection,
+    cache: Option<&LayoutCache>,
 ) -> BlockLayout<'a> {
     if b.is_table() {
         return crate::table::layout_table_contents(
@@ -947,6 +984,7 @@ fn layout_contents<'a>(
         margin_left,
         content,
         fonts,
+        cache,
     )
 }
 
@@ -1027,6 +1065,7 @@ pub(crate) fn layout_inline_block<'a>(
         margin_left,
         Content::Root,
         fonts,
+        None,
     );
     let height = margin_top + layout.height + margin_bottom;
     // An inline table aligns by its first row's baseline (CSS2 §10.8.1,
@@ -1055,7 +1094,8 @@ pub(crate) fn layout_inline_block<'a>(
 /// The body of a block container's layout once its content width and
 /// left margin are known: its height, the stacking of its children and
 /// the margins it exposes. `content` says which float context the
-/// children are laid out in (M11).
+/// children are laid out in (M11); `cache` is the layout cache those
+/// placed in flow are taken from and kept in, if any (M13.2).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn layout_block_contents<'a>(
     b: &'a LayoutBox,
@@ -1066,6 +1106,7 @@ pub(crate) fn layout_block_contents<'a>(
     margin_left: f32,
     content: Content<'_>,
     fonts: &FontCollection,
+    cache: Option<&LayoutCache>,
 ) -> BlockLayout<'a> {
     let Edges { border, padding } = edges;
     // What keeps this box's margins from adjoining its children's: a
@@ -1111,6 +1152,7 @@ pub(crate) fn layout_block_contents<'a>(
             first_baseline: None,
             absolutes: Vec::new(),
             auto_content_height: 0.0,
+            held: Vec::new(),
         };
     }
 
@@ -1152,6 +1194,7 @@ pub(crate) fn layout_block_contents<'a>(
         floats,
         at,
         fonts,
+        cache,
     );
     if bfc_root {
         // A float still waiting at the end of its context is placed
@@ -1191,6 +1234,7 @@ pub(crate) fn layout_block_contents<'a>(
             first_baseline: None,
             absolutes,
             auto_content_height: 0.0,
+            held: children.held,
         };
     }
 
@@ -1320,6 +1364,7 @@ pub(crate) fn layout_block_contents<'a>(
         first_baseline: children.first_baseline.map(|y| content_y + y),
         absolutes,
         auto_content_height,
+        held: children.held,
     }
 }
 
@@ -1500,6 +1545,7 @@ fn layout_absolute<'a>(
         margin_left,
         Content::Root,
         fonts,
+        None,
     );
     let mut fragment = layout.root;
     let specified_height = definite_height(style, cb_height, vertical_edges);
@@ -1567,6 +1613,9 @@ struct BlockPlacement<'a> {
     /// stop there, and its own top margin lies below the gap. `None`
     /// when the box's margins collapse with its siblings' as usual.
     separated: Option<f32>,
+    /// The serial of the layout cache's entry for the box, when the
+    /// layout was taken from it or kept in it (M13.2).
+    held: Option<u64>,
 }
 
 /// Whether a box's top edge separates its margins from its children's
@@ -1596,6 +1645,12 @@ fn separates_top(style: &ComputedStyle, cb_width: f32) -> bool {
 /// margin, where the margins pending so far end (as clearance would
 /// have it); a box whose top edge separates its margins resolves it at
 /// its hypothetical top.
+///
+/// With `cache`, an element's principal block or table laid out in a
+/// context no float has touched is taken from it when it was kept
+/// with the same inputs, and kept when it may be (M13.2,
+/// [`crate::cache`]); a box laid out instead is counted, and the cache
+/// goes on to the boxes inside it.
 fn place_block<'a>(
     child: &'a LayoutBox,
     cb_width: f32,
@@ -1603,7 +1658,31 @@ fn place_block<'a>(
     floats: &mut FloatContext,
     at: At,
     fonts: &FontCollection,
+    cache: Option<&LayoutCache>,
 ) -> BlockPlacement<'a> {
+    // Only an element's own box is kept under its node, and only one no
+    // float can have reached; the boxes inside it may be, whatever it is.
+    let held = cache.filter(|_| {
+        !child.anonymous
+            && matches!(child.kind, BoxKind::Block | BoxKind::Table)
+            && floats.is_untouched()
+    });
+    let inputs = Inputs {
+        cb_width,
+        available_width: cb_width,
+        cb_height,
+    };
+    if let Some((layout, serial)) = held.and_then(|cache| cache.take(child.node, inputs)) {
+        return BlockPlacement {
+            x: layout.margin_left,
+            layout,
+            separated: None,
+            held: Some(serial),
+        };
+    }
+    if let Some(cache) = cache {
+        cache.count_laid_out();
+    }
     let root = establishes_bfc(&child.style);
     let own_top = AdjoiningMargins::of(child.style.margin[TOP].resolve(cb_width, 0.0));
     if at.origin.is_none() {
@@ -1614,7 +1693,12 @@ fn place_block<'a>(
         }
     }
     if !root || floats.is_empty() {
-        let layout = layout_block(child, cb_width, cb_width, cb_height, floats, at, fonts);
+        let layout = layout_block(
+            child, cb_width, cb_width, cb_height, floats, at, fonts, cache,
+        );
+        // Laid out untouched, it is kept if it placed no float either.
+        let kept =
+            held.and_then(|cache| cache.keep(child.node, inputs, &layout, floats.is_untouched()));
         let above = if layout.self_collapsing {
             layout.top_edge
         } else {
@@ -1629,6 +1713,7 @@ fn place_block<'a>(
                 x: layout.margin_left,
                 layout,
                 separated: None,
+                held: kept,
             };
         };
         // Clearance: the box's top border edge is at `top`, the margins
@@ -1638,7 +1723,9 @@ fn place_block<'a>(
         // the box is, an empty box has none, any other's does (its
         // lines beside floats, its own floats), so it is laid out
         // again from where it really is: the pending margins put so
-        // that joining the box's resolve to its top.
+        // that joining the box's resolve to its top. No box kept comes
+        // here: a float to clear was in the context before it, or the
+        // box placed it.
         let layout = if root || layout.self_collapsing {
             layout
         } else {
@@ -1648,12 +1735,15 @@ fn place_block<'a>(
                 anchor: top - above.resolve(),
                 strut: above,
             };
-            layout_block(child, cb_width, cb_width, cb_height, floats, inside, fonts)
+            layout_block(
+                child, cb_width, cb_width, cb_height, floats, inside, fonts, cache,
+            )
         };
         return BlockPlacement {
             x: layout.margin_left,
             layout,
             separated: Some(top),
+            held: None,
         };
     }
     // A context root's top is its own margin's, no child's escaping
@@ -1667,7 +1757,7 @@ fn place_block<'a>(
         let (mut left, mut right) = floats.space(top, 0.0, cb_left, cb_right);
         let fitted = loop {
             let room = right - left;
-            let layout = layout_block(child, cb_width, room, cb_height, floats, at, fonts);
+            let layout = layout_block(child, cb_width, room, cb_height, floats, at, fonts, cache);
             let alone = left == cb_left && right == cb_right;
             if !alone && layout.margin_left + layout.root.w > room {
                 break None;
@@ -1678,6 +1768,7 @@ fn place_block<'a>(
                     x: left - cb_left + layout.margin_left,
                     layout,
                     separated: (top > hypothetical).then_some(top),
+                    held: None,
                 });
             }
             // A float lower down narrows the room: try that room.
@@ -1759,6 +1850,9 @@ struct ChildrenLayout<'a> {
     /// The absolutely positioned boxes met among the children or
     /// carried up by them (M11), relative to the content-box origin.
     absolutes: Vec<Deferred<'a>>,
+    /// The children whose fragments the layout cache holds (M13.2), by
+    /// their places in `fragments`.
+    held: Vec<Held>,
 }
 
 /// Stacks a block container's children (M10.4: all block-level, per the
@@ -1784,8 +1878,10 @@ fn layout_children<'a>(
     floats: &mut FloatContext,
     at: At,
     fonts: &FontCollection,
+    cache: Option<&LayoutCache>,
 ) -> ChildrenLayout<'a> {
     let mut fragments = Vec::new();
+    let mut held = Vec::new();
     let mut absolutes: Vec<Deferred<'a>> = Vec::new();
     let mut y = 0.0f32;
     // The set of margins adjoining BETWEEN two siblings, not yet
@@ -1819,7 +1915,14 @@ fn layout_children<'a>(
                     layout,
                     x,
                     separated,
-                } = place_block(child, cb_width, cb_height, floats, at, fonts);
+                    held: serial,
+                } = place_block(child, cb_width, cb_height, floats, at, fonts, cache);
+                // Its fragment goes next, whichever way it is placed.
+                held.extend(serial.map(|serial| Held {
+                    index: fragments.len(),
+                    node: child.node,
+                    serial,
+                }));
                 // `position: relative` moves the fragment, and its
                 // subtree with it, from where the flow put it (M11).
                 let (dx, dy) = relative_offset(&child.style, cb_width, cb_height);
@@ -2035,6 +2138,7 @@ fn layout_children<'a>(
         first_baseline,
         end: at,
         absolutes,
+        held,
     }
 }
 
@@ -2636,6 +2740,7 @@ mod tests {
             kind: BoxKind::Text("x".to_string()),
             children: Vec::new(),
             node: no_node(),
+            anonymous: true,
         };
         let block = LayoutBox {
             style: ComputedStyle {
@@ -2645,6 +2750,7 @@ mod tests {
             kind: BoxKind::Block,
             children: vec![text],
             node: no_node(),
+            anonymous: false,
         };
         let layout = layout_document(&[block], VIEWPORT, &fonts);
         let m = fonts.primary().metrics(16.0);

@@ -41,6 +41,12 @@ pub struct LayoutBox {
     /// level. Hit testing answers with this, and the fragments the box
     /// produces carry it.
     pub node: NodeId,
+    /// Whether the box is anonymous: one generated for `node`'s content
+    /// — a text box, or an anonymous block, table, row or cell (CSS2
+    /// §9.2.1.1, §17.2.1) — rather than one of the boxes `node` itself
+    /// generates. Only the latter stand for the element: the layout
+    /// cache keeps an element's results by its node (M13.2).
+    pub anonymous: bool,
 }
 
 /// A box's kind, per `display` (block, inline, inline-block and the
@@ -368,6 +374,7 @@ impl BlockContainer<'_> {
                                 kind,
                                 children,
                                 node: child,
+                                anonymous: false,
                             };
                             if self.open.is_empty() && self.run.is_empty() {
                                 self.out.push(out_of_flow);
@@ -381,6 +388,7 @@ impl BlockContainer<'_> {
                                 kind: BoxKind::Block,
                                 children: build_block_container(styled, child),
                                 node: child,
+                                anonymous: false,
                             };
                             self.add_block(block);
                         }
@@ -390,6 +398,7 @@ impl BlockContainer<'_> {
                                 kind: BoxKind::Table,
                                 children: build_table(styled, child),
                                 node: child,
+                                anonymous: false,
                             };
                             self.add_block(table);
                         }
@@ -399,6 +408,7 @@ impl BlockContainer<'_> {
                                 kind: BoxKind::Inline,
                                 children: Vec::new(),
                                 node: child,
+                                anonymous: false,
                             });
                             self.add_children(child, &styled.children(child));
                             let inline = self.open.pop().expect("the inline just opened");
@@ -410,6 +420,7 @@ impl BlockContainer<'_> {
                                 kind: BoxKind::InlineBlock,
                                 children: build_block_container(styled, child),
                                 node: child,
+                                anonymous: false,
                             };
                             self.add_inline_level(block);
                         }
@@ -419,6 +430,7 @@ impl BlockContainer<'_> {
                                 kind: BoxKind::Table,
                                 children: build_table(styled, child),
                                 node: child,
+                                anonymous: false,
                             };
                             self.add_inline_level(table);
                         }
@@ -452,6 +464,7 @@ impl BlockContainer<'_> {
                         kind: BoxKind::Text(text.clone()),
                         children: Vec::new(),
                         node: parent,
+                        anonymous: true,
                     });
                 }
                 // The document node is no one's child; a stale id is no
@@ -516,6 +529,7 @@ impl BlockContainer<'_> {
             kind: BoxKind::Table,
             children: order_table_children(parts),
             node: parent,
+            anonymous: true,
         };
         if inline_level {
             self.add_inline_level(table);
@@ -556,6 +570,7 @@ impl BlockContainer<'_> {
                 kind: BoxKind::Inline,
                 children: Vec::new(),
                 node,
+                anonymous: false,
             });
         }
     }
@@ -578,6 +593,7 @@ impl BlockContainer<'_> {
             kind: BoxKind::AnonymousBlock,
             children,
             node: self.node,
+            anonymous: true,
         });
     }
 
@@ -639,6 +655,7 @@ fn build_table_part(styled: &Styled<'_>, idx: NodeId, style: &ComputedStyle) -> 
         kind,
         children,
         node: idx,
+        anonymous: false,
     }
 }
 
@@ -652,6 +669,7 @@ fn build_column(styled: &Styled<'_>, idx: NodeId) -> LayoutBox {
         },
         children: Vec::new(),
         node: idx,
+        anonymous: false,
     }
 }
 
@@ -664,6 +682,7 @@ fn build_cell(styled: &Styled<'_>, idx: NodeId) -> LayoutBox {
         kind: BoxKind::Cell { colspan, rowspan },
         children: build_block_container(styled, idx),
         node: idx,
+        anonymous: false,
     }
 }
 
@@ -674,6 +693,7 @@ fn anonymous_row(styled: &Styled<'_>, node: NodeId, cells: Vec<LayoutBox>) -> La
         kind: BoxKind::Row,
         children: cells,
         node,
+        anonymous: true,
     }
 }
 
@@ -799,6 +819,7 @@ fn cells_of(styled: &Styled<'_>, node: NodeId, items: Vec<RowItem>) -> Vec<Layou
             },
             children: build_block_container_of(styled, node, &content),
             node,
+            anonymous: true,
         });
     };
     for item in items {

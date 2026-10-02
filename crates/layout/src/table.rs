@@ -601,6 +601,7 @@ pub(crate) fn layout_table_contents<'a>(
         last_baseline: last_row_baseline.map(|b| top_height + b),
         absolutes,
         auto_content_height: content_height,
+        held: Vec::new(),
     }
 }
 
@@ -1428,6 +1429,7 @@ fn layout_cell<'a>(
         0.0,
         Content::Root,
         fonts,
+        None,
     );
     let specified = definite_height(&b.style, None, edges.vertical()).unwrap_or(0.0);
     let (min_height, _) = height_bounds(&b.style, None, edges.vertical());
@@ -1463,6 +1465,7 @@ fn layout_caption<'a>(
         margin_left,
         Content::Root,
         fonts,
+        None,
     )
 }
 
