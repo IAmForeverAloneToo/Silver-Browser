@@ -716,6 +716,11 @@ pub(crate) struct BlockLayout<'a> {
     /// top (CSS2 §10.8.1: an inline-block's own baseline); `None` when
     /// nothing inside made a line.
     pub(crate) last_baseline: Option<f32>,
+    /// The baseline of its first line box, or of the first row of the
+    /// first table in it, the same way (CSS2 §17.5.3: a table cell's
+    /// baseline; §10.8.1: an inline table's, M12); `None` when there is
+    /// neither.
+    pub(crate) first_baseline: Option<f32>,
     /// The absolutely positioned boxes met inside whose containing
     /// block is further up (M11), relative to the border box.
     pub(crate) absolutes: Vec<Deferred<'a>>,
@@ -1000,9 +1005,16 @@ pub(crate) fn layout_inline_block<'a>(
         fonts,
     );
     let height = margin_top + layout.height + margin_bottom;
-    let ascent = match layout.last_baseline {
-        Some(baseline) if !b.style.overflow.clips() => margin_top + baseline,
-        _ => height,
+    // An inline table aligns by its first row's baseline (CSS2 §10.8.1,
+    // M12), whatever its `overflow`, which a table does not apply.
+    let baseline = if b.is_table() {
+        layout.first_baseline
+    } else {
+        layout.last_baseline.filter(|_| !b.style.overflow.clips())
+    };
+    let ascent = match baseline {
+        Some(baseline) => margin_top + baseline,
+        None => height,
     };
     AtomicLayout {
         width: margin_left + layout.root.w + margin_right,
@@ -1072,6 +1084,7 @@ pub(crate) fn layout_block_contents<'a>(
             bottom_edge: own_bottom,
             self_collapsing: true,
             last_baseline: None,
+            first_baseline: None,
             absolutes: Vec::new(),
             auto_content_height: 0.0,
         };
@@ -1151,6 +1164,7 @@ pub(crate) fn layout_block_contents<'a>(
             bottom_edge: children.trailing.join(own_bottom),
             self_collapsing: true,
             last_baseline: None,
+            first_baseline: None,
             absolutes,
             auto_content_height: 0.0,
         };
@@ -1279,6 +1293,7 @@ pub(crate) fn layout_block_contents<'a>(
         bottom_edge: margin_bottom,
         self_collapsing: false,
         last_baseline: children.last_baseline.map(|y| content_y + y),
+        first_baseline: children.first_baseline.map(|y| content_y + y),
         absolutes,
         auto_content_height,
     }
@@ -1711,6 +1726,9 @@ struct ChildrenLayout<'a> {
     /// first child's `y = 0` like `content_height`; `None` when none
     /// made a line.
     last_baseline: Option<f32>,
+    /// The baseline of the first, the same way, a block child's first
+    /// counting (M12).
+    first_baseline: Option<f32>,
     /// The flow position after the last child, in the float context's
     /// coordinates (M11): where a float met next would go.
     end: At,
@@ -1753,6 +1771,7 @@ fn layout_children<'a>(
     let mut still_leading = true;
     let mut leading = AdjoiningMargins::default();
     let mut last_baseline = None;
+    let mut first_baseline: Option<f32> = None;
     // The content top is resolved: the leading set is this container's
     // to materialise, at the first content's top.
     let top_resolved = at.origin.is_some();
@@ -1805,6 +1824,9 @@ fn layout_children<'a>(
                         if let Some(baseline) = layout.last_baseline {
                             last_baseline = Some(child_y + baseline);
                         }
+                        if let Some(baseline) = layout.first_baseline {
+                            first_baseline = first_baseline.or(Some(child_y + baseline));
+                        }
                     }
                     fragments.push(layout.root.translated(x, child_y + dy));
                     absolutes.extend(carried(layout.absolutes, x, child_y + dy));
@@ -1854,6 +1876,9 @@ fn layout_children<'a>(
                 let child_y = y;
                 if let Some(baseline) = layout.last_baseline {
                     last_baseline = Some(child_y + baseline);
+                }
+                if let Some(baseline) = layout.first_baseline {
+                    first_baseline = first_baseline.or(Some(child_y + baseline));
                 }
                 fragments.push(layout.root.translated(x, child_y + dy));
                 absolutes.extend(carried(layout.absolutes, x, child_y + dy));
@@ -1963,6 +1988,9 @@ fn layout_children<'a>(
                 if let Some(baseline) = lines.last_baseline {
                     last_baseline = Some(y + baseline);
                 }
+                if let Some(baseline) = lines.first_baseline {
+                    first_baseline = first_baseline.or(Some(y + baseline));
+                }
                 fragments.extend(lines.fragments.into_iter().map(|f| f.translated(0.0, y)));
                 absolutes.extend(carried(lines.absolutes, 0.0, y));
                 y += lines.height;
@@ -1980,6 +2008,7 @@ fn layout_children<'a>(
         trailing: if still_leading { leading } else { pending },
         nothing_materialised: still_leading,
         last_baseline,
+        first_baseline,
         end: at,
         absolutes,
     }

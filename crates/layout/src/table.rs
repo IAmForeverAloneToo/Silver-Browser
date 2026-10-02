@@ -23,12 +23,20 @@
 //! measures (the performance milestone's) would halve. Then the row
 //! heights: what the
 //! cells need, each laid out as a block container at its column's width
-//! and never shorter than its own `height`, a cell spanning rows giving
-//! what it needs beyond the rows it spans to those rows in proportion
-//! to their heights; the table's own `height` past the rows' sum is
-//! given to the rows the same way. Every cell is stretched to the rows
-//! it spans, its content at its top (`vertical-align` and the row
-//! baselines are step 5's). The separated border model's
+//! and never shorter than its own `height` (CSS2 §17.5.3). The cells
+//! whose `vertical-align` is `baseline` — every value but `top`,
+//! `middle` and `bottom` counts as it — share their row's baseline, the
+//! lowest of their own (a cell's first line box's, or the first row's of
+//! a table in it, else its content's bottom edge), so the row holds each
+//! of them moved down to it; a cell spanning rows aligns to its first
+//! row's and gives what it needs beyond the rows it spans to those rows
+//! in proportion to their heights; the table's own `height` past the
+//! rows' sum is given to the rows the same way. Every cell is stretched
+//! to the rows it spans, and its content placed in it by its alignment:
+//! at its top, centred, at its bottom, or on the row's baseline. The
+//! table's baseline is its first row's, the lowest cell content's bottom
+//! for a row with no cell on its baseline, and an inline table aligns
+//! by it. The separated border model's
 //! `border-spacing` lies between every two cells and between the cells
 //! and the table's padding edge (§17.6.1).
 //!
@@ -52,6 +60,7 @@
 use style::computed::{
     BOTTOM, BorderCollapse, BorderStyle, BoxSizing, CaptionSide, Color, ComputedStyle, Display,
     Float, LEFT, LengthPercentage, LengthPercentageAuto, Position, RIGHT, TOP, TableLayout,
+    VerticalAlign,
 };
 use text::FontCollection;
 
@@ -115,6 +124,24 @@ pub(crate) fn layout_table_contents<'a>(
         cells.push(layout_cell(cell.b, span_width, content_width, fonts));
     }
 
+    // The row baselines: the lowest baseline among the cells aligned to
+    // it, a cell spanning rows to its first row's.
+    let mut row_baselines: Vec<Option<f32>> = vec![None; grid.rows.len()];
+    for (cell, layout) in grid.cells.iter().zip(&cells) {
+        if layout.align == CellAlign::Baseline {
+            let baseline = &mut row_baselines[cell.row];
+            *baseline = Some(baseline.map_or(layout.baseline, |b| b.max(layout.baseline)));
+        }
+    }
+    // What a cell needs of the rows it spans: its natural height, and,
+    // aligned to the baseline, its content moved down to the row's.
+    let needed = |cell: &GridCell<'_>, layout: &CellLayout<'_>| match row_baselines[cell.row] {
+        Some(row_baseline) if layout.align == CellAlign::Baseline => layout
+            .natural_height
+            .max(row_baseline - layout.baseline + layout.extent),
+        _ => layout.natural_height,
+    };
+
     // The row heights: each row's own `height` and what its cells need,
     // a cell spanning rows giving what it needs beyond its rows to them.
     let mut heights: Vec<f32> = grid
@@ -127,7 +154,7 @@ pub(crate) fn layout_table_contents<'a>(
         .collect();
     for (cell, layout) in grid.cells.iter().zip(&cells) {
         if cell.rowspan == 1 {
-            heights[cell.row] = heights[cell.row].max(layout.natural_height);
+            heights[cell.row] = heights[cell.row].max(needed(cell, layout));
         }
     }
     let mut spanning: Vec<(&GridCell<'a>, &CellLayout<'a>)> = grid
@@ -140,8 +167,9 @@ pub(crate) fn layout_table_contents<'a>(
     for (cell, layout) in spanning {
         let rows = &mut heights[cell.row..cell.row + cell.rowspan];
         let have = rows.iter().sum::<f32>() + (cell.rowspan - 1) as f32 * vspacing;
-        if layout.natural_height > have {
-            distribute(layout.natural_height - have, rows);
+        let wants = needed(cell, layout);
+        if wants > have {
+            distribute(wants - have, rows);
         }
     }
     // The table's `height` is a minimum for the rows together.
@@ -199,6 +227,40 @@ pub(crate) fn layout_table_contents<'a>(
             .sum::<f32>()
             + (cell.rowspan - 1) as f32 * vspacing,
     };
+
+    // Where each cell's content goes in its height: at the top, centred,
+    // at the bottom, or on its row's baseline; never above its top.
+    let offsets: Vec<f32> = grid
+        .cells
+        .iter()
+        .zip(&cells)
+        .map(|(cell, layout)| {
+            let height = cell_rect(cell).h;
+            let offset = match layout.align {
+                CellAlign::Top => 0.0,
+                CellAlign::Middle => (height - layout.extent) / 2.0,
+                CellAlign::Bottom => height - layout.extent,
+                CellAlign::Baseline => {
+                    row_baselines[cell.row].map_or(0.0, |row| row - layout.baseline)
+                }
+            };
+            offset.max(0.0)
+        })
+        .collect();
+    // A row's baseline from the table box's top: its cells' shared one,
+    // or, with no cell on it, the lowest content bottom among its cells,
+    // or its bottom with no cell at all.
+    let row_baseline = |r: usize| -> f32 {
+        let own = row_baselines[r].or_else(|| {
+            grid.row_cells[r]
+                .clone()
+                .map(|i| offsets[i] + cells[i].content_bottom)
+                .reduce(f32::max)
+        });
+        row_y[r] + own.unwrap_or(heights[r])
+    };
+    let first_row_baseline = (!heights.is_empty()).then(|| row_baseline(0));
+    let last_row_baseline = (!heights.is_empty()).then(|| row_baseline(heights.len() - 1));
 
     // The table box's fragment, the grid's parts inside it.
     let table_width = content_width + edges.horizontal();
@@ -309,6 +371,7 @@ pub(crate) fn layout_table_contents<'a>(
                         row_index,
                         &grid,
                         &mut cells,
+                        &offsets,
                         &row_rect,
                         &cell_rect,
                         &mut cell_absolutes,
@@ -326,6 +389,7 @@ pub(crate) fn layout_table_contents<'a>(
                     row_index,
                     &grid,
                     &mut cells,
+                    &offsets,
                     &row_rect,
                     &cell_rect,
                     &mut cell_absolutes,
@@ -400,7 +464,11 @@ pub(crate) fn layout_table_contents<'a>(
         top_edge: own_top,
         bottom_edge: own_bottom,
         self_collapsing: false,
-        last_baseline: None,
+        // The first row's baseline is the table's own (an inline table
+        // aligns by it); the last row's is what a box ending in the table
+        // takes as its last.
+        first_baseline: first_row_baseline.map(|b| top_height + b),
+        last_baseline: last_row_baseline.map(|b| top_height + b),
         absolutes,
         auto_content_height: content_height,
     }
@@ -1041,6 +1109,28 @@ fn distribute(extra: f32, parts: &mut [f32]) {
     }
 }
 
+/// How a cell's content is placed in it (CSS2 §17.5.3): `top`,
+/// `middle` and `bottom` as they say, every other `vertical-align` on
+/// the row's baseline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CellAlign {
+    Top,
+    Middle,
+    Bottom,
+    Baseline,
+}
+
+impl CellAlign {
+    fn of(style: &ComputedStyle) -> Self {
+        match style.vertical_align {
+            VerticalAlign::Top => CellAlign::Top,
+            VerticalAlign::Middle => CellAlign::Middle,
+            VerticalAlign::Bottom => CellAlign::Bottom,
+            _ => CellAlign::Baseline,
+        }
+    }
+}
+
 /// A cell's content laid out at its columns' width.
 struct CellLayout<'a> {
     layout: BlockLayout<'a>,
@@ -1048,6 +1138,15 @@ struct CellLayout<'a> {
     /// `height` and `min-height` when taller (CSS2 §17.5.3: a cell's
     /// height is a minimum), plus its padding and border.
     natural_height: f32,
+    /// The border-box height of its content as laid out, padding and
+    /// border included: what its alignment places inside its height.
+    extent: f32,
+    /// From its border box's top to its content's bottom edge.
+    content_bottom: f32,
+    /// From its border box's top to its baseline: its first line box's,
+    /// or a table's in it, else its content's bottom edge (§17.5.3).
+    baseline: f32,
+    align: CellAlign,
     /// The move `position: relative` gives the cell (CSS2 §9.4.3), its
     /// containing block the table box, applied where the cell is placed.
     relative: (f32, f32),
@@ -1077,8 +1176,13 @@ fn layout_cell<'a>(
     let specified = definite_height(&b.style, None, edges.vertical()).unwrap_or(0.0);
     let (min_height, _) = height_bounds(&b.style, None, edges.vertical());
     let content_height = layout.auto_content_height.max(specified).max(min_height);
+    let content_bottom = edges.border[TOP] + edges.padding[TOP] + layout.auto_content_height;
     CellLayout {
         natural_height: content_height + edges.vertical(),
+        extent: layout.auto_content_height + edges.vertical(),
+        content_bottom,
+        baseline: layout.first_baseline.unwrap_or(content_bottom),
+        align: CellAlign::of(&b.style),
         relative: relative_offset(&b.style, table_width, None),
         layout,
     }
@@ -1115,6 +1219,7 @@ fn row_fragment<'a>(
     index: usize,
     grid: &Grid<'a>,
     cells: &mut [Option<CellLayout<'a>>],
+    offsets: &[f32],
     row_rect: &dyn Fn(usize) -> Rect,
     cell_rect: &dyn Fn(&GridCell<'_>) -> Rect,
     absolutes: &mut Vec<Deferred<'a>>,
@@ -1142,7 +1247,21 @@ fn row_fragment<'a>(
         let (dx, dy) = layout.relative;
         cell_fragment.x = r.x - rect.x + dx;
         cell_fragment.y = r.y - rect.y + dy;
-        absolutes.extend(carried(layout.layout.absolutes, r.x + dx, r.y + dy));
+        // The content moves by the cell's alignment; the absolutely
+        // positioned boxes the cell itself places against its padding box
+        // do not, and those carried up keep their static positions in
+        // the content.
+        let offset = offsets[i];
+        for child in &mut cell_fragment.children {
+            if !child.style.position.is_out_of_flow() {
+                child.y += offset;
+            }
+        }
+        absolutes.extend(carried(
+            layout.layout.absolutes,
+            r.x + dx,
+            r.y + dy + offset,
+        ));
         fragment.children.push(cell_fragment);
     }
     fragment
@@ -1752,6 +1871,121 @@ mod tests {
         let empty = [column(0.0, 0.0, None, false), column(0.0, 0.0, None, false)];
         assert_eq!(auto_column_widths(&empty, 40.0), [20.0, 20.0]);
         assert_eq!(auto_column_widths(&[], 40.0), Vec::<f32>::new());
+    }
+
+    /// Text-free baselines: cells of font size zero, whose lines are as
+    /// tall as the inline-blocks on them and whose baseline is those
+    /// inline-blocks' bottom.
+    const BASELINES: &str = "body { margin: 0; } table { border-spacing: 0; }
+        td, .c { padding: 0; font-size: 0; }
+        .ib { display: inline-block; width: 10px; }
+        .i10 { height: 10px; } .i20 { height: 20px; } .i30 { height: 30px; }
+        .i50 { height: 50px; }
+        .b5 { height: 5px; } .b10 { height: 10px; } .b25 { height: 25px; } .b60 { height: 60px; }
+        .base { vertical-align: baseline; } .top { vertical-align: top; }
+        .mid { vertical-align: middle; } .bot { vertical-align: bottom; }";
+
+    #[test]
+    fn cells_place_their_content_at_the_top_middle_bottom_or_on_the_rows_baseline() {
+        // A 60px row: two cells on its baseline (30 and 10 from their
+        // tops, so the second's content moves down 20), and cells at
+        // the top, the middle and the bottom. Nodes: table 4, tr 5, td 6,
+        // span 7, td 8, span 9, td 10, div 11, td 12, div 13, td 14, div
+        // 15, td 16, div 17.
+        let layout = document_of(
+            "<table><tr><td class=base><span class='ib i30'></span></td>\
+             <td class=base><span class='ib i10'></span></td>\
+             <td class=top><div class=b5></div></td><td class=mid><div class=b10></div></td>\
+             <td class=top><div class=b60></div></td><td class=bot><div class=b10></div></td>\
+             </tr></table>",
+            BASELINES,
+        );
+        assert_eq!(fragment_of(&layout, 4).h, 60.0);
+        for (node, y) in [
+            (7, 0.0),
+            (9, 20.0),
+            (11, 0.0),
+            (13, 25.0),
+            (15, 0.0),
+            (17, 50.0),
+        ] {
+            assert_eq!(fragment_of(&layout, node).y, y, "node {node}");
+        }
+        // Every cell is stretched to the row whatever its alignment.
+        for cell in [6, 8, 10, 12, 14, 16] {
+            assert_eq!(fragment_of(&layout, cell).h, 60.0, "cell {cell}");
+        }
+    }
+
+    #[test]
+    fn a_cell_moved_down_to_the_baseline_makes_its_row_taller() {
+        // The second cell's baseline is 10 and its content 35 tall: on a
+        // baseline of 30 it needs 55. Nodes: table 4, tr 5, td 6, span 7,
+        // td 8, span 9, div 10.
+        let layout = document_of(
+            "<table><tr><td class=base><span class='ib i30'></span></td>\
+             <td class=base><span class='ib i10'></span><div class=b25></div></td></tr></table>",
+            BASELINES,
+        );
+        assert_eq!(fragment_of(&layout, 4).h, 55.0);
+        assert_eq!(fragment_of(&layout, 9).y, 20.0);
+        assert_eq!(fragment_of(&layout, 10).y, 30.0);
+    }
+
+    #[test]
+    fn an_html_cell_is_centred_and_a_css_cell_sits_on_the_baseline() {
+        // The UA sheet: 2px spacing, 1px padding, a row group's middle
+        // inherited. The short cell's 12px is centred in 42: its content
+        // is 15 below the cell's top, at 8 + 2 + 15 + 1. Nodes: table 4,
+        // tr 5, td 6, div 7, td 8, div 9.
+        let layout = document_of(
+            "<table><tr><td><div class=h40></div></td><td><div class=h10></div></td></tr></table>",
+            ".h40 { height: 40px; width: 5px; } .h10 { height: 10px; width: 5px; }",
+        );
+        assert_eq!(fragment_of(&layout, 9).y, 26.0);
+        // `display: table-cell` on plain elements: on the baseline, the
+        // initial value. Nodes: div 4, div 5, span 6, div 7, span 8.
+        let layout = document_of(
+            "<div><div class=c><span class='ib i30'></span></div>\
+             <div class=c><span class='ib i10'></span></div></div>",
+            &format!("{BASELINES} .c {{ display: table-cell; }}"),
+        );
+        assert_eq!(fragment_of(&layout, 6).y, 0.0);
+        assert_eq!(fragment_of(&layout, 8).y, 20.0);
+    }
+
+    #[test]
+    fn an_inline_table_sits_on_its_line_by_its_first_rows_baseline() {
+        // A 50px inline-block and an inline table whose first row's
+        // baseline is 20 below its top: the table's top is 30 down the
+        // line. One with no row sits by its bottom. Nodes: div 4, span 5,
+        // table 6, tr 7, td 8, span 9, tr 10, td 11, span 12; table 13.
+        let layout = document_of(
+            "<div class=c><span class='ib i50'></span><table class=it>\
+             <tr><td><span class='ib i20'></span></td></tr>\
+             <tr><td><span class='ib i30'></span></td></tr></table>\
+             <table class='it empty'></table></div>",
+            &format!(
+                "{BASELINES} .c {{ display: block; }} .it {{ display: inline-table; }}
+                 .empty {{ width: 10px; height: 20px; }}"
+            ),
+        );
+        let table = fragment_of(&layout, 6);
+        assert_eq!((table.y, table.h), (30.0, 50.0));
+        assert_eq!(fragment_of(&layout, 13).y, 30.0);
+    }
+
+    #[test]
+    fn a_table_first_in_a_cell_gives_the_cell_its_first_rows_baseline() {
+        // The first cell's baseline is the nested table's first row's,
+        // 30; the second cell's content moves down 20 to it. Nodes: table
+        // 4, tr 5, td 6, table 7, tr 8, td 9, span 10, td 11, span 12.
+        let layout = document_of(
+            "<table><tr><td class=base><table><tr><td><span class='ib i30'></span></td></tr></table></td>\
+             <td class=base><span class='ib i10'></span></td></tr></table>",
+            BASELINES,
+        );
+        assert_eq!(fragment_of(&layout, 12).y, 20.0);
     }
 
     #[test]

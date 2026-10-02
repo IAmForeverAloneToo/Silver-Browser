@@ -234,6 +234,9 @@ pub(crate) struct InlineLayout<'a> {
     /// §10.8.1: what an inline-block's own baseline is), `None` when no
     /// line was made.
     pub(crate) last_baseline: Option<f32>,
+    /// The baseline of the first line, the same way (CSS2 §17.5.3: what
+    /// a table cell's baseline is, M12).
+    pub(crate) first_baseline: Option<f32>,
     /// The absolutely positioned boxes met in the run or carried by its
     /// inline-blocks and floats (M11), relative to the run's top-left.
     pub(crate) absolutes: Vec<Deferred<'a>>,
@@ -280,6 +283,7 @@ pub(crate) fn layout_inline<'a>(
         y: 0.0,
         fragments: Vec::new(),
         last_baseline: None,
+        first_baseline: None,
         deferred: Vec::new(),
         absolutes: Vec::new(),
     };
@@ -336,6 +340,7 @@ pub(crate) fn layout_inline<'a>(
                     lines.start_line();
                     let m = join(lines.strut, fonts.metrics_for_text(" ", style.font_size_px));
                     lines.last_baseline = Some(lines.y + m.ascent);
+                    lines.first_baseline = lines.first_baseline.or(lines.last_baseline);
                     lines.y += m.line_height();
                 }
                 after_atomic = false;
@@ -348,6 +353,7 @@ pub(crate) fn layout_inline<'a>(
         fragments: lines.fragments,
         height: lines.y,
         last_baseline: lines.last_baseline,
+        first_baseline: lines.first_baseline,
         absolutes: lines.absolutes,
     }
 }
@@ -387,6 +393,7 @@ struct Lines<'a, 'i, 'f, 'c> {
     y: f32,
     fragments: Vec<Fragment>,
     last_baseline: Option<f32>,
+    first_baseline: Option<f32>,
     /// Floats met on the line in progress that did not fit beside it,
     /// placed below it once its height is known.
     deferred: Vec<PendingFloat>,
@@ -547,6 +554,7 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
             &mut self.open,
         );
         self.last_baseline = baseline.or(self.last_baseline);
+        self.first_baseline = self.first_baseline.or(baseline);
         self.line_width = 0.0;
         self.has_content = false;
         self.place_deferred();
