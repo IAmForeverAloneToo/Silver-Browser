@@ -23,6 +23,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
+use engine::address::Address;
 use engine::{Engine, FrameTime, Link, LoadState, Url};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
@@ -378,9 +379,10 @@ impl ApplicationHandler<NetworkWake> for Browser {
 
 /// What the command line asks to show: `None` for `about:silver`, or
 /// the URL to load. An argument naming an existing file is that file's
-/// `file:` URL, and any other must parse as an absolute URL. The file
-/// comes first: on Windows, `C:\page.html` parses as a URL too, of the
-/// scheme `c`.
+/// `file:` URL; any other goes through the address field's rules
+/// (`engine::address`, M15.4), so `example.com` is
+/// `https://example.com/`. The file comes first: on Windows,
+/// `C:\page.html` parses as a URL too, of the scheme `c`.
 fn start_page(mut args: impl Iterator<Item = OsString>) -> Result<Option<Url>, String> {
     let Some(arg) = args.next() else {
         return Ok(None);
@@ -396,9 +398,14 @@ fn start_page(mut args: impl Iterator<Item = OsString>) -> Result<Option<Url>, S
             .map(Some)
             .ok_or_else(|| format!("{}: no file: URL names this path", path.display()));
     }
-    let not_found = || format!("{}: not a URL, and no such file", path.display());
+    let not_found = || format!("{}: not an address, and no such file", path.display());
     let text = arg.to_str().ok_or_else(not_found)?;
-    Url::parse(text).map(Some).map_err(|_| not_found())
+    match engine::address::parse(text) {
+        Address::Url(url) => Ok(Some(url)),
+        Address::Empty => Ok(None),
+        Address::Unsupported(scheme) => Err(format!("{scheme}: addresses cannot be opened")),
+        Address::NotAnAddress => Err(not_found()),
+    }
 }
 
 fn main() {
@@ -480,6 +487,19 @@ mod tests {
             url.as_str()
         );
         assert_eq!(url.fragment(), None);
+    }
+
+    #[test]
+    fn an_address_without_a_scheme_is_loaded_as_the_address_field_would() {
+        assert_eq!(
+            start(&["example.com"]),
+            Ok(Some(Url::parse("https://example.com/").unwrap()))
+        );
+        assert_eq!(
+            start(&["localhost:8080"]),
+            Ok(Some(Url::parse("http://localhost:8080/").unwrap()))
+        );
+        assert!(start(&["mailto:someone@example.com"]).is_err());
     }
 
     #[test]

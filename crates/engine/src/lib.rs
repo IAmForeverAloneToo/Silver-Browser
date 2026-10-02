@@ -79,6 +79,7 @@
 //! without being fetched; any other is fetched again for its entry,
 //! which is shown at its saved scroll position.
 
+pub mod address;
 pub mod differential;
 mod loader;
 mod navigation;
