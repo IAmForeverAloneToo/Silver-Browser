@@ -82,6 +82,7 @@ use style::computed::{
     BOTTOM, BoxSizing, ComputedStyle, Display, Float, LEFT, LengthPercentage, LengthPercentageAuto,
     Position, RIGHT, TOP,
 };
+use style::selector_matching::PseudoElement;
 use text::FontCollection;
 
 use crate::box_tree::{BoxKind, LayoutBox};
@@ -110,8 +111,16 @@ pub struct Fragment {
     /// The node this fragment belongs to (M9.4, M13): what hit testing
     /// answers with. A text fragment names its containing element, and
     /// an anonymous box's fragment the element its box names — the
-    /// document node at the top level.
+    /// document node at the top level; a generated box's, its
+    /// originating element (M16).
     pub node: NodeId,
+    /// Whether the fragment is made from a box an element's `::before`
+    /// or `::after` generated, or from one inside it (M16,
+    /// [`crate::LayoutBox::generated`]): it names its element without
+    /// being one of the element's own, so what looks for those — the
+    /// canvas background, an element's scroll offset and scrolling box,
+    /// the box a fragment link scrolls to — passes over it.
+    pub generated: Option<PseudoElement>,
     /// For a text fragment, the distance from the top of its box to the
     /// baseline at `y`: the box runs from `y - ascent` to `y - ascent +
     /// h`, the line's own extent. Zero for a box.
@@ -1013,6 +1022,7 @@ pub(crate) fn pending_float(
 ) -> PendingFloat {
     PendingFloat {
         node: b.node,
+        generated: b.generated,
         side: b.style.float,
         clear: b.style.clear,
         w: atomic.width,
@@ -1631,20 +1641,27 @@ fn separates_top(style: &ComputedStyle, cb_width: f32) -> bool {
 /// edge is not past (CSS2 §9.5.2 — the top is put level with the
 /// lowest such float's bottom margin edge), and, for a block
 /// formatting context root, in the room between the floats at its top
-/// (§9.5: its border box must not overlap a float's margin box): as
-/// far left as that room allows, its `auto` width the room's, moved
-/// down to the next height at which a float ends when it does not fit
-/// — a box too wide for a room with no float beside it overflows, as
-/// in normal flow. The room must hold the box's whole height: when a
-/// float lower down narrows it, the narrower room is tried at the same
-/// top, so a wider float below a narrow one is still avoided.
+/// (§9.5: its border box must not overlap a float's margin box): its
+/// border box as far left as that room and its own left margin allow,
+/// the margins measured from the containing block's edges as in normal
+/// flow, so that a margin may lie under a float — what the browsers do,
+/// where §9.5 leaves it open: a left margin narrower than the float
+/// beside the box moves it no further — and its `auto` width what the
+/// room leaves; moved down to the next height at which a float ends
+/// when it does not fit — a box too wide for a room with no float
+/// beside it overflows, as in normal flow. The room must hold the box's
+/// whole height: when a float lower down narrows it, the narrower room
+/// is tried at the same top, so a wider float below a narrow one is
+/// still avoided.
 ///
-/// A float waiting for the flow position is placed before a box that
+/// A float waiting for the flow position — met before the box, or
+/// inside an empty box before it — is placed before a box that
 /// resolves it: a box whose `clear` names such a float cannot collapse
 /// its margins past it, so the position resolves above the box's own
 /// margin, where the margins pending so far end (as clearance would
 /// have it); a box whose top edge separates its margins resolves it at
-/// its hypothetical top.
+/// its hypothetical top. Whether or not the flow position was already
+/// known above the empty box: the float's own was not.
 ///
 /// With `cache`, an element's principal block or table laid out in a
 /// context no float has touched is taken from it when it was kept
@@ -1671,6 +1688,7 @@ fn place_block<'a>(
         cb_width,
         available_width: cb_width,
         cb_height,
+        quote_depth: child.quote_depth,
     };
     if let Some((layout, serial)) = held.and_then(|cache| cache.take(child.node, inputs)) {
         return BlockPlacement {
@@ -1685,12 +1703,10 @@ fn place_block<'a>(
     }
     let root = establishes_bfc(&child.style);
     let own_top = AdjoiningMargins::of(child.style.margin[TOP].resolve(cb_width, 0.0));
-    if at.origin.is_none() {
-        if floats.waits_to_be_cleared(child.style.clear) {
-            floats.resolve_pending(at.anchor + at.strut.resolve());
-        } else if separates_top(&child.style, cb_width) {
-            floats.resolve_pending(at.anchor + at.strut.join(own_top).resolve());
-        }
+    if floats.waits_to_be_cleared(child.style.clear) {
+        floats.resolve_pending(at.anchor + at.strut.resolve());
+    } else if separates_top(&child.style, cb_width) {
+        floats.resolve_pending(at.anchor + at.strut.join(own_top).resolve());
     }
     if !root || floats.is_empty() {
         let layout = layout_block(
@@ -1753,19 +1769,35 @@ fn place_block<'a>(
         .clear_bottom(child.style.clear)
         .map_or(hypothetical, |bottom| hypothetical.max(bottom));
     let (cb_left, cb_right) = (at.x, at.x + cb_width);
+    // The margins as the edges are found from them, an `auto` one as
+    // zero: it takes its share of the room in the box's layout.
+    let margin_left = child.style.margin[LEFT].resolve(cb_width, 0.0);
+    let margin_right = child.style.margin[RIGHT].resolve(cb_width, 0.0);
     loop {
         let (mut left, mut right) = floats.space(top, 0.0, cb_left, cb_right);
         let fitted = loop {
-            let room = right - left;
+            // The border box's edges: where normal flow puts them, or
+            // clear of a float on that side when that is further in.
+            let border_left = if left > cb_left {
+                left.max(cb_left + margin_left)
+            } else {
+                cb_left + margin_left
+            };
+            let border_right = if right < cb_right {
+                right.min(cb_right - margin_right)
+            } else {
+                cb_right - margin_right
+            };
+            let room = border_right - border_left + margin_left + margin_right;
             let layout = layout_block(child, cb_width, room, cb_height, floats, at, fonts, cache);
             let alone = left == cb_left && right == cb_right;
-            if !alone && layout.margin_left + layout.root.w > room {
+            if !alone && layout.root.w > border_right - border_left {
                 break None;
             }
             let (lower_left, lower_right) = floats.space(top, layout.height, cb_left, cb_right);
             if lower_left == left && lower_right == right {
                 break Some(BlockPlacement {
-                    x: left - cb_left + layout.margin_left,
+                    x: border_left - cb_left + layout.margin_left - margin_left,
                     layout,
                     separated: (top > hypothetical).then_some(top),
                     held: None,
@@ -1797,6 +1829,7 @@ pub(crate) fn box_fragment(w: f32, h: f32, b: &LayoutBox) -> Fragment {
         style: b.style.clone(),
         kind: FragmentKind::Box,
         node: b.node,
+        generated: b.generated,
         ascent: 0.0,
         scroll_height: 0.0,
         children: Vec::new(),
@@ -2741,6 +2774,8 @@ mod tests {
             children: Vec::new(),
             node: no_node(),
             anonymous: true,
+            generated: None,
+            quote_depth: 0,
         };
         let block = LayoutBox {
             style: ComputedStyle {
@@ -2751,6 +2786,8 @@ mod tests {
             children: vec![text],
             node: no_node(),
             anonymous: false,
+            generated: None,
+            quote_depth: 0,
         };
         let layout = layout_document(&[block], VIEWPORT, &fonts);
         let m = fonts.primary().metrics(16.0);
@@ -3723,12 +3760,46 @@ mod tests {
     }
 
     #[test]
+    fn a_float_in_an_empty_box_waits_for_the_next_box_however_the_flow_stood() {
+        // A paragraph, then an empty box holding a float, then a box
+        // that resolves the float's position: the flow's was known
+        // since the paragraph, the float's only at that box's top,
+        // where the margins around the empty box end — 10 + 8 — and
+        // there a context root dodges it, and a box with a top border
+        // lies under it. Nodes: div 1, p 2, e 3, f 4, o 5.
+        let root = Element::new("div")
+            .push(Element::new("p"))
+            .push(
+                Element::new("div")
+                    .attr("class", "e")
+                    .push(Element::new("div").attr("class", "f")),
+            )
+            .push(Element::new("div").attr("class", "o"));
+        let css = "div, p { margin: 0; } div { width: 200px; } p { height: 10px; }
+                   .e { margin: 5px 0; } .f { float: left; width: 50px; height: 40px; }
+                   .o { width: auto; height: 20px; margin-top: 8px; }";
+        let at = |layout: &Laid, node: usize| {
+            let f = by_node(layout, node);
+            (f.x, f.y, f.w)
+        };
+        let layout = document_of(root.clone(), &format!("{css} .o {{ overflow: hidden; }}"));
+        assert_eq!(at(&layout, 4), (0.0, 18.0, 50.0));
+        assert_eq!(at(&layout, 5), (50.0, 18.0, 150.0));
+        let layout = document_of(root, &format!("{css} .o {{ border-top: 1px solid #000; }}"));
+        assert_eq!(at(&layout, 4), (0.0, 18.0, 50.0));
+        assert_eq!(at(&layout, 5), (0.0, 18.0, 200.0));
+    }
+
+    #[test]
     fn a_context_root_beside_floats_takes_the_room_left_or_moves_below() {
         // A 200px container with a 50 by 40 left float and an overflow
         // box: the box's border box keeps out of the float (CSS2 §9.5),
-        // its `auto` width the room beside it; a left margin lies
-        // inside that room; a box too wide for the room goes below the
-        // float at its full width. Nodes: div 1, f 2, o 3.
+        // its `auto` width the room beside it; its margins are measured
+        // from the container's edges, so a left margin narrower than
+        // the float lies under it and a wider one moves the box past
+        // the float's edge, as in the browsers; a box too wide for the
+        // room goes below the float at its full width. Nodes: div 1,
+        // f 2, o 3.
         let root = Element::new("div")
             .push(Element::new("div").attr("class", "f"))
             .push(Element::new("div").attr("class", "o"));
@@ -3740,13 +3811,38 @@ mod tests {
             (o.x, o.y, o.w)
         };
         assert_eq!(at(&document_of(root.clone(), css)), (50.0, 0.0, 150.0));
-        assert_eq!(
-            at(&document_of(
-                root.clone(),
-                &format!("{css} .o {{ margin-left: 10px; }}")
-            )),
-            (60.0, 0.0, 140.0)
-        );
+        for (margin, expected) in [
+            ("margin-left: 10px", (50.0, 0.0, 150.0)),
+            ("margin-left: 70px", (70.0, 0.0, 130.0)),
+            ("margin-right: 10px", (50.0, 0.0, 140.0)),
+            ("margin-left: -10px", (50.0, 0.0, 150.0)),
+        ] {
+            assert_eq!(
+                at(&document_of(
+                    root.clone(),
+                    &format!("{css} .o {{ {margin}; }}")
+                )),
+                expected,
+                "{margin}"
+            );
+        }
+        // On the float's side and the other, with the float on the right.
+        let right = css.replace("float: left", "float: right");
+        for (margin, expected) in [
+            ("margin-right: 10px", (0.0, 0.0, 150.0)),
+            ("margin-right: 70px", (0.0, 0.0, 130.0)),
+            ("margin-left: 10px", (10.0, 0.0, 140.0)),
+            ("margin-left: -10px", (-10.0, 0.0, 160.0)),
+        ] {
+            assert_eq!(
+                at(&document_of(
+                    root.clone(),
+                    &format!("{right} .o {{ {margin}; }}")
+                )),
+                expected,
+                "{margin}"
+            );
+        }
         assert_eq!(
             at(&document_of(
                 root.clone(),
@@ -4378,5 +4474,69 @@ mod tests {
         assert_eq!(layout.height, m.line_height());
         let b = &inline_boxes(&layout)[0];
         assert_eq!((b.x, b.w, b.h), (0.0, 10.0, m.ascent + m.descent));
+    }
+
+    #[test]
+    fn an_elements_two_generated_floats_are_placed_each_on_its_side() {
+        // Both name the div, and are told apart by the pseudo-element:
+        // the `::after` float is placed after the overflow box, at the
+        // right. Nodes: div 1, div 2.
+        let layout = document_of(
+            Element::new("div")
+                .attr("class", "o")
+                .push(Element::new("div")),
+            "div { margin: 0; width: 200px; } div div { overflow: hidden; width: auto; height: 30px; }
+             .o::before { content: ''; float: left; width: 50px; height: 40px; }
+             .o::after { content: ''; float: right; width: 60px; height: 20px; }",
+        );
+        let floats: Vec<(f32, f32, Option<PseudoElement>)> = layout
+            .iter()
+            .filter(|f| f.style.float != Float::None)
+            .map(|f| (f.x, f.y, f.generated))
+            .collect();
+        assert_eq!(
+            floats,
+            [
+                (0.0, 0.0, Some(PseudoElement::Before)),
+                (140.0, 30.0, Some(PseudoElement::After)),
+            ]
+        );
+    }
+
+    #[test]
+    fn generated_boxes_make_fragments_marked_generated_naming_their_element() {
+        // <p>x<span>y</span></p>: nodes p 1, span 2. The p's `::before`
+        // is a block above its line, the span's `::after` an inline box
+        // inside the span's.
+        let layout = document_of(
+            Element::new("p")
+                .text("x")
+                .push(Element::new("span").text("y")),
+            "p { margin: 0 } p::before { display: block; content: 'a'; height: 30px }
+             span::after { content: 'b'; padding: 0 2px; letter-spacing: 1px }",
+        );
+        let p = by_node(&layout, 1);
+        assert!(p.generated.is_none());
+        let before = &p.children[0];
+        assert!(matches!(before.kind, FragmentKind::Box));
+        assert_eq!(
+            (layout.number(before.node), before.generated, before.h),
+            (1, Some(PseudoElement::Before), 30.0)
+        );
+        for (text, generated) in [
+            ("a", Some(PseudoElement::Before)),
+            ("x", None),
+            ("y", None),
+            ("b", Some(PseudoElement::After)),
+        ] {
+            assert_eq!(text_of(&layout, text).generated, generated, "{text}");
+        }
+        assert_eq!(text_of(&layout, "a").node, p.node);
+        assert_eq!(text_of(&layout, "x").top(), 30.0);
+        let boxes: Vec<(usize, Option<PseudoElement>)> = inline_boxes(&layout)
+            .iter()
+            .map(|b| (layout.number(b.node), b.generated))
+            .collect();
+        assert_eq!(boxes, [(2, None), (2, Some(PseudoElement::After))]);
     }
 }

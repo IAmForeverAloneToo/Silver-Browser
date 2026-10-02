@@ -99,6 +99,7 @@ use style::computed::{
     BOTTOM, BorderStyle, ComputedStyle, Direction, LEFT, RIGHT, TOP, TextAlign, TextTransform,
     WhiteSpace,
 };
+use style::selector_matching::PseudoElement;
 use text::{FontCollection, FontMetrics};
 
 use crate::block::{
@@ -127,6 +128,9 @@ pub(crate) enum InlineItem<'a> {
         /// The element the text belongs to (M9.4), carried into its
         /// fragment.
         node: NodeId,
+        /// Whether the text is a generated box's (M16), also carried
+        /// into its fragment.
+        generated: Option<PseudoElement>,
     },
     /// A literal newline under `white-space: pre`/`pre-wrap`/`pre-line`
     /// — ends the current line unconditionally, however much of
@@ -169,6 +173,7 @@ struct LineWord<'i> {
     width: f32,
     style: &'i ComputedStyle,
     node: NodeId,
+    generated: Option<PseudoElement>,
 }
 
 /// One item on the line being built. The atomic's layout is boxed: it
@@ -301,12 +306,14 @@ pub(crate) fn layout_inline<'a>(
                 no_wrap,
                 gap_before,
                 node,
+                generated,
             } => {
                 let word = LineWord {
                     text: text.as_str(),
                     width: *width,
                     style,
                     node: *node,
+                    generated: *generated,
                 };
                 let can_break = !no_wrap && (*gap_before || after_atomic);
                 lines.place(LineItem::Word(word), *gap_before, can_break);
@@ -740,6 +747,7 @@ impl<'a> Collector<'a, '_> {
             no_wrap,
             gap_before,
             node: b.node,
+            generated: b.generated,
         });
     }
 }
@@ -1200,6 +1208,7 @@ fn close_inline<'a>(
         style,
         kind: FragmentKind::InlineBox,
         node: b.node,
+        generated: b.generated,
         ascent: 0.0,
         scroll_height: 0.0,
         children,
@@ -1224,6 +1233,7 @@ fn text_fragment(
         style: word.style.clone(),
         kind: FragmentKind::Text(word.text.to_string()),
         node: word.node,
+        generated: word.generated,
         ascent,
         scroll_height: 0.0,
         children: Vec::new(),
@@ -1252,6 +1262,7 @@ fn emit_letter_spaced(
             width: w,
             style: word.style,
             node: word.node,
+            generated: word.generated,
         };
         fragments.push(text_fragment(*x, baseline_y, &one, ascent, descent));
         *x += w + word.style.letter_spacing;
@@ -1303,6 +1314,8 @@ mod tests {
             children: Vec::new(),
             node: crate::testing::no_node(),
             anonymous: true,
+            generated: None,
+            quote_depth: 0,
         }
     }
 
@@ -1313,6 +1326,8 @@ mod tests {
             children,
             node: crate::testing::no_node(),
             anonymous: false,
+            generated: None,
+            quote_depth: 0,
         }
     }
 
@@ -1509,6 +1524,8 @@ mod tests {
             children: Vec::new(),
             node: crate::testing::no_node(),
             anonymous: true,
+            generated: None,
+            quote_depth: 0,
         }
     }
 

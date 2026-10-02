@@ -15,9 +15,23 @@
 //! table objects: cells outside a row get an anonymous row, content
 //! outside a cell an anonymous cell, and table parts outside a table an
 //! anonymous table — an inline one inside an inline element.
+//!
+//! An element's `::before` and `::after` (M16,
+//! docs/design/selectors-pseudo.md) generate a box as its first and
+//! last child when their `content` is not `none` and their `display`
+//! not `none`, unless the element is replaced: the box its `display`
+//! makes, holding a text box with the content's text. The builder walks
+//! [`Item`]s, which are nodes or these boxes or their text, so a
+//! generated box is built by the code an element's is, anonymous boxes
+//! and all. The quote marks of `open-quote` and `close-quote` are
+//! chosen as the build reaches them, which is in document order.
 
-use dom::{Document, NodeData, NodeId};
-use style::computed::{CaptionSide, Display, Float};
+use std::borrow::Cow;
+use std::cell::Cell;
+
+use dom::{Document, NodeId};
+use style::computed::{CaptionSide, Content, ContentItem, Display, Float};
+use style::selector_matching::PseudoElement;
 use style::{ComputedStyle, Styles};
 
 /// One node in the box tree.
@@ -38,15 +52,32 @@ pub struct LayoutBox {
     /// The node this box belongs to (M9.4, M13): the generating element
     /// for an element's box, the containing element for an anonymous
     /// text, block or table box — the document node for one at the top
-    /// level. Hit testing answers with this, and the fragments the box
-    /// produces carry it.
+    /// level — and the originating element for a generated box and the
+    /// boxes in it (M16). Hit testing answers with this, and the
+    /// fragments the box produces carry it.
     pub node: NodeId,
     /// Whether the box is anonymous: one generated for `node`'s content
-    /// — a text box, or an anonymous block, table, row or cell (CSS2
-    /// §9.2.1.1, §17.2.1) — rather than one of the boxes `node` itself
-    /// generates. Only the latter stand for the element: the layout
-    /// cache keeps an element's results by its node (M13.2).
+    /// — a text box, an anonymous block, table, row or cell (CSS2
+    /// §9.2.1.1, §17.2.1), or a `::before` or `::after` box (M16) —
+    /// rather than one of the boxes `node` itself generates. Only the
+    /// latter stand for the element: the layout cache keeps an
+    /// element's results by its node (M13.2).
     pub anonymous: bool,
+    /// The pseudo-element that generated the box (M16): `::before` or
+    /// `::after` for the box one generates and for those inside it, its
+    /// anonymous boxes and its text; `None` for the element's own boxes
+    /// and the anonymous boxes in them. The fragments made from the box
+    /// are marked as it is, so that what looks for an element's own
+    /// boxes passes over them, and what tells two boxes of one element
+    /// apart can.
+    pub generated: Option<PseudoElement>,
+    /// The quote depth (CSS 2.2 §12.3.2) where the box's content starts
+    /// in document order: the `open-quote`s and `no-open-quote`s before
+    /// it less the `close-quote`s and `no-close-quote`s, never below
+    /// zero (M16). The quote marks in the box, and so its layout, depend
+    /// on it as on the box's own subtree, and the layout cache keeps an
+    /// element's results under it.
+    pub quote_depth: u32,
 }
 
 /// A box's kind, per `display` (block, inline, inline-block and the
@@ -104,11 +135,13 @@ pub enum BoxKind {
     /// containing [`LayoutBox`]) is a copy of the *nearest element
     /// ancestor's* — exactly how CSS defines an anonymous box's style:
     /// text has no element of its own to be styled, so it visually
-    /// takes whatever's around it. A run of nothing but collapsible
-    /// white space is kept where it separates inline-level content
-    /// (M10.4: it is the gap between two words, or two inline-blocks)
-    /// and dropped at the start and end of a block container's inline
-    /// run, where a line would discard it anyway (css-text-3 §4.1.3).
+    /// takes whatever's around it; in a generated box, the
+    /// pseudo-element's. An empty text makes none. A run of nothing but
+    /// collapsible white space is kept where it separates inline-level
+    /// content (M10.4: it is the gap between two words, or two
+    /// inline-blocks) and dropped at the start and end of a block
+    /// container's inline run, where a line would discard it anyway
+    /// (css-text-3 §4.1.3).
     Text(String),
     /// A table (CSS2 §17.2, M12): the table wrapper box and the table
     /// box in one (docs/design/tables.md: the wrapper is implicit, the
@@ -204,77 +237,285 @@ impl LayoutBox {
 /// element `styles` has no style for generates no box, nor does
 /// anything under it, as if it were `display: none`.
 pub fn build_box_tree(document: &Document, styles: &Styles) -> Vec<LayoutBox> {
-    let styled = Styled { document, styles };
-    build_block_container(&styled, document.root())
+    let styled = Styled {
+        document,
+        styles,
+        quote_depth: Cell::new(0),
+    };
+    build_block_container(&styled, Item::Node(document.root()))
 }
 
-/// What the builder reads: the document, and its styles by node.
+/// What the builder walks (M16): a node of the document; or the box an
+/// element's `::before` or `::after` generates, which stands where the
+/// element's first or last child would; or the text in one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Item {
+    Node(NodeId),
+    Generated(NodeId, Side),
+    GeneratedText(NodeId, Side),
+}
+
+/// Which of an element's two generated boxes an [`Item`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Before,
+    After,
+}
+
+impl Side {
+    fn pseudo_element(self) -> PseudoElement {
+        match self {
+            Side::Before => PseudoElement::Before,
+            Side::After => PseudoElement::After,
+        }
+    }
+}
+
+impl Item {
+    /// The node the item's boxes name: the node itself, or a generated
+    /// box's originating element.
+    fn node(self) -> NodeId {
+        match self {
+            Item::Node(node) | Item::Generated(node, _) | Item::GeneratedText(node, _) => node,
+        }
+    }
+
+    /// The pseudo-element whose box the item is, or is the text in.
+    fn generated(self) -> Option<PseudoElement> {
+        match self {
+            Item::Node(_) => None,
+            Item::Generated(_, side) | Item::GeneratedText(_, side) => Some(side.pseudo_element()),
+        }
+    }
+}
+
+/// What the builder reads: the document, and its styles by node; and
+/// the quote depth the build has reached.
 struct Styled<'a> {
     document: &'a Document,
     styles: &'a Styles,
+    /// The `open-quote`s and `no-open-quote`s in the generated text
+    /// built so far, in document order, less the `close-quote`s and
+    /// `no-close-quote`s, never below zero (CSS 2.2 §12.3.2).
+    quote_depth: Cell<u32>,
 }
 
 impl<'a> Styled<'a> {
-    /// The computed style of `node`: an element's, or the document
-    /// node's; `None` for one the cascade did not style.
-    fn style(&self, node: NodeId) -> Option<&'a ComputedStyle> {
-        self.styles.get(node)
+    /// The computed style of `item`: an element's, the document node's,
+    /// or a generated box's pseudo-element's; `None` for a text, and for
+    /// an element the cascade did not style.
+    fn style(&self, item: Item) -> Option<&'a ComputedStyle> {
+        match item {
+            Item::Node(node) => self.styles.get(node),
+            Item::Generated(element, side) => self.styles.pseudo(element, side.pseudo_element()),
+            Item::GeneratedText(..) => None,
+        }
     }
 
-    /// The style of a text box in `node`: a copy of `node`'s own, or
+    /// The style of a text box in `item`: a copy of `item`'s own, or
     /// the initial values when it has none.
-    fn style_or_initial(&self, node: NodeId) -> ComputedStyle {
-        self.style(node).cloned().unwrap_or_default()
+    fn style_or_initial(&self, item: Item) -> ComputedStyle {
+        self.style(item).cloned().unwrap_or_default()
     }
 
-    /// The style of an anonymous box in `node`: inherited from `node`'s
+    /// The style of an anonymous box in `item`: inherited from `item`'s
     /// own, every other property initial; the initial values throughout
-    /// when `node` has no style.
-    fn inherited_from(&self, node: NodeId) -> ComputedStyle {
-        self.style(node)
+    /// when `item` has no style.
+    fn inherited_from(&self, item: Item) -> ComputedStyle {
+        self.style(item)
             .map_or_else(ComputedStyle::default, ComputedStyle::inherited_from)
     }
 
-    /// `node`'s children, in document order.
-    fn children(&self, node: NodeId) -> Vec<NodeId> {
-        self.document.children(node).collect()
+    /// Whether `item` is built as an element is: an element, or a
+    /// generated box.
+    fn is_element(&self, item: Item) -> bool {
+        match item {
+            Item::Node(node) => self.document.is_element(node),
+            Item::Generated(..) => true,
+            Item::GeneratedText(..) => false,
+        }
+    }
+
+    /// The items in `item`, in document order: a node's children, an
+    /// element's between the boxes its `::before` and `::after`
+    /// generate, when they do; a generated box's text; nothing in a
+    /// text.
+    fn children(&self, item: Item) -> Vec<Item> {
+        match item {
+            Item::Node(node) => {
+                let generated = |side| {
+                    self.generates(node, side)
+                        .then_some(Item::Generated(node, side))
+                };
+                generated(Side::Before)
+                    .into_iter()
+                    .chain(self.document.children(node).map(Item::Node))
+                    .chain(generated(Side::After))
+                    .collect()
+            }
+            Item::Generated(element, side) => vec![Item::GeneratedText(element, side)],
+            Item::GeneratedText(..) => Vec::new(),
+        }
+    }
+
+    /// Whether the element `node` has a `side` item (Pseudo-Elements 4
+    /// §4): the pseudo-element is styled, its `content` is a list (the
+    /// cascade computes `normal` to `none` there), and the element is
+    /// not replaced. One whose `display` is `none` makes no box, as an
+    /// element's does not.
+    fn generates(&self, node: NodeId, side: Side) -> bool {
+        if self.document.tag(node).is_none_or(is_replaced) {
+            return false;
+        }
+        self.styles
+            .pseudo(node, side.pseudo_element())
+            .is_some_and(|style| matches!(style.content, Content::Items(_)))
+    }
+
+    /// The text of `item` when it is a text node or a generated box's
+    /// text, and `None` otherwise. A generated text's quote marks are
+    /// chosen at the depth the build has reached, and the depth then
+    /// moves past them when `advance` says so: once per text, when the
+    /// build reaches it, whether a box is made for it or not.
+    fn text(&self, item: Item, advance: bool) -> Option<Cow<'a, str>> {
+        match item {
+            Item::Node(node) => self.document.text(node).map(Cow::Borrowed),
+            Item::Generated(..) => None,
+            Item::GeneratedText(element, side) => {
+                let style = self.styles.pseudo(element, side.pseudo_element())?;
+                let Content::Items(items) = &style.content else {
+                    return None;
+                };
+                let mut depth = self.quote_depth.get();
+                let mut text = String::new();
+                for part in items.iter() {
+                    match part {
+                        ContentItem::Text(s) => text.push_str(s),
+                        ContentItem::OpenQuote => {
+                            if let Some((open, _)) = style.quotes.marks(depth as usize) {
+                                text.push_str(open);
+                            }
+                            depth = depth.saturating_add(1);
+                        }
+                        // One that would take the depth below zero gives
+                        // no mark, and the depth stays (§12.3.2).
+                        ContentItem::CloseQuote => {
+                            if depth > 0 {
+                                depth -= 1;
+                                if let Some((_, close)) = style.quotes.marks(depth as usize) {
+                                    text.push_str(close);
+                                }
+                            }
+                        }
+                        ContentItem::NoOpenQuote => depth = depth.saturating_add(1),
+                        ContentItem::NoCloseQuote => depth = depth.saturating_sub(1),
+                    }
+                }
+                if advance {
+                    self.quote_depth.set(depth);
+                }
+                Some(Cow::Owned(text))
+            }
+        }
+    }
+
+    /// The box `item` generates with the computed `style`, of `kind`,
+    /// its children the ones `build` makes: an element's own box, or a
+    /// generated one, which is anonymous to the layout cache.
+    fn own_box(
+        &self,
+        item: Item,
+        style: &ComputedStyle,
+        kind: BoxKind,
+        build: impl FnOnce() -> Vec<LayoutBox>,
+    ) -> LayoutBox {
+        let quote_depth = self.quote_depth.get();
+        LayoutBox {
+            style: style.clone(),
+            kind,
+            children: build(),
+            node: item.node(),
+            anonymous: item.generated().is_some(),
+            generated: item.generated(),
+            quote_depth,
+        }
+    }
+
+    /// An anonymous box of `kind` in `item`, with the style
+    /// [`anonymous_style`] gives it, holding `children`, whose content
+    /// starts at `quote_depth`.
+    fn anonymous_box(
+        &self,
+        item: Item,
+        display: Display,
+        kind: BoxKind,
+        children: Vec<LayoutBox>,
+        quote_depth: u32,
+    ) -> LayoutBox {
+        LayoutBox {
+            style: anonymous_style(self, item, display),
+            kind,
+            children,
+            node: item.node(),
+            anonymous: true,
+            generated: item.generated(),
+            quote_depth,
+        }
     }
 }
 
-/// The block-level children of the block container `idx` generates
+/// Whether the element named `tag` is replaced, so that it has no
+/// `::before` or `::after` box (Pseudo-Elements 4 §4): in this engine
+/// the HTML elements whose content is not a box tree's — `br` and `wbr`
+/// among them, which make no box of their own.
+fn is_replaced(tag: &str) -> bool {
+    matches!(
+        tag,
+        "img"
+            | "input"
+            | "textarea"
+            | "select"
+            | "iframe"
+            | "video"
+            | "audio"
+            | "canvas"
+            | "embed"
+            | "object"
+            | "br"
+            | "wbr"
+    )
+}
+
+/// The block-level children of the block container `item` generates
 /// (CSS2 §9.2.1.1): its children in document order, each inline-level
 /// run wrapped in an anonymous block, each block found inside an inline
 /// child hoisted out to this level.
-fn build_block_container(styled: &Styled<'_>, idx: NodeId) -> Vec<LayoutBox> {
-    build_block_container_of(styled, idx, &styled.children(idx))
+fn build_block_container(styled: &Styled<'_>, item: Item) -> Vec<LayoutBox> {
+    build_block_container_of(styled, item, &styled.children(item))
 }
 
 /// [`build_block_container`] for `children`, some of the children of
-/// the element `idx`: what an anonymous cell holds (§17.2.1), built as
-/// the block container it is, with `idx` as the element its anonymous
-/// boxes name and inherit from.
-fn build_block_container_of(
-    styled: &Styled<'_>,
-    idx: NodeId,
-    children: &[NodeId],
-) -> Vec<LayoutBox> {
+/// `item`: what an anonymous cell holds (§17.2.1), built as the block
+/// container it is, with `item` as what its anonymous boxes name and
+/// inherit from.
+fn build_block_container_of(styled: &Styled<'_>, item: Item, children: &[Item]) -> Vec<LayoutBox> {
     let mut container = BlockContainer {
         styled,
-        node: idx,
+        item,
         out: Vec::new(),
         run: Vec::new(),
         open: Vec::new(),
     };
-    container.add_children(idx, children);
+    container.add_children(item, children);
     container.finish()
 }
 
-/// The style of an anonymous box: inherited from the element `node`
-/// it belongs to, every other property initial (so no margin, padding,
-/// border, background or size of its own), and the `display` it is
-/// generated with.
-fn anonymous_style(styled: &Styled<'_>, node: NodeId, display: Display) -> ComputedStyle {
-    let mut style = styled.inherited_from(node);
+/// The style of an anonymous box: inherited from `item`, the element
+/// or generated box it belongs to, every other property initial (so no
+/// margin, padding, border, background or size of its own), and the
+/// `display` it is generated with.
+fn anonymous_style(styled: &Styled<'_>, item: Item, display: Display) -> ComputedStyle {
+    let mut style = styled.inherited_from(item);
     style.display = display;
     style
 }
@@ -304,8 +545,9 @@ fn needs_a_table(display: Display) -> bool {
 /// inside them is hoisted out of, and what is reopened after it.
 struct BlockContainer<'a> {
     styled: &'a Styled<'a>,
-    /// The container's element: what its anonymous boxes name.
-    node: NodeId,
+    /// The container's element or generated box: what its anonymous
+    /// blocks name and inherit from.
+    item: Item,
     out: Vec<LayoutBox>,
     run: Vec<LayoutBox>,
     open: Vec<LayoutBox>,
@@ -321,10 +563,10 @@ enum Misplaced {
 }
 
 impl BlockContainer<'_> {
-    /// Adds the boxes of `children`, the children of the element
-    /// `parent`, in document order, to whatever is innermost: the open
-    /// inline chain, else the run.
-    fn add_children(&mut self, parent: NodeId, children: &[NodeId]) {
+    /// Adds the boxes of `children`, the children of `parent`, in
+    /// document order, to whatever is innermost: the open inline chain,
+    /// else the run.
+    fn add_children(&mut self, parent: Item, children: &[Item]) {
         let styled = self.styled;
         // Table-internal boxes and captions met here, whose parent is a
         // block container or an inline element, are collected into an
@@ -332,171 +574,152 @@ impl BlockContainer<'_> {
         // dropped, as the browsers do, and anything else ends the run.
         let mut misplaced: Vec<Misplaced> = Vec::new();
         for &child in children {
-            match styled.document.data(child) {
-                Some(NodeData::Element { .. }) => {
-                    // No style, which the cascade gives every element in
-                    // the tree, or `display: none`: the element AND its
-                    // subtree generate no box at all.
-                    let Some(style) = styled.style(child) else {
-                        continue;
-                    };
-                    if style.display == Display::None {
-                        continue;
-                    }
-                    if needs_a_table(style.display) {
-                        self.collect_misplaced(&mut misplaced, child, style);
-                        continue;
-                    }
-                    self.flush_misplaced(parent, &mut misplaced);
-                    match style.display {
-                        // A float or an absolutely positioned box computes
-                        // to a block-level `display` (CSS2 §9.7, the
-                        // cascade's rule) and is a block container inside,
-                        // or a table when its display is `table`; outside
-                        // it is out of flow, and goes where it is met:
-                        // into the run or inline open around it, else
-                        // among the container's blocks.
-                        Display::Block | Display::Table
-                            if style.float != Float::None || style.position.is_out_of_flow() =>
-                        {
-                            let kind = if style.position.is_out_of_flow() {
-                                BoxKind::Absolute
-                            } else {
-                                BoxKind::Float
-                            };
-                            let children = if style.display == Display::Table {
-                                build_table(styled, child)
-                            } else {
-                                build_block_container(styled, child)
-                            };
-                            let out_of_flow = LayoutBox {
-                                style: style.clone(),
-                                kind,
-                                children,
-                                node: child,
-                                anonymous: false,
-                            };
-                            if self.open.is_empty() && self.run.is_empty() {
-                                self.out.push(out_of_flow);
-                            } else {
-                                self.add_inline_level(out_of_flow);
-                            }
-                        }
-                        Display::Block => {
-                            let block = LayoutBox {
-                                style: style.clone(),
-                                kind: BoxKind::Block,
-                                children: build_block_container(styled, child),
-                                node: child,
-                                anonymous: false,
-                            };
-                            self.add_block(block);
-                        }
-                        Display::Table => {
-                            let table = LayoutBox {
-                                style: style.clone(),
-                                kind: BoxKind::Table,
-                                children: build_table(styled, child),
-                                node: child,
-                                anonymous: false,
-                            };
-                            self.add_block(table);
-                        }
-                        Display::Inline => {
-                            self.open.push(LayoutBox {
-                                style: style.clone(),
-                                kind: BoxKind::Inline,
-                                children: Vec::new(),
-                                node: child,
-                                anonymous: false,
-                            });
-                            self.add_children(child, &styled.children(child));
-                            let inline = self.open.pop().expect("the inline just opened");
-                            self.add_inline_level(inline);
-                        }
-                        Display::InlineBlock => {
-                            let block = LayoutBox {
-                                style: style.clone(),
-                                kind: BoxKind::InlineBlock,
-                                children: build_block_container(styled, child),
-                                node: child,
-                                anonymous: false,
-                            };
-                            self.add_inline_level(block);
-                        }
-                        Display::InlineTable => {
-                            let table = LayoutBox {
-                                style: style.clone(),
-                                kind: BoxKind::Table,
-                                children: build_table(styled, child),
-                                node: child,
-                                anonymous: false,
-                            };
-                            self.add_inline_level(table);
-                        }
-                        Display::None
-                        | Display::TableRowGroup
-                        | Display::TableHeaderGroup
-                        | Display::TableFooterGroup
-                        | Display::TableRow
-                        | Display::TableColumnGroup
-                        | Display::TableColumn
-                        | Display::TableCell
-                        | Display::TableCaption => unreachable!("handled above"),
-                    }
-                }
-                Some(NodeData::Text(text)) => {
-                    let white_space = text.chars().all(crate::inline::is_css_space);
-                    if white_space && !misplaced.is_empty() {
-                        continue; // between two table parts: no content
-                    }
-                    self.flush_misplaced(parent, &mut misplaced);
-                    // White space at the start of the run (css-text-3
-                    // §4.1: space, tab, newline, carriage return, form
-                    // feed — a no-break space is content) is dropped:
-                    // a line discards it. Elsewhere it is kept, as the
-                    // gap it is; `flush_run` drops it at the end.
-                    if white_space && self.open.is_empty() && self.run.is_empty() {
-                        continue;
-                    }
-                    self.add_inline_level(LayoutBox {
-                        style: styled.style_or_initial(parent),
-                        kind: BoxKind::Text(text.clone()),
-                        children: Vec::new(),
-                        node: parent,
-                        anonymous: true,
-                    });
-                }
-                // The document node is no one's child; a stale id is no
-                // node at all.
-                Some(NodeData::Document) | None => {}
+            if styled.is_element(child) {
+                self.add_element(parent, child, &mut misplaced);
+                continue;
             }
+            let quote_depth = styled.quote_depth.get();
+            // The document node is no one's child; a stale id is no node
+            // at all.
+            let Some(text) = styled.text(child, true) else {
+                continue;
+            };
+            let white_space = text.chars().all(crate::inline::is_css_space);
+            if white_space && !misplaced.is_empty() {
+                continue; // between two table parts: no content
+            }
+            self.flush_misplaced(parent, &mut misplaced);
+            // White space at the start of the run (css-text-3 §4.1:
+            // space, tab, newline, carriage return, form feed — a
+            // no-break space is content) is dropped: a line discards
+            // it. Elsewhere it is kept, as the gap it is; `flush_run`
+            // drops it at the end. An empty text is nothing.
+            if text.is_empty() || (white_space && self.open.is_empty() && self.run.is_empty()) {
+                continue;
+            }
+            self.add_inline_level(LayoutBox {
+                style: styled.style_or_initial(parent),
+                kind: BoxKind::Text(text.into_owned()),
+                children: Vec::new(),
+                node: parent.node(),
+                anonymous: true,
+                generated: parent.generated(),
+                quote_depth,
+            });
         }
         self.flush_misplaced(parent, &mut misplaced);
     }
 
-    /// Collects the table-internal element `idx`, with the computed
-    /// `style`, met where its parent is not a table part, for the
-    /// anonymous table that will wrap it and its consecutive
-    /// table-internal siblings (§17.2.1): a cell joins the anonymous row
-    /// of the cells just before it, or starts one; a row, a row group, a
-    /// column, a column group or a caption is built as itself.
+    /// Adds the boxes of `child`, an element or a generated box among
+    /// the children of `parent`, collecting it into `misplaced` when it
+    /// is a table part out of place.
+    fn add_element(&mut self, parent: Item, child: Item, misplaced: &mut Vec<Misplaced>) {
+        let styled = self.styled;
+        // No style, which the cascade gives every element in the tree,
+        // or `display: none`: the element AND its subtree generate no
+        // box at all.
+        let Some(style) = styled.style(child) else {
+            return;
+        };
+        if style.display == Display::None {
+            return;
+        }
+        if needs_a_table(style.display) {
+            self.collect_misplaced(misplaced, child, style);
+            return;
+        }
+        self.flush_misplaced(parent, misplaced);
+        match style.display {
+            // A float or an absolutely positioned box computes to a
+            // block-level `display` (CSS2 §9.7, the cascade's rule) and
+            // is a block container inside, or a table when its display
+            // is `table`; outside it is out of flow, and goes where it
+            // is met: into the run or inline open around it, else among
+            // the container's blocks.
+            Display::Block | Display::Table
+                if style.float != Float::None || style.position.is_out_of_flow() =>
+            {
+                let kind = if style.position.is_out_of_flow() {
+                    BoxKind::Absolute
+                } else {
+                    BoxKind::Float
+                };
+                let out_of_flow = styled.own_box(child, style, kind, || {
+                    if style.display == Display::Table {
+                        build_table(styled, child)
+                    } else {
+                        build_block_container(styled, child)
+                    }
+                });
+                if self.open.is_empty() && self.run.is_empty() {
+                    self.out.push(out_of_flow);
+                } else {
+                    self.add_inline_level(out_of_flow);
+                }
+            }
+            Display::Block => {
+                let block = styled.own_box(child, style, BoxKind::Block, || {
+                    build_block_container(styled, child)
+                });
+                self.add_block(block);
+            }
+            Display::Table => {
+                let table =
+                    styled.own_box(child, style, BoxKind::Table, || build_table(styled, child));
+                self.add_block(table);
+            }
+            Display::Inline => {
+                let inline = styled.own_box(child, style, BoxKind::Inline, Vec::new);
+                self.open.push(inline);
+                self.add_children(child, &styled.children(child));
+                let inline = self.open.pop().expect("the inline just opened");
+                self.add_inline_level(inline);
+            }
+            Display::InlineBlock => {
+                let block = styled.own_box(child, style, BoxKind::InlineBlock, || {
+                    build_block_container(styled, child)
+                });
+                self.add_inline_level(block);
+            }
+            Display::InlineTable => {
+                let table =
+                    styled.own_box(child, style, BoxKind::Table, || build_table(styled, child));
+                self.add_inline_level(table);
+            }
+            Display::None
+            | Display::TableRowGroup
+            | Display::TableHeaderGroup
+            | Display::TableFooterGroup
+            | Display::TableRow
+            | Display::TableColumnGroup
+            | Display::TableColumn
+            | Display::TableCell
+            | Display::TableCaption => unreachable!("handled above"),
+        }
+    }
+
+    /// Collects the table-internal `item`, with the computed `style`,
+    /// met where its parent is not a table part, for the anonymous
+    /// table that will wrap it and its consecutive table-internal
+    /// siblings (§17.2.1): a cell joins the anonymous row of the cells
+    /// just before it, or starts one; a row, a row group, a column, a
+    /// column group or a caption is built as itself.
     fn collect_misplaced(
         &mut self,
         misplaced: &mut Vec<Misplaced>,
-        idx: NodeId,
+        item: Item,
         style: &ComputedStyle,
     ) {
         let styled = self.styled;
         if style.display == Display::TableCell {
-            let cell = build_cell(styled, idx);
+            let cell = build_cell(styled, item, style);
             match misplaced.last_mut() {
                 Some(Misplaced::Cells(cells)) => cells.push(cell),
                 _ => misplaced.push(Misplaced::Cells(vec![cell])),
             }
         } else {
             misplaced.push(Misplaced::Proper(Box::new(build_table_part(
-                styled, idx, style,
+                styled, item, style,
             ))));
         }
     }
@@ -506,12 +729,12 @@ impl BlockContainer<'_> {
     /// content of the inline element `parent` when one is open, else a
     /// block-level table among the container's blocks (§17.2.1: "if the
     /// parent is an inline box, the anonymous box is an inline-table").
-    fn flush_misplaced(&mut self, parent: NodeId, misplaced: &mut Vec<Misplaced>) {
+    fn flush_misplaced(&mut self, parent: Item, misplaced: &mut Vec<Misplaced>) {
         if misplaced.is_empty() {
             return;
         }
         let styled = self.styled;
-        let parts = std::mem::take(misplaced)
+        let parts: Vec<LayoutBox> = std::mem::take(misplaced)
             .into_iter()
             .map(|m| match m {
                 Misplaced::Proper(part) => *part,
@@ -524,13 +747,14 @@ impl BlockContainer<'_> {
         } else {
             Display::Table
         };
-        let table = LayoutBox {
-            style: anonymous_style(styled, parent, display),
-            kind: BoxKind::Table,
-            children: order_table_children(parts),
-            node: parent,
-            anonymous: true,
-        };
+        let quote_depth = parts[0].quote_depth;
+        let table = styled.anonymous_box(
+            parent,
+            display,
+            BoxKind::Table,
+            order_table_children(parts),
+            quote_depth,
+        );
         if inline_level {
             self.add_inline_level(table);
         } else {
@@ -551,28 +775,29 @@ impl BlockContainer<'_> {
     /// wherever it was found (CSS2 §9.2.1.1): the inline chain open
     /// around it is closed, the run so far wrapped into an anonymous
     /// block before it, and the chain reopened after it — the halves
-    /// keep the inline elements' style and node, and either may end up
-    /// empty.
+    /// keep the inline elements' style, node and marks, and either may
+    /// end up empty.
     fn add_block(&mut self, block: LayoutBox) {
-        let chain: Vec<(ComputedStyle, NodeId)> = self
+        let quote_depth = self.styled.quote_depth.get();
+        let chain: Vec<LayoutBox> = self
             .open
             .iter()
-            .map(|b| (b.style.clone(), b.node))
+            .map(|b| LayoutBox {
+                style: b.style.clone(),
+                kind: BoxKind::Inline,
+                children: Vec::new(),
+                node: b.node,
+                anonymous: b.anonymous,
+                generated: b.generated,
+                quote_depth,
+            })
             .collect();
         while let Some(inline) = self.open.pop() {
             self.add_inline_level(inline);
         }
         self.flush_run();
         self.out.push(block);
-        for (style, node) in chain {
-            self.open.push(LayoutBox {
-                style,
-                kind: BoxKind::Inline,
-                children: Vec::new(),
-                node,
-                anonymous: false,
-            });
-        }
+        self.open = chain;
     }
 
     /// Wraps the run so far, if any, in an anonymous block. White space
@@ -584,16 +809,19 @@ impl BlockContainer<'_> {
         ) {
             self.run.pop();
         }
-        if self.run.is_empty() {
+        let Some(first) = self.run.first() else {
             return;
-        }
+        };
+        let quote_depth = first.quote_depth;
         let children = std::mem::take(&mut self.run);
         self.out.push(LayoutBox {
-            style: self.styled.inherited_from(self.node),
+            style: self.styled.inherited_from(self.item),
             kind: BoxKind::AnonymousBlock,
             children,
-            node: self.node,
+            node: self.item.node(),
             anonymous: true,
+            generated: self.item.generated(),
+            quote_depth,
         });
     }
 
@@ -607,103 +835,75 @@ impl BlockContainer<'_> {
     }
 }
 
-/// The box of the element `idx` with the computed `style`, whose
-/// `display` is one of the table values other than a cell: a row, a row
-/// group, a column, a column group or a caption, with its children
-/// built as the kind requires.
-fn build_table_part(styled: &Styled<'_>, idx: NodeId, style: &ComputedStyle) -> LayoutBox {
-    let (kind, children) = match style.display {
-        Display::TableRow => (BoxKind::Row, build_row(styled, idx)),
-        Display::TableRowGroup => (
-            BoxKind::RowGroup(RowGroupKind::Body),
-            build_row_group(styled, idx),
+/// The box of `item` with the computed `style`, whose `display` is one
+/// of the table values other than a cell: a row, a row group, a column,
+/// a column group or a caption, with its children built as the kind
+/// requires.
+fn build_table_part(styled: &Styled<'_>, item: Item, style: &ComputedStyle) -> LayoutBox {
+    type Build = fn(&Styled<'_>, Item) -> Vec<LayoutBox>;
+    let (kind, build): (BoxKind, Build) = match style.display {
+        Display::TableRow => (BoxKind::Row, build_row),
+        Display::TableRowGroup => (BoxKind::RowGroup(RowGroupKind::Body), build_row_group),
+        Display::TableHeaderGroup => (BoxKind::RowGroup(RowGroupKind::Header), build_row_group),
+        Display::TableFooterGroup => (BoxKind::RowGroup(RowGroupKind::Footer), build_row_group),
+        Display::TableColumnGroup => (
+            BoxKind::ColumnGroup {
+                span: column_span(styled.document, item),
+            },
+            build_columns,
         ),
-        Display::TableHeaderGroup => (
-            BoxKind::RowGroup(RowGroupKind::Header),
-            build_row_group(styled, idx),
-        ),
-        Display::TableFooterGroup => (
-            BoxKind::RowGroup(RowGroupKind::Footer),
-            build_row_group(styled, idx),
-        ),
-        Display::TableColumnGroup => {
-            // Its column children, and nothing else (§17.2.1: any other
-            // child of a column group is treated as `display: none`).
-            let columns = styled
-                .document
-                .element_children(idx)
-                .filter(|&c| {
-                    styled
-                        .style(c)
-                        .is_some_and(|s| s.display == Display::TableColumn)
-                })
-                .map(|c| build_column(styled, c))
-                .collect();
-            (
-                BoxKind::ColumnGroup {
-                    span: column_span(styled.document, idx),
-                },
-                columns,
-            )
-        }
-        Display::TableColumn => return build_column(styled, idx),
-        Display::TableCaption => (BoxKind::Caption, build_block_container(styled, idx)),
+        Display::TableColumn => return build_column(styled, item, style),
+        Display::TableCaption => (BoxKind::Caption, build_block_container),
         _ => unreachable!("a table part's display"),
     };
-    LayoutBox {
-        style: style.clone(),
-        kind,
-        children,
-        node: idx,
-        anonymous: false,
-    }
+    styled.own_box(item, style, kind, || build(styled, item))
+}
+
+/// The columns of the column group `item`: its column children, and
+/// nothing else (§17.2.1: any other child of a column group is treated
+/// as `display: none`).
+fn build_columns(styled: &Styled<'_>, item: Item) -> Vec<LayoutBox> {
+    styled
+        .children(item)
+        .into_iter()
+        .filter_map(|child| {
+            let style = styled
+                .style(child)
+                .filter(|s| s.display == Display::TableColumn)?;
+            Some(build_column(styled, child, style))
+        })
+        .collect()
 }
 
 /// A column box: `span` columns of the grid, no children whatever the
 /// element holds (§17.2.1).
-fn build_column(styled: &Styled<'_>, idx: NodeId) -> LayoutBox {
-    LayoutBox {
-        style: styled.style_or_initial(idx),
-        kind: BoxKind::Column {
-            span: column_span(styled.document, idx),
-        },
-        children: Vec::new(),
-        node: idx,
-        anonymous: false,
-    }
+fn build_column(styled: &Styled<'_>, item: Item, style: &ComputedStyle) -> LayoutBox {
+    let span = column_span(styled.document, item);
+    styled.own_box(item, style, BoxKind::Column { span }, Vec::new)
 }
 
 /// A cell box: a block container inside, its spans from the HTML
 /// attributes.
-fn build_cell(styled: &Styled<'_>, idx: NodeId) -> LayoutBox {
-    let (colspan, rowspan) = cell_spans(styled.document, idx);
-    LayoutBox {
-        style: styled.style_or_initial(idx),
-        kind: BoxKind::Cell { colspan, rowspan },
-        children: build_block_container(styled, idx),
-        node: idx,
-        anonymous: false,
-    }
+fn build_cell(styled: &Styled<'_>, item: Item, style: &ComputedStyle) -> LayoutBox {
+    let (colspan, rowspan) = cell_spans(styled.document, item);
+    styled.own_box(item, style, BoxKind::Cell { colspan, rowspan }, || {
+        build_block_container(styled, item)
+    })
 }
 
-/// An anonymous row holding `cells`, in the element `node`.
-fn anonymous_row(styled: &Styled<'_>, node: NodeId, cells: Vec<LayoutBox>) -> LayoutBox {
-    LayoutBox {
-        style: anonymous_style(styled, node, Display::TableRow),
-        kind: BoxKind::Row,
-        children: cells,
-        node,
-        anonymous: true,
-    }
+/// An anonymous row holding `cells`, at least one, in `item`.
+fn anonymous_row(styled: &Styled<'_>, item: Item, cells: Vec<LayoutBox>) -> LayoutBox {
+    let quote_depth = cells[0].quote_depth;
+    styled.anonymous_box(item, Display::TableRow, BoxKind::Row, cells, quote_depth)
 }
 
 /// The children of a table box (CSS2 §17.2.1), ordered for layout and
-/// paint: the element's captions, column groups, columns, row groups
-/// and rows as themselves; its cells, and any other content, in
-/// anonymous rows — consecutive ones in the same row, a cell as itself
-/// in it and the rest in anonymous cells.
-fn build_table(styled: &Styled<'_>, idx: NodeId) -> Vec<LayoutBox> {
-    order_table_children(rows_and_parts(styled, idx, |display| {
+/// paint: the item's captions, column groups, columns, row groups and
+/// rows as themselves; its cells, and any other content, in anonymous
+/// rows — consecutive ones in the same row, a cell as itself in it and
+/// the rest in anonymous cells.
+fn build_table(styled: &Styled<'_>, item: Item) -> Vec<LayoutBox> {
+    order_table_children(rows_and_parts(styled, item, |display| {
         matches!(
             display,
             Display::TableCaption
@@ -717,118 +917,116 @@ fn build_table(styled: &Styled<'_>, idx: NodeId) -> Vec<LayoutBox> {
     }))
 }
 
-/// The rows of a row group: the element's rows as themselves, and
-/// anything else in anonymous rows as in a table.
-fn build_row_group(styled: &Styled<'_>, idx: NodeId) -> Vec<LayoutBox> {
-    rows_and_parts(styled, idx, |display| display == Display::TableRow)
+/// The rows of a row group: the item's rows as themselves, and anything
+/// else in anonymous rows as in a table.
+fn build_row_group(styled: &Styled<'_>, item: Item) -> Vec<LayoutBox> {
+    rows_and_parts(styled, item, |display| display == Display::TableRow)
 }
 
-/// The children of the table or row group `idx`: an element child
+/// The children of the table or row group `item`: an element child
 /// whose `display` passes `proper` is built as the part it is; every
 /// other child — a cell, an element of any other display, text — goes
 /// into an anonymous row, consecutive ones into the same row, white
-/// space between parts dropped (§17.2.1's steps 1 and 2).
+/// space between parts dropped (§17.2.1's steps 1 and 2). Each is built
+/// in document order, where the quote depth is the one it starts at.
 fn rows_and_parts(
     styled: &Styled<'_>,
-    idx: NodeId,
+    item: Item,
     proper: impl Fn(Display) -> bool,
 ) -> Vec<LayoutBox> {
     let mut parts = Vec::new();
-    let mut row_run: Vec<RowItem> = Vec::new();
-    let flush = |parts: &mut Vec<LayoutBox>, row_run: &mut Vec<RowItem>| {
-        let cells = cells_of(styled, idx, std::mem::take(row_run));
+    let mut row_run: Vec<RowItem<'_>> = Vec::new();
+    let flush = |parts: &mut Vec<LayoutBox>, row_run: &mut Vec<RowItem<'_>>| {
+        let cells = cells_of(styled, item, std::mem::take(row_run));
         if !cells.is_empty() {
-            parts.push(anonymous_row(styled, idx, cells));
+            parts.push(anonymous_row(styled, item, cells));
         }
     };
-    for child in styled.document.children(idx) {
-        if styled.document.is_element(child) {
-            let Some(style) = styled.style(child) else {
-                continue;
-            };
-            if style.display == Display::None {
-                continue;
-            }
-            if proper(style.display) {
+    for child in styled.children(item) {
+        match row_item(styled, child) {
+            Some(RowItem::Element(child, style)) if proper(style.display) => {
                 flush(&mut parts, &mut row_run);
                 parts.push(build_table_part(styled, child, style));
-            } else if style.display == Display::TableCell {
-                row_run.push(RowItem::Cell(Box::new(build_cell(styled, child))));
-            } else {
-                row_run.push(RowItem::Content(child));
             }
-        } else {
-            row_run.push(RowItem::Content(child));
+            Some(row_item) => row_run.push(row_item),
+            None => {}
         }
     }
     flush(&mut parts, &mut row_run);
     parts
 }
 
-/// The cells of the row `idx`: the element's cells as themselves, and
-/// anything else in anonymous cells, consecutive ones in the same cell.
-fn build_row(styled: &Styled<'_>, idx: NodeId) -> Vec<LayoutBox> {
+/// The cells of the row `item`: its cells as themselves, and anything
+/// else in anonymous cells, consecutive ones in the same cell.
+fn build_row(styled: &Styled<'_>, item: Item) -> Vec<LayoutBox> {
     let items = styled
-        .document
-        .children(idx)
-        .filter_map(|child| {
-            if !styled.document.is_element(child) {
-                return Some(RowItem::Content(child));
-            }
-            match styled.style(child)?.display {
-                Display::None => None,
-                Display::TableCell => Some(RowItem::Cell(Box::new(build_cell(styled, child)))),
-                _ => Some(RowItem::Content(child)),
-            }
-        })
+        .children(item)
+        .into_iter()
+        .filter_map(|child| row_item(styled, child))
         .collect();
-    cells_of(styled, idx, items)
+    cells_of(styled, item, items)
 }
 
-/// One child of a row, or of the anonymous row a table's or row
-/// group's stray children get: a cell, or content for an anonymous
-/// cell — a child node, an element or text.
-enum RowItem {
-    Cell(Box<LayoutBox>),
-    Content(NodeId),
+/// One child of a table, a row group or a row, before it is built,
+/// which is in document order: an element or a generated box, with
+/// the style it is shown with, or a text.
+enum RowItem<'a> {
+    Element(Item, &'a ComputedStyle),
+    Text(Item),
 }
 
-/// The cells `items` make, in the element `node`: a cell as itself; a
-/// run of consecutive content in one anonymous cell, built as the
-/// block container a cell is; a run of nothing but white space in none
+/// `child` as a [`RowItem`]; `None` for an element shown with
+/// `display: none` or not styled, which makes no box.
+fn row_item<'a>(styled: &Styled<'a>, child: Item) -> Option<RowItem<'a>> {
+    if !styled.is_element(child) {
+        return Some(RowItem::Text(child));
+    }
+    let style = styled.style(child)?;
+    (style.display != Display::None).then_some(RowItem::Element(child, style))
+}
+
+/// The cells `items` make, in `item`: a cell as itself; a run of
+/// consecutive content, which is an element of any display other than
+/// a cell's or a text, in one anonymous cell, built as the block
+/// container a cell is; a run of nothing but white space in none
 /// (§17.2.1 step 1: white space between table parts is no content).
-fn cells_of(styled: &Styled<'_>, node: NodeId, items: Vec<RowItem>) -> Vec<LayoutBox> {
+fn cells_of(styled: &Styled<'_>, item: Item, items: Vec<RowItem<'_>>) -> Vec<LayoutBox> {
     let mut cells = Vec::new();
-    let mut content: Vec<NodeId> = Vec::new();
-    let flush = |cells: &mut Vec<LayoutBox>, content: &mut Vec<NodeId>| {
+    let mut content: Vec<Item> = Vec::new();
+    let flush = |cells: &mut Vec<LayoutBox>, content: &mut Vec<Item>| {
+        let content = std::mem::take(content);
         let only_white_space = content.iter().all(|&child| {
             styled
-                .document
-                .text(child)
+                .text(child, false)
                 .is_some_and(|text| text.chars().all(crate::inline::is_css_space))
         });
-        let content = std::mem::take(content);
         if only_white_space {
+            // No cell; a generated text's quotes still count.
+            for &child in &content {
+                let _ = styled.text(child, true);
+            }
             return;
         }
-        cells.push(LayoutBox {
-            style: anonymous_style(styled, node, Display::TableCell),
-            kind: BoxKind::Cell {
+        let quote_depth = styled.quote_depth.get();
+        let children = build_block_container_of(styled, item, &content);
+        cells.push(styled.anonymous_box(
+            item,
+            Display::TableCell,
+            BoxKind::Cell {
                 colspan: 1,
                 rowspan: 1,
             },
-            children: build_block_container_of(styled, node, &content),
-            node,
-            anonymous: true,
-        });
+            children,
+            quote_depth,
+        ));
     };
-    for item in items {
-        match item {
-            RowItem::Cell(cell) => {
+    for row_item in items {
+        match row_item {
+            RowItem::Element(child, style) if style.display == Display::TableCell => {
                 flush(&mut cells, &mut content);
-                cells.push(*cell);
+                cells.push(build_cell(styled, child, style));
             }
-            RowItem::Content(child) => content.push(child),
+            RowItem::Element(child, _) | RowItem::Text(child) => content.push(child),
         }
     }
     flush(&mut cells, &mut content);
@@ -881,8 +1079,12 @@ fn order_table_children(parts: Vec<LayoutBox>) -> Vec<LayoutBox> {
 /// model for tables): `colspan` is 1 when absent, unparsable or zero
 /// and at most 1000; `rowspan` is 1 when absent or unparsable, zero
 /// meaning to the end of the row group, and at most 65534. An element
-/// of any other name is one cell of the grid whatever it says.
-fn cell_spans(document: &Document, idx: NodeId) -> (u32, u32) {
+/// of any other name, and a generated box, is one cell of the grid
+/// whatever it says.
+fn cell_spans(document: &Document, item: Item) -> (u32, u32) {
+    let Item::Node(idx) = item else {
+        return (1, 1);
+    };
     if !matches!(document.tag(idx), Some("td" | "th")) {
         return (1, 1);
     }
@@ -901,8 +1103,12 @@ fn cell_spans(document: &Document, idx: NodeId) -> (u32, u32) {
 }
 
 /// A `col` or `colgroup` element's `span`: 1 when absent, unparsable
-/// or zero, at most 1000; 1 for an element of any other name.
-fn column_span(document: &Document, idx: NodeId) -> u32 {
+/// or zero, at most 1000; 1 for an element of any other name, and for a
+/// generated box.
+fn column_span(document: &Document, item: Item) -> u32 {
+    let Item::Node(idx) = item else {
+        return 1;
+    };
     if !matches!(document.tag(idx), Some("col" | "colgroup")) {
         return 1;
     }
@@ -973,17 +1179,32 @@ mod tests {
                 BoxKind::Cell { colspan, rowspan } => format!("cell {colspan}x{rowspan}"),
                 BoxKind::Caption => "caption".to_string(),
             };
-            out.push((kind, self.number(b.node)));
+            // A generated box, or one in it, is marked with a `+`.
+            let mark = if b.generated.is_some() { "+" } else { "" };
+            out.push((format!("{mark}{kind}"), self.number(b.node)));
             for c in &b.children {
                 self.shape(c, out);
             }
+        }
+
+        /// The text boxes' texts in `boxes`' subtrees, in preorder.
+        fn texts(&self, boxes: &[LayoutBox]) -> Vec<String> {
+            self.shape_of(boxes)
+                .into_iter()
+                .filter_map(|(k, _)| {
+                    k.strip_prefix('+')
+                        .unwrap_or(&k)
+                        .strip_prefix("text ")
+                        .map(str::to_string)
+                })
+                .collect()
         }
 
         /// [`Tree::shape_of`] without the text boxes.
         fn boxes_of(&self, boxes: &[LayoutBox]) -> Vec<(String, usize)> {
             self.shape_of(boxes)
                 .into_iter()
-                .filter(|(k, _)| !k.starts_with("text"))
+                .filter(|(k, _)| !k.trim_start_matches('+').starts_with("text"))
                 .collect()
         }
 
@@ -1463,12 +1684,19 @@ mod tests {
 
     #[test]
     fn top_level_inline_content_goes_into_an_anonymous_block_of_the_document() {
-        // A hand-built document whose root element is inline: the
-        // document node (0) is the block container.
-        let tree = built(Element::new("span").text("x"), "");
+        // A hand-built document with an inline element after the root
+        // element, which is a block whatever its `display` (the
+        // cascade blockifies it): the document node (0) is the block
+        // container. Nodes: span 1, b 2.
+        let doc = dom::Node::document(vec![
+            Element::new("span").into(),
+            Element::new("b").text("x").into(),
+        ]);
+        let (document, boxes) = boxes_of(&doc, &[]);
+        let tree = Tree { document, boxes };
         assert_eq!(
             tree.shape_of(&tree),
-            pairs(&[("anon", 0), ("inline", 1), ("text x", 1)])
+            pairs(&[("block", 1), ("anon", 0), ("inline", 2), ("text x", 2)])
         );
     }
 
@@ -1994,5 +2222,350 @@ mod tests {
             let col = &tree.body().children[0].children[0];
             assert_eq!(col.kind, BoxKind::Column { span: expected }, "{attr}");
         }
+    }
+
+    #[test]
+    fn before_and_after_generate_the_first_and_last_child_boxes() {
+        // Nodes: p 4, b 5.
+        let tree = tree_of(
+            "<p>x<b>y</b></p>",
+            "p::before { content: 'a'; color: #ff0000 } p::after { content: 'c' }",
+        );
+        assert_eq!(
+            tree.shape_of(&tree.body().children),
+            pairs(&[
+                ("block", 4),
+                ("anon", 4),
+                ("+inline", 4),
+                ("+text a", 4),
+                ("text x", 4),
+                ("inline", 5),
+                ("text y", 5),
+                ("+inline", 4),
+                ("+text c", 4),
+            ])
+        );
+        // The generated box names its element and is anonymous to the
+        // cache; it and its text take the pseudo-element's style.
+        let before = &tree.body().children[0].children[0].children[0];
+        assert_eq!(before.generated, Some(PseudoElement::Before));
+        assert!(before.anonymous);
+        assert_eq!(before.style.color, style::computed::Color::rgb8(255, 0, 0));
+        assert_eq!(
+            before.children[0].style.color,
+            style::computed::Color::rgb8(255, 0, 0)
+        );
+        let p = &tree.body().children[0];
+        assert!(p.generated.is_none() && !p.anonymous);
+    }
+
+    #[test]
+    fn a_generated_box_is_built_as_its_display_makes_it() {
+        // Nodes: div 4.
+        for (css, expected) in [
+            (
+                "display: block",
+                vec![("+block", 4), ("+anon", 4), ("anon", 4)],
+            ),
+            (
+                "display: inline-block",
+                vec![("anon", 4), ("+inline-block", 4), ("+anon", 4)],
+            ),
+            (
+                "float: left",
+                vec![("+float", 4), ("+anon", 4), ("anon", 4)],
+            ),
+            (
+                "position: absolute",
+                vec![("+absolute", 4), ("+anon", 4), ("anon", 4)],
+            ),
+            (
+                "display: table",
+                vec![
+                    ("+table", 4),
+                    ("+row", 4),
+                    ("+cell 1x1", 4),
+                    ("+anon", 4),
+                    ("anon", 4),
+                ],
+            ),
+            (
+                "display: inline-table",
+                vec![
+                    ("anon", 4),
+                    ("+inline-table", 4),
+                    ("+row", 4),
+                    ("+cell 1x1", 4),
+                    ("+anon", 4),
+                ],
+            ),
+            // A table part outside a table gets an anonymous table and
+            // row, which belong to the element.
+            (
+                "display: table-cell",
+                vec![
+                    ("table", 4),
+                    ("row", 4),
+                    ("+cell 1x1", 4),
+                    ("+anon", 4),
+                    ("anon", 4),
+                ],
+            ),
+            (
+                "display: table-row",
+                vec![
+                    ("table", 4),
+                    ("+row", 4),
+                    ("+cell 1x1", 4),
+                    ("+anon", 4),
+                    ("anon", 4),
+                ],
+            ),
+            (
+                "display: table-caption",
+                vec![("table", 4), ("+caption", 4), ("+anon", 4), ("anon", 4)],
+            ),
+        ] {
+            let tree = tree_of(
+                "<div>x</div>",
+                &format!("div::before {{ content: 'a'; {css} }}"),
+            );
+            let mut expected = expected;
+            expected.insert(0, ("block", 4));
+            assert_eq!(
+                tree.boxes_of(&tree.body().children),
+                pairs(&expected),
+                "{css}"
+            );
+            assert_eq!(tree.texts(&tree.body().children), ["a", "x"], "{css}");
+        }
+    }
+
+    #[test]
+    fn a_generated_block_in_an_inline_is_hoisted_and_splits_it() {
+        // Nodes: div 4, span 5.
+        let tree = tree_of(
+            "<div><span>x</span></div>",
+            "span::before { display: block; content: 'a' }",
+        );
+        assert_eq!(
+            tree.shape_of(&tree.body().children[0].children),
+            pairs(&[
+                ("anon", 4),
+                ("inline", 5),
+                ("+block", 5),
+                ("+anon", 5),
+                ("+text a", 5),
+                ("anon", 4),
+                ("inline", 5),
+                ("text x", 5),
+            ])
+        );
+    }
+
+    #[test]
+    fn no_box_without_content_or_with_display_none() {
+        for css in [
+            "p::before { content: none }",
+            "p::before { content: normal }",
+            "p::before { color: #ff0000 }",
+            "p::before { content: 'a'; display: none }",
+            "p::after { content: 'a' } p { display: none }",
+        ] {
+            let tree = tree_of("<p>x</p><div></div>", css);
+            assert!(
+                tree.shape_of(&tree.body().children)
+                    .iter()
+                    .all(|(k, _)| !k.starts_with('+')),
+                "{css}"
+            );
+        }
+        // An empty string makes a box with nothing in it.
+        let tree = tree_of("<p>x</p>", "p::before { content: '' }");
+        assert_eq!(
+            tree.shape_of(&tree.body().children),
+            pairs(&[("block", 4), ("anon", 4), ("+inline", 4), ("text x", 4)])
+        );
+    }
+
+    #[test]
+    fn replaced_elements_have_no_generated_boxes() {
+        for tag in [
+            "img", "input", "br", "wbr", "embed", "textarea", "select", "iframe", "video", "audio",
+            "canvas", "object",
+        ] {
+            let tree = tree_of(
+                &format!("<p><{tag}></{tag}><span></span></p>"),
+                &format!(
+                    "{tag}::before, {tag}::after, span::after {{ content: 'r'; display: block }}"
+                ),
+            );
+            // The span's alone.
+            assert_eq!(tree.texts(&tree.body().children), ["r"], "{tag}");
+        }
+    }
+
+    #[test]
+    fn generated_white_space_is_text_like_any_other() {
+        // At the start of a block container's run, and between table
+        // parts, it is no content.
+        let tree = tree_of(
+            "<p>x</p><div>y</div>",
+            "p::before { display: block; content: ' ' } div::before { display: table; content: ' ' }",
+        );
+        assert_eq!(
+            tree.boxes_of(&tree.body().children),
+            pairs(&[
+                ("block", 4),
+                ("+block", 4),
+                ("anon", 4),
+                ("block", 5),
+                ("+table", 5),
+                ("anon", 5)
+            ])
+        );
+        // Between two words it is the gap.
+        let tree = tree_of("<p>x<b>y</b></p>", "b::before { content: ' ' }");
+        assert_eq!(tree.texts(&tree.body().children), ["x", " ", "y"]);
+    }
+
+    #[test]
+    fn content_attr_reads_the_originating_elements_attribute() {
+        let tree = tree_of(
+            "<a href=/x>link</a><a>bare</a>",
+            "a::after { content: ' (' attr(href) ')' }",
+        );
+        assert_eq!(
+            tree.texts(&tree.body().children),
+            ["link", " (/x)", "bare", " ()"]
+        );
+    }
+
+    #[test]
+    fn quote_marks_follow_the_depth_in_document_order() {
+        // The UA sheet's `q` rules, and `quotes: auto`.
+        let tree = tree_of("<p><q>a<q>b</q>c</q><q>d</q></p>", "");
+        assert_eq!(
+            tree.texts(&tree.body().children),
+            [
+                "\u{201C}", "a", "\u{2018}", "b", "\u{2019}", "c", "\u{201D}", "\u{201C}", "d",
+                "\u{201D}"
+            ]
+        );
+        // A close-quote at depth 0 gives no mark and leaves the depth;
+        // the no- keywords move it without one; a depth past the pairs
+        // takes the last.
+        let tree = tree_of(
+            "<p><span class=x></span><q>a</q><span class=n></span><q>b<q>c<q>d</q></q></q>\
+             <span class=m></span><q>e</q></p>",
+            "p { quotes: '<' '>' '{' '}' } .x::before { content: close-quote 'X' }
+             .n::before { content: no-open-quote } .m::before { content: no-close-quote }",
+        );
+        assert_eq!(
+            tree.texts(&tree.body().children),
+            [
+                "X", "<", "a", ">", "{", "b", "{", "c", "{", "d", "}", "}", "}", "<", "e", ">"
+            ]
+        );
+        // `quotes: none` gives no marks.
+        let tree = tree_of("<p><q>a</q></p>", "p { quotes: none }");
+        assert_eq!(tree.texts(&tree.body().children), ["a"]);
+    }
+
+    #[test]
+    fn a_quote_moves_the_depth_where_its_box_shows_nothing() {
+        // The open quotes are white space, which makes no text box, in
+        // a block and in a table; the depth moves all the same.
+        for display in ["block", "table"] {
+            let tree = tree_of(
+                "<div class=s></div><q>a</q>",
+                &format!(
+                    ".s {{ quotes: ' ' ' ' }} .s::before {{ content: open-quote; display: {display} }}"
+                ),
+            );
+            assert_eq!(
+                tree.texts(&tree.body().children),
+                ["\u{2018}", "a", "\u{2019}"],
+                "{display}"
+            );
+        }
+    }
+
+    #[test]
+    fn quote_depth_follows_document_order_through_table_parts() {
+        // The span before the cell goes into an anonymous cell, which
+        // is built before the cell, as it comes first.
+        for html in [
+            "<div class=row><span class=o></span><div class=cell><span class=o></span></div></div>",
+            "<div class=table><span class=o></span><div class=cell><span class=o></span></div></div>",
+            "<div class=group><span class=o></span><div class=row><span class=o></span></div></div>",
+        ] {
+            let tree = tree_of(
+                html,
+                ".o::before { content: open-quote } .table { display: table }
+                 .group { display: table-row-group } .row { display: table-row }
+                 .cell { display: table-cell }",
+            );
+            assert_eq!(
+                tree.texts(&tree.body().children),
+                ["\u{201C}", "\u{2018}"],
+                "{html}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_box_records_the_quote_depth_it_starts_at() {
+        // Nodes: div 4, span 5, p 6, b 7.
+        let tree = tree_of(
+            "<div><span class=o></span><p><b>x</b></p></div>",
+            ".o::before { content: open-quote }",
+        );
+        let div = &tree.body().children[0];
+        assert_eq!(div.quote_depth, 0);
+        let p = &div.children[1];
+        assert_eq!(
+            (
+                tree.number(p.node),
+                p.quote_depth,
+                p.children[0].quote_depth
+            ),
+            (6, 1, 1)
+        );
+    }
+
+    #[test]
+    fn generated_table_parts_take_no_spans_and_go_where_their_display_puts_them() {
+        // Nodes: table 4, tr 5, td 6.
+        let tree = tree_of(
+            "<table><tr><td colspan=3>x</td></tr></table>",
+            "tr::before { display: table-cell; content: 'a' }
+             td::before { display: table-cell; content: 'b' }",
+        );
+        let table = &tree.body().children[0];
+        assert_eq!(
+            tree.boxes_of(&table.children),
+            pairs(&[
+                ("row", 5),
+                ("+cell 1x1", 5),
+                ("+anon", 5),
+                ("cell 3x1", 6),
+                ("table", 6),
+                ("row", 6),
+                ("+cell 1x1", 6),
+                ("+anon", 6),
+                ("anon", 6),
+            ])
+        );
+        // A generated column is a column of one, in its group.
+        let tree = tree_of(
+            "<table><colgroup span=3></colgroup><tr><td>x</td></tr></table>",
+            "colgroup::before { display: table-column; content: '' }",
+        );
+        let table = &tree.body().children[0];
+        assert_eq!(
+            tree.boxes_of(&table.children[..1]),
+            pairs(&[("colgroup 3", 5), ("+col 1", 5)])
+        );
     }
 }

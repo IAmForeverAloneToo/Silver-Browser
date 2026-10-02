@@ -516,8 +516,12 @@ pub fn paint_fragments_in(
 }
 
 /// The fragment whose background the canvas takes (CSS2 §14.2): the
-/// root element's when it has one, else the body's — the root's first
-/// box child, in an HTML document.
+/// root element's when it has one, else the body's — the first box
+/// among the root's children that names another element, in an HTML
+/// document. The root's box is the first of `roots`, a block or a table
+/// (the cascade blockifies the root); among its children, an anonymous
+/// box and a box the root's `::before` or `::after` generated (M16)
+/// name the root, and are passed over.
 fn canvas_background(roots: &[Fragment]) -> Option<&Fragment> {
     fn is_box(f: &Fragment) -> bool {
         matches!(f.kind, FragmentKind::Box)
@@ -529,7 +533,7 @@ fn canvas_background(roots: &[Fragment]) -> Option<&Fragment> {
     with_background(root).or_else(|| {
         root.children
             .iter()
-            .find(|f| is_box(f))
+            .find(|f| is_box(f) && f.node != root.node)
             .and_then(with_background)
     })
 }
@@ -583,7 +587,8 @@ fn snapped(rect: Rect) -> Rect {
 /// edges and the padding box's each on their own, which keeps the
 /// border's widths, whole pixels already, as they are. `canvas_node`
 /// is the element whose background the canvas already took (CSS2
-/// §14.2), which is not painted on its own box again.
+/// §14.2), which is not painted on its own box again — but is on the
+/// boxes its `::before` and `::after` generate (M16).
 fn push_box(items: &mut Vec<DisplayItem>, f: &Fragment, rect: Rect, canvas_node: Option<NodeId>) {
     let outer = snapped(rect);
     let inner = snapped(padding_box(f, rect));
@@ -593,7 +598,8 @@ fn push_box(items: &mut Vec<DisplayItem>, f: &Fragment, rect: Rect, canvas_node:
         (outer.y + outer.h - (inner.y + inner.h)).max(0.0),
         (inner.x - outer.x).max(0.0),
     ];
-    if f.style.background_color.a > 0.0 && canvas_node != Some(f.node) {
+    let canvas_took = f.generated.is_none() && canvas_node == Some(f.node);
+    if f.style.background_color.a > 0.0 && !canvas_took {
         items.push(DisplayItem::Rect {
             x: outer.x,
             y: outer.y,
@@ -1416,6 +1422,60 @@ mod fragment_tests {
             rects(&list)[0],
             DisplayItem::Rect { color, .. } if *color == Rgba8::rgb(255, 255, 255)
         ));
+    }
+
+    #[test]
+    fn a_generated_box_is_never_the_canvas_and_keeps_its_background() {
+        let page =
+            || Element::new("html").push(Element::new("body").push(Element::new("p").text("x")));
+        let count = |list: &DisplayList, rgb: Rgba8| {
+            rects(list)
+                .into_iter()
+                .filter(|i| matches!(i, DisplayItem::Rect { color, .. } if *color == rgb))
+                .count()
+        };
+        let (red, green, blue) = (
+            Rgba8::rgb(255, 0, 0),
+            Rgba8::rgb(0, 255, 0),
+            Rgba8::rgb(0, 0, 255),
+        );
+        // The root's `::before` before the body, a block or a cell in an
+        // anonymous table: the body's green is still the canvas's, and
+        // not painted on the body; the blue is painted on its box.
+        for before in ["display: block", "display: table-cell; width: 10px"] {
+            let list = display_list_of(
+                page(),
+                &format!(
+                    "html, body {{ margin: 0 }} body {{ background-color: #00ff00 }}
+                     html::before {{ {before}; content: ''; height: 10px; background-color: #0000ff }}"
+                ),
+            );
+            assert!(
+                matches!(rects(&list)[0], DisplayItem::Rect { w: 800.0, h: 600.0, color, .. } if *color == green),
+                "{before}"
+            );
+            assert_eq!(
+                (count(&list, green), count(&list, blue)),
+                (1, 1),
+                "{before}"
+            );
+        }
+        // A `::before` of the element whose background the canvas took
+        // has its own, painted.
+        for (css, rgb) in [
+            ("html { background-color: #ff0000 } html::before", red),
+            ("body { background-color: #00ff00 } body::before", green),
+        ] {
+            let list = display_list_of(
+                page(),
+                &format!(
+                    "html, body {{ margin: 0 }}
+                     {css} {{ display: block; content: ''; height: 10px; background-color: {} }}",
+                    if rgb == red { "#ff0000" } else { "#00ff00" }
+                ),
+            );
+            assert_eq!(count(&list, rgb), 2, "{css}");
+        }
     }
 
     #[test]

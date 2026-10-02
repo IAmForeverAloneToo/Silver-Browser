@@ -1749,19 +1749,25 @@ impl Engine {
             scroll_y: self.shown.scroll_y,
         };
         let layout = self.layout(width as f32);
-        // The clips in force, outermost first: the chain around a hit.
-        let mut clips: Vec<(NodeId, Rect)> = Vec::new();
-        let under = |rect: &Rect, clips: &[(NodeId, Rect)]| {
+        // The clips in force, outermost first: the chain around a hit,
+        // which a generated box's clip is not part of, as it does not
+        // scroll.
+        let mut clips: Vec<(Option<NodeId>, Rect)> = Vec::new();
+        let under = |rect: &Rect, clips: &[(Option<NodeId>, Rect)]| {
             rect.contains(x, y) && clips.last().is_none_or(|(_, clip)| clip.contains(x, y))
         };
-        let chain = |clips: &[(NodeId, Rect)]| clips.iter().map(|(node, _)| *node).collect();
+        let chain =
+            |clips: &[(Option<NodeId>, Rect)]| clips.iter().filter_map(|(node, _)| *node).collect();
         let mut hit = None;
         for step in paint_order(&layout.roots, viewport, &offsets) {
             match step {
                 Step::Box { fragment, rect } => {
                     if under(&rect, &clips) {
                         let mut chain: Vec<NodeId> = chain(&clips);
-                        if fragment.clips() && padding_box(fragment, rect).contains(x, y) {
+                        if fragment.clips()
+                            && fragment.generated.is_none()
+                            && padding_box(fragment, rect).contains(x, y)
+                        {
                             chain.push(fragment.node);
                         }
                         hit = Some((fragment.node, chain));
@@ -1881,16 +1887,23 @@ impl Engine {
             scroll_y: 0.0,
         };
         let mut padding_tops: HashMap<NodeId, f32> = HashMap::new();
-        let mut chain: Vec<NodeId> = Vec::new();
+        // As in `hit`, with the clips of generated boxes, which do not
+        // scroll, left out; and the first box is one of the element's
+        // own, not one its `::before` generated.
+        let mut chain: Vec<Option<NodeId>> = Vec::new();
         for step in paint_order(&layout.roots, whole, &offsets) {
             match step {
                 Step::Box { fragment, rect } | Step::Text { fragment, rect, .. } => {
+                    if fragment.generated.is_some() {
+                        continue;
+                    }
                     if fragment.clips() {
                         padding_tops.insert(fragment.node, padding_box(fragment, rect).y);
                     }
                     if fragment.node == node {
                         let chain = chain
                             .iter()
+                            .flatten()
                             .map(|c| (*c, padding_tops.get(c).copied().unwrap_or(0.0)))
                             .collect();
                         return Some((rect.y, chain));
@@ -1960,10 +1973,11 @@ fn parsed_or_empty(source: &str) -> Document {
         .map_or_else(|_| Document::new(), |parsed| Document::from_node(&parsed))
 }
 
-/// The box fragment of the element `node`, if it has one.
+/// The box fragment of the element `node`, if it has one of its own: a
+/// box its `::before` or `::after` generated is not (M16).
 fn fragment_of(fragments: &[Fragment], node: NodeId) -> Option<&Fragment> {
     for f in fragments {
-        if matches!(f.kind, FragmentKind::Box) && f.node == node {
+        if matches!(f.kind, FragmentKind::Box) && f.node == node && f.generated.is_none() {
             return Some(f);
         }
         if let Some(found) = fragment_of(&f.children, node) {
@@ -3178,6 +3192,42 @@ mod tests {
     }
 
     #[test]
+    fn a_generated_box_is_its_element_to_the_pointer_but_never_its_scroller() {
+        // The link's `::before` is a 40px block above its text: the
+        // pointer over it is over the link, and a click follows it.
+        // #e's `::before` is absolutely positioned outside #e, at
+        // document y 300, and clips: the wheel over it scrolls the
+        // viewport, not #e, whose element it names.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0 } p { margin: 0 }
+                    a::before { display: block; height: 40px; content: '' }
+                    #e { overflow: auto; height: 100px }
+                    #e::before { position: absolute; top: 300px; left: 0; width: 100px;
+                                 height: 50px; overflow: auto; content: 'x' }
+                    .tall { height: 1000px }</style>\
+             <p><a href=\"https://example.test/t\" id=a>b</a></p>\
+             <div id=e><div class=tall></div></div><div class=tall></div>",
+        );
+        engine.frame(200, 100);
+        let (a, e) = (node_by_id(&engine, "a"), node_by_id(&engine, "e"));
+        assert_eq!(engine.hit_test(5.0, 20.0), Some(a));
+        assert_eq!(engine.link_at(5.0, 20.0).map(|link| link.node()), Some(a));
+        engine.set_scroll(260.0);
+        // Over its text, and over the box below it.
+        for y in [45.0, 80.0] {
+            assert_eq!(engine.hit_test(5.0, y), Some(e));
+            engine.wheel(5.0, y, 30.0);
+            assert_eq!(engine.element_scroll_target(e), 0.0, "{y}");
+        }
+        assert_eq!(engine.scroll_target(), 320.0);
+        // Over #e itself, the wheel scrolls #e.
+        engine.set_scroll(0.0);
+        engine.wheel(5.0, 80.0, 30.0);
+        assert_eq!(engine.element_scroll_target(e), 30.0);
+    }
+
+    #[test]
     fn an_inline_element_paints_its_background_and_is_hit_over_its_padding() {
         // <p><a href=…>b</a></p>, the link with 10px of horizontal
         // padding and a red background (M11.6): its padding is red, is
@@ -3666,6 +3716,25 @@ mod tests {
         <form id=y><input type=radio name=r><span>t</span></form>\
         <p title=t class=a>quoted <q>words</q></p>";
 
+    /// A page of generated boxes (M16) of each display, with quotes
+    /// whose marks depend on what comes before them, on the classes the
+    /// mutator sets.
+    const GENERATED_PAGE: &str = "<style>\
+          body { margin: 4px; font-size: 10px } q { quotes: '<' '>' '{' '}' }\
+          .a::before { content: open-quote 'A'; display: block; height: 3px; background-color: #f00 }\
+          .b::after { content: close-quote attr(title); display: inline-block; padding: 1px }\
+          .c::before { content: 'C'; float: left; width: 5px; height: 5px; background-color: #0f0 }\
+          .c::after { content: 'X'; position: absolute; top: 2px; right: 3px }\
+          div::after { content: ''; display: table; clear: both }\
+          td::before { content: no-open-quote 'T'; display: table-cell; width: 4px }\
+          p::before { content: 'O'; display: block; overflow: hidden; height: 4px }\
+        </style>\
+        <div class=a><p class=b title=t>one <q>two <q>three</q></q></p></div>\
+        <p class='b c' title=u><span class=c>x</span> y</p>\
+        <div><div class=c>z</div></div>\
+        <table><tr><td class=a>cell <q>q</q></td></tr></table>\
+        <div class=c style='position: relative'>abs <q>r</q></div>";
+
     #[test]
     fn after_random_mutations_the_engine_shows_what_a_fresh_engine_shows() {
         // Seeded runs of random mutations, each compared after every
@@ -3678,6 +3747,7 @@ mod tests {
             ("first", DIFFERENTIAL_PAGE),
             ("nested", NESTED_PAGE),
             ("forms", FORMS_PAGE),
+            ("generated", GENERATED_PAGE),
         ] {
             let changed: usize = (1..=8)
                 .map(|seed| mutate_and_compare(&mut fresh, name, page, seed))

@@ -1221,6 +1221,35 @@ fn a_fragment_navigation_fetches_nothing_and_scrolls_to_its_element() {
 }
 
 #[test]
+fn a_fragment_scrolls_to_its_elements_own_box_not_a_generated_one() {
+    // The span's `::before` is a 400px block hoisted out of it, before
+    // its text: the span's own box is its text's line, below.
+    let server = serve(|path| match path {
+        "/g" => Some(html(
+            "<style>body { margin: 0 } p { margin: 0 }
+                    #t::before { display: block; height: 400px; content: '' }</style>\
+             <p><a id=go href=\"#t\">go</a></p><p><span id=t>x</span></p>\
+             <div style=\"height: 1000px\"></div>",
+        )),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.load(server.url("/g"));
+    click(&mut tab, "go");
+    tab.engine.frame(400, 100);
+    let line = tab
+        .engine
+        .fragments(400.0)
+        .into_iter()
+        .find(|f| matches!(&f.kind, layout::FragmentKind::Text(t) if t == "x"))
+        .expect("the span's text is laid out")
+        .top();
+    assert!(line > 400.0);
+    let y = tab.engine.scroll_y();
+    assert!((line - 5.0..=line).contains(&y), "{y} for a line at {line}");
+}
+
+#[test]
 fn entries_of_one_document_each_keep_their_own_scroll_position() {
     let server = serve(|path| match path {
         "/long" => Some(long_page("")),

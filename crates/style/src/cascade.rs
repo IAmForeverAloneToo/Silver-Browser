@@ -33,7 +33,8 @@
 //!   after the longhands: an absolutely positioned box does not float,
 //!   and a box that floats or is absolutely positioned computes to the
 //!   block-level `display` of §9.7's table
-//!   ([`crate::computed::Display::blockified`]).
+//!   ([`crate::computed::Display::blockified`]), as the root element
+//!   always does (M16).
 //! * The table properties (M12): `table-layout`, `border-collapse`,
 //!   `border-spacing`, `caption-side`, `empty-cells` and
 //!   `vertical-align`, the last parsed in full though read on table
@@ -517,13 +518,20 @@ impl<'a> Cascader<'a> {
             viewport_used: &self.viewport_used,
             attributes: self.document.attrs(element).unwrap_or_default(),
         };
-        let style = compute_style(
+        let mut style = compute_style(
             matched.of(Target::Element),
             parent_style,
             Target::Element,
             self.document.attr(element, "dir"),
             &resolution,
         );
+        // The root element's box is a block container or a table,
+        // whatever its `display` (CSS2 §9.7, css-display-3 §2.7): what
+        // the canvas takes its background from, and every other box is
+        // inside.
+        if self.document.document_element() == Some(element) {
+            style.display = style.display.blockified();
+        }
         // Each pseudo-element some rule styles, from the element's style.
         let pseudo = |target: Target| {
             let applied = matched.of(target);
@@ -3309,6 +3317,29 @@ mod tests {
         // job, walking `display` — so a display:none subtree's children
         // still have well-defined styles.
         assert_eq!(style("span").color, Color::rgb8(255, 0, 0));
+    }
+
+    #[test]
+    fn the_root_elements_display_is_blockified() {
+        let document =
+            Document::from_node(&html::parse_document("<div><span>x</span></div>").unwrap());
+        // The root's, and another element's, which is what it says.
+        for (value, root, other) in [
+            ("inline", Display::Block, Display::Inline),
+            ("inline-block", Display::Block, Display::InlineBlock),
+            ("table-cell", Display::Block, Display::TableCell),
+            ("inline-table", Display::Table, Display::InlineTable),
+            ("none", Display::None, Display::None),
+        ] {
+            let sheets = [sheet(&format!("html, span {{ display: {value}; }}"))];
+            let styles = cascade_document(&document, &sheets, &CascadeContext::default());
+            let style = |tag: &str| styles.get(first(&document, tag)).expect("styled");
+            assert_eq!(
+                (style("html").display, style("span").display),
+                (root, other),
+                "{value}"
+            );
+        }
     }
 
     #[test]

@@ -292,6 +292,15 @@ pub(crate) fn invalidate(
                 }
                 around_child(document, features, *parent, &mut out);
                 radios |= features.checked && !document.is_text(*child);
+                // Which element is the root can change with the
+                // document node's children, and the root's `display`
+                // is blockified (M16): each of them, the root that was
+                // and the root that is, is restyled.
+                if *parent == document.root() {
+                    for top in document.element_children(*parent) {
+                        out.mark(document, top, Reach::Element);
+                    }
+                }
             }
             Change::AttributeChanged { .. } | Change::TextChanged { .. } => {}
         }
@@ -496,6 +505,7 @@ fn siblings(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::computed::Display;
     use crate::{CascadeContext, Restyle, Styles, Stylesheets};
 
     /// The document `html` parses to, `css` prepared as its one sheet,
@@ -541,6 +551,34 @@ mod tests {
             .subtree(document.root())
             .find(|&n| document.attr(n, "id") == Some(id))
             .unwrap_or_else(|| panic!("#{id}"))
+    }
+
+    #[test]
+    fn an_element_becoming_the_root_is_restyled_as_the_root() {
+        // Two top-level elements: the span is inline until the div
+        // before it goes, and the root's `display` is blockified.
+        let mut document = Document::from_node(&dom::Node::document(vec![
+            dom::Element::new("div").into(),
+            dom::Element::new("span").into(),
+        ]));
+        let sheets = Stylesheets::new(vec![css::parse_stylesheet("span { color: #f00 }").unwrap()]);
+        let mut styles = sheets.cascade(&document, &CascadeContext::default());
+        let root = document.root();
+        let (div, span) = (
+            document.first_child(root).unwrap(),
+            document.last_child(root).unwrap(),
+        );
+        assert_eq!(styles.get(span).unwrap().display, Display::Inline);
+        let restyle = change(&mut document, &sheets, &mut styles, |d| {
+            d.remove_child(root, div).unwrap();
+        });
+        assert!(!restyle.full);
+        assert_eq!(styles.get(span).unwrap().display, Display::Block);
+        // And put back, the span is an element like any other again.
+        change(&mut document, &sheets, &mut styles, |d| {
+            d.insert_before(root, div, Some(span)).unwrap();
+        });
+        assert_eq!(styles.get(span).unwrap().display, Display::Inline);
     }
 
     #[test]

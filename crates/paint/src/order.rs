@@ -99,11 +99,14 @@ pub enum Step<'a> {
         baseline: f32,
     },
     /// Everything up to the matching [`Step::PopClip`] shows only inside
-    /// `rect`, the padding box of the clipping box `node` intersected
-    /// with the clips around it (CSS2 §11.1.1). The clipping box's
-    /// content is scrolled by its offset; the box, its clip and its
-    /// scrollbar are not.
-    PushClip { node: NodeId, rect: Rect },
+    /// `rect`, the padding box of the clipping box intersected with the
+    /// clips around it (CSS2 §11.1.1). `node` is the element whose box
+    /// it is, and `None` for a box an element's `::before` or `::after`
+    /// generated (M16): scroll offsets are kept by element, and a
+    /// generated box's is its element's own, so it clips and does not
+    /// scroll. The clipping box's content is scrolled by its offset;
+    /// the box, its clip and its scrollbar are not.
+    PushClip { node: Option<NodeId>, rect: Rect },
     /// The end of the innermost [`Step::PushClip`].
     PopClip,
     /// A scroll container's place for its overlay scrollbar (M10.5):
@@ -177,8 +180,9 @@ struct Walk<'a, 'o> {
     /// into, negated, and the shifts of the sticky boxes.
     dy: f32,
     /// The clips in force, outermost first: each clipping box being
-    /// walked into, with its effective clip rectangle.
-    chain: Vec<(NodeId, Rect)>,
+    /// walked into, as [`Step::PushClip`] names it, with its effective
+    /// clip rectangle.
+    chain: Vec<(Option<NodeId>, Rect)>,
     offsets: &'o dyn ScrollOffsets,
 }
 
@@ -189,7 +193,7 @@ struct Walk<'a, 'o> {
 struct Positioned<'a> {
     f: &'a Fragment,
     containing: Rect,
-    chain: Vec<(NodeId, Rect)>,
+    chain: Vec<(Option<NodeId>, Rect)>,
     dx: f32,
     dy: f32,
 }
@@ -331,14 +335,15 @@ impl<'a> Walk<'a, '_> {
             None => padding_box,
         };
         let mark = self.steps.len();
+        let node = f.generated.is_none().then_some(f.node);
         if emit != Emit::Nothing {
             self.steps.push(Step::PushClip {
-                node: f.node,
+                node,
                 rect: effective,
             });
         }
-        self.chain.push((f.node, effective));
-        let offset = self.offsets.offset(f.node);
+        self.chain.push((node, effective));
+        let offset = node.map_or(0.0, |node| self.offsets.offset(node));
         self.dy -= offset;
         body(self, padding_box);
         self.dy += offset;
@@ -665,7 +670,7 @@ mod tests {
                     FragmentKind::Box | FragmentKind::InlineBox => unreachable!(),
                 },
                 Step::PushClip { node, rect } => {
-                    let node = layout.number(*node);
+                    let node = node.map_or(0, |node| layout.number(node));
                     format!("clip {node} {} {} {} {}", rect.x, rect.y, rect.w, rect.h)
                 }
                 Step::PopClip => "pop".to_string(),
@@ -709,6 +714,50 @@ mod tests {
                 "pop".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn a_generated_box_clips_and_its_elements_offset_does_not_scroll_it() {
+        // The scroll container (node 1) scrolled by 10: its `::before`,
+        // a clipping block, moves with the container's content, and its
+        // own content, its text 20px down, is not moved by the
+        // container's offset again. Its clip, the part of its padding
+        // box inside the container's, names no element.
+        let layout = layout_of(
+            Element::new("div")
+                .attr("class", "s")
+                .push(Element::new("p").attr("class", "t")),
+            "div, p { margin: 0 } .s { overflow: auto; height: 100px } .t { height: 200px }
+             .s::before { display: block; overflow: hidden; height: 40px; padding-top: 20px;
+                          content: 'a' }",
+        );
+        let offsets: std::collections::HashMap<NodeId, f32> =
+            [(layout.element(1), 10.0)].into_iter().collect();
+        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &offsets);
+        let clips: Vec<(Option<usize>, f32)> = steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::PushClip { node, rect } => Some((node.map(|n| layout.number(n)), rect.y)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(clips, [(Some(1), 0.0), (None, 0.0)]);
+        let generated = steps
+            .iter()
+            .find_map(|s| match s {
+                Step::Box { fragment, rect } if fragment.generated.is_some() => Some(rect.y),
+                _ => None,
+            })
+            .expect("the generated box has a step");
+        assert_eq!(generated, -10.0);
+        let text = steps
+            .iter()
+            .find_map(|s| match s {
+                Step::Text { rect, .. } => Some(rect.y),
+                _ => None,
+            })
+            .expect("the text has a step");
+        assert_eq!(text, 10.0);
     }
 
     #[test]
@@ -757,7 +806,7 @@ mod tests {
                     h: 100.0,
                     ..
                 }
-            } if layout.number(node) == 2
+            } if node.map(|node| layout.number(node)) == Some(2)
         ));
         // The scrollbar is painted over the content, in the last pass.
         assert_eq!(
@@ -801,7 +850,7 @@ mod tests {
         let clips: Vec<(usize, f32)> = steps
             .iter()
             .filter_map(|s| match s {
-                Step::PushClip { node, rect } => Some((layout.number(*node), rect.h)),
+                Step::PushClip { node, rect } => Some((layout.number(node.unwrap()), rect.h)),
                 _ => None,
             })
             .collect();

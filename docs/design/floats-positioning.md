@@ -70,7 +70,9 @@ still collapsing, the float waits and is placed level with what
 resolves it: the first line, the top of the next box that is not
 self-collapsing or whose top edge separates its margins, the base of a
 box that clears it, or the context's end; which is where a browser
-puts a float between two blocks whose margins collapse across it — and
+puts a float between two blocks whose margins collapse across it, and
+so it is for a float in an empty box when the flow's own position was
+already known above the box, since the float's was not — and
 never above an earlier float's top or an earlier line's top; its
 left (right) edge is as far left (right) as the containing block's
 content edge and the earlier floats of its side overlapping it
@@ -123,12 +125,16 @@ same rule.
 block that is a context root (an `overflow` other than `visible`,
 later a table) must not overlap a float's margin box (CSS2 §9.5): after
 its margins are resolved, its border box is placed in the space between
-the floats at its top, as far left as that space allows, and its
-`auto` width is computed with that space as the containing width (the
-box may be narrower than §10.3.3 says, as the specification permits);
-when the space is narrower than its minimum, the box moves down to the
-next float's bottom and tries again, like a float does. Its margins
-still collapse with its siblings' as usual: the dodge is after that.
+the floats at its top, as far left as that space and its own margin
+allow — its margins are measured from the containing block's edges, as
+in normal flow, and may lie under a float, as the browsers have it
+where §9.5 leaves it open, so a left margin narrower than the float
+beside the box moves it no further — and its `auto` width is what the
+space leaves (the box may be narrower than §10.3.3 says, as the
+specification permits); when the space is narrower than its border
+box, the box moves down to the next float's bottom and tries again,
+like a float does. Its margins still collapse with its siblings' as
+usual: the dodge is after that.
 
 **Relative positioning (M11.3).** A box with `position: relative` is
 laid out in flow where it is and then moved: by `left` (else minus
@@ -371,3 +377,12 @@ the margin box. An inline element is hit over its border box, like a
 block. And a scroll container that is not a stacking context paints
 its scrollbar at the end of the inline pass, under positioned content
 inside it, which the walk's passes made the place for it.
+
+M16's reference pages of generated boxes found two more, corrected
+above too. A float waiting in an empty box was placed only where the
+flow's position resolved, so when that position was known above the
+empty box the float waited past the next box, a context root that
+should have avoided it included, to the context's end. And a context
+root beside a float had its margin measured from the float's edge,
+where the browsers measure it from the containing block's: the first
+version took the space between the floats for its containing block.

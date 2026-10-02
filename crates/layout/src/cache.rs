@@ -13,8 +13,9 @@
 //!   the entries of every node a change can affect and of its
 //!   ancestors ([`LayoutCache::invalidate`]);
 //! - the inputs are the same: the containing block's width and height
-//!   (the latter for percentage heights), and the width available to
-//!   the box;
+//!   (the latter for percentage heights), the width available to the
+//!   box, and the quote depth it starts at (M16), which the quote marks
+//!   in it are chosen by;
 //! - no float was in the box's formatting context, placed or waiting,
 //!   when it was laid out or when it is reused, and the box placed
 //!   none: its layout then neither met a float nor moved one, and its
@@ -58,6 +59,7 @@ pub(crate) struct Inputs {
     pub(crate) cb_width: f32,
     pub(crate) available_width: f32,
     pub(crate) cb_height: Option<f32>,
+    pub(crate) quote_depth: u32,
 }
 
 /// A child of a box whose fragment the cache holds under the child's
@@ -301,6 +303,7 @@ fn childless(fragment: &Fragment) -> Fragment {
         style: fragment.style.clone(),
         kind: fragment.kind.clone(),
         node: fragment.node,
+        generated: fragment.generated,
         ascent: fragment.ascent,
         scroll_height: fragment.scroll_height,
         children: Vec::new(),
@@ -634,5 +637,29 @@ mod tests {
         assert_eq!(s.cache.len(), 2);
         s.cache.invalidate(&s.document, &[Change::Everything], &[]);
         assert!(s.cache.is_empty());
+    }
+
+    #[test]
+    fn a_box_is_taken_only_at_the_quote_depth_it_was_kept_at() {
+        // #b's quote marks depend on the quote #a's class opens: with
+        // it, #b's `q` is a quote inside a quote, and its last span
+        // closes #a's quote, where without it the close-quote has none
+        // to close — the depth after #b is 0 either way.
+        let mut s = Session::new(
+            "<p id=a class=o>one</p><p id=b><q>two</q><span class=c></span></p>",
+            ".o::before { content: open-quote } .c::before { content: close-quote }",
+        );
+        assert_eq!(s.pass(), (4, 0));
+        let a = s.id("a");
+        // #a is restyled, and #b, unchanged but at another depth, laid
+        // out again with it: `pass` holds the result to a fresh one.
+        s.change(|d| d.remove_attribute(a, "class").unwrap());
+        assert_eq!(s.pass(), (4, 0));
+        // A change that moves no depth: #b is taken.
+        s.change(|d| {
+            let text = d.first_child(a).unwrap();
+            d.set_text(text, "uno").unwrap();
+        });
+        assert_eq!(s.pass(), (3, 1));
     }
 }

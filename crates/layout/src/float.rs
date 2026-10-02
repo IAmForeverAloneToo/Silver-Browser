@@ -27,6 +27,7 @@
 
 use dom::NodeId;
 use style::computed::{Clear, Float};
+use style::selector_matching::PseudoElement;
 
 use crate::block::{AdjoiningMargins, Fragment, FragmentKind};
 
@@ -43,8 +44,12 @@ pub(crate) struct FloatContext {
 /// A float laid out and sized, before it is placed.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PendingFloat {
-    /// The float's element, which its fragment carries.
+    /// The float's element, which its fragment carries, and the
+    /// pseudo-element that generated it, if one did (M16): together
+    /// they tell the floats of one context apart, as an element's
+    /// `::before` and `::after` name it both.
     pub(crate) node: NodeId,
+    pub(crate) generated: Option<PseudoElement>,
     pub(crate) side: Float,
     /// The floats it goes below (CSS2 §9.5.2 on a float).
     pub(crate) clear: Clear,
@@ -70,6 +75,7 @@ pub(crate) struct PendingFloat {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PlacedFloat {
     node: NodeId,
+    generated: Option<PseudoElement>,
     side: Float,
     x: f32,
     y: f32,
@@ -221,6 +227,7 @@ impl FloatContext {
         };
         self.placed.push(PlacedFloat {
             node: f.node,
+            generated: f.generated,
             side: f.side,
             x,
             y,
@@ -309,7 +316,9 @@ pub(crate) fn attach_floats(
             continue;
         }
         if f.style.float != Float::None
-            && let Some(p) = placed.iter().find(|p| p.node == f.node)
+            && let Some(p) = placed
+                .iter()
+                .find(|p| p.node == f.node && p.generated == f.generated)
         {
             f.x = p.border_x + dx - px;
             f.y = p.border_y + dy - py;
@@ -327,6 +336,7 @@ mod tests {
     fn float(side: Float, w: f32, h: f32) -> PendingFloat {
         PendingFloat {
             node: crate::testing::no_node(),
+            generated: None,
             side,
             clear: Clear::None,
             w,

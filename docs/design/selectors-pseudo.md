@@ -210,38 +210,69 @@ last pair, as CSS 2.2 §12.3.2 says.
 whose `display` there is not `none`, gets a box for it as its first or
 last child, as Pseudo-Elements 4 says: the box its `display` makes
 (inline by default; block, inline-block, a float, an absolutely
-positioned box, a table, all as for an element), holding one text box
-with the content's text, which `white-space` and `text-transform`
-treat as they treat any text, so `"\A"` breaks a line only where white
-space is preserved. The box tree builder walks *items* instead of node
-ids: a node, or an element's generated box, or the text in one. So
-generated boxes go through the same code as elements — anonymous
+positioned box, a table, a table part, all as for an element), holding
+one text box with the content's text, or none when the text is empty.
+The text is text like any other: `white-space` and `text-transform`
+treat it as they treat any text, so `"\A"` breaks a line only where
+white space is preserved, and white space at the start of a block
+container's run or between table parts makes no box — its quotes
+still move the depth. The box tree builder walks *items* instead of
+node ids: a node, or an element's generated box, or the text in one.
+So generated boxes go through the same code as elements — anonymous
 blocks around them, hoisting a block out of an inline, anonymous
 table parts around one met in a table — with no second path to keep
-in step. They are not made for replaced elements, as Pseudo-Elements 4
-says; in this engine those are `img`, `input`, `textarea`, `select`,
-`iframe`, `video`, `audio`, `canvas`, `embed` and `object`, and `br`
-and `wbr`, which make no box of their own.
+in step; a generated table part takes none of its element's
+`colspan`, `rowspan` or `span`. The builder builds every box in
+document order, a cell where it stands among the content around it,
+so the quote depth is right in tables too. Generated boxes are not
+made for replaced elements, as Pseudo-Elements 4 says; in this engine
+those are `img`, `input`, `textarea`, `select`, `iframe`, `video`,
+`audio`, `canvas`, `embed` and `object`, and `br` and `wbr`, which
+make no box of their own.
 
-A generated box names its originating element and is marked as
-generated, and so is each fragment made from it:
+A generated box names its originating element and is marked with the
+pseudo-element that generated it, and so is each box inside it and
+each fragment made from them:
 
 - hit testing answers with the originating element, so a click on an
   `a`'s `::before` follows the link, as in the browsers;
+- the floats of a formatting context are told apart by node and
+  pseudo-element, since an element's `::before` and `::after` floats
+  name it both;
 - the layout cache (M13.2) keeps and takes results by node, for boxes
   that stand for an element only; a generated box is anonymous to it.
   What a cached box drew can depend on the quotes before it, so a box
   the cache keeps records the quote depth it began at, and is taken
   only at that depth (M21's counters will join that key);
-- the canvas background (CSS2 §14.2), which looks for the root's and
-  `body`'s boxes, skips generated ones, so a `::before` on `html` or
-  `body` neither becomes the canvas's source nor loses its background;
+- the canvas background (CSS2 §14.2) is the root's box's, the first
+  box of the document, or the body's, the first among the root's
+  children that names another element: a box of the root's `::before`
+  names the root and is passed over, one of the body's is inside the
+  body's box, so neither becomes the canvas's source, and each keeps
+  its background. For the root's box to be the first, the cascade now
+  blockifies the root element's `display`, as CSS 2.2 §9.7 and
+  css-display-3 §2.7 say and it did not before; a top-level change
+  restyles the document node's element children, whose root may have
+  changed;
 - a generated box does not scroll: `overflow` other than `visible`
   clips it but gives it no scroll offset, since scroll offsets are kept
-  by element and its element has its own. Browsers scroll one; no page
-  the milestone knows of needs it, and it is said here;
+  by element and its element has its own. Its clip in the paint order
+  names no element, so the wheel does not take it for its element's
+  scroll container, and a fragment link scrolls to the element's own
+  first box, not to one its `::before` generated. Browsers scroll one;
+  no page the milestone knows of needs it, and it is said here;
 - the differential checker (M13) and the paint-order walk need nothing
   new: the node a generated fragment names is in the tree.
+
+The reference pages of generated boxes found three faults, two of
+them M11's: the floats were told apart by node alone, so an element's
+two generated floats were placed as one; a float in an empty box,
+waiting for the flow position, was not placed before the next box
+when the flow's own position was already known above the empty box,
+so a context root after it did not avoid it; and a context root
+beside a float had its margin added beyond the float, where the
+browsers measure it from the containing block and let it lie under
+the float (docs/design/floats-positioning.md is corrected).
 
 **`::first-letter` (M16.2).** It applies to block containers — a
 block, an inline-block, a table cell or caption — and is found when the
