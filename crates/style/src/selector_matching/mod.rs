@@ -12,9 +12,16 @@
 //!   `:empty`, `:root`, and the `:nth-*` family with the full An+B
 //!   grammar (including `of S`)
 //! * logical combinators: `:not()`, `:is()`, `:where()`
-//! * dynamic pseudo-classes (`:hover`, `:focus`, `:focus-visible`,
-//!   `:focus-within`, `:active`, `:visited`, `:link`) parse but never
-//!   match until input events land (M26)
+//! * `:lang()`, by the language HTML gives an element and RFC 4647's
+//!   extended filtering
+//! * `:link` and `:any-link`, on `a` and `area` elements with an `href`
+//! * the form pseudo-classes `:disabled`, `:enabled`, `:checked`,
+//!   `:required` and `:optional`, by the state HTML gives a control
+//!   from its attributes, since no control has state of its own yet
+//! * pseudo-classes that parse and never match: the user-action ones
+//!   (`:hover`, `:focus`, `:focus-visible`, `:focus-within`,
+//!   `:active`) until input events land (M26), `:visited`, since there
+//!   is no history to read, and `:target`
 //! * one pseudo-element at the end of a selector (M16,
 //!   docs/design/selectors-pseudo.md): `::before`, `::after`,
 //!   `::first-letter` and `::first-line`, also with one colon;
@@ -31,6 +38,7 @@
 //! pseudo-element inside `:not()`, `:is()` or `:where()` (which the
 //! last two forgive), namespaces (`|`), and anything unknown.
 
+mod language;
 mod matcher;
 mod parse;
 
@@ -242,10 +250,31 @@ pub enum PseudoClass {
     FocusWithin,
     /// Dynamic, see [`PseudoClass::Hover`].
     Active,
-    /// Dynamic, see [`PseudoClass::Hover`].
+    /// `:visited`: never matched, there being no history; that also
+    /// keeps a page from reading history through styles.
     Visited,
-    /// Dynamic, see [`PseudoClass::Hover`].
+    /// `:link`: an `a` or `area` element with an `href`.
     Link,
+    /// `:any-link`: as `:link`, every link being unvisited.
+    AnyLink,
+    /// `:target`: parseable, never matched until the engine keeps the
+    /// part a fragment indicates.
+    Target,
+    /// `:lang(…)`: the language ranges, ASCII lowercased, that can
+    /// match anything. A range that is not well-formed matches nothing
+    /// and is left out when parsed, so a list of none matches nothing.
+    Lang(Vec<String>),
+    /// `:disabled`: a form element HTML calls actually disabled.
+    Disabled,
+    /// `:enabled`: a form element HTML can disable that is not.
+    Enabled,
+    /// `:checked`: a checked checkbox or radio button, or a selected
+    /// option.
+    Checked,
+    /// `:required`: an `input`, `select` or `textarea` that is required.
+    Required,
+    /// `:optional`: one of those that could be and is not.
+    Optional,
 }
 
 /// selectors-4 specificity: (ids, classes+attributes+pseudo-classes,

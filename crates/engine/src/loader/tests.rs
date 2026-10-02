@@ -516,6 +516,58 @@ fn a_link_removed_before_its_sheet_arrives_is_aborted() {
 }
 
 #[test]
+fn the_content_language_of_the_response_is_the_documents_last_resort() {
+    // `:lang()` falls back on the response's language when no `lang`
+    // attribute or `meta` pragma gives one (M16), if it names one.
+    const PAGE: &str = "<style>p:lang(fr) { color: #f00 } p:lang('') { color: #0f0 }</style>\
+                        <p id=a>x</p>";
+    let server = serve(|path| {
+        let languages: &[(&str, &str)] = match path {
+            "/fr.html" => &[("Content-Language", "fr-CA")],
+            "/spaced.html" => &[("Content-Language", " , fr ,")],
+            "/two.html" => &[("Content-Language", "fr, en")],
+            "/twice.html" => &[("Content-Language", "fr"), ("Content-Language", "en")],
+            "/none.html" => &[],
+            _ => return None,
+        };
+        let mut fields = vec![("Content-Type", "text/html")];
+        fields.extend_from_slice(languages);
+        Some(Reply::with_fields(200, &fields, PAGE.as_bytes()))
+    });
+    let red = style::computed::Color::rgb8(255, 0, 0);
+    let green = style::computed::Color::rgb8(0, 255, 0);
+    for (path, expected) in [
+        ("/fr.html", red),
+        ("/spaced.html", red),
+        ("/two.html", green),
+        ("/twice.html", green),
+        ("/none.html", green),
+    ] {
+        let mut tab = Tab::new();
+        tab.load(server.url(path));
+        let document = tab.engine.document();
+        let p = document
+            .subtree(document.root())
+            .find(|&node| document.attr(node, "id") == Some("a"))
+            .expect("the paragraph");
+        let color = tab.engine.styles().get(p).expect("styled").color;
+        assert_eq!(color, expected, "{path}");
+        // A restyle reads it too: a `style` attribute restyles its
+        // element.
+        let before = tab.engine.restyled_elements();
+        tab.engine.mutate(|document| {
+            let _ = document.set_attribute(p, "style", "padding: 1px");
+        });
+        let color = tab.engine.styles().get(p).expect("styled").color;
+        assert_eq!(color, expected, "{path}, restyled");
+        assert!(
+            tab.engine.restyled_elements() > before,
+            "{path}: restyled, not cascaded"
+        );
+    }
+}
+
+#[test]
 fn a_redirected_document_is_at_its_last_url() {
     let server = serve(|path| match path {
         "/old" => Some(Reply::with_fields(

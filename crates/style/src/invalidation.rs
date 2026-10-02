@@ -22,6 +22,26 @@
 //!   looking both ways are. Text counts for `:empty` and nothing else.
 //! - A text node's data changed: no selector reads it.
 //!
+//! Three kinds of pseudo-class read more than an element and its
+//! ancestors (M16), and add rules of their own when a sheet uses them:
+//!
+//! - `:lang()` reads the document's `<meta http-equiv>` pragma: a
+//!   change to a `meta`'s `http-equiv` or `content`, or a `meta`
+//!   inserted or removed, cascades the document whole.
+//! - `:disabled` and `:enabled` read which `legend` is a fieldset's
+//!   first: a child inserted under or removed from a `fieldset`
+//!   restyles the fieldset's subtree.
+//! - `:checked` reads a select's other options and a radio button's
+//!   group: a child inserted or removed in a `select`, or a change to
+//!   an `option`'s or `optgroup`'s `selected` or `disabled`, restyles
+//!   the select's subtree; and any element inserted or removed, or a
+//!   change to an `input`'s `checked`, `name`, `type` or `form`, or to
+//!   any element's `id`, restyles every radio button in the document.
+//!
+//! The attributes they read on the element and its ancestors (`lang`,
+//! `href`, `disabled`, `checked`, `selected`, `type`, `multiple`,
+//! `size`, `required`) count as named by a selector.
+//!
 //! The changes are read after they were all made, so each rule looks
 //! at the document as it now stands: an element no longer in the tree
 //! is not restyled, an attribute is compared between the value it had
@@ -59,6 +79,12 @@ pub struct SelectorFeatures {
     every_sibling: bool,
     /// `:empty`.
     empty: bool,
+    /// `:lang()`: the document's pragma counts.
+    lang: bool,
+    /// `:disabled` or `:enabled`: a fieldset's first legend counts.
+    fieldsets: bool,
+    /// `:checked`: a select's options and radio button groups count.
+    checked: bool,
 }
 
 impl SelectorFeatures {
@@ -118,6 +144,22 @@ impl SelectorFeatures {
             PseudoClass::Not(list) | PseudoClass::Is(list) | PseudoClass::Where(list) => {
                 self.add(list);
             }
+            PseudoClass::Link | PseudoClass::AnyLink => self.read(&["href"]),
+            PseudoClass::Lang(_) => {
+                self.lang = true;
+                self.read(&["lang"]);
+            }
+            PseudoClass::Disabled | PseudoClass::Enabled => {
+                self.fieldsets = true;
+                self.read(&["disabled"]);
+            }
+            PseudoClass::Checked => {
+                self.checked = true;
+                self.read(&[
+                    "checked", "selected", "type", "multiple", "size", "disabled",
+                ]);
+            }
+            PseudoClass::Required | PseudoClass::Optional => self.read(&["required", "type"]),
             // `:root` depends on the parent, which an insertion
             // restyles whole; the dynamic ones never match yet.
             PseudoClass::Root
@@ -127,7 +169,14 @@ impl SelectorFeatures {
             | PseudoClass::FocusWithin
             | PseudoClass::Active
             | PseudoClass::Visited
-            | PseudoClass::Link => {}
+            | PseudoClass::Target => {}
+        }
+    }
+
+    /// Counts the attributes `names` as named by a selector.
+    fn read(&mut self, names: &[&str]) {
+        for name in names {
+            self.attributes.insert((*name).to_owned());
         }
     }
 
@@ -200,12 +249,29 @@ pub(crate) fn invalidate(
     let mut out = Invalidation::default();
     // Each attribute's value before the first of its changes.
     let mut attributes: HashMap<(NodeId, &str), Option<&str>> = HashMap::new();
+    // Whether every radio button is to be restyled (`:checked`).
+    let mut radios = false;
     for change in changes {
         match change {
             Change::Everything => {
                 out.everything = true;
                 return out;
             }
+            Change::Inserted { parent, child } | Change::Removed { parent, child, .. } => {
+                // A freed node's kind is no longer known: it could have
+                // been a `meta`, or held one.
+                let holds_meta = !document.contains(*child) || holds(document, *child, "meta");
+                if features.lang && holds_meta {
+                    out.everything = true;
+                    return out;
+                }
+                around_child(document, features, *parent, &mut out);
+                radios |= features.checked && !document.is_text(*child);
+            }
+            Change::AttributeChanged { .. } | Change::TextChanged { .. } => {}
+        }
+        match change {
+            Change::Everything => {}
             Change::Inserted { parent, child } => {
                 let element = !document.is_text(*child);
                 if document.parent(*child) == Some(*parent) {
@@ -275,6 +341,21 @@ pub(crate) fn invalidate(
         if new == old {
             continue;
         }
+        let tag = document.tag(element);
+        if features.lang && tag == Some("meta") && matches!(name, "http-equiv" | "content") {
+            out.everything = true;
+            return out;
+        }
+        if features.checked {
+            if matches!(tag, Some("option" | "optgroup"))
+                && matches!(name, "selected" | "disabled")
+                && let Some(select) = select_around(document, element)
+            {
+                out.mark(document, select, Reach::Subtree);
+            }
+            radios |= name == "id"
+                || (tag == Some("input") && matches!(name, "checked" | "name" | "type" | "form"));
+        }
         if features.mentions(name, old, new) {
             out.mark(document, element, Reach::Subtree);
             if features.every_sibling {
@@ -294,7 +375,56 @@ pub(crate) fn invalidate(
             out.mark(document, element, Reach::Element);
         }
     }
+    if radios {
+        let buttons: Vec<NodeId> = document
+            .subtree(document.root())
+            .filter(|&node| {
+                document.tag(node) == Some("input")
+                    && document
+                        .attr(node, "type")
+                        .is_some_and(|t| t.eq_ignore_ascii_case("radio"))
+            })
+            .collect();
+        for button in buttons {
+            out.mark(document, button, Reach::Element);
+        }
+    }
     out
+}
+
+/// Whether `node` or a node under it is an element named `tag`.
+fn holds(document: &Document, node: NodeId, tag: &str) -> bool {
+    document
+        .subtree(node)
+        .any(|node| document.tag(node) == Some(tag))
+}
+
+/// The `select` that is `node` or its nearest ancestor that is one.
+fn select_around(document: &Document, node: NodeId) -> Option<NodeId> {
+    std::iter::once(node)
+        .chain(document.ancestors(node))
+        .find(|&node| document.tag(node) == Some("select"))
+}
+
+/// What a child inserted under or removed from `parent` restyles for
+/// the pseudo-classes that read past an element (M16): the parent's
+/// subtree when it is a `fieldset` and `:disabled` or `:enabled` is in
+/// use, since its first legend may have changed; the subtree of the
+/// `select` around it when `:checked` is, since its options may have.
+fn around_child(
+    document: &Document,
+    features: &SelectorFeatures,
+    parent: NodeId,
+    out: &mut Invalidation,
+) {
+    if features.fieldsets && document.tag(parent) == Some("fieldset") {
+        out.mark(document, parent, Reach::Subtree);
+    }
+    if features.checked
+        && let Some(select) = select_around(document, parent)
+    {
+        out.mark(document, select, Reach::Subtree);
+    }
 }
 
 /// Marks the element children of `parent` that a child inserted or
@@ -556,5 +686,211 @@ mod tests {
         });
         assert!(!r.full);
         assert!(styles.uses_viewport_units);
+    }
+    // ---- M16: the pseudo-classes that read past an element ---------------
+
+    /// The nodes, in no order: elements one depth apart are restyled in
+    /// no order.
+    fn set(nodes: &[NodeId]) -> HashSet<NodeId> {
+        nodes.iter().copied().collect()
+    }
+
+    #[test]
+    fn the_new_pseudo_classes_count_what_they_read() {
+        let sheets = Stylesheets::new(vec![
+            css::parse_stylesheet(":lang(en) {} :any-link {} :enabled {} :checked {} :optional {}")
+                .unwrap(),
+        ]);
+        let f = sheets.features();
+        assert!(f.lang && f.fieldsets && f.checked);
+        for name in [
+            "lang", "href", "disabled", "checked", "selected", "type", "multiple", "size",
+            "required",
+        ] {
+            assert!(f.attributes.contains(name), "{name}");
+        }
+        // The UA sheet's `:link` reads `href` without the rest.
+        let plain = Stylesheets::new(Vec::new());
+        let f = plain.features();
+        assert!(f.attributes.contains("href"));
+        assert!(!f.lang && !f.fieldsets && !f.checked);
+    }
+
+    #[test]
+    fn a_lang_change_restyles_the_subtree_and_a_pragma_change_the_document() {
+        let (mut d, sheets, mut styles) = setup(
+            "<meta id=m http-equiv=content-language content=fr>\
+             <div id=x><p>one</p></div><p id=y>two</p>",
+            ":lang(de) { color: #f00 } :lang(fr) { margin: 0 }",
+        );
+        let x = by_id(&d, "x");
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(x, "lang", "de").unwrap();
+        });
+        assert!(!r.full);
+        assert_eq!(r.computed, 2, "the div and its paragraph");
+        let m = by_id(&d, "m");
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(m, "content", "de").unwrap();
+        });
+        assert!(r.full, "the pragma's content");
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(m, "http-equiv", "refresh").unwrap();
+        });
+        assert!(r.full, "the pragma's name");
+        let head = d.parent(m).unwrap();
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.remove_child(head, m).unwrap()
+        });
+        assert!(r.full, "a meta removed");
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.append_child(head, m).unwrap()
+        });
+        assert!(r.full, "a meta inserted");
+        // Anything else inserted, a meta's other attributes and a meta
+        // without `:lang()` in use cascade nothing whole.
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            let p = d.create_element("p").unwrap();
+            d.append_child(x, p).unwrap();
+            d.set_attribute(m, "name", "x").unwrap();
+        });
+        assert!(!r.full);
+        let (mut d, sheets, mut styles) =
+            setup("<meta id=m http-equiv=content-language content=fr>", "p {}");
+        let m = by_id(&d, "m");
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(m, "content", "de").unwrap();
+        });
+        assert!(!r.full);
+    }
+
+    #[test]
+    fn a_freed_node_may_have_held_a_meta() {
+        let (mut d, sheets, mut styles) = setup(
+            "<div id=x><p id=y>one</p></div>",
+            ":lang(de) { color: #f00 }",
+        );
+        let (x, y) = (by_id(&d, "x"), by_id(&d, "y"));
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.remove_child(x, y).unwrap();
+            d.free(y).unwrap();
+        });
+        assert!(r.full);
+    }
+
+    #[test]
+    fn a_child_of_a_fieldset_inserted_or_removed_restyles_the_fieldset() {
+        let (mut d, sheets, mut styles) = setup(
+            "<fieldset id=f disabled><legend id=l><input id=a></legend><input id=b></fieldset>\
+             <div id=d><input></div>",
+            "input:disabled { color: #f00 }",
+        );
+        let (f, l, a) = (by_id(&d, "f"), by_id(&d, "l"), by_id(&d, "a"));
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            let legend = d.create_element("legend").unwrap();
+            d.insert_before(f, legend, Some(l)).unwrap();
+        });
+        assert!(!r.full);
+        assert!(r.changed.contains(&a), "a is no longer in the first legend");
+        let first = d.first_child(f).unwrap();
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.remove_child(f, first).unwrap()
+        });
+        assert!(r.changed.contains(&a), "a is in the first legend again");
+        // Under anything but a fieldset, nothing more than before.
+        let div = by_id(&d, "d");
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            let legend = d.create_element("legend").unwrap();
+            d.append_child(div, legend).unwrap();
+        });
+        assert_eq!(r.computed, 1, "the legend alone");
+    }
+
+    #[test]
+    fn an_option_changed_or_moved_restyles_its_select() {
+        let (mut d, sheets, mut styles) = setup(
+            "<select id=s><optgroup id=g><option id=a>1</option></optgroup>\
+             <option id=b>2</option></select><p>x</p>",
+            "option:checked { color: #f00 }",
+        );
+        let (a, b, g) = (by_id(&d, "a"), by_id(&d, "b"), by_id(&d, "g"));
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(b, "selected", "").unwrap();
+        });
+        assert_eq!(set(&r.changed), set(&[a, b]), "a unselected, b selected");
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.remove_attribute(b, "selected").unwrap();
+        });
+        assert_eq!(set(&r.changed), set(&[a, b]), "a the first option again");
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(g, "disabled", "").unwrap();
+        });
+        assert_eq!(set(&r.changed), set(&[a, b]), "b the first not disabled");
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.remove_attribute(g, "disabled").unwrap();
+            d.set_attribute(a, "disabled", "").unwrap();
+        });
+        assert!(r.changed.is_empty(), "a's disabled, b stays the first");
+        let s = by_id(&d, "s");
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            let option = d.create_element("option").unwrap();
+            d.insert_before(s, option, Some(g)).unwrap();
+        });
+        assert!(r.changed.contains(&b), "the new first option takes it");
+        assert!(!r.full);
+    }
+
+    #[test]
+    fn a_radio_buttons_group_is_restyled_with_it() {
+        let (mut d, sheets, mut styles) = setup(
+            "<form id=f><input id=a type=radio name=r checked><p><input id=b type=radio name=r></p>\
+             </form><input id=c type=radio name=r checked form=g><p>x</p>",
+            ":checked { color: #f00 }",
+        );
+        let (a, b, c, f) = (
+            by_id(&d, "a"),
+            by_id(&d, "b"),
+            by_id(&d, "c"),
+            by_id(&d, "f"),
+        );
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(b, "checked", "").unwrap();
+        });
+        assert_eq!(set(&r.changed), set(&[a, b]), "b checked, a unchecked");
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(b, "name", "other").unwrap();
+        });
+        assert_eq!(r.changed, [a], "a checked again");
+        // `c` names form `g`, which is none: alone, and checked. The form
+        // taking that ID takes `c` into `a`'s group, after it.
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(f, "id", "g").unwrap();
+        });
+        assert_eq!(r.changed, [a]);
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(c, "type", "checkbox").unwrap();
+        });
+        assert!(r.changed.contains(&a));
+        // An element inserted anywhere may change a group: made aside
+        // first, so that its insertion is the one change.
+        let mut input = None;
+        change(&mut d, &sheets, &mut styles, |d| {
+            let made = d.create_element("input").unwrap();
+            for (name, value) in [
+                ("type", "radio"),
+                ("name", "r"),
+                ("checked", ""),
+                ("form", "g"),
+            ] {
+                d.set_attribute(made, name, value).unwrap();
+            }
+            input = Some(made);
+        });
+        let body = d.parent(c).unwrap();
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.append_child(body, input.unwrap()).unwrap();
+        });
+        assert!(r.changed.contains(&a), "a unchecked by the button after it");
+        assert!(!r.full);
     }
 }

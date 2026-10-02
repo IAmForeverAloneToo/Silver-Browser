@@ -12,11 +12,13 @@
 use std::fmt;
 
 mod document;
+mod microsyntax;
 
 pub use document::{
     Change, Children, Document, MAX_DEPTH, MAX_JOURNAL, MAX_NODES, MutationError, NodeData, NodeId,
     Subtree,
 };
+pub use microsyntax::parse_non_negative_integer;
 
 /// A text node's payload.
 #[derive(Debug, Clone, PartialEq, Eq)]

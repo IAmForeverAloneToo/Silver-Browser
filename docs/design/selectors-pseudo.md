@@ -115,14 +115,24 @@ until state exists:
   `optgroup`, `option` or `fieldset` that is actually disabled: its
   own `disabled` attribute; for the first four and `fieldset`, being
   inside a `fieldset` with `disabled` and not inside that fieldset's
-  first `legend` child; for an `option`, being the child of a disabled
-  `optgroup`. `:enabled` matches the same elements when not disabled.
-- `:checked` matches an `input` of type `checkbox` or `radio` with a
-  `checked` attribute, and an `option` that is selected, as HTML's
-  selectedness setting algorithm makes it: one with a `selected`
-  attribute; but in a `select` without `multiple`, only the last of
-  those, and, with none and no `size` over one, the first option in
-  tree order that is not disabled.
+  first `legend` child; for an `option`, the nearest of its ancestors
+  that is an `optgroup`, `select`, `hr`, `datalist` or `option` being
+  an `optgroup` with `disabled`. `:enabled` matches the same elements
+  when not disabled.
+- `:checked` matches an `input` of type `checkbox` with a `checked`
+  attribute; one of type `radio` with one that is the last with one in
+  its radio button group in tree order, since each button checks
+  itself and unchecks the rest of its group as it is parsed (a group
+  is the radio buttons of one form owner with one non-empty `name`;
+  the form owner is the form a `form` attribute names, for a button in
+  the document, else the nearest `form` ancestor; a button with no
+  name is alone); and an `option` that is selected, as HTML's
+  selectedness setting algorithm makes it. In the list of options of a
+  `select` without `multiple` — its `option` descendants, not looking
+  inside a `select`, `hr`, `option` or `datalist`, nor an `optgroup`
+  inside another — that is the last with a `selected` attribute, or,
+  with none and a display size of 1 (`size`, else 1), the first that
+  is not disabled; any other option is selected by its own attribute.
 - `:required` matches an `input` whose type the `required` attribute
   applies to (every type but `hidden`, `range`, `color`, `submit`,
   `image`, `reset` and `button`) with that attribute, and a `select`
@@ -138,8 +148,9 @@ The rest of HTML's form pseudo-classes (`:read-only`, `:read-write`,
 history yet, so every link is unvisited and `:visited` keeps matching
 nothing, which is also what keeps history from being read through
 styles. The UA sheet's `a { color: blue; }` becomes HTML's
-`:link { color: #0000EE; }` and `:visited { color: #551A8B; }`, so an
-`a` without `href` is no longer blue. `:focus-visible`, `:focus-within`
+`:link { color: #0000EE; }` and `:visited { color: #551A8B; }`, with
+its `:link:active` and `:visited:active` red, so an `a` without
+`href` is no longer blue. `:focus-visible`, `:focus-within`
 and `:target` are recognised and match nothing, as `:hover` and
 `:focus` do now, so that a list holding one keeps its other selectors;
 M26.4 makes the user-action ones match, and `:target` waits for the
@@ -307,15 +318,24 @@ breaking finds, so it is applied by the inline layout:
 **Invalidation (M13.1).** The selector features gain what the new
 selectors read:
 
-- `:lang()` reads `lang` on every ancestor, so a `lang` change
-  restyles the element's subtree, and a change to a
-  `meta http-equiv` element restyles the whole document;
-- the form pseudo-classes read attributes of other elements (a
-  fieldset's `disabled`, a select's other options), so a change to
-  `disabled`, `checked`, `selected`, `required`, `multiple`, `size` or
-  `type`, or a child inserted or removed, restyles the subtree of the
-  nearest `fieldset` or `select` around it, or the element's own;
-- `:link` reads `href`;
+- the attributes the new pseudo-classes read on the element and its
+  ancestors — `lang`, `href`, `disabled`, `checked`, `selected`,
+  `type`, `multiple`, `size`, `required` — count as named by a
+  selector, so a change to one restyles the element's subtree;
+- `:lang()` reads the document's pragma: a change to a `meta`'s
+  `http-equiv` or `content`, or a `meta` inserted or removed (or a
+  node freed, whose kind is no longer known), cascades the document
+  whole;
+- `:disabled` and `:enabled` read which `legend` is a fieldset's
+  first: a child inserted under or removed from a `fieldset` restyles
+  the fieldset's subtree;
+- `:checked` reads a select's other options and a radio button's
+  group: a child inserted or removed in a `select`, or a change to an
+  `option`'s or `optgroup`'s `selected` or `disabled`, restyles the
+  select's subtree; any element inserted or removed, or a change to an
+  `input`'s `checked`, `name`, `type` or `form`, or to any element's
+  `id` (which a `form` attribute names), restyles every radio button
+  in the document;
 - `content: attr(x)` reads `x` on the originating element, so the
   names in `attr()` join the attribute names whose change restyles the
   element.

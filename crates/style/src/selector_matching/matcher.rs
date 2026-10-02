@@ -31,11 +31,22 @@
 //! selector without a flag compares the values of the attributes HTML
 //! lists ASCII case-insensitively, and every other value identically.
 //! Values are compared in place, with nothing allocated.
+//!
+//! `:lang()` reads the language HTML gives an element: the `lang`
+//! attribute of the element or its nearest ancestor that has one; else
+//! the document's pragma-set default language, from the last
+//! `<meta http-equiv="content-language">` in it that sets one; else the
+//! language the protocol gave the document ([`Matcher::with_language`]);
+//! else none, the empty tag. The form pseudo-classes read the state
+//! HTML gives a control from its attributes and those of the elements
+//! around it, as a document parsed in tree order has it: no control has
+//! state of its own yet.
 
 use std::collections::{HashMap, HashSet};
 
 use dom::{Document, NodeId};
 
+use super::language::{extended_filter, is_well_formed_tag, pragma_language};
 use super::{
     AttrOp, CaseFlag, Combinator, PseudoClass, PseudoElement, Selector, SelectorList,
     SimpleSelector,
@@ -78,6 +89,34 @@ pub struct Matcher<'a> {
     /// every element child among the siblings that match S, or `None`
     /// for a child that does not, computed once per parent.
     nth_ranks: HashMap<(NodeId, usize), Vec<Option<u32>>>,
+    /// The language the protocol gave the document, `:lang()`'s last
+    /// resort.
+    protocol_language: Option<String>,
+    /// Where each element's language comes from, by slot index, filled
+    /// along an element's ancestors the first time `:lang()` asks.
+    languages: Vec<Option<LanguageSource>>,
+    /// The language of an element without a `lang` around it, found
+    /// the first time one is asked about.
+    default_language: Option<String>,
+    /// The first element with each ID, for `form` attributes, made the
+    /// first time one is followed.
+    ids: Option<HashMap<&'a str, NodeId>>,
+    /// For each tree a radio button is in, by its root: the checked
+    /// button of each radio button group, by form owner and name.
+    radio_groups: HashMap<NodeId, HashMap<(Option<NodeId>, &'a str), NodeId>>,
+    /// The selected option of each `select` without `multiple` asked
+    /// about.
+    selected_options: HashMap<NodeId, Option<NodeId>>,
+}
+
+/// Where an element's language comes from.
+#[derive(Debug, Clone, Copy)]
+enum LanguageSource {
+    /// The `lang` attribute of this element, the element itself or its
+    /// nearest ancestor with one.
+    Attribute(NodeId),
+    /// None around it: the document's default language.
+    Default,
 }
 
 /// One partial match on the explicit stack: `selector.compounds[k]`
@@ -90,12 +129,25 @@ struct Frame {
 }
 
 impl<'a> Matcher<'a> {
-    /// A matcher over `document`, with empty caches.
+    /// A matcher over `document`, with empty caches, for a document the
+    /// protocol gave no language.
     pub fn new(document: &'a Document) -> Self {
+        Matcher::with_language(document, None)
+    }
+
+    /// A matcher over `document`, which the protocol says is in
+    /// `language` (HTTP's `Content-Language`, when it names one).
+    pub fn with_language(document: &'a Document, language: Option<&str>) -> Self {
         Matcher {
             document,
             positions: Vec::new(),
             nth_ranks: HashMap::new(),
+            protocol_language: language.map(str::to_owned),
+            languages: Vec::new(),
+            default_language: None,
+            ids: None,
+            radio_groups: HashMap::new(),
+            selected_options: HashMap::new(),
         }
     }
 
@@ -344,14 +396,209 @@ impl<'a> Matcher<'a> {
             PseudoClass::Is(list) | PseudoClass::Where(list) => {
                 self.matches_element_list(element, list)
             }
-            // Dynamic pseudo-classes never match until input state exists (M26).
+            // The user-action pseudo-classes never match until input
+            // state exists (M26); `:visited` never does, there being no
+            // history, nor `:target` yet.
             PseudoClass::Hover
             | PseudoClass::Focus
             | PseudoClass::FocusVisible
             | PseudoClass::FocusWithin
             | PseudoClass::Active
             | PseudoClass::Visited
-            | PseudoClass::Link => false,
+            | PseudoClass::Target => false,
+            // HTML §4.16.3: `a` and `area` elements with an `href`.
+            PseudoClass::Link | PseudoClass::AnyLink => {
+                matches!(document.tag(element), Some("a" | "area"))
+                    && document.attr(element, "href").is_some()
+            }
+            PseudoClass::Lang(ranges) => self.matches_lang(element, ranges),
+            PseudoClass::Disabled => actually_disabled(document, element),
+            PseudoClass::Enabled => {
+                can_be_disabled(document, element) && !actually_disabled(document, element)
+            }
+            PseudoClass::Checked => self.checked(element),
+            PseudoClass::Required => required(document, element) == Some(true),
+            PseudoClass::Optional => required(document, element) == Some(false),
+        }
+    }
+
+    /// Whether the element's language matches one of `ranges`
+    /// (selectors-4 §7.2): the empty range matches an element with no
+    /// language, any other a well-formed tag, by extended filtering.
+    fn matches_lang(&mut self, element: NodeId, ranges: &[String]) -> bool {
+        let document = self.document;
+        let tag = match self.language_source(element) {
+            LanguageSource::Attribute(holder) => document.attr(holder, "lang").unwrap_or(""),
+            LanguageSource::Default => self.default_language(),
+        };
+        let well_formed = is_well_formed_tag(tag);
+        ranges.iter().any(|range| {
+            if range.is_empty() {
+                tag.is_empty()
+            } else {
+                well_formed && extended_filter(range, tag)
+            }
+        })
+    }
+
+    /// Where the element's language comes from: the nearest `lang`
+    /// attribute on it or an ancestor, an empty one included, else the
+    /// default. Kept for every element walked, so the elements of a
+    /// document cost one walk between them.
+    fn language_source(&mut self, element: NodeId) -> LanguageSource {
+        let document = self.document;
+        if self.languages.len() < document.slot_count() {
+            self.languages.resize(document.slot_count(), None);
+        }
+        let mut walked = Vec::new();
+        let mut at = Some(element);
+        let source = loop {
+            let Some(node) = at else {
+                break LanguageSource::Default;
+            };
+            if let Some(source) = self.languages[node.index()] {
+                break source;
+            }
+            walked.push(node);
+            if document.attr(node, "lang").is_some() {
+                break LanguageSource::Attribute(node);
+            }
+            at = document.parent(node);
+        };
+        for node in walked {
+            self.languages[node.index()] = Some(source);
+        }
+        source
+    }
+
+    /// The language of an element with no `lang` around it: the
+    /// document's pragma-set default language (HTML §4.2.5.3), from the
+    /// last `<meta http-equiv="content-language">` that sets one; else
+    /// the protocol's; else none.
+    fn default_language(&mut self) -> &str {
+        if self.default_language.is_none() {
+            let document = self.document;
+            let pragma = document
+                .subtree(document.root())
+                .filter(|&node| {
+                    document.tag(node) == Some("meta")
+                        && document
+                            .attr(node, "http-equiv")
+                            .is_some_and(|value| value.eq_ignore_ascii_case("content-language"))
+                })
+                .filter_map(|meta| document.attr(meta, "content").and_then(pragma_language))
+                .last();
+            let language = pragma
+                .map(str::to_owned)
+                .or_else(|| self.protocol_language.clone())
+                .unwrap_or_default();
+            self.default_language = Some(language);
+        }
+        self.default_language.as_deref().unwrap_or_default()
+    }
+
+    /// Whether the element is checked (HTML §4.16.3): a checkbox with a
+    /// `checked` attribute, a radio button that is checked, or an
+    /// option that is selected.
+    fn checked(&mut self, element: NodeId) -> bool {
+        let document = self.document;
+        match document.tag(element) {
+            Some("input") if document.attr(element, "checked").is_some() => {
+                match input_type(document, element) {
+                    "checkbox" => true,
+                    "radio" => self.radio_checked(element),
+                    _ => false,
+                }
+            }
+            Some("option") => self.option_selected(element),
+            _ => false,
+        }
+    }
+
+    /// Whether a radio button with a `checked` attribute is checked:
+    /// whether it is the last with one in its radio button group
+    /// (HTML §4.10.5.1.16), since each checks itself and unchecks the
+    /// rest of the group when it is parsed. One without a name is alone
+    /// in its group.
+    fn radio_checked(&mut self, radio: NodeId) -> bool {
+        let document = self.document;
+        let Some(name) = document.attr(radio, "name").filter(|name| !name.is_empty()) else {
+            return true;
+        };
+        let root = document.ancestors(radio).last().unwrap_or(radio);
+        if !self.radio_groups.contains_key(&root) {
+            let buttons: Vec<(NodeId, &'a str)> = document
+                .subtree(root)
+                .filter(|&node| {
+                    document.tag(node) == Some("input")
+                        && document.attr(node, "checked").is_some()
+                        && input_type(document, node) == "radio"
+                })
+                .filter_map(|node| {
+                    let name = document
+                        .attr(node, "name")
+                        .filter(|name| !name.is_empty())?;
+                    Some((node, name))
+                })
+                .collect();
+            let mut groups = HashMap::new();
+            for (button, name) in buttons {
+                // A later button replaces an earlier one: the last wins.
+                groups.insert((self.form_owner(button), name), button);
+            }
+            self.radio_groups.insert(root, groups);
+        }
+        let owner = self.form_owner(radio);
+        self.radio_groups[&root].get(&(owner, name)) == Some(&radio)
+    }
+
+    /// The element's form owner (HTML §4.10.18.3): for one with a `form`
+    /// attribute, in the document, the first element with that ID if it
+    /// is a `form`, else none; for any other, its nearest `form`
+    /// ancestor.
+    fn form_owner(&mut self, element: NodeId) -> Option<NodeId> {
+        let document = self.document;
+        if let Some(id) = document.attr(element, "form")
+            && crate::invalidation::attached(document, element)
+        {
+            let owner = self.element_with_id(id)?;
+            return (document.tag(owner) == Some("form")).then_some(owner);
+        }
+        document
+            .ancestors(element)
+            .find(|&ancestor| document.tag(ancestor) == Some("form"))
+    }
+
+    /// The first element in tree order whose ID is `id`.
+    fn element_with_id(&mut self, id: &str) -> Option<NodeId> {
+        let document = self.document;
+        let ids = self.ids.get_or_insert_with(|| {
+            let mut ids = HashMap::new();
+            for node in document.subtree(document.root()) {
+                if let Some(id) = document.attr(node, "id").filter(|id| !id.is_empty()) {
+                    ids.entry(id).or_insert(node);
+                }
+            }
+            ids
+        });
+        ids.get(id).copied()
+    }
+
+    /// Whether an option is selected (HTML §4.10.7): in the list of a
+    /// `select` without `multiple`, whether it is the one the
+    /// selectedness setting algorithm leaves selected; elsewhere,
+    /// whether it has a `selected` attribute.
+    fn option_selected(&mut self, option: NodeId) -> bool {
+        let document = self.document;
+        match owner_select(document, option) {
+            Some(select) if document.attr(select, "multiple").is_none() => {
+                *self
+                    .selected_options
+                    .entry(select)
+                    .or_insert_with(|| selected_option(document, select))
+                    == Some(option)
+            }
+            _ => document.attr(option, "selected").is_some(),
         }
     }
 
@@ -384,6 +631,206 @@ impl<'a> Matcher<'a> {
         let position = self.position(element).index as usize;
         self.nth_ranks[&key].get(position).copied().flatten()
     }
+}
+
+/// The elements `:enabled` and `:disabled` apply to (HTML §4.16.3).
+fn can_be_disabled(document: &Document, element: NodeId) -> bool {
+    matches!(
+        document.tag(element),
+        Some("button" | "input" | "select" | "textarea" | "optgroup" | "option" | "fieldset")
+    )
+}
+
+/// Whether the element is actually disabled (HTML §4.16.3): a
+/// `button`, `input`, `select`, `textarea` or `fieldset` with a
+/// `disabled` attribute or in a `fieldset` that disables it
+/// (§4.10.19.5, §4.10.15); an `optgroup` with one; an option that is
+/// disabled.
+fn actually_disabled(document: &Document, element: NodeId) -> bool {
+    match document.tag(element) {
+        Some("button" | "input" | "select" | "textarea" | "fieldset") => {
+            document.attr(element, "disabled").is_some() || disabled_by_fieldset(document, element)
+        }
+        Some("optgroup") => document.attr(element, "disabled").is_some(),
+        Some("option") => option_disabled(document, element),
+        _ => false,
+    }
+}
+
+/// Whether a `fieldset` with a `disabled` attribute around the element
+/// disables it: one it is not inside the first `legend` child of.
+fn disabled_by_fieldset(document: &Document, element: NodeId) -> bool {
+    let mut child = element;
+    for ancestor in document.ancestors(element) {
+        if document.tag(ancestor) == Some("fieldset")
+            && document.attr(ancestor, "disabled").is_some()
+            && !(document.tag(child) == Some("legend")
+                && document
+                    .element_children(ancestor)
+                    .find(|&c| document.tag(c) == Some("legend"))
+                    == Some(child))
+        {
+            return true;
+        }
+        child = ancestor;
+    }
+    false
+}
+
+/// Whether an option is disabled (HTML §4.10.10): it has a `disabled`
+/// attribute, or the nearest of its ancestors that is an `optgroup`,
+/// `select`, `hr`, `datalist` or `option` is an `optgroup` with one.
+fn option_disabled(document: &Document, option: NodeId) -> bool {
+    if document.attr(option, "disabled").is_some() {
+        return true;
+    }
+    for ancestor in document.ancestors(option) {
+        match document.tag(ancestor) {
+            Some("select" | "hr" | "datalist" | "option") => return false,
+            Some("optgroup") => return document.attr(ancestor, "disabled").is_some(),
+            _ => {}
+        }
+    }
+    false
+}
+
+/// The `select` whose list of options holds `option` (HTML §4.10.7):
+/// its nearest `select` ancestor, unless an `hr`, a `datalist` or an
+/// `option` comes before it, or two `optgroup`s do.
+fn owner_select(document: &Document, option: NodeId) -> Option<NodeId> {
+    let mut optgroups = 0;
+    for ancestor in document.ancestors(option) {
+        match document.tag(ancestor) {
+            Some("select") => return Some(ancestor),
+            Some("hr" | "datalist" | "option") => return None,
+            Some("optgroup") => {
+                optgroups += 1;
+                if optgroups == 2 {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// A `select`'s list of options (HTML §4.10.7), in tree order: its
+/// `option` descendants, not looking inside a `select`, `hr`, `option`
+/// or `datalist`, nor an `optgroup` inside another.
+fn list_of_options(document: &Document, select: NodeId) -> Vec<NodeId> {
+    let mut options = Vec::new();
+    let mut node = document.first_child(select);
+    while let Some(at) = node {
+        let tag = document.tag(at);
+        if tag == Some("option") {
+            options.push(at);
+        }
+        let closed = matches!(tag, Some("select" | "hr" | "option" | "datalist"))
+            || (tag == Some("optgroup")
+                && document
+                    .ancestors(at)
+                    .take_while(|&ancestor| ancestor != select)
+                    .any(|ancestor| document.tag(ancestor) == Some("optgroup")));
+        node = match document.first_child(at) {
+            Some(child) if !closed => Some(child),
+            _ => next_within(document, at, select),
+        };
+    }
+    options
+}
+
+/// The node after `node` and its subtree in tree order, within `root`.
+fn next_within(document: &Document, mut node: NodeId, root: NodeId) -> Option<NodeId> {
+    while node != root {
+        if let Some(next) = document.next_sibling(node) {
+            return Some(next);
+        }
+        node = document.parent(node)?;
+    }
+    None
+}
+
+/// The option a `select` without `multiple` leaves selected, by the
+/// selectedness setting algorithm (HTML §4.10.7) over its options'
+/// `selected` attributes: the last with one; with none, and a display
+/// size of 1, the first that is not disabled. Its display size is its
+/// `size`, a non-negative integer, else 1.
+fn selected_option(document: &Document, select: NodeId) -> Option<NodeId> {
+    let options = list_of_options(document, select);
+    if let Some(&last) = options
+        .iter()
+        .rev()
+        .find(|&&option| document.attr(option, "selected").is_some())
+    {
+        return Some(last);
+    }
+    let size = document
+        .attr(select, "size")
+        .and_then(dom::parse_non_negative_integer)
+        .unwrap_or(1);
+    if size != 1 {
+        return None;
+    }
+    options
+        .into_iter()
+        .find(|&option| !option_disabled(document, option))
+}
+
+/// The keywords of an `input` element's `type` (HTML §4.10.5.1).
+const INPUT_TYPES: [&str; 22] = [
+    "hidden",
+    "text",
+    "search",
+    "tel",
+    "url",
+    "email",
+    "password",
+    "date",
+    "month",
+    "week",
+    "time",
+    "datetime-local",
+    "number",
+    "range",
+    "color",
+    "checkbox",
+    "radio",
+    "file",
+    "submit",
+    "image",
+    "reset",
+    "button",
+];
+
+/// An `input` element's type: the keyword its `type` names, ASCII
+/// case-insensitively, or `text`, the missing and the invalid value's.
+fn input_type(document: &Document, input: NodeId) -> &'static str {
+    document
+        .attr(input, "type")
+        .and_then(|value| {
+            INPUT_TYPES
+                .into_iter()
+                .find(|t| t.eq_ignore_ascii_case(value))
+        })
+        .unwrap_or("text")
+}
+
+/// For an element `:required` and `:optional` apply to, whether it is
+/// required (HTML §4.16.3, §4.10.5.3.4): an `input` of a type the
+/// `required` attribute applies to — all but `hidden`, `range`,
+/// `color` and the buttons — or a `select` or `textarea`, with that
+/// attribute. `None` for any other element.
+fn required(document: &Document, element: NodeId) -> Option<bool> {
+    let applies = match document.tag(element) {
+        Some("input") => !matches!(
+            input_type(document, element),
+            "hidden" | "range" | "color" | "submit" | "image" | "reset" | "button"
+        ),
+        Some("select" | "textarea") => true,
+        _ => false,
+    };
+    applies.then(|| document.attr(element, "required").is_some())
 }
 
 /// Whether the pseudo-classes after a pseudo-element hold: no
@@ -964,7 +1411,7 @@ mod tests {
 
     #[test]
     fn dynamic_pseudo_classes_never_match_yet() {
-        let doc = p(vec![e("a").attr("href", "x").into()]);
+        let doc = p(vec![e("a").attr("href", "x").attr("id", "x").into()]);
         for sel in [
             ":hover",
             ":focus",
@@ -972,12 +1419,12 @@ mod tests {
             ":focus-within",
             ":active",
             ":visited",
-            ":link",
+            ":target",
         ] {
             assert_eq!(
                 matched_tags(&doc, sel),
                 Vec::<String>::new(),
-                "{sel} must not match before M26"
+                "{sel} must not match yet"
             );
         }
     }
@@ -1530,5 +1977,285 @@ mod tests {
         assert_eq!(matched_tags(&doc, "[class~=b]"), Vec::<String>::new());
         assert_eq!(matched_tags(&doc, ".c.d.e.f"), vec!["b"]);
         assert_eq!(matched_tags(&doc, "[class~=e]"), vec!["b"]);
+    }
+    // ---- M16: :lang(), links and the form states -----------------------
+
+    /// The `id`s of the elements of `html`, parsed, that `selector`
+    /// matches, in tree order, the protocol saying the document is in
+    /// `language`.
+    fn ids_in(html: &str, selector: &str, language: Option<&str>) -> Vec<String> {
+        let document = Document::from_node(&html::parse_document(html).expect("never fails"));
+        ids_of(&document, selector, language)
+    }
+
+    fn ids(html: &str, selector: &str) -> Vec<String> {
+        ids_in(html, selector, None)
+    }
+
+    /// The `id`s of the elements of `document` that `selector` matches.
+    fn ids_of(document: &Document, selector: &str, language: Option<&str>) -> Vec<String> {
+        let list = parse_selector_list(&css::tokenize(selector)).expect("valid selector");
+        let mut matcher = Matcher::with_language(document, language);
+        elements(document)
+            .into_iter()
+            .filter(|&id| matcher.matches_list(id, &list))
+            .filter_map(|id| document.attr(id, "id").map(str::to_owned))
+            .collect()
+    }
+
+    const NONE: [&str; 0] = [];
+
+    #[test]
+    fn lang_reads_the_nearest_lang_attribute() {
+        let page = "<div id=a lang=de-CH><p id=b>x</p><p id=c lang=fr>y<span id=d>z</span></p>\
+                    <p id=e lang=''>w</p><p id=f lang=en_US>v</p></div><p id=g>u</p>";
+        assert_eq!(ids(page, ":lang(de)"), ["a", "b"]);
+        assert_eq!(ids(page, ":lang(fr)"), ["c", "d"]);
+        assert_eq!(ids(page, ":lang(DE-ch, fr)"), ["a", "b", "c", "d"]);
+        assert_eq!(ids(page, ":lang(\\*-CH)"), ["a", "b"]);
+        assert_eq!(ids(page, ":lang(de-DE)"), NONE);
+        // `*` matches any tag but none; the empty range none only.
+        assert_eq!(ids(page, ":lang('*')"), ["a", "b", "c", "d"]);
+        assert_eq!(ids(page, ":lang('')"), ["e", "g"]);
+        // A tag that is not well-formed matches nothing.
+        assert_eq!(ids(page, "#f:lang(en), #f:lang(en-us), #f:lang('*')"), NONE);
+        // `und` is a tag.
+        assert_eq!(
+            ids("<p id=a lang=und>x</p>", ":lang('*'), :lang(und)"),
+            ["a"]
+        );
+        // A range that is not well-formed matches nothing.
+        assert_eq!(ids(page, ":lang('de-*-CH'), :lang(åå)"), NONE);
+    }
+
+    #[test]
+    fn without_a_lang_the_pragma_then_the_protocol_give_the_language() {
+        let page = "<meta http-equiv=Content-Language content=' fr-CA '>\
+                    <p id=a>x</p><p id=b lang=de>y</p>";
+        assert_eq!(ids_in(page, ":lang(fr)", Some("en")), ["a"]);
+        assert_eq!(ids_in(page, ":lang(en)", Some("en")), NONE);
+        assert_eq!(ids_in(page, ":lang(de)", Some("en")), ["b"]);
+        // The last that sets one; one with a comma or empty sets none.
+        let page = "<meta http-equiv=content-language content=fr>\
+                    <meta http-equiv=CONTENT-LANGUAGE content=it>\
+                    <meta http-equiv=content-language content='en, de'>\
+                    <meta http-equiv=content-language content=''>\
+                    <meta http-equiv=content-language><p id=a>x</p>";
+        assert_eq!(ids_in(page, ":lang(it)", Some("es")), ["a"]);
+        // Nor does another pragma or a name.
+        let page = "<meta name=content-language content=fr>\
+                    <meta http-equiv=refresh content=fr><p id=a>x</p>";
+        assert_eq!(ids_in(page, ":lang(es)", Some("es")), ["a"]);
+        assert_eq!(ids_in(page, ":lang('')", None), ["a"]);
+        assert_eq!(
+            ids_in("<p id=a>x</p>", ":lang(es-MX)", Some("ES-mx")),
+            ["a"]
+        );
+        assert_eq!(ids_in("<p id=a>x</p>", ":lang('')", Some("es")), NONE);
+    }
+
+    #[test]
+    fn one_matcher_answers_lang_for_every_element_alike() {
+        // The sources kept for one element serve the next: asked
+        // innermost first, then outermost, the answers stand.
+        let page = "<div id=a lang=fr><p id=b><span id=c>x</span></p></div><p id=d>y</p>";
+        let document = Document::from_node(&html::parse_document(page).unwrap());
+        let list = parse_selector_list(&css::tokenize(":lang(fr)")).unwrap();
+        let mut matcher = Matcher::with_language(&document, Some("de"));
+        let mut all = elements(&document);
+        all.reverse();
+        let found: Vec<&str> = all
+            .into_iter()
+            .filter(|&id| matcher.matches_list(id, &list))
+            .filter_map(|id| document.attr(id, "id"))
+            .collect();
+        assert_eq!(found, ["c", "b", "a"]);
+    }
+
+    #[test]
+    fn links_are_a_and_area_elements_with_an_href() {
+        let page = "<a id=a href=x>1</a><a id=b>2</a><a id=c href=''>3</a>\
+                    <map><area id=d href=y><area id=e></map>\
+                    <link id=f href=z rel=stylesheet><div id=g href=x></div>";
+        assert_eq!(ids(page, ":link"), ["a", "c", "d"]);
+        assert_eq!(ids(page, ":any-link"), ["a", "c", "d"]);
+        assert_eq!(ids(page, ":visited"), NONE);
+    }
+
+    #[test]
+    fn a_fieldset_disables_what_is_not_in_its_first_legend() {
+        let page = "<fieldset id=f disabled>\
+                      <legend id=l1><input id=a></legend>\
+                      <legend id=l2><input id=b></legend>\
+                      <input id=c><fieldset id=g><button id=d></button></fieldset>\
+                    </fieldset>\
+                    <input id=e disabled><textarea id=t></textarea>\
+                    <select id=s><option id=o>1</option></select><div id=x disabled></div>";
+        assert_eq!(ids(page, ":disabled"), ["f", "b", "c", "g", "d", "e"]);
+        assert_eq!(ids(page, ":enabled"), ["a", "t", "s", "o"]);
+        // A disabled fieldset inside an enabled one's first legend.
+        let page = "<fieldset id=f><legend id=l><fieldset id=g disabled>\
+                    <legend><input id=a></legend><input id=b></fieldset></legend></fieldset>";
+        assert_eq!(ids(page, ":disabled"), ["g", "b"]);
+    }
+
+    #[test]
+    fn an_option_is_disabled_by_itself_or_its_optgroup() {
+        let page = "<select id=s><optgroup id=g disabled><option id=a>1</option></optgroup>\
+                    <optgroup id=h><option id=b disabled>2</option><option id=c>3</option>\
+                    </optgroup></select>";
+        assert_eq!(ids(page, ":disabled"), ["g", "a", "b"]);
+        assert_eq!(ids(page, "option:enabled"), ["c"]);
+        // The nearest of optgroup, select, hr, datalist and option
+        // decides; built by hand, as the parser would not nest them so.
+        let doc = p(vec![
+            e("optgroup")
+                .attr("disabled", "")
+                .push(e("select").push(e("option").attr("id", "a")))
+                .push(e("div").push(e("option").attr("id", "b")))
+                .push(e("hr").push(e("option").attr("id", "c")))
+                .into(),
+        ]);
+        let document = Document::from_node(&doc);
+        assert_eq!(ids_of(&document, "option:disabled", None), ["b"]);
+    }
+
+    #[test]
+    fn checkboxes_and_the_last_checked_radio_of_each_group_are_checked() {
+        let page = "<form id=f1>\
+                      <input id=a type=checkbox checked><input id=b type=CheckBox>\
+                      <input id=c type=radio name=r checked><input id=d type=RADIO name=r checked>\
+                      <input id=e type=radio name=R checked>\
+                      <input id=g type=radio checked><input id=h type=radio name='' checked>\
+                      <input id=n type=radio name=r>\
+                    </form>\
+                    <form id=f2><input id=i type=radio name=r checked></form>\
+                    <input id=j type=radio name=r checked form=f1>\
+                    <input id=k type=radio name=r checked><input id=l type=radio name=r checked form=nope>\
+                    <input id=m type=text checked>";
+        assert_eq!(ids(page, ":checked"), ["a", "e", "g", "h", "i", "j", "l"]);
+        // A `form` naming an element that is not a form: no form owner.
+        let page = "<div id=f1></div><form id=f2><input id=a type=radio name=r checked form=f1>\
+                    <input id=b type=radio name=r checked></form>\
+                    <input id=c type=radio name=r checked>";
+        assert_eq!(ids(page, ":checked"), ["b", "c"]);
+        // Only the first element with an ID counts.
+        let page = "<div id=f></div><form id=f><input id=a type=radio name=r checked></form>\
+                    <input id=b type=radio name=r checked form=f>";
+        assert_eq!(ids(page, ":checked"), ["a", "b"]);
+    }
+
+    #[test]
+    fn radio_groups_are_per_tree() {
+        // A detached tree's buttons are a group of their own, and a
+        // `form` attribute is not followed out of it: `b` is in the
+        // detached form with `c`, which comes after it.
+        let mut document = Document::from_node(
+            &html::parse_document("<form id=f><input id=a type=radio name=r checked></form>")
+                .unwrap(),
+        );
+        let loose = document.create_element("form").unwrap();
+        for id in ["b", "c"] {
+            let input = document.create_element("input").unwrap();
+            for (name, value) in [
+                ("id", id),
+                ("type", "radio"),
+                ("name", "r"),
+                ("checked", ""),
+            ] {
+                document.set_attribute(input, name, value).unwrap();
+            }
+            document.append_child(loose, input).unwrap();
+        }
+        let b = document.first_child(loose).unwrap();
+        document.set_attribute(b, "form", "f").unwrap();
+        let list = parse_selector_list(&css::tokenize(":checked")).unwrap();
+        let mut matcher = Matcher::new(&document);
+        let checked: Vec<&str> = document
+            .subtree(document.root())
+            .chain(document.subtree(loose))
+            .filter(|&id| matcher.matches_list(id, &list))
+            .filter_map(|id| document.attr(id, "id"))
+            .collect();
+        assert_eq!(checked, ["a", "c"]);
+    }
+
+    #[test]
+    fn a_select_without_multiple_selects_one_option() {
+        let options =
+            |select: &str, options: &str| ids(&format!("{select}{options}</select>"), ":checked");
+        let three = "<option id=a selected>1</option><option id=b selected>2</option>\
+                     <option id=c>3</option>";
+        assert_eq!(options("<select>", three), ["b"]);
+        assert_eq!(options("<select multiple>", three), ["a", "b"]);
+        // With none selected, the first not disabled, if the display
+        // size is 1.
+        let none = "<option id=a disabled>1</option>\
+                    <optgroup disabled><option id=b>2</option></optgroup>\
+                    <option id=c>3</option><option id=d>4</option>";
+        assert_eq!(options("<select>", none), ["c"]);
+        assert_eq!(options("<select size=' +1x'>", none), ["c"]);
+        assert_eq!(options("<select size=junk>", none), ["c"]);
+        assert_eq!(options("<select size=2>", none), NONE);
+        assert_eq!(options("<select size=0>", none), NONE);
+        assert_eq!(options("<select multiple>", none), NONE);
+        // Outside a select, by its own attribute.
+        let page = "<datalist><option id=a selected>1</option><option id=b>2</option></datalist>";
+        assert_eq!(ids(page, ":checked"), ["a"]);
+        // A select's options end where it does: one after it takes
+        // nothing from it.
+        let page = "<select><option id=a selected>1</option></select>\
+                    <p><option id=b selected>2</option></p>";
+        assert_eq!(ids(page, ":checked"), ["a", "b"]);
+    }
+
+    #[test]
+    fn a_selects_list_of_options_is_htmls() {
+        // Built by hand: an option in a div counts; one under two
+        // optgroups, or in a datalist, an option or an inner select, is
+        // not the outer select's, and is selected by its own attribute.
+        let doc =
+            p(vec![
+                e("select")
+                    .push(e("div").push(e("option").attr("id", "in-div")))
+                    .push(e("optgroup").push(
+                        e("optgroup").push(e("option").attr("id", "deep").attr("selected", "")),
+                    ))
+                    .push(e("datalist").push(e("option").attr("id", "listed")))
+                    .push(
+                        e("option")
+                            .attr("id", "outer")
+                            .push(e("option").attr("id", "inner").attr("selected", "")),
+                    )
+                    .push(e("select").push(e("option").attr("id", "nested")))
+                    .into(),
+            ]);
+        let document = Document::from_node(&doc);
+        assert_eq!(
+            ids_of(&document, ":checked", None),
+            ["in-div", "deep", "inner", "nested"]
+        );
+        // The outer select's list: in-div and outer, in that order.
+        let doc = p(vec![
+            e("select")
+                .push(e("div").push(e("option").attr("id", "in-div").attr("disabled", "")))
+                .push(e("optgroup").push(e("optgroup").push(e("option").attr("id", "deep"))))
+                .push(e("option").attr("id", "outer"))
+                .into(),
+        ]);
+        let document = Document::from_node(&doc);
+        assert_eq!(ids_of(&document, ":checked", None), ["outer"]);
+    }
+
+    #[test]
+    fn required_and_optional_follow_the_type() {
+        let page = "<input id=a required><input id=b><input id=c type=hidden required>\
+                    <input id=d type=RANGE required><input id=e type=checkbox required>\
+                    <input id=f type=submit><input id=g type=color><input id=h type=image>\
+                    <input id=i type=reset><input id=j type=button><input id=k type=bogus>\
+                    <select id=l required></select><textarea id=m></textarea>\
+                    <button id=n required></button><div id=o required></div>";
+        assert_eq!(ids(page, ":required"), ["a", "e", "l"]);
+        assert_eq!(ids(page, ":optional"), ["b", "k", "m"]);
     }
 }

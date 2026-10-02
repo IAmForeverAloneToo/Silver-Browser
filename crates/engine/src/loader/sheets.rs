@@ -21,6 +21,9 @@ pub(crate) struct Page {
     /// The encoding the document is in when the engine cannot decode
     /// it yet, and decoded it as UTF-8 instead.
     undecodable: Option<Encoding>,
+    /// The language the response's `Content-Language` gave the
+    /// document, when it named one (M16).
+    language: Option<String>,
     /// The elements that may own a sheet, `<link>` and `<style>`, in
     /// tree order.
     owners: Vec<Owner>,
@@ -121,6 +124,7 @@ impl Page {
                 address_space: AddressSpace::Public,
             },
             undecodable: None,
+            language: None,
             owners: Vec::new(),
         }
     }
@@ -143,8 +147,20 @@ impl Page {
                 address_space,
             },
             undecodable,
+            language: None,
             owners: Vec::new(),
         }
+    }
+
+    /// The page, its document in `language` by its response.
+    pub(crate) fn with_language(mut self, language: Option<String>) -> Page {
+        self.language = language;
+        self
+    }
+
+    /// The language the response gave the document, if it named one.
+    pub(crate) fn language(&self) -> Option<&str> {
+        self.language.as_deref()
     }
 
     pub(crate) fn id(&self) -> PageId {

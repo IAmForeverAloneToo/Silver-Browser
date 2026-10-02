@@ -877,29 +877,6 @@ fn order_table_children(parts: Vec<LayoutBox>) -> Vec<LayoutBox> {
         .collect()
 }
 
-/// A `colspan`, `rowspan` or `span` attribute's value by the HTML
-/// standard's rules for parsing non-negative integers: leading ASCII
-/// white space and a `+` are skipped, the digits that follow are the
-/// number and whatever follows them is ignored; no digit, or a
-/// negative number, is an error (`None`). A number too large for a
-/// `u64` saturates, which every clamp below treats alike.
-fn html_non_negative_integer(value: &str) -> Option<u64> {
-    let s = value.trim_start_matches([' ', '\t', '\n', '\r', '\x0c']);
-    let (negative, s) = match s.strip_prefix('-') {
-        Some(rest) => (true, rest),
-        None => (false, s.strip_prefix('+').unwrap_or(s)),
-    };
-    let digits = s.bytes().take_while(u8::is_ascii_digit).count();
-    if digits == 0 {
-        return None;
-    }
-    let value = s[..digits].parse::<u64>().unwrap_or(u64::MAX);
-    if negative && value != 0 {
-        return None;
-    }
-    Some(value)
-}
-
 /// A `td` or `th` element's `colspan` and `rowspan` (HTML's processing
 /// model for tables): `colspan` is 1 when absent, unparsable or zero
 /// and at most 1000; `rowspan` is 1 when absent or unparsable, zero
@@ -911,13 +888,13 @@ fn cell_spans(document: &Document, idx: NodeId) -> (u32, u32) {
     }
     let colspan = document
         .attr(idx, "colspan")
-        .and_then(html_non_negative_integer)
+        .and_then(dom::parse_non_negative_integer)
         .filter(|v| *v != 0)
         .unwrap_or(1)
         .min(1000);
     let rowspan = document
         .attr(idx, "rowspan")
-        .and_then(html_non_negative_integer)
+        .and_then(dom::parse_non_negative_integer)
         .unwrap_or(1)
         .min(65534);
     (colspan as u32, rowspan as u32)
@@ -931,7 +908,7 @@ fn column_span(document: &Document, idx: NodeId) -> u32 {
     }
     document
         .attr(idx, "span")
-        .and_then(html_non_negative_integer)
+        .and_then(dom::parse_non_negative_integer)
         .filter(|v| *v != 0)
         .unwrap_or(1)
         .min(1000) as u32
@@ -2017,9 +1994,5 @@ mod tests {
             let col = &tree.body().children[0].children[0];
             assert_eq!(col.kind, BoxKind::Column { span: expected }, "{attr}");
         }
-        assert_eq!(html_non_negative_integer("  12abc"), Some(12));
-        assert_eq!(html_non_negative_integer("abc"), None);
-        assert_eq!(html_non_negative_integer("-3"), None);
-        assert_eq!(html_non_negative_integer("+"), None);
     }
 }

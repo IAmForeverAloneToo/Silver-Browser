@@ -70,9 +70,15 @@ pre { display: block; margin: 16px 0; font-family: monospace; white-space: pre; 
 b, strong { font-weight: bold; }
 i, em { font-style: italic; }
 
-a { color: blue; }
+/* Links (HTML §15.3.4, M16): only an `a` or `area` with an `href` is
+ * one. Every link is unvisited, there being no history, and none is
+ * active until input events land (M26); `text-decoration` and `cursor`
+ * are not properties here yet. */
+:link { color: #0000EE; }
+:visited { color: #551A8B; }
+:link:active, :visited:active { color: #FF0000; }
 
-/* The rest of the HTML standard's block-level elements (HTML §15.3.1,
+/* The rest of the HTML standard's block-level elements (HTML §15.3.3,
  * "Flow content"), which were missing: without this rule a <div> is an
  * inline box, so its width, height, margins and backgrounds do not
  * apply and every <div><p> pair takes the block-in-inline path. `li`
@@ -87,7 +93,7 @@ dl { margin: 16px 0; }
 dd { margin-left: 40px; }
 hr { margin: 8px 0; border-width: 1px; border-style: solid; }
 
-/* Tables (HTML §15.3.9, M12): CSS2 §17.2's display values for the
+/* Tables (HTML §15.3.8, M12): CSS2 §17.2's display values for the
  * table elements, and the standard's own defaults. The `vertical-align`
  * pair is why an HTML cell is centred vertically by default while a
  * CSS table cell sits on the baseline: a row group is `middle`, and

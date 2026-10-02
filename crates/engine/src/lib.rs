@@ -934,7 +934,8 @@ impl Engine {
             loader::Outcome::Document(parsed) => {
                 let address_space = response.address_space.unwrap_or(net::AddressSpace::Public);
                 let mut incoming =
-                    Page::fetched(page, at, parsed.encoding, parsed.undecodable, address_space);
+                    Page::fetched(page, at, parsed.encoding, parsed.undecodable, address_space)
+                        .with_language(parsed.language);
                 incoming.begin(&parsed.document, &mut self.network);
                 self.navigation = Some(Navigation {
                     url,
@@ -1224,6 +1225,7 @@ impl Engine {
             viewport_width: viewport.0 as f32,
             viewport_height: viewport.1 as f32,
             fonts: Some(&fonts),
+            language: self.shown.page.language(),
         };
         self.shown
             .stylesheets
@@ -1287,6 +1289,7 @@ impl Engine {
                 viewport_width: self.viewport.0 as f32,
                 viewport_height: self.viewport.1 as f32,
                 fonts: Some(&fonts),
+                language: self.shown.page.language(),
             };
             let cached = self.shown.styled.as_mut().expect("not stale");
             let restyle = self.shown.stylesheets.restyle(
@@ -3641,6 +3644,25 @@ mod tests {
         <div style=\"overflow: hidden\"><span class=b></span><p>beside</p><p>below</p></div>\
         <ul><li>x</li><li>y</li></ul>";
 
+    /// A page of the selectors that read past an element (M16): the
+    /// language from `lang` and the pragma, links, and the form states,
+    /// over a fieldset with a legend, a select and radio groups.
+    const FORMS_PAGE: &str = "<style>\
+          body { margin: 4px; font-size: 10px }\
+          :lang(fr) { color: #f00 } :lang('') { padding: 1px } :lang(\\*-CH) { margin-left: 3px }\
+          :checked { display: block; width: 7px; height: 3px; background-color: #0a0 }\
+          :disabled { color: #0f0 } :enabled + span { padding: 2px }\
+          :link { padding: 1px } :required { border: 1px solid #f00 } :optional ~ b { display: block }\
+          input, select, option, optgroup, fieldset, legend, form { display: block; min-height: 2px }\
+        </style>\
+        <meta http-equiv=content-language content=fr>\
+        <form id=x><fieldset disabled><legend><input type=radio name=r checked></legend>\
+        <input type=checkbox checked><span>s</span></fieldset>\
+        <select><option>1</option><optgroup disabled><option selected>2</option></optgroup>\
+        <option>3</option></select><input type=radio name=r checked><b>b</b></form>\
+        <div lang=de-CH><p>x <a href=#>link</a></p><input type=radio name=r form=x checked required></div>\
+        <form id=y><input type=radio name=r><span>t</span></form>";
+
     #[test]
     fn after_random_mutations_the_engine_shows_what_a_fresh_engine_shows() {
         // Seeded runs of random mutations, each compared after every
@@ -3649,7 +3671,11 @@ mod tests {
         // and lays out again, and what it keeps, must come to what a
         // full pass computes.
         let mut fresh = test_engine();
-        for (name, page) in [("first", DIFFERENTIAL_PAGE), ("nested", NESTED_PAGE)] {
+        for (name, page) in [
+            ("first", DIFFERENTIAL_PAGE),
+            ("nested", NESTED_PAGE),
+            ("forms", FORMS_PAGE),
+        ] {
             let changed: usize = (1..=8)
                 .map(|seed| mutate_and_compare(&mut fresh, name, page, seed))
                 .sum();

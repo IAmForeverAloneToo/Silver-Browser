@@ -26,6 +26,7 @@
 use crate::ParseError;
 use css::Token;
 
+use super::language::is_well_formed_range;
 use super::{
     AttrOp, CaseFlag, Combinator, CompoundSelector, PseudoClass, PseudoElement,
     PseudoElementSelector, Selector, SelectorList, SimpleSelector, Specificity,
@@ -533,6 +534,13 @@ fn parse_pseudo(
                 "active" => PseudoClass::Active,
                 "visited" => PseudoClass::Visited,
                 "link" => PseudoClass::Link,
+                "any-link" => PseudoClass::AnyLink,
+                "target" => PseudoClass::Target,
+                "disabled" => PseudoClass::Disabled,
+                "enabled" => PseudoClass::Enabled,
+                "checked" => PseudoClass::Checked,
+                "required" => PseudoClass::Required,
+                "optional" => PseudoClass::Optional,
                 _ => return None,
             };
             c.advance();
@@ -564,6 +572,10 @@ fn parse_pseudo(
                         *spec += max_specificity(list);
                     }
                     PseudoClass::NthChild { a, b, of }
+                }
+                "lang" => {
+                    *spec += Specificity(0, 1, 0);
+                    PseudoClass::Lang(parse_language_ranges(c)?)
                 }
                 "nth-last-child" => {
                     *spec += Specificity(0, 1, 0);
@@ -621,6 +633,35 @@ fn legacy_pseudo_element(name: &str) -> Option<PseudoElement> {
         "first-letter" => Some(PseudoElement::FirstLetter),
         "first-line" => Some(PseudoElement::FirstLine),
         _ => None,
+    }
+}
+
+/// Parses `:lang()`'s argument at the cursor (just after the function
+/// token), stopping before the closing `)`: one or more language
+/// ranges, each an identifier or a string, separated by commas
+/// (selectors-4 §7.2). The ranges kept are those that can match
+/// anything, ASCII lowercased; see [`PseudoClass::Lang`].
+fn parse_language_ranges(c: &mut Cursor) -> Option<Vec<String>> {
+    let mut ranges = Vec::new();
+    loop {
+        c.skip_ws();
+        let range = match c.peek() {
+            Some(Token::Ident(range))
+            | Some(Token::String {
+                value: range,
+                bad: false,
+            }) => range,
+            _ => return None,
+        };
+        c.advance();
+        if is_well_formed_range(range) {
+            ranges.push(range.to_ascii_lowercase());
+        }
+        c.skip_ws();
+        if !matches!(c.peek(), Some(Token::Comma)) {
+            return Some(ranges);
+        }
+        c.advance();
     }
 }
 
@@ -1059,6 +1100,63 @@ mod tests {
                 vec![SimpleSelector::PseudoClass(expected)],
                 "mismatch for {src}"
             );
+        }
+    }
+
+    #[test]
+    fn parses_the_m16_pseudo_classes() {
+        for (src, expected) in [
+            (":any-link", PseudoClass::AnyLink),
+            (":target", PseudoClass::Target),
+            (":disabled", PseudoClass::Disabled),
+            (":Enabled", PseudoClass::Enabled),
+            (":CHECKED", PseudoClass::Checked),
+            (":required", PseudoClass::Required),
+            (":optional", PseudoClass::Optional),
+            (":focus-visible", PseudoClass::FocusVisible),
+            (":focus-within", PseudoClass::FocusWithin),
+        ] {
+            assert_eq!(
+                ok(src).0[0].compounds[0].simple,
+                vec![SimpleSelector::PseudoClass(expected)],
+                "{src}"
+            );
+            assert_eq!(spec(src), Specificity(0, 1, 0), "{src}");
+        }
+        err(":any-link()");
+        err(":checked(x)");
+    }
+
+    #[test]
+    fn lang_takes_identifiers_and_strings_and_keeps_the_well_formed() {
+        let ranges = |sel: &str| match &ok(sel).0[0].compounds[0].simple[0] {
+            SimpleSelector::PseudoClass(PseudoClass::Lang(ranges)) => ranges.clone(),
+            other => panic!("expected :lang, got {other:?}"),
+        };
+        assert_eq!(ranges(":lang(en)"), ["en"]);
+        assert_eq!(
+            ranges(":LANG( EN-us ,'fr', \\*-CH,\"*-Latn\" , '' )"),
+            ["en-us", "fr", "*-ch", "*-latn", ""]
+        );
+        // Ranges that are not well-formed match nothing, and are left out.
+        assert_eq!(ranges(":lang('de-*-DE', de)"), ["de"]);
+        assert!(ranges(":lang(åå)").is_empty());
+        assert!(ranges(":lang('en_US')").is_empty());
+        assert_eq!(spec(":lang(en, fr)"), Specificity(0, 1, 0));
+        for bad in [
+            ":lang()",
+            ":lang( )",
+            ":lang(en,)",
+            ":lang(,en)",
+            ":lang(en fr)",
+            ":lang(*)",
+            ":lang(1)",
+            ":lang(en",
+            ":lang(url(x))",
+            ":lang(f(x))",
+            ":lang",
+        ] {
+            err(bad);
         }
     }
 

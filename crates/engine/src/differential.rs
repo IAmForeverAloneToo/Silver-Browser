@@ -19,17 +19,21 @@ use dom::{Document, NodeId};
 use crate::Engine;
 
 /// The tags a [`Mutator`] creates elements with: blocks, inlines, the
-/// table parts and `style`, whose text is a stylesheet.
-const TAGS: [&str; 12] = [
-    "div", "p", "span", "b", "ul", "li", "table", "tr", "td", "style", "a", "section",
+/// table parts, `style`, whose text is a stylesheet, the form elements
+/// the form pseudo-classes read, and `meta`, whose pragma `:lang()`
+/// reads.
+const TAGS: [&str; 20] = [
+    "div", "p", "span", "b", "ul", "li", "table", "tr", "td", "style", "a", "section", "input",
+    "select", "option", "optgroup", "fieldset", "legend", "form", "meta",
 ];
 
 /// The attributes a [`Mutator`] sets and removes, those selectors and
 /// the cascade read and those table layout reads, each with the values
 /// it is given: class names and ids a page's selectors can name, span
-/// counts, directions, and inline styles that reach every kind of box.
-/// `class` and `style`, the ones pages change most, come up most.
-const ATTRIBUTES: [(&str, &[&str]); 10] = [
+/// counts, directions, inline styles that reach every kind of box, and
+/// what `:lang()`, `:link` and the form pseudo-classes read. `class`
+/// and `style`, the ones pages change most, come up most.
+const ATTRIBUTES: [(&str, &[&str]); 23] = [
     ("class", CLASSES),
     ("class", CLASSES),
     ("style", STYLES),
@@ -40,6 +44,19 @@ const ATTRIBUTES: [(&str, &[&str]); 10] = [
     ("rowspan", &["2", "0"]),
     ("span", &["3"]),
     ("dir", &["rtl", "ltr"]),
+    ("lang", &["fr", "de-CH", "", "en_US"]),
+    ("href", &["#", ""]),
+    ("type", &["radio", "checkbox", "text", "hidden"]),
+    ("name", &["r", ""]),
+    ("form", &["x", "y"]),
+    ("checked", &[""]),
+    ("selected", &[""]),
+    ("disabled", &[""]),
+    ("required", &[""]),
+    ("multiple", &[""]),
+    ("size", &["1", "2"]),
+    ("http-equiv", &["content-language"]),
+    ("content", &["fr", "de, fr", ""]),
 ];
 
 const CLASSES: &[&str] = &["a", "b", "c", "a b", "c a", ""];
@@ -65,7 +82,7 @@ const STYLES: &[&str] = &[
 
 /// The data a [`Mutator`] gives text nodes: empty, white space, words,
 /// right-to-left letters, and stylesheets for a `style` element.
-const TEXTS: [&str; 11] = [
+const TEXTS: [&str; 13] = [
     "",
     " ",
     "x",
@@ -77,6 +94,8 @@ const TEXTS: [&str; 11] = [
     "div { padding: 3px } .b { display: none }",
     "td { border: 1px solid #000 } .c { position: relative; left: 5px }",
     "li:first-child { font-size: 30px } span + b { display: block }",
+    ":lang(fr) { color: #f00 } :lang('') { padding: 2px } :link { margin: 1px }",
+    ":checked { display: block; width: 7px } :disabled + span { display: none }",
 ];
 
 /// Turns bytes into mutations of a document: each step reads an

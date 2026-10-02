@@ -135,7 +135,8 @@ pub trait FontMeasure {
     fn zero_advance(&self, font_size_px: f32) -> f32;
 }
 
-/// What the cascade resolves relative units against (M10.1).
+/// What the cascade resolves relative units against (M10.1), and what
+/// it knows of the document from outside it (M16).
 #[derive(Clone, Copy, Default)]
 pub struct CascadeContext<'a> {
     /// The viewport's size in CSS pixels, for `vw`, `vh`, `vmin` and
@@ -144,6 +145,10 @@ pub struct CascadeContext<'a> {
     pub viewport_height: f32,
     /// The font measures for `ex` and `ch`, or `None` for the fallbacks.
     pub fonts: Option<&'a dyn FontMeasure>,
+    /// The language the protocol gave the document (HTTP's
+    /// `Content-Language`, when it names one), `:lang()`'s last resort
+    /// for an element no `lang` attribute or `meta` pragma gives one.
+    pub language: Option<&'a str>,
 }
 
 /// Resolves the computed style of every element under `document`'s
@@ -391,7 +396,7 @@ impl<'a> Cascader<'a> {
     ) -> Self {
         Cascader {
             document,
-            matcher: Matcher::new(document),
+            matcher: Matcher::with_language(document, context.language),
             ua,
             author,
             context,
@@ -1825,6 +1830,7 @@ mod tests {
             viewport_width: 800.0,
             viewport_height: 600.0,
             fonts: None,
+            language: None,
         };
         let viewport_used = Cell::new(false);
         let resolution = Resolution {
@@ -2504,6 +2510,7 @@ mod tests {
             viewport_width: 800.0,
             viewport_height: 600.0,
             fonts: Some(&StubFont),
+            language: None,
         };
         let sheets = [sheet(
             "html { font-size: 20px }
@@ -2728,6 +2735,18 @@ mod tests {
         let sheets = [sheet(":not() { color: red; } p { color: blue; }")];
         let s = style_of("<p>x</p>", &sheets, "p");
         assert_eq!(s.color, Color::rgb8(0, 0, 255));
+    }
+
+    #[test]
+    fn the_ua_sheet_colours_links_and_only_links() {
+        // HTML's `:link` colour; an `a` without an `href` is no link.
+        let html = "<p><a id=x href=y>link</a><a id=z>anchor</a><area id=w href=v></p>";
+        assert_eq!(style_of(html, &[], "#x").color, Color::rgb8(0, 0, 0xEE));
+        assert_eq!(
+            style_of(html, &[], "#z").color,
+            style_of(html, &[], "p").color
+        );
+        assert_eq!(style_of(html, &[], "#w").color, Color::rgb8(0, 0, 0xEE));
     }
 
     #[test]

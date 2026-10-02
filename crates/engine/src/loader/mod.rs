@@ -220,6 +220,8 @@ pub(crate) struct Parsed {
     /// decode that one yet (a legacy CJK encoding): its bytes were
     /// decoded as UTF-8 instead.
     pub(crate) undecodable: Option<Encoding>,
+    /// The language the response's `Content-Language` names, if one.
+    pub(crate) language: Option<String>,
 }
 
 /// What a navigation's response becomes (docs/design/navigation.md,
@@ -272,6 +274,7 @@ pub(crate) fn outcome(response: &Response) -> Outcome {
             document: Document::from_node(&decoded.document),
             encoding: decoded.encoding,
             undecodable: decoded.undecodable,
+            language: content_language(response),
         })
     } else if computed.is_xml()
         || computed.is_javascript()
@@ -286,12 +289,24 @@ pub(crate) fn outcome(response: &Response) -> Outcome {
             document: crate::pages::text(&text),
             encoding: decoded_with,
             undecodable: (!encoding.can_decode()).then_some(encoding),
+            language: content_language(response),
         })
     } else if computed.is_image() || computed.is_audio_or_video() {
         Outcome::Unshowable(essence.to_owned())
     } else {
         Outcome::Download(essence.to_owned())
     }
+}
+
+/// The language the response's `Content-Language` gives its document,
+/// HTML's language "from a higher-level protocol": the one language tag
+/// it names; none when it names none, or more than one, which HTML
+/// takes to leave the language unknown.
+pub(crate) fn content_language(response: &Response) -> Option<String> {
+    let values = response.headers.get_decode_split(b"Content-Language")?;
+    let mut tags = values.into_iter().filter(|value| !value.is_empty());
+    let tag = tags.next()?;
+    tags.next().is_none().then_some(tag)
 }
 
 /// The response's computed MIME type (MIME Sniffing §7).

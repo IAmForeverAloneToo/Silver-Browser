@@ -53,6 +53,7 @@ fuzz_target!(|data: &[u8]| {
             viewport_width: width,
             viewport_height: 64.0,
             fonts: None,
+            language: None,
         };
         let styles = style::cascade_document(&doc, &sheets, &context);
         let boxes = layout::build_box_tree(&doc, &styles);
