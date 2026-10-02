@@ -674,7 +674,7 @@ lays its element out again, and every pass copies every fragment,
 since fragments hold copies of styles and absolute coordinates (M35.9);
 text shaping's cost (M35.8); a scroll as a shifted frame (M19);
 parallel layout (M35.3); rule hashing and style sharing (M35.2);
-parsing into the arena as bytes arrive (M14.6); scripting, the
+parsing into the arena as bytes arrive (M24.8); scripting, the
 collector that frees detached nodes, and mutation observers (M24,
 M25); input events (M26). 593 tests workspace-wide. Still stub: `net`.
 Phase A is done. Next milestone: `net` v1, URLs and HTTP/1.1 (M14).

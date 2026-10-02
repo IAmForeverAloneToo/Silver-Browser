@@ -571,7 +571,7 @@ since that's the concrete, testable exit criterion.
        baseline (with M10's inline-block). Done 2026-10-01 with M10.4:
        an inline-block's baseline is its last line box's, or its bottom
        margin edge when it has none or clips (CSS2 §10.8.1); images are
-       M14's. Other `vertical-align` values are not read.
+       M23's. Other `vertical-align` values are not read.
 - [x] M7.8 Acceptance: multi-paragraph text at a narrow viewport wraps
        onto more lines than the same content at a wide one, verified at
        the full `engine` pipeline level
@@ -1131,6 +1131,11 @@ Per css-grid-1 (level 2 subgrid included):
        this blocks the obvious foot-gun from day one).
 - [ ] M24.7 Acceptance: `console.log("hello")`, `document.title = "x"`
        from an inline script; a script-error page state.
+- [ ] M24.8 Streamed parsing (from M14.6, see `docs/design/net.md`):
+       the tokenizer as HTML §13.2's state machine, resumable at any
+       byte; the tree builder writing into the `dom::Document` as bytes
+       arrive, with frames drawn as the document grows; the input
+       stream's insertion point and the parser paused by scripts.
 
 ---
 
@@ -1188,6 +1193,8 @@ Per css-grid-1 (level 2 subgrid included):
        `SameSite=Lax|Strict|None` (default Lax), `Secure`, jar per-origin
        in-memory (persistence in M28).
 - [ ] M27.5 Mixed content: block active http subresources on https pages.
+       (Stylesheets are blocked since M14, `docs/design/net.md`; this
+       item covers the rest.)
 - [ ] M27.6 `XMLHttpRequest` (legacy, minimal but correct).
 - [ ] M27.7 Security tests: an adversarial test page attempting
        cross-origin reads must fail in every documented vector (this test
@@ -1273,7 +1280,10 @@ Per css-grid-1 (level 2 subgrid included):
 - [ ] M33.3 `Referrer-Policy`, HSTS (max-age/includeSubDomains, preload
        list shipped read-only), `Upgrade-Insecure-Requests`.
 - [ ] M33.4 Private Network Access: block public→local requests
-       (pre-flight posture v1: block outright).
+       (pre-flight posture v1: block outright). Begun at M14 (D19):
+       public→local and local→loopback requests are refused outright
+       from then on; this item adds Local Network Access's permission
+       prompt.
 - [ ] M33.5 Memory-safety audit pass: `unsafe` inventory across the
        workspace (target: unsafe exists only in FFI crates, each block
        has a written safety argument — policy lives in architecture.md).
@@ -1370,7 +1380,9 @@ process seams.
 - [ ] M37.2 Downloads: download manager, progress, open-folder,
        `Content-Disposition` handling, safe default paths.
 - [ ] M37.3 Settings: startup page, search-engine selection, JS/CSP
-       toggles (no-scripts mode), dark mode, engine feature flags.
+       toggles (no-scripts mode), dark mode, engine feature flags,
+       languages (`Accept-Language`, fixed at `en-US,en;q=0.9` since
+       M14).
 - [ ] M37.4 Error/network pages polish; `about:` pages (`about:silver`
        = engine demo gallery — the M1 demo document graduates here).
 - [ ] M37.5 Profile system: multi-profile v1 (per-profile cookie/storage
@@ -1408,7 +1420,10 @@ gold-plate unstarted work.
 - [ ] M40 WebAudio, Media elements (`<video>`: decode + basic controls;
        media keys; DRM explicitly never (broken by design)).
 - [ ] M41 WebGL1/2 (on wgpu), WebGPU (gate: M19.3 maturity).
-- [ ] M42 Full bidi + ICU4X integration (writing modes, vertical text).
+- [ ] M42 Full bidi + ICU4X integration (writing modes, vertical text);
+       the Encoding Standard's legacy CJK encodings (GBK/gb18030, Big5,
+       EUC-JP, ISO-2022-JP, Shift_JIS, EUC-KR), sooner if a T1 page
+       needs one (R1; `docs/design/net.md`).
 - [ ] M43 WebRTC (gate: T4).
 - [ ] M44 Accessibility (accessibility tree, platform APIs — critical
        for real users, gate: T3 exit).
@@ -1489,8 +1504,8 @@ gold-plate unstarted work.
 | D1 | JS engine | M24 | quickjs-ng / SpiderMonkey (mozjs) / V8 (rusty_v8) / Boa | quickjs-ng behind a `ScriptEngine` trait; trait designed for swap |
 | D2 | Renderer sandbox mechanism | M34 | Win job objects+tokens / AppContainer / others per-OS | Job objects + restricted token v1 |
 | D3 | GPU backend | M19 | wgpu / keep software only | wgpu, software path permanent fallback |
-| D4 | TLS | M14 | rustls / native-tls | rustls (pure Rust, no OpenSSL linkage) |
-| D5 | HTTP client | M14 | hyper / custom over rustls | custom-lite first (control + learning), hyper if maintenance bites |
+| D4 | TLS | M14 | rustls / native-tls | rustls (pure Rust, no OpenSSL linkage); decided at M14: the `aws-lc-rs` provider for X25519MLKEM768, Mozilla's roots from `webpki-roots`, no bypass (see `docs/design/net.md`) |
+| D5 | HTTP client | M14 | hyper / custom over rustls | custom-lite first (control + learning), hyper if maintenance bites; decided at M14: our own HTTP/1.1 over blocking I/O on threads, no async runtime (see `docs/design/net.md`) |
 | D6 | Image codecs | M23 | image crate ensemble / per-format crates | per-format crates behind a trait (faster, auditable) |
 | D7 | Text/i18n | M8/M42 | rustybuzz+unicode crates / harfbuzz FFI / ICU4X | rustybuzz now, ICU4X at M42 |
 | D8 | 2D rasterizer | M19 | tiny-skia forever / vello (wgpu-native) / both | both behind the existing `RenderBackend` trait |
@@ -1502,6 +1517,9 @@ gold-plate unstarted work.
 | D14 | Quirks mode | M40s | full quirks emulation / standards-only + limited quirk stylesheet | limited quirk stylesheet (uqlist-style) driven by T1 data |
 | D15 | HTTP/3 (QUIC) | M47+ | quinn / skip | quinn when HTTP/2 coverage demonstrably costs compat |
 | D16 | DOM storage and node identity | M13 | owned tree with ids on nodes / reference-counted nodes / preorder indices remapped per change / arena of slots with generational ids | arena with generational `NodeId`s; the owned `Node` kept as a tree literal (see `docs/design/incremental.md`) |
+| D17 | URL parser | M14 | the `url` crate / our own | our own WHATWG URL parser in `net`, UTS #46 through the `idna` crate (see `docs/design/net.md`) |
+| D18 | Character encodings | M14 | `encoding_rs` / our own | our own `encoding` crate, a leaf beside `dom`; `encoding_rs` is Gecko code (§1.3); CJK legacy encodings with M42 or a T1 page (see `docs/design/net.md`) |
+| D19 | Requests from public pages to local addresses, before M33 | M14 | allow until M33.4 / refuse outright now | refuse outright now, by Local Network Access's address spaces, checked on the address connected to (see `docs/design/net.md`) |
 
 ---
 

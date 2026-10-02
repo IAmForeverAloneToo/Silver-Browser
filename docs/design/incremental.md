@@ -59,7 +59,7 @@ from one in linear time and `Document::to_node` takes a snapshot back,
 so the hundreds of tests that build trees with `Element::new(..)`
 keep doing so. The parser keeps returning a `Node` and the engine
 converts it once per load; parsing straight into the arena belongs
-with M14.6's streamed loading.
+with streamed parsing, which M14's design moved to M24.8.
 
 **Mutation.** `Document` offers the operations M25 will bind:
 `create_element`, `create_text`, `append_child`, `insert_before`,
@@ -333,7 +333,7 @@ rebuilding it per call, and caching word measures in layout, are
 recorded as a new item, M35.8. Damage from a scroll as a shifted frame
 (M19); compositing layers (M19); parallel layout (M35.3); rule
 hashing, Bloom filters and style sharing (M35.2); parsing into the
-arena as bytes arrive (M14.6); scripting, the collector that frees
+arena as bytes arrive (M24.8); scripting, the collector that frees
 detached nodes, and mutation observers (M24, M25); input events (M26);
 benchmarks tracked by criterion in CI (T4.2).
 
