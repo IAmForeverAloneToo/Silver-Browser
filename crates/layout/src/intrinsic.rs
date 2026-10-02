@@ -39,8 +39,13 @@ pub(crate) fn contribution(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32) 
         LengthPercentageAuto::Percent(_) | LengthPercentageAuto::Auto => 0.0,
     };
     let border = style.used_border_width();
-    let non_content =
-        border[LEFT] + border[RIGHT] + fixed(style.padding[LEFT]) + fixed(style.padding[RIGHT]);
+    // A table whose borders collapse has neither border nor padding of
+    // its own: its cells hold the grid lines (M12).
+    let non_content = if crate::table::collapses(style) {
+        0.0
+    } else {
+        border[LEFT] + border[RIGHT] + fixed(style.padding[LEFT]) + fixed(style.padding[RIGHT])
+    };
     let margins = fixed_margin(style.margin[LEFT]) + fixed_margin(style.margin[RIGHT]);
     let inner = |v: f32| match style.box_sizing {
         BoxSizing::ContentBox => v.max(0.0),

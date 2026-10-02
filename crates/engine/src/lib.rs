@@ -1783,6 +1783,42 @@ mod tests {
     }
 
     #[test]
+    fn collapsed_borders_paint_on_the_grid_lines_the_winner_on_top_at_joints() {
+        // A collapsed 2-column table at (10, 10): the table's 4px blue
+        // border on its outer lines, the cells' 2px red one between them
+        // at x = 60, 59 to 61. At the joint with the top line the blue
+        // border, which wins, is painted over the red; a point on a line
+        // is the table's, one inside a cell the cell's.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 10px }
+                    table { border-collapse: collapse; border: 4px solid #0000ff;
+                            table-layout: fixed; width: 100px }
+                    td { padding: 0; height: 20px; border: 2px solid #ff0000 }</style>\
+             <table id=t><tr><td id=a></td><td></td></tr></table>",
+        );
+        let pixels = engine.frame(200, 100);
+        let (t, a) = (node_by_id(&engine, "t"), node_by_id(&engine, "a"));
+        let (blue, red) = ([0x00, 0x00, 0xff, 0xff], [0xff, 0x00, 0x00, 0xff]);
+        assert_eq!(
+            px(&pixels, 200, 9, 20),
+            blue,
+            "the outer half of the left line"
+        );
+        assert_eq!(px(&pixels, 200, 11, 20), blue, "its inner half");
+        assert_eq!(px(&pixels, 200, 59, 20), red);
+        assert_eq!(px(&pixels, 200, 60, 20), red);
+        assert_eq!(
+            px(&pixels, 200, 60, 9),
+            blue,
+            "the joint, the top line over the inner one"
+        );
+        assert_eq!(px(&pixels, 200, 30, 20), [0xff, 0xff, 0xff, 0xff]);
+        assert_eq!(engine.hit_test(60.0, 20.0), Some(t));
+        assert_eq!(engine.hit_test(30.0, 20.0), Some(a));
+    }
+
+    #[test]
     fn an_inline_element_paints_its_background_and_is_hit_over_its_padding() {
         // <p><a href=/t>b</a></p>, the link with 10px of horizontal
         // padding and a red background (M11.6): its padding is red, is

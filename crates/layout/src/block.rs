@@ -830,7 +830,16 @@ pub(crate) struct Edges {
 }
 
 impl Edges {
+    /// A table whose borders collapse has neither in layout (M12): its
+    /// border is the grid's outer lines', which its cells hold, and it
+    /// has no padding (CSS2 §17.6.2).
     pub(crate) fn of(style: &ComputedStyle, cb_width: f32) -> Self {
+        if crate::table::collapses(style) {
+            return Edges {
+                border: [0.0; 4],
+                padding: [0.0; 4],
+            };
+        }
         Edges {
             border: effective_border_width(style),
             padding: style.padding.map(|p| p.resolve(cb_width)),

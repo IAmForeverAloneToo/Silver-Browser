@@ -36,9 +36,24 @@
 //! at its top, centred, at its bottom, or on the row's baseline. The
 //! table's baseline is its first row's, the lowest cell content's bottom
 //! for a row with no cell on its baseline, and an inline table aligns
-//! by it. The separated border model's
+//! by it.
+//!
+//! The border models (CSS2 §17.6). In the separated model,
 //! `border-spacing` lies between every two cells and between the cells
-//! and the table's padding edge (§17.6.1).
+//! and the table's padding edge, every cell paints its own border, and
+//! under `empty-cells: hide` a cell with no content paints neither its
+//! border nor its background. In the collapsed model there is no
+//! spacing and `empty-cells` does nothing: every segment of every grid
+//! line — per column of a horizontal line, per row of a vertical one —
+//! is resolved to one border by §17.6.2.1's conflict rules among the
+//! cells on either side and, where the line is their edge, the rows,
+//! row groups, columns, column groups and the table; each cell holds the
+//! part of each line on its side (half, the left or top half rounded
+//! down), which is its border in layout and in its measures; the table
+//! has no padding and no border of its own, its border box running
+//! from the middle of its outer lines, whose outer halves lie in its
+//! margin; and the resolved borders are painted by fragments of their
+//! own, one per segment, the table's, after the cells' backgrounds.
 //!
 //! The fragments: the table's own is its wrapper box (CSS2 §17.4),
 //! holding the captions and the table box — the border box the table's
@@ -59,8 +74,8 @@
 
 use style::computed::{
     BOTTOM, BorderCollapse, BorderStyle, BoxSizing, CaptionSide, Color, ComputedStyle, Display,
-    Float, LEFT, LengthPercentage, LengthPercentageAuto, Position, RIGHT, TOP, TableLayout,
-    VerticalAlign,
+    EmptyCells, Float, LEFT, LengthPercentage, LengthPercentageAuto, Overflow, Position, RIGHT,
+    TOP, TableLayout, VerticalAlign,
 };
 use text::FontCollection;
 
@@ -92,6 +107,10 @@ pub(crate) fn layout_table_contents<'a>(
     let grid = Grid::of(b);
     let (hspacing, vspacing) = spacing(style);
     let columns = grid.columns;
+    // In the collapsed border model, the borders every grid line resolves
+    // to, and the part of them each cell holds (CSS2 §17.6.2).
+    let collapsed = collapses(style).then(|| collapse_borders(b, &grid));
+    let cell_borders = collapsed.as_ref().map(|c| c.cells.as_slice());
 
     // The column widths, and the content width they need: the table is
     // never narrower than its columns' minimums and its captions'
@@ -104,7 +123,7 @@ pub(crate) fn layout_table_contents<'a>(
         let needed = widths.iter().sum::<f32>() + spacing;
         (widths, content_width.max(needed))
     } else {
-        let measures = measure_columns(&grid, hspacing, fonts);
+        let measures = measure_columns(&grid, hspacing, cell_borders, fonts);
         let (grid_min, _) = grid_widths(&measures, hspacing);
         let content_width =
             content_width
@@ -116,12 +135,19 @@ pub(crate) fn layout_table_contents<'a>(
 
     // Every cell's content, laid out at its columns' width.
     let mut cells: Vec<CellLayout<'a>> = Vec::with_capacity(grid.cells.len());
-    for cell in &grid.cells {
+    for (i, cell) in grid.cells.iter().enumerate() {
         let span_width = widths[cell.col..cell.col + cell.colspan]
             .iter()
             .sum::<f32>()
             + (cell.colspan - 1) as f32 * hspacing;
-        cells.push(layout_cell(cell.b, span_width, content_width, fonts));
+        let border = cell_borders.map(|borders| borders[i]);
+        cells.push(layout_cell(
+            cell.b,
+            span_width,
+            content_width,
+            border,
+            fonts,
+        ));
     }
 
     // The row baselines: the lowest baseline among the cells aligned to
@@ -267,6 +293,10 @@ pub(crate) fn layout_table_contents<'a>(
     let table_height = content_height + edges.vertical();
     let mut table_box = box_fragment(table_width, table_height, b);
     table_box.style = inner_style(style);
+    if collapsed.is_some() {
+        // Its border is the grid's outer lines', painted as segments.
+        table_box.style.border_style = [BorderStyle::None; 4];
+    }
     // The absolutely positioned boxes met in the cells, relative to the
     // table box, and in the captions, relative to the wrapper.
     let mut cell_absolutes: Vec<Deferred<'a>> = Vec::new();
@@ -372,6 +402,7 @@ pub(crate) fn layout_table_contents<'a>(
                         &grid,
                         &mut cells,
                         &offsets,
+                        collapsed.is_some(),
                         &row_rect,
                         &cell_rect,
                         &mut cell_absolutes,
@@ -390,6 +421,7 @@ pub(crate) fn layout_table_contents<'a>(
                     &grid,
                     &mut cells,
                     &offsets,
+                    collapsed.is_some(),
                     &row_rect,
                     &cell_rect,
                     &mut cell_absolutes,
@@ -399,6 +431,29 @@ pub(crate) fn layout_table_contents<'a>(
             }
             _ => {}
         }
+    }
+
+    // The collapsed borders, last, over the cells' backgrounds: one
+    // fragment per segment, the table's own.
+    if let Some(collapsed) = collapsed
+        .as_ref()
+        .filter(|_| columns > 0 && !heights.is_empty())
+    {
+        let line_x: Vec<f32> = (0..=columns)
+            .map(|v| match col_x.get(v) {
+                Some(x) => *x,
+                None => col_x[columns - 1] + widths[columns - 1],
+            })
+            .collect();
+        let line_y: Vec<f32> = (0..=heights.len())
+            .map(|l| match row_y.get(l) {
+                Some(y) => *y,
+                None => row_y[l - 1] + heights[l - 1],
+            })
+            .collect();
+        table_box
+            .children
+            .extend(collapsed.segments(b, &line_x, &line_y));
     }
 
     // The captions, blocks in the wrapper above and below the table box
@@ -506,6 +561,7 @@ struct Grid<'a> {
     /// Per column, the column box and column group box covering it,
     /// if any.
     column_boxes: Vec<ColumnRef<'a>>,
+    groups: Vec<GridGroup<'a>>,
 }
 
 struct GridRow<'a> {
@@ -514,8 +570,9 @@ struct GridRow<'a> {
 }
 
 /// A row group, or the run of consecutive rows directly in the table,
-/// which act as one for a `rowspan` reaching past them.
-struct GridGroup {
+/// which act as one for a `rowspan` reaching past them and have no box.
+struct GridGroup<'a> {
+    b: Option<&'a LayoutBox>,
     first_row: usize,
     rows: usize,
 }
@@ -536,7 +593,7 @@ struct ColumnRef<'a> {
 
 impl<'a> Grid<'a> {
     fn of(table: &'a LayoutBox) -> Self {
-        let mut groups: Vec<GridGroup> = Vec::new();
+        let mut groups: Vec<GridGroup<'a>> = Vec::new();
         let mut rows: Vec<GridRow<'a>> = Vec::new();
         let mut implicit: Option<usize> = None;
         for part in &table.children {
@@ -545,6 +602,7 @@ impl<'a> Grid<'a> {
                     implicit = None;
                     let g = groups.len();
                     groups.push(GridGroup {
+                        b: Some(part),
                         first_row: rows.len(),
                         rows: part.children.len(),
                     });
@@ -553,6 +611,7 @@ impl<'a> Grid<'a> {
                 BoxKind::Row => {
                     let g = *implicit.get_or_insert_with(|| {
                         groups.push(GridGroup {
+                            b: None,
                             first_row: rows.len(),
                             rows: 0,
                         });
@@ -654,6 +713,7 @@ impl<'a> Grid<'a> {
             cells,
             row_cells,
             column_boxes,
+            groups,
         }
     }
 }
@@ -780,14 +840,21 @@ struct ColumnMeasure {
 /// never below the minimum; both over its border box, padding and border
 /// included, a percentage padding counting as zero as in every intrinsic
 /// width. A percentage `width` is the share of the table it asks for.
-fn measure_cell(b: &LayoutBox, fonts: &FontCollection) -> ColumnMeasure {
+/// In the collapsed border model its border is its share of the grid
+/// lines, which a column counts where the separated model counts
+/// spacing.
+fn measure_cell(
+    b: &LayoutBox,
+    collapsed_border: Option<[f32; 4]>,
+    fonts: &FontCollection,
+) -> ColumnMeasure {
     let style = &b.style;
     let (content_min, content_max) = crate::intrinsic::content_widths(b, fonts);
     let fixed = |v: LengthPercentage| match v {
         LengthPercentage::Px(px) => px,
         LengthPercentage::Percent(_) => 0.0,
     };
-    let border = style.used_border_width();
+    let border = collapsed_border.unwrap_or_else(|| style.used_border_width());
     let edges =
         border[LEFT] + border[RIGHT] + fixed(style.padding[LEFT]) + fixed(style.padding[RIGHT]);
     let border_box = |v: f32| match style.box_sizing {
@@ -833,7 +900,12 @@ fn measure_cell(b: &LayoutBox, fonts: &FontCollection) -> ColumnMeasure {
 /// equally among those that have none. Last, the percentages are cut,
 /// in column order, so that together they ask for no more than the
 /// whole.
-fn measure_columns(grid: &Grid<'_>, hspacing: f32, fonts: &FontCollection) -> Vec<ColumnMeasure> {
+fn measure_columns(
+    grid: &Grid<'_>,
+    hspacing: f32,
+    cell_borders: Option<&[[f32; 4]]>,
+    fonts: &FontCollection,
+) -> Vec<ColumnMeasure> {
     let mut columns = vec![ColumnMeasure::default(); grid.columns];
     for (column, cref) in columns.iter_mut().zip(&grid.column_boxes) {
         match column_box_width(cref) {
@@ -848,7 +920,8 @@ fn measure_columns(grid: &Grid<'_>, hspacing: f32, fonts: &FontCollection) -> Ve
     let measures: Vec<ColumnMeasure> = grid
         .cells
         .iter()
-        .map(|cell| measure_cell(cell.b, fonts))
+        .enumerate()
+        .map(|(i, cell)| measure_cell(cell.b, cell_borders.map(|b| b[i]), fonts))
         .collect();
     let raise_percent = |column: &mut ColumnMeasure, p: f32| {
         column.percent = Some(column.percent.map_or(p, |q| q.max(p)));
@@ -1077,15 +1150,23 @@ pub(crate) fn content_widths(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32
         let width = widths.iter().sum::<f32>() + columns_spacing(grid.columns, hspacing);
         (width, width)
     } else {
-        grid_widths(&measure_columns(&grid, hspacing, fonts), hspacing)
+        let collapsed = collapses(style).then(|| collapse_borders(b, &grid));
+        let cell_borders = collapsed.as_ref().map(|c| c.cells.as_slice());
+        grid_widths(
+            &measure_columns(&grid, hspacing, cell_borders, fonts),
+            hspacing,
+        )
     };
     let fixed = |v: LengthPercentage| match v {
         LengthPercentage::Px(px) => px,
         LengthPercentage::Percent(_) => 0.0,
     };
     let border = style.used_border_width();
-    let edges =
-        border[LEFT] + border[RIGHT] + fixed(style.padding[LEFT]) + fixed(style.padding[RIGHT]);
+    let edges = if collapses(style) {
+        0.0
+    } else {
+        border[LEFT] + border[RIGHT] + fixed(style.padding[LEFT]) + fixed(style.padding[RIGHT])
+    };
     let min = min.max(caption_min(b, edges, fonts));
     (min, max.max(min))
 }
@@ -1154,14 +1235,19 @@ struct CellLayout<'a> {
 
 /// Lays out the cell `b`'s content as the block formatting context root
 /// it is, `span_width` wide over its border box (a cell has no margins),
-/// percentages of `table_width`.
+/// percentages of `table_width`; in the collapsed border model its
+/// border is `collapsed_border`, its share of the grid lines around it.
 fn layout_cell<'a>(
     b: &'a LayoutBox,
     span_width: f32,
     table_width: f32,
+    collapsed_border: Option<[f32; 4]>,
     fonts: &FontCollection,
 ) -> CellLayout<'a> {
-    let edges = Edges::of(&b.style, table_width);
+    let mut edges = Edges::of(&b.style, table_width);
+    if let Some(border) = collapsed_border {
+        edges.border = border;
+    }
     let content_width = (span_width - edges.horizontal()).max(0.0);
     let layout = layout_block_contents(
         b,
@@ -1220,6 +1306,7 @@ fn row_fragment<'a>(
     grid: &Grid<'a>,
     cells: &mut [Option<CellLayout<'a>>],
     offsets: &[f32],
+    collapsed: bool,
     row_rect: &dyn Fn(usize) -> Rect,
     cell_rect: &dyn Fn(&GridCell<'_>) -> Rect,
     absolutes: &mut Vec<Deferred<'a>>,
@@ -1244,6 +1331,15 @@ fn row_fragment<'a>(
         let mut cell_fragment = layout.layout.root;
         cell_fragment.w = r.w;
         cell_fragment.h = r.h;
+        if collapsed {
+            // Its borders are the grid lines', painted as segments.
+            cell_fragment.style.border_style = [BorderStyle::None; 4];
+        } else if cell.b.style.empty_cells == EmptyCells::Hide && is_empty_cell(cell.b) {
+            // `empty-cells: hide` (CSS2 §17.6.1.1): an empty cell paints
+            // neither its border nor its background.
+            cell_fragment.style.border_style = [BorderStyle::None; 4];
+            cell_fragment.style.background_color = Color::TRANSPARENT;
+        }
         let (dx, dy) = layout.relative;
         cell_fragment.x = r.x - rect.x + dx;
         cell_fragment.y = r.y - rect.y + dy;
@@ -1289,6 +1385,365 @@ fn background_fragment(part: &LayoutBox, rect: Rect) -> Fragment {
     fragment.style.position = Position::Static;
     fragment.style.float = Float::None;
     fragment.style.z_index = None;
+    fragment
+}
+
+/// Whether a cell is empty for `empty-cells` (CSS2 §17.6.1.1): it has
+/// no in-flow or floating content, white space collapsed away being
+/// none; an absolutely positioned box alone leaves it empty.
+fn is_empty_cell(b: &LayoutBox) -> bool {
+    b.children.iter().all(|c| c.kind == BoxKind::Absolute)
+}
+
+/// Whether a table's borders collapse (CSS2 §17.6.2): `border-collapse:
+/// collapse` on a table. Such a table has no padding and no border of
+/// its own in layout — its border is the grid's outer lines', which its
+/// cells hold half of and whose other half lies in its margin — so its
+/// border box runs from the middle of its left line to the middle of its
+/// right one.
+pub(crate) fn collapses(style: &ComputedStyle) -> bool {
+    matches!(style.display, Display::Table | Display::InlineTable)
+        && style.border_collapse == BorderCollapse::Collapse
+}
+
+/// One border taking part in the conflict on a segment of a grid line
+/// (CSS2 §17.6.2.1), and, once it has won, the border the segment is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Candidate {
+    /// The used width: zero for `none`, whole pixels otherwise.
+    width: f32,
+    style: BorderStyle,
+    color: Color,
+    /// What the border belongs to, the most specific first: a cell 0, a
+    /// row 1, a row group 2, a column 3, a column group 4, the table 5.
+    owner: u8,
+    /// Between two borders of the same kind, 0 for the one further left
+    /// or further up.
+    order: u8,
+}
+
+impl Candidate {
+    fn of(b: &LayoutBox, side: usize, owner: u8, order: u8) -> Self {
+        Candidate {
+            width: b.style.used_border_width()[side],
+            style: b.style.border_style[side],
+            color: b.style.border_color[side],
+            owner,
+            order,
+        }
+    }
+
+    /// How a border ranks among those of the same width (§17.6.2.1:
+    /// `double`, `solid`, `dashed`, `dotted`, `ridge`, `outset`,
+    /// `groove`, `inset`).
+    fn style_rank(&self) -> u8 {
+        match self.style {
+            BorderStyle::Double => 8,
+            BorderStyle::Solid => 7,
+            BorderStyle::Dashed => 6,
+            BorderStyle::Dotted => 5,
+            BorderStyle::Ridge => 4,
+            BorderStyle::Outset => 3,
+            BorderStyle::Groove => 2,
+            BorderStyle::Inset => 1,
+            BorderStyle::None | BorderStyle::Hidden => 0,
+        }
+    }
+
+    /// Whether `self` loses to `other`: the wider wins, then the style
+    /// higher in the list, then the more specific owner, then the one
+    /// further left or up.
+    fn precedence(&self, other: &Self) -> std::cmp::Ordering {
+        self.width
+            .total_cmp(&other.width)
+            .then(self.style_rank().cmp(&other.style_rank()))
+            .then(other.owner.cmp(&self.owner))
+            .then(other.order.cmp(&self.order))
+    }
+}
+
+/// CSS2 §17.6.2.1's conflict resolution: a `hidden` border wins over
+/// everything and leaves no border; `none` loses to everything, and no
+/// border is left when every border is `none` (or of no width); among
+/// the others, [`Candidate::precedence`] decides.
+fn resolve(candidates: &[Candidate]) -> Option<Candidate> {
+    if candidates.iter().any(|c| c.style == BorderStyle::Hidden) {
+        return None;
+    }
+    candidates
+        .iter()
+        .filter(|c| c.style != BorderStyle::None && c.width > 0.0)
+        .copied()
+        .max_by(Candidate::precedence)
+}
+
+/// The part of a grid line's border on its left or top side: half of it,
+/// rounded down; the rest lies on the right or bottom side. A stated
+/// choice for the odd pixel, which the reference pages check.
+fn before_line(width: f32) -> f32 {
+    (width / 2.0).floor()
+}
+
+fn after_line(width: f32) -> f32 {
+    width - before_line(width)
+}
+
+/// The borders of a table in the collapsed model.
+struct CollapsedBorders {
+    /// Per horizontal grid line, top to bottom (rows + 1), per column:
+    /// its border, `None` for no border or inside a cell spanning rows.
+    horizontal: Vec<Vec<Option<Candidate>>>,
+    /// Per vertical grid line, left to right (columns + 1), per row.
+    vertical: Vec<Vec<Option<Candidate>>>,
+    /// Per cell, in the grid's order, the border widths its border box
+    /// holds, top, right, bottom and left: on each side the part of the
+    /// line on the cell's side, the widest along the side where the line
+    /// changes under a spanning cell.
+    cells: Vec<[f32; 4]>,
+}
+
+/// Resolves every segment of every grid line of `table` (CSS2 §17.6.2):
+/// the borders of the cells on either side of it, and, where the line
+/// is their edge, of the rows, the row groups, the columns, the column
+/// groups and the table.
+fn collapse_borders(table: &LayoutBox, grid: &Grid<'_>) -> CollapsedBorders {
+    let (rows, columns) = (grid.rows.len(), grid.columns);
+    let mut slots = vec![vec![u32::MAX; columns]; rows];
+    for (i, cell) in grid.cells.iter().enumerate() {
+        for row in &mut slots[cell.row..cell.row + cell.rowspan] {
+            for slot in &mut row[cell.col..cell.col + cell.colspan] {
+                *slot = i as u32;
+            }
+        }
+    }
+    let at = |r: usize, c: usize| -> Option<usize> {
+        let i = slots[r][c];
+        (i != u32::MAX).then_some(i as usize)
+    };
+    // Whether the column box (or group) over column `c` starts or ends
+    // there: a box spanning columns has its sides at its outer ones.
+    let same = |a: Option<&LayoutBox>, b: Option<&LayoutBox>| match (a, b) {
+        (Some(a), Some(b)) => std::ptr::eq(a, b),
+        _ => false,
+    };
+    let column_part = |c: usize, group: bool| {
+        let cref = &grid.column_boxes[c];
+        if group { cref.group } else { cref.column }
+    };
+    let starts =
+        |c: usize, group: bool| c == 0 || !same(column_part(c - 1, group), column_part(c, group));
+    let ends = |c: usize, group: bool| {
+        c + 1 == columns || !same(column_part(c + 1, group), column_part(c, group))
+    };
+
+    let mut horizontal = vec![vec![None; columns]; rows + 1];
+    let mut vertical = vec![vec![None; rows]; columns + 1];
+    let mut candidates = Vec::with_capacity(8);
+    for (l, line) in horizontal.iter_mut().enumerate() {
+        for (c, segment) in line.iter_mut().enumerate() {
+            let above = if l > 0 { at(l - 1, c) } else { None };
+            let below = if l < rows { at(l, c) } else { None };
+            if above.is_some() && above == below {
+                continue; // inside a cell spanning rows
+            }
+            candidates.clear();
+            if let Some(i) = above {
+                candidates.push(Candidate::of(grid.cells[i].b, BOTTOM, 0, 0));
+            }
+            if let Some(i) = below {
+                candidates.push(Candidate::of(grid.cells[i].b, TOP, 0, 1));
+            }
+            if l > 0 {
+                let row = &grid.rows[l - 1];
+                candidates.push(Candidate::of(row.b, BOTTOM, 1, 0));
+                let group = &grid.groups[row.group];
+                if let Some(g) = group.b.filter(|_| l == group.first_row + group.rows) {
+                    candidates.push(Candidate::of(g, BOTTOM, 2, 0));
+                }
+            }
+            if l < rows {
+                let row = &grid.rows[l];
+                candidates.push(Candidate::of(row.b, TOP, 1, 1));
+                let group = &grid.groups[row.group];
+                if let Some(g) = group.b.filter(|_| l == group.first_row) {
+                    candidates.push(Candidate::of(g, TOP, 2, 1));
+                }
+            }
+            if l == 0 || l == rows {
+                let side = if l == 0 { TOP } else { BOTTOM };
+                if let Some(column) = column_part(c, false) {
+                    candidates.push(Candidate::of(column, side, 3, 0));
+                }
+                if let Some(group) = column_part(c, true) {
+                    candidates.push(Candidate::of(group, side, 4, 0));
+                }
+                candidates.push(Candidate::of(table, side, 5, 0));
+            }
+            *segment = resolve(&candidates);
+        }
+    }
+    for (v, line) in vertical.iter_mut().enumerate() {
+        for (r, segment) in line.iter_mut().enumerate() {
+            let left = if v > 0 { at(r, v - 1) } else { None };
+            let right = if v < columns { at(r, v) } else { None };
+            if left.is_some() && left == right {
+                continue; // inside a cell spanning columns
+            }
+            candidates.clear();
+            if let Some(i) = left {
+                candidates.push(Candidate::of(grid.cells[i].b, RIGHT, 0, 0));
+            }
+            if let Some(i) = right {
+                candidates.push(Candidate::of(grid.cells[i].b, LEFT, 0, 1));
+            }
+            if v == 0 || v == columns {
+                let side = if v == 0 { LEFT } else { RIGHT };
+                let row = &grid.rows[r];
+                candidates.push(Candidate::of(row.b, side, 1, 0));
+                if let Some(g) = grid.groups[row.group].b {
+                    candidates.push(Candidate::of(g, side, 2, 0));
+                }
+            }
+            for (group, owner) in [(false, 3), (true, 4)] {
+                if v > 0
+                    && ends(v - 1, group)
+                    && let Some(part) = column_part(v - 1, group)
+                {
+                    candidates.push(Candidate::of(part, RIGHT, owner, 0));
+                }
+                if v < columns
+                    && starts(v, group)
+                    && let Some(part) = column_part(v, group)
+                {
+                    candidates.push(Candidate::of(part, LEFT, owner, 1));
+                }
+            }
+            if v == 0 || v == columns {
+                let side = if v == 0 { LEFT } else { RIGHT };
+                candidates.push(Candidate::of(table, side, 5, 0));
+            }
+            *segment = resolve(&candidates);
+        }
+    }
+
+    let width = |b: &Option<Candidate>| b.map_or(0.0, |b| b.width);
+    let cells = grid
+        .cells
+        .iter()
+        .map(|cell| {
+            let cols = cell.col..cell.col + cell.colspan;
+            let span_rows = cell.row..cell.row + cell.rowspan;
+            let widest = |values: &mut dyn Iterator<Item = f32>| values.fold(0.0, f32::max);
+            [
+                widest(
+                    &mut horizontal[cell.row][cols.clone()]
+                        .iter()
+                        .map(|b| after_line(width(b))),
+                ),
+                widest(
+                    &mut vertical[cell.col + cell.colspan][span_rows.clone()]
+                        .iter()
+                        .map(|b| before_line(width(b))),
+                ),
+                widest(
+                    &mut horizontal[cell.row + cell.rowspan][cols]
+                        .iter()
+                        .map(|b| before_line(width(b))),
+                ),
+                widest(
+                    &mut vertical[cell.col][span_rows]
+                        .iter()
+                        .map(|b| after_line(width(b))),
+                ),
+            ]
+        })
+        .collect();
+    CollapsedBorders {
+        horizontal,
+        vertical,
+        cells,
+    }
+}
+
+impl CollapsedBorders {
+    /// The fragments that paint the resolved borders, the table's own:
+    /// one per segment of a grid line per column or row it crosses, a
+    /// box with just the one side set, lying across its line as the line
+    /// is split, and reaching over the joints at its ends by the part of
+    /// the widest crossing border on its side, so that neighbouring
+    /// segments meet square. They come lowest precedence first, so at a
+    /// joint the winning border is painted over the others. `line_x` and
+    /// `line_y` are the grid lines' positions in the table box. `inset`
+    /// and `outset` are painted as `ridge` and `groove`, as the collapsed
+    /// model has them (§17.6.3).
+    fn segments(&self, table: &LayoutBox, line_x: &[f32], line_y: &[f32]) -> Vec<Fragment> {
+        let width = |b: Option<&Option<Candidate>>| b.copied().flatten().map_or(0.0, |b| b.width);
+        // The widest vertical border at the joint of horizontal line `l`
+        // and vertical line `v`, and the widest horizontal one.
+        let vertical_at = |l: usize, v: usize| {
+            let line = &self.vertical[v];
+            let above = if l > 0 { width(line.get(l - 1)) } else { 0.0 };
+            above.max(width(line.get(l)))
+        };
+        let horizontal_at = |l: usize, v: usize| {
+            let line = &self.horizontal[l];
+            let left = if v > 0 { width(line.get(v - 1)) } else { 0.0 };
+            left.max(width(line.get(v)))
+        };
+        let mut segments: Vec<(Candidate, Fragment)> = Vec::new();
+        for (l, line) in self.horizontal.iter().enumerate() {
+            for (c, border) in line.iter().enumerate() {
+                let Some(border) = *border else { continue };
+                let x0 = line_x[c] - before_line(vertical_at(l, c));
+                let x1 = line_x[c + 1] + after_line(vertical_at(l, c + 1));
+                let y0 = line_y[l] - before_line(border.width);
+                let rect = Rect {
+                    x: x0,
+                    y: y0,
+                    w: x1 - x0,
+                    h: border.width,
+                };
+                segments.push((border, segment_fragment(table, border, TOP, rect)));
+            }
+        }
+        for (v, line) in self.vertical.iter().enumerate() {
+            for (r, border) in line.iter().enumerate() {
+                let Some(border) = *border else { continue };
+                let y0 = line_y[r] - before_line(horizontal_at(r, v));
+                let y1 = line_y[r + 1] + after_line(horizontal_at(r + 1, v));
+                let x0 = line_x[v] - before_line(border.width);
+                let rect = Rect {
+                    x: x0,
+                    y: y0,
+                    w: border.width,
+                    h: y1 - y0,
+                };
+                segments.push((border, segment_fragment(table, border, LEFT, rect)));
+            }
+        }
+        segments.sort_by(|a, b| a.0.precedence(&b.0));
+        segments.into_iter().map(|(_, f)| f).collect()
+    }
+}
+
+/// A collapsed border segment's fragment: the table's, painting one
+/// side, `side`, with `border` across `rect`.
+fn segment_fragment(table: &LayoutBox, border: Candidate, side: usize, rect: Rect) -> Fragment {
+    let mut fragment = box_fragment(rect.w, rect.h, table);
+    fragment.x = rect.x;
+    fragment.y = rect.y;
+    fragment.style = inner_style(&table.style);
+    fragment.style.background_color = Color::TRANSPARENT;
+    fragment.style.overflow = Overflow::Visible;
+    fragment.style.border_style = [BorderStyle::None; 4];
+    fragment.style.border_style[side] = match border.style {
+        BorderStyle::Inset => BorderStyle::Ridge,
+        BorderStyle::Outset => BorderStyle::Groove,
+        other => other,
+    };
+    fragment.style.border_width = [0.0; 4];
+    fragment.style.border_width[side] = border.width;
+    fragment.style.border_color[side] = border.color;
     fragment
 }
 
@@ -1986,6 +2441,206 @@ mod tests {
             BASELINES,
         );
         assert_eq!(fragment_of(&layout, 12).y, 20.0);
+    }
+
+    fn candidate(width: f32, style: BorderStyle, owner: u8, order: u8) -> Candidate {
+        Candidate {
+            width,
+            style,
+            color: Color::BLACK,
+            owner,
+            order,
+        }
+    }
+
+    #[test]
+    fn border_conflicts_resolve_as_css2_section_17_6_2_1_says() {
+        use BorderStyle::*;
+        let solid = |w| candidate(w, Solid, 0, 0);
+        // `hidden` wins over everything, and leaves no border.
+        assert_eq!(
+            resolve(&[solid(5.0), candidate(0.0, Hidden, 5, 0)]),
+            Option::None
+        );
+        // `none` loses to everything; all `none` is no border.
+        assert_eq!(
+            resolve(&[candidate(0.0, None, 0, 0), candidate(1.0, Solid, 5, 0)]),
+            Some(candidate(1.0, Solid, 5, 0))
+        );
+        assert_eq!(
+            resolve(&[candidate(0.0, None, 0, 0), candidate(0.0, None, 5, 0)]),
+            Option::None
+        );
+        // The wider wins, whatever its owner or style.
+        assert_eq!(
+            resolve(&[solid(1.0), candidate(3.0, Inset, 5, 0)])
+                .unwrap()
+                .width,
+            3.0
+        );
+        // Equal widths: the style higher in the list.
+        for (better, worse) in [
+            (Double, Solid),
+            (Solid, Dashed),
+            (Dashed, Dotted),
+            (Dotted, Ridge),
+            (Ridge, Outset),
+            (Outset, Groove),
+            (Groove, Inset),
+        ] {
+            let won =
+                resolve(&[candidate(2.0, worse, 0, 0), candidate(2.0, better, 5, 1)]).unwrap();
+            assert_eq!(won.style, better, "{better:?} over {worse:?}");
+        }
+        // Equal styles: the more specific owner, then the one to the left
+        // or above.
+        assert_eq!(
+            resolve(&[candidate(2.0, Solid, 5, 0), candidate(2.0, Solid, 1, 1)])
+                .unwrap()
+                .owner,
+            1
+        );
+        assert_eq!(
+            resolve(&[candidate(2.0, Solid, 0, 1), candidate(2.0, Solid, 0, 0)])
+                .unwrap()
+                .order,
+            0
+        );
+    }
+
+    /// A 2 by 2 collapsed table: a 4px blue table border, 2px red cell
+    /// borders, two 50px columns, cells 20px tall inside.
+    const COLLAPSED: &str = "<table><tr><td></td><td></td></tr><tr><td></td><td></td></tr></table>";
+    const COLLAPSED_CSS: &str = "body { margin: 0; }
+        table { border-collapse: collapse; border: 4px solid #0000ff; table-layout: fixed; width: 100px; }
+        td { padding: 0; height: 20px; border: 2px solid #ff0000; }";
+
+    #[test]
+    fn collapsed_borders_are_shared_on_the_grid_lines_and_held_half_by_each_cell() {
+        // The outer lines resolve to the table's 4px, the inner ones to
+        // the cells' 2px. A cell holds the part of each line on its side:
+        // 2 of an outer line, 1 of an inner one, so the first row is 2 +
+        // 20 + 1 tall and the second 1 + 20 + 2; the table box runs from
+        // the middle of its outer lines, the outer halves lying outside.
+        // Nodes: table 4, tr 5, td 6, td 7, tr 8, td 9, td 10.
+        let layout = document_of(COLLAPSED, COLLAPSED_CSS);
+        let table = fragments_of(&layout, 4);
+        assert_eq!(rect(table[0]), (0.0, 0.0, 100.0, 46.0));
+        assert_eq!(rect(table[1]), (0.0, 0.0, 100.0, 46.0));
+        assert_eq!(
+            table[1].style.used_border_width(),
+            [0.0; 4],
+            "the lines paint it"
+        );
+        assert_eq!(rect(fragment_of(&layout, 6)), (0.0, 0.0, 50.0, 23.0));
+        assert_eq!(rect(fragment_of(&layout, 7)), (50.0, 0.0, 50.0, 23.0));
+        assert_eq!(rect(fragment_of(&layout, 9)), (0.0, 23.0, 50.0, 23.0));
+        assert_eq!(fragment_of(&layout, 6).style.used_border_width(), [0.0; 4]);
+        // Twelve segments: three lines of two each way, the red ones
+        // first so the blue ones win at the joints.
+        let segments = &table[2..];
+        assert_eq!(segments.len(), 12);
+        let blue = Color::rgb8(0, 0, 255);
+        let red = Color::rgb8(255, 0, 0);
+        let first_blue = segments
+            .iter()
+            .position(|f| f.style.border_color.contains(&blue))
+            .unwrap();
+        assert!(
+            segments[..first_blue]
+                .iter()
+                .all(|f| f.style.used_border_width().iter().sum::<f32>() == 2.0)
+        );
+        // The top line over the first column: 4px across its line, two
+        // above the table box, reaching over the left joint by the
+        // outer line's two and over the middle one by the inner line's 1.
+        let top_left = segments
+            .iter()
+            .find(|f| f.style.used_border_width()[TOP] == 4.0 && f.x < 0.0 && f.y < 0.0)
+            .unwrap();
+        assert_eq!(rect(top_left), (-2.0, -2.0, 53.0, 4.0));
+        assert_eq!(top_left.style.border_color[TOP], blue);
+        // The inner vertical line in the first row: 2px, from 2 above the
+        // table box to 1 below the middle line.
+        let middle = segments
+            .iter()
+            .find(|f| f.style.used_border_width()[LEFT] == 2.0 && f.x == 49.0 && f.y < 0.0)
+            .unwrap();
+        assert_eq!(rect(middle), (49.0, -2.0, 2.0, 26.0));
+        assert_eq!(middle.style.border_color[LEFT], red);
+    }
+
+    #[test]
+    fn a_hidden_border_leaves_its_segment_bare_and_auto_widths_count_the_halves() {
+        // `hidden` on the first cell's top: no segment over its column on
+        // the top line. The cell holds none of that line, though the row,
+        // and so the cell, stays as tall as its neighbour's 2 + 20 + 1.
+        // Nodes: td 6.
+        let layout = document_of(
+            COLLAPSED,
+            &format!("{COLLAPSED_CSS} tr:first-child td:first-child {{ border-top: hidden; }}"),
+        );
+        assert_eq!(fragments_of(&layout, 4).len(), 2 + 11);
+        assert_eq!(rect(fragment_of(&layout, 6)), (0.0, 0.0, 50.0, 23.0));
+        // An automatic table measures its cells with the parts of the
+        // lines they hold: 2 + 10 + 1 and 1 + 10 + 2. Nodes: td 6, td 8.
+        let layout = document_of(
+            "<table><tr><td><div class=b></div></td><td><div class=b></div></td></tr></table>",
+            "body { margin: 0; } table { border-collapse: collapse; border: 4px solid #0000ff; }
+             td { padding: 0; border: 2px solid #ff0000; } .b { width: 10px; height: 10px; }",
+        );
+        assert_eq!(fragment_of(&layout, 4).w, 26.0);
+        assert_eq!(columns_of(&layout, &[6, 8]), [(0.0, 13.0), (13.0, 13.0)]);
+        assert_eq!(
+            fragment_of(&layout, 7).x,
+            2.0,
+            "inside the first cell's 2px"
+        );
+    }
+
+    #[test]
+    fn a_collapsed_table_without_rows_or_columns_has_no_segments() {
+        // Columns and no row; a row and no cell; nothing at all. Nodes:
+        // table 4, col 5; table 6, tr 7; table 8.
+        let layout = document_of(
+            "<table><col></table><table><tr></tr></table><table></table>",
+            "table { border-collapse: collapse; border: 3px solid #000000; width: 20px; }",
+        );
+        for node in [4, 6, 8] {
+            assert_eq!(fragments_of(&layout, node).len(), 2, "node {node}");
+        }
+    }
+
+    #[test]
+    fn empty_cells_hide_paints_nothing_for_an_empty_cell_in_the_separated_model() {
+        // Nodes: table 4, tr 5, td 6, td 7, td 8.
+        let html = "<table><tr><td></td><td> </td><td>x</td></tr></table>";
+        let css = "table { empty-cells: hide; } td { background-color: #ff0000; border: 1px solid #000000; }";
+        let layout = document_of(html, css);
+        for node in [6, 7] {
+            let cell = fragment_of(&layout, node);
+            assert_eq!(
+                cell.style.background_color,
+                Color::TRANSPARENT,
+                "node {node}"
+            );
+            assert_eq!(cell.style.used_border_width(), [0.0; 4], "node {node}");
+        }
+        let full = fragment_of(&layout, 8);
+        assert_eq!(full.style.background_color, Color::rgb8(255, 0, 0));
+        assert_eq!(full.style.used_border_width(), [1.0; 4]);
+        // Its border and padding keep their room: 1 + 1 + 1 + 1.
+        assert_eq!(fragment_of(&layout, 6).w, 4.0);
+        // In the collapsed model `empty-cells` does nothing to the
+        // background.
+        let layout = document_of(
+            html,
+            &format!("{css} table {{ border-collapse: collapse; }}"),
+        );
+        assert_eq!(
+            fragment_of(&layout, 6).style.background_color,
+            Color::rgb8(255, 0, 0)
+        );
     }
 
     #[test]
