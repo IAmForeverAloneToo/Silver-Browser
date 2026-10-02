@@ -148,8 +148,10 @@ impl Network {
     }
 
     /// Aborts and forgets the fetches of `page`: all of them, or those
-    /// for `owner`'s sheets. Their results are not taken.
-    pub(crate) fn cancel(&mut self, page: PageId, owner: Option<NodeId>) {
+    /// for `owner`'s sheets. Their results are not taken, even those that
+    /// have finished and wait to be. Says whether there were any.
+    pub(crate) fn cancel(&mut self, page: PageId, owner: Option<NodeId>) -> bool {
+        let before = self.flights.len();
         self.flights.retain(|_, flight| {
             let cancelled = flight.page == page
                 && owner.is_none_or(
@@ -160,6 +162,7 @@ impl Network {
             }
             !cancelled
         });
+        self.flights.len() != before
     }
 
     /// Aborts and forgets every fetch.

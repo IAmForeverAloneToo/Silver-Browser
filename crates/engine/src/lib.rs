@@ -55,8 +55,8 @@
 //! does.
 //!
 //! Documents also come by URL (M14.6, docs/design/net.md, "The engine's
-//! loader"). [`Engine::load`] fetches one through `net` on a thread of
-//! its own, at most 32 fetches in flight; each result comes back over a
+//! loader"). [`Engine::navigate`] fetches one through `net` on a thread
+//! of its own, at most 32 fetches in flight; each result comes back over a
 //! channel and calls the waker the shell gives with
 //! [`Engine::set_waker`], and [`Engine::poll_network`] takes them on
 //! the engine's thread. The page shown stays until the new document and
@@ -68,9 +68,22 @@
 //! restyles the page. [`Engine::load_state`] says where
 //! the latest load stands. A document given to the engine as source or
 //! as a tree has no URL and fetches nothing.
+//!
+//! Navigation keeps a session history (M15, docs/design/navigation.md):
+//! a new engine shows the initial `about:blank`, each navigation pushes
+//! an entry or replaces the current one, and [`Engine::go_back`],
+//! [`Engine::go_forward`], [`Engine::reload`] and [`Engine::stop`] act
+//! on it as HTML's traversal, reload and "stop loading" do. A document
+//! left with nothing on its way is kept whole, with its cascade, layout
+//! and scroll offsets, by the back-forward cache of six, and shown again
+//! without being fetched; any other is fetched again for its entry,
+//! which is shown at its saved scroll position.
 
 pub mod differential;
 mod loader;
+mod navigation;
+#[cfg(test)]
+mod testing;
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -81,6 +94,7 @@ pub use net::{Client, NetworkError, Url};
 use dom::{Change, Document, NodeId};
 use layout::{DocumentLayout, Fragment, FragmentKind, LayoutCache};
 use loader::{Incoming, Network, Page, PageId, Target};
+use navigation::{History, StateId};
 use paint::{
     DisplayItem, Rect, SCROLLBAR_THUMB, SCROLLBAR_TRACK, Step, Viewport, padding_box,
     paint_fragments_in, paint_order, scrollbar_thumb,
@@ -198,8 +212,8 @@ pub struct FrameStats {
 /// The scrollbar track's width, in px, at the viewport's right edge.
 pub const SCROLLBAR_WIDTH: f32 = 12.0;
 
-/// A browsing session: one document, its stylesheets, its scroll
-/// position and its rasterizer.
+/// A browsing session: the document shown, the session history and the
+/// documents it keeps, the network, and the rasterizer.
 pub struct Engine {
     backend: SoftwareBackend,
     /// Loaded once and reused every frame — `text::FontCollection::new()`
@@ -208,43 +222,30 @@ pub struct Engine {
     /// redo per frame. The backend holds a clone of the same collection
     /// (a `FontCollection` clones by sharing its face data).
     layout_fonts: text::FontCollection,
-    document: Document,
-    /// The document's stylesheets, element by element, with what is
-    /// fetched for them, and its URL.
-    page: Page,
-    /// The stylesheets that apply, prepared for the cascade.
-    stylesheets: Stylesheets,
+    /// The document shown, with everything made from it.
+    shown: Shown,
+    /// The session history (M15): its entries, the current one, whose
+    /// document is the one shown, and the documents kept for others.
+    history: History<Box<Shown>>,
     /// The fetches, the threads they run on and the client they share.
     network: Network,
-    /// The load whose document is not shown yet, if one is under way.
-    incoming: Option<Incoming>,
+    /// The navigation whose document is not shown yet, if one is under
+    /// way.
+    navigation: Option<Navigation>,
     load_state: LoadState,
     /// The number the next page is given.
     next_page: PageId,
-    /// The cascade of the current document, computed on first use and
-    /// dropped when a document loads or its stylesheets change, or when
-    /// the viewport changes and the document used viewport units
-    /// (M10.1); a change to the document restyles it (M13.1).
-    styled: Option<CachedStyle>,
-    /// The changes made to the document since the cached cascade, in
-    /// order, for the next frame to restyle by.
-    pending: Vec<Change>,
+    /// Where the next frames scroll the viewport to, once there is a
+    /// layout to find it in: an entry's saved offset, shown again.
+    goal: Option<ScrollGoal>,
     /// How many full cascades have run: what proves a resize without
     /// viewport units does not.
     style_runs: u64,
     /// How many element styles restyles have computed (M13.1): what
     /// proves a change restyles what it touches and no more.
     restyled_elements: u64,
-    /// The layout of the current document for one viewport width,
-    /// dropped when a document loads or changes, or the width changes
-    /// (M9.5).
-    layout: Option<CachedLayout>,
     /// How many layouts have run: what proves a scroll does not.
     layout_runs: u64,
-    /// The boxes' layouts the next layout may take rather than redo
-    /// (M13.2): forgotten where a change reaches, and all of them when
-    /// a document loads or is cascaded whole.
-    layout_cache: LayoutCache,
     /// How many boxes placed in flow the layouts have laid out, and how
     /// many they took from the cache instead: what proves a change lays
     /// out what it reaches and no more.
@@ -252,8 +253,6 @@ pub struct Engine {
     boxes_reused: u64,
     /// The last frame's size: what scrolling is clamped to.
     viewport: (u32, u32),
-    /// The scroll offset shown, and the one being approached.
-    scroll_y: f32,
     /// The time of the last frame drawn while a scroll offset was on its
     /// way to its target (M13.4): the next frame advances the animation
     /// by the time since. `None` when none was, so that an animation
@@ -266,13 +265,100 @@ pub struct Engine {
     /// everything in it, and is rasterized whole without comparing its
     /// display list with the last one's (M13.3).
     drawn_scroll_y: f32,
+    /// Whether the document was replaced or changed, or a scroll offset
+    /// set, since the last frame.
+    changed: bool,
+}
+
+/// A document and everything the engine made from it (M15): what the
+/// back-forward cache keeps whole, so that a document shown again needs
+/// no cascade and no layout.
+struct Shown {
+    document: Document,
+    /// The document's stylesheets, element by element, with what is
+    /// fetched for them, and its URL.
+    page: Page,
+    /// The stylesheets that apply, prepared for the cascade.
+    stylesheets: Stylesheets,
+    /// The cascade of the document, computed on first use and dropped
+    /// when its stylesheets change, or when the viewport changes and the
+    /// document used viewport units (M10.1); a change to the document
+    /// restyles it (M13.1).
+    styled: Option<CachedStyle>,
+    /// The changes made to the document since the cached cascade, in
+    /// order, for the next frame to restyle by.
+    pending: Vec<Change>,
+    /// The layout of the document for one viewport width, dropped when
+    /// the document changes, or the width changes (M9.5).
+    layout: Option<CachedLayout>,
+    /// The boxes' layouts the next layout may take rather than redo
+    /// (M13.2): forgotten where a change reaches, and all of them when
+    /// the document is cascaded whole.
+    layout_cache: LayoutCache,
+    /// The scroll offset shown, and the one being approached.
+    scroll_y: f32,
     scroll_target: f32,
     /// Each scroll container's offset (M10.5), by its element's id; one
     /// never scrolled has no entry, and one freed loses its entry.
     element_scroll: HashMap<NodeId, ElementScroll>,
-    /// Whether the document was replaced or changed, or a scroll offset
-    /// set, since the last frame.
-    changed: bool,
+    /// The initial `about:blank` of a new engine, which the first
+    /// navigation replaces (HTML's "is initial about:blank").
+    initial: bool,
+    /// Whether the back-forward cache may keep the document when it is
+    /// left: HTML's "salvageable", which aborting its fetches ends.
+    salvageable: bool,
+}
+
+impl Shown {
+    /// `document` with `page` its stylesheets, nothing made from it yet,
+    /// at the top.
+    fn new(mut document: Document, page: Page) -> Shown {
+        document.take_changes();
+        let stylesheets = Stylesheets::new(page.sheets());
+        Shown {
+            document,
+            page,
+            stylesheets,
+            styled: None,
+            pending: Vec::new(),
+            layout: None,
+            layout_cache: LayoutCache::new(),
+            scroll_y: 0.0,
+            scroll_target: 0.0,
+            element_scroll: HashMap::new(),
+            initial: false,
+            salvageable: true,
+        }
+    }
+}
+
+/// A navigation under way: its document's load, and what showing it
+/// does to the session history.
+struct Navigation {
+    incoming: Incoming,
+    handling: Handling,
+}
+
+/// What a navigation's document does to the session history when it is
+/// shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Handling {
+    /// A new entry after the current one (HTML's "push").
+    Push,
+    /// A new entry in the current one's place (HTML's "replace").
+    Replace,
+    /// The current entry's document, fetched again.
+    Reload,
+    /// The document of the entry at this index, fetched again since none
+    /// was kept: a traversal.
+    Traverse(usize),
+}
+
+/// Where the viewport is to be scrolled once the document is laid out.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ScrollGoal {
+    /// An entry's saved offset.
+    Offset(f32),
 }
 
 /// A scroll container's offset shown, and the one being approached.
@@ -336,50 +422,49 @@ impl Scrollbar {
 }
 
 impl Engine {
-    /// Creates a session rendering the built-in document, with the
+    /// Creates a session showing the initial `about:blank`, with the
     /// system's fonts.
     pub fn new() -> Result<Self, FontError> {
         Ok(Self::with_fonts(text::FontCollection::new()?))
     }
 
-    /// Creates a session rendering the built-in document, with fonts
-    /// already loaded (a test's bundled font, say). Layout and the
-    /// rasterizer share the collection by cloning its handles.
+    /// Creates a session showing the initial `about:blank`, as HTML's
+    /// new navigable does (M15), with fonts already loaded (a test's
+    /// bundled font, say). Layout and the rasterizer share the
+    /// collection by cloning its handles.
     pub fn with_fonts(fonts: text::FontCollection) -> Self {
-        let mut engine = Engine {
+        let mut network = Network::new();
+        let mut page = Page::given(0);
+        let document = parsed_or_empty("");
+        page.begin(&document, &mut network);
+        let mut shown = Shown::new(document, page);
+        shown.initial = true;
+        let blank = Url::parse("about:blank").expect("about:blank parses");
+        Engine {
             backend: SoftwareBackend::with_fonts(fonts.clone()),
             layout_fonts: fonts,
-            document: Document::new(),
-            page: Page::given(0),
-            stylesheets: Stylesheets::default(),
-            network: Network::new(),
-            incoming: None,
+            shown,
+            history: History::new(Some(blank)),
+            network,
+            navigation: None,
             load_state: LoadState::Loaded,
             next_page: 1,
-            styled: None,
-            pending: Vec::new(),
+            goal: None,
             style_runs: 0,
             restyled_elements: 0,
-            layout: None,
             layout_runs: 0,
-            layout_cache: LayoutCache::new(),
             boxes_laid_out: 0,
             boxes_reused: 0,
             viewport: (0, 0),
-            scroll_y: 0.0,
             animation_clock: None,
             stats: FrameStats::default(),
             drawn_scroll_y: 0.0,
-            scroll_target: 0.0,
-            element_scroll: HashMap::new(),
-            changed: false,
-        };
-        engine.load_document(DOCUMENT_SOURCE);
-        engine
+            changed: true,
+        }
     }
 
-    /// Shows the built-in page, as a new engine does: what the shell
-    /// shows when it is given nothing to load, or its load fails.
+    /// Shows the built-in page as a document given to the engine: what
+    /// the shell shows when its load fails, until M15's error pages.
     pub fn show_built_in_page(&mut self) {
         self.load_document(DOCUMENT_SOURCE);
     }
@@ -393,41 +478,51 @@ impl Engine {
         }
     }
 
-    /// Makes `document` the session document (M13.5): its `<style>`
+    /// Makes `document` the session document (M13.5), the only entry
+    /// of a new session history, with no URL (M15): its `<style>`
     /// elements are parsed into stylesheets, the cascade and layout
     /// caches, the layout cache's boxes among them, and the glyph cache
-    /// start over, every scroll offset is
-    /// dropped and the document starts at the top. Its journal of
-    /// changes is emptied, since the engine has seen nothing of it yet.
-    /// The document has no URL and fetches nothing, so its `<link>`
-    /// elements and `@import` rules bring no sheets. A load under way,
-    /// and the fetches of the page shown, are aborted, and the load
-    /// state is [`LoadState::Loaded`].
+    /// start over, every scroll offset is dropped and the document
+    /// starts at the top. Its journal of changes is emptied, since the
+    /// engine has seen nothing of it yet. The document has no URL and
+    /// fetches nothing, so its `<link>` elements and `@import` rules
+    /// bring no sheets. A navigation under way, the fetches of the page
+    /// shown and the documents the history kept are dropped, and the
+    /// load state is [`LoadState::Loaded`].
     pub fn set_document(&mut self, document: Document) {
-        self.cancel_incoming();
+        self.cancel_navigation();
         let mut page = Page::given(self.new_page_id());
         page.begin(&document, &mut self.network);
-        self.install(document, page);
+        let left = self.show(Shown::new(document, page));
+        self.network.cancel(left.page.id(), None);
+        self.history = History::new(None);
+        self.goal = None;
         self.load_state = LoadState::Loaded;
     }
 
-    /// Shows `document`, with `page` its stylesheets, in place of the
-    /// document shown, whose fetches are aborted.
-    fn install(&mut self, mut document: Document, page: Page) {
-        self.network.cancel(self.page.id(), None);
-        document.take_changes();
-        self.document = document;
-        self.page = page;
-        self.stylesheets = Stylesheets::new(self.page.sheets());
-        self.styled = None;
-        self.pending.clear();
-        self.layout = None;
-        self.layout_cache.clear();
-        self.scroll_y = 0.0;
-        self.scroll_target = 0.0;
-        self.element_scroll.clear();
+    /// Shows `shown` in place of the document shown, which it returns:
+    /// the frame and the glyph cache start over, and the scroll
+    /// animation's clock.
+    fn show(&mut self, shown: Shown) -> Shown {
+        let left = std::mem::replace(&mut self.shown, shown);
         self.backend.clear_glyph_cache();
+        self.backend.forget_frame();
+        self.drawn_scroll_y = self.shown.scroll_y;
+        self.animation_clock = None;
         self.changed = true;
+        left
+    }
+
+    /// Leaves `left`, the document of document state `state`: its
+    /// fetches are aborted, and the back-forward cache keeps it if it is
+    /// salvageable — no fetch was aborted for it, now or by a stop — and
+    /// an entry still has its state.
+    fn leave(&mut self, left: Shown, state: StateId) {
+        let aborted = self.network.cancel(left.page.id(), None);
+        if left.salvageable && !aborted && !left.initial {
+            // What the cache lets go is dropped here.
+            drop(self.history.keep(state, Box::new(left)));
+        }
     }
 
     fn new_page_id(&mut self) -> PageId {
@@ -436,26 +531,126 @@ impl Engine {
         id
     }
 
-    /// Starts loading `url` (docs/design/net.md, "The engine's loader"),
-    /// in place of any load under way, which is aborted. The document
-    /// is fetched on a thread of its own; the page shown stays until it
-    /// has arrived and so have the stylesheets the parser met before its
-    /// `<body>`, or they have failed. [`Engine::poll_network`] takes the
-    /// results, and [`Engine::load_state`] says where the load stands.
-    pub fn load(&mut self, url: Url) {
-        self.cancel_incoming();
+    /// Navigates to `url`, as the user asks with the address field or
+    /// the command line (docs/design/navigation.md, "Navigating"): HTML's
+    /// navigate, with no source document. The new entry replaces the
+    /// current one when `url` is the current entry's URL, or the
+    /// document shown is the initial `about:blank`; otherwise it is
+    /// pushed after it. The document is fetched on a thread of its own,
+    /// in place of any navigation under way, which is aborted; the page
+    /// shown stays until the new document has arrived and so have the
+    /// stylesheets the parser met before its `<body>`, or they have
+    /// failed. [`Engine::poll_network`] takes the results, and
+    /// [`Engine::load_state`] says where the navigation stands.
+    pub fn navigate(&mut self, url: Url) {
+        let handling = if self.shown.initial || self.history.current().url.as_ref() == Some(&url) {
+            Handling::Replace
+        } else {
+            Handling::Push
+        };
+        self.start_navigation(url, handling);
+    }
+
+    /// Fetches `url`'s document, for `handling` once it is shown.
+    fn start_navigation(&mut self, url: Url, handling: Handling) {
+        self.cancel_navigation();
         let id = self.new_page_id();
         let request = net::Request::get(url, net::Destination::Document);
         self.network.fetch(id, Target::Document, request);
-        self.incoming = Some(Incoming::Fetching(id));
+        self.navigation = Some(Navigation {
+            incoming: Incoming::Fetching(id),
+            handling,
+        });
         self.load_state = LoadState::Loading;
     }
 
-    /// Aborts the load under way, if there is one.
-    fn cancel_incoming(&mut self) {
-        if let Some(incoming) = self.incoming.take() {
-            self.network.cancel(incoming.id(), None);
+    /// Aborts the navigation under way, if there is one.
+    fn cancel_navigation(&mut self) {
+        if let Some(navigation) = self.navigation.take() {
+            self.network.cancel(navigation.incoming.id(), None);
         }
+    }
+
+    /// Goes back one entry in the session history, if there is one
+    /// before the current one: [`Engine::traverse`] by -1.
+    pub fn go_back(&mut self) {
+        self.traverse(-1);
+    }
+
+    /// Goes forward one entry, if there is one after the current one.
+    pub fn go_forward(&mut self) {
+        self.traverse(1);
+    }
+
+    /// Whether there is an entry before the current one.
+    pub fn can_go_back(&self) -> bool {
+        self.history.can_go_back()
+    }
+
+    /// Whether there is an entry after the current one.
+    pub fn can_go_forward(&self) -> bool {
+        self.history.can_go_forward()
+    }
+
+    /// Makes the entry `delta` away from the current one current, as
+    /// HTML's "traverse the history by a delta" does; a delta past
+    /// either end does nothing, and 0 reloads. A navigation under way is
+    /// aborted, and the current entry's scroll position saved. An entry
+    /// of the same document state shows the same document, at the
+    /// entry's URL; another shows the document the back-forward cache
+    /// kept for it, whole, or, when it kept none, its URL is fetched
+    /// again for it. Either way the entry's scroll position is restored.
+    pub fn traverse(&mut self, delta: isize) {
+        if delta == 0 {
+            self.reload();
+            return;
+        }
+        let Some((index, entry)) = self.history.by_delta(delta) else {
+            return;
+        };
+        let (state, url, scroll) = (entry.state, entry.url.clone(), entry.scroll);
+        self.cancel_navigation();
+        self.history.current_mut().scroll = self.shown.scroll_target;
+        let left_state = self.history.current().state;
+        if state == left_state {
+            self.history.go_to(index);
+            if let Some(url) = url {
+                self.shown.page.set_url(url);
+            }
+            self.goal = Some(ScrollGoal::Offset(scroll));
+            self.changed = true;
+            self.settle_load_state();
+        } else if let Some(kept) = self.history.take_kept(state) {
+            self.history.go_to(index);
+            let left = self.show(*kept);
+            self.leave(left, left_state);
+            self.goal = Some(ScrollGoal::Offset(scroll));
+            self.settle_load_state();
+        } else if let Some(url) = url {
+            self.start_navigation(url, Handling::Traverse(index));
+        }
+    }
+
+    /// Fetches the current entry's URL again and shows the new document
+    /// in the same entry, at its scroll position, as HTML's reload does.
+    /// A document given to the engine has no URL, and is not reloaded.
+    pub fn reload(&mut self) {
+        if let Some(url) = self.history.current().url.clone() {
+            self.start_navigation(url, Handling::Reload);
+        }
+    }
+
+    /// HTML's "stop loading": the navigation under way is aborted, and so
+    /// are the shown document's own fetches. Its stylesheets aborted
+    /// that way count as failed, and the load is over. A document whose
+    /// fetches were aborted is not kept by the back-forward cache.
+    pub fn stop(&mut self) {
+        self.cancel_navigation();
+        if self.shown.page.abort(&mut self.network) {
+            self.shown.salvageable = false;
+            self.sheets_changed();
+        }
+        self.settle_load_state();
     }
 
     /// Takes every fetch result that has arrived and applies it: a
@@ -482,15 +677,19 @@ impl Engine {
         match target {
             Target::Document => self.document_arrived(page, result),
             Target::Sheet { owner, path } => {
-                if page == self.page.id() {
+                if page == self.shown.page.id() {
                     if self
+                        .shown
                         .page
                         .sheet_arrived(owner, &path, id, result, &mut self.network)
                     {
                         self.sheets_changed();
                     }
                     self.update_load_state();
-                } else if let Some(Incoming::Waiting { page: incoming, .. }) = &mut self.incoming
+                } else if let Some(Navigation {
+                    incoming: Incoming::Waiting { page: incoming, .. },
+                    ..
+                }) = &mut self.navigation
                     && incoming.id() == page
                 {
                     incoming.sheet_arrived(owner, &path, id, result, &mut self.network);
@@ -500,14 +699,17 @@ impl Engine {
         }
     }
 
-    /// Takes the response to the document fetch of the load under way:
-    /// the load fails, or the document is parsed and its stylesheets
-    /// fetched.
+    /// Takes the response to the document fetch of the navigation under
+    /// way: the navigation fails, or the document is parsed and its
+    /// stylesheets fetched.
     fn document_arrived(&mut self, page: PageId, result: Result<net::Response, LoadError>) {
-        if !matches!(self.incoming, Some(Incoming::Fetching(id)) if id == page) {
+        let Some(navigation) = self.navigation.take() else {
+            return;
+        };
+        if !matches!(navigation.incoming, Incoming::Fetching(id) if id == page) {
+            self.navigation = Some(navigation);
             return;
         }
-        self.incoming = None;
         let parsed = result.and_then(|response| {
             let parsed = loader::document_from(&response)?;
             let address_space = response.address_space.unwrap_or(net::AddressSpace::Public);
@@ -525,9 +727,12 @@ impl Engine {
         match parsed {
             Ok((document, mut incoming)) => {
                 incoming.begin(&document, &mut self.network);
-                self.incoming = Some(Incoming::Waiting {
-                    page: Box::new(incoming),
-                    document: Box::new(document),
+                self.navigation = Some(Navigation {
+                    incoming: Incoming::Waiting {
+                        page: Box::new(incoming),
+                        document: Box::new(document),
+                    },
+                    handling: navigation.handling,
                 });
                 self.commit_if_ready();
             }
@@ -539,51 +744,111 @@ impl Engine {
     /// arrived or failed.
     fn commit_if_ready(&mut self) {
         let ready = matches!(
-            &self.incoming,
-            Some(Incoming::Waiting { page, .. }) if page.blocking_settled()
+            &self.navigation,
+            Some(Navigation { incoming: Incoming::Waiting { page, .. }, .. })
+                if page.blocking_settled()
         );
         if !ready {
             return;
         }
-        let Some(Incoming::Waiting { page, document }) = self.incoming.take() else {
+        let Some(Navigation {
+            incoming: Incoming::Waiting { page, document },
+            handling,
+        }) = self.navigation.take()
+        else {
             unreachable!("checked above");
         };
-        self.install(*document, *page);
-        self.update_load_state();
+        self.commit(*document, *page, handling);
+    }
+
+    /// Shows a navigation's document, and puts it in the session history
+    /// as `handling` says: in a new entry pushed or put in the current
+    /// one's place, the document left kept or dropped; or in the entry
+    /// reloaded or traversed to, at its saved scroll position.
+    fn commit(&mut self, document: Document, page: Page, handling: Handling) {
+        let url = page.url().cloned();
+        self.history.current_mut().scroll = self.shown.scroll_target;
+        let left_state = self.history.current().state;
+        let mut goal = None;
+        match handling {
+            Handling::Push => {
+                let state = self.history.new_state();
+                self.history.push(url, state);
+            }
+            Handling::Replace => {
+                let state = self.history.new_state();
+                self.history.replace(url, state);
+            }
+            Handling::Reload => {
+                let entry = self.history.current_mut();
+                entry.url = url;
+                goal = Some(ScrollGoal::Offset(entry.scroll));
+            }
+            Handling::Traverse(index) => {
+                self.history.go_to(index);
+                let entry = self.history.entry_mut(index);
+                entry.url = url;
+                goal = Some(ScrollGoal::Offset(entry.scroll));
+            }
+        }
+        let left = self.show(Shown::new(document, page));
+        if handling == Handling::Reload {
+            // The entry's state has the new document; the old one is
+            // gone, not kept.
+            self.network.cancel(left.page.id(), None);
+        } else {
+            self.leave(left, left_state);
+        }
+        self.goal = goal;
+        self.settle_load_state();
     }
 
     /// The load is done once its document is shown and every stylesheet
     /// it asked for has arrived or failed.
     fn update_load_state(&mut self) {
-        if self.load_state == LoadState::Loading && self.incoming.is_none() && self.page.settled() {
+        if self.load_state == LoadState::Loading
+            && self.navigation.is_none()
+            && self.shown.page.settled()
+        {
             self.load_state = LoadState::Loaded;
         }
+    }
+
+    /// The load state as the document shown and the navigation under way
+    /// make it, after a document is shown or a load stopped.
+    fn settle_load_state(&mut self) {
+        self.load_state = if self.navigation.is_some() || !self.shown.page.settled() {
+            LoadState::Loading
+        } else {
+            LoadState::Loaded
+        };
     }
 
     /// Takes the stylesheets that apply as they now stand: when they
     /// differ from those the cascade has, the next frame cascades the
     /// whole document.
     fn sheets_changed(&mut self) {
-        let sheets = self.page.sheets();
-        if sheets != self.stylesheets.sheets() {
-            self.stylesheets = Stylesheets::new(sheets);
-            self.styled = None;
-            self.pending.clear();
-            self.layout = None;
+        let sheets = self.shown.page.sheets();
+        if sheets != self.shown.stylesheets.sheets() {
+            self.shown.stylesheets = Stylesheets::new(sheets);
+            self.shown.styled = None;
+            self.shown.pending.clear();
+            self.shown.layout = None;
             self.changed = true;
         }
     }
 
-    /// Where the latest load stands. A document given to the engine,
-    /// the built-in one included, is loaded.
+    /// Where the latest navigation stands. A document given to the
+    /// engine, and the initial `about:blank`, are loaded.
     pub fn load_state(&self) -> &LoadState {
         &self.load_state
     }
 
-    /// The URL of the document shown; none for a document given to the
+    /// The current entry's URL: the URL of the document shown, which a
+    /// fragment navigation changes; none for a document given to the
     /// engine.
     pub fn url(&self) -> Option<&Url> {
-        self.page.url()
+        self.history.current().url.as_ref()
     }
 
     /// The name of the encoding the document shown is in, when the
@@ -592,7 +857,10 @@ impl Engine {
     /// decoded as UTF-8, which keeps its ASCII and shows the rest as
     /// U+FFFD; the shell says so.
     pub fn undecodable_encoding(&self) -> Option<&'static str> {
-        self.page.undecodable().map(|encoding| encoding.name())
+        self.shown
+            .page
+            .undecodable()
+            .map(|encoding| encoding.name())
     }
 
     /// Calls `waker`, from a fetch's thread, whenever a fetch finishes:
@@ -611,7 +879,7 @@ impl Engine {
 
     /// The current document.
     pub fn document(&self) -> &Document {
-        &self.document
+        &self.shown.document
     }
 
     /// Lends the document to `f` to change through its mutation API,
@@ -632,8 +900,8 @@ impl Engine {
     /// frame. When it records none — a value set to the one already
     /// there, say — nothing is redone.
     pub fn mutate<R>(&mut self, f: impl FnOnce(&mut Document) -> R) -> R {
-        let result = f(&mut self.document);
-        let changes = self.document.take_changes();
+        let result = f(&mut self.shown.document);
+        let changes = self.shown.document.take_changes();
         if !changes.is_empty() {
             self.document_changed(changes);
         }
@@ -647,27 +915,33 @@ impl Engine {
         let mut sheets = None;
         if changes
             .iter()
-            .any(|change| loader::may_touch_sheets(&self.document, change))
+            .any(|change| loader::may_touch_sheets(&self.shown.document, change))
         {
-            self.page.rescan(&self.document, &mut self.network);
+            self.shown
+                .page
+                .rescan(&self.shown.document, &mut self.network);
             self.update_load_state();
-            sheets = Some(self.page.sheets()).filter(|sheets| sheets != self.stylesheets.sheets());
+            sheets = Some(self.shown.page.sheets())
+                .filter(|sheets| sheets != self.shown.stylesheets.sheets());
         }
         if let Some(sheets) = sheets {
-            self.stylesheets = Stylesheets::new(sheets);
-            self.styled = None;
-            self.pending.clear();
-        } else if self.styled.is_some() && self.pending.first() != Some(&Change::Everything) {
+            self.shown.stylesheets = Stylesheets::new(sheets);
+            self.shown.styled = None;
+            self.shown.pending.clear();
+        } else if self.shown.styled.is_some()
+            && self.shown.pending.first() != Some(&Change::Everything)
+        {
             // Past the journal's own bound, the changes count as all.
-            if self.pending.len() + changes.len() > dom::MAX_JOURNAL {
-                self.pending = vec![Change::Everything];
+            if self.shown.pending.len() + changes.len() > dom::MAX_JOURNAL {
+                self.shown.pending = vec![Change::Everything];
             } else {
-                self.pending.extend(changes);
+                self.shown.pending.extend(changes);
             }
         }
-        self.layout = None;
-        let document = &self.document;
-        self.element_scroll
+        self.shown.layout = None;
+        let document = &self.shown.document;
+        self.shown
+            .element_scroll
             .retain(|node, _| document.contains(*node));
         self.changed = true;
     }
@@ -683,14 +957,15 @@ impl Engine {
 
     /// Whether a scroll offset is on its way to its target.
     fn animating(&self) -> bool {
-        self.scroll_y != self.scroll_target || self.element_scroll.values().any(|s| s.y != s.target)
+        self.shown.scroll_y != self.shown.scroll_target
+            || self.shown.element_scroll.values().any(|s| s.y != s.target)
     }
 
     /// The document's stylesheets that apply, in cascade order: those
     /// of its `<link>` and `<style>` elements in tree order, each one's
     /// imports before it.
     pub fn stylesheets(&self) -> &[css::Stylesheet] {
-        self.stylesheets.sheets()
+        self.shown.stylesheets.sheets()
     }
 
     /// The document's elements' computed styles, by node, as the frames
@@ -709,7 +984,9 @@ impl Engine {
             viewport_height: viewport.1 as f32,
             fonts: Some(&fonts),
         };
-        self.stylesheets.cascade(&self.document, &context)
+        self.shown
+            .stylesheets
+            .cascade(&self.shown.document, &context)
     }
 
     /// How many full cascades this session has run.
@@ -729,7 +1006,7 @@ impl Engine {
     /// frame pipeline uses [`Engine::layout`].
     pub fn fragments(&self, viewport_width: f32) -> Vec<Fragment> {
         let styles = self.cascade((viewport_width as u32, self.viewport.1));
-        let boxes = layout::build_box_tree(&self.document, &styles);
+        let boxes = layout::build_box_tree(&self.shown.document, &styles);
         layout::flatten(
             layout::layout_document_in(
                 &boxes,
@@ -749,45 +1026,51 @@ impl Engine {
     /// the changes and the restyled elements reach forgotten by a
     /// restyle (M13.2).
     fn cached_styles(&mut self) -> &Styles {
-        let stale = self.styled.as_ref().is_none_or(|cached| {
+        let stale = self.shown.styled.as_ref().is_none_or(|cached| {
             cached.styles.uses_viewport_units && cached.viewport != self.viewport
         });
         if stale {
             let styles = self.cascade(self.viewport);
             self.style_runs += 1;
-            self.pending.clear();
-            self.layout = None;
-            self.layout_cache.clear();
-            self.styled = Some(CachedStyle {
+            self.shown.pending.clear();
+            self.shown.layout = None;
+            self.shown.layout_cache.clear();
+            self.shown.styled = Some(CachedStyle {
                 viewport: self.viewport,
                 styles,
             });
-        } else if !self.pending.is_empty() {
-            let changes = std::mem::take(&mut self.pending);
+        } else if !self.shown.pending.is_empty() {
+            let changes = std::mem::take(&mut self.shown.pending);
             let fonts = FontMeasurer(&self.layout_fonts);
             let context = CascadeContext {
                 viewport_width: self.viewport.0 as f32,
                 viewport_height: self.viewport.1 as f32,
                 fonts: Some(&fonts),
             };
-            let cached = self.styled.as_mut().expect("not stale");
-            let restyle =
-                self.stylesheets
-                    .restyle(&self.document, &context, &mut cached.styles, &changes);
+            let cached = self.shown.styled.as_mut().expect("not stale");
+            let restyle = self.shown.stylesheets.restyle(
+                &self.shown.document,
+                &context,
+                &mut cached.styles,
+                &changes,
+            );
             // Styles that did not depend on the viewport stand for this
             // one; any computed now used it.
             cached.viewport = self.viewport;
             if restyle.full {
                 self.style_runs += 1;
-                self.layout_cache.clear();
+                self.shown.layout_cache.clear();
             } else {
                 self.restyled_elements += restyle.computed as u64;
-                self.layout_cache
-                    .invalidate(&self.document, &changes, &restyle.changed);
+                self.shown.layout_cache.invalidate(
+                    &self.shown.document,
+                    &changes,
+                    &restyle.changed,
+                );
             }
-            self.layout = None;
+            self.shown.layout = None;
         }
-        &self.styled.as_ref().expect("just computed").styles
+        &self.shown.styled.as_ref().expect("just computed").styles
     }
 
     /// The document's layout for `viewport_width`, computed once per
@@ -799,31 +1082,31 @@ impl Engine {
         // layout — so the cascade is checked first.
         self.cached_styles();
         let viewport_height = self.viewport.1 as f32;
-        let stale = self.layout.as_ref().is_none_or(|cached| {
+        let stale = self.shown.layout.as_ref().is_none_or(|cached| {
             cached.width != viewport_width
                 || (cached.layout.depends_on_viewport_height && cached.height != viewport_height)
         });
         if stale {
-            let styles = &self.styled.as_ref().expect("just computed").styles;
-            let boxes = layout::build_box_tree(&self.document, styles);
+            let styles = &self.shown.styled.as_ref().expect("just computed").styles;
+            let boxes = layout::build_box_tree(&self.shown.document, styles);
             let layout = layout::layout_document_cached(
                 &boxes,
                 viewport_width,
                 Some(viewport_height),
                 &self.layout_fonts,
-                &self.layout_cache,
+                &self.shown.layout_cache,
             );
             self.layout_runs += 1;
-            let (laid_out, reused) = self.layout_cache.counts();
+            let (laid_out, reused) = self.shown.layout_cache.counts();
             self.boxes_laid_out += laid_out as u64;
             self.boxes_reused += reused as u64;
-            self.layout = Some(CachedLayout {
+            self.shown.layout = Some(CachedLayout {
                 width: viewport_width,
                 height: viewport_height,
                 layout,
             });
         }
-        &self.layout.as_ref().expect("just computed").layout
+        &self.shown.layout.as_ref().expect("just computed").layout
     }
 
     /// How many layouts this session has run.
@@ -908,9 +1191,20 @@ impl Engine {
         // The document may be shorter at this width than where the
         // offset was; so may a scroll container's content.
         let max = self.max_scroll();
-        self.scroll_target = self.scroll_target.clamp(0.0, max);
-        self.scroll_y = self.scroll_y.clamp(0.0, max);
-        let mut elements = std::mem::take(&mut self.element_scroll);
+        if let Some(ScrollGoal::Offset(y)) = self.goal {
+            // Applied before painting, so that no frame shows the
+            // document elsewhere first, and again at each frame until
+            // the document's load is over, since a late stylesheet can
+            // make the document longer.
+            self.shown.scroll_target = y;
+            self.shown.scroll_y = y;
+            if self.shown.page.settled() {
+                self.goal = None;
+            }
+        }
+        self.shown.scroll_target = self.shown.scroll_target.clamp(0.0, max);
+        self.shown.scroll_y = self.shown.scroll_y.clamp(0.0, max);
+        let mut elements = std::mem::take(&mut self.shown.element_scroll);
         {
             let layout = self.layout(width as f32);
             for (node, scroll) in elements.iter_mut() {
@@ -919,8 +1213,9 @@ impl Engine {
                 scroll.y = scroll.y.clamp(0.0, max);
             }
         }
-        self.element_scroll = elements;
+        self.shown.element_scroll = elements;
         let offsets: HashMap<NodeId, f32> = self
+            .shown
             .element_scroll
             .iter()
             .map(|(node, scroll)| (*node, scroll.y))
@@ -929,12 +1224,12 @@ impl Engine {
         let viewport = Viewport {
             width: width as f32,
             height: height as f32,
-            scroll_y: self.scroll_y,
+            scroll_y: self.shown.scroll_y,
         };
         let scrollbar = self.scrollbar();
-        if self.scroll_y != self.drawn_scroll_y {
+        if self.shown.scroll_y != self.drawn_scroll_y {
             self.backend.forget_frame();
-            self.drawn_scroll_y = self.scroll_y;
+            self.drawn_scroll_y = self.shown.scroll_y;
         }
         let layout = self.layout(width as f32);
         let mut list = paint_fragments_in(&layout.roots, viewport, &offsets);
@@ -974,13 +1269,13 @@ impl Engine {
 
     /// The scroll offset the current frame shows, in px.
     pub fn scroll_y(&self) -> f32 {
-        self.scroll_y
+        self.shown.scroll_y
     }
 
     /// The scroll offset being approached (equal to [`Engine::scroll_y`]
     /// once the animation has settled).
     pub fn scroll_target(&self) -> f32 {
-        self.scroll_target
+        self.shown.scroll_target
     }
 
     /// The furthest the last frame's viewport can scroll: the document's
@@ -999,7 +1294,7 @@ impl Engine {
     /// Scrolls by `dy` px (down when positive), animated over the next
     /// ticks; the target is clamped to the document.
     pub fn scroll_by(&mut self, dy: f32) {
-        let target = self.scroll_target + dy;
+        let target = self.shown.scroll_target + dy;
         self.scroll_to(target);
     }
 
@@ -1010,16 +1305,18 @@ impl Engine {
         if y.is_nan() {
             return;
         }
+        // The user has scrolled: a position being restored is given up.
+        self.goal = None;
         let max = self.max_scroll();
-        self.scroll_target = y.clamp(0.0, max);
+        self.shown.scroll_target = y.clamp(0.0, max);
     }
 
     /// Jumps to offset `y` at once, no animation (a thumb drag follows
     /// the pointer); clamped to the document.
     pub fn set_scroll(&mut self, y: f32) {
         self.scroll_to(y);
-        self.changed |= self.scroll_y != self.scroll_target;
-        self.scroll_y = self.scroll_target;
+        self.changed |= self.shown.scroll_y != self.shown.scroll_target;
+        self.shown.scroll_y = self.shown.scroll_target;
     }
 
     /// Jumps to the fraction `f` of the scroll range (0 is the top, 1
@@ -1047,8 +1344,8 @@ impl Engine {
     fn advance(&mut self, elapsed: Duration) -> bool {
         let frames = elapsed.as_secs_f64() / FRAME_BUDGET.as_secs_f64();
         let keep = (1.0 - f64::from(SCROLL_TICK_FRACTION)).powf(frames) as f32;
-        let mut moving = approach(&mut self.scroll_y, self.scroll_target, keep);
-        for scroll in self.element_scroll.values_mut() {
+        let mut moving = approach(&mut self.shown.scroll_y, self.shown.scroll_target, keep);
+        for scroll in self.shown.element_scroll.values_mut() {
             moving |= approach(&mut scroll.y, scroll.target, keep);
         }
         moving
@@ -1063,7 +1360,7 @@ impl Engine {
             return None;
         }
         let (width, height) = (width as f32, height as f32);
-        let (thumb_y, thumb_h) = scrollbar_thumb(height, max, self.scroll_y);
+        let (thumb_y, thumb_h) = scrollbar_thumb(height, max, self.shown.scroll_y);
         Some(Scrollbar {
             x: width - SCROLLBAR_WIDTH,
             w: SCROLLBAR_WIDTH,
@@ -1078,12 +1375,15 @@ impl Engine {
     /// The scroll offset a scroll container shows, in px: zero for an
     /// element never scrolled, or not a scroll container at all.
     pub fn element_scroll(&self, node: NodeId) -> f32 {
-        self.element_scroll.get(&node).map_or(0.0, |s| s.y)
+        self.shown.element_scroll.get(&node).map_or(0.0, |s| s.y)
     }
 
     /// The offset a scroll container is approaching.
     pub fn element_scroll_target(&self, node: NodeId) -> f32 {
-        self.element_scroll.get(&node).map_or(0.0, |s| s.target)
+        self.shown
+            .element_scroll
+            .get(&node)
+            .map_or(0.0, |s| s.target)
     }
 
     /// The furthest the element's content can scroll in the last
@@ -1106,8 +1406,9 @@ impl Engine {
         if y.is_nan() {
             return;
         }
+        self.goal = None;
         let max = self.element_max_scroll(node);
-        self.element_scroll.entry(node).or_default().target = y.clamp(0.0, max);
+        self.shown.element_scroll.entry(node).or_default().target = y.clamp(0.0, max);
     }
 
     /// Scrolls the element's content by `dy` px (down when positive),
@@ -1120,7 +1421,7 @@ impl Engine {
     /// Jumps the element's content to offset `y` at once, no animation.
     pub fn set_element_scroll(&mut self, node: NodeId, y: f32) {
         self.scroll_element_to(node, y);
-        if let Some(scroll) = self.element_scroll.get_mut(&node) {
+        if let Some(scroll) = self.shown.element_scroll.get_mut(&node) {
             self.changed |= scroll.y != scroll.target;
             scroll.y = scroll.target;
         }
@@ -1194,6 +1495,7 @@ impl Engine {
             return None;
         }
         let offsets: HashMap<NodeId, f32> = self
+            .shown
             .element_scroll
             .iter()
             .map(|(node, scroll)| (*node, scroll.y))
@@ -1201,7 +1503,7 @@ impl Engine {
         let viewport = Viewport {
             width: width as f32,
             height: height as f32,
-            scroll_y: self.scroll_y,
+            scroll_y: self.shown.scroll_y,
         };
         let layout = self.layout(width as f32);
         // The clips in force, outermost first: the chain around a hit.
@@ -1242,7 +1544,7 @@ impl Engine {
     /// is M15's navigation).
     pub fn link_at(&mut self, x: f32, y: f32) -> Option<String> {
         let hit = self.hit_test(x, y)?;
-        let document = &self.document;
+        let document = &self.shown.document;
         std::iter::successors(Some(hit), |&node| document.parent_element(node)).find_map(|node| {
             if document.tag(node) == Some("a") {
                 document.attr(node, "href").map(str::to_string)
@@ -1251,6 +1553,13 @@ impl Engine {
             }
         })
     }
+}
+
+/// The document HTML `source` parses to, or an empty one if the parser
+/// refuses it.
+fn parsed_or_empty(source: &str) -> Document {
+    html::parse_document(source)
+        .map_or_else(|_| Document::new(), |parsed| Document::from_node(&parsed))
 }
 
 /// The box fragment of the element `node`, if it has one.
@@ -1300,6 +1609,22 @@ mod tests {
         )
     }
 
+    /// A test engine showing the built-in page.
+    fn builtin_engine() -> Engine {
+        let mut engine = test_engine();
+        engine.load_document(DOCUMENT_SOURCE);
+        engine
+    }
+
+    #[test]
+    fn a_new_engine_shows_the_initial_about_blank() {
+        let engine = test_engine();
+        assert_eq!(engine.url().map(Url::as_str), Some("about:blank"));
+        assert_eq!(engine.document().text_content(engine.document().root()), "");
+        assert_eq!(engine.load_state(), &LoadState::Loaded);
+        assert!(!engine.can_go_back() && !engine.can_go_forward());
+    }
+
     #[test]
     fn frame_produces_full_size_buffer() {
         let mut engine = test_engine();
@@ -1309,7 +1634,7 @@ mod tests {
 
     #[test]
     fn builtin_document_parses_to_expected_text() {
-        let engine = test_engine();
+        let engine = builtin_engine();
         assert!(
             engine
                 .document()
@@ -1339,7 +1664,7 @@ mod tests {
 
     #[test]
     fn builtin_style_element_parses_into_stylesheet() {
-        let engine = test_engine();
+        let engine = builtin_engine();
         assert_eq!(engine.stylesheets().len(), 1);
         let rules = engine.stylesheets()[0].rules.len();
         assert!(rules >= 2, "expected at least h1 and p rules, got {rules}");
@@ -1347,7 +1672,7 @@ mod tests {
 
     #[test]
     fn loading_a_document_replaces_stylesheets() {
-        let mut engine = test_engine();
+        let mut engine = builtin_engine();
         assert!(!engine.stylesheets().is_empty());
         engine.load_document("<p>no styles here</p>");
         assert!(engine.stylesheets().is_empty());
@@ -1462,7 +1787,7 @@ mod tests {
 
     #[test]
     fn builtin_document_renders_the_card_background_and_border() {
-        let engine = test_engine();
+        let engine = builtin_engine();
         let fragments = engine.fragments(800.0);
         let has_card_background = fragments.iter().any(|f| {
             matches!(f.kind, layout::FragmentKind::Box) && f.style.background_color.a > 0.0
@@ -2715,7 +3040,7 @@ mod tests {
             document.remove_child(body, s).expect("a child");
             document.free(s).expect("detached");
         });
-        assert!(engine.element_scroll.is_empty());
+        assert!(engine.shown.element_scroll.is_empty());
         assert_eq!(engine.element_scroll(s), 0.0);
         engine.frame(200, 100);
 

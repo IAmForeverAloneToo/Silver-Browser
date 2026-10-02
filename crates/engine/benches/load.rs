@@ -1,6 +1,7 @@
-//! M14 exit: the time from `Engine::load` to the first frame for a page
-//! of 1,000 paragraphs and three stylesheets, served by `net`'s test
-//! server on 127.0.0.1 (docs/design/net.md, "Order of work", step 9).
+//! M14 exit: the time from `Engine::navigate` (M14's `load`) to the
+//! first frame for a page of 1,000 paragraphs and three stylesheets,
+//! served by `net`'s test server on 127.0.0.1 (docs/design/net.md,
+//! "Order of work", step 9).
 //! The page links its sheets from its `<head>`, so they block it: it is
 //! shown once all three have arrived, styled, and the frame after that
 //! is the first. Each run starts a new engine, so its connections are
@@ -78,7 +79,7 @@ fn run(server: &TestServer) -> (Duration, FrameStats, Duration) {
         let _ = wake.send(());
     });
     let start = Instant::now();
-    engine.load(server.url("/page.html"));
+    engine.navigate(server.url("/page.html"));
     while engine.url().is_none() {
         woken
             .recv_timeout(Duration::from_secs(30))

@@ -162,6 +162,25 @@ impl Page {
         self.undecodable
     }
 
+    /// Gives the document a new URL, as a navigation to one of its
+    /// fragments does (M15). A document given to the engine keeps none.
+    pub(crate) fn set_url(&mut self, url: Url) {
+        if self.context.url.is_some() {
+            self.context.url = Some(url);
+        }
+    }
+
+    /// Aborts the fetches of the page's sheets, as HTML's "stop loading"
+    /// does, and leaves those sheets out as failed. Says whether any
+    /// fetch was aborted.
+    pub(crate) fn abort(&mut self, network: &mut Network) -> bool {
+        let aborted = network.cancel(self.context.id, None);
+        for owner in &mut self.owners {
+            owner.sheet.fail_waiting();
+        }
+        aborted
+    }
+
     /// Finds the sheets of `document`, freshly parsed, and starts their
     /// fetches: each element's URL resolved against the base URL as it
     /// was where the parser inserted it, and those before `<body>`
@@ -317,6 +336,16 @@ impl Page {
 }
 
 impl Slot {
+    /// Makes this sheet, and each import below it, failed where it is
+    /// still on its way.
+    fn fail_waiting(&mut self) {
+        match self {
+            Slot::Waiting(_) => *self = Slot::Failed,
+            Slot::Ready(sheet) => sheet.imports.iter_mut().for_each(Slot::fail_waiting),
+            Slot::None | Slot::Failed => {}
+        }
+    }
+
     fn settled(&self) -> bool {
         match self {
             Slot::Waiting(_) => false,

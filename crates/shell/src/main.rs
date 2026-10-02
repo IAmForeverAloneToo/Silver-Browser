@@ -407,8 +407,7 @@ fn main() {
             // An event loop gone has no one to wake.
             let _ = proxy.send_event(NetworkWake);
         });
-        engine.load_document("");
-        engine.load(url.clone());
+        engine.navigate(url.clone());
     }
 
     let mut browser = Browser::new(Some(engine), start);

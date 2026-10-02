@@ -2,201 +2,15 @@
 //! net.md, "Tests"): documents and their stylesheets fetched, imported,
 //! ordered, blocking, chosen and refreshed as the document changes.
 
-use std::sync::mpsc::{Receiver, channel};
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use dom::NodeId;
 use net::test_server::{Reply, TestServer};
 
 use super::{Incoming, MAX_FETCH_THREADS};
+use crate::testing::*;
 use crate::{Engine, LoadError, LoadState, NetworkError, Url};
-
-/// Long enough for anything a test waits for on a loaded machine.
-const WAIT: Duration = Duration::from_secs(30);
-
-/// An engine over the bundled font, and the channel its waker sends on.
-struct Tab {
-    engine: Engine,
-    woken: Receiver<()>,
-}
-
-impl Tab {
-    fn new() -> Tab {
-        let mut engine = Engine::with_fonts(
-            text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
-                .expect("the bundled font parses"),
-        );
-        let (wake, woken) = channel();
-        engine.set_waker(move || {
-            let _ = wake.send(());
-        });
-        Tab { engine, woken }
-    }
-
-    /// Takes results as the waker says they come, as the shell does,
-    /// until `done` holds.
-    fn wait_until(&mut self, mut done: impl FnMut(&Engine) -> bool) {
-        let deadline = Instant::now() + WAIT;
-        loop {
-            self.engine.poll_network();
-            if done(&self.engine) {
-                return;
-            }
-            let left = deadline
-                .checked_duration_since(Instant::now())
-                .expect("the engine gets there in time");
-            self.woken
-                .recv_timeout(left)
-                .expect("a fetch finishes in time");
-        }
-    }
-
-    /// Takes results until no fetch is in flight.
-    fn settle(&mut self) {
-        self.wait_until(|engine| engine.network.in_flight() == 0);
-    }
-
-    /// Loads `url` and takes results until no fetch is in flight.
-    fn load(&mut self, url: Url) {
-        self.engine.load(url);
-        self.settle();
-    }
-
-    /// The name each stylesheet that applies goes by: its first rule's
-    /// first identifier, `a` for `.a {}`.
-    fn names(&self) -> Vec<String> {
-        names(&self.engine)
-    }
-}
-
-fn names(engine: &Engine) -> Vec<String> {
-    engine
-        .stylesheets()
-        .iter()
-        .map(|sheet| {
-            sheet
-                .rules
-                .iter()
-                .find_map(|rule| match rule {
-                    css::Rule::Qualified(rule) => {
-                        rule.prelude.iter().find_map(|token| match token {
-                            css::Token::Ident(name) => Some(name.clone()),
-                            _ => None,
-                        })
-                    }
-                    css::Rule::At(_) => None,
-                })
-                .unwrap_or_default()
-        })
-        .collect()
-}
-
-/// A server answering each path with what `route` gives, and 404 for
-/// the paths it gives nothing for.
-fn serve(route: impl Fn(&str) -> Option<Reply> + Send + Sync + 'static) -> TestServer {
-    TestServer::plain(move |request| {
-        route(&request.target).unwrap_or_else(|| {
-            Reply::with_fields(404, &[("Content-Type", "text/plain")], b"not here")
-        })
-    })
-}
-
-fn html(body: &str) -> Reply {
-    Reply::ok("text/html", body.as_bytes())
-}
-
-fn css(body: &str) -> Reply {
-    Reply::ok("text/css", body.as_bytes())
-}
-
-fn css_bytes(body: &[u8]) -> Reply {
-    Reply::ok("text/css", body)
-}
-
-/// The paths the server was asked for, in the order it was.
-fn paths(server: &TestServer) -> Vec<String> {
-    server
-        .requests()
-        .into_iter()
-        .map(|request| request.target)
-        .collect()
-}
-
-/// The paths the server was asked for, sorted: fetches made together
-/// reach it in any order.
-fn sorted_paths(server: &TestServer) -> Vec<String> {
-    let mut paths = paths(server);
-    paths.sort_unstable();
-    paths
-}
-
-/// Waits for `done`, which no fetch result tells of.
-fn wait_for(mut done: impl FnMut() -> bool) {
-    let deadline = Instant::now() + WAIT;
-    while !done() {
-        assert!(Instant::now() < deadline, "it happens in time");
-        thread::sleep(Duration::from_millis(2));
-    }
-}
-
-/// A gate a server's script waits at until the test opens it.
-#[derive(Default)]
-struct Gate {
-    open: Mutex<bool>,
-    opened: Condvar,
-}
-
-impl Gate {
-    fn new() -> Arc<Gate> {
-        Arc::new(Gate::default())
-    }
-
-    fn wait(&self) {
-        let mut open = self.open.lock().unwrap_or_else(PoisonError::into_inner);
-        while !*open {
-            open = self
-                .opened
-                .wait(open)
-                .unwrap_or_else(PoisonError::into_inner);
-        }
-    }
-
-    fn open(&self) {
-        *self.open.lock().unwrap_or_else(PoisonError::into_inner) = true;
-        self.opened.notify_all();
-    }
-}
-
-fn element(engine: &Engine, tag: &str) -> NodeId {
-    let document = engine.document();
-    document
-        .subtree(document.root())
-        .find(|&node| document.tag(node) == Some(tag))
-        .expect("the element")
-}
-
-fn by_id(engine: &Engine, id: &str) -> NodeId {
-    let document = engine.document();
-    document
-        .subtree(document.root())
-        .find(|&node| document.attr(node, "id") == Some(id))
-        .expect("the element")
-}
-
-fn color(engine: &mut Engine, id: &str) -> (f32, f32, f32) {
-    let node = by_id(engine, id);
-    let color = engine.styles().get(node).expect("styled").color;
-    (color.r, color.g, color.b)
-}
-
-fn text(engine: &Engine) -> String {
-    engine.document().text_content(engine.document().root())
-}
-
-const RED: (f32, f32, f32) = (1.0, 0.0, 0.0);
-const BLACK: (f32, f32, f32) = (0.0, 0.0, 0.0);
 
 const BODY: &str = "<body><p class=note>Some text to draw</p><div class=box></div></body>";
 const SHEET_A: &str =
@@ -258,18 +72,19 @@ fn the_page_shown_stays_until_the_sheets_before_body_arrive() {
         })
     };
     let mut tab = Tab::new();
-    tab.engine.load(server.url("/page.html"));
+    tab.engine.navigate(server.url("/page.html"));
     tab.wait_until(|engine| {
-        matches!(&engine.incoming, Some(Incoming::Waiting { .. }))
+        matches!(incoming(engine), Some(Incoming::Waiting { .. }))
             && engine.network.in_flight() == 1
     });
     // The document and the import are in; the blocking sheet is not, so
-    // the built-in page is still the one shown.
+    // the initial about:blank is still the one shown.
     assert_eq!(tab.engine.load_state(), &LoadState::Loading);
-    assert!(text(&tab.engine).contains("Hello from Silver Browser"));
+    assert_eq!(tab.engine.url().map(Url::as_str), Some("about:blank"));
+    assert_eq!(text(&tab.engine), "");
     gate.open();
     // The first moment the new page is shown, its sheets are there.
-    tab.wait_until(|engine| engine.url().is_some());
+    tab.wait_until(|engine| engine.navigation.is_none());
     assert!(text(&tab.engine).ends_with("New"));
     assert_eq!(tab.names(), ["imported", "", "slow"]);
     assert_eq!(tab.engine.load_state(), &LoadState::Loaded);
@@ -294,8 +109,8 @@ fn a_sheet_after_body_does_not_hold_the_page_back_and_restyles_it_when_it_comes(
         })
     };
     let mut tab = Tab::new();
-    tab.engine.load(server.url("/page.html"));
-    tab.wait_until(|engine| engine.url().is_some());
+    tab.engine.navigate(server.url("/page.html"));
+    tab.wait_until(|engine| engine.navigation.is_none());
     assert_eq!(tab.names(), ["early"]);
     assert_eq!(tab.engine.load_state(), &LoadState::Loading);
     tab.engine.frame(100, 100);
@@ -331,7 +146,7 @@ fn sheets_take_the_tree_order_of_their_elements_not_the_order_they_arrive_in() {
         })
     };
     let mut tab = Tab::new();
-    tab.engine.load(server.url("/page.html"));
+    tab.engine.navigate(server.url("/page.html"));
     tab.wait_until(|engine| names(engine) == ["middle", "second"]);
     gate.open();
     tab.settle();
@@ -674,8 +489,8 @@ fn a_link_removed_before_its_sheet_arrives_is_aborted() {
         })
     };
     let mut tab = Tab::new();
-    tab.engine.load(server.url("/page.html"));
-    tab.wait_until(|engine| engine.url().is_some());
+    tab.engine.navigate(server.url("/page.html"));
+    tab.wait_until(|engine| engine.navigation.is_none());
     wait_for(|| paths(&server).contains(&"/slow.css".to_owned()));
     assert_eq!(tab.engine.load_state(), &LoadState::Loading);
     let link = element(&tab.engine, "link");
@@ -711,7 +526,11 @@ fn a_document_that_is_not_html_fails_as_unsupported_and_the_page_stays() {
         tab.engine.load_state(),
         &LoadState::Failed(LoadError::Unsupported("text/plain".into()))
     );
-    assert_eq!(tab.engine.url(), None, "the built-in page stays");
+    assert_eq!(
+        tab.engine.url().map(Url::as_str),
+        Some("about:blank"),
+        "the page shown stays"
+    );
 
     // An error status is still a document.
     tab.load(server.url("/missing.html"));
@@ -837,7 +656,7 @@ fn a_new_load_aborts_the_one_under_way() {
         })
     };
     let mut tab = Tab::new();
-    tab.engine.load(server.url("/first.html"));
+    tab.engine.navigate(server.url("/first.html"));
     wait_for(|| paths(&server).contains(&"/first.html".to_owned()));
     tab.load(server.url("/second.html"));
     assert_eq!(tab.engine.url(), Some(&server.url("/second.html")));
@@ -866,8 +685,8 @@ fn a_new_page_aborts_the_fetches_of_the_page_it_replaces() {
         })
     };
     let mut tab = Tab::new();
-    tab.engine.load(server.url("/first.html"));
-    tab.wait_until(|engine| engine.url().is_some());
+    tab.engine.navigate(server.url("/first.html"));
+    tab.wait_until(|engine| engine.navigation.is_none());
     wait_for(|| paths(&server).contains(&"/slow.css".to_owned()));
     tab.load(server.url("/second.html"));
     assert_eq!(text(&tab.engine), "Second");
@@ -888,8 +707,8 @@ fn one_poll_takes_every_result_that_has_arrived() {
         _ => None,
     });
     let mut tab = Tab::new();
-    tab.engine.load(server.url("/page.html"));
-    tab.wait_until(|engine| engine.url().is_some());
+    tab.engine.navigate(server.url("/page.html"));
+    tab.wait_until(|engine| engine.navigation.is_none());
     wait_for(|| paths(&server).len() == 3 && tab.engine.network.pool().running() == 0);
     assert!(tab.engine.poll_network(), "a frame is wanted");
     assert_eq!(tab.names(), ["a", "b"]);
@@ -899,7 +718,7 @@ fn one_poll_takes_every_result_that_has_arrived() {
 fn an_engine_dropped_aborts_its_fetches() {
     let server = TestServer::plain(|_| Reply::Hang);
     let mut tab = Tab::new();
-    tab.engine.load(server.url("/"));
+    tab.engine.navigate(server.url("/"));
     wait_for(|| server.requests().len() == 1);
     let running = tab.engine.network.pool().running_probe();
     assert_eq!(running(), 1);
@@ -926,8 +745,8 @@ fn no_more_than_thirty_two_fetches_run_at_once_and_the_sheets_keep_their_order()
         })
     };
     let mut tab = Tab::new();
-    tab.engine.load(server.url("/page.html"));
-    tab.wait_until(|engine| matches!(&engine.incoming, Some(Incoming::Waiting { .. })));
+    tab.engine.navigate(server.url("/page.html"));
+    tab.wait_until(|engine| matches!(incoming(engine), Some(Incoming::Waiting { .. })));
     wait_for(|| tab.engine.network.pool().running() == MAX_FETCH_THREADS);
     thread::sleep(Duration::from_millis(100));
     assert_eq!(tab.engine.network.pool().most_running(), MAX_FETCH_THREADS);
@@ -966,7 +785,7 @@ fn a_document_given_while_a_load_is_under_way_replaces_it() {
         })
     };
     let mut tab = Tab::new();
-    tab.engine.load(server.url("/page.html"));
+    tab.engine.navigate(server.url("/page.html"));
     tab.engine.load_document("<p>Given</p>");
     assert_eq!(tab.engine.load_state(), &LoadState::Loaded);
     assert_eq!(tab.engine.network.in_flight(), 0);

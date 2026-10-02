@@ -191,10 +191,10 @@ pub fn compare_with_fresh(
     height: u32,
 ) -> Result<(), String> {
     let pixels = engine.frame(width, height);
-    fresh.set_document(Document::from_node(&engine.document.to_node()));
+    fresh.set_document(Document::from_node(&engine.shown.document.to_node()));
     fresh.frame(width, height);
-    let order = tree_order(&engine.document);
-    let fresh_order = tree_order(&fresh.document);
+    let order = tree_order(&engine.shown.document);
+    let fresh_order = tree_order(&fresh.shown.document);
     if order.len() != fresh_order.len() {
         return Err(format!(
             "the snapshot has {} nodes, the document {}",
@@ -218,16 +218,16 @@ pub fn compare_with_fresh(
 
     engine.cached_styles();
     fresh.cached_styles();
-    let styles = &engine.styled.as_ref().expect("cascaded").styles;
-    let fresh_styles = &fresh.styled.as_ref().expect("cascaded").styles;
+    let styles = &engine.shown.styled.as_ref().expect("cascaded").styles;
+    let fresh_styles = &fresh.shown.styled.as_ref().expect("cascaded").styles;
     for (i, (&node, &fresh_node)) in order.iter().zip(&fresh_order).enumerate() {
-        if engine.document.data(node) != fresh.document.data(fresh_node) {
+        if engine.shown.document.data(node) != fresh.shown.document.data(fresh_node) {
             return Err(format!("node {i} differs from the snapshot's"));
         }
         if styles.get(node) != fresh_styles.get(fresh_node) {
             return Err(format!(
                 "node {i} ({:?}): computed style {:?}, a full cascade gives {:?}",
-                engine.document.tag(node),
+                engine.shown.document.tag(node),
                 styles.get(node),
                 fresh_styles.get(fresh_node)
             ));
