@@ -37,7 +37,10 @@ shell          (bin "silver-browser": windowing, event loop, browser chrome UI)
    keep it honest.
 2. **Only `shell` touches the OS**: window creation, input events, the
    event loop. Only `render` touches pixel buffers / the GPU. `engine`
-   orchestrates but owns no platform state.
+   orchestrates but owns no platform state. Only `net` opens network
+   connections and reads resources by URL (since M14): CI fails the
+   build when `TcpStream`, `UdpSocket`, `ToSocketAddrs` or `rustls`
+   appears in any other crate or in `fuzz/` (T3.4).
 3. **Types are owned by their producer.** The display list lives in
    `paint`, the box tree in `layout`, the DOM in `dom`. No shared
    "common types" crate — if two layers need a type, it belongs to the
@@ -49,7 +52,9 @@ shell          (bin "silver-browser": windowing, event loop, browser chrome UI)
 5. **Library crates never panic on untrusted input.** All parsing entry
    points return `Result`. Web content is hostile by definition.
 6. **Cross-platform only.** `std` plus crates that build on Windows,
-   macOS, and Linux. No `#[cfg(windows)]` outside `shell` and `render`.
+   macOS, and Linux. No `#[cfg(windows)]` outside `shell` and `render`,
+   but for one thing in `net`: turning a `file:` URL's path into a
+   drive-letter path, and back in its tests (M14).
 7. **Rendering is pluggable.** `render` exposes a backend trait; the
    software backend (tiny-skia → softbuffer) is the default, a wgpu
    backend lands behind the same trait later.
@@ -680,3 +685,70 @@ parsing into the arena as bytes arrive (M24.8); scripting, the
 collector that frees detached nodes, and mutation observers (M24,
 M25); input events (M26). 593 tests workspace-wide. Still stub: `net`.
 Phase A is done. Next milestone: `net` v1, URLs and HTTP/1.1 (M14).
+
+Milestone 14 (`net` v1, URLs and HTTP/1.1), designed in
+`docs/design/net.md` and built in its nine steps. A new leaf crate,
+`encoding` (D18, step 1): the Encoding Standard's 40 encodings and
+228 labels, BOM sniffing, and decoders fed bytes in pieces of any size
+with the replacement and fatal modes, for UTF-8, UTF-16, the 28
+single-byte encodings, x-user-defined and replacement; encoders for
+UTF-8 and the single-byte encodings; the single-byte tables generated
+from the standard's index files. The legacy CJK encodings are
+recognised and, until a page or M42 needs them, decoded as UTF-8,
+`Engine::undecodable_encoding` saying so. `net::url` (D17, step 2) is
+the URL Standard's parser written as its state machine, with IPv4,
+IPv6 and opaque hosts, domains through `idna` only when they are not
+ASCII, the serializer and origins; the `url` crate is gone.
+`net::mime` (step 3): MIME types parsed, serialized and extracted from
+`Content-Type` as Fetch does, the MIME Sniffing algorithm, and `data:`
+URLs with forgiving-base64. `html::parse_document_from_bytes` and
+`css::decode_stylesheet` (step 4) find a document's and a sheet's
+encoding as HTML and css-syntax-3 say, a late `<meta>` having the
+bytes parsed again. `net::http` (step 5) writes requests and reads
+responses over any byte stream, per RFC 9112: interim responses
+skipped, chunked and length-delimited bodies, 256 KiB of header and
+64 MiB of body at most. `net::transport` (step 6): the system's
+resolver; connection attempts alternating address families 250ms
+apart; Local Network Access's address spaces, checked on every address
+connected to (D19); TLS 1.2 and 1.3 through rustls over aws-lc-rs,
+with X25519MLKEM768 and Mozilla's roots, failing closed (D4); six
+pooled connections an origin, an idle one looked at before it is
+taken and a `GET` or `HEAD` sent once more when a reused connection
+failed before answering; gzip and deflate; 60-second waits; and aborts
+that wake a waiting connection at once on every OS, each connection
+waiting in a `mio` poll of its own. `net::Client::fetch` (step 7) is
+Fetch's scheme fetch and HTTP-redirect fetch over them: `about:blank`,
+`data:`, `file:`, `http:` and `https:`, twenty redirects with their
+method rules, the bad ports, mixed content, and every check run again
+on every hop. The engine's loader (M14.6, step 8): `Engine::load`
+fetches a document on threads of the engine's own, at most 32 at
+once, each result waking the shell through the waker it gave, and
+`poll_network` applies what arrived. The page shown stays until the
+new document and the stylesheets before its `<body>` have arrived or
+failed, so a page first appears styled. Stylesheets come from `<link>`
+and `<style>` in tree order, each with its `@import`s before it, with
+`<base>`, media, types and the preferred set as HTML and CSSOM have
+them, and follow the journal as elements come, go and change;
+`load_state` says loading, loaded or failed. A document given as
+source or as a tree fetches nothing. The shell runs as
+`silver-browser [URL or path]`, an existing file first, and reports a
+load that fails. Tests: the web-platform-tests files for URLs (3,660
+cases), encodings, MIME types and `data:` URLs, kept with their
+BSD-3-Clause notice; the HTTP reader over in-memory streams;
+`net::test_server`, scripted HTTP and HTTPS on 127.0.0.1 with a root
+made as the tests run, which `net`'s tests and the engine's fetch
+from; and a page whose sheets come from it, drawing the frame the same
+page draws with them inline. Four new fuzz targets, `url_parse`,
+`encoding_decode`, `mime_sniff` and `http_response`, run in CI with
+the others. Numbers (step 9, `docs/perf-budgets.md`): a page of 1,000
+paragraphs and three stylesheets from the local server is shown 3.3ms
+after `load` in release; its first frame takes 650–820ms more, nearly
+all of it the first layout's text shaping (M35.8). Not in this
+milestone, said rather than hidden: parsing as bytes arrive (M24.8);
+images (M23); cookies, CORS and the same-origin policy (M27); Referer
+and HSTS (M33.3); the cache (M28.4, M38.2); HTTP/2 (M38); revocation,
+Certificate Transparency, ECH and pools partitioned by site (M33);
+proxies; the legacy CJK encodings (M42, or a T1 page that needs one);
+media queries beyond `all` and `screen` (M20); navigation and error
+pages (M15). 835 tests workspace-wide. Next milestone: navigation and
+the address bar (M15).

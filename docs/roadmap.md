@@ -89,7 +89,7 @@ images, the last item on T0's list, come with M23.
 
 ---
 
-## 2. Current state (M0–M13)
+## 2. Current state (M0–M14)
 
 - **M0 — Scaffold** (done 2026-09-30): 11-crate workspace, layer DAG,
   `docs/architecture.md` contract.
@@ -285,10 +285,35 @@ images, the last item on T0's list, come with M23.
   copied each pass — M35.9, text shaping's cost — M35.8, a scroll
   redrawn whole — M19).
 
-Verified per the vertical-slice rule at each milestone: 593 tests
-workspace-wide (193 in `style`, 165 in `layout`, 53 in `engine` with the
-reference harness, 45 in `html`, 39 in `paint`, 32 in `css`, 31 in
-`text`, 17 in `dom`, 17 in `render`, 1 in `net`), clippy clean
+- **M14 — `net` v1, URLs and HTTP/1.1** (done 2026-10-02, designed in
+  `docs/design/net.md` and built in its nine steps): the Encoding
+  Standard as a leaf crate, `encoding` (D18); the URL Standard's parser
+  of our own, with UTS #46 through `idna` (D17); MIME types, MIME
+  Sniffing and `data:` URLs; documents and stylesheets decoded from
+  bytes by HTML's and css-syntax-3's encoding rules; HTTP/1.1 of our
+  own over any stream (D5); connections with Local Network Access's
+  address spaces refused on the address connected to (D19), TLS through
+  rustls over aws-lc-rs with post-quantum key exchange and Mozilla's
+  roots, failing closed (D4), a pool of six an origin, and aborts that
+  end a waiting connection at once on every OS; `net::Client::fetch`
+  with Fetch's schemes, redirects, bad ports and mixed content; and the
+  engine's loader: `Engine::load` on threads of its own, render-blocking
+  stylesheets in tree order with their imports, `<base>`, media and the
+  preferred set, kept current through the journal. The shell runs as
+  `silver-browser [URL or path]`, and CI holds sockets and TLS to `net`
+  (T3.4). A page of 1,000 paragraphs and three stylesheets from the
+  local test server is shown 3.3ms after `load` in release, its first
+  frame's layout taking the rest. See `docs/architecture.md` for the
+  writeup and the stated gaps (parsing as bytes arrive — M24.8,
+  images — M23, cookies and CORS — M27, the cache — M28.4, HTTP/2 —
+  M38, revocation and Certificate Transparency — M33, the legacy CJK
+  encodings — M42).
+
+Verified per the vertical-slice rule at each milestone: 835 tests
+workspace-wide (193 in `style`, 165 in `layout`, 153 in `net` and one
+ignored, the live fetch run by hand, 90 in `engine` with the reference
+harness, 63 in `html`, 39 in `paint`, 37 in `css`, 31 in `text`, 26 in
+`encoding`, 17 in `dom`, 17 in `render`, 4 in `shell`), clippy clean
 (`-D warnings`, every target), fuzz targets clean, smoke run.
 Toolchain: 1.98.1, pinned by `rust-toolchain.toml`.
 Build target dir outside OneDrive (`%LOCALAPPDATA%\silver-browser\target`)
@@ -900,29 +925,53 @@ code and corrected to it after; built in its twelve steps on
 
 ## M14 — `net` v1: URLs + HTTP/1.1  ·  `net`  ·  Effort: XL  ·  Depends: none (parallelizable from M4+)
 
-- [ ] M14.1 WHATWG URL parsing: scheme/host/port/path/query/fragment,
+- [x] M14.1 WHATWG URL parsing: scheme/host/port/path/query/fragment,
        percent-encoding, IDNA (`idna` crate), IPv4/IPv6 hosts,
        relative-resolution. Full test suite from the WHATWG
-       `urltestdata.json`.
-- [ ] M14.2 Fetch core: `net::fetch(url) -> Response { status, headers, body }`;
+       `urltestdata.json`. Done 2026-10-02: `net::url`, our own (D17),
+       against `urltestdata.json`, `toascii.json`, `IdnaTestV2.json` and
+       `percent-encoding.json`, 3,660 cases; the `url` crate is gone.
+- [x] M14.2 Fetch core: `net::fetch(url) -> Response { status, headers, body }`;
        redirect following (max 20, cross-scheme rules); `data:` and
-       `file:` schemes.
-- [ ] M14.3 HTTP/1.1 over `rustls` (pure-Rust TLS 1.2/1.3, webpki roots):
+       `file:` schemes. Done 2026-10-02: `net::Client::fetch(&Request)`,
+       Fetch's scheme fetch for `about:blank`, `data:`, `file:`, `http:`
+       and `https:`, and its redirect fetch, with every check run again
+       on every hop.
+- [x] M14.3 HTTP/1.1 over `rustls` (pure-Rust TLS 1.2/1.3, webpki roots):
        chunked transfer, keep-alive, connection reuse pool (per-origin,
-       max 6).
-- [ ] M14.4 Certificate validation: WebPKI rules; no user-configurable
-       cert bypass in v1 (security posture: fail closed).
-- [ ] M14.5 MIME sniffing (WHATWG mime sniffing algorithm) + charset
+       max 6). Done 2026-10-02: `net::http` over any stream (D5), rustls
+       over aws-lc-rs (D4), six connections an origin, an idle one looked
+       at before reuse, gzip and deflate.
+- [x] M14.4 Certificate validation: WebPKI rules; no user-configurable
+       cert bypass in v1 (security posture: fail closed). Done
+       2026-10-02: rustls's WebPKI verifier against `webpki-roots`; a
+       failure names its fault and cannot be accepted.
+- [x] M14.5 MIME sniffing (WHATWG mime sniffing algorithm) + charset
        detection (`charset` detection: BOM → declared → UTF-8 fallback).
-- [ ] M14.6 Resource loading pipeline in `engine`: HTML → inline subresource
+       Done 2026-10-02: `net::mime`, and HTML's encoding sniffing with
+       the prescan and a re-parse on a late `<meta>`; css-syntax-3's
+       stylesheet encoding.
+- [x] M14.6 Resource loading pipeline in `engine`: HTML → inline subresource
        set (stylesheets, images) → parallel fetch → incremental document
-       assembly (stylesheet arrives → restyle).
-- [ ] M14.7 Security v1 in net: private-address blocking posture decision
+       assembly (stylesheet arrives → restyle). Done 2026-10-02:
+       `Engine::load`, `poll_network` and `load_state`; stylesheets in
+       tree order with their imports, render-blocking before `<body>`,
+       restyling as they arrive, and kept current through the journal.
+       Images are M23's; parsing as bytes arrive moved to M24.8.
+- [x] M14.7 Security v1 in net: private-address blocking posture decision
        (PNA later, M33), `blob:`/`javascript:` scheme rejection in fetch.
-- [ ] M14.8 Tests: URL suite (1000+ cases), mock HTTP server harness
-       (`httptest`-style, local only), TLS via self-signed test CA.
-- [ ] M14.9 Fuzz: URL parser (T2 priority target — URL parsers are the
-       #1 historical CVE source in browsers).
+       Done 2026-10-02: D19, refused outright by Local Network Access's
+       address spaces on the address connected to; every scheme but the
+       five a network error; mixed content blocked.
+- [x] M14.8 Tests: URL suite (1000+ cases), mock HTTP server harness
+       (`httptest`-style, local only), TLS via self-signed test CA. Done
+       2026-10-02: 3,660 URL cases; `net::test_server`, scripted HTTP and
+       HTTPS on 127.0.0.1 with a root made as the tests run, which the
+       engine's tests fetch from too.
+- [x] M14.9 Fuzz: URL parser (T2 priority target — URL parsers are the
+       #1 historical CVE source in browsers). Done 2026-10-02:
+       `url_parse`, with `encoding_decode`, `mime_sniff` and
+       `http_response`, run in CI with the other targets.
 
 ---
 
@@ -1454,8 +1503,9 @@ gold-plate unstarted work.
        `html_tokenizer` + `html_parse` (M2), `font_data` (M1).
        Started 2026-10-01: `fuzz/` has `html_parse`, `css_stylesheet`
        (tokenizer, stylesheet and style attribute), `selector_parse`,
-       `style_document` and `pipeline`; `url_parse` and `font_data`
-       wait for their milestones.
+       `style_document` and `pipeline`; `mutation` since M13, and
+       `url_parse`, `encoding_decode`, `mime_sniff` and `http_response`
+       since M14; `font_data` waits for its milestone.
 - [ ] T2.2 Seed corpora from WPT + real-site captures; corpus committed.
 - [ ] T2.3 Coverage-guided runs in CI nightly; crash → reproducer test
        before anything else. Since 2026-10-01 CI runs every target for a
@@ -1471,8 +1521,11 @@ gold-plate unstarted work.
        argument in code (enforced by convention + grep in CI).
 - [ ] T3.3 `docs/security.md` updated with every milestone (threat model
        lives there from M33 on; before that, in architecture.md notes).
-- [ ] T3.4 Secret-handling rule: no network egress anywhere except the
-       `net` crate's fetch path. CI grep-enforced.
+- [x] T3.4 Secret-handling rule: no network egress anywhere except the
+       `net` crate's fetch path. CI grep-enforced. Done 2026-10-02
+       (M14): CI's check job fails when `TcpStream`, `UdpSocket`,
+       `ToSocketAddrs` or `rustls` appears under `crates/` or `fuzz/`
+       outside `crates/net`.
 
 ## T4 — Performance
 - [ ] T4.1 `docs/perf-budgets.md` exists from M13; every milestone exit
@@ -1505,7 +1558,7 @@ gold-plate unstarted work.
 | D2 | Renderer sandbox mechanism | M34 | Win job objects+tokens / AppContainer / others per-OS | Job objects + restricted token v1 |
 | D3 | GPU backend | M19 | wgpu / keep software only | wgpu, software path permanent fallback |
 | D4 | TLS | M14 | rustls / native-tls | rustls (pure Rust, no OpenSSL linkage); decided at M14: the `aws-lc-rs` provider for X25519MLKEM768, Mozilla's roots from `webpki-roots`, no bypass (see `docs/design/net.md`) |
-| D5 | HTTP client | M14 | hyper / custom over rustls | custom-lite first (control + learning), hyper if maintenance bites; decided at M14: our own HTTP/1.1 over blocking I/O on threads, no async runtime (see `docs/design/net.md`) |
+| D5 | HTTP client | M14 | hyper / custom over rustls | custom-lite first (control + learning), hyper if maintenance bites; decided at M14: our own HTTP/1.1 on threads, no async runtime, each connection waiting in a `mio` poll of its own that an abort wakes (see `docs/design/net.md`) |
 | D6 | Image codecs | M23 | image crate ensemble / per-format crates | per-format crates behind a trait (faster, auditable) |
 | D7 | Text/i18n | M8/M42 | rustybuzz+unicode crates / harfbuzz FFI / ICU4X | rustybuzz now, ICU4X at M42 |
 | D8 | 2D rasterizer | M19 | tiny-skia forever / vello (wgpu-native) / both | both behind the existing `RenderBackend` trait |
