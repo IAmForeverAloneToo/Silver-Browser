@@ -18,5 +18,9 @@ text.workspace = true
 name = "scroll"
 harness = false
 
+[[bench]]
+name = "mutation"
+harness = false
+
 [dev-dependencies]
 png = "0.17"

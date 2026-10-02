@@ -59,6 +59,7 @@ nothing that changes what is shown.
   machine measures its base again.
 - **Benchmarks:** plain binaries, `harness = false`, run by hand:
   - `cargo bench -p engine --bench scroll` (M9.6; stages since M13.4).
+  - `cargo bench -p engine --bench mutation` (M13.6).
   - `cargo bench -p style --bench match`.
   - Criterion-tracked benchmarks run in CI are T4.2, for M35.
 - **Counters** prove work that is not done: `Engine::style_runs`,
@@ -88,6 +89,31 @@ Redrawing a shifted frame instead is M19's.
 
 ### Changing the document
 
+The mutation benchmark (M13.6) draws a page of 1,000 paragraphs at
+1280 by 800. It then appends 1,000 paragraphs one a frame, and 1,000
+more in a single frame. Two runs in release, one in debug:
+
+| | Release | Debug |
+| --- | --- | --- |
+| The first frame | 642–687ms | 749ms |
+| Its layout | 634–676ms | 722ms |
+| An appended paragraph's frame, median | 7.0–7.1ms | 16.0ms |
+| Its layout, median | 5.7–5.8ms | 12.8ms |
+| Its paint, median | 1.0ms | 2.8ms |
+| Its style and raster, median | 0.3ms and 0.03ms | 0.4ms and 0.09ms |
+| The worst of those frames | 15–24ms | 30ms |
+| Those frames over 16.7ms | 0–2 of 1,000 | 448 of 1,000 |
+| 1,000 appended in one frame | 581–685ms | 720ms |
+
+No frame after the first lays the document out whole: the claim of
+M13.6. Each appended paragraph's frame restyles one element and lays
+out three boxes: the new paragraph, the body and the root. Every other
+box comes from the layout cache, 1,499,500 of them over the thousand
+frames. The thousand appended at once cost 1,000 element restyles and
+1,002 boxes laid out, the 2,000 paragraphs already there taken from
+the cache. The new paragraphs are below the viewport, so raster redraws
+little more than the scrollbar's thumb.
+
 Measured as each step of M13 landed, in release, against the step
 before it:
 
@@ -107,9 +133,11 @@ The cascade of the whole page costs what it did before M13.1: 3ms for
 These are known and recorded rather than hidden. Each has the item that
 is to take it on.
 
-- **The first layout of a large page.** 490ms for 1,000 paragraphs,
-  most of it text shaping, at about 25µs a word. Caching word measures
-  and fonts' faces is M35.8.
+- **The first layout of a large page.** 490ms for the 1,000 paragraphs
+  M13.2 was measured on, and 630–680ms for the mutation benchmark's
+  page. Most of it is text shaping, at about 25µs a word. Caching word
+  measures and fonts' faces is M35.8. Laying out 1,000 new paragraphs
+  at once costs the same, for the same reason.
 - **Work that grows faster than the page.** The box tree, rebuilt on
   every layout pass, takes 1.1, 2.4, 5.2, 18.7 and 80ms at 1,000,
   2,000, 4,000, 8,000 and 16,000 paragraphs. Its boxes, fragments and
@@ -120,6 +148,11 @@ is to take it on.
   every box copies them all into the new layout: 58ms of the 90ms
   above. Fragments that refer to styles, and relative coordinates, are
   M35's.
+- **An appended paragraph in the debug build.** The work above that
+  grows with the page, the box tree and the fragments copied, takes an
+  appended paragraph's frame past the budget almost half the time
+  between 1,000 and 2,000 paragraphs. In release it stays within it.
+  The same items, M35, take it on.
 - **Positions counted from the end.** With `:last-child` or
   `:nth-last-child` in a stylesheet, inserting an element restyles every
   sibling before it: 20,015 elements and 42ms at 10,000 paragraphs. That
