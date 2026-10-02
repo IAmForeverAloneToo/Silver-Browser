@@ -20,12 +20,26 @@
 //!
 //! Elements are named by their [`NodeId`] in a [`Document`] (M13); an
 //! id that names no element matches nothing.
+//!
+//! A selector that ends in a pseudo-element represents that
+//! pseudo-element, never an element: [`Matcher::matches`] says no to
+//! it, and [`Matcher::matches_pseudo_element`] matches its compounds
+//! against the originating element.
+//!
+//! Every element is an HTML element in an HTML document (the DOM has no
+//! namespaces), so HTML's case rules always apply: an attribute
+//! selector without a flag compares the values of the attributes HTML
+//! lists ASCII case-insensitively, and every other value identically.
+//! Values are compared in place, with nothing allocated.
 
 use std::collections::{HashMap, HashSet};
 
 use dom::{Document, NodeId};
 
-use super::{AttrOp, Combinator, PseudoClass, Selector, SelectorList, SimpleSelector};
+use super::{
+    AttrOp, CaseFlag, Combinator, PseudoClass, PseudoElement, Selector, SelectorList,
+    SimpleSelector,
+};
 
 /// Whether any selector in the list matches the element. A one-off;
 /// a pass over many elements wants a [`Matcher`].
@@ -92,9 +106,30 @@ impl<'a> Matcher<'a> {
     }
 
     /// Whether one complex selector matches the element; nothing matches
-    /// a node that is not one.
+    /// a node that is not one, and a selector ending in a pseudo-element
+    /// matches no element.
     pub fn matches(&mut self, element: NodeId, selector: &'a Selector) -> bool {
         self.document.is_element(element) && self.matches_element(element, selector)
+    }
+
+    /// Whether `selector` represents the `pseudo` pseudo-element of
+    /// `element`: it ends in that pseudo-element, the pseudo-classes
+    /// after it hold, and its compounds match `element` as the
+    /// originating element. A `::-webkit-` one never matches.
+    pub fn matches_pseudo_element(
+        &mut self,
+        element: NodeId,
+        selector: &'a Selector,
+        pseudo: PseudoElement,
+    ) -> bool {
+        let Some(ending) = &selector.pseudo_element else {
+            return false;
+        };
+        ending.element == pseudo
+            && pseudo != PseudoElement::WebkitPrefixed
+            && ending.states.iter().all(state_matches)
+            && self.document.is_element(element)
+            && self.matches_compounds(element, selector)
     }
 
     /// [`Matcher::matches_list`] for a node the caller knows is an
@@ -106,6 +141,12 @@ impl<'a> Matcher<'a> {
 
     /// [`Matcher::matches`] for a node the caller knows is an element.
     pub(crate) fn matches_element(&mut self, element: NodeId, selector: &'a Selector) -> bool {
+        selector.pseudo_element.is_none() && self.matches_compounds(element, selector)
+    }
+
+    /// Whether the selector's compounds match the element, its
+    /// pseudo-element aside.
+    fn matches_compounds(&mut self, element: NodeId, selector: &'a Selector) -> bool {
         let compounds = &selector.compounds;
         let Some(last) = compounds.last() else {
             return false;
@@ -199,15 +240,16 @@ impl<'a> Matcher<'a> {
             SimpleSelector::Type(t) => document.tag(element) == Some(t.as_str()),
             SimpleSelector::Universal => true,
             SimpleSelector::Id(v) => document.attr(element, "id") == Some(v.as_str()),
+            // HTML splits `class` on ASCII white space only.
             SimpleSelector::Class(c) => document
                 .attr(element, "class")
-                .is_some_and(|cls| cls.split_whitespace().any(|w| w == c)),
+                .is_some_and(|cls| cls.split_ascii_whitespace().any(|w| w == c)),
             SimpleSelector::Attribute {
                 name,
                 op,
                 value,
-                case_insensitive,
-            } => matches_attribute(document, element, name, *op, value, *case_insensitive),
+                case,
+            } => matches_attribute(document, element, name, *op, value, *case),
             SimpleSelector::PseudoClass(pc) => self.matches_pseudo_class(element, pc),
         }
     }
@@ -305,6 +347,8 @@ impl<'a> Matcher<'a> {
             // Dynamic pseudo-classes never match until input state exists (M26).
             PseudoClass::Hover
             | PseudoClass::Focus
+            | PseudoClass::FocusVisible
+            | PseudoClass::FocusWithin
             | PseudoClass::Active
             | PseudoClass::Visited
             | PseudoClass::Link => false,
@@ -342,35 +386,177 @@ impl<'a> Matcher<'a> {
     }
 }
 
-/// Attribute selector semantics (selectors-4 §6.1).
+/// Whether the pseudo-classes after a pseudo-element hold: no
+/// pseudo-element is hovered, focused or active until M26.4, so each
+/// user-action one is false, and `:is()`, `:where()` and `:not()` of
+/// them follow from that.
+fn state_matches(state: &PseudoClass) -> bool {
+    let any = |list: &SelectorList| {
+        list.0.iter().any(|selector| {
+            selector.compounds.iter().all(|compound| {
+                compound.simple.iter().all(|simple| match simple {
+                    SimpleSelector::PseudoClass(state) => state_matches(state),
+                    _ => false,
+                })
+            })
+        })
+    };
+    match state {
+        PseudoClass::Not(list) => !any(list),
+        PseudoClass::Is(list) | PseudoClass::Where(list) => any(list),
+        _ => false,
+    }
+}
+
+/// The attributes whose values HTML's attribute selectors compare ASCII
+/// case-insensitively when no flag says otherwise (HTML §4.16.2,
+/// "Case-sensitivity of selectors"), sorted for the binary search.
+const HTML_CASE_INSENSITIVE_VALUES: [&str; 46] = [
+    "accept",
+    "accept-charset",
+    "align",
+    "alink",
+    "axis",
+    "bgcolor",
+    "charset",
+    "checked",
+    "clear",
+    "codetype",
+    "color",
+    "compact",
+    "declare",
+    "defer",
+    "dir",
+    "direction",
+    "disabled",
+    "enctype",
+    "face",
+    "frame",
+    "hreflang",
+    "http-equiv",
+    "lang",
+    "language",
+    "link",
+    "media",
+    "method",
+    "multiple",
+    "nohref",
+    "noresize",
+    "noshade",
+    "nowrap",
+    "readonly",
+    "rel",
+    "rev",
+    "rules",
+    "scope",
+    "scrolling",
+    "selected",
+    "shape",
+    "target",
+    "text",
+    "type",
+    "valign",
+    "valuetype",
+    "vlink",
+];
+
+/// Whether HTML compares the values of the attribute `name` (in ASCII
+/// lowercase, as the parser leaves it) ASCII case-insensitively.
+fn html_value_is_case_insensitive(name: &str) -> bool {
+    HTML_CASE_INSENSITIVE_VALUES.binary_search(&name).is_ok()
+}
+
+/// Attribute selector semantics (selectors-4 §6.1, §6.3).
 fn matches_attribute(
     document: &Document,
     element: NodeId,
     name: &str,
     op: AttrOp,
     value: &str,
-    case_insensitive: bool,
+    case: CaseFlag,
 ) -> bool {
     let Some(actual) = document.attr(element, name) else {
         return false;
     };
-    let (actual, value) = if case_insensitive {
-        (actual.to_lowercase(), value.to_lowercase())
-    } else {
-        (actual.to_string(), value.to_string())
+    let fold = match case {
+        CaseFlag::I => true,
+        CaseFlag::S => false,
+        CaseFlag::Unset => html_value_is_case_insensitive(name),
     };
+    let compare = Compare { fold };
     match op {
         AttrOp::Exists => true,
-        AttrOp::Equals => actual == value,
-        // `~=` matches whitespace-separated words; an empty value never matches.
-        AttrOp::IncludeSpace => !value.is_empty() && actual.split_whitespace().any(|w| w == value),
+        AttrOp::Equals => compare.eq(actual, value),
+        // `~=` matches words separated by ASCII white space, as HTML
+        // splits them; an empty value never matches, nor one holding
+        // white space, which no word holds.
+        AttrOp::IncludeSpace => {
+            !value.is_empty()
+                && actual
+                    .split_ascii_whitespace()
+                    .any(|word| compare.eq(word, value))
+        }
         // `|=` is the value itself or a `value-` prefix.
-        AttrOp::Dash => actual == value || actual.starts_with(&format!("{value}-")),
+        AttrOp::Dash => {
+            compare.eq(actual, value)
+                || (actual.as_bytes().get(value.len()) == Some(&b'-')
+                    && compare.starts_with(actual, value))
+        }
         // selectors-4 §6.2: an empty value "does not represent anything"
         // for the three substring operators.
-        AttrOp::Prefix => !value.is_empty() && actual.starts_with(&value),
-        AttrOp::Suffix => !value.is_empty() && actual.ends_with(&value),
-        AttrOp::Substring => !value.is_empty() && actual.contains(&value),
+        AttrOp::Prefix => !value.is_empty() && compare.starts_with(actual, value),
+        AttrOp::Suffix => !value.is_empty() && compare.ends_with(actual, value),
+        AttrOp::Substring => !value.is_empty() && compare.contains(actual, value),
+    }
+}
+
+/// Compares strings identically, or with ASCII letters folded when
+/// `fold`, in place. Folding works byte by byte: it changes only ASCII
+/// bytes, which UTF-8 never uses inside a multi-byte character, so a
+/// match found on bytes is one on characters.
+#[derive(Clone, Copy)]
+struct Compare {
+    fold: bool,
+}
+
+impl Compare {
+    fn eq(self, a: &str, b: &str) -> bool {
+        self.eq_bytes(a.as_bytes(), b.as_bytes())
+    }
+
+    fn starts_with(self, haystack: &str, needle: &str) -> bool {
+        haystack
+            .as_bytes()
+            .get(..needle.len())
+            .is_some_and(|head| self.eq_bytes(head, needle.as_bytes()))
+    }
+
+    fn ends_with(self, haystack: &str, needle: &str) -> bool {
+        haystack
+            .len()
+            .checked_sub(needle.len())
+            .is_some_and(|start| self.eq_bytes(&haystack.as_bytes()[start..], needle.as_bytes()))
+    }
+
+    fn contains(self, haystack: &str, needle: &str) -> bool {
+        if !self.fold {
+            return haystack.contains(needle);
+        }
+        if needle.is_empty() {
+            return true;
+        }
+        haystack
+            .as_bytes()
+            .windows(needle.len())
+            .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
+    }
+
+    fn eq_bytes(self, a: &[u8], b: &[u8]) -> bool {
+        if self.fold {
+            a.eq_ignore_ascii_case(b)
+        } else {
+            a == b
+        }
     }
 }
 
@@ -393,6 +579,7 @@ fn nth_matches(a: i32, b: i32, zero_based_index: u32) -> bool {
 mod tests {
     use super::*;
     use crate::parse_selector_list;
+    use crate::selector_matching::PseudoElement;
     use dom::{Element, Node};
 
     /// The tags of all elements the selector matches, in document order.
@@ -778,7 +965,15 @@ mod tests {
     #[test]
     fn dynamic_pseudo_classes_never_match_yet() {
         let doc = p(vec![e("a").attr("href", "x").into()]);
-        for sel in [":hover", ":focus", ":active", ":visited", ":link"] {
+        for sel in [
+            ":hover",
+            ":focus",
+            ":focus-visible",
+            ":focus-within",
+            ":active",
+            ":visited",
+            ":link",
+        ] {
             assert_eq!(
                 matched_tags(&doc, sel),
                 Vec::<String>::new(),
@@ -888,9 +1083,9 @@ mod tests {
 
     #[test]
     fn attribute_dash_case_insensitive_flag() {
-        let doc = p(vec![e("p").attr("lang", "EN-us").into()]);
-        assert_eq!(matched_tags(&doc, "[lang|=en]"), Vec::<String>::new());
-        assert_eq!(matched_tags(&doc, "[lang|=en i]"), vec!["p"]);
+        let doc = p(vec![e("p").attr("data-lang", "EN-us").into()]);
+        assert_eq!(matched_tags(&doc, "[data-lang|=en]"), Vec::<String>::new());
+        assert_eq!(matched_tags(&doc, "[data-lang|=en i]"), vec!["p"]);
     }
 
     #[test]
@@ -1089,5 +1284,251 @@ mod tests {
             .filter(|&&i| matcher.matches_list(i, &nested))
             .count();
         assert_eq!(count, 1667);
+    }
+    // ---- M16: pseudo-elements, HTML's case rule, in-place comparison -------
+
+    #[test]
+    fn a_selector_ending_in_a_pseudo_element_matches_no_element() {
+        let doc = p(vec![e("p").into(), e("div").into()]);
+        for sel in [
+            "p::before",
+            "::after",
+            "p:before",
+            "::-webkit-scrollbar",
+            "*::marker",
+        ] {
+            assert_eq!(matched_tags(&doc, sel), Vec::<String>::new(), "{sel}");
+        }
+        // Its list's other selectors still match.
+        assert_eq!(matched_tags(&doc, "p, div::before"), vec!["p"]);
+    }
+
+    #[test]
+    fn a_pseudo_element_selector_matches_its_originating_element() {
+        // <div class=a><p/></div><p/>
+        let doc = p(vec![
+            e("div").attr("class", "a").push(e("p")).into(),
+            e("p").into(),
+        ]);
+        let document = Document::from_node(&doc);
+        let all = elements(&document);
+        let originating = |sel: &str, pseudo: PseudoElement| -> Vec<usize> {
+            let list = parse_selector_list(&css::tokenize(sel)).expect("valid selector");
+            let mut matcher = Matcher::new(&document);
+            all.iter()
+                .enumerate()
+                .filter(|&(_, &id)| matcher.matches_pseudo_element(id, &list.0[0], pseudo))
+                .map(|(i, _)| i)
+                .collect()
+        };
+        // Elements in tree order: div, the inner p, the outer p.
+        assert_eq!(originating(".a p::before", PseudoElement::Before), vec![1]);
+        assert_eq!(originating(".a p:before", PseudoElement::Before), vec![1]);
+        assert_eq!(
+            originating(".a p::before", PseudoElement::After),
+            Vec::<usize>::new()
+        );
+        assert_eq!(originating("p::after", PseudoElement::After), vec![1, 2]);
+        assert_eq!(
+            originating("::marker", PseudoElement::Marker),
+            vec![0, 1, 2]
+        );
+        assert_eq!(
+            originating("::first-line", PseudoElement::FirstLine),
+            vec![0, 1, 2]
+        );
+        // A selector with no pseudo-element represents no pseudo-element.
+        assert_eq!(originating("p", PseudoElement::Before), Vec::<usize>::new());
+        // `::-webkit-` ones match nothing, even asked for by name.
+        assert_eq!(
+            originating("::-webkit-scrollbar", PseudoElement::WebkitPrefixed),
+            Vec::<usize>::new()
+        );
+        // No pseudo-element is in a user-action state yet: `:hover` after
+        // one never holds, and `:not(:hover)` always does.
+        assert_eq!(
+            originating("p::before:hover", PseudoElement::Before),
+            Vec::<usize>::new()
+        );
+        assert_eq!(
+            originating("p::before:is(:hover, :focus)", PseudoElement::Before),
+            Vec::<usize>::new()
+        );
+        assert_eq!(
+            originating("p::before:is(.a)", PseudoElement::Before),
+            Vec::<usize>::new()
+        );
+        assert_eq!(
+            originating("p::before:not(:hover)", PseudoElement::Before),
+            vec![1, 2]
+        );
+        assert_eq!(
+            originating(
+                "p::before:not(:is(:hover)):where(:not(:active))",
+                PseudoElement::Before
+            ),
+            vec![1, 2]
+        );
+        assert_eq!(
+            originating("p::before:not(:not(:hover))", PseudoElement::Before),
+            Vec::<usize>::new()
+        );
+        // A text node originates nothing.
+        let list = parse_selector_list(&css::tokenize("::before")).unwrap();
+        let text = Document::from_node(&p(vec![Node::text("x")]));
+        let node = text.first_child(text.root()).unwrap();
+        assert!(!Matcher::new(&text).matches_pseudo_element(
+            node,
+            &list.0[0],
+            PseudoElement::Before
+        ));
+    }
+
+    #[test]
+    fn html_lists_the_attributes_whose_values_ignore_ascii_case() {
+        // HTML §4.16.2: forty-six names, sorted for the binary search.
+        assert!(HTML_CASE_INSENSITIVE_VALUES.windows(2).all(|w| w[0] < w[1]));
+        for name in HTML_CASE_INSENSITIVE_VALUES {
+            assert!(html_value_is_case_insensitive(name), "{name}");
+            assert_eq!(name, name.to_ascii_lowercase());
+        }
+        for name in [
+            "href",
+            "class",
+            "id",
+            "title",
+            "data-type",
+            "value",
+            "name",
+            "src",
+            "",
+        ] {
+            assert!(!html_value_is_case_insensitive(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn html_attribute_values_compare_without_regard_to_ascii_case() {
+        let doc = p(vec![
+            e("input").attr("type", "CheckBox").into(),
+            e("a")
+                .attr("rel", "NoFollow noopener")
+                .attr("hreflang", "EN-gb")
+                .into(),
+            e("p").attr("data-type", "CheckBox").into(),
+        ]);
+        assert_eq!(matched_tags(&doc, "[type=checkbox]"), vec!["input"]);
+        assert_eq!(matched_tags(&doc, "[type=CHECKBOX]"), vec!["input"]);
+        assert_eq!(
+            matched_tags(&doc, "[type^=che][type$=BOX][type*=kB]"),
+            vec!["input"]
+        );
+        // `s` makes it identical, `i` makes any value insensitive.
+        assert_eq!(
+            matched_tags(&doc, "[type=checkbox s]"),
+            Vec::<String>::new()
+        );
+        assert_eq!(matched_tags(&doc, "[type=CheckBox s]"), vec!["input"]);
+        assert_eq!(
+            matched_tags(&doc, "[data-type=checkbox]"),
+            Vec::<String>::new()
+        );
+        assert_eq!(matched_tags(&doc, "[data-type=checkbox i]"), vec!["p"]);
+        assert_eq!(matched_tags(&doc, "[rel~=nofollow]"), vec!["a"]);
+        assert_eq!(matched_tags(&doc, "[hreflang|=en]"), vec!["a"]);
+        assert_eq!(matched_tags(&doc, "[hreflang|=en s]"), Vec::<String>::new());
+        // The rule is the value's; the name was lowercased when parsed.
+        assert_eq!(matched_tags(&doc, "[TYPE=checkbox]"), vec!["input"]);
+    }
+
+    #[test]
+    fn case_insensitive_comparison_folds_ascii_letters_only() {
+        // `to_lowercase` used to fold the Kelvin sign into `k` and `É`
+        // into `é`; HTML and selectors-4 say ASCII case-insensitive.
+        let doc = p(vec![
+            e("p").attr("data-x", "\u{212A}").into(),
+            e("b").attr("data-x", "ÉTÉ").into(),
+            e("i").attr("data-x", "SS").into(),
+        ]);
+        assert_eq!(matched_tags(&doc, "[data-x=k i]"), Vec::<String>::new());
+        assert_eq!(matched_tags(&doc, "[data-x='\u{212A}' i]"), vec!["p"]);
+        assert_eq!(matched_tags(&doc, "[data-x='été' i]"), Vec::<String>::new());
+        assert_eq!(matched_tags(&doc, "[data-x='ÉtÉ' i]"), vec!["b"]);
+        assert_eq!(matched_tags(&doc, "[data-x='ß' i]"), Vec::<String>::new());
+        assert_eq!(matched_tags(&doc, "[data-x*='T' i]"), vec!["b"]);
+        assert_eq!(matched_tags(&doc, "[data-x*='é' i]"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn in_place_comparisons_agree_with_the_string_operators() {
+        // Every operator, folded and not, against values with multi-byte
+        // characters, a needle longer than the value, and the edges.
+        let values = [
+            "", "a", "A", "é", "aé", "éA-b", "en", "EN-gb", "ENx", "x-y z",
+        ];
+        let needles = [
+            "", "a", "é", "A", "en", "éa", "-", "éA-b", "en-gb", "x-y z", "z",
+        ];
+        for value in values {
+            for needle in needles {
+                for fold in [false, true] {
+                    let compare = Compare { fold };
+                    let (v, n) = if fold {
+                        (value.to_ascii_lowercase(), needle.to_ascii_lowercase())
+                    } else {
+                        (value.to_string(), needle.to_string())
+                    };
+                    let case = format!("{value:?} {needle:?} fold={fold}");
+                    assert_eq!(compare.eq(value, needle), v == n, "eq {case}");
+                    assert_eq!(
+                        compare.starts_with(value, needle),
+                        v.starts_with(&n),
+                        "^ {case}"
+                    );
+                    assert_eq!(
+                        compare.ends_with(value, needle),
+                        v.ends_with(&n),
+                        "$ {case}"
+                    );
+                    assert_eq!(compare.contains(value, needle), v.contains(&n), "* {case}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dash_and_word_operators_compare_in_place() {
+        let doc = p(vec![
+            e("a").attr("data-x", "EN").into(),
+            e("b").attr("data-x", "EN-gb").into(),
+            e("i").attr("data-x", "ENx").into(),
+            e("s").attr("data-x", "e").into(),
+            e("u").attr("data-x", "one\tTWO\u{c}three").into(),
+        ]);
+        assert_eq!(matched_tags(&doc, "[data-x|=en i]"), vec!["a", "b"]);
+        assert_eq!(matched_tags(&doc, "[data-x|=EN]"), vec!["a", "b"]);
+        assert_eq!(matched_tags(&doc, "[data-x|=en]"), Vec::<String>::new());
+        assert_eq!(matched_tags(&doc, "[data-x~=two i]"), vec!["u"]);
+        assert_eq!(matched_tags(&doc, "[data-x~=three]"), vec!["u"]);
+        assert_eq!(
+            matched_tags(&doc, "[data-x~='one TWO']"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn classes_are_split_on_ascii_white_space_only() {
+        // HTML splits `class` on ASCII white space; a no-break space is
+        // part of a class name.
+        let doc = p(vec![
+            e("p").attr("class", "a\u{a0}b").into(),
+            e("b").attr("class", "c\td\u{c}e\rf").into(),
+        ]);
+        assert_eq!(matched_tags(&doc, ".a"), Vec::<String>::new());
+        assert_eq!(matched_tags(&doc, ".b"), Vec::<String>::new());
+        assert_eq!(matched_tags(&doc, ".a\u{a0}b"), vec!["p"]);
+        assert_eq!(matched_tags(&doc, "[class~=b]"), Vec::<String>::new());
+        assert_eq!(matched_tags(&doc, ".c.d.e.f"), vec!["b"]);
+        assert_eq!(matched_tags(&doc, "[class~=e]"), vec!["b"]);
     }
 }

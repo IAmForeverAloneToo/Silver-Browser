@@ -73,6 +73,8 @@ impl SelectorFeatures {
                     self.sibling_combinators = true;
                 }
             }
+            // The pseudo-classes after a pseudo-element are user-action
+            // ones, which read nothing a change records (M26.4).
             for compound in &selector.compounds {
                 for simple in &compound.simple {
                     self.add_simple(simple);
@@ -93,35 +95,39 @@ impl SelectorFeatures {
             SimpleSelector::Attribute { name, .. } => {
                 self.attributes.insert(name.clone());
             }
-            SimpleSelector::PseudoClass(pc) => match pc {
-                PseudoClass::FirstChild
-                | PseudoClass::FirstOfType
-                | PseudoClass::NthOfType { .. } => {
-                    self.counts_from_start = true;
-                }
-                PseudoClass::NthChild { of: None, .. } => self.counts_from_start = true,
-                PseudoClass::NthChild { of: Some(list), .. } => {
-                    self.every_sibling = true;
-                    self.add(list);
-                }
-                PseudoClass::LastChild
-                | PseudoClass::LastOfType
-                | PseudoClass::NthLastChild { .. }
-                | PseudoClass::NthLastOfType { .. } => self.counts_from_end = true,
-                PseudoClass::OnlyChild | PseudoClass::OnlyOfType => self.every_sibling = true,
-                PseudoClass::Empty => self.empty = true,
-                PseudoClass::Not(list) | PseudoClass::Is(list) | PseudoClass::Where(list) => {
-                    self.add(list);
-                }
-                // `:root` depends on the parent, which an insertion
-                // restyles whole; the dynamic ones never match yet.
-                PseudoClass::Root
-                | PseudoClass::Hover
-                | PseudoClass::Focus
-                | PseudoClass::Active
-                | PseudoClass::Visited
-                | PseudoClass::Link => {}
-            },
+            SimpleSelector::PseudoClass(pc) => self.add_pseudo_class(pc),
+        }
+    }
+
+    fn add_pseudo_class(&mut self, pc: &PseudoClass) {
+        match pc {
+            PseudoClass::FirstChild | PseudoClass::FirstOfType | PseudoClass::NthOfType { .. } => {
+                self.counts_from_start = true;
+            }
+            PseudoClass::NthChild { of: None, .. } => self.counts_from_start = true,
+            PseudoClass::NthChild { of: Some(list), .. } => {
+                self.every_sibling = true;
+                self.add(list);
+            }
+            PseudoClass::LastChild
+            | PseudoClass::LastOfType
+            | PseudoClass::NthLastChild { .. }
+            | PseudoClass::NthLastOfType { .. } => self.counts_from_end = true,
+            PseudoClass::OnlyChild | PseudoClass::OnlyOfType => self.every_sibling = true,
+            PseudoClass::Empty => self.empty = true,
+            PseudoClass::Not(list) | PseudoClass::Is(list) | PseudoClass::Where(list) => {
+                self.add(list);
+            }
+            // `:root` depends on the parent, which an insertion
+            // restyles whole; the dynamic ones never match yet.
+            PseudoClass::Root
+            | PseudoClass::Hover
+            | PseudoClass::Focus
+            | PseudoClass::FocusVisible
+            | PseudoClass::FocusWithin
+            | PseudoClass::Active
+            | PseudoClass::Visited
+            | PseudoClass::Link => {}
         }
     }
 
@@ -381,16 +387,19 @@ mod tests {
         let sheets = Stylesheets::new(vec![
             css::parse_stylesheet(
                 ".a #b [c] { x: y } :not(.d) :is(#e) :where([f]) { x: y }
-                 :nth-child(2 of .g) { x: y } p ~ q { x: y } :empty { x: y }",
+                 :nth-child(2 of .g) { x: y } p ~ q { x: y } :empty { x: y }
+                 .h::before:not(:hover), [i] .j:after { x: y }",
             )
             .unwrap(),
         ]);
         let f = sheets.features();
-        for class in ["a", "d", "g"] {
+        // A pseudo-element's originating element is matched as any
+        // element is, so its selector's features count.
+        for class in ["a", "d", "g", "h", "j"] {
             assert!(f.classes.contains(class), "{class}");
         }
         assert!(f.ids.contains("b") && f.ids.contains("e"));
-        assert!(f.attributes.contains("c") && f.attributes.contains("f"));
+        assert!(["c", "f", "i"].iter().all(|a| f.attributes.contains(*a)));
         // The UA sheet's own: `input[type=hidden i]` and the like.
         assert!(f.attributes.contains("type"));
         assert!(f.sibling_combinators && f.every_sibling && f.empty);

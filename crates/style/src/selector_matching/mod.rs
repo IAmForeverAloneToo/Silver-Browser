@@ -4,19 +4,32 @@
 //!
 //! * type (`div`), universal (`*`), id (`#x`), class (`.x`) selectors
 //! * all attribute operators (`[a]`, `=`, `~=`, `|=`, `^=`, `$=`, `*=`,
-//!   plus the `i`/`s` case-sensitivity flags)
+//!   plus the `i`/`s` case-sensitivity flags), with HTML's rule that
+//!   the values of some attributes compare ASCII case-insensitively
 //! * all four combinators (descendant, `>`, `+`, `~`)
 //! * structural pseudo-classes: `:first-child`, `:last-child`,
 //!   `:only-child`, `:first-of-type`, `:last-of-type`, `:only-of-type`,
 //!   `:empty`, `:root`, and the `:nth-*` family with the full An+B
 //!   grammar (including `of S`)
 //! * logical combinators: `:not()`, `:is()`, `:where()`
-//! * dynamic pseudo-classes (`:hover`, `:focus`, `:active`, `:visited`,
-//!   `:link`) parse but never match until input events land (M26)
+//! * dynamic pseudo-classes (`:hover`, `:focus`, `:focus-visible`,
+//!   `:focus-within`, `:active`, `:visited`, `:link`) parse but never
+//!   match until input events land (M26)
+//! * one pseudo-element at the end of a selector (M16,
+//!   docs/design/selectors-pseudo.md): `::before`, `::after`,
+//!   `::first-letter` and `::first-line`, also with one colon;
+//!   `::marker`, `::placeholder` and `::selection`; and any
+//!   `::-webkit-` name that is not a function, which never matches
+//!   (selectors-4 Appendix B). Only the user-action pseudo-classes may
+//!   follow it.
+//!
+//! Names (types, attributes, pseudo-classes and pseudo-elements) are
+//! compared in ASCII lowercase, as HTML and selectors-4 say.
 //!
 //! Not supported — hard parse errors, so the containing rule is dropped
-//! exactly as css-syntax-3 prescribes: pseudo-elements (M16),
-//! namespaces (`|`), and anything unknown.
+//! exactly as css-syntax-3 prescribes: other pseudo-elements, a
+//! pseudo-element inside `:not()`, `:is()` or `:where()` (which the
+//! last two forgive), namespaces (`|`), and anything unknown.
 
 mod matcher;
 mod parse;
@@ -37,8 +50,52 @@ pub struct Selector {
     pub compounds: Vec<CompoundSelector>,
     /// `combinators[i]` joins `compounds[i]` and `compounds[i+1]`.
     pub combinators: Vec<Combinator>,
+    /// The pseudo-element the selector ends in (`p::before`), if any.
+    /// The compounds then match its *originating element*, and the
+    /// selector represents that element's pseudo-element, not the
+    /// element: it never matches an element itself.
+    pub pseudo_element: Option<PseudoElementSelector>,
     /// Pre-computed at parse time (selectors-4 §17).
     pub specificity: Specificity,
+}
+
+/// A pseudo-element at the end of a selector, with the pseudo-classes
+/// that follow it (`::before:hover`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PseudoElementSelector {
+    /// Which pseudo-element.
+    pub element: PseudoElement,
+    /// The pseudo-classes after it, in source order: the user-action
+    /// ones (`:hover`, `:focus`, `:focus-visible`, `:focus-within`,
+    /// `:active`), and `:is()`, `:where()` and `:not()` of them, as
+    /// selectors-4 §3.6.3 allows. No pseudo-element is in a user-action
+    /// state until M26.4, and they are matched so.
+    pub states: Vec<PseudoClass>,
+}
+
+/// The pseudo-elements a selector may end in (Pseudo-Elements 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PseudoElement {
+    /// `::before` (or `:before`)
+    Before,
+    /// `::after` (or `:after`)
+    After,
+    /// `::first-letter` (or `:first-letter`)
+    FirstLetter,
+    /// `::first-line` (or `:first-line`)
+    FirstLine,
+    /// `::marker`: recognised; nothing draws it before list items
+    /// (M21.6).
+    Marker,
+    /// `::placeholder`: recognised; no control draws placeholder text
+    /// yet.
+    Placeholder,
+    /// `::selection`: recognised; there is no selection yet (M26).
+    Selection,
+    /// A `::-webkit-` name that is not a function: valid, so that the
+    /// list it is in keeps its other selectors, and matching nothing
+    /// (selectors-4 Appendix B).
+    WebkitPrefixed,
 }
 
 /// How two compound selectors relate.
@@ -74,14 +131,14 @@ pub enum SimpleSelector {
     Class(String),
     /// An attribute selector.
     Attribute {
-        /// Attribute name (lowercased).
+        /// Attribute name (ASCII lowercased).
         name: String,
         /// The comparison.
         op: AttrOp,
         /// The comparison value (empty for `Exists`).
         value: String,
-        /// ASCII case-insensitive comparison (`i` flag).
-        case_insensitive: bool,
+        /// How the value compares: the flag, or HTML's rule without one.
+        case: CaseFlag,
     },
     /// A pseudo-class.
     PseudoClass(PseudoClass),
@@ -106,7 +163,20 @@ pub enum AttrOp {
     Substring,
 }
 
-/// Pseudo-classes (the M4 subset).
+/// An attribute selector's case-sensitivity flag (selectors-4 §6.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaseFlag {
+    /// No flag: the value compares as the document language says. In
+    /// HTML, ASCII case-insensitively for the attributes it lists
+    /// (`type`, `lang`, `rel` …), identically for every other.
+    Unset,
+    /// `i`: ASCII case-insensitively, whatever the attribute.
+    I,
+    /// `s`: identically, whatever the attribute.
+    S,
+}
+
+/// Pseudo-classes (the M4 subset, and M16's).
 #[derive(Debug, Clone, PartialEq)]
 pub enum PseudoClass {
     /// `:first-child`
@@ -166,6 +236,10 @@ pub enum PseudoClass {
     Hover,
     /// Dynamic, see [`PseudoClass::Hover`].
     Focus,
+    /// Dynamic, see [`PseudoClass::Hover`].
+    FocusVisible,
+    /// Dynamic, see [`PseudoClass::Hover`].
+    FocusWithin,
     /// Dynamic, see [`PseudoClass::Hover`].
     Active,
     /// Dynamic, see [`PseudoClass::Hover`].

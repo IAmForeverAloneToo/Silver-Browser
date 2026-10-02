@@ -45,11 +45,16 @@ last compound selector:
 Any other pseudo-element makes the selector invalid, as now. After a
 pseudo-element only the user-action pseudo-classes may follow
 (`:hover`, `:focus`, `:focus-visible`, `:focus-within`, `:active`),
-which never match yet; anything else after it is invalid. A
-pseudo-element inside `:is()`, `:where()`, `:not()` stays invalid
-there, as Selectors 4 says (`:is()` and `:where()` forgive it, as
-now). A pseudo-element counts in the third column of specificity, as a
-type selector does.
+and `:is()`, `:where()` and `:not()` whose arguments are made of them,
+since Selectors 4 §3.6.3 passes the restriction to their arguments
+(`:is()` and `:where()` forgive an argument that breaks it). No
+pseudo-element is hovered, focused or active until M26.4, so
+`::before:hover` never matches and `::before:not(:hover)` always does.
+Anything else after a pseudo-element, a combinator included, is
+invalid. A pseudo-element inside `:is()`, `:where()`, `:not()` stays
+invalid there, as Selectors 4 says (`:is()` and `:where()` forgive it,
+as now). A pseudo-element counts in the third column of specificity,
+as a type selector does.
 
 The selector keeps its pseudo-element as a field of its own; the
 compound selectors before it match the *originating element*, and a
@@ -68,7 +73,11 @@ value case-sensitive. The flag becomes three states — none, `i`, `s` —
 where it is one boolean now. Comparisons are made in place, with no
 string allocated per attribute tested, as two are now. Every document
 the engine has is an HTML document, so the rule always applies; the
-UA sheet's `i` flags stay, harmless.
+UA sheet's `i` flags stay, harmless. The HTML tokenizer lowercases
+attribute names in ASCII too, as HTML's tokenizer does, so that the
+name a selector gives and the name a page wrote agree; and `class` and
+the words `~=` compares are split on ASCII white space, as HTML splits
+them, not on Unicode's.
 
 **Specificity of `:nth-child(An+B of S)`.** It becomes what Selectors 4
 says: one pseudo-class plus the most specific selector in S. It counts
@@ -349,7 +358,9 @@ another language its own marks. Beyond the page:
   table; clear: both }`); generated boxes on `html` and `body`; and the
   reference pages' mutation test, run over them;
 - the fuzz targets that parse selectors, style documents and run the
-  pipeline cover the new grammar and the new boxes with no change.
+  pipeline cover the new grammar and the new boxes; the selector
+  target also matches each selector that ends in a pseudo-element
+  against the element it would originate from.
 
 **The layering contract.** Nothing moves. `style` keeps selectors,
 the cascade and the pseudo-element styles; `layout` builds the

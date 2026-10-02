@@ -171,6 +171,62 @@ fn attribute_selector_table() {
             selector: "[data-x=abc i]",
             expected: &["p"],
         },
+        Case {
+            name: "case_sensitive_by_default",
+            html: "<p data-x='ABC'>a</p>",
+            selector: "[data-x=abc]",
+            expected: &[],
+        },
+        Case {
+            name: "html_case_insensitive_attribute",
+            html: "<input type=CheckBox><input type=text>",
+            selector: "[type=checkbox]",
+            expected: &["input"],
+        },
+        Case {
+            name: "html_case_insensitive_attribute_with_s_flag",
+            html: "<input type=CheckBox><input type=checkbox>",
+            selector: "[TYPE=checkbox s]",
+            expected: &["input"],
+        },
+        Case {
+            name: "html_case_insensitive_dash",
+            html: "<p lang=EN-GB>a</p><p lang=fr>b</p>",
+            selector: "[lang|=en]",
+            expected: &["p"],
+        },
+    ]);
+}
+
+#[test]
+fn pseudo_element_table() {
+    // A selector ending in a pseudo-element represents the
+    // pseudo-element, never an element; its list's others still match.
+    run(&[
+        Case {
+            name: "before",
+            html: "<p>a</p>",
+            selector: "p::before",
+            expected: &[],
+        },
+        Case {
+            name: "legacy_after",
+            html: "<p>a</p>",
+            selector: "p:after",
+            expected: &[],
+        },
+        Case {
+            name: "list_keeps_the_others",
+            html: "<p>a</p><div>b</div>",
+            selector: "div, p::first-line, ::-webkit-scrollbar",
+            expected: &["div"],
+        },
+        Case {
+            name: "is_forgives_a_pseudo_element",
+            html: "<p>a</p><div>b</div>",
+            selector: ":is(::before, div)",
+            expected: &["div"],
+        },
     ]);
 }
 

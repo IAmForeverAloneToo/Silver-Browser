@@ -14,13 +14,21 @@
 //! near it. `:is()` and `:where()` take a forgiving selector list
 //! (selectors-4 §4.2): a member that does not parse is dropped and the
 //! rest stand, where `:not()` and the rule's own list fail whole.
+//!
+//! A selector may end in a pseudo-element (M16), in the rule's own list
+//! only: selectors-4 makes one invalid inside `:not()`, `:is()`,
+//! `:where()` and `of S`. After it may come the user-action
+//! pseudo-classes, and `:is()`, `:where()` and `:not()` of them
+//! (§3.6.3), and nothing else, not even a combinator. Names are
+//! compared in ASCII lowercase: Unicode lowercasing turns some
+//! non-ASCII letters into ASCII ones (the Kelvin sign into `k`).
 
 use crate::ParseError;
 use css::Token;
 
 use super::{
-    AttrOp, Combinator, CompoundSelector, PseudoClass, Selector, SelectorList, SimpleSelector,
-    Specificity,
+    AttrOp, CaseFlag, Combinator, CompoundSelector, PseudoClass, PseudoElement,
+    PseudoElementSelector, Selector, SelectorList, SimpleSelector, Specificity,
 };
 
 /// How deep `:not()`, `:is()`, `:where()` and `of S` may nest.
@@ -31,12 +39,27 @@ pub const MAX_NESTING: usize = 32;
 /// error (selectors-4 §5.1: `<complex-selector>#`, no empty members).
 pub fn parse_selector_list(tokens: &[Token]) -> Result<SelectorList, ParseError> {
     let mut c = Cursor::new(tokens);
-    let list = parse_list(&mut c, 0, false, false)?;
+    let list = parse_list(&mut c, 0, Scope::Rule, false, false)?;
     c.skip_ws();
     if !c.at_end() {
         return Err(ParseError::InvalidSelector);
     }
     Ok(list)
+}
+
+/// Where a selector list stands, which decides what its selectors may
+/// hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    /// The rule's own list: a selector may end in a pseudo-element.
+    Rule,
+    /// Inside `:not()`, `:is()`, `:where()` or `of S`, where a
+    /// pseudo-element is invalid (selectors-4 §4).
+    Nested,
+    /// Inside `:not()`, `:is()` or `:where()` after a pseudo-element,
+    /// whose restrictions pass to their arguments (§3.6.3): each
+    /// selector is one compound of the pseudo-classes allowed there.
+    State,
 }
 
 /// A peekable cursor over a token slice.
@@ -70,17 +93,29 @@ impl<'a> Cursor<'a> {
         }
         self.pos > start
     }
+
+    /// Whether the cursor is where a list member ends: at a comma, at
+    /// the end, or, `in_parens`, at the `)` closing the list.
+    fn at_member_end(&self, in_parens: bool) -> bool {
+        match self.peek() {
+            None | Some(Token::Comma) => true,
+            Some(Token::CloseParen) => in_parens,
+            _ => false,
+        }
+    }
 }
 
 /// Parses a selector list at the cursor: complex selectors separated by
 /// top-level commas, ending at the end of the tokens or, when
 /// `in_parens`, before the `)` that closes the enclosing function
 /// (left for the caller to consume). With `forgiving`, a member that
-/// fails to parse is skipped rather than failing the list, and the
-/// list may come out empty.
+/// fails to parse, or is followed by anything but the end of its
+/// member, is skipped rather than failing the list, and the list may
+/// come out empty.
 fn parse_list(
     c: &mut Cursor,
     depth: usize,
+    scope: Scope,
     in_parens: bool,
     forgiving: bool,
 ) -> Result<SelectorList, ParseError> {
@@ -91,7 +126,15 @@ fn parse_list(
     loop {
         c.skip_ws();
         let start = c.pos;
-        match parse_complex(c, depth) {
+        let member = parse_complex(c, depth, scope).and_then(|selector| {
+            c.skip_ws();
+            if c.at_member_end(in_parens) {
+                Ok(selector)
+            } else {
+                Err(ParseError::InvalidSelector)
+            }
+        });
+        match member {
             Ok(selector) => selectors.push(selector),
             Err(e) => {
                 if !forgiving {
@@ -101,7 +144,6 @@ fn parse_list(
                 skip_member(c);
             }
         }
-        c.skip_ws();
         match c.peek() {
             Some(Token::Comma) => {
                 c.advance();
@@ -149,25 +191,34 @@ fn skip_member(c: &mut Cursor) {
 
 /// Parses one complex selector at the cursor, stopping before a
 /// top-level comma, a closing `)`, or the end.
-fn parse_complex(c: &mut Cursor, depth: usize) -> Result<Selector, ParseError> {
+fn parse_complex(c: &mut Cursor, depth: usize, scope: Scope) -> Result<Selector, ParseError> {
     c.skip_ws();
-    let (first, mut spec) = parse_compound(c, depth).ok_or(ParseError::InvalidSelector)?;
-    let mut compounds = vec![first];
+    if scope == Scope::State {
+        return parse_state_selector(c, depth);
+    }
+    let mut compounds = Vec::new();
     let mut combinators = Vec::new();
+    let mut specificity = Specificity::default();
+    let mut pseudo_element = None;
     loop {
+        let compound = parse_compound(c, depth, scope).ok_or(ParseError::InvalidSelector)?;
+        specificity += compound.specificity;
+        compounds.push(compound.selector);
+        if compound.pseudo_element.is_some() {
+            // The pseudo-element ends the selector: it has no
+            // descendants or siblings for a combinator to reach, and
+            // whatever follows it is left for the list, which takes
+            // anything but a comma or its end for an error.
+            pseudo_element = compound.pseudo_element;
+            break;
+        }
         let had_ws = c.skip_ws();
         if let Some(comb) = peek_combinator(c) {
             c.advance();
             c.skip_ws();
-            let (next, s) = parse_compound(c, depth).ok_or(ParseError::InvalidSelector)?;
-            spec += s;
             combinators.push(comb);
-            compounds.push(next);
         } else if had_ws && starts_compound(c.peek()) {
-            let (next, s) = parse_compound(c, depth).ok_or(ParseError::InvalidSelector)?;
-            spec += s;
             combinators.push(Combinator::Descendant);
-            compounds.push(next);
         } else {
             break;
         }
@@ -175,7 +226,30 @@ fn parse_complex(c: &mut Cursor, depth: usize) -> Result<Selector, ParseError> {
     Ok(Selector {
         compounds,
         combinators,
-        specificity: spec,
+        pseudo_element,
+        specificity,
+    })
+}
+
+/// Parses one selector of a list inside `:not()`, `:is()` or `:where()`
+/// after a pseudo-element: a compound of the pseudo-classes allowed
+/// there, nothing else.
+fn parse_state_selector(c: &mut Cursor, depth: usize) -> Result<Selector, ParseError> {
+    let mut specificity = Specificity::default();
+    let states = parse_states(c, depth, &mut specificity).ok_or(ParseError::InvalidSelector)?;
+    if states.is_empty() {
+        return Err(ParseError::InvalidSelector);
+    }
+    Ok(Selector {
+        compounds: vec![CompoundSelector {
+            simple: states
+                .into_iter()
+                .map(SimpleSelector::PseudoClass)
+                .collect(),
+        }],
+        combinators: Vec::new(),
+        pseudo_element: None,
+        specificity,
     })
 }
 
@@ -204,9 +278,20 @@ fn starts_compound(t: Option<&Token>) -> bool {
     )
 }
 
-/// Parses one compound selector (no combinators). Returns the compound
-/// and its specificity contribution.
-fn parse_compound(c: &mut Cursor, depth: usize) -> Option<(CompoundSelector, Specificity)> {
+/// One compound selector as parsed.
+struct Compound {
+    /// Its simple selectors.
+    selector: CompoundSelector,
+    /// Their specificity, the pseudo-element's and its states' with it.
+    specificity: Specificity,
+    /// The pseudo-element that ends it, and so the selector, if any.
+    pseudo_element: Option<PseudoElementSelector>,
+}
+
+/// Parses one compound selector (no combinators), which in the rule's
+/// own list may end in a pseudo-element; a compound that is a
+/// pseudo-element alone stands for `*` and it (selectors-4 §3.6.2).
+fn parse_compound(c: &mut Cursor, depth: usize, scope: Scope) -> Option<Compound> {
     let mut simple: Vec<SimpleSelector> = Vec::new();
     let mut spec = Specificity::default();
     let mut seen_type = false;
@@ -218,7 +303,7 @@ fn parse_compound(c: &mut Cursor, depth: usize) -> Option<(CompoundSelector, Spe
                     return None;
                 }
                 seen_type = true;
-                simple.push(SimpleSelector::Type(name.to_lowercase()));
+                simple.push(SimpleSelector::Type(name.to_ascii_lowercase()));
                 spec.2 += 1;
             }
             Token::Delim('*') => {
@@ -248,19 +333,34 @@ fn parse_compound(c: &mut Cursor, depth: usize) -> Option<(CompoundSelector, Spe
             // Namespaces are unsupported (documented subset).
             Token::Delim('|') => return None,
             Token::OpenSquare => {
-                let (name, op, value, case_insensitive) = parse_attribute(c)?;
+                let (name, op, value, case) = parse_attribute(c)?;
                 spec.1 += 1;
                 simple.push(SimpleSelector::Attribute {
                     name,
                     op,
                     value,
-                    case_insensitive,
+                    case,
                 });
                 continue; // parse_attribute consumed through `]`
             }
             Token::Colon => {
-                let pseudo = parse_pseudo(c, &mut spec, depth)?;
-                simple.push(SimpleSelector::PseudoClass(pseudo));
+                match parse_pseudo(c, &mut spec, depth, Scope::Nested)? {
+                    Pseudo::Class(pc) => simple.push(SimpleSelector::PseudoClass(pc)),
+                    Pseudo::Element(element) => {
+                        if scope != Scope::Rule {
+                            return None;
+                        }
+                        let states = parse_states(c, depth, &mut spec)?;
+                        if simple.is_empty() {
+                            simple.push(SimpleSelector::Universal);
+                        }
+                        return Some(Compound {
+                            selector: CompoundSelector { simple },
+                            specificity: spec,
+                            pseudo_element: Some(PseudoElementSelector { element, states }),
+                        });
+                    }
+                }
                 continue; // parse_pseudo consumed its tokens
             }
             _ => break,
@@ -270,15 +370,44 @@ fn parse_compound(c: &mut Cursor, depth: usize) -> Option<(CompoundSelector, Spe
     if simple.is_empty() {
         return None;
     }
-    Some((CompoundSelector { simple }, spec))
+    Some(Compound {
+        selector: CompoundSelector { simple },
+        specificity: spec,
+        pseudo_element: None,
+    })
+}
+
+/// Parses the pseudo-classes after a pseudo-element, or in a list
+/// inside one of them: the user-action ones, and `:is()`, `:where()` and
+/// `:not()` of them (selectors-4 §3.6.3). `None` when another
+/// pseudo-class or a pseudo-element is there; anything else after them
+/// is left for the list, which takes it for an error.
+fn parse_states(c: &mut Cursor, depth: usize, spec: &mut Specificity) -> Option<Vec<PseudoClass>> {
+    let mut states = Vec::new();
+    while matches!(c.peek(), Some(Token::Colon)) {
+        match parse_pseudo(c, spec, depth, Scope::State)? {
+            Pseudo::Class(
+                pc @ (PseudoClass::Hover
+                | PseudoClass::Focus
+                | PseudoClass::FocusVisible
+                | PseudoClass::FocusWithin
+                | PseudoClass::Active
+                | PseudoClass::Not(_)
+                | PseudoClass::Is(_)
+                | PseudoClass::Where(_)),
+            ) => states.push(pc),
+            _ => return None,
+        }
+    }
+    Some(states)
 }
 
 /// Parses an attribute selector; the cursor is at `[`.
-fn parse_attribute(c: &mut Cursor) -> Option<(String, AttrOp, String, bool)> {
+fn parse_attribute(c: &mut Cursor) -> Option<(String, AttrOp, String, CaseFlag)> {
     c.advance(); // '['
     c.skip_ws();
     let name = match c.peek() {
-        Some(Token::Ident(name)) => name.to_lowercase(),
+        Some(Token::Ident(name)) => name.to_ascii_lowercase(),
         _ => return None,
     };
     c.advance();
@@ -286,7 +415,7 @@ fn parse_attribute(c: &mut Cursor) -> Option<(String, AttrOp, String, bool)> {
     let op = match c.peek() {
         Some(Token::CloseSquare) => {
             c.advance();
-            return Some((name, AttrOp::Exists, String::new(), false));
+            return Some((name, AttrOp::Exists, String::new(), CaseFlag::Unset));
         }
         Some(Token::Delim('=')) => {
             c.advance();
@@ -326,39 +455,68 @@ fn parse_attribute(c: &mut Cursor) -> Option<(String, AttrOp, String, bool)> {
         _ => return None,
     };
     c.skip_ws();
-    // Optional case flag (`i` or `s`).
-    let mut case_insensitive = false;
+    // The optional case flag (§6.3), an `i` or an `s` in either case.
+    let mut case = CaseFlag::Unset;
     if let Some(Token::Ident(flag)) = c.peek() {
-        match flag.as_str() {
-            "i" | "I" => {
-                case_insensitive = true;
-                c.advance();
-                c.skip_ws();
-            }
-            "s" | "S" => {
-                c.advance();
-                c.skip_ws();
-            }
-            _ => {}
+        if flag.eq_ignore_ascii_case("i") {
+            case = CaseFlag::I;
+        } else if flag.eq_ignore_ascii_case("s") {
+            case = CaseFlag::S;
+        } else {
+            return None;
         }
+        c.advance();
+        c.skip_ws();
     }
     if !matches!(c.peek(), Some(Token::CloseSquare)) {
         return None;
     }
     c.advance();
-    Some((name, op, value, case_insensitive))
+    Some((name, op, value, case))
 }
 
-/// Parses a pseudo-class; the cursor is at `:`. Updates `spec` with the
-/// specificity contribution (selectors-4 §17: `:not()`/`:is()` count
-/// the max of their arguments; `:where()` counts zero).
-fn parse_pseudo(c: &mut Cursor, spec: &mut Specificity, depth: usize) -> Option<PseudoClass> {
+/// What a `:` begins.
+enum Pseudo {
+    Class(PseudoClass),
+    Element(PseudoElement),
+}
+
+/// Parses a pseudo-class or a pseudo-element; the cursor is at `:`.
+/// Updates `spec` with the specificity contribution (selectors-4 §17:
+/// `:not()`/`:is()` count the max of their arguments, `:where()` counts
+/// zero, `:nth-child(… of S)` one pseudo-class and the max of S, a
+/// pseudo-element one type selector). `inner` is the scope of the
+/// lists inside `:not()`, `:is()` and `:where()`.
+fn parse_pseudo(
+    c: &mut Cursor,
+    spec: &mut Specificity,
+    depth: usize,
+    inner: Scope,
+) -> Option<Pseudo> {
     c.advance(); // ':'
     match c.peek() {
-        // Pseudo-elements (`::before` etc.) are the M16 milestone.
-        Some(Token::Colon) => None,
+        Some(Token::Colon) => {
+            c.advance();
+            // `::name`; no functional pseudo-element (`::part()`,
+            // `::-webkit-x()`) is one this engine knows.
+            let Some(Token::Ident(name)) = c.peek() else {
+                return None;
+            };
+            let element = pseudo_element(name)?;
+            c.advance();
+            *spec += Specificity(0, 0, 1);
+            Some(Pseudo::Element(element))
+        }
         Some(Token::Ident(name)) => {
-            let pc = match name.to_lowercase().as_str() {
+            let name = name.to_ascii_lowercase();
+            // CSS 2's four pseudo-elements keep their one-colon form,
+            // and are never taken for pseudo-classes (selectors-4 §3.6.1).
+            if let Some(element) = legacy_pseudo_element(&name) {
+                c.advance();
+                *spec += Specificity(0, 0, 1);
+                return Some(Pseudo::Element(element));
+            }
+            let pc = match name.as_str() {
                 "first-child" => PseudoClass::FirstChild,
                 "last-child" => PseudoClass::LastChild,
                 "only-child" => PseudoClass::OnlyChild,
@@ -370,6 +528,8 @@ fn parse_pseudo(c: &mut Cursor, spec: &mut Specificity, depth: usize) -> Option<
                 // Dynamic: parseable, but never matched until M26.
                 "hover" => PseudoClass::Hover,
                 "focus" => PseudoClass::Focus,
+                "focus-visible" => PseudoClass::FocusVisible,
+                "focus-within" => PseudoClass::FocusWithin,
                 "active" => PseudoClass::Active,
                 "visited" => PseudoClass::Visited,
                 "link" => PseudoClass::Link,
@@ -377,29 +537,32 @@ fn parse_pseudo(c: &mut Cursor, spec: &mut Specificity, depth: usize) -> Option<
             };
             c.advance();
             *spec += Specificity(0, 1, 0);
-            Some(pc)
+            Some(Pseudo::Class(pc))
         }
         Some(Token::Function(name)) => {
-            let name = name.to_lowercase();
+            let name = name.to_ascii_lowercase();
             c.advance();
             let pc = match name.as_str() {
                 "not" => {
-                    let list = parse_list(c, depth + 1, true, false).ok()?;
+                    let list = parse_list(c, depth + 1, inner, true, false).ok()?;
                     *spec += max_specificity(&list);
                     PseudoClass::Not(list)
                 }
                 "is" => {
-                    let list = parse_list(c, depth + 1, true, true).ok()?;
+                    let list = parse_list(c, depth + 1, inner, true, true).ok()?;
                     *spec += max_specificity(&list);
                     PseudoClass::Is(list)
                 }
                 "where" => {
-                    let list = parse_list(c, depth + 1, true, true).ok()?;
+                    let list = parse_list(c, depth + 1, inner, true, true).ok()?;
                     PseudoClass::Where(list) // zero specificity by design
                 }
                 "nth-child" => {
-                    *spec += Specificity(0, 1, 0);
                     let (a, b, of) = parse_nth(c, true, depth)?;
+                    *spec += Specificity(0, 1, 0);
+                    if let Some(list) = &of {
+                        *spec += max_specificity(list);
+                    }
                     PseudoClass::NthChild { a, b, of }
                 }
                 "nth-last-child" => {
@@ -427,8 +590,36 @@ fn parse_pseudo(c: &mut Cursor, spec: &mut Specificity, depth: usize) -> Option<
                 return None;
             }
             c.advance();
-            Some(pc)
+            Some(Pseudo::Class(pc))
         }
+        _ => None,
+    }
+}
+
+/// The pseudo-element `::name` names, if this engine knows it.
+fn pseudo_element(name: &str) -> Option<PseudoElement> {
+    let name = name.to_ascii_lowercase();
+    if let Some(element) = legacy_pseudo_element(&name) {
+        return Some(element);
+    }
+    match name.as_str() {
+        "marker" => Some(PseudoElement::Marker),
+        "placeholder" => Some(PseudoElement::Placeholder),
+        "selection" => Some(PseudoElement::Selection),
+        // selectors-4 Appendix B: valid, and matching nothing.
+        _ if name.starts_with("-webkit-") => Some(PseudoElement::WebkitPrefixed),
+        _ => None,
+    }
+}
+
+/// The pseudo-elements CSS 2 wrote with one colon, by their ASCII
+/// lowercase names.
+fn legacy_pseudo_element(name: &str) -> Option<PseudoElement> {
+    match name {
+        "before" => Some(PseudoElement::Before),
+        "after" => Some(PseudoElement::After),
+        "first-letter" => Some(PseudoElement::FirstLetter),
+        "first-line" => Some(PseudoElement::FirstLine),
         _ => None,
     }
 }
@@ -465,7 +656,7 @@ fn parse_nth(
     if !allow_of {
         return None;
     }
-    let list = parse_list(c, depth + 1, true, false).ok()?;
+    let list = parse_list(c, depth + 1, Scope::Nested, true, false).ok()?;
     Some((a, b, Some(Box::new(list))))
 }
 
@@ -686,7 +877,7 @@ mod tests {
                 name: "disabled".into(),
                 op: AttrOp::Exists,
                 value: String::new(),
-                case_insensitive: false,
+                case: CaseFlag::Unset,
             }]
         );
     }
@@ -707,7 +898,7 @@ mod tests {
                     name: "a".into(),
                     op,
                     value: "b".into(),
-                    case_insensitive: false,
+                    case: CaseFlag::Unset,
                 }],
                 "operator mismatch for {src}"
             );
@@ -722,31 +913,33 @@ mod tests {
                 name: "href".into(),
                 op: AttrOp::Equals,
                 value: "https://x".into(),
-                case_insensitive: false,
+                case: CaseFlag::Unset,
             }]
         );
     }
 
     #[test]
     fn parses_case_flags() {
-        assert_eq!(
-            ok("[a=b i]").0[0].compounds[0].simple,
-            vec![SimpleSelector::Attribute {
-                name: "a".into(),
-                op: AttrOp::Equals,
-                value: "b".into(),
-                case_insensitive: true,
-            }]
-        );
-        assert_eq!(
-            ok("[a=B s]").0[0].compounds[0].simple,
-            vec![SimpleSelector::Attribute {
-                name: "a".into(),
-                op: AttrOp::Equals,
-                value: "B".into(),
-                case_insensitive: false,
-            }]
-        );
+        // Three states: none, `i` and `s`, each flag in either case.
+        let case = |sel: &str| match &ok(sel).0[0].compounds[0].simple[0] {
+            SimpleSelector::Attribute { case, value, .. } => {
+                assert_eq!(value, "B", "{sel}: the value is kept as written");
+                *case
+            }
+            other => panic!("expected an attribute, got {other:?}"),
+        };
+        assert_eq!(case("[a=B]"), CaseFlag::Unset);
+        assert_eq!(case("[a=B i]"), CaseFlag::I);
+        assert_eq!(case("[a=B I]"), CaseFlag::I);
+        assert_eq!(case("[a=B s]"), CaseFlag::S);
+        assert_eq!(case("[a='B'S]"), CaseFlag::S);
+        assert_eq!(case("[a^=B i ]"), CaseFlag::I);
+        // One flag, after a value, and no other letter.
+        err("[a=B i s]");
+        err("[a i]");
+        err("[a=B ii]");
+        // The long s, which Unicode case folding makes `s`, is not one.
+        err("[a=B \u{17F}]");
     }
 
     #[test]
@@ -757,7 +950,7 @@ mod tests {
                 name: "data-x".into(),
                 op: AttrOp::Equals,
                 value: "y".into(),
-                case_insensitive: false,
+                case: CaseFlag::Unset,
             }]
         );
     }
@@ -774,7 +967,7 @@ mod tests {
                 name: "tabindex".into(),
                 op: AttrOp::Equals,
                 value: "0".into(),
-                case_insensitive: false,
+                case: CaseFlag::Unset,
             }]
         );
     }
@@ -884,10 +1077,274 @@ mod tests {
         err(":");
     }
 
+    // ---- pseudo-elements (M16) --------------------------------------------
+
+    /// The selector's pseudo-element and the states after it.
+    fn ending(sel: &str) -> Option<PseudoElementSelector> {
+        let list = ok(sel);
+        assert_eq!(list.0.len(), 1, "{sel}");
+        list.0[0].pseudo_element.clone()
+    }
+
+    fn element(sel: &str) -> PseudoElement {
+        ending(sel)
+            .unwrap_or_else(|| panic!("{sel} ends in a pseudo-element"))
+            .element
+    }
+
     #[test]
-    fn pseudo_elements_error_for_now() {
-        err("::before");
-        err("a::after");
+    fn parses_every_pseudo_element() {
+        for (src, expected) in [
+            ("::before", PseudoElement::Before),
+            ("::after", PseudoElement::After),
+            ("::first-letter", PseudoElement::FirstLetter),
+            ("::first-line", PseudoElement::FirstLine),
+            ("::marker", PseudoElement::Marker),
+            ("::placeholder", PseudoElement::Placeholder),
+            ("::selection", PseudoElement::Selection),
+            // CSS 2's one-colon forms of the four.
+            (":before", PseudoElement::Before),
+            (":after", PseudoElement::After),
+            (":first-letter", PseudoElement::FirstLetter),
+            (":first-line", PseudoElement::FirstLine),
+            // Names are ASCII case-insensitive.
+            ("::BEFORE", PseudoElement::Before),
+            (":First-Line", PseudoElement::FirstLine),
+        ] {
+            assert_eq!(element(src), expected, "{src}");
+            assert_eq!(element(&format!("p{src}")), expected, "p{src}");
+        }
+        assert_eq!(ending("p"), None);
+        assert_eq!(ending("p:hover"), None);
+    }
+
+    #[test]
+    fn a_pseudo_element_alone_stands_for_the_universal_selector() {
+        // selectors-4 §3.6.2: `::first-line` is `*::first-line`, and
+        // `div ::before` is `div *::before`.
+        let selector = &ok("::before").0[0];
+        assert_eq!(
+            selector.compounds[0].simple,
+            vec![SimpleSelector::Universal]
+        );
+        let selector = &ok("div ::before").0[0];
+        assert_eq!(selector.combinators, vec![Combinator::Descendant]);
+        assert_eq!(
+            selector.compounds[1].simple,
+            vec![SimpleSelector::Universal]
+        );
+        assert_eq!(
+            selector.pseudo_element.as_ref().unwrap().element,
+            PseudoElement::Before
+        );
+        let selector = &ok("ul > li.a:hover::marker").0[0];
+        assert_eq!(selector.combinators, vec![Combinator::Child]);
+        assert_eq!(
+            selector.compounds[1].simple,
+            vec![
+                SimpleSelector::Type("li".into()),
+                SimpleSelector::Class("a".into()),
+                SimpleSelector::PseudoClass(PseudoClass::Hover),
+            ]
+        );
+        assert_eq!(
+            selector.pseudo_element.as_ref().unwrap().element,
+            PseudoElement::Marker
+        );
+    }
+
+    #[test]
+    fn only_the_css2_pseudo_elements_take_one_colon() {
+        err(":marker");
+        err(":placeholder");
+        err(":selection");
+        err(":-webkit-scrollbar");
+    }
+
+    #[test]
+    fn webkit_pseudo_elements_are_valid_and_match_nothing_but_others_stay_invalid() {
+        // selectors-4 Appendix B: any `::-webkit-` name that is not a
+        // function, matched ASCII case-insensitively.
+        for src in [
+            "::-webkit-scrollbar",
+            "div::-webkit-scrollbar-thumb:hover",
+            "::-WEBKIT-Inner-Spin-Button",
+            "::-webkit-",
+        ] {
+            assert_eq!(
+                ending(src).unwrap().element,
+                PseudoElement::WebkitPrefixed,
+                "{src}"
+            );
+        }
+        // A list holding one keeps its other selectors.
+        assert_eq!(ok(".a, ::-webkit-scrollbar").0.len(), 2);
+        err("::-webkit-x()");
+        err("::-moz-selection");
+        err("::-webkitx");
+        err("::backdrop");
+        err("::part(x)");
+        err("::slotted(p)");
+        err("::nope");
+        err(":: before");
+        err("::");
+        err("::'before'");
+    }
+
+    #[test]
+    fn a_pseudo_element_ends_the_selector() {
+        for src in [
+            "p::before span",
+            "p::before > span",
+            "p::before + p",
+            "p::before ~ p",
+            "p::before.a",
+            "p::before#x",
+            "p::before[x]",
+            "p::before*",
+            "p::beforediv",
+            "::before div",
+            "::before::after",
+            "::before:after",
+            "::first-line::first-letter",
+            "::before::-webkit-x",
+            // White space then `:hover` is a descendant compound.
+            "p::before :hover",
+        ] {
+            err(src);
+        }
+        // A comma ends it too, and white space before one.
+        assert_eq!(ok("p::before , .a").0.len(), 2);
+    }
+
+    #[test]
+    fn user_action_pseudo_classes_and_logical_ones_of_them_may_follow() {
+        let states = |src: &str| ending(src).expect(src).states;
+        assert_eq!(states("::before:hover"), vec![PseudoClass::Hover]);
+        assert_eq!(
+            states("::after:focus:active"),
+            vec![PseudoClass::Focus, PseudoClass::Active]
+        );
+        assert_eq!(
+            states("::first-line:focus-visible"),
+            vec![PseudoClass::FocusVisible]
+        );
+        assert_eq!(
+            states("::selection:FOCUS-WITHIN"),
+            vec![PseudoClass::FocusWithin]
+        );
+        assert_eq!(states(":before:hover").len(), 1);
+        // §3.6.3: the logical pseudo-classes pass the restriction to
+        // their arguments.
+        assert!(matches!(
+            states("::before:not(:hover, :focus)").as_slice(),
+            [PseudoClass::Not(list)] if list.0.len() == 2
+        ));
+        assert!(matches!(
+            states("::before:where(:is(:active:hover))").as_slice(),
+            [PseudoClass::Where(list)] if list.0.len() == 1
+        ));
+        // `:is()` forgives an argument that is invalid there; `:not()`
+        // does not.
+        assert!(matches!(
+            states("::before:is(:hover, .a, :first-child, p)").as_slice(),
+            [PseudoClass::Is(list)] if list.0.len() == 1
+        ));
+        assert!(matches!(
+            states("::before:is(.a)").as_slice(),
+            [PseudoClass::Is(list)] if list.0.is_empty()
+        ));
+        assert!(matches!(
+            states("::before:is(:hover.a, :focus[x], :active)").as_slice(),
+            [PseudoClass::Is(list)] if list.0.len() == 1
+        ));
+        for src in [
+            "::before:first-child",
+            "::before:empty",
+            "::before:root",
+            "::before:visited",
+            "::before:link",
+            "::before:nth-child(1)",
+            "::before:not(.a)",
+            "::before:not(:hover .a)",
+            "::before:not(:hover.a)",
+            "::before:not(:focus::after)",
+            "::before:hover.a",
+            "::before:hover[x]",
+            "::before:hover p",
+            "::before:not(:hover > :focus)",
+            "::before:not(:hover, ::after)",
+            "::before:not(:first-child)",
+            "::before:not()",
+        ] {
+            err(src);
+        }
+    }
+
+    #[test]
+    fn pseudo_elements_are_invalid_inside_logical_pseudo_classes() {
+        err(":not(::before)");
+        err(":not(:before)");
+        err(":not(p::after)");
+        err(":nth-child(1 of ::before)");
+        err(":nth-child(1 of :first-line)");
+        // Forgiven, and so dropped, by `:is()` and `:where()`.
+        let list = ok(":is(:after, .a)");
+        let SimpleSelector::PseudoClass(PseudoClass::Is(inner)) = &list.0[0].compounds[0].simple[0]
+        else {
+            panic!("expected :is");
+        };
+        assert_eq!(inner.0.len(), 1);
+        assert!(inner.0[0].pseudo_element.is_none());
+        let list = ok(":where(p::before)");
+        let SimpleSelector::PseudoClass(PseudoClass::Where(inner)) =
+            &list.0[0].compounds[0].simple[0]
+        else {
+            panic!("expected :where");
+        };
+        assert!(inner.0.is_empty());
+    }
+
+    #[test]
+    fn a_forgiving_list_drops_a_member_with_anything_after_it() {
+        // selectors-4 §4.2 parses each member whole; a member that parses
+        // to a point and then meets junk is dropped, not the list.
+        let members = |src: &str| match &ok(src).0[0].compounds[0].simple[0] {
+            SimpleSelector::PseudoClass(PseudoClass::Is(l) | PseudoClass::Where(l)) => l.0.len(),
+            other => panic!("expected :is or :where, got {other:?}"),
+        };
+        assert_eq!(members(":is(.a | .b, .c)"), 1);
+        assert_eq!(members(":where(.a ::before, .b, .c)"), 2);
+        assert_eq!(members(":is(.a .b)"), 1);
+        err(":not(.a | .b)");
+        err(":not(.a | .b, .c)");
+    }
+
+    #[test]
+    fn names_are_compared_in_ascii_lowercase() {
+        // The Kelvin sign is Unicode-lowercased to `k`; ASCII lowercasing
+        // leaves it, so `:lin\u{212A}` is not `:link`, and the type
+        // selector `\u{212A}BD` does not name `kbd`.
+        err(":lin\u{212A}");
+        err("::mar\u{212A}er");
+        assert_eq!(
+            ok("\u{212A}BD").0[0].compounds[0].simple,
+            vec![SimpleSelector::Type("\u{212A}bd".into())]
+        );
+        assert_eq!(
+            ok("[\u{212A}EY=x]").0[0].compounds[0].simple,
+            vec![SimpleSelector::Attribute {
+                name: "\u{212A}ey".into(),
+                op: AttrOp::Equals,
+                value: "x".into(),
+                case: CaseFlag::Unset,
+            }]
+        );
+        assert_eq!(
+            ok("ÉTÉ").0[0].compounds[0].simple,
+            vec![SimpleSelector::Type("ÉtÉ".into())]
+        );
+        assert!(parse(":NOT(.a):Hover::BEFORE").is_ok());
     }
 
     #[test]
@@ -1027,8 +1484,27 @@ mod tests {
     }
 
     #[test]
-    fn specificity_of_nth_counts_as_one_class() {
-        assert_eq!(spec(":nth-child(2n+1 of .a)"), Specificity(0, 1, 0));
+    fn specificity_of_nth_child_of_s_adds_the_most_specific_of_s() {
+        // selectors-4 §17: one pseudo-class plus the most specific
+        // selector in S.
+        assert_eq!(spec(":nth-child(2n+1 of .a)"), Specificity(0, 2, 0));
+        assert_eq!(spec(":nth-child(2n of #a, .b)"), Specificity(1, 1, 0));
+        assert_eq!(spec("li:nth-child(odd of .x .y)"), Specificity(0, 3, 1));
+        assert_eq!(spec(":nth-child(1 of :where(#a))"), Specificity(0, 1, 0));
+        assert_eq!(spec(":nth-child(2n+1)"), Specificity(0, 1, 0));
+        assert_eq!(spec(":nth-last-child(1)"), Specificity(0, 1, 0));
+    }
+
+    #[test]
+    fn specificity_of_a_pseudo_element_is_a_type_selector() {
+        assert_eq!(spec("::before"), Specificity(0, 0, 1));
+        assert_eq!(spec("p::before"), Specificity(0, 0, 2));
+        assert_eq!(spec("p:before"), Specificity(0, 0, 2));
+        assert_eq!(spec(".a::after:hover"), Specificity(0, 2, 1));
+        assert_eq!(spec("#x ::marker"), Specificity(1, 0, 1));
+        assert_eq!(spec("::-webkit-scrollbar"), Specificity(0, 0, 1));
+        assert_eq!(spec("::before:not(:hover, :focus)"), Specificity(0, 1, 1));
+        assert_eq!(spec("::before:where(:hover)"), Specificity(0, 0, 1));
     }
 
     #[test]
@@ -1154,7 +1630,7 @@ mod tests {
                 name: "title".into(),
                 op: AttrOp::Equals,
                 value: "hello world".into(),
-                case_insensitive: false,
+                case: CaseFlag::Unset,
             }]
         );
     }
@@ -1167,7 +1643,7 @@ mod tests {
                 name: "aria-level2".into(),
                 op: AttrOp::Equals,
                 value: "x".into(),
-                case_insensitive: false,
+                case: CaseFlag::Unset,
             }]
         );
     }

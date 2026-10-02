@@ -1,6 +1,8 @@
 //! The selector parser on arbitrary text, and every selector it accepts
 //! matched against every node of a small fixed document — its text
-//! nodes and the document node included, which match nothing.
+//! nodes and the document node included, which match nothing — as the
+//! element, and as the originating element of the pseudo-element the
+//! selector ends in, if it ends in one.
 
 #![no_main]
 
@@ -24,7 +26,13 @@ fuzz_target!(|data: &[u8]| {
         let page = html::parse_document(PAGE).expect("the fixed page parses");
         dom::Document::from_node(&page)
     });
+    let mut matcher = style::selector_matching::Matcher::new(doc);
     for id in doc.subtree(doc.root()) {
         let _ = style::matches_selector_list(doc, id, &list);
+        for selector in &list.0 {
+            if let Some(ending) = &selector.pseudo_element {
+                let _ = matcher.matches_pseudo_element(id, selector, ending.element);
+            }
+        }
     }
 });

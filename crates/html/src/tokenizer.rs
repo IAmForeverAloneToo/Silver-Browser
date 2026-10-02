@@ -296,7 +296,7 @@ impl Tokenizer {
             content.push(self.input[self.pos]);
             self.pos += 1;
         }
-        if let Some(rest) = content.trim().to_lowercase().strip_prefix("doctype") {
+        if let Some(rest) = content.trim().to_ascii_lowercase().strip_prefix("doctype") {
             Token::Doctype(rest.trim().to_string())
         } else {
             Token::Comment(content)
@@ -322,7 +322,7 @@ impl Tokenizer {
     /// drop attributes on end tags too).
     fn read_end_tag(&mut self) -> Token {
         self.pos += 2; // "</"
-        let name = self.take_while(is_tag_name_char).to_lowercase();
+        let name = self.take_while(is_tag_name_char).to_ascii_lowercase();
         while let Some(c) = self.peek() {
             self.pos += 1;
             if c == '>' {
@@ -338,7 +338,7 @@ impl Tokenizer {
     /// thousand lookups, not a scan of the list for each.
     fn read_start_tag(&mut self) -> Token {
         self.pos += 1; // "<"
-        let name = self.take_while(is_tag_name_char).to_lowercase();
+        let name = self.take_while(is_tag_name_char).to_ascii_lowercase();
         let mut attrs: Vec<(String, String)> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
         let mut self_closing = false;
@@ -378,7 +378,9 @@ impl Tokenizer {
     fn read_attribute(&mut self) -> (String, String) {
         let name = self
             .take_while(|c| !c.is_whitespace() && c != '=' && c != '>' && c != '/')
-            .to_lowercase();
+            // HTML lowercases ASCII letters only (§13.2.5.33): Unicode
+            // lowercasing would turn the Kelvin sign into `k`.
+            .to_ascii_lowercase();
         self.skip_whitespace();
         if self.peek() != Some('=') {
             return (name, String::new());
@@ -899,6 +901,23 @@ mod tests {
     #[test]
     fn end_tags_are_lowercased() {
         assert_eq!(tokenize("</DIV>"), vec![Token::EndTag("div".into())]);
+    }
+
+    #[test]
+    fn attribute_names_are_lowercased_in_ascii_only() {
+        // The selector parser lowercases attribute names the same way,
+        // so `[data-\u{212A}]` finds what the page wrote.
+        assert_eq!(
+            tokenize("<p DATA-\u{212A}=1 ÉTÉ=2>"),
+            vec![Token::StartTag {
+                name: "p".into(),
+                attrs: vec![
+                    ("data-\u{212A}".into(), "1".into()),
+                    ("ÉtÉ".into(), "2".into()),
+                ],
+                self_closing: false,
+            }]
+        );
     }
 
     #[test]

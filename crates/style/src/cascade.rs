@@ -2731,6 +2731,20 @@ mod tests {
     }
 
     #[test]
+    fn a_rule_for_a_pseudo_element_does_not_style_its_originating_element() {
+        // M16: `p::before` represents the pseudo-element, not `p`; and
+        // since it parses, the other selectors in its list apply where
+        // they used to be dropped with it.
+        let sheets = [sheet(
+            "p { color: blue; } p::before, p:after { color: red; } \
+             .a, p::first-line, b::-webkit-scrollbar { color: green; }",
+        )];
+        let html = "<p>x</p><b class=a>y</b>";
+        assert_eq!(style_of(html, &sheets, "p").color, Color::rgb8(0, 0, 255));
+        assert_eq!(style_of(html, &sheets, "b").color, Color::rgb8(0, 128, 0));
+    }
+
+    #[test]
     fn display_none_is_recorded_but_children_still_get_styles() {
         let sheets = [sheet("div { display: none; } span { color: red; }")];
         let document =
