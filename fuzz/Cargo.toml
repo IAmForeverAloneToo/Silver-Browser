@@ -1,8 +1,9 @@
 # Fuzz targets for everything that parses text from a page: the
 # Encoding Standard's decoders, the URL parser, MIME types and sniffing,
-# the HTML parser, the CSS tokenizer and parser, the selector parser,
-# the cascade, and the whole pipeline through to a raster; and for the
-# engine whose document changes in place, held to a full pass over it.
+# the HTTP/1.1 response reader, the HTML parser, the CSS tokenizer and
+# parser, the selector parser, the cascade, and the whole pipeline
+# through to a raster; and for the engine whose document changes in
+# place, held to a full pass over it.
 # Not a workspace member: libfuzzer needs nightly, and the normal build
 # must not.
 # `cargo +nightly fuzz run <target>` from the repository root; CI runs
@@ -91,6 +92,13 @@ bench = false
 [[bin]]
 name = "mime_sniff"
 path = "fuzz_targets/mime_sniff.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_response"
+path = "fuzz_targets/http_response.rs"
 test = false
 doc = false
 bench = false

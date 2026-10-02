@@ -7,13 +7,14 @@
 //! of `docs/design/net.md`'s order of work), before a field gets here.
 
 use std::collections::HashMap;
+use std::fmt;
 
 use crate::infra::isomorphic_decode;
 
 /// A header list: header fields in the order they came, each name and
 /// value as bytes. Names match ASCII case-insensitively, and a name may
 /// occur more than once.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct HeaderList {
     fields: Vec<(Vec<u8>, Vec<u8>)>,
     /// Each name in the list, lower case, with the casing it first came
@@ -119,6 +120,19 @@ impl HeaderList {
             }
             None => self.append(name, value),
         }
+    }
+}
+
+/// The fields, each name and value isomorphic-decoded; the casings are
+/// derived from them and left out.
+impl fmt::Debug for HeaderList {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list()
+            .entries(
+                self.iter()
+                    .map(|(name, value)| (isomorphic_decode(name), isomorphic_decode(value))),
+            )
+            .finish()
     }
 }
 

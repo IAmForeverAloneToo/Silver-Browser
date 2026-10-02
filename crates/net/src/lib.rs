@@ -2,13 +2,15 @@
 //! `docs/design/net.md`).
 //!
 //! [`url`] is the URL Standard's parser. [`mime`] parses MIME types and
-//! sniffs a resource's type, [`headers`] holds Fetch's header lists, and
-//! [`data_url`] reads `data:` URLs. Fetching is still a stub; it grows
+//! sniffs a resource's type, [`headers`] holds Fetch's header lists,
+//! [`data_url`] reads `data:` URLs, and [`http`] writes HTTP/1.1
+//! requests and reads responses over any stream. Fetching is still a stub; it grows
 //! into the resource loader, HTTP(S) with connection pooling, that
 //! `engine` drives. Only `engine` orchestrates fetching.
 
 pub mod data_url;
 pub mod headers;
+pub mod http;
 mod infra;
 pub mod mime;
 pub mod url;
