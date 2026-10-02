@@ -544,3 +544,70 @@ under its positioned descendants; a double border in two colours blends
 its mitres from the bands' colours alone where the browser lets the
 background through; the browser's last bit of mitre blending. 497
 tests workspace-wide. Still stub: `net`. Next milestone: tables (M12).
+
+Milestone 12 (Tables), designed in `docs/design/tables.md` and built in
+its eight steps, one commit each. The properties first (step 1): CSS2
+§17.2's `display` values, `table-layout`, `border-collapse`,
+`border-spacing`, `caption-side`, `empty-cells` and `vertical-align` in
+the cascade, the four the specification says inherited, and the HTML
+standard's table rules in the UA sheet in place of M10's blocks, which
+is why an HTML cell is centred and a CSS one sits on the baseline. The
+box tree (M12.1, step 2): a box kind per display value (`Table`,
+`RowGroup` with its header, body or footer, `Row`, `ColumnGroup`,
+`Column`, `Cell`, `Caption`), `colspan`, `rowspan` and `span` read as
+the HTML standard clamps them, CSS2 §17.2.1's anonymous rows, cells,
+row groups and tables supplied in the builder, and a table's children
+ordered top captions, columns, the first header group, the rest, the
+first footer group, bottom captions; a floated or absolutely positioned
+table is the `Float` or `Absolute` box with a table's children, laid
+out as a table by its display. `layout::table` lays a table out (steps
+3 to 6): the grid of css-tables-3 §3.4 (M12.4), a `rowspan` cut at its
+group's end and 0 meaning that end; the fixed algorithm of CSS2
+§17.5.2.1 (M12.2) and, for every other table, the automatic one as
+css-tables-3 §3.9 writes the browsers' practice down (M12.3) — cell and
+column measures, a length `width` its column's maximum and its
+constraint, a spanning cell's excess by maximums, percentages cut past
+the whole, MIN, MAX and CAPMIN, the used width shrink-to-fit with MIN
+as its floor, and §3.9.3's sizing guesses interpolated; row heights
+(M12.6), `vertical-align` placing a cell's content at its top, middle
+or bottom or on the row's baseline, a cell's first baseline its first
+line box's or a nested table's first row's, for which layout now
+records a box's first baseline beside its last; and a rowspan's excess,
+a row group's `height` and the table's `height` shared out as the
+browsers share them. The separated model spaces the cells,
+`empty-cells: hide` leaving an empty cell unpainted; the collapsed
+model (M12.5) resolves every segment of every grid line by CSS2
+§17.6.2.1's conflict rules, each cell holding exactly half of each line
+on its side and the table half the widest of each outer line, inside
+its border box, as css-tables-3 §3.7.1.1 and the browsers have it, and
+paints the resolved borders as the table box's own fragments, one per
+segment, each joint its winner's. The fragments: the table's wrapper,
+holding the captions and the table box, painting nothing and carrying
+the table's positioning, and the table box, painting its background and
+border; column groups, columns, row groups and rows paint their
+backgrounds as one fragment per cell, under it, in §17.5.1's order, and
+the paint-order walk needs nothing new. Hit testing gives the cell, the
+row in the spacing between its cells, the row group between its rows
+and the table on a collapsed line. A table is a block formatting
+context root, `margin: auto` centres it, its intrinsic contribution is
+MIN and MAX, and an `inline-table` aligns by its first row. Acceptance
+(M12.7, step 7): five more pages, twenty-six in all, every one exact.
+They found two defects, and measuring the reference browser to pin them
+down a third, all fixed: a rowspan's excess goes first, equally, to the
+rows after its first where another rowspan starts, else to the
+unconstrained rows by height, else to the constrained ones, else to the
+last row, the cells ending together taken shortest first; a table's
+height goes to its body groups by height before their rows, the header
+and footer groups taking none, and a row group's `height` is a minimum;
+and the collapsed model is css-tables-3's — exact halves and the outer
+lines inside the border box, not CSS2's outer halves in the margin —
+with a joint its winner's, a losing segment stopping at its edge. Not
+in this milestone, said rather than hidden: the presentational
+attributes (`border`, `cellpadding`, `cellspacing`, `width`, `height`,
+`bgcolor`, `align`); `visibility: collapse`; the parser's table
+insertion modes; `overflow` on a table; `direction: rtl` in tables;
+percentage heights on rows, row groups and cells, which count as
+`auto`; `min-height` and `max-height` on rows and row groups; a row
+group with no rows taking a share of the table's height; `th`'s bold
+(M21). 551 tests workspace-wide. Still stub: `net`. Next milestone: the
+incremental engine (M13).

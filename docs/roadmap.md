@@ -89,7 +89,7 @@ images, the last item on T0's list, come with M23.
 
 ---
 
-## 2. Current state (M0–M9)
+## 2. Current state (M0–M12)
 
 - **M0 — Scaffold** (done 2026-09-30): 11-crate workspace, layer DAG,
   `docs/architecture.md` contract.
@@ -249,8 +249,24 @@ images, the last item on T0's list, come with M23.
   stated gaps (`line-height`, `vertical-align`, nested sticky, the
   browser's last bit of mitre blending, a double border in two colours).
 
-Verified per the vertical-slice rule at each milestone: 497 tests
-workspace-wide (182 in `style`, 103 in `layout`, 45 in `html`, 41 in
+- **M12 — Tables** (done 2026-10-02, designed in `docs/design/tables.md`
+  and built in its eight steps): CSS2 chapter 17's display values and
+  properties with the HTML standard's table rules in the UA sheet; a
+  box kind per table part with CSS2 §17.2.1's anonymous table objects;
+  the grid of css-tables-3 §3.4 with `colspan` and `rowspan`; the fixed
+  algorithm and the automatic one as css-tables-3 §3.9 writes the
+  browsers' practice down; row heights with `vertical-align` in cells
+  and the table's baseline; captions; the separated model with
+  `empty-cells`, and the collapsed model's conflict resolution with
+  exact half borders and segments painted by the table; and five more
+  reference pages, twenty-six matching exactly, which corrected how a
+  rowspan's excess and a table's height are shared out and where the
+  collapsed lines lie. See `docs/architecture.md` for the writeup and
+  the stated gaps (presentational attributes, `visibility: collapse`,
+  percentage row heights, the parser's table insertion modes).
+
+Verified per the vertical-slice rule at each milestone: 551 tests
+workspace-wide (191 in `style`, 152 in `layout`, 45 in `html`, 43 in
 `engine` with the reference harness, 39 in `paint`, 32 in `css`, 31 in
 `text`, 11 in `render`), clippy clean (`-D warnings`, every target),
 fuzz targets clean, smoke run.
@@ -776,17 +792,49 @@ code and corrected to it after; built in its twelve steps on
 
 ## M12 — Tables  ·  `layout`  ·  Effort: XL  ·  Depends: M10
 
-- [ ] M12.1 Table formatting model: row/rowgroup/column/columngroup
-       boxes, anonymous table boxes (missing tr/td wrapping).
-- [ ] M12.2 Fixed layout algorithm (CSS2 §17.5.2.1).
-- [ ] M12.3 Automatic layout algorithm (min/max content widths,
-       percentage column distribution — CSS2 §17.5.2.2).
-- [ ] M12.4 `colspan`/`rowspan` with cell grid construction.
-- [ ] M12.5 `border-collapse` (collapse model conflict resolution per
-       CSS2 §17.6.2), `border-spacing` for the separated model.
-- [ ] M12.6 `vertical-align` in cells; caption placement.
-- [ ] M12.7 Acceptance: 5 real-world table screenshots (including
+- [x] M12.1 Table formatting model: row/rowgroup/column/columngroup
+       boxes, anonymous table boxes (missing tr/td wrapping). Done
+       2026-10-01: a box kind per display value, CSS2 §17.2.1's
+       anonymous rows, cells, row groups and tables in the builder, the
+       first header and footer groups moved to their places, and the
+       display values and table properties in the cascade and the UA
+       sheet.
+- [x] M12.2 Fixed layout algorithm (CSS2 §17.5.2.1). Done 2026-10-02:
+       column boxes, then the first row's cells, percentages of the
+       width left after the spacing, the rest shared equally; no cell
+       measured.
+- [x] M12.3 Automatic layout algorithm (min/max content widths,
+       percentage column distribution — CSS2 §17.5.2.2). Done
+       2026-10-02, as css-tables-3 §3.9 writes the browsers' practice
+       down: cell and column measures, a length `width` a column's
+       maximum and constraint, spanning cells, percentages cut past the
+       whole, MIN, MAX and CAPMIN, §3.9.3's sizing guesses, `margin:
+       auto`, and the table's intrinsic contribution.
+- [x] M12.4 `colspan`/`rowspan` with cell grid construction. Done
+       2026-10-02: css-tables-3 §3.4's slots, a `rowspan` cut at its
+       group's end and 0 meaning that end, the HTML standard's clamps;
+       a rowspan's excess shared out as the browsers do.
+- [x] M12.5 `border-collapse` (collapse model conflict resolution per
+       CSS2 §17.6.2), `border-spacing` for the separated model. Done
+       2026-10-02: every grid line's segments resolved by §17.6.2.1,
+       exact half borders and the table's border inside its border box
+       (css-tables-3 §3.7.1.1), segments painted by the table with each
+       joint its winner's; spacing and `empty-cells` in the separated
+       model.
+- [x] M12.6 `vertical-align` in cells; caption placement. Done
+       2026-10-02: top, middle, bottom and the row's baseline, the
+       table's baseline its first row's for an `inline-table`; a row
+       group's and a table's `height` shared out by groups and rows;
+       captions above and below the table box in the wrapper.
+- [x] M12.7 Acceptance: 5 real-world table screenshots (including
        nested tables and colspan-heavy cases) match reference renderers.
+       Done 2026-10-02: five more pages under
+       `crates/engine/tests/reference/` (the grid with captions and
+       alignment, automatic widths, spans, the collapsed model, nested
+       and CSS tables), all twenty-six matching the headless browser's
+       captures exactly; hits through a table and the collapsed lines'
+       pixels are engine tests. The pages found two defects and
+       measuring the browser a third, fixed.
 
 ---
 

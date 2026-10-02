@@ -56,36 +56,39 @@ not wrap rows in a `tbody` or foster-parent a stray block out of a
 table, both said in its own documentation, and the anonymous table
 objects below give such a tree the boxes a browser's tree has.
 
-**The box tree.** Each display value is a box kind of its own:
-`Table` (the wrapper and the table box in one — the wrapper is implicit,
-see captions below), `RowGroup` (header, body and footer, with which it
-is recorded), `Row`, `ColumnGroup`, `Column`, `Cell` and `Caption`;
-`inline-table` is a `Table` that is inline-level, an item on its line
-like an inline-block. A cell and a caption are block containers, built
-by the same builder as any block (their children all block-level, an
-inline run in an anonymous block), and block formatting context roots
-(CSS2 §9.4.1); a column or column group has no children, whatever the
-element holds. The missing structure is supplied by CSS2 §17.2.1's
-anonymous table objects, in the builder, in the order the
-specification gives: a table child that is not a caption, a column, a
-column group, a row group or a row is wrapped in an anonymous row,
-consecutive ones in the same row; a row-group child that is not a row,
-in an anonymous row; a row child that is not a cell, in an anonymous
-cell, consecutive ones in the same cell; a cell, row or row group
-whose parent is not what it needs is wrapped in an anonymous row, row
-group or table, consecutive misplaced ones in the same one, so that
-`display: table-cell` on sibling `div`s inside a plain `div` makes a
-one-row table of them, as it does in a browser. An anonymous box
+**The box tree.** Each display value is a box kind of its own: `Table`
+(the wrapper and the table box in one box, which layout gives a fragment
+each, see captions below), `RowGroup` (header, body and footer, with
+which it is recorded), `Row`, `ColumnGroup`, `Column`, `Cell` and
+`Caption`; `inline-table` is a `Table` that is inline-level, an item on
+its line like an inline-block, and a floated or absolutely positioned
+table is the `Float` or `Absolute` box M11 gives such a box, with a
+table's children, which layout lays out as a table by its display. A
+cell and a caption are block containers, built by the same builder as
+any block (their children all block-level, an inline run in an anonymous
+block), and block formatting context roots (CSS2 §9.4.1); a column or
+column group has no children, whatever the element holds. The missing
+structure is supplied by CSS2 §17.2.1's anonymous table objects, in the
+builder, in the order the specification gives: a table child that is not
+a caption, a column, a column group, a row group or a row is wrapped in
+an anonymous row, consecutive ones in the same row; a row-group child
+that is not a row, in an anonymous row; a row child that is not a cell,
+in an anonymous cell, consecutive ones in the same cell; a cell, row or
+row group whose parent is not what it needs is wrapped in an anonymous
+row, row group or table, consecutive misplaced ones in the same one, so
+that `display: table-cell` on sibling `div`s inside a plain `div` makes
+a one-row table of them, as it does in a browser. An anonymous box
 inherits from its parent like an anonymous block does and has no
-background, border, padding or margin of its own. A table's children
-are kept in the order they are painted and laid out: captions with
+background, border, padding or margin of its own. A table's children are
+kept in the order they are painted and laid out: captions with
 `caption-side: top`, then column groups and columns, then the header
-group, the other row groups and rows in document order, then the
-footer group, then the bottom captions (§17.2: a header group is
-displayed before every other row and row group, a footer group after
-them, whatever their place in the source). Out-of-flow boxes inside a
-table — a float or an absolutely positioned child of a row, say — are
-treated as what they are, not as cells.
+group, the other row groups and rows in document order, then the footer
+group, then the bottom captions (§17.2: a header group is displayed
+before every other row and row group, a footer group after them,
+whatever their place in the source; only the first of each is one, any
+other a body group). Out-of-flow boxes inside a table — a float or an
+absolutely positioned child of a row, say — are treated as what they
+are, not as cells.
 
 **The grid (M12.4).** Before any width is known, the table's rows are
 walked into a grid of slots, css-tables-3 §3.4's way: each cell takes
@@ -99,78 +102,114 @@ cells under it still takes a column, and a `span` on a column or
 column group counts as that many. Every cell knows its first column
 and row and its spans; every slot knows the cell on it. Row groups,
 rows and columns keep their boxes, so their backgrounds paint and
-their heights and widths apply.
+their heights and widths apply. A run of rows directly in a table acts
+as one row group, a body group, for a `rowspan` reaching past it and
+for the table's height, as the `tbody` a parser's table insertion mode
+would have put them in does.
 
 **Column widths, the automatic algorithm (M12.3).** CSS2 §17.5.2.2
 leaves the distribution to the UA; this engine takes what the browsers
-have in common, which css-tables-3 §3.9 writes down. First each cell's
-outer min-content and max-content widths (`layout::intrinsic` on the
-cell as a block container, plus its padding and border); a cell with a
-length `width` has min and max no smaller than it, `box-sizing`
-applied, so a column is never narrower than a cell's given width; a
-cell with a percentage `width` gives its column that percentage, the
-largest among its cells, and a column box's own `width` sets the
-column's minimum and maximum, or its percentage, the same way. A cell
-spanning one column sets its column's minimum to the largest cell
-minimum and maximum to the largest cell maximum. Cells spanning
-several columns are taken next in order of increasing span: the part
-of the cell's minimum beyond the sum of its columns' minimums and the
-spacing between them is distributed to those columns in proportion to
-their maximums, equally when all are zero, and its maximum the same
-way; a spanning cell's percentage is split among its columns that have
-none, equally, after the ones that have one are counted. The table's
-own minimum (MIN) is the sum of the column minimums, the spacing
-between and around them and the table's border and padding; its
-maximum (MAX) the same with the maximums, and a percentage column's
-maximum raised to what makes its percentage of the whole hold where it
-can. The table's used width: a length `width` as given (`box-sizing`
-applied), a percentage of the containing block's width, each no less
-than MIN; `auto` is the greater of MIN and the lesser of MAX and the
-containing block's width, which is shrink-to-fit with the table's own
-minimum as the floor, as §17.5.2.2's rule comes to. Then the width is
-given out to the columns: every column gets its minimum; percentage
-columns are raised toward their percentage of the table's width, with
-the percentages scaled down together when they sum past what is left;
-the remainder goes to the columns that have neither a percentage nor a
-given width, each raised toward its maximum in proportion to its
-maximum, then to the columns with a given width the same way, then to
-the percentage columns; and width still left after every column has
-its maximum is given to the columns without a percentage in proportion
-to their maximums, equally when all are zero. `margin: auto` on a
+have in common, which css-tables-3 §3.9 writes down. First each column
+is measured from the cells that span it alone, over their border boxes
+(`layout::intrinsic` on the cell as a block container, plus its padding
+and border): a cell's minimum is its content's min-content width or its
+`min-width`, whichever is greater, and its maximum its length `width`,
+`box-sizing` applied, else its content's max-content width, never less
+than its minimum. A cell with a length `width` constrains its column,
+and that width is the column's maximum, not a minimum (§3.9.1): a table
+too narrow for its columns' maximums can make such a column narrower,
+down to its content. A cell with a percentage `width` gives its column
+that percentage, the largest among its cells. A column box's length
+`width` raises its columns' maximums and constrains them, a column
+group's counting for its columns that give none, and a percentage one
+is their percentage. Cells spanning several columns are taken next, in
+order of increasing span: the part of the cell's minimum beyond its
+columns' minimums and the spacing between them goes to those columns
+in proportion to their maximums, equally when all are zero, and its
+maximum the same way; a spanning cell's percentage, less what its
+columns already have, is split equally among those that have none.
+Last, percentages are cut in column order so that together they ask
+for no more than the whole: 70% and 60% become 70% and 30%. The
+table's minimum (MIN) is the sum of the column minimums and the spacing
+between and around them; its maximum (MAX) the same with the maximums,
+raised so that each percentage column's maximum is its share of the
+whole and the other columns fill what the percentages leave, and as
+wide as a table gets when they leave nothing and other columns want
+room; CAPMIN, the widest caption's minimum, is a floor under both; the
+table's border and padding come on top. The table's used width: a
+length `width` as given (`box-sizing` applied), a percentage of the
+containing block's width, each no less than MIN; `auto` is MAX when the
+room its margins leave holds it, that room otherwise, and never less
+than MIN, which is shrink-to-fit with the table's minimum as the floor,
+as §17.5.2.2's rule comes to. Then the width is given out to the
+columns by §3.9.3's sizing guesses: every column at its minimum; then
+the percentage columns at their percentage of the width (never under
+their minimum); then the constrained columns at their maximum too; then
+every column at its maximum. A width between two guesses is their
+linear combination, every column moving the same fraction of the way
+from the one to the next; a width past the last goes to the
+unconstrained columns in proportion to their maximums, else to the
+constrained ones the same way, else to the percentage columns in
+proportion to their percentages, else equally. `margin: auto` on a
 table centres it: once the used width is known, §10.3.3's rules
-resolve the margins with it.
+resolve the margins with it. Each cell is measured twice, once for the
+table's own width by whatever places the table and once for its
+columns: a linear cost, nested tables included, which a cache of
+measures would halve.
 
 **Column widths, the fixed algorithm (M12.2).** `table-layout: fixed`
 with a `width` other than `auto` (with `auto`, the automatic algorithm
-is used, as §17.5.2.1 says): the table's width is the given one, and
-the columns take their widths from the column boxes with a `width`,
-then from the cells of the first row with a `width` (a spanning cell's
-split equally across its columns), percentages of the table's width;
-the columns left over share what remains equally, and when nothing
-remains they are zero. No cell is measured: a wide cell's content
-overflows its column, which is the point of the algorithm, and the
-rows after the first do not change the widths.
+is used, as §17.5.2.1 says): the table's width is the given one, and the
+columns take their widths from the column boxes with a `width` (a
+column's own, else its group's), then from the cells of the first row
+with a `width`, their border box (a spanning cell's split equally across
+its columns, less the spacing between them), a percentage being of the
+width left after the spacing, as the browsers have it; the columns left
+over share what remains equally, and when nothing remains they are zero;
+width left with no column to take it goes to every column in proportion
+to its width, equally when all are zero. The table is never narrower
+than the widths its columns are given. No cell is measured: a wide
+cell's content overflows its column, which is the point of the
+algorithm, and the rows after the first do not change the widths.
 
 **Row heights and vertical alignment (M12.6).** Each cell's content is
-laid out as a block container at its column's width, less the cell's
-padding and border, and the cell's own `height` is a minimum for it.
-A row's height is what its cells need (CSS2 §17.5.3): the cells with
-`vertical-align: baseline` share the row's baseline, which is the
-largest distance from a cell's top to its first baseline — a cell's
-first line box's baseline, else its content's bottom edge — and the
-row is as tall as the tallest of their bottoms below that baseline and
-of the other cells, and no less than the row's own `height`. A cell
-spanning rows is held until its last row: what it needs beyond the sum
-of the rows it spans and the spacing between them is given to those
-rows in proportion to their heights, equally when all are zero. Then
-every cell is as tall as the rows it spans — its border box is
-stretched to them — and its content is placed inside it by its
-alignment: at its top, on the baseline, centred, or at its bottom. A
-table's `height` is a minimum for the table: height past the rows'
-sum is given to the rows in proportion to their heights, equally when
-all are zero. The first row's baseline is the table's, which is what an
-`inline-table` aligns by on its line, and a table with no row aligns by
-its bottom margin edge.
+laid out as a block container at its columns' width, less the cell's
+padding and border, and the cell's own `height` and `min-height` are a
+minimum for it. The cells whose `vertical-align` is `baseline` — every
+value but `top`, `middle` and `bottom` counts as it (§17.5.3) — share
+their row's baseline, the lowest of their own: a cell's first line
+box's, or the first row's of a table first in it, else its content's
+bottom edge; a cell spanning rows aligns to its first row's. A row is
+as tall as its own length `height`, as each cell spanning it alone
+needs, and as each of its baseline cells needs moved down to the
+row's baseline. A row is constrained when its own `height`, or that of
+a cell spanning it alone, is a length; a percentage counts as `auto`.
+A cell spanning rows gives what it needs beyond the rows it spans and
+the spacing between them to those rows as the browsers do, which the
+specifications leave open: the cells ending in an earlier row first,
+and of those ending together the one spanning fewer rows; each to the
+rows after its first where another cell spanning rows starts, equally;
+else to its unconstrained rows in proportion to their heights; else to
+its constrained rows the same way; else, every row being of no height,
+to the last. A row group's length `height` is a minimum for its rows
+and the spacing between them, given out as a table's is. A table's
+`height` and `min-height` are a minimum for the table: what they add
+past the rows' sum goes to the body groups — to the header and footer
+groups only when there is none — in proportion to their heights, a
+group with a length `height` being constrained among them, and in each
+group to its rows: the unconstrained ones, or all of them when every
+one is constrained, in proportion to their heights, equally when those
+are all zero. css-tables-3 §3.10.5 has equal increments instead, which
+is not what the browsers do. Then every cell is as tall as the rows it
+spans — its border box is stretched to them — and its content is
+placed inside it by its alignment: at its top, centred, at its bottom,
+or on its row's baseline. The table's baseline is its first row's (a
+row with no cell on its baseline having the lowest bottom of its
+cells' content for one), which is what an `inline-table` aligns by on
+its line, and a table with no row aligns by its bottom margin edge; the
+last row's is what a box ending in the table takes as its last
+baseline, and to carry both, layout records a box's first baseline
+beside its last.
 
 **The separated border model.** `border-collapse: separate`, the
 initial value and the UA sheet's: `border-spacing` lies between every
@@ -178,90 +217,118 @@ two cells and between the cells and the table's padding edge; each
 cell paints its own border and background; a column, a column group, a
 row group and a row paint their backgrounds under the cells of their
 area (§17.5.1's layers, in that order, which is the order the fragment
-tree keeps them in), and a cell with no content at all — no box, no
-text — under `empty-cells: hide` paints neither border nor background.
+tree keeps them in), and a cell with no in-flow or floating content —
+white space collapsed away being none, an absolutely positioned box
+alone leaving it empty — under `empty-cells: hide` paints neither
+border nor background, its border and padding keeping their room.
 Spacing is counted in MIN, MAX and the table's used width, and in the
 rows' sum for its height.
 
 **The collapsed border model (M12.5).** `border-collapse: collapse`:
-`border-spacing` and `empty-cells` are ignored, and every grid edge —
-each cell's four sides, with the row, row group, column, column group
-and table edges that fall on the same line — is resolved to one border
-by CSS2 §17.6.2.1's rules in order: `hidden` wins over everything;
-`none` loses to everything; the wider wins; among equal widths the
-style wins in the order `double`, `solid`, `dashed`, `dotted`,
-`ridge`, `outset`, `groove`, `inset`; among equal styles the element
-further up the list cell, row, row group, column, column group, table
-wins, and for two of the same kind the one further left or up. The
-resolved borders are centred on the grid lines: a column is as wide as
-its cells' content plus half the borders on its two sides, the half
-on the left and top being the width rounded down and the other half
-the rest, a stated choice the acceptance page checks; the table's
-border box is widened by half its outer borders and the other half
-lies in its margin (§17.6.2), so its width includes half the border.
-A cell's own border is not painted in this model: layout emits each
-resolved border segment — one per grid line per column or row it
-crosses, so that neighbouring segments of different widths or styles
-meet with square ends, as a browser's do — as a fragment of its own
-with just that one side set in its style and the table's node, which
-`paint` paints with the side's own style (`double`, `dashed` and the
-rest included) as it paints any border, after the cells' backgrounds,
-since the segments are the table fragment's last children. Cell
-minimums and maximums count the half borders where the separated
-model counts spacing.
+`border-spacing` and `empty-cells` are ignored, and every segment of
+every grid line — per column of a horizontal line, per row of a
+vertical one — is resolved to one border among those that meet there,
+the cells' on either side and, where the line is their edge, the
+rows', row groups', columns', column groups' and the table's, by CSS2
+§17.6.2.1's rules in order: `hidden` wins over everything and leaves
+no border; `none` loses to everything, and all `none` is no border;
+the wider wins; among equal widths the style wins in the order
+`double`, `solid`, `dashed`, `dotted`, `ridge`, `outset`, `groove`,
+`inset`; among equal styles the element further up the list cell, row,
+row group, column, column group, table wins, and for two of the same
+kind the one further left or up. A line inside a cell spanning across
+it has no segment there. The geometry is css-tables-3 §3.7.1.1's,
+which is what the browsers do, not CSS2 §17.6.2's: every resolved
+border is halved exactly, a 3px line putting 1.5 on each side, its
+edges snapped where it is painted; each cell holds half of each line
+on its side as its border, in layout and in its measures — the widest
+half along a side where the line changes under a spanning cell — so
+the automatic algorithm counts the halves where the separated model
+counts spacing; and the table has no padding, its border being half
+the widest border along each of its outer lines, so that its border
+box holds them whole with its background beneath them, where CSS2 ends
+the table's box at the outer lines' middle and puts their outer halves
+in its margin. A grid with no rows or no columns has no lines and no
+border. Neither a cell's own border nor the table's is painted in this
+model: layout emits each resolved segment as a fragment of its own,
+the table's, with just that one side set in its style, which `paint`
+paints with the side's own style (`double`, `dashed` and the rest
+included, `inset` and `outset` as `ridge` and `groove`, §17.6.3) as it
+paints any border. A segment lies across its line as the line is split
+and, at each end, where lines cross, reaches over the joint by half
+the widest border crossing it there when no border meeting at the
+joint wins over it, and otherwise stops at the joint's edge: a joint
+is its winner's, so neighbouring segments meet square and nothing
+shows through a winning `double`'s gap, as in the browsers. The
+segments are the table box's last children, after the cells'
+backgrounds, lowest precedence first, and a point on a line is the
+table's.
 
 **Captions.** A `table-caption` box is laid out as a block at the
-table's used width, above the grid for `caption-side: top` and below
-it for `bottom`, several of a side stacked in source order; the
-table's margins stand outside the captions and the grid together
-(CSS2 §17.4's wrapper box, which this engine does not make a separate
-box of: the `Table` box's fragment is the wrapper's, its border and
-background painted over the grid's part alone), and a caption's own
-minimum content width (CAPMIN) is one of the floors of the table's
-used width.
+width of the table's border box, above it for `caption-side: top` and
+below it for `bottom`, several of a side stacked in source order, each
+with its own margins. The `Table` box has two fragments, CSS2 §17.4's
+two boxes: the wrapper's, which holds the captions and the table box,
+paints nothing and carries the table's positioning and its place in the
+flow, the table's margins standing outside captions and grid together;
+and the table box's inside it, which paints the table's background and
+border over the grid's part alone. A caption's own minimum content
+width (CAPMIN) is one of the floors of the table's used width.
 
 **The table in its flow.** A table is a block formatting context root
 for the flow around it: its margins collapse with its siblings' and
 never with anything inside it, it dodges floats like any root (M11.2,
 its `auto` width computed in the room it is given), and floats inside
-a cell or a caption stay in that cell's or caption's own context. Its
-intrinsic contribution to a shrink-to-fit ancestor — a float, an
-inline-block, a cell — is its MIN and MAX. An `inline-table` is placed
-on its line as an inline-block is, as wide as its margin box, its
-baseline the first row's. `overflow` on a table is not applied: CSS2
-gives it to block containers, and a table is not one.
+a cell or a caption stay in that cell's or caption's own context. A
+floated or absolutely positioned table is a grid at its shrink-to-fit
+width. Its intrinsic contribution to a shrink-to-fit ancestor — a
+float, an inline-block, a cell — is its MIN and MAX, a length `width`
+raising both and never lowering them. An `inline-table` is placed on
+its line as an inline-block is, as wide as its margin box, its baseline
+the first row's whatever its `overflow`. `overflow` on a table is not
+applied: CSS2 gives it to block containers, and a table is not one.
 
 **Fragments, painting and hit testing.** Layout produces fragments for
-the table, each caption, each column group and column (an empty box
-over its columns' area, for its background), each row group, each row,
-each cell (its border box, stretched to its rows, with its content as
-children, offset by its alignment) and, in the collapsed model, each
-border segment. The paint-order walk needs nothing new: these are
-block-level boxes in flow, painted in tree order in the blocks pass,
-which is §17.5.1's order, and their inline content in the inline pass;
-a positioned table part is painted at its layer as any positioned box
-is. Hit testing answers with the cell under the pointer, the row
-between cells (spacing is the row's, and the row group's outside the
-rows, and the table's outside the groups), and a border segment with
-the table.
+the table (the wrapper and the table box), each caption, each column
+group and column, each row group, each row, each cell (its border box,
+stretched to its rows, with its content as children, offset by its
+alignment) and, in the collapsed model, each border segment. A column
+group, a column, a row group and a row paint nothing of their own: in
+the separated model their backgrounds show only under the cells of
+their area, never in the spacing (§17.6.1), so each paints its
+background as one fragment per cell, under the cell, in §17.5.1's order
+— column group, column, row group, row, cell — which is the tree's. A
+row's and a row group's fragments cover their rows' area; a column's
+has no size, since a column is never hit. The paint-order walk needs
+nothing new: these are block-level boxes in flow, painted in tree order
+in the blocks pass and their inline content in the inline pass; a
+positioned table part is painted at its layer as any positioned box
+is. Hit testing answers with the cell under the pointer, the row in
+the spacing between its cells, the row group between its rows, the
+table outside the groups, and the table on a collapsed line.
 
 **Acceptance against a reference browser (M12.7).** The harness of
 M10.7 and M11.7: box-only pages under `crates/engine/tests/reference/`,
 captured by `capture.sh` from the headless shell, compared byte for
 byte, text kept out since text rasterizers differ by design — so the
 "real-world" tables the roadmap names are real-world structures with
-sized boxes for content. Five pages: a plain grid with the UA sheet's
-spacing and padding, a caption top and bottom, a header and a footer
-group out of source order, and cells aligned at the top, middle,
-bottom and baseline; the automatic algorithm with a given table width
-to distribute, percentage columns, cells with widths and a column box
-with one; `colspan` and `rowspan` in the shapes real pages use,
-including a span past its row group and a cell pushed right by a span
-from above; the collapsed model with every conflict rule exercised,
-`hidden` and `none` included, and the half-border rounding; and nested
-tables, one in a cell of another with a `table-layout: fixed` one
-beside it, and `display: table-cell` on plain elements. Hit testing
-through a table is an engine test.
+sized boxes for content. Five pages, all exact: a plain grid with the
+UA sheet's spacing and padding, a caption at the top and one at the
+bottom, a header and a footer group out of source order, cells at the
+top, middle, bottom and on the baseline, and a second grid with
+spacing of its own (22); the automatic algorithm sharing out a given
+width past the maximum and between the guesses, percentage columns,
+cells with widths, a column box with one, and `margin: auto` (23);
+`colspan` and `rowspan` in the shapes real pages use, a cell pushed
+right by a span from above, a span past its row group and `rowspan`
+0 (24); the collapsed model with every conflict rule exercised,
+`hidden` and `none` included, the halves of odd widths, a joint a
+`double` wins, a column's border, and the table's background in its
+own border beside a hidden segment (25); and nested tables, an
+automatic one in a cell of another beside a `table-layout: fixed` one
+whose content overflows, and `display: table-cell` on plain elements
+(26). Hit testing through a table and the pixels on its collapsed
+lines are engine tests.
 
 ## 2. Not in this milestone, said rather than hidden
 
@@ -275,8 +342,11 @@ insertion modes, `tbody` insertion and foster parenting; `overflow`
 and scrolling on a table; `border-radius` on cells (M18); `text-indent`;
 `direction: rtl` in tables (left-to-right throughout, as since M6);
 `page-break-*` inside tables; the HTML `rules` and `frame` attributes;
-percentage heights on rows and cells; a `rowspan` cell's height split
-other than in proportion.
+percentage heights on rows, row groups and cells, which count as
+`auto` (CSS2 leaves a row's undefined; the browsers resolve them
+against the table); `min-height` and `max-height` on rows and row
+groups; and a row group with no rows, which takes no share of a table's
+height, where a browser gives it one.
 
 ## 3. Order of work
 
@@ -294,4 +364,35 @@ Row heights in full: baselines and `vertical-align`, `rowspan`
 distribution, the table's `height`, captions, `inline-table`. (6)
 `empty-cells` and the collapsed border model: conflict resolution, the
 half borders, the segment fragments. (7) The reference pages, and
-whatever they find. (8) The documents.
+whatever they find. (8) The documents. All eight landed on 2026-10-01
+and 2026-10-02, one commit each.
+
+## 4. What the code taught
+
+Ten things this note did not foresee, each corrected above where it
+stands. A cell's length `width` is its column's maximum and constrains
+the column, not a minimum (css-tables-3 §3.9.1), and among the sizing
+guesses the constrained columns grow before the unconstrained ones, the
+order §3.9.3 gives: the note had both the other way round. The fixed
+algorithm takes percentages of the width left after the spacing, as
+the browsers do, not of the table's width, and a column without a
+width takes its group's. A floated or absolutely positioned table is
+built as the float or absolute box with a table's children, and step 3
+chose the table path by box kind, which stacked such a table's rows as
+blocks until step 4 chose it by display. An inline table aligns by its
+first row and a block ending in a table by its last, so layout now
+records a box's first baseline beside its last. The reference pages
+found the rest. Page 24: a rowspan's excess, which the note shared
+among its rows in proportion to their heights, goes first to the rows
+where another rowspan starts, constrained rows taking it only when no
+other row can and the last row when no row has a height, and of two
+cells ending together the shorter goes first. Measuring the reference
+browser on small tables to pin that down showed two more: a table's
+own height goes to its body groups before their rows, the header and
+footer groups taking none, and a row group's `height` is a minimum,
+neither of which the note had. Page 25: the collapsed model in the
+browsers is css-tables-3's, not CSS2's — exact halves where the note
+chose to round, and the outer lines whole inside the table's border
+box where the note put half of them in its margin — and a joint is its
+winner's, a losing segment stopping at its edge, which a `double`'s
+gap showed at one pair of pixels.
