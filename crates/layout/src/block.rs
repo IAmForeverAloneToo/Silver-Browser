@@ -507,6 +507,47 @@ pub(crate) fn resolve_width_and_margins(
     used
 }
 
+/// A table's width in normal flow (M12, CSS2 §17.5.2.2 and css-tables-3
+/// §3.9.2), as [`resolve_width_and_margins`] gives a block's: an `auto`
+/// width is the table's shrink-to-fit width, its maximum (MAX) when the
+/// room its margins leave holds it, that room otherwise, and never less
+/// than its minimum (MIN, CAPMIN); a given width is used as given, never
+/// less than the minimum either; `min-width` and `max-width` clamp it,
+/// the minimum still winning. The margins are then resolved for the
+/// width so found, so `margin: auto` centres the table (§10.3.3).
+fn table_width_and_margins(
+    b: &LayoutBox,
+    cb_width: f32,
+    available_width: f32,
+    non_content_width: f32,
+    fonts: &FontCollection,
+) -> (f32, f32, f32) {
+    let style = &b.style;
+    let c = width_constraints(style, cb_width, non_content_width);
+    let (min_content, max_content) = crate::intrinsic::content_widths(b, fonts);
+    let used = match c.width {
+        Some(w) => w,
+        None => {
+            // The room the margins leave, an `auto` margin counting as
+            // zero: what an `auto` block would fill.
+            let (room, _, _) =
+                tentative_width(style, cb_width, available_width, non_content_width, None);
+            room.min(max_content)
+        }
+    };
+    let used = c
+        .max
+        .map_or(used, |max| used.min(max))
+        .max(c.min)
+        .max(min_content);
+    let mut definite = style.clone();
+    definite.width = LengthPercentageAuto::Px(used);
+    definite.box_sizing = BoxSizing::ContentBox;
+    definite.min_width = LengthPercentage::Px(0.0);
+    definite.max_width = None;
+    resolve_width_and_margins(&definite, cb_width, available_width, non_content_width)
+}
+
 /// CSS2.1 §10.3.3 for one value of `width` (`None` for `auto`), as the
 /// content-box width: `(width, margin_left, margin_right)`.
 fn tentative_width(
@@ -820,8 +861,11 @@ fn layout_block<'a>(
     // margin-right is fully resolved here but never read again — see
     // `BlockLayout::margin_left`'s doc for why that's correct, not an
     // oversight.
-    let (content_width, margin_left, _margin_right) =
-        resolve_width_and_margins(&b.style, cb_width, available_width, edges.horizontal());
+    let (content_width, margin_left, _margin_right) = if b.is_table() {
+        table_width_and_margins(b, cb_width, available_width, edges.horizontal(), fonts)
+    } else {
+        resolve_width_and_margins(&b.style, cb_width, available_width, edges.horizontal())
+    };
     let content = if establishes_bfc(&b.style) {
         Content::Root
     } else {
@@ -840,7 +884,8 @@ fn layout_block<'a>(
 }
 
 /// The content of `b` laid out at `content_width`: a table's grid
-/// (M12, [`crate::table`]), else a block container's children
+/// (M12, [`crate::table`]) — an in-flow, inline, floated or absolutely
+/// positioned one alike — else a block container's children
 /// ([`layout_block_contents`]).
 #[allow(clippy::too_many_arguments)]
 fn layout_contents<'a>(
@@ -853,7 +898,7 @@ fn layout_contents<'a>(
     content: Content<'_>,
     fonts: &FontCollection,
 ) -> BlockLayout<'a> {
-    if b.kind == BoxKind::Table {
+    if b.is_table() {
         return crate::table::layout_table_contents(
             b,
             edges,

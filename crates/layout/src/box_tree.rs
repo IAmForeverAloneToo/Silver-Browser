@@ -161,6 +161,18 @@ pub enum RowGroupKind {
 }
 
 impl LayoutBox {
+    /// Whether this box is a table, laid out as a grid of its table
+    /// parts (M12): a [`BoxKind::Table`], or a float or an absolutely
+    /// positioned box whose `display` is `table`, which the builder gives
+    /// a table's children.
+    pub fn is_table(&self) -> bool {
+        match self.kind {
+            BoxKind::Table => true,
+            BoxKind::Float | BoxKind::Absolute => self.style.display == Display::Table,
+            _ => false,
+        }
+    }
+
     /// Whether this box is block-level: a child of a block container,
     /// stacked vertically by `block::layout_children`. A table is,
     /// unless it is an inline table; a float is neither block-level nor

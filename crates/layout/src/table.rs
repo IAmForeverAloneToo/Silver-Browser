@@ -6,13 +6,22 @@
 //! and occupies `colspan` columns and `rowspan` rows, a `rowspan` past
 //! the end of its row group cut at the group's end and 0 meaning that
 //! end; the number of columns is the widest row's, or what the column
-//! boxes declare, whichever is greater. Then the column widths: the
-//! fixed algorithm of CSS2 §17.5.2.1 — the column boxes with a `width`,
-//! then the cells of the first row with one, a spanning cell's split
-//! equally across its columns, the columns left over sharing what
-//! remains of the table's width equally — and, until the automatic
-//! algorithm lands (step 4 of the note), a table whose `width` is `auto`
-//! takes its containing block's width. Then the row heights: what the
+//! boxes declare, whichever is greater. Then the column widths: for a
+//! `table-layout: fixed` table with a `width`, the fixed algorithm of
+//! CSS2 §17.5.2.1 — the column boxes with a `width`, then the cells of
+//! the first row with one, a spanning cell's split equally across its
+//! columns, the columns left over sharing what remains equally — and for
+//! every other table the automatic one, as css-tables-3 §3.9 writes the
+//! browsers' common practice down: each column's minimum, maximum,
+//! percentage and whether a length `width` constrains it, from its
+//! cells and its column box, cells spanning several columns giving
+//! their excess to them; the table's minimum and maximum widths (MIN,
+//! MAX) from those; and the width the table gets shared out by the
+//! sizing guesses of §3.9.3. The cells are measured twice, once for the
+//! table's own width by whoever places it and once here for its
+//! columns: a linear cost, nested tables included, which a cache of
+//! measures (the performance milestone's) would halve. Then the row
+//! heights: what the
 //! cells need, each laid out as a block container at its column's width
 //! and never shorter than its own `height`, a cell spanning rows giving
 //! what it needs beyond the rows it spans to those rows in proportion
@@ -42,7 +51,7 @@
 
 use style::computed::{
     BOTTOM, BorderCollapse, BorderStyle, BoxSizing, CaptionSide, Color, ComputedStyle, Display,
-    Float, LEFT, LengthPercentageAuto, Position, TOP,
+    Float, LEFT, LengthPercentage, LengthPercentageAuto, Position, RIGHT, TOP, TableLayout,
 };
 use text::FontCollection;
 
@@ -72,24 +81,29 @@ pub(crate) fn layout_table_contents<'a>(
 ) -> BlockLayout<'a> {
     let style = &b.style;
     let grid = Grid::of(b);
-    let (hspacing, vspacing) = match style.border_collapse {
-        BorderCollapse::Separate => (
-            style.border_spacing.horizontal,
-            style.border_spacing.vertical,
-        ),
-        BorderCollapse::Collapse => (0.0, 0.0),
-    };
+    let (hspacing, vspacing) = spacing(style);
     let columns = grid.columns;
 
-    // The column widths, and the content width they need: the fixed
-    // algorithm's table is the wider of its `width` and its columns.
-    let widths = fixed_column_widths(&grid, content_width, hspacing);
-    let columns_width = if columns == 0 {
-        0.0
+    // The column widths, and the content width they need: the table is
+    // never narrower than its columns' minimums and its captions'
+    // (MIN and CAPMIN), nor, laid out by the fixed algorithm, than the
+    // widths its columns are given. The widths are shared out of the
+    // assignable width, the content width less the spacing.
+    let spacing = columns_spacing(columns, hspacing);
+    let (widths, content_width) = if uses_fixed_layout(style) {
+        let widths = fixed_column_widths(&grid, (content_width - spacing).max(0.0), hspacing);
+        let needed = widths.iter().sum::<f32>() + spacing;
+        (widths, content_width.max(needed))
     } else {
-        widths.iter().sum::<f32>() + (columns + 1) as f32 * hspacing
+        let measures = measure_columns(&grid, hspacing, fonts);
+        let (grid_min, _) = grid_widths(&measures, hspacing);
+        let content_width =
+            content_width
+                .max(grid_min)
+                .max(caption_min(b, edges.horizontal(), fonts));
+        let widths = auto_column_widths(&measures, (content_width - spacing).max(0.0));
+        (widths, content_width)
     };
-    let content_width = content_width.max(columns_width);
 
     // Every cell's content, laid out at its columns' width.
     let mut cells: Vec<CellLayout<'a>> = Vec::with_capacity(grid.cells.len());
@@ -576,35 +590,33 @@ impl<'a> Grid<'a> {
     }
 }
 
-/// CSS2 §17.5.2.1, the fixed table layout algorithm, for a table whose
-/// content box is `table_width` wide with `hspacing` between columns:
-/// a column box's `width` sets its columns' width (each of them, for a
-/// `span`); a first-row cell's `width` — its border box, a percentage
-/// of the table's width — sets its column's, or, spanning, is split
-/// equally across its columns less the spacing between them; the
-/// columns left over share what remains of the width equally, and
-/// nothing when nothing remains. Width left over with no column to
+/// CSS2 §17.5.2.1, the fixed table layout algorithm, sharing out the
+/// assignable width `assignable` — the table's content width less the
+/// spacing around and between its columns, `hspacing` each: a column
+/// box's `width` sets its columns' width (each of them, for a `span`;
+/// a column's own, else its group's); a first-row cell's `width` — its
+/// border box — sets its column's, or, spanning, is split equally across
+/// its columns less the spacing between them; a percentage is of the
+/// assignable width; the columns left over share what remains equally,
+/// and nothing when nothing remains. Width left over with no column to
 /// take it goes to every column in proportion to its width, equally
 /// when all are zero (§17.5.2.1: "the extra space should be
 /// distributed over the columns").
-fn fixed_column_widths(grid: &Grid<'_>, table_width: f32, hspacing: f32) -> Vec<f32> {
+fn fixed_column_widths(grid: &Grid<'_>, assignable: f32, hspacing: f32) -> Vec<f32> {
     let n = grid.columns;
     let mut widths: Vec<Option<f32>> = vec![None; n];
     for (c, cref) in grid.column_boxes.iter().enumerate() {
-        let source = cref.column.or(cref.group);
-        if let Some(part) = source
-            && let Some(w) = given_width(&part.style, table_width)
-        {
+        if let Some(w) = column_box_width(cref).and_then(|w| resolve_width(w, assignable)) {
             widths[c] = Some(w.max(0.0));
         }
     }
     for cell in grid.cells.iter().filter(|cell| cell.row == 0) {
-        let Some(w) = given_width(&cell.b.style, table_width) else {
+        let Some(w) = resolve_width(cell.b.style.width, assignable) else {
             continue;
         };
         let border_box = match cell.b.style.box_sizing {
             BoxSizing::BorderBox => w,
-            BoxSizing::ContentBox => w + Edges::of(&cell.b.style, table_width).horizontal(),
+            BoxSizing::ContentBox => w + Edges::of(&cell.b.style, assignable).horizontal(),
         };
         let each =
             ((border_box - (cell.colspan - 1) as f32 * hspacing) / cell.colspan as f32).max(0.0);
@@ -615,7 +627,7 @@ fn fixed_column_widths(grid: &Grid<'_>, table_width: f32, hspacing: f32) -> Vec<
         }
     }
     let set: f32 = widths.iter().flatten().sum();
-    let remaining = (table_width - set - (n + 1) as f32 * hspacing).max(0.0);
+    let remaining = (assignable - set).max(0.0);
     let auto = widths.iter().filter(|w| w.is_none()).count();
     if auto > 0 {
         let each = remaining / auto as f32;
@@ -633,12 +645,381 @@ fn fixed_column_widths(grid: &Grid<'_>, table_width: f32, hspacing: f32) -> Vec<
 }
 
 /// A `width` as a length, a percentage of `of`, or `None` for `auto`.
-fn given_width(style: &ComputedStyle, of: f32) -> Option<f32> {
-    match style.width {
+fn resolve_width(width: LengthPercentageAuto, of: f32) -> Option<f32> {
+    match width {
         LengthPercentageAuto::Auto => None,
         LengthPercentageAuto::Px(w) => Some(w),
         LengthPercentageAuto::Percent(p) => Some(of * p / 100.0),
     }
+}
+
+/// The `width` a column's boxes give it: its column box's, else its
+/// column group's when the column box gives none (or there is none);
+/// `None` when neither does.
+fn column_box_width(cref: &ColumnRef<'_>) -> Option<LengthPercentageAuto> {
+    [cref.column, cref.group]
+        .into_iter()
+        .flatten()
+        .map(|part| part.style.width)
+        .find(|w| !w.is_auto())
+}
+
+/// The spacing around and between `columns` columns in the separated
+/// model, `hspacing` each: none without a column.
+fn columns_spacing(columns: usize, hspacing: f32) -> f32 {
+    if columns == 0 {
+        0.0
+    } else {
+        (columns + 1) as f32 * hspacing
+    }
+}
+
+/// Whether the table is laid out by the fixed algorithm: `table-layout:
+/// fixed` and a `width` other than `auto` (CSS2 §17.5.2.1; with `auto`,
+/// the automatic algorithm is used).
+fn uses_fixed_layout(style: &ComputedStyle) -> bool {
+    style.table_layout == TableLayout::Fixed && !style.width.is_auto()
+}
+
+/// The table's horizontal border spacing, and its vertical: the
+/// separated model's `border-spacing`, none in the collapsed model.
+fn spacing(style: &ComputedStyle) -> (f32, f32) {
+    match style.border_collapse {
+        BorderCollapse::Separate => (
+            style.border_spacing.horizontal,
+            style.border_spacing.vertical,
+        ),
+        BorderCollapse::Collapse => (0.0, 0.0),
+    }
+}
+
+/// What a column needs (css-tables-3 §3.9.1): its minimum and maximum
+/// widths, the percentage of the table's assignable width it asks for,
+/// and whether a length `width` — a cell's or its column box's —
+/// constrains it.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct ColumnMeasure {
+    min: f32,
+    max: f32,
+    percent: Option<f32>,
+    constrained: bool,
+}
+
+/// A cell's outer widths (css-tables-3 §3.9.1): its minimum is its
+/// content's min-content width, or its `min-width` when larger; its
+/// maximum is its `width` when that is a length — which constrains its
+/// column, and is not a minimum — else its content's max-content width,
+/// never below the minimum; both over its border box, padding and border
+/// included, a percentage padding counting as zero as in every intrinsic
+/// width. A percentage `width` is the share of the table it asks for.
+fn measure_cell(b: &LayoutBox, fonts: &FontCollection) -> ColumnMeasure {
+    let style = &b.style;
+    let (content_min, content_max) = crate::intrinsic::content_widths(b, fonts);
+    let fixed = |v: LengthPercentage| match v {
+        LengthPercentage::Px(px) => px,
+        LengthPercentage::Percent(_) => 0.0,
+    };
+    let border = style.used_border_width();
+    let edges =
+        border[LEFT] + border[RIGHT] + fixed(style.padding[LEFT]) + fixed(style.padding[RIGHT]);
+    let border_box = |v: f32| match style.box_sizing {
+        BoxSizing::ContentBox => v.max(0.0) + edges,
+        BoxSizing::BorderBox => v.max(edges),
+    };
+    let mut min = content_min + edges;
+    if let LengthPercentage::Px(floor) = style.min_width {
+        min = min.max(border_box(floor));
+    }
+    match style.width {
+        LengthPercentageAuto::Px(w) => ColumnMeasure {
+            min,
+            max: min.max(border_box(w)),
+            percent: None,
+            constrained: true,
+        },
+        LengthPercentageAuto::Percent(p) => ColumnMeasure {
+            min,
+            max: min.max(content_max + edges),
+            percent: Some(p.max(0.0)),
+            constrained: false,
+        },
+        LengthPercentageAuto::Auto => ColumnMeasure {
+            min,
+            max: min.max(content_max + edges),
+            percent: None,
+            constrained: false,
+        },
+    }
+}
+
+/// Every column's measure (css-tables-3 §3.9.1): a column box's length
+/// `width` raises the column's maximum and constrains it, a percentage
+/// one is its percentage; the cells spanning one column raise its
+/// minimum and maximum to theirs, a percentage cell raises its
+/// percentage, a cell with a length `width` constrains it. Then the
+/// cells spanning several columns, fewest columns first: the part of a
+/// cell's minimum beyond its columns' minimums and the spacing between
+/// them is given to those columns in proportion to their maximums,
+/// equally when all are zero, and its maximum the same way; its
+/// percentage, less the percentages its columns already have, is split
+/// equally among those that have none. Last, the percentages are cut,
+/// in column order, so that together they ask for no more than the
+/// whole.
+fn measure_columns(grid: &Grid<'_>, hspacing: f32, fonts: &FontCollection) -> Vec<ColumnMeasure> {
+    let mut columns = vec![ColumnMeasure::default(); grid.columns];
+    for (column, cref) in columns.iter_mut().zip(&grid.column_boxes) {
+        match column_box_width(cref) {
+            Some(LengthPercentageAuto::Px(w)) => {
+                column.max = column.max.max(w.max(0.0));
+                column.constrained = true;
+            }
+            Some(LengthPercentageAuto::Percent(p)) => column.percent = Some(p.max(0.0)),
+            Some(LengthPercentageAuto::Auto) | None => {}
+        }
+    }
+    let measures: Vec<ColumnMeasure> = grid
+        .cells
+        .iter()
+        .map(|cell| measure_cell(cell.b, fonts))
+        .collect();
+    let raise_percent = |column: &mut ColumnMeasure, p: f32| {
+        column.percent = Some(column.percent.map_or(p, |q| q.max(p)));
+    };
+    for (cell, m) in grid.cells.iter().zip(&measures) {
+        if cell.colspan != 1 {
+            continue;
+        }
+        let column = &mut columns[cell.col];
+        column.min = column.min.max(m.min);
+        column.max = column.max.max(m.max);
+        column.constrained |= m.constrained;
+        if let Some(p) = m.percent {
+            raise_percent(column, p);
+        }
+    }
+    for column in &mut columns {
+        column.max = column.max.max(column.min);
+    }
+    let mut spanning: Vec<usize> = (0..grid.cells.len())
+        .filter(|&i| grid.cells[i].colspan > 1)
+        .collect();
+    spanning.sort_by_key(|&i| grid.cells[i].colspan);
+    for i in spanning {
+        let cell = &grid.cells[i];
+        let m = &measures[i];
+        let spanned = &mut columns[cell.col..cell.col + cell.colspan];
+        let between = (cell.colspan - 1) as f32 * hspacing;
+        if let Some(p) = m.percent {
+            let have: f32 = spanned.iter().filter_map(|c| c.percent).sum();
+            let without = spanned.iter().filter(|c| c.percent.is_none()).count();
+            if p > have && without > 0 {
+                let each = (p - have) / without as f32;
+                for column in spanned.iter_mut().filter(|c| c.percent.is_none()) {
+                    column.percent = Some(each);
+                }
+            }
+        }
+        let weights: Vec<f32> = spanned.iter().map(|c| c.max).collect();
+        let min_have = spanned.iter().map(|c| c.min).sum::<f32>() + between;
+        if m.min > min_have {
+            for (column, share) in spanned.iter_mut().zip(shares(m.min - min_have, &weights)) {
+                column.min += share;
+            }
+        }
+        let max_have = spanned.iter().map(|c| c.max).sum::<f32>() + between;
+        if m.max > max_have {
+            for (column, share) in spanned.iter_mut().zip(shares(m.max - max_have, &weights)) {
+                column.max += share;
+            }
+        }
+        for column in spanned.iter_mut() {
+            column.max = column.max.max(column.min);
+        }
+    }
+    let mut total = 0.0f32;
+    for column in &mut columns {
+        if let Some(p) = column.percent {
+            let p = p.min(100.0 - total).max(0.0);
+            column.percent = Some(p);
+            total += p;
+        }
+    }
+    columns
+}
+
+/// `extra` shared in proportion to `weights`, equally when all are zero.
+fn shares(extra: f32, weights: &[f32]) -> Vec<f32> {
+    let total: f32 = weights.iter().sum();
+    if total > 0.0 {
+        weights.iter().map(|w| extra * w / total).collect()
+    } else if weights.is_empty() {
+        Vec::new()
+    } else {
+        vec![extra / weights.len() as f32; weights.len()]
+    }
+}
+
+/// The widest a table's assignable width can need to be: what a table
+/// whose percentages ask for the whole and whose other columns still
+/// want room asks for (Blink's own ceiling on a table's width).
+const UNBOUNDED_TABLE_WIDTH: f32 = 1_000_000.0;
+
+/// The grid's minimum and maximum widths, spacing included (css-tables-3
+/// §3.9.2): the columns' minimums, and their maximums — raised so that,
+/// where it can, each percentage column's maximum is its percentage of
+/// the whole, and the other columns' maximums fill what the percentages
+/// leave; when the percentages leave nothing and other columns want
+/// room, as wide as a table gets.
+fn grid_widths(columns: &[ColumnMeasure], hspacing: f32) -> (f32, f32) {
+    let spacing = columns_spacing(columns.len(), hspacing);
+    let min = columns.iter().map(|c| c.min).sum::<f32>();
+    let max = columns.iter().map(|c| c.max).sum::<f32>();
+    let total_percent: f32 = columns.iter().filter_map(|c| c.percent).sum();
+    let mut needed = 0.0f32;
+    let mut others = 0.0f32;
+    for column in columns {
+        match column.percent {
+            Some(p) if p > 0.0 => needed = needed.max(column.max * 100.0 / p),
+            Some(_) => {}
+            None => others += column.max,
+        }
+    }
+    if others > 0.0 {
+        needed = if total_percent >= 100.0 {
+            UNBOUNDED_TABLE_WIDTH
+        } else {
+            needed.max(others * 100.0 / (100.0 - total_percent))
+        };
+    }
+    (min + spacing, max.max(needed).max(min) + spacing)
+}
+
+/// The automatic algorithm's column widths for the assignable width
+/// `width` (css-tables-3 §3.9.3). Four sizing guesses, each no narrower
+/// than the one before: every column at its minimum; then the
+/// percentage columns at their percentage of `width`, never below their
+/// minimum; then the columns a length constrains at their maximum too;
+/// then the other columns at their maximum. A width between two guesses
+/// is their linear combination — every column moving the same fraction
+/// of the way from one to the next — and a width past the last is that
+/// guess with the excess given out: to the unconstrained columns in
+/// proportion to their maximums, else to the constrained ones the same
+/// way, else to the percentage columns in proportion to their
+/// percentages, else equally to the unconstrained columns, to the
+/// constrained ones, to all.
+fn auto_column_widths(columns: &[ColumnMeasure], width: f32) -> Vec<f32> {
+    let percent_width = |c: &ColumnMeasure, p: f32| c.min.max(width * p / 100.0);
+    let guesses: [Vec<f32>; 4] = [
+        columns.iter().map(|c| c.min).collect(),
+        columns
+            .iter()
+            .map(|c| c.percent.map_or(c.min, |p| percent_width(c, p)))
+            .collect(),
+        columns
+            .iter()
+            .map(|c| match c.percent {
+                Some(p) => percent_width(c, p),
+                None if c.constrained => c.max,
+                None => c.min,
+            })
+            .collect(),
+        columns
+            .iter()
+            .map(|c| c.percent.map_or(c.max, |p| percent_width(c, p)))
+            .collect(),
+    ];
+    let sums: Vec<f32> = guesses.iter().map(|g| g.iter().sum()).collect();
+    if width <= sums[0] {
+        return guesses[0].clone();
+    }
+    for k in 0..3 {
+        if width <= sums[k + 1] {
+            let span = sums[k + 1] - sums[k];
+            let t = if span > 0.0 {
+                (width - sums[k]) / span
+            } else {
+                0.0
+            };
+            return guesses[k]
+                .iter()
+                .zip(&guesses[k + 1])
+                .map(|(a, b)| a + t * (b - a))
+                .collect();
+        }
+    }
+    let mut widths = guesses[3].clone();
+    let excess = width - sums[3];
+    let unconstrained = |c: &ColumnMeasure| c.percent.is_none() && !c.constrained;
+    let constrained = |c: &ColumnMeasure| c.percent.is_none() && c.constrained;
+    type Pick<'p> = (
+        &'p dyn Fn(&ColumnMeasure) -> bool,
+        &'p dyn Fn(&ColumnMeasure) -> f32,
+    );
+    let by_max = |c: &ColumnMeasure| c.max;
+    let by_percent = |c: &ColumnMeasure| c.percent.unwrap_or(0.0);
+    let equally = |_: &ColumnMeasure| 1.0;
+    let any = |_: &ColumnMeasure| true;
+    let order: [Pick<'_>; 6] = [
+        (&unconstrained, &by_max),
+        (&constrained, &by_max),
+        (&|c: &ColumnMeasure| c.percent.is_some(), &by_percent),
+        (&unconstrained, &equally),
+        (&constrained, &equally),
+        (&any, &equally),
+    ];
+    for (pick, weight) in order {
+        let weights: Vec<f32> = columns
+            .iter()
+            .map(|c| if pick(c) { weight(c) } else { 0.0 })
+            .collect();
+        if weights.iter().sum::<f32>() > 0.0 {
+            for (w, share) in widths.iter_mut().zip(shares(excess, &weights)) {
+                *w += share;
+            }
+            break;
+        }
+    }
+    widths
+}
+
+/// The widest minimum among the table's captions, over their margin
+/// boxes, less the table's own horizontal border and padding
+/// `table_edges`: the content width the table needs so that a caption,
+/// as wide as the table, holds its content (CAPMIN, CSS2 §17.5.2.2).
+fn caption_min(b: &LayoutBox, table_edges: f32, fonts: &FontCollection) -> f32 {
+    b.children
+        .iter()
+        .filter(|part| part.kind == BoxKind::Caption)
+        .map(|caption| crate::intrinsic::contribution(caption, fonts).0 - table_edges)
+        .fold(0.0, f32::max)
+}
+
+/// A table's min-content and max-content widths over its content box —
+/// what is inside its border and padding — for the intrinsic sizes of
+/// the boxes around it and for its own shrink-to-fit width: the grid's
+/// MIN and MAX, never narrower than its captions' minimum (CAPMIN). A
+/// table the fixed algorithm lays out measures no cell: it needs the
+/// widths its columns are given.
+pub(crate) fn content_widths(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32) {
+    let style = &b.style;
+    let grid = Grid::of(b);
+    let (hspacing, _) = spacing(style);
+    let (min, max) = if uses_fixed_layout(style) {
+        let widths = fixed_column_widths(&grid, 0.0, hspacing);
+        let width = widths.iter().sum::<f32>() + columns_spacing(grid.columns, hspacing);
+        (width, width)
+    } else {
+        grid_widths(&measure_columns(&grid, hspacing, fonts), hspacing)
+    };
+    let fixed = |v: LengthPercentage| match v {
+        LengthPercentage::Px(px) => px,
+        LengthPercentage::Percent(_) => 0.0,
+    };
+    let border = style.used_border_width();
+    let edges =
+        border[LEFT] + border[RIGHT] + fixed(style.padding[LEFT]) + fixed(style.padding[RIGHT]);
+    let min = min.max(caption_min(b, edges, fonts));
+    (min, max.max(min))
 }
 
 /// Gives `extra` to `parts` in proportion to their sizes, equally when
@@ -1088,19 +1469,18 @@ mod tests {
     #[test]
     fn a_table_is_a_formatting_context_root_in_its_flow() {
         // Its margins do not collapse with its cells' content; it dodges
-        // a float like any root, its `auto` width the room beside it
-        // until the automatic algorithm lands. Nodes: div.f 4, table 5,
-        // tr 6, td 7, p 8.
+        // a float like any root, shrinking to its content in the room
+        // beside it. Nodes: div.f 4, table 5, tr 6, td 7, p 8.
         let layout = document_of(
-            "<div class=f></div><table><tr><td><p>x</p></td></tr></table>",
+            "<div class=f></div><table><tr><td><p></p></td></tr></table>",
             "body { margin: 0; } td { padding: 0; } .f { float: left; width: 100px; height: 50px; }
-             table { table-layout: fixed; border-spacing: 0; margin-top: 10px; }
-             p { margin: 20px 0; height: 10px; }",
+             table { border-spacing: 0; margin-top: 10px; }
+             p { margin: 20px 0; height: 10px; width: 50px; }",
         );
         let table = fragments_of(&layout, 5);
-        assert_eq!(rect(table[0]), (100.0, 10.0, 700.0, 50.0));
+        assert_eq!(rect(table[0]), (100.0, 10.0, 50.0, 50.0));
         // The cell is a root too: the p's margins are inside it.
-        assert_eq!(rect(fragment_of(&layout, 8)), (100.0, 30.0, 700.0, 10.0));
+        assert_eq!(rect(fragment_of(&layout, 8)), (100.0, 30.0, 50.0, 10.0));
     }
 
     #[test]
@@ -1135,6 +1515,243 @@ mod tests {
             fragment_of(&layout, 6).style.padding,
             [LengthPercentage::Px(1.0); 4]
         );
+    }
+
+    /// Two cells whose widths are known without text: the first's floats
+    /// make its minimum 50 and its maximum 80, the second's block makes
+    /// both 40. No spacing, no padding.
+    const TWO_CELLS: &str = "<table><tr><td><div class=f50></div><div class=f30></div></td>\
+                             <td><div class=b40></div></td></tr></table>";
+    const MEASURED: &str = "body { margin: 0; } table { border-spacing: 0; } td { padding: 0; }
+        .f50 { float: left; width: 50px; height: 10px; }
+        .f30 { float: left; width: 30px; height: 10px; }
+        .b40 { width: 40px; height: 10px; }";
+
+    /// The x and the width of the fragments of `nodes`.
+    fn columns_of(layout: &DocumentLayout, nodes: &[usize]) -> Vec<(f32, f32)> {
+        nodes
+            .iter()
+            .map(|&n| {
+                let f = fragment_of(layout, n);
+                (f.x, f.w)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_automatic_algorithm_fits_the_columns_to_the_width_the_table_gets() {
+        // Nodes: table 4, tr 5, td 6, div 7, div 8, td 9, div 10. An
+        // `auto` table is as wide as its maximum, 120, each column at
+        // its maximum. Given 100px, between the minimums (90) and the
+        // maximums (120): every column a third of the way from its
+        // minimum to its maximum. Given 60px, below MIN: the table is
+        // MIN, each column at its minimum. Given 300px, past MAX: the
+        // excess goes in proportion to the maximums, 180 as 120 to 60.
+        for (css, table, cells) in [
+            ("", 120.0, [(0.0, 80.0), (80.0, 40.0)]),
+            (
+                "table { width: 100px; }",
+                100.0,
+                [(0.0, 60.0), (60.0, 40.0)],
+            ),
+            ("table { width: 60px; }", 90.0, [(0.0, 50.0), (50.0, 40.0)]),
+            (
+                "table { width: 300px; }",
+                300.0,
+                [(0.0, 200.0), (200.0, 100.0)],
+            ),
+        ] {
+            let layout = document_of(TWO_CELLS, &format!("{MEASURED} {css}"));
+            assert_eq!(fragment_of(&layout, 4).w, table, "{css}");
+            assert_eq!(columns_of(&layout, &[6, 9]), cells, "{css}");
+        }
+    }
+
+    #[test]
+    fn percentage_columns_take_their_share_and_raise_the_tables_maximum() {
+        // The first cell asks for 25%. In a 400px table: 100px, the rest
+        // going to the other column. With an `auto` width the table is
+        // as wide as makes the first column's maximum, 80, its 25%: 320.
+        // Nodes: table 4, tr 5, td 6, td 9.
+        let css = format!("{MEASURED} td:first-child {{ width: 25%; }}");
+        let layout = document_of(TWO_CELLS, &format!("{css} table {{ width: 400px; }}"));
+        assert_eq!(columns_of(&layout, &[6, 9]), [(0.0, 100.0), (100.0, 300.0)]);
+        let layout = document_of(TWO_CELLS, &css);
+        assert_eq!(fragment_of(&layout, 4).w, 320.0);
+        assert_eq!(columns_of(&layout, &[6, 9]), [(0.0, 80.0), (80.0, 240.0)]);
+        // A column asking for the whole while another wants room: the
+        // table is as wide as it can be, the room it is given; the other
+        // column keeps its minimum.
+        let css = format!("{MEASURED} td:first-child {{ width: 100%; }}");
+        let layout = document_of(TWO_CELLS, &css);
+        assert_eq!(fragment_of(&layout, 4).w, VIEWPORT);
+        assert_eq!(columns_of(&layout, &[6, 9]), [(0.0, 760.0), (760.0, 40.0)]);
+        // Percentages past the whole are cut in column order: 70% and
+        // 60% are 70% and 30%. Nodes: table 4, tr 5, td 6, td 7.
+        let layout = document_of(
+            "<table><tr><td class=a></td><td class=b></td></tr></table>",
+            "body { margin: 0; } table { border-spacing: 0; width: 100px; } td { padding: 0; }
+             .a { width: 70%; } .b { width: 60%; }",
+        );
+        assert_eq!(columns_of(&layout, &[6, 7]), [(0.0, 70.0), (70.0, 30.0)]);
+    }
+
+    #[test]
+    fn a_cells_length_width_constrains_its_column_without_being_a_minimum() {
+        // An empty cell 100px wide and the 40px block's cell: the table
+        // is 140 when it can be, and given 120px the constrained column
+        // gives way first, down to its minimum, 0, given 30px.
+        // Nodes: table 4, tr 5, td 6, td 7.
+        let html = "<table><tr><td class=w></td><td><div class=b40></div></td></tr></table>";
+        let css = format!("{MEASURED} .w {{ width: 100px; }}");
+        for (extra, table, cells) in [
+            ("", 140.0, [(0.0, 100.0), (100.0, 40.0)]),
+            (
+                "table { width: 120px; }",
+                120.0,
+                [(0.0, 80.0), (80.0, 40.0)],
+            ),
+            ("table { width: 30px; }", 40.0, [(0.0, 0.0), (0.0, 40.0)]),
+        ] {
+            let layout = document_of(html, &format!("{css} {extra}"));
+            assert_eq!(fragment_of(&layout, 4).w, table, "{extra}");
+            assert_eq!(columns_of(&layout, &[6, 7]), cells, "{extra}");
+        }
+    }
+
+    #[test]
+    fn a_spanning_cell_gives_its_excess_to_its_columns_by_their_maximums() {
+        // A 200px block spanning two columns over cells of 30 and 10: the
+        // 160 beyond them goes 120 and 40, so the columns are 150 and 50.
+        // Nodes: table 4, tr 5, td 6, div 7, tr 8, td 9, div 10, td 11.
+        let layout = document_of(
+            "<table><tr><td colspan=2><div class=b200></div></td></tr>\
+             <tr><td><div class=b30></div></td><td><div class=b10></div></td></tr></table>",
+            "body { margin: 0; } table { border-spacing: 0; } td { padding: 0; }
+             .b200 { width: 200px; } .b30 { width: 30px; } .b10 { width: 10px; }",
+        );
+        assert_eq!(fragment_of(&layout, 4).w, 200.0);
+        assert_eq!(
+            columns_of(&layout, &[6, 9, 11]),
+            [(0.0, 200.0), (0.0, 150.0), (150.0, 50.0)]
+        );
+    }
+
+    #[test]
+    fn column_boxes_constrain_their_columns_and_a_group_its_columns_without_a_width() {
+        // A 60px col over an empty cell; a 70px colgroup over two cols
+        // without a width. Nodes: table 4, col 5, tr 6, td 7, td 8, div
+        // 9; table 10, colgroup 11, col 12, col 13, tr 14, td 15, td 16.
+        let layout = document_of(
+            "<table><col class=c60><tr><td></td><td><div class=b40></div></td></tr></table>\
+             <table><colgroup class=c70><col><col></colgroup><tr><td></td><td></td></tr></table>",
+            &format!("{MEASURED} .c60 {{ width: 60px; }} .c70 {{ width: 70px; }}"),
+        );
+        assert_eq!(columns_of(&layout, &[7, 8]), [(0.0, 60.0), (60.0, 40.0)]);
+        assert_eq!(fragment_of(&layout, 10).w, 140.0);
+        assert_eq!(columns_of(&layout, &[15, 16]), [(0.0, 70.0), (70.0, 70.0)]);
+    }
+
+    #[test]
+    fn auto_margins_centre_a_table_and_a_caption_widens_it() {
+        // Nodes: table 4, tr 5, td 6, td 9.
+        let layout = document_of(
+            TWO_CELLS,
+            &format!("{MEASURED} table {{ margin: 0 auto; }}"),
+        );
+        assert_eq!(rect(fragment_of(&layout, 4)), (340.0, 0.0, 120.0, 10.0));
+        // A caption with a 300px block: the table is 300 wide, the 180
+        // past its maximum going as 120 to 60. Nodes: table 4, caption
+        // 5, div 6, tr 7, td 8, td 11.
+        let layout = document_of(
+            "<table><caption><div class=b300></div></caption><tr>\
+             <td><div class=f50></div><div class=f30></div></td>\
+             <td><div class=b40></div></td></tr></table>",
+            &format!("{MEASURED} .b300 {{ width: 300px; }}"),
+        );
+        assert_eq!(fragment_of(&layout, 4).w, 300.0);
+        assert_eq!(
+            columns_of(&layout, &[8, 11]),
+            [(0.0, 200.0), (200.0, 100.0)]
+        );
+    }
+
+    #[test]
+    fn floated_positioned_and_contained_tables_are_grids_at_their_shrink_to_fit_width() {
+        // A floated table and an absolutely positioned one are laid out
+        // as grids, as wide as their maximum; a float holding a table
+        // shrinks to the table's maximum. Nodes: table 4, tr 5, td 6,
+        // td 9.
+        for css in [
+            "table { float: left; }",
+            "table { position: absolute; top: 0; }",
+        ] {
+            let layout = document_of(TWO_CELLS, &format!("{MEASURED} {css}"));
+            assert_eq!(fragment_of(&layout, 4).w, 120.0, "{css}");
+            assert_eq!(
+                columns_of(&layout, &[6, 9]),
+                [(0.0, 80.0), (80.0, 40.0)],
+                "{css}"
+            );
+        }
+        // Nodes: div 4, table 5, tr 6, td 7, td 10.
+        let layout = document_of(
+            &format!("<div class=fl>{TWO_CELLS}</div>"),
+            &format!("{MEASURED} .fl {{ float: left; }}"),
+        );
+        assert_eq!(fragment_of(&layout, 4).w, 120.0);
+        assert_eq!(columns_of(&layout, &[7, 10]), [(0.0, 80.0), (80.0, 40.0)]);
+    }
+
+    #[test]
+    fn the_fixed_algorithm_takes_percentages_of_the_width_less_the_spacing() {
+        // 210px with 10px spacing leaves 180 for the columns: 50% is 90.
+        // Nodes: table 4, tr 5, td 6, td 7.
+        let layout = document_of(
+            "<table><tr><td class=h></td><td></td></tr></table>",
+            "body { margin: 0; } td { padding: 0; }
+             table { table-layout: fixed; width: 210px; border-spacing: 10px; }
+             .h { width: 50%; }",
+        );
+        assert_eq!(columns_of(&layout, &[6, 7]), [(10.0, 90.0), (110.0, 90.0)]);
+    }
+
+    #[test]
+    fn the_sizing_guesses_move_every_column_the_same_fraction() {
+        let column = |min: f32, max: f32, percent: Option<f32>, constrained: bool| ColumnMeasure {
+            min,
+            max,
+            percent,
+            constrained,
+        };
+        // A percentage column, a constrained one and a free one. At a
+        // width of 100 the guesses sum to 30, 60, 90 and 130, so 100 is a
+        // quarter of the way from the third to the fourth; at 45 they sum
+        // to 30, 38, 68 and 108 (the percentage is of the width), so 45
+        // is 7/30 of the way from the second to the third.
+        let columns = [
+            column(10.0, 10.0, Some(40.0), false),
+            column(10.0, 40.0, None, true),
+            column(10.0, 50.0, None, false),
+        ];
+        assert_eq!(
+            auto_column_widths(&columns, 75.0 / 0.75),
+            [40.0, 40.0, 20.0]
+        );
+        assert_eq!(auto_column_widths(&columns, 45.0), [18.0, 17.0, 10.0]);
+        assert_eq!(auto_column_widths(&columns, 30.0), [10.0, 10.0, 10.0]);
+        // Past the maximum guess: the free column takes the excess.
+        assert_eq!(auto_column_widths(&columns, 200.0), [80.0, 40.0, 80.0]);
+        // Without a free column, the constrained one; without either,
+        // the percentage columns by percentage; without any, all equally.
+        let only = [
+            column(0.0, 20.0, None, true),
+            column(0.0, 0.0, Some(0.0), false),
+        ];
+        assert_eq!(auto_column_widths(&only, 40.0), [40.0, 0.0]);
+        let empty = [column(0.0, 0.0, None, false), column(0.0, 0.0, None, false)];
+        assert_eq!(auto_column_widths(&empty, 40.0), [20.0, 20.0]);
+        assert_eq!(auto_column_widths(&[], 40.0), Vec::<f32>::new());
     }
 
     #[test]

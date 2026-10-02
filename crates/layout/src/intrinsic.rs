@@ -12,7 +12,10 @@
 //! `min-width` as zero; percentage margins and paddings count as zero
 //! (css-sizing-3 §5.2.1: a percentage against a size that is being
 //! computed). `box-sizing: border-box` applies to the given sizes as it
-//! does in layout. A contribution is never negative.
+//! does in layout. A contribution is never negative. A table's widths
+//! are its grid's (M12, `crate::table::content_widths`), and its given
+//! width is a floor over them, never a ceiling: a table is never
+//! narrower than its columns need.
 
 use style::computed::{BoxSizing, LEFT, LengthPercentage, LengthPercentageAuto, RIGHT};
 use text::FontCollection;
@@ -23,7 +26,8 @@ use crate::inline::{collect_inline_items, run_intrinsic_widths};
 /// The `(min-content, max-content)` contribution of a block-level box
 /// or an inline-block to the box it sits in: its own intrinsic size
 /// under its `width`, `min-width` and `max-width`, plus its horizontal
-/// padding, border and margins.
+/// padding, border and margins. A table (M12) is never narrower than
+/// its own minimum, whatever its `width` and `max-width` say.
 pub(crate) fn contribution(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32) {
     let style = &b.style;
     let fixed = |v: LengthPercentage| match v {
@@ -42,12 +46,25 @@ pub(crate) fn contribution(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32) 
         BoxSizing::ContentBox => v.max(0.0),
         BoxSizing::BorderBox => (v - non_content).max(0.0),
     };
-    let (mut min, mut max) = match style.width {
-        LengthPercentageAuto::Px(w) => (inner(w), inner(w)),
-        LengthPercentageAuto::Percent(_) | LengthPercentageAuto::Auto => content_widths(b, fonts),
+    // A table's minimum is a floor under every other size it is given.
+    let (floor, (mut min, mut max)) = if b.is_table() {
+        let (table_min, table_max) = content_widths(b, fonts);
+        let sizes = match style.width {
+            LengthPercentageAuto::Px(w) => (inner(w).max(table_min), inner(w).max(table_min)),
+            LengthPercentageAuto::Percent(_) | LengthPercentageAuto::Auto => (table_min, table_max),
+        };
+        (table_min, sizes)
+    } else {
+        let sizes = match style.width {
+            LengthPercentageAuto::Px(w) => (inner(w), inner(w)),
+            LengthPercentageAuto::Percent(_) | LengthPercentageAuto::Auto => {
+                content_widths(b, fonts)
+            }
+        };
+        (0.0, sizes)
     };
     if let Some(LengthPercentage::Px(limit)) = style.max_width {
-        let limit = inner(limit);
+        let limit = inner(limit).max(floor);
         min = min.min(limit);
         max = max.min(limit);
     }
@@ -73,13 +90,17 @@ pub(crate) fn contribution(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32) 
 /// float below content that has ended it would not add, a case this
 /// over-estimates).
 pub(crate) fn content_widths(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32) {
+    if b.is_table() {
+        return crate::table::content_widths(b, fonts);
+    }
     let mut min = 0.0f32;
     let mut in_flow_max = 0.0f32;
     let mut floats_max = 0.0f32;
     for child in &b.children {
         let (child_min, child_max) = match child.kind {
-            // A table and its parts contribute as the blocks they are
-            // laid out as until `layout::table` (M12 step 3).
+            // A table contributes its grid's widths (M12); a table part
+            // a hand-built tree puts in a block container contributes
+            // as the block it is laid out as there.
             BoxKind::Block
             | BoxKind::InlineBlock
             | BoxKind::Float
