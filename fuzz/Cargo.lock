@@ -166,8 +166,10 @@ version = "0.0.1"
 dependencies = [
  "css",
  "dom",
+ "encoding",
  "html",
  "layout",
+ "net",
  "paint",
  "render",
  "style",

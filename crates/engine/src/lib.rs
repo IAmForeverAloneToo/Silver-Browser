@@ -53,14 +53,34 @@
 //! that can still move that way, then to its ancestors, then to the
 //! viewport: scroll chaining. Each container animates as the viewport
 //! does.
+//!
+//! Documents also come by URL (M14.6, docs/design/net.md, "The engine's
+//! loader"). [`Engine::load`] fetches one through `net` on a thread of
+//! its own, at most 32 fetches in flight; each result comes back over a
+//! channel and calls the waker the shell gives with
+//! [`Engine::set_waker`], and [`Engine::poll_network`] takes them on
+//! the engine's thread. The page shown stays until the new document and
+//! the stylesheets the parser met before its `<body>` have arrived or
+//! failed, so a page first appears styled. A document's stylesheets
+//! come from its `<link>` and `<style>` elements in tree order, each
+//! with its `@import`s before it, and are found again when the journal
+//! says an element that owns one changed; a sheet that arrives later
+//! restyles the page. [`Engine::load_state`] says where
+//! the latest load stands. A document given to the engine as source or
+//! as a tree has no URL and fetches nothing.
 
 pub mod differential;
+mod loader;
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+pub use loader::{LoadError, LoadState};
+pub use net::{Client, NetworkError, Url};
+
 use dom::{Change, Document, NodeId};
 use layout::{DocumentLayout, Fragment, FragmentKind, LayoutCache};
+use loader::{Incoming, Network, Page, PageId, Target};
 use paint::{
     DisplayItem, Rect, SCROLLBAR_THUMB, SCROLLBAR_TRACK, Step, Viewport, padding_box,
     paint_fragments_in, paint_order, scrollbar_thumb,
@@ -189,10 +209,18 @@ pub struct Engine {
     /// (a `FontCollection` clones by sharing its face data).
     layout_fonts: text::FontCollection,
     document: Document,
-    /// The text of the document's `<style>` elements, as last read, and
-    /// the stylesheets parsed from it, prepared for the cascade.
-    style_sources: Vec<String>,
+    /// The document's stylesheets, element by element, with what is
+    /// fetched for them, and its URL.
+    page: Page,
+    /// The stylesheets that apply, prepared for the cascade.
     stylesheets: Stylesheets,
+    /// The fetches, the threads they run on and the client they share.
+    network: Network,
+    /// The load whose document is not shown yet, if one is under way.
+    incoming: Option<Incoming>,
+    load_state: LoadState,
+    /// The number the next page is given.
+    next_page: PageId,
     /// The cascade of the current document, computed on first use and
     /// dropped when a document loads or its stylesheets change, or when
     /// the viewport changes and the document used viewport units
@@ -322,8 +350,12 @@ impl Engine {
             backend: SoftwareBackend::with_fonts(fonts.clone()),
             layout_fonts: fonts,
             document: Document::new(),
-            style_sources: Vec::new(),
+            page: Page::given(0),
             stylesheets: Stylesheets::default(),
+            network: Network::new(),
+            incoming: None,
+            load_state: LoadState::Loaded,
+            next_page: 1,
             styled: None,
             pending: Vec::new(),
             style_runs: 0,
@@ -361,11 +393,26 @@ impl Engine {
     /// start over, every scroll offset is
     /// dropped and the document starts at the top. Its journal of
     /// changes is emptied, since the engine has seen nothing of it yet.
-    pub fn set_document(&mut self, mut document: Document) {
+    /// The document has no URL and fetches nothing, so its `<link>`
+    /// elements and `@import` rules bring no sheets. A load under way,
+    /// and the fetches of the page shown, are aborted, and the load
+    /// state is [`LoadState::Loaded`].
+    pub fn set_document(&mut self, document: Document) {
+        self.cancel_incoming();
+        let mut page = Page::given(self.new_page_id());
+        page.begin(&document, &mut self.network);
+        self.install(document, page);
+        self.load_state = LoadState::Loaded;
+    }
+
+    /// Shows `document`, with `page` its stylesheets, in place of the
+    /// document shown, whose fetches are aborted.
+    fn install(&mut self, mut document: Document, page: Page) {
+        self.network.cancel(self.page.id(), None);
         document.take_changes();
         self.document = document;
-        self.style_sources = style_texts(&self.document);
-        self.stylesheets = Stylesheets::new(parse_stylesheets(&self.style_sources));
+        self.page = page;
+        self.stylesheets = Stylesheets::new(self.page.sheets());
         self.styled = None;
         self.pending.clear();
         self.layout = None;
@@ -377,6 +424,170 @@ impl Engine {
         self.changed = true;
     }
 
+    fn new_page_id(&mut self) -> PageId {
+        let id = self.next_page;
+        self.next_page += 1;
+        id
+    }
+
+    /// Starts loading `url` (docs/design/net.md, "The engine's loader"),
+    /// in place of any load under way, which is aborted. The document
+    /// is fetched on a thread of its own; the page shown stays until it
+    /// has arrived and so have the stylesheets the parser met before its
+    /// `<body>`, or they have failed. [`Engine::poll_network`] takes the
+    /// results, and [`Engine::load_state`] says where the load stands.
+    pub fn load(&mut self, url: Url) {
+        self.cancel_incoming();
+        let id = self.new_page_id();
+        let request = net::Request::get(url, net::Destination::Document);
+        self.network.fetch(id, Target::Document, request);
+        self.incoming = Some(Incoming::Fetching(id));
+        self.load_state = LoadState::Loading;
+    }
+
+    /// Aborts the load under way, if there is one.
+    fn cancel_incoming(&mut self) {
+        if let Some(incoming) = self.incoming.take() {
+            self.network.cancel(incoming.id(), None);
+        }
+    }
+
+    /// Takes every fetch result that has arrived and applies it: a
+    /// document is parsed, and shown once its blocking stylesheets have
+    /// arrived or failed; a stylesheet takes its place among the
+    /// document's, which restyles it. Says whether a frame is wanted,
+    /// as [`Engine::needs_frame`] does. The shell calls it when the
+    /// waker wakes it.
+    pub fn poll_network(&mut self) -> bool {
+        while let Some(arrived) = self.network.take() {
+            self.arrived(arrived);
+        }
+        self.needs_frame()
+    }
+
+    /// Applies one fetch's result.
+    fn arrived(&mut self, arrived: loader::Arrived) {
+        let loader::Arrived {
+            id,
+            page,
+            target,
+            result,
+        } = arrived;
+        match target {
+            Target::Document => self.document_arrived(page, result),
+            Target::Sheet { owner, path } => {
+                if page == self.page.id() {
+                    if self
+                        .page
+                        .sheet_arrived(owner, &path, id, result, &mut self.network)
+                    {
+                        self.sheets_changed();
+                    }
+                    self.update_load_state();
+                } else if let Some(Incoming::Waiting { page: incoming, .. }) = &mut self.incoming
+                    && incoming.id() == page
+                {
+                    incoming.sheet_arrived(owner, &path, id, result, &mut self.network);
+                    self.commit_if_ready();
+                }
+            }
+        }
+    }
+
+    /// Takes the response to the document fetch of the load under way:
+    /// the load fails, or the document is parsed and its stylesheets
+    /// fetched.
+    fn document_arrived(&mut self, page: PageId, result: Result<net::Response, LoadError>) {
+        if !matches!(self.incoming, Some(Incoming::Fetching(id)) if id == page) {
+            return;
+        }
+        self.incoming = None;
+        let parsed = result.and_then(|response| {
+            let (document, encoding) = loader::document_from(&response)?;
+            let address_space = response.address_space.unwrap_or(net::AddressSpace::Public);
+            Ok((
+                document,
+                Page::fetched(page, response.url().clone(), encoding, address_space),
+            ))
+        });
+        match parsed {
+            Ok((document, mut incoming)) => {
+                incoming.begin(&document, &mut self.network);
+                self.incoming = Some(Incoming::Waiting {
+                    page: Box::new(incoming),
+                    document: Box::new(document),
+                });
+                self.commit_if_ready();
+            }
+            Err(error) => self.load_state = LoadState::Failed(error),
+        }
+    }
+
+    /// Shows the incoming document once its blocking stylesheets have
+    /// arrived or failed.
+    fn commit_if_ready(&mut self) {
+        let ready = matches!(
+            &self.incoming,
+            Some(Incoming::Waiting { page, .. }) if page.blocking_settled()
+        );
+        if !ready {
+            return;
+        }
+        let Some(Incoming::Waiting { page, document }) = self.incoming.take() else {
+            unreachable!("checked above");
+        };
+        self.install(*document, *page);
+        self.update_load_state();
+    }
+
+    /// The load is done once its document is shown and every stylesheet
+    /// it asked for has arrived or failed.
+    fn update_load_state(&mut self) {
+        if self.load_state == LoadState::Loading && self.incoming.is_none() && self.page.settled() {
+            self.load_state = LoadState::Loaded;
+        }
+    }
+
+    /// Takes the stylesheets that apply as they now stand: when they
+    /// differ from those the cascade has, the next frame cascades the
+    /// whole document.
+    fn sheets_changed(&mut self) {
+        let sheets = self.page.sheets();
+        if sheets != self.stylesheets.sheets() {
+            self.stylesheets = Stylesheets::new(sheets);
+            self.styled = None;
+            self.pending.clear();
+            self.layout = None;
+            self.changed = true;
+        }
+    }
+
+    /// Where the latest load stands. A document given to the engine,
+    /// the built-in one included, is loaded.
+    pub fn load_state(&self) -> &LoadState {
+        &self.load_state
+    }
+
+    /// The URL of the document shown; none for a document given to the
+    /// engine.
+    pub fn url(&self) -> Option<&Url> {
+        self.page.url()
+    }
+
+    /// Calls `waker`, from a fetch's thread, whenever a fetch finishes:
+    /// the shell's way to be woken to call [`Engine::poll_network`].
+    pub fn set_waker(&mut self, waker: impl Fn() + Send + Sync + 'static) {
+        self.network.set_waker(std::sync::Arc::new(waker));
+    }
+
+    /// Fetches from now on with `client`, in place of the one the
+    /// engine makes at its first fetch, `Client::default()`: a test's
+    /// client trusts its server's root, say. Fetches in flight finish
+    /// with the client they began with.
+    pub fn set_network(&mut self, client: Client) {
+        self.network.set_client(client);
+    }
+
     /// The current document.
     pub fn document(&self) -> &Document {
         &self.document
@@ -384,10 +595,14 @@ impl Engine {
 
     /// Lends the document to `f` to change through its mutation API,
     /// and returns what `f` returns (M13.5). The engine then reads the
-    /// document's journal. When it records any change, the `<style>`
-    /// elements' text is read again and, if it changed, the stylesheets
-    /// are parsed again and the next frame cascades the whole document
-    /// and lays it out afresh; otherwise the next frame restyles the
+    /// document's journal. When a change could touch a stylesheet — a
+    /// `<link>` or `<style>` inserted, removed or changed, or a
+    /// `<style>`'s text — the document's sheets are found again: an
+    /// element's sheet is kept while what made it is unchanged, made
+    /// again or fetched again otherwise, and dropped with the element.
+    /// If the sheets that apply changed, the next frame cascades the
+    /// whole document and lays it out afresh; otherwise the next frame
+    /// restyles the
     /// elements the changes reach (M13.1) and lays out the boxes the
     /// changes and those restyles reach (M13.2). The scroll offsets of
     /// freed elements are dropped, and
@@ -405,13 +620,20 @@ impl Engine {
     }
 
     /// What `changes` to the document invalidate: the cascade, whole
-    /// when the stylesheets' text changed and by restyle otherwise, the
+    /// when the stylesheets changed and by restyle otherwise, the
     /// layout, and the scroll offsets of freed elements.
     fn document_changed(&mut self, changes: Vec<Change>) {
-        let sources = style_texts(&self.document);
-        if sources != self.style_sources {
-            self.stylesheets = Stylesheets::new(parse_stylesheets(&sources));
-            self.style_sources = sources;
+        let mut sheets = None;
+        if changes
+            .iter()
+            .any(|change| loader::may_touch_sheets(&self.document, change))
+        {
+            self.page.rescan(&self.document, &mut self.network);
+            self.update_load_state();
+            sheets = Some(self.page.sheets()).filter(|sheets| sheets != self.stylesheets.sheets());
+        }
+        if let Some(sheets) = sheets {
+            self.stylesheets = Stylesheets::new(sheets);
             self.styled = None;
             self.pending.clear();
         } else if self.styled.is_some() && self.pending.first() != Some(&Change::Everything) {
@@ -443,7 +665,9 @@ impl Engine {
         self.scroll_y != self.scroll_target || self.element_scroll.values().any(|s| s.y != s.target)
     }
 
-    /// The document's stylesheets, in document order.
+    /// The document's stylesheets that apply, in cascade order: those
+    /// of its `<link>` and `<style>` elements in tree order, each one's
+    /// imports before it.
     pub fn stylesheets(&self) -> &[css::Stylesheet] {
         self.stylesheets.sheets()
     }
@@ -1033,37 +1257,12 @@ fn approach(y: &mut f32, target: f32, keep: f32) -> bool {
     true
 }
 
-/// The stylesheets `sources` parse to, in order; a source that does not
-/// parse is left out.
-fn parse_stylesheets(sources: &[String]) -> Vec<css::Stylesheet> {
-    sources
-        .iter()
-        .filter_map(|text| css::parse_stylesheet(text).ok())
-        .collect()
-}
-
-/// Collects the concatenated text of every `<style>` element in the
-/// document, in document order: each one's text children. An element
-/// under a `<style>`, which the parser never puts there, is not looked
-/// into. Iterative, at any depth.
-fn style_texts(document: &Document) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut pending = vec![document.root()];
-    while let Some(node) = pending.pop() {
-        if document.tag(node) == Some("style") {
-            let text: String = document
-                .children(node)
-                .filter_map(|child| document.text(child))
-                .collect();
-            if !text.trim().is_empty() {
-                out.push(text);
-            }
-            continue; // no nested style elements
-        }
-        let children: Vec<NodeId> = document.element_children(node).collect();
-        pending.extend(children.into_iter().rev());
+impl Drop for Engine {
+    /// Aborts the fetches in flight, so that their threads end soon
+    /// rather than read on for an engine gone.
+    fn drop(&mut self) {
+        self.network.cancel_all();
     }
-    out
 }
 
 #[cfg(test)]
