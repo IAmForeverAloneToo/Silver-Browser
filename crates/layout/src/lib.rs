@@ -19,6 +19,7 @@ pub mod box_tree;
 mod float;
 pub mod inline;
 mod intrinsic;
+mod table;
 
 pub use block::{
     DocumentLayout, Fragment, FragmentKind, Preorder, flatten, layout, layout_document,

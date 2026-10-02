@@ -1724,6 +1724,65 @@ mod tests {
     }
 
     #[test]
+    fn a_table_paints_its_parts_under_its_cells_and_is_hit_through_its_grid() {
+        // A fixed 100px table, 10px spacing, blue; a row group of two
+        // red rows, each with two cells, the second green. The columns
+        // are (100 - 3 * 10) / 2 = 35px; the rows 20px, at 10 and 40.
+        // The row's red shows under its cells alone, never in the
+        // spacing (CSS2 §17.6.1); the pointer finds the cell over a
+        // cell, the row between two cells of it, the group between two
+        // rows, and the table in its own spacing (M12).
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0 }
+                    table { table-layout: fixed; width: 100px; border-spacing: 10px;
+                            background-color: #0000ff }
+                    td { padding: 0; height: 20px }
+                    tr { background-color: #ff0000 }
+                    .g { background-color: #00ff00 }</style>\
+             <table id=t><tbody id=b><tr id=r><td id=a></td><td class=g id=c></td></tr>\
+             <tr><td></td><td class=g></td></tr></tbody></table>",
+        );
+        let pixels = engine.frame(200, 100);
+        let id = |name: &str| node_by_id(&engine, name);
+        let (t, b, r, a, c) = (id("t"), id("b"), id("r"), id("a"), id("c"));
+        let blue = [0x00, 0x00, 0xff, 0xff];
+        assert_eq!(
+            px(&pixels, 200, 20, 20),
+            [0xff, 0x00, 0x00, 0xff],
+            "the row under a cell"
+        );
+        assert_eq!(engine.hit_test(20.0, 20.0), Some(a));
+        assert_eq!(
+            px(&pixels, 200, 70, 20),
+            [0x00, 0xff, 0x00, 0xff],
+            "the green cell"
+        );
+        assert_eq!(engine.hit_test(70.0, 20.0), Some(c));
+        assert_eq!(
+            px(&pixels, 200, 50, 20),
+            blue,
+            "the spacing between two cells"
+        );
+        assert_eq!(engine.hit_test(50.0, 20.0), Some(r));
+        assert_eq!(
+            px(&pixels, 200, 20, 35),
+            blue,
+            "the spacing between two rows"
+        );
+        assert_eq!(engine.hit_test(20.0, 35.0), Some(b));
+        assert_eq!(px(&pixels, 200, 5, 5), blue, "the table's own spacing");
+        assert_eq!(engine.hit_test(5.0, 5.0), Some(t));
+        assert_eq!(engine.hit_test(95.0, 65.0), Some(t));
+        assert_eq!(
+            px(&pixels, 200, 20, 75),
+            [0xff, 0xff, 0xff, 0xff],
+            "below the table"
+        );
+        assert_ne!(engine.hit_test(20.0, 75.0), Some(t));
+    }
+
+    #[test]
     fn an_inline_element_paints_its_background_and_is_hit_over_its_padding() {
         // <p><a href=/t>b</a></p>, the link with 10px of horizontal
         // padding and a red background (M11.6): its padding is red, is

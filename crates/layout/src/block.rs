@@ -78,7 +78,7 @@
 //! scrolls over.
 
 use style::computed::{
-    BOTTOM, BoxSizing, ComputedStyle, Float, LEFT, LengthPercentage, LengthPercentageAuto,
+    BOTTOM, BoxSizing, ComputedStyle, Display, Float, LEFT, LengthPercentage, LengthPercentageAuto,
     Position, RIGHT, TOP,
 };
 use text::FontCollection;
@@ -170,10 +170,24 @@ impl Fragment {
     }
 
     /// Whether the fragment clips its content (CSS2 §11.1.1, M9.3): a
-    /// block-level or inline-block box whose `overflow` says so. An
-    /// inline box's `overflow` does not apply, nor does a text's.
+    /// block container's or inline-block's box whose `overflow` says
+    /// so. An inline box's `overflow` does not apply, nor does a text's,
+    /// nor a table's or a table part's other than a cell's (M12:
+    /// `overflow` is given to block containers, which they are not).
     pub fn clips(&self) -> bool {
-        matches!(self.kind, FragmentKind::Box) && self.style.overflow.clips()
+        matches!(self.kind, FragmentKind::Box)
+            && self.style.overflow.clips()
+            && !matches!(
+                self.style.display,
+                Display::Table
+                    | Display::InlineTable
+                    | Display::TableRowGroup
+                    | Display::TableHeaderGroup
+                    | Display::TableFooterGroup
+                    | Display::TableRow
+                    | Display::TableColumnGroup
+                    | Display::TableColumn
+            )
     }
 
     /// Whether the document-space point lies within the fragment's box
@@ -472,7 +486,7 @@ fn width_constraints(style: &ComputedStyle, cb_width: f32, non_content: f32) -> 
 /// `available_width` — the containing block's width, or for a block
 /// formatting context root beside floats the room between them (CSS2
 /// §9.5, M11).
-fn resolve_width_and_margins(
+pub(crate) fn resolve_width_and_margins(
     style: &ComputedStyle,
     cb_width: f32,
     available_width: f32,
@@ -550,7 +564,11 @@ fn tentative_width(
 /// The specified `height` as a content-box height, or `None` for
 /// `auto` — which a percentage of an indefinite containing-block height
 /// is too (CSS2 §10.5).
-fn definite_height(style: &ComputedStyle, cb_height: Option<f32>, non_content: f32) -> Option<f32> {
+pub(crate) fn definite_height(
+    style: &ComputedStyle,
+    cb_height: Option<f32>,
+    non_content: f32,
+) -> Option<f32> {
     let inner = |v: f32| match style.box_sizing {
         BoxSizing::ContentBox => v.max(0.0),
         BoxSizing::BorderBox => (v - non_content).max(0.0),
@@ -565,7 +583,7 @@ fn definite_height(style: &ComputedStyle, cb_height: Option<f32>, non_content: f
 /// `min-height` and `max-height` as content-box heights (CSS2 §10.7):
 /// a percentage of an indefinite containing-block height is `0` and
 /// `none` respectively.
-fn height_bounds(
+pub(crate) fn height_bounds(
     style: &ComputedStyle,
     cb_height: Option<f32>,
     non_content: f32,
@@ -660,6 +678,10 @@ pub(crate) struct BlockLayout<'a> {
     /// The absolutely positioned boxes met inside whose containing
     /// block is further up (M11), relative to the border box.
     pub(crate) absolutes: Vec<Deferred<'a>>,
+    /// The content's height as if `height` were `auto` (CSS2 §10.6.3,
+    /// a context root's floats included): what a table row takes from
+    /// a cell whose `height` is only a minimum (M12).
+    pub(crate) auto_content_height: f32,
 }
 
 /// An inline-block laid out for its line (M10.4, M7.7): one atomic item
@@ -728,11 +750,15 @@ pub(crate) fn relative_offset(
 /// Whether a box with this style establishes a block formatting context
 /// of its own (CSS2 §9.4.1, M10.4): `overflow` other than `visible`, an
 /// atomic inline (an inline-block, an inline table), a float or an
-/// absolutely positioned box (M11). Table cells and captions do too;
-/// they arrive with their box kinds (M12).
+/// absolutely positioned box (M11), a table, a table cell or a caption
+/// (M12).
 pub(crate) fn establishes_bfc(style: &ComputedStyle) -> bool {
     style.overflow.clips()
         || style.display.is_atomic_inline()
+        || matches!(
+            style.display,
+            Display::Table | Display::TableCell | Display::TableCaption
+        )
         || style.float != Float::None
         || style.position.is_out_of_flow()
 }
@@ -766,12 +792,12 @@ impl Edges {
     }
 
     /// What the two sides take out of the width.
-    fn horizontal(&self) -> f32 {
+    pub(crate) fn horizontal(&self) -> f32 {
         self.border[LEFT] + self.border[RIGHT] + self.padding[LEFT] + self.padding[RIGHT]
     }
 
     /// What the two sides take out of the height.
-    fn vertical(&self) -> f32 {
+    pub(crate) fn vertical(&self) -> f32 {
         self.border[TOP] + self.padding[TOP] + self.padding[BOTTOM] + self.border[BOTTOM]
     }
 }
@@ -801,9 +827,46 @@ fn layout_block<'a>(
     } else {
         Content::In { floats, at }
     };
-    layout_block_contents(
+    layout_contents(
         b,
         &edges,
+        cb_width,
+        cb_height,
+        content_width,
+        margin_left,
+        content,
+        fonts,
+    )
+}
+
+/// The content of `b` laid out at `content_width`: a table's grid
+/// (M12, [`crate::table`]), else a block container's children
+/// ([`layout_block_contents`]).
+#[allow(clippy::too_many_arguments)]
+fn layout_contents<'a>(
+    b: &'a LayoutBox,
+    edges: &Edges,
+    cb_width: f32,
+    cb_height: Option<f32>,
+    content_width: f32,
+    margin_left: f32,
+    content: Content<'_>,
+    fonts: &FontCollection,
+) -> BlockLayout<'a> {
+    if b.kind == BoxKind::Table {
+        return crate::table::layout_table_contents(
+            b,
+            edges,
+            cb_width,
+            cb_height,
+            content_width,
+            margin_left,
+            fonts,
+        );
+    }
+    layout_block_contents(
+        b,
+        edges,
         cb_width,
         cb_height,
         content_width,
@@ -881,7 +944,7 @@ pub(crate) fn layout_inline_block<'a>(
         content_width = content_width.min(max);
     }
     content_width = content_width.max(c.min);
-    let layout = layout_block_contents(
+    let layout = layout_contents(
         b,
         &edges,
         cb_width,
@@ -913,7 +976,7 @@ pub(crate) fn layout_inline_block<'a>(
 /// the margins it exposes. `content` says which float context the
 /// children are laid out in (M11).
 #[allow(clippy::too_many_arguments)]
-fn layout_block_contents<'a>(
+pub(crate) fn layout_block_contents<'a>(
     b: &'a LayoutBox,
     edges: &Edges,
     cb_width: f32,
@@ -965,6 +1028,7 @@ fn layout_block_contents<'a>(
             self_collapsing: true,
             last_baseline: None,
             absolutes: Vec::new(),
+            auto_content_height: 0.0,
         };
     }
 
@@ -1043,6 +1107,7 @@ fn layout_block_contents<'a>(
             self_collapsing: true,
             last_baseline: None,
             absolutes,
+            auto_content_height: 0.0,
         };
     }
 
@@ -1170,6 +1235,7 @@ fn layout_block_contents<'a>(
         self_collapsing: false,
         last_baseline: children.last_baseline.map(|y| content_y + y),
         absolutes,
+        auto_content_height,
     }
 }
 
@@ -1183,7 +1249,7 @@ fn layout_block_contents<'a>(
 /// between them does not scroll it. A `position: fixed` box, and
 /// anything carried by a box that is not positioned, goes on up;
 /// returned relative to `root`'s border box.
-fn settle_absolutes<'a>(
+pub(crate) fn settle_absolutes<'a>(
     b: &LayoutBox,
     root: &mut Fragment,
     border: &[f32; 4],
@@ -1341,7 +1407,7 @@ fn layout_absolute<'a>(
     // The content, as a block formatting context root's, with the
     // style's own height (or the content's); the box's used height
     // may then come from `top` and `bottom` instead.
-    let layout = layout_block_contents(
+    let layout = layout_contents(
         b,
         &edges,
         cb_width,
@@ -1547,7 +1613,7 @@ fn place_block<'a>(
 }
 
 /// `b`'s own box fragment at its border-box origin, no content yet.
-fn box_fragment(w: f32, h: f32, b: &LayoutBox) -> Fragment {
+pub(crate) fn box_fragment(w: f32, h: f32, b: &LayoutBox) -> Fragment {
     Fragment {
         x: 0.0,
         y: 0.0,
@@ -1649,9 +1715,10 @@ fn layout_children<'a>(
 
     for child in children {
         match &child.kind {
-            // A table and each of its parts are laid out as the blocks
-            // they are built as inside, stacked, until `layout::table`
-            // lays a table's grid out (M12 step 3).
+            // A table is placed like a block, its grid laid out by
+            // `layout::table` (M12); a table part that a hand-built tree
+            // puts here, outside any table, is laid out as the block it
+            // is built as inside.
             BoxKind::Block
             | BoxKind::Table
             | BoxKind::RowGroup(_)
@@ -2978,10 +3045,10 @@ mod tests {
             let frags = fragments_of(Element::new(tag).text("x"), "");
             assert_eq!(box_fragments(&frags).len(), 1, "<{tag}> is a block");
         }
-        // A table is a table (M12): its text gets an anonymous row and
-        // cell, three boxes.
+        // A table is a table (M12): its wrapper, its table box, and an
+        // anonymous row and cell for its text, four boxes.
         let frags = fragments_of(Element::new("table").text("x"), "");
-        assert_eq!(box_fragments(&frags).len(), 3, "<table> is a table");
+        assert_eq!(box_fragments(&frags).len(), 4, "<table> is a table");
     }
 
     /// The tree form of [`fragments_of`].
