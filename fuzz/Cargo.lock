@@ -99,6 +99,9 @@ dependencies = [
 [[package]]
 name = "css"
 version = "0.0.1"
+dependencies = [
+ "encoding",
+]
 
 [[package]]
 name = "displaydoc"
@@ -198,6 +201,7 @@ name = "html"
 version = "0.0.1"
 dependencies = [
  "dom",
+ "encoding",
 ]
 
 [[package]]

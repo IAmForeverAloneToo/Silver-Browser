@@ -1,5 +1,7 @@
 //! CSS parsing: source text in, stylesheet model out.
 //!
+//! [`decode_stylesheet`] turns a stylesheet's bytes into its text, in the
+//! encoding css-syntax-3 finds for them ([`decode`]).
 //! [`parse_stylesheet`] runs the [`tokenizer`] (a `css-syntax-3` token
 //! model) through the [`parser`], producing a [`Stylesheet`] with
 //! WHATWG-style error recovery: malformed input degrades, never fails,
@@ -11,8 +13,11 @@
 //! Selectors are not parsed yet: rule preludes are kept as token
 //! vectors for the future `style` crate to consume.
 
+pub mod decode;
 pub mod parser;
 pub mod tokenizer;
+
+pub use decode::{decode_stylesheet, determine_fallback_encoding};
 
 pub use parser::{
     AtRule, Block, Declaration, QualifiedRule, Rule, Stylesheet, parse_style_attribute,

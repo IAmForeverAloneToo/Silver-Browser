@@ -275,6 +275,9 @@ checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
 [[package]]
 name = "css"
 version = "0.0.1"
+dependencies = [
+ "encoding",
+]
 
 [[package]]
 name = "ctor"
@@ -583,6 +586,7 @@ name = "html"
 version = "0.0.1"
 dependencies = [
  "dom",
+ "encoding",
 ]
 
 [[package]]

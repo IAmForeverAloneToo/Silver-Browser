@@ -32,6 +32,15 @@
 //! than back into the head (the spec reopens the head); a stylesheet
 //! or script there is collected and hidden all the same.
 //!
+//! A `<meta>` that declares a character encoding, by `charset` or by
+//! `http-equiv=content-type` and `content`, is noted as it is built:
+//! the first one is [`TreeBuilder::encoding_declaration`], which the
+//! caller decoding the bytes acts on (HTML §13.2.3.4, see
+//! [`crate::parse_document_from_bytes`]). Every insertion mode hands a
+//! `<meta>` to the "in head" rules that do this, but for `select` and
+//! framesets, which ignore it; this builder has neither mode and notes
+//! every `<meta>`.
+//!
 //! What the full tree construction algorithm has and this does not:
 //! the table insertion modes (a table's cells are not wrapped in a
 //! `tbody`, a stray `<td>` outside a table is an ordinary element), the
@@ -40,8 +49,10 @@
 //! only to the extent that a self-closing tag inside `<svg>` or `<math>`
 //! is honoured, as the spec does there and nowhere else in HTML.
 
+use crate::encoding_sniffing::extract_from_meta_content;
 use crate::tokenizer::Token;
 use dom::{Element, Node};
+use encoding::Encoding;
 
 /// The most elements that may be open at once.
 pub const MAX_DEPTH: usize = dom::MAX_DEPTH;
@@ -144,6 +155,8 @@ pub struct TreeBuilder {
     /// "in body" rule for those start tags).
     skip_leading_newline: bool,
     phase: Phase,
+    /// The encoding the first `<meta>` declaring one names.
+    encoding_declaration: Option<Encoding>,
 }
 
 impl Default for TreeBuilder {
@@ -160,7 +173,15 @@ impl TreeBuilder {
             open: Vec::new(),
             skip_leading_newline: false,
             phase: Phase::Initial,
+            encoding_declaration: None,
         }
+    }
+
+    /// The encoding the first `<meta>` built so far declares, by its
+    /// `charset` or, failing that, by `http-equiv=content-type` and its
+    /// `content`; `None` when none has declared one.
+    pub fn encoding_declaration(&self) -> Option<Encoding> {
+        self.encoding_declaration
     }
 
     /// Feeds one token into the builder.
@@ -217,6 +238,9 @@ impl TreeBuilder {
     /// elements in the head while it is still open, everything else in
     /// the body, implied as needed.
     fn start_tag(&mut self, name: String, attrs: Vec<(String, String)>, self_closing: bool) {
+        if name == "meta" && self.encoding_declaration.is_none() {
+            self.encoding_declaration = meta_encoding_declaration(&attrs);
+        }
         match name.as_str() {
             "html" => {
                 if self.phase == Phase::Initial {
@@ -489,6 +513,26 @@ fn is_html_whitespace(c: char) -> bool {
     matches!(c, '\t' | '\n' | '\u{c}' | '\r' | ' ')
 }
 
+/// The encoding a `<meta>` declares (the "in head" rules for `meta`):
+/// its `charset`, if that names an encoding; otherwise, with
+/// `http-equiv` set to `Content-Type` in any case, the one its
+/// `content` names.
+fn meta_encoding_declaration(attrs: &[(String, String)]) -> Option<Encoding> {
+    let attr = |name: &str| {
+        attrs
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, value)| value.as_str())
+    };
+    if let Some(encoding) = attr("charset").and_then(Encoding::for_label) {
+        return Some(encoding);
+    }
+    if attr("http-equiv").is_some_and(|value| value.eq_ignore_ascii_case("content-type")) {
+        return attr("content").and_then(extract_from_meta_content);
+    }
+    None
+}
+
 /// A repeated `<html>` or `<body>` start tag adds the attributes the
 /// open element does not have yet (the spec's rule), never replaces.
 fn merge_attrs(target: Option<&mut Element>, attrs: Vec<(String, String)>) {
@@ -505,6 +549,44 @@ fn merge_attrs(target: Option<&mut Element>, attrs: Vec<(String, String)>) {
 mod tests {
     use super::*;
     use crate::tokenizer::Tokenizer;
+
+    /// The first encoding a `<meta>` in `source` declares.
+    fn declared(source: &str) -> Option<&'static str> {
+        let mut tokenizer = Tokenizer::new(source);
+        let mut builder = TreeBuilder::new();
+        while let Some(token) = tokenizer.next_token() {
+            builder.process(token);
+        }
+        builder.encoding_declaration().map(Encoding::name)
+    }
+
+    #[test]
+    fn meta_encoding_declarations() {
+        assert_eq!(declared("<meta charset=koi8-r>"), Some("KOI8-R"));
+        assert_eq!(declared("<p>x<meta charset=koi8-r>"), Some("KOI8-R"));
+        assert_eq!(
+            declared("<meta http-equiv=Content-Type content='text/html; charset=koi8-r'>"),
+            Some("KOI8-R")
+        );
+        // Without the pragma, content declares nothing.
+        assert_eq!(declared("<meta content='text/html; charset=koi8-r'>"), None);
+        // A charset naming nothing gives way to the pragma.
+        assert_eq!(
+            declared("<meta charset=bogus http-equiv=content-type content='charset=koi8-r'>"),
+            Some("KOI8-R")
+        );
+        // The first declaration stays.
+        assert_eq!(
+            declared("<meta charset=bogus><meta charset=koi8-r><meta charset=latin2>"),
+            Some("KOI8-R")
+        );
+        // Character references are resolved before the label is read,
+        // and text that only looks like a <meta> is not one.
+        assert_eq!(declared("<meta charset=&#x6B;oi8-r>"), Some("KOI8-R"));
+        assert_eq!(declared("<title><meta charset=koi8-r></title>"), None);
+        assert_eq!(declared("<!-- <meta charset=koi8-r> -->"), None);
+        assert_eq!(declared("<p>no meta</p>"), None);
+    }
 
     /// Builds a tree from HTML source (test convenience).
     fn build(source: &str) -> Node {

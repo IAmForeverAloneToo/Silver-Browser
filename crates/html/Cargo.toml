@@ -6,3 +6,4 @@ license.workspace = true
 
 [dependencies]
 dom.workspace = true
+encoding.workspace = true
