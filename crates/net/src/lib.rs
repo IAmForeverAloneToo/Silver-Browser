@@ -1,10 +1,13 @@
-//! Networking: URLs and resource fetching (stub).
+//! Networking: URLs and resource fetching (roadmap M14; see
+//! `docs/design/net.md`).
 //!
-//! Will contain the resource loader: HTTP(S) fetching, connection pooling,
-//! caching, and content-type dispatch back to `engine`. Only `engine`
-//! orchestrates fetching — no other layer performs I/O.
+//! [`url`] is the URL Standard's parser. Fetching is still a stub; it
+//! grows into the resource loader, HTTP(S) with connection pooling, that
+//! `engine` drives. Only `engine` orchestrates fetching.
 
-pub use url::Url;
+pub mod url;
+
+pub use url::{Host, Origin, Url};
 
 /// Errors produced by resource fetching.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

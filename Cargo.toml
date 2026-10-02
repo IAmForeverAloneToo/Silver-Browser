@@ -36,7 +36,8 @@ ab_glyph = "0.2"
 ttf-parser = "0.25"
 unicode-bidi = "0.3"
 unicode-script = "0.5"
-url = "2"
+# UTS #46 for the URL parser's domains (D17; docs/design/net.md).
+idna = "1.1"
 
 # Dependencies are optimised even in the dev profile: the rasterizer,
 # the shaper and the font parser are not what a debug build is for
