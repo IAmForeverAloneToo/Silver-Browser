@@ -265,6 +265,8 @@ struct Shown {
     /// Whether the browser made the page: `about:silver`, or a page in
     /// place of a response. Only such a page may open `about:` pages.
     made: bool,
+    /// The document's icon, once it has arrived.
+    icon: Option<Icon>,
 }
 
 impl Shown {
@@ -288,6 +290,7 @@ impl Shown {
             salvageable: true,
             failure: None,
             made: false,
+            icon: None,
         }
     }
 }
@@ -331,6 +334,20 @@ enum Indicated {
     /// The top of the document.
     Top,
     Element(NodeId),
+}
+
+/// The most bytes an icon is kept with: no icon needs more.
+pub const MAX_ICON_BYTES: usize = 1 << 20;
+
+/// A document's icon (docs/design/navigation.md, "The icon"): fetched
+/// and kept, not shown until images are decoded (M23).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Icon {
+    /// Where it came from, after any redirects.
+    pub url: Url,
+    /// Its computed MIME type's essence: an image type.
+    pub mime_type: String,
+    pub bytes: Vec<u8>,
 }
 
 /// A link under the pointer (docs/design/navigation.md, "Links"): an `a`
@@ -688,6 +705,56 @@ impl Engine {
         shown
     }
 
+    /// Takes the response to the shown document's icon: kept when its
+    /// status is ok, its computed type an image type and its body no
+    /// larger than [`MAX_ICON_BYTES`]. HTML's `load` event does not wait
+    /// for it, and neither does the load state.
+    fn icon_arrived(&mut self, page: PageId, result: Result<net::Response, LoadError>) {
+        if page != self.shown.page.id() {
+            return;
+        }
+        let Ok(response) = result else {
+            return;
+        };
+        let computed = loader::computed_type(&response);
+        if response.ok() && computed.is_image() && response.body.len() <= MAX_ICON_BYTES {
+            self.shown.icon = Some(Icon {
+                url: response.url().clone(),
+                mime_type: computed.essence().to_owned(),
+                bytes: response.body,
+            });
+        }
+    }
+
+    /// The document's icon (HTML's `icon` link type, else
+    /// `/favicon.ico`), once it has arrived; none for a document without
+    /// one, or whose icon failed.
+    pub fn icon(&self) -> Option<&Icon> {
+        self.shown.icon.as_ref()
+    }
+
+    /// The document's title, as `document.title` reads it: the text of
+    /// the first `title` element in tree order, its own text children
+    /// joined, with ASCII whitespace stripped from its ends and each run
+    /// of it inside collapsed to one space. Empty when there is none.
+    pub fn title(&self) -> String {
+        let document = &self.shown.document;
+        let Some(title) = document
+            .subtree(document.root())
+            .find(|&node| document.tag(node) == Some("title"))
+        else {
+            return String::new();
+        };
+        let text: String = document
+            .children(title)
+            .filter_map(|child| document.text(child))
+            .collect();
+        text.split(|c: char| c.is_ascii_whitespace())
+            .filter(|word| !word.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     /// What the user should be told of the latest navigation that
     /// showed no page, once: a download this version cannot save. The
     /// shell shows it in the status bubble.
@@ -807,6 +874,7 @@ impl Engine {
         } = arrived;
         match target {
             Target::Document => self.document_arrived(page, result),
+            Target::Icon => self.icon_arrived(page, result),
             Target::Sheet { owner, path } => {
                 if page == self.shown.page.id() {
                     if self
@@ -948,6 +1016,12 @@ impl Engine {
             }
         }
         let left = self.show(shown);
+        if !self.shown.made
+            && let Some(request) = self.shown.page.icon_request(&self.shown.document)
+        {
+            self.network
+                .fetch(self.shown.page.id(), Target::Icon, request);
+        }
         if handling == Handling::Reload {
             // The entry's state has the new document; the old one is
             // gone, not kept.

@@ -123,11 +123,18 @@ pub(crate) fn css_bytes(body: &[u8]) -> Reply {
     Reply::ok("text/css", body)
 }
 
-/// The paths the server was asked for, in the order it was.
+/// The paths the server was asked for, in the order it was, but for the
+/// icons the pages asked for (M15), which tests of documents and their
+/// stylesheets leave aside.
 pub(crate) fn paths(server: &TestServer) -> Vec<String> {
     server
         .requests()
         .into_iter()
+        .filter(|request| {
+            request
+                .header("Accept")
+                .is_none_or(|accept| !accept.starts_with("image/"))
+        })
         .map(|request| request.target)
         .collect()
 }

@@ -99,6 +99,9 @@ fn a_request_sends_its_fields() {
     client()
         .fetch(&Request::get(server.url("/style.css"), Destination::Style))
         .unwrap();
+    let icon = Request::get(server.url("/favicon.ico"), Destination::Image);
+    assert_eq!(icon.mode, Mode::NoCors);
+    client().fetch(&icon).unwrap();
     let requests = server.requests();
     let sent = &requests[0];
     assert_eq!(
@@ -117,6 +120,10 @@ fn a_request_sends_its_fields() {
         assert_eq!(sent.header(unsent), None, "{unsent}");
     }
     assert_eq!(requests[1].header("Accept"), Some("text/css,*/*;q=0.1"));
+    assert_eq!(
+        requests[2].header("Accept"),
+        Some("image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5")
+    );
 }
 
 #[test]

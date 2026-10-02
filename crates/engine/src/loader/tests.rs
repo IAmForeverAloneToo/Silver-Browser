@@ -499,7 +499,14 @@ fn a_link_removed_before_its_sheet_arrives_is_aborted() {
         document.remove_child(body, link).unwrap();
     });
     // Nothing is left to wait for.
-    assert_eq!(tab.engine.network.in_flight(), 0);
+    let sheets_in_flight = tab
+        .engine
+        .network
+        .flights
+        .values()
+        .filter(|flight| matches!(flight.target, super::Target::Sheet { .. }))
+        .count();
+    assert_eq!(sheets_in_flight, 0);
     assert_eq!(tab.engine.load_state(), &LoadState::Loaded);
     // The abort ends the fetch's wait without the server's answer.
     wait_for(|| tab.engine.network.pool().running() == 0);

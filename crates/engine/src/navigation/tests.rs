@@ -143,9 +143,13 @@ fn pages() -> TestServer {
     })
 }
 
-/// How many times the server was asked for `path`.
+/// How many times the server was asked for `path`, icons included.
 fn asked(server: &TestServer, path: &str) -> usize {
-    paths(server).iter().filter(|p| *p == path).count()
+    server
+        .requests()
+        .iter()
+        .filter(|request| request.target == path)
+        .count()
 }
 
 /// The first paragraph's text: which page is shown.
@@ -1466,4 +1470,163 @@ fn about_silvers_own_fragment_link_navigates_within_it() {
         tab.engine.max_scroll(),
         "the end is at the bottom"
     );
+}
+
+// ---- The title and the icon -------------------------------------------------
+
+#[test]
+fn the_title_is_the_first_title_elements_text_with_its_whitespace_collapsed() {
+    let mut tab = Tab::new();
+    tab.engine
+        .load_document("<title> \n A\t\tpage  title \r\n</title><title>second</title><p>x</p>");
+    assert_eq!(tab.engine.title(), "A page title");
+    tab.engine.load_document("<p>no title</p>");
+    assert_eq!(tab.engine.title(), "");
+    // Only the title's own text children count.
+    tab.engine.load_document("<title>own</title>");
+    tab.engine.mutate(|document| {
+        let title = document
+            .subtree(document.root())
+            .find(|&node| document.tag(node) == Some("title"))
+            .unwrap();
+        let b = document.create_element("b").unwrap();
+        let text = document.create_text("nested").unwrap();
+        document.append_child(b, text).unwrap();
+        document.append_child(title, b).unwrap();
+        let more = document.create_text(" more").unwrap();
+        document.append_child(title, more).unwrap();
+    });
+    assert_eq!(tab.engine.title(), "own more");
+}
+
+/// The bytes an ICO file starts with.
+const ICO: &[u8] = b"\0\0\x01\0\x01\0\x10\x10\0\0\x01\0\x20\0\x68\x04\0\0\x16\0\0\0";
+/// The bytes a PNG file starts with.
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+
+#[test]
+fn the_last_icon_link_is_fetched_and_kept() {
+    let server = serve(|path| match path {
+        "/page" => Some(html(
+            "<link rel=icon href=first.png>\
+             <link rel=\"shortcut ICON\" href=chosen.png>\
+             <link rel=icon type=text/css href=not-an-image.png>\
+             <link rel=icon href=\"\">\
+             <p>page</p>",
+        )),
+        "/chosen.png" => Some(Reply::ok("image/png", PNG)),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.load(server.url("/page"));
+    assert_eq!(asked(&server, "/chosen.png"), 1);
+    assert_eq!(
+        asked(&server, "/first.png") + asked(&server, "/favicon.ico"),
+        0
+    );
+    let icon = tab.engine.icon().expect("the icon");
+    assert_eq!(icon.url, server.url("/chosen.png"));
+    assert_eq!(icon.mime_type, "image/png");
+    assert_eq!(icon.bytes, PNG);
+    let request = server
+        .requests()
+        .into_iter()
+        .find(|request| request.target == "/chosen.png")
+        .unwrap();
+    assert_eq!(
+        request.header("Accept"),
+        Some("image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5")
+    );
+}
+
+#[test]
+fn with_no_icon_link_an_http_page_asks_for_favicon_ico() {
+    let server = serve(|path| match path {
+        "/dir/page" => Some(page("page")),
+        "/favicon.ico" => Some(Reply::ok("image/x-icon", ICO)),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.load(server.url("/dir/page"));
+    assert_eq!(tab.engine.icon().unwrap().url, server.url("/favicon.ico"));
+    assert_eq!(tab.engine.icon().unwrap().mime_type, "image/x-icon");
+    // The icon comes back with its document from the cache.
+    tab.load(server.url("/dir/page?other"));
+    tab.engine.go_back();
+    assert!(tab.engine.icon().is_some());
+}
+
+#[test]
+fn an_icon_that_is_not_an_image_or_too_large_or_missing_is_not_kept() {
+    let big = Arc::new({
+        let mut bytes = PNG.to_vec();
+        bytes.resize(crate::MAX_ICON_BYTES + 1, 0);
+        bytes
+    });
+    let server = {
+        let big = big.clone();
+        serve(move |path| match path {
+            "/html" => Some(html("<link rel=icon href=/page.html><p>a</p>")),
+            "/page.html" => Some(html("<p>not an icon</p>")),
+            "/big" => Some(html("<link rel=icon href=/big.png><p>a</p>")),
+            "/big.png" => Some(Reply::ok("image/png", &big)),
+            "/missing" => Some(page("missing")),
+            _ => None,
+        })
+    };
+    let mut tab = Tab::new();
+    for path in ["/html", "/big", "/missing"] {
+        tab.load(server.url(path));
+        assert_eq!(tab.engine.icon(), None, "{path}");
+    }
+    assert_eq!(
+        asked(&server, "/favicon.ico"),
+        1,
+        "asked for, and not found"
+    );
+}
+
+#[test]
+fn the_load_does_not_wait_for_the_icon() {
+    let gate = Gate::new();
+    let server = {
+        let gate = gate.clone();
+        serve(move |path| match path {
+            "/page" => Some(page("page")),
+            "/favicon.ico" => {
+                gate.wait();
+                Some(Reply::ok("image/x-icon", ICO))
+            }
+            _ => None,
+        })
+    };
+    let mut tab = Tab::new();
+    tab.engine.navigate(server.url("/page"));
+    tab.wait_until(|engine| engine.navigation.is_none());
+    assert_eq!(tab.engine.load_state(), &LoadState::Loaded);
+    assert_eq!(tab.engine.icon(), None);
+    gate.open();
+    tab.settle();
+    assert!(tab.engine.icon().is_some());
+}
+
+#[test]
+fn a_public_page_may_not_take_its_icon_from_a_local_address_and_others_ask_for_none() {
+    let server = serve(|path| (path == "/icon.png").then(|| Reply::ok("image/png", PNG)));
+    let mut tab = Tab::new();
+    // A data: document no server answered for is public.
+    let page = format!(
+        "data:text/html,<link rel=icon href=\"{}\"><p>public</p>",
+        server.url("/icon.png")
+    );
+    tab.load(Url::parse(&page).unwrap());
+    assert_eq!(all_text(&tab.engine), "public");
+    assert_eq!(tab.engine.icon(), None);
+    assert_eq!(asked(&server, "/icon.png"), 0);
+    // No /favicon.ico but over HTTP, and none for the browser's pages.
+    tab.engine.navigate(Url::parse("about:silver").unwrap());
+    assert_eq!(tab.engine.network.in_flight(), 0);
+    tab.load(Url::parse("data:text/html,<p>no icon</p>").unwrap());
+    assert_eq!(tab.engine.network.in_flight(), 0);
+    assert_eq!(tab.engine.icon(), None);
 }

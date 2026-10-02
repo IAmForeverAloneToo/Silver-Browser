@@ -192,6 +192,43 @@ impl Page {
         Url::parse_with(href, base.as_ref(), self.context.encoding).ok()
     }
 
+    /// The request for the document's icon (HTML's `icon` link type,
+    /// M15): the last `<link>` in tree order whose `rel` has the token
+    /// `icon`, whose `type`, if it has one, is an image type, and whose
+    /// `href` is not empty and parses; else, for an `http:` or `https:`
+    /// document, `/favicon.ico` against its URL, as HTML allows. None for
+    /// a document with no URL.
+    pub(crate) fn icon_request(&self, document: &Document) -> Option<Request> {
+        let url = self.context.url.clone()?;
+        let linked = document
+            .subtree(document.root())
+            .filter(|&node| {
+                document.tag(node) == Some("link")
+                    && document.attr(node, "rel").is_some_and(|rel| {
+                        rel.split(is_ascii_whitespace)
+                            .any(|token| token.eq_ignore_ascii_case("icon"))
+                    })
+                    && document.attr(node, "type").is_none_or(|kind| {
+                        kind.is_empty() || MimeType::parse(kind).is_some_and(|t| t.is_image())
+                    })
+            })
+            .filter_map(|node| document.attr(node, "href"))
+            .filter(|href| !href.is_empty())
+            .filter_map(|href| self.resolve(document, href))
+            .last();
+        let icon = match linked {
+            Some(icon) => icon,
+            None if matches!(url.scheme(), "http" | "https") => url.join("/favicon.ico").ok()?,
+            None => return None,
+        };
+        Some(
+            Request::get(icon, Destination::Image).initiated_by(Initiator {
+                url,
+                address_space: self.context.address_space,
+            }),
+        )
+    }
+
     /// Aborts the fetches of the page's sheets, as HTML's "stop loading"
     /// does, and leaves those sheets out as failed. Says whether any
     /// fetch was aborted.

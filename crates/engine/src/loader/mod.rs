@@ -75,6 +75,8 @@ pub(crate) enum Target {
     /// A sheet of `owner`, the element: its own at an empty `path`, and
     /// else the import at each index in turn.
     Sheet { owner: NodeId, path: Vec<usize> },
+    /// A page's icon.
+    Icon,
 }
 
 /// A fetch in flight.
@@ -293,7 +295,7 @@ pub(crate) fn outcome(response: &Response) -> Outcome {
 }
 
 /// The response's computed MIME type (MIME Sniffing §7).
-fn computed_type(response: &Response) -> net::MimeType {
+pub(crate) fn computed_type(response: &Response) -> net::MimeType {
     net::mime::sniff::computed_type(
         response.mime_type.as_ref(),
         net::mime::sniff::check_for_apache_bug(&response.headers),
