@@ -210,10 +210,21 @@ impl Network {
     }
 }
 
-/// The document a response holds, and its encoding. Its computed MIME
-/// type (MIME Sniffing §7) must be HTML; a status that is not ok is
-/// still a document, shown as the server sent it.
-pub(crate) fn document_from(response: &Response) -> Result<(Document, Encoding), LoadError> {
+/// A fetched document, parsed.
+pub(crate) struct Parsed {
+    pub(crate) document: Document,
+    /// The encoding its bytes were decoded with.
+    pub(crate) encoding: Encoding,
+    /// The encoding it turned out to be in, when the engine cannot
+    /// decode that one yet (a legacy CJK encoding): its bytes were
+    /// decoded as UTF-8 instead.
+    pub(crate) undecodable: Option<Encoding>,
+}
+
+/// The document a response holds. Its computed MIME type (MIME Sniffing
+/// §7) must be HTML; a status that is not ok is still a document, shown
+/// as the server sent it.
+pub(crate) fn document_from(response: &Response) -> Result<Parsed, LoadError> {
     let computed = net::mime::sniff::computed_type(
         response.mime_type.as_ref(),
         net::mime::sniff::check_for_apache_bug(&response.headers),
@@ -231,7 +242,11 @@ pub(crate) fn document_from(response: &Response) -> Result<(Document, Encoding),
         .and_then(|mime_type| mime_type.parameter("charset"))
         .and_then(Encoding::for_label);
     let decoded = html::parse_document_from_bytes(&response.body, transport);
-    Ok((Document::from_node(&decoded.document), decoded.encoding))
+    Ok(Parsed {
+        document: Document::from_node(&decoded.document),
+        encoding: decoded.encoding,
+        undecodable: decoded.undecodable,
+    })
 }
 
 /// A load whose document is not shown yet.

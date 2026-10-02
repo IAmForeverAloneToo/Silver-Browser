@@ -59,7 +59,8 @@ struct Browser {
     thumb_grab: Option<f32>,
     /// The clock frames are drawn by: the time since the browser began.
     start: Instant,
-    /// The URL the command line asked for, until its load fails.
+    /// The URL the command line asked for, until its load fails or its
+    /// page is shown.
     loading: Option<Url>,
 }
 
@@ -207,7 +208,8 @@ impl Browser {
 
 impl ApplicationHandler<NetworkWake> for Browser {
     /// A fetch finished: the engine takes what arrived. A failed load is
-    /// reported, and the built-in page shown in its place.
+    /// reported, and the built-in page shown in its place; a page shown
+    /// in an encoding the engine cannot decode yet is reported too.
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, _wake: NetworkWake) {
         let Some(engine) = self.engine.as_mut() else {
             return;
@@ -218,6 +220,14 @@ impl ApplicationHandler<NetworkWake> for Browser {
                 eprintln!("silver-browser: {url}: {error}");
             }
             engine.show_built_in_page();
+        } else if let Some(url) = engine.url()
+            && self.loading.take().is_some()
+            && let Some(encoding) = engine.undecodable_encoding()
+        {
+            eprintln!(
+                "silver-browser: {url} is in {encoding}, which this version cannot decode; \
+                 it is shown as UTF-8"
+            );
         }
         if let Some(window) = self.window.clone() {
             self.redraw_if_wanted(&window);

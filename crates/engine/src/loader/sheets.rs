@@ -18,6 +18,9 @@ pub(crate) const MAX_IMPORT_DEPTH: usize = 16;
 /// One document's stylesheets.
 pub(crate) struct Page {
     context: Context,
+    /// The encoding the document is in when the engine cannot decode
+    /// it yet, and decoded it as UTF-8 instead.
+    undecodable: Option<Encoding>,
     /// The elements that may own a sheet, `<link>` and `<style>`, in
     /// tree order.
     owners: Vec<Owner>,
@@ -117,16 +120,19 @@ impl Page {
                 encoding: encoding::UTF_8,
                 address_space: AddressSpace::Public,
             },
+            undecodable: None,
             owners: Vec::new(),
         }
     }
 
-    /// The page of a document fetched from `url`, in `encoding`, from a
-    /// server in `address_space`.
+    /// The page of a document fetched from `url`, decoded with
+    /// `encoding`, from a server in `address_space`. `undecodable` is
+    /// the encoding it is in when the engine cannot decode that one.
     pub(crate) fn fetched(
         id: PageId,
         url: Url,
         encoding: Encoding,
+        undecodable: Option<Encoding>,
         address_space: AddressSpace,
     ) -> Page {
         Page {
@@ -136,6 +142,7 @@ impl Page {
                 encoding,
                 address_space,
             },
+            undecodable,
             owners: Vec::new(),
         }
     }
@@ -147,6 +154,12 @@ impl Page {
     /// The document's URL.
     pub(crate) fn url(&self) -> Option<&Url> {
         self.context.url.as_ref()
+    }
+
+    /// The encoding the document is in, when the engine cannot decode
+    /// it yet.
+    pub(crate) fn undecodable(&self) -> Option<Encoding> {
+        self.undecodable
     }
 
     /// Finds the sheets of `document`, freshly parsed, and starts their
@@ -215,7 +228,9 @@ impl Page {
         result: Result<Response, LoadError>,
         network: &mut Network,
     ) -> bool {
-        let Page { context, owners } = self;
+        let Page {
+            context, owners, ..
+        } = self;
         let Some(owner_entry) = owners.iter_mut().find(|o| o.node == owner) else {
             return false;
         };

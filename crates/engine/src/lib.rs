@@ -509,11 +509,17 @@ impl Engine {
         }
         self.incoming = None;
         let parsed = result.and_then(|response| {
-            let (document, encoding) = loader::document_from(&response)?;
+            let parsed = loader::document_from(&response)?;
             let address_space = response.address_space.unwrap_or(net::AddressSpace::Public);
             Ok((
-                document,
-                Page::fetched(page, response.url().clone(), encoding, address_space),
+                parsed.document,
+                Page::fetched(
+                    page,
+                    response.url().clone(),
+                    parsed.encoding,
+                    parsed.undecodable,
+                    address_space,
+                ),
             ))
         });
         match parsed {
@@ -578,6 +584,15 @@ impl Engine {
     /// engine.
     pub fn url(&self) -> Option<&Url> {
         self.page.url()
+    }
+
+    /// The name of the encoding the document shown is in, when the
+    /// engine cannot decode it yet: a legacy CJK encoding, until a page
+    /// needs one or M42 brings them (docs/design/net.md). Its bytes were
+    /// decoded as UTF-8, which keeps its ASCII and shows the rest as
+    /// U+FFFD; the shell says so.
+    pub fn undecodable_encoding(&self) -> Option<&'static str> {
+        self.page.undecodable().map(|encoding| encoding.name())
     }
 
     /// Calls `waker`, from a fetch's thread, whenever a fetch finishes:

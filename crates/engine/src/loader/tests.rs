@@ -803,6 +803,26 @@ fn a_document_and_its_sheets_are_decoded_in_their_encodings() {
 }
 
 #[test]
+fn a_document_in_an_encoding_not_decoded_yet_says_which() {
+    let server = serve(|path| match path {
+        "/sjis.html" => Some(Reply::ok(
+            "text/html; charset=shift_jis",
+            b"<p>ASCII stays, \x82\xa0 does not</p>",
+        )),
+        "/utf8.html" => Some(html("<p>x</p>")),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    assert_eq!(tab.engine.undecodable_encoding(), None);
+    tab.load(server.url("/sjis.html"));
+    assert_eq!(tab.engine.load_state(), &LoadState::Loaded);
+    assert_eq!(tab.engine.undecodable_encoding(), Some("Shift_JIS"));
+    assert_eq!(text(&tab.engine), "ASCII stays, \u{fffd}\u{fffd} does not");
+    tab.load(server.url("/utf8.html"));
+    assert_eq!(tab.engine.undecodable_encoding(), None);
+}
+
+#[test]
 fn a_new_load_aborts_the_one_under_way() {
     let gate = Gate::new();
     let server = {
