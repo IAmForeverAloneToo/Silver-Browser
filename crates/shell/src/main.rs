@@ -23,7 +23,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
-use engine::{Engine, FrameTime, LoadState, Url};
+use engine::{Engine, FrameTime, Link, LoadState, Url};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -61,6 +61,9 @@ struct Browser {
     /// The URL the command line asked for, until its load fails or its
     /// page is shown.
     loading: Option<Url>,
+    /// The link the left button was pressed on: released on the same
+    /// one, the press is a click, which follows it (M15).
+    pressed_link: Option<Link>,
 }
 
 impl Browser {
@@ -74,6 +77,7 @@ impl Browser {
             thumb_grab: None,
             start: Instant::now(),
             loading,
+            pressed_link: None,
         }
     }
 
@@ -161,8 +165,8 @@ impl Browser {
     }
 
     /// The left button pressed at the pointer: grabs the scrollbar's
-    /// thumb, jumps a page from its track, or hit-tests the document
-    /// for a link (M9.4; following it is M15).
+    /// thumb, jumps a page from its track, or notes the link under it,
+    /// which the release follows if it is over the same link.
     fn press(&mut self) {
         let (x, y) = self.cursor;
         let page = self.page_px();
@@ -181,8 +185,29 @@ impl Browser {
             }
             return;
         }
-        if let Some(href) = engine.link_at(x, y) {
-            println!("link: {href}");
+        self.pressed_link = engine.link_at(x, y);
+    }
+
+    /// The left button released at the pointer: a press and a release on
+    /// the same link are a click, which follows it (HTML's activation
+    /// behaviour).
+    fn release(&mut self) {
+        self.thumb_grab = None;
+        let (x, y) = self.cursor;
+        let Some(pressed) = self.pressed_link.take() else {
+            return;
+        };
+        let Some(engine) = self.engine.as_mut() else {
+            return;
+        };
+        if engine
+            .link_at(x, y)
+            .is_some_and(|link| link.node() == pressed.node())
+        {
+            engine.follow_link(&pressed);
+            if let Some(notice) = engine.take_notice() {
+                eprintln!("silver-browser: {notice}");
+            }
         }
     }
 
@@ -332,7 +357,10 @@ impl ApplicationHandler<NetworkWake> for Browser {
                     self.press();
                     self.redraw_if_wanted(&window);
                 }
-                ElementState::Released => self.thumb_grab = None,
+                ElementState::Released => {
+                    self.release();
+                    self.redraw_if_wanted(&window);
+                }
             },
             WindowEvent::KeyboardInput {
                 event:

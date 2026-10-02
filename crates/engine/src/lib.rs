@@ -262,6 +262,9 @@ struct Shown {
     salvageable: bool,
     /// For an error page, the error it says.
     failure: Option<LoadError>,
+    /// Whether the browser made the page: `about:silver`, or a page in
+    /// place of a response. Only such a page may open `about:` pages.
+    made: bool,
 }
 
 impl Shown {
@@ -284,6 +287,7 @@ impl Shown {
             initial: false,
             salvageable: true,
             failure: None,
+            made: false,
         }
     }
 }
@@ -312,10 +316,44 @@ enum Handling {
 }
 
 /// Where the viewport is to be scrolled once the document is laid out.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 enum ScrollGoal {
     /// An entry's saved offset.
     Offset(f32),
+    /// The part of the document a URL's fragment indicates (HTML's
+    /// "scroll to the fragment").
+    Fragment(String),
+}
+
+/// What a fragment indicates in a document (HTML's "indicated part").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Indicated {
+    /// The top of the document.
+    Top,
+    Element(NodeId),
+}
+
+/// A link under the pointer (docs/design/navigation.md, "Links"): an `a`
+/// element with an `href`, in the document shown when it was found, and
+/// the URL its `href` parses to.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Link {
+    page: PageId,
+    node: NodeId,
+    url: Url,
+}
+
+impl Link {
+    /// The URL the link goes to: its `href` parsed against the
+    /// document's base URL, with the document's encoding.
+    pub fn url(&self) -> &Url {
+        &self.url
+    }
+
+    /// The link's element.
+    pub fn node(&self) -> NodeId {
+        self.node
+    }
 }
 
 /// A scroll container's offset shown, and the one being approached.
@@ -495,12 +533,106 @@ impl Engine {
     /// failed. [`Engine::poll_network`] takes the results, and
     /// [`Engine::load_state`] says where the navigation stands.
     pub fn navigate(&mut self, url: Url) {
-        let handling = if self.shown.initial || self.history.current().url.as_ref() == Some(&url) {
+        let current = self.history.current().url.clone();
+        let handling = if self.shown.initial || current.as_ref() == Some(&url) {
             Handling::Replace
         } else {
             Handling::Push
         };
-        self.start_navigation(url, handling);
+        // A URL that differs from the current entry's only in having a
+        // fragment is a navigation to that fragment, unless the page
+        // shown is an error page, which no fragment could name a part
+        // of: there the user wants the URL tried again.
+        let same_document = url.fragment().is_some()
+            && self.shown.failure.is_none()
+            && current
+                .as_ref()
+                .is_some_and(|current| current.without_fragment() == url.without_fragment());
+        if same_document {
+            self.navigate_to_fragment(url, handling);
+        } else {
+            self.start_navigation(url, handling);
+        }
+    }
+
+    /// HTML's "navigate to a fragment": a new entry for `url`, pushed or
+    /// put in the current one's place, with the current entry's document
+    /// state, so the document stays and only its URL changes; the next
+    /// frame scrolls to the fragment. Nothing is fetched, and a
+    /// navigation under way goes on, unless it fetches the current
+    /// entry's document again for a reload or a traversal, which the
+    /// new entry would leave without a place.
+    fn navigate_to_fragment(&mut self, url: Url, handling: Handling) {
+        if matches!(
+            self.navigation
+                .as_ref()
+                .map(|navigation| navigation.handling),
+            Some(Handling::Reload | Handling::Traverse(_))
+        ) {
+            self.cancel_navigation();
+        }
+        let state = self.history.current().state;
+        self.history.current_mut().scroll = self.shown.scroll_target;
+        if handling == Handling::Push {
+            self.history.push(Some(url.clone()), state);
+        } else {
+            self.history.replace(Some(url.clone()), state);
+        }
+        let fragment = url.fragment().unwrap_or_default().to_owned();
+        self.shown.page.set_url(url);
+        self.goal = Some(ScrollGoal::Fragment(fragment));
+        self.changed = true;
+    }
+
+    /// Follows `link`, a click on it having activated it (HTML's "follow
+    /// the hyperlink", docs/design/navigation.md, "Links"): its `href`
+    /// is parsed again as it now stands, and the page navigates to it,
+    /// as [`Engine::navigate`] does, unless the link's document is no
+    /// longer shown or the element has left it (HTML's "cannot
+    /// navigate"), or the page may not navigate to that URL:
+    ///
+    /// - `http:`, `https:` and `about:blank` from any page;
+    /// - `file:` only from a `file:` page;
+    /// - other `about:` pages only from a page the browser made;
+    /// - `data:` from no page, as the browsers refuse it;
+    /// - `javascript:` does nothing until there are scripts;
+    /// - any other scheme would go to another program, which this
+    ///   version cannot do.
+    ///
+    /// A refusal leaves a notice saying why, but for `javascript:`.
+    pub fn follow_link(&mut self, link: &Link) {
+        let document = &self.shown.document;
+        if link.page != self.shown.page.id() || !connected(document, link.node) {
+            return;
+        }
+        let Some(href) = document.attr(link.node, "href") else {
+            return;
+        };
+        let Some(url) = self.shown.page.resolve(document, href) else {
+            return;
+        };
+        let source = self.shown.page.url().map(Url::scheme);
+        let refusal = match url.scheme() {
+            "http" | "https" => None,
+            "about" if url.path_str() == "blank" => None,
+            "about" if self.shown.made => None,
+            "about" => Some("This page may not open the browser's own pages".to_owned()),
+            "file" if source == Some("file") => None,
+            "file" => Some("This page may not open files on this computer".to_owned()),
+            "data" => Some(
+                "This page may not open a data: address; type it into the address field \
+                 to open it"
+                    .to_owned(),
+            ),
+            "javascript" => return,
+            scheme => Some(format!(
+                "{scheme}: links open in another program, which this version cannot do"
+            )),
+        };
+        match refusal {
+            Some(why) => self.notice = Some(why),
+            None => self.navigate(url),
+        }
     }
 
     /// Fetches `url`'s document, for `handling` once it is shown. The
@@ -522,6 +654,7 @@ impl Engine {
                 page.begin(&document, &mut self.network);
                 let mut shown = Shown::new(document, page);
                 shown.salvageable = false;
+                shown.made = true;
                 shown
             } else {
                 let error = LoadError::Network(NetworkError::BadScheme("about".to_owned()));
@@ -551,6 +684,7 @@ impl Engine {
         let mut shown = Shown::new(document, page);
         shown.salvageable = false;
         shown.failure = failure;
+        shown.made = true;
         shown
     }
 
@@ -787,7 +921,11 @@ impl Engine {
     fn commit(&mut self, shown: Shown, url: Option<Url>, handling: Handling) {
         self.history.current_mut().scroll = self.shown.scroll_target;
         let left_state = self.history.current().state;
-        let mut goal = None;
+        // A new document at a URL with a fragment is scrolled to it.
+        let mut goal = url
+            .as_ref()
+            .and_then(Url::fragment)
+            .map(|fragment| ScrollGoal::Fragment(fragment.to_owned()));
         match handling {
             Handling::Push => {
                 let state = self.history.new_state();
@@ -1213,17 +1351,6 @@ impl Engine {
         // The document may be shorter at this width than where the
         // offset was; so may a scroll container's content.
         let max = self.max_scroll();
-        if let Some(ScrollGoal::Offset(y)) = self.goal {
-            // Applied before painting, so that no frame shows the
-            // document elsewhere first, and again at each frame until
-            // the document's load is over, since a late stylesheet can
-            // make the document longer.
-            self.shown.scroll_target = y;
-            self.shown.scroll_y = y;
-            if self.shown.page.settled() {
-                self.goal = None;
-            }
-        }
         self.shown.scroll_target = self.shown.scroll_target.clamp(0.0, max);
         self.shown.scroll_y = self.shown.scroll_y.clamp(0.0, max);
         let mut elements = std::mem::take(&mut self.shown.element_scroll);
@@ -1236,6 +1363,16 @@ impl Engine {
             }
         }
         self.shown.element_scroll = elements;
+        if let Some(goal) = self.goal.clone() {
+            // Applied before painting, so that no frame shows the
+            // document elsewhere first, and again at each frame until
+            // the document's load is over, since a late stylesheet can
+            // move what it scrolls to.
+            self.scroll_to_goal(&goal);
+            if self.shown.page.settled() {
+                self.goal = None;
+            }
+        }
         let offsets: HashMap<NodeId, f32> = self
             .shown
             .element_scroll
@@ -1561,20 +1698,175 @@ impl Engine {
         hit
     }
 
-    /// The `href` of the nearest `<a>` at or above the element under
-    /// the viewport point, if any (M9.4's "link clicks"; following it
-    /// is M15's navigation).
-    pub fn link_at(&mut self, x: f32, y: f32) -> Option<String> {
+    /// The link under the viewport point, if any (M9.4, M15): the
+    /// nearest `<a>` with an `href` at or above the element there, and
+    /// the URL its `href` parses to against the document's base URL,
+    /// with the document's encoding, as HTML's "follow the hyperlink"
+    /// parses it. An `href` that does not parse is no link to follow.
+    pub fn link_at(&mut self, x: f32, y: f32) -> Option<Link> {
         let hit = self.hit_test(x, y)?;
         let document = &self.shown.document;
-        std::iter::successors(Some(hit), |&node| document.parent_element(node)).find_map(|node| {
-            if document.tag(node) == Some("a") {
-                document.attr(node, "href").map(str::to_string)
-            } else {
-                None
-            }
+        let (node, href) = std::iter::successors(Some(hit), |&node| document.parent_element(node))
+            .find_map(|node| {
+                (document.tag(node) == Some("a"))
+                    .then(|| document.attr(node, "href").map(|href| (node, href)))
+                    .flatten()
+            })?;
+        let url = self.shown.page.resolve(document, href)?;
+        Some(Link {
+            page: self.shown.page.id(),
+            node,
+            url,
         })
     }
+
+    /// Scrolls to `goal`, at once: an entry's saved offset, or the part
+    /// of the document a fragment indicates.
+    fn scroll_to_goal(&mut self, goal: &ScrollGoal) {
+        match goal {
+            ScrollGoal::Offset(y) => {
+                let y = y.clamp(0.0, self.max_scroll());
+                self.shown.scroll_y = y;
+                self.shown.scroll_target = y;
+            }
+            ScrollGoal::Fragment(fragment) => {
+                match indicated_part(&self.shown.document, fragment) {
+                    Some(Indicated::Top) => {
+                        self.shown.scroll_y = 0.0;
+                        self.shown.scroll_target = 0.0;
+                    }
+                    Some(Indicated::Element(node)) => self.scroll_into_view(node),
+                    None => {}
+                }
+            }
+        }
+    }
+
+    /// Scrolls `node` into view as CSSOM View's "scroll into view" does
+    /// with `block: start` and the behaviour "auto", that is at once:
+    /// each scrolling box around it, innermost first, is scrolled so
+    /// that the top of the element's first box is at the top of the
+    /// box's padding edge, as far as it can go, and then the viewport.
+    /// An element with no box is not scrolled to.
+    fn scroll_into_view(&mut self, node: NodeId) {
+        let Some((_, chain)) = self.locate(node) else {
+            return;
+        };
+        for (container, _) in chain.into_iter().rev() {
+            // Where things are now that the boxes inside have scrolled.
+            let Some((top, chain)) = self.locate(node) else {
+                return;
+            };
+            let Some(&(_, padding_top)) = chain.iter().find(|(c, _)| *c == container) else {
+                return;
+            };
+            let max = self.element_max_scroll(container);
+            let scroll = self.shown.element_scroll.entry(container).or_default();
+            let wanted = (scroll.y + top - padding_top).clamp(0.0, max);
+            scroll.y = wanted;
+            scroll.target = wanted;
+        }
+        let Some((top, _)) = self.locate(node) else {
+            return;
+        };
+        let wanted = top.clamp(0.0, self.max_scroll());
+        self.shown.scroll_y = wanted;
+        self.shown.scroll_target = wanted;
+    }
+
+    /// Where `node`'s first box is in the document, with the scroll
+    /// containers scrolled as they are, and the clipping boxes around
+    /// it, outermost first, each with the top of its padding box: from
+    /// the paint order of the whole document, as a viewport as tall as
+    /// it and at its top would see it.
+    fn locate(&mut self, node: NodeId) -> Option<(f32, Vec<(NodeId, f32)>)> {
+        let (width, height) = self.viewport;
+        if width == 0 {
+            return None;
+        }
+        let offsets: HashMap<NodeId, f32> = self
+            .shown
+            .element_scroll
+            .iter()
+            .map(|(node, scroll)| (*node, scroll.y))
+            .collect();
+        let layout = self.layout(width as f32);
+        let whole = Viewport {
+            width: width as f32,
+            height: layout.height.max(0.0) + height as f32,
+            scroll_y: 0.0,
+        };
+        let mut padding_tops: HashMap<NodeId, f32> = HashMap::new();
+        let mut chain: Vec<NodeId> = Vec::new();
+        for step in paint_order(&layout.roots, whole, &offsets) {
+            match step {
+                Step::Box { fragment, rect } | Step::Text { fragment, rect, .. } => {
+                    if fragment.clips() {
+                        padding_tops.insert(fragment.node, padding_box(fragment, rect).y);
+                    }
+                    if fragment.node == node {
+                        let chain = chain
+                            .iter()
+                            .map(|c| (*c, padding_tops.get(c).copied().unwrap_or(0.0)))
+                            .collect();
+                        return Some((rect.y, chain));
+                    }
+                }
+                Step::PushClip { node, .. } => chain.push(node),
+                Step::PopClip => {
+                    chain.pop();
+                }
+                Step::Scrollbar { .. } => {}
+            }
+        }
+        None
+    }
+}
+
+/// Whether `node` is in the document's tree: its ancestors reach the
+/// document node. A node removed stays valid, detached.
+fn connected(document: &Document, node: NodeId) -> bool {
+    document.contains(node)
+        && std::iter::successors(Some(node), |&node| document.parent(node)).last()
+            == Some(document.root())
+}
+
+/// HTML's "select the indicated part" for a document at a URL whose
+/// fragment is `fragment`: the top of the document for an empty one;
+/// else the first element in tree order whose ID is the fragment, or
+/// the first `a` whose `name` is; else the same two for the fragment
+/// percent-decoded and decoded as UTF-8; else the top of the document
+/// for `top` in any case; else nothing.
+fn indicated_part(document: &Document, fragment: &str) -> Option<Indicated> {
+    if fragment.is_empty() {
+        return Some(Indicated::Top);
+    }
+    if let Some(element) = potential_indicated_element(document, fragment) {
+        return Some(Indicated::Element(element));
+    }
+    let decoded =
+        String::from_utf8_lossy(&net::url::percent_decode(fragment.as_bytes())).into_owned();
+    if let Some(element) = potential_indicated_element(document, &decoded) {
+        return Some(Indicated::Element(element));
+    }
+    decoded
+        .eq_ignore_ascii_case("top")
+        .then_some(Indicated::Top)
+}
+
+/// HTML's "find a potential indicated element": the first element in
+/// tree order whose ID is `fragment`, else the first `a` whose `name`
+/// is.
+fn potential_indicated_element(document: &Document, fragment: &str) -> Option<NodeId> {
+    let root = document.root();
+    document
+        .subtree(root)
+        .find(|&node| document.tag(node).is_some() && document.attr(node, "id") == Some(fragment))
+        .or_else(|| {
+            document.subtree(root).find(|&node| {
+                document.tag(node) == Some("a") && document.attr(node, "name") == Some(fragment)
+            })
+        })
 }
 
 /// The document HTML `source` parses to, or an empty one if the parser
@@ -2803,7 +3095,7 @@ mod tests {
 
     #[test]
     fn an_inline_element_paints_its_background_and_is_hit_over_its_padding() {
-        // <p><a href=/t>b</a></p>, the link with 10px of horizontal
+        // <p><a href=…>b</a></p>, the link with 10px of horizontal
         // padding and a red background (M11.6): its padding is red, is
         // the link for the pointer and for a click, and ends with its
         // content area, the rest of the line below being the
@@ -2812,13 +3104,13 @@ mod tests {
         engine.load_document(
             "<style>body { margin: 0 } p { margin: 0 }
                     a { padding: 0 10px; background-color: #ff0000 }</style>\
-             <p id=p><a href=\"/t\" id=a>b</a></p>",
+             <p id=p><a href=\"https://example.test/t\" id=a>b</a></p>",
         );
         let pixels = engine.frame(200, 100);
         let (p, a) = (node_by_id(&engine, "p"), node_by_id(&engine, "a"));
         assert_eq!(px(&pixels, 200, 5, 8), [0xff, 0x00, 0x00, 0xff]);
         assert_eq!(engine.hit_test(5.0, 8.0), Some(a));
-        assert_eq!(engine.link_at(5.0, 8.0).as_deref(), Some("/t"));
+        assert_eq!(engine.link_at(5.0, 8.0).map(|link| link.node()), Some(a));
         assert_eq!(
             px(&pixels, 200, 5, 18),
             [0xff, 0xff, 0xff, 0xff],
@@ -2885,7 +3177,10 @@ mod tests {
         let link = word("link");
         let plain = word("plain");
         assert_eq!(
-            engine.link_at(link.x + 1.0, link.top() + 1.0).as_deref(),
+            engine
+                .link_at(link.x + 1.0, link.top() + 1.0)
+                .map(|link| link.url().as_str().to_owned())
+                .as_deref(),
             Some("https://example.test/x")
         );
         assert_eq!(engine.link_at(plain.x + 1.0, plain.top() + 1.0), None);

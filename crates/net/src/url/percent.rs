@@ -122,7 +122,7 @@ pub(crate) fn percent_encode_after_encoding(
 
 /// *Percent-decode* `input`: each `%` followed by two hex digits becomes
 /// the byte they spell, and every other byte stays as it is.
-pub(crate) fn percent_decode(input: &[u8]) -> Vec<u8> {
+pub fn percent_decode(input: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(input.len());
     let mut i = 0;
     while i < input.len() {

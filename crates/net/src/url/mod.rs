@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use encoding::{Encoding, UTF_8};
 
 pub use host::Host;
+pub use percent::percent_decode;
 
 /// Why a string is not a URL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

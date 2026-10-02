@@ -942,3 +942,528 @@ fn a_timeout_is_an_error_page() {
     ));
     assert!(all_text(&tab.engine).contains("took too long to answer"));
 }
+
+// ---- Links and fragments ----------------------------------------------------
+
+/// The element whose ID is `id`.
+fn element_by_id(engine: &Engine, id: &str) -> dom::NodeId {
+    let document = engine.document();
+    document
+        .subtree(document.root())
+        .find(|&node| document.attr(node, "id") == Some(id))
+        .unwrap_or_else(|| panic!("no #{id}"))
+}
+
+/// A viewport point on the element whose ID is `id`, scrolled to where
+/// a viewport of 400 by 100 shows it.
+fn point_on(engine: &mut Engine, id: &str) -> (f32, f32) {
+    engine.frame(400, 100);
+    let node = element_by_id(engine, id);
+    let fragment = engine
+        .fragments(400.0)
+        .into_iter()
+        .find(|fragment| fragment.node == node)
+        .unwrap_or_else(|| panic!("#{id} is laid out"));
+    let top = fragment.top();
+    if top < engine.scroll_y() || top + 2.0 > engine.scroll_y() + 100.0 {
+        engine.set_scroll(top);
+        engine.frame(400, 100);
+    }
+    (fragment.x + 1.0, top + 1.0 - engine.scroll_y())
+}
+
+/// The link on the element whose ID is `id`, found as the pointer finds
+/// it.
+fn link_on(engine: &mut Engine, id: &str) -> crate::Link {
+    let (x, y) = point_on(engine, id);
+    engine
+        .link_at(x, y)
+        .unwrap_or_else(|| panic!("#{id} is a link"))
+}
+
+/// Clicks the link on the element whose ID is `id`.
+fn click(tab: &mut Tab, id: &str) {
+    let link = link_on(&mut tab.engine, id);
+    tab.engine.follow_link(&link);
+    tab.settle();
+}
+
+/// The top of the element whose ID is `id` in the document, after a
+/// frame of 400 by 100.
+fn top_of(engine: &mut Engine, id: &str) -> f32 {
+    engine.frame(400, 100);
+    let node = element_by_id(engine, id);
+    engine
+        .fragments(400.0)
+        .into_iter()
+        .find(|fragment| fragment.node == node)
+        .map(|fragment| fragment.top())
+        .unwrap()
+}
+
+/// A long page whose paragraphs have IDs `p0` to `p39`, with what
+/// `head` holds before them.
+fn long_page(head: &str) -> Reply {
+    let paragraphs: String = (0..40).map(|n| format!("<p id=p{n}>{n}</p>")).collect();
+    html(&format!(
+        "{head}<body style=\"margin: 0\">{paragraphs}</body>"
+    ))
+}
+
+#[test]
+fn a_links_url_is_parsed_against_the_documents_base_url_and_encoding() {
+    let server = serve(|path| match path {
+        "/dir/page.html" => Some(Reply::ok(
+            "text/html;charset=windows-1252",
+            b"<p><a id=before href=\"other.html?q=\xe9\">before</a></p>\
+              <base href=\"/base/\">\
+              <p><a id=after href=\"#here\">after</a></p>\
+              <p><a id=broken href=\"http://[nope/\">broken</a></p>",
+        )),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.load(server.url("/dir/page.html"));
+    // Parsed when followed, against the first <base> wherever it stands,
+    // with the query in the document's encoding.
+    let before = link_on(&mut tab.engine, "before");
+    assert_eq!(before.url(), &server.url("/base/other.html?q=%E9"));
+    assert_eq!(
+        link_on(&mut tab.engine, "after").url(),
+        &server.url("/base/#here")
+    );
+    let (x, y) = point_on(&mut tab.engine, "broken");
+    assert_eq!(
+        tab.engine.link_at(x, y),
+        None,
+        "an href that does not parse"
+    );
+}
+
+#[test]
+fn a_click_on_a_link_navigates_and_back_comes_back() {
+    let server = serve(|path| match path {
+        "/a" => Some(html("<p><a id=go href=\"/b\">to b</a></p>")),
+        "/b" => Some(page("b")),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.load(server.url("/a"));
+    click(&mut tab, "go");
+    assert_eq!(shown(&tab.engine), "b 0");
+    assert_eq!(tab.engine.history.len(), 2);
+    tab.engine.go_back();
+    assert_eq!(at_path(&tab.engine).as_deref(), Some("/a"));
+}
+
+#[test]
+fn a_page_may_navigate_only_where_the_browsers_let_it() {
+    let server = serve(|path| match path {
+        "/a" => Some(html(
+            "<p><a id=file href=\"file:///etc/hosts\">file</a></p>\
+             <p><a id=data href=\"data:text/html,<p>hi\">data</a></p>\
+             <p><a id=silver href=\"about:silver\">silver</a></p>\
+             <p><a id=script href=\"javascript:void(0)\">script</a></p>\
+             <p><a id=mail href=\"mailto:someone@example.com\">mail</a></p>\
+             <p><a id=blank href=\"about:blank\">blank</a></p>",
+        )),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.load(server.url("/a"));
+    for (id, said) in [
+        ("file", Some("files on this computer")),
+        ("data", Some("data: address")),
+        ("silver", Some("the browser's own pages")),
+        ("script", None),
+        ("mail", Some("mailto: links open in another program")),
+    ] {
+        click(&mut tab, id);
+        assert_eq!(at_path(&tab.engine).as_deref(), Some("/a"), "{id}");
+        assert_eq!(tab.engine.history.len(), 1, "{id}");
+        let notice = tab.engine.take_notice();
+        match said {
+            Some(said) => assert!(
+                notice.as_deref().is_some_and(|n| n.contains(said)),
+                "{id}: {notice:?}"
+            ),
+            None => assert_eq!(notice, None, "{id}"),
+        }
+    }
+    click(&mut tab, "blank");
+    assert_eq!(tab.engine.url().map(Url::as_str), Some("about:blank"));
+}
+
+#[test]
+fn a_file_page_may_open_files_and_the_browsers_page_its_own_pages() {
+    let dir = std::env::temp_dir().join(format!("silver-links-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("one.html"),
+        "<p><a id=two href=\"two.html\">two</a></p>",
+    )
+    .unwrap();
+    std::fs::write(dir.join("two.html"), "<p>two 0</p>").unwrap();
+    let one = Url::from_file_path(&dir.join("one.html")).unwrap();
+    let mut tab = Tab::new();
+    tab.load(one);
+    click(&mut tab, "two");
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(shown(&tab.engine), "two 0");
+
+    tab.engine.navigate(Url::parse("about:silver").unwrap());
+    tab.engine.mutate(|document| {
+        let body = document
+            .subtree(document.root())
+            .find(|&node| document.tag(node) == Some("body"))
+            .unwrap();
+        let link = document.create_element("a").unwrap();
+        document
+            .set_attribute(link, "href", "about:nothing")
+            .unwrap();
+        document.set_attribute(link, "id", "own").unwrap();
+        let text = document.create_text("own").unwrap();
+        document.append_child(link, text).unwrap();
+        let first = document.first_child(body);
+        document.insert_before(body, link, first).unwrap();
+    });
+    click(&mut tab, "own");
+    assert_eq!(tab.engine.url().map(Url::as_str), Some("about:nothing"));
+}
+
+#[test]
+fn a_link_whose_document_or_element_is_gone_does_nothing() {
+    let server = serve(|path| match path {
+        "/a" => Some(html(
+            "<p><a id=go href=\"/b\">to b</a></p><p id=other>x</p>",
+        )),
+        "/b" => Some(page("b")),
+        "/c" => Some(page("c")),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.load(server.url("/a"));
+    let link = link_on(&mut tab.engine, "go");
+    // Removed from the document: it cannot navigate.
+    tab.engine.mutate(|document| {
+        let parent = document.parent(link.node()).unwrap();
+        document.remove_child(parent, link.node()).unwrap();
+    });
+    tab.engine.follow_link(&link);
+    tab.settle();
+    assert_eq!(at_path(&tab.engine).as_deref(), Some("/a"));
+    // Its document no longer shown.
+    tab.load(server.url("/a"));
+    let link = link_on(&mut tab.engine, "go");
+    tab.load(server.url("/c"));
+    tab.engine.follow_link(&link);
+    tab.settle();
+    assert_eq!(shown(&tab.engine), "c 0");
+    assert_eq!(asked(&server, "/b"), 0);
+}
+
+#[test]
+fn a_link_is_followed_to_where_its_href_points_when_it_is_followed() {
+    let server = serve(|path| match path {
+        "/a" => Some(html("<p><a id=go href=\"/b\">go</a></p>")),
+        "/b" => Some(page("b")),
+        "/c" => Some(page("c")),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.load(server.url("/a"));
+    let link = link_on(&mut tab.engine, "go");
+    tab.engine.mutate(|document| {
+        document.set_attribute(link.node(), "href", "/c").unwrap();
+    });
+    tab.engine.follow_link(&link);
+    tab.settle();
+    assert_eq!(shown(&tab.engine), "c 0");
+}
+
+#[test]
+fn a_fragment_navigation_fetches_nothing_and_scrolls_to_its_element() {
+    let server = serve(|path| match path {
+        "/long" => Some(long_page("<p><a id=go href=\"#p30\">far</a></p>")),
+        "/b" => Some(page("b")),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.load(server.url("/long"));
+    let far = top_of(&mut tab.engine, "p30");
+    assert!(far > 100.0);
+    click(&mut tab, "go");
+    assert_eq!(asked(&server, "/long"), 1, "nothing fetched");
+    assert_eq!(tab.engine.history.len(), 2);
+    assert_eq!(tab.engine.url(), Some(&server.url("/long#p30")));
+    // The document's URL is its entry's, as HTML's document URL is
+    // (scripts will read it, M25).
+    assert_eq!(tab.engine.shown.page.url(), tab.engine.url());
+    tab.engine.frame(400, 100);
+    assert_eq!(tab.engine.scroll_y(), far);
+
+    // Back is within the document: its URL and scroll position return.
+    tab.engine.go_back();
+    assert_eq!(tab.engine.url(), Some(&server.url("/long")));
+    assert_eq!(tab.engine.shown.page.url(), tab.engine.url());
+    assert_eq!(tab.engine.document().root(), tab.engine.document().root());
+    tab.engine.frame(400, 100);
+    assert_eq!(tab.engine.scroll_y(), 0.0);
+    // A link now resolves against the document's URL as it stands.
+    tab.engine.go_forward();
+    tab.engine.frame(400, 100);
+    assert_eq!(tab.engine.scroll_y(), far);
+    assert_eq!(asked(&server, "/long"), 1);
+}
+
+#[test]
+fn entries_of_one_document_each_keep_their_own_scroll_position() {
+    let server = serve(|path| match path {
+        "/long" => Some(long_page("")),
+        "/b" => Some(page("b")),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.load(server.url("/long"));
+    tab.load(server.url("/long#p30"));
+    tab.engine.frame(400, 100);
+    let far = tab.engine.scroll_y();
+    assert!(far > 100.0);
+    tab.load(server.url("/b"));
+    // Two back, past /long#p30, to /long: the document the cache kept is
+    // shown at /long's position, not the one it was left at.
+    tab.engine.traverse(-2);
+    assert_eq!(tab.engine.url(), Some(&server.url("/long")));
+    tab.engine.frame(400, 100);
+    assert_eq!(tab.engine.scroll_y(), 0.0);
+    tab.engine.go_forward();
+    tab.engine.frame(400, 100);
+    assert_eq!(tab.engine.scroll_y(), far);
+    assert_eq!(asked(&server, "/long"), 1);
+}
+
+#[test]
+fn the_indicated_part_is_found_as_html_finds_it() {
+    let server = serve(|path| match path {
+        "/page" => Some(html(
+            "<body style=\"margin: 0\">\
+             <a name=both>name first</a>\
+             <div style=\"height: 300px\"></div>\
+             <p id=both>id later</p>\
+             <div style=\"height: 300px\"></div>\
+             <p id=\"\u{e9}t\u{e9}\">encoded</p>\
+             <div style=\"height: 300px\"></div>\
+             <a name=named>named</a>\
+             <div style=\"height: 900px\"></div></body>",
+        )),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.load(server.url("/page"));
+    let both = top_of(&mut tab.engine, "both");
+    let encoded = top_of(&mut tab.engine, "\u{e9}t\u{e9}");
+    let named = {
+        tab.engine.frame(400, 100);
+        let document = tab.engine.document();
+        let node = document
+            .subtree(document.root())
+            .find(|&node| document.attr(node, "name") == Some("named"))
+            .unwrap();
+        tab.engine
+            .fragments(400.0)
+            .into_iter()
+            .find(|fragment| fragment.node == node)
+            .unwrap()
+            .top()
+    };
+    for (fragment, expected) in [
+        ("both", Some(both)),
+        ("%C3%A9t%C3%A9", Some(encoded)),
+        ("named", Some(named)),
+        ("top", Some(0.0)),
+        ("ToP", Some(0.0)),
+        ("", Some(0.0)),
+        ("nothing", None),
+    ] {
+        // Start somewhere else, to see the scroll.
+        tab.engine.set_scroll(150.0);
+        tab.engine.frame(400, 100);
+        tab.engine
+            .navigate(server.url(&format!("/page#{fragment}")));
+        tab.engine.frame(400, 100);
+        assert_eq!(
+            tab.engine.scroll_y(),
+            expected.unwrap_or(150.0),
+            "#{fragment}"
+        );
+    }
+    assert_eq!(asked(&server, "/page"), 1);
+}
+
+#[test]
+fn an_element_in_a_scroll_container_is_scrolled_into_view_through_it() {
+    let server = serve(|path| match path {
+        "/page" => Some(html(
+            "<body style=\"margin: 0\">\
+             <div style=\"height: 300px\"></div>\
+             <div id=box style=\"height: 50px; overflow: auto\">\
+               <div style=\"height: 200px\"></div><p id=inner style=\"margin: 0\">inner</p>\
+               <div style=\"height: 200px\"></div>\
+             </div>\
+             <div style=\"height: 900px\"></div></body>",
+        )),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.load(server.url("/page#inner"));
+    tab.engine.frame(400, 100);
+    let container = element_by_id(&tab.engine, "box");
+    assert_eq!(tab.engine.element_scroll(container), 200.0);
+    assert_eq!(tab.engine.scroll_y(), 300.0);
+}
+
+#[test]
+fn a_new_document_is_scrolled_to_its_fragment_and_again_as_late_sheets_move_it() {
+    let gate = Gate::new();
+    // A sheet before <body> would block the page; this one comes after.
+    let server = {
+        let gate = gate.clone();
+        serve(move |path| match path {
+            "/page" => Some(html(&format!(
+                "<body style=\"margin: 0\">{}<link rel=stylesheet href=late.css></body>",
+                (0..40)
+                    .map(|n| format!("<p id=p{n}>{n}</p>"))
+                    .collect::<String>()
+            ))),
+            "/late.css" => {
+                gate.wait();
+                Some(css("p { margin: 0 0 50px 0 }"))
+            }
+            _ => None,
+        })
+    };
+    let mut tab = Tab::new();
+    tab.engine.navigate(server.url("/page#p20"));
+    tab.wait_until(|engine| engine.navigation.is_none());
+    let before = top_of(&mut tab.engine, "p20");
+    assert_eq!(tab.engine.scroll_y(), before);
+    gate.open();
+    tab.settle();
+    let after = top_of(&mut tab.engine, "p20");
+    assert!(after > before);
+    assert_eq!(tab.engine.scroll_y(), after, "scrolled to it again");
+}
+
+#[test]
+fn a_fragment_goal_is_given_up_once_the_user_scrolls() {
+    let gate = Gate::new();
+    let server = {
+        let gate = gate.clone();
+        serve(move |path| match path {
+            "/page" => Some(html(&format!(
+                "<body style=\"margin: 0\">{}<link rel=stylesheet href=late.css></body>",
+                (0..40)
+                    .map(|n| format!("<p id=p{n}>{n}</p>"))
+                    .collect::<String>()
+            ))),
+            "/late.css" => {
+                gate.wait();
+                Some(css("p { margin: 0 0 50px 0 }"))
+            }
+            _ => None,
+        })
+    };
+    let mut tab = Tab::new();
+    tab.engine.navigate(server.url("/page#p20"));
+    tab.wait_until(|engine| engine.navigation.is_none());
+    tab.engine.frame(400, 100);
+    assert!(tab.engine.scroll_y() > 0.0);
+    // The user scrolls while the page still loads: the fragment is
+    // not scrolled to again when the late sheet moves it.
+    tab.engine.set_scroll(10.0);
+    gate.open();
+    tab.settle();
+    tab.engine.frame(400, 100);
+    assert_eq!(tab.engine.scroll_y(), 10.0);
+}
+
+#[test]
+fn the_same_fragment_again_replaces_the_entry_and_scrolls_again() {
+    let server = serve(|path| (path == "/long").then(|| long_page("")));
+    let mut tab = Tab::new();
+    tab.load(server.url("/long"));
+    tab.engine.navigate(server.url("/long#p30"));
+    let far = top_of(&mut tab.engine, "p30");
+    assert_eq!(tab.engine.scroll_y(), far);
+    tab.engine.set_scroll(0.0);
+    tab.engine.navigate(server.url("/long#p30"));
+    tab.engine.frame(400, 100);
+    assert_eq!(tab.engine.scroll_y(), far);
+    assert_eq!(tab.engine.history.len(), 2);
+    // Without the fragment it is another document: fetched.
+    tab.load(server.url("/long"));
+    assert_eq!(asked(&server, "/long"), 2);
+}
+
+#[test]
+fn a_fragment_on_an_error_page_is_tried_again() {
+    let server = serve(|path| (path == "/gone").then_some(Reply::Close));
+    let mut tab = Tab::new();
+    tab.load(server.url("/gone"));
+    assert!(failed(&tab.engine));
+    tab.load(server.url("/gone#part"));
+    assert_eq!(asked(&server, "/gone"), 2);
+}
+
+#[test]
+fn a_fragment_navigation_leaves_a_navigation_under_way_going() {
+    let gate = Gate::new();
+    let server = {
+        let gate = gate.clone();
+        serve(move |path| match path {
+            "/long" => Some(long_page("")),
+            "/held" => {
+                gate.wait();
+                Some(page("held"))
+            }
+            _ => None,
+        })
+    };
+    let mut tab = Tab::new();
+    tab.load(server.url("/long"));
+    tab.engine.navigate(server.url("/held"));
+    tab.engine.navigate(server.url("/long#p10"));
+    assert!(tab.engine.navigation.is_some());
+    assert_eq!(tab.engine.url(), Some(&server.url("/long#p10")));
+    gate.open();
+    tab.settle();
+    assert_eq!(shown(&tab.engine), "held 0");
+    assert_eq!(tab.engine.history.len(), 3);
+    tab.engine.go_back();
+    assert_eq!(tab.engine.url(), Some(&server.url("/long#p10")));
+}
+
+#[test]
+fn about_silvers_own_fragment_link_navigates_within_it() {
+    let mut tab = Tab::new();
+    tab.engine.navigate(Url::parse("about:silver").unwrap());
+    // Give the link an ID to find it by.
+    tab.engine.mutate(|document| {
+        let link = document
+            .subtree(document.root())
+            .find(|&node| document.attr(node, "href") == Some("#end"))
+            .unwrap();
+        document.set_attribute(link, "id", "to-end").unwrap();
+    });
+    let link = link_on(&mut tab.engine, "to-end");
+    assert_eq!(link.url().as_str(), "about:silver#end");
+    tab.engine.follow_link(&link);
+    assert_eq!(tab.engine.url().map(Url::as_str), Some("about:silver#end"));
+    assert_eq!(tab.engine.history.len(), 2);
+    tab.engine.frame(400, 100);
+    assert_eq!(
+        tab.engine.scroll_y(),
+        tab.engine.max_scroll(),
+        "the end is at the bottom"
+    );
+}

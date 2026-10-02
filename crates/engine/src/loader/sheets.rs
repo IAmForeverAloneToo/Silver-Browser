@@ -170,6 +170,28 @@ impl Page {
         }
     }
 
+    /// The document's base URL as it now stands (HTML's "document base
+    /// URL"): the frozen base URL of the first `<base href>` in tree
+    /// order, or else the document's URL. A document with no URL has
+    /// none.
+    pub(crate) fn base_url(&self, document: &Document) -> Option<Url> {
+        let first_base = document.subtree(document.root()).find(|&node| {
+            document.tag(node) == Some("base") && document.attr(node, "href").is_some()
+        });
+        match first_base.and_then(|node| document.attr(node, "href")) {
+            Some(href) => frozen_base_url(href, &self.context),
+            None => self.context.url.clone(),
+        }
+    }
+
+    /// `href` parsed against the document's base URL with the
+    /// document's encoding: HTML's "encoding-parse a URL". `None` when
+    /// it does not parse.
+    pub(crate) fn resolve(&self, document: &Document, href: &str) -> Option<Url> {
+        let base = self.base_url(document);
+        Url::parse_with(href, base.as_ref(), self.context.encoding).ok()
+    }
+
     /// Aborts the fetches of the page's sheets, as HTML's "stop loading"
     /// does, and leaves those sheets out as failed. Says whether any
     /// fetch was aborted.
