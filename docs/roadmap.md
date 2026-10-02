@@ -1124,7 +1124,9 @@ Per css-grid-1 (level 2 subgrid included):
 - [ ] M21.3 `env()` stubs (safe-area, viewport).
 - [ ] M21.4 Counters: `counter-increment/reset`, `counter()`, `counters()`
        + `content` integration (M16).
-- [ ] M21.5 Generated content: `content: url()` (needs M23), `attr()`.
+- [ ] M21.5 Generated content: `content: url()` (needs M23), `attr()`
+       (css-values-5's typed `attr()`; `content`'s string `attr()` is
+       M16's, see `docs/design/selectors-pseudo.md`).
 - [ ] M21.6 List styling: `list-style-type` (disc/decimal + 3 custom),
        `::marker` content.
 - [ ] M21.7 `text-decoration` (underline position/thickness v1);

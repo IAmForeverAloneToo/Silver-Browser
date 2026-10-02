@@ -1,0 +1,422 @@
+# Design note: selectors v2 and pseudo-elements
+
+Roadmap M16. Written before the code, as the record of the decisions;
+what ships is described in `docs/architecture.md` "Current state" when
+the code lands. Where this note and the code later disagree, the code
+wins and this note is corrected, as the notes before it were.
+
+The problem: the engine styles elements and nothing else. A rule whose
+selector names a pseudo-element — `p::before`, `p:first-line`, a
+clearfix's `::after` — fails to parse and is dropped whole, with every
+other selector in its list, so generated content never appears and a
+page's `.a, .b::before { … }` loses `.a` as well. Selectors the web
+leans on are missing in the same way: `:lang()`, the form states
+(`:disabled`, `:checked`, `:required`), `:link`, which never matches
+(the UA sheet colours `a` instead), and HTML's rule that some
+attributes' values compare without regard to case. `<q>` has no
+quotation marks. This milestone adds the pseudo-elements CSS draws —
+`::before` and `::after` with `content`, `::first-letter` and
+`::first-line` — recognises the ones it cannot draw yet, and brings
+the selector matcher up to Selectors 4 for what the web uses.
+
+The standards are read at the versions current when this note was
+written: Selectors Level 4 (Editor's Draft of 18 September 2026), CSS
+Pseudo-Elements Level 4 (10 September 2026), and CSS 2.2 §12 for
+`content` and `quotes`, since CSS Generated Content Level 3 calls
+itself "a very rough draft … not ready for implementation" and is
+followed only where browsers agree with it; HTML for the language of
+an element, its case-insensitive attribute values and its form
+pseudo-classes; RFC 4647 §3.3.2 for language ranges.
+
+## 1. Decisions
+
+**What is parsed.** A selector may end in one pseudo-element, after its
+last compound selector:
+
+- `::before`, `::after`, `::first-letter` and `::first-line`, and the
+  same four with one colon, which CSS 2 wrote and Pseudo-Elements 4
+  requires to be accepted;
+- `::marker`, `::placeholder` and `::selection`, recognised and
+  matched but drawing nothing yet (M16.3; see section 2);
+- any `::-webkit-` name that is not a function, which Selectors 4's
+  Appendix B makes valid at parse time and matching nothing, so that a
+  list with `::-webkit-scrollbar` in it keeps its other selectors.
+
+Any other pseudo-element makes the selector invalid, as now. After a
+pseudo-element only the user-action pseudo-classes may follow
+(`:hover`, `:focus`, `:focus-visible`, `:focus-within`, `:active`),
+which never match yet; anything else after it is invalid. A
+pseudo-element inside `:is()`, `:where()`, `:not()` stays invalid
+there, as Selectors 4 says (`:is()` and `:where()` forgive it, as
+now). A pseudo-element counts in the third column of specificity, as a
+type selector does.
+
+The selector keeps its pseudo-element as a field of its own; the
+compound selectors before it match the *originating element*, and a
+rule whose selector matches contributes its declarations to that
+element's pseudo-element instead of to the element.
+
+**Case, as HTML and Selectors 4 say.** Every name the parser compares —
+pseudo-class and pseudo-element names, attribute flags — is compared
+in ASCII lowercase, not Unicode lowercase as now (`to_lowercase` turns
+some non-ASCII letters into ASCII ones). Attribute selectors gain
+HTML's rule: on an HTML element, the values of the forty-six
+attributes HTML lists (`type`, `lang`, `dir`, `rel`, `checked`,
+`disabled` among them) compare ASCII case-insensitively unless the
+selector says `s`; `i` makes any value case-insensitive, `s` makes any
+value case-sensitive. The flag becomes three states — none, `i`, `s` —
+where it is one boolean now. Comparisons are made in place, with no
+string allocated per attribute tested, as two are now. Every document
+the engine has is an HTML document, so the rule always applies; the
+UA sheet's `i` flags stay, harmless.
+
+**Specificity of `:nth-child(An+B of S)`.** It becomes what Selectors 4
+says: one pseudo-class plus the most specific selector in S. It counts
+one pseudo-class alone now.
+
+**`:lang()`.** It takes a comma-separated list of language ranges, each
+an identifier or a string. An element's language is HTML's: the
+`lang` attribute of the element or its nearest ancestor that has one;
+else the pragma-set default language, from the last
+`<meta http-equiv="content-language">` in the document whose content
+is one tag (the first run of non-white-space characters, none when
+the content has a comma); else the response's `Content-Language`
+field when it names one language; else unknown, the empty tag. The
+`xml:lang` attribute in no namespace has no effect, as HTML says, and
+there is no XML namespace in an HTML document. A range matches a tag
+by RFC 4647's extended filtering, ASCII case-insensitively: the first
+subtags must be equal or the range's `*`; each later subtag of the
+range is looked for in order in the tag, skipping subtags but never a
+singleton, `*` matching anything. `*` does not match an untagged
+element; the empty range `:lang("")` matches only untagged elements.
+A range or a tag that is not well-formed by BCP 47's syntax matches
+nothing. Two deviations, said rather than hidden: tags are not
+canonicalised (RFC 5646 §4.5, and the extlang form Selectors 4 asks
+for), and a well-formed tag is not checked against the registry of
+valid subtags; both need the IANA registry's data, which nothing
+carries until the internationalisation work of D7 and M42.
+
+**The form pseudo-classes (M16.4).** No form control has state yet
+(interactive controls have no milestone; M26 wires events), so each of
+these matches the state the element has when nothing has changed it,
+which HTML defines from its attributes; that is exact for every page
+until state exists:
+
+- `:disabled` matches a `button`, `input`, `select`, `textarea`,
+  `optgroup`, `option` or `fieldset` that is actually disabled: its
+  own `disabled` attribute; for the first four and `fieldset`, being
+  inside a `fieldset` with `disabled` and not inside that fieldset's
+  first `legend` child; for an `option`, being the child of a disabled
+  `optgroup`. `:enabled` matches the same elements when not disabled.
+- `:checked` matches an `input` of type `checkbox` or `radio` with a
+  `checked` attribute, and an `option` that is selected, as HTML's
+  selectedness setting algorithm makes it: one with a `selected`
+  attribute; but in a `select` without `multiple`, only the last of
+  those, and, with none and no `size` over one, the first option in
+  tree order that is not disabled.
+- `:required` matches an `input` whose type the `required` attribute
+  applies to (every type but `hidden`, `range`, `color`, `submit`,
+  `image`, `reset` and `button`) with that attribute, and a `select`
+  or `textarea` with it; `:optional` matches the same elements without
+  it.
+
+The rest of HTML's form pseudo-classes (`:read-only`, `:read-write`,
+`:placeholder-shown`, `:default`, `:indeterminate`, `:valid`,
+`:invalid` and the range ones) wait for form controls with state.
+
+**Links and the dynamic pseudo-classes.** `:link` and `:any-link` match
+`a` and `area` elements with an `href`, as HTML says; there is no
+history yet, so every link is unvisited and `:visited` keeps matching
+nothing, which is also what keeps history from being read through
+styles. The UA sheet's `a { color: blue; }` becomes HTML's
+`:link { color: #0000EE; }` and `:visited { color: #551A8B; }`, so an
+`a` without `href` is no longer blue. `:focus-visible`, `:focus-within`
+and `:target` are recognised and match nothing, as `:hover` and
+`:focus` do now, so that a list holding one keeps its other selectors;
+M26.4 makes the user-action ones match, and `:target` waits for the
+engine to keep the indicated part it finds (M15).
+
+**Pseudo-element styles.** `Styles` keeps, beside each element's style,
+the styles of its pseudo-elements that some rule styles: `::before`,
+`::after`, `::first-letter` and `::first-line`. A pseudo-element no
+rule matches has no style kept, and so, for `::before` and `::after`,
+no box, since `content`'s initial value computes to `none` on them.
+Each is cascaded from its own matched declarations with its
+originating element's style as the parent it inherits from, as
+Pseudo-Elements 4 says of tree-abiding pseudo-elements; `::first-line`
+and `::first-letter` inherit differently when laid out (below). The
+`::marker`, `::placeholder` and `::selection` declarations are matched
+and set aside: nothing draws them yet. Restyling compares an element's
+pseudo-element styles with its own, so that a change to either counts
+as a change to the element, which is how layout hears of it.
+
+**`content` and `quotes`.** Two properties join the computed style,
+growing it by 32 bytes:
+
+- `content: normal | none | [ <string> | url() | attr(<name>) |
+  open-quote | close-quote | no-open-quote | no-close-quote ]+`, not
+  inherited, initial `normal`, which computes to `none` on `::before`
+  and `::after`. Its computed value is the list with each `attr()`
+  replaced by the attribute's value on the originating element (the
+  empty string when it has none), as CSS 2.2 says. A `url()` is left
+  out, as CSS 2.2 allows a user agent that cannot show the resource to
+  do, until images (M23, M21.5): `content: url(x)` makes an empty box.
+  `counter()` and `counters()` make the declaration invalid until
+  counters exist (M21.4): leaving the number out would print "." where
+  "3." was meant. On an element, `content` has no effect, as in CSS
+  2.2; css-content-3's replacing of an element by an image waits with
+  images.
+- `quotes: auto | none | [ <string> <string> ]+`, inherited, initial
+  `auto`. `auto` gives “ ” and ‘ ’ in every language: the choice by
+  content language that css-content-3 describes needs locale data
+  (M42). HTML's rendering section has been cut down to
+  `q::before { content: open-quote }` and
+  `q::after { content: close-quote }`, which the UA sheet gains.
+
+The quote marks are chosen when the box tree is built, which walks the
+document in order: the depth is the open quotes so far minus the close
+quotes, never below zero, and a depth past the pairs given takes the
+last pair, as CSS 2.2 §12.3.2 says.
+
+**Generated boxes for `::before` and `::after`.** An element whose
+`::before` or `::after` style has a `content` other than `none`, and
+whose `display` there is not `none`, gets a box for it as its first or
+last child, as Pseudo-Elements 4 says: the box its `display` makes
+(inline by default; block, inline-block, a float, an absolutely
+positioned box, a table, all as for an element), holding one text box
+with the content's text, which `white-space` and `text-transform`
+treat as they treat any text, so `"\A"` breaks a line only where white
+space is preserved. The box tree builder walks *items* instead of node
+ids: a node, or an element's generated box, or the text in one. So
+generated boxes go through the same code as elements — anonymous
+blocks around them, hoisting a block out of an inline, anonymous
+table parts around one met in a table — with no second path to keep
+in step. They are not made for replaced elements, as Pseudo-Elements 4
+says; in this engine those are `img`, `input`, `textarea`, `select`,
+`iframe`, `video`, `audio`, `canvas`, `embed` and `object`, and `br`
+and `wbr`, which make no box of their own.
+
+A generated box names its originating element and is marked as
+generated, and so is each fragment made from it:
+
+- hit testing answers with the originating element, so a click on an
+  `a`'s `::before` follows the link, as in the browsers;
+- the layout cache (M13.2) keeps and takes results by node, for boxes
+  that stand for an element only; a generated box is anonymous to it.
+  What a cached box drew can depend on the quotes before it, so a box
+  the cache keeps records the quote depth it began at, and is taken
+  only at that depth (M21's counters will join that key);
+- the canvas background (CSS2 §14.2), which looks for the root's and
+  `body`'s boxes, skips generated ones, so a `::before` on `html` or
+  `body` neither becomes the canvas's source nor loses its background;
+- a generated box does not scroll: `overflow` other than `visible`
+  clips it but gives it no scroll offset, since scroll offsets are kept
+  by element and its element has its own. Browsers scroll one; no page
+  the milestone knows of needs it, and it is said here;
+- the differential checker (M13) and the paint-order walk need nothing
+  new: the node a generated fragment names is in the tree.
+
+**`::first-letter` (M16.2).** It applies to block containers — a
+block, an inline-block, a table cell or caption — and is found when the
+box tree is built:
+
+- the first-letter text is looked for in the inline content at the
+  start of the originating element's first formatted line: its own, or
+  that of its first in-flow block-level child, recursively (not into an
+  inline-block, a table or a replaced element, which have their own).
+  Collapsible white space at the start is skipped; generated
+  `::before` text counts, as Pseudo-Elements 4 says (`p::before
+  { content: "Note: " }` makes "N" the first letter); a forced line
+  break, an atomic inline or any other in-flow content first means
+  there is none;
+- the text is Pseudo-Elements 4's pattern: punctuation (Unicode P\*)
+  with any spaces (Zs but U+3000) between, then one letter, number or
+  symbol (L\*, N\*, S\*) with the combining marks after it, then any
+  punctuation but opening punctuation and dashes (Ps, Pd), with spaces
+  between that are not word separators. Typographic character units
+  are taken as one scalar value with its combining marks; Dutch "ij"
+  and other language tailorings wait for M42;
+- the text box that holds it is split: the first-letter text goes into
+  a box of its own, styled by the `::first-letter` style with the
+  element the text is in as its parent. That box is an inline box, or,
+  with `float` other than `none`, a float, which every browser honours
+  for drop caps though Pseudo-Elements 4 leaves it to the user agent.
+  When several ancestors whose first formatted line this is have
+  `::first-letter` styles, their boxes nest outermost first, as the
+  fictional tag sequence in Pseudo-Elements 4 nests them;
+- the properties that apply are the ones Pseudo-Elements 4 lists that
+  this engine has (font size and family, colour, background,
+  `text-transform`, letter and word spacing, `vertical-align`,
+  margins, padding, borders) and `float`; the others are ignored;
+- the inline layout already keeps text with no white space between it
+  flush and unbroken, so "T" and "he" stay one word.
+
+Part of the first-letter text wrapped to the next line stays in the
+pseudo-element (Pseudo-Elements 4 drops it out);
+`::first-letter::prefix` and `::suffix`, and `initial-letter`, are not
+built (section 2).
+
+**`::first-line` (M16.2).** Its box is the first line, which only line
+breaking finds, so it is applied by the inline layout:
+
+- the first formatted line is found as for `::first-letter`: a block
+  container's first line box, or its first in-flow block-level child's
+  first formatted line, recursively. Block layout carries down to that
+  child the chain of `::first-line` styles of the elements whose first
+  formatted line it holds, outermost first;
+- in that line, Pseudo-Elements 4's fictional tag sequence is followed
+  as written: the `::first-line` pseudo-elements stand just inside the
+  block whose line it is, the outermost first, each inheriting from
+  the one outside it and the outermost from that block; the inline
+  elements on the line inherit from the innermost, each restyled with
+  its own rules and that new parent; text directly in the block takes
+  the innermost's style. Only the properties Pseudo-Elements 4 lists
+  apply on the `::first-line` pseudo-elements themselves (font size and
+  family, colour, background, `text-transform`, letter and word
+  spacing, `vertical-align`); the restyled inline elements keep all
+  their own;
+- the restyling needs the cascade during layout, so layout takes a
+  `Restyle` from the engine, which runs an element's rules again with
+  a given parent style, and gives a pseudo-element's style with a given
+  parent. It is called only for elements on a first line, and for the
+  `::first-letter` box when one is on it (which then inherits from the
+  first line, as Pseudo-Elements 4 says);
+- the words are measured with their first-line styles while the first
+  line is filled, and with their own after it: the first line breaks
+  where its own text, in its own fonts, runs out of room, and the
+  second starts with the next word in its normal style. The line's
+  strut comes from the innermost `::first-line` style, since the root
+  inline box's fragment on the first line inherits from it;
+- a `::first-line` with a background gets an inline-box fragment
+  around the line's content, named by its originating element and
+  marked generated;
+- the layout of a block whose first line takes styles from an
+  ancestor's `::first-line` depends on that ancestor, so such a block
+  is neither kept in the layout cache nor taken from it; the blocks
+  that are, are invalidated by their own restyle as now.
+
+**Invalidation (M13.1).** The selector features gain what the new
+selectors read:
+
+- `:lang()` reads `lang` on every ancestor, so a `lang` change
+  restyles the element's subtree, and a change to a
+  `meta http-equiv` element restyles the whole document;
+- the form pseudo-classes read attributes of other elements (a
+  fieldset's `disabled`, a select's other options), so a change to
+  `disabled`, `checked`, `selected`, `required`, `multiple`, `size` or
+  `type`, or a child inserted or removed, restyles the subtree of the
+  nearest `fieldset` or `select` around it, or the element's own;
+- `:link` reads `href`;
+- `content: attr(x)` reads `x` on the originating element, so the
+  names in `attr()` join the attribute names whose change restyles the
+  element.
+
+Each is added only when a sheet uses the selector or the function, as
+now.
+
+**Performance (M16.5).** The roadmap asks for a Bloom filter of
+ancestors if the matching benchmark — 1,000 selectors over 10,003
+elements — has regressed more than twice. Measured on this machine
+before the work: the code as imported (M8) takes 269–347ms in release,
+today's 340–400ms, so it has not. M16.5 measures again after the
+milestone, which adds rules (`::before` ones are matched against every
+element, as any rule is) and the case-insensitive comparison without
+allocating, and builds the filter only if the threshold is passed;
+M35.2's rule hashing and style sharing remain where the larger win
+is. The number goes into `docs/perf-budgets.md`, which has none for
+this benchmark yet, with the M8 code's beside it.
+
+**Acceptance (M16.6).** `about:silver` shows each pseudo-element: a
+drop cap by `::first-letter` floated left, a first line in capitals by
+`::first-line`, `::before` and `::after` content on the cards, a `<q>`
+with its quotation marks, and a `:lang()` rule giving a quotation in
+another language its own marks. Beyond the page:
+
+- unit tests for the parser (every pseudo-element, the legacy forms,
+  `-webkit-`, what may follow, specificity), the matcher (HTML's
+  case-insensitive attributes and the `i` and `s` flags, `:lang()`
+  against RFC 4647's examples, the form pseudo-classes, `:link`), the
+  cascade (pseudo-element styles, `content` with `attr()`, `quotes`,
+  the restyle that a pseudo-element's change makes), the box tree
+  (generated boxes of each display, in tables, on replaced elements,
+  quote depth, the first-letter split and its pattern) and the inline
+  layout (the first line restyled and measured, the nesting, the
+  strut);
+- reference pages for the boxes, built of boxes alone as the others
+  are and captured from the reference browser: `::before` and
+  `::after` as blocks, inline-blocks, floats, absolutely positioned
+  boxes and tables; the clearfix (`::after { content: ""; display:
+  table; clear: both }`); generated boxes on `html` and `body`; and the
+  reference pages' mutation test, run over them;
+- the fuzz targets that parse selectors, style documents and run the
+  pipeline cover the new grammar and the new boxes with no change.
+
+**The layering contract.** Nothing moves. `style` keeps selectors,
+the cascade and the pseudo-element styles; `layout` builds the
+generated boxes and applies the first line, through the `Restyle`
+trait `style` defines and the engine implements over its sheets.
+
+## 2. Not in this milestone, said rather than hidden
+
+- *Counters* (`counter()`, `counters()`, `counter-reset`,
+  `counter-increment`): M21.4. A `content` naming one is invalid until
+  then.
+- *Images in `content`* and the typed `attr()` of css-values-5: M23 and
+  M21.5.
+- *List items and their markers*: `display: list-item`, `::marker`'s
+  box and its content, `list-style`: M21.6. `::marker` is recognised
+  and draws nothing.
+- *`::placeholder`*: the form controls draw no placeholder text yet.
+  *`::selection`* and the other highlight pseudo-elements: there is no
+  selection (M26).
+- *`::first-letter::prefix` and `::suffix`*, *`initial-letter`*, and
+  the language tailorings of a first letter (Dutch "ij"): not on the
+  roadmap yet, and M42 for the tailorings.
+- *Other pseudo-elements*: `::backdrop`, `::file-selector-button`,
+  `::details-content`, `::part()`, `::slotted()`, `::cue`,
+  `::view-transition` and the rest stay invalid, each with the feature
+  it styles.
+- *`:has()`*, *`:dir()`*, *`:scope`*, *`:defined`*, *`:state()`*: not on
+  the roadmap yet; a selector using one stays invalid.
+- *The form pseudo-classes beyond `:disabled`, `:enabled`, `:checked`,
+  `:required` and `:optional`*, and *state* for any of them: with
+  interactive form controls, which have no milestone yet, and M26.
+- *Canonicalising language tags* and checking them against the
+  registry, and *quotes by language*: M42.
+- *A scrolling generated box*: see above.
+- *`content` on an element*: with images (M23).
+- *Quirks mode* (`.class` and `#id` matched case-insensitively): D14.
+
+## 3. Order of work
+
+Each step is a vertical slice: build, tests, clippy green and a smoke
+run before the next. A step is done when its tests pass.
+
+1. *Selector syntax.* Pseudo-elements in the selector (the four, the
+   legacy forms, the three recognised ones, `-webkit-`), what may follow
+   one, specificity with `:nth-child(… of S)` corrected; ASCII case
+   throughout; the three-state attribute flag, HTML's case-insensitive
+   attributes, comparisons without allocation.
+2. *Pseudo-classes.* `:lang()` with the document's language (the
+   `lang` attribute, `meta http-equiv="content-language"`, the
+   response's `Content-Language`); `:link` and `:any-link` and the UA
+   sheet's link colours; `:disabled`, `:enabled`, `:checked`,
+   `:required`, `:optional`; the never-matching dynamic ones; their
+   invalidation.
+3. *Pseudo-element styles.* `Styles` and the cascade; `content` and
+   `quotes`; the UA sheet's `q`; restyle comparing pseudo-element
+   styles; `attr()` invalidation.
+4. *Generated boxes.* The builder over items; `::before` and `::after`
+   of every display, in tables, not on replaced elements; quote depth
+   and its key in the layout cache; generated fragments in hit testing,
+   the canvas background and scrolling; the reference pages.
+5. *`::first-letter`.* Finding the text, the pattern, the split, the
+   inline or floating box, nesting.
+6. *`::first-line`.* The first formatted line through blocks, the
+   chain, the `Restyle` hook, measuring the first line in its styles,
+   its fragment, the strut, the cache rule.
+7. *Performance and fuzzing.* M16.5's measurement, and the filter if
+   it is due; the fuzz targets run.
+8. *Acceptance and the documents.* `about:silver`; this note corrected
+   to the code; the architecture's M16 entry; the roadmap's ticks; the
+   benchmark's numbers in `docs/perf-budgets.md`.
