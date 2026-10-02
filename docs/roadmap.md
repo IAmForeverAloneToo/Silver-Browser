@@ -1224,7 +1224,9 @@ Per css-grid-1 (level 2 subgrid included):
 - [ ] M26.5 Timers: `setTimeout/setInterval` (clamped, background
        throttling policy), `Promise` + microtask ordering.
 - [ ] M26.6 Link handling: `<a href>` click → navigation; middle-click
-       → new-tab-less v1 (tabs are M37 — queue a note).
+       → new-tab-less v1 (tabs are M37 — queue a note). (M15 follows a
+       click on a link from the shell, `docs/design/navigation.md`; this
+       item makes the click an event a listener can cancel.)
 - [ ] M26.7 Acceptance: interactive todo-list page (add/remove/style
        entries) works end-to-end.
 
@@ -1387,7 +1389,8 @@ process seams.
        independent — the DAG shape from architecture.md pays off here).
 - [ ] M35.4 Paint/raster: parallel raster tiles, display-list retention.
 - [ ] M35.5 Memory: shared string/data arenas per pipeline stage;
-       measure + cap the layer cache (M19.6); idle renderer memory trim.
+       measure + cap the layer cache (M19.6) and the back-forward cache
+       (M15, six documents for now); idle renderer memory trim.
 - [ ] M35.6 Startup: cold start < 300ms to a blank tab on a mid laptop
        (measure; lazy-init everything non-critical).
 - [ ] M35.7 Acceptance: numeric budgets published in
@@ -1427,7 +1430,9 @@ process seams.
 - [ ] M37.1 Tab system: multiple renderers, tab strip UI (in-engine
        drawing — D9), per-tab history, crash placeholders.
 - [ ] M37.2 Downloads: download manager, progress, open-folder,
-       `Content-Disposition` handling, safe default paths.
+       `Content-Disposition` handling, safe default paths. (Since M15 a
+       response that would be a download leaves the page shown, with a
+       notice, `docs/design/navigation.md`.)
 - [ ] M37.3 Settings: startup page, search-engine selection, JS/CSP
        toggles (no-scripts mode), dark mode, engine feature flags,
        languages (`Accept-Language`, fixed at `en-US,en;q=0.9` since
@@ -1562,7 +1567,7 @@ gold-plate unstarted work.
 | D6 | Image codecs | M23 | image crate ensemble / per-format crates | per-format crates behind a trait (faster, auditable) |
 | D7 | Text/i18n | M8/M42 | rustybuzz+unicode crates / harfbuzz FFI / ICU4X | rustybuzz now, ICU4X at M42 |
 | D8 | 2D rasterizer | M19 | tiny-skia forever / vello (wgpu-native) / both | both behind the existing `RenderBackend` trait |
-| D9 | Chrome UI toolkit | M15/M37 | in-engine (softbuffer) / egui / native | in-engine (no extra toolkit; the engine is the toolkit) |
+| D9 | Chrome UI toolkit | M15/M37 | in-engine (softbuffer) / egui / native | in-engine (no extra toolkit; the engine is the toolkit); decided at M15: a `ui` crate beside `engine`, under `shell`, drawing with `paint`, `render` and `text`, and touching no OS (see `docs/design/navigation.md`) |
 | D10 | Profile storage engine | M28 | redb / sled / SQLite / custom files | redb (pure Rust, embedded, single-file) |
 | D11 | DevTools protocol | M36 | custom in-engine UI only / CDP-compatible | custom first; CDP-compat only if external tools wanted |
 | D12 | UA string & fingerprint policy | M25 | honest UA / Chrome-mimic | honest minimal UA + minimal API surface (compat escape hatch flag exists but is not default) |
