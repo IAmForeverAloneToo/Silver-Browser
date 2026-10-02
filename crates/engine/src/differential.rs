@@ -82,7 +82,7 @@ const STYLES: &[&str] = &[
 
 /// The data a [`Mutator`] gives text nodes: empty, white space, words,
 /// right-to-left letters, and stylesheets for a `style` element.
-const TEXTS: [&str; 13] = [
+const TEXTS: [&str; 14] = [
     "",
     " ",
     "x",
@@ -96,6 +96,7 @@ const TEXTS: [&str; 13] = [
     "li:first-child { font-size: 30px } span + b { display: block }",
     ":lang(fr) { color: #f00 } :lang('') { padding: 2px } :link { margin: 1px }",
     ":checked { display: block; width: 7px } :disabled + span { display: none }",
+    "p::before { content: attr(title) } .a::after { content: 'x'; color: #f00 }",
 ];
 
 /// Turns bytes into mutations of a document: each step reads an
@@ -249,6 +250,14 @@ pub fn compare_with_fresh(
                 engine.shown.document.tag(node),
                 styles.get(node),
                 fresh_styles.get(fresh_node)
+            ));
+        }
+        if styles.pseudo_styles(node) != fresh_styles.pseudo_styles(fresh_node) {
+            return Err(format!(
+                "node {i} ({:?}): pseudo-element styles {:?}, a full cascade gives {:?}",
+                engine.shown.document.tag(node),
+                styles.pseudo_styles(node),
+                fresh_styles.pseudo_styles(fresh_node)
             ));
         }
     }

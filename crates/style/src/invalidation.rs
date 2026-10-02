@@ -40,7 +40,8 @@
 //!
 //! The attributes they read on the element and its ancestors (`lang`,
 //! `href`, `disabled`, `checked`, `selected`, `type`, `multiple`,
-//! `size`, `required`) count as named by a selector.
+//! `size`, `required`) count as named by a selector, and so do the ones
+//! a `content` declaration's `attr()` reads.
 //!
 //! The changes are read after they were all made, so each rule looks
 //! at the document as it now stands: an element no longer in the tree
@@ -170,6 +171,30 @@ impl SelectorFeatures {
             | PseudoClass::Active
             | PseudoClass::Visited
             | PseudoClass::Target => {}
+        }
+    }
+
+    /// Adds what the declarations of `sheet`'s rules read: the
+    /// attributes `content`'s `attr()` names, on the element a
+    /// `::before` or `::after` comes from.
+    pub(crate) fn add_declarations(&mut self, sheet: &css::Stylesheet) {
+        for rule in &sheet.rules {
+            let css::Rule::Qualified(rule) = rule else {
+                continue;
+            };
+            for declaration in rule.declarations.iter().filter(|d| d.name == "content") {
+                let mut tokens = declaration.value.iter();
+                while let Some(token) = tokens.next() {
+                    if let css::Token::Function(name) = token
+                        && name.eq_ignore_ascii_case("attr")
+                        && let Some(css::Token::Ident(attribute)) = tokens
+                            .by_ref()
+                            .find(|token| !matches!(token, css::Token::Whitespace))
+                    {
+                        self.attributes.insert(attribute.to_ascii_lowercase());
+                    }
+                }
+            }
         }
     }
 
@@ -500,6 +525,12 @@ mod tests {
         let full = sheets.cascade(document, &context);
         for node in document.subtree(document.root()) {
             assert_eq!(styles.get(node), full.get(node), "{:?}", document.tag(node));
+            assert_eq!(
+                styles.pseudo_styles(node),
+                full.pseudo_styles(node),
+                "{:?}'s pseudo-elements",
+                document.tag(node)
+            );
         }
         assert_eq!(styles.uses_viewport_units, full.uses_viewport_units);
         restyle
@@ -892,5 +923,48 @@ mod tests {
         });
         assert!(r.changed.contains(&a), "a unchecked by the button after it");
         assert!(!r.full);
+    }
+    // ---- M16: pseudo-element styles ------------------------------------------
+
+    #[test]
+    fn content_attr_names_count_as_read() {
+        let sheets = Stylesheets::new(vec![
+            css::parse_stylesheet(
+                "p::before { content: 'a' attr( Data-X ) attr(title) } \
+                 p { color: attr(nope) } .a { content: attr(other) }",
+            )
+            .unwrap(),
+        ]);
+        let f = sheets.features();
+        for name in ["data-x", "title", "other"] {
+            assert!(f.attributes.contains(name), "{name}");
+        }
+        assert!(!f.attributes.contains("nope"), "only `content` reads one");
+    }
+
+    #[test]
+    fn a_change_to_a_pseudo_elements_style_is_one_to_its_element() {
+        let (mut d, sheets, mut styles) = setup(
+            "<p id=x>one</p><p>two</p>",
+            ".b::before { content: '!' } p::after { content: attr(title) }",
+        );
+        let x = by_id(&d, "x");
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(x, "class", "b").unwrap();
+        });
+        assert_eq!(r.changed, [x], "its ::before, not its own style");
+        assert!(
+            styles
+                .pseudo(x, crate::selector_matching::PseudoElement::Before)
+                .is_some()
+        );
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(x, "title", "t").unwrap();
+        });
+        assert_eq!(r.changed, [x], "its ::after's content");
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(x, "lang", "fr").unwrap();
+        });
+        assert!(r.changed.is_empty(), "nothing reads `lang`");
     }
 }

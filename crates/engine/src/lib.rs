@@ -3654,6 +3654,8 @@ mod tests {
           :disabled { color: #0f0 } :enabled + span { padding: 2px }\
           :link { padding: 1px } :required { border: 1px solid #f00 } :optional ~ b { display: block }\
           input, select, option, optgroup, fieldset, legend, form { display: block; min-height: 2px }\
+          p::before { content: attr(title) '>' } .a::after, b:after { content: open-quote; color: #00f }\
+          p::first-line { color: #f0f } div::first-letter { padding: 1px }\
         </style>\
         <meta http-equiv=content-language content=fr>\
         <form id=x><fieldset disabled><legend><input type=radio name=r checked></legend>\
@@ -3661,7 +3663,8 @@ mod tests {
         <select><option>1</option><optgroup disabled><option selected>2</option></optgroup>\
         <option>3</option></select><input type=radio name=r checked><b>b</b></form>\
         <div lang=de-CH><p>x <a href=#>link</a></p><input type=radio name=r form=x checked required></div>\
-        <form id=y><input type=radio name=r><span>t</span></form>";
+        <form id=y><input type=radio name=r><span>t</span></form>\
+        <p title=t class=a>quoted <q>words</q></p>";
 
     #[test]
     fn after_random_mutations_the_engine_shows_what_a_fresh_engine_shows() {

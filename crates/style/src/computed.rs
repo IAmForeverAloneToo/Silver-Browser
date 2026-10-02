@@ -9,6 +9,8 @@
 //! sets it and (for non-inherited properties) its parent's value doesn't
 //! apply either.
 
+use std::sync::Arc;
+
 /// An RGBA color, 0.0–1.0 channels (see `paint::Rgba8` for the 8-bit
 /// form `render` actually blits — `style` owns its own color type per
 /// the layering contract: `paint` sits *above* `style` and converts at
@@ -442,6 +444,70 @@ pub const BOTTOM: usize = 2;
 /// Index into an [`Edges`] array for the left edge.
 pub const LEFT: usize = 3;
 
+/// `content`'s computed value (CSS 2.2 §12.2, M16), which only
+/// `::before` and `::after` read.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum Content {
+    /// `normal`, the initial value; on `::before` and `::after` it
+    /// computes to `none`.
+    #[default]
+    Normal,
+    /// `none`: no box.
+    None,
+    /// The parts, in order: strings with each `attr()` replaced by the
+    /// attribute's value, and the quote keywords. A `url()` is left out
+    /// until images (M23), so the list may be empty: a box with nothing
+    /// in it.
+    Items(Arc<[ContentItem]>),
+}
+
+/// One part of a [`Content`] list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContentItem {
+    /// A string, or the value of an `attr()`.
+    Text(String),
+    /// `open-quote`: the opening mark at the current depth, which it
+    /// then deepens.
+    OpenQuote,
+    /// `close-quote`: makes the depth shallower, then gives its closing
+    /// mark.
+    CloseQuote,
+    /// `no-open-quote`: deepens without a mark.
+    NoOpenQuote,
+    /// `no-close-quote`: makes the depth shallower without a mark.
+    NoCloseQuote,
+}
+
+/// `quotes`' computed value (CSS 2.2 §12.3.1, M16).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum Quotes {
+    /// `auto`, the initial value: “ ” and ‘ ’ in every language, until
+    /// the choice by language that needs locale data (M42).
+    #[default]
+    Auto,
+    /// `none`: the quote keywords give no marks.
+    None,
+    /// The pairs of opening and closing marks, outermost first; never
+    /// empty.
+    Pairs(Arc<[(String, String)]>),
+}
+
+impl Quotes {
+    /// The opening and closing marks for a quote `depth` levels deep,
+    /// the outermost being 0: past the last pair, the last pair (CSS 2.2
+    /// §12.3.2); `None` for `quotes: none`.
+    pub fn marks(&self, depth: usize) -> Option<(&str, &str)> {
+        const AUTO: [(&str, &str); 2] = [("\u{201C}", "\u{201D}"), ("\u{2018}", "\u{2019}")];
+        match self {
+            Quotes::Auto => Some(AUTO[depth.min(AUTO.len() - 1)]),
+            Quotes::None => None,
+            Quotes::Pairs(pairs) => pairs
+                .get(depth.min(pairs.len().saturating_sub(1)))
+                .map(|(open, close)| (open.as_str(), close.as_str())),
+        }
+    }
+}
+
 /// A resolved set of CSS property values for one element (roadmap M5.1).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComputedStyle {
@@ -563,6 +629,12 @@ pub struct ComputedStyle {
     /// on `tr`, `td` and `th` is what carries a row group's `middle`
     /// down to an HTML cell.
     pub vertical_align: VerticalAlign,
+    /// `content` (M16) — not inherited, and set only on `::before` and
+    /// `::after`, the pseudo-elements it applies to (CSS 2.2 §12.2); an
+    /// element keeps `normal`.
+    pub content: Content,
+    /// `quotes` (M16) — inherited.
+    pub quotes: Quotes,
 }
 
 impl Default for ComputedStyle {
@@ -607,6 +679,8 @@ impl Default for ComputedStyle {
             caption_side: CaptionSide::Top,
             empty_cells: EmptyCells::Show,
             vertical_align: VerticalAlign::Baseline,
+            content: Content::Normal,
+            quotes: Quotes::Auto,
         }
     }
 }
@@ -653,6 +727,7 @@ impl ComputedStyle {
             border_spacing: parent.border_spacing,
             caption_side: parent.caption_side,
             empty_cells: parent.empty_cells,
+            quotes: parent.quotes.clone(),
             ..ComputedStyle::default()
         }
     }

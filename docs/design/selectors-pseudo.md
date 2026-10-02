@@ -164,14 +164,16 @@ no box, since `content`'s initial value computes to `none` on them.
 Each is cascaded from its own matched declarations with its
 originating element's style as the parent it inherits from, as
 Pseudo-Elements 4 says of tree-abiding pseudo-elements; `::first-line`
-and `::first-letter` inherit differently when laid out (below). The
-`::marker`, `::placeholder` and `::selection` declarations are matched
-and set aside: nothing draws them yet. Restyling compares an element's
-pseudo-element styles with its own, so that a change to either counts
-as a change to the element, which is how layout hears of it.
+and `::first-letter` inherit differently when laid out (below). An
+element's `style` attribute styles the element alone. The rules for
+`::marker`, `::placeholder` and `::selection` are parsed and set
+aside, unmatched: nothing draws them yet. Restyling compares an
+element's pseudo-element styles with its own, so that a change to
+either counts as a change to the element, which is how layout hears
+of it.
 
 **`content` and `quotes`.** Two properties join the computed style,
-growing it by 32 bytes:
+growing it by 48 bytes, from 336 to 384:
 
 - `content: normal | none | [ <string> | url() | attr(<name>) |
   open-quote | close-quote | no-open-quote | no-close-quote ]+`, not
@@ -183,9 +185,14 @@ growing it by 32 bytes:
   do, until images (M23, M21.5): `content: url(x)` makes an empty box.
   `counter()` and `counters()` make the declaration invalid until
   counters exist (M21.4): leaving the number out would print "." where
-  "3." was meant. On an element, `content` has no effect, as in CSS
-  2.2; css-content-3's replacing of an element by an image waits with
-  images.
+  "3." was meant, and so do the typed and fallback forms of `attr()`
+  (M21.5). css-content-3's alternative text after a `/` is accepted
+  and set aside, as nothing reads it. `content` applies to `::before`
+  and `::after` only, as in CSS 2.2: on an element, and on
+  `::first-letter` and `::first-line`, it is not applied and stays
+  `normal`, so that no element's own style reads an attribute through
+  `attr()`; css-content-3's replacing of an element by an image waits
+  with images.
 - `quotes: auto | none | [ <string> <string> ]+`, inherited, initial
   `auto`. `auto` gives “ ” and ‘ ’ in every language: the choice by
   content language that css-content-3 describes needs locale data

@@ -56,19 +56,21 @@
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use css::Token;
 use dom::{Change, Document, NodeId};
 
 use crate::computed::{
     BOTTOM, BorderCollapse, BorderSpacing, BorderStyle, BoxSizing, CaptionSide, Clear, Color,
-    ComputedStyle, Direction, Display, Edges, EmptyCells, Float, LEFT, LengthPercentage,
-    LengthPercentageAuto, MarginEdges, Overflow, PaddingEdges, Position, RIGHT, TOP, TableLayout,
-    TextAlign, TextTransform, VerticalAlign, WhiteSpace,
+    ComputedStyle, Content, ContentItem, Direction, Display, Edges, EmptyCells, Float, LEFT,
+    LengthPercentage, LengthPercentageAuto, MarginEdges, Overflow, PaddingEdges, Position, Quotes,
+    RIGHT, TOP, TableLayout, TextAlign, TextTransform, VerticalAlign, WhiteSpace,
 };
 use crate::invalidation::{Reach, SelectorFeatures, invalidate};
-use crate::selector_matching::{Matcher, SelectorList, Specificity, parse_selector_list};
+use crate::selector_matching::{
+    Matcher, PseudoElement, SelectorList, Specificity, parse_selector_list,
+};
 
 /// The built-in default stylesheet (M5.6), compiled in — loading it is
 /// not resource fetching (no I/O at runtime), so it doesn't bend the
@@ -76,13 +78,14 @@ use crate::selector_matching::{Matcher, SelectorList, Specificity, parse_selecto
 const UA_STYLESHEET_SRC: &str = include_str!("../assets/ua.css");
 
 /// Every element's [`ComputedStyle`] in one document, by [`NodeId`],
-/// and the document node's, whose initial values the top-level
-/// elements inherit from.
+/// with those of its pseudo-elements that some rule styles (M16), and
+/// the document node's, whose initial values the top-level elements
+/// inherit from.
 #[derive(Debug, Clone, Default)]
 pub struct Styles {
-    /// By slot index: the node the style was computed for, so that a
-    /// later node in the same slot is not taken for it, and its style.
-    entries: Vec<Option<(NodeId, ComputedStyle)>>,
+    /// By slot index: the node the styles were computed for, so that a
+    /// later node in the same slot is not taken for it, and its styles.
+    entries: Vec<Option<(NodeId, Computed)>>,
     /// The font size `rem` resolved against: the root element's, the
     /// first element under the document node.
     rem: f32,
@@ -99,18 +102,36 @@ impl Styles {
     /// node's initial values; `None` for a text node, a node not styled
     /// (detached), or a stale id.
     pub fn get(&self, node: NodeId) -> Option<&ComputedStyle> {
+        self.computed(node).map(|computed| &computed.style)
+    }
+
+    /// The computed style of the element `node`'s pseudo-element
+    /// `pseudo`, when some rule styles it: `::before`, `::after`,
+    /// `::first-letter` and `::first-line` are kept; the others are
+    /// matched and set aside, nothing drawing them yet.
+    pub fn pseudo(&self, node: NodeId, pseudo: PseudoElement) -> Option<&ComputedStyle> {
+        self.computed(node)?.pseudo.as_deref()?.get(pseudo)
+    }
+
+    /// The styles of the element `node`'s pseudo-elements that some rule
+    /// styles; `None` when none is.
+    pub fn pseudo_styles(&self, node: NodeId) -> Option<&PseudoStyles> {
+        self.computed(node)?.pseudo.as_deref()
+    }
+
+    fn computed(&self, node: NodeId) -> Option<&Computed> {
         match self.entries.get(node.index())? {
-            Some((id, style)) if *id == node => Some(style),
+            Some((id, computed)) if *id == node => Some(computed),
             _ => None,
         }
     }
 
-    fn set(&mut self, node: NodeId, style: ComputedStyle) {
+    fn set(&mut self, node: NodeId, computed: Computed) {
         let index = node.index();
         if self.entries.len() <= index {
             self.entries.resize(index + 1, None);
         }
-        self.entries[index] = Some((node, style));
+        self.entries[index] = Some((node, computed));
     }
 
     /// Forgets `node`'s style, if it has one.
@@ -120,6 +141,75 @@ impl Styles {
         {
             *entry = None;
         }
+    }
+}
+
+/// An element's computed style and those of its pseudo-elements.
+#[derive(Debug, Clone, PartialEq, Default)]
+struct Computed {
+    style: ComputedStyle,
+    /// `None` when no rule styles any of them, as for most elements.
+    pseudo: Option<Box<PseudoStyles>>,
+}
+
+/// The styles of an element's pseudo-elements that some rule styles
+/// (M16), each cascaded from its own rules with the element's style as
+/// the parent it inherits from (Pseudo-Elements 4, tree-abiding
+/// pseudo-elements; `::first-letter` and `::first-line` inherit
+/// differently when laid out).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PseudoStyles {
+    /// `::before`.
+    pub before: Option<ComputedStyle>,
+    /// `::after`.
+    pub after: Option<ComputedStyle>,
+    /// `::first-letter`.
+    pub first_letter: Option<ComputedStyle>,
+    /// `::first-line`.
+    pub first_line: Option<ComputedStyle>,
+}
+
+impl PseudoStyles {
+    /// The style of `pseudo`, if it is one kept and some rule styles it.
+    pub fn get(&self, pseudo: PseudoElement) -> Option<&ComputedStyle> {
+        match pseudo {
+            PseudoElement::Before => self.before.as_ref(),
+            PseudoElement::After => self.after.as_ref(),
+            PseudoElement::FirstLetter => self.first_letter.as_ref(),
+            PseudoElement::FirstLine => self.first_line.as_ref(),
+            PseudoElement::Marker
+            | PseudoElement::Placeholder
+            | PseudoElement::Selection
+            | PseudoElement::WebkitPrefixed => None,
+        }
+    }
+}
+
+/// What a style is computed for: an element, or one of the
+/// pseudo-elements whose styles are kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Target {
+    Element,
+    Before,
+    After,
+    FirstLetter,
+    FirstLine,
+}
+
+impl Target {
+    /// The targets in the order [`Matched`] keeps them.
+    const ALL: [Target; 5] = [
+        Target::Element,
+        Target::Before,
+        Target::After,
+        Target::FirstLetter,
+        Target::FirstLine,
+    ];
+
+    /// Whether `content` applies: on `::before` and `::after` only
+    /// (CSS 2.2 §12.2).
+    fn takes_content(self) -> bool {
+        matches!(self, Target::Before | Target::After)
     }
 }
 
@@ -199,6 +289,9 @@ impl Stylesheets {
         let mut features = ua().features.clone();
         for (_, list) in selectors.iter().flatten() {
             features.add(list);
+        }
+        for sheet in &sheets {
+            features.add_declarations(sheet);
         }
         Stylesheets {
             sheets,
@@ -283,10 +376,12 @@ impl Stylesheets {
                 } else {
                     styles.rem
                 };
-                let style = cascader.style_of(node, &parent_style, rem);
+                // A change to a pseudo-element's style counts as one to
+                // the element's: how layout hears of it.
+                let computed = cascader.style_of(node, &parent_style, rem);
                 restyle.computed += 1;
-                let changed = styles.get(node) != Some(&style);
-                styles.set(node, style);
+                let changed = styles.computed(node) != Some(&computed);
+                styles.set(node, computed);
                 if changed {
                     restyle.changed.push(node);
                 }
@@ -365,6 +460,7 @@ fn ua() -> &'static UserAgent {
         for (_, list) in selectors {
             features.add(list);
         }
+        features.add_declarations(sheet);
         UserAgent {
             rules: rules_of(std::slice::from_ref(sheet), std::slice::from_ref(selectors))
                 .into_iter()
@@ -407,13 +503,8 @@ impl<'a> Cascader<'a> {
     /// The computed style of `element`, a child of an element (or of the
     /// document node) whose style is `parent_style`, with `rem` the
     /// root element's font size.
-    fn style_of(
-        &mut self,
-        element: NodeId,
-        parent_style: &ComputedStyle,
-        rem: f32,
-    ) -> ComputedStyle {
-        let applied = declarations_for(
+    fn style_of(&mut self, element: NodeId, parent_style: &ComputedStyle, rem: f32) -> Computed {
+        let matched = declarations_for(
             self.document,
             &mut self.matcher,
             element,
@@ -424,13 +515,28 @@ impl<'a> Cascader<'a> {
             rem,
             context: self.context,
             viewport_used: &self.viewport_used,
+            attributes: self.document.attrs(element).unwrap_or_default(),
         };
-        compute_style(
-            &applied,
+        let style = compute_style(
+            matched.of(Target::Element),
             parent_style,
+            Target::Element,
             self.document.attr(element, "dir"),
             &resolution,
-        )
+        );
+        // Each pseudo-element some rule styles, from the element's style.
+        let pseudo = |target: Target| {
+            let applied = matched.of(target);
+            (!applied.is_empty()).then(|| compute_style(applied, &style, target, None, &resolution))
+        };
+        let pseudo = PseudoStyles {
+            before: pseudo(Target::Before),
+            after: pseudo(Target::After),
+            first_letter: pseudo(Target::FirstLetter),
+            first_line: pseudo(Target::FirstLine),
+        };
+        let pseudo = (pseudo != PseudoStyles::default()).then(|| Box::new(pseudo));
+        Computed { style, pseudo }
     }
 
     /// Every element's style, cascaded afresh.
@@ -441,7 +547,7 @@ impl<'a> Cascader<'a> {
             rem: ComputedStyle::default().font_size_px,
             ..Styles::default()
         };
-        styles.set(document.root(), ComputedStyle::default());
+        styles.set(document.root(), Computed::default());
         // `rem` is the root element's font size: known once the root (the
         // first element under the document) is styled, and the initial
         // value for the root itself.
@@ -455,12 +561,12 @@ impl<'a> Cascader<'a> {
             let children: Vec<NodeId> = document.element_children(parent).collect();
             for &child in &children {
                 let rem = root_font_size.unwrap_or(ComputedStyle::default().font_size_px);
-                let style = self.style_of(child, &parent_style, rem);
+                let computed = self.style_of(child, &parent_style, rem);
                 if root_font_size.is_none() {
-                    root_font_size = Some(style.font_size_px);
-                    styles.rem = style.font_size_px;
+                    root_font_size = Some(computed.style.font_size_px);
+                    styles.rem = computed.style.font_size_px;
                 }
-                styles.set(child, style);
+                styles.set(child, computed);
             }
             pending.extend(children.into_iter().rev());
         }
@@ -478,6 +584,9 @@ struct Resolution<'a> {
     context: &'a CascadeContext<'a>,
     /// Set when a viewport unit is met.
     viewport_used: &'a Cell<bool>,
+    /// The attributes of the element, or the originating element of the
+    /// pseudo-element, the style is for: what `attr()` reads.
+    attributes: &'a [(String, String)],
 }
 
 /// The bases a length in one element's declarations resolves against:
@@ -535,6 +644,24 @@ fn rules_of<'s>(
         .collect()
 }
 
+/// The declarations that apply to an element and to each of its
+/// pseudo-elements, unsorted, by [`Target`].
+#[derive(Default)]
+struct Matched {
+    targets: [Vec<Applied>; 5],
+}
+
+impl Matched {
+    fn of(&self, target: Target) -> &[Applied] {
+        &self.targets[target as usize]
+    }
+
+    /// The element's own declarations.
+    fn element(&mut self) -> &mut Vec<Applied> {
+        &mut self.targets[Target::Element as usize]
+    }
+}
+
 /// A declaration plus everything needed to sort it into cascade order.
 struct Applied {
     /// See [`tier`] — encodes origin *and* importance in one order.
@@ -574,17 +701,18 @@ fn tier(base: TierBase, important: bool) -> u8 {
     }
 }
 
-/// Every declaration that applies to `element`, tagged with its
-/// cascade key — unsorted; [`compute_style`] sorts before applying.
+/// Every declaration that applies to `element` and to each of its
+/// pseudo-elements, tagged with its cascade key — unsorted;
+/// [`compute_style`] sorts before applying.
 fn declarations_for<'a>(
     document: &Document,
     matcher: &mut Matcher<'a>,
     element: NodeId,
     ua: &[ParsedRule<'a>],
     author_sheets: &[Vec<ParsedRule<'a>>],
-) -> Vec<Applied> {
+) -> Matched {
     let mut order = 0u32;
-    let mut out = Vec::new();
+    let mut out = Matched::default();
     collect_from_sheet(
         matcher,
         element,
@@ -603,11 +731,12 @@ fn declarations_for<'a>(
             &mut out,
         );
     }
+    // An inline `style` styles the element alone.
     if let Some(style_attr) = document.attr(element, "style")
         && let Ok(decls) = css::parse_style_attribute(style_attr)
     {
         for decl in decls {
-            out.push(Applied {
+            out.element().push(Applied {
                 tier: tier(TierBase::AuthorInline, decl.important),
                 // Inline declarations aren't selector-matched, so there's
                 // nothing to compare within this tier by specificity —
@@ -623,48 +752,77 @@ fn declarations_for<'a>(
     out
 }
 
-/// Matches `sheet`'s rules against `element`, pushing one
-/// [`Applied`] per declaration in every rule that matches.
+/// Matches `sheet`'s rules against `element` and its pseudo-elements,
+/// pushing one [`Applied`] per declaration of every rule that matches,
+/// for each target it matches.
 fn collect_from_sheet<'a>(
     matcher: &mut Matcher<'a>,
     element: NodeId,
     sheet: &[ParsedRule<'a>],
     base: TierBase,
     order: &mut u32,
-    out: &mut Vec<Applied>,
+    out: &mut Matched,
 ) {
     for rule in sheet {
         // A comma-separated list is cascade-equivalent to separate rules
         // sharing one declaration block — each matching branch
         // contributes independently, so the specificity that matters is
-        // the highest among the branches that actually matched here.
+        // the highest among the branches that actually matched here,
+        // for the element and for each of its pseudo-elements.
         let list: &'a SelectorList = rule.list;
-        let specificity = list
-            .0
-            .iter()
-            .filter(|s| matcher.matches_element(element, s))
-            .map(|s| s.specificity)
-            .max();
-        let Some(specificity) = specificity else {
-            continue;
-        };
-        for decl in rule.declarations {
-            out.push(Applied {
-                tier: tier(base, decl.important),
-                specificity,
-                order: *order,
-                decl: decl.clone(),
-            });
-            *order += 1;
+        let mut best: [Option<Specificity>; 5] = [None; 5];
+        for selector in &list.0 {
+            let target = match &selector.pseudo_element {
+                None => Target::Element,
+                Some(ending) => match ending.element {
+                    PseudoElement::Before => Target::Before,
+                    PseudoElement::After => Target::After,
+                    PseudoElement::FirstLetter => Target::FirstLetter,
+                    PseudoElement::FirstLine => Target::FirstLine,
+                    // Matched and set aside: nothing draws them yet.
+                    PseudoElement::Marker
+                    | PseudoElement::Placeholder
+                    | PseudoElement::Selection
+                    | PseudoElement::WebkitPrefixed => continue,
+                },
+            };
+            let matches = match &selector.pseudo_element {
+                None => matcher.matches_element(element, selector),
+                Some(ending) => matcher.matches_pseudo_element(element, selector, ending.element),
+            };
+            if matches {
+                let best = &mut best[target as usize];
+                *best = (*best).max(Some(selector.specificity));
+            }
         }
+        if best.iter().all(Option::is_none) {
+            continue;
+        }
+        for (target, specificity) in Target::ALL.into_iter().zip(best) {
+            let Some(specificity) = specificity else {
+                continue;
+            };
+            // The same order for each target: within one, it is the
+            // declarations' order in the sheets.
+            for (offset, decl) in rule.declarations.iter().enumerate() {
+                out.targets[target as usize].push(Applied {
+                    tier: tier(base, decl.important),
+                    specificity,
+                    order: *order + offset as u32,
+                    decl: decl.clone(),
+                });
+            }
+        }
+        *order += rule.declarations.len() as u32;
     }
 }
 
 /// Sorts `applied` into cascade order and folds it into a fresh
-/// `ComputedStyle` inherited from `parent`.
+/// `ComputedStyle` inherited from `parent`, for `target`.
 fn compute_style(
     applied: &[Applied],
     parent: &ComputedStyle,
+    target: Target,
     dir_attr: Option<&str>,
     resolution: &Resolution<'_>,
 ) -> ComputedStyle {
@@ -721,7 +879,14 @@ fn compute_style(
     };
     let mut border_color_set = [false; 4];
     for a in &sorted {
+        if a.decl.name == "content" && !target.takes_content() {
+            continue; // it applies to `::before` and `::after` only
+        }
         apply_declaration(&mut style, &a.decl, &bases, parent, &mut border_color_set);
+    }
+    // `normal` computes to `none` on `::before` and `::after`.
+    if target.takes_content() && style.content == Content::Normal {
+        style.content = Content::None;
     }
     for (color, set) in style.border_color.iter_mut().zip(border_color_set) {
         if !set {
@@ -971,6 +1136,16 @@ fn apply_declaration(
                 style.vertical_align = v;
             }
         }
+        "content" => {
+            if let Some(c) = parse_content(&decl.value, bases.resolution.attributes) {
+                style.content = c;
+            }
+        }
+        "quotes" => {
+            if let Some(q) = parse_quotes(&decl.value) {
+                style.quotes = q;
+            }
+        }
         _ => {} // not in the v1 property set (or not a real property) — ignored, never an error
     }
 }
@@ -1081,6 +1256,7 @@ fn is_inherited(name: &str) -> bool {
             | "border-spacing"
             | "caption-side"
             | "empty-cells"
+            | "quotes"
     )
 }
 
@@ -1181,6 +1357,8 @@ fn apply_css_wide(
         "caption-side" => style.caption_side = src.caption_side,
         "empty-cells" => style.empty_cells = src.empty_cells,
         "vertical-align" => style.vertical_align = src.vertical_align,
+        "content" => style.content = src.content.clone(),
+        "quotes" => style.quotes = src.quotes.clone(),
         "border-color" => {
             // The parent's border color is a real color; the initial
             // value is `currentcolor`, resolved once the cascade is done.
@@ -1730,6 +1908,121 @@ fn parse_color(tokens: &[Token]) -> Option<Color> {
     }
 }
 
+/// `content` (CSS 2.2 §12.2, M16): `normal`, `none`, or one or more
+/// of a string, `attr(<name>)`, `url()` and the four quote keywords;
+/// and after them, css-content-3's `/` and alternative text of strings
+/// and `attr()`, accepted and set aside, as nothing reads it. An
+/// `attr()` takes the value of the attribute of that name in
+/// `attributes`, the name ASCII lowercased as HTML says (§4.16.1), or
+/// the empty string when there is none. A `url()` is left out until
+/// images (M23). `counter()` and `counters()` make the declaration
+/// invalid until counters exist (M21.4), as anything else does.
+fn parse_content(tokens: &[Token], attributes: &[(String, String)]) -> Option<Content> {
+    if let Some(keyword) = single_ident(tokens) {
+        if keyword.eq_ignore_ascii_case("normal") {
+            return Some(Content::Normal);
+        }
+        if keyword.eq_ignore_ascii_case("none") {
+            return Some(Content::None);
+        }
+    }
+    let mut items = Vec::new();
+    // Whether anything came before the `/`, and after it.
+    let (mut parts, mut alternative) = (0, None);
+    let mut i = 0;
+    while let Some(token) = tokens.get(i) {
+        i += 1;
+        let item = match token {
+            Token::Whitespace => continue,
+            Token::Delim('/') if parts > 0 && alternative.is_none() => {
+                alternative = Some(0);
+                continue;
+            }
+            Token::String { value, bad: false } => Some(ContentItem::Text(value.clone())),
+            Token::Function(name) if name.eq_ignore_ascii_case("attr") => {
+                let (name, next) = attr_argument(tokens, i)?;
+                i = next;
+                let value = attributes
+                    .iter()
+                    .find(|(attribute, _)| *attribute == name)
+                    .map_or("", |(_, value)| value);
+                Some(ContentItem::Text(value.to_owned()))
+            }
+            _ if alternative.is_some() => return None,
+            // The tokenizer makes the whole of a `url(…)`, quoted or not,
+            // one token.
+            Token::Url { bad: false, .. } => None,
+            Token::Ident(keyword) => Some(match keyword.to_ascii_lowercase().as_str() {
+                "open-quote" => ContentItem::OpenQuote,
+                "close-quote" => ContentItem::CloseQuote,
+                "no-open-quote" => ContentItem::NoOpenQuote,
+                "no-close-quote" => ContentItem::NoCloseQuote,
+                _ => return None,
+            }),
+            _ => return None,
+        };
+        match &mut alternative {
+            Some(count) => *count += 1,
+            None => {
+                parts += 1;
+                items.extend(item);
+            }
+        }
+    }
+    if parts == 0 || alternative == Some(0) {
+        return None;
+    }
+    Some(Content::Items(Arc::from(items)))
+}
+
+/// The attribute name of an `attr()` whose arguments start at
+/// `tokens[i]`, ASCII lowercased, and the index after its `)`: one
+/// identifier, with white space around it, and nothing else, the
+/// typed and fallback forms of css-values-5 being M21.5's.
+fn attr_argument(tokens: &[Token], mut i: usize) -> Option<(String, usize)> {
+    let mut name = None;
+    while let Some(token) = tokens.get(i) {
+        i += 1;
+        match token {
+            Token::Whitespace => {}
+            Token::Ident(ident) if name.is_none() => name = Some(ident.to_ascii_lowercase()),
+            Token::CloseParen => return name.map(|name| (name, i)),
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// `quotes` (CSS 2.2 §12.3.1, css-content-3 for `auto`): `auto`,
+/// `none`, or pairs of strings, opening mark then closing mark.
+fn parse_quotes(tokens: &[Token]) -> Option<Quotes> {
+    if let Some(keyword) = single_ident(tokens) {
+        return match keyword.to_ascii_lowercase().as_str() {
+            "auto" => Some(Quotes::Auto),
+            "none" => Some(Quotes::None),
+            _ => None,
+        };
+    }
+    let strings = tokens
+        .iter()
+        .filter(|token| !matches!(token, Token::Whitespace))
+        .map(|token| match token {
+            Token::String { value, bad: false } => Some(value.clone()),
+            _ => None,
+        })
+        .collect::<Option<Vec<String>>>()?;
+    if strings.is_empty() || strings.len() % 2 != 0 {
+        return None;
+    }
+    let pairs: Vec<(String, String)> = strings
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|[open, close]| (open.clone(), close.clone()))
+        .collect();
+    Some(Quotes::Pairs(Arc::from(pairs)))
+}
+
 fn single_token(tokens: &[Token]) -> Option<&Token> {
     let mut it = tokens.iter().filter(|t| !matches!(t, Token::Whitespace));
     let first = it.next()?;
@@ -1837,6 +2130,7 @@ mod tests {
             rem: 16.0,
             context: &context,
             viewport_used: &viewport_used,
+            attributes: &[],
         };
         f(&LengthBases {
             em: 16.0,
@@ -1855,6 +2149,43 @@ mod tests {
             .find(|&id| matches_selector(&document, id, &list.0[0]))
             .and_then(|id| styles.get(id).cloned())
             .unwrap_or_else(|| panic!("no element matched {selector:?}"))
+    }
+
+    /// Styles `html` and returns the style of the pseudo-element `pseudo`
+    /// of the first element `selector` matches, if some rule styles it.
+    fn pseudo_of(
+        html: &str,
+        sheets: &[css::Stylesheet],
+        selector: &str,
+        pseudo: PseudoElement,
+    ) -> Option<ComputedStyle> {
+        let document = Document::from_node(&html::parse_document(html).expect("never fails"));
+        let styles = cascade_document(&document, sheets, &CascadeContext::default());
+        let list = parse_selector_list(&css::tokenize(selector)).expect("valid selector");
+        let element = document
+            .subtree(document.root())
+            .find(|&id| matches_selector(&document, id, &list.0[0]))
+            .unwrap_or_else(|| panic!("no element matched {selector:?}"));
+        styles.pseudo(element, pseudo).cloned()
+    }
+
+    /// The content of `p::before` with `declaration` in `p`, from a
+    /// rule that also gives it the content "before".
+    fn content(html: &str, declaration: &str) -> Content {
+        let sheets = [sheet(&format!(
+            "p::before {{ content: 'before' }} p::before {{ content: {declaration} }}"
+        ))];
+        pseudo_of(html, &sheets, "p", PseudoElement::Before)
+            .expect("styled")
+            .content
+    }
+
+    fn items(items: &[ContentItem]) -> Content {
+        Content::Items(Arc::from(items.to_vec()))
+    }
+
+    fn text(text: &str) -> ContentItem {
+        ContentItem::Text(text.to_owned())
     }
 
     /// The first element named `tag`, in tree order.
@@ -2747,6 +3078,209 @@ mod tests {
             style_of(html, &[], "p").color
         );
         assert_eq!(style_of(html, &[], "#w").color, Color::rgb8(0, 0, 0xEE));
+    }
+
+    // ---- M16: pseudo-element styles, `content` and `quotes` ---------------
+
+    #[test]
+    fn pseudo_element_styles_are_kept_beside_the_element() {
+        let sheets = [sheet(
+            "p { color: #00f } p::before { content: 'x'; color: #f00 }\
+             p::first-line { color: #0f0 } p:first-letter { color: #ff0 }\
+             p::marker { color: #0ff } p::selection { color: #0ff } p::-webkit-x { color: #0ff }",
+        )];
+        let html = "<p>text</p><div>no rule</div>";
+        let of = |pseudo| pseudo_of(html, &sheets, "p", pseudo);
+        assert_eq!(style_of(html, &sheets, "p").color, Color::rgb8(0, 0, 255));
+        let before = of(PseudoElement::Before).expect("::before is styled");
+        assert_eq!(before.color, Color::rgb8(255, 0, 0));
+        assert_eq!(before.content, items(&[text("x")]));
+        assert_eq!(of(PseudoElement::After), None, "no rule styles ::after");
+        assert_eq!(
+            of(PseudoElement::FirstLine).unwrap().color,
+            Color::rgb8(0, 255, 0)
+        );
+        assert_eq!(
+            of(PseudoElement::FirstLetter).unwrap().color,
+            Color::rgb8(255, 255, 0)
+        );
+        // Matched and set aside.
+        for pseudo in [
+            PseudoElement::Marker,
+            PseudoElement::Selection,
+            PseudoElement::Placeholder,
+            PseudoElement::WebkitPrefixed,
+        ] {
+            assert_eq!(of(pseudo), None);
+        }
+        let document = Document::from_node(&html::parse_document(html).unwrap());
+        let styles = cascade_document(&document, &sheets, &CascadeContext::default());
+        assert!(styles.pseudo_styles(first(&document, "div")).is_none());
+        assert!(styles.pseudo_styles(first(&document, "p")).is_some());
+    }
+
+    #[test]
+    fn a_pseudo_element_inherits_from_its_element_and_cascades_on_its_own() {
+        let sheets = [sheet(
+            "p { color: #00f; font-size: 20px; padding: 3px }\
+             p::after { content: '!'; padding-left: 1em }\
+             ::after { margin-left: 7px; padding-left: 2px }\
+             .a::after { margin-left: 9px }",
+        )];
+        let html = "<p class=a style='padding-right: 5px; color: #f00'>x</p>";
+        let after = pseudo_of(html, &sheets, "p", PseudoElement::After).unwrap();
+        // Inherited from the element, the inline style's colour with it.
+        assert_eq!(after.color, Color::rgb8(255, 0, 0));
+        assert_eq!(after.font_size_px, 20.0);
+        // Its own declarations, `em` against the inherited font size,
+        // more specific beating less: (0,0,2) over (0,0,1).
+        assert_eq!(after.padding[LEFT], LengthPercentage::Px(20.0));
+        assert_eq!(after.margin[LEFT], LengthPercentageAuto::Px(9.0));
+        // Not inherited, and the inline style is the element's alone.
+        assert_eq!(after.padding[TOP], LengthPercentage::Px(0.0));
+        assert_eq!(after.padding[RIGHT], LengthPercentage::Px(0.0));
+    }
+
+    #[test]
+    fn a_selector_list_styles_a_pseudo_element_with_its_most_specific_branch() {
+        // (1,0,1) from `#x::before`, not the first branch's (0,0,2):
+        // more specific than `.y::before`'s (0,1,1).
+        let sheets = [sheet(
+            "p::before, #x::before { content: ''; color: #f00 } .y::before { color: #0f0 }",
+        )];
+        let before = pseudo_of("<p id=x class=y>x</p>", &sheets, "p", PseudoElement::Before);
+        assert_eq!(before.unwrap().color, Color::rgb8(255, 0, 0));
+    }
+
+    #[test]
+    fn a_selector_list_styles_each_target_with_its_own_specificity() {
+        // `#x::before` is the more specific in its list for ::before, `p`
+        // the one for the element; each competes on its own.
+        let sheets = [sheet(
+            "p, #x::before { color: #f00 } p#x { color: #00f }\
+             p::before { content: ''; color: #0f0 }",
+        )];
+        let html = "<p id=x>x</p>";
+        assert_eq!(style_of(html, &sheets, "p").color, Color::rgb8(0, 0, 255));
+        let before = pseudo_of(html, &sheets, "p", PseudoElement::Before).unwrap();
+        assert_eq!(before.color, Color::rgb8(255, 0, 0));
+    }
+
+    #[test]
+    fn content_applies_to_before_and_after_only() {
+        // `normal` computes to `none` on ::before and ::after.
+        let sheets = [sheet(
+            "p { content: 'element' } p::before { color: #f00 } p::after { content: normal }\
+             p::first-line { content: 'x' }",
+        )];
+        let html = "<p>x</p>";
+        let of = |pseudo| pseudo_of(html, &sheets, "p", pseudo).unwrap().content;
+        assert_eq!(of(PseudoElement::Before), Content::None);
+        assert_eq!(of(PseudoElement::After), Content::None);
+        assert_eq!(of(PseudoElement::FirstLine), Content::Normal);
+        assert_eq!(style_of(html, &sheets, "p").content, Content::Normal);
+        // So `inherit` takes the element's `normal`, and `initial` is
+        // `normal`: both `none` here.
+        assert_eq!(content("<p>x</p>", "inherit"), Content::None);
+        assert_eq!(content("<p>x</p>", "initial"), Content::None);
+        assert_eq!(content("<p>x</p>", "unset"), Content::None);
+        assert_eq!(content("<p>x</p>", "none"), Content::None);
+        assert_eq!(content("<p>x</p>", "NORMAL"), Content::None);
+    }
+
+    #[test]
+    fn content_takes_strings_attributes_urls_and_quotes() {
+        let p = "<p title=T data-x='a b'>x</p>";
+        assert_eq!(
+            content(
+                p,
+                "'a' attr(title) url(x.png) url('y') OPEN-QUOTE close-quote no-open-quote no-close-quote"
+            ),
+            items(&[
+                text("a"),
+                text("T"),
+                ContentItem::OpenQuote,
+                ContentItem::CloseQuote,
+                ContentItem::NoOpenQuote,
+                ContentItem::NoCloseQuote,
+            ])
+        );
+        // `attr()`'s name in ASCII lowercase; a missing one is empty.
+        assert_eq!(
+            content(p, "attr( DATA-X ) attr(nope)"),
+            items(&[text("a b"), text("")])
+        );
+        // An image is left out: a box with nothing in it.
+        assert_eq!(content(p, "url(x.png)"), items(&[]));
+        // Alternative text is accepted and set aside.
+        assert_eq!(content(p, "'a' / 'alt' attr(title)"), items(&[text("a")]));
+        // Anything else drops the declaration: the earlier one stands.
+        for bad in [
+            "counter(x)",
+            "'a' counters(x, '.')",
+            "normal 'a'",
+            "none none",
+            "attr(x, 'fallback')",
+            "attr(x string)",
+            "attr()",
+            "attr('x')",
+            "'a' /",
+            "/ 'a'",
+            "'a' / open-quote",
+            "'a' / url(x)",
+            "'a' / 'b' / 'c'",
+            "'a' b",
+            "1",
+            "url(x y)",
+            "url('x' 'y')",
+            // A string a newline ends: a bad string.
+            "'bad\n",
+        ] {
+            assert_eq!(content(p, bad), items(&[text("before")]), "{bad}");
+        }
+    }
+
+    #[test]
+    fn quotes_parse_inherit_and_give_their_marks() {
+        let sheets = [sheet(
+            "div { quotes: '«' '»' '‹' '›' } .none { quotes: NONE } .auto { quotes: auto }\
+             .odd { quotes: 'a' } .ident { quotes: a b } .mixed { quotes: 'a' b }\
+             .unset { quotes: unset }",
+        )];
+        let html = "<div><p>x</p><p class=none>x</p><p class=auto>x</p>\
+                    <p class=odd>x</p><p class=ident>x</p><p class=mixed>x</p>\
+                    <p class=unset>x</p></div>";
+        let pairs = Quotes::Pairs(Arc::from(vec![
+            ("«".to_owned(), "»".to_owned()),
+            ("‹".to_owned(), "›".to_owned()),
+        ]));
+        assert_eq!(style_of(html, &sheets, "p").quotes, pairs, "inherited");
+        assert_eq!(style_of(html, &sheets, ".none").quotes, Quotes::None);
+        assert_eq!(style_of(html, &sheets, ".auto").quotes, Quotes::Auto);
+        assert_eq!(style_of(html, &sheets, ".unset").quotes, pairs, "inherited");
+        for bad in [".odd", ".ident", ".mixed"] {
+            assert_eq!(style_of(html, &sheets, bad).quotes, pairs, "{bad}");
+        }
+        assert_eq!(pairs.marks(0), Some(("«", "»")));
+        assert_eq!(pairs.marks(1), Some(("‹", "›")));
+        assert_eq!(
+            pairs.marks(5),
+            Some(("‹", "›")),
+            "past the last pair, the last"
+        );
+        assert_eq!(Quotes::Auto.marks(0), Some(("\u{201C}", "\u{201D}")));
+        assert_eq!(Quotes::Auto.marks(3), Some(("\u{2018}", "\u{2019}")));
+        assert_eq!(Quotes::None.marks(0), None);
+        assert_eq!(ComputedStyle::default().quotes, Quotes::Auto);
+    }
+
+    #[test]
+    fn the_ua_sheet_quotes_q() {
+        let html = "<p><q>x</q></p>";
+        let of = |pseudo| pseudo_of(html, &[], "q", pseudo).unwrap().content;
+        assert_eq!(of(PseudoElement::Before), items(&[ContentItem::OpenQuote]));
+        assert_eq!(of(PseudoElement::After), items(&[ContentItem::CloseQuote]));
+        assert_eq!(pseudo_of(html, &[], "p", PseudoElement::Before), None);
     }
 
     #[test]

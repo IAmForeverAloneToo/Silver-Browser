@@ -54,6 +54,8 @@ pub mod selector_matching;
 
 pub use selector_matching::{matches_selector, matches_selector_list, parse_selector_list};
 
-pub use cascade::{CascadeContext, FontMeasure, Restyle, Styles, Stylesheets, cascade_document};
+pub use cascade::{
+    CascadeContext, FontMeasure, PseudoStyles, Restyle, Styles, Stylesheets, cascade_document,
+};
 pub use computed::ComputedStyle;
 pub use invalidation::SelectorFeatures;
