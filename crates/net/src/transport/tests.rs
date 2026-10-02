@@ -518,6 +518,54 @@ fn both_versions_of_tls_are_spoken() {
     }
 }
 
+/// `der` as a PEM file's certificate section.
+fn pem(der: &[u8]) -> String {
+    const DIGITS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut text = String::new();
+    for chunk in der.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, &b)| n | (b as u32) << (16 - 8 * i));
+        for i in 0..4 {
+            text.push(if i <= chunk.len() {
+                DIGITS[(n >> (18 - 6 * i) & 63) as usize] as char
+            } else {
+                '='
+            });
+        }
+    }
+    let lines: Vec<&str> = text
+        .as_bytes()
+        .chunks(64)
+        .map(|line| std::str::from_utf8(line).unwrap())
+        .collect();
+    format!(
+        "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+        lines.join("\n")
+    )
+}
+
+#[test]
+fn roots_from_a_pem_file_are_trusted_in_tests() {
+    let authority = TestAuthority::new();
+    let server = TestServer::tls(authority.server(&["127.0.0.1"], VALID), |_| hello());
+    let file = format!("a comment\n{}", pem(&authority.root));
+    let config = Config::default().trust_pem(file.as_bytes()).unwrap();
+    let transport = Transport::new(config);
+    assert_eq!(
+        get(&transport, &server.url("/")).unwrap().response.body,
+        b"hello"
+    );
+    for refused in [
+        &b""[..],
+        b"no certificate here",
+        b"-----BEGIN CERTIFICATE-----\n!!\n",
+    ] {
+        assert!(Config::default().trust_pem(refused).is_err(), "{refused:?}");
+    }
+}
+
 #[test]
 fn an_https_exchange() {
     let authority = TestAuthority::new();

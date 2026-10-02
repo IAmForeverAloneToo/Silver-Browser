@@ -60,7 +60,7 @@ nothing that changes what is shown.
 - **Benchmarks:** plain binaries, `harness = false`, run by hand:
   - `cargo bench -p engine --bench scroll` (M9.6; stages since M13.4).
   - `cargo bench -p engine --bench mutation` (M13.6).
-  - `cargo bench -p engine --bench load` (M14).
+  - `cargo bench -p engine --bench load` (M14; going back, M15).
   - `cargo bench -p style --bench match`.
   - Criterion-tracked benchmarks run in CI are T4.2, for M35.
 - **Counters** prove work that is not done: `Engine::style_runs`,
@@ -134,7 +134,7 @@ The cascade of the whole page costs what it did before M13.1: 3ms for
 The load benchmark (M14) serves a page of 1,000 paragraphs, 111KB,
 and three stylesheets its `<head>` links from `net`'s test server on
 127.0.0.1. Each run starts a new engine, so its connections are new
-too, calls `Engine::load`, takes results as the waker says they come,
+too, calls `Engine::navigate`, takes results as the waker says they come,
 and draws the first frame at 1280 by 800 once the page is shown. The
 sheets block the page, so it is shown styled, with all three in. Ten
 runs a row, medians, and in release the range over two rows:
@@ -160,6 +160,30 @@ mutation benchmark's are within their ranges or at most 2% past them
 (its first frame 650–688ms, the thousand appended at once 640–699ms),
 inside T4.3's 10%, and the scroll benchmark's layout is 156–170ms over
 three runs on a quiet machine, as recorded.
+
+### Going back
+
+The same benchmark (M15) shows the page, leaves it, and goes back to
+it, timing the traversal to the end of the first frame drawn after it.
+Kept in the back-forward cache, the page comes back whole, its cascade,
+layout and scroll offsets with it, and the frame only paints and
+rasterizes. Left for seven pages, so that the cache, which keeps six,
+lets it go, it is fetched, parsed and laid out again. Before each page
+is left, the benchmark waits for its icon, a fetch of its own that
+would otherwise keep it from the cache. Ten runs a row, medians, and
+in release the range over two rows:
+
+| | Release | Debug |
+| --- | --- | --- |
+| Back to the page from the cache, to its first frame drawn | 5.2–6.4ms | 14.6ms |
+| Back to the page fetched again, to its first frame drawn | 648–656ms | 796ms |
+
+The cached page is back within the frame budget; the one fetched again
+costs what its first load did, the first layout's text shaping again.
+The rows for loading the page, measured again in the same runs: 3.7ms
+from `navigate` to the page shown, against 3.3–3.4ms recorded, and
+633–635ms for the first frame, against 693–711ms; inside T4.3's 10%
+the one way, and faster the other.
 
 ### Over budget, and why
 

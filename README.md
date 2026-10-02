@@ -12,16 +12,25 @@ Once the Rust toolchain is installed:
 cargo run -p silver-browser
 ```
 
-Opens a window rendering a document parsed by our own HTML tokenizer
-and tree builder, with its stylesheet parsed by our own css-syntax-3
-tokenizer and parser (milestone 3), with real font loading, real text
-shaping (rustybuzz), and software rasterization (tiny-skia) presented
-through winit + softbuffer.
+Opens a window on the browser's own page, `about:silver`, with the
+address field ready to type into. Given an address, a URL or a file,
+it opens that instead:
+
+```
+cargo run -p silver-browser -- example.com
+```
+
+Ctrl+L focuses the address field (Cmd+L on macOS), Enter goes there,
+Alt+Left and Alt+Right go back and forward (Cmd+[ and Cmd+]), and F5
+reloads. Everything on screen, the toolbar included, is parsed, laid
+out and drawn by the engine's own crates, and presented through winit
+and softbuffer.
 
 ## Architecture
 
-The workspace is a strict layer DAG of crates (`shell → engine → render /
-paint / layout / style / text / net / html / css → dom / encoding`).
+The workspace is a strict layer DAG of crates (`shell → ui / engine`,
+`engine → render / paint / layout / style / text / net / html / css →
+dom / encoding`, and `ui → render / paint / text`).
 **Read [`docs/architecture.md`](docs/architecture.md) before adding any
 dependency edge** — the layering contract there is binding.
 

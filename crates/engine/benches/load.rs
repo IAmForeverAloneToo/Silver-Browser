@@ -1,7 +1,10 @@
 //! M14 exit: the time from `Engine::navigate` (M14's `load`) to the
 //! first frame for a page of 1,000 paragraphs and three stylesheets,
 //! served by `net`'s test server on 127.0.0.1 (docs/design/net.md,
-//! "Order of work", step 9).
+//! "Order of work", step 9). And M15's: the time from going back to
+//! that page to its first frame, when the back-forward cache kept it
+//! and when it was pushed out and is fetched again
+//! (docs/design/navigation.md, "The back-forward cache").
 //! The page links its sheets from its `<head>`, so they block it: it is
 //! shown once all three have arrived, styled, and the frame after that
 //! is the first. Each run starts a new engine, so its connections are
@@ -16,7 +19,7 @@
 //! ```
 
 use std::hint::black_box;
-use std::sync::mpsc::channel;
+use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
 use engine::{Engine, FrameStats, FrameTime, LoadState};
@@ -67,10 +70,9 @@ fn spread(times: &mut [f64]) -> String {
     )
 }
 
-/// One run: a new engine loads the page, and draws its first frame.
-/// Returns the time until the page was shown, the first frame's stats,
-/// and the time from `load` to the frame's end.
-fn run(server: &TestServer) -> (Duration, FrameStats, Duration) {
+/// A new engine over the bundled font, and the channel its waker sends
+/// on.
+fn engine() -> (Engine, Receiver<()>) {
     let fonts = text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
         .expect("the bundled font parses");
     let mut engine = Engine::with_fonts(fonts);
@@ -78,24 +80,82 @@ fn run(server: &TestServer) -> (Duration, FrameStats, Duration) {
     engine.set_waker(move || {
         let _ = wake.send(());
     });
-    let start = Instant::now();
-    engine.navigate(server.url("/page.html"));
-    while engine.url().is_none() {
+    (engine, woken)
+}
+
+/// Takes results as the waker says they come until the page under way
+/// is shown, all there.
+fn wait(engine: &mut Engine, woken: &Receiver<()>) {
+    while *engine.load_state() == LoadState::Loading {
         woken
             .recv_timeout(Duration::from_secs(30))
             .expect("the page loads");
         engine.poll_network();
-        assert!(
-            !matches!(engine.load_state(), LoadState::Failed(_)),
-            "the load failed: {:?}",
-            engine.load_state()
-        );
     }
-    let shown = start.elapsed();
     assert_eq!(engine.load_state(), &LoadState::Loaded);
-    assert_eq!(engine.stylesheets().len(), 3, "the three sheets apply");
+}
+
+/// Takes results until none has come for a while: the page's icon, a
+/// fetch of its own that would keep it from the back-forward cache if
+/// the page were left with it on its way.
+fn settle(engine: &mut Engine, woken: &Receiver<()>) {
+    while woken.recv_timeout(Duration::from_millis(200)).is_ok() {
+        engine.poll_network();
+    }
+}
+
+fn first_frame(engine: &mut Engine) {
     black_box(engine.frame_at(WIDTH, HEIGHT, FrameTime::at(Duration::ZERO)));
+}
+
+/// One run: a new engine loads the page, and draws its first frame.
+/// Returns the time until the page was shown, the first frame's stats,
+/// and the time from `navigate` to the frame's end.
+fn run(server: &TestServer) -> (Duration, FrameStats, Duration) {
+    let (mut engine, woken) = engine();
+    let start = Instant::now();
+    engine.navigate(server.url("/page.html"));
+    wait(&mut engine, &woken);
+    let shown = start.elapsed();
+    assert_eq!(engine.stylesheets().len(), 3, "the three sheets apply");
+    first_frame(&mut engine);
     (shown, engine.frame_stats(), start.elapsed())
+}
+
+/// One run back: a new engine shows the page, leaves it for a small
+/// one, or for seven of them so that the back-forward cache, which
+/// keeps six, lets it go, and goes back to it. Returns the time from
+/// the traversal to the end of the first frame drawn after it.
+fn back(server: &TestServer, kept: bool) -> Duration {
+    let (mut engine, woken) = engine();
+    engine.navigate(server.url("/page.html"));
+    wait(&mut engine, &woken);
+    first_frame(&mut engine);
+    settle(&mut engine, &woken);
+    let away = if kept { 1 } else { 7 };
+    for n in 0..away {
+        engine.navigate(server.url(&format!("/small{n}.html")));
+        wait(&mut engine, &woken);
+        first_frame(&mut engine);
+        settle(&mut engine, &woken);
+    }
+    let fetched = server.requests().len();
+    let start = Instant::now();
+    engine.traverse(-(away as isize));
+    wait(&mut engine, &woken);
+    first_frame(&mut engine);
+    let took = start.elapsed();
+    assert_eq!(engine.url(), Some(&server.url("/page.html")));
+    let asked: Vec<String> = server.requests()[fetched..]
+        .iter()
+        .map(|request| request.target.clone())
+        .collect();
+    if kept {
+        assert!(asked.is_empty(), "from the cache: {asked:?}");
+    } else {
+        assert!(asked.contains(&"/page.html".to_owned()), "fetched again");
+    }
+    took
 }
 
 fn main() {
@@ -107,6 +167,9 @@ fn main() {
             "/base.css" => Reply::ok("text/css", BASE.as_bytes()),
             "/text.css" => Reply::ok("text/css", TEXT.as_bytes()),
             "/notes.css" => Reply::ok("text/css", NOTES.as_bytes()),
+            small if small.starts_with("/small") => {
+                Reply::ok("text/html", b"<title>A small page</title><p>small")
+            }
             _ => Reply::with_fields(404, &[], b""),
         })
     };
@@ -170,4 +233,12 @@ fn main() {
         println!("  the first frame, {name}: {}", spread(times));
     }
     println!("  load to the first frame drawn: {}", spread(&mut total));
+
+    for (kept, name) in [(true, "from the cache"), (false, "fetched again")] {
+        let mut times: Vec<f64> = (0..RUNS).map(|_| ms(back(&server, kept))).collect();
+        println!(
+            "  back to the page {name}, to its first frame drawn: {}",
+            spread(&mut times)
+        );
+    }
 }

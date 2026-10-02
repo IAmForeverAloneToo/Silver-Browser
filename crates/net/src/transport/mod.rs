@@ -74,6 +74,27 @@ impl Config {
         self.extra_roots.push(root);
         self
     }
+
+    /// Trusts the certificates of the PEM file `pem` beside Mozilla's
+    /// roots: the root of a network that intercepts TLS, for the live
+    /// tests run by hand on one. A certificate no root store would take
+    /// is left out; a file with none it would is refused. There is no
+    /// such option outside tests.
+    #[cfg(any(test, feature = "test-server"))]
+    pub fn trust_pem(mut self, pem: &[u8]) -> Result<Config, String> {
+        use rustls::pki_types::pem::PemObject;
+        let mut store = rustls::RootCertStore::empty();
+        for root in CertificateDer::pem_slice_iter(pem) {
+            let root = root.map_err(|error| format!("not a PEM file: {error:?}"))?;
+            if store.add(root.clone()).is_ok() {
+                self.extra_roots.push(root);
+            }
+        }
+        if store.is_empty() {
+            return Err("no certificate in it can be a root".to_owned());
+        }
+        Ok(self)
+    }
 }
 
 /// One request to send.

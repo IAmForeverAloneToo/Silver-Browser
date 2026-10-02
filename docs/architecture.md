@@ -14,7 +14,10 @@ The workspace is a layered DAG. Every crate may depend ONLY on crates below
 it in this stack:
 
 ```
-shell          (bin "silver-browser": windowing, event loop, browser chrome UI)
+shell          (bin "silver-browser": windowing, event loop, input, clipboard)
+ ├ ui          (the browser's own interface, since M15: the toolbar and its
+ │              address field, the status bubble, the window's title; draws
+ │              with paint, render and text below, and touches no OS)
  └ engine      (session glue: orchestrates net → parse → style → layout →
                 paint → render for each frame/navigation)
     ├ render  (rasterization backends: software today, wgpu GPU later)
@@ -36,7 +39,9 @@ shell          (bin "silver-browser": windowing, event loop, browser chrome UI)
    `use` a higher one. The workspace root `Cargo.toml` mirrors this graph;
    keep it honest.
 2. **Only `shell` touches the OS**: window creation, input events, the
-   event loop. Only `render` touches pixel buffers / the GPU. `engine`
+   event loop, the clipboard. `ui` draws the browser's own interface
+   and touches no OS: the shell gives it input and shows its pixels
+   (M15). Only `render` touches pixel buffers / the GPU. `engine`
    orchestrates but owns no platform state. Only `net` opens network
    connections and reads resources by URL (since M14): CI fails the
    build when `TcpStream`, `UdpSocket`, `ToSocketAddrs` or `rustls`
@@ -752,3 +757,63 @@ proxies; the legacy CJK encodings (M42, or a T1 page that needs one);
 media queries beyond `all` and `screen` (M20); navigation and error
 pages (M15). 835 tests workspace-wide. Next milestone: navigation and
 the address bar (M15).
+
+Milestone 15 (navigation v1 and the address bar), designed in
+`docs/design/navigation.md` and built in its eight steps.
+`engine::navigation` (step 1) keeps the session history: at most 50
+entries, each with its URL, a document state that the entries a
+fragment navigation made from one another share, and a scroll
+position; a new engine shows the initial `about:blank`. Everything
+made from the document shown — the document, its page and stylesheets,
+the cascade, the layout and its cache, the scroll offsets, the icon —
+is one value, which the back-forward cache keeps whole for up to six
+documents left, unless leaving one aborted a fetch or the browser made
+it. `Engine::navigate` and `follow_link` push an entry, or replace it
+when the URL is the one shown or the page is the initial
+`about:blank`; `go_back`, `go_forward`, `traverse`, `reload` and
+`stop` are HTML's; `Engine::load` is gone. A response becomes (step
+2), in HTML's order, a download refused with a notice (`attachment`,
+PDF, a type nothing shows), nothing (204, 205), an HTML document,
+XHTML through the HTML parser, a text document of one `<pre>` for
+text, script, JSON and other XML types, a page saying an image, audio
+or video cannot be shown yet, or, for an error status with an empty
+body, a page naming the status; a network error becomes an error page
+under the URL that failed, naming what failed, with no way past a TLS
+failure. The browser's pages are built as trees, so nothing from
+outside becomes markup; `about:silver` is the built-in page, with a
+link to one of its fragments. Links (step 3): `link_at` gives the link
+with its URL, parsed against the document's base URL and encoding when
+it is followed, under the browsers' scheme rules (no `data:` from a
+page, `file:` only from a `file:` page, `about:silver` only from the
+browser's own); fragment navigations, HTML's indicated part, scrolling
+into view through scroll containers, and scroll goals applied before a
+frame is painted and restored on traversal. `Engine::title`, and the
+icon, fetched with `net`'s new image destination and kept up to 1 MiB
+(step 4). `engine::address` (step 5) makes what is typed a URL: a
+domain gets `https://`, a local host `http://`, an absolute path its
+`file:` URL; there is no search and no `http:` fallback. A new crate,
+`ui` (D9, step 6), draws the toolbar — back, forward, reload or stop,
+the address field — and the status bubble with `paint`, `render` and
+`text`, which gained the caret's places in shaped text; the field is a
+model of its own, tested by a seeded run of 20,000 commands. The shell
+(step 7) puts the toolbar above the page and the bubble over it, and
+its input is a session of its own types, driven in tests with an
+engine and the test server: the focus, the keys of Linux, Windows and
+macOS, the clipboard through `arboard`, double and triple clicks, the
+input method, the pointer's shapes and the window's title. The
+acceptance (step 8): an ignored live test reads `https://example.com/`
+through the engine, run here on a network whose TLS is intercepted by
+trusting that network's root; the browser itself, which trusts
+Mozilla's roots alone, shows the interception as an error with no way
+past, and pointing it at the site from a direct connection is left to
+a run by hand. Going back to a page of 1,000 paragraphs kept in the
+cache takes 5–6ms to its first frame, and to one fetched again 650ms
+(`docs/perf-budgets.md`). Not in this milestone, said rather than
+hidden: tabs and named targets (M37.1); downloads (M37.2); search and
+suggestions (M37.3); scripts' part in navigation (M24–M26); form
+submission; an XML parser; images and media as documents (M23, M40);
+showing the icon (M23); grapheme clusters and bidirectional text in
+the field (M42); an input method's preedit text (M45); scaling for
+high-density displays; the toolbar's accessibility (M44). 940 tests
+workspace-wide. Next milestone: selectors v2 and pseudo-elements
+(M16).

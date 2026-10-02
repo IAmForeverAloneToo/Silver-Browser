@@ -977,21 +977,34 @@ code and corrected to it after; built in its twelve steps on
 
 ## M15 — Navigation v1 + address bar  ·  `shell`/`engine`  ·  Effort: L  ·  Depends: M14
 
-- [ ] M15.1 Navigation state machine: `about:blank`, `about:silver`
+- [x] M15.1 Navigation state machine: `about:blank`, `about:silver`
        (built-in demo), user URL entry → fetch → parse → render; error
-       pages (DNS fail, TLS fail, HTTP error classes).
-- [ ] M15.2 Session history: back/forward with in-memory bfcache v1
+       pages (DNS fail, TLS fail, HTTP error classes). Done 2026-10-02:
+       `Engine::navigate` and `follow_link`, HTML's history handling,
+       responses dispatched by type, error, status and type pages built
+       as trees, the initial `about:blank`.
+- [x] M15.2 Session history: back/forward with in-memory bfcache v1
        (document snapshot, no JS state yet), same-document fragment
-       navigation.
-- [ ] M15.3 Minimal chrome UI v0: a URL text box + back/forward buttons
+       navigation. Done 2026-10-02: 50 entries, the document's state as
+       one value, six kept whole, fragments scrolled to through scroll
+       containers, positions restored.
+- [x] M15.3 Minimal chrome UI v0: a URL text box + back/forward buttons
        drawn in-engine (softbuffer UI; not native widgets — see D9).
-- [ ] M15.4 Address bar input heuristics v1: scheme-less input →
+       Done 2026-10-02: the `ui` crate's toolbar, address field and
+       status bubble; the shell's keys, clipboard and input method.
+- [x] M15.4 Address bar input heuristics v1: scheme-less input →
        `https://` prefix; "looks like a host" detection (single token,
-       dot rules).
-- [ ] M15.5 Page title → window title; favicon fetch (v0: no UI display).
+       dot rules). Done 2026-10-02: `engine::address`, `http://` for
+       local hosts, no search and no `http:` fallback.
+- [x] M15.5 Page title → window title; favicon fetch (v0: no UI display).
+       Done 2026-10-02: `Engine::title`, cleaned for the window; the
+       icon fetched as an image and kept.
 - [ ] M15.6 Acceptance: navigate to a real static site over HTTPS
        (e.g., example.com) and read it. **This is the T1 gate-crasher
-       milestone.**
+       milestone.** 2026-10-02: the engine's live test reads
+       `https://example.com/`, run on a network whose TLS is intercepted
+       by trusting its root; the browser pointed at the site from a
+       direct connection waits for a run by hand.
 
 ---
 

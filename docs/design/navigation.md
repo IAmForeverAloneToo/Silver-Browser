@@ -194,12 +194,14 @@ empty window tells the user nothing.
 
 **Pages the browser makes.** HTML calls them documents "for inline
 content that doesn't have a DOM": the browser's own, under the URL
-navigated to. Here they are HTML documents the engine builds from its
-own source, with an inline stylesheet and no URL of their own, so that
-nothing in them resolves against the URL shown and they fetch nothing.
-Their origin is opaque. Text that comes from outside — the URL, the
-reason for an error, a MIME type — is put into them as text nodes,
-never spliced into their source, so it cannot become markup.
+navigated to. Here they are HTML documents the engine builds as trees,
+element by element, with an inline stylesheet and no URL of their own,
+so that nothing in them resolves against the URL shown and they fetch
+nothing. Their origin is opaque. Text that comes from outside — the
+URL, the reason for an error, a MIME type — goes into them as text
+nodes; there is no markup for it to be spliced into. `about:silver`
+alone is parsed from the engine's own source, under its own URL, so
+that its links to its own fragments resolve.
 
 - *`about:silver`* is the built-in page, the one shown since M1: the
   page with no argument on the command line, and HTML's other
@@ -327,10 +329,11 @@ title and the browser's name, "Example Domain — Silver Browser"; when
 the title is empty, the entry's URL takes its place, and with no URL
 the window says "Silver Browser". The title can be anything a page
 writes, so before it goes to the window it loses its control
-characters and the bidirectional formatting characters (U+200E,
-U+200F, U+202A–U+202E, U+2066–U+2069), which would otherwise let a
-page reorder the text the browser puts after it, and it is cut at
-1,024 characters, more than any title bar shows.
+characters and the bidirectional formatting characters (U+061C,
+U+200E, U+200F, U+202A–U+202E, U+2066–U+2069), which would otherwise
+let a page reorder the text the browser puts after it, and what is
+left, trimmed, is cut at 1,024 characters, more than any title bar
+shows.
 
 **The icon (M15.5).** HTML's `icon` link type, fetched and kept, not yet
 shown (images are M23):
@@ -362,6 +365,7 @@ shown (images are M23):
   document waits for a stylesheet; failed, with the error, while an
   error page is shown; loaded otherwise;
 - `title()`, `icon()`;
+- `fonts()`, the fonts it draws with, which the toolbar draws with too;
 - `link_at(x, y)`, which now answers with a `Link`: the element and its
   URL;
 - a notice of what a navigation did that the user should be told and
@@ -442,9 +446,13 @@ drawing.
   word is a run of letters and digits, so `/`, `.`, `:` and `-` stop
   the caret as they do in the browsers' address bars; Ctrl+Backspace
   and Ctrl+Delete by words; Shift with any of the moves extends the
-  selection; Ctrl+A selects all. A click places the caret, a drag
-  selects, a double click selects a word. A click that focuses the
-  field selects all of it, as the browsers' address bars do.
+  selection; Ctrl+A selects all. A click places the caret, Shift with a
+  click selects to it, a drag selects, a double click selects a word
+  and a triple click all of it; presses half a second and four pixels
+  apart at most count as one click after another. A click that focuses
+  the field selects all of it, as the browsers' address bars do, unless
+  the pointer then moves four pixels or more with the button held,
+  which selects from where it was pressed.
 - Characters are Unicode scalar values: the caret moves by one, and
   never stands inside one. Grapheme clusters, so that an accented
   letter made of two code points moves as one, come with M42's text
@@ -454,19 +462,24 @@ drawing.
   refused whole, with a notice, rather than cut into a URL nobody
   wrote. Pasted text loses its line breaks and control characters.
 - Drawing: the text at 15 pixels, clipped to the field and scrolled
-  sideways to keep the caret in view; a selection's highlight; a caret
-  one pixel wide, which does not blink, so the toolbar needs no timer;
-  a focus ring. The caret's places come from the text's shaping:
-  `text` gains, for a shaped run, the x of every character boundary,
-  from the shaper's clusters, a ligature's advance shared among the
-  characters it joins. The field shapes its text once per change, and
-  draws only the characters in view.
+  sideways to keep the caret in view; a selection's highlight and a
+  caret one pixel wide, which does not blink, so the toolbar needs no
+  timer, both only while the field has the keyboard, as in the browsers;
+  a focus ring. The caret's places come from the text's shaping: `text`
+  gains, for a shaped run, the x of every character boundary, from the
+  shaper's clusters, a ligature's advance shared among the characters it
+  joins. The field shapes its text once per change, and draws only the
+  characters in view.
 
 **The status bubble.** A small box at the bottom left of the page, over
 it, as the browsers have: while the pointer is over a link, the link's
 URL, so where a link goes can be read before it is followed; otherwise
-the latest notice, until the next input. It is part of `ui`, drawn into
-its own buffer, and the shell puts it over the page's pixels.
+the latest notice, until the next input: a key, a press of a mouse
+button or a turn of the wheel, but not the pointer moving, or a notice
+would go before it was read. It is at most half the window's width; a
+longer text keeps its start, where a URL's scheme and host are, and
+ends in an ellipsis. It is part of `ui`, drawn into its own buffer, and
+the shell puts it over the page's pixels.
 
 **Showing a URL.** The field shows a URL as the URL Standard serializes
 it: an internationalized host as its ASCII (`xn--`) form, and the path
@@ -492,11 +505,16 @@ has focus, else to the page. On Linux and Windows:
   under way, stops it;
 - the scrolling keys of M9 scroll the page when it has focus;
 - Ctrl+C, Ctrl+X and Ctrl+V copy, cut and paste in the field, and so
-  do Ctrl+Insert, Shift+Delete and Shift+Insert.
+  do Ctrl+Insert, Shift+Delete and Shift+Insert;
+- a key pressed with Ctrl or Alt alone types nothing into the field;
+  with both, which is how Windows reports AltGr, it types.
 
 On macOS, Cmd stands where Ctrl is, Cmd+[ and Cmd+] go back and
 forward, and the field moves as macOS fields do: Option+Left and
-Option+Right by words, Cmd+Left and Cmd+Right to the ends. The mapping
+Option+Right by words, Cmd+Left and Cmd+Right to the ends; Option
+types characters, so Alt+D is not macOS's, and Cmd+Backspace, which
+deletes to the line's start in macOS fields, does nothing until the
+field can do that. The mapping
 from keys to commands is the shell's (rule 6 keeps `cfg` there); `ui`
 takes commands. A click on the page gives it the focus; one on the
 field gives the field the focus. The pointer is a hand over a link, an
@@ -508,7 +526,7 @@ focus, as a new window's address bar does.
 
 **The clipboard and input methods.** The clipboard is the OS's, so the
 shell reaches it, through the `arboard` crate with its default features
-off. It adds seven small crates to the tree, under licences the
+off. It adds eight small crates to the tree, under licences the
 repository allows; one of them, `objc2-app-kit`, is a second generation
 of a crate `winit` already brings on macOS, so the bans list skips it
 by name, as it does `objc2`, until `winit` moves to the same
@@ -565,10 +583,11 @@ window shows it.
   address, Enter, the load, the title, back. Only the window, the
   surface and the clipboard are left to the smoke run and to hand.
 - *A live test*, `#[ignore]`d: the engine navigates to
-  `https://example.com/` and finds its title, "Example Domain", and its
-  heading. It trusts Mozilla's roots, and also a root named by an
-  environment variable when one is given, for a network whose TLS is
-  intercepted; the browser itself has no such option. It is run by
+  `https://example.com/` and finds its title, "Example Domain", its
+  text and its link, and draws it. It trusts Mozilla's roots, and also
+  the certificates of the PEM file `SILVER_EXTRA_ROOTS` names when it
+  names one, for a network whose TLS is intercepted; the browser itself
+  has no such option. It is run by
   hand. M15.6's acceptance is that test, and the browser itself pointed
   at the site on a machine with a direct connection.
 
@@ -651,3 +670,39 @@ run before the next. A step is done when its tests pass.
    `docs/perf-budgets.md`: going back to a page of 1,000 paragraphs
    kept in the cache, and to one fetched again, each to its first
    frame.
+
+## 4. What the code taught
+
+Ten things this note did not foresee, each corrected above where it
+stands or recorded here. Scrolling an element into view could not use
+the paint-order walk as it was, since that walk leaves out what is
+outside the viewport, which is where a fragment's target usually is; the
+target is found in a walk of its own with a viewport as tall as the
+document, and each scroll container around it is scrolled innermost
+first, the target found again after each. A navigation to a fragment
+lets a push or a replace under way go on, as the note says, but cancels
+a reload or a traversal, whose entry would otherwise be shown in the
+wrong place. A document given as source has no URL, so only an absolute
+`href` in it resolves. A `text/plain` response with a NUL in it sniffs
+as binary, as MIME Sniffing says, and becomes a download rather than a
+text document; and a text document's `<pre>` is drawn in the
+proportional face, since no monospace face is loaded yet. The icon,
+which the load does not wait for, is a fetch of the document's own: a
+page left before its icon arrives aborts that fetch, and HTML's rule
+then keeps the page out of the back-forward cache. `example.com:port`,
+which the rule for a host and port does not take, `port` being no
+number, parses as a URL whose scheme is `example.com`, and was refused
+as a scheme the browser does not open; a scheme with a dot in it is now
+taken as no address. The field's caret stands at characters in logical
+order, while the text it draws goes through `text`'s shaping, which lays
+a right-to-left run out right to left: in a URL with Hebrew or Arabic in
+it the caret stands apart from its character until M42. Escape on a page
+stops only a load under way, as the note says, and the code had to look
+at the load state to do so: `stop` on a page all there would still abort
+its icon. And `example.com` no longer has a heading: the page this note
+had in mind became a title, a paragraph and a link, so the live test
+reads those. Last, the load benchmark waited for the engine to have a
+URL, which with the initial `about:blank` it always has, so its wait
+ended at once and its run failed; benchmarks are built by the checks but
+not run, and it was found only when step 8 ran it. It waits for the load
+state now.
