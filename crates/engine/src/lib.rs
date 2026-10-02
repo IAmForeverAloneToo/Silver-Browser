@@ -26,7 +26,9 @@
 //! next frame, which restyles the elements it reaches (M13.1) and lays
 //! out the boxes it reaches, taking the others from the layout cache
 //! (M13.2); [`Engine::boxes_laid_out`] and [`Engine::boxes_reused`]
-//! count which. Scrolling
+//! count which. The rasterizer keeps the last frame and draws again
+//! only where the new display list differs from the last one (M13.3);
+//! [`Engine::redrawn`] says where. Scrolling
 //! (M9.2) is a target the frame approaches a fixed fraction per
 //! [`Engine::tick`] — the "fixed-tick lerp" of the roadmap, no clock
 //! involved; compositor-smooth scrolling is M19. The scrollbar is
@@ -171,6 +173,10 @@ pub struct Engine {
     viewport: (u32, u32),
     /// The scroll offset shown, and the one being approached.
     scroll_y: f32,
+    /// The scroll offset the last frame showed: a frame at another moves
+    /// everything in it, and is rasterized whole without comparing its
+    /// display list with the last one's (M13.3).
+    drawn_scroll_y: f32,
     scroll_target: f32,
     /// Each scroll container's offset (M10.5), by its element's id; one
     /// never scrolled has no entry, and one freed loses its entry.
@@ -267,6 +273,7 @@ impl Engine {
             boxes_reused: 0,
             viewport: (0, 0),
             scroll_y: 0.0,
+            drawn_scroll_y: 0.0,
             scroll_target: 0.0,
             element_scroll: HashMap::new(),
             changed: false,
@@ -525,6 +532,13 @@ impl Engine {
         self.boxes_reused
     }
 
+    /// What the last frame's raster drew anew (M13.3): the whole frame,
+    /// or the rectangles where its display list differed from the
+    /// frame's before — none when it did not.
+    pub fn redrawn(&self) -> &render::Redrawn {
+        self.backend.redrawn()
+    }
+
     /// Renders the current document into an RGBA8 framebuffer for a
     /// `width` x `height` viewport at the current scroll offset, with
     /// the scrollbar when the document is taller than the viewport. A
@@ -565,6 +579,10 @@ impl Engine {
             scroll_y: self.scroll_y,
         };
         let scrollbar = self.scrollbar();
+        if self.scroll_y != self.drawn_scroll_y {
+            self.backend.forget_frame();
+            self.drawn_scroll_y = self.scroll_y;
+        }
         let layout = self.layout(width as f32);
         let mut list = paint_fragments_in(&layout.roots, viewport, &offsets);
         if let Some(bar) = scrollbar {
@@ -2326,6 +2344,53 @@ mod tests {
         // A new width: every paragraph's containing block is new.
         engine.frame(300, 100);
         assert_eq!((engine.boxes_laid_out(), engine.boxes_reused()), (314, 200));
+    }
+
+    #[test]
+    fn a_frame_redraws_where_its_list_changed_and_nowhere_else() {
+        // After the first frame, the raster draws again only where the
+        // display list differs from the last frame's (M13.3), and the
+        // frame is still what a fresh engine draws whole.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0 } p { margin: 0 } .x { color: #00f }</style>\
+             <p>one</p><p>two</p><p>three</p>",
+        );
+        engine.frame(200, 100);
+        assert_eq!(engine.redrawn(), &render::Redrawn::Whole);
+        engine.frame(200, 100);
+        assert_eq!(engine.redrawn(), &render::Redrawn::Rects(Vec::new()));
+        // The second paragraph's text in another colour: around its
+        // line alone.
+        let second = boxes_of(&engine, "p")[1].clone();
+        engine
+            .mutate(|document| document.set_attribute(second.node, "class", "x"))
+            .expect("an element");
+        engine.frame(200, 100);
+        let render::Redrawn::Rects(rects) = engine.redrawn().clone() else {
+            panic!("drawn whole: {:?}", engine.redrawn());
+        };
+        assert!(!rects.is_empty());
+        for rect in &rects {
+            assert!(
+                rect.y0 as f32 >= second.y - 2.0 && rect.y1 as f32 <= second.y + second.h + 2.0,
+                "{rect:?} reaches past the paragraph at {} by {}",
+                second.y,
+                second.h
+            );
+        }
+        let mut fresh = test_engine();
+        differential::compare_with_fresh(&mut engine, &mut fresh, 200, 100)
+            .expect("the frame drawn in part is the whole raster");
+        // A new size: drawn whole.
+        engine.frame(200, 30);
+        assert_eq!(engine.redrawn(), &render::Redrawn::Whole);
+        // A scroll moves everything: drawn whole, without comparing.
+        engine.set_scroll(10.0);
+        engine.frame(200, 30);
+        assert_eq!(engine.redrawn(), &render::Redrawn::Whole);
+        engine.frame(200, 30);
+        assert_eq!(engine.redrawn(), &render::Redrawn::Rects(Vec::new()));
     }
 
     /// A page with something of every kind the mutations reach: styled

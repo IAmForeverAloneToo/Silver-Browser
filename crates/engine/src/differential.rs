@@ -3,9 +3,10 @@
 //! it now stands.
 //!
 //! An engine that mutates its document keeps what it computed for the
-//! document before — today only what a mutation leaves valid, later
-//! (M13.1 to M13.3) what it chooses to reuse. A full pass over the same
-//! document is the answer it must give. [`compare_with_fresh`] checks
+//! document before and reuses what the changes left valid: element
+//! styles (M13.1), boxes' layouts (M13.2) and the last frame's pixels
+//! (M13.3). A full pass over the same document is the answer it must
+//! give. [`compare_with_fresh`] checks
 //! that: the computed style of every element, every fragment and every
 //! pixel. [`Mutator`] turns bytes into mutations, so that the engine's
 //! tests drive it from seeded random bytes and the `mutation` fuzz
@@ -210,6 +211,9 @@ pub fn compare_with_fresh(
             fresh.set_element_scroll(fresh_node, offset);
         }
     }
+    // Rasterized whole, not from the frame before: the engine's raster
+    // keeps its last frame (M13.3), and the fresh one's must not.
+    fresh.backend.forget_frame();
     let fresh_pixels = fresh.frame(width, height);
 
     engine.cached_styles();

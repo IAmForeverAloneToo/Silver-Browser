@@ -2,6 +2,10 @@
 //! widths, paint at several scroll offsets, raster. The bundled test
 //! font, so every machine shapes the same text; a small raster, so the
 //! time goes into the engine rather than into filling pixels.
+//!
+//! The rasterizer draws each frame from the last one, this input's or
+//! the one before's, redrawing only what changed (M13.3): every frame
+//! must be byte for byte what a raster of the whole list gives.
 
 #![no_main]
 
@@ -13,8 +17,13 @@ use std::sync::OnceLock;
 static FONTS: OnceLock<text::FontCollection> = OnceLock::new();
 
 thread_local! {
-    static BACKEND: RefCell<render::SoftwareBackend> =
-        RefCell::new(render::SoftwareBackend::with_fonts(fonts().clone()));
+    /// The backend under test, which keeps its last frame, and one that
+    /// is made to rasterize every list whole.
+    static BACKENDS: RefCell<(render::SoftwareBackend, render::SoftwareBackend)> =
+        RefCell::new((
+            render::SoftwareBackend::with_fonts(fonts().clone()),
+            render::SoftwareBackend::with_fonts(fonts().clone()),
+        ));
 }
 
 fn fonts() -> &'static text::FontCollection {
@@ -55,8 +64,15 @@ fuzz_target!(|data: &[u8]| {
                 scroll_y,
             };
             let list = paint::paint_fragments(&document.roots, viewport);
-            BACKEND.with(|b| {
-                let _ = b.borrow_mut().rasterize(&list, width as u32, 64);
+            BACKENDS.with(|backends| {
+                let (backend, whole) = &mut *backends.borrow_mut();
+                let pixels = backend.rasterize(&list, width as u32, 64);
+                whole.forget_frame();
+                assert!(
+                    pixels == whole.rasterize(&list, width as u32, 64),
+                    "{:?} redrawn from the last frame differs from a whole raster",
+                    backend.redrawn()
+                );
             });
         }
     }

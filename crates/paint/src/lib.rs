@@ -103,8 +103,11 @@ impl Rgba8 {
     }
 }
 
-/// One drawable operation in a display list.
-#[derive(Debug, Clone)]
+/// One drawable operation in a display list. Items compare by value:
+/// two equal items draw the same pixels over the same pixels under the
+/// same clip, which `render` relies on when it compares a frame's list
+/// with the last one's to redraw only where they differ (M13.3).
+#[derive(Debug, Clone, PartialEq)]
 pub enum DisplayItem {
     /// Fill an axis-aligned rectangle.
     Rect {
@@ -191,7 +194,7 @@ impl Viewport {
 }
 
 /// An ordered list of drawable operations.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct DisplayList {
     /// Items in paint order (later items composite over earlier ones).
     pub items: Vec<DisplayItem>,
