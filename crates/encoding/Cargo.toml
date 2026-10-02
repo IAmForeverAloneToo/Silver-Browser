@@ -1,0 +1,16 @@
+[package]
+name = "encoding"
+version.workspace = true
+edition.workspace = true
+# The crate is AGPL like the workspace. The tables in src/tables.rs are
+# generated from the Encoding Standard's index files, and the standard
+# licenses the portions of it carried into source code under
+# BSD-3-Clause: see LICENSE-WHATWG.
+license = "AGPL-3.0-only AND BSD-3-Clause"
+
+# Leaf crate: no dependencies. See docs/architecture.md.
+[dependencies]
+
+[dev-dependencies]
+# The tests read the standard's label table, which is JSON.
+serde_json = "1"

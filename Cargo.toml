@@ -10,11 +10,12 @@ edition = "2024"
 license = "AGPL-3.0-only"
 
 # Layer order (dependencies may only point DOWN this list):
-#   shell -> engine -> { render, paint, layout, style, text, net, html, css } -> dom
+#   shell -> engine -> { render, paint, layout, style, text, net, html, css } -> { dom, encoding }
 # See docs/architecture.md — the layering contract is binding.
 [workspace.dependencies]
 # Internal crates
 dom = { path = "crates/dom" }
+encoding = { path = "crates/encoding" }
 html = { path = "crates/html" }
 css = { path = "crates/css" }
 style = { path = "crates/style" }

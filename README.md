@@ -21,7 +21,7 @@ through winit + softbuffer.
 ## Architecture
 
 The workspace is a strict layer DAG of crates (`shell → engine → render /
-paint / layout / style / text / net / html / css → dom`).
+paint / layout / style / text / net / html / css → dom / encoding`).
 **Read [`docs/architecture.md`](docs/architecture.md) before adding any
 dependency edge** — the layering contract there is binding.
 

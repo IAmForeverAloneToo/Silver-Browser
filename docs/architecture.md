@@ -25,7 +25,9 @@ shell          (bin "silver-browser": windowing, event loop, browser chrome UI)
     ├ net     (URL parsing, resource fetching)
     ├ html    (bytes → DOM)
     ├ css     (stylesheet bytes → CSSOM)
-    └ dom     (document object model — the leaf crate)
+    ├ dom     (document object model — a leaf crate)
+    └ encoding (the Encoding Standard's labels, decoders, encoders — a
+                leaf crate, since M14)
 ```
 
 ### Rules
