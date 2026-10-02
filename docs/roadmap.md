@@ -89,7 +89,7 @@ images, the last item on T0's list, come with M23.
 
 ---
 
-## 2. Current state (M0–M12)
+## 2. Current state (M0–M13)
 
 - **M0 — Scaffold** (done 2026-09-30): 11-crate workspace, layer DAG,
   `docs/architecture.md` contract.
@@ -265,11 +265,31 @@ images, the last item on T0's list, come with M23.
   the stated gaps (presentational attributes, `visibility: collapse`,
   percentage row heights, the parser's table insertion modes).
 
-Verified per the vertical-slice rule at each milestone: 551 tests
-workspace-wide (191 in `style`, 152 in `layout`, 45 in `html`, 43 in
-`engine` with the reference harness, 39 in `paint`, 32 in `css`, 31 in
-`text`, 11 in `render`), clippy clean (`-D warnings`, every target),
-fuzz targets clean, smoke run.
+- **M13 — Incremental engine** (done 2026-10-02, designed in
+  `docs/design/incremental.md` and built in its ten steps): the
+  document as a live arena of slots named by generational `NodeId`s
+  (D16), with the DOM's mutations, their checks and a change journal;
+  every stage moved onto it; restyle of the elements a change can
+  reach, by the features the selectors depend on; a layout cache by
+  node that lays out only the boxes a change reaches and their
+  ancestors; a raster that redraws only where the display list
+  changed, byte for byte a whole raster's; frames drawn for a time and
+  a deadline, timed by stage, with time-based scrolling and the shell
+  drawing only when a frame is wanted; `docs/perf-budgets.md` (T4.1);
+  and the acceptance benchmark, 1,000 paragraphs appended one a frame
+  to a page of 1,000 without laying the document out whole, 7ms a
+  frame at the median in release. Incremental is held to from scratch
+  by a differential check over random mutations, in the tests and in
+  the `mutation` fuzz target. See `docs/architecture.md` for the
+  writeup and the stated gaps (the box tree rebuilt and every fragment
+  copied each pass — M35.9, text shaping's cost — M35.8, a scroll
+  redrawn whole — M19).
+
+Verified per the vertical-slice rule at each milestone: 593 tests
+workspace-wide (193 in `style`, 165 in `layout`, 53 in `engine` with the
+reference harness, 45 in `html`, 39 in `paint`, 32 in `css`, 31 in
+`text`, 17 in `dom`, 17 in `render`, 1 in `net`), clippy clean
+(`-D warnings`, every target), fuzz targets clean, smoke run.
 Toolchain: 1.98.1, pinned by `rust-toolchain.toml`.
 Build target dir outside OneDrive (`%LOCALAPPDATA%\silver-browser\target`)
 — currently only by passing `CARGO_TARGET_DIR` manually each session; no
