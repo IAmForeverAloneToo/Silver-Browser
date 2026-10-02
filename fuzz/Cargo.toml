@@ -1,6 +1,7 @@
 # Fuzz targets for everything that parses text from a page: the HTML
 # parser, the CSS tokenizer and parser, the selector parser, the cascade,
-# and the whole pipeline through to a raster. Not a workspace member:
+# and the whole pipeline through to a raster; and for the engine whose
+# document changes in place, held to a full pass over it. Not a workspace member:
 # libfuzzer needs nightly, and the normal build must not.
 # `cargo +nightly fuzz run <target>` from the repository root; CI runs
 # each target for a short while on every push and for longer weekly.
@@ -19,6 +20,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 css = { path = "../crates/css" }
 dom = { path = "../crates/dom" }
+engine = { path = "../crates/engine" }
 html = { path = "../crates/html" }
 layout = { path = "../crates/layout" }
 paint = { path = "../crates/paint" }
@@ -57,6 +59,13 @@ bench = false
 [[bin]]
 name = "pipeline"
 path = "fuzz_targets/pipeline.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mutation"
+path = "fuzz_targets/mutation.rs"
 test = false
 doc = false
 bench = false

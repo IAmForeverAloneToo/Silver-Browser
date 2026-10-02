@@ -11,6 +11,11 @@
 //! pixels in red over the capture, dimmed) are written under
 //! `target/reference/` for a look, and the failure names the pixels.
 //!
+//! A second test loads each page, changes its document and changes it
+//! back, drawing a frame after every step, and holds what is left to
+//! the same capture (M13): whatever the engine keeps from frame to
+//! frame, the page must draw as it did.
+//!
 //! A page may declare `<meta name="reference-tolerance" content="N">`:
 //! a channel may then differ by up to `N`, and the test says how many
 //! pixels did. One page uses it, for the last bit of the browser's
@@ -173,6 +178,118 @@ fn every_reference_page_renders_as_its_capture() {
         let frame = engine.frame(WIDTH, HEIGHT);
         let actual: Vec<u8> = frame.chunks(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
         if let Some(failure) = compare(name, &expected, &actual, tolerance, &out_dir) {
+            failures.push(failure);
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+/// Changes `engine`'s document four ways and changes it back, drawing
+/// a frame after every step (M13): the body's first element hidden and
+/// shown again, its last element in tree order taken out and put back
+/// where it was, a text node appended and removed, and a tall block
+/// inserted first and removed. What is left is the page as loaded.
+fn mutate_and_restore(engine: &mut Engine) {
+    let frame = |engine: &mut Engine| {
+        engine.frame(WIDTH, HEIGHT);
+    };
+    let (body, first, last) = {
+        let document = engine.document();
+        let html = document
+            .document_element()
+            .expect("the parser implies html");
+        let body = document
+            .element_children(html)
+            .find(|&e| document.tag(e) == Some("body"))
+            .expect("the parser implies a body");
+        let first = document.element_children(body).next();
+        let last = document
+            .subtree(body)
+            .filter(|&n| n != body && document.is_element(n))
+            .last();
+        (body, first, last)
+    };
+    frame(engine);
+    if let Some(first) = first {
+        let old = engine.document().attr(first, "style").map(str::to_string);
+        engine
+            .mutate(|document| document.set_attribute(first, "style", "display: none"))
+            .expect("an element");
+        frame(engine);
+        engine
+            .mutate(|document| match &old {
+                Some(value) => document.set_attribute(first, "style", value),
+                None => document.remove_attribute(first, "style"),
+            })
+            .expect("an element");
+        frame(engine);
+    }
+    if let Some(last) = last {
+        let (parent, next) = {
+            let document = engine.document();
+            (
+                document.parent(last).expect("attached"),
+                document.next_sibling(last),
+            )
+        };
+        engine
+            .mutate(|document| document.remove_child(parent, last))
+            .expect("a child");
+        frame(engine);
+        engine
+            .mutate(|document| document.insert_before(parent, last, next))
+            .expect("back where it was");
+        frame(engine);
+    }
+    let text = engine.mutate(|document| {
+        let text = document.create_text("x").expect("a text node");
+        document.append_child(body, text).expect("appended");
+        text
+    });
+    frame(engine);
+    engine.mutate(|document| {
+        document.remove_child(body, text).expect("a child");
+        document.free(text).expect("detached");
+    });
+    frame(engine);
+    let block = engine.mutate(|document| {
+        let block = document.create_element("div").expect("an element");
+        document
+            .set_attribute(block, "style", "height: 300px; background-color: #ff0000")
+            .expect("an element");
+        let first_child = document.first_child(body);
+        document
+            .insert_before(body, block, first_child)
+            .expect("inserted");
+        block
+    });
+    frame(engine);
+    engine.mutate(|document| {
+        document.remove_child(body, block).expect("a child");
+        document.free(block).expect("detached");
+    });
+}
+
+#[test]
+fn every_reference_page_changed_and_changed_back_renders_as_its_capture() {
+    // The engine keeps what it computed between frames; whatever it
+    // keeps, a page mutated and restored must draw as it did (M13).
+    let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/reference");
+    let mut failures = Vec::new();
+    for page in &pages() {
+        let name = page
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .expect("a page name");
+        let expected = read_capture(&page.with_extension("png"));
+        let source = fs::read_to_string(page).expect("the page is read");
+        let mut engine = engine();
+        engine.load_document(&source);
+        mutate_and_restore(&mut engine);
+        let frame = engine.frame(WIDTH, HEIGHT);
+        let actual: Vec<u8> = frame.chunks(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+        let name = format!("{name}.restored");
+        if let Some(failure) = compare(&name, &expected, &actual, tolerance_of(&source), &out_dir) {
             failures.push(failure);
         }
     }

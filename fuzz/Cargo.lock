@@ -105,6 +105,20 @@ name = "dom"
 version = "0.0.1"
 
 [[package]]
+name = "engine"
+version = "0.0.1"
+dependencies = [
+ "css",
+ "dom",
+ "html",
+ "layout",
+ "paint",
+ "render",
+ "style",
+ "text",
+]
+
+[[package]]
 name = "fdeflate"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -330,6 +344,7 @@ version = "0.0.0"
 dependencies = [
  "css",
  "dom",
+ "engine",
  "html",
  "layout",
  "libfuzzer-sys",
