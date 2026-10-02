@@ -1,0 +1,12 @@
+[package]
+name = "ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The browser's own interface (docs/design/navigation.md): drawn with the
+# engine's display list, rasterizer and text, and touching no OS.
+[dependencies]
+paint.workspace = true
+render.workspace = true
+text.workspace = true

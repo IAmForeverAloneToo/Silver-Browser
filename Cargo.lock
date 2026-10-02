@@ -2272,6 +2272,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ui"
+version = "0.0.1"
+dependencies = [
+ "paint",
+ "render",
+ "text",
+]
+
+[[package]]
 name = "unicode-bidi"
 version = "0.3.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"

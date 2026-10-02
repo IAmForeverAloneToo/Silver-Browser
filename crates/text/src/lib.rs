@@ -335,6 +335,49 @@ impl FontStore {
             .sum()
     }
 
+    /// Where a caret may stand in `text` at `font_size_px` (M15): the x
+    /// of each character boundary, from the run's start, one more than
+    /// there are characters, the first 0 and the last the run's advance.
+    /// They come from the shaper's clusters: a cluster's advance is
+    /// shared evenly among the characters it covers, a ligature's
+    /// among the letters it joins. The characters are taken in logical
+    /// order, left to right; a run the shaper lays out right to left is
+    /// not placed as it is drawn until bidirectional text comes to
+    /// editing (M42). All zeros past the first if the face cannot be
+    /// constructed.
+    pub fn caret_stops(&self, text: &str, font_size_px: f32) -> Vec<f32> {
+        let count = text.chars().count();
+        let mut stops = Vec::with_capacity(count + 1);
+        stops.push(0.0);
+        if let Some(shaped) = self.shape_raw(text) {
+            let scale = font_size_px / self.units_per_em;
+            let mut advances: std::collections::BTreeMap<usize, f32> =
+                std::collections::BTreeMap::new();
+            for (info, pos) in shaped.glyph_infos().iter().zip(shaped.glyph_positions()) {
+                *advances.entry(info.cluster as usize).or_default() += pos.x_advance as f32 * scale;
+            }
+            let starts: Vec<usize> = advances.keys().copied().collect();
+            let mut x = 0.0f32;
+            for (k, &start) in starts.iter().enumerate() {
+                let end = starts.get(k + 1).copied().unwrap_or(text.len());
+                let Some(covered) = text.get(start..end) else {
+                    continue;
+                };
+                let chars = covered.chars().count();
+                let share = advances[&start] / chars.max(1) as f32;
+                for _ in 0..chars {
+                    x += share;
+                    stops.push(x);
+                }
+            }
+        }
+        // A face that would not shape, or clusters that did not cover
+        // every character, leave the rest where the last one ended.
+        let last = stops.last().copied().unwrap_or(0.0);
+        stops.resize(count + 1, last);
+        stops
+    }
+
     /// Shared rustybuzz plumbing for [`FontStore::shape`] and
     /// [`FontStore::measure`] — font-unit positions, unscaled.
     fn shape_raw(&self, text: &str) -> Option<rustybuzz::GlyphBuffer> {
@@ -682,6 +725,24 @@ impl FontCollection {
         }
         out
     }
+
+    /// Where a caret may stand in `text` at `font_size_px` (M15), as
+    /// [`FontStore::caret_stops`] has it, the runs itemized and each
+    /// measured in the font [`FontCollection::font_for`] picks, as
+    /// [`FontCollection::shape`] places them: one stop per character
+    /// boundary, the last at the whole text's advance.
+    pub fn caret_stops(&self, text: &str, font_size_px: f32) -> Vec<f32> {
+        let mut stops = vec![0.0];
+        let mut pen_x = 0.0f32;
+        for (range, script) in itemize(text) {
+            let font = self.font_for(script);
+            let run_text = &text[range];
+            let run = font.caret_stops(run_text, font_size_px);
+            stops.extend(run.iter().skip(1).map(|x| x + pen_x));
+            pen_x += font.measure(run_text, font_size_px);
+        }
+        stops
+    }
 }
 
 /// A base text direction, for [`bidi_reorder`] — this crate's own copy
@@ -754,6 +815,40 @@ mod tests {
 
     fn test_fonts() -> FontCollection {
         FontCollection::from_bytes(TEST_FONT.to_vec(), 0).expect("the bundled test font parses")
+    }
+
+    #[test]
+    fn caret_stops_stand_at_every_character_boundary() {
+        let fonts = test_fonts();
+        for text in [
+            "",
+            "a",
+            "Hello, world",
+            "café ünïcode",
+            "office ﬁ ffi",
+            "日本語 mixed",
+        ] {
+            let stops = fonts.caret_stops(text, 15.0);
+            assert_eq!(stops.len(), text.chars().count() + 1, "{text:?}");
+            assert_eq!(stops[0], 0.0);
+            assert!(
+                stops.windows(2).all(|pair| pair[0] <= pair[1]),
+                "{text:?}: {stops:?}"
+            );
+            let whole = fonts.measure(text, 15.0);
+            assert!((stops[stops.len() - 1] - whole).abs() < 0.01, "{text:?}");
+        }
+        // Each boundary of plain text is where the text up to it ends.
+        let text = "Hello, world";
+        let stops = fonts.caret_stops(text, 15.0);
+        for (n, (i, _)) in text.char_indices().enumerate() {
+            let prefix = fonts.measure(&text[..i], 15.0);
+            assert!(
+                (stops[n] - prefix).abs() < 0.5,
+                "at {i}: {} vs {prefix}",
+                stops[n]
+            );
+        }
     }
 
     #[test]
