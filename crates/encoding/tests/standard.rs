@@ -168,7 +168,11 @@ fn tables_match_the_standard() {
     if std::env::var_os("ENCODING_REGENERATE").is_some() {
         std::fs::write(&path, &generated).expect("tables.rs written");
     }
-    let current = std::fs::read_to_string(&path).expect("tables.rs");
+    // A checkout may have turned the file's line endings into CRLF (git
+    // does on Windows by default), which is no difference in the tables.
+    let current = std::fs::read_to_string(&path)
+        .expect("tables.rs")
+        .replace("\r\n", "\n");
     assert!(
         current == generated,
         "src/tables.rs does not match data/; see data/README.md to regenerate it"
