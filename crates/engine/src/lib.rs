@@ -23,8 +23,8 @@
 //! counts the layouts actually done, so a test can prove it. The
 //! document changes in place through [`Engine::mutate`] (M13.5), which
 //! reads the document's journal afterwards: a change is seen by the
-//! next frame, which for now cascades and lays out the whole document
-//! again, as for a new one. Scrolling
+//! next frame, which restyles the elements it reaches (M13.1) and, for
+//! now, lays the whole document out again. Scrolling
 //! (M9.2) is a target the frame approaches a fixed fraction per
 //! [`Engine::tick`] — the "fixed-tick lerp" of the roadmap, no clock
 //! involved; compositor-smooth scrolling is M19. The scrollbar is
@@ -49,7 +49,7 @@ pub mod differential;
 
 use std::collections::HashMap;
 
-use dom::{Document, NodeId};
+use dom::{Change, Document, NodeId};
 use layout::{DocumentLayout, Fragment, FragmentKind};
 use paint::{
     DisplayItem, Rect, SCROLLBAR_THUMB, SCROLLBAR_TRACK, Step, Viewport, padding_box,
@@ -57,7 +57,7 @@ use paint::{
 };
 use render::{RenderBackend as _, SoftwareBackend};
 use style::computed::Overflow;
-use style::{CascadeContext, FontMeasure, Styles};
+use style::{CascadeContext, FontMeasure, Styles, Stylesheets};
 use text::FontError;
 
 /// The document rendered when no other is loaded.
@@ -133,16 +133,23 @@ pub struct Engine {
     layout_fonts: text::FontCollection,
     document: Document,
     /// The text of the document's `<style>` elements, as last read, and
-    /// the stylesheets parsed from it.
+    /// the stylesheets parsed from it, prepared for the cascade.
     style_sources: Vec<String>,
-    stylesheets: Vec<css::Stylesheet>,
+    stylesheets: Stylesheets,
     /// The cascade of the current document, computed on first use and
-    /// dropped when a document loads or changes, or when the viewport
-    /// changes and the document used viewport units (M10.1).
+    /// dropped when a document loads or its stylesheets change, or when
+    /// the viewport changes and the document used viewport units
+    /// (M10.1); a change to the document restyles it (M13.1).
     styled: Option<CachedStyle>,
-    /// How many cascades have run: what proves a resize without
+    /// The changes made to the document since the cached cascade, in
+    /// order, for the next frame to restyle by.
+    pending: Vec<Change>,
+    /// How many full cascades have run: what proves a resize without
     /// viewport units does not.
     style_runs: u64,
+    /// How many element styles restyles have computed (M13.1): what
+    /// proves a change restyles what it touches and no more.
+    restyled_elements: u64,
     /// The layout of the current document for one viewport width,
     /// dropped when a document loads or changes, or the width changes
     /// (M9.5).
@@ -237,9 +244,11 @@ impl Engine {
             layout_fonts: fonts,
             document: Document::new(),
             style_sources: Vec::new(),
-            stylesheets: Vec::new(),
+            stylesheets: Stylesheets::default(),
             styled: None,
+            pending: Vec::new(),
             style_runs: 0,
+            restyled_elements: 0,
             layout: None,
             layout_runs: 0,
             viewport: (0, 0),
@@ -270,8 +279,9 @@ impl Engine {
         document.take_changes();
         self.document = document;
         self.style_sources = style_texts(&self.document);
-        self.stylesheets = parse_stylesheets(&self.style_sources);
+        self.stylesheets = Stylesheets::new(parse_stylesheets(&self.style_sources));
         self.styled = None;
+        self.pending.clear();
         self.layout = None;
         self.scroll_y = 0.0;
         self.scroll_target = 0.0;
@@ -288,30 +298,42 @@ impl Engine {
     /// Lends the document to `f` to change through its mutation API,
     /// and returns what `f` returns (M13.5). The engine then reads the
     /// document's journal. When it records any change, the `<style>`
-    /// elements' text is read again and the stylesheets reparsed if it
-    /// changed, the next frame cascades and lays the document out
-    /// afresh, the scroll offsets of freed elements are dropped, and
+    /// elements' text is read again and, if it changed, the stylesheets
+    /// are parsed again and the next frame cascades the whole document;
+    /// otherwise the next frame restyles the elements the changes reach
+    /// (M13.1). The next frame lays the document out afresh, the scroll
+    /// offsets of freed elements are dropped, and
     /// [`Engine::needs_frame`] says a frame is wanted; the document's
     /// own scroll offset stays, clamped to the new layout by the next
     /// frame. When it records none — a value set to the one already
     /// there, say — nothing is redone.
     pub fn mutate<R>(&mut self, f: impl FnOnce(&mut Document) -> R) -> R {
         let result = f(&mut self.document);
-        if !self.document.take_changes().is_empty() {
-            self.document_changed();
+        let changes = self.document.take_changes();
+        if !changes.is_empty() {
+            self.document_changed(changes);
         }
         result
     }
 
-    /// What a change to the document invalidates: everything derived
-    /// from it, the stylesheets only when their text changed.
-    fn document_changed(&mut self) {
+    /// What `changes` to the document invalidate: the cascade, whole
+    /// when the stylesheets' text changed and by restyle otherwise, the
+    /// layout, and the scroll offsets of freed elements.
+    fn document_changed(&mut self, changes: Vec<Change>) {
         let sources = style_texts(&self.document);
         if sources != self.style_sources {
-            self.stylesheets = parse_stylesheets(&sources);
+            self.stylesheets = Stylesheets::new(parse_stylesheets(&sources));
             self.style_sources = sources;
+            self.styled = None;
+            self.pending.clear();
+        } else if self.styled.is_some() && self.pending.first() != Some(&Change::Everything) {
+            // Past the journal's own bound, the changes count as all.
+            if self.pending.len() + changes.len() > dom::MAX_JOURNAL {
+                self.pending = vec![Change::Everything];
+            } else {
+                self.pending.extend(changes);
+            }
         }
-        self.styled = None;
         self.layout = None;
         let document = &self.document;
         self.element_scroll
@@ -331,7 +353,7 @@ impl Engine {
 
     /// The document's stylesheets, in document order.
     pub fn stylesheets(&self) -> &[css::Stylesheet] {
-        &self.stylesheets
+        self.stylesheets.sheets()
     }
 
     /// The document's elements' computed styles, by node, as the frames
@@ -350,12 +372,18 @@ impl Engine {
             viewport_height: viewport.1 as f32,
             fonts: Some(&fonts),
         };
-        style::cascade_document(&self.document, &self.stylesheets, &context)
+        self.stylesheets.cascade(&self.document, &context)
     }
 
-    /// How many cascades this session has run.
+    /// How many full cascades this session has run.
     pub fn style_runs(&self) -> u64 {
         self.style_runs
+    }
+
+    /// How many element styles this session's restyles have computed
+    /// (M13.1).
+    pub fn restyled_elements(&self) -> u64 {
+        self.restyled_elements
     }
 
     /// Lays the current document out against a `viewport_width`-wide
@@ -376,9 +404,10 @@ impl Engine {
         )
     }
 
-    /// The cached cascade for the current viewport: recomputed when none
-    /// is cached, or when the viewport changed and the document's styles
-    /// depend on it (M10.1). A recomputation drops the cached layout.
+    /// The cached cascade for the current viewport: computed whole when
+    /// none is cached, or when the viewport changed and the document's
+    /// styles depend on it (M10.1); restyled when the document changed
+    /// since (M13.1). Either drops the cached layout.
     fn cached_styles(&mut self) -> &Styles {
         let stale = self.styled.as_ref().is_none_or(|cached| {
             cached.styles.uses_viewport_units && cached.viewport != self.viewport
@@ -386,11 +415,33 @@ impl Engine {
         if stale {
             let styles = self.cascade(self.viewport);
             self.style_runs += 1;
+            self.pending.clear();
             self.layout = None;
             self.styled = Some(CachedStyle {
                 viewport: self.viewport,
                 styles,
             });
+        } else if !self.pending.is_empty() {
+            let changes = std::mem::take(&mut self.pending);
+            let fonts = FontMeasurer(&self.layout_fonts);
+            let context = CascadeContext {
+                viewport_width: self.viewport.0 as f32,
+                viewport_height: self.viewport.1 as f32,
+                fonts: Some(&fonts),
+            };
+            let cached = self.styled.as_mut().expect("not stale");
+            let restyle =
+                self.stylesheets
+                    .restyle(&self.document, &context, &mut cached.styles, &changes);
+            // Styles that did not depend on the viewport stand for this
+            // one; any computed now used it.
+            cached.viewport = self.viewport;
+            if restyle.full {
+                self.style_runs += 1;
+            } else {
+                self.restyled_elements += restyle.computed as u64;
+            }
+            self.layout = None;
         }
         &self.styled.as_ref().expect("just computed").styles
     }
@@ -2092,8 +2143,8 @@ mod tests {
         engine.frame(200, 100);
         assert_eq!((engine.style_runs(), engine.layout_runs()), runs);
 
-        // A real change is seen: the next frame cascades and lays out
-        // again, and shows it.
+        // A real change is seen: the next frame restyles the one element
+        // it reaches (M13.1), lays out again, and shows it.
         engine
             .mutate(|document| document.set_attribute(p, "style", "background-color: #0000ff"))
             .expect("p is an element");
@@ -2102,8 +2153,9 @@ mod tests {
         assert!(!engine.needs_frame());
         assert_eq!(
             (engine.style_runs(), engine.layout_runs()),
-            (runs.0 + 1, runs.1 + 1)
+            (runs.0, runs.1 + 1)
         );
+        assert_eq!(engine.restyled_elements(), 1);
         assert_eq!(px(&frame, 200, 5, 5), [0x00, 0x00, 0xff, 0xff]);
 
         // A stylesheet's text changed: the stylesheets are parsed again.
@@ -2148,16 +2200,65 @@ mod tests {
         assert!(engine.needs_frame());
     }
 
+    #[test]
+    fn appending_a_paragraph_to_a_long_page_restyles_it_alone() {
+        // No selector depends on siblings or children here, the UA
+        // sheet's included: the new paragraph is the one element
+        // restyled, and nothing is cascaded whole (M13.1).
+        let mut engine = test_engine();
+        let mut page = String::from("<style>p { margin: 0 } .x { color: #00f }</style>");
+        for i in 0..100 {
+            page.push_str(&format!("<p>{i}</p>"));
+        }
+        engine.load_document(&page);
+        engine.frame(200, 100);
+        let (runs, restyled) = (engine.style_runs(), engine.restyled_elements());
+        let body = first(&engine, "body");
+        engine.mutate(|document| {
+            let p = document.create_element("p").expect("an element");
+            let text = document.create_text("new").expect("a text node");
+            document.append_child(p, text).expect("appended");
+            document.append_child(body, p).expect("appended");
+        });
+        engine.frame(200, 100);
+        assert_eq!(engine.style_runs(), runs);
+        assert_eq!(engine.restyled_elements(), restyled + 1);
+        // A class some selector names, on one paragraph: it alone.
+        let p = first(&engine, "p");
+        engine
+            .mutate(|document| document.set_attribute(p, "class", "x"))
+            .expect("an element");
+        engine.frame(200, 100);
+        assert_eq!(engine.restyled_elements(), restyled + 2);
+        // A new stylesheet: the whole document, cascaded afresh.
+        let style = first(&engine, "style");
+        let text = engine.document().first_child(style).expect("the sheet");
+        engine
+            .mutate(|document| document.set_text(text, "p { margin: 1px }"))
+            .expect("a text node");
+        engine.frame(200, 100);
+        assert_eq!(engine.style_runs(), runs + 1);
+    }
+
     /// A page with something of every kind the mutations reach: styled
     /// blocks and inlines, a float, a positioned box, an inline-block,
-    /// structural and sibling selectors, a table and a scroll container.
+    /// a table and a scroll container, under selectors that make most
+    /// styles depend on an element's siblings, its place among them or
+    /// whether it has children, so that a restyle that misses any of
+    /// them shows.
     const DIFFERENTIAL_PAGE: &str = "<style>\
           body { margin: 4px; font-size: 10px }\
           .a { color: #c00; padding: 2px; background-color: #eee }\
           .b { float: left; width: 30px; height: 10px; background-color: #0a0 }\
           .c { position: relative; top: 3px; border: 1px solid #00f }\
+          * + * { margin-top: 1px }\
+          .a ~ * { color: #060 }\
+          :first-child { padding-left: 1px }\
+          :last-child { padding-right: 2px }\
+          :only-child { border: 1px solid #f0f }\
+          :nth-child(2 of .a) { background-color: #ff0 }\
+          #x { border: 3px solid #0ff } [title] > * { font-size: 12px }\
           li:first-child { font-size: 14px }\
-          p + p { margin-top: 2px }\
           td { padding: 1px; border: 1px solid #000 }\
           :empty { min-height: 2px; background-color: #ccc }\
         </style>\
@@ -2174,13 +2275,13 @@ mod tests {
         // everything, so this is the baseline each incremental stage
         // will have to keep.
         let mut fresh = test_engine();
-        for seed in 1..=4u64 {
+        for seed in 1..=8u64 {
             let mut engine = test_engine();
             engine.load_document(DIFFERENTIAL_PAGE);
             let mut mutator = differential::Mutator::new(engine.document());
             let mut rng = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15);
             let mut changed = 0;
-            for step in 0..40 {
+            for step in 0..50 {
                 // xorshift64: a sequence a failing seed replays.
                 let script: Vec<u8> = (0..6)
                     .map(|_| {
@@ -2202,7 +2303,7 @@ mod tests {
                 }
             }
             assert!(
-                changed >= 10,
+                changed >= 15,
                 "seed {seed}: only {changed} steps changed anything"
             );
         }

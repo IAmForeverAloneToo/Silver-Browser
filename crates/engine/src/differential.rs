@@ -23,21 +23,28 @@ const TAGS: [&str; 12] = [
     "div", "p", "span", "b", "ul", "li", "table", "tr", "td", "style", "a", "section",
 ];
 
-/// The attributes a [`Mutator`] sets and removes: those selectors and
-/// the cascade read, and those table layout reads.
-const ATTRIBUTES: [&str; 8] = [
-    "class", "id", "style", "colspan", "rowspan", "span", "dir", "href",
+/// The attributes a [`Mutator`] sets and removes, those selectors and
+/// the cascade read and those table layout reads, each with the values
+/// it is given: class names and ids a page's selectors can name, span
+/// counts, directions, and inline styles that reach every kind of box.
+/// `class` and `style`, the ones pages change most, come up most.
+const ATTRIBUTES: [(&str, &[&str]); 10] = [
+    ("class", CLASSES),
+    ("class", CLASSES),
+    ("style", STYLES),
+    ("style", STYLES),
+    ("id", &["x", "y", ""]),
+    ("title", &["t", ""]),
+    ("colspan", &["2", "0", "x"]),
+    ("rowspan", &["2", "0"]),
+    ("span", &["3"]),
+    ("dir", &["rtl", "ltr"]),
 ];
 
-/// The values a [`Mutator`] gives attributes: class and id names, span
-/// counts, a direction, and inline styles that reach every kind of box.
-const VALUES: [&str; 20] = [
-    "a",
-    "b",
-    "c",
+const CLASSES: &[&str] = &["a", "b", "c", "a b", "c a", ""];
+
+const STYLES: &[&str] = &[
     "",
-    "2",
-    "rtl",
     "display: none",
     "float: left; width: 30px; height: 10px",
     "float: right; width: 20px; height: 25px; clear: both",
@@ -52,6 +59,7 @@ const VALUES: [&str; 20] = [
     "margin: 6px; border: 2px solid #00f",
     "font-size: 20px; color: #f00",
     "background-color: #0f0; min-height: 5px",
+    "color: inherit; padding: inherit",
 ];
 
 /// The data a [`Mutator`] gives text nodes: empty, white space, words,
@@ -143,13 +151,13 @@ impl Mutator {
             }
             5 => {
                 let element = self.pick(byte());
-                let name = ATTRIBUTES[byte() % ATTRIBUTES.len()];
-                let value = VALUES[byte() % VALUES.len()];
+                let (name, values) = ATTRIBUTES[byte() % ATTRIBUTES.len()];
+                let value = values[byte() % values.len()];
                 let _ = document.set_attribute(element, name, value);
             }
             6 => {
                 let element = self.pick(byte());
-                let name = ATTRIBUTES[byte() % ATTRIBUTES.len()];
+                let (name, _) = ATTRIBUTES[byte() % ATTRIBUTES.len()];
                 let _ = document.remove_attribute(element, name);
             }
             7 => {

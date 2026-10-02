@@ -55,10 +55,11 @@
 //! process.
 
 use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use css::Token;
-use dom::{Document, NodeId};
+use dom::{Change, Document, NodeId};
 
 use crate::computed::{
     BOTTOM, BorderCollapse, BorderSpacing, BorderStyle, BoxSizing, CaptionSide, Clear, Color,
@@ -66,6 +67,7 @@ use crate::computed::{
     LengthPercentageAuto, MarginEdges, Overflow, PaddingEdges, Position, RIGHT, TOP, TableLayout,
     TextAlign, TextTransform, VerticalAlign, WhiteSpace,
 };
+use crate::invalidation::{Reach, SelectorFeatures, invalidate};
 use crate::selector_matching::{Matcher, SelectorList, Specificity, parse_selector_list};
 
 /// The built-in default stylesheet (M5.6), compiled in — loading it is
@@ -81,9 +83,14 @@ pub struct Styles {
     /// By slot index: the node the style was computed for, so that a
     /// later node in the same slot is not taken for it, and its style.
     entries: Vec<Option<(NodeId, ComputedStyle)>>,
+    /// The font size `rem` resolved against: the root element's, the
+    /// first element under the document node.
+    rem: f32,
     /// Whether any declaration used a viewport unit (`vw`, `vh`, `vmin`,
     /// `vmax`), so that these styles depend on the viewport the cascade
-    /// was given and must be recomputed when it changes (M10.1).
+    /// was given and must be recomputed when it changes (M10.1). A
+    /// restyle can set it and never clears it: a stale `true` costs a
+    /// needless cascade on resize, a stale `false` would be wrong.
     pub uses_viewport_units: bool,
 }
 
@@ -104,6 +111,15 @@ impl Styles {
             self.entries.resize(index + 1, None);
         }
         self.entries[index] = Some((node, style));
+    }
+
+    /// Forgets `node`'s style, if it has one.
+    fn forget(&mut self, node: NodeId) {
+        if let Some(entry) = self.entries.get_mut(node.index())
+            && entry.as_ref().is_some_and(|(id, _)| *id == node)
+        {
+            *entry = None;
+        }
     }
 }
 
@@ -137,73 +153,315 @@ pub struct CascadeContext<'a> {
 /// [`tier`]), with the viewport and font units resolved against
 /// `context`. `CascadeContext::default()`, no viewport and no font, is
 /// what a test or a fuzz target wants. An element outside the tree, a
-/// detached one, is not styled.
+/// detached one, is not styled. A caller that cascades the same sheets
+/// again, or restyles, keeps them as [`Stylesheets`] instead.
 pub fn cascade_document(
     document: &Document,
     author_sheets: &[css::Stylesheet],
     context: &CascadeContext<'_>,
 ) -> Styles {
-    cascade_with_ua(document, ua_rules(), author_sheets, context)
+    let selectors: Vec<Vec<(usize, SelectorList)>> =
+        author_sheets.iter().map(parse_selectors).collect();
+    let author = rules_of(author_sheets, &selectors);
+    Cascader::new(document, ua().rules.as_slice(), author, context).cascade()
 }
 
-/// The built-in user-agent sheet's rules, parsed once per process.
-fn ua_rules() -> &'static [ParsedRule<'static>] {
-    static SHEET: OnceLock<css::Stylesheet> = OnceLock::new();
-    static RULES: OnceLock<Vec<ParsedRule<'static>>> = OnceLock::new();
-    RULES.get_or_init(|| {
-        let sheet = SHEET.get_or_init(|| {
-            css::parse_stylesheet(UA_STYLESHEET_SRC)
-                .expect("the built-in UA stylesheet (assets/ua.css) is valid CSS")
+/// A document's author stylesheets prepared for the cascade (M13.1):
+/// each qualified rule's selectors parsed once, and what the selectors
+/// depend on, the built-in UA sheet's included, which says what a
+/// change to the document can restyle. Made when the stylesheets
+/// change and kept for every cascade and restyle until they do again.
+#[derive(Debug, Clone)]
+pub struct Stylesheets {
+    sheets: Vec<css::Stylesheet>,
+    /// For each sheet, each qualified rule whose prelude parses: its
+    /// index among the sheet's rules, and its selectors.
+    selectors: Vec<Vec<(usize, SelectorList)>>,
+    features: SelectorFeatures,
+}
+
+impl Default for Stylesheets {
+    fn default() -> Self {
+        Stylesheets::new(Vec::new())
+    }
+}
+
+impl Stylesheets {
+    /// `sheets`, in document order, prepared.
+    pub fn new(sheets: Vec<css::Stylesheet>) -> Self {
+        let selectors: Vec<Vec<(usize, SelectorList)>> =
+            sheets.iter().map(parse_selectors).collect();
+        let mut features = ua().features.clone();
+        for (_, list) in selectors.iter().flatten() {
+            features.add(list);
+        }
+        Stylesheets {
+            sheets,
+            selectors,
+            features,
+        }
+    }
+
+    /// The sheets, in document order.
+    pub fn sheets(&self) -> &[css::Stylesheet] {
+        &self.sheets
+    }
+
+    /// What the selectors, the UA sheet's among them, depend on.
+    pub fn features(&self) -> &SelectorFeatures {
+        &self.features
+    }
+
+    /// [`cascade_document`] with these sheets.
+    pub fn cascade(&self, document: &Document, context: &CascadeContext<'_>) -> Styles {
+        let author = rules_of(&self.sheets, &self.selectors);
+        Cascader::new(document, ua().rules.as_slice(), author, context).cascade()
+    }
+
+    /// Brings `styles`, computed for `document` with these sheets and
+    /// `context`, up to date after `changes`, the records of
+    /// everything done to the document since in the order it was done
+    /// (M13.1). The elements the changes can restyle, by the rules of
+    /// [`crate::invalidation`], are restyled shallowest first, each
+    /// from its parent's style; one whose style changed has its
+    /// children restyled too, since they inherit from it, and one
+    /// marked with its subtree has all of it restyled. The styles of
+    /// nodes taken out of the tree are forgotten. Where that cannot
+    /// give what a full cascade would — the journal overflowed, or the
+    /// root's font size, which `rem` reads, changed — the document is
+    /// cascaded whole. The result is what a full cascade would give.
+    pub fn restyle(
+        &self,
+        document: &Document,
+        context: &CascadeContext<'_>,
+        styles: &mut Styles,
+        changes: &[Change],
+    ) -> Restyle {
+        let invalidation = invalidate(document, &self.features, changes);
+        let author = rules_of(&self.sheets, &self.selectors);
+        let mut cascader = Cascader::new(document, ua().rules.as_slice(), author, context);
+        if invalidation.everything {
+            *styles = cascader.cascade();
+            return Restyle::full(styles);
+        }
+        for removed in &invalidation.removed {
+            for node in document.subtree(*removed) {
+                styles.forget(node);
+            }
+        }
+        let mut restyle = Restyle::default();
+        // By depth, shallowest first: every ancestor's style is final
+        // before a node is restyled from its parent's.
+        let mut levels: BTreeMap<usize, Vec<NodeId>> = BTreeMap::new();
+        let mut pending = invalidation.dirty;
+        for &node in pending.keys() {
+            levels
+                .entry(document.ancestors(node).count())
+                .or_default()
+                .push(node);
+        }
+        let first_element = document.document_element();
+        while let Some((depth, nodes)) = levels.pop_first() {
+            for node in nodes {
+                let Some(reach) = pending.remove(&node) else {
+                    continue; // listed twice
+                };
+                let parent_style = document
+                    .parent(node)
+                    .and_then(|parent| styles.get(parent))
+                    .cloned()
+                    .unwrap_or_default();
+                // The root element resolves `rem` against the initial
+                // font size, every other element against the root's.
+                let rem = if Some(node) == first_element {
+                    ComputedStyle::default().font_size_px
+                } else {
+                    styles.rem
+                };
+                let style = cascader.style_of(node, &parent_style, rem);
+                restyle.computed += 1;
+                let changed = styles.get(node) != Some(&style);
+                styles.set(node, style);
+                if changed {
+                    restyle.changed.push(node);
+                }
+                if changed || reach == Reach::Subtree {
+                    let child_reach = if reach == Reach::Subtree {
+                        Reach::Subtree
+                    } else {
+                        Reach::Element
+                    };
+                    for child in document.element_children(node) {
+                        match pending.get_mut(&child) {
+                            Some(r) => *r = (*r).max(child_reach),
+                            None => {
+                                pending.insert(child, child_reach);
+                                levels.entry(depth + 1).or_default().push(child);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        styles.uses_viewport_units |= cascader.viewport_used.get();
+        let rem = first_element
+            .and_then(|root| styles.get(root))
+            .map_or(ComputedStyle::default().font_size_px, |s| s.font_size_px);
+        if rem != styles.rem {
+            *styles = cascader.cascade();
+            return Restyle::full(styles);
+        }
+        restyle
+    }
+}
+
+/// What [`Stylesheets::restyle`] did.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Restyle {
+    /// The document was cascaded whole: every element counts as
+    /// changed, and [`Restyle::changed`] is empty.
+    pub full: bool,
+    /// The elements whose computed style changed, a newly styled one
+    /// among them, in the order they were restyled.
+    pub changed: Vec<NodeId>,
+    /// How many elements had their style computed.
+    pub computed: usize,
+}
+
+impl Restyle {
+    /// A full cascade, which computed every element of `styles`.
+    fn full(styles: &Styles) -> Self {
+        Restyle {
+            full: true,
+            changed: Vec::new(),
+            computed: styles.entries.iter().flatten().count().saturating_sub(1),
+        }
+    }
+}
+
+/// The built-in user-agent sheet, prepared once per process: its
+/// rules, and what their selectors depend on.
+struct UserAgent {
+    rules: Vec<ParsedRule<'static>>,
+    features: SelectorFeatures,
+}
+
+fn ua() -> &'static UserAgent {
+    static SHEET: OnceLock<(css::Stylesheet, Vec<(usize, SelectorList)>)> = OnceLock::new();
+    static UA: OnceLock<UserAgent> = OnceLock::new();
+    UA.get_or_init(|| {
+        let (sheet, selectors) = SHEET.get_or_init(|| {
+            let sheet = css::parse_stylesheet(UA_STYLESHEET_SRC)
+                .expect("the built-in UA stylesheet (assets/ua.css) is valid CSS");
+            let selectors = parse_selectors(&sheet);
+            (sheet, selectors)
         });
-        parse_rules(sheet)
+        let mut features = SelectorFeatures::default();
+        for (_, list) in selectors {
+            features.add(list);
+        }
+        UserAgent {
+            rules: rules_of(std::slice::from_ref(sheet), std::slice::from_ref(selectors))
+                .into_iter()
+                .flatten()
+                .collect(),
+            features,
+        }
     })
 }
 
-/// [`cascade_document`] with the user-agent rules given.
-fn cascade_with_ua(
-    document: &Document,
-    ua_rules: &[ParsedRule<'_>],
-    author_sheets: &[css::Stylesheet],
-    context: &CascadeContext<'_>,
-) -> Styles {
-    let author_rules: Vec<Vec<ParsedRule<'_>>> = author_sheets.iter().map(parse_rules).collect();
-    let mut matcher = Matcher::new(document);
-    let mut styles = Styles::default();
-    styles.set(document.root(), ComputedStyle::default());
-    let viewport_used = Cell::new(false);
-    // `rem` is the root element's font size: known once the root (the
-    // first element under the document) is styled, and the initial
-    // value for the root itself.
-    let mut root_font_size: Option<f32> = None;
-    // Preorder with an explicit stack: an element's children are styled
-    // together, from its own finished style, before any grandchild is
-    // reached, and no depth of tree costs stack.
-    let mut pending = vec![document.root()];
-    while let Some(parent) = pending.pop() {
-        let parent_style = styles.get(parent).cloned().unwrap_or_default();
-        let children: Vec<NodeId> = document.element_children(parent).collect();
-        for &child in &children {
-            let applied = declarations_for(document, &mut matcher, child, ua_rules, &author_rules);
-            let resolution = Resolution {
-                rem: root_font_size.unwrap_or(ComputedStyle::default().font_size_px),
-                context,
-                viewport_used: &viewport_used,
-            };
-            let style = compute_style(
-                &applied,
-                &parent_style,
-                document.attr(child, "dir"),
-                &resolution,
-            );
-            if root_font_size.is_none() {
-                root_font_size = Some(style.font_size_px);
-            }
-            styles.set(child, style);
+/// The cascade's working state over one document: the matcher, with
+/// its caches, and the rules in force.
+struct Cascader<'a> {
+    document: &'a Document,
+    matcher: Matcher<'a>,
+    ua: &'a [ParsedRule<'a>],
+    author: Vec<Vec<ParsedRule<'a>>>,
+    context: &'a CascadeContext<'a>,
+    /// Set when a viewport unit is met.
+    viewport_used: Cell<bool>,
+}
+
+impl<'a> Cascader<'a> {
+    fn new(
+        document: &'a Document,
+        ua: &'a [ParsedRule<'a>],
+        author: Vec<Vec<ParsedRule<'a>>>,
+        context: &'a CascadeContext<'a>,
+    ) -> Self {
+        Cascader {
+            document,
+            matcher: Matcher::new(document),
+            ua,
+            author,
+            context,
+            viewport_used: Cell::new(false),
         }
-        pending.extend(children.into_iter().rev());
     }
-    styles.uses_viewport_units = viewport_used.get();
-    styles
+
+    /// The computed style of `element`, a child of an element (or of the
+    /// document node) whose style is `parent_style`, with `rem` the
+    /// root element's font size.
+    fn style_of(
+        &mut self,
+        element: NodeId,
+        parent_style: &ComputedStyle,
+        rem: f32,
+    ) -> ComputedStyle {
+        let applied = declarations_for(
+            self.document,
+            &mut self.matcher,
+            element,
+            self.ua,
+            &self.author,
+        );
+        let resolution = Resolution {
+            rem,
+            context: self.context,
+            viewport_used: &self.viewport_used,
+        };
+        compute_style(
+            &applied,
+            parent_style,
+            self.document.attr(element, "dir"),
+            &resolution,
+        )
+    }
+
+    /// Every element's style, cascaded afresh.
+    fn cascade(&mut self) -> Styles {
+        let document = self.document;
+        self.viewport_used.set(false);
+        let mut styles = Styles {
+            rem: ComputedStyle::default().font_size_px,
+            ..Styles::default()
+        };
+        styles.set(document.root(), ComputedStyle::default());
+        // `rem` is the root element's font size: known once the root (the
+        // first element under the document) is styled, and the initial
+        // value for the root itself.
+        let mut root_font_size: Option<f32> = None;
+        // Preorder with an explicit stack: an element's children are styled
+        // together, from its own finished style, before any grandchild is
+        // reached, and no depth of tree costs stack.
+        let mut pending = vec![document.root()];
+        while let Some(parent) = pending.pop() {
+            let parent_style = styles.get(parent).cloned().unwrap_or_default();
+            let children: Vec<NodeId> = document.element_children(parent).collect();
+            for &child in &children {
+                let rem = root_font_size.unwrap_or(ComputedStyle::default().font_size_px);
+                let style = self.style_of(child, &parent_style, rem);
+                if root_font_size.is_none() {
+                    root_font_size = Some(style.font_size_px);
+                    styles.rem = style.font_size_px;
+                }
+                styles.set(child, style);
+            }
+            pending.extend(children.into_iter().rev());
+        }
+        styles.uses_viewport_units = self.viewport_used.get();
+        styles
+    }
 }
 
 /// What one document's relative units resolve against, beyond the
@@ -226,25 +484,48 @@ struct LengthBases<'a> {
     resolution: &'a Resolution<'a>,
 }
 
-/// A qualified rule with its selector list parsed, once, for the whole
-/// pass over the document. A rule whose prelude does not parse is
-/// dropped here, per css-syntax-3 (M4.10).
+/// A qualified rule ready to match: its parsed selectors and its
+/// declarations. A rule whose prelude does not parse is dropped before
+/// this, per css-syntax-3 (M4.10).
 struct ParsedRule<'s> {
-    list: SelectorList,
+    list: &'s SelectorList,
     declarations: &'s [css::Declaration],
 }
 
-fn parse_rules(sheet: &css::Stylesheet) -> Vec<ParsedRule<'_>> {
+/// Each qualified rule of `sheet` whose prelude parses: its index and
+/// its selectors. At-rules are skipped (see the module doc).
+fn parse_selectors(sheet: &css::Stylesheet) -> Vec<(usize, SelectorList)> {
     sheet
         .rules
         .iter()
-        .filter_map(|rule| match rule {
-            css::Rule::Qualified(qr) => Some(ParsedRule {
-                list: parse_selector_list(&qr.prelude).ok()?,
-                declarations: &qr.declarations,
-            }),
-            // At-rules are skipped (see the module doc).
+        .enumerate()
+        .filter_map(|(i, rule)| match rule {
+            css::Rule::Qualified(qr) => Some((i, parse_selector_list(&qr.prelude).ok()?)),
             css::Rule::At(_) => None,
+        })
+        .collect()
+}
+
+/// The rules of `sheets` ready to match, from their `selectors` as
+/// [`parse_selectors`] gave them.
+fn rules_of<'s>(
+    sheets: &'s [css::Stylesheet],
+    selectors: &'s [Vec<(usize, SelectorList)>],
+) -> Vec<Vec<ParsedRule<'s>>> {
+    sheets
+        .iter()
+        .zip(selectors)
+        .map(|(sheet, lists)| {
+            lists
+                .iter()
+                .filter_map(|(i, list)| match &sheet.rules[*i] {
+                    css::Rule::Qualified(qr) => Some(ParsedRule {
+                        list,
+                        declarations: &qr.declarations,
+                    }),
+                    css::Rule::At(_) => None,
+                })
+                .collect()
         })
         .collect()
 }
@@ -294,8 +575,8 @@ fn declarations_for<'a>(
     document: &Document,
     matcher: &mut Matcher<'a>,
     element: NodeId,
-    ua: &'a [ParsedRule<'a>],
-    author_sheets: &'a [Vec<ParsedRule<'a>>],
+    ua: &[ParsedRule<'a>],
+    author_sheets: &[Vec<ParsedRule<'a>>],
 ) -> Vec<Applied> {
     let mut order = 0u32;
     let mut out = Vec::new();
@@ -342,7 +623,7 @@ fn declarations_for<'a>(
 fn collect_from_sheet<'a>(
     matcher: &mut Matcher<'a>,
     element: NodeId,
-    sheet: &'a [ParsedRule<'a>],
+    sheet: &[ParsedRule<'a>],
     base: TierBase,
     order: &mut u32,
     out: &mut Vec<Applied>,
@@ -352,8 +633,8 @@ fn collect_from_sheet<'a>(
         // sharing one declaration block — each matching branch
         // contributes independently, so the specificity that matters is
         // the highest among the branches that actually matched here.
-        let specificity = rule
-            .list
+        let list: &'a SelectorList = rule.list;
+        let specificity = list
             .0
             .iter()
             .filter(|s| matcher.matches_element(element, s))
@@ -1675,14 +1956,25 @@ mod tests {
     fn ua_important_beats_author_important() {
         // css-cascade-5 §6.1: UA `!important` is the strongest tier of
         // all. `assets/ua.css` uses none, so a UA sheet of the test's own
-        // stands in through `cascade_with_ua`.
+        // stands in for the built-in one.
         let ua = sheet("p { color: red !important; display: block; }");
         let author = [sheet(
             "p { color: blue !important; display: inline !important; }",
         )];
         let document = Document::from_node(&html::parse_document("<p>x</p>").expect("never fails"));
-        let ua_rules = parse_rules(&ua);
-        let styles = cascade_with_ua(&document, &ua_rules, &author, &CascadeContext::default());
+        let ua = [ua];
+        let ua_selectors: Vec<_> = ua.iter().map(parse_selectors).collect();
+        let ua_rules: Vec<ParsedRule<'_>> =
+            rules_of(&ua, &ua_selectors).into_iter().flatten().collect();
+        let author_selectors: Vec<_> = author.iter().map(parse_selectors).collect();
+        let context = CascadeContext::default();
+        let styles = Cascader::new(
+            &document,
+            &ua_rules,
+            rules_of(&author, &author_selectors),
+            &context,
+        )
+        .cascade();
         let p = styles.get(first(&document, "p")).expect("styled");
         assert_eq!(p.color, Color::rgb8(255, 0, 0));
         // A normal UA declaration still loses to an important author one.

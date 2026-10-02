@@ -40,6 +40,10 @@ pub mod cascade;
 /// Computed values resolved for one element (the cascade's output).
 pub mod computed;
 
+/// Style invalidation (M13.1): which elements a change to a document
+/// can restyle.
+pub mod invalidation;
+
 /// Selector matching: does a selector match an element?
 ///
 /// The selectors-4 subset this engine supports, a right-to-left matcher
@@ -50,5 +54,6 @@ pub mod selector_matching;
 
 pub use selector_matching::{matches_selector, matches_selector_list, parse_selector_list};
 
-pub use cascade::{CascadeContext, FontMeasure, Styles, cascade_document};
+pub use cascade::{CascadeContext, FontMeasure, Restyle, Styles, Stylesheets, cascade_document};
 pub use computed::ComputedStyle;
+pub use invalidation::SelectorFeatures;
