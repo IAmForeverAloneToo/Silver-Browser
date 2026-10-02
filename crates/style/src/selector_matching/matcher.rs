@@ -12,36 +12,58 @@
 //! compounds times ancestors rather than the exponential retrying a
 //! naive backtrack does (`#x .a .a .a span` under forty nested `.a`
 //! used to take minutes). A [`Matcher`] holds the caches a pass over
-//! one document benefits from: the `:nth-child(… of S)` ranks per
+//! one document benefits from, valid while the document does not
+//! change: each parent's children's positions, counted once for the
+//! structural pseudo-classes, and the `:nth-child(… of S)` ranks per
 //! parent, which the cascade would otherwise recount for every element
 //! of a long list.
+//!
+//! Elements are named by their [`NodeId`] in a [`Document`] (M13); an
+//! id that names no element matches nothing.
 
 use std::collections::{HashMap, HashSet};
 
-use super::flat_dom::FlatDom;
+use dom::{Document, NodeId};
+
 use super::{AttrOp, Combinator, PseudoClass, Selector, SelectorList, SimpleSelector};
 
 /// Whether any selector in the list matches the element. A one-off;
 /// a pass over many elements wants a [`Matcher`].
-pub fn matches_selector_list(flat: &FlatDom, idx: usize, list: &SelectorList) -> bool {
-    Matcher::new(flat).matches_list(idx, list)
+pub fn matches_selector_list(document: &Document, element: NodeId, list: &SelectorList) -> bool {
+    Matcher::new(document).matches_list(element, list)
 }
 
 /// Whether one complex selector matches the element. A one-off; a pass
 /// over many elements wants a [`Matcher`].
-pub fn matches_selector(flat: &FlatDom, idx: usize, selector: &Selector) -> bool {
-    Matcher::new(flat).matches(idx, selector)
+pub fn matches_selector(document: &Document, element: NodeId, selector: &Selector) -> bool {
+    Matcher::new(document).matches(element, selector)
 }
 
-/// Matches selectors against one document. The selectors it is given
+/// Where an element stands among its parent's element children, for
+/// the structural pseudo-classes: its 0-based index among them and
+/// their number, and the same among those of its type.
+#[derive(Debug, Clone, Copy)]
+struct Position {
+    index: u32,
+    count: u32,
+    type_index: u32,
+    type_count: u32,
+}
+
+/// Matches selectors against one document, which must not change while
+/// the matcher lives (its caches assume so). The selectors it is given
 /// must outlive it (`'a`): the `of S` cache below is keyed by where a
 /// list lives.
 pub struct Matcher<'a> {
-    flat: &'a FlatDom,
+    document: &'a Document,
+    /// Every element's [`Position`] by slot index, filled a parent's
+    /// children at a time the first time one of them is asked about;
+    /// empty until a structural pseudo-class is met.
+    positions: Vec<Option<Position>>,
     /// `:nth-child(An+B of S)`: for each (parent, S) seen, the rank of
     /// every element child among the siblings that match S, or `None`
     /// for a child that does not, computed once per parent.
-    nth_ranks: HashMap<(usize, usize), Vec<Option<u32>>>,
+    nth_ranks: HashMap<(NodeId, usize), Vec<Option<u32>>>,
 }
 
 /// One partial match on the explicit stack: `selector.compounds[k]`
@@ -49,31 +71,46 @@ pub struct Matcher<'a> {
 /// compound `k - 1` (`None` once they are exhausted).
 struct Frame {
     k: usize,
-    node: usize,
-    next: Option<usize>,
+    node: NodeId,
+    next: Option<NodeId>,
 }
 
 impl<'a> Matcher<'a> {
-    /// A matcher over `flat`, with empty caches.
-    pub fn new(flat: &'a FlatDom) -> Self {
+    /// A matcher over `document`, with empty caches.
+    pub fn new(document: &'a Document) -> Self {
         Matcher {
-            flat,
+            document,
+            positions: Vec::new(),
             nth_ranks: HashMap::new(),
         }
     }
 
-    /// Whether any selector in the list matches the element.
-    pub fn matches_list(&mut self, idx: usize, list: &'a SelectorList) -> bool {
-        list.0.iter().any(|s| self.matches(idx, s))
+    /// Whether any selector in the list matches the element; nothing
+    /// matches a node that is not one.
+    pub fn matches_list(&mut self, element: NodeId, list: &'a SelectorList) -> bool {
+        self.document.is_element(element) && self.matches_element_list(element, list)
     }
 
-    /// Whether one complex selector matches the element.
-    pub fn matches(&mut self, idx: usize, selector: &'a Selector) -> bool {
+    /// Whether one complex selector matches the element; nothing matches
+    /// a node that is not one.
+    pub fn matches(&mut self, element: NodeId, selector: &'a Selector) -> bool {
+        self.document.is_element(element) && self.matches_element(element, selector)
+    }
+
+    /// [`Matcher::matches_list`] for a node the caller knows is an
+    /// element, as the cascade does for every one it styles: the check
+    /// is not repeated for each of the thousands of selectors it tries.
+    pub(crate) fn matches_element_list(&mut self, element: NodeId, list: &'a SelectorList) -> bool {
+        list.0.iter().any(|s| self.matches_element(element, s))
+    }
+
+    /// [`Matcher::matches`] for a node the caller knows is an element.
+    pub(crate) fn matches_element(&mut self, element: NodeId, selector: &'a Selector) -> bool {
         let compounds = &selector.compounds;
         let Some(last) = compounds.last() else {
             return false;
         };
-        if !self.matches_compound(idx, last) {
+        if !self.matches_compound(element, last) {
             return false;
         }
         let n = compounds.len();
@@ -84,11 +121,11 @@ impl<'a> Matcher<'a> {
         // does not match at `node`, or does and the compounds before it
         // cannot be satisfied from there. Allocated only once something
         // fails, which the common one-candidate selectors never do.
-        let mut failed: Option<HashSet<(usize, usize)>> = None;
+        let mut failed: Option<HashSet<(usize, NodeId)>> = None;
         let mut stack = vec![Frame {
             k: n - 1,
-            node: idx,
-            next: self.first_candidate(selector.combinators[n - 2], idx),
+            node: element,
+            next: self.first_candidate(selector.combinators[n - 2], element),
         }];
         loop {
             let (target, cand) = {
@@ -108,8 +145,8 @@ impl<'a> Matcher<'a> {
                 let comb = selector.combinators[frame.k - 1];
                 frame.next = match comb {
                     Combinator::Child | Combinator::NextSibling => None,
-                    Combinator::Descendant => self.flat.parent_element(cand),
-                    Combinator::LaterSibling => self.flat.prev_element_sibling(cand),
+                    Combinator::Descendant => self.document.parent_element(cand),
+                    Combinator::LaterSibling => self.document.prev_element_sibling(cand),
                 };
                 (frame.k - 1, cand)
             };
@@ -138,56 +175,108 @@ impl<'a> Matcher<'a> {
     /// The first element to try for the compound left of `node` across
     /// `comb`: the parent for the ancestor combinators, the previous
     /// element sibling for the sibling ones.
-    fn first_candidate(&self, comb: Combinator, node: usize) -> Option<usize> {
+    fn first_candidate(&self, comb: Combinator, node: NodeId) -> Option<NodeId> {
         match comb {
-            Combinator::Child | Combinator::Descendant => self.flat.parent_element(node),
+            Combinator::Child | Combinator::Descendant => self.document.parent_element(node),
             Combinator::NextSibling | Combinator::LaterSibling => {
-                self.flat.prev_element_sibling(node)
+                self.document.prev_element_sibling(node)
             }
         }
     }
 
     /// Whether every simple selector in the compound matches.
-    fn matches_compound(&mut self, idx: usize, compound: &'a super::CompoundSelector) -> bool {
-        compound.simple.iter().all(|s| self.matches_simple(idx, s))
+    fn matches_compound(&mut self, element: NodeId, compound: &'a super::CompoundSelector) -> bool {
+        compound
+            .simple
+            .iter()
+            .all(|s| self.matches_simple(element, s))
     }
 
     /// Whether one simple selector matches the element.
-    fn matches_simple(&mut self, idx: usize, simple: &'a SimpleSelector) -> bool {
-        let node = &self.flat.nodes[idx];
+    fn matches_simple(&mut self, element: NodeId, simple: &'a SimpleSelector) -> bool {
+        let document = self.document;
         match simple {
-            SimpleSelector::Type(t) => node.tag == *t,
+            SimpleSelector::Type(t) => document.tag(element) == Some(t.as_str()),
             SimpleSelector::Universal => true,
-            SimpleSelector::Id(v) => self.flat.attr(idx, "id") == Some(v.as_str()),
-            SimpleSelector::Class(c) => self
-                .flat
-                .attr(idx, "class")
+            SimpleSelector::Id(v) => document.attr(element, "id") == Some(v.as_str()),
+            SimpleSelector::Class(c) => document
+                .attr(element, "class")
                 .is_some_and(|cls| cls.split_whitespace().any(|w| w == c)),
             SimpleSelector::Attribute {
                 name,
                 op,
                 value,
                 case_insensitive,
-            } => matches_attribute(self.flat, idx, name, *op, value, *case_insensitive),
-            SimpleSelector::PseudoClass(pc) => self.matches_pseudo_class(idx, pc),
+            } => matches_attribute(document, element, name, *op, value, *case_insensitive),
+            SimpleSelector::PseudoClass(pc) => self.matches_pseudo_class(element, pc),
         }
     }
 
+    /// The element's [`Position`] among its parent's element children,
+    /// the parent's children all counted the first time one is asked.
+    fn position(&mut self, element: NodeId) -> Position {
+        if let Some(Some(position)) = self.positions.get(element.index()) {
+            return *position;
+        }
+        let document = self.document;
+        if self.positions.len() < document.slot_count() {
+            self.positions.resize(document.slot_count(), None);
+        }
+        let Some(parent) = document.parent(element) else {
+            // A detached element stands alone.
+            return Position {
+                index: 0,
+                count: 1,
+                type_index: 0,
+                type_count: 1,
+            };
+        };
+        let children: Vec<NodeId> = document.element_children(parent).collect();
+        let mut of_type: HashMap<&str, u32> = HashMap::new();
+        let mut type_indices = Vec::with_capacity(children.len());
+        for &child in &children {
+            let seen = of_type
+                .entry(document.tag(child).unwrap_or(""))
+                .or_insert(0);
+            type_indices.push(*seen);
+            *seen += 1;
+        }
+        let count = children.len() as u32;
+        for (i, (&child, type_index)) in children.iter().zip(type_indices).enumerate() {
+            let type_count = of_type[document.tag(child).unwrap_or("")];
+            self.positions[child.index()] = Some(Position {
+                index: i as u32,
+                count,
+                type_index,
+                type_count,
+            });
+        }
+        self.positions[element.index()].expect("the element is among its parent's children")
+    }
+
     /// Pseudo-class semantics.
-    fn matches_pseudo_class(&mut self, idx: usize, pc: &'a PseudoClass) -> bool {
-        let node = &self.flat.nodes[idx];
+    fn matches_pseudo_class(&mut self, element: NodeId, pc: &'a PseudoClass) -> bool {
+        let document = self.document;
         match pc {
-            PseudoClass::FirstChild => node.element_index == 0,
-            PseudoClass::LastChild => node.element_index + 1 == node.sibling_count,
-            PseudoClass::OnlyChild => node.sibling_count == 1,
-            PseudoClass::FirstOfType => node.type_index == 0,
-            PseudoClass::LastOfType => node.type_index + 1 == node.sibling_type_count,
-            PseudoClass::OnlyOfType => node.sibling_type_count == 1,
-            // selectors-4: any text child (even whitespace) makes it non-empty.
-            PseudoClass::Empty => node.child_elements.is_empty() && !node.has_text_child,
-            PseudoClass::Root => node.parent == Some(0),
+            PseudoClass::FirstChild => self.position(element).index == 0,
+            PseudoClass::LastChild => {
+                let p = self.position(element);
+                p.index + 1 == p.count
+            }
+            PseudoClass::OnlyChild => self.position(element).count == 1,
+            PseudoClass::FirstOfType => self.position(element).type_index == 0,
+            PseudoClass::LastOfType => {
+                let p = self.position(element);
+                p.type_index + 1 == p.type_count
+            }
+            PseudoClass::OnlyOfType => self.position(element).type_count == 1,
+            // selectors-4: any child, element or text (even white
+            // space), makes it non-empty; the document holds no other
+            // kind of child.
+            PseudoClass::Empty => document.first_child(element).is_none(),
+            PseudoClass::Root => document.parent(element) == Some(document.root()),
             PseudoClass::NthChild { a, b, of } => match of {
-                None => nth_matches(*a, *b, node.element_index),
+                None => nth_matches(*a, *b, self.position(element).index),
                 // selectors-4 §4: with an `of S` filter, the element must
                 // itself match S, and the An+B formula applies to its
                 // position *among only the siblings that match S* — not
@@ -195,18 +284,24 @@ impl<'a> Matcher<'a> {
                 // other .x", not ".x at an odd position among all
                 // siblings".)
                 Some(list) => self
-                    .rank_among(idx, list)
+                    .rank_among(element, list)
                     .is_some_and(|rank| nth_matches(*a, *b, rank)),
             },
             PseudoClass::NthLastChild { a, b } => {
-                nth_matches(*a, *b, node.sibling_count - 1 - node.element_index)
+                let p = self.position(element);
+                nth_matches(*a, *b, p.count - 1 - p.index)
             }
-            PseudoClass::NthOfType { a, b } => nth_matches(*a, *b, node.type_index),
+            PseudoClass::NthOfType { a, b } => {
+                nth_matches(*a, *b, self.position(element).type_index)
+            }
             PseudoClass::NthLastOfType { a, b } => {
-                nth_matches(*a, *b, node.sibling_type_count - 1 - node.type_index)
+                let p = self.position(element);
+                nth_matches(*a, *b, p.type_count - 1 - p.type_index)
             }
-            PseudoClass::Not(list) => !self.matches_list(idx, list),
-            PseudoClass::Is(list) | PseudoClass::Where(list) => self.matches_list(idx, list),
+            PseudoClass::Not(list) => !self.matches_element_list(element, list),
+            PseudoClass::Is(list) | PseudoClass::Where(list) => {
+                self.matches_element_list(element, list)
+            }
             // Dynamic pseudo-classes never match until input state exists (M26).
             PseudoClass::Hover
             | PseudoClass::Focus
@@ -216,17 +311,20 @@ impl<'a> Matcher<'a> {
         }
     }
 
-    /// The 0-based rank of `idx` among its element siblings that match
+    /// The 0-based rank of `element` among its element siblings that match
     /// `list` (selectors-4's `of S` filter: positions are renumbered
     /// within the filtered set, not the full sibling list), or `None`
-    /// when `idx` itself does not match. The ranks of a parent's whole
+    /// when `element` itself does not match. The ranks of a parent's whole
     /// child list are computed in one pass the first time any child
     /// asks, so a list of n items costs n matches, not n squared.
-    fn rank_among(&mut self, idx: usize, list: &'a SelectorList) -> Option<u32> {
-        let parent = self.flat.nodes[idx].parent.unwrap_or(0);
+    fn rank_among(&mut self, element: NodeId, list: &'a SelectorList) -> Option<u32> {
+        let Some(parent) = self.document.parent(element) else {
+            // A detached element is its own only sibling.
+            return self.matches_list(element, list).then_some(0);
+        };
         let key = (parent, list as *const SelectorList as usize);
         if !self.nth_ranks.contains_key(&key) {
-            let children = self.flat.nodes[parent].child_elements.clone();
+            let children: Vec<NodeId> = self.document.element_children(parent).collect();
             let mut ranks = Vec::with_capacity(children.len());
             let mut rank = 0u32;
             for child in children {
@@ -239,21 +337,21 @@ impl<'a> Matcher<'a> {
             }
             self.nth_ranks.insert(key, ranks);
         }
-        let position = self.flat.nodes[idx].element_index as usize;
+        let position = self.position(element).index as usize;
         self.nth_ranks[&key].get(position).copied().flatten()
     }
 }
 
 /// Attribute selector semantics (selectors-4 §6.1).
 fn matches_attribute(
-    flat: &FlatDom,
-    idx: usize,
+    document: &Document,
+    element: NodeId,
     name: &str,
     op: AttrOp,
     value: &str,
     case_insensitive: bool,
 ) -> bool {
-    let Some(actual) = flat.attr(idx, name) else {
+    let Some(actual) = document.attr(element, name) else {
         return false;
     };
     let (actual, value) = if case_insensitive {
@@ -278,7 +376,7 @@ fn matches_attribute(
 
 /// Whether the CSS `An+B` formula matches: the element's 1-indexed sibling
 /// *position* equals `a*n + b` for some integer `n >= 0` (selectors-4 §4).
-/// `zero_based_index` is `FlatDom`'s internal 0-based counter, so it's
+/// `zero_based_index` is [`Position`]'s 0-based counter, so it's
 /// converted to a 1-indexed position before applying the formula.
 fn nth_matches(a: i32, b: i32, zero_based_index: u32) -> bool {
     let position = zero_based_index as i64 + 1;
@@ -299,15 +397,23 @@ mod tests {
 
     /// The tags of all elements the selector matches, in document order.
     fn matched_tags(document: &Node, selector: &str) -> Vec<String> {
-        let flat = FlatDom::build(document);
+        let document = Document::from_node(document);
         let list = parse_selector_list(&css::tokenize(selector)).expect("valid selector");
         let mut out = Vec::new();
-        for idx in flat.element_indices() {
-            if matches_selector_list(&flat, idx, &list) {
-                out.push(flat.nodes[idx].tag.clone());
+        for id in elements(&document) {
+            if matches_selector_list(&document, id, &list) {
+                out.push(document.tag(id).unwrap().to_string());
             }
         }
         out
+    }
+
+    /// The document's elements in tree order.
+    fn elements(document: &Document) -> Vec<NodeId> {
+        document
+            .subtree(document.root())
+            .filter(|&id| document.is_element(id))
+            .collect()
     }
 
     fn p(children: Vec<Node>) -> Node {
@@ -722,12 +828,12 @@ mod tests {
                 .push(e("li").attr("class", "x").attr("data-mark", "third"))
                 .into(),
         ]);
-        let flat = FlatDom::build(&doc);
+        let document = Document::from_node(&doc);
         let list = parse_selector_list(&css::tokenize(":nth-child(2 of .x)")).unwrap();
-        let marks: Vec<&str> = flat
-            .element_indices()
-            .filter(|&i| matches_selector_list(&flat, i, &list))
-            .filter_map(|i| flat.attr(i, "data-mark"))
+        let marks: Vec<&str> = elements(&document)
+            .into_iter()
+            .filter(|&i| matches_selector_list(&document, i, &list))
+            .filter_map(|i| document.attr(i, "data-mark"))
             .collect();
         assert_eq!(marks, vec!["second"]);
     }
@@ -903,29 +1009,53 @@ mod tests {
                     inner = e("div").push(inner).into();
                 }
                 let doc = p(vec![inner]);
-                let flat = FlatDom::build(&doc);
-                let last = flat.nodes.len() - 1;
+                let document = Document::from_node(&doc);
+                let last = *elements(&document).last().unwrap();
                 let selector = vec!["div"; 20_000].join(" > ") + " > a";
                 let list = parse_selector_list(&css::tokenize(&selector)).expect("valid");
-                assert!(matches_selector_list(&flat, last, &list));
+                assert!(matches_selector_list(&document, last, &list));
                 let selector = vec!["div"; 20_001].join(" > ") + " > a";
                 let list = parse_selector_list(&css::tokenize(&selector)).expect("valid");
-                assert!(!matches_selector_list(&flat, last, &list));
+                assert!(!matches_selector_list(&document, last, &list));
                 let selector = vec!["div"; 20_000].join(" ") + " a";
                 let list = parse_selector_list(&css::tokenize(&selector)).expect("valid");
-                assert!(matches_selector_list(&flat, last, &list));
+                assert!(matches_selector_list(&document, last, &list));
 
                 let siblings: Vec<Node> = (0..300).map(|_| e("a").into()).collect();
                 let doc = p(vec![e("div").push_children(siblings).into()]);
-                let flat = FlatDom::build(&doc);
-                let last = flat.nodes.len() - 1;
+                let document = Document::from_node(&doc);
+                let all = elements(&document);
+                let (last, before) = (all[all.len() - 1], all[all.len() - 2]);
                 let selector = vec!["a"; 300].join(" ~ ");
                 let list = parse_selector_list(&css::tokenize(&selector)).expect("valid");
-                assert!(matches_selector_list(&flat, last, &list));
-                assert!(!matches_selector_list(&flat, last - 1, &list));
+                assert!(matches_selector_list(&document, last, &list));
+                assert!(!matches_selector_list(&document, before, &list));
             })
             .expect("thread");
         handle.join().expect("no stack overflow");
+    }
+
+    #[test]
+    fn a_text_node_matches_nothing_and_a_detached_element_stands_alone() {
+        let mut document = Document::from_node(&p(vec![e("div").text("x").into()]));
+        let div = document.document_element().unwrap();
+        let text = document.first_child(div).unwrap();
+        let any = parse_selector_list(&css::tokenize("*, :not(p), :empty")).unwrap();
+        assert!(!matches_selector_list(&document, text, &any));
+        let stale = document.create_element("p").unwrap();
+        document.free(stale).unwrap();
+        assert!(!matches_selector_list(&document, stale, &any), "a stale id");
+        // A detached element stands alone: the first, last and only
+        // child, and the only one of its type.
+        let loose = document.create_element("li").unwrap();
+        let alone = parse_selector_list(&css::tokenize(
+            "li:first-child:last-child:only-child:only-of-type:nth-child(1):nth-last-child(1):nth-child(1 of li)",
+        ))
+        .unwrap();
+        assert!(matches_selector_list(&document, loose, &alone));
+        let root = parse_selector_list(&css::tokenize(":root")).unwrap();
+        assert!(!matches_selector_list(&document, loose, &root));
+        assert!(matches_selector_list(&document, div, &root));
     }
 
     #[test]
@@ -940,22 +1070,23 @@ mod tests {
             })
             .collect();
         let doc = p(vec![e("ul").push_children(siblings).into()]);
-        let flat = FlatDom::build(&doc);
+        let document = Document::from_node(&doc);
+        let all = elements(&document);
         let list = parse_selector_list(&css::tokenize("li:nth-child(odd of .x)")).expect("valid");
-        let mut matcher = Matcher::new(&flat);
-        let count = flat
-            .element_indices()
-            .filter(|&i| matcher.matches_list(i, &list))
+        let mut matcher = Matcher::new(&document);
+        let count = all
+            .iter()
+            .filter(|&&i| matcher.matches_list(i, &list))
             .count();
         // 6667 `.x` items, every other one.
         assert_eq!(count, 3334);
         let nested =
             parse_selector_list(&css::tokenize("li:nth-child(odd of :nth-child(odd of .x))"))
                 .expect("valid");
-        let mut matcher = Matcher::new(&flat);
-        let count = flat
-            .element_indices()
-            .filter(|&i| matcher.matches_list(i, &nested))
+        let mut matcher = Matcher::new(&document);
+        let count = all
+            .iter()
+            .filter(|&&i| matcher.matches_list(i, &nested))
             .count();
         assert_eq!(count, 1667);
     }

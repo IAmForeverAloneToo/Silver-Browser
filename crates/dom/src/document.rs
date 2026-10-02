@@ -66,11 +66,13 @@ impl NodeId {
     /// The slot's index: dense, below [`Document::slot_count`], and
     /// shared by successive nodes in the slot, so a table indexed by it
     /// must check the generation too (or use the whole id).
+    #[inline]
     pub fn index(self) -> usize {
         self.index as usize
     }
 
     /// The slot's generation when this node was created in it.
+    #[inline]
     pub fn generation(self) -> u32 {
         self.generation
     }
@@ -297,6 +299,7 @@ impl Document {
     // ---- Reading ----------------------------------------------------------
 
     /// The document node.
+    #[inline]
     pub fn root(&self) -> NodeId {
         self.root
     }
@@ -319,11 +322,13 @@ impl Document {
 
     /// One past the highest slot index in use: the size a table indexed
     /// by [`NodeId::index`] needs.
+    #[inline]
     pub fn slot_count(&self) -> usize {
         self.slots.len()
     }
 
     /// The live node in slot `index`, if any.
+    #[inline]
     pub fn id_at(&self, index: usize) -> Option<NodeId> {
         let slot = self.slots.get(index)?;
         slot.record.as_ref()?;
@@ -334,26 +339,31 @@ impl Document {
     }
 
     /// Whether `id` names a live node of this document.
+    #[inline]
     pub fn contains(&self, id: NodeId) -> bool {
         self.record(id).is_some()
     }
 
     /// What `id` is.
+    #[inline]
     pub fn data(&self, id: NodeId) -> Option<&NodeData> {
         self.record(id).map(|r| &r.data)
     }
 
     /// Whether `id` is an element.
+    #[inline]
     pub fn is_element(&self, id: NodeId) -> bool {
         matches!(self.data(id), Some(NodeData::Element { .. }))
     }
 
     /// Whether `id` is a text node.
+    #[inline]
     pub fn is_text(&self, id: NodeId) -> bool {
         matches!(self.data(id), Some(NodeData::Text(_)))
     }
 
     /// An element's tag name.
+    #[inline]
     pub fn tag(&self, id: NodeId) -> Option<&str> {
         match self.data(id)? {
             NodeData::Element { tag, .. } => Some(tag),
@@ -362,6 +372,7 @@ impl Document {
     }
 
     /// An element's attributes, in order.
+    #[inline]
     pub fn attrs(&self, id: NodeId) -> Option<&[(String, String)]> {
         match self.data(id)? {
             NodeData::Element { attrs, .. } => Some(attrs),
@@ -371,6 +382,7 @@ impl Document {
 
     /// An element's attribute `name` (matched exactly; names are stored
     /// lowercase by the parser and by [`Document::set_attribute`]).
+    #[inline]
     pub fn attr(&self, id: NodeId, name: &str) -> Option<&str> {
         self.attrs(id)?
             .iter()
@@ -379,6 +391,7 @@ impl Document {
     }
 
     /// A text node's data.
+    #[inline]
     pub fn text(&self, id: NodeId) -> Option<&str> {
         match self.data(id)? {
             NodeData::Text(data) => Some(data),
@@ -387,56 +400,77 @@ impl Document {
     }
 
     /// The node's parent; `None` for the root and a detached node.
+    #[inline]
     pub fn parent(&self, id: NodeId) -> Option<NodeId> {
         self.link(self.record(id)?.parent)
     }
 
-    /// The node's parent when that is an element.
+    /// The node's parent when that is an element. (One lookup per node
+    /// visited: selector matching walks these links for every element.)
+    #[inline]
     pub fn parent_element(&self, id: NodeId) -> Option<NodeId> {
-        self.parent(id).filter(|&p| self.is_element(p))
+        let parent = self.record(id)?.parent?;
+        self.element_at(parent)
     }
 
+    #[inline]
     pub fn first_child(&self, id: NodeId) -> Option<NodeId> {
         self.link(self.record(id)?.first_child)
     }
 
+    #[inline]
     pub fn last_child(&self, id: NodeId) -> Option<NodeId> {
         self.link(self.record(id)?.last_child)
     }
 
+    #[inline]
     pub fn next_sibling(&self, id: NodeId) -> Option<NodeId> {
         self.link(self.record(id)?.next_sibling)
     }
 
+    #[inline]
     pub fn prev_sibling(&self, id: NodeId) -> Option<NodeId> {
         self.link(self.record(id)?.prev_sibling)
     }
 
     /// The nearest element before `id` among its siblings.
+    #[inline]
     pub fn prev_element_sibling(&self, id: NodeId) -> Option<NodeId> {
-        let mut at = self.prev_sibling(id);
-        while let Some(s) = at {
-            if self.is_element(s) {
-                return Some(s);
+        let mut at = self.record(id)?.prev_sibling;
+        while let Some(index) = at {
+            let slot = &self.slots[index as usize];
+            let record = slot.record.as_ref()?;
+            if matches!(record.data, NodeData::Element { .. }) {
+                return Some(NodeId {
+                    index,
+                    generation: slot.generation,
+                });
             }
-            at = self.prev_sibling(s);
+            at = record.prev_sibling;
         }
         None
     }
 
     /// The nearest element after `id` among its siblings.
+    #[inline]
     pub fn next_element_sibling(&self, id: NodeId) -> Option<NodeId> {
-        let mut at = self.next_sibling(id);
-        while let Some(s) = at {
-            if self.is_element(s) {
-                return Some(s);
+        let mut at = self.record(id)?.next_sibling;
+        while let Some(index) = at {
+            let slot = &self.slots[index as usize];
+            let record = slot.record.as_ref()?;
+            if matches!(record.data, NodeData::Element { .. }) {
+                return Some(NodeId {
+                    index,
+                    generation: slot.generation,
+                });
             }
-            at = self.next_sibling(s);
+            at = record.next_sibling;
         }
         None
     }
 
     /// The node's children, first to last; none for a stale id.
+    #[inline]
     pub fn children(&self, id: NodeId) -> Children<'_> {
         Children {
             document: self,
@@ -727,6 +761,7 @@ impl Document {
 
     // ---- Internals ----------------------------------------------------------
 
+    #[inline]
     fn record(&self, id: NodeId) -> Option<&Record> {
         let slot = self.slots.get(id.index as usize)?;
         if slot.generation != id.generation {
@@ -751,7 +786,22 @@ impl Document {
         }
     }
 
+    /// The id of the element in slot `index`, from a link; `None` when
+    /// it is another kind of node.
+    #[inline]
+    fn element_at(&self, index: u32) -> Option<NodeId> {
+        let slot = self.slots.get(index as usize)?;
+        match slot.record.as_ref()?.data {
+            NodeData::Element { .. } => Some(NodeId {
+                index,
+                generation: slot.generation,
+            }),
+            _ => None,
+        }
+    }
+
     /// The id of the live node in slot `index`, from a link.
+    #[inline]
     fn link(&self, index: Option<u32>) -> Option<NodeId> {
         let index = index?;
         Some(NodeId {
@@ -909,6 +959,7 @@ pub struct Children<'a> {
 impl Iterator for Children<'_> {
     type Item = NodeId;
 
+    #[inline]
     fn next(&mut self) -> Option<NodeId> {
         let current = self.next?;
         self.next = self.document.next_sibling(current);

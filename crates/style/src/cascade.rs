@@ -1,6 +1,8 @@
 //! The cascade: origin sorting, specificity, inheritance, and property
-//! parsing — turning a `dom::Node` plus its stylesheets into a
-//! [`StyledDom`] (roadmap M5).
+//! parsing — turning a [`dom::Document`] plus its stylesheets into
+//! [`Styles`], each element's computed style by its [`NodeId`] (roadmap
+//! M5, M13). [`StyledDom`] is the preorder view of the same results the
+//! box tree reads until it moves onto the document.
 //!
 //! Scope of this milestone, deliberately:
 //!
@@ -16,7 +18,7 @@
 //!   `pt`, `pc`), `em`, `rem`, `ex`, `ch`, and the viewport units `vw`,
 //!   `vh`, `vmin`, `vmax`. The relative ones resolve here, against the
 //!   [`CascadeContext`] the caller gives: the viewport for the viewport
-//!   units (zero when none is given, and [`StyledDom::uses_viewport_units`]
+//!   units (zero when none is given, and [`Styles::uses_viewport_units`]
 //!   says whether any were met, so a caller can recascade on a viewport
 //!   change only when it matters), and a [`FontMeasure`] for `ex` and
 //!   `ch` (half an em each without one, the fallbacks css-values-4
@@ -47,12 +49,15 @@
 //!
 //! The selectors of every rule are parsed once per sheet, not once per
 //! element: a thousand rules against ten thousand elements is ten
-//! million matches, which is the work, not ten million parses.
+//! million matches, which is the work, not ten million parses. The
+//! built-in user-agent sheet and its selectors are parsed once per
+//! process.
 
 use std::cell::Cell;
+use std::sync::OnceLock;
 
 use css::Token;
-use dom::Node;
+use dom::{Document, Node, NodeId};
 
 use crate::computed::{
     BOTTOM, BorderCollapse, BorderSpacing, BorderStyle, BoxSizing, CaptionSide, Clear, Color,
@@ -60,28 +65,83 @@ use crate::computed::{
     LengthPercentageAuto, MarginEdges, Overflow, PaddingEdges, Position, RIGHT, TOP, TableLayout,
     TextAlign, TextTransform, VerticalAlign, WhiteSpace,
 };
-use crate::selector_matching::{
-    FlatChild, FlatDom, Matcher, SelectorList, Specificity, parse_selector_list,
-};
+use crate::selector_matching::{FlatDom, Matcher, SelectorList, Specificity, parse_selector_list};
 
 /// The built-in default stylesheet (M5.6), compiled in — loading it is
 /// not resource fetching (no I/O at runtime), so it doesn't bend the
 /// "parsers never fetch" rule.
 const UA_STYLESHEET_SRC: &str = include_str!("../assets/ua.css");
 
-/// A `FlatDom` with each node's [`ComputedStyle`] resolved alongside it:
-/// `styles[i]` is the computed style for `flat.nodes[i]`, including
-/// index 0 (the virtual document root — never itself painted, but real
-/// top-level elements inherit from its always-initial-values style).
-pub struct StyledDom {
-    /// The structural view (also used for selector matching).
-    pub flat: FlatDom,
-    /// Parallel to `flat.nodes` — `styles[i]` is `flat.nodes[i]`'s style.
-    pub styles: Vec<ComputedStyle>,
+/// Every element's [`ComputedStyle`] in one document, by [`NodeId`],
+/// and the document node's, whose initial values the top-level
+/// elements inherit from.
+#[derive(Debug, Clone, Default)]
+pub struct Styles {
+    /// By slot index: the node the style was computed for, so that a
+    /// later node in the same slot is not taken for it, and its style.
+    entries: Vec<Option<(NodeId, ComputedStyle)>>,
     /// Whether any declaration used a viewport unit (`vw`, `vh`, `vmin`,
     /// `vmax`), so that these styles depend on the viewport the cascade
     /// was given and must be recomputed when it changes (M10.1).
     pub uses_viewport_units: bool,
+}
+
+impl Styles {
+    /// The computed style of `node`: an element's, or the document
+    /// node's initial values; `None` for a text node, a node not styled
+    /// (detached), or a stale id.
+    pub fn get(&self, node: NodeId) -> Option<&ComputedStyle> {
+        match self.entries.get(node.index())? {
+            Some((id, style)) if *id == node => Some(style),
+            _ => None,
+        }
+    }
+
+    fn set(&mut self, node: NodeId, style: ComputedStyle) {
+        let index = node.index();
+        if self.entries.len() <= index {
+            self.entries.resize(index + 1, None);
+        }
+        self.entries[index] = Some((node, style));
+    }
+}
+
+/// A `FlatDom` with each node's [`ComputedStyle`] resolved alongside it:
+/// `styles[i]` is the computed style for `flat.nodes[i]`, including
+/// index 0 (the virtual document root — never itself painted, but real
+/// top-level elements inherit from its always-initial-values style).
+///
+/// It is the preorder view of a cascade's [`Styles`], which the box tree
+/// reads until it moves onto the document (M13).
+pub struct StyledDom {
+    /// The structural view.
+    pub flat: FlatDom,
+    /// Parallel to `flat.nodes` — `styles[i]` is `flat.nodes[i]`'s style.
+    pub styles: Vec<ComputedStyle>,
+    /// As [`Styles::uses_viewport_units`].
+    pub uses_viewport_units: bool,
+}
+
+impl StyledDom {
+    /// The view of `styles`, computed for `document`: its elements in
+    /// tree order, which is the order `FlatDom::from_document` numbers
+    /// them in.
+    fn view(document: &Document, styles: &Styles) -> Self {
+        let flat = FlatDom::from_document(document);
+        let mut flat_styles = Vec::with_capacity(flat.nodes.len());
+        flat_styles.push(ComputedStyle::default());
+        flat_styles.extend(
+            document
+                .subtree(document.root())
+                .filter(|&id| document.is_element(id))
+                .map(|id| styles.get(id).cloned().unwrap_or_default()),
+        );
+        StyledDom {
+            flat,
+            styles: flat_styles,
+            uses_viewport_units: styles.uses_viewport_units,
+        }
+    }
 }
 
 /// What the font can say about itself, for the units that need it:
@@ -124,25 +184,67 @@ pub fn style_document_in(
     author_sheets: &[css::Stylesheet],
     context: &CascadeContext<'_>,
 ) -> StyledDom {
-    let ua = css::parse_stylesheet(UA_STYLESHEET_SRC)
-        .expect("the built-in UA stylesheet (assets/ua.css) is valid CSS");
-    style_document_with_ua(document, &ua, author_sheets, context)
+    let document = Document::from_node(document);
+    StyledDom::view(
+        &document,
+        &cascade_document(&document, author_sheets, context),
+    )
 }
 
 /// [`style_document_in`] with the user-agent stylesheet given rather
 /// than built in — what a test of the UA tiers needs, since
 /// `assets/ua.css` has no `!important` of its own to assert against.
+#[cfg(test)]
 pub(crate) fn style_document_with_ua(
     document: &Node,
     ua: &css::Stylesheet,
     author_sheets: &[css::Stylesheet],
     context: &CascadeContext<'_>,
 ) -> StyledDom {
-    let flat = FlatDom::build(document);
+    let document = Document::from_node(document);
     let ua_rules = parse_rules(ua);
+    StyledDom::view(
+        &document,
+        &cascade_with_ua(&document, &ua_rules, author_sheets, context),
+    )
+}
+
+/// Resolves the computed style of every element under `document`'s
+/// root, cascading the built-in UA stylesheet (lowest precedence) under
+/// `author_sheets` (in document order) and each element's inline
+/// `style` attribute, against `context`.
+pub fn cascade_document(
+    document: &Document,
+    author_sheets: &[css::Stylesheet],
+    context: &CascadeContext<'_>,
+) -> Styles {
+    cascade_with_ua(document, ua_rules(), author_sheets, context)
+}
+
+/// The built-in user-agent sheet's rules, parsed once per process.
+fn ua_rules() -> &'static [ParsedRule<'static>] {
+    static SHEET: OnceLock<css::Stylesheet> = OnceLock::new();
+    static RULES: OnceLock<Vec<ParsedRule<'static>>> = OnceLock::new();
+    RULES.get_or_init(|| {
+        let sheet = SHEET.get_or_init(|| {
+            css::parse_stylesheet(UA_STYLESHEET_SRC)
+                .expect("the built-in UA stylesheet (assets/ua.css) is valid CSS")
+        });
+        parse_rules(sheet)
+    })
+}
+
+/// [`cascade_document`] with the user-agent rules given.
+fn cascade_with_ua(
+    document: &Document,
+    ua_rules: &[ParsedRule<'_>],
+    author_sheets: &[css::Stylesheet],
+    context: &CascadeContext<'_>,
+) -> Styles {
     let author_rules: Vec<Vec<ParsedRule<'_>>> = author_sheets.iter().map(parse_rules).collect();
-    let mut matcher = Matcher::new(&flat);
-    let mut styles = vec![ComputedStyle::default(); flat.nodes.len()];
+    let mut matcher = Matcher::new(document);
+    let mut styles = Styles::default();
+    styles.set(document.root(), ComputedStyle::default());
     let viewport_used = Cell::new(false);
     // `rem` is the root element's font size: known once the root (the
     // first element under the document) is styled, and the initial
@@ -151,42 +253,32 @@ pub(crate) fn style_document_with_ua(
     // Preorder with an explicit stack: an element's children are styled
     // together, from its own finished style, before any grandchild is
     // reached, and no depth of tree costs stack.
-    let mut pending = vec![0usize];
-    while let Some(idx) = pending.pop() {
-        let parent_style = styles[idx].clone();
-        let child_element_indices: Vec<usize> = flat.nodes[idx]
-            .children
-            .iter()
-            .filter_map(|c| match c {
-                FlatChild::Element(i) => Some(*i),
-                FlatChild::Text(_) => None,
-            })
-            .collect();
-        for &child_idx in &child_element_indices {
-            let applied =
-                declarations_for(&flat, &mut matcher, child_idx, &ua_rules, &author_rules);
+    let mut pending = vec![document.root()];
+    while let Some(parent) = pending.pop() {
+        let parent_style = styles.get(parent).cloned().unwrap_or_default();
+        let children: Vec<NodeId> = document.element_children(parent).collect();
+        for &child in &children {
+            let applied = declarations_for(document, &mut matcher, child, ua_rules, &author_rules);
             let resolution = Resolution {
                 rem: root_font_size.unwrap_or(ComputedStyle::default().font_size_px),
                 context,
                 viewport_used: &viewport_used,
             };
-            styles[child_idx] = compute_style(
+            let style = compute_style(
                 &applied,
                 &parent_style,
-                flat.attr(child_idx, "dir"),
+                document.attr(child, "dir"),
                 &resolution,
             );
             if root_font_size.is_none() {
-                root_font_size = Some(styles[child_idx].font_size_px);
+                root_font_size = Some(style.font_size_px);
             }
+            styles.set(child, style);
         }
-        pending.extend(child_element_indices.into_iter().rev());
+        pending.extend(children.into_iter().rev());
     }
-    StyledDom {
-        flat,
-        styles,
-        uses_viewport_units: viewport_used.get(),
-    }
+    styles.uses_viewport_units = viewport_used.get();
+    styles
 }
 
 /// What one document's relative units resolve against, beyond the
@@ -271,29 +363,36 @@ fn tier(base: TierBase, important: bool) -> u8 {
     }
 }
 
-/// Every declaration that applies to element `idx`, tagged with its
+/// Every declaration that applies to `element`, tagged with its
 /// cascade key — unsorted; [`compute_style`] sorts before applying.
 fn declarations_for<'a>(
-    flat: &FlatDom,
+    document: &Document,
     matcher: &mut Matcher<'a>,
-    idx: usize,
+    element: NodeId,
     ua: &'a [ParsedRule<'a>],
     author_sheets: &'a [Vec<ParsedRule<'a>>],
 ) -> Vec<Applied> {
     let mut order = 0u32;
     let mut out = Vec::new();
-    collect_from_sheet(matcher, idx, ua, TierBase::UserAgent, &mut order, &mut out);
+    collect_from_sheet(
+        matcher,
+        element,
+        ua,
+        TierBase::UserAgent,
+        &mut order,
+        &mut out,
+    );
     for sheet in author_sheets {
         collect_from_sheet(
             matcher,
-            idx,
+            element,
             sheet,
             TierBase::AuthorSheet,
             &mut order,
             &mut out,
         );
     }
-    if let Some(style_attr) = flat.attr(idx, "style")
+    if let Some(style_attr) = document.attr(element, "style")
         && let Ok(decls) = css::parse_style_attribute(style_attr)
     {
         for decl in decls {
@@ -313,11 +412,11 @@ fn declarations_for<'a>(
     out
 }
 
-/// Matches `sheet`'s rules against element `idx`, pushing one
+/// Matches `sheet`'s rules against `element`, pushing one
 /// [`Applied`] per declaration in every rule that matches.
 fn collect_from_sheet<'a>(
     matcher: &mut Matcher<'a>,
-    idx: usize,
+    element: NodeId,
     sheet: &'a [ParsedRule<'a>],
     base: TierBase,
     order: &mut u32,
@@ -332,7 +431,7 @@ fn collect_from_sheet<'a>(
             .list
             .0
             .iter()
-            .filter(|s| matcher.matches(idx, s))
+            .filter(|s| matcher.matches_element(element, s))
             .map(|s| s.specificity)
             .max();
         let Some(specificity) = specificity else {
@@ -1536,15 +1635,68 @@ mod tests {
     /// Styles `html` and returns the computed style of the element found
     /// by `selector` (the first match, in document order).
     fn style_of(html: &str, sheets: &[css::Stylesheet], selector: &str) -> ComputedStyle {
-        let document = html::parse_document(html).expect("html parsing never fails");
-        let styled = style_document(&document, sheets);
+        let document = Document::from_node(&html::parse_document(html).expect("never fails"));
+        let styles = cascade_document(&document, sheets, &CascadeContext::default());
         let list = parse_selector_list(&css::tokenize(selector)).expect("valid selector");
-        styled
+        document
+            .subtree(document.root())
+            .find(|&id| matches_selector(&document, id, &list.0[0]))
+            .and_then(|id| styles.get(id).cloned())
+            .unwrap_or_else(|| panic!("no element matched {selector:?}"))
+    }
+
+    #[test]
+    fn styles_are_kept_by_node_and_answer_nothing_for_text_detached_or_stale_nodes() {
+        let node = html::parse_document("<p class=a>x</p><p>y</p>").expect("never fails");
+        let mut document = Document::from_node(&node);
+        let sheet = css::parse_stylesheet(".a { color: #ff0000 }").unwrap();
+        let styles = cascade_document(&document, &[sheet], &CascadeContext::default());
+        assert_eq!(styles.get(document.root()), Some(&ComputedStyle::default()));
+        let paragraphs: Vec<NodeId> = document
+            .subtree(document.root())
+            .filter(|&id| document.tag(id) == Some("p"))
+            .collect();
+        assert_eq!(
+            styles.get(paragraphs[0]).unwrap().color,
+            Color::rgb8(255, 0, 0)
+        );
+        assert_ne!(
+            styles.get(paragraphs[1]).unwrap().color,
+            Color::rgb8(255, 0, 0)
+        );
+        let text = document.first_child(paragraphs[0]).unwrap();
+        assert_eq!(
+            styles.get(text),
+            None,
+            "a text node has no style of its own"
+        );
+        // The view the box tree reads holds the same styles in tree order.
+        let view = style_document(
+            &node,
+            &[css::parse_stylesheet(".a { color: #ff0000 }").unwrap()],
+        );
+        let flat_p: Vec<usize> = view
             .flat
             .element_indices()
-            .find(|&i| matches_selector(&styled.flat, i, &list.0[0]))
-            .map(|i| styled.styles[i].clone())
-            .unwrap_or_else(|| panic!("no element matched {selector:?}"))
+            .filter(|&i| view.flat.nodes[i].tag == "p")
+            .collect();
+        assert_eq!(view.styles[flat_p[0]], *styles.get(paragraphs[0]).unwrap());
+        // A node created after the cascade has none, nor does a new node
+        // in the slot of one freed since: the styles are a record of the
+        // nodes the cascade saw, and a slot's generation tells them apart.
+        let late = document.create_element("p").unwrap();
+        assert_eq!(styles.get(late), None);
+        let body = document.parent(paragraphs[1]).unwrap();
+        document.remove_child(body, paragraphs[1]).unwrap();
+        document.free(paragraphs[1]).unwrap();
+        let reused = [
+            document.create_element("p").unwrap(),
+            document.create_element("p").unwrap(),
+        ]
+        .into_iter()
+        .find(|id| id.index() == paragraphs[1].index())
+        .expect("the freed slot is reused");
+        assert_eq!(styles.get(reused), None, "a new node in a styled slot");
     }
 
     /// Wraps four plain pixel values as `MarginEdges` (test convenience).
@@ -2125,14 +2277,13 @@ mod tests {
         selector: &str,
         context: &CascadeContext<'_>,
     ) -> ComputedStyle {
-        let document = html::parse_document(html).expect("html parsing never fails");
-        let styled = style_document_in(&document, sheets, context);
+        let document = Document::from_node(&html::parse_document(html).expect("never fails"));
+        let styles = cascade_document(&document, sheets, context);
         let list = parse_selector_list(&css::tokenize(selector)).expect("valid selector");
-        styled
-            .flat
-            .element_indices()
-            .find(|&i| matches_selector_list(&styled.flat, i, &list))
-            .map(|i| styled.styles[i].clone())
+        document
+            .subtree(document.root())
+            .find(|&id| matches_selector_list(&document, id, &list))
+            .and_then(|id| styles.get(id).cloned())
             .expect("the selector matches an element")
     }
 

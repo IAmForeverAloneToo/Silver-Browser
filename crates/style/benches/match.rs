@@ -1,5 +1,8 @@
 //! M4.12 baseline: match ~1,000 selectors against a ~10,000-element
-//! synthetic DOM.
+//! synthetic DOM, through one `Matcher` for the whole pass as the
+//! cascade matches (M13: a one-off match recounts the element's siblings
+//! for the structural pseudo-classes, which a pass would repeat for
+//! every element).
 //!
 //! `harness = false` (see `Cargo.toml`): this is a plain binary, not a
 //! `#[bench]`-harness target, so it needs no bench-runner dependency.
@@ -12,7 +15,7 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use dom::{Element, Node};
-use style::selector_matching::{FlatDom, parse_selector_list};
+use style::selector_matching::{Matcher, parse_selector_list};
 
 const TARGET_ELEMENTS: usize = 10_000;
 const TARGET_SELECTORS: usize = 1_000;
@@ -71,8 +74,12 @@ fn synthetic_selector_sources(target_count: usize) -> Vec<String> {
 
 fn main() {
     let dom = synthetic_dom(TARGET_ELEMENTS);
-    let flat = FlatDom::build(&dom);
-    let element_count = flat.element_count();
+    let document = dom::Document::from_node(&dom);
+    let elements: Vec<dom::NodeId> = document
+        .subtree(document.root())
+        .filter(|&id| document.is_element(id))
+        .collect();
+    let element_count = elements.len();
 
     let selectors: Vec<_> = synthetic_selector_sources(TARGET_SELECTORS)
         .iter()
@@ -83,9 +90,10 @@ fn main() {
 
     let start = Instant::now();
     let mut match_count = 0usize;
+    let mut matcher = Matcher::new(&document);
     for list in &selectors {
-        for idx in flat.element_indices() {
-            if style::selector_matching::matches_selector_list(&flat, idx, list) {
+        for &id in &elements {
+            if matcher.matches_list(id, list) {
                 match_count += 1;
             }
         }

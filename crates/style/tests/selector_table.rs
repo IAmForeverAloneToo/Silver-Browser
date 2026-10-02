@@ -16,7 +16,7 @@ struct Case {
 fn run(cases: &[Case]) {
     for case in cases {
         let doc = html::parse_document(case.html).expect("html parsing never fails");
-        let flat = style::selector_matching::FlatDom::build(&doc);
+        let document = dom::Document::from_node(&doc);
         let list = style::selector_matching::parse_selector_list(&css::tokenize(case.selector))
             .unwrap_or_else(|e| {
                 panic!(
@@ -28,10 +28,10 @@ fn run(cases: &[Case]) {
         // case's markup; they are reported only where the case wrote
         // them, so each row reads as the markup it shows.
         let wrote = |tag: &str| case.html.contains(&format!("<{tag}"));
-        let matched: Vec<&str> = flat
-            .element_indices()
-            .filter(|&i| style::selector_matching::matches_selector_list(&flat, i, &list))
-            .map(|i| flat.nodes[i].tag.as_str())
+        let matched: Vec<&str> = document
+            .subtree(document.root())
+            .filter(|&i| style::selector_matching::matches_selector_list(&document, i, &list))
+            .filter_map(|i| document.tag(i))
             .filter(|tag| !matches!(*tag, "html" | "head" | "body") || wrote(tag))
             .collect();
         assert_eq!(

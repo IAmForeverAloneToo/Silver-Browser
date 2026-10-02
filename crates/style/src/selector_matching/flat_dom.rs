@@ -1,12 +1,10 @@
-//! A flat, index-based view of the document for selector matching (and,
-//! since M5, styling and rendering).
+//! A flat, index-based view of the document, numbered in preorder: what
+//! the box tree, `paint` and the engine name elements by until they
+//! move onto the live document's [`dom::NodeId`]s (M13). Selector
+//! matching and the cascade read the live document itself.
 //!
-//! The DOM is a downward tree (no parent pointers), but selectors need
-//! ancestor and sibling queries. [`FlatDom`] copies the element tree
-//! into a vector where every node knows its parent, element siblings,
-//! and structural position — O(1) queries, no borrow gymnastics, and
-//! the natural place for future matching caches (style sharing, bloom
-//! filters; see docs/roadmap.md M16.5, M35.2).
+//! [`FlatDom`] copies the element tree into a vector where every node
+//! knows its parent, element siblings, and structural position.
 //!
 //! Index 0 is a virtual `#document` node so that top-level elements
 //! have a parent; `:root` is "parent is the virtual document".
@@ -20,7 +18,7 @@
 
 use std::collections::HashMap;
 
-use dom::Node;
+use dom::{Document, Node, NodeData};
 
 /// A flattened document: elements indexed for O(1) structural queries.
 #[derive(Debug, Clone)]
@@ -68,11 +66,18 @@ pub enum FlatChild {
 }
 
 impl FlatDom {
-    /// Flattens a document. The walk keeps its own stack of child
-    /// iterators rather than recursing, so a tree of any depth is
-    /// flattened in constant stack space; the order is still preorder,
-    /// document order, text and element children interleaved as written.
+    /// Flattens a document: [`FlatDom::from_document`] of the live
+    /// document `document` describes.
     pub fn build(document: &Node) -> Self {
+        Self::from_document(&Document::from_node(document))
+    }
+
+    /// Flattens a live document. The walk keeps its own stack of child
+    /// iterators rather than recursing, so a tree of any depth is
+    /// flattened in constant stack space; the order is preorder, the
+    /// document's tree order, text and element children interleaved as
+    /// they stand.
+    pub fn from_document(document: &Document) -> Self {
         let mut flat = FlatDom {
             nodes: vec![FlatNode {
                 tag: "#document".into(),
@@ -88,27 +93,26 @@ impl FlatDom {
                 children: Vec::new(),
             }],
         };
-        let mut stack: Vec<(usize, std::slice::Iter<'_, Node>)> = Vec::new();
-        if let Node::Document(children) = document {
-            stack.push((0, children.iter()));
-        }
+        let mut stack: Vec<(usize, dom::Children<'_>)> =
+            vec![(0, document.children(document.root()))];
         while let Some((parent, iter)) = stack.last_mut() {
             let parent = *parent;
-            match iter.next() {
-                None => {
-                    stack.pop();
-                }
-                Some(Node::Text(t)) => {
+            let Some(id) = iter.next() else {
+                stack.pop();
+                continue;
+            };
+            match document.data(id) {
+                Some(NodeData::Text(data)) => {
                     flat.nodes[parent].has_text_child = true;
                     flat.nodes[parent]
                         .children
-                        .push(FlatChild::Text(t.data.clone()));
+                        .push(FlatChild::Text(data.clone()));
                 }
-                Some(Node::Element(el)) => {
+                Some(NodeData::Element { tag, attrs }) => {
                     let idx = flat.nodes.len();
                     flat.nodes.push(FlatNode {
-                        tag: el.tag.clone(),
-                        attrs: el.attrs.clone(),
+                        tag: tag.clone(),
+                        attrs: attrs.clone(),
                         parent: Some(parent),
                         prev_element_sibling: None,
                         child_elements: Vec::new(),
@@ -121,10 +125,9 @@ impl FlatDom {
                     });
                     flat.nodes[parent].child_elements.push(idx);
                     flat.nodes[parent].children.push(FlatChild::Element(idx));
-                    stack.push((idx, el.children.iter()));
+                    stack.push((idx, document.children(id)));
                 }
-                // A document node never nests inside another.
-                Some(Node::Document(_)) => {}
+                Some(NodeData::Document) | None => {}
             }
         }
         flat.fixup_sibling_stats();
