@@ -9,7 +9,7 @@
 
 mod host;
 mod parser;
-mod percent;
+pub(crate) mod percent;
 
 use std::fmt;
 use std::hash::{Hash, Hasher};

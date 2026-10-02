@@ -1,12 +1,20 @@
 //! Networking: URLs and resource fetching (roadmap M14; see
 //! `docs/design/net.md`).
 //!
-//! [`url`] is the URL Standard's parser. Fetching is still a stub; it
-//! grows into the resource loader, HTTP(S) with connection pooling, that
+//! [`url`] is the URL Standard's parser. [`mime`] parses MIME types and
+//! sniffs a resource's type, [`headers`] holds Fetch's header lists, and
+//! [`data_url`] reads `data:` URLs. Fetching is still a stub; it grows
+//! into the resource loader, HTTP(S) with connection pooling, that
 //! `engine` drives. Only `engine` orchestrates fetching.
 
+pub mod data_url;
+pub mod headers;
+mod infra;
+pub mod mime;
 pub mod url;
 
+pub use headers::HeaderList;
+pub use mime::MimeType;
 pub use url::{Host, Origin, Url};
 
 /// Errors produced by resource fetching.
