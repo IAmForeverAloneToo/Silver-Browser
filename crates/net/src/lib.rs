@@ -5,14 +5,16 @@
 //! sniffs a resource's type, [`headers`] holds Fetch's header lists,
 //! [`data_url`] reads `data:` URLs, [`http`] writes HTTP/1.1 requests
 //! and reads responses over any stream, and [`transport`] keeps the
-//! connections they travel on, plain or over TLS. Fetching itself is
-//! still a stub; it grows into the resource loader that `engine`
-//! drives. Only `engine` orchestrates fetching.
+//! connections they travel on, plain or over TLS. [`fetch`] puts them
+//! together: a [`Client`] fetches a [`Request`] by its scheme, follows
+//! its redirects and returns a [`Response`]. Only `engine` orchestrates
+//! fetching.
 
 mod address_space;
 mod content_coding;
 pub mod data_url;
 mod error;
+pub mod fetch;
 pub mod headers;
 pub mod http;
 mod infra;
@@ -24,24 +26,7 @@ pub mod url;
 
 pub use address_space::AddressSpace;
 pub use error::{AbortHandle, NetworkError, TlsFailure};
+pub use fetch::{Client, Destination, Initiator, Method, Mode, Request, Response};
 pub use headers::HeaderList;
 pub use mime::MimeType;
 pub use url::{Host, Origin, Url};
-
-/// Fetches a resource.
-///
-/// Currently always returns [`NetworkError::NotYetImplemented`].
-pub fn fetch(_url: &Url) -> Result<Vec<u8>, NetworkError> {
-    Err(NetworkError::NotYetImplemented)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fetch_is_explicitly_unimplemented() {
-        let url = Url::parse("https://example.org/").expect("valid URL");
-        assert_eq!(fetch(&url), Err(NetworkError::NotYetImplemented));
-    }
-}

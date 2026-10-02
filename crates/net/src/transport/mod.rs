@@ -50,7 +50,7 @@ pub struct Config {
     pub max_per_origin: usize,
     pub limits: Limits,
     /// Roots trusted beside Mozilla's: only tests add one.
-    extra_roots: Vec<CertificateDer<'static>>,
+    pub(crate) extra_roots: Vec<CertificateDer<'static>>,
 }
 
 impl Default for Config {

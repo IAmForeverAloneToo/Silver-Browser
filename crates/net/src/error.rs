@@ -13,9 +13,6 @@ use crate::http::Malformed;
 /// Why a fetch gave no response.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetworkError {
-    /// Fetching is not implemented yet: the stub [`crate::fetch`] until
-    /// fetch arrives (step 7 of `docs/design/net.md`).
-    NotYetImplemented,
     /// A scheme that is not fetched: anything but `about:blank`,
     /// `data:`, `file:`, `http:` and `https:`.
     BadScheme(String),
@@ -81,9 +78,6 @@ pub enum TlsFailure {
 impl fmt::Display for NetworkError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            NetworkError::NotYetImplemented => {
-                f.write_str("resource fetching is not implemented yet")
-            }
             NetworkError::BadScheme(scheme) => write!(f, "{scheme}: URLs are not fetched"),
             NetworkError::BadPort(port) => write!(f, "port {port} is not fetched"),
             NetworkError::AddressSpace { initiator, target } => {
