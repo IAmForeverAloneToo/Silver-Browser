@@ -68,8 +68,9 @@ fuzz_target!(|data: &[u8]| {
                 let (backend, whole) = &mut *backends.borrow_mut();
                 let pixels = backend.rasterize(&list, width as u32, 64);
                 whole.forget_frame();
+                let same = pixels == whole.rasterize(&list, width as u32, 64);
                 assert!(
-                    pixels == whole.rasterize(&list, width as u32, 64),
+                    same,
                     "{:?} redrawn from the last frame differs from a whole raster",
                     backend.redrawn()
                 );

@@ -1,12 +1,15 @@
 //! M9.6 baseline: a document at least ten viewports tall, scrolled by
 //! 40px a frame for 120 frames at 1280 x 800, reported as milliseconds
 //! per frame. Layout runs once (M9.5) and is timed on its own; every
-//! frame is paint plus raster.
+//! frame is paint plus raster. The frames are drawn sixty a second on a
+//! clock of the benchmark's own (M13.4), and each one's stages are
+//! reported from `Engine::frame_stats`, with the frames that overran
+//! the budget.
 //!
 //! `harness = false` (see `Cargo.toml`): a plain binary, not a
 //! `#[bench]`-harness target, so it needs no bench-runner dependency.
-//! Run by hand and eyeballed against the milestone's budget, 60fps on
-//! the debug build (16.7ms a frame):
+//! Run by hand, its numbers recorded in `docs/perf-budgets.md` against
+//! the budget, 60fps (16.7ms a frame):
 //!
 //! ```text
 //! cargo bench -p engine --profile dev   # the debug build the budget names
@@ -17,9 +20,9 @@
 //! (performance track) commitment for later (M35+).
 
 use std::hint::black_box;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use engine::Engine;
+use engine::{Engine, FRAME_BUDGET, FrameStats, FrameTime};
 
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 800;
@@ -80,10 +83,13 @@ fn main() {
 
     // Then scroll-only frames (M9.5): the layout is cached.
     let runs_before = engine.layout_runs();
+    let mut stats = Vec::new();
     let start = Instant::now();
     for i in 1..=FRAMES {
         engine.set_scroll(i as f32 * STEP_PX);
-        black_box(engine.frame(WIDTH, HEIGHT));
+        let time = FrameTime::at(FRAME_BUDGET * i);
+        black_box(engine.frame_at(WIDTH, HEIGHT, time));
+        stats.push(engine.frame_stats());
     }
     let elapsed = start.elapsed();
     let per_frame_ms = elapsed.as_secs_f64() * 1000.0 / FRAMES as f64;
@@ -102,5 +108,24 @@ fn main() {
          layouts run during them: {}",
         1000.0 / per_frame_ms,
         engine.layout_runs() - runs_before
+    );
+    let stage = |name: &str, of: fn(&FrameStats) -> Duration| {
+        let mut times: Vec<f64> = stats.iter().map(|s| of(s).as_secs_f64() * 1000.0).collect();
+        times.sort_by(f64::total_cmp);
+        println!(
+            "  {name}: median {:.2} ms, worst {:.2} ms",
+            times[times.len() / 2],
+            times[times.len() - 1]
+        );
+    };
+    stage("style", |s| s.style);
+    stage("layout", |s| s.layout);
+    stage("paint", |s| s.paint);
+    stage("raster", |s| s.raster);
+    stage("frame", |s| s.total);
+    println!(
+        "  over the {:.1} ms budget: {} of {FRAMES}",
+        FRAME_BUDGET.as_secs_f64() * 1000.0,
+        stats.iter().filter(|s| s.overran).count()
     );
 }

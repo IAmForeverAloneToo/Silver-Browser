@@ -28,10 +28,15 @@
 //! (M13.2); [`Engine::boxes_laid_out`] and [`Engine::boxes_reused`]
 //! count which. The rasterizer keeps the last frame and draws again
 //! only where the new display list differs from the last one (M13.3);
-//! [`Engine::redrawn`] says where. Scrolling
-//! (M9.2) is a target the frame approaches a fixed fraction per
-//! [`Engine::tick`] — the "fixed-tick lerp" of the roadmap, no clock
-//! involved; compositor-smooth scrolling is M19. The scrollbar is
+//! [`Engine::redrawn`] says where. A frame is drawn for a time the
+//! caller passes, [`Engine::frame_at`] (M13.4), which also gives it a
+//! deadline; [`Engine::frame_stats`] says what each stage took and
+//! whether it overran, and [`Engine::needs_frame`] whether one is
+//! wanted. Scrolling (M9.2) is a target the shown offset approaches by
+//! a fixed fraction of the distance every sixtieth of a second of that
+//! time, however many frames share it, or every [`Engine::tick`] for a
+//! caller without a clock; compositor-smooth scrolling is M19. The
+//! scrollbar is
 //! in-engine chrome (decision D9): drawn into the frame after the
 //! document, its geometry exposed through [`Engine::scrollbar`] for the
 //! shell to map presses and drags. Hit testing (M9.4) answers with the
@@ -46,12 +51,13 @@
 //! inside the clip, hit testing adds it on the way down. The wheel
 //! ([`Engine::wheel`]) goes to the innermost container under the pointer
 //! that can still move that way, then to its ancestors, then to the
-//! viewport: scroll chaining. Each container animates with the same
-//! fixed-tick lerp as the viewport.
+//! viewport: scroll chaining. Each container animates as the viewport
+//! does.
 
 pub mod differential;
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use dom::{Change, Document, NodeId};
 use layout::{DocumentLayout, Fragment, FragmentKind, LayoutCache};
@@ -116,12 +122,59 @@ const DOCUMENT_SOURCE: &str = "\
   </body>\
 </html>";
 
-/// How much of the remaining distance to the scroll target one
-/// [`Engine::tick`] covers (M9.2's fixed-tick lerp): a 1000px scroll
-/// settles in about twenty ticks, a third of a second at sixty frames.
+/// How much of the remaining distance to the scroll target the scroll
+/// animation covers in one frame of sixty a second, [`FRAME_BUDGET`]
+/// (M9.2's lerp, measured in time since M13.4): a 1000px scroll settles
+/// in about twenty such frames, a third of a second.
 const SCROLL_TICK_FRACTION: f32 = 1.0 / 3.0;
-/// Within this distance of the target, a tick lands on it exactly.
+/// Within this distance of the target, the animation lands on it.
 const SCROLL_SNAP_PX: f32 = 0.5;
+
+/// The time a frame may take: one of sixty a second (M13.4,
+/// `docs/perf-budgets.md`). The scroll animation's rate is given per
+/// such a frame too.
+pub const FRAME_BUDGET: Duration = Duration::from_nanos(16_666_667);
+
+/// When a frame is drawn, on the caller's clock (M13.4): any clock that
+/// does not go backwards, the times only compared with each other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameTime {
+    /// The time the frame is drawn for: what it shows is advanced to it.
+    pub now: Duration,
+    /// When the frame should be done; one done later has overrun. Work
+    /// that could wait for a later frame would stop at it, but there is
+    /// none yet (see `docs/perf-budgets.md`).
+    pub deadline: Duration,
+}
+
+impl FrameTime {
+    /// A frame drawn for `now`, given [`FRAME_BUDGET`].
+    pub fn at(now: Duration) -> Self {
+        FrameTime {
+            now,
+            deadline: now + FRAME_BUDGET,
+        }
+    }
+}
+
+/// What a frame took, stage by stage (M13.4), on the engine's own clock,
+/// which it reads for nothing else.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FrameStats {
+    /// Bringing the computed styles up to date: a restyle, a whole
+    /// cascade, or nothing.
+    pub style: Duration,
+    /// Bringing the layout up to date.
+    pub layout: Duration,
+    /// Building the display list.
+    pub paint: Duration,
+    /// Rasterizing it.
+    pub raster: Duration,
+    /// The whole frame: the stages and what holds them together.
+    pub total: Duration,
+    /// Whether the frame took longer than its deadline allowed.
+    pub overran: bool,
+}
 /// The scrollbar track's width, in px, at the viewport's right edge.
 pub const SCROLLBAR_WIDTH: f32 = 12.0;
 
@@ -173,6 +226,14 @@ pub struct Engine {
     viewport: (u32, u32),
     /// The scroll offset shown, and the one being approached.
     scroll_y: f32,
+    /// The time of the last frame drawn while a scroll offset was on its
+    /// way to its target (M13.4): the next frame advances the animation
+    /// by the time since. `None` when none was, so that an animation
+    /// begun since starts with one frame's step, however long the
+    /// engine was idle.
+    animation_clock: Option<Duration>,
+    /// What the last frame took (M13.4).
+    stats: FrameStats,
     /// The scroll offset the last frame showed: a frame at another moves
     /// everything in it, and is rasterized whole without comparing its
     /// display list with the last one's (M13.3).
@@ -181,7 +242,8 @@ pub struct Engine {
     /// Each scroll container's offset (M10.5), by its element's id; one
     /// never scrolled has no entry, and one freed loses its entry.
     element_scroll: HashMap<NodeId, ElementScroll>,
-    /// Whether the document was replaced or changed since the last frame.
+    /// Whether the document was replaced or changed, or a scroll offset
+    /// set, since the last frame.
     changed: bool,
 }
 
@@ -273,6 +335,8 @@ impl Engine {
             boxes_reused: 0,
             viewport: (0, 0),
             scroll_y: 0.0,
+            animation_clock: None,
+            stats: FrameStats::default(),
             drawn_scroll_y: 0.0,
             scroll_target: 0.0,
             element_scroll: HashMap::new(),
@@ -365,14 +429,18 @@ impl Engine {
         self.changed = true;
     }
 
-    /// Whether a frame is wanted: the document was replaced or changed
-    /// since the last frame, or a scroll offset, the document's or a
-    /// scroll container's, has not reached its target. A new viewport
-    /// size is the caller's to know: [`Engine::frame`] takes it.
+    /// Whether a frame is wanted: the document was replaced or changed,
+    /// or a scroll offset set, since the last frame, or a scroll offset,
+    /// the document's or a scroll container's, is on its way to its
+    /// target. A new viewport size is the caller's to know: the frame
+    /// takes it.
     pub fn needs_frame(&self) -> bool {
-        self.changed
-            || self.scroll_y != self.scroll_target
-            || self.element_scroll.values().any(|s| s.y != s.target)
+        self.changed || self.animating()
+    }
+
+    /// Whether a scroll offset is on its way to its target.
+    fn animating(&self) -> bool {
+        self.scroll_y != self.scroll_target || self.element_scroll.values().any(|s| s.y != s.target)
     }
 
     /// The document's stylesheets, in document order.
@@ -539,20 +607,59 @@ impl Engine {
         self.backend.redrawn()
     }
 
+    /// Draws the frame for `time` (M13.4): the scroll animations are
+    /// advanced to `time.now` — by the time since the last frame drawn
+    /// while one ran, or by one frame of [`FRAME_BUDGET`] for one begun
+    /// since — and the frame is drawn as [`Engine::frame`] draws it,
+    /// overrunning when it ends past `time.deadline`. The pixels are lent
+    /// out until the next frame; [`Engine::frame_stats`] says what it
+    /// took. What it shows is a function of the document, the viewport,
+    /// the scroll inputs and the times passed in.
+    pub fn frame_at(&mut self, width: u32, height: u32, time: FrameTime) -> &[u8] {
+        if self.animating() {
+            let elapsed = self
+                .animation_clock
+                .map_or(FRAME_BUDGET, |then| time.now.saturating_sub(then));
+            self.advance(elapsed);
+        }
+        self.animation_clock = self.animating().then_some(time.now);
+        self.draw(width, height, time.deadline.saturating_sub(time.now))
+    }
+
     /// Renders the current document into an RGBA8 framebuffer for a
     /// `width` x `height` viewport at the current scroll offset, with
     /// the scrollbar when the document is taller than the viewport. A
     /// viewport over `render::MAX_FRAME_PIXELS` gets an empty buffer
-    /// rather than an allocation the machine cannot make.
+    /// rather than an allocation the machine cannot make. No animation
+    /// is advanced: [`Engine::tick`] does that for a caller without a
+    /// clock, and [`Engine::frame_at`] draws by time. The frame overruns
+    /// past [`FRAME_BUDGET`].
     ///
     /// A pure function of (document, stylesheets, size, scroll): no
     /// platform state, no side effects outside the caches.
     pub fn frame(&mut self, width: u32, height: u32) -> Vec<u8> {
+        self.draw(width, height, FRAME_BUDGET).to_vec()
+    }
+
+    /// What the last frame took, stage by stage (M13.4).
+    pub fn frame_stats(&self) -> FrameStats {
+        self.stats
+    }
+
+    /// Draws a frame and times its stages, overrunning past `budget`.
+    fn draw(&mut self, width: u32, height: u32, budget: Duration) -> &[u8] {
+        let start = Instant::now();
         if width as u64 * height as u64 > render::MAX_FRAME_PIXELS {
-            return Vec::new();
+            self.stats = FrameStats::default();
+            return &[];
         }
         self.changed = false;
         self.viewport = (width, height);
+        self.cached_styles();
+        let style_time = start.elapsed();
+        let stage = Instant::now();
+        self.layout(width as f32);
+        let layout_time = stage.elapsed();
         // The document may be shorter at this width than where the
         // offset was; so may a scroll container's content.
         let max = self.max_scroll();
@@ -573,6 +680,7 @@ impl Engine {
             .iter()
             .map(|(node, scroll)| (*node, scroll.y))
             .collect();
+        let stage = Instant::now();
         let viewport = Viewport {
             width: width as f32,
             height: height as f32,
@@ -601,7 +709,20 @@ impl Engine {
                 color: SCROLLBAR_THUMB,
             });
         }
-        self.backend.rasterize(&list, width, height)
+        let paint = stage.elapsed();
+        let stage = Instant::now();
+        let pixels = self.backend.rasterize(&list, width, height);
+        let raster = stage.elapsed();
+        let total = start.elapsed();
+        self.stats = FrameStats {
+            style: style_time,
+            layout: layout_time,
+            paint,
+            raster,
+            total,
+            overran: total > budget,
+        };
+        pixels
     }
 
     // ---- Scrolling (M9.2) ---------------------------------------------------
@@ -652,6 +773,7 @@ impl Engine {
     /// the pointer); clamped to the document.
     pub fn set_scroll(&mut self, y: f32) {
         self.scroll_to(y);
+        self.changed |= self.scroll_y != self.scroll_target;
         self.scroll_y = self.scroll_target;
     }
 
@@ -662,15 +784,27 @@ impl Engine {
         self.set_scroll(f.clamp(0.0, 1.0) * max);
     }
 
-    /// Advances the scroll animations one frame: each shown offset, the
-    /// viewport's and every scroll container's, moves
-    /// [`SCROLL_TICK_FRACTION`] of the way to its target, landing on it
-    /// within [`SCROLL_SNAP_PX`]. Returns whether another frame is
-    /// wanted (an offset has not reached its target).
+    /// Advances the scroll animations by one frame of [`FRAME_BUDGET`],
+    /// for a caller without a clock (see [`Engine::frame_at`]). Returns
+    /// whether another frame is wanted (an offset has not reached its
+    /// target).
     pub fn tick(&mut self) -> bool {
-        let mut moving = approach(&mut self.scroll_y, self.scroll_target);
+        self.advance(FRAME_BUDGET)
+    }
+
+    /// Advances the scroll animations by `elapsed`: each shown offset,
+    /// the viewport's and every scroll container's, covers
+    /// [`SCROLL_TICK_FRACTION`] of its distance to its target in every
+    /// [`FRAME_BUDGET`] of it, so that how far it gets depends on the
+    /// time alone, not on how many frames shared it, and lands on the
+    /// target within [`SCROLL_SNAP_PX`]. Returns whether an offset has
+    /// not reached its target.
+    fn advance(&mut self, elapsed: Duration) -> bool {
+        let frames = elapsed.as_secs_f64() / FRAME_BUDGET.as_secs_f64();
+        let keep = (1.0 - f64::from(SCROLL_TICK_FRACTION)).powf(frames) as f32;
+        let mut moving = approach(&mut self.scroll_y, self.scroll_target, keep);
         for scroll in self.element_scroll.values_mut() {
-            moving |= approach(&mut scroll.y, scroll.target);
+            moving |= approach(&mut scroll.y, scroll.target, keep);
         }
         moving
     }
@@ -742,6 +876,7 @@ impl Engine {
     pub fn set_element_scroll(&mut self, node: NodeId, y: f32) {
         self.scroll_element_to(node, y);
         if let Some(scroll) = self.element_scroll.get_mut(&node) {
+            self.changed |= scroll.y != scroll.target;
             scroll.y = scroll.target;
         }
     }
@@ -886,16 +1021,15 @@ fn fragment_of(fragments: &[Fragment], node: NodeId) -> Option<&Fragment> {
     None
 }
 
-/// One tick of a scroll animation: `y` moves [`SCROLL_TICK_FRACTION`]
-/// of the way to `target`, landing on it within [`SCROLL_SNAP_PX`].
-/// Returns whether it is still short of the target.
-fn approach(y: &mut f32, target: f32) -> bool {
-    let remaining = target - *y;
-    if remaining.abs() <= SCROLL_SNAP_PX {
+/// One step of a scroll animation: `y` moves to `keep` of its distance
+/// from `target`, landing on it within [`SCROLL_SNAP_PX`]. Returns
+/// whether it is still short of it.
+fn approach(y: &mut f32, target: f32, keep: f32) -> bool {
+    *y = target - (target - *y) * keep;
+    if (target - *y).abs() <= SCROLL_SNAP_PX {
         *y = target;
         return false;
     }
-    *y += remaining * SCROLL_TICK_FRACTION;
     true
 }
 
@@ -1259,6 +1393,126 @@ mod tests {
         engine.set_scroll(50.0);
         engine.load_document(TALL);
         assert_eq!(engine.scroll_y(), 0.0);
+    }
+
+    /// Draws `engine`'s 200 by 100 frame for `ms` milliseconds on the
+    /// test's clock, and returns the offset it shows.
+    fn frame_at_ms(engine: &mut Engine, ms: f64) -> f32 {
+        let now = Duration::from_secs_f64(ms / 1000.0);
+        engine.frame_at(200, 100, FrameTime::at(now));
+        engine.scroll_y()
+    }
+
+    #[test]
+    fn the_scroll_animation_runs_on_time_whatever_the_frame_rate() {
+        // Two engines scroll the same way, one drawing sixty frames a
+        // second, the other thirty (M13.4): after the same time both
+        // show the same offset, a third of the remaining distance gone
+        // every sixtieth of a second.
+        let (mut fast, mut slow) = (test_engine(), test_engine());
+        for engine in [&mut fast, &mut slow] {
+            engine.load_document(TALL);
+            frame_at_ms(engine, 0.0);
+            engine.scroll_by(1e9);
+        }
+        let max = fast.scroll_target();
+        assert!(max > 100.0);
+        // Ten idle seconds later, the first frame: one frame's step, a
+        // third of the way, not the time since the last frame.
+        let start = 10_000.0;
+        let third = frame_at_ms(&mut fast, start);
+        assert!((third - max / 3.0).abs() < 1e-3, "{third} of {max}");
+        frame_at_ms(&mut slow, start);
+        // A tenth of a second more: six frames, or three.
+        for k in 1..=6 {
+            frame_at_ms(&mut fast, start + k as f64 * 1000.0 / 60.0);
+        }
+        for k in 1..=3 {
+            frame_at_ms(&mut slow, start + k as f64 * 1000.0 / 30.0);
+        }
+        let expected = max - max * (2.0f32 / 3.0).powi(7);
+        assert!(
+            (fast.scroll_y() - expected).abs() < 0.01,
+            "{}",
+            fast.scroll_y()
+        );
+        assert!((slow.scroll_y() - fast.scroll_y()).abs() < 0.01);
+        assert!(fast.needs_frame(), "still on its way");
+        // A frame drawn late makes up the time in one step: here, all
+        // the way.
+        frame_at_ms(&mut fast, start + 2100.0);
+        assert_eq!(fast.scroll_y(), max);
+        assert!(!fast.needs_frame());
+    }
+
+    #[test]
+    fn a_frame_records_its_stages_and_whether_it_overran() {
+        let mut engine = test_engine();
+        engine.load_document(TALL);
+        let now = Duration::from_secs(1);
+        // Due when it begins: overrun.
+        engine.frame_at(200, 100, FrameTime { now, deadline: now });
+        let stats = engine.frame_stats();
+        assert!(stats.overran);
+        assert!(stats.layout > Duration::ZERO && stats.raster > Duration::ZERO);
+        assert!(stats.total >= stats.style + stats.layout + stats.paint + stats.raster);
+        // An hour to spare: on time.
+        let deadline = now + Duration::from_secs(3600);
+        engine.frame_at(200, 100, FrameTime { now, deadline });
+        assert!(!engine.frame_stats().overran);
+        // Past the frame cap: nothing drawn, nothing taken.
+        engine.frame_at(100_000, 100_000, FrameTime::at(now));
+        assert_eq!(engine.frame_stats(), FrameStats::default());
+    }
+
+    #[test]
+    fn a_burst_of_mutations_between_frames_costs_one_pass() {
+        // Changes are applied as they come and their work is left to
+        // the next frame (M13.4): ten paragraphs appended one by one,
+        // one layout, each paragraph restyled once.
+        let mut engine = test_engine();
+        engine.load_document("<p>one</p>");
+        engine.frame(200, 100);
+        let (layouts, restyled) = (engine.layout_runs(), engine.restyled_elements());
+        let body = first(&engine, "body");
+        for i in 0..10 {
+            engine.mutate(|document| {
+                let p = document.create_element("p").expect("an element");
+                let text = document.create_text(&format!("{i}")).expect("a text node");
+                document.append_child(p, text).expect("appended");
+                document.append_child(body, p).expect("appended");
+            });
+        }
+        assert_eq!(engine.layout_runs(), layouts, "nothing before the frame");
+        assert!(engine.needs_frame());
+        engine.frame(200, 100);
+        assert_eq!(engine.layout_runs(), layouts + 1);
+        assert_eq!(engine.restyled_elements(), restyled + 10);
+        assert!(!engine.needs_frame());
+    }
+
+    #[test]
+    fn an_offset_set_at_once_wants_a_frame_and_the_frame_lent_is_the_frame() {
+        let mut engine = test_engine();
+        engine.load_document(
+            "<div id=s style=\"height: 20px; overflow: auto\"><p>a</p><p>b</p><p>c</p></div>\
+             <p>one</p><p>two</p><p>three</p><p>four</p><p>five</p><p>six</p>",
+        );
+        let owned = engine.frame(200, 100);
+        assert!(!engine.needs_frame());
+        let lent = engine.frame_at(200, 100, FrameTime::at(Duration::ZERO));
+        assert_eq!(lent, owned.as_slice());
+        engine.set_scroll(30.0);
+        assert!(engine.needs_frame(), "the offset shown changed");
+        engine.frame(200, 100);
+        assert!(!engine.needs_frame());
+        engine.set_scroll(30.0);
+        assert!(!engine.needs_frame(), "the same offset changes nothing");
+        let s = node_by_id(&engine, "s");
+        engine.set_element_scroll(s, 5.0);
+        assert!(engine.needs_frame(), "a container's offset changed");
+        engine.frame(200, 100);
+        assert!(!engine.needs_frame());
     }
 
     #[test]

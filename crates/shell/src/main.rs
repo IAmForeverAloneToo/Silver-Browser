@@ -5,13 +5,15 @@
 //! pumps frames to the screen and turns input into engine calls (M9):
 //! the wheel (at the pointer, so a scroll container under it takes it
 //! first, M10.5), the keys and the scrollbar into scrolling, a click
-//! into a hit test. A scroll animates over frames, so a redraw that
-//! leaves the engine mid-animation asks for the next one.
+//! into a hit test. Each frame is drawn for the time on the shell's
+//! clock (M13.4), and a frame is asked for only when the engine wants
+//! one: after input that changed something, or while a scroll animates.
 
 use std::num::NonZeroU32;
 use std::sync::Arc;
+use std::time::Instant;
 
-use engine::Engine;
+use engine::{Engine, FrameTime};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -40,6 +42,8 @@ struct Browser {
     /// While the scrollbar's thumb is held: how far below the thumb's
     /// top the pointer grabbed it, so the thumb follows without jumping.
     thumb_grab: Option<f32>,
+    /// The clock frames are drawn by: the time since the browser began.
+    start: Instant,
 }
 
 impl Browser {
@@ -51,6 +55,7 @@ impl Browser {
             engine,
             cursor: (0.0, 0.0),
             thumb_grab: None,
+            start: Instant::now(),
         }
     }
 
@@ -78,7 +83,8 @@ impl Browser {
             return;
         }
 
-        let rgba = engine.frame(size.width, size.height);
+        let time = FrameTime::at(self.start.elapsed());
+        let rgba = engine.frame_at(size.width, size.height, time);
         if rgba.is_empty() {
             // Past the engine's frame cap: the last frame stays shown.
             return;
@@ -96,6 +102,13 @@ impl Browser {
                 }
             }
             Err(e) => eprintln!("buffer acquisition failed: {e}"),
+        }
+    }
+
+    /// Asks for a frame when the engine wants one.
+    fn redraw_if_wanted(&self, window: &Window) {
+        if self.engine.as_ref().is_some_and(Engine::needs_frame) {
+            window.request_redraw();
         }
     }
 
@@ -226,13 +239,10 @@ impl ApplicationHandler for Browser {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::RedrawRequested => {
-                // One animation step per frame; while the scroll has
-                // not settled, the next frame is wanted.
-                let animating = self.engine.as_mut().is_some_and(Engine::tick);
+                // While a scroll has not settled, the next frame is
+                // wanted, which the engine advances by the time passed.
                 self.draw();
-                if animating {
-                    window.request_redraw();
-                }
+                self.redraw_if_wanted(&window);
             }
             WindowEvent::Resized(size) => {
                 if let (Some(w), Some(h)) =
@@ -257,13 +267,13 @@ impl ApplicationHandler for Browser {
                 if let Some(engine) = self.engine.as_mut() {
                     engine.wheel(x, y, dy);
                 }
-                window.request_redraw();
+                self.redraw_if_wanted(&window);
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = (position.x as f32, position.y as f32);
                 if self.thumb_grab.is_some() {
                     self.drag();
-                    window.request_redraw();
+                    self.redraw_if_wanted(&window);
                 }
             }
             WindowEvent::MouseInput {
@@ -273,7 +283,7 @@ impl ApplicationHandler for Browser {
             } => match state {
                 ElementState::Pressed => {
                     self.press();
-                    window.request_redraw();
+                    self.redraw_if_wanted(&window);
                 }
                 ElementState::Released => self.thumb_grab = None,
             },
@@ -285,7 +295,7 @@ impl ApplicationHandler for Browser {
                         ..
                     },
                 ..
-            } if self.key_scroll(&logical_key) => window.request_redraw(),
+            } if self.key_scroll(&logical_key) => self.redraw_if_wanted(&window),
             _ => {}
         }
     }

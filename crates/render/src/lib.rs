@@ -248,14 +248,15 @@ struct Retained {
 
 /// A rasterizer: display list + viewport size in, framebuffer out.
 pub trait RenderBackend {
-    /// Rasterizes `list` into a `width` x `height` RGBA8 buffer
-    /// (row-major, 4 bytes per pixel, alpha-premultiplied as produced by
-    /// tiny-skia — everything Milestone-1 draws is opaque, so premultiplied
-    /// and straight alpha coincide). The result is the list's whole
-    /// raster, however the backend comes by it: it may draw again only
-    /// what changed since the last frame (M13.3), but the bytes are the
-    /// same.
-    fn rasterize(&mut self, list: &DisplayList, width: u32, height: u32) -> Vec<u8>;
+    /// Rasterizes `list` into a `width` x `height` RGBA8 frame (row-major,
+    /// 4 bytes per pixel, alpha-premultiplied as produced by tiny-skia —
+    /// everything Milestone-1 draws is opaque, so premultiplied and
+    /// straight alpha coincide), lent out until the next call: the
+    /// backend keeps it. The frame is the list's whole raster, however
+    /// the backend comes by it: it may draw again only what changed
+    /// since the last frame (M13.3), but the bytes are the same. A size
+    /// the backend refuses gives an empty frame.
+    fn rasterize(&mut self, list: &DisplayList, width: u32, height: u32) -> &[u8];
 }
 
 /// The CPU rasterizer: tiny-skia for geometry, cached glyph masks for text.
@@ -786,11 +787,11 @@ fn copy_pixels(from: &tiny_skia::Pixmap, to: &mut tiny_skia::Pixmap, rect: Pixel
 }
 
 impl RenderBackend for SoftwareBackend {
-    fn rasterize(&mut self, list: &DisplayList, width: u32, height: u32) -> Vec<u8> {
+    fn rasterize(&mut self, list: &DisplayList, width: u32, height: u32) -> &[u8] {
         self.redrawn = Redrawn::Whole;
         let last = self.retained.take();
         if width as u64 * height as u64 > MAX_FRAME_PIXELS {
-            return Vec::new();
+            return &[];
         }
         // The last frame, when it is this size, drawn again where the
         // lists differ; otherwise a frame drawn whole, on a new pixmap,
@@ -815,18 +816,17 @@ impl RenderBackend for SoftwareBackend {
             Some(pixmap) => pixmap,
             None => {
                 let Some(mut pixmap) = tiny_skia::Pixmap::new(width, height) else {
-                    return Vec::new();
+                    return &[];
                 };
                 self.draw_all(&mut pixmap, list);
                 pixmap
             }
         };
-        let pixels = pixmap.data().to_vec();
-        self.retained = Some(Retained {
+        let retained = self.retained.insert(Retained {
             list: list.clone(),
             pixmap,
         });
-        pixels
+        retained.pixmap.data()
     }
 }
 
@@ -1230,7 +1230,7 @@ mod tests {
             for x in 0..10 {
                 let inside = (3..7).contains(&x) && (3..7).contains(&y);
                 assert_eq!(
-                    px(&buf, 10, x, y),
+                    px(buf, 10, x, y),
                     if inside { BLACK } else { WHITE },
                     "({x}, {y})"
                 );
@@ -1277,7 +1277,7 @@ mod tests {
                     || (x == 0 && y < 5)
                     || (x == 9 && y == 9);
                 assert_eq!(
-                    px(&buf, 10, x, y),
+                    px(buf, 10, x, y),
                     if expect { BLACK } else { WHITE },
                     "({x}, {y})"
                 );
@@ -1297,13 +1297,15 @@ mod tests {
             size: 16.0,
             color: Rgba8::rgb(0, 0, 0),
         };
-        let unclipped = backend.rasterize(
-            &DisplayList {
-                items: vec![white_frame(10.0, 10.0), text.clone()],
-            },
-            10,
-            10,
-        );
+        let unclipped = backend
+            .rasterize(
+                &DisplayList {
+                    items: vec![white_frame(10.0, 10.0), text.clone()],
+                },
+                10,
+                10,
+            )
+            .to_vec();
         let clipped = backend.rasterize(
             &DisplayList {
                 items: vec![
@@ -1327,10 +1329,10 @@ mod tests {
             for x in 0..10 {
                 let inside = (3..7).contains(&x) && (3..7).contains(&y);
                 if inside {
-                    assert_eq!(px(&clipped, 10, x, y), px(&unclipped, 10, x, y));
-                    inked_inside += (px(&clipped, 10, x, y) != WHITE) as u32;
+                    assert_eq!(px(clipped, 10, x, y), px(&unclipped, 10, x, y));
+                    inked_inside += (px(clipped, 10, x, y) != WHITE) as u32;
                 } else {
-                    assert_eq!(px(&clipped, 10, x, y), WHITE, "({x}, {y}) outside the clip");
+                    assert_eq!(px(clipped, 10, x, y), WHITE, "({x}, {y}) outside the clip");
                     inked_outside_unclipped += (px(&unclipped, 10, x, y) != WHITE) as u32;
                 }
             }
@@ -1359,7 +1361,7 @@ mod tests {
                 item("hello", 20.0),
             ],
         };
-        let first = backend.rasterize(&list, 40, 20);
+        let first = backend.rasterize(&list, 40, 20).to_vec();
         assert_eq!(backend.shape_cache_len(), 2, "one run per (text, size)");
         let second = backend.rasterize(&list, 40, 20);
         assert_eq!(first, second, "a cached run draws the same pixels");
@@ -1401,7 +1403,7 @@ mod tests {
         let buf = backend.rasterize(&list, 10, 10);
         for y in 0..10 {
             for x in 0..10 {
-                let p = px(&buf, 10, x, y);
+                let p = px(buf, 10, x, y);
                 assert!(p == BLACK || p == WHITE, "({x}, {y}): {p:?}");
             }
         }
@@ -1415,16 +1417,16 @@ mod tests {
             ],
         };
         let buf = backend.rasterize(&list, 10, 10);
-        assert_eq!(px(&buf, 10, 8, 2), BLACK, "well inside");
-        assert_eq!(px(&buf, 10, 2, 8), WHITE, "well outside");
+        assert_eq!(px(buf, 10, 8, 2), BLACK, "well inside");
+        assert_eq!(px(buf, 10, 2, 8), WHITE, "well outside");
         assert_eq!(
-            px(&buf, 10, 9, 0),
+            px(buf, 10, 9, 0),
             BLACK,
             "the edge on whole pixels is exact"
         );
         for (x, y) in [(5, 5), (2, 2), (8, 8)] {
             assert_eq!(
-                px(&buf, 10, x, y),
+                px(buf, 10, x, y),
                 [128, 128, 128, 0xff],
                 "({x}, {y}) half covered"
             );
@@ -1444,11 +1446,7 @@ mod tests {
         };
         let buf = backend.rasterize(&list, 10, 10);
         for (x, y, value) in [(0, 0, 191), (1, 0, 64), (2, 1, 191), (3, 1, 64), (2, 0, 0)] {
-            assert_eq!(
-                px(&buf, 10, x, y),
-                [value, value, value, 0xff],
-                "({x}, {y})"
-            );
+            assert_eq!(px(buf, 10, x, y), [value, value, value, 0xff], "({x}, {y})");
         }
     }
 
@@ -1474,7 +1472,7 @@ mod tests {
         let buf = backend.rasterize(&list, 10, 10);
         for y in 0..10 {
             for x in 0..10 {
-                assert_eq!(px(&buf, 10, x, y), BLACK, "({x}, {y})");
+                assert_eq!(px(buf, 10, x, y), BLACK, "({x}, {y})");
             }
         }
         // Clipped to the middle, a quad covering everything paints only
@@ -1500,7 +1498,7 @@ mod tests {
             for x in 0..10 {
                 let inside = (3..7).contains(&x) && (3..7).contains(&y);
                 assert_eq!(
-                    px(&buf, 10, x, y),
+                    px(buf, 10, x, y),
                     if inside { BLACK } else { WHITE },
                     "({x}, {y})"
                 );
@@ -1670,9 +1668,9 @@ mod tests {
                 y1: y0 + 1 + rng.below((h - y0) as usize) as u32,
             };
             backend.forget_frame();
-            let whole = backend.rasterize(&list, w, h);
+            let whole = backend.rasterize(&list, w, h).to_vec();
             backend.forget_frame();
-            let old = backend.rasterize(&before, w, h);
+            let old = backend.rasterize(&before, w, h).to_vec();
             let mut pixmap = tiny_skia::Pixmap::new(w, h).expect("a frame");
             pixmap.data_mut().copy_from_slice(&old);
             backend.redraw(&mut pixmap, &list, rect);
@@ -1871,7 +1869,7 @@ mod tests {
                 },
             ],
         };
-        let first = backend.rasterize(&list, 20, 20);
+        let first = backend.rasterize(&list, 20, 20).to_vec();
         assert_eq!(backend.redrawn(), &Redrawn::Whole);
         assert_eq!(backend.rasterize(&list, 20, 20), first);
         assert_eq!(backend.redrawn(), &Redrawn::Rects(Vec::new()));
