@@ -82,7 +82,8 @@ attribute operators + `i`/`s` flags, all four combinators, structural
 pseudo-classes including the full `An+B [of S]` grammar, `:not/:is/
 :where`, dynamic pseudo-classes as parse-but-never-match stubs until
 M26) and matches them right-to-left against a flattened DOM view
-(`FlatDom`). 121 tests (unit + a table-driven harness over real markup,
+(`FlatDom`; since M13, against the live `dom::Document`). 121 tests
+(unit + a table-driven harness over real markup,
 `tests/selector_table.rs`); a hand-rolled baseline bench
 (`benches/match.rs`) measures ~200ms matching 1k selectors against a
 10k-element synthetic DOM — over the milestone's <100ms aspirational
@@ -90,7 +91,8 @@ budget, expected until the M16.5/M35.2 optimization passes (bloom
 filters, rule-hash bucketing) land.
 
 Milestone 6 (Box tree + block layout v1): `layout::box_tree` turns a
-`style::StyledDom` into a tree of block/inline/anonymous-text boxes
+`style::StyledDom` (since M13, the document and its `style::Styles`)
+into a tree of block/inline/anonymous-text boxes
 (`display: none` skips the whole subtree); `layout::block` lays normal-
 flow block boxes out for real — CSS2.1 §10.3.3 width/margin resolution
 (`auto`/px/percent width, auto-centering, the over-constrained ltr rule)
@@ -209,7 +211,8 @@ milestone: viewport, scrolling, clipping (M9), per the roadmap's phase
 map.
 
 Milestone 5 (Cascade + computed values): `style::cascade` turns a
-`dom::Node` plus its `css::Stylesheet`s into a `StyledDom` — every
+`dom::Node` plus its `css::Stylesheet`s into a `StyledDom` (since M13,
+a `dom::Document` into `style::Styles`, keyed by `NodeId`) — every
 element's `ComputedStyle` (`color`, `background-color`, `font-size`
 with `em` resolved against the right basis, `font-family`, `display`,
 `margin`/`padding`/`border-width` per side, `border-color`/`border-
@@ -241,8 +244,8 @@ one first, so the tree keeps its shape and a page of 100,000 nested
 trees iteratively. `css` bounds at-rule nesting (`MAX_NESTING`, 128;
 deeper blocks are kept raw), `style` bounds selector nesting
 (`MAX_NESTING`, 32), and the cascade parses every selector once per
-stylesheet rather than once per element. `FlatDom::build`, the
-cascade's walk and the matcher are iterative; the matcher memoises
+stylesheet rather than once per element. `FlatDom::build` (retired in
+M13), the cascade's walk and the matcher are iterative; the matcher memoises
 the `(compound, element)` pairs that lead nowhere, so a chain of
 descendant combinators over a deep tree is polynomial rather than
 exponential, and `:nth-child(… of S)` ranks a parent's children once
@@ -282,7 +285,8 @@ Bitstream Vera licence beside it) as `text::TEST_FONT`; every test
 measures the same font on every machine, and a missing font is a
 failure. 370 tests workspace-wide. Fuzzing: five cargo-fuzz targets
 under `fuzz/` (`html_parse`, `css_stylesheet`, `selector_parse`,
-`style_document`, `pipeline`), run on every push and weekly in CI,
+`style_document`, `pipeline`; M13 adds `mutation`), run on every push
+and weekly in CI,
 clean after the fixes. Noted for the milestones they belong to, not
 fixed here: `rustybuzz` re-parses the face on every shape or measure
 call (M9.6's bench decides whether that matters); a text fragment's
@@ -296,7 +300,8 @@ takes up.
 Milestone 9 (Viewport, scrolling, clipping): layout's output is a tree
 (M9.1): a block box's `Fragment` holds its content's fragments as
 `children`, every fragment carries the `FlatDom` index of its element
-(`node`; a text fragment names its containing element), and a text
+(`node`, a `NodeId` since M13; a text fragment names its containing
+element), and a text
 fragment's box is its line (`y` stays the baseline, `ascent` says where
 the top is, `h` is ascent plus descent). `layout::layout_document`
 returns `DocumentLayout { roots, height }` in document coordinates (the
@@ -314,7 +319,8 @@ its content. `render::SoftwareBackend` keeps a clip stack: rects are
 intersected, glyph blits touch only pixels whose centre is inside, an
 unmatched pop is ignored. Scrolling lives in `Engine` (M9.2): a target
 offset clamped to the document, approached a third of the remaining
-distance per `tick` (the roadmap's fixed-tick lerp; no clock involved),
+distance per `tick` (the roadmap's fixed-tick lerp; no clock involved,
+until M13.4 timed it by the clock the shell passes each frame),
 through `scroll_by`, `scroll_to`, `set_scroll` and `scroll_to_fraction`,
 vertical only (documents are laid out to the viewport width; a wider
 word overflows to the right, M7's stated gap). The scrollbar is
@@ -611,3 +617,64 @@ percentage heights on rows, row groups and cells, which count as
 group with no rows taking a share of the table's height; `th`'s bold
 (M21). 551 tests workspace-wide. Still stub: `net`. Next milestone: the
 incremental engine (M13).
+
+Milestone 13 (The incremental engine), designed in
+`docs/design/incremental.md` and built in its ten steps, one commit
+each. The document became a live value (step 1): `dom::Document` holds
+every node in an arena of slots and names each by a generational
+`NodeId` (decision D16), so a stale or forged id resolves to nothing
+and no id makes the crate panic. It offers the DOM's mutations, each
+checking what the standard checks and this engine's two limits, 512
+levels of nesting and some four million live nodes, and records every
+change in a journal in the DOM's terms, which collapses into one record
+saying everything changed past 65,536 unread. `Document::from_node`
+builds it from the parser's tree and `to_node` takes a snapshot back.
+Every stage then moved onto it (steps 2 and 3): the matcher and the
+cascade read the arena, the cascade's result is `style::Styles` by
+`NodeId`, boxes and fragments carry `NodeId`s, `hit_test` answers with
+one and element scroll offsets are kept by one; `FlatDom` and
+`StyledDom` are gone, and the UA sheet is parsed once per process. The
+engine's API (M13.5, step 4): `set_document`, `load_document`,
+`mutate`, which lends the document to a closure and reads the journal
+after, `needs_frame`, and `styles`, the cascade the frames use. Each
+stage then learned to redo only what a change reaches. Style (M13.1,
+step 5): a document's sheets are prepared once as `style::Stylesheets`
+with the features their selectors depend on, and the journal turns
+into the elements to restyle — a named class or attribute, siblings
+where sibling combinators or positions are in use, the parent where
+`:empty` is — restyled by depth, each element's children only when its
+style changed. Layout (M13.2, step 6): the box tree is rebuilt each
+pass, and `layout::LayoutCache` keeps an element's own block or table
+box's layout by node, taken again when its subtree, its containing
+block and its float context are as before and nothing was carried out
+of it; its entries name their children's rather than copy them.
+Raster (M13.3, step 7): `render::SoftwareBackend` keeps the last frame
+and redraws only the rectangles where the display list changed, every
+item kept inside them by means that cannot change its pixels there, so
+a frame's bytes are a whole raster's. The frame scheduler (M13.4, step
+8): `Engine::frame_at` draws a frame for a time and a deadline the
+caller passes and lends the pixels; `Engine::frame_stats` times each
+stage; scrolling animates by that time; the shell draws only when the
+engine wants a frame. `docs/perf-budgets.md` records the budget, the
+policy for a frame over it — it skips nothing that changes what is
+shown — and the numbers (T4.1). Acceptance (M13.6, step 9):
+`crates/engine/benches/mutation.rs` appends 1,000 paragraphs to a page
+of 1,000 one a frame, and no frame after the first lays the document
+out whole; each lays out three boxes, at a median of 7ms in release.
+Incremental equals from scratch: `engine::differential` drives the
+engine with random mutations and holds every style, fragment and pixel
+to a fresh engine's, in the engine's tests on two pages and in the new
+`mutation` fuzz target; the pipeline target holds every frame drawn in
+part to a whole raster; the reference pages, mutated and changed back,
+still match their captures. The counters that prove work not done:
+`style_runs`, `restyled_elements`, `layout_runs`, `boxes_laid_out`,
+`boxes_reused` and `redrawn`. Not in this milestone, said rather than
+hidden: building the box tree incrementally; a paint-only change still
+lays its element out again, and every pass copies every fragment,
+since fragments hold copies of styles and absolute coordinates (M35.9);
+text shaping's cost (M35.8); a scroll as a shifted frame (M19);
+parallel layout (M35.3); rule hashing and style sharing (M35.2);
+parsing into the arena as bytes arrive (M14.6); scripting, the
+collector that frees detached nodes, and mutation observers (M24,
+M25); input events (M26). 593 tests workspace-wide. Still stub: `net`.
+Phase A is done. Next milestone: `net` v1, URLs and HTTP/1.1 (M14).

@@ -840,18 +840,41 @@ code and corrected to it after; built in its twelve steps on
 
 ## M13 — Incremental engine v1  ·  `engine`/`style`/`layout`  ·  Effort: L  ·  Depends: M5–M12
 
-- [ ] M13.1 Dirty flags: style dirty bits per element (class/attr change →
-       subtree or sibling invalidation v1 = conservative subtree).
-- [ ] M13.2 Layout invalidation: damage region propagation (content-size
+- [x] M13.1 Dirty flags: style dirty bits per element (class/attr change →
+       subtree or sibling invalidation v1 = conservative subtree). Done
+       2026-10-02: the change journal turned into the elements to
+       restyle by the features the selectors depend on — named classes,
+       ids and attributes, sibling combinators, positions from either
+       end, `:empty` — restyled by depth, children only where a style
+       changed; a `<style>` change or the root's font size cascades
+       whole.
+- [x] M13.2 Layout invalidation: damage region propagation (content-size
        changes → ancestor reflow; position-only changes → paint-only).
-- [ ] M13.3 Paint invalidation: display-list diffing v1 (item-equality
-       rect collection).
-- [ ] M13.4 Frame scheduler: input → frame pipeline with a frame budget
+       Done 2026-10-02: a layout cache by node for elements' block and
+       table boxes, forgotten for what a change reaches and its
+       ancestors; a box that only moved is placed again whole, and one
+       a float can reach is laid out again. The box tree is rebuilt
+       each pass.
+- [x] M13.3 Paint invalidation: display-list diffing v1 (item-equality
+       rect collection). Done 2026-10-02: the last frame kept and the
+       new list compared with the last; the rectangles where they
+       differ redrawn, byte for byte a whole raster's.
+- [x] M13.4 Frame scheduler: input → frame pipeline with a frame budget
        (16.7ms target, deadline-aware: skip layout polish when over
-       budget — document the policy).
-- [ ] M13.5 `Engine::set_document` public API + repaint triggering.
-- [ ] M13.6 Acceptance: a DOM-mutation benchmark (append 1k nodes) runs
-       without full-document relayout; measure and record.
+       budget — document the policy). Done 2026-10-02: frames drawn
+       for a time and a deadline the caller passes, each stage timed,
+       scrolling animated by time, the shell drawing only when a frame
+       is wanted. The policy, in `docs/perf-budgets.md`: a late frame
+       skips nothing that changes what is shown, there being no layout
+       polish to defer, only the animation frames it could not draw.
+- [x] M13.5 `Engine::set_document` public API + repaint triggering. Done
+       2026-10-02: `set_document`, `mutate` over the document's own
+       mutation API, `needs_frame`.
+- [x] M13.6 Acceptance: a DOM-mutation benchmark (append 1k nodes) runs
+       without full-document relayout; measure and record. Done
+       2026-10-02: `crates/engine/benches/mutation.rs`; each appended
+       paragraph's frame lays out three boxes, 7ms at the median in
+       release, recorded in `docs/perf-budgets.md`.
 
 ---
 
@@ -1295,6 +1318,15 @@ process seams.
        word measures in layout (measured at M13: about 25µs a word,
        8µs of it the face, most of a 1,000-paragraph page's 700ms
        layout).
+- [ ] M35.9 Layout's work in proportion to the page on every pass
+       (measured at M13): the box tree, rebuilt each pass and growing
+       faster than the page (1.1ms at 1,000 paragraphs, 80ms at
+       16,000), and the fragments, every one copied into each new
+       layout since fragments hold absolute coordinates and copies of
+       their styles (58ms of a 90ms pass at 10,000 paragraphs). A box
+       tree updated in place, and fragments positioned relative to
+       their parent that refer to their styles, so that a pass copies
+       only what it laid out and a paint-only change only repaints.
 
 ---
 

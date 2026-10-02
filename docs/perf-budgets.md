@@ -142,17 +142,17 @@ is to take it on.
   every layout pass, takes 1.1, 2.4, 5.2, 18.7 and 80ms at 1,000,
   2,000, 4,000, 8,000 and 16,000 paragraphs. Its boxes, fragments and
   computed styles are large: a `LayoutBox` is 400 bytes, a `Fragment`
-  416 and a `ComputedStyle` 336. M35.
+  416 and a `ComputedStyle` 336. M35.9.
 - **A layout pass copies every fragment.** Fragments hold absolute
   coordinates and copies of their styles, so even a pass that reuses
   every box copies them all into the new layout: 58ms of the 90ms
   above. Fragments that refer to styles, and relative coordinates, are
-  M35's.
+  M35.9's.
 - **An appended paragraph in the debug build.** The work above that
   grows with the page, the box tree and the fragments copied, takes an
   appended paragraph's frame past the budget almost half the time
   between 1,000 and 2,000 paragraphs. In release it stays within it.
-  The same items, M35, take it on.
+  M35.9 takes it on.
 - **Positions counted from the end.** With `:last-child` or
   `:nth-last-child` in a stylesheet, inserting an element restyles every
   sibling before it: 20,015 elements and 42ms at 10,000 paragraphs. That
