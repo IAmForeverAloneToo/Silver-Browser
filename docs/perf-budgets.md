@@ -60,6 +60,7 @@ nothing that changes what is shown.
 - **Benchmarks:** plain binaries, `harness = false`, run by hand:
   - `cargo bench -p engine --bench scroll` (M9.6; stages since M13.4).
   - `cargo bench -p engine --bench mutation` (M13.6).
+  - `cargo bench -p engine --bench load` (M14).
   - `cargo bench -p style --bench match`.
   - Criterion-tracked benchmarks run in CI are T4.2, for M35.
 - **Counters** prove work that is not done: `Engine::style_runs`,
@@ -128,14 +129,46 @@ before it:
 The cascade of the whole page costs what it did before M13.1: 3ms for
 1,000 paragraphs, 35–37ms for 10,000.
 
+### Loading a page
+
+The load benchmark (M14) serves a page of 1,000 paragraphs, 111KB,
+and three stylesheets its `<head>` links from `net`'s test server on
+127.0.0.1. Each run starts a new engine, so its connections are new
+too, calls `Engine::load`, takes results as the waker says they come,
+and draws the first frame at 1280 by 800 once the page is shown. The
+sheets block the page, so it is shown styled, with all three in. Ten
+runs a row, medians, and in release the range over two rows:
+
+| | Release | Debug |
+| --- | --- | --- |
+| The document fetched alone, a client of its own | 0.6–0.8ms | 0.9ms |
+| Parsed alone | 1.5ms | 11.3ms |
+| `load` to the page shown, its sheets in | 3.3–3.4ms | 13.8ms |
+| The first frame | 693–711ms | 891ms |
+| Its layout | 686–704ms | 857ms |
+| Its style, paint and raster | 2.4–2.7, 0.6–0.7 and 3.7–3.9ms | 18.8, 2.7 and 10.7ms |
+| `load` to the first frame drawn | 697–714ms | 906ms |
+
+Fetching, parsing and putting the page together with its sheets take
+half a percent of it. The rest is the first layout of 1,000
+paragraphs, which costs what it costs when the page is given as
+source (the mutation benchmark's first frame, above): text shaping,
+M35.8's.
+
+The numbers recorded before M14 were measured again with it. The
+mutation benchmark's are within their ranges or at most 2% past them
+(its first frame 650–688ms, the thousand appended at once 640–699ms),
+inside T4.3's 10%, and the scroll benchmark's layout is 156–170ms over
+three runs on a quiet machine, as recorded.
+
 ### Over budget, and why
 
 These are known and recorded rather than hidden. Each has the item that
 is to take it on.
 
 - **The first layout of a large page.** 490ms for the 1,000 paragraphs
-  M13.2 was measured on, and 630–680ms for the mutation benchmark's
-  page. Most of it is text shaping, at about 25µs a word. Caching word
+  M13.2 was measured on, 630–680ms for the mutation benchmark's page,
+  and 690–700ms for the load benchmark's, with its sheets. Most of it is text shaping, at about 25µs a word. Caching word
   measures and fonts' faces is M35.8. Laying out 1,000 new paragraphs
   at once costs the same, for the same reason.
 - **Work that grows faster than the page.** The box tree, rebuilt on
