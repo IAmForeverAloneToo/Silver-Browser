@@ -39,10 +39,11 @@ pub(crate) fn contribution(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32) 
         LengthPercentageAuto::Percent(_) | LengthPercentageAuto::Auto => 0.0,
     };
     let border = style.used_border_width();
-    // A table whose borders collapse has neither border nor padding of
-    // its own: its cells hold the grid lines (M12).
+    // A table whose borders collapse has no padding, and half its outer
+    // grid lines for its border (M12).
     let non_content = if crate::table::collapses(style) {
-        0.0
+        let border = crate::table::collapsed_table_border(b);
+        border[LEFT] + border[RIGHT]
     } else {
         border[LEFT] + border[RIGHT] + fixed(style.padding[LEFT]) + fixed(style.padding[RIGHT])
     };

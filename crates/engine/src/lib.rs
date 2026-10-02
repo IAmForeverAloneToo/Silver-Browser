@@ -1785,10 +1785,11 @@ mod tests {
     #[test]
     fn collapsed_borders_paint_on_the_grid_lines_the_winner_on_top_at_joints() {
         // A collapsed 2-column table at (10, 10): the table's 4px blue
-        // border on its outer lines, the cells' 2px red one between them
-        // at x = 60, 59 to 61. At the joint with the top line the blue
-        // border, which wins, is painted over the red; a point on a line
-        // is the table's, one inside a cell the cell's.
+        // border on its outer lines, whole inside its border box, whose
+        // own border is their half, 2px; the cells' 2px red one between
+        // them at x = 60 (12 + 48), 59 to 61. At the joint with the top
+        // line the blue border, which wins, is painted over the red; a
+        // point on a line is the table's, one inside a cell the cell's.
         let mut engine = test_engine();
         engine.load_document(
             "<style>body { margin: 10px }
@@ -1800,20 +1801,23 @@ mod tests {
         let pixels = engine.frame(200, 100);
         let (t, a) = (node_by_id(&engine, "t"), node_by_id(&engine, "a"));
         let (blue, red) = ([0x00, 0x00, 0xff, 0xff], [0xff, 0x00, 0x00, 0xff]);
+        let white = [0xff, 0xff, 0xff, 0xff];
+        assert_eq!(px(&pixels, 200, 9, 20), white, "nothing in its margin");
         assert_eq!(
-            px(&pixels, 200, 9, 20),
+            px(&pixels, 200, 10, 20),
             blue,
             "the outer half of the left line"
         );
-        assert_eq!(px(&pixels, 200, 11, 20), blue, "its inner half");
+        assert_eq!(px(&pixels, 200, 13, 20), blue, "its inner half");
+        assert_eq!(px(&pixels, 200, 14, 20), white, "the cell");
         assert_eq!(px(&pixels, 200, 59, 20), red);
         assert_eq!(px(&pixels, 200, 60, 20), red);
         assert_eq!(
-            px(&pixels, 200, 60, 9),
+            px(&pixels, 200, 60, 11),
             blue,
             "the joint, the top line over the inner one"
         );
-        assert_eq!(px(&pixels, 200, 30, 20), [0xff, 0xff, 0xff, 0xff]);
+        assert_eq!(px(&pixels, 200, 30, 20), white);
         assert_eq!(engine.hit_test(60.0, 20.0), Some(t));
         assert_eq!(engine.hit_test(30.0, 20.0), Some(a));
     }

@@ -1,0 +1,40 @@
+<!doctype html>
+<html>
+<head>
+<title>Tables: a plain grid with the UA sheet's spacing and padding, a caption at the top and one at the bottom, a header and a footer group out of source order, and cells at the top, the middle, the bottom and on the baseline</title>
+<style>
+  html { background-color: #f3eee6; }
+  body { margin: 20px; }
+  table { background-color: #d9c7a8; }
+  caption { background-color: #8b5a2b; }
+  caption div { height: 20px; }
+  caption.under { caption-side: bottom; background-color: #a0522d; }
+  caption.under div { height: 10px; }
+  thead { background-color: #cd853f; }
+  tfoot { background-color: #deb887; }
+  td { background-color: #f5deb3; font-size: 0; }
+  .ib { display: inline-block; width: 30px; background-color: #8b4513; }
+  .blk { width: 40px; background-color: #6b3e1f; }
+  .h10 { height: 10px; } .h20 { height: 20px; } .h30 { height: 30px; } .h60 { height: 60px; }
+  .top { vertical-align: top; } .mid { vertical-align: middle; }
+  .bot { vertical-align: bottom; } .base { vertical-align: baseline; }
+  .second { margin-top: 30px; border-spacing: 6px 3px; }
+</style>
+</head>
+<body>
+<table>
+<caption><div></div></caption>
+<tfoot><tr><td><div class="blk h10"></div></td><td><div class="blk h10"></div></td><td></td><td></td><td></td><td></td></tr></tfoot>
+<tbody>
+<tr><td class="top"><div class="blk h10"></div></td><td class="mid"><div class="blk h10"></div></td><td class="bot"><div class="blk h10"></div></td><td class="base"><span class="ib h30"></span></td><td class="base"><span class="ib h10"></span></td><td><div class="blk h60"></div></td></tr>
+<tr><td></td><td><div class="blk h20"></div></td><td></td><td class="base"><span class="ib h10"></span></td><td class="base"><span class="ib h20"></span></td><td><div class="blk h10"></div></td></tr>
+</tbody>
+<thead><tr><td colspan="6"><div class="blk h20"></div></td></tr></thead>
+<caption class="under"><div></div></caption>
+</table>
+<table class="second">
+<tr><td><div class="blk h20"></div></td><td class="mid"><div class="blk h10"></div></td></tr>
+<tr><td class="bot"><div class="blk h10"></div></td><td><div class="blk h30"></div></td></tr>
+</table>
+</body>
+</html>

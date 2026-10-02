@@ -830,9 +830,9 @@ pub(crate) struct Edges {
 }
 
 impl Edges {
-    /// A table whose borders collapse has neither in layout (M12): its
-    /// border is the grid's outer lines', which its cells hold, and it
-    /// has no padding (CSS2 §17.6.2).
+    /// A table whose borders collapse has neither here (M12): it has no
+    /// padding (CSS2 §17.6.2), and its border comes from its grid, which
+    /// [`Edges::of_box`] reads.
     pub(crate) fn of(style: &ComputedStyle, cb_width: f32) -> Self {
         if crate::table::collapses(style) {
             return Edges {
@@ -844,6 +844,19 @@ impl Edges {
             border: effective_border_width(style),
             padding: style.padding.map(|p| p.resolve(cb_width)),
         }
+    }
+
+    /// The box `b`'s own: [`Edges::of`] its style, but for a table whose
+    /// borders collapse, whose border is half the widest border along
+    /// each of its grid's outer lines (css-tables-3 §3.7.1.1).
+    pub(crate) fn of_box(b: &LayoutBox, cb_width: f32) -> Self {
+        if crate::table::collapses(&b.style) {
+            return Edges {
+                border: crate::table::collapsed_table_border(b),
+                padding: [0.0; 4],
+            };
+        }
+        Edges::of(&b.style, cb_width)
     }
 
     /// What the two sides take out of the width.
@@ -871,7 +884,7 @@ fn layout_block<'a>(
     at: At,
     fonts: &FontCollection,
 ) -> BlockLayout<'a> {
-    let edges = Edges::of(&b.style, cb_width);
+    let edges = Edges::of_box(b, cb_width);
     // margin-right is fully resolved here but never read again — see
     // `BlockLayout::margin_left`'s doc for why that's correct, not an
     // oversight.
@@ -986,7 +999,7 @@ pub(crate) fn layout_inline_block<'a>(
     cb_height: Option<f32>,
     fonts: &FontCollection,
 ) -> AtomicLayout<'a> {
-    let edges = Edges::of(&b.style, cb_width);
+    let edges = Edges::of_box(b, cb_width);
     let margin = |side: usize| b.style.margin[side].resolve(cb_width, 0.0);
     let (margin_left, margin_right) = (margin(LEFT), margin(RIGHT));
     let (margin_top, margin_bottom) = (margin(TOP), margin(BOTTOM));
@@ -1402,7 +1415,7 @@ fn layout_absolute<'a>(
     fonts: &FontCollection,
 ) -> (Fragment, Vec<Deferred<'a>>) {
     let style = &b.style;
-    let edges = Edges::of(style, cb_width);
+    let edges = Edges::of_box(b, cb_width);
     let horizontal_edges = edges.horizontal();
     let vertical_edges = edges.vertical();
     let (left, right) = (

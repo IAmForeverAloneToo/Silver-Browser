@@ -29,9 +29,18 @@
 //! lowest of their own (a cell's first line box's, or the first row's of
 //! a table in it, else its content's bottom edge), so the row holds each
 //! of them moved down to it; a cell spanning rows aligns to its first
-//! row's and gives what it needs beyond the rows it spans to those rows
-//! in proportion to their heights; the table's own `height` past the
-//! rows' sum is given to the rows the same way. Every cell is stretched
+//! row's and gives what it needs beyond the rows it spans to them, as
+//! browsers do where the specifications say nothing: those ending in an
+//! earlier row first, and of those ending together the shorter, each to
+//! the rows after its first where another spanning cell starts, equally,
+//! else to the unconstrained rows (no length `height` on the row or a
+//! cell in it alone) in proportion to their heights, else to the
+//! constrained ones, else to the last row. A row group's length `height`
+//! is a minimum for its rows, and the table's own `height` past the
+//! rows' sum is given to the body groups (to the header and footer
+//! groups when there is none) and in each to its rows: the unconstrained
+//! ones, or all when every one is constrained, in proportion to their
+//! heights, equally when those are all zero. Every cell is stretched
 //! to the rows it spans, and its content placed in it by its alignment:
 //! at its top, centred, at its bottom, or on the row's baseline. The
 //! table's baseline is its first row's, the lowest cell content's bottom
@@ -47,13 +56,13 @@
 //! line — per column of a horizontal line, per row of a vertical one —
 //! is resolved to one border by §17.6.2.1's conflict rules among the
 //! cells on either side and, where the line is their edge, the rows,
-//! row groups, columns, column groups and the table; each cell holds the
-//! part of each line on its side (half, the left or top half rounded
-//! down), which is its border in layout and in its measures; the table
-//! has no padding and no border of its own, its border box running
-//! from the middle of its outer lines, whose outer halves lie in its
-//! margin; and the resolved borders are painted by fragments of their
-//! own, one per segment, the table's, after the cells' backgrounds.
+//! row groups, columns, column groups and the table; each cell holds
+//! half of each line on its side, exactly (css-tables-3 §3.7.1.1), which
+//! is its border in layout and in its measures; the table has no
+//! padding, and its border is half the widest border along each of its
+//! outer lines, so that its border box holds them whole; and the
+//! resolved borders are painted by fragments of their own, one per
+//! segment, the table's, after the cells' backgrounds.
 //!
 //! The fragments: the table's own is its wrapper box (CSS2 §17.4),
 //! holding the captions and the table box — the border box the table's
@@ -84,7 +93,7 @@ use crate::block::{
     definite_height, height_bounds, layout_block_contents, relative_offset,
     resolve_width_and_margins, settle_absolutes,
 };
-use crate::box_tree::{BoxKind, LayoutBox};
+use crate::box_tree::{BoxKind, LayoutBox, RowGroupKind};
 
 /// Lays out the table box `b` whose content box is `content_width` wide
 /// — the `width` given, or the containing block's width for `auto` —
@@ -170,6 +179,9 @@ pub(crate) fn layout_table_contents<'a>(
 
     // The row heights: each row's own `height` and what its cells need,
     // a cell spanning rows giving what it needs beyond its rows to them.
+    // A row is constrained when its own `height`, or that of a cell in
+    // it alone, is a length; the rows where a cell spanning rows starts
+    // take another spanning cell's excess first.
     let mut heights: Vec<f32> = grid
         .rows
         .iter()
@@ -178,27 +190,72 @@ pub(crate) fn layout_table_contents<'a>(
             LengthPercentageAuto::Auto | LengthPercentageAuto::Percent(_) => 0.0,
         })
         .collect();
+    let constrained: Vec<bool> = grid
+        .rows
+        .iter()
+        .zip(&grid.row_cells)
+        .map(|(row, own)| {
+            is_length(row.b.style.height)
+                || own.clone().any(|i| {
+                    let cell = &grid.cells[i];
+                    cell.rowspan == 1 && is_length(cell.b.style.height)
+                })
+        })
+        .collect();
+    let starts_span: Vec<bool> = grid
+        .row_cells
+        .iter()
+        .map(|own| own.clone().any(|i| grid.cells[i].rowspan > 1))
+        .collect();
     for (cell, layout) in grid.cells.iter().zip(&cells) {
         if cell.rowspan == 1 {
             heights[cell.row] = heights[cell.row].max(needed(cell, layout));
         }
     }
+    // The spanning cells: those ending in an earlier row first and, of
+    // those ending in the same row, those spanning fewer rows.
     let mut spanning: Vec<(&GridCell<'a>, &CellLayout<'a>)> = grid
         .cells
         .iter()
         .zip(&cells)
         .filter(|(cell, _)| cell.rowspan > 1)
         .collect();
-    spanning.sort_by_key(|(cell, _)| cell.row + cell.rowspan);
+    spanning.sort_by_key(|(cell, _)| (cell.row + cell.rowspan, cell.rowspan));
     for (cell, layout) in spanning {
-        let rows = &mut heights[cell.row..cell.row + cell.rowspan];
-        let have = rows.iter().sum::<f32>() + (cell.rowspan - 1) as f32 * vspacing;
+        let span = cell.row..cell.row + cell.rowspan;
+        let have = heights[span.clone()].iter().sum::<f32>() + (cell.rowspan - 1) as f32 * vspacing;
         let wants = needed(cell, layout);
         if wants > have {
-            distribute(wants - have, rows);
+            distribute_rowspan(
+                wants - have,
+                &mut heights[span.clone()],
+                &constrained[span.clone()],
+                &starts_span[span],
+            );
         }
     }
-    // The table's `height` is a minimum for the rows together.
+    // A row group's own `height` is a minimum for its rows together.
+    let group_extent = |heights: &[f32], group: &GridGroup<'_>| {
+        heights[group.span()].iter().sum::<f32>() + group.rows.saturating_sub(1) as f32 * vspacing
+    };
+    for group in grid.groups.iter().filter(|g| g.rows > 0) {
+        let Some(LengthPercentageAuto::Px(h)) = group.b.map(|g| g.style.height) else {
+            continue;
+        };
+        let have = group_extent(&heights, group);
+        if h > have {
+            distribute_height(
+                h - have,
+                &mut heights[group.span()],
+                &constrained[group.span()],
+            );
+        }
+    }
+    // The table's `height` is a minimum for the rows together. What it
+    // adds goes to the body groups, the rows directly in the table being
+    // one, or to the header and footer groups when there is none; among
+    // the groups as among rows, a group with a length `height` being
+    // constrained; and in each group to its rows.
     let rows_height = if heights.is_empty() {
         0.0
     } else {
@@ -208,7 +265,25 @@ pub(crate) fn layout_table_contents<'a>(
     let (min_height, _) = height_bounds(style, cb_height, edges.vertical());
     let wanted = specified.unwrap_or(0.0).max(min_height);
     if wanted > rows_height && !heights.is_empty() {
-        distribute(wanted - rows_height, &mut heights);
+        let with_rows = || grid.groups.iter().filter(|g| g.rows > 0);
+        let mut groups: Vec<&GridGroup<'_>> = with_rows().filter(|g| g.is_body()).collect();
+        if groups.is_empty() {
+            groups = with_rows().collect();
+        }
+        let before: Vec<f32> = groups.iter().map(|g| group_extent(&heights, g)).collect();
+        let groups_constrained: Vec<bool> = groups
+            .iter()
+            .map(|g| g.b.is_some_and(|b| is_length(b.style.height)))
+            .collect();
+        let mut after = before.clone();
+        distribute_height(wanted - rows_height, &mut after, &groups_constrained);
+        for ((group, before), after) in groups.iter().zip(&before).zip(&after) {
+            distribute_height(
+                after - before,
+                &mut heights[group.span()],
+                &constrained[group.span()],
+            );
+        }
     }
     let content_height = rows_height.max(wanted);
 
@@ -575,6 +650,20 @@ struct GridGroup<'a> {
     b: Option<&'a LayoutBox>,
     first_row: usize,
     rows: usize,
+}
+
+impl GridGroup<'_> {
+    /// Its rows' indices.
+    fn span(&self) -> std::ops::Range<usize> {
+        self.first_row..self.first_row + self.rows
+    }
+
+    /// Whether it is a body group: a `tbody`, or rows directly in the
+    /// table, as the HTML parser's implied `tbody` would hold them.
+    fn is_body(&self) -> bool {
+        self.b
+            .is_none_or(|b| b.kind == BoxKind::RowGroup(RowGroupKind::Body))
+    }
 }
 
 struct GridCell<'a> {
@@ -1163,12 +1252,93 @@ pub(crate) fn content_widths(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32
     };
     let border = style.used_border_width();
     let edges = if collapses(style) {
-        0.0
+        let border = collapsed_table_border(b);
+        border[LEFT] + border[RIGHT]
     } else {
         border[LEFT] + border[RIGHT] + fixed(style.padding[LEFT]) + fixed(style.padding[RIGHT])
     };
     let min = min.max(caption_min(b, edges, fonts));
     (min, max.max(min))
+}
+
+/// Whether a size is a length, which makes a row or a row group
+/// constrained.
+fn is_length(size: LengthPercentageAuto) -> bool {
+    matches!(size, LengthPercentageAuto::Px(_))
+}
+
+/// Gives `extra`, what a cell spanning `rows` needs beyond their heights
+/// and the spacing between them, to those rows as browsers do, which
+/// css-tables-3 leaves open: to the rows after the first where another
+/// cell spanning rows starts (`starts_span`), equally; else to the rows
+/// not `constrained` in proportion to their heights; else to the
+/// constrained ones the same way; and, every row being of no height, to
+/// the last.
+fn distribute_rowspan(extra: f32, rows: &mut [f32], constrained: &[bool], starts_span: &[bool]) {
+    if extra <= 0.0 || rows.is_empty() {
+        return;
+    }
+    let starting = starts_span.iter().skip(1).filter(|&&s| s).count();
+    if starting > 0 {
+        let each = extra / starting as f32;
+        for (row, _) in rows
+            .iter_mut()
+            .zip(starts_span)
+            .skip(1)
+            .filter(|(_, s)| **s)
+        {
+            *row += each;
+        }
+        return;
+    }
+    for taking in [false, true] {
+        let total: f32 = rows
+            .iter()
+            .zip(constrained)
+            .filter(|(_, c)| **c == taking)
+            .map(|(h, _)| *h)
+            .sum();
+        if total > 0.0 {
+            for (row, _) in rows
+                .iter_mut()
+                .zip(constrained)
+                .filter(|(_, c)| **c == taking)
+            {
+                *row += extra * *row / total;
+            }
+            return;
+        }
+    }
+    if let Some(last) = rows.last_mut() {
+        *last += extra;
+    }
+}
+
+/// Gives `extra` to `parts`, rows or row groups, as browsers share out a
+/// table's or a row group's height, which is not css-tables-3 §3.10.5's
+/// equal increments: to the parts not `constrained`, or to all of them
+/// when every one is, in proportion to their sizes, equally when those
+/// are all zero.
+fn distribute_height(extra: f32, parts: &mut [f32], constrained: &[bool]) {
+    if extra <= 0.0 || parts.is_empty() {
+        return;
+    }
+    let all = constrained.iter().all(|&c| c);
+    let takes = |c: &bool| all || !*c;
+    let (total, count) = parts
+        .iter()
+        .zip(constrained)
+        .filter(|(_, c)| takes(c))
+        .fold((0.0, 0usize), |(total, count), (p, _)| {
+            (total + p, count + 1)
+        });
+    for (part, _) in parts.iter_mut().zip(constrained).filter(|(_, c)| takes(c)) {
+        *part += if total > 0.0 {
+            extra * *part / total
+        } else {
+            extra / count as f32
+        };
+    }
 }
 
 /// Gives `extra` to `parts` in proportion to their sizes, equally when
@@ -1396,11 +1566,10 @@ fn is_empty_cell(b: &LayoutBox) -> bool {
 }
 
 /// Whether a table's borders collapse (CSS2 §17.6.2): `border-collapse:
-/// collapse` on a table. Such a table has no padding and no border of
-/// its own in layout — its border is the grid's outer lines', which its
-/// cells hold half of and whose other half lies in its margin — so its
-/// border box runs from the middle of its left line to the middle of its
-/// right one.
+/// collapse` on a table. Such a table has no padding, and its border in
+/// layout is [`collapsed_table_border`]'s: half of each outer line's
+/// widest border, the other half its cells', so its border box holds its
+/// outer lines whole.
 pub(crate) fn collapses(style: &ComputedStyle) -> bool {
     matches!(style.display, Display::Table | Display::InlineTable)
         && style.border_collapse == BorderCollapse::Collapse
@@ -1477,15 +1646,11 @@ fn resolve(candidates: &[Candidate]) -> Option<Candidate> {
         .max_by(Candidate::precedence)
 }
 
-/// The part of a grid line's border on its left or top side: half of it,
-/// rounded down; the rest lies on the right or bottom side. A stated
-/// choice for the odd pixel, which the reference pages check.
-fn before_line(width: f32) -> f32 {
-    (width / 2.0).floor()
-}
-
-fn after_line(width: f32) -> f32 {
-    width - before_line(width)
+/// The part of a grid line's border on either side of it: half of it,
+/// exactly, as css-tables-3 §3.7.1.1 divides every collapsed border by
+/// two; the odd pixel of a line falls where painting snaps it.
+fn half(width: f32) -> f32 {
+    width / 2.0
 }
 
 /// The borders of a table in the collapsed model.
@@ -1500,6 +1665,11 @@ struct CollapsedBorders {
     /// line on the cell's side, the widest along the side where the line
     /// changes under a spanning cell.
     cells: Vec<[f32; 4]>,
+    /// The table's own border widths, top, right, bottom and left: half
+    /// the widest border along each of its outer lines (css-tables-3
+    /// §3.7.1.1), so that every outer line lies inside its border box;
+    /// none for a grid without rows or columns, which has no lines.
+    table: [f32; 4],
 }
 
 /// Resolves every segment of every grid line of `table` (CSS2 §17.6.2):
@@ -1627,6 +1797,18 @@ fn collapse_borders(table: &LayoutBox, grid: &Grid<'_>) -> CollapsedBorders {
     }
 
     let width = |b: &Option<Candidate>| b.map_or(0.0, |b| b.width);
+    let widest_half =
+        |line: &[Option<Candidate>]| line.iter().map(|b| half(width(b))).fold(0.0, f32::max);
+    let table = if rows == 0 || columns == 0 {
+        [0.0; 4]
+    } else {
+        [
+            widest_half(&horizontal[0]),
+            widest_half(&vertical[columns]),
+            widest_half(&horizontal[rows]),
+            widest_half(&vertical[0]),
+        ]
+    };
     let cells = grid
         .cells
         .iter()
@@ -1638,23 +1820,19 @@ fn collapse_borders(table: &LayoutBox, grid: &Grid<'_>) -> CollapsedBorders {
                 widest(
                     &mut horizontal[cell.row][cols.clone()]
                         .iter()
-                        .map(|b| after_line(width(b))),
+                        .map(|b| half(width(b))),
                 ),
                 widest(
                     &mut vertical[cell.col + cell.colspan][span_rows.clone()]
                         .iter()
-                        .map(|b| before_line(width(b))),
+                        .map(|b| half(width(b))),
                 ),
                 widest(
                     &mut horizontal[cell.row + cell.rowspan][cols]
                         .iter()
-                        .map(|b| before_line(width(b))),
+                        .map(|b| half(width(b))),
                 ),
-                widest(
-                    &mut vertical[cell.col][span_rows]
-                        .iter()
-                        .map(|b| after_line(width(b))),
-                ),
+                widest(&mut vertical[cell.col][span_rows].iter().map(|b| half(width(b)))),
             ]
         })
         .collect();
@@ -1662,22 +1840,62 @@ fn collapse_borders(table: &LayoutBox, grid: &Grid<'_>) -> CollapsedBorders {
         horizontal,
         vertical,
         cells,
+        table,
     }
+}
+
+/// The border widths of a table whose borders collapse, top, right,
+/// bottom and left: half the widest border along each of its grid's
+/// outer lines (css-tables-3 §3.7.1.1), which only its grid can tell;
+/// it has no padding.
+pub(crate) fn collapsed_table_border(table: &LayoutBox) -> [f32; 4] {
+    collapse_borders(table, &Grid::of(table)).table
 }
 
 impl CollapsedBorders {
     /// The fragments that paint the resolved borders, the table's own:
     /// one per segment of a grid line per column or row it crosses, a
     /// box with just the one side set, lying across its line as the line
-    /// is split, and reaching over the joints at its ends by the part of
-    /// the widest crossing border on its side, so that neighbouring
-    /// segments meet square. They come lowest precedence first, so at a
-    /// joint the winning border is painted over the others. `line_x` and
-    /// `line_y` are the grid lines' positions in the table box. `inset`
-    /// and `outset` are painted as `ridge` and `groove`, as the collapsed
-    /// model has them (§17.6.3).
+    /// is split. A joint, where lines cross, is its winner's: a segment
+    /// reaches over the joint at its end by half the widest border
+    /// crossing it there when no border meeting there wins over it, and
+    /// otherwise stops at the joint's edge, as browsers paint it, so that
+    /// a losing border never shows through a winning `double`'s gap and
+    /// neighbouring segments meet square. They come lowest precedence
+    /// first, so where borders that tie overlap at a joint the later one
+    /// is painted over the others. `line_x` and `line_y` are the grid
+    /// lines' positions in the table box. `inset` and `outset` are
+    /// painted as `ridge` and `groove`, as the collapsed model has them
+    /// (§17.6.3).
     fn segments(&self, table: &LayoutBox, line_x: &[f32], line_y: &[f32]) -> Vec<Fragment> {
         let width = |b: Option<&Option<Candidate>>| b.copied().flatten().map_or(0.0, |b| b.width);
+        // The borders meeting at the joint of horizontal line `l` and
+        // vertical line `v`, and how far a segment ending there reaches
+        // past the line it crosses: over the joint by half the widest
+        // crossing border, `crossing`, when none of them wins over it,
+        // short of it by as much otherwise.
+        let meeting = |l: usize, v: usize| {
+            let at = |line: &Vec<Option<Candidate>>, i: Option<usize>| {
+                i.and_then(|i| line.get(i).copied().flatten())
+            };
+            [
+                at(&self.horizontal[l], v.checked_sub(1)),
+                at(&self.horizontal[l], Some(v)),
+                at(&self.vertical[v], l.checked_sub(1)),
+                at(&self.vertical[v], Some(l)),
+            ]
+        };
+        let reach = |border: &Candidate, l: usize, v: usize, crossing: f32| {
+            let beaten = meeting(l, v)
+                .iter()
+                .flatten()
+                .any(|other| other.precedence(border) == std::cmp::Ordering::Greater);
+            if beaten {
+                -half(crossing)
+            } else {
+                half(crossing)
+            }
+        };
         // The widest vertical border at the joint of horizontal line `l`
         // and vertical line `v`, and the widest horizontal one.
         let vertical_at = |l: usize, v: usize| {
@@ -1694,13 +1912,13 @@ impl CollapsedBorders {
         for (l, line) in self.horizontal.iter().enumerate() {
             for (c, border) in line.iter().enumerate() {
                 let Some(border) = *border else { continue };
-                let x0 = line_x[c] - before_line(vertical_at(l, c));
-                let x1 = line_x[c + 1] + after_line(vertical_at(l, c + 1));
-                let y0 = line_y[l] - before_line(border.width);
+                let x0 = line_x[c] - reach(&border, l, c, vertical_at(l, c));
+                let x1 = line_x[c + 1] + reach(&border, l, c + 1, vertical_at(l, c + 1));
+                let y0 = line_y[l] - half(border.width);
                 let rect = Rect {
                     x: x0,
                     y: y0,
-                    w: x1 - x0,
+                    w: (x1 - x0).max(0.0),
                     h: border.width,
                 };
                 segments.push((border, segment_fragment(table, border, TOP, rect)));
@@ -1709,14 +1927,14 @@ impl CollapsedBorders {
         for (v, line) in self.vertical.iter().enumerate() {
             for (r, border) in line.iter().enumerate() {
                 let Some(border) = *border else { continue };
-                let y0 = line_y[r] - before_line(horizontal_at(r, v));
-                let y1 = line_y[r + 1] + after_line(horizontal_at(r + 1, v));
-                let x0 = line_x[v] - before_line(border.width);
+                let y0 = line_y[r] - reach(&border, r, v, horizontal_at(r, v));
+                let y1 = line_y[r + 1] + reach(&border, r + 1, v, horizontal_at(r + 1, v));
+                let x0 = line_x[v] - half(border.width);
                 let rect = Rect {
                     x: x0,
                     y: y0,
                     w: border.width,
-                    h: y1 - y0,
+                    h: (y1 - y0).max(0.0),
                 };
                 segments.push((border, segment_fragment(table, border, LEFT, rect)));
             }
@@ -2518,23 +2736,24 @@ mod tests {
     #[test]
     fn collapsed_borders_are_shared_on_the_grid_lines_and_held_half_by_each_cell() {
         // The outer lines resolve to the table's 4px, the inner ones to
-        // the cells' 2px. A cell holds the part of each line on its side:
-        // 2 of an outer line, 1 of an inner one, so the first row is 2 +
-        // 20 + 1 tall and the second 1 + 20 + 2; the table box runs from
-        // the middle of its outer lines, the outer halves lying outside.
+        // the cells' 2px. A cell holds half of each line on its side: 2 of
+        // an outer line, 1 of an inner one, so each row is 2 + 20 + 1
+        // tall. The table's border is half its outer lines, 2 a side, so
+        // its border box, 100 wide as given, holds them whole: its
+        // columns are 48 wide, and it is 2 + 23 + 23 + 2 tall.
         // Nodes: table 4, tr 5, td 6, td 7, tr 8, td 9, td 10.
         let layout = document_of(COLLAPSED, COLLAPSED_CSS);
         let table = fragments_of(&layout, 4);
-        assert_eq!(rect(table[0]), (0.0, 0.0, 100.0, 46.0));
-        assert_eq!(rect(table[1]), (0.0, 0.0, 100.0, 46.0));
+        assert_eq!(rect(table[0]), (0.0, 0.0, 100.0, 50.0));
+        assert_eq!(rect(table[1]), (0.0, 0.0, 100.0, 50.0));
         assert_eq!(
             table[1].style.used_border_width(),
             [0.0; 4],
             "the lines paint it"
         );
-        assert_eq!(rect(fragment_of(&layout, 6)), (0.0, 0.0, 50.0, 23.0));
-        assert_eq!(rect(fragment_of(&layout, 7)), (50.0, 0.0, 50.0, 23.0));
-        assert_eq!(rect(fragment_of(&layout, 9)), (0.0, 23.0, 50.0, 23.0));
+        assert_eq!(rect(fragment_of(&layout, 6)), (2.0, 2.0, 48.0, 23.0));
+        assert_eq!(rect(fragment_of(&layout, 7)), (50.0, 2.0, 48.0, 23.0));
+        assert_eq!(rect(fragment_of(&layout, 9)), (2.0, 25.0, 48.0, 23.0));
         assert_eq!(fragment_of(&layout, 6).style.used_border_width(), [0.0; 4]);
         // Twelve segments: three lines of two each way, the red ones
         // first so the blue ones win at the joints.
@@ -2551,22 +2770,24 @@ mod tests {
                 .iter()
                 .all(|f| f.style.used_border_width().iter().sum::<f32>() == 2.0)
         );
-        // The top line over the first column: 4px across its line, two
-        // above the table box, reaching over the left joint by the
-        // outer line's two and over the middle one by the inner line's 1.
+        // The top line over the first column: 4px across its line, from
+        // the table box's top, reaching over the left joint by the outer
+        // line's half, to the box's left, and over the middle one by the
+        // inner line's 1.
         let top_left = segments
             .iter()
-            .find(|f| f.style.used_border_width()[TOP] == 4.0 && f.x < 0.0 && f.y < 0.0)
+            .find(|f| f.style.used_border_width()[TOP] == 4.0 && f.x == 0.0 && f.y == 0.0)
             .unwrap();
-        assert_eq!(rect(top_left), (-2.0, -2.0, 53.0, 4.0));
+        assert_eq!(rect(top_left), (0.0, 0.0, 51.0, 4.0));
         assert_eq!(top_left.style.border_color[TOP], blue);
-        // The inner vertical line in the first row: 2px, from 2 above the
-        // table box to 1 below the middle line.
+        // The inner vertical line in the first row: 2px, from the top
+        // line's inner edge, the top line winning that joint, to 1 below
+        // the middle line, whose joint it ties with the lines it meets.
         let middle = segments
             .iter()
-            .find(|f| f.style.used_border_width()[LEFT] == 2.0 && f.x == 49.0 && f.y < 0.0)
+            .find(|f| f.style.used_border_width()[LEFT] == 2.0 && f.x == 49.0 && f.y == 4.0)
             .unwrap();
-        assert_eq!(rect(middle), (49.0, -2.0, 2.0, 26.0));
+        assert_eq!(rect(middle), (49.0, 4.0, 2.0, 22.0));
         assert_eq!(middle.style.border_color[LEFT], red);
     }
 
@@ -2581,19 +2802,20 @@ mod tests {
             &format!("{COLLAPSED_CSS} tr:first-child td:first-child {{ border-top: hidden; }}"),
         );
         assert_eq!(fragments_of(&layout, 4).len(), 2 + 11);
-        assert_eq!(rect(fragment_of(&layout, 6)), (0.0, 0.0, 50.0, 23.0));
-        // An automatic table measures its cells with the parts of the
-        // lines they hold: 2 + 10 + 1 and 1 + 10 + 2. Nodes: td 6, td 8.
+        assert_eq!(rect(fragment_of(&layout, 6)), (2.0, 2.0, 48.0, 23.0));
+        // An automatic table measures its cells with the halves of the
+        // lines they hold, 2 + 10 + 1 and 1 + 10 + 2, and is as wide as
+        // they are with its own border's halves. Nodes: td 6, td 8.
         let layout = document_of(
             "<table><tr><td><div class=b></div></td><td><div class=b></div></td></tr></table>",
             "body { margin: 0; } table { border-collapse: collapse; border: 4px solid #0000ff; }
              td { padding: 0; border: 2px solid #ff0000; } .b { width: 10px; height: 10px; }",
         );
-        assert_eq!(fragment_of(&layout, 4).w, 26.0);
-        assert_eq!(columns_of(&layout, &[6, 8]), [(0.0, 13.0), (13.0, 13.0)]);
+        assert_eq!(fragment_of(&layout, 4).w, 30.0);
+        assert_eq!(columns_of(&layout, &[6, 8]), [(2.0, 13.0), (15.0, 13.0)]);
         assert_eq!(
             fragment_of(&layout, 7).x,
-            2.0,
+            4.0,
             "inside the first cell's 2px"
         );
     }
@@ -2607,7 +2829,10 @@ mod tests {
             "table { border-collapse: collapse; border: 3px solid #000000; width: 20px; }",
         );
         for node in [4, 6, 8] {
-            assert_eq!(fragments_of(&layout, node).len(), 2, "node {node}");
+            let table = fragments_of(&layout, node);
+            assert_eq!(table.len(), 2, "node {node}");
+            // No lines, so no border: the width given, and no height.
+            assert_eq!((table[1].w, table[1].h), (20.0, 0.0), "node {node}");
         }
     }
 
@@ -2641,6 +2866,218 @@ mod tests {
             fragment_of(&layout, 6).style.background_color,
             Color::rgb8(255, 0, 0)
         );
+    }
+
+    /// The heights of the row fragments of `nodes`.
+    fn heights_of(layout: &DocumentLayout, nodes: &[usize]) -> Vec<f32> {
+        nodes.iter().map(|&n| fragment_of(layout, n).h).collect()
+    }
+
+    /// Rows of 10px content in 2px padding (14px) and 3px spacing, as the
+    /// browser measurements these tests take their numbers from.
+    const ROWS_CSS: &str = "body { margin: 0; } table { border-spacing: 3px; } td { padding: 2px; }
+        div { width: 30px; } .e { padding: 0; } .t10 { height: 10px; } .t30 { height: 30px; }
+        .t70 { height: 70px; } .t76 { height: 76px; } .t90 { height: 90px; }
+        .h20 { height: 20px; } .h100 { height: 100px; } .h200 { height: 200px; }";
+
+    #[test]
+    fn a_rowspans_excess_goes_first_to_the_rows_where_another_rowspan_starts() {
+        // A cell spanning rows 1 and 2 needs 74px of their 31: the 43
+        // go to row 2, where another spanning cell starts, not 21.5 to
+        // each. Nodes: tr 5, tr 10, tr 15.
+        let layout = document_of(
+            "<table><tr><td rowspan=2><div class=t70></div></td><td><div class=t10></div></td></tr>\
+             <tr><td><div class=t10></div></td><td rowspan=2><div class=t10></div></td></tr>\
+             <tr><td><div class=t10></div></td><td><div class=t10></div></td></tr></table>",
+            ROWS_CSS,
+        );
+        assert_eq!(heights_of(&layout, &[5, 10, 15]), [14.0, 57.0, 14.0]);
+        // Two cells ending in row 3: the one spanning fewer rows first,
+        // its 77 to row 3 (row 2 has no height), which leaves the longer
+        // one nothing to give; the other way round row 2 would take 74
+        // and then 3. Nodes: tr 5, tr 10, tr 13.
+        let layout = document_of(
+            "<table><tr><td rowspan=3><div class=t90></div></td><td><div class=t10></div></td></tr>\
+             <tr><td rowspan=2><div class=t76></div></td></tr><tr></tr></table>",
+            ROWS_CSS,
+        );
+        assert_eq!(heights_of(&layout, &[5, 10, 13]), [14.0, 0.0, 77.0]);
+    }
+
+    #[test]
+    fn a_rowspans_excess_spares_constrained_rows_and_falls_to_the_last_of_no_height() {
+        // A row with a length height keeps it while another can grow.
+        // Nodes: tr 5, tr 10.
+        let layout = document_of(
+            "<table><tr class=h20><td rowspan=2><div class=t70></div></td><td><div class=t10></div></td></tr>\
+             <tr><td><div class=t10></div></td></tr></table>",
+            ROWS_CSS,
+        );
+        assert_eq!(heights_of(&layout, &[5, 10]), [20.0, 51.0]);
+        // Rows of no height: the last takes it all; a constrained row
+        // with a height takes it before them. Nodes: tr 5, tr 9, tr 11.
+        let rows = "<tr><td class=e></td></tr><tr><td class=e></td></tr></table>";
+        let layout = document_of(
+            &format!(
+                "<table><tr><td rowspan=3><div class=t70></div></td><td class=e></td></tr>{rows}"
+            ),
+            ROWS_CSS,
+        );
+        assert_eq!(heights_of(&layout, &[5, 9, 11]), [0.0, 0.0, 68.0]);
+        let layout = document_of(
+            &format!(
+                "<table><tr class=h20><td rowspan=3><div class=t70></div></td><td class=e></td></tr>{rows}"
+            ),
+            ROWS_CSS,
+        );
+        assert_eq!(heights_of(&layout, &[5, 9, 11]), [68.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn the_tables_height_goes_to_its_body_groups_then_their_rows() {
+        let close = |got: Vec<f32>, want: [f32; 3]| {
+            assert!(
+                got.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-3),
+                "{got:?} against {want:?}"
+            );
+        };
+        // 126px past the rows go to the groups by their heights, 14 and
+        // 34 + 3 + 14, then within the second by its rows'. Nodes: tr 6,
+        // tr 10, tr 13.
+        let layout = document_of(
+            "<table class=h200><tbody><tr><td><div class=t10></div></td></tr></tbody>\
+             <tbody><tr><td><div class=t30></div></td></tr><tr><td><div class=t10></div></td></tr></tbody></table>",
+            ROWS_CSS,
+        );
+        let second = 126.0 * 51.0 / 65.0;
+        close(
+            heights_of(&layout, &[6, 10, 13]),
+            [
+                14.0 + 126.0 * 14.0 / 65.0,
+                34.0 + second * 34.0 / 48.0,
+                14.0 + second * 14.0 / 48.0,
+            ],
+        );
+        // The header and footer groups take none of it while there is a
+        // body group. Nodes: tr 6, tr 10, tr 14.
+        let layout = document_of(
+            "<table class=h200><thead><tr><td><div class=t10></div></td></tr></thead>\
+             <tbody><tr><td><div class=t30></div></td></tr></tbody>\
+             <tfoot><tr><td><div class=t10></div></td></tr></tfoot></table>",
+            ROWS_CSS,
+        );
+        assert_eq!(heights_of(&layout, &[6, 10, 14]), [14.0, 160.0, 14.0]);
+        // A constrained row keeps its height and the unconstrained ones,
+        // of no height, share equally. Nodes: tr 5, tr 8, tr 10.
+        let layout = document_of(
+            "<table class=h200><tr class=h20><td><div class=t10></div></td></tr>\
+             <tr><td class=e></td></tr><tr><td class=e></td></tr></table>",
+            ROWS_CSS,
+        );
+        assert_eq!(heights_of(&layout, &[5, 8, 10]), [20.0, 84.0, 84.0]);
+        // A row group's own height is a minimum for its rows, shared the
+        // same way. Nodes: tr 6, tr 9.
+        let layout = document_of(
+            "<table><tbody class=h100><tr class=h20><td><div class=t10></div></td></tr>\
+             <tr><td><div class=t30></div></td></tr></tbody></table>",
+            ROWS_CSS,
+        );
+        assert_eq!(heights_of(&layout, &[6, 9]), [20.0, 77.0]);
+    }
+
+    #[test]
+    fn distributing_heights_follows_the_browsers_order() {
+        let (f, t) = (false, true);
+        let rowspan = |rows: [f32; 3], constrained: [bool; 3], starts: [bool; 3]| {
+            let mut rows = rows;
+            distribute_rowspan(12.0, &mut rows, &constrained, &starts);
+            rows
+        };
+        // The rows after the first where a spanning cell starts, equally.
+        assert_eq!(
+            rowspan([14.0, 14.0, 14.0], [f; 3], [t, t, t]),
+            [14.0, 20.0, 20.0]
+        );
+        // Else the unconstrained rows by height, else the constrained
+        // ones, else the last row.
+        assert_eq!(
+            rowspan([10.0, 0.0, 30.0], [f; 3], [t, f, f]),
+            [13.0, 0.0, 39.0]
+        );
+        assert_eq!(
+            rowspan([20.0, 0.0, 0.0], [t, f, f], [f; 3]),
+            [32.0, 0.0, 0.0]
+        );
+        assert_eq!(rowspan([0.0; 3], [t, f, f], [f; 3]), [0.0, 0.0, 12.0]);
+        let height = |parts: [f32; 3], constrained: [bool; 3]| {
+            let mut parts = parts;
+            distribute_height(12.0, &mut parts, &constrained);
+            parts
+        };
+        // The unconstrained parts by size, equally when of none; all
+        // parts when all are constrained, the same way.
+        assert_eq!(height([10.0, 30.0, 20.0], [f, f, t]), [13.0, 39.0, 20.0]);
+        assert_eq!(height([20.0, 0.0, 0.0], [t, f, f]), [20.0, 6.0, 6.0]);
+        assert_eq!(height([10.0, 20.0, 30.0], [t; 3]), [12.0, 24.0, 36.0]);
+        assert_eq!(height([0.0; 3], [t; 3]), [4.0; 3]);
+    }
+
+    #[test]
+    fn a_collapsed_tables_border_is_half_its_widest_outer_borders_and_halves_are_exact() {
+        // A 10px left border in the second row only: the table's left
+        // border is its half, 5, for the whole side, and the first column
+        // 5 + 40 + 1 wide; the float around the table counts it too.
+        // Nodes: div 4, table 5, td 7, td 8, td 10.
+        let css = "body { margin: 0; } .f { float: left; } table { border-collapse: collapse; }
+             td { padding: 0; width: 40px; height: 20px; border: 2px solid #ff0000; }
+             .w { border-left: 10px solid #0000ff; } .c { border: 3px solid #000000; }
+             .t { border-top-width: 7px; }";
+        let layout = document_of(
+            "<div class=f><table><tr><td></td><td></td></tr><tr><td class=w></td><td></td></tr></table></div>",
+            css,
+        );
+        assert_eq!(fragment_of(&layout, 4).w, 94.0);
+        assert_eq!(rect(fragments_of(&layout, 5)[1]), (0.0, 0.0, 94.0, 46.0));
+        assert_eq!(rect(fragment_of(&layout, 7)), (5.0, 1.0, 46.0, 22.0));
+        assert_eq!(rect(fragment_of(&layout, 8)), (51.0, 1.0, 42.0, 22.0));
+        assert_eq!(rect(fragment_of(&layout, 10)), (5.0, 23.0, 46.0, 22.0));
+        // Odd widths are halved exactly: the table's 3px gives 1.5 a side,
+        // the first cell's 7px top the table 3.5 at the top. Nodes: table
+        // 4, td 6, td 7.
+        let layout = document_of(
+            "<table class=c><tr><td class=t></td><td></td></tr></table>",
+            css,
+        );
+        assert_eq!(rect(fragments_of(&layout, 4)[1]), (0.0, 0.0, 88.0, 30.0));
+        assert_eq!(rect(fragment_of(&layout, 6)), (1.5, 3.5, 42.5, 25.0));
+        assert_eq!(rect(fragment_of(&layout, 7)), (44.0, 3.5, 42.5, 25.0));
+    }
+
+    #[test]
+    fn a_joint_is_its_winners_and_the_losers_stop_at_its_edge() {
+        // A 3px double under the first cell meets the 2px inner line: the
+        // double reaches over the joint, the inner line's two segments and
+        // the line's other half stop at its edges, so nothing shows in the
+        // double's gap. Rows are 1 + 20 + 1.5 tall, lines at y 1, 23.5 and
+        // 46 and x 1, 23 and 45. Nodes: table 4.
+        let layout = document_of(
+            "<table><tr><td class=d></td><td></td></tr><tr><td></td><td></td></tr></table>",
+            "body { margin: 0; } table { border-collapse: collapse; }
+             td { padding: 0; width: 20px; height: 20px; border: 2px solid #ff0000; }
+             .d { border-bottom: 3px double #0000ff; }",
+        );
+        let segments: Vec<_> = fragments_of(&layout, 4)[2..]
+            .iter()
+            .map(|f| rect(f))
+            .collect();
+        for want in [
+            (0.0, 22.0, 24.0, 3.0),
+            (22.0, 0.0, 2.0, 22.0),
+            (22.0, 25.0, 2.0, 22.0),
+            (24.0, 22.5, 22.0, 2.0),
+        ] {
+            assert!(segments.contains(&want), "{want:?} in {segments:?}");
+        }
     }
 
     #[test]

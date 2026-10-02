@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+<head>
+<title>Tables: a table in a cell of another beside a table-layout fixed one, and display table-cell on plain elements</title>
+<style>
+  html { background-color: #f4eef3; }
+  body { margin: 10px; }
+  table { border-spacing: 5px; background-color: #b493ad; }
+  td { padding: 3px; background-color: #e8d9e5; }
+  table table { border-spacing: 2px; background-color: #7d5a77; }
+  table table td { padding: 1px; background-color: #f6eef4; }
+  .fixed { table-layout: fixed; width: 150px; }
+  .b { height: 14px; background-color: #4e3049; }
+  .w20 { width: 20px; } .w50 { width: 50px; } .w300 { width: 300px; }
+  .row { display: table; margin-top: 20px; border-spacing: 0; background-color: #c9a9c3; }
+  .cell { display: table-cell; padding: 4px; background-color: #ead5e6; font-size: 0; }
+  .cell + .cell { background-color: #dcbcd6; }
+  .ib { display: inline-block; width: 30px; background-color: #6d4566; }
+  .h10 { height: 10px; } .h30 { height: 30px; }
+</style>
+</head>
+<body>
+<table>
+<tr>
+<td><table><tr><td><div class="b w50"></div></td><td><div class="b w20"></div></td></tr><tr><td colspan="2"><div class="b w50"></div></td></tr></table></td>
+<td><table class="fixed"><tr><td><div class="b w20"></div></td><td><div class="b w300"></div></td></tr></table></td>
+</tr>
+</table>
+<div class="row"><div class="cell"><span class="ib h30"></span></div><div class="cell"><span class="ib h10"></span></div><div class="cell"><div class="b w50"></div></div></div>
+</body>
+</html>

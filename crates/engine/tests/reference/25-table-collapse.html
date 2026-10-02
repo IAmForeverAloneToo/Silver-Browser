@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+<head>
+<title>Tables: the collapsed border model, every conflict rule (hidden, none, width, style, owner, position), the odd pixel of a half border, a joint a double wins, and the table's background in its own border</title>
+<style>
+  html { background-color: #f2f2f2; }
+  body { margin: 20px; }
+  table { border-collapse: collapse; margin-bottom: 20px; }
+  td { padding: 0; width: 40px; height: 24px; background-color: #ffffff; }
+  .t1 { border: 4px solid #1f3a93; }
+  .t1 td { border: 2px solid #c0392b; }
+  .t1 td.wide { border-right: 5px solid #27ae60; }
+  .t1 td.dbl { border-bottom: 3px double #8e44ad; }
+  .t1 td.sol { border-top: 3px solid #f39c12; }
+  .t1 td.hid { border-left: hidden; }
+  .t1 td.non { border: none; }
+  .t1 tr.row { border-bottom: 2px solid #16a085; }
+  .t2 { border: 3px solid #2c3e50; }
+  .t2 col.first { border-right: 7px solid #d35400; }
+  .t2 td { border: 1px solid #7f8c8d; }
+  .t2 tr.thick td { border-top: 3px solid #c0392b; }
+  .t3 { border: 3px solid #2c3e50; background-color: #ffcc00; }
+  .t3 td { border: 1px solid #7f8c8d; background-color: transparent; }
+  .t3 td.hid { border-left: hidden; }
+  .t3 td.paint { background-color: #ffffff; }
+</style>
+</head>
+<body>
+<table class="t1">
+<tr class="row"><td></td><td class="wide"></td><td class="dbl"></td><td></td></tr>
+<tr><td class="hid"></td><td class="sol"></td><td class="non"></td><td></td></tr>
+<tr><td></td><td></td><td></td><td class="dbl"></td></tr>
+</table>
+<table class="t2">
+<col class="first"><col><col>
+<tr><td></td><td></td><td></td></tr>
+<tr class="thick"><td></td><td></td><td></td></tr>
+</table>
+<table class="t3">
+<tr><td class="paint"></td><td></td></tr>
+<tr><td class="hid"></td><td class="paint"></td></tr>
+</table>
+</body>
+</html>

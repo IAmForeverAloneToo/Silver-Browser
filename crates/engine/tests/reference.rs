@@ -1,5 +1,5 @@
-//! M10.7's and M11.7's acceptance: the box model, floats, positioning
-//! and stacking against a reference browser.
+//! M10.7's, M11.7's and M12.7's acceptance: the box model, floats,
+//! positioning, stacking and tables against a reference browser.
 //!
 //! Every page under `tests/reference/` is a case built of boxes alone —
 //! no text, since text rasterizers differ by design — and
@@ -155,8 +155,8 @@ fn every_reference_page_renders_as_its_capture() {
     let pages = pages();
     assert_eq!(
         pages.len(),
-        21,
-        "the ten cases of M10's design note and the eleven of M11's"
+        26,
+        "the ten cases of M10's design note, the eleven of M11's and the five of M12's"
     );
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/reference");
     let mut failures = Vec::new();

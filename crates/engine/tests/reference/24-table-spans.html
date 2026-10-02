@@ -1,0 +1,35 @@
+<!doctype html>
+<html>
+<head>
+<title>Tables: colspan and rowspan in the shapes pages use, a cell pushed right by a span from above, a rowspan past its row group and rowspan 0</title>
+<style>
+  html { background-color: #eef3e9; }
+  body { margin: 10px; }
+  table { border-spacing: 3px; margin-bottom: 14px; background-color: #a7c49b; }
+  td { padding: 2px; background-color: #dcebd5; }
+  .b { background-color: #3f6b35; }
+  .w30 { width: 30px; } .w50 { width: 50px; } .w120 { width: 120px; } .w200 { width: 200px; }
+  .h10 { height: 10px; } .h20 { height: 20px; } .h70 { height: 70px; }
+  .x { background-color: #c2dcb8; }
+</style>
+</head>
+<body>
+<table>
+<tr><td rowspan="2"><div class="b w30 h70"></div></td><td colspan="2"><div class="b w120 h10"></div></td><td><div class="b w30 h10"></div></td></tr>
+<tr><td><div class="b w30 h10"></div></td><td rowspan="3" class="x"><div class="b w50 h20"></div></td><td><div class="b w30 h10"></div></td></tr>
+<tr><td colspan="2"><div class="b w50 h10"></div></td><td><div class="b w30 h20"></div></td></tr>
+<tr><td><div class="b w30 h10"></div></td><td><div class="b w30 h10"></div></td><td><div class="b w30 h10"></div></td></tr>
+</table>
+<table>
+<tbody>
+<tr><td rowspan="5" class="x"><div class="b w30 h20"></div></td><td><div class="b w50 h10"></div></td></tr>
+<tr><td><div class="b w50 h10"></div></td></tr>
+</tbody>
+<tbody>
+<tr><td><div class="b w30 h10"></div></td><td rowspan="0" class="x"><div class="b w30 h70"></div></td></tr>
+<tr><td><div class="b w30 h10"></div></td></tr>
+<tr><td colspan="2"><div class="b w200 h10"></div></td></tr>
+</tbody>
+</table>
+</body>
+</html>
