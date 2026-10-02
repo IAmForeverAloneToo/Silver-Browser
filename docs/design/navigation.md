@@ -583,8 +583,8 @@ window shows it.
   address, Enter, the load, the title, back. Only the window, the
   surface and the clipboard are left to the smoke run and to hand.
 - *A live test*, `#[ignore]`d: the engine navigates to
-  `https://example.com/` and finds its title, "Example Domain", its
-  text and its link, and draws it. It trusts Mozilla's roots, and also
+  `https://example.com/` and finds its title, "Example Domain", and its
+  text, and draws it. It trusts Mozilla's roots, and also
   the certificates of the PEM file `SILVER_EXTRA_ROOTS` names when it
   names one, for a network whose TLS is intercepted; the browser itself
   has no such option. It is run by
@@ -700,9 +700,10 @@ it the caret stands apart from its character until M42. Escape on a page
 stops only a load under way, as the note says, and the code had to look
 at the load state to do so: `stop` on a page all there would still abort
 its icon. And `example.com` no longer has a heading: the page this note
-had in mind became a title, a paragraph and a link, so the live test
-reads those. Last, the load benchmark waited for the engine to have a
-URL, which with the initial `about:blank` it always has, so its wait
-ended at once and its run failed; benchmarks are built by the checks but
-not run, and it was found only when step 8 ran it. It waits for the load
-state now.
+had in mind became a title, a paragraph and a link, and then, within the
+day, lost the link, so the live test reads only the title and the
+paragraph's words. Last, the load benchmark waited for the engine to
+have a URL, which with the initial `about:blank` it always has, so its
+wait ended at once and its run failed; benchmarks are built by the
+checks but not run, and it was found only when step 8 ran it. It waits
+for the load state now.

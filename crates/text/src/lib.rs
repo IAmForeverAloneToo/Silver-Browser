@@ -24,7 +24,7 @@ use std::fmt;
 use std::ops::Range;
 use std::sync::Arc;
 
-use ab_glyph::{Font as _, Glyph, GlyphId, Point};
+use ab_glyph::{Font as _, Glyph, GlyphId, Point, PxScale};
 // Re-exported: `Script` is already part of this crate's own public API
 // (`itemize`, `FontCollection::font_for`/`shape`), so a consumer like
 // `render` can name it as `text::Script` without taking its own direct
@@ -258,7 +258,7 @@ impl FontStore {
         if id.0 != 0
             && let Some(outline) = self
                 .glyph_font
-                .outline_glyph(id.with_scale(font_size_px.max(0.0)))
+                .outline_glyph(id.with_scale(px_scale(&self.glyph_font, font_size_px.max(0.0))))
         {
             // Outline coordinates grow downward, the baseline at zero.
             let top = -outline.px_bounds().min.y;
@@ -394,7 +394,26 @@ impl FontStore {
 /// font asks for gigabytes per letter) taking the process down.
 pub const MAX_MASK_PIXELS: u64 = 4096 * 4096;
 
-/// Rasterizes one glyph of `font` at `size_px` into an alpha mask.
+/// `ab_glyph`'s scale for a font size of `size_px`. A font size is the
+/// em, as the shaper's advances are scaled; `ab_glyph`'s `PxScale` is
+/// instead the height from the descender to the ascender, which is
+/// larger than the em in most fonts (2,384 units to DejaVu Sans's
+/// 2,048), so given the font size as it is, every glyph would be drawn
+/// that much smaller than the room its advance leaves it. A font whose
+/// units per em `ab_glyph` cannot read, or whose height is not positive,
+/// keeps the font size.
+fn px_scale(font: &ab_glyph::FontArc, size_px: f32) -> PxScale {
+    let height = font.height_unscaled();
+    let scale = font
+        .units_per_em()
+        .map(|units_per_em| size_px * height / units_per_em)
+        .filter(|scale| scale.is_finite() && *scale > 0.0)
+        .unwrap_or(size_px);
+    PxScale::from(scale)
+}
+
+/// Rasterizes one glyph of `font` at `size_px`, the em, into an alpha
+/// mask, at the size the shaper's advances are measured at.
 ///
 /// The mask is positioned relative to the baseline at the pen position
 /// (`left`/`top` carry the placement offsets). Returns an empty mask for
@@ -406,7 +425,7 @@ pub fn rasterize_glyph(font: &ab_glyph::FontArc, glyph_id: u16, size_px: f32) ->
     }
     let glyph = Glyph {
         id: GlyphId(glyph_id),
-        scale: size_px.into(),
+        scale: px_scale(font, size_px),
         position: Point { x: 0.0, y: 0.0 },
     };
     let Some(outlined) = font.outline_glyph(glyph) else {
@@ -815,6 +834,42 @@ mod tests {
 
     fn test_fonts() -> FontCollection {
         FontCollection::from_bytes(TEST_FONT.to_vec(), 0).expect("the bundled test font parses")
+    }
+
+    /// A glyph is drawn at the size its advance is measured at, the em:
+    /// its mask covers its outline's bounding box scaled by the font
+    /// size over the units per em, give or take the pixels the box's
+    /// edges are rounded out to and the coverage that rounds to none.
+    #[test]
+    fn glyphs_are_drawn_at_the_size_the_shaper_measures() {
+        let store = test_store();
+        let face = ttf_parser::Face::parse(TEST_FONT, 0).expect("the bundled font parses");
+        for size in [11.0_f32, 16.0, 40.0] {
+            let scale = size / face.units_per_em() as f32;
+            for c in ['m', 'W', 'H', 'o', 'l'] {
+                let id = face.glyph_index(c).expect("the glyph");
+                let bbox = face.glyph_bounding_box(id).expect("an outline");
+                let mask = rasterize_glyph(store.glyph_font(), id.0, size);
+                let left = bbox.x_min as f32 * scale;
+                let right = bbox.x_max as f32 * scale;
+                let top = -(bbox.y_max as f32) * scale;
+                let bottom = -(bbox.y_min as f32) * scale;
+                let (mask_left, mask_top) = (mask.left as f32, mask.top as f32);
+                let mask_right = mask_left + mask.width as f32;
+                let mask_bottom = mask_top + mask.height as f32;
+                for (what, drawn, outline) in [
+                    ("left", mask_left, left),
+                    ("right", mask_right, right),
+                    ("top", mask_top, top),
+                    ("bottom", mask_bottom, bottom),
+                ] {
+                    assert!(
+                        (drawn - outline).abs() <= 1.0,
+                        "{c:?} at {size}px: {what} drawn at {drawn}, outline at {outline}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
