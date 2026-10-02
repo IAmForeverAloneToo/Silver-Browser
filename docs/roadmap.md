@@ -1290,6 +1290,11 @@ process seams.
        (measure; lazy-init everything non-critical).
 - [ ] M35.7 Acceptance: numeric budgets published in
        `docs/perf-budgets.md`, regressions block milestone exit (T4).
+- [ ] M35.8 Text measurement off layout's hot path: each font's
+       shaping face kept rather than rebuilt per call, and a cache of
+       word measures in layout (measured at M13: about 25µs a word,
+       8µs of it the face, most of a 1,000-paragraph page's 700ms
+       layout).
 
 ---
 
@@ -1444,6 +1449,7 @@ gold-plate unstarted work.
 | D13 | Process granularity | M34 | per-tab / per-site-instance / hybrid | per-site-instance with LRU cap |
 | D14 | Quirks mode | M40s | full quirks emulation / standards-only + limited quirk stylesheet | limited quirk stylesheet (uqlist-style) driven by T1 data |
 | D15 | HTTP/3 (QUIC) | M47+ | quinn / skip | quinn when HTTP/2 coverage demonstrably costs compat |
+| D16 | DOM storage and node identity | M13 | owned tree with ids on nodes / reference-counted nodes / preorder indices remapped per change / arena of slots with generational ids | arena with generational `NodeId`s; the owned `Node` kept as a tree literal (see `docs/design/incremental.md`) |
 
 ---
 
