@@ -674,6 +674,22 @@ each where it scales them to a size: line boxes, struts and every
 baseline read them there. The rule was measured from 1 to 48 pixels,
 fractional sizes included; it holds at every size, the smallest too.
 
+Nor did the same glyphs make the same widths. The reference browser,
+at a device scale of one, has no subpixel positioning: each glyph's
+advance is the font's own hinted as FreeType hints it — scaled in its
+26.6 fixed point at the pixels per em, which is a whole number when the
+font's `head` table asks for one, as DejaVu Sans's does, and rounded
+to a whole pixel — and the shaper's adjustment to it, kerning, is
+scaled at the size and rounded too. Every width comes out a whole
+number: "The quick brown fox jumps over the lazy dog" is 358 pixels
+there at 16 and was 359.87 here, "Navigation" 71 at 13 and was 70.12,
+and at 10.5 pixels a run is as wide as at 11. That is two pixels over a
+line, enough to break it elsewhere. So the text crate places glyphs by
+the same arithmetic, in `shape`, `measure` and the caret stops alike.
+Measured over 316 runs of words, kerning pairs, ligatures and figures
+from 10 to 32 pixels, fractional sizes among them, it gives every
+width the reference browser gives.
+
 **Performance and fuzzing.** A benchmark, `benches/flex.rs`, lays out:
 
 - a grid of a thousand cards in a wrapping row;
