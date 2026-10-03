@@ -231,17 +231,23 @@ fn resolve_intrinsic(tracks: &mut [Track], items: &[Contribution], space: &Space
 /// content-based, then max-content minimums; then the growth limits of
 /// tracks with intrinsic, then max-content maximums. With `flexible`,
 /// only the flexible tracks grow, in proportion to their factors.
+///
+/// Under a min-content or max-content constraint, an item's limited
+/// min-content contribution stands in for its minimum one (step 3.1),
+/// but for the items crossing flexible tracks under a min-content
+/// constraint: the reference browser and the web-platform-tests
+/// (grid-flex-spanning-items-001) keep their minimum contribution there,
+/// which the draft's "repeat the previous step" would not.
 fn accommodate(tracks: &mut [Track], group: &[&Contribution], space: &Space, flexible: bool) {
-    let constrained = !matches!(space.available, Available::Definite(_));
     let under_max = space.available == Available::MaxContent;
     for t in tracks.iter_mut() {
         t.infinitely_growable = false;
     }
     let only = |t: &Track, ok: bool| ok && (!flexible || t.is_flexible());
-    let minimum = if constrained {
-        Kind::LimitedMinContent
-    } else {
-        Kind::Minimum
+    let minimum = match space.available {
+        Available::MinContent if !flexible => Kind::LimitedMinContent,
+        Available::MaxContent => Kind::LimitedMinContent,
+        _ => Kind::Minimum,
     };
     distribute(
         tracks,
@@ -1077,6 +1083,45 @@ mod tests {
                 &space(Available::Definite(60.0), 3)
             ),
             vec![50.0, 50.0, 0.0]
+        );
+        // Under a min-content constraint such an item gives its minimum
+        // contribution, here none: `1fr 30px` around an item 300 wide is
+        // 30 at its narrowest (grid-flex-spanning-items-001).
+        let wide = [item(0..2, 0.0, 300.0, 300.0)];
+        let fixed = || track(Fixed(30.0), Fixed(30.0));
+        assert_eq!(
+            sized(
+                vec![fr(1.0), fixed()],
+                &wide,
+                &space(Available::MinContent, 2)
+            ),
+            vec![0.0, 30.0]
+        );
+        assert_eq!(
+            sized(
+                vec![fr(1.0), fixed()],
+                &wide,
+                &space(Available::MaxContent, 2)
+            ),
+            vec![270.0, 30.0]
+        );
+        // Under a max-content constraint it gives its limited min-content
+        // contribution first, so that a small item's minimum in one of the
+        // tracks does not unbalance them: the reference browser's
+        // `1fr 2fr auto`, an item of 300 across the first two and one of
+        // 9 in the first, is 100, 200 and 9.
+        let mixed = [
+            item(0..2, 0.0, 300.0, 300.0),
+            item(0..1, 9.0, 9.0, 9.0),
+            item(2..3, 9.0, 9.0, 9.0),
+        ];
+        assert_eq!(
+            sized(
+                vec![fr(1.0), fr(2.0), track(Auto, Auto)],
+                &mixed,
+                &space(Available::MaxContent, 3)
+            ),
+            vec![100.0, 200.0, 9.0]
         );
         // Factors summing to less than one: that share of the space by
         // factor, the rest equally (§12.5 step 4). The reference browser

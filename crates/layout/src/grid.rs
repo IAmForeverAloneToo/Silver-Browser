@@ -732,7 +732,15 @@ pub(crate) fn layout_grid_contents<'a>(
         gutters: gutters.to_vec(),
         stretch: stretches_tracks(style.align_content),
     };
-    let available = definite.map_or(Available::MaxContent, Available::Definite);
+    // A height imposed but not definite (a column flex container's
+    // flexed item, say) is still the height the rows fill, as the
+    // reference browser has it; only percentages do not resolve against
+    // it.
+    let available = match (definite, imposed) {
+        (Some(height), _) => Available::Definite(height),
+        (None, Some(_)) => Available::Definite(known_height.unwrap_or(0.0)),
+        (None, None) => Available::MaxContent,
+    };
     size_tracks(&mut rows, &row_items, &row_space(available, &row_gutters));
     let auto_content_height =
         rows.iter().map(Track::size).sum::<f32>() + row_gutters.iter().sum::<f32>();
@@ -873,16 +881,21 @@ pub(crate) fn layout_grid_contents<'a>(
 /// max-content constraint, percentages of its width counting as `auto`
 /// and percentage gaps as zero, since that width is what is being found
 /// (§7.2.1, css-align-3 §8.1). An automatic repetition repeats in its
-/// own definite width, else its maximum, else its minimum, else once.
+/// definite maximum width, else its minimum, else once. Its `width` is
+/// what these sizes stand in for, so it does not count: one 200 pixels
+/// wide with `repeat(auto-fill, 50px)` is 50 at its narrowest, as the
+/// reference browser and the web-platform-tests have it
+/// (flex-item-grid-container-auto-repeat-002), where §7.2.3.2's text
+/// would repeat four times.
 pub(crate) fn content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32) {
     let style = &b.style;
     let (non_content, _) = crate::intrinsic::fixed_edges(b);
-    let px = |size: Size| match size {
-        Size::Px(px) => Some(inner(style, px, non_content)),
-        _ => None,
-    };
     let max = match style.max_width {
         MaxSize::Px(px) => Some(inner(style, px, non_content)),
+        _ => None,
+    };
+    let min = match style.min_width {
+        Size::Px(px) => Some(inner(style, px, non_content)),
         _ => None,
     };
     let fixed_gap = |gap: Option<LengthPercentage>| match gap {
@@ -893,7 +906,7 @@ pub(crate) fn content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32
     let grid = build(
         b,
         AxisInputs {
-            room: room(px(style.width), max, px(style.min_width)),
+            room: room(None, max, min),
             gap: column_gap,
             size: None,
         },
@@ -1425,6 +1438,39 @@ mod tests {
              #a { grid-column: 1 / 3 }",
         );
         assert_eq!(rect(&l, "g").2, 100.0);
+    }
+
+    #[test]
+    fn a_grids_own_width_does_not_repeat_its_tracks_for_its_intrinsic_sizes() {
+        // The reference browser: 200 wide with `repeat(auto-fill, 50px)`,
+        // its min-content and max-content widths are one repetition's.
+        let grid = "display: grid; width: 200px; grid-template-columns: repeat(auto-fill, 50px)";
+        for limit in ["max-width: min-content", "max-width: max-content"] {
+            let l = laid(&items(1), &format!("#g {{ {grid}; {limit} }}"));
+            assert_eq!(rect(&l, "g").2, 50.0, "{limit}");
+        }
+        // So a flex item's automatic minimum lets it shrink to that.
+        let l = laid(
+            "<div id=f><div id=a></div><div id=g></div></div>",
+            &format!(
+                "#f {{ display: flex; width: 100px }} #a {{ width: 50px; flex: none }} #g {{ {grid} }}"
+            ),
+        );
+        assert_eq!(rect(&l, "g").2, 50.0);
+    }
+
+    #[test]
+    fn rows_fill_a_height_imposed_but_not_definite() {
+        // A column flex container with only a minimum height flexes the
+        // grid to 100; that is not definite for percentages, but the
+        // auto row still stretches to it, as in the reference browser
+        // (grid-within-flexbox-indefinite).
+        let l = laid(
+            "<div id=f><div id=g><div id=a></div></div></div>",
+            "#f { display: flex; flex-direction: column; min-height: 100px; width: 100px }
+             #g { display: grid; flex: 1 }",
+        );
+        assert_eq!(rect(&l, "a").3, 100.0);
     }
 
     #[test]
