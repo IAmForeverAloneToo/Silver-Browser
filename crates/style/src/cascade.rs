@@ -27,9 +27,9 @@
 //!   parent's font size and resolves here.
 //! * `display`: `block`, `inline`, `inline-block` and `none` (M5.1's
 //!   own v1 scope, plus M10.4's `inline-block`), the table values of
-//!   CSS2 §17.2 (M12), and `flex` and `inline-flex` with the
-//!   Compatibility Standard's `-webkit-` forms of the two (M17). `grid`
-//!   lands with its milestone.
+//!   CSS2 §17.2 (M12), `flex` and `inline-flex` with the Compatibility
+//!   Standard's `-webkit-` forms of the two (M17), and `grid` and
+//!   `inline-grid` (M18).
 //! * Flexbox (M17): `flex-direction`, `flex-wrap`, `flex-flow`, `order`,
 //!   `flex-grow`, `flex-shrink`, `flex-basis` and `flex`; the alignment
 //!   properties `justify-content`, `align-content`, `align-items` and
@@ -37,6 +37,16 @@
 //!   and `gap`. A flex container's children are blockified. The
 //!   `-webkit-` aliases the Compatibility Standard requires (§3.4.1) are
 //!   the properties under a second name ([`canonical_name`]).
+//! * Grid (M18): `grid-template-columns`, `grid-template-rows` and
+//!   `grid-template-areas`, `grid-auto-columns`, `grid-auto-rows` and
+//!   `grid-auto-flow`, the placement properties `grid-row-start`,
+//!   `grid-row-end`, `grid-column-start` and `grid-column-end`, and the
+//!   shorthands `grid-template`, `grid`, `grid-row`, `grid-column` and
+//!   `grid-area`, parsed in [`grid`]; `justify-items` and
+//!   `justify-self`, which `place-items` and `place-self` set too; and
+//!   the legacy gap names `grid-row-gap`, `grid-column-gap` and
+//!   `grid-gap`. A grid container's children are blockified, as a flex
+//!   container's are.
 //! * Sizes: `width`, `height` and the minimums and maximums take
 //!   css-sizing-3's `min-content`, `max-content` and `fit-content`, and
 //!   `min-width` and `min-height` start at `auto` (M17).
@@ -82,10 +92,13 @@ use crate::computed::{
     Quotes, RIGHT, SelfAlignment, Size, TOP, TableLayout, TextAlign, TextTransform, VerticalAlign,
     WhiteSpace,
 };
+use crate::computed::{GridStyle, JustifyItems};
 use crate::invalidation::{Reach, SelectorFeatures, invalidate};
 use crate::selector_matching::{
     Matcher, PseudoElement, SelectorList, Specificity, parse_selector_list,
 };
+
+mod grid;
 
 /// The built-in default stylesheet (M5.6), compiled in — loading it is
 /// not resource fetching (no I/O at runtime), so it doesn't bend the
@@ -1109,16 +1122,21 @@ fn compute_style(
     if style.float != Float::None || style.position.is_out_of_flow() {
         style.display = style.display.blockified();
     }
-    // The children of a flex container are its items, blockified
-    // (css-display-3 §2.7, css-flexbox-1 §4, M17): an element and its
-    // `::before` and `::after`, whose parent here is the element. A
-    // `::first-letter` or `::first-line` is not one, nor is an element
-    // inheriting from a `::first-line`, whose `display` is never a flex
-    // container's.
+    // The children of a flex or a grid container are its items,
+    // blockified (css-display-3 §2.7, css-flexbox-1 §4, M17; css-grid-2
+    // §6.1, M18): an element and its `::before` and `::after`, whose
+    // parent here is the element. A `::first-letter` or `::first-line`
+    // is not one, nor is an element inheriting from a `::first-line`,
+    // whose `display` is never a flex or a grid container's.
     if matches!(target, Target::Element | Target::Before | Target::After)
-        && parent.display.is_flex()
+        && parent.display.has_items()
     {
         style.display = style.display.blockified();
+    }
+    // Grid properties set back to their initial values leave no copy of
+    // them behind, so that two styles alike compare equal.
+    if style.grid.as_deref() == Some(&GridStyle::default()) {
+        style.grid = None;
     }
     style
 }
@@ -1318,8 +1336,92 @@ fn apply_declaration(
                 style.justify_content = justify;
             })
             .is_some(),
-        "place-items" => set(&mut style.align_items, parse_place_self(value, true)),
-        "place-self" => set(&mut style.align_self, parse_place_self(value, false)),
+        "justify-items" => {
+            let parent_items = parent.grid().justify_items;
+            let words = idents(&split_whitespace_groups(value));
+            set_grid(
+                style,
+                words.and_then(|w| grid::justify_items(&w, parent_items)),
+                |g, v| g.justify_items = v,
+            )
+        }
+        "justify-self" => {
+            let words = idents(&split_whitespace_groups(value));
+            set_grid(
+                style,
+                words.and_then(|w| grid::justify_self(&w, true)),
+                |g, v| g.justify_self = v,
+            )
+        }
+        "place-items" => match parse_place_items(value, parent.grid().justify_items) {
+            Some((align, justify)) => {
+                style.align_items = align;
+                set_grid(style, Some(justify), |g, v| g.justify_items = v)
+            }
+            None => false,
+        },
+        "place-self" => match parse_place_self(value) {
+            Some((align, justify)) => {
+                style.align_self = align;
+                set_grid(style, Some(justify), |g, v| g.justify_self = v)
+            }
+            None => false,
+        },
+        "grid-template-columns" => set_grid(style, grid::parse_template(value, bases), |g, v| {
+            g.template_columns = v
+        }),
+        "grid-template-rows" => set_grid(style, grid::parse_template(value, bases), |g, v| {
+            g.template_rows = v
+        }),
+        "grid-template-areas" => set_grid(style, grid::parse_template_areas(value), |g, v| {
+            g.template_areas = v
+        }),
+        "grid-template" => set_grid(
+            style,
+            grid::parse_grid_template(value, bases),
+            |g, (rows, columns, areas)| {
+                g.template_rows = rows;
+                g.template_columns = columns;
+                g.template_areas = areas;
+            },
+        ),
+        "grid-auto-columns" => set_grid(style, grid::parse_auto_tracks(value, bases), |g, v| {
+            g.auto_columns = v
+        }),
+        "grid-auto-rows" => set_grid(style, grid::parse_auto_tracks(value, bases), |g, v| {
+            g.auto_rows = v
+        }),
+        "grid-auto-flow" => set_grid(style, grid::parse_auto_flow(value), |g, v| g.auto_flow = v),
+        "grid" => set_grid(style, grid::parse_grid(value, bases), |g, v| {
+            (g.template_rows, g.template_columns, g.template_areas) = v.template;
+            g.auto_flow = v.auto_flow;
+            g.auto_rows = v.auto_rows;
+            g.auto_columns = v.auto_columns;
+        }),
+        "grid-row-start" => set_grid(style, grid::parse_grid_line(value), |g, v| g.row_start = v),
+        "grid-row-end" => set_grid(style, grid::parse_grid_line(value), |g, v| g.row_end = v),
+        "grid-column-start" => set_grid(style, grid::parse_grid_line(value), |g, v| {
+            g.column_start = v
+        }),
+        "grid-column-end" => set_grid(style, grid::parse_grid_line(value), |g, v| g.column_end = v),
+        "grid-row" => set_grid(style, grid::parse_grid_lines(value), |g, (start, end)| {
+            g.row_start = start;
+            g.row_end = end;
+        }),
+        "grid-column" => set_grid(style, grid::parse_grid_lines(value), |g, (start, end)| {
+            g.column_start = start;
+            g.column_end = end;
+        }),
+        "grid-area" => set_grid(
+            style,
+            grid::parse_grid_area(value),
+            |g, [rs, cs, re, ce]| {
+                g.row_start = rs;
+                g.column_start = cs;
+                g.row_end = re;
+                g.column_end = ce;
+            },
+        ),
         "row-gap" => set(&mut style.row_gap, parse_gap(value, bases)),
         "column-gap" => set(&mut style.column_gap, parse_gap(value, bases)),
         "gap" => parse_gap_shorthand(value, bases)
@@ -1348,6 +1450,32 @@ fn parse_font_size(value: &[Token], bases: &LengthBases<'_>) -> Option<f32> {
 /// value parsed, for [`apply_declaration`]'s answer.
 fn set<T>(slot: &mut T, v: Option<T>) -> bool {
     v.map(|v| *slot = v).is_some()
+}
+
+/// [`set`] for the grid properties (M18), which live behind
+/// [`ComputedStyle::grid`]: `update` writes `v`, when there is one, into
+/// the style's own copy of them.
+fn set_grid<T>(
+    style: &mut ComputedStyle,
+    v: Option<T>,
+    update: impl FnOnce(&mut GridStyle, T),
+) -> bool {
+    v.map(|v| update(style.grid_mut(), v)).is_some()
+}
+
+/// Copies grid properties from `src`, a parent's style or the initial
+/// one, by `copy`: nothing to do when neither has any set, both being
+/// the initial values.
+fn copy_grid(
+    style: &mut ComputedStyle,
+    src: &ComputedStyle,
+    copy: impl FnOnce(&mut GridStyle, &GridStyle),
+) {
+    if style.grid.is_none() && src.grid.is_none() {
+        return;
+    }
+    let src = src.grid().clone();
+    copy(style.grid_mut(), &src);
 }
 
 /// Writes a `border-*-width` longhand: a width keyword or a length; a
@@ -1585,8 +1713,76 @@ fn apply_css_wide(
             style.align_content = src.align_content;
             style.justify_content = src.justify_content;
         }
-        "align-items" | "place-items" => style.align_items = src.align_items,
-        "align-self" | "place-self" => style.align_self = src.align_self,
+        "align-items" => style.align_items = src.align_items,
+        "align-self" => style.align_self = src.align_self,
+        // `justify-items`' initial value, `legacy`, computes against the
+        // parent's (css-align-3 §6.1).
+        "justify-items" | "place-items" => {
+            if name == "place-items" {
+                style.align_items = src.align_items;
+            }
+            let value = if from_parent {
+                parent.grid().justify_items
+            } else {
+                JustifyItems::legacy_under(parent.grid().justify_items)
+            };
+            if style.grid.is_some() || value != JustifyItems::NORMAL {
+                style.grid_mut().justify_items = value;
+            }
+        }
+        "justify-self" | "place-self" => {
+            if name == "place-self" {
+                style.align_self = src.align_self;
+            }
+            copy_grid(style, src, |g, s| g.justify_self = s.justify_self);
+        }
+        "grid-template-columns" => copy_grid(style, src, |g, s| {
+            g.template_columns = s.template_columns.clone()
+        }),
+        "grid-template-rows" => {
+            copy_grid(style, src, |g, s| g.template_rows = s.template_rows.clone())
+        }
+        "grid-template-areas" => copy_grid(style, src, |g, s| {
+            g.template_areas = s.template_areas.clone()
+        }),
+        "grid-template" => copy_grid(style, src, |g, s| {
+            g.template_columns = s.template_columns.clone();
+            g.template_rows = s.template_rows.clone();
+            g.template_areas = s.template_areas.clone();
+        }),
+        "grid-auto-columns" => {
+            copy_grid(style, src, |g, s| g.auto_columns = s.auto_columns.clone())
+        }
+        "grid-auto-rows" => copy_grid(style, src, |g, s| g.auto_rows = s.auto_rows.clone()),
+        "grid-auto-flow" => copy_grid(style, src, |g, s| g.auto_flow = s.auto_flow),
+        "grid" => copy_grid(style, src, |g, s| {
+            g.template_columns = s.template_columns.clone();
+            g.template_rows = s.template_rows.clone();
+            g.template_areas = s.template_areas.clone();
+            g.auto_columns = s.auto_columns.clone();
+            g.auto_rows = s.auto_rows.clone();
+            g.auto_flow = s.auto_flow;
+        }),
+        "grid-row-start" => copy_grid(style, src, |g, s| g.row_start = s.row_start.clone()),
+        "grid-row-end" => copy_grid(style, src, |g, s| g.row_end = s.row_end.clone()),
+        "grid-column-start" => {
+            copy_grid(style, src, |g, s| g.column_start = s.column_start.clone())
+        }
+        "grid-column-end" => copy_grid(style, src, |g, s| g.column_end = s.column_end.clone()),
+        "grid-row" => copy_grid(style, src, |g, s| {
+            g.row_start = s.row_start.clone();
+            g.row_end = s.row_end.clone();
+        }),
+        "grid-column" => copy_grid(style, src, |g, s| {
+            g.column_start = s.column_start.clone();
+            g.column_end = s.column_end.clone();
+        }),
+        "grid-area" => copy_grid(style, src, |g, s| {
+            g.row_start = s.row_start.clone();
+            g.row_end = s.row_end.clone();
+            g.column_start = s.column_start.clone();
+            g.column_end = s.column_end.clone();
+        }),
         "row-gap" => style.row_gap = src.row_gap,
         "column-gap" => style.column_gap = src.column_gap,
         "gap" => {
@@ -1856,6 +2052,8 @@ fn parse_display(tokens: &[Token]) -> Option<Display> {
         // The `-webkit-` forms are the Compatibility Standard's (§3.4.5).
         "flex" | "-webkit-flex" => Some(Display::Flex),
         "inline-flex" | "-webkit-inline-flex" => Some(Display::InlineFlex),
+        "grid" => Some(Display::Grid),
+        "inline-grid" => Some(Display::InlineGrid),
         _ => None, // grid/list-item/... land with their milestones
     }
 }
@@ -2289,32 +2487,6 @@ fn self_alignment(words: &[String], allow_auto: bool) -> Option<SelfAlignment> {
     .map(|(p, o)| SelfAlignment::Position(p, o))
 }
 
-/// Whether `words` are a `justify-self` (or, with `legacy`, a
-/// `justify-items`) value (css-align-3 §6.1, §6.3): what `place-self`
-/// and `place-items` check of their second half before dropping it,
-/// since no layout here reads it yet.
-fn is_justify_self(words: &[String], items: bool) -> bool {
-    use AlignPosition::*;
-    let legacy = |w: &String| w == "legacy";
-    let side = |w: &String| matches!(w.as_str(), "left" | "right" | "center");
-    match words {
-        [w] if w == "auto" => !items,
-        [w] if items && legacy(w) => true,
-        [a, b] if items && ((legacy(a) && side(b)) || (side(a) && legacy(b))) => true,
-        _ => {
-            matches!(words, [w] if w == "normal" || w == "stretch")
-                || baseline_position(words).is_some()
-                || positional(
-                    words,
-                    &[
-                        Center, Start, End, SelfStart, SelfEnd, FlexStart, FlexEnd, Left, Right,
-                    ],
-                )
-                .is_some()
-        }
-    }
-}
-
 /// A two-part alignment shorthand's words split at the first place
 /// where both halves parse: `first(words[..k])` and `second(words[k..])`,
 /// the second `None` when it is left out.
@@ -2351,17 +2523,42 @@ fn parse_place_content(tokens: &[Token]) -> Option<(ContentAlignment, ContentAli
     Some((align, justify))
 }
 
-/// `place-items` and `place-self` (css-align-3 §6.3, §6.2.1, M17): the
-/// `align-items` or `align-self` value; the `justify-items` or
-/// `justify-self` after it is checked and dropped.
-fn parse_place_self(tokens: &[Token], items: bool) -> Option<SelfAlignment> {
+/// `place-items` (css-align-3 §6.3, M17; the justify half since M18):
+/// the `align-items` value, then the `justify-items` value, the first
+/// value again when it is left out, a bare `legacy` computing against
+/// `parent`, the parent's `justify-items`.
+fn parse_place_items(
+    tokens: &[Token],
+    parent: JustifyItems,
+) -> Option<(SelfAlignment, JustifyItems)> {
     let words = idents(&split_whitespace_groups(tokens))?;
-    let (align, _) = split_pair(
+    let (align, justify) = split_pair(
         &words,
-        |w| self_alignment(w, !items),
-        |w| is_justify_self(w, items).then_some(()),
+        |w| self_alignment(w, false),
+        |w| grid::justify_items(w, parent),
     )?;
-    Some(align)
+    let justify = match justify {
+        Some(justify) => justify,
+        None => grid::justify_items(&words, parent)?,
+    };
+    Some((align, justify))
+}
+
+/// `place-self` (css-align-3 §6.2.1, M17; the justify half since M18):
+/// the `align-self` value, then the `justify-self` value, the first
+/// value again when it is left out.
+fn parse_place_self(tokens: &[Token]) -> Option<(SelfAlignment, SelfAlignment)> {
+    let words = idents(&split_whitespace_groups(tokens))?;
+    let (align, justify) = split_pair(
+        &words,
+        |w| self_alignment(w, true),
+        |w| grid::justify_self(w, true),
+    )?;
+    let justify = match justify {
+        Some(justify) => justify,
+        None => grid::justify_self(&words, true)?,
+    };
+    Some((align, justify))
 }
 
 /// `row-gap` and `column-gap` (CSS Gaps 1 §2, M17): `normal`, or a
@@ -2391,10 +2588,14 @@ fn parse_gap_shorthand(
 }
 
 /// The name a property is known by here: a `-webkit-` alias the
-/// Compatibility Standard requires (§3.4.1) as the property itself,
-/// every other name as it is.
+/// Compatibility Standard requires (§3.4.1), or a legacy gap name
+/// css-align-3 §8.3 requires (M18), as the property itself, every other
+/// name as it is.
 fn canonical_name(name: &str) -> &str {
     match name {
+        "grid-row-gap" => "row-gap",
+        "grid-column-gap" => "column-gap",
+        "grid-gap" => "gap",
         "-webkit-align-content" => "align-content",
         "-webkit-align-items" => "align-items",
         "-webkit-align-self" => "align-self",
@@ -2964,6 +3165,19 @@ mod tests {
             ("font-size", "150%"),
             ("color", "inherit"),
             ("align-self", "unset"),
+            ("display", "grid"),
+            ("display", "inline-grid"),
+            (
+                "grid-template-columns",
+                "repeat(auto-fill, minmax(10em, 1fr))",
+            ),
+            ("grid-template", "'a b' 1fr / auto 1fr"),
+            ("grid", "auto-flow dense / 10px"),
+            ("grid-area", "a / 2 / span 3"),
+            ("justify-items", "legacy center"),
+            ("justify-self", "safe right"),
+            ("grid-gap", "1px"),
+            ("grid-row-gap", "inherit"),
         ] {
             assert!(supports(name, value), "{name}: {value}");
         }
@@ -2983,7 +3197,9 @@ mod tests {
             assert!(!supports(name, value), "{name}: {value}");
         }
         for (name, value) in [
-            ("display", "grid"),
+            ("grid-template-columns", "subgrid"),
+            ("grid-template-rows", "masonry"),
+            ("display", "grid-lanes"),
             ("display", "-webkit-box"),
             ("width", "-5px"),
             ("width", "calc(10px + 1em)"),
@@ -4442,6 +4658,8 @@ mod tests {
             // The Compatibility Standard's keywords (§3.4.5).
             ("-webkit-flex", Display::Flex),
             ("-WEBKIT-INLINE-FLEX", Display::InlineFlex),
+            ("grid", Display::Grid),
+            ("inline-grid", Display::InlineGrid),
         ] {
             let sheets = [sheet(&format!("span {{ display: {value}; }}"))];
             assert_eq!(style_of(html, &sheets, "span").display, expected, "{value}");
@@ -4449,7 +4667,7 @@ mod tests {
         // An unknown keyword leaves the UA value in place, and so does
         // `-webkit-box`, whose mapping the Standard calls not web
         // compatible.
-        for value in ["grid", "-webkit-box", "-webkit-inline-box"] {
+        for value in ["grid-lanes", "-webkit-box", "-webkit-inline-box"] {
             let sheets = [sheet(&format!("div {{ display: {value}; }}"))];
             assert_eq!(
                 style_of(html, &sheets, "div").display,
@@ -4777,6 +4995,7 @@ mod tests {
             (s.align_content, s.justify_content),
             (ContentAlignment::Normal, ContentAlignment::Normal)
         );
+        // Without a second value, the justify half is the first (M18).
         let s = p("p { place-items: center; place-self: end }");
         assert_eq!(
             (s.align_items, s.align_self),
@@ -4785,8 +5004,15 @@ mod tests {
                 SelfAlignment::Position(End, OverflowAlign::Default)
             )
         );
-        // The justify half is checked: `legacy` is justify-items',
-        // `auto` justify-self's.
+        assert_eq!(
+            (s.grid().justify_items.value, s.grid().justify_self),
+            (
+                SelfAlignment::Position(Center, OverflowAlign::Default),
+                SelfAlignment::Position(End, OverflowAlign::Default)
+            )
+        );
+        // The justify half is its own property's: `legacy` is
+        // justify-items', `auto` and `left` justify-self's.
         let s = p("p { place-items: start legacy left; place-self: stretch auto }");
         assert_eq!(
             (s.align_items, s.align_self),
@@ -4795,11 +5021,28 @@ mod tests {
                 SelfAlignment::Stretch
             )
         );
+        assert_eq!(
+            s.grid().justify_items,
+            JustifyItems {
+                value: SelfAlignment::Position(Left, OverflowAlign::Default),
+                legacy: true
+            }
+        );
+        assert_eq!(s.grid().justify_self, SelfAlignment::Auto);
+        let s = p("p { place-self: auto safe right }");
+        assert_eq!(
+            (s.align_self, s.grid().justify_self),
+            (
+                SelfAlignment::Auto,
+                SelfAlignment::Position(Right, OverflowAlign::Safe)
+            )
+        );
         let s = p("p { place-items: start auto; place-self: stretch legacy }");
         assert_eq!(
             (s.align_items, s.align_self),
             (SelfAlignment::Normal, SelfAlignment::Auto)
         );
+        assert_eq!(s.grid, None);
     }
 
     #[test]
@@ -5358,5 +5601,622 @@ mod tests {
         let before = style_of("<p>x</p>", &[], "p");
         let after = style_of("<p>x</p>", &[sheet("p { color: red; }")], "p");
         assert_ne!(before.color, after.color);
+    }
+
+    #[test]
+    fn grid_and_inline_grid_make_containers_whose_children_are_blockified() {
+        // css-grid-2 §5.1, §6.1 (M18).
+        for (value, expected) in [
+            ("grid", Display::Grid),
+            ("inline-grid", Display::InlineGrid),
+            ("GRID", Display::Grid),
+        ] {
+            let s = style_of(
+                "<p>x</p>",
+                &[sheet(&format!("p {{ display: {value} }}"))],
+                "p",
+            );
+            assert_eq!(s.display, expected, "{value}");
+        }
+        let html = "<div><span>a</span><i>i</i><u>u</u><q>q</q></div>";
+        for container in ["grid", "inline-grid"] {
+            let sheets = [sheet(&format!(
+                "div {{ display: {container} }} i {{ display: inline-block }}
+                 u {{ display: inline-grid }} q {{ display: none }}"
+            ))];
+            for (selector, expected) in [
+                ("span", Display::Block),
+                ("i", Display::Block),
+                ("u", Display::Grid),
+                ("q", Display::None),
+            ] {
+                assert_eq!(
+                    style_of(html, &sheets, selector).display,
+                    expected,
+                    "{container} {selector}"
+                );
+            }
+        }
+        // §5.1: a floated or absolutely positioned inline grid is a grid.
+        for extra in ["float: left", "position: absolute"] {
+            let css = format!("p {{ display: inline-grid; {extra} }}");
+            let s = style_of("<p>x</p>", &[sheet(&css)], "p");
+            assert_eq!(s.display, Display::Grid, "{extra}");
+        }
+        // The container's `::before` is an item.
+        let sheets = [sheet(
+            "div { display: grid } div::before { content: 'x'; display: inline }",
+        )];
+        assert_eq!(
+            pseudo_of("<div>x</div>", &sheets, "div", PseudoElement::Before).map(|s| s.display),
+            Some(Display::Block)
+        );
+    }
+
+    /// The grid properties `css` gives a `<p>`.
+    fn grid_of(css: &str) -> crate::computed::GridStyle {
+        style_of("<p>x</p>", &[sheet(css)], "p").grid().clone()
+    }
+
+    #[test]
+    fn track_lists_take_sizes_line_names_and_repetitions() {
+        use crate::computed::{
+            RepeatCount, TrackBreadth as B, TrackRepeat, TrackSection as S, TrackSize as T,
+        };
+        let columns = |value: &str| grid_of(&format!("p {{ grid-template-columns: {value} }}"));
+        let names =
+            |names: &[&str]| -> Vec<Arc<str>> { names.iter().map(|&n| Arc::from(n)).collect() };
+        let px = |v: f32| T::Breadth(B::Fixed(LengthPercentage::Px(v)));
+        assert_eq!(columns("none").template_columns, None);
+        let list = columns(
+            "[a] 100px [b C] 1fr minmax(10%, max-content) fit-content(5em) auto min-content",
+        )
+        .template_columns
+        .expect("valid");
+        assert_eq!(
+            list.names,
+            vec![
+                names(&["a"]),
+                names(&["b", "C"]),
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+                vec![]
+            ]
+        );
+        assert_eq!(
+            list.sections,
+            vec![
+                S::Track(px(100.0)),
+                S::Track(T::Breadth(B::Flex(1.0))),
+                S::Track(T::MinMax(
+                    B::Fixed(LengthPercentage::Percent(10.0)),
+                    B::MaxContent
+                )),
+                S::Track(T::FitContent(LengthPercentage::Px(80.0))),
+                S::Track(T::AUTO),
+                S::Track(T::Breadth(B::MinContent)),
+            ]
+        );
+        // A repetition keeps its own names and count; layout repeats it.
+        let list = columns("repeat(2, [x] 10px [y]) [z] 2em")
+            .template_columns
+            .expect("valid");
+        assert_eq!(list.names, vec![vec![], names(&["z"]), vec![]]);
+        assert_eq!(
+            list.sections,
+            vec![
+                S::Repeat(TrackRepeat {
+                    count: RepeatCount::Count(2),
+                    names: vec![names(&["x"]), names(&["y"])],
+                    tracks: vec![px(10.0)],
+                }),
+                S::Track(px(32.0)),
+            ]
+        );
+        // An automatic repetition among fixed sizes.
+        let list = columns("10px repeat(auto-fill, minmax(100px, 1fr)) repeat(2, 5%)")
+            .template_columns
+            .expect("valid");
+        assert_eq!(
+            list.auto_repeat().map(|r| r.count),
+            Some(RepeatCount::AutoFill)
+        );
+        let list = columns("repeat(auto-fit, minmax(auto, 10px))").template_columns;
+        assert!(list.is_some(), "a fixed maximum makes a fixed size");
+        // A count beyond a u32 is kept as the largest; layout limits it.
+        let list = columns("repeat(99999999999, 1px)")
+            .template_columns
+            .expect("valid");
+        assert!(matches!(
+            &list.sections[0],
+            S::Repeat(TrackRepeat {
+                count: RepeatCount::Count(u32::MAX),
+                ..
+            })
+        ));
+        // Invalid: the declaration is dropped.
+        for value in [
+            "[a] [b] 10px",
+            "[a]",
+            "repeat(0, 10px)",
+            "repeat(2.5, 10px)",
+            "repeat(-1, 10px)",
+            "repeat(2, repeat(2, 10px))",
+            "repeat(2)",
+            "repeat(2,)",
+            "repeat(2, 10px",
+            "repeat(auto-fill, 1fr)",
+            "repeat(auto-fill, auto)",
+            "repeat(auto-fit, minmax(min-content, 1fr))",
+            "repeat(auto-fill, 10px) repeat(auto-fit, 10px)",
+            "repeat(auto-fill, 10px) auto",
+            "repeat(auto-fill, 10px) repeat(2, 1fr)",
+            "minmax(1fr, 10px)",
+            "minmax(10px)",
+            "minmax(10px 20px)",
+            "fit-content(auto)",
+            "fit-content(1fr)",
+            "-10px",
+            "-1fr",
+            "10px [a",
+            "[span] 10px",
+            "[auto] 10px",
+            "[inherit] 10px",
+            "[1] 10px",
+            "subgrid",
+            "calc(10px)",
+            "10px 'a'",
+            "10 px",
+            "none 10px",
+        ] {
+            assert_eq!(columns(value).template_columns, None, "{value}");
+        }
+    }
+
+    #[test]
+    fn template_areas_are_rectangles_of_named_cells() {
+        use crate::computed::NamedArea;
+        let areas =
+            |value: &str| grid_of(&format!("p {{ grid-template-areas: {value} }}")).template_areas;
+        let area = |name: &str, rows: (u32, u32), columns: (u32, u32)| NamedArea {
+            name: Arc::from(name),
+            rows,
+            columns,
+        };
+        let a = areas("\"head head\" \"nav main\" \"foot .\"").expect("valid");
+        assert_eq!((a.rows, a.columns), (3, 2));
+        assert_eq!(
+            a.areas,
+            vec![
+                area("head", (0, 1), (0, 2)),
+                area("nav", (1, 2), (0, 1)),
+                area("main", (1, 2), (1, 2)),
+                area("foot", (2, 3), (0, 1)),
+            ]
+        );
+        // A run of dots is one null cell, and white space separates;
+        // a name may start with a digit, and is kept as written.
+        let a = areas("'a  ... B' '1st ...B'").expect("valid");
+        assert_eq!((a.rows, a.columns), (2, 3));
+        assert_eq!(
+            a.areas,
+            vec![
+                area("a", (0, 1), (0, 1)),
+                area("B", (0, 2), (2, 3)),
+                area("1st", (1, 2), (0, 1)),
+            ]
+        );
+        assert_eq!(areas("none"), None);
+        for value in [
+            "'a b' 'a'",
+            "'a b a'",
+            "'a b' 'b a'",
+            "'a .' '. a'",
+            "'a #'",
+            "''",
+            "'   '",
+            "'a' none",
+            "a",
+            "'a' 10px",
+        ] {
+            assert_eq!(areas(value), None, "{value}");
+        }
+    }
+
+    #[test]
+    fn grid_template_sets_the_rows_the_columns_and_the_areas() {
+        use crate::computed::{TrackBreadth as B, TrackSection as S, TrackSize as T};
+        let names =
+            |names: &[&str]| -> Vec<Arc<str>> { names.iter().map(|&n| Arc::from(n)).collect() };
+        let sizes = |list: &Option<crate::computed::TrackList>| -> Vec<S> {
+            list.as_ref().expect("a list").sections.clone()
+        };
+        let fr = S::Track(T::Breadth(B::Flex(1.0)));
+        let auto = S::Track(T::AUTO);
+        let g = grid_of("p { grid-template: auto 1fr / auto 1fr auto }");
+        assert_eq!(sizes(&g.template_rows), vec![auto.clone(), fr.clone()]);
+        assert_eq!(
+            sizes(&g.template_columns),
+            vec![auto.clone(), fr.clone(), auto.clone()]
+        );
+        assert_eq!(g.template_areas, None);
+        // The areas form (§7.4's example): the names after one row and
+        // before the next are one line's.
+        let g = grid_of(
+            "p { grid-template: [header-top] 'a a a' [header-bottom]
+                                 [main-top] 'b b b' 1fr [main-bottom]
+                                 / auto 1fr auto }",
+        );
+        let rows = g.template_rows.as_ref().expect("rows");
+        assert_eq!(
+            rows.names,
+            vec![
+                names(&["header-top"]),
+                names(&["header-bottom", "main-top"]),
+                names(&["main-bottom"]),
+            ]
+        );
+        assert_eq!(rows.sections, vec![auto.clone(), fr.clone()]);
+        assert_eq!(sizes(&g.template_columns).len(), 3);
+        let areas = g.template_areas.expect("areas");
+        assert_eq!((areas.rows, areas.columns, areas.areas.len()), (2, 3, 2));
+        let g = grid_of("p { grid-template: 'a' 'b' }");
+        assert_eq!(sizes(&g.template_rows), vec![auto.clone(), auto.clone()]);
+        assert_eq!(g.template_columns, None);
+        // `none` resets all three.
+        let s = style_of(
+            "<p>x</p>",
+            &[sheet(
+                "p { grid-template-areas: 'a'; grid-template-columns: 1px; grid-template: none }",
+            )],
+            "p",
+        );
+        assert_eq!(s.grid, None);
+        for value in [
+            "'a' / repeat(2, 1px)",
+            "1px 'a'",
+            "auto 1fr",
+            "'a' 'b' / 1px / 2px",
+            "'a' [x] [y] [z] 'b'",
+            "'a' repeat(2, 1px)",
+            "'a b' 'c'",
+            "/ 1px",
+        ] {
+            let g = grid_of(&format!("p {{ grid-template: {value} }}"));
+            assert_eq!(g, crate::computed::GridStyle::default(), "{value}");
+        }
+    }
+
+    #[test]
+    fn the_grid_shorthand_sets_a_template_or_a_flow() {
+        use crate::computed::{GridAutoFlow, TrackBreadth as B, TrackSection as S, TrackSize as T};
+        let fr = T::Breadth(B::Flex(1.0));
+        let g = grid_of(
+            "p { grid-auto-flow: column; grid-auto-rows: 5px; grid: auto-flow 1fr / 100px }",
+        );
+        assert_eq!(g.template_rows, None);
+        assert_eq!(
+            g.template_columns.expect("columns").sections,
+            vec![S::Track(T::Breadth(B::Fixed(LengthPercentage::Px(100.0))))]
+        );
+        assert_eq!(g.auto_flow, GridAutoFlow::default());
+        assert_eq!((g.auto_rows, g.auto_columns), (vec![fr], vec![T::AUTO]));
+        let g = grid_of("p { grid: none / auto-flow dense 1fr 2fr }");
+        assert_eq!((&g.template_rows, &g.template_columns), (&None, &None));
+        assert_eq!(
+            g.auto_flow,
+            GridAutoFlow {
+                column: true,
+                dense: true
+            }
+        );
+        assert_eq!(g.auto_columns, vec![fr, T::Breadth(B::Flex(2.0))]);
+        assert_eq!(g.auto_rows, vec![T::AUTO]);
+        let g = grid_of("p { grid: dense auto-flow / 10px }");
+        assert_eq!(
+            g.auto_flow,
+            GridAutoFlow {
+                column: false,
+                dense: true
+            }
+        );
+        // A template resets the implicit properties.
+        let g = grid_of("p { grid-auto-flow: column dense; grid: 'a' 10px / 20px }");
+        assert_eq!(g.auto_flow, GridAutoFlow::default());
+        assert!(g.template_areas.is_some());
+        for value in [
+            "auto-flow / auto-flow",
+            "1fr auto-flow / 10px",
+            "auto-flow 1fr dense / 10px",
+            "auto-flow",
+            "auto-flow dense dense / 1px",
+            "10px / 20px / 30px",
+            "auto-flow / repeat(2, 1px) auto-flow",
+        ] {
+            let g = grid_of(&format!("p {{ grid: {value} }}"));
+            assert_eq!(g, crate::computed::GridStyle::default(), "{value}");
+        }
+        for (value, expected) in [
+            ("row", (false, false)),
+            ("column", (true, false)),
+            ("dense", (false, true)),
+            ("dense column", (true, true)),
+        ] {
+            let g = grid_of(&format!("p {{ grid-auto-flow: {value} }}"));
+            assert_eq!((g.auto_flow.column, g.auto_flow.dense), expected, "{value}");
+        }
+        for value in ["row column", "dense dense", "auto-flow", "1px"] {
+            let g = grid_of(&format!(
+                "p {{ grid-auto-flow: column; grid-auto-flow: {value} }}"
+            ));
+            assert!(g.auto_flow.column, "{value}");
+        }
+        let g = grid_of("p { grid-auto-rows: 10px minmax(0, 1fr) }");
+        assert_eq!(g.auto_rows.len(), 2);
+        for value in ["repeat(2, 1px)", "[a] 1px", "none"] {
+            let g = grid_of(&format!("p {{ grid-auto-rows: {value} }}"));
+            assert_eq!(g.auto_rows, vec![T::AUTO], "{value}");
+        }
+    }
+
+    #[test]
+    fn grid_lines_are_auto_names_numbers_and_spans() {
+        use crate::computed::GridLine as L;
+        let name = |n: &str| Some(Arc::<str>::from(n));
+        let line = |value: &str| grid_of(&format!("p {{ grid-row-start: {value} }}")).row_start;
+        for (value, expected) in [
+            ("auto", L::Auto),
+            ("foo", L::Ident(Arc::from("foo"))),
+            ("Foo", L::Ident(Arc::from("Foo"))),
+            ("3", L::Line(3, None)),
+            ("-1", L::Line(-1, None)),
+            ("2 foo", L::Line(2, name("foo"))),
+            ("foo -2", L::Line(-2, name("foo"))),
+            ("span 2", L::Span(2, None)),
+            ("span foo", L::Span(1, name("foo"))),
+            ("2 span", L::Span(2, None)),
+            ("span foo 3", L::Span(3, name("foo"))),
+            ("foo 3 span", L::Span(3, name("foo"))),
+            ("99999999999", L::Line(i32::MAX, None)),
+        ] {
+            assert_eq!(line(value), expected, "{value}");
+        }
+        for value in [
+            "0",
+            "0 foo",
+            "span 0",
+            "span -1",
+            "span",
+            "span span",
+            "2 3",
+            "foo bar",
+            "2 span foo",
+            "span auto",
+            "auto 2",
+            "1.5",
+            "span 2 3",
+            "inherit 2",
+            "a b c d",
+            "'a'",
+        ] {
+            assert_eq!(line(value), L::Auto, "{value}");
+        }
+        let both = |css: &str| {
+            let g = grid_of(css);
+            (g.row_start, g.row_end, g.column_start, g.column_end)
+        };
+        let foo = || L::Ident(Arc::from("foo"));
+        assert_eq!(
+            both("p { grid-row: foo }"),
+            (foo(), foo(), L::Auto, L::Auto)
+        );
+        assert_eq!(
+            both("p { grid-row: 2 }"),
+            (L::Line(2, None), L::Auto, L::Auto, L::Auto)
+        );
+        assert_eq!(
+            both("p { grid-column: 1 / span 2 }"),
+            (L::Auto, L::Auto, L::Line(1, None), L::Span(2, None))
+        );
+        assert_eq!(both("p { grid-area: foo }"), (foo(), foo(), foo(), foo()));
+        assert_eq!(
+            both("p { grid-area: 1 / 2 }"),
+            (L::Line(1, None), L::Auto, L::Line(2, None), L::Auto)
+        );
+        let bar = || L::Ident(Arc::from("bar"));
+        assert_eq!(
+            both("p { grid-area: foo / bar }"),
+            (foo(), foo(), bar(), bar())
+        );
+        assert_eq!(
+            both("p { grid-area: 1 / 2 / 3 / 4 }"),
+            (
+                L::Line(1, None),
+                L::Line(3, None),
+                L::Line(2, None),
+                L::Line(4, None)
+            )
+        );
+        for css in [
+            "p { grid-area: 1 / 2 / 3 / 4 / 5 }",
+            "p { grid-row: 1 / }",
+            "p { grid-row: / 2 }",
+            "p { grid-column: 1 / 2 / 3 }",
+            "p { grid-area: 0 }",
+        ] {
+            assert_eq!(both(css), (L::Auto, L::Auto, L::Auto, L::Auto), "{css}");
+        }
+    }
+
+    #[test]
+    fn justify_items_and_justify_self_take_the_inline_axis_values() {
+        use AlignPosition::*;
+        let pos = |p, o| SelfAlignment::Position(p, o);
+        let self_value =
+            |value: &str| grid_of(&format!("p {{ justify-self: {value} }}")).justify_self;
+        for (value, expected) in [
+            ("auto", SelfAlignment::Auto),
+            ("normal", SelfAlignment::Normal),
+            ("stretch", SelfAlignment::Stretch),
+            ("baseline", SelfAlignment::Baseline(BaselinePosition::First)),
+            (
+                "last baseline",
+                SelfAlignment::Baseline(BaselinePosition::Last),
+            ),
+            ("safe left", pos(Left, OverflowAlign::Safe)),
+            ("right", pos(Right, OverflowAlign::Default)),
+            ("unsafe center", pos(Center, OverflowAlign::Unsafe)),
+            ("self-start", pos(SelfStart, OverflowAlign::Default)),
+            ("flex-end", pos(FlexEnd, OverflowAlign::Default)),
+        ] {
+            assert_eq!(self_value(value), expected, "{value}");
+        }
+        for value in [
+            "legacy",
+            "left right",
+            "safe",
+            "safe baseline",
+            "space-between",
+        ] {
+            let g = grid_of(&format!("p {{ justify-self: end; justify-self: {value} }}"));
+            assert_eq!(g.justify_self, pos(End, OverflowAlign::Default), "{value}");
+        }
+        let items = |value: &str| grid_of(&format!("p {{ justify-items: {value} }}")).justify_items;
+        let legacy = |p| JustifyItems {
+            value: pos(p, OverflowAlign::Default),
+            legacy: true,
+        };
+        let plain = |value| JustifyItems {
+            value,
+            legacy: false,
+        };
+        for (value, expected) in [
+            ("normal", JustifyItems::NORMAL),
+            ("legacy", JustifyItems::NORMAL),
+            ("legacy left", legacy(Left)),
+            ("center legacy", legacy(Center)),
+            ("right", plain(pos(Right, OverflowAlign::Default))),
+            ("safe end", plain(pos(End, OverflowAlign::Safe))),
+            ("stretch", plain(SelfAlignment::Stretch)),
+        ] {
+            assert_eq!(items(value), expected, "{value}");
+        }
+        for value in [
+            "auto",
+            "legacy auto",
+            "legacy start",
+            "legacy legacy",
+            "legacy safe left",
+        ] {
+            let g = grid_of(&format!(
+                "p {{ justify-items: end; justify-items: {value} }}"
+            ));
+            assert_eq!(
+                g.justify_items,
+                plain(pos(End, OverflowAlign::Default)),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_legacy_justify_items_passes_to_the_children() {
+        // css-align-3 §6.1: `legacy`, the initial value, is the parent's
+        // value when that carries `legacy`; `normal` otherwise.
+        use AlignPosition::*;
+        let child = |css: &str| {
+            style_of("<div><p>x</p></div>", &[sheet(css)], "p")
+                .grid()
+                .justify_items
+        };
+        let legacy = |p| JustifyItems {
+            value: SelfAlignment::Position(p, OverflowAlign::Default),
+            legacy: true,
+        };
+        assert_eq!(
+            child("div { justify-items: legacy center }"),
+            legacy(Center)
+        );
+        assert_eq!(child("div { justify-items: center }"), JustifyItems::NORMAL);
+        assert_eq!(
+            child("div { justify-items: legacy right } p { justify-items: legacy }"),
+            legacy(Right)
+        );
+        assert_eq!(
+            child("div { justify-items: legacy right } p { justify-items: initial }"),
+            legacy(Right)
+        );
+        assert_eq!(
+            child("div { justify-items: legacy right } p { justify-items: start }"),
+            JustifyItems {
+                value: SelfAlignment::Position(Start, OverflowAlign::Default),
+                legacy: false
+            }
+        );
+        assert_eq!(
+            child("div { justify-items: center } p { justify-items: inherit }"),
+            JustifyItems {
+                value: SelfAlignment::Position(Center, OverflowAlign::Default),
+                legacy: false
+            }
+        );
+        assert_eq!(
+            child("div { justify-items: legacy left } p { place-items: start legacy }"),
+            legacy(Left)
+        );
+    }
+
+    #[test]
+    fn the_grid_properties_take_the_css_wide_keywords_and_keep_no_initial_copy() {
+        let child = |css: &str| style_of("<div><p>x</p></div>", &[sheet(css)], "p");
+        let parent = "div { grid-template-columns: 10px; grid-row: 2 / 3; grid-auto-flow: dense;
+                       justify-self: end }";
+        let s = child(&format!(
+            "{parent} p {{ grid-template-columns: inherit; grid-row: inherit;
+                          grid-auto-flow: inherit; justify-self: inherit }}"
+        ));
+        let d = style_of("<div><p>x</p></div>", &[sheet(parent)], "div");
+        assert_eq!(s.grid(), d.grid());
+        // Back to initial values: no copy is kept.
+        for css in [
+            "p { grid-template-columns: 10px; grid-template-columns: initial }",
+            "p { grid-area: 1 / 2; grid-area: unset }",
+            "p { grid: 'a' / 10px; grid: initial }",
+            "p { grid-row: auto; grid-column-end: auto; justify-self: auto }",
+            "p { place-self: center; place-self: unset }",
+            "p { grid-auto-rows: 1px; grid-auto-rows: auto }",
+        ] {
+            assert_eq!(child(css).grid, None, "{css}");
+        }
+        // `inherit` on a shorthand takes every longhand of it.
+        let s = child("div { grid: 'a' 10px / 20px } p { grid-template: inherit }");
+        assert!(s.grid().template_areas.is_some() && s.grid().template_columns.is_some());
+    }
+
+    #[test]
+    fn the_legacy_gap_names_are_the_gap_properties() {
+        // css-align-3 §8.3 (M18).
+        let p = |css: &str| style_of("<p>x</p>", &[sheet(css)], "p");
+        let s = p("p { grid-gap: 1px 2px }");
+        assert_eq!(
+            (s.row_gap, s.column_gap),
+            (
+                Some(LengthPercentage::Px(1.0)),
+                Some(LengthPercentage::Px(2.0))
+            )
+        );
+        let s = p("p { grid-row-gap: 3px; grid-column-gap: 4% }");
+        assert_eq!(
+            (s.row_gap, s.column_gap),
+            (
+                Some(LengthPercentage::Px(3.0)),
+                Some(LengthPercentage::Percent(4.0))
+            )
+        );
+        // One property under two names: the later declaration wins.
+        let s = p("p { grid-gap: 5px; row-gap: 6px }");
+        assert_eq!(s.row_gap, Some(LengthPercentage::Px(6.0)));
     }
 }

@@ -57,8 +57,8 @@ impl Color {
 }
 
 /// `display` (css-display-3, the box-generation values of CSS2 §9.2.4,
-/// the table values of §17.2, M12, and the flex values of
-/// css-flexbox-1 §3, M17).
+/// the table values of §17.2, M12, the flex values of css-flexbox-1 §3,
+/// M17, and the grid values of css-grid-2 §5.1, M18).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Display {
     /// Generates a block-level box.
@@ -99,16 +99,23 @@ pub enum Display {
     /// An inline-level flex container: atomic on its line like an
     /// inline-block, a flex container inside.
     InlineFlex,
+    /// A block-level grid container (css-grid-2 §5.1, M18): its
+    /// children are grid items, placed in its rows and columns.
+    Grid,
+    /// An inline-level grid container: atomic on its line like an
+    /// inline-block, a grid container inside.
+    InlineGrid,
 }
 
 impl Display {
     /// Whether this value is an atomic inline-level box (CSS2 §9.2.2):
-    /// an inline-block, an inline table or an inline flex container, one
-    /// item on its line and a formatting context of its own inside.
+    /// an inline-block, an inline table, an inline flex container or an
+    /// inline grid container, one item on its line and a formatting
+    /// context of its own inside.
     pub fn is_atomic_inline(self) -> bool {
         matches!(
             self,
-            Display::InlineBlock | Display::InlineTable | Display::InlineFlex
+            Display::InlineBlock | Display::InlineTable | Display::InlineFlex | Display::InlineGrid
         )
     }
 
@@ -118,17 +125,31 @@ impl Display {
         matches!(self, Display::Flex | Display::InlineFlex)
     }
 
-    /// The value a float, an absolutely positioned box or a flex item
-    /// computes to (CSS2 §9.7's table, css-display-3 §2.7's
-    /// blockification): an inline table becomes a table and an inline
-    /// flex container a flex container; an inline box, an inline-block
-    /// and every table-internal box become a block; a block, a table, a
-    /// flex container and `none` stay what they are.
+    /// Whether this value makes a grid container (M18), whose children
+    /// are grid items and so blockified (css-grid-2 §6.1).
+    pub fn is_grid(self) -> bool {
+        matches!(self, Display::Grid | Display::InlineGrid)
+    }
+
+    /// Whether this value makes a container whose in-flow children are
+    /// its items, blockified: a flex or a grid container.
+    pub fn has_items(self) -> bool {
+        self.is_flex() || self.is_grid()
+    }
+
+    /// The value a float, an absolutely positioned box, a flex item or a
+    /// grid item computes to (CSS2 §9.7's table, css-display-3 §2.7's
+    /// blockification): an inline table becomes a table, an inline flex
+    /// container a flex container and an inline grid container a grid
+    /// container; an inline box, an inline-block and every
+    /// table-internal box become a block; a block, a table, a flex
+    /// container, a grid container and `none` stay what they are.
     pub fn blockified(self) -> Display {
         match self {
-            Display::Block | Display::Table | Display::Flex | Display::None => self,
+            Display::Block | Display::Table | Display::Flex | Display::Grid | Display::None => self,
             Display::InlineTable => Display::Table,
             Display::InlineFlex => Display::Flex,
+            Display::InlineGrid => Display::Grid,
             Display::Inline
             | Display::InlineBlock
             | Display::TableRowGroup
@@ -622,6 +643,243 @@ pub enum SelfAlignment {
     Position(AlignPosition, OverflowAlign),
 }
 
+/// `justify-items` (css-align-3 §6.1, M18): the `justify-self` that
+/// `auto` gives a container's items, and whether it carries `legacy`,
+/// which makes the value pass to the container's children as their own
+/// `legacy` (§6.1's computed value).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JustifyItems {
+    /// The value, never `auto`: `normal`, `stretch`, a baseline or a
+    /// position, `left`, `right` and `center` among them.
+    pub value: SelfAlignment,
+    /// Written with `legacy`: `legacy left`, `legacy right` or `legacy
+    /// center`.
+    pub legacy: bool,
+}
+
+impl JustifyItems {
+    /// `normal`, which a bare `legacy` computes to unless its parent's
+    /// value carries `legacy`.
+    pub const NORMAL: JustifyItems = JustifyItems {
+        value: SelfAlignment::Normal,
+        legacy: false,
+    };
+
+    /// What a bare `legacy`, the initial value, computes to under a
+    /// parent whose value is `parent`: that value when it carries
+    /// `legacy`, `normal` otherwise.
+    pub fn legacy_under(parent: JustifyItems) -> JustifyItems {
+        if parent.legacy {
+            parent
+        } else {
+            JustifyItems::NORMAL
+        }
+    }
+}
+
+/// A line's names in a track list (css-grid-2 §7.2.2, M18): the
+/// `<custom-ident>`s between `[` and `]`, as written, since a
+/// `<custom-ident>` is case-sensitive.
+pub type LineNames = Vec<Arc<str>>;
+
+/// One end of a track's size, a `<track-breadth>` (css-grid-2 §7.2.1).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TrackBreadth {
+    /// A non-negative length or percentage: a fixed sizing function.
+    Fixed(LengthPercentage),
+    /// A non-negative `<flex>`, in `fr`: a flexible sizing function.
+    Flex(f32),
+    /// `min-content`.
+    MinContent,
+    /// `max-content`.
+    MaxContent,
+    /// `auto`.
+    Auto,
+}
+
+/// A track's size, a `<track-size>` (css-grid-2 §7.2.1), as written.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TrackSize {
+    /// One breadth, both the minimum and the maximum, a flex's minimum
+    /// being `auto` (§12.2).
+    Breadth(TrackBreadth),
+    /// `minmax(min, max)`: the minimum is never a flex.
+    MinMax(TrackBreadth, TrackBreadth),
+    /// `fit-content(<length-percentage>)`.
+    FitContent(LengthPercentage),
+}
+
+impl TrackSize {
+    /// `auto`: `grid-auto-rows` and `grid-auto-columns`' initial value.
+    pub const AUTO: TrackSize = TrackSize::Breadth(TrackBreadth::Auto);
+}
+
+/// How many times a `repeat()` repeats (css-grid-2 §7.2.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepeatCount {
+    /// A number of times, at least one, as written; layout limits it.
+    Count(u32),
+    /// `auto-fill`: as many as fit.
+    AutoFill,
+    /// `auto-fit`: as many as fit, the empty ones collapsed.
+    AutoFit,
+}
+
+impl RepeatCount {
+    /// Whether the count is found at layout: `auto-fill` or `auto-fit`.
+    pub fn is_automatic(self) -> bool {
+        matches!(self, RepeatCount::AutoFill | RepeatCount::AutoFit)
+    }
+}
+
+/// A `repeat()` in a track list (css-grid-2 §7.2.3): its tracks, each
+/// after the names of the line before it, `names` having one more entry
+/// than `tracks`, its last the names of the line after the last track.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrackRepeat {
+    pub count: RepeatCount,
+    pub names: Vec<LineNames>,
+    pub tracks: Vec<TrackSize>,
+}
+
+/// One section of a track list: a track, or a repetition of tracks.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TrackSection {
+    Track(TrackSize),
+    Repeat(TrackRepeat),
+}
+
+/// A track list, `grid-template-columns` or `grid-template-rows` when
+/// not `none` (css-grid-2 §7.2.5's computed track list): its sections,
+/// each after the names of the line before it, `names` having one more
+/// entry than `sections`, its last the names of the line after the last.
+/// Never empty, and with at most one automatic repetition.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrackList {
+    pub names: Vec<LineNames>,
+    pub sections: Vec<TrackSection>,
+}
+
+impl TrackList {
+    /// The list's `repeat(auto-fill, …)` or `repeat(auto-fit, …)`, if
+    /// it has one.
+    pub fn auto_repeat(&self) -> Option<&TrackRepeat> {
+        self.sections.iter().find_map(|section| match section {
+            TrackSection::Repeat(repeat) if repeat.count.is_automatic() => Some(repeat),
+            _ => None,
+        })
+    }
+}
+
+/// A named grid area of `grid-template-areas` (css-grid-2 §7.3): its
+/// rows and columns, zero-based, from the first to one past the last.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NamedArea {
+    pub name: Arc<str>,
+    pub rows: (u32, u32),
+    pub columns: (u32, u32),
+}
+
+/// `grid-template-areas` when not `none` (css-grid-2 §7.3): the size of
+/// the grid its strings make, and its named areas, each a rectangle,
+/// worked out once by the cascade.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TemplateAreas {
+    pub rows: u32,
+    pub columns: u32,
+    pub areas: Vec<NamedArea>,
+}
+
+impl TemplateAreas {
+    /// The area called `name`, if there is one.
+    pub fn area(&self, name: &str) -> Option<&NamedArea> {
+        self.areas.iter().find(|area| &*area.name == name)
+    }
+}
+
+/// A `<grid-line>`: one of `grid-row-start`, `grid-row-end`,
+/// `grid-column-start` and `grid-column-end` (css-grid-2 §8.3).
+#[derive(Debug, Clone, PartialEq)]
+pub enum GridLine {
+    /// `auto`: automatic placement, or a span of one.
+    Auto,
+    /// A `<custom-ident>` alone: a named area's edge, else the first
+    /// line with that name.
+    Ident(Arc<str>),
+    /// `<integer> && <custom-ident>?`: the integer is never zero, and
+    /// negative counts from the end of the explicit grid.
+    Line(i32, Option<Arc<str>>),
+    /// `span && [ <integer> || <custom-ident> ]`: the integer is at
+    /// least one.
+    Span(u32, Option<Arc<str>>),
+}
+
+/// `grid-auto-flow` (css-grid-2 §7.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct GridAutoFlow {
+    /// `column`: items fill each column in turn; `row` otherwise, the
+    /// initial value.
+    pub column: bool,
+    /// `dense`: auto-placement goes back to fill holes.
+    pub dense: bool,
+}
+
+/// The grid properties of one element (css-grid-2 §7, §8, M18), and
+/// `justify-items` and `justify-self` (css-align-3 §6.1, §6.2), which
+/// only grid containers, grid items and absolutely positioned boxes
+/// read: what [`ComputedStyle::grid`] points to when any of them is not
+/// its initial value. None of them is inherited.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GridStyle {
+    /// `grid-template-columns`; `None` is `none`.
+    pub template_columns: Option<TrackList>,
+    /// `grid-template-rows`; `None` is `none`.
+    pub template_rows: Option<TrackList>,
+    /// `grid-template-areas`; `None` is `none`.
+    pub template_areas: Option<TemplateAreas>,
+    /// `grid-auto-columns`: never empty, a pattern repeated.
+    pub auto_columns: Vec<TrackSize>,
+    /// `grid-auto-rows`: never empty.
+    pub auto_rows: Vec<TrackSize>,
+    /// `grid-auto-flow`.
+    pub auto_flow: GridAutoFlow,
+    /// `grid-row-start`, `grid-row-end`, `grid-column-start` and
+    /// `grid-column-end`.
+    pub row_start: GridLine,
+    pub row_end: GridLine,
+    pub column_start: GridLine,
+    pub column_end: GridLine,
+    /// `justify-items`: its initial value, `legacy`, takes the parent's
+    /// when that carries `legacy`, and is `normal` otherwise.
+    pub justify_items: JustifyItems,
+    /// `justify-self`, initially `auto`.
+    pub justify_self: SelfAlignment,
+}
+
+impl Default for GridStyle {
+    /// Every grid property's initial value.
+    fn default() -> Self {
+        GridStyle {
+            template_columns: None,
+            template_rows: None,
+            template_areas: None,
+            auto_columns: vec![TrackSize::AUTO],
+            auto_rows: vec![TrackSize::AUTO],
+            auto_flow: GridAutoFlow::default(),
+            row_start: GridLine::Auto,
+            row_end: GridLine::Auto,
+            column_start: GridLine::Auto,
+            column_end: GridLine::Auto,
+            justify_items: JustifyItems::NORMAL,
+            justify_self: SelfAlignment::Auto,
+        }
+    }
+}
+
+/// The grid properties' initial values, which [`ComputedStyle::grid`]
+/// gives a style that sets none of them.
+static INITIAL_GRID: LazyLock<GridStyle> = LazyLock::new(GridStyle::default);
+
 /// The box-model edges, one value per side, in CSS's `top, right,
 /// bottom, left` order (matches `margin`/`padding`/`border-width`
 /// shorthand order, so parsing and storage share one shape).
@@ -865,6 +1123,11 @@ pub struct ComputedStyle {
     pub row_gap: Option<LengthPercentage>,
     /// `column-gap` (M17) — not inherited; `None` is `normal`.
     pub column_gap: Option<LengthPercentage>,
+    /// The grid properties and the two justify properties (M18), behind
+    /// one pointer, so that the many elements that set none of them
+    /// carry eight bytes for them; `None` is every initial value. Read
+    /// through [`ComputedStyle::grid`].
+    pub grid: Option<Arc<GridStyle>>,
 }
 
 /// `font-family`'s initial value, one for every style that has it.
@@ -926,6 +1189,7 @@ impl Default for ComputedStyle {
             align_self: SelfAlignment::Auto,
             row_gap: None,
             column_gap: None,
+            grid: None,
         }
     }
 }
@@ -957,8 +1221,28 @@ impl ComputedStyle {
     /// (css-cascade-5 §7.1); everything else starts at its initial
     /// value, exactly like [`ComputedStyle::default`]. The cascade then
     /// overwrites whatever this element's own matched declarations set.
+    ///
+    /// `justify-items` is not inherited, but its initial value, `legacy`,
+    /// computes to the parent's when that carries `legacy` (css-align-3
+    /// §6.1).
     pub fn inherited_from(parent: &ComputedStyle) -> Self {
-        ComputedStyle::default().inheriting(parent)
+        let mut style = ComputedStyle::default().inheriting(parent);
+        let legacy = JustifyItems::legacy_under(parent.grid().justify_items);
+        if legacy != JustifyItems::NORMAL {
+            style.grid_mut().justify_items = legacy;
+        }
+        style
+    }
+
+    /// The grid properties (M18): this style's, or their initial values.
+    pub fn grid(&self) -> &GridStyle {
+        self.grid.as_deref().unwrap_or(&INITIAL_GRID)
+    }
+
+    /// The grid properties to change, this style's own copy made first
+    /// if it shares them or has none.
+    pub fn grid_mut(&mut self) -> &mut GridStyle {
+        Arc::make_mut(self.grid.get_or_insert_with(Default::default))
     }
 
     /// This style with its inherited properties taken from `from` and
@@ -1052,6 +1336,65 @@ mod tests {
     }
 
     #[test]
+    fn the_style_is_the_size_it_is_meant_to_be() {
+        // Every byte here is copied with every box and fragment (M17's
+        // T4.3). The grid properties (M18) cost a pointer and no more:
+        // 424 bytes before them. Growing this is a decision, not an
+        // accident; say why where the number changes.
+        assert_eq!(std::mem::size_of::<ComputedStyle>(), 432);
+        assert_eq!(ComputedStyle::default().grid, None);
+        assert_eq!(*ComputedStyle::default().grid(), GridStyle::default());
+    }
+
+    #[test]
+    fn grid_mut_copies_a_shared_value_once() {
+        let mut a = ComputedStyle::default();
+        a.grid_mut().auto_flow.dense = true;
+        let b = a.clone();
+        assert!(Arc::ptr_eq(
+            a.grid.as_ref().unwrap(),
+            b.grid.as_ref().unwrap()
+        ));
+        let mut c = b.clone();
+        c.grid_mut().auto_flow.column = true;
+        assert!(!Arc::ptr_eq(
+            b.grid.as_ref().unwrap(),
+            c.grid.as_ref().unwrap()
+        ));
+        assert!(b.grid().auto_flow.dense && !b.grid().auto_flow.column);
+        assert!(c.grid().auto_flow.dense && c.grid().auto_flow.column);
+    }
+
+    #[test]
+    fn a_bare_legacy_takes_a_legacy_parents_justify_items() {
+        // css-align-3 §6.1: `legacy`, the initial value, computes to the
+        // parent's value when that carries `legacy`, else to `normal`.
+        let mut parent = ComputedStyle::default();
+        assert_eq!(
+            ComputedStyle::inherited_from(&parent).grid,
+            None,
+            "nothing to carry"
+        );
+        let center = JustifyItems {
+            value: SelfAlignment::Position(AlignPosition::Center, OverflowAlign::Default),
+            legacy: true,
+        };
+        parent.grid_mut().justify_items = center;
+        assert_eq!(
+            ComputedStyle::inherited_from(&parent).grid().justify_items,
+            center
+        );
+        parent.grid_mut().justify_items = JustifyItems {
+            legacy: false,
+            ..center
+        };
+        assert_eq!(
+            ComputedStyle::inherited_from(&parent).grid().justify_items,
+            JustifyItems::NORMAL
+        );
+    }
+
+    #[test]
     fn inherited_from_carries_only_inherited_properties() {
         let parent = ComputedStyle {
             color: Color::rgb8(255, 0, 0),
@@ -1102,6 +1445,12 @@ mod tests {
         assert!(!Display::Flex.is_atomic_inline());
         assert!(Display::Flex.is_flex() && Display::InlineFlex.is_flex());
         assert!(!Display::Block.is_flex() && !Display::InlineBlock.is_flex());
+        assert!(Display::InlineGrid.is_atomic_inline());
+        assert!(!Display::Grid.is_atomic_inline());
+        assert!(Display::Grid.is_grid() && Display::InlineGrid.is_grid());
+        assert!(!Display::Flex.is_grid() && !Display::Grid.is_flex());
+        assert!(Display::Grid.has_items() && Display::InlineFlex.has_items());
+        assert!(!Display::Block.has_items() && !Display::Table.has_items());
         for (value, expected) in [
             (Display::Block, Display::Block),
             (Display::Inline, Display::Block),
@@ -1119,6 +1468,8 @@ mod tests {
             (Display::TableCaption, Display::Block),
             (Display::Flex, Display::Flex),
             (Display::InlineFlex, Display::Flex),
+            (Display::Grid, Display::Grid),
+            (Display::InlineGrid, Display::Grid),
         ] {
             assert_eq!(value.blockified(), expected, "{value:?}");
         }

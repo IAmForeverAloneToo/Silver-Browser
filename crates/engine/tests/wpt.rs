@@ -582,6 +582,8 @@ fn display_name(display: Display) -> &'static str {
         Display::TableCaption => "table-caption",
         Display::Flex => "flex",
         Display::InlineFlex => "inline-flex",
+        Display::Grid => "grid",
+        Display::InlineGrid => "inline-grid",
     }
 }
 
