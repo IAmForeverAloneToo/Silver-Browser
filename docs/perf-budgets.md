@@ -56,13 +56,15 @@ nothing that changes what is shown.
 - **Machine:** a cloud container with four cores and 15GB of memory:
   an Intel Xeon at 2.1GHz for the numbers up to M15, and one at 2.8GHz
   from M16, which measured its base again ("Selectors and
-  pseudo-elements", below). Numbers from different machines are not
-  compared; a milestone that changes machine measures its base again.
+  pseudo-elements", below), as M17 did ("Flexbox", below). Numbers
+  from different machines are not compared; a milestone that changes
+  machine measures its base again.
 - **Benchmarks:** plain binaries, `harness = false`, run by hand:
   - `cargo bench -p engine --bench scroll` (M9.6; stages since M13.4).
   - `cargo bench -p engine --bench mutation` (M13.6).
   - `cargo bench -p engine --bench load` (M14; going back, M15).
   - `cargo bench -p engine --bench pseudo` (M16.5).
+  - `cargo bench -p engine --bench flex` (M17).
   - `cargo bench -p style --bench match` (M4.12; recorded since M16).
   - Criterion-tracked benchmarks run in CI are T4.2, for M35.
 - **Counters** prove work that is not done: `Engine::style_runs`,
@@ -271,11 +273,116 @@ appended paragraph, M16.5 changed three things:
 - That second collection stops where the first line has surely ended,
   rather than at the end of the paragraph.
 
+### Flexbox (M17)
+
+**T4.3.** The benchmarks above, run on the same kind of machine as M16's:
+the code before M17 (`f04fcc6`) and M17's in turn, in release. The
+scrolling and loading rows are four rounds of each, and the matching
+row eight runs; the mutation and pseudo rows are two more rounds, run
+once the layout cache's change below was in. The ranges are over the
+rounds.
+
+| | Before M17 | M17 |
+| --- | --- | --- |
+| Scrolling: the layout, once | 177–228ms, median 180 | 186–205ms, median 187 |
+| Scrolling: a scroll frame, median | 2.8–3.2ms | 2.8–3.2ms |
+| Changing the document: the first frame | 720–722ms | 729–730ms |
+| An appended paragraph's frame, median | 13.7–14.6ms | 15.1–15.5ms |
+| Its layout, median | 12.0–12.6ms | 13.2–13.5ms |
+| Those frames over 16.7ms | 259–291 of 1,000 | 394–442 of 1,000 |
+| 1,000 appended in one frame | 707–781ms | 710–768ms |
+| Loading: `load` to the first frame drawn | 752–792ms | 760–815ms |
+| Going back to the page from the cache | 6.2–8.2ms | 6.4–7.3ms |
+| Going back to the page fetched again | 752–785ms | 766–821ms |
+| Matching: 1,000 selectors over 10,003 elements | 294–335ms, median 311 | 293–372ms, median 319 |
+
+The scrolling rows are for the same page on both sides, of 128
+paragraphs. The benchmark grows its page until it is ten viewports
+tall, and with M17's text metrics (the flexbox note, "Vertical
+metrics") 128 paragraphs are 7,988px rather than 8,061, so the
+benchmark as it stands takes 256 and reports twice the layout:
+377–402ms, which is 1.47ms a paragraph against 1.37.
+
+The appended paragraph's frame is the row nearest T4.3's line: 8%
+longer by the clock, and 5% more instructions under callgrind, 37.1
+million a frame against 35.2. It was 11% more, 39.1 million, before
+one change. M17's layout cache moves the places of a reused subtree's
+boxes along in tree order when something was inserted before them, and
+it rebuilt the subtree a fragment at a time to do so even when nothing
+had moved, as when a paragraph is appended after it. It now copies
+such a subtree whole, as it did before. What remains is the computed
+style, 48 bytes larger for the flex properties (424 bytes, from 376),
+and the fragments and boxes that carry copies of it: a `Fragment` is
+512 bytes and a `LayoutBox` 504. Fragments that refer to their styles
+rather than copy them are M35.9's, and take this with the rest.
+
+The pseudo benchmark, the same two rounds:
+
+| Sheet | The first frame, before | M17 | An appended paragraph's frame, median, before | M17 |
+| --- | --- | --- | --- | --- |
+| None | 1.99–2.06s | 2.09–2.14s | 26.4–27.1ms | 27.8–28.8ms |
+| `::before` and `::after` | 2.21–2.24s | 2.26–2.28s | 32.8–34.6ms | 35.4–36.2ms |
+| `::first-letter` | 2.03–2.43s | 2.13–2.23s | 33.6–34.0ms | 34.7–35.4ms |
+| `::first-line`, colour and size | 2.69–2.77s | 2.60–2.68s | 34.2–36.9ms | 40.2–40.5ms |
+| `::first-line`, a background | 2.06–2.08s | 2.16–2.28s | 30.7–31.2ms | 31.9–33.3ms |
+| All of them | 2.63–2.65s | 2.74–2.92s | 63.3–64.9ms | 67.9–68.6ms |
+
+`::first-line` with inherited properties reads 14% over in these two
+rounds, while the four before read 4% (37.8–41.8ms before, 40.0–43.0ms
+with M17). Counted under callgrind, its appended paragraph's frame
+takes 129.1 million instructions against 122.0, 6% more, which is the
+style's growth again; the rounds' clock moved more than the code did.
+
+**What flex layout costs.** The flex benchmark (`benches/flex.rs`), at
+1280 by 800, in release:
+
+| | Release |
+| --- | --- |
+| A grid of 1,000 cards, the first frame | 2.56s |
+| Its layout | 2.53s |
+| The grid after a card's title changes, a frame, median of 20 | 2.58s |
+| Its layout | 2.57s |
+| A chain of 8 nested flex containers, its layout | 1.9ms, 0.24ms a level |
+| 16 | 4.2ms, 0.26ms a level |
+| 32 | 10.5ms, 0.33ms a level |
+| 64 | 25.2ms, 0.39ms a level |
+
+The grid's card is a column of a title, a paragraph that wraps and a row
+of two spans, in a wrapping row with gaps. Its time is text measurement,
+the font's face parsed and its shaping plan built on every call (M35.8):
+a trial that kept both for each font laid 200 cards out in 95ms rather
+than 676ms. A change inside a flex container lays all its items out
+again, by design (the flexbox note, "The layout cache"), so the frame
+after a title changes costs what the first one did.
+
+The chain's time is to grow linearly with its depth. It first took
+210ms at 64 levels, 4.1ms a level against 0.6 at 8: each container
+measured its item's content widths afresh, down to the foot of the
+chain. The pass keeps them now (the flexbox note, "The layout pass").
+In instructions under callgrind the layout grows 2.1 and 2.0 times for
+each doubling from 16 to 64 levels, and 2.4 from 64 to 128. What grows
+faster than the depth is the kept item layouts copied into each layout
+of the container above them, 12% of the instructions at 64 levels and
+21% at 128 (M35.9).
+
 ### Over budget, and why
 
 These are known and recorded rather than hidden. Each has the item that
 is to take it on.
 
+- **A selector that fails at its leftmost compound, after descendant
+  combinators.** The matcher keeps what it has failed on for one
+  element's match only, so every element tries each pair of its
+  ancestors: the square of the tree's depth, for every element. M17's
+  fuzz runs found a 3,118-byte input, unknown elements nested hundreds
+  deep and one such rule, whose cascade takes 0.9s in release (0.8s
+  before M17). M35.2.
+- **A large flex layout, and a change inside one.** A grid of 1,000
+  cards takes 2.5s to lay out, nearly all of it text measurement
+  (M35.8). A change anywhere inside a flex container lays all its items
+  out again, since they are kept only with the container (the flexbox
+  note, "The layout cache"), so a change to one card costs the grid's
+  whole layout.
 - **The first layout of a large page.** 490ms for the 1,000 paragraphs
   M13.2 was measured on, 630–680ms for the mutation benchmark's page,
   and 690–700ms for the load benchmark's, with its sheets. Most of it is text shaping, at about 25µs a word. Caching word
@@ -296,7 +403,10 @@ is to take it on.
   paragraph's frame past the budget almost half the time between 1,000
   and 2,000 paragraphs in the debug build. In release it stayed within
   it on the machine measured to M15; on M16's it is past it 115–240
-  times in 1,000, the median at 12.6ms. M35.9 takes it on.
+  times in 1,000, the median at 12.6ms. M17's larger computed style
+  takes it further: 394–442 times in 1,000, the median at 15.1–15.5ms,
+  against 259–291 and 13.7–14.6ms for the code before M17 measured in
+  the same rounds. M35.9 takes it on.
 - **A first line's boxes cascaded again at every build.** A
   `::first-line` that sets an inherited property has every inline
   element, `::before`, `::after` and `::first-letter` on a first line's

@@ -873,3 +873,63 @@ kept (M35.9); and two gaps older than this milestone that it found,
 `br`, which makes no box and breaks no line, and white space alone at
 the ends of a run under `pre`, which is dropped. 1,060 tests
 workspace-wide. Next milestone: flexbox (M17).
+
+Milestone 17 (flexbox), designed in `docs/design/flexbox.md` and built
+in its thirteen steps. The cascade (step 1) knows `display: flex` and
+`inline-flex` and their `-webkit-` forms, the flex and alignment
+properties, the gaps and the `place-*` shorthands; it blockifies a flex
+container's children, takes CSS Color 4's 148 colour names, and keeps
+`min-content`, `max-content` and `fit-content` in two new size types,
+`min-width` and `min-height` becoming `auto`. Layout resolves those
+keywords for every kind of box (step 2), and its functions share one
+context per pass, `layout::pass::Pass` (step 3): the fonts, each flex
+item's layouts by box and inputs, and each box's content widths, so a
+chain of nested containers costs a few layouts a level rather than two
+to the power of its depth. A formatting context can impose a height on
+the box it lays out. `layout::flex` (step 4) follows css-flexbox-1 §9
+in the abstract axes: items in `order`, base and hypothetical sizes,
+the automatic minimum, lines with gaps, the flexible lengths in `f64`,
+definite sizes, a flex container's intrinsic widths, and `inline-flex`
+as an atomic inline. The web-platform-tests runner (step 5, T1.1)
+chooses `css/css-flexbox`'s tests by a rule of what the engine has,
+copies them with their references, and runs reftests, check-layout
+tests and crashtests against `expectations.txt`, writing a report page
+with a failing reftest's render beside its reference's. Then came
+alignment on both axes with `safe` and `unsafe` (step 6), first and
+last baseline groups and a container's own baselines (step 7),
+absolutely positioned children in the static-position rectangle (step
+8), and items painted as inline-blocks in order-modified document
+order, with `z-index`, hit testing and the layout cache (step 9). 342
+of the subset's 350 tests pass, and the 8 left wait on nothing in this
+milestone. Twenty reference pages, box-only, match the reference
+browser byte for byte (step 10); they found a cleared box measuring its
+clearance against its own floats. Five real layouts with text, a
+navigation bar, a card grid, the holy grail, media objects and an
+application shell, match it within a pixel in every element (step 11),
+once the text crate took the reference browser's vertical metrics,
+`hhea`'s rounded to whole pixels, and its glyph advances, hinted as
+FreeType hints them and placed on whole pixels; `about:silver` lays its
+cards out with flexbox. The flex benchmark (step 12) found the pass
+measuring content widths afresh at every level of a nested chain, the
+square of its depth; it keeps them now, and 64 levels take 25ms rather
+than 210. The benchmarks before M17 stay within T4.3's 10%
+(`docs/perf-budgets.md`), and the three fuzz targets that lay pages out
+ran fifteen minutes each with flex pages among their seeds, without a
+crash; `style_document` kept an input whose cascade costs the square of
+the tree's depth for every element, since the selector matcher forgets
+its failures between elements (0.9s for 3KB, 0.8s before M17). Not
+in this milestone, said rather than hidden: writing modes and
+`direction: rtl` (M42); `visibility: collapse`; aspect ratios and
+replaced items (M23); css-sizing-4's functions and keywords; the
+multi-line column container's max-content width; fragmentation (M20);
+and what the milestone found outside flexbox: the body's `overflow` not
+carried to the viewport, classic scrollbars, two tables' unbounded
+max-content widths, quirks mode (D14), `vertical-align` other than
+`baseline` (M7.7), `font-weight`, and the stack that layout's
+recursion needs: 2.3MB in release for the 511 levels the parser
+allows, more than the 1MB of a Windows main thread, where the shell
+lays out (some 200 levels fit). A grid of 1,000 cards takes 2.5s to lay out, nearly all
+of it text measurement that parses the font's face on every call
+(M35.8), and an appended paragraph's frame is 8% slower than before
+the milestone for the larger computed style that every fragment copies
+(M35.9). 1,155 tests workspace-wide. Next milestone: grid (M18).

@@ -780,8 +780,8 @@ pub(crate) fn layout_flex_contents<'a>(
     // single line's being the known height, as the reference browsers
     // have it (step 8). A single-line container's line is as large as the
     // container; in a multi-line one, `align-content: normal` and
-    // `stretch` share the free space among the lines (step 16, done here
-    // so that the items stretch to their lines).
+    // `stretch` share the free space among the lines (step 9), before the
+    // items stretch to their lines.
     let mut line_cross: Vec<f32> = lines
         .iter()
         .map(|line| {

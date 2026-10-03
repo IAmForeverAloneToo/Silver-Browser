@@ -1046,28 +1046,60 @@ code and corrected to it after; built in its twelve steps on
 
 ## M17 — Flexbox  ·  `layout`  ·  Effort: XL  ·  Depends: M10
 
-Per css-flexbox-1 (all items cite the spec section in code comments):
+Per css-flexbox-1 (all items cite the spec section in code comments).
+Designed in `docs/design/flexbox.md` before the code and corrected to it
+after; built in its thirteen steps.
 
-- [ ] M17.1 Flex container/item box tree integration; `display: flex |
-       inline-flex`; item creation order and `order` property.
-- [ ] M17.2 Axis setup: `flex-direction`, `flex-wrap`, main/cross axis
-       resolution; anonymous flex items.
-- [ ] M17.3 Base size resolution: `flex-basis` (`auto` → content or
+- [x] M17.1 Flex container/item box tree integration; `display: flex |
+       inline-flex`; item creation order and `order` property. Done
+       2026-10-03: a `Flex` box, block-level or an atomic inline by its
+       display, floated or positioned as any box; its children
+       blockified into items, absolutely positioned ones aside; the
+       items in `order`, their fragments, painting and hit testing too.
+- [x] M17.2 Axis setup: `flex-direction`, `flex-wrap`, main/cross axis
+       resolution; anonymous flex items. Done 2026-10-03: the four
+       directions, `wrap` and `wrap-reverse`, `flex-flow`; a run of text
+       that is not all white space an anonymous item.
+- [x] M17.3 Base size resolution: `flex-basis` (`auto` → content or
        width), content-based min/max sizes (`min-content`, `max-content`
-       intrinsic sizing v1).
-- [ ] M17.4 Flexible lengths algorithm (§9.7): grow/shrink factors,
+       intrinsic sizing v1). Done 2026-10-03: every basis; the automatic
+       minimum size (§4.5); `min-content`, `max-content` and
+       `fit-content` as widths and limits of blocks, floats,
+       inline-blocks, positioned boxes and tables, and in the block axis
+       as the automatic size; `min-width` and `min-height: auto`.
+- [x] M17.4 Flexible lengths algorithm (§9.7): grow/shrink factors,
        hypothetical main size, resolved flexible lengths, min/max
-       violations, inflexible item handling.
-- [ ] M17.5 Main axis alignment: `justify-content` (all 6 values),
-       margins auto-absorption.
-- [ ] M17.6 Cross axis: `align-items`/`align-self`, `align-content`,
-       single-line stretch; `flex-wrap: wrap` multi-line packing.
-- [ ] M17.7 Baseline alignment of flex items (first-baseline v1).
-- [ ] M17.8 Absolute-positioned flex children (containing block rules §9.2).
-- [ ] M17.9 Test matrix: the WPT flexbox subset (adopt the harness in T1
-       this milestone) + 20 hand-built golden cases.
-- [ ] M17.10 Acceptance: 5 real flex layouts (nav bar, card grid, holy
-       grail) render correctly.
+       violations, inflexible item handling. Done 2026-10-03: §9.7 in
+       `f64`, per line, with gaps; definite sizes (§9.8) through a
+       height imposed on the item; each item's layouts and each box's
+       content widths kept for the pass.
+- [x] M17.5 Main axis alignment: `justify-content` (all 6 values),
+       margins auto-absorption. Done 2026-10-03: every value of
+       css-align-3 with `safe` and `unsafe` and the reference browsers'
+       fallbacks; auto margins on both axes.
+- [x] M17.6 Cross axis: `align-items`/`align-self`, `align-content`,
+       single-line stretch; `flex-wrap: wrap` multi-line packing. Done
+       2026-10-03: stretch with the item laid out again at its line's
+       height; lines packed and stretched by `align-content`.
+- [x] M17.7 Baseline alignment of flex items (first-baseline v1). Done
+       2026-10-03: first and last baseline groups; a flex container's
+       own baselines, for `inline-flex` on its line, an outer flex
+       container and a table cell.
+- [x] M17.8 Absolute-positioned flex children (containing block rules §9.2).
+       Done 2026-10-03: placed in the static-position rectangle as the
+       sole item would be (§4.1), by `justify-content` and `align-self`.
+- [x] M17.9 Test matrix: the WPT flexbox subset (adopt the harness in T1
+       this milestone) + 20 hand-built golden cases. Done 2026-10-03:
+       350 tests of `css/css-flexbox`, chosen by rule; 342 pass, and the
+       8 left are named with their reasons, none of them this
+       milestone's. Twenty reference pages, 30 to 49, match the
+       reference browser byte for byte.
+- [x] M17.10 Acceptance: 5 real flex layouts (nav bar, card grid, holy
+       grail) render correctly. Done 2026-10-03: a navigation bar, a card
+       grid, the holy grail, media objects and an application shell, with
+       text, every element of each (143 boxes) within a pixel of where
+       the reference browser puts it; `about:silver`'s cards laid out
+       with flexbox.
 
 ---
 
@@ -1525,8 +1557,13 @@ gold-plate unstarted work.
 # 5. Cross-cutting tracks (never "done", run through every phase)
 
 ## T1 — Compatibility & testing
-- [ ] T1.1 WPT runner harness (pull web-platform-tests, run subset,
+- [x] T1.1 WPT runner harness (pull web-platform-tests, run subset,
        triage UI) — **start at M4**, becomes the main compat driver by M17.
+       Done 2026-10-03 (M17): `examples/wpt.rs` pulls a directory's tests
+       by a rule of what the engine has; `tests/wpt.rs` runs reftests,
+       check-layout tests and crashtests against `expectations.txt`, and
+       writes `target/wpt/report.html`, with a failing reftest's render
+       beside its reference's.
 - [ ] T1.2 Golden-rendering harness: fixed test pages → frame buffers →
        compare vs reference (Firefox) with tolerance; runs in CI.
 - [ ] T1.3 Adversarial test-site (built in-repo): every attack pattern

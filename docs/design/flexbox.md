@@ -150,7 +150,8 @@ scope. This milestone replaces them with CSS Color 4's whole table of
 This is not flexbox, and it is taken here for the test suite: nearly a
 third of the web-platform-tests' flexbox reftests and check-layout tests
 paint with `lightblue`, `pink`, `lightgreen` or another name outside the
-eighteen. The table is fixed by the standard and costs one `match`.
+eighteen. The table is fixed by the standard: a sorted array of the 148,
+searched by name.
 `rgb()` and `hsl()` stay out: the flexbox tests hardly use them.
 
 **Blockification.** The children of a flex container are blockified
@@ -229,9 +230,9 @@ The kept results live in a pass context that the layout functions of
 `block`, `inline` and `table` take in place of the font collection they
 take today: the fonts, the item layouts, and the boxes' content widths.
 It is made by `layout_document` and its siblings and dropped at the end,
-so nothing outlives the box tree it describes. The layout cache (M13) is
-unchanged: it keeps results across passes by node, and this keeps them
-within one pass by box.
+so nothing outlives the box tree it describes. The pass context does not
+replace the layout cache (M13): the cache keeps results across passes by
+node, and this keeps them within one pass by box.
 
 A box's min-content and max-content widths are kept under the box alone,
 since they depend on nothing else: the intrinsic size keywords and a
@@ -263,9 +264,9 @@ nothing.
 independent formatting context for its content (§4), whatever its own
 style says. Its margins do not collapse with its children's, and the
 floats inside it stay inside. `layout_block_contents` takes its being a
-root from the content it is given, `Content::Root`, rather than from its
-style alone. For every caller today the two agree. The flex layout lays
-every item out as a root.
+root from the content it is given, `Content::Root`, as well as from its
+style. For every other caller the two agree; the flex layout lays every
+item out as a root, whatever its style says.
 
 **The algorithm.** `layout::flex` follows §9 step by step, in the
 abstract main and cross axes, and maps to physical coordinates at the
@@ -300,16 +301,20 @@ steps:
    large factors and sizes stay finite. The sum of factors below one
    takes its share of the initial free space.
 7. *Hypothetical cross size*: in a row container, the item laid out at
-   its used main size with its height `auto`, giving its height. In a
-   column container, its width: its definite width, else `fit-content`
-   in the line's room. Either way it is clamped by its own cross-axis
-   minimum and maximum.
+   its used main size with no height imposed, its own `height`,
+   `min-height` and `max-height` applied, giving its height. In a column
+   container, its width: its definite width, else `fit-content` in the
+   container's content width less its margins, border and padding.
+   Either way it is clamped by its own cross-axis minimum and maximum.
 8. *Line cross size*: a single-line container with a definite cross size
    gives its line that size. Otherwise each line is as large as its
    largest outer hypothetical cross size, and as large as each baseline
-   group's extent (below).
-9. *Single-line clamp*: the line clamped by the container's minimum and
-   maximum cross size.
+   group's extent (below); a single line is then clamped by the
+   container's minimum and maximum cross size.
+9. *`align-content: stretch`*: in a multi-line container whose
+   `align-content` is `normal` or `stretch`, each line grows by an equal
+   share of the positive free cross space, before the items stretch, so
+   that a stretched item fills its grown line.
 10. *`visibility: collapse`*: not done (section 2).
 11. *Stretch*: an item with `align-self: stretch` (or `normal`), whose
     cross size is `auto` and neither of whose cross-axis margins is
@@ -328,9 +333,8 @@ steps:
     definite height, else the sum of its lines' cross sizes and the gaps
     between them, clamped as a block's height is. A column container's
     width is the width block layout gave it.
-16. *`align-content`*: in a multi-line container, distributes the free
-    cross space among the lines. `stretch` grows each line by an equal
-    share, and only when there is space to share.
+16. *`align-content`*: in a multi-line container, places the lines in
+    the free cross space that step 9 did not take.
 
 Every item is then laid out at its used size, the kept result for that
 size when there is one, and its fragment placed.
@@ -550,10 +554,10 @@ overflowing a flex row.
 upstream `css/css-flexbox` directory, and is chosen by a rule rather
 than by hand:
 
-- every reftest and check-layout test whose test, references and
-  stylesheets use only what this engine has;
-- no script but `testharness.js`, `check-layout-th.js` and calls to
-  `checkLayout`;
+- every reftest, check-layout test and crashtest whose test, references
+  and stylesheets use only what this engine has;
+- no script but `testharness.js`, `testharnessreport.js` and
+  `check-layout-th.js`, and calls to `checkLayout`;
 - no element that makes no box here: images, SVG, canvases, frames,
   media, form controls, lists or `br`;
 - every declaration a property and value the cascade accepts, decided by
@@ -608,10 +612,11 @@ lead.
 - *Expectations.* `expectations.txt` names each test expected to fail,
   with the reason. A test that fails without being named fails the run,
   and so does a named one that passes, so the file stays the true list
-  of what does not work and why. Its sections are the steps that will
+  of what does not work and why. Its sections were the steps that would
   make the tests pass, and a last one for those that wait on nothing in
-  this milestone (section 2). At step 5, 287 of the 350 pass; 55 wait on
-  steps 6 to 9 and 8 on nothing here. At step 6, 332 pass; 10 wait on
+  this milestone (section 2); since step 9 only that last one is left.
+  At step 5, 287 of the 350 pass; 55 wait on steps 6 to 9 and 8 on
+  nothing here. At step 6, 332 pass; 10 wait on
   steps 7 to 9. At step 7, 334 pass; 8 wait on steps 8 and 9. At step
   8, 340 pass; 2 wait on step 9. At step 9, 342 pass, and the 8 left
   wait on nothing in this milestone.
@@ -665,11 +670,11 @@ first fragment's, not the rectangle around them all). It pairs the
 browser's elements with the page's start tags in order, and stops when
 they differ rather than put one box's numbers on another element. The
 engine test runs them through the WPT runner's check-layout code, at
-its tolerance of a pixel, every element of the body checked. The
-capture gives the reference browser the engine's own font, DejaVu Sans,
-by an `@font-face` this engine ignores, so both sides measure the same
-glyphs, and stops if that browser did not load it. The pages use only
-what this engine has: no `font-weight` (their headings are set to
+its tolerance of a pixel, every element of the body checked. Each page
+gives the reference browser the engine's own font, DejaVu Sans, by an
+`@font-face` this engine ignores, so both sides measure the same glyphs,
+and the capture stops if that browser did not load it. The pages use
+only what this engine has: no `font-weight` (their headings are set to
 `normal`, or the reference browser would embolden them), no
 `line-height`, lists, images or form controls. `about:silver` lays its
 cards out with flexbox, so the built-in page shows it.
@@ -726,9 +731,11 @@ width the reference browser gives.
 
 Its numbers go in `docs/perf-budgets.md`, and the existing benchmarks
 must stay within 10% (T4.3): the pass context and the new size types
-touch every layout. The three fuzz targets run for fifteen minutes each
-with flex pages among their seeds and the new keywords in their
-dictionaries.
+touch every layout. The three fuzz targets that lay pages out,
+`pipeline`, `mutation` and `style_document`, run for fifteen minutes
+each with flex pages among their seeds and the flexbox properties and
+keywords in a dictionary. The repository keeps neither corpora nor
+dictionaries, so both were given to the run by hand.
 
 The benchmark found the pass keeping too little. Its item layouts held
 a chain to a few layouts a level, 317 of them at 64 levels, but each
@@ -740,11 +747,34 @@ the chain measures each box once, and 64 levels take 25ms, 0.24 to
 depth is copying: a container laid out at more than one size places a
 copy of its item's kept layout in each, so the fragments below a level
 are copied a few times over, 12% of the instructions at 64 levels and
-21% at 128. Fragments shared rather than copied are M35.9's. The grid of
-cards is a case of M35.8's instead: its time is text measurement, which
-parses the font's face and builds its shaping plan on every call. A trial
-that kept both, for each font, laid out 200 cards in 95ms rather than
-676ms; following the roadmap, that is left to M35.8, with the number.
+21% at 128, counted under callgrind. Fragments shared rather than copied
+are M35.9's. The grid of cards is a case of M35.8's instead: its time is
+text measurement, which parses the font's face and builds its shaping
+plan on every call. A trial that kept both, for each font, laid out 200
+cards in 95ms rather than 676ms. That stays M35.8's, which now has the
+number.
+
+T4.3 found one more thing to mend. The layout cache, which since step 9
+moves a reused subtree's places in tree order along when something was
+inserted before it, rebuilt the subtree a fragment at a time even when
+nothing had moved, and an appended paragraph's frame took 11% more
+instructions than before M17. It copies an unmoved subtree whole now, as
+before. The 5% left is the computed style, 48 bytes larger for the flex
+properties, copied with every fragment and box; that is M35.9's to take
+away, with the copies. The other benchmarks are within the spread of
+their runs.
+
+The fuzz runs, each of 900 seconds, found no crash and no difference
+from a fresh engine: 41,634 inputs through `pipeline`, 15,052 through
+`mutation` and 321,989 through `style_document`. The last kept one input
+as slow, 3,118 bytes of unknown elements nested hundreds deep, whose
+own text read as a stylesheet gives one rule, `<a name that matches
+nothing> * *`. Its cascade takes 0.9 seconds in a release build, 0.8
+before this milestone. The matcher keeps the pairs it has failed on for
+one element's match only, so every element tries each pair of its
+ancestors before the leftmost compound fails: the square of the depth,
+for every element. That is the matcher's, and is left to M35.2 with the
+input.
 
 ## 2. Not in this milestone, said rather than hidden
 
@@ -793,6 +823,19 @@ that kept both, for each font, laid out 200 cards in 95ms rather than
   - tests written for classic scrollbars, which take room from the
     content, against this engine's overlays (M10.5, by decision);
   - quirks mode (roadmap D14).
+- *What the reference pages, the acceptance and the benchmark found
+  outside flexbox*, said here and left to their owners:
+  - `vertical-align` other than `baseline` is not read (M7.7), so two
+    golden cases written with it were replaced;
+  - `font-weight` is not read, and there is no bold face: the
+    acceptance pages set their headings to `normal`;
+  - layout recurses once a level of the tree, and for the 511 levels
+    the HTML parser allows it needs 2.3MB of stack in a release build,
+    2.5MB to 3.1MB when the levels are flex containers, and 5.6MB to
+    8MB in a debug build. The shell lays out on its main thread, which
+    has 8MB on Linux and 1MB on Windows, where a page of blocks nested
+    some 200 deep overflows it (230 need 1.25MB). Nested blocks needed
+    as much before this milestone.
 
 ## 3. Order of work
 
