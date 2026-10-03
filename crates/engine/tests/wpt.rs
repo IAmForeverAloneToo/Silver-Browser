@@ -1,6 +1,7 @@
-//! The web-platform-tests subset (M17, T1.1): the tests under
-//! `tests/wpt/`, which `examples/wpt.rs` chose and copied from upstream,
-//! run as `wptrunner` would run them, against `expectations.txt`.
+//! The web-platform-tests subset (M17, T1.1; its grid tests M18's): the
+//! tests under `tests/wpt/`, which `examples/wpt.rs` chose and copied
+//! from upstream, run as `wptrunner` would run them, against
+//! `expectations.txt`.
 //!
 //! The directory is served from the `net` crate's test server on
 //! 127.0.0.1, so a test and its stylesheets load through the engine's

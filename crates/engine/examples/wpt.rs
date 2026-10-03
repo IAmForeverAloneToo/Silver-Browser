@@ -1,4 +1,5 @@
-//! The web-platform-tests subset the engine runs (M17, T1.1).
+//! The web-platform-tests subset the engine runs (M17, T1.1; its grid
+//! tests M18's).
 //!
 //! `cargo run -p engine --example wpt -- pull <checkout>` reads a
 //! checkout of web-platform-tests and copies into `tests/wpt/` the tests
@@ -39,7 +40,7 @@ use std::process::{Command, ExitCode};
 use dom::{Document, NodeId};
 
 /// The directories of the checkout whose tests are taken.
-const DIRECTORIES: &[&str] = &["css/css-flexbox"];
+const DIRECTORIES: &[&str] = &["css/css-flexbox", "css/css-grid"];
 
 /// Elements that make no box here, or not the box the tests mean.
 const NO_BOX: &[&str] = &[
@@ -652,11 +653,11 @@ fn readme(
     left_out: &BTreeMap<String, usize>,
 ) -> String {
     let total: usize = counts.values().sum();
-    let directories = DIRECTORIES
-        .iter()
-        .map(|d| format!("`{d}`"))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let quoted: Vec<String> = DIRECTORIES.iter().map(|d| format!("`{d}`")).collect();
+    let directories = match quoted.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => quoted.join(""),
+    };
     let mut text = format!(
         "# web-platform-tests subset\n\n\
          The tests here are copied from\n\
@@ -665,9 +666,10 @@ fn readme(
          ```text\n\
          {commit} ({date})\n\
          ```\n\n\
-         They are the tests of {directories} that use only what this engine\n\
-         has, chosen by the rule in `examples/wpt.rs` and copied with their\n\
-         references and stylesheets at their own paths by\n\n\
+         They are the tests of {directories}\n\
+         that use only what this engine has, chosen by the rule in\n\
+         `examples/wpt.rs` and copied with their references and stylesheets\n\
+         at their own paths by\n\n\
          ```sh\n\
          cargo run -p engine --example wpt -- pull <checkout>\n\
          ```\n\n\
