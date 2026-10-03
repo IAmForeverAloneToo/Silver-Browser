@@ -483,8 +483,9 @@ struct Lines<'a, 'i, 'f, 'c> {
     last_baseline: Option<f32>,
     first_baseline: Option<f32>,
     /// Floats met on the line in progress that did not fit beside it,
-    /// placed below it once its height is known.
-    deferred: Vec<PendingFloat>,
+    /// placed below it once its height is known, each with the
+    /// absolutely positioned boxes it carries, from its border box.
+    deferred: Vec<(PendingFloat, Vec<Deferred<'a>>, (f32, f32))>,
     /// The absolutely positioned boxes met so far (M11), relative to
     /// the run's top-left.
     absolutes: Vec<Deferred<'a>>,
@@ -665,29 +666,60 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
         let atomic = layout_float(b, self.cb_width, self.cb_height, self.pass);
         let float = pending_float(b, &atomic, self.cb_left, self.cb_width);
         self.fragments.push(atomic.root);
+        // Where the float's border box is in its margin box, which is
+        // what the context places: the absolutely positioned boxes it
+        // carries are from the border box.
+        let (dx, dy) = atomic.relative;
+        let border = (atomic.margin_left + dx, atomic.margin_top + dy);
+        let absolutes = atomic.absolutes;
         if self.line.is_empty() {
             if self.resolved {
-                self.floats.place(float, self.line_top());
+                let at = self.floats.place(float, self.line_top());
+                self.carry(absolutes, at, border);
             } else {
+                // Taken to be at the containing block's left on this line
+                // until the flow position resolves and it is placed. Only a
+                // float with nothing before it in the run waits here, which
+                // in practice is a floated `::first-letter`, carrying none.
+                let key = (float.node, float.generated);
                 self.floats.defer(float);
+                let from = self.absolutes.len();
+                self.absolutes
+                    .extend(carried(absolutes, border.0, self.y + border.1));
+                for d in &mut self.absolutes[from..] {
+                    d.float = Some(key);
+                }
             }
         } else if self.line_width + float.w <= self.available_width {
             // Beside the line, which is measured again: no narrower
             // than the content on it, by the check above; or lower,
             // past other floats, where the room is as it was.
-            self.floats.place(float, self.line_top());
+            let at = self.floats.place(float, self.line_top());
+            self.carry(absolutes, at, border);
             self.measure_room();
         } else {
-            self.deferred.push(float);
+            self.deferred.push((float, absolutes, border));
         }
+    }
+
+    /// Takes in the absolutely positioned boxes a float carries, its
+    /// margin box placed at `(x, y)` in the context's coordinates and its
+    /// border box `border` into it.
+    fn carry(&mut self, absolutes: Vec<Deferred<'a>>, (x, y): (f32, f32), border: (f32, f32)) {
+        self.absolutes.extend(carried(
+            absolutes,
+            x - self.cb_left + border.0,
+            y - self.top + border.1,
+        ));
     }
 
     /// Places the floats that waited for the line just ended, at its
     /// bottom.
     fn place_deferred(&mut self) {
         let top = self.line_top();
-        for float in std::mem::take(&mut self.deferred) {
-            self.floats.place(float, top);
+        for (float, absolutes, border) in std::mem::take(&mut self.deferred) {
+            let at = self.floats.place(float, top);
+            self.carry(absolutes, at, border);
         }
     }
 

@@ -823,6 +823,7 @@ pub(crate) fn layout_flex_contents<'a>(
                 w: content_width,
                 h: content_height,
                 align: if column { [cross, main] } else { [main, cross] },
+                float: None,
             });
         } else {
             absolutes.extend(carried);

@@ -29,7 +29,7 @@ use dom::NodeId;
 use style::computed::{Clear, Float};
 use style::selector_matching::PseudoElement;
 
-use crate::block::{AdjoiningMargins, Fragment, FragmentKind};
+use crate::block::{AdjoiningMargins, Deferred, Fragment, FragmentKind};
 
 /// The floats of one block formatting context.
 #[derive(Debug, Default, Clone)]
@@ -39,7 +39,16 @@ pub(crate) struct FloatContext {
     /// Floats met while the flow position was unresolved, in order,
     /// waiting for the content that resolves it.
     pending: Vec<PendingFloat>,
+    /// For each float that waited, how far from where it was taken to be
+    /// it was placed: from its containing block's left and the flow
+    /// position that resolved. The absolutely positioned boxes it
+    /// carries move by as much ([`FloatContext::shift_carried`]).
+    shifts: Vec<(FloatKey, f32, f32)>,
 }
+
+/// What tells the floats of one context apart: the element, and the
+/// pseudo-element that generated the float if one did.
+pub(crate) type FloatKey = (NodeId, Option<PseudoElement>);
 
 /// A float laid out and sized, before it is placed.
 #[derive(Debug, Clone, Copy)]
@@ -245,10 +254,32 @@ impl FloatContext {
     }
 
     /// Places every waiting float at `top`, the flow position just
-    /// resolved, in the order they were met.
+    /// resolved, in the order they were met. Each was taken to be at its
+    /// containing block's left at `top`, which the absolutely positioned
+    /// boxes it carries were placed by; how far it is from there is kept
+    /// for them.
     pub(crate) fn resolve_pending(&mut self, top: f32) {
         for f in std::mem::take(&mut self.pending) {
-            self.place(f, top);
+            let (x, y) = self.place(f, top);
+            self.shifts
+                .push(((f.node, f.generated), x - f.cb_left, y - top));
+        }
+    }
+
+    /// Moves each box of `absolutes` that a float of this context
+    /// carried while it waited, once the float is placed, to where the
+    /// float went; the others, and those whose float still waits, stay.
+    pub(crate) fn shift_carried(&self, absolutes: &mut [Deferred<'_>]) {
+        if self.shifts.is_empty() {
+            return;
+        }
+        for d in absolutes.iter_mut() {
+            let Some(key) = d.float else { continue };
+            if let Some(&(_, dx, dy)) = self.shifts.iter().find(|(k, ..)| *k == key) {
+                d.x += dx;
+                d.y += dy;
+                d.float = None;
+            }
         }
     }
 

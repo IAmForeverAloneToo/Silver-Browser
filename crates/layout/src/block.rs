@@ -88,7 +88,7 @@ use text::FontCollection;
 
 use crate::box_tree::{BoxKind, LayoutBox};
 use crate::cache::{Held, Inputs, LayoutCache};
-use crate::float::{At, FloatContext, PendingFloat, attach_floats};
+use crate::float::{At, FloatContext, FloatKey, PendingFloat, attach_floats};
 use crate::inline::layout_inline;
 use crate::pass::Pass;
 
@@ -443,6 +443,8 @@ fn layout_document_with(
     // the flow position at the end is placed where the content would
     // have been.
     floats.resolve_pending(children.end.position());
+    let mut children = children;
+    floats.shift_carried(&mut children.absolutes);
     let height = if children.nothing_materialised {
         children.leading.resolve()
     } else {
@@ -834,6 +836,10 @@ pub(crate) struct Deferred<'a> {
     /// The margin box's place in it, horizontally and vertically, along
     /// an axis whose insets are both `auto`.
     pub(crate) align: [StaticAlign; 2],
+    /// The float that carries it while that float waits for the flow
+    /// position (M11): the rectangle is where the float was taken to be,
+    /// and moves with it once it is placed.
+    pub(crate) float: Option<FloatKey>,
 }
 
 impl<'a> Deferred<'a> {
@@ -846,6 +852,7 @@ impl<'a> Deferred<'a> {
             w: 0.0,
             h: 0.0,
             align: [StaticAlign::Start; 2],
+            float: None,
         }
     }
 
@@ -1441,7 +1448,7 @@ pub(crate) fn layout_block_contents<'a>(
             (floats, at)
         }
     };
-    let children = layout_children(
+    let mut children = layout_children(
         &b.children,
         content_width,
         children_cb_height,
@@ -1457,6 +1464,17 @@ pub(crate) fn layout_block_contents<'a>(
         // block after that content: it does not wait for content after
         // the box, as in the browsers.
         floats.resolve_pending(children.end.position());
+        floats.shift_carried(&mut children.absolutes);
+    } else if b.style.position.is_positioned() {
+        // A positioned box lays out the absolutely positioned boxes in it
+        // when its content ends. A float still waiting for the flow
+        // position, which nothing in this box resolved, takes those it
+        // carries to where it goes if the position resolves here, as it
+        // does unless margins below collapse through the box; the float
+        // itself goes on waiting.
+        let mut trial = floats.clone();
+        trial.resolve_pending(children.end.position());
+        trial.shift_carried(&mut children.absolutes);
     }
 
     // Every child collapsed through (empty blocks all the way down):
@@ -2451,22 +2469,29 @@ fn layout_children<'a>(
                 // it will be placed in the common case, the content top.
                 let atomic = layout_float(child, cb_width, cb_height, pass);
                 let float = pending_float(child, &atomic, at.x, cb_width);
-                let (fx, fy) = match at.origin {
+                let key = (float.node, float.generated);
+                let (fx, fy, waits) = match at.origin {
                     Some(origin) => {
                         let (px, py) = floats.place(float, at.position());
-                        (px - at.x, py - origin)
+                        (px - at.x, py - origin, false)
                     }
                     None => {
                         floats.defer(float);
-                        (0.0, 0.0)
+                        (0.0, 0.0, true)
                     }
                 };
                 let (dx, dy) = atomic.relative;
+                let from = absolutes.len();
                 absolutes.extend(carried(
                     atomic.absolutes,
                     fx + atomic.margin_left + dx,
                     fy + atomic.margin_top + dy,
                 ));
+                if waits {
+                    for d in &mut absolutes[from..] {
+                        d.float = Some(key);
+                    }
+                }
                 fragments.push(atomic.root);
             }
             BoxKind::Absolute => {
@@ -4683,6 +4708,104 @@ mod tests {
         );
         assert_eq!(by_node(&layout, 4).y, 26.0);
         assert_eq!(by_node(&layout, 6).y, 58.0);
+    }
+
+    /// A float 20 by 30 with a 5px right margin, holding an absolutely
+    /// positioned box 10 by 10, for the tests of where such a box goes.
+    fn float_carrying_an_absolute() -> Element {
+        Element::new("div")
+            .attr("class", "f")
+            .push(Element::new("div").attr("class", "a"))
+    }
+
+    const FLOAT_CARRYING_CSS: &str = "div, p { margin: 0; }
+         .f { float: left; width: 20px; height: 30px; margin-right: 5px; }
+         .a { position: absolute; width: 10px; height: 10px; }";
+
+    #[test]
+    fn a_waiting_floats_absolutely_positioned_box_goes_where_it_does() {
+        // Two floats met while the flow position is still unresolved wait
+        // for it, and are then placed: the second beside the first, or
+        // below it in a box too narrow for both. The absolutely
+        // positioned box in each goes where its float went, as in the
+        // reference browser, not where the float was taken to be while
+        // it waited. Nodes: div 1, f 2, a 3, f 4, b 5.
+        for (width, b) in [("auto", (25.0, 0.0)), ("30px", (0.0, 30.0))] {
+            let root = Element::new("div")
+                .attr("style", format!("width: {width}"))
+                .push(float_carrying_an_absolute())
+                .push(float_carrying_an_absolute());
+            let layout = document_of(root, FLOAT_CARRYING_CSS);
+            let at = |n| {
+                let f = by_node(&layout, n);
+                (f.x, f.y)
+            };
+            assert_eq!((at(3), at(5)), ((0.0, 0.0), b), "{width}");
+        }
+        // The same in a line, met before anything on it (white space
+        // that collapses away): the floats wait for the line that
+        // resolves the flow position.
+        for width in ["auto", "30px"] {
+            let root = Element::new("div")
+                .attr("style", format!("width: {width}"))
+                .text(" ")
+                .push(float_carrying_an_absolute())
+                .push(float_carrying_an_absolute())
+                .text("y");
+            let layout = document_of(root, FLOAT_CARRYING_CSS);
+            let b = by_node(&layout, 5);
+            let expected = if width == "auto" {
+                (25.0, 0.0)
+            } else {
+                (0.0, 30.0)
+            };
+            assert_eq!((b.x, b.y), expected, "{width}");
+        }
+        // And when the box holding them is positioned, so their containing
+        // block, and lays them out whether a paragraph after them resolved
+        // the position or nothing did. Nodes: div 1, f 2, a 3, f 4, b 5.
+        for paragraph in [true, false] {
+            let mut root = Element::new("div")
+                .attr("style", "position: relative")
+                .push(float_carrying_an_absolute())
+                .push(float_carrying_an_absolute());
+            if paragraph {
+                root = root.push(Element::new("p").text("t"));
+            }
+            let layout = document_of(root, FLOAT_CARRYING_CSS);
+            let b = by_node(&layout, 5);
+            assert_eq!((b.x, b.y), (25.0, 0.0), "{paragraph}");
+        }
+    }
+
+    #[test]
+    fn a_float_in_a_line_carries_its_absolutely_positioned_box() {
+        // A float met in a line, beside it or below it, kept the
+        // absolutely positioned boxes inside it from being laid out at
+        // all. Now each goes with its float: beside the first line, at
+        // the left; below a full line 15 tall, at 15. Nodes: div 1, f 2,
+        // a 3 in the first case; div 1, i 2, f 3, a 4 in the second.
+        let root = Element::new("div")
+            .text("x")
+            .push(float_carrying_an_absolute())
+            .text("y");
+        let layout = document_of(root, FLOAT_CARRYING_CSS);
+        let a = by_node(&layout, 3);
+        assert_eq!((a.x, a.y), (0.0, 0.0));
+        let block = |width: &str| {
+            Element::new("i").attr(
+                "style",
+                format!("display: inline-block; width: {width}; height: 15px"),
+            )
+        };
+        let root = Element::new("div")
+            .attr("style", "width: 40px; font-size: 0")
+            .push(block("40px"))
+            .push(float_carrying_an_absolute())
+            .push(block("5px"));
+        let layout = document_of(root, FLOAT_CARRYING_CSS);
+        let a = by_node(&layout, 4);
+        assert_eq!((a.x, a.y), (0.0, 15.0));
     }
 
     #[test]
