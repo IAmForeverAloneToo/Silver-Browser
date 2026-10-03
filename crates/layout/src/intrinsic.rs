@@ -21,7 +21,9 @@ use style::computed::{BoxSizing, LEFT, LengthPercentage, LengthPercentageAuto, R
 use text::FontCollection;
 
 use crate::box_tree::{BoxKind, LayoutBox};
-use crate::inline::{collect_first_line_items, collect_inline_items, run_intrinsic_widths};
+use crate::inline::{
+    collect_first_line_items, collect_inline_items, restyled_on_first_line, run_intrinsic_widths,
+};
 
 /// The `(min-content, max-content)` contribution of a block-level box
 /// or an inline-block to the box it sits in: its own intrinsic size
@@ -119,13 +121,14 @@ pub(crate) fn content_widths(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32
             | BoxKind::Caption => contribution(child, fonts),
             BoxKind::Absolute => (0.0, 0.0),
             // A run holding a first formatted line counts it in its
-            // styles there (M16).
+            // styles there (M16), where any differ from its own.
             BoxKind::AnonymousBlock => {
                 let items = collect_inline_items(&child.children, fonts);
                 let first = child
                     .first_line
                     .as_ref()
-                    .map(|_| collect_first_line_items(&child.children, fonts));
+                    .filter(|_| restyled_on_first_line(&child.children))
+                    .map(|_| collect_first_line_items(&child.children, fonts, None));
                 run_intrinsic_widths(&items, first.as_deref(), fonts)
             }
             // A hand-built tree's stray inline-level child: a run of one.

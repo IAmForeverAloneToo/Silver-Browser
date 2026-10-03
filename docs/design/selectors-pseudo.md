@@ -312,7 +312,10 @@ over the box tree once it is built (`layout::box_tree::first_letter`):
   is in as its parent (Pseudo-Elements 4 §2.2.3): the cascade keeps it
   with the originating element as parent (above), and layout asks
   `style` for it through the `Recascade` trait, which the engine makes
-  from its sheets. That box is an inline box, or, with `float` other
+  from its sheets. Asked with the originating element's own style as
+  the parent, as for a letter in the element's own text, it gives the
+  style the cascade kept and matches nothing again (M16.5). That box
+  is an inline box, or, with `float` other
   than `none`, a float holding the letter's line, which every browser
   honours for drop caps though Pseudo-Elements 4 leaves it to the user
   agent. When several ancestors whose first formatted line this is
@@ -377,7 +380,8 @@ while it fills the first line (`layout::box_tree::first_line`):
   box has: a `::first-line` that sets nothing inherited costs no
   cascade. The box tree does not know which of the run's elements the
   first line will hold, so it restyles them all, at each build: a cost
-  the inline elements of a first line's run pay, which M16.5 measures.
+  the inline elements of a first line's run pay, which M16.5 measured
+  and `docs/perf-budgets.md` records until M35.9 keeps the box tree.
   An atomic inline keeps its style, and so do the boxes inside it
   (browsers style an inline-block on the first line from it, said in
   section 2); a float or an absolutely positioned box is not on the
@@ -388,11 +392,18 @@ while it fills the first line (`layout::box_tree::first_line`):
   while it fills the first line, and with their own after it: the
   first line breaks where its text, in its first-line fonts, runs out
   of room, and the words that move to the second line take their own
-  styles. The run's items are collected twice, once in each style, one
-  for one, as nothing a `::first-line` may set changes where a word
-  starts or ends. The intrinsic widths do the same: the widest line
-  counts the first line in first-line styles, and the widest piece
-  counts the first piece so;
+  styles. The run's items are collected a second time in first-line
+  styles, one for one, as nothing a `::first-line` may set changes
+  where a word starts or ends; but only when a box in the run has a
+  style of its own there, and only as far as the first line can reach
+  (M16.5). That is to its first forced break, and to the first break
+  opportunity after items wider together than the containing block,
+  which no line is wider than. The bound holds while nothing takes
+  room back, a negative width, gap or edge, and while no atomic
+  inline, whose width only its layout finds, has come; past one, the
+  items go on to the forced break. The intrinsic widths do the same,
+  to the first forced break: the widest line counts the first line in
+  first-line styles, and the widest piece counts the first piece so;
 - a `::first-line` with a background gets an inline-box fragment
   around the line's content, named by its originating element and
   marked generated, the outermost around the next;
@@ -430,16 +441,32 @@ Each is added only when a sheet uses the selector or the function, as
 now.
 
 **Performance (M16.5).** The roadmap asks for a Bloom filter of
-ancestors if the matching benchmark — 1,000 selectors over 10,003
-elements — has regressed more than twice. Measured on this machine
-before the work: the code as imported (M8) takes 269–347ms in release,
-today's 340–400ms, so it has not. M16.5 measures again after the
-milestone, which adds rules (`::before` ones are matched against every
-element, as any rule is) and the case-insensitive comparison without
-allocating, and builds the filter only if the threshold is passed;
-M35.2's rule hashing and style sharing remain where the larger win
-is. The number goes into `docs/perf-budgets.md`, which has none for
-this benchmark yet, with the M8 code's beside it.
+ancestors if the matching benchmark, 1,000 selectors over 10,003
+elements, has slowed by more than twice. It has not: on the machine M16
+was measured on, the code as imported (M8) takes 202–209ms, the code
+before M16 291–307ms and M16's 292–328ms. There is no filter, and
+M35.2's rule hashing and style sharing remain where the larger win is.
+
+M16.5 also measured what the milestone costs, with a benchmark of its
+own for the pseudo-elements (`benches/pseudo.rs`) and the others
+against the code before M16, and acted on what it found:
+
+- a pseudo-element asked of the `Recascade` with its element's own
+  style as the parent is the style the cascade kept (the
+  `::first-letter` section above);
+- a first line's run is collected a second time, in first-line styles,
+  only where a box in it has a style of its own there, and only as far
+  as the first line can reach (the `::first-line` section above);
+- `content` and `quotes` made a computed style dearer to copy, and a
+  layout pass copies every fragment's: an appended paragraph's frame
+  took 12% longer than before M16. A style's `font-family`, which every
+  copy allocated again, is now shared, and the frame is quicker than it
+  was before M16.
+
+What remains is the first line's cascade at every build of the box
+tree, which `docs/perf-budgets.md` records with M35.9, the box tree
+kept and updated in place, as the item that removes it. The numbers
+are there.
 
 **Acceptance (M16.6).** `about:silver` shows each pseudo-element: a
 drop cap by `::first-letter` floated left, a first line in capitals by

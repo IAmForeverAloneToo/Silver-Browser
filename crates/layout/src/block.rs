@@ -4731,16 +4731,17 @@ mod tests {
 
     #[test]
     fn a_shrink_to_fit_width_counts_the_first_line_in_its_styles() {
-        // The float is as wide as "aa bb" in the first line's 32px.
+        // The float is as wide as "aa bb cc" in the first line's 32px:
+        // its whole first line, however wide.
         let fonts = test_fonts();
         let layout = document_of(
             Element::new("div")
                 .attr("class", "f")
-                .push(Element::new("p").text("aa bb")),
+                .push(Element::new("p").text("aa bb cc")),
             ".f { float: left } p { margin: 0 } p::first-line { font-size: 32px }",
         );
-        let width =
-            fonts.measure("aa", 32.0) + fonts.measure(" ", 32.0) + fonts.measure("bb", 32.0);
+        let w = |text| fonts.measure(text, 32.0);
+        let width = w("aa") + w(" ") + w("bb") + w(" ") + w("cc");
         assert_eq!(layout.roots[0].w, width);
     }
 
@@ -4775,5 +4776,36 @@ mod tests {
             (layout.number(boxes[0].node), boxes[0].style.font_size_px),
             (2, 32.0)
         );
+    }
+
+    #[test]
+    fn every_line_after_the_first_is_in_the_paragraphs_styles() {
+        // Two words to the 32px first line, then lines in 16px: the
+        // items as on the first line end soon after it, and the rest
+        // are the paragraph's own, each word set once.
+        let fonts = test_fonts();
+        let first = fonts.metrics_for_text(" ", 32.0).line_height();
+        let width =
+            fonts.measure("aa", 32.0) + fonts.measure(" ", 32.0) + fonts.measure("bb", 32.0);
+        let words = [
+            "aa", "bb", "cc", "dd", "ee", "ff", "gg", "hh", "ii", "jj", "kk", "ll",
+        ];
+        let layout = document_of(
+            Element::new("p").text(words.join(" ")),
+            &format!("p {{ margin: 0; width: {width}px }} p::first-line {{ font-size: 32px }}"),
+        );
+        let texts = layout
+            .iter()
+            .filter(|f| matches!(f.kind, FragmentKind::Text(_)))
+            .count();
+        assert_eq!(texts, words.len());
+        for (i, word) in words.into_iter().enumerate() {
+            let f = text_of(&layout, word);
+            if i < 2 {
+                assert_eq!((f.style.font_size_px, f.y < first), (32.0, true), "{word}");
+            } else {
+                assert_eq!((f.style.font_size_px, f.y > first), (16.0, true), "{word}");
+            }
+        }
     }
 }

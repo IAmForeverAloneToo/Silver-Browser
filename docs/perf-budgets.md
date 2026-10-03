@@ -53,15 +53,17 @@ nothing that changes what is shown.
   names it.
 - **Font:** the bundled test font (`text::TEST_FONT`), so every machine
   shapes the same text.
-- **Machine:** a cloud container with four cores of an Intel Xeon at
-  2.1GHz and 15GB of memory, for the numbers below. Numbers from
-  different machines are not compared; a milestone that changes
-  machine measures its base again.
+- **Machine:** a cloud container with four cores and 15GB of memory:
+  an Intel Xeon at 2.1GHz for the numbers up to M15, and one at 2.8GHz
+  from M16, which measured its base again ("Selectors and
+  pseudo-elements", below). Numbers from different machines are not
+  compared; a milestone that changes machine measures its base again.
 - **Benchmarks:** plain binaries, `harness = false`, run by hand:
   - `cargo bench -p engine --bench scroll` (M9.6; stages since M13.4).
   - `cargo bench -p engine --bench mutation` (M13.6).
   - `cargo bench -p engine --bench load` (M14; going back, M15).
-  - `cargo bench -p style --bench match`.
+  - `cargo bench -p engine --bench pseudo` (M16.5).
+  - `cargo bench -p style --bench match` (M4.12; recorded since M16).
   - Criterion-tracked benchmarks run in CI are T4.2, for M35.
 - **Counters** prove work that is not done: `Engine::style_runs`,
   `restyled_elements`, `layout_runs`, `boxes_laid_out`, `boxes_reused`
@@ -185,6 +187,90 @@ from `navigate` to the page shown, against 3.3–3.4ms recorded, and
 633–635ms for the first frame, against 693–711ms; inside T4.3's 10%
 the one way, and faster the other.
 
+### Selectors and pseudo-elements (M16)
+
+M16 was measured on a new machine, with an Intel Xeon at 2.8GHz, which
+ran the benchmarks above again for T4.3: the code before M16
+(`770049c`) and M16's in turn, two runs of each, in release.
+
+| | Before M16 | M16 |
+| --- | --- | --- |
+| Scrolling: the layout, once | 175–180ms | 177–181ms |
+| Scrolling: a scroll frame, median | 2.8–2.9ms | 2.7–2.8ms |
+| Changing the document: the first frame | 678–741ms | 692–732ms |
+| An appended paragraph's frame, median | 13.1–13.4ms | 12.6–12.7ms |
+| Its layout, median | 11.3–11.5ms | 11.0ms |
+| Those frames over 16.7ms | 151–247 of 1,000 | 115–240 of 1,000 |
+| 1,000 appended in one frame | 680–682ms | 701–706ms |
+| Loading: `load` to the first frame drawn | 720–809ms | 742–759ms |
+| Going back to the page from the cache | 5.7–5.8ms | 5.7–5.8ms |
+| Going back to the page fetched again | 748–751ms | 785–787ms |
+
+All are inside T4.3's 10%: the thousand paragraphs appended at once
+take 3–4% longer, going back to a page fetched again 5%, and the rest
+are within the spread of the runs. That holds since a change M16.5 made
+for it. M16's `content` and `quotes` made a computed style 48 bytes
+larger and dearer to copy, and a layout pass copies every fragment's
+style (below): measured first, an appended paragraph's frame took
+15.6–16.0ms against 14.0–14.2ms before M16, 12% longer, and 8% more
+instructions under callgrind. Every copy of a style also allocated its
+`font-family` again. The family is now shared between the styles that
+have it, and the frame takes 17% fewer instructions than before M16.
+
+The machine is no faster than the one before it at this work. The
+appended paragraph's frame is past the budget in release too, which
+"Over budget, and why" records.
+
+**Selector matching (M16.5).** The match benchmark, 1,000 selectors over
+10,003 elements, three runs of each in turn:
+
+| The code as imported (M8) | Before M16 | M16 |
+| --- | --- | --- |
+| 202–209ms | 291–307ms | 292–328ms |
+
+The roadmap asks for a Bloom filter of ancestors if matching has slowed
+by more than twice. It takes 1.4–1.6 times what the code as imported
+did, and the growth came before M16, so there is no filter. M35.2's
+rule hashing and style sharing remain where the larger win is.
+
+**What pseudo-elements cost (M16.5).** The pseudo benchmark draws a page
+of 1,000 paragraphs of three lines at 1280 by 800, each with a link and
+an emphasis on its first line, under each of six sheets. It then
+appends a paragraph a frame, a hundred times. The box tree is built
+again at each frame, and its pseudo-elements with it, while the cascade
+and the layout are incremental. Two runs, in release, of the code
+before M16.5's changes and of M16's:
+
+| Sheet | The first frame, before | The first frame | An appended paragraph's frame, median, before | An appended paragraph's frame, median |
+| --- | --- | --- | --- | --- |
+| None | 2.13–2.17s | 2.02–2.18s | 26.6ms | 24.3–24.9ms |
+| `::before` and `::after` | 2.16–2.18s | 2.14–2.23s | 33.9ms | 31.0–32.0ms |
+| `::first-letter` | 2.13–2.14s | 2.02–2.24s | 34.5–35.4ms | 26.9–29.0ms |
+| `::first-line`, colour and size | 2.79–3.04s | 2.54–2.60s | 40.4–43.1ms | 31.9–32.4ms |
+| `::first-line`, a background | 2.78–2.86s | 2.06–2.11s | 32.1–34.2ms | 26.4–26.7ms |
+| All of them | 2.97–3.07s | 2.59–2.68s | 70.6–71.7ms | 55.3–58.9ms |
+
+Generated boxes are built again with the box tree: `::before` and
+`::after` on every paragraph add 6–8ms to an appended paragraph's
+frame, the first letter's split 2–5ms. A `::first-line` that sets
+inherited properties has every inline element on a first line's run
+cascaded again at each build, 7–8ms here for 2,000 links and emphases.
+With all the sheets, the generated boxes and the first letters are on
+the first line too, and are cascaded again as well: 30–35ms. Besides
+the shared `font-family` above, which takes 2ms off every row's
+appended paragraph, M16.5 changed three things:
+
+- A pseudo-element's style asked of `Recascade` with its element's own
+  style as the parent is the style the cascade kept, so the first
+  letter of a paragraph's own text is not cascaded again.
+- A first line's run is collected a second time, in its styles there,
+  only where a box in the run has a style of its own there. A
+  `::first-line` with a background alone now costs a first frame what
+  none does, and 2ms of an appended paragraph's, for the boxes it
+  paints.
+- That second collection stops where the first line has surely ended,
+  rather than at the end of the paragraph.
+
 ### Over budget, and why
 
 These are known and recorded rather than hidden. Each has the item that
@@ -198,18 +284,27 @@ is to take it on.
 - **Work that grows faster than the page.** The box tree, rebuilt on
   every layout pass, takes 1.1, 2.4, 5.2, 18.7 and 80ms at 1,000,
   2,000, 4,000, 8,000 and 16,000 paragraphs. Its boxes, fragments and
-  computed styles are large: a `LayoutBox` is 400 bytes, a `Fragment`
-  416 and a `ComputedStyle` 336. M35.9.
+  computed styles are large: a `LayoutBox` is 448 bytes, a `Fragment`
+  464 and a `ComputedStyle` 376, each 40 or 48 more since M16. M35.9.
 - **A layout pass copies every fragment.** Fragments hold absolute
   coordinates and copies of their styles, so even a pass that reuses
   every box copies them all into the new layout: 58ms of the 90ms
   above. Fragments that refer to styles, and relative coordinates, are
   M35.9's.
-- **An appended paragraph in the debug build.** The work above that
-  grows with the page, the box tree and the fragments copied, takes an
-  appended paragraph's frame past the budget almost half the time
-  between 1,000 and 2,000 paragraphs. In release it stays within it.
-  M35.9 takes it on.
+- **An appended paragraph's frame.** The work above that grows with the
+  page, the box tree and the fragments copied, takes an appended
+  paragraph's frame past the budget almost half the time between 1,000
+  and 2,000 paragraphs in the debug build. In release it stayed within
+  it on the machine measured to M15; on M16's it is past it 115–240
+  times in 1,000, the median at 12.6ms. M35.9 takes it on.
+- **A first line's boxes cascaded again at every build.** A
+  `::first-line` that sets an inherited property has every inline
+  element, `::before`, `::after` and `::first-letter` on a first line's
+  run cascaded again whenever the box tree is built, which is at every
+  layout pass. On the pseudo benchmark's page that is 7–8ms of an
+  appended paragraph's frame with links and emphases alone, and 30–35ms
+  with generated boxes and first letters as well. A box tree kept and
+  updated in place, M35.9, keeps those styles with it.
 - **Positions counted from the end.** With `:last-child` or
   `:nth-last-child` in a stylesheet, inserting an element restyles every
   sibling before it: 20,015 elements and 42ms at 10,000 paragraphs. That

@@ -9,7 +9,7 @@
 //! sets it and (for non-inherited properties) its parent's value doesn't
 //! apply either.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 /// An RGBA color, 0.0–1.0 channels (see `paint::Rgba8` for the 8-bit
 /// form `render` actually blits — `style` owns its own color type per
@@ -526,7 +526,9 @@ pub struct ComputedStyle {
     /// string is parsed and carried through cascade/inheritance and
     /// then simply never read. See `cascade::parse_font_family`'s doc
     /// for why that's a real, separately-scoped gap, not an oversight.
-    pub font_family: String,
+    /// Shared, not copied, by the styles that inherit it and the
+    /// fragments that copy their styles (M16.5).
+    pub font_family: Arc<str>,
     /// `display` — not inherited (every element's own box generation is
     /// independent of its parent's).
     pub display: Display,
@@ -637,6 +639,9 @@ pub struct ComputedStyle {
     pub quotes: Quotes,
 }
 
+/// `font-family`'s initial value, one for every style that has it.
+static SANS_SERIF: LazyLock<Arc<str>> = LazyLock::new(|| Arc::from("sans-serif"));
+
 impl Default for ComputedStyle {
     /// The CSS initial values for the v1 property set.
     fn default() -> Self {
@@ -644,7 +649,7 @@ impl Default for ComputedStyle {
             color: Color::BLACK,
             background_color: Color::TRANSPARENT,
             font_size_px: 16.0, // 'medium', by UA convention
-            font_family: "sans-serif".to_string(),
+            font_family: Arc::clone(&SANS_SERIF),
             display: Display::Inline,
             text_align: TextAlign::Left,
             text_transform: TextTransform::None,
@@ -713,7 +718,7 @@ impl ComputedStyle {
     /// value, exactly like [`ComputedStyle::default`]. The cascade then
     /// overwrites whatever this element's own matched declarations set.
     pub fn inherited_from(parent: &ComputedStyle) -> Self {
-        ComputedStyle::default().with_inherited_from(parent)
+        ComputedStyle::default().inheriting(parent)
     }
 
     /// This style with its inherited properties taken from `from` and
@@ -721,6 +726,12 @@ impl ComputedStyle {
     /// inherits from, its inherited properties from the `::first-line`
     /// and the others from its parent (Pseudo-Elements 4 §2.1.3, M16).
     pub fn with_inherited_from(&self, from: &ComputedStyle) -> Self {
+        self.clone().inheriting(from)
+    }
+
+    /// [`ComputedStyle::with_inherited_from`], taking this style rather
+    /// than copying it.
+    fn inheriting(self, from: &ComputedStyle) -> Self {
         ComputedStyle {
             color: from.color,
             font_size_px: from.font_size_px,
@@ -736,7 +747,7 @@ impl ComputedStyle {
             caption_side: from.caption_side,
             empty_cells: from.empty_cells,
             quotes: from.quotes.clone(),
-            ..self.clone()
+            ..self
         }
     }
 }

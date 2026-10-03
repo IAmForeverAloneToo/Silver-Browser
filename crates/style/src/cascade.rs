@@ -492,9 +492,11 @@ pub trait Recascade {
 }
 
 /// [`Recascade`] over a document, the [`Stylesheets`] and context it was
-/// cascaded with, and the styles that gave (for `rem`): an element's
-/// rules are matched again for each question, which layout asks once per
-/// `::first-letter` box and per inline box on a first line's run.
+/// cascaded with, and the styles that gave: an element's rules are
+/// matched again for each question, which layout asks once per
+/// `::first-letter` box and `::first-line`, and per inline box on a first
+/// line's run — but for a pseudo-element of an element asked with the
+/// element's own style as parent, whose style the cascade kept.
 pub struct Recascader<'a> {
     document: &'a Document,
     styles: &'a Styles,
@@ -571,6 +573,11 @@ impl Recascade for Recascader<'_> {
         parent: &ComputedStyle,
     ) -> Option<ComputedStyle> {
         let target = Target::of(pseudo)?;
+        // From the element's own style, it is what the cascade kept: no
+        // rule need be matched again.
+        if self.styles.get(element) == Some(parent) {
+            return self.styles.pseudo(element, pseudo).cloned();
+        }
         self.with_matched(element, |matched, resolution| {
             let applied = matched.of(target);
             (!applied.is_empty()).then(|| compute_style(applied, parent, target, None, resolution))
@@ -1117,7 +1124,7 @@ fn apply_declaration(
         "font-size" => {} // first pass, above
         "font-family" => {
             if let Some(f) = parse_font_family(&decl.value) {
-                style.font_family = f;
+                style.font_family = f.into();
             }
         }
         "display" => {
@@ -3510,7 +3517,7 @@ mod tests {
             .expect("styled");
         assert_eq!(s.color, Color::rgb8(255, 0, 0));
         assert_eq!(s.background_color, Color::rgb8(0, 255, 0));
-        assert_eq!((s.font_size_px, s.font_family.as_str()), (30.0, "serif"));
+        assert_eq!((s.font_size_px, &*s.font_family), (30.0, "serif"));
         assert_eq!(s.text_transform, TextTransform::Uppercase);
         assert_eq!((s.letter_spacing, s.word_spacing), (2.0, 3.0));
         assert_eq!(s.vertical_align, VerticalAlign::Top);
@@ -3574,6 +3581,17 @@ mod tests {
                 .pseudo_element(p, PseudoElement::Marker, &parent)
                 .is_none()
         );
+        // With the element's own style as parent, it is the one the
+        // cascade kept, or none.
+        assert_eq!(
+            recascade.pseudo_element(p, PseudoElement::FirstLetter, styles.get(p).unwrap()),
+            Some(cascaded.clone())
+        );
+        assert!(
+            recascade
+                .pseudo_element(div, PseudoElement::FirstLetter, styles.get(div).unwrap())
+                .is_none()
+        );
     }
 
     #[test]
@@ -3589,10 +3607,15 @@ mod tests {
         let recascade = sheets.recascader(&document, &styles, &context);
         let size = |tag: &str| {
             let element = first(&document, tag);
-            let parent = styles.get(element).expect("styled");
+            // The element's style but for a colour, so that the rules are
+            // matched again rather than the cascade's style taken.
+            let parent = ComputedStyle {
+                color: Color::rgb8(1, 2, 3),
+                ..styles.get(element).expect("styled").clone()
+            };
             let cascaded = styles.pseudo(element, PseudoElement::FirstLetter).unwrap();
             let recascaded = recascade
-                .pseudo_element(element, PseudoElement::FirstLetter, parent)
+                .pseudo_element(element, PseudoElement::FirstLetter, &parent)
                 .unwrap();
             (cascaded.font_size_px, recascaded.font_size_px)
         };
@@ -3618,7 +3641,7 @@ mod tests {
             .expect("styled");
         assert_eq!(s.color, Color::rgb8(255, 0, 0));
         assert_eq!(s.background_color, Color::rgb8(0, 255, 0));
-        assert_eq!((s.font_size_px, s.font_family.as_str()), (30.0, "serif"));
+        assert_eq!((s.font_size_px, &*s.font_family), (30.0, "serif"));
         assert_eq!(s.text_transform, TextTransform::Uppercase);
         assert_eq!((s.letter_spacing, s.word_spacing), (2.0, 3.0));
         assert_eq!(s.vertical_align, VerticalAlign::Top);

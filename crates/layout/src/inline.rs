@@ -289,10 +289,14 @@ pub(crate) fn layout_inline<'a>(
 ) -> InlineLayout<'a> {
     let flat = collect_inline_items(items, fonts);
     let strut = fonts.metrics_for_text(" ", container.font_size_px);
-    let first_items = first_line.map(|_| collect_first_line_items(items, fonts));
+    // The items as on the first line, as far as it can reach; the run's
+    // own when nothing in it is restyled there.
+    let first_items = first_line
+        .filter(|_| restyled_on_first_line(items))
+        .map(|_| collect_first_line_items(items, fonts, Some(cb_width)));
     let first = first_line
-        .zip(first_items.as_deref())
-        .filter(|(_, items)| one_for_one(items, &flat))
+        .map(|line| (line, first_items.as_deref().unwrap_or(&flat)))
+        .filter(|(_, items)| is_prefix(items, &flat))
         .map(|(line, items)| FirstLineRun {
             items,
             chain: &line.chain,
@@ -410,21 +414,21 @@ pub(crate) fn layout_inline<'a>(
 }
 
 /// Whether `first`, a run's items as on the first line, are its `items`
-/// one for one, as the collector makes them: else (which a debug build
-/// asserts never happens) the first line is laid out in the run's own
-/// styles rather than across mismatched items.
-fn one_for_one(first: &[InlineItem<'_>], items: &[InlineItem<'_>]) -> bool {
-    debug_assert_eq!(
-        first.len(),
-        items.len(),
+/// one for one as far as they go, as the collector makes them: else
+/// (which a debug build asserts never happens) the first line is laid
+/// out in the run's own styles rather than across mismatched items.
+fn is_prefix(first: &[InlineItem<'_>], items: &[InlineItem<'_>]) -> bool {
+    debug_assert!(
+        first.len() <= items.len(),
         "the first line's items are the run's"
     );
-    first.len() == items.len()
+    first.len() <= items.len()
 }
 
 /// A run's first formatted line, which `::first-line` styles (M16).
 struct FirstLineRun<'a, 'i> {
-    /// The run's items as they are on the first line, one for one.
+    /// The run's items as they are on the first line, one for one, as
+    /// far as the line can reach ([`Reach`]).
     items: &'i [InlineItem<'a>],
     /// The `::first-line`s around the line's content, outermost first.
     chain: &'a [LayoutBox],
@@ -483,11 +487,19 @@ struct Lines<'a, 'i, 'f, 'c> {
 
 impl<'a, 'i> Lines<'a, 'i, '_, '_> {
     /// The run's `index`th item as the line in progress takes it: as on
-    /// the first line while that is being filled (M16).
+    /// the first line while that is being filled (M16). The line ends
+    /// before its items do, [`Reach`] has it; else (which a debug build
+    /// asserts never happens) the rest of it is in the run's own styles.
     fn item(&self, index: usize) -> &'i InlineItem<'a> {
-        match &self.first {
-            Some(first) => &first.items[index],
-            None => &self.items[index],
+        match self.first.as_ref().and_then(|first| first.items.get(index)) {
+            Some(item) => item,
+            None => {
+                debug_assert!(
+                    self.first.is_none(),
+                    "the first line reached past its items"
+                );
+                &self.items[index]
+            }
         }
     }
 
@@ -753,29 +765,45 @@ pub(crate) fn collect_inline_items<'a>(
     boxes: &'a [LayoutBox],
     fonts: &FontCollection,
 ) -> Vec<InlineItem<'a>> {
-    collect(boxes, fonts, false)
+    collect(boxes, fonts, None)
 }
 
 /// [`collect_inline_items`] in the boxes' styles on the first formatted
 /// line (M16, [`crate::box_tree::FirstLine`]): the same items, one for
 /// one, as what may differ there — fonts, colour, `text-transform`,
 /// spacing — changes no word's bounds, measured and drawn in those
-/// styles.
+/// styles. Only as many as the first line can take, though: a prefix
+/// of the run's items, which ends at the first forced break and, with
+/// `room` (the containing block's width, [`Reach`]), at the first
+/// break opportunity past it.
 pub(crate) fn collect_first_line_items<'a>(
     boxes: &'a [LayoutBox],
     fonts: &FontCollection,
+    room: Option<f32>,
 ) -> Vec<InlineItem<'a>> {
-    collect(boxes, fonts, true)
+    collect(boxes, fonts, Some(Reach { room, taken: 0.0 }))
+}
+
+/// Whether a box in the run `boxes` has a style of its own on the first
+/// formatted line (M16): where none has, the run's items on the first
+/// line are its own. The boxes in an atomic inline are not the run's.
+pub(crate) fn restyled_on_first_line(boxes: &[LayoutBox]) -> bool {
+    boxes.iter().any(|b| match b.kind {
+        BoxKind::Text(_) => b.first_line.is_some(),
+        BoxKind::Inline => b.first_line.is_some() || restyled_on_first_line(&b.children),
+        _ => false,
+    })
 }
 
 fn collect<'a>(
     boxes: &'a [LayoutBox],
     fonts: &FontCollection,
-    first_line: bool,
+    first_line: Option<Reach>,
 ) -> Vec<InlineItem<'a>> {
     let mut collector = Collector {
         fonts,
         first_line,
+        done: false,
         out: Vec::new(),
         space_pending: false,
         gap_placed: false,
@@ -785,10 +813,48 @@ fn collect<'a>(
     collector.out
 }
 
+/// How far a first formatted line can reach into its run (M16.5): not
+/// past a forced break, which ends it, nor past a break opportunity
+/// once the items before it are wider together than `room`, the
+/// containing block's width. [`layout_inline`] has all those items on
+/// the line in progress, but for those a line of no width took, and a
+/// line wider than the room for it breaks at the next opportunity:
+/// there the first line is made, at the latest.
+///
+/// That holds while nothing takes room back: no negative width, gap or
+/// edge, which would let more on the line, and no atomic inline, whose
+/// width only its layout finds. Past one, the room no longer bounds the
+/// line, and the items go on to the first forced break; as they do for
+/// the intrinsic widths, whose lines are as wide as their content.
+#[derive(Clone, Copy)]
+struct Reach {
+    room: Option<f32>,
+    /// The width of the items so far, the gaps between them aside.
+    taken: f32,
+}
+
+impl Reach {
+    /// Counts an item `width` wide, set after a gap in `style` if any,
+    /// with a break opportunity before it if `breaks`: whether the first
+    /// line has surely ended there, before it. An item that takes room
+    /// back turns the bound off first, as the line may then hold it.
+    fn take(&mut self, width: f32, style: &ComputedStyle, breaks: bool) -> bool {
+        if !(width >= 0.0 && style.word_spacing >= 0.0) {
+            self.room = None;
+        }
+        let ended = breaks && self.room.is_some_and(|room| self.taken > room.max(0.0));
+        self.taken += width;
+        ended
+    }
+}
+
 struct Collector<'a, 'f> {
     fonts: &'f FontCollection,
-    /// Whether the boxes are styled as on the first formatted line.
-    first_line: bool,
+    /// Whether the boxes are styled as on the first formatted line, and
+    /// then how far it reaches.
+    first_line: Option<Reach>,
+    /// The first line has ended: no more items are collected for it.
+    done: bool,
     out: Vec<InlineItem<'a>>,
     /// Collapsible white space has been seen since the last item: the
     /// next item gets a gap before it.
@@ -808,26 +874,67 @@ impl<'a> Collector<'a, '_> {
     /// `b`'s style where the items go: on the first line, or its own.
     fn style_of(&self, b: &'a LayoutBox) -> &'a ComputedStyle {
         match &b.first_line {
-            Some(line) if self.first_line => &line.style,
+            Some(line) if self.first_line.is_some() => &line.style,
             _ => &b.style,
         }
     }
 
+    /// Adds `item`. On the first line (M16), it counts towards the
+    /// line's [`Reach`], and is the last item when the line has ended
+    /// before it, or ends at it.
+    fn push(&mut self, item: InlineItem<'a>) {
+        if let Some(reach) = &mut self.first_line {
+            self.done |= match &item {
+                InlineItem::Word {
+                    width,
+                    style,
+                    no_wrap,
+                    gap_before,
+                    ..
+                } => reach.take(*width, style, !no_wrap && *gap_before),
+                InlineItem::Open {
+                    style, gap_before, ..
+                } => reach.room.is_some_and(|room| {
+                    let breaks = style.white_space != WhiteSpace::Pre && *gap_before;
+                    reach.take(edge_widths(style, room).0, style, breaks)
+                }),
+                InlineItem::Close(style) => reach
+                    .room
+                    .is_some_and(|room| reach.take(edge_widths(style, room).1, style, false)),
+                InlineItem::Atomic { .. } => {
+                    reach.room = None;
+                    false
+                }
+                InlineItem::ForcedBreak(_) => true,
+                InlineItem::Float(_) | InlineItem::Absolute(_) => false,
+            };
+        }
+        self.out.push(item);
+    }
+
     fn collect(&mut self, boxes: &'a [LayoutBox]) {
         for b in boxes {
+            if self.done {
+                return;
+            }
             match &b.kind {
                 BoxKind::Text(text) => self.text(b, text),
                 BoxKind::Inline => {
                     let gap_before = std::mem::take(&mut self.space_pending);
                     self.gap_placed |= gap_before;
                     let style = self.style_of(b);
-                    self.out.push(InlineItem::Open {
+                    self.push(InlineItem::Open {
                         b,
                         style,
                         gap_before,
                     });
+                    // Collects nothing when the line ended at the start
+                    // edge, and the end edge is past the end as well.
                     self.collect(&b.children);
-                    self.out.push(InlineItem::Close(style));
+                    if self.done {
+                        return;
+                    }
+                    self.push(InlineItem::Close(style));
                 }
                 // An inline-block, or a table in a run, which is an
                 // inline table (M12): atomic on the line.
@@ -835,13 +942,13 @@ impl<'a> Collector<'a, '_> {
                     let gap_before = std::mem::take(&mut self.space_pending);
                     self.gap_placed = false;
                     self.at_word_start = true;
-                    self.out.push(InlineItem::Atomic { b, gap_before });
+                    self.push(InlineItem::Atomic { b, gap_before });
                 }
                 // A float or an absolutely positioned box is invisible
                 // to the white space around it: a gap pending before it
                 // is still pending after it.
-                BoxKind::Float => self.out.push(InlineItem::Float(b)),
-                BoxKind::Absolute => self.out.push(InlineItem::Absolute(b)),
+                BoxKind::Float => self.push(InlineItem::Float(b)),
+                BoxKind::Absolute => self.push(InlineItem::Absolute(b)),
                 // The box tree builder hoists a block out of inline
                 // content (CSS2 §9.2.1.1) and keeps a table's parts in
                 // tables, so none reaches here from a parsed document;
@@ -879,11 +986,17 @@ impl<'a> Collector<'a, '_> {
         // embedded `\n` would silently lose everything after it.
         let base_direction = to_text_direction(style.direction);
         for (i, line) in transformed.split('\n').enumerate() {
+            if self.done {
+                return;
+            }
             if i > 0 {
                 if preserves_newlines {
-                    self.out.push(InlineItem::ForcedBreak(style));
+                    self.push(InlineItem::ForcedBreak(style));
                     self.space_pending = false;
                     self.gap_placed = false;
+                    if self.done {
+                        return;
+                    }
                 } else {
                     self.space_pending = !self.gap_placed;
                 }
@@ -908,6 +1021,9 @@ impl<'a> Collector<'a, '_> {
                 if is_css_space(c) {
                     if let Some((start, gap_before)) = word.take() {
                         self.word(b, style, &reordered[start..i], no_wrap, gap_before);
+                        if self.done {
+                            return;
+                        }
                     }
                     self.space_pending = !self.gap_placed;
                 } else if word.is_none() {
@@ -929,7 +1045,7 @@ impl<'a> Collector<'a, '_> {
         gap_before: bool,
     ) {
         self.gap_placed = false;
-        self.out.push(InlineItem::Word {
+        self.push(InlineItem::Word {
             text: text.to_string(),
             width: measure_word(text, style, self.fonts),
             style,
@@ -952,7 +1068,9 @@ impl<'a> Collector<'a, '_> {
 /// it would sit beside the line's content.
 ///
 /// With `first`, the items as they are on the first formatted line
-/// (M16, one for one with `items`), the first line is measured in them —
+/// (M16, one for one with `items` as far as its first forced break,
+/// [`collect_first_line_items`] with no room), the first line is
+/// measured in them —
 /// the first that only a forced break ends for the widest line, the
 /// first piece for the widest piece — and the rest in `items`.
 pub(crate) fn run_intrinsic_widths(
@@ -960,7 +1078,7 @@ pub(crate) fn run_intrinsic_widths(
     first: Option<&[InlineItem<'_>]>,
     fonts: &FontCollection,
 ) -> (f32, f32) {
-    let first = first.filter(|first| one_for_one(first, items));
+    let first = first.filter(|first| is_prefix(first, items));
     let mut min = 0.0f32;
     let mut max = 0.0f32;
     // The line being measured, and the unbreakable piece at its end.
@@ -973,9 +1091,13 @@ pub(crate) fn run_intrinsic_widths(
     let mut first_line = first.is_some();
     let mut first_piece = first.is_some();
     for (i, item) in items.iter().enumerate() {
-        // The item as the line and as the piece measure it.
+        // The item as the line and as the piece measure it: the first
+        // line's items go as far as its first forced break.
         let version = |on_first: bool| match first {
-            Some(first) if on_first => &first[i],
+            Some(first) if on_first => {
+                debug_assert!(i < first.len(), "the first line reached past its items");
+                first.get(i).unwrap_or(item)
+            }
             _ => item,
         };
         if matches!(item, InlineItem::ForcedBreak(_)) {
@@ -2217,7 +2339,7 @@ mod tests {
         let w = |text, size| fonts.measure(text, size);
         let boxes = [on_first_line("aa bb", WhiteSpace::Normal)];
         let items = collect_inline_items(&boxes, &fonts);
-        let first = collect_first_line_items(&boxes, &fonts);
+        let first = collect_first_line_items(&boxes, &fonts, None);
         assert_eq!(
             run_intrinsic_widths(&items, Some(&first), &fonts),
             (
@@ -2228,9 +2350,238 @@ mod tests {
         // After a forced break, the next line is the run's own.
         let boxes = [on_first_line("aa\nbbbbbb", WhiteSpace::Pre)];
         let items = collect_inline_items(&boxes, &fonts);
-        let first = collect_first_line_items(&boxes, &fonts);
+        let first = collect_first_line_items(&boxes, &fonts, None);
         let (min, max) = run_intrinsic_widths(&items, Some(&first), &fonts);
         assert_eq!(min, max);
         assert_eq!(max, w("aa", 32.0).max(w("bbbbbb", 16.0)));
+    }
+
+    /// `b` with `style` on the first formatted line.
+    fn with_first_line(b: LayoutBox, style: ComputedStyle) -> LayoutBox {
+        LayoutBox {
+            first_line: Some(Box::new(FirstLine {
+                style,
+                chain: Vec::new(),
+            })),
+            ..b
+        }
+    }
+
+    /// A 32px style, `white-space: pre` or not.
+    fn big(white_space: WhiteSpace) -> ComputedStyle {
+        ComputedStyle {
+            font_size_px: 32.0,
+            white_space,
+            ..ComputedStyle::default()
+        }
+    }
+
+    /// The items in short: a word as its text and font size, an inline
+    /// element's edges as `<` and `>`, a forced break as `/`, an atomic
+    /// inline as `[]`.
+    fn shapes(items: &[InlineItem<'_>]) -> Vec<String> {
+        items
+            .iter()
+            .map(|item| match item {
+                InlineItem::Word { text, style, .. } => format!("{text}@{}", style.font_size_px),
+                InlineItem::Open { .. } => "<".to_string(),
+                InlineItem::Close(_) => ">".to_string(),
+                InlineItem::ForcedBreak(_) => "/".to_string(),
+                InlineItem::Atomic { .. } => "[]".to_string(),
+                InlineItem::Float(_) => "float".to_string(),
+                InlineItem::Absolute(_) => "absolute".to_string(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_first_lines_items_end_at_the_first_break_past_the_room() {
+        // Once the words so far are wider than the room, the line has
+        // ended at the next break opportunity: the items end with it.
+        let fonts = test_fonts();
+        let w = |t| fonts.measure(t, 32.0);
+        let normal = || big(WhiteSpace::Normal);
+        let run = [with_first_line(text_box("aa bb cc dd ee", 16.0), normal())];
+        let first = |room| shapes(&collect_first_line_items(&run, &fonts, room));
+        assert_eq!(first(None), ["aa@32", "bb@32", "cc@32", "dd@32", "ee@32"]);
+        assert_eq!(
+            first(Some(w("aa") + w("bb") - 1.0)),
+            ["aa@32", "bb@32", "cc@32"]
+        );
+        // As wide as the room is not past it.
+        assert_eq!(
+            first(Some(w("aa") + w("bb"))),
+            ["aa@32", "bb@32", "cc@32", "dd@32"]
+        );
+        // A room below zero is none: the line ends after its first item.
+        let run = [with_first_line(text_box(" aa bb cc", 16.0), normal())];
+        assert_eq!(
+            shapes(&collect_first_line_items(&run, &fonts, Some(-5.0))),
+            ["aa@32", "bb@32"]
+        );
+        // Nothing after the end is collected: not the next box, text or
+        // an inline element, nor a forced break after the word the line
+        // ended at.
+        let bold = with_first_line(
+            inline_box(vec![with_first_line(text_box("cc", 16.0), normal())]),
+            normal(),
+        );
+        for next in [with_first_line(text_box(" cc", 16.0), normal()), bold] {
+            let run = [with_first_line(text_box("aa bb", 16.0), normal()), next];
+            assert_eq!(
+                shapes(&collect_first_line_items(&run, &fonts, Some(0.0))),
+                ["aa@32", "bb@32"]
+            );
+        }
+        let pre_line = ComputedStyle {
+            white_space: WhiteSpace::PreLine,
+            ..ComputedStyle::default()
+        };
+        let run = [with_first_line(
+            styled_text_box("aa bb\ncc", pre_line),
+            big(WhiteSpace::PreLine),
+        )];
+        assert_eq!(
+            shapes(&collect_first_line_items(&run, &fonts, Some(0.0))),
+            ["aa@32", "bb@32"]
+        );
+    }
+
+    #[test]
+    fn the_first_lines_items_end_only_where_the_line_can_break() {
+        // With no room, the line ends at the first break opportunity
+        // after its first item: not between words set flush, nor before
+        // an inline element's start edge with no gap before it.
+        let fonts = test_fonts();
+        let normal = || big(WhiteSpace::Normal);
+        let bold = |text: &str| {
+            with_first_line(
+                inline_box(vec![with_first_line(text_box(text, 16.0), normal())]),
+                normal(),
+            )
+        };
+        let first = |run: &[LayoutBox]| shapes(&collect_first_line_items(run, &fonts, Some(0.0)));
+        let run = [
+            with_first_line(text_box("aa", 16.0), normal()),
+            bold("bb"),
+            with_first_line(text_box(" cc dd", 16.0), normal()),
+        ];
+        assert_eq!(first(&run), ["aa@32", "<", "bb@32", ">", "cc@32"]);
+        // A start edge with a gap before it is one, and a word inside
+        // the element: the items end there, the element left open.
+        let run = [with_first_line(text_box("aa ", 16.0), normal()), bold("bb")];
+        assert_eq!(first(&run), ["aa@32", "<"]);
+        let run = [
+            with_first_line(text_box("aa", 16.0), normal()),
+            bold(" bb cc"),
+        ];
+        assert_eq!(first(&run), ["aa@32", "<", "bb@32"]);
+        // Nor anywhere under `pre` but at a forced break, where the line
+        // ends whatever the room.
+        let pre = ComputedStyle {
+            white_space: WhiteSpace::Pre,
+            ..ComputedStyle::default()
+        };
+        let run = [
+            with_first_line(styled_text_box("aa bb ", pre.clone()), big(WhiteSpace::Pre)),
+            with_first_line(
+                inline_box(vec![with_first_line(
+                    styled_text_box("cc", pre.clone()),
+                    big(WhiteSpace::Pre),
+                )]),
+                big(WhiteSpace::Pre),
+            ),
+            with_first_line(styled_text_box("\ndd", pre), big(WhiteSpace::Pre)),
+        ];
+        for room in [Some(0.0), None] {
+            assert_eq!(
+                shapes(&collect_first_line_items(&run, &fonts, room)),
+                ["aa@32", "bb@32", "<", "cc@32", ">", "/"]
+            );
+        }
+    }
+
+    #[test]
+    fn what_takes_room_back_lets_the_first_lines_items_run_on() {
+        // With no room the items would end at the second word; but an
+        // atomic inline before it, whose width is not known, or a
+        // negative word or letter spacing or margin, which lets more on
+        // the line, turns the bound off.
+        let fonts = test_fonts();
+        let bounded_is_all = |run: &[LayoutBox]| {
+            shapes(&collect_first_line_items(run, &fonts, Some(0.0)))
+                == shapes(&collect_first_line_items(run, &fonts, None))
+        };
+        let normal = || big(WhiteSpace::Normal);
+        let words = |text: &str, style: ComputedStyle| with_first_line(text_box(text, 16.0), style);
+        assert!(!bounded_is_all(&[words("aa bb cc", normal())]));
+        let atomic = LayoutBox {
+            kind: BoxKind::InlineBlock,
+            ..inline_box(Vec::new())
+        };
+        assert!(bounded_is_all(&[atomic, words(" aa bb cc", normal())]));
+        let spaced = ComputedStyle {
+            word_spacing: -1.0,
+            ..normal()
+        };
+        assert!(bounded_is_all(&[words("aa bb cc", spaced)]));
+        // Letter spacing that makes "iii" narrower than nothing and
+        // leaves "mm" wider: the word that takes room back is where the
+        // line would end, and it is let on first.
+        let (i, m) = (fonts.measure("i", 32.0), fonts.measure("m", 32.0));
+        assert!(i < m);
+        let spaced = ComputedStyle {
+            letter_spacing: -(i + m) / 2.0,
+            ..normal()
+        };
+        assert!(bounded_is_all(&[words("mm iii mm mm", spaced)]));
+        // So is a start edge that takes room back; and an end edge that
+        // does turns the bound off for what follows it.
+        let edged = |side: usize| {
+            let mut style = normal();
+            style.margin[side] = style::computed::LengthPercentageAuto::Px(-1000.0);
+            with_first_line(
+                inline_box(vec![with_first_line(text_box("bb", 16.0), normal())]),
+                style,
+            )
+        };
+        let run = [
+            words("aa ", normal()),
+            edged(LEFT),
+            words(" cc dd", normal()),
+        ];
+        assert!(bounded_is_all(&run));
+        let run = [
+            words("aa", normal()),
+            edged(RIGHT),
+            words(" cc dd", normal()),
+        ];
+        assert!(bounded_is_all(&run));
+    }
+
+    #[test]
+    fn a_run_is_restyled_on_the_first_line_where_a_box_in_it_is() {
+        let restyled = || big(WhiteSpace::Normal);
+        assert!(!restyled_on_first_line(&[
+            text_box("aa", 16.0),
+            inline_box(vec![text_box("bb", 16.0)]),
+        ]));
+        assert!(restyled_on_first_line(&[
+            text_box("aa", 16.0),
+            with_first_line(text_box("bb", 16.0), restyled()),
+        ]));
+        assert!(restyled_on_first_line(&[with_first_line(
+            inline_box(Vec::new()),
+            restyled()
+        )]));
+        assert!(restyled_on_first_line(&[inline_box(vec![
+            with_first_line(text_box("bb", 16.0), restyled())
+        ])]));
+        // The boxes in an atomic inline are not the run's.
+        let atomic = LayoutBox {
+            kind: BoxKind::InlineBlock,
+            ..inline_box(vec![with_first_line(text_box("bb", 16.0), restyled())])
+        };
+        assert!(!restyled_on_first_line(&[atomic]));
     }
 }
