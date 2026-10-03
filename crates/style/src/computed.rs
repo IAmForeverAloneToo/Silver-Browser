@@ -713,22 +713,30 @@ impl ComputedStyle {
     /// value, exactly like [`ComputedStyle::default`]. The cascade then
     /// overwrites whatever this element's own matched declarations set.
     pub fn inherited_from(parent: &ComputedStyle) -> Self {
+        ComputedStyle::default().with_inherited_from(parent)
+    }
+
+    /// This style with its inherited properties taken from `from` and
+    /// the others kept: the parent a child on the first formatted line
+    /// inherits from, its inherited properties from the `::first-line`
+    /// and the others from its parent (Pseudo-Elements 4 §2.1.3, M16).
+    pub fn with_inherited_from(&self, from: &ComputedStyle) -> Self {
         ComputedStyle {
-            color: parent.color,
-            font_size_px: parent.font_size_px,
-            font_family: parent.font_family.clone(),
-            text_align: parent.text_align,
-            text_transform: parent.text_transform,
-            white_space: parent.white_space,
-            letter_spacing: parent.letter_spacing,
-            word_spacing: parent.word_spacing,
-            direction: parent.direction,
-            border_collapse: parent.border_collapse,
-            border_spacing: parent.border_spacing,
-            caption_side: parent.caption_side,
-            empty_cells: parent.empty_cells,
-            quotes: parent.quotes.clone(),
-            ..ComputedStyle::default()
+            color: from.color,
+            font_size_px: from.font_size_px,
+            font_family: from.font_family.clone(),
+            text_align: from.text_align,
+            text_transform: from.text_transform,
+            white_space: from.white_space,
+            letter_spacing: from.letter_spacing,
+            word_spacing: from.word_spacing,
+            direction: from.direction,
+            border_collapse: from.border_collapse,
+            border_spacing: from.border_spacing,
+            caption_side: from.caption_side,
+            empty_cells: from.empty_cells,
+            quotes: from.quotes.clone(),
+            ..self.clone()
         }
     }
 }

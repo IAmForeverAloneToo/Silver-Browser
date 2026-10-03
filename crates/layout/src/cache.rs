@@ -688,4 +688,22 @@ mod tests {
         // fresh one, the letter back to the paragraph's size.
         assert_eq!(s.pass(), (4, 1));
     }
+
+    #[test]
+    fn a_block_holding_an_ancestors_first_line_is_neither_kept_nor_taken() {
+        // #p's run holds #d's first line: #d's restyle does not reach #p,
+        // whose layout reads it, so #p is laid out each time.
+        let mut s = Session::new(
+            "<div id=d class=big><p id=p>Text</p></div><p id=q>after</p>",
+            ".big::first-line { font-size: 40px }",
+        );
+        s.pass();
+        assert!(!s.kept("p"));
+        assert!(s.kept("q"));
+        let d = s.id("d");
+        s.change(|doc| doc.remove_attribute(d, "class").unwrap());
+        // html, body, #d and #p; #q taken. `pass` holds the result to a
+        // fresh one, the line back to the paragraph's size.
+        assert_eq!(s.pass(), (4, 1));
+    }
 }

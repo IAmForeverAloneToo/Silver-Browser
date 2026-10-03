@@ -25,8 +25,10 @@
 //! generated box is built by the code an element's is, anonymous boxes
 //! and all. The quote marks of `open-quote` and `close-quote` are
 //! chosen as the build reaches them, which is in document order. Once
-//! the tree is built, a block container's `::first-letter` takes its
-//! first letter out of the text box it is in ([`first_letter`]).
+//! the tree is built, the boxes of the run holding a block container's
+//! first formatted line get their styles on it ([`first_line`]), and a
+//! block container's `::first-letter` takes its first letter out of the
+//! text box it is in ([`first_letter`]).
 
 use std::borrow::Cow;
 use std::cell::Cell;
@@ -37,6 +39,7 @@ use style::selector_matching::PseudoElement;
 use style::{ComputedStyle, Recascade, Styles};
 
 mod first_letter;
+mod first_line;
 
 /// One node in the box tree.
 #[derive(Debug, Clone)]
@@ -84,10 +87,29 @@ pub struct LayoutBox {
     pub quote_depth: u32,
     /// Whether the box's layout reads the style of an ancestor's
     /// pseudo-element (M16): a block between a block container and the
-    /// text its `::first-letter` takes. A restyle of the ancestor does
-    /// not reach the box, so the layout cache neither keeps nor takes
-    /// it.
+    /// text its `::first-letter` takes, or the run its `::first-line`
+    /// styles. A restyle of the ancestor does not reach the box, so the
+    /// layout cache neither keeps nor takes it.
     pub styled_by_ancestor: bool,
+    /// The box's style on the first formatted line, where it differs
+    /// from its own (M16, [`first_line`]): set on the boxes in the run
+    /// whose first line some `::first-line` styles, and on that run's
+    /// anonymous block, which holds the `::first-line`s too.
+    pub first_line: Option<Box<FirstLine>>,
+}
+
+/// What a box is on the first formatted line (M16).
+#[derive(Debug, Clone)]
+pub struct FirstLine {
+    /// The box's style there: for the run's anonymous block, the
+    /// innermost `::first-line`'s, which the line's root inline box
+    /// inherits — its font is the line's strut.
+    pub style: ComputedStyle,
+    /// For the run's anonymous block, the `::first-line`
+    /// pseudo-elements around the line's content, outermost first: each
+    /// an inline box naming its originating element, marked as the
+    /// `::first-line`'s, with no children. Empty for any other box.
+    pub chain: Vec<LayoutBox>,
 }
 
 /// A box's kind, per `display` (block, inline, inline-block and the
@@ -260,6 +282,7 @@ pub fn build_box_tree(
         quote_depth: Cell::new(0),
     };
     let mut boxes = build_block_container(&styled, Item::Node(document.root()));
+    first_line::apply(&styled, &mut boxes);
     first_letter::apply(&styled, &mut boxes);
     boxes
 }
@@ -459,6 +482,7 @@ impl<'a> Styled<'a> {
             generated: item.generated(),
             quote_depth,
             styled_by_ancestor: false,
+            first_line: None,
         }
     }
 
@@ -482,6 +506,7 @@ impl<'a> Styled<'a> {
             generated: item.generated(),
             quote_depth,
             styled_by_ancestor: false,
+            first_line: None,
         }
     }
 }
@@ -628,6 +653,7 @@ impl BlockContainer<'_> {
                 generated: parent.generated(),
                 quote_depth,
                 styled_by_ancestor: false,
+                first_line: None,
             });
         }
         self.flush_misplaced(parent, &mut misplaced);
@@ -814,6 +840,7 @@ impl BlockContainer<'_> {
                 generated: b.generated,
                 quote_depth,
                 styled_by_ancestor: false,
+                first_line: None,
             })
             .collect();
         while let Some(inline) = self.open.pop() {
@@ -847,6 +874,7 @@ impl BlockContainer<'_> {
             generated: self.item.generated(),
             quote_depth,
             styled_by_ancestor: false,
+            first_line: None,
         });
     }
 
@@ -2837,6 +2865,304 @@ mod tests {
                 inner.style.color,
                 style::computed::Color::rgb8(255, 0, 0),
                 "{outer}"
+            );
+        }
+    }
+
+    /// Every box under `boxes` with a style on the first line, as
+    /// `(kind, node number, color, font size)` there, in tree order.
+    fn first_line_styles(tree: &Tree, boxes: &[LayoutBox]) -> Vec<(String, usize, [u8; 3], f32)> {
+        fn walk(tree: &Tree, b: &LayoutBox, out: &mut Vec<(String, usize, [u8; 3], f32)>) {
+            if let Some(line) = &b.first_line {
+                let kind = match &b.kind {
+                    BoxKind::Text(t) => format!("text {t}"),
+                    BoxKind::AnonymousBlock => "anon".to_string(),
+                    BoxKind::Inline => "inline".to_string(),
+                    other => format!("{other:?}"),
+                };
+                let c = line.style.color;
+                let rgb = [c.r, c.g, c.b].map(|v| (v * 255.0).round() as u8);
+                out.push((kind, tree.number(b.node), rgb, line.style.font_size_px));
+            }
+            for c in &b.children {
+                walk(tree, c, out);
+            }
+        }
+        let mut out = Vec::new();
+        for b in boxes {
+            walk(tree, b, &mut out);
+        }
+        out
+    }
+
+    #[test]
+    fn the_first_lines_run_holds_the_first_line_and_its_boxes_their_styles_there() {
+        // Nodes: p 4, b 5.
+        let tree = tree_of(
+            "<p>Some <b>bold</b> text</p>",
+            "p { color: #00f; font-size: 10px; background-color: #0f0 }
+             b { font-size: 2em; background-color: inherit }
+             p::first-line { color: #f00; font-size: 20px; margin-left: 9px;
+                 background-color: #ff0 }",
+        );
+        let red = [255, 0, 0];
+        // The run, the text in the p and the b's, and the b, whose 2em
+        // are of the line's 20px.
+        assert_eq!(
+            first_line_styles(&tree, &tree.body().children),
+            [
+                ("anon".to_string(), 4, red, 20.0),
+                ("text Some ".to_string(), 4, red, 20.0),
+                ("inline".to_string(), 5, red, 40.0),
+                ("text bold".to_string(), 5, red, 40.0),
+                ("text  text".to_string(), 4, red, 20.0),
+            ]
+        );
+        let p = &tree.body().children[0];
+        let line = p.children[0].first_line.as_ref().unwrap();
+        // The `::first-line` is the p's; margins do not apply to it.
+        assert_eq!(line.chain.len(), 1);
+        let pseudo = &line.chain[0];
+        assert_eq!(
+            (tree.number(pseudo.node), pseudo.generated, &pseudo.kind),
+            (4, Some(PseudoElement::FirstLine), &BoxKind::Inline)
+        );
+        assert_eq!(line.style.margin, ComputedStyle::default().margin);
+        // The boxes' own styles are as they were.
+        let b = &p.children[0].children[1];
+        assert_eq!(
+            (b.style.color, b.style.font_size_px),
+            (style::computed::Color::rgb8(0, 0, 255), 20.0)
+        );
+        // What the b inherits but is not inherited, it inherits from the
+        // p, not the `::first-line` (Pseudo-Elements 4 §2.1.3).
+        let line = b.first_line.as_ref().unwrap();
+        assert_eq!(
+            line.style.background_color,
+            style::computed::Color::rgb8(0, 255, 0)
+        );
+    }
+
+    #[test]
+    fn several_first_lines_nest_and_the_outermost_inherits_from_the_block_whose_line_it_is() {
+        // Nodes: div 4, p 5, span 6, p 7. The empty p and the float are
+        // passed over; the div's `::first-line` stands inside the p whose
+        // line it is, the p's inside it.
+        let tree = tree_of(
+            "<div><p></p><span class=f>F</span><p class=x>Text</p></div>",
+            ".f { float: left } .x { font-size: 10px }
+             div::first-line { font-size: 2em } p::first-line { color: #f00 }",
+        );
+        let div = &tree.body().children[0];
+        let p = &div.children[2];
+        assert_eq!(tree.number(p.node), 7);
+        assert!(p.styled_by_ancestor && !div.styled_by_ancestor);
+        let line = p.children[0].first_line.as_ref().expect("the p's run");
+        let chain: Vec<_> = line.chain.iter().map(|b| tree.number(b.node)).collect();
+        assert_eq!(chain, [4, 7]);
+        // 2em of the p's 10px; the p's inherits it, and is red.
+        assert_eq!(line.chain[0].style.font_size_px, 20.0);
+        assert_eq!(
+            (line.style.font_size_px, line.style.color),
+            (20.0, style::computed::Color::rgb8(255, 0, 0))
+        );
+        // Only that run is styled.
+        assert_eq!(
+            first_line_styles(&tree, &tree.body().children).len(),
+            2,
+            "the run and its text"
+        );
+    }
+
+    #[test]
+    fn a_run_has_a_line_when_it_holds_content_or_an_edge() {
+        for (html, first) in [
+            // An empty inline element with an edge makes a line, whether
+            // of margin, border or padding, a percentage among them; one
+            // without makes none, nor does an `auto` margin, nor white
+            // space alone.
+            ("<div><p><span class=e></span></p><p>Text</p></div>", 0),
+            ("<div><p><span class=m></span></p><p>Text</p></div>", 0),
+            ("<div><p><span class=b></span></p><p>Text</p></div>", 0),
+            ("<div><p><span class=pc></span></p><p>Text</p></div>", 0),
+            ("<div><p><span></span></p><p>Text</p></div>", 1),
+            ("<div><p><span class=auto></span></p><p>Text</p></div>", 1),
+            ("<div><p><span> </span></p><p>Text</p></div>", 1),
+            // Text in an inline element is content, an inline-block is,
+            // and a line break kept is a line, though empty — between
+            // two elements, as white space alone at a run's start or end
+            // makes no box, whatever `white-space` says.
+            ("<div><p><b>X</b></p><p>Text</p></div>", 0),
+            ("<div><p><span class=ib></span></p><p>Text</p></div>", 0),
+            (
+                "<div><p class=pre><span></span>\n<span></span></p><p>Text</p></div>",
+                0,
+            ),
+            (
+                "<div><p><span></span>\n<span></span></p><p>Text</p></div>",
+                1,
+            ),
+            // An absolutely positioned block is out of flow.
+            ("<div><p class=abs>A</p><p>Text</p></div>", 1),
+        ] {
+            let tree = tree_of(
+                html,
+                ".e { padding-left: 2px } .m { margin-right: 2px }
+                 .b { border-left: 1px solid } .pc { padding-right: 5% }
+                 .auto { margin: 0 auto } .ib { display: inline-block }
+                 .pre { white-space: pre } .abs { position: absolute }
+                 div::first-line { color: #f00 }",
+            );
+            let div = &tree.body().children[0];
+            let runs: Vec<bool> = div
+                .children
+                .iter()
+                .map(|p| {
+                    p.children
+                        .first()
+                        .is_some_and(|run| run.first_line.is_some())
+                })
+                .collect();
+            let mut expected = vec![false, false];
+            expected[first] = true;
+            assert_eq!(runs, expected, "{html}");
+        }
+    }
+
+    #[test]
+    fn there_is_no_first_line_in_a_table_after_one_or_on_an_inline() {
+        for (html, css) in [
+            ("<div><table><tr><td>X</td></tr></table>y</div>", ""),
+            (
+                "<p><span>The</span></p>",
+                "span::first-line { color: #f00 }",
+            ),
+            ("<div class=row>Text</div>", ".row { display: table-row }"),
+        ] {
+            let tree = tree_of(html, &format!("{css} div::first-line {{ color: #f00 }}"));
+            assert_eq!(
+                first_line_styles(&tree, &tree.body().children),
+                [],
+                "{html}"
+            );
+        }
+        // But a cell has its own.
+        let tree = tree_of(
+            "<table><tr><td>Cell</td></tr></table>",
+            "td::first-line { color: #f00 }",
+        );
+        assert_eq!(first_line_styles(&tree, &tree.body().children).len(), 2);
+    }
+
+    #[test]
+    fn what_a_first_line_inherits_nothing_from_costs_no_cascade() {
+        /// A [`Recascade`] counting the elements it is asked for.
+        struct Counting<'a>(&'a dyn Recascade, Cell<usize>);
+        impl Recascade for Counting<'_> {
+            fn element(&self, element: NodeId, parent: &ComputedStyle) -> ComputedStyle {
+                self.1.set(self.1.get() + 1);
+                self.0.element(element, parent)
+            }
+            fn pseudo_element(
+                &self,
+                element: NodeId,
+                pseudo: PseudoElement,
+                parent: &ComputedStyle,
+            ) -> Option<ComputedStyle> {
+                self.0.pseudo_element(element, pseudo, parent)
+            }
+        }
+        for (css, cascades, styled) in [
+            // A background is not inherited: only the run is styled.
+            ("p::first-line { background-color: #0f0 }", 0, 1),
+            // A colour is: the b is cascaded again, and it and the texts
+            // styled.
+            ("p::first-line { color: #f00 }", 1, 5),
+            // Unless the b sets its own: cascaded again, it is as it was.
+            ("p::first-line { color: #f00 } b { color: #00f }", 1, 3),
+        ] {
+            let node = html::parse_document("<p>a <b>b</b> c</p>").unwrap();
+            let document = Document::from_node(&node);
+            let sheets = style::Stylesheets::new(vec![css::parse_stylesheet(css).unwrap()]);
+            let context = style::CascadeContext::default();
+            let styles = sheets.cascade(&document, &context);
+            let recascader = sheets.recascader(&document, &styles, &context);
+            let counting = Counting(&recascader, Cell::new(0));
+            let boxes = build_box_tree(&document, &styles, &counting);
+            assert_eq!(counting.1.get(), cascades, "{css}");
+            let tree = Tree { document, boxes };
+            assert_eq!(first_line_styles(&tree, &tree.boxes).len(), styled, "{css}");
+        }
+    }
+
+    #[test]
+    fn generated_inline_boxes_and_the_first_letter_are_styled_on_the_first_line() {
+        // Nodes: p 4. A `::before` on the line is cascaded again from it,
+        // and the first letter inherits from it: 2em of its 20px.
+        let tree = tree_of(
+            "<p>The</p>",
+            "p { font-size: 10px } p::first-line { font-size: 20px; color: #f00 }
+             p::before { content: 'x' } p::first-letter { font-size: 2em }",
+        );
+        let run = &tree.body().children[0].children[0];
+        assert_eq!(
+            tree.shape_of(&run.children),
+            pairs(&[
+                ("+inline", 4),
+                ("^inline", 4),
+                ("^text x", 4),
+                ("text The", 4),
+            ])
+        );
+        let before = &run.children[0];
+        assert_eq!(
+            before
+                .first_line
+                .as_ref()
+                .map(|line| line.style.font_size_px),
+            Some(20.0)
+        );
+        let letter = &before.children[0];
+        assert_eq!(letter.style.font_size_px, 40.0);
+        assert_eq!(letter.style.color, style::computed::Color::rgb8(255, 0, 0));
+        // The rest of the text keeps its style on the line.
+        assert_eq!(
+            run.children[1]
+                .first_line
+                .as_ref()
+                .map(|line| line.style.font_size_px),
+            Some(20.0)
+        );
+        // So does the rest of a text the letter is split from.
+        let tree = tree_of(
+            "<p>The</p>",
+            "p::first-line { font-size: 20px } p::first-letter { font-size: 2em }",
+        );
+        let run = &tree.body().children[0].children[0];
+        assert_eq!(tree.texts(&run.children), ["T", "he"]);
+        assert_eq!(
+            run.children[1]
+                .first_line
+                .as_ref()
+                .map(|line| line.style.font_size_px),
+            Some(20.0)
+        );
+    }
+
+    #[test]
+    fn an_atomic_inline_and_an_out_of_flow_box_keep_their_styles_on_the_first_line() {
+        let tree = tree_of(
+            "<p><span class=ib>x</span><span class=f>y</span> z</p>",
+            ".ib { display: inline-block } .f { float: left }
+             p::first-line { color: #f00 }",
+        );
+        let run = &tree.body().children[0].children[0];
+        assert!(run.first_line.is_some());
+        for b in &run.children[..2] {
+            assert!(
+                first_line_styles(&tree, std::slice::from_ref(b)).is_empty(),
+                "{:?}",
+                b.kind
             );
         }
     }

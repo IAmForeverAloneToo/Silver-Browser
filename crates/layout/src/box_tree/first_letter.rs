@@ -242,12 +242,16 @@ fn split(
     let BoxKind::Text(text) = &text_box.kind else {
         unreachable!("the path leads to a text box");
     };
-    // The box inherits from what the text is in: its element, or the
-    // pseudo-element whose box it is in. `display` does not apply to
-    // it, so its style's is `inline`, or a float's block.
-    let Some(style) =
-        recascade.pseudo_element(element, PseudoElement::FirstLetter, &text_box.style)
-    else {
+    // The box inherits from what the text is in — its element, or the
+    // pseudo-element whose box it is in — as that is on the first line,
+    // where the letter is: a `::first-line` styles it too. `display`
+    // does not apply to it, so its style's is `inline`, or a float's
+    // block.
+    let parent = text_box
+        .first_line
+        .as_ref()
+        .map_or(&text_box.style, |line| &line.style);
+    let Some(style) = recascade.pseudo_element(element, PseudoElement::FirstLetter, parent) else {
         return; // no rule styles it after all
     };
     // The pieces of the text left as they were, and the boxes of the
@@ -261,6 +265,7 @@ fn split(
         generated: text_box.generated,
         quote_depth: text_box.quote_depth,
         styled_by_ancestor: false,
+        first_line: text_box.first_line.clone(),
     };
     let generated = |kind, style: ComputedStyle, children| LayoutBox {
         style,
@@ -271,6 +276,7 @@ fn split(
         generated: Some(PseudoElement::FirstLetter),
         quote_depth: text_box.quote_depth,
         styled_by_ancestor: false,
+        first_line: None,
     };
     let letter = generated(
         BoxKind::Text(text[start..end].to_string()),

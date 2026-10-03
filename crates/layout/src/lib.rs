@@ -30,7 +30,7 @@ pub use block::{
     DocumentLayout, Fragment, FragmentKind, Preorder, flatten, layout, layout_document,
     layout_document_cached, layout_document_in, preorder,
 };
-pub use box_tree::{BoxKind, LayoutBox, RowGroupKind, build_box_tree};
+pub use box_tree::{BoxKind, FirstLine, LayoutBox, RowGroupKind, build_box_tree};
 pub use cache::LayoutCache;
 
 #[cfg(test)]

@@ -343,45 +343,63 @@ pseudo-element (Pseudo-Elements 4 drops it out);
 built (section 2).
 
 **`::first-line` (M16.2).** Its box is the first line, which only line
-breaking finds, so it is applied by the inline layout:
+breaking finds; but which run of inline content holds it, and what
+every box in that run looks like on it, is known before, so the box
+tree builder works out the styles and the inline layout uses them
+while it fills the first line (`layout::box_tree::first_line`):
 
-- the first formatted line is found as for `::first-letter`: a block
-  container's first line box, or its first in-flow block-level child's
-  first formatted line, recursively. Block layout carries down to that
-  child the chain of `::first-line` styles of the elements whose first
-  formatted line it holds, outermost first;
-- in that line, Pseudo-Elements 4's fictional tag sequence is followed
-  as written: the `::first-line` pseudo-elements stand just inside the
-  block whose line it is, the outermost first, each inheriting from
-  the one outside it and the outermost from that block; the inline
-  elements on the line inherit from the innermost, each restyled with
-  its own rules and that new parent; text directly in the block takes
-  the innermost's style. Only the properties Pseudo-Elements 4 lists
-  apply on the `::first-line` pseudo-elements themselves (font size and
-  family, colour, background, `text-transform`, letter and word
-  spacing, `vertical-align`); the restyled inline elements keep all
-  their own;
-- the restyling needs the cascade during layout, through the
-  `Recascade` that `::first-letter` brought (named so beside the
-  `Restyle` that `Stylesheets::restyle` returns), which gains running
-  an element's rules again with a given parent style, beside giving a
-  pseudo-element's style with a given parent. It is called only for
-  elements on a first line, and for the `::first-letter` box when one
-  is on it (which then inherits from the first line, as
-  Pseudo-Elements 4 says);
-- the words are measured with their first-line styles while the first
-  line is filled, and with their own after it: the first line breaks
-  where its own text, in its own fonts, runs out of room, and the
-  second starts with the next word in its normal style. The line's
-  strut comes from the innermost `::first-line` style, since the root
-  inline box's fragment on the first line inherits from it;
+- the first formatted line is found as for `::first-letter`: the run
+  (the anonymous block) of a block container's first line box, or its
+  first in-flow block-level child's that has a line, recursively. A
+  run has a line when it holds text other than collapsible white
+  space, a line break kept by `white-space`, an atomic inline, or an
+  inline element with a horizontal margin, border or padding — any
+  percentage counted as some width, which a zero containing block
+  would not give;
+- the run gets the chain of `::first-line` styles of the elements whose
+  first formatted line it holds, outermost first. Pseudo-Elements 4's
+  fictional tag sequence is followed as written: the `::first-line`
+  pseudo-elements stand just inside the block whose line it is, the
+  outermost inheriting from that block and each next from the one
+  outside it. The line's root inline box takes the innermost's style,
+  so the first line's strut is that font's. Only the properties
+  Pseudo-Elements 4 lists apply on a `::first-line` that this engine
+  has (font size and family, colour, background, `text-transform`,
+  letter and word spacing, `vertical-align`);
+- every inline-level box in the run gets its style on the first line,
+  when it differs from its own: text, the first-line style of what it
+  is in; an inline element, or a `::before` or `::after` inline box,
+  cascaded again with its own rules and a parent whose inherited
+  properties are its parent's on the first line and whose others are
+  its parent's own (Pseudo-Elements 4 §2.1.3). The cascade is run
+  through the `Recascade` that `::first-letter` brought, which gains an
+  element hook, and only where that parent differs from the parent the
+  box has: a `::first-line` that sets nothing inherited costs no
+  cascade. The box tree does not know which of the run's elements the
+  first line will hold, so it restyles them all, at each build: a cost
+  the inline elements of a first line's run pay, which M16.5 measures.
+  An atomic inline keeps its style, and so do the boxes inside it
+  (browsers style an inline-block on the first line from it, said in
+  section 2); a float or an absolutely positioned box is not on the
+  line and keeps its own;
+- a `::first-letter` is on the first line and inherits from it: its
+  style is cascaded with its text's first-line style as the parent;
+- the inline layout measures the words with their first-line styles
+  while it fills the first line, and with their own after it: the
+  first line breaks where its text, in its first-line fonts, runs out
+  of room, and the words that move to the second line take their own
+  styles. The run's items are collected twice, once in each style, one
+  for one, as nothing a `::first-line` may set changes where a word
+  starts or ends. The intrinsic widths do the same: the widest line
+  counts the first line in first-line styles, and the widest piece
+  counts the first piece so;
 - a `::first-line` with a background gets an inline-box fragment
   around the line's content, named by its originating element and
-  marked generated;
-- the layout of a block whose first line takes styles from an
-  ancestor's `::first-line` depends on that ancestor, so such a block
-  is neither kept in the layout cache nor taken from it; the blocks
-  that are, are invalidated by their own restyle as now.
+  marked generated, the outermost around the next;
+- the blocks between the originating element and the run lay out a
+  style that is not their own, as for `::first-letter`: they are
+  marked, and the layout cache neither keeps nor takes them; the
+  blocks that are, are invalidated by their own restyle as now.
 
 **Invalidation (M13.1).** The selector features gain what the new
 selectors read:
@@ -473,6 +491,11 @@ layout with the styles it cascaded.
 - *`::first-letter::prefix` and `::suffix`*, *`initial-letter`*, and
   the language tailorings of a first letter (Dutch "ij"): not on the
   roadmap yet, and M42 for the tailorings.
+- *An atomic inline on the first line*: an inline-block or an inline
+  table there keeps its own style, and so does everything in it, where
+  the browsers have it inherit from the `::first-line`. It is the one
+  box on the line that `::first-line` does not reach; the box tree
+  would have to style its whole subtree again.
 - *`br`*: it makes no box and breaks no line in this engine, which
   this milestone found and does not change; it has no milestone yet.
   Once it breaks a line, a `br` first will end the search for a first

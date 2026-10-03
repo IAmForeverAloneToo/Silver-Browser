@@ -229,34 +229,36 @@ impl Target {
     }
 
     /// Whether a declaration of the property `name` applies to the
-    /// target. `content` applies to `::before` and `::after` only;
-    /// `::first-letter` takes the properties Pseudo-Elements 4 §2.2.4
+    /// target (M16). `content` applies to `::before` and `::after` only.
+    /// `::first-line` takes the properties Pseudo-Elements 4 §2.1.2
     /// lists that this engine has — the font's, colour, background,
-    /// `text-transform`, letter and word spacing, `vertical-align`,
-    /// margins, padding and borders — and `float`, which every browser
-    /// honours for a drop cap (M16); every other target takes every
-    /// other property.
+    /// `text-transform`, letter and word spacing and `vertical-align` —
+    /// and `::first-letter` those of §2.2.4: these, margins, padding and
+    /// borders, and `float`, which every browser honours for a drop cap.
+    /// The element, `::before` and `::after` take every other property.
     fn applies(self, name: &str) -> bool {
+        let line = matches!(
+            name,
+            "font-size"
+                | "font-family"
+                | "color"
+                | "background-color"
+                | "text-transform"
+                | "letter-spacing"
+                | "word-spacing"
+                | "vertical-align"
+        );
         match self {
+            Target::FirstLine => line,
             Target::FirstLetter => {
-                matches!(
-                    name,
-                    "font-size"
-                        | "font-family"
-                        | "color"
-                        | "background-color"
-                        | "text-transform"
-                        | "letter-spacing"
-                        | "word-spacing"
-                        | "vertical-align"
-                        | "float"
-                ) || (["margin", "padding", "border"]
-                    .iter()
-                    .any(|prefix| name.starts_with(prefix))
-                    // A table's, not the box's border.
-                    && !matches!(name, "border-collapse" | "border-spacing"))
+                line || name == "float"
+                    || (["margin", "padding", "border"]
+                        .iter()
+                        .any(|prefix| name.starts_with(prefix))
+                        // A table's, not the box's border.
+                        && !matches!(name, "border-collapse" | "border-spacing"))
             }
-            Target::Element | Target::FirstLine => name != "content",
+            Target::Element => name != "content",
             Target::Before | Target::After => true,
         }
     }
@@ -465,13 +467,19 @@ impl Stylesheets {
 }
 
 /// What layout asks of the cascade once it knows where an element's
-/// content falls (M16): the style of a pseudo-element that inherits
-/// from something other than its originating element. A
-/// `::first-letter` inherits from the element its text is in, or from
-/// the `::first-letter` around it (Pseudo-Elements 4 §2.2.3), which
-/// only the box tree finds; `layout` defines no cascade of its own, so
-/// it asks through this.
+/// content falls (M16): the style of an element or a pseudo-element
+/// that inherits from something other than its parent or originating
+/// element. A `::first-letter` inherits from the element its text is
+/// in, or from the `::first-letter` around it (Pseudo-Elements 4
+/// §2.2.3); a `::first-line` from the block whose line it is, and an
+/// element on that line from it (§2.1.3). Only the box tree finds
+/// these; `layout` defines no cascade of its own, so it asks through
+/// this.
 pub trait Recascade {
+    /// The style of the element `element`, cascaded from its rules as
+    /// [`Styles::get`]'s is, but inheriting from `parent`.
+    fn element(&self, element: NodeId, parent: &ComputedStyle) -> ComputedStyle;
+
     /// The style of the element `element`'s `pseudo`, cascaded from its
     /// rules as [`Styles::pseudo`]'s is, but inheriting from `parent`;
     /// `None` when no rule styles it.
@@ -486,7 +494,7 @@ pub trait Recascade {
 /// [`Recascade`] over a document, the [`Stylesheets`] and context it was
 /// cascaded with, and the styles that gave (for `rem`): an element's
 /// rules are matched again for each question, which layout asks once per
-/// `::first-letter` box.
+/// `::first-letter` box and per inline box on a first line's run.
 pub struct Recascader<'a> {
     document: &'a Document,
     styles: &'a Styles,
@@ -516,14 +524,15 @@ impl Stylesheets {
     }
 }
 
-impl Recascade for Recascader<'_> {
-    fn pseudo_element(
+impl Recascader<'_> {
+    /// `cascade` of `element`'s matched declarations, resolved as the
+    /// cascade resolves them: the root element's `rem` is the initial
+    /// font size, every other element's the root's.
+    fn with_matched<R>(
         &self,
         element: NodeId,
-        pseudo: PseudoElement,
-        parent: &ComputedStyle,
-    ) -> Option<ComputedStyle> {
-        let target = Target::of(pseudo)?;
+        cascade: impl FnOnce(&Matched, &Resolution<'_>) -> R,
+    ) -> R {
         let mut cascader = self.cascader.borrow_mut();
         let cascader = &mut *cascader;
         let matched = declarations_for(
@@ -533,12 +542,6 @@ impl Recascade for Recascader<'_> {
             cascader.ua,
             &cascader.author,
         );
-        let applied = matched.of(target);
-        if applied.is_empty() {
-            return None;
-        }
-        // As the cascade has it: the root element's `rem` is the initial
-        // font size, every other element's the root's.
         let rem = if self.document.document_element() == Some(element) {
             ComputedStyle::default().font_size_px
         } else {
@@ -550,8 +553,55 @@ impl Recascade for Recascader<'_> {
             viewport_used: &cascader.viewport_used,
             attributes: self.document.attrs(element).unwrap_or_default(),
         };
-        Some(compute_style(applied, parent, target, None, &resolution))
+        cascade(&matched, &resolution)
     }
+}
+
+impl Recascade for Recascader<'_> {
+    fn element(&self, element: NodeId, parent: &ComputedStyle) -> ComputedStyle {
+        self.with_matched(element, |matched, resolution| {
+            element_style(self.document, element, matched, parent, resolution)
+        })
+    }
+
+    fn pseudo_element(
+        &self,
+        element: NodeId,
+        pseudo: PseudoElement,
+        parent: &ComputedStyle,
+    ) -> Option<ComputedStyle> {
+        let target = Target::of(pseudo)?;
+        self.with_matched(element, |matched, resolution| {
+            let applied = matched.of(target);
+            (!applied.is_empty()).then(|| compute_style(applied, parent, target, None, resolution))
+        })
+    }
+}
+
+/// An element's style from its `matched` declarations, inheriting from
+/// `parent`: its `dir` attribute read, and the root element's `display`
+/// blockified.
+fn element_style(
+    document: &Document,
+    element: NodeId,
+    matched: &Matched,
+    parent: &ComputedStyle,
+    resolution: &Resolution<'_>,
+) -> ComputedStyle {
+    let mut style = compute_style(
+        matched.of(Target::Element),
+        parent,
+        Target::Element,
+        document.attr(element, "dir"),
+        resolution,
+    );
+    // The root element's box is a block container or a table, whatever
+    // its `display` (CSS2 §9.7, css-display-3 §2.7): what the canvas
+    // takes its background from, and every other box is inside.
+    if document.document_element() == Some(element) {
+        style.display = style.display.blockified();
+    }
+    style
 }
 
 /// What [`Stylesheets::restyle`] did.
@@ -656,20 +706,7 @@ impl<'a> Cascader<'a> {
             viewport_used: &self.viewport_used,
             attributes: self.document.attrs(element).unwrap_or_default(),
         };
-        let mut style = compute_style(
-            matched.of(Target::Element),
-            parent_style,
-            Target::Element,
-            self.document.attr(element, "dir"),
-            &resolution,
-        );
-        // The root element's box is a block container or a table,
-        // whatever its `display` (CSS2 §9.7, css-display-3 §2.7): what
-        // the canvas takes its background from, and every other box is
-        // inside.
-        if self.document.document_element() == Some(element) {
-            style.display = style.display.blockified();
-        }
+        let style = element_style(self.document, element, &matched, parent_style, &resolution);
         // Each pseudo-element some rule styles, from the element's style.
         let pseudo = |target: Target| {
             let applied = matched.of(target);
@@ -3561,6 +3598,79 @@ mod tests {
         };
         assert_eq!(size("html"), (32.0, 32.0));
         assert_eq!(size("p"), (40.0, 40.0));
+    }
+
+    #[test]
+    fn a_first_line_takes_only_the_properties_that_apply_to_it() {
+        // Its fonts, colour, background, spacing and `vertical-align`
+        // apply; margins, padding, borders, `float`, `display` and
+        // `white-space` do not.
+        let sheets = [sheet(
+            "p::first-line { color: #f00; background-color: #0f0; font-size: 30px;
+                 font-family: serif; text-transform: uppercase; letter-spacing: 2px;
+                 word-spacing: 3px; vertical-align: top; margin: 2px; padding-left: 3px;
+                 border: 1px solid #00f; float: left; display: block; white-space: pre; }",
+        )];
+        let document = Document::from_node(&html::parse_document("<p>x</p>").unwrap());
+        let styles = cascade_document(&document, &sheets, &CascadeContext::default());
+        let s = styles
+            .pseudo(first(&document, "p"), PseudoElement::FirstLine)
+            .expect("styled");
+        assert_eq!(s.color, Color::rgb8(255, 0, 0));
+        assert_eq!(s.background_color, Color::rgb8(0, 255, 0));
+        assert_eq!((s.font_size_px, s.font_family.as_str()), (30.0, "serif"));
+        assert_eq!(s.text_transform, TextTransform::Uppercase);
+        assert_eq!((s.letter_spacing, s.word_spacing), (2.0, 3.0));
+        assert_eq!(s.vertical_align, VerticalAlign::Top);
+        let initial = ComputedStyle::default();
+        assert_eq!(
+            (&s.margin, &s.padding, &s.border_style),
+            (&initial.margin, &initial.padding, &initial.border_style)
+        );
+        assert_eq!(
+            (s.float, s.display, s.white_space),
+            (Float::None, Display::Inline, WhiteSpace::Normal)
+        );
+    }
+
+    #[test]
+    fn a_recascade_gives_an_elements_style_from_another_parent() {
+        // The span's own rules, over the given parent: its `em` and what
+        // it inherits are the parent's, what it sets its own.
+        let sheets = Stylesheets::new(vec![sheet(
+            "p { color: #00f } span { font-size: 2em; } .own { color: #0f0 }",
+        )]);
+        let document = Document::from_node(
+            &html::parse_document(
+                "<p><span>a</span><span class=own style='padding-left: 3px'>b</span></p>",
+            )
+            .unwrap(),
+        );
+        let context = CascadeContext::default();
+        let styles = sheets.cascade(&document, &context);
+        let recascade = sheets.recascader(&document, &styles, &context);
+        let parent = ComputedStyle {
+            font_size_px: 10.0,
+            color: Color::rgb8(1, 2, 3),
+            ..ComputedStyle::default()
+        };
+        let spans: Vec<NodeId> = document
+            .subtree(document.root())
+            .filter(|&id| document.tag(id) == Some("span"))
+            .collect();
+        let s = recascade.element(spans[0], &parent);
+        assert_eq!((s.font_size_px, s.color), (20.0, Color::rgb8(1, 2, 3)));
+        // A class rule and the `style` attribute are its rules too.
+        let s = recascade.element(spans[1], &parent);
+        assert_eq!(s.color, Color::rgb8(0, 255, 0));
+        assert_eq!(s.padding[LEFT], LengthPercentage::Px(3.0));
+        // The cascade's own, from the p's style, is the same as asked
+        // for with that parent.
+        let p = first(&document, "p");
+        assert_eq!(
+            recascade.element(spans[0], styles.get(p).unwrap()),
+            *styles.get(spans[0]).unwrap()
+        );
     }
 
     #[test]

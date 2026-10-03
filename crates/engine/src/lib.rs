@@ -3766,6 +3766,7 @@ mod tests {
           p::before { content: 'O'; display: block; overflow: hidden; height: 4px }\
           .a::first-letter { font-size: 14px; color: #00f } div::first-letter { padding: 1px }\
           td::first-letter { float: left; font-size: 20px }\
+          .a::first-line { font-size: 12px; background-color: #ff0 } p::first-line { color: #f0f }\
         </style>\
         <div class=a><p class=b title=t>one <q>two <q>three</q></q></p></div>\
         <p class='b c' title=u><span class=c>x</span> y</p>\

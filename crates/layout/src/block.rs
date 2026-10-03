@@ -2107,13 +2107,23 @@ fn layout_children<'a>(
                 // One inline formatting context (M7): the anonymous
                 // block's children wrap onto lines together, from the
                 // flow position down.
-                let run = match child.kind {
-                    BoxKind::AnonymousBlock => child.children.as_slice(),
-                    _ => std::slice::from_ref(child),
+                let (run, first_line) = match child.kind {
+                    BoxKind::AnonymousBlock => {
+                        (child.children.as_slice(), child.first_line.as_deref())
+                    }
+                    _ => (std::slice::from_ref(child), None),
                 };
                 let root_top = at.position();
-                let lines =
-                    layout_inline(run, cb_width, cb_height, &child.style, floats, at, fonts);
+                let lines = layout_inline(
+                    run,
+                    cb_width,
+                    cb_height,
+                    &child.style,
+                    first_line,
+                    floats,
+                    at,
+                    fonts,
+                );
                 if lines.last_baseline.is_none() {
                     // No line box at all (an empty inline element, or
                     // floats alone): treated as not existing, so it
@@ -2779,6 +2789,7 @@ mod tests {
             generated: None,
             quote_depth: 0,
             styled_by_ancestor: false,
+            first_line: None,
         };
         let block = LayoutBox {
             style: ComputedStyle {
@@ -2792,6 +2803,7 @@ mod tests {
             generated: None,
             quote_depth: 0,
             styled_by_ancestor: false,
+            first_line: None,
         };
         let layout = layout_document(&[block], VIEWPORT, &fonts);
         let m = fonts.primary().metrics(16.0);
@@ -4611,5 +4623,157 @@ mod tests {
             .find(|f| f.style.float == Float::Left)
             .expect("the letter is a float");
         assert_eq!(cap.h, fonts.primary().metrics(8.0).line_height());
+    }
+
+    #[test]
+    fn the_first_line_is_filled_in_its_own_font_and_the_next_in_the_paragraphs() {
+        // The p is as wide as "aa bb" in 32px: 16px would fit "cc" too,
+        // but the first line is filled in its 32px, over its strut.
+        let fonts = test_fonts();
+        let m = |size| fonts.metrics_for_text(" ", size);
+        let width =
+            fonts.measure("aa", 32.0) + fonts.measure(" ", 32.0) + fonts.measure("bb", 32.0);
+        let layout = document_of(
+            Element::new("p").text("aa bb cc dd"),
+            &format!("p {{ margin: 0; width: {width}px }} p::first-line {{ font-size: 32px }}"),
+        );
+        let [aa, bb, cc, dd] = ["aa", "bb", "cc", "dd"].map(|t| text_of(&layout, t));
+        assert_eq!((aa.style.font_size_px, bb.style.font_size_px), (32.0, 32.0));
+        assert_eq!((aa.y, bb.y), (m(32.0).ascent, m(32.0).ascent));
+        assert_eq!((cc.style.font_size_px, dd.style.font_size_px), (16.0, 16.0));
+        let second = m(32.0).line_height() + m(16.0).ascent;
+        assert_eq!((cc.y, dd.y), (second, second));
+        assert_eq!(
+            layout.roots[0].h,
+            m(32.0).line_height() + m(16.0).line_height()
+        );
+    }
+
+    #[test]
+    fn words_moved_on_from_the_first_line_take_their_own_styles() {
+        // "b" fits on the first line but the "c" glued to it does not:
+        // both move on, back in 16px, the b element's box with them.
+        // Nodes: p 1, b 2.
+        let fonts = test_fonts();
+        let width =
+            fonts.measure("aaaa", 32.0) + fonts.measure(" ", 32.0) + fonts.measure("b", 32.0) + 1.0;
+        let layout = document_of(
+            Element::new("p")
+                .text("aaaa b")
+                .push(Element::new("b").text("c")),
+            &format!("p {{ margin: 0; width: {width}px }} p::first-line {{ font-size: 32px }}"),
+        );
+        let [aaaa, b, c] = ["aaaa", "b", "c"].map(|t| text_of(&layout, t));
+        assert_eq!(aaaa.style.font_size_px, 32.0);
+        assert_eq!((b.style.font_size_px, c.style.font_size_px), (16.0, 16.0));
+        assert!(b.y > aaaa.y);
+        assert_eq!(b.y, c.y);
+        let boxes = inline_boxes(&layout);
+        assert_eq!(boxes.len(), 1);
+        assert_eq!(
+            (layout.number(boxes[0].node), boxes[0].style.font_size_px),
+            (2, 16.0)
+        );
+        assert!(boxes[0].y > aaaa.y - fonts.metrics_for_text(" ", 32.0).ascent);
+    }
+
+    #[test]
+    fn a_first_line_with_a_background_has_a_box_around_its_content() {
+        // Nodes: p 1. Two lines; the box is around the first's two
+        // words, as wide as they are, and named by the p.
+        let fonts = test_fonts();
+        let width =
+            fonts.measure("aa", 16.0) + fonts.measure(" ", 16.0) + fonts.measure("bb", 16.0);
+        let layout = document_of(
+            Element::new("p").text("aa bb cc"),
+            &format!(
+                "p {{ margin: 0; width: {width}px }} p::first-line {{ background-color: #0f0 }}"
+            ),
+        );
+        let boxes = inline_boxes(&layout);
+        assert_eq!(boxes.len(), 1);
+        let line = &boxes[0];
+        assert_eq!(
+            (layout.number(line.node), line.generated),
+            (1, Some(PseudoElement::FirstLine))
+        );
+        assert_eq!((line.x, line.w), (0.0, width));
+        let texts: Vec<&str> = line
+            .children
+            .iter()
+            .filter_map(|f| match &f.kind {
+                FragmentKind::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, ["aa", "bb"]);
+    }
+
+    #[test]
+    fn the_first_lines_strut_is_its_font_and_the_next_lines_the_paragraphs() {
+        // Two inline-blocks 2px tall, one a line: the first line is as
+        // tall as the 40px font, the second as the 16px.
+        let fonts = test_fonts();
+        let m = |size| fonts.metrics_for_text(" ", size);
+        let layout = document_of(
+            Element::new("p")
+                .push(Element::new("span"))
+                .text(" ")
+                .push(Element::new("span")),
+            "p { margin: 0; width: 6px } span { display: inline-block; width: 4px; height: 2px }
+             p::first-line { font-size: 40px }",
+        );
+        assert_eq!(
+            layout.roots[0].h,
+            m(40.0).line_height() + m(16.0).line_height()
+        );
+    }
+
+    #[test]
+    fn a_shrink_to_fit_width_counts_the_first_line_in_its_styles() {
+        // The float is as wide as "aa bb" in the first line's 32px.
+        let fonts = test_fonts();
+        let layout = document_of(
+            Element::new("div")
+                .attr("class", "f")
+                .push(Element::new("p").text("aa bb")),
+            ".f { float: left } p { margin: 0 } p::first-line { font-size: 32px }",
+        );
+        let width =
+            fonts.measure("aa", 32.0) + fonts.measure(" ", 32.0) + fonts.measure("bb", 32.0);
+        assert_eq!(layout.roots[0].w, width);
+    }
+
+    #[test]
+    fn a_kept_line_break_first_makes_the_first_line_empty() {
+        // The first line is the blank one, in the first line's 32px; the
+        // text is on the second, in its own 16px.
+        let fonts = test_fonts();
+        let m = |size| fonts.metrics_for_text(" ", size);
+        let layout = document_of(
+            Element::new("p").text("\nabc"),
+            "p { margin: 0; white-space: pre } p::first-line { font-size: 32px }",
+        );
+        let abc = text_of(&layout, "abc");
+        assert_eq!(abc.style.font_size_px, 16.0);
+        assert_eq!(abc.y, m(32.0).line_height() + m(16.0).ascent);
+    }
+
+    #[test]
+    fn an_inline_element_continued_onto_the_first_line_is_styled_there() {
+        // The span's start edge is flushed alone before its word, which
+        // does not fit beside it: the span is continued onto the first
+        // line, its box there in its first-line style. Nodes: p 1, span 2.
+        let layout = document_of(
+            Element::new("p").push(Element::new("span").text(" aaaa")),
+            "p { margin: 0; width: 1px } p::first-line { font-size: 32px }",
+        );
+        assert_eq!(text_of(&layout, "aaaa").style.font_size_px, 32.0);
+        let boxes = inline_boxes(&layout);
+        assert_eq!(boxes.len(), 1);
+        assert_eq!(
+            (layout.number(boxes[0].node), boxes[0].style.font_size_px),
+            (2, 32.0)
+        );
     }
 }
