@@ -56,7 +56,7 @@ pub use selector_matching::{matches_selector, matches_selector_list, parse_selec
 
 pub use cascade::{
     CascadeContext, FontMeasure, PseudoStyles, Recascade, Recascader, Restyle, Styles, Stylesheets,
-    cascade_document,
+    cascade_document, supports,
 };
 pub use computed::ComputedStyle;
 pub use invalidation::SelectorFeatures;

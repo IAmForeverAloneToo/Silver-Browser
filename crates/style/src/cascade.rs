@@ -1061,12 +1061,7 @@ fn compute_style(
                 CssWide::Initial => ComputedStyle::default().font_size_px,
                 CssWide::Inherit | CssWide::Unset => parent.font_size_px,
             };
-        } else if let Some(Token::Percentage { value }) = single_token(&a.decl.value) {
-            let px = *value as f32 / 100.0 * parent.font_size_px;
-            if px.is_finite() && px >= 0.0 {
-                style.font_size_px = px.min(MAX_LENGTH_PX);
-            }
-        } else if let Some(px) = parse_non_negative_length_px(&a.decl.value, &parent_bases) {
+        } else if let Some(px) = parse_font_size(&a.decl.value, &parent_bases) {
             style.font_size_px = px;
         }
     }
@@ -1128,10 +1123,43 @@ fn compute_style(
     style
 }
 
+/// Whether the cascade accepts the declaration `name: value` (M17): a
+/// property this engine knows, by its name or a `-webkit-` alias, and a
+/// value that property's parser takes, a CSS-wide keyword included.
+/// `name` and `value` are a declaration's as `css` parses one: the name
+/// lowercased, the value's tokens trimmed and without `!important`. The
+/// cascade's own parsers answer, so the answer is what the cascade does
+/// with the declaration. A relative length resolves against a 16px font
+/// in an 800 by 600 viewport, which no answer depends on.
+pub fn supports(name: &str, value: &[Token]) -> bool {
+    let context = CascadeContext::default();
+    let viewport_used = Cell::new(false);
+    let resolution = Resolution {
+        rem: 16.0,
+        context: &context,
+        viewport_used: &viewport_used,
+        attributes: &[],
+    };
+    let bases = LengthBases {
+        em: 16.0,
+        resolution: &resolution,
+    };
+    let parent = ComputedStyle::default();
+    apply_declaration(
+        &mut ComputedStyle::default(),
+        canonical_name(name),
+        value,
+        &bases,
+        &parent,
+        &mut [false; 4],
+    )
+}
+
 /// Applies one already-cascade-ordered declaration to `style`, ignoring
 /// (never erroring on) any property name or value this engine doesn't
 /// understand yet — the M3 forward-compatibility pattern: a browser
 /// encounters unsupported properties on every real page, constantly.
+/// Says whether it applied it, which is what [`supports`] answers (M17).
 fn apply_declaration(
     style: &mut ComputedStyle,
     name: &str,
@@ -1139,113 +1167,64 @@ fn apply_declaration(
     bases: &LengthBases<'_>,
     parent: &ComputedStyle,
     border_color_set: &mut [bool; 4],
-) {
+) -> bool {
     if let Some(keyword) = css_wide_keyword(value) {
-        apply_css_wide(style, name, keyword, parent, border_color_set);
-        return;
+        return apply_css_wide(style, name, keyword, parent, border_color_set);
     }
     match name {
-        "color" => {
-            if let Some(c) = parse_color(value) {
-                style.color = c;
-            }
-        }
-        "background-color" => {
-            if let Some(c) = parse_color(value) {
-                style.background_color = c;
-            }
-        }
-        "font-size" => {} // first pass, above
-        "font-family" => {
-            if let Some(f) = parse_font_family(value) {
-                style.font_family = f.into();
-            }
-        }
-        "display" => {
-            if let Some(d) = parse_display(value) {
-                style.display = d;
-            }
-        }
-        "text-align" => {
-            if let Some(a) = parse_text_align(value) {
-                style.text_align = a;
-            }
-        }
-        "text-transform" => {
-            if let Some(t) = parse_text_transform(value) {
-                style.text_transform = t;
-            }
-        }
-        "white-space" => {
-            if let Some(w) = parse_white_space(value) {
-                style.white_space = w;
-            }
-        }
-        "letter-spacing" => {
-            if let Some(v) = parse_spacing(value, bases) {
-                style.letter_spacing = v;
-            }
-        }
-        "word-spacing" => {
-            if let Some(v) = parse_spacing(value, bases) {
-                style.word_spacing = v;
-            }
-        }
-        "width" => {
-            if let Some(w) = parse_size(value, bases) {
-                style.width = w;
-            }
-        }
-        "height" => {
-            // A percentage is kept as one (M10.1); layout resolves it
-            // against the containing block's height when that is
-            // definite, and treats it as `auto` otherwise (CSS2 §10.5).
-            if let Some(h) = parse_size(value, bases) {
-                style.height = h;
-            }
-        }
-        "margin" => {
-            if let Some(e) = parse_margin_shorthand(value, bases) {
-                style.margin = e;
-            }
-        }
+        "color" => set(&mut style.color, parse_color(value)),
+        "background-color" => set(&mut style.background_color, parse_color(value)),
+        "background" => set(&mut style.background_color, parse_background(value)),
+        // The first pass of `compute_style` applies it.
+        "font-size" => parse_font_size(value, bases).is_some(),
+        "font-family" => set(
+            &mut style.font_family,
+            parse_font_family(value).map(Into::into),
+        ),
+        "display" => set(&mut style.display, parse_display(value)),
+        "text-align" => set(&mut style.text_align, parse_text_align(value)),
+        "text-transform" => set(&mut style.text_transform, parse_text_transform(value)),
+        "white-space" => set(&mut style.white_space, parse_white_space(value)),
+        "letter-spacing" => set(&mut style.letter_spacing, parse_spacing(value, bases)),
+        "word-spacing" => set(&mut style.word_spacing, parse_spacing(value, bases)),
+        "width" => set(&mut style.width, parse_size(value, bases)),
+        // A percentage is kept as one (M10.1); layout resolves it against
+        // the containing block's height when that is definite, and treats
+        // it as `auto` otherwise (CSS2 §10.5).
+        "height" => set(&mut style.height, parse_size(value, bases)),
+        "margin" => set(&mut style.margin, parse_margin_shorthand(value, bases)),
         "margin-top" => set_margin_edge(&mut style.margin, TOP, value, bases),
         "margin-right" => set_margin_edge(&mut style.margin, RIGHT, value, bases),
         "margin-bottom" => set_margin_edge(&mut style.margin, BOTTOM, value, bases),
         "margin-left" => set_margin_edge(&mut style.margin, LEFT, value, bases),
-        "padding" => {
-            if let Some(e) = parse_padding_shorthand(value, bases) {
-                style.padding = e;
-            }
-        }
+        "padding" => set(&mut style.padding, parse_padding_shorthand(value, bases)),
         "padding-top" => set_padding_edge(&mut style.padding, TOP, value, bases),
         "padding-right" => set_padding_edge(&mut style.padding, RIGHT, value, bases),
         "padding-bottom" => set_padding_edge(&mut style.padding, BOTTOM, value, bases),
         "padding-left" => set_padding_edge(&mut style.padding, LEFT, value, bases),
-        "border-width" => {
-            if let Some(e) = parse_border_width_shorthand(value, bases) {
-                style.border_width = e;
-            }
-        }
+        "border-width" => set(
+            &mut style.border_width,
+            parse_border_width_shorthand(value, bases),
+        ),
         "border-top-width" => set_border_width(style, TOP, value, bases),
         "border-right-width" => set_border_width(style, RIGHT, value, bases),
         "border-bottom-width" => set_border_width(style, BOTTOM, value, bases),
         "border-left-width" => set_border_width(style, LEFT, value, bases),
         "border-color" => {
-            if let Some(colors) = parse_1_to_4(value, parse_color) {
-                style.border_color = colors;
+            let set_colors = set(&mut style.border_color, parse_1_to_4(value, parse_color));
+            if set_colors {
                 *border_color_set = [true; 4];
             }
+            set_colors
         }
         "border-top-color" => set_border_color(style, TOP, value, border_color_set),
         "border-right-color" => set_border_color(style, RIGHT, value, border_color_set),
         "border-bottom-color" => set_border_color(style, BOTTOM, value, border_color_set),
         "border-left-color" => set_border_color(style, LEFT, value, border_color_set),
-        "border-style" => {
-            if let Some(styles) = parse_1_to_4(value, parse_border_style) {
-                style.border_style = styles;
-            }
-        }
+        "border-style" => set(
+            &mut style.border_style,
+            parse_1_to_4(value, parse_border_style),
+        ),
         "border-top-style" => set_border_style(style, TOP, value),
         "border-right-style" => set_border_style(style, RIGHT, value),
         "border-bottom-style" => set_border_style(style, BOTTOM, value),
@@ -1261,201 +1240,114 @@ fn apply_declaration(
         "border-right" => apply_border_shorthand(style, &[RIGHT], value, bases, border_color_set),
         "border-bottom" => apply_border_shorthand(style, &[BOTTOM], value, bases, border_color_set),
         "border-left" => apply_border_shorthand(style, &[LEFT], value, bases, border_color_set),
-        "overflow" => {
-            if let Some(o) = parse_overflow(value) {
-                style.overflow = o;
-            }
-        }
-        "float" => {
-            if let Some(f) = parse_float(value) {
-                style.float = f;
-            }
-        }
-        "clear" => {
-            if let Some(c) = parse_clear(value) {
-                style.clear = c;
-            }
-        }
-        "position" => {
-            if let Some(p) = parse_position(value) {
-                style.position = p;
-            }
-        }
-        "top" | "right" | "bottom" | "left" => {
-            // Kept as written (M11.3): a percentage is of the containing
-            // block's height or width, which only layout knows.
-            if let Some(v) = parse_length_percentage_or_auto(value, bases) {
-                style.inset[edge_index(name)] = v;
-            }
-        }
-        "z-index" => {
-            if let Some(z) = parse_z_index(value) {
-                style.z_index = z;
-            }
-        }
-        "box-sizing" => {
-            if let Some(b) = parse_box_sizing(value) {
-                style.box_sizing = b;
-            }
-        }
-        "min-width" => {
-            if let Some(v) = parse_size(value, bases) {
-                style.min_width = v;
-            }
-        }
-        "min-height" => {
-            if let Some(v) = parse_size(value, bases) {
-                style.min_height = v;
-            }
-        }
-        "max-width" => {
-            if let Some(v) = parse_max_size(value, bases) {
-                style.max_width = v;
-            }
-        }
-        "max-height" => {
-            if let Some(v) = parse_max_size(value, bases) {
-                style.max_height = v;
-            }
-        }
-        "table-layout" => {
-            if let Some(t) = parse_table_layout(value) {
-                style.table_layout = t;
-            }
-        }
-        "border-collapse" => {
-            if let Some(b) = parse_border_collapse(value) {
-                style.border_collapse = b;
-            }
-        }
-        "border-spacing" => {
-            if let Some(s) = parse_border_spacing(value, bases) {
-                style.border_spacing = s;
-            }
-        }
-        "caption-side" => {
-            if let Some(c) = parse_caption_side(value) {
-                style.caption_side = c;
-            }
-        }
-        "empty-cells" => {
-            if let Some(e) = parse_empty_cells(value) {
-                style.empty_cells = e;
-            }
-        }
-        "vertical-align" => {
-            if let Some(v) = parse_vertical_align(value, bases) {
-                style.vertical_align = v;
-            }
-        }
-        "content" => {
-            if let Some(c) = parse_content(value, bases.resolution.attributes) {
-                style.content = c;
-            }
-        }
-        "quotes" => {
-            if let Some(q) = parse_quotes(value) {
-                style.quotes = q;
-            }
-        }
-        "flex-direction" => {
-            if let Some(d) = parse_flex_direction(value) {
-                style.flex_direction = d;
-            }
-        }
-        "flex-wrap" => {
-            if let Some(w) = parse_flex_wrap(value) {
-                style.flex_wrap = w;
-            }
-        }
-        "flex-flow" => {
-            if let Some((d, w)) = parse_flex_flow(value) {
+        "overflow" => set(&mut style.overflow, parse_overflow(value)),
+        "float" => set(&mut style.float, parse_float(value)),
+        "clear" => set(&mut style.clear, parse_clear(value)),
+        "position" => set(&mut style.position, parse_position(value)),
+        // Kept as written (M11.3): a percentage is of the containing
+        // block's height or width, which only layout knows.
+        "top" | "right" | "bottom" | "left" => set(
+            &mut style.inset[edge_index(name)],
+            parse_length_percentage_or_auto(value, bases),
+        ),
+        "z-index" => set(&mut style.z_index, parse_z_index(value)),
+        "box-sizing" => set(&mut style.box_sizing, parse_box_sizing(value)),
+        "min-width" => set(&mut style.min_width, parse_size(value, bases)),
+        "min-height" => set(&mut style.min_height, parse_size(value, bases)),
+        "max-width" => set(&mut style.max_width, parse_max_size(value, bases)),
+        "max-height" => set(&mut style.max_height, parse_max_size(value, bases)),
+        "table-layout" => set(&mut style.table_layout, parse_table_layout(value)),
+        "border-collapse" => set(&mut style.border_collapse, parse_border_collapse(value)),
+        "border-spacing" => set(
+            &mut style.border_spacing,
+            parse_border_spacing(value, bases),
+        ),
+        "caption-side" => set(&mut style.caption_side, parse_caption_side(value)),
+        "empty-cells" => set(&mut style.empty_cells, parse_empty_cells(value)),
+        "vertical-align" => set(
+            &mut style.vertical_align,
+            parse_vertical_align(value, bases),
+        ),
+        "content" => set(
+            &mut style.content,
+            parse_content(value, bases.resolution.attributes),
+        ),
+        "quotes" => set(&mut style.quotes, parse_quotes(value)),
+        "flex-direction" => set(&mut style.flex_direction, parse_flex_direction(value)),
+        "flex-wrap" => set(&mut style.flex_wrap, parse_flex_wrap(value)),
+        "flex-flow" => parse_flex_flow(value)
+            .map(|(d, w)| {
                 style.flex_direction = d;
                 style.flex_wrap = w;
-            }
-        }
-        "order" => {
-            if let Some(o) = parse_order(value) {
-                style.order = o;
-            }
-        }
-        "flex-grow" => {
-            if let Some(g) = parse_flex_factor(value) {
-                style.flex_grow = g;
-            }
-        }
-        "flex-shrink" => {
-            if let Some(s) = parse_flex_factor(value) {
-                style.flex_shrink = s;
-            }
-        }
-        "flex-basis" => {
-            if let Some(b) = parse_flex_basis(value, bases) {
-                style.flex_basis = b;
-            }
-        }
-        "flex" => {
-            if let Some((grow, shrink, basis)) = parse_flex(value, bases) {
+            })
+            .is_some(),
+        "order" => set(&mut style.order, parse_order(value)),
+        "flex-grow" => set(&mut style.flex_grow, parse_flex_factor(value)),
+        "flex-shrink" => set(&mut style.flex_shrink, parse_flex_factor(value)),
+        "flex-basis" => set(&mut style.flex_basis, parse_flex_basis(value, bases)),
+        "flex" => parse_flex(value, bases)
+            .map(|(grow, shrink, basis)| {
                 style.flex_grow = grow;
                 style.flex_shrink = shrink;
                 style.flex_basis = basis;
-            }
-        }
+            })
+            .is_some(),
         "justify-content" | "align-content" => {
             let justify = name == "justify-content";
             let words = idents(&split_whitespace_groups(value));
-            if let Some(a) = words.and_then(|w| content_alignment(&w, justify)) {
-                if justify {
-                    style.justify_content = a;
-                } else {
-                    style.align_content = a;
-                }
-            }
+            let slot = if justify {
+                &mut style.justify_content
+            } else {
+                &mut style.align_content
+            };
+            set(slot, words.and_then(|w| content_alignment(&w, justify)))
         }
         "align-items" | "align-self" => {
             let items = name == "align-items";
             let words = idents(&split_whitespace_groups(value));
-            if let Some(a) = words.and_then(|w| self_alignment(&w, !items)) {
-                if items {
-                    style.align_items = a;
-                } else {
-                    style.align_self = a;
-                }
-            }
+            let slot = if items {
+                &mut style.align_items
+            } else {
+                &mut style.align_self
+            };
+            set(slot, words.and_then(|w| self_alignment(&w, !items)))
         }
-        "place-content" => {
-            if let Some((align, justify)) = parse_place_content(value) {
+        "place-content" => parse_place_content(value)
+            .map(|(align, justify)| {
                 style.align_content = align;
                 style.justify_content = justify;
-            }
-        }
-        "place-items" => {
-            if let Some(a) = parse_place_self(value, true) {
-                style.align_items = a;
-            }
-        }
-        "place-self" => {
-            if let Some(a) = parse_place_self(value, false) {
-                style.align_self = a;
-            }
-        }
-        "row-gap" | "column-gap" => {
-            if let Some(g) = parse_gap(value, bases) {
-                if name == "row-gap" {
-                    style.row_gap = g;
-                } else {
-                    style.column_gap = g;
-                }
-            }
-        }
-        "gap" => {
-            if let Some((row, column)) = parse_gap_shorthand(value, bases) {
+            })
+            .is_some(),
+        "place-items" => set(&mut style.align_items, parse_place_self(value, true)),
+        "place-self" => set(&mut style.align_self, parse_place_self(value, false)),
+        "row-gap" => set(&mut style.row_gap, parse_gap(value, bases)),
+        "column-gap" => set(&mut style.column_gap, parse_gap(value, bases)),
+        "gap" => parse_gap_shorthand(value, bases)
+            .map(|(row, column)| {
                 style.row_gap = row;
                 style.column_gap = column;
-            }
-        }
-        _ => {} // not in the v1 property set (or not a real property) — ignored, never an error
+            })
+            .is_some(),
+        // Not in the v1 property set, or not a real property: ignored,
+        // never an error.
+        _ => false,
     }
+}
+
+/// A `font-size` (CSS2 §15.7): a non-negative length, or a percentage
+/// of the parent's font size, which is `bases.em` here.
+fn parse_font_size(value: &[Token], bases: &LengthBases<'_>) -> Option<f32> {
+    if let Some(Token::Percentage { value }) = single_token(value) {
+        let px = *value as f32 / 100.0 * bases.em;
+        return (px.is_finite() && px >= 0.0).then(|| px.min(MAX_LENGTH_PX));
+    }
+    parse_non_negative_length_px(value, bases)
+}
+
+/// Writes `v` into `slot` when there is one: whether a declaration's
+/// value parsed, for [`apply_declaration`]'s answer.
+fn set<T>(slot: &mut T, v: Option<T>) -> bool {
+    v.map(|v| *slot = v).is_some()
 }
 
 /// Writes a `border-*-width` longhand: a width keyword or a length; a
@@ -1467,25 +1359,28 @@ fn set_border_width(
     side: usize,
     tokens: &[Token],
     bases: &LengthBases<'_>,
-) {
-    if let Some(v) = parse_border_width(tokens, bases) {
-        style.border_width[side] = v;
-    }
+) -> bool {
+    set(
+        &mut style.border_width[side],
+        parse_border_width(tokens, bases),
+    )
 }
 
 /// Writes a `border-*-color` longhand.
-fn set_border_color(style: &mut ComputedStyle, side: usize, tokens: &[Token], set: &mut [bool; 4]) {
-    if let Some(c) = parse_color(tokens) {
-        style.border_color[side] = c;
-        set[side] = true;
-    }
+fn set_border_color(
+    style: &mut ComputedStyle,
+    side: usize,
+    tokens: &[Token],
+    color_set: &mut [bool; 4],
+) -> bool {
+    let applied = set(&mut style.border_color[side], parse_color(tokens));
+    color_set[side] |= applied;
+    applied
 }
 
 /// Writes a `border-*-style` longhand.
-fn set_border_style(style: &mut ComputedStyle, side: usize, tokens: &[Token]) {
-    if let Some(s) = parse_border_style(tokens) {
-        style.border_style[side] = s;
-    }
+fn set_border_style(style: &mut ComputedStyle, side: usize, tokens: &[Token]) -> bool {
+    set(&mut style.border_style[side], parse_border_style(tokens))
 }
 
 /// A `<line-width>` (CSS2 §8.5.1): `thin`, `medium`, `thick`, or a
@@ -1523,10 +1418,11 @@ fn set_padding_edge(
     which: usize,
     tokens: &[Token],
     bases: &LengthBases<'_>,
-) {
-    if let Some(v) = parse_non_negative_length_percentage(tokens, bases) {
-        edges[which] = v;
-    }
+) -> bool {
+    set(
+        &mut edges[which],
+        parse_non_negative_length_percentage(tokens, bases),
+    )
 }
 
 /// The CSS-wide keywords (css-cascade-5 §7.3), which every property
@@ -1571,14 +1467,15 @@ fn is_inherited(name: &str) -> bool {
 /// Applies `name: <keyword>`: the parent's computed value for
 /// `inherit`, the initial value for `initial`, whichever the property's
 /// inheritance says for `unset`. `font-size` is handled in the first
-/// pass of [`compute_style`] and ignored here.
+/// pass of [`compute_style`] and ignored here. Says whether `name` is a
+/// property this engine knows.
 fn apply_css_wide(
     style: &mut ComputedStyle,
     name: &str,
     keyword: CssWide,
     parent: &ComputedStyle,
     border_color_set: &mut [bool; 4],
-) {
+) -> bool {
     let initial = ComputedStyle::default();
     let from_parent = match keyword {
         CssWide::Inherit => true,
@@ -1588,7 +1485,7 @@ fn apply_css_wide(
     let src = if from_parent { parent } else { &initial };
     match name {
         "color" => style.color = src.color,
-        "background-color" => style.background_color = src.background_color,
+        "background-color" | "background" => style.background_color = src.background_color,
         "font-size" => {} // the first pass, see `compute_style`
         "font-family" => style.font_family = src.font_family.clone(),
         "display" => style.display = src.display,
@@ -1712,8 +1609,9 @@ fn apply_css_wide(
             }
             *border_color_set = [from_parent; 4];
         }
-        _ => {} // a property this engine does not know: ignored, as ever
+        _ => return false, // a property this engine does not know: ignored, as ever
     }
+    true
 }
 
 /// Like [`set_edge`], for a `margin-*` longhand (which additionally
@@ -1723,10 +1621,11 @@ fn set_margin_edge(
     which: usize,
     tokens: &[Token],
     bases: &LengthBases<'_>,
-) {
-    if let Some(v) = parse_length_percentage_or_auto(tokens, bases) {
-        edges[which] = v;
-    }
+) -> bool {
+    set(
+        &mut edges[which],
+        parse_length_percentage_or_auto(tokens, bases),
+    )
 }
 
 /// Expands a 1–4 value list into `[top, right, bottom, left]` per CSS2
@@ -1777,13 +1676,13 @@ fn apply_border_shorthand(
     tokens: &[Token],
     bases: &LengthBases<'_>,
     border_color_set: &mut [bool; 4],
-) {
+) -> bool {
     let mut width = None;
     let mut border_style = None;
     let mut color = None;
     let groups = split_whitespace_groups(tokens);
     if groups.is_empty() {
-        return; // `border: ;` has no component: an invalid declaration, ignored
+        return false; // `border: ;` has no component: an invalid declaration, ignored
     }
     for g in groups {
         if width.is_none()
@@ -1799,7 +1698,7 @@ fn apply_border_shorthand(
         {
             color = Some(c);
         } else {
-            return; // an unrecognized (or repeated) part: drop the whole shorthand
+            return false; // an unrecognized (or repeated) part: drop the whole shorthand
         }
     }
     for &side in sides {
@@ -1813,6 +1712,7 @@ fn apply_border_shorthand(
             None => border_color_set[side] = false,
         }
     }
+    true
 }
 
 /// Splits `tokens` on whitespace into non-empty groups, preserving each
@@ -2633,6 +2533,33 @@ fn parse_font_family(tokens: &[Token]) -> Option<String> {
 /// (see the module doc) — filters whitespace, then requires exactly one
 /// remaining token (trailing garbage invalidates the value, matching
 /// real CSS: a malformed value drops the whole declaration).
+/// The `background` shorthand (css-backgrounds-3 §3.10, M17) as far as
+/// this engine paints backgrounds: one layer of a `<color>` and the
+/// image `none`, each at most once and either left out; the colour it
+/// sets, `transparent` when it gives none. Any other component — an
+/// image, a position, a size, a second layer — is one this engine cannot
+/// honour, so the declaration is dropped rather than half applied.
+fn parse_background(tokens: &[Token]) -> Option<Color> {
+    let groups = split_whitespace_groups(tokens);
+    if groups.is_empty() {
+        return None;
+    }
+    let mut color = None;
+    let mut image = false;
+    for group in &groups {
+        if !image && single_ident(group).is_some_and(|i| i.eq_ignore_ascii_case("none")) {
+            image = true;
+        } else if color.is_none()
+            && let Some(c) = parse_color(group)
+        {
+            color = Some(c);
+        } else {
+            return None;
+        }
+    }
+    Some(color.unwrap_or(ComputedStyle::default().background_color))
+}
+
 fn parse_color(tokens: &[Token]) -> Option<Color> {
     match single_token(tokens)? {
         Token::Hash { value, .. } => parse_hex_color(value),
@@ -2987,6 +2914,89 @@ mod tests {
 
     fn sheet(src: &str) -> css::Stylesheet {
         css::parse_stylesheet(src).expect("test stylesheets are valid")
+    }
+
+    #[test]
+    fn the_background_shorthand_sets_the_colour_and_resets_it() {
+        // M17: `background` is its colour here, the rest of the layer at
+        // its initial value; a later shorthand without a colour resets
+        // an earlier `background-color`, and one the engine cannot honour
+        // is dropped whole.
+        let colour = |css: &str| {
+            let sheet = css::parse_stylesheet(css).expect("never fails");
+            style_of("<p>x</p>", &[sheet], "p").background_color
+        };
+        assert_eq!(colour("p { background: green }"), Color::rgb8(0, 128, 0));
+        assert_eq!(
+            colour("p { background-color: red; background: none }"),
+            ComputedStyle::default().background_color
+        );
+        assert_eq!(
+            colour("p { background: green; background: url(a.png) red }"),
+            Color::rgb8(0, 128, 0)
+        );
+    }
+
+    #[test]
+    fn supports_answers_what_the_cascade_does_with_a_declaration() {
+        // M17: the cascade's own parsers, every property and alias it
+        // knows, the CSS-wide keywords; nothing it would drop.
+        let supports = |name: &str, value: &str| {
+            let declarations =
+                css::parse_style_attribute(&format!("{name}: {value}")).expect("never fails");
+            let [d] = declarations.as_slice() else {
+                panic!("one declaration in {name}: {value}");
+            };
+            super::supports(&d.name, &d.value)
+        };
+        for (name, value) in [
+            ("display", "flex"),
+            ("display", "-webkit-inline-flex"),
+            ("width", "10px"),
+            ("width", "fit-content"),
+            ("margin", "auto 5%"),
+            ("border", "1px solid lightblue"),
+            ("-webkit-flex", "1"),
+            ("flex-flow", "column wrap"),
+            ("place-items", "center"),
+            ("gap", "10px 5%"),
+            ("font-size", "12px"),
+            ("font-size", "150%"),
+            ("color", "inherit"),
+            ("align-self", "unset"),
+        ] {
+            assert!(supports(name, value), "{name}: {value}");
+        }
+        for (name, value) in [
+            ("background", "green"),
+            ("background", "none"),
+            ("background", "none lightblue"),
+        ] {
+            assert!(supports(name, value), "{name}: {value}");
+        }
+        for (name, value) in [
+            ("background", "url(a.png) green"),
+            ("background", "green, red"),
+            ("background", "green red"),
+            ("background", "left top green"),
+        ] {
+            assert!(!supports(name, value), "{name}: {value}");
+        }
+        for (name, value) in [
+            ("display", "grid"),
+            ("display", "-webkit-box"),
+            ("width", "-5px"),
+            ("width", "calc(10px + 1em)"),
+            ("color", "rgb(0, 0, 0)"),
+            ("writing-mode", "vertical-rl"),
+            ("bogus", "inherit"),
+            ("font-size", "-1px"),
+            ("flex-grow", "-1"),
+            ("justify-content", "baseline"),
+            ("border", "1px solid red 2px"),
+        ] {
+            assert!(!supports(name, value), "{name}: {value}");
+        }
     }
 
     /// Runs `f` with the length bases of a 16px element whose root is

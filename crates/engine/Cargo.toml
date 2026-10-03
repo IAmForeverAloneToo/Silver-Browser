@@ -16,6 +16,12 @@ render.workspace = true
 style.workspace = true
 text.workspace = true
 
+[[example]]
+# The web-platform-tests pull (M17); its rule's tests run with the
+# crate's.
+name = "wpt"
+test = true
+
 [[bench]]
 name = "scroll"
 harness = false

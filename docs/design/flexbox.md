@@ -462,7 +462,13 @@ context even when it is not positioned, and is painted at its `z-index`
 layer. The paint-order walk knows an item by its parent fragment, a flex
 container's, whose in-flow children are its items. Order-modified
 document order comes from the fragment order above. Hit testing reads
-the same steps, so it agrees.
+the same steps, so it agrees. Positioned boxes are another matter:
+CSS2's Appendix E paints them in tree order, which M11's walk takes
+from the fragments. An absolutely positioned box goes up to its
+containing block's fragment, or becomes a root of the layout, so it
+comes after the positioned boxes that follow it in the document. The
+WPT subset found the difference, and the walk takes positioned boxes in
+document order, order-modified among items, in step 9.
 
 **The layout cache.** An in-flow flex container placed by `block` is
 kept under its node like a block or a table, with the same conditions.
@@ -490,14 +496,21 @@ than by hand:
 - every declaration a property and value the cascade accepts, decided by
   a new `style::supports(name, value)`, the cascade's own parsers
   answering, so the rule can never disagree with the cascade;
-- no `@font-face` and no Ahem font, no writing modes, no `direction:
-  rtl`.
+- no at-rule but `@charset`, so no `@font-face` and no `@media`, and no
+  rule inside a rule (CSS Nesting), which the parser would drop with
+  the declarations around it;
+- no Ahem font, no writing modes, no `direction: rtl`;
+- in an XHTML file, no CDATA section and no self-closing tag but a void
+  element's, which the HTML parser reads otherwise.
 
-A scan of the directory at the commit used here finds nearly 500 such
-tests among its 1,234 reftests and check-layout tests, once this
-milestone's properties and colours are counted. The rest wait mostly on
-writing modes (201 tests), `line-height` (136), `br` (131), images (112)
-and scripts (103).
+For the subset, the cascade takes the `background` shorthand in its
+one-layer colour form: a `<color>`, `none`, or both, setting the colour,
+transparent when none is given. With anything else in it, an image or a
+position, the declaration is dropped whole, as a parse error is. At the commit vendored here, the rule takes
+350 tests: 310 reftests, 32 check-layout tests and 8 crashtests. The
+directory's README counts the tests it leaves out by the first reason
+found: scripts (160), CDATA sections (127), writing modes (113), images
+(82) and `line-height` (65) lead.
 
 - *Pulling.* `cargo run -p engine --example wpt -- pull <checkout>`
   applies the rule to a checkout of web-platform-tests. It copies the
@@ -530,7 +543,10 @@ and scripts (103).
 - *Expectations.* `expectations.txt` names each test expected to fail,
   with the reason. A test that fails without being named fails the run,
   and so does a named one that passes, so the file stays the true list
-  of what does not work and why.
+  of what does not work and why. Its sections are the steps that will
+  make the tests pass, and a last one for those that wait on nothing in
+  this milestone (section 2). At step 5, 287 of the 350 pass; 55 wait on
+  steps 6 to 9 and 8 on nothing here.
 - *Triage.* Every run writes `target/wpt/report.html`. It lists each
   test with its result and reason, and for a failing reftest shows the
   test's render, the reference's and the difference side by side. That
@@ -612,6 +628,21 @@ dictionaries.
   scripts: the tests that need them wait for them. `expectations.txt`
   and the report say which, and the rule picks them up again when they
   land.
+- *What the WPT subset found outside flexbox*, kept as expected failures
+  with their reasons, each a matter for the milestone that owns it:
+  - a fixed-layout table with a percentage width has an unbounded
+    max-content width in the reference browsers, in a float as in a
+    flex item; this engine gives it its columns' (tables, M12);
+  - a table whose 100% column makes its max-content width unbounded
+    (CSS2 §17.5.2.2) keeps that out of a flex item's base size in the
+    reference browsers, which this engine does not (M12);
+  - the root's or the body's `overflow` is not carried to the viewport
+    (css-overflow-3 §3.3), so a body with `overflow: hidden` is a
+    formatting context root here and its child's margins do not
+    collapse through it (M9 and M10.5);
+  - tests written for classic scrollbars, which take room from the
+    content, against this engine's overlays (M10.5, by decision);
+  - quirks mode (roadmap D14).
 
 ## 3. Order of work
 
@@ -649,7 +680,8 @@ tests pass.
    its alignment, and the height imposed on an absolutely positioned box
    that knows it. M17.8.
 9. *Paint and the cache*: items painted as inline-blocks, `z-index` on
-   items, hit testing; flex containers in the layout cache.
+   items, positioned boxes in document order, hit testing; flex
+   containers in the layout cache.
 10. *The golden cases*: the twenty reference pages, and whatever they
     find. M17.9 with step 5.
 11. *Acceptance*: the five layouts and `about:silver`. M17.10.
