@@ -129,7 +129,7 @@ pub enum DisplayItem {
         text: String,
         /// Left edge of the run, px from viewport left.
         x: f32,
-        /// Baseline, px from viewport top.
+        /// Baseline, px from viewport top: a whole pixel.
         y: f32,
         /// Font size in px.
         size: f32,
@@ -472,10 +472,15 @@ pub fn paint_fragments_in(
                 if let FragmentKind::Text(text) = &fragment.kind
                     && !text.trim().is_empty()
                 {
+                    // The baseline on the pixel grid, as a browser puts it
+                    // and as a box's edges are (M11): a glyph's edge then
+                    // falls in the same pixel rows whatever fraction the
+                    // layout gave the line (M17). Across, the run keeps
+                    // its fraction.
                     items.push(DisplayItem::Text {
                         text: text.clone(),
                         x: rect.x,
-                        y: baseline,
+                        y: snap(baseline),
                         size: fragment.style.font_size_px,
                         color: to_rgba8(fragment.style.color),
                     });
@@ -566,12 +571,17 @@ fn push_scrollbar(items: &mut Vec<DisplayItem>, f: &Fragment, rect: Rect, offset
     });
 }
 
+/// A position on the pixel grid (M11): rounded to the nearest whole
+/// device pixel, half up.
+fn snap(v: f32) -> f32 {
+    (v + 0.5).floor()
+}
+
 /// Snaps a box's edges to whole device pixels (M11): each edge rounded
 /// to the nearest pixel on its own, half up, so that neighbouring boxes
 /// still meet without a seam, as browsers do; layout keeps its
-/// fractions, and text is not snapped.
+/// fractions. A text run's baseline is snapped the same way (M17).
 fn snapped(rect: Rect) -> Rect {
-    let snap = |v: f32| (v + 0.5).floor();
     let (x, y) = (snap(rect.x), snap(rect.y));
     let (right, bottom) = (snap(rect.x + rect.w), snap(rect.y + rect.h));
     Rect {
@@ -1483,7 +1493,7 @@ mod fragment_tests {
     }
 
     #[test]
-    fn text_fragment_paints_at_its_baseline() {
+    fn text_fragment_paints_at_its_baseline_on_the_pixel_grid() {
         let fonts = test_fonts();
         let list = display_list_of(
             Element::new("p").text("hi"),
@@ -1505,15 +1515,25 @@ mod fragment_tests {
             } => {
                 assert_eq!(text, "hi");
                 // The baseline is the font's own ascent at this size
-                // (M7.1/M7.4) — not simply the font-size.
-                assert_eq!(
-                    (*x, *y, *size),
-                    (0.0, fonts.primary().metrics(12.0).ascent, 12.0)
-                );
+                // (M7.1/M7.4) — not simply the font-size — on the pixel
+                // grid (M17): 9.12 is 9.
+                let ascent = fonts.primary().metrics(12.0).ascent;
+                assert_eq!((ascent * 100.0).round(), 912.0);
+                assert_eq!((*x, *y, *size), (0.0, 9.0, 12.0));
                 assert_eq!(*color, Rgba8::rgb(0, 0, 255));
             }
             _ => unreachable!(),
         }
+        // Half a pixel lower, 9.62 is 10.
+        let list = display_list_of(
+            Element::new("p").text("hi"),
+            "p { display: block; margin: 0; padding-top: 0.5px; font-size: 12px; }",
+        );
+        let baseline = list.items.iter().find_map(|i| match i {
+            DisplayItem::Text { y, .. } => Some(*y),
+            _ => None,
+        });
+        assert_eq!(baseline, Some(10.0));
     }
 
     #[test]

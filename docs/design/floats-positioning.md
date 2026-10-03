@@ -285,7 +285,9 @@ such mitres declares as its tolerance; and a double border in two
 colours differs outright — the browser lets the background through the
 mitres of its bands, this engine does not — so that page has none. With
 both rules, the reference pages of this milestone use fractional
-lengths and multi-colour borders where M10's could not.
+lengths and multi-colour borders where M10's could not. M17's
+web-platform tests were the text reference case: a text run's baseline
+is snapped since, as an edge is, its horizontal position left as it is.
 
 **Acceptance against a reference browser (M11.7).** The harness of
 M10.7: box-only pages under `crates/engine/tests/reference/`, captured

@@ -554,8 +554,9 @@ a line that grows into a float after it started is not relaid; `inset`,
 are not parsed; `direction: rtl` does not change the over-constrained
 rules; sticky in nested scrollers and `fixed` inside a transformed
 ancestor (M19); opacity and transforms as stacking contexts (M19);
-text positions are not snapped; absolutely positioned boxes do not
-shrink-to-fit against their containing block's height; floats do not
+text positions are not snapped across, only their baselines (M17);
+absolutely positioned boxes do not shrink-to-fit against their
+containing block's height; floats do not
 affect margin collapsing beyond clearance; collapsible white space at
 the end of an inline element is rendered after its end edge; a scroll
 container that is not a stacking context has its scrollbar painted
