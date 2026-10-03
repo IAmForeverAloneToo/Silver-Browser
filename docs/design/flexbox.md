@@ -656,6 +656,24 @@ DejaVu Sans, by an `@font-face` this engine ignores, so both sides
 measure the same glyphs. `about:silver` lays its cards out with flexbox,
 so the built-in page shows it.
 
+**Vertical metrics, found at step 11.** The same glyphs did not make
+the same lines. The reference browser takes a font's ascent, descent
+and line gap from its `hhea` table, from OS/2's typographic metrics
+only when the font sets OS/2's USE_TYPO_METRICS bit (and from those,
+then the Windows ones, when `hhea` has none), and rounds each to a
+whole pixel at the used size. DejaVu Sans does not set the bit, so its
+normal line there is 19 pixels at 16, the baseline 15 below its top,
+and 15 at 13, 28 at 24. This engine took the typographic metrics
+whenever a font had them, unrounded (M8.5, on the belief that browsers
+do): 19.2, 15.6 and 28.8, the baseline 13.76 below the top at 16. A
+paragraph was a pixel taller every five lines, and text beside a box
+aligned by its baseline sat a pixel or two off. So the text crate
+takes the metrics as the reference browser does, which is what
+ttf-parser's `ascender`, `descender` and `line_gap` choose, and rounds
+each where it scales them to a size: line boxes, struts and every
+baseline read them there. The rule was measured from 1 to 48 pixels,
+fractional sizes included; it holds at every size, the smallest too.
+
 **Performance and fuzzing.** A benchmark, `benches/flex.rs`, lays out:
 
 - a grid of a thousand cards in a wrapping row;
