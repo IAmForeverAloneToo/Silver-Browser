@@ -104,9 +104,20 @@ The same sizes apply as floors in `min-width` and as ceilings in
 `max-width`. The keywords apply to blocks, floats, inline-blocks,
 absolutely positioned boxes and tables, and contribute to an ancestor's
 intrinsic widths as `(min, min)`, `(max, max)` and `(min, max)`. In the
-block axis, `height` and `min-height` take a keyword as `auto` and
-`max-height` as `none`: for a box's block size the keywords are its
-automatic size, unless otherwise specified (§3.2). The bare
+block axis the keywords are the box's automatic size (§3.2): `height`
+takes one as `auto`, and `min-height` and `max-height` as the height
+`auto` would give the box, the content's, as the reference browsers
+have it. So `height: 200px; max-height: min-content` is as tall as the
+content, and a keyword `min-height` floors a fixed `height` with it,
+whereas `min-height` taking it as `0` would not. The content's height
+is known only once the children are laid out: they resolve their
+percentages against the height with the length limits applied and not
+the keyword ones, as in the reference browsers, and a keyword
+`min-height` lets margins collapse as `auto` does, since it changes no
+`auto` height. A flex item's keyword limit in a column is its measured
+content height (below); a flex container's is its automatic height: a
+column container's items' hypothetical sizes, a row container's lines,
+a single line being the height it is given. The bare
 `fit-content` is Level 3's, and the `fit-content()` function is Level
 4's (see section 2). The computed style keeps the keywords as written,
 in two new types for the sizes and the limits, and layout resolves them
@@ -168,7 +179,9 @@ and layout chooses the flex path by it. The children follow §4:
   is an anonymous `Block` box wrapping the run's anonymous block, so the
   run has a box of its own to place, inheriting from the container as an
   anonymous block does. A run of nothing but white space makes no item,
-  whatever `white-space` says (§4).
+  whatever `white-space` says (§4). An element that makes no box, one
+  with `display: none`, does not end a run; an absolutely positioned
+  one does, as in the reference browsers.
 
 The children stay in document order in the box tree. `::first-line` and
 `::first-letter` do not apply to a flex container (§3). Their finders
@@ -218,8 +231,10 @@ that height is definite:
 - a block container takes it as its height, unclamped, since the flex
   algorithm has already clamped it. Its children's percentage heights
   resolve against it when it is definite and are `auto` when it is not;
-- a table takes it as it takes its own `height`, a minimum its rows grow
-  to fill;
+- a table takes it in place of its own `height` and `min-height`, which
+  the flex layout has already applied, so they are no second minimum: a
+  minimum its rows grow to fill. Its content height as with `height:
+  auto`, which the flex layout measures, is its captions and rows;
 - a flex container takes it as its height.
 
 The flex layout imposes the stretched and the flexed sizes this way. An
@@ -317,7 +332,10 @@ size, `content` meaning `max-content`:
   its cross size. That is its definite width, or, stretched in a
   single-line container whose width is known, the container's content
   width less its margins, which §9.8 calls definite. Otherwise it is
-  `fit-content` in the container's width.
+  `fit-content` in the container's width. The item is measured as if
+  its `height` were `auto`: a percentage of the container's height is
+  indefinite in that layout, as in the reference browsers, so content
+  sized by percentages inside it measures as nothing.
 
 Case B, an aspect ratio, waits for replaced elements (M23). Case C,
 sizing under a min-content or max-content constraint, is the intrinsic

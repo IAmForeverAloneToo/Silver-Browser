@@ -257,14 +257,20 @@ pub(crate) fn layout_table_contents<'a>(
     } else {
         heights.iter().sum::<f32>() + (heights.len() + 1) as f32 * vspacing
     };
-    let specified = definite_height(style, cb_height, edges.vertical());
-    let (min_height, _) = height_bounds(style, cb_height, edges.vertical());
     // A height imposed on the table (M17: a stretched or flexed flex
-    // item's) is a minimum, as its own `height` is.
-    let wanted = specified
-        .unwrap_or(0.0)
-        .max(min_height)
-        .max(imposed.map_or(0.0, |i| i.height - edges.vertical()));
+    // item's) is a minimum in place of its own `height` and
+    // `min-height`, which the flex layout has already applied: they are
+    // no second minimum (css-flexbox-1 §9.8, as the reference browsers
+    // have it). A keyword in `min-height` is the rows' height, the
+    // table's automatic height.
+    let wanted = match imposed {
+        Some(imposed) => imposed.height - edges.vertical(),
+        None => {
+            let specified = definite_height(style, cb_height, edges.vertical());
+            let bounds = height_bounds(style, cb_height, edges.vertical(), Some(rows_height));
+            specified.unwrap_or(0.0).max(bounds.0)
+        }
+    };
     if wanted > rows_height && !heights.is_empty() {
         let with_rows = || grid.groups.iter().filter(|g| g.rows > 0);
         let mut groups: Vec<&GridGroup<'_>> = with_rows().filter(|g| g.is_body()).collect();
@@ -601,7 +607,10 @@ pub(crate) fn layout_table_contents<'a>(
         first_baseline: first_row_baseline.map(|b| top_height + b),
         last_baseline: last_row_baseline.map(|b| top_height + b),
         absolutes,
-        auto_content_height: content_height,
+        // As with `height: auto`: the captions and the rows, the table's
+        // own `height` and anything imposed left out — what a flex item
+        // or a keyword limit takes as the table's content (M17).
+        auto_content_height: top_height + rows_height + bottom_height,
         held: Vec::new(),
     }
 }
@@ -1431,7 +1440,12 @@ fn layout_cell<'a>(
         None,
     );
     let specified = definite_height(&b.style, None, edges.vertical()).unwrap_or(0.0);
-    let (min_height, _) = height_bounds(&b.style, None, edges.vertical());
+    let (min_height, _) = height_bounds(
+        &b.style,
+        None,
+        edges.vertical(),
+        Some(layout.auto_content_height),
+    );
     let content_height = layout.auto_content_height.max(specified).max(min_height);
     let content_bottom = edges.border[TOP] + edges.padding[TOP] + layout.auto_content_height;
     CellLayout {

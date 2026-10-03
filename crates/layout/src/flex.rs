@@ -31,8 +31,8 @@ use text::FontCollection;
 
 use crate::block::{
     AdjoiningMargins, BlockLayout, Content, Deferred, Edges, Imposed, Intrinsic, box_fragment,
-    carried, definite_height, extent_bottom, height_bounds, layout_contents, relative_offset,
-    settle_absolutes, used, width_constraints,
+    carried, clamp_height, definite_height, extent_bottom, height_bounds, layout_contents,
+    relative_offset, settle_absolutes, used, width_constraints,
 };
 use crate::box_tree::{BoxKind, LayoutBox};
 use crate::pass::{ItemKey, Pass};
@@ -122,6 +122,10 @@ struct Item<'a> {
     stretches: bool,
     /// The border-box cross size: hypothetical, then used.
     cross: f32,
+    /// A row item's content height as with `height: auto`, from the
+    /// layout that gave its hypothetical cross size: what a keyword in
+    /// its `min-height` or `max-height` is when it is stretched.
+    auto_height: f32,
     /// A column item's content width, the cross size's content box.
     width: f32,
     /// A row item stretched: its border-box height is imposed.
@@ -182,6 +186,7 @@ impl<'a> Item<'a> {
             target: 0.0,
             stretches,
             cross: 0.0,
+            auto_height: 0.0,
             width: 0.0,
             imposed_cross: None,
             x: 0.0,
@@ -219,15 +224,18 @@ impl<'a> Item<'a> {
         // A column item's height at its cross size (§9.2 step 3, case
         // E): its definite width, or stretched in a single-line container
         // the container's width less its margins, else `fit-content`;
-        // laid out once, if the basis or the automatic minimum asks.
+        // laid out once, if the basis, a limit or the automatic minimum
+        // asks. Its content's height does not depend on its own height,
+        // whose percentage is indefinite here as in the reference
+        // browsers: the content inside it is measured as with `auto`.
         let measured = OnceCell::new();
         let content_height = || {
             *measured.get_or_init(|| {
                 let room = (c.width - cross_margins - item.edges.horizontal()).max(0.0);
                 let stretched = (single_line && item.stretches).then_some(room);
                 let width = item.column_width(c, stretched);
-                let layout = item.lay_out(c, width, None, pass);
-                item.content_height(&layout)
+                let layout = item.lay_out_in(c, width, None, None, pass);
+                layout.auto_content_height
             })
         };
         // The content size in the main axis, measured if anything asks:
@@ -248,6 +256,8 @@ impl<'a> Item<'a> {
                 item.intrinsic.widths().1
             }
         };
+        // A keyword in `min-height` or `max-height` is the column item's
+        // content height, its automatic size (css-sizing-3 §3.2).
         let max = match if c.column {
             style.max_height
         } else {
@@ -256,9 +266,9 @@ impl<'a> Item<'a> {
             MaxSize::None => None,
             MaxSize::Px(px) => Some(inner(px)),
             MaxSize::Percent(p) => c.definite_main().map(|of| inner(of * p / 100.0)),
-            _ if c.column => None,
             MaxSize::MinContent => Some(min_content()),
             MaxSize::MaxContent => Some(max_content()),
+            MaxSize::FitContent if c.column => Some(content_height()),
             MaxSize::FitContent => item.intrinsic.keyword(Size::FitContent, room),
         };
         let max = max.unwrap_or(f32::INFINITY);
@@ -283,8 +293,13 @@ impl<'a> Item<'a> {
             Size::Px(px) => inner(px),
             Size::Percent(p) => c.definite_main().map_or(0.0, |of| inner(of * p / 100.0)),
             Size::Auto => automatic(),
-            keyword if !c.column => item.intrinsic.keyword(keyword, room).unwrap_or(0.0),
-            _ => automatic(),
+            Size::MinContent => min_content(),
+            Size::MaxContent => max_content(),
+            Size::FitContent if c.column => content_height(),
+            Size::FitContent => item
+                .intrinsic
+                .keyword(Size::FitContent, room)
+                .unwrap_or(0.0),
         };
         item.base = basis.unwrap_or_else(max_content);
         item.definite_basis = basis.is_some();
@@ -304,13 +319,26 @@ impl<'a> Item<'a> {
         imposed: Option<Imposed>,
         pass: &Pass<'a>,
     ) -> BlockLayout<'a> {
-        let key = ItemKey::of(self.b, width, imposed, c.width, c.definite_height);
+        self.lay_out_in(c, width, imposed, c.definite_height, pass)
+    }
+
+    /// As [`Item::lay_out`], against the containing-block height
+    /// `cb_height` in place of the container's.
+    fn lay_out_in(
+        &self,
+        c: &Container,
+        width: f32,
+        imposed: Option<Imposed>,
+        cb_height: Option<f32>,
+        pass: &Pass<'a>,
+    ) -> BlockLayout<'a> {
+        let key = ItemKey::of(self.b, width, imposed, c.width, cb_height);
         pass.item(key, || {
             layout_contents(
                 self.b,
                 &self.edges,
                 c.width,
-                c.definite_height,
+                cb_height,
                 width,
                 0.0,
                 Content::Root,
@@ -319,16 +347,6 @@ impl<'a> Item<'a> {
                 imposed,
             )
         })
-    }
-
-    /// The content height of `layout`, the item's, as if its `height`
-    /// were `auto`; a table's grows to its own height, a minimum.
-    fn content_height(&self, layout: &BlockLayout<'_>) -> f32 {
-        if self.b.is_table() {
-            (layout.height - self.edges.vertical()).max(0.0)
-        } else {
-            layout.auto_content_height
-        }
     }
 
     /// A column item's content width (§9.4 step 7): its own `width`;
@@ -380,19 +398,29 @@ pub(crate) fn layout_flex_contents<'a>(
     let vertical_edges = edges.vertical();
     // The content height when it is known before the items are: the
     // height imposed, which is already clamped, or the container's own
-    // `height` clamped by `min-height` and `max-height`. Percentages
-    // inside resolve against it only when it is definite (§9.8).
-    let (min_height, max_height) = height_bounds(style, cb_height, vertical_edges);
-    let clamp_height = |h: f32| max_height.map_or(h, |max| h.min(max)).max(min_height);
+    // `height` clamped by `min-height` and `max-height` — by a keyword
+    // in them only once the content's height is known, as a block's is.
+    // Percentages inside resolve against it only when it is definite
+    // (§9.8).
+    let bounds = |content: Option<f32>| height_bounds(style, cb_height, vertical_edges, content);
     let (known_height, definite) = match imposed {
         Some(imposed) => {
             let height = (imposed.height - vertical_edges).max(0.0);
             (Some(height), imposed.definite.then_some(height))
         }
         None => {
-            let height = definite_height(style, cb_height, vertical_edges).map(clamp_height);
+            let height = definite_height(style, cb_height, vertical_edges)
+                .map(|height| clamp_height(height, bounds(None)));
             (height, height)
         }
+    };
+    // A content height the container takes in an axis, given its
+    // content's, `content`, the height `auto` would give it: the height
+    // imposed; else its known height or `content`, clamped, a keyword
+    // limit being `content`, its automatic height (css-sizing-3 §3.2).
+    let fit = |content: f32| match known_height {
+        Some(known) if imposed.is_some() => known,
+        known => clamp_height(known.unwrap_or(content), bounds(Some(content))),
     };
     // The gaps (CSS Gaps 1 §2): `normal` is zero in a flex container,
     // and so is a percentage of an indefinite height, as in the
@@ -438,7 +466,9 @@ pub(crate) fn layout_flex_contents<'a>(
     // on one line, which nothing breaks with infinite room, clamped by
     // `min-height` and `max-height` — and when a `max-height` made it
     // wrap, its longest line, clamped again, as the reference browsers
-    // have it: its content's height laid out in that room.
+    // have it: its content's height laid out in that room. Its automatic
+    // height, which a keyword limit is, is the same: the outer sizes on
+    // one line, or the longest line.
     let gaps = |n: usize, gap: f32| gap * n.saturating_sub(1) as f32;
     let outer_sum = |items: &[Item<'_>]| {
         items
@@ -448,7 +478,7 @@ pub(crate) fn layout_flex_contents<'a>(
             + gaps(items.len(), c.main_gap)
     };
     let room = if column {
-        known_height.unwrap_or_else(|| clamp_height(outer_sum(&items)))
+        fit(outer_sum(&items))
     } else {
         content_width
     };
@@ -457,11 +487,7 @@ pub(crate) fn layout_flex_contents<'a>(
         .iter()
         .map(|line| outer_sum(&items[line.clone()]))
         .fold(0.0, f32::max);
-    let main_size = if column {
-        known_height.unwrap_or_else(|| clamp_height(longest))
-    } else {
-        content_width
-    };
+    let main_size = if column { fit(longest) } else { content_width };
     // §9.7: the items' main sizes on each line.
     for line in &lines {
         resolve_flexible_lengths(&mut items[line.clone()], main_size, c.main_gap);
@@ -476,7 +502,9 @@ pub(crate) fn layout_flex_contents<'a>(
             item.width = item.column_width(&c, None);
             item.cross = item.width + item.edges.horizontal();
         } else {
-            item.cross = item.lay_out(&c, item.target, None, pass).height;
+            let layout = item.lay_out(&c, item.target, None, pass);
+            item.cross = layout.height;
+            item.auto_height = layout.auto_content_height;
         }
     }
 
@@ -484,10 +512,12 @@ pub(crate) fn layout_flex_contents<'a>(
     // hypothetical cross size on it, and the container's cross size: a
     // column container's its width, a row container's its known height,
     // else its lines' and the gaps between them clamped as a block's
-    // height is. A single-line container's line is as large as the
-    // container; in a multi-line one, `align-content: normal` and
-    // `stretch` share the free space among the lines (step 16, done
-    // here so that the items stretch to their lines).
+    // height is. Its automatic height, which a keyword limit is, is the
+    // lines' — a single line's being the known height, as the reference
+    // browsers have it (step 8). A single-line container's line is as
+    // large as the container; in a multi-line one, `align-content:
+    // normal` and `stretch` share the free space among the lines (step
+    // 16, done here so that the items stretch to their lines).
     let mut line_cross: Vec<f32> = lines
         .iter()
         .map(|line| {
@@ -501,7 +531,7 @@ pub(crate) fn layout_flex_contents<'a>(
     let cross_size = if column {
         content_width
     } else {
-        known_height.unwrap_or_else(|| clamp_height(lines_sum))
+        fit(known_height.filter(|_| single_line).unwrap_or(lines_sum))
     };
     if single_line {
         line_cross.fill(cross_size);
@@ -519,7 +549,8 @@ pub(crate) fn layout_flex_contents<'a>(
 
     // §9.4 step 11: a stretched item takes its line's cross size less
     // its margins, clamped by its own minimum and maximum: a row item's
-    // height, imposed and definite, a column item's width.
+    // height, imposed and definite, a keyword limit being its content's
+    // height; a column item's width.
     for (line, &size) in lines.iter().zip(&line_cross) {
         for item in items[line.clone()].iter_mut().filter(|item| item.stretches) {
             let outer = (size - item.cross_margins).max(0.0);
@@ -529,10 +560,13 @@ pub(crate) fn layout_flex_contents<'a>(
                 item.cross = item.width + item.edges.horizontal();
             } else {
                 let vertical = item.edges.vertical();
-                let (min, max) = height_bounds(&item.b.style, c.definite_height, vertical);
-                let content = (outer - vertical).max(0.0);
-                let content = max.map_or(content, |max| content.min(max)).max(min);
-                item.cross = content + vertical;
+                let bounds = height_bounds(
+                    &item.b.style,
+                    c.definite_height,
+                    vertical,
+                    Some(item.auto_height),
+                );
+                item.cross = clamp_height((outer - vertical).max(0.0), bounds) + vertical;
                 item.imposed_cross = Some(item.cross);
             }
         }
@@ -1134,6 +1168,91 @@ mod tests {
     }
 
     #[test]
+    fn a_column_items_content_is_measured_as_if_its_height_were_auto() {
+        // The content size suggestion of an item whose own `height` is a
+        // percentage of the container's: the percentage inside it is of
+        // an indefinite height while it is measured, so the content is
+        // empty and the item flexes to 90 (css-flexbox WPT
+        // flex-minimum-height-flex-items-012).
+        let l = laid(
+            "<div id=c><div id=a></div><div id=b><div id=i></div></div></div>",
+            "#c { display: flex; flex-direction: column; height: 100px; width: 100px }
+             #a { height: 10px; flex: 0.1 }
+             #b { height: 100%; display: flex; flex: 0.9 } #i { height: 100% }",
+        );
+        assert_eq!(rect(&l, "a").3, 10.0);
+        assert_eq!(rect(&l, "b"), (0.0, 10.0, 100.0, 90.0));
+        assert_eq!(rect(&l, "i").3, 90.0, "laid out at its flexed height");
+    }
+
+    #[test]
+    fn a_keyword_height_limit_is_the_content_height() {
+        // css-sizing-3 §3.2, as the reference browsers have it. A column
+        // item's keyword limit is its content's height, 100 here: a
+        // ceiling on its basis, a floor above its own `height`, which
+        // `min-height: auto` would take.
+        let html = "<div id=c><div id=a><p></p></div></div>";
+        let css = "#c { display: flex; flex-direction: column; height: 300px }
+                   p { margin: 0; height: 100px }";
+        let height = |extra: &str| rect(&laid(html, &format!("{css} {extra}")), "a").3;
+        assert_eq!(
+            height("#a { flex: 0 0 200px; max-height: min-content }"),
+            100.0
+        );
+        assert_eq!(height("#a { flex: 1; max-height: fit-content }"), 100.0);
+        assert_eq!(
+            height("#a { flex: 0 0 20px; height: 50px; min-height: max-content }"),
+            100.0
+        );
+        assert_eq!(height("#a { flex: 0 0 20px; height: 50px }"), 50.0);
+        // A stretched row item's is its content's height too.
+        let css = "#c { display: flex; height: 300px } p { margin: 0; height: 40px }";
+        let height = |extra: &str| rect(&laid(html, &format!("{css} {extra}")), "a").3;
+        assert_eq!(height("#a { max-height: min-content }"), 40.0);
+        assert_eq!(height(""), 300.0);
+        assert_eq!(
+            height("#c { align-items: start } #a { height: 10px; min-height: min-content }"),
+            40.0
+        );
+        // A container's: a column one's is its items' hypothetical sizes,
+        // into which they flex; a row one's its lines', a single line's
+        // being the height it is given.
+        let l = laid(
+            "<div id=c><div id=a></div><div id=b></div></div>",
+            "#c { display: flex; flex-direction: column; height: 300px;
+                  max-height: min-content }
+             #a { flex: 1 0 50px } #b { height: 20px }",
+        );
+        assert_eq!(rect(&l, "c").3, 70.0);
+        assert_eq!(rect(&l, "a").3, 50.0);
+        let html = "<div id=c><div id=a><p></p></div><div id=b></div></div>";
+        let css = "#c { display: flex; height: 300px; max-height: min-content; width: 100px }
+                   #a, #b { width: 60px } p { margin: 0; height: 40px } #b { height: 30px }";
+        assert_eq!(rect(&laid(html, css), "c").3, 300.0);
+        let l = laid(html, &format!("{css} #c {{ flex-wrap: wrap }}"));
+        assert_eq!(rect(&l, "c").3, 70.0);
+        assert_eq!(rect(&l, "a").3, 40.0, "nothing left to stretch into");
+    }
+
+    #[test]
+    fn a_tables_own_height_is_no_second_minimum_once_flexed() {
+        // The flex layout applies the table's `height` once, as its
+        // basis; the flexed size then stands, but for the rows, which
+        // the automatic minimum keeps whole anyway (css-flexbox WPT
+        // table-as-item-specified-height).
+        let html = "<div id=c><div id=t><div id=r><div id=d></div></div></div></div>";
+        let css = "#c { display: flex; flex-direction: column; width: 100px }
+                   #t { display: table; width: 100px; height: 500px; flex: 0 0 100px }
+                   #r { display: table-row } #d { display: table-cell; padding: 0 }";
+        assert_eq!(rect(&laid(html, css), "t").3, 100.0);
+        let l = laid(
+            html,
+            &format!("{css} #t {{ flex-basis: 10px }} #d {{ height: 40px }}"),
+        );
+        assert_eq!(rect(&l, "t").3, 40.0);
+    }
+
+    #[test]
     fn flex_one_starts_from_nothing_and_flex_auto_from_the_content() {
         // `flex: 1` is a basis of 0%; `flex: auto` the content's width.
         let html = "<div id=c><div id=a><span class=w></span></div><div id=b><span class=n></span></div></div>";
@@ -1607,5 +1726,27 @@ mod tests {
         let (shallow, deep) = (computed(10), computed(40));
         assert!(deep <= 3 * 40, "{deep} layouts for 40 levels");
         assert!(deep - shallow <= 3 * 30, "{shallow} for 10, {deep} for 40");
+    }
+
+    #[test]
+    fn a_maximum_on_either_container_makes_a_definite_height_inside() {
+        // css-flexbox WPT flexbox-definite-sizes-003 and -004, which the
+        // subset cannot check for want of the body's overflow carried to
+        // the viewport: a nested container stretched to a line that the
+        // outer container's `max-height` clamps, or clamped by its own,
+        // is a definite height for the percentage in its item.
+        for (outer, inner) in [("max-height: 100px", ""), ("", "max-height: 100px")] {
+            let l = laid(
+                "<div id=o><div id=i><div id=b><div id=c></div></div></div></div>",
+                &format!(
+                    "#o {{ display: flex; width: 100px; {outer} }}
+                     #i {{ display: flex; width: 100px; {inner} }}
+                     #b {{ width: 100px; max-height: 100% }} #c {{ height: 9999px }}"
+                ),
+            );
+            assert_eq!(rect(&l, "o").3, 100.0, "{outer}{inner}");
+            assert_eq!(rect(&l, "i").3, 100.0, "{outer}{inner}");
+            assert_eq!(rect(&l, "b").3, 100.0, "{outer}{inner}");
+        }
     }
 }

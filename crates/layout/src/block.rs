@@ -757,11 +757,16 @@ pub(crate) fn definite_height(
 
 /// `min-height` and `max-height` as content-box heights (CSS2 §10.7):
 /// a percentage of an indefinite containing-block height is `0` and
-/// `none` respectively.
+/// `none` respectively. A keyword is the box's automatic height (M17,
+/// css-sizing-3 §3.2: in the block axis `min-content`, `max-content`
+/// and `fit-content` are the box's automatic size), `content`, the
+/// content-box height it has with `height: auto`; `None` while that is
+/// not known, for which a keyword limits nothing.
 pub(crate) fn height_bounds(
     style: &ComputedStyle,
     cb_height: Option<f32>,
     non_content: f32,
+    content: Option<f32>,
 ) -> (f32, Option<f32>) {
     let inner = |v: f32| match style.box_sizing {
         BoxSizing::ContentBox => v.max(0.0),
@@ -771,14 +776,21 @@ pub(crate) fn height_bounds(
         LengthPercentage::Px(px) => Some(inner(px)),
         LengthPercentage::Percent(p) => cb_height.map(|h| inner(h * p / 100.0)),
     };
-    (
-        style
-            .min_height
-            .length_percentage()
-            .and_then(resolve)
-            .unwrap_or(0.0),
-        style.max_height.length_percentage().and_then(resolve),
-    )
+    let min = match style.min_height {
+        Size::MinContent | Size::MaxContent | Size::FitContent => content,
+        size => size.length_percentage().and_then(resolve),
+    };
+    let max = match style.max_height {
+        MaxSize::MinContent | MaxSize::MaxContent | MaxSize::FitContent => content,
+        size => size.length_percentage().and_then(resolve),
+    };
+    (min.unwrap_or(0.0), max)
+}
+
+/// `height` clamped by [`height_bounds`]: to the maximum, then to the
+/// minimum, which wins (CSS2 §10.7).
+pub(crate) fn clamp_height(height: f32, (min, max): (f32, Option<f32>)) -> f32 {
+    max.map_or(height, |max| height.min(max)).max(min)
 }
 
 /// An absolutely positioned box met in flow (M11), on its way up to
@@ -1274,23 +1286,33 @@ pub(crate) fn layout_block_contents<'a>(
     let stops_bottom = bfc_root || border[BOTTOM] > 0.0 || padding[BOTTOM] > 0.0;
     let non_content_height = edges.vertical();
     // An imposed height is the box's, already clamped (M17); its
-    // children resolve percentages against it when it is definite.
-    let (specified_height, min_height, max_height, children_cb_height) = match imposed {
+    // children resolve percentages against it when it is definite. A
+    // specified one is clamped by `min-height` and `max-height` first
+    // (CSS2 §10.5: the children's percentages are of the used height),
+    // by their keywords only once the content's height is known: the
+    // children resolve theirs against the height before those, as in
+    // the reference browsers.
+    let bounds = |content: Option<f32>| match imposed {
+        Some(_) => (0.0, None),
+        None => height_bounds(&b.style, cb_height, non_content_height, content),
+    };
+    let (specified_height, children_cb_height) = match imposed {
         Some(imposed) => {
             let height = (imposed.height - non_content_height).max(0.0);
-            (Some(height), 0.0, None, imposed.definite.then_some(height))
+            (Some(height), imposed.definite.then_some(height))
         }
         None => {
             let specified = definite_height(&b.style, cb_height, non_content_height);
-            let (min, max) = height_bounds(&b.style, cb_height, non_content_height);
-            (specified, min, max, specified)
+            (specified, specified.map(|h| clamp_height(h, bounds(None))))
         }
     };
     // CSS2 §8.3.1: a box collapses its own margins through, or lets a
     // child's bottom margin escape, only with `height: auto` and
-    // `min-height: 0`. Vertical margins resolve a percentage against
-    // the containing block's *width* (§8.3).
-    let height_is_auto = specified_height.is_none() && min_height <= 0.0;
+    // `min-height: 0` — or a keyword, the content's height, which is
+    // what `auto` makes it anyway, as in the reference browsers.
+    // Vertical margins resolve a percentage against the containing
+    // block's *width* (§8.3).
+    let height_is_auto = specified_height.is_none() && bounds(None).0 <= 0.0;
     let own_top = AdjoiningMargins::of(b.style.margin[TOP].resolve(cb_width, 0.0));
     let own_bottom = AdjoiningMargins::of(b.style.margin[BOTTOM].resolve(cb_width, 0.0));
     let non_content_width = edges.horizontal();
@@ -1459,10 +1481,10 @@ pub(crate) fn layout_block_contents<'a>(
     };
     // CSS2 §10.7: the tentative height clamped to `max-height`, then
     // `min-height`.
-    let content_height = specified_height.unwrap_or(auto_content_height);
-    let content_height = max_height
-        .map_or(content_height, |max| content_height.min(max))
-        .max(min_height);
+    let content_height = clamp_height(
+        specified_height.unwrap_or(auto_content_height),
+        bounds(Some(auto_content_height)),
+    );
 
     let margin_bottom = if stops_bottom || !height_is_auto {
         own_bottom
@@ -1733,7 +1755,12 @@ fn layout_absolute<'a>(
     );
     let mut fragment = layout.root;
     let specified_height = definite_height(style, cb_height, vertical_edges);
-    let (min_height, max_height) = height_bounds(style, cb_height, vertical_edges);
+    let bounds = height_bounds(
+        style,
+        cb_height,
+        vertical_edges,
+        Some(layout.auto_content_height),
+    );
     // §10.6.4: the top edge, the border-box height and the margins.
     let solve_height = |height: Option<f32>| -> (f32, f32, f32, f32) {
         let mt = margin_top.unwrap_or(0.0);
@@ -1765,13 +1792,8 @@ fn layout_absolute<'a>(
         }
     };
     let mut solved = solve_height(specified_height);
-    let clamp = |border_height: f32| {
-        let content = border_height - vertical_edges;
-        let content = max_height
-            .map_or(content, |max| content.min(max))
-            .max(min_height);
-        content + vertical_edges
-    };
+    let clamp =
+        |border_height: f32| clamp_height(border_height - vertical_edges, bounds) + vertical_edges;
     if clamp(solved.1) != solved.1 {
         solved = solve_height(Some(clamp(solved.1) - vertical_edges));
     }
@@ -2525,8 +2547,8 @@ mod tests {
             k(".k { width: min-content; margin: 0 auto }"),
             ((800.0 - min) / 2.0, min)
         );
-        // In the block axis a keyword is the automatic size, `auto` for
-        // `height` and `min-height`, `none` for `max-height`.
+        // In the block axis a keyword is the automatic size: the height
+        // `auto` gives, which limits an `auto` height to itself.
         let layout = document_of(
             root.clone(),
             &format!(
@@ -2537,6 +2559,114 @@ mod tests {
         assert_eq!(by_node(&layout, 2).h, by_node(&auto, 2).h);
         // `min-width: auto` is zero on a block.
         assert_eq!(k(".k { width: 0; min-width: auto }").1, 0.0);
+    }
+
+    #[test]
+    fn a_keyword_height_limit_is_the_content_height() {
+        // css-sizing-3 §3.2, as the reference browsers have it: in the
+        // block axis a keyword is the box's automatic height, here its
+        // 100px child's, whatever `height` says; for a block, a float
+        // and an absolutely positioned box alike, and as a content-box
+        // height under border-box. Node 2 is the box, 3 the child.
+        let root = Element::new("div").attr("class", "r").push(
+            Element::new("div")
+                .attr("class", "k")
+                .push(Element::new("div").attr("class", "c")),
+        );
+        let base = "div { margin: 0; } .c { height: 100px; width: 10px; }
+                    .r { position: relative; height: 300px; }";
+        let k = |css: &str| {
+            let layout = document_of(root.clone(), &format!("{base} {css}"));
+            by_node(&layout, 2).h
+        };
+        assert_eq!(k(".k { height: 200px; max-height: min-content }"), 100.0);
+        assert_eq!(k(".k { height: 200px; max-height: max-content }"), 100.0);
+        assert_eq!(k(".k { height: 200px; max-height: fit-content }"), 100.0);
+        assert_eq!(k(".k { height: 50px; min-height: min-content }"), 100.0);
+        assert_eq!(k(".k { height: 50px; min-height: fit-content }"), 100.0);
+        assert_eq!(k(".k { height: min-content }"), 100.0);
+        assert_eq!(
+            k(
+                ".k { height: 200px; max-height: min-content; padding: 10px; box-sizing: border-box }"
+            ),
+            120.0
+        );
+        assert_eq!(
+            k(".k { float: left; height: 200px; max-height: min-content }"),
+            100.0
+        );
+        assert_eq!(
+            k(".k { position: absolute; top: 0; bottom: 0; max-height: min-content }"),
+            100.0
+        );
+        assert_eq!(k(".k { position: absolute; top: 0; bottom: 0 }"), 300.0);
+    }
+
+    #[test]
+    fn percentages_inside_a_clamped_height_are_of_the_clamped_height() {
+        // CSS2 §10.5: a child's percentage height is of its containing
+        // block's used height, `min-height` and `max-height` applied —
+        // and as the reference browsers have it, of the height before a
+        // keyword limit, which needs the child's own height first. Node
+        // 1 is the box, 2 the child with a percentage, 3 a 100px one.
+        let root = Element::new("div")
+            .attr("class", "k")
+            .push(Element::new("div").attr("class", "p"))
+            .push(Element::new("div").attr("class", "c"));
+        let base = "div { margin: 0; } .p { height: 50%; } .c { height: 100px; }";
+        let k = |css: &str| {
+            let layout = document_of(root.clone(), &format!("{base} {css}"));
+            (by_node(&layout, 1).h, by_node(&layout, 2).h)
+        };
+        assert_eq!(k(".k { height: 300px; max-height: 120px }"), (120.0, 60.0));
+        assert_eq!(k(".k { height: 30px; min-height: 200px }"), (200.0, 100.0));
+        assert_eq!(
+            k(".k { min-height: 200px }"),
+            (200.0, 0.0),
+            "auto: indefinite"
+        );
+        assert_eq!(
+            k(".k { height: 300px; max-height: max-content }"),
+            (250.0, 150.0)
+        );
+        assert_eq!(
+            k(".k { height: 50px; min-height: max-content }"),
+            (125.0, 25.0)
+        );
+    }
+
+    #[test]
+    fn a_keyword_min_height_lets_margins_collapse_as_auto_does() {
+        // A keyword `min-height` is the height `auto` gives, so the box
+        // still lets its last child's bottom margin escape, and an empty
+        // one still collapses through, as in the reference browsers.
+        let root = Element::new("div")
+            .push(
+                Element::new("div")
+                    .attr("class", "k")
+                    .push(Element::new("div").attr("class", "m")),
+            )
+            .push(Element::new("p").text("x"));
+        let frags = fragments_of(
+            root,
+            "div, p { margin: 0; } .k { min-height: min-content; }
+             .m { height: 10px; margin-bottom: 20px; }",
+        );
+        let boxes = box_fragments(&frags);
+        assert_eq!(boxes[1].h, 10.0, "the margin is not inside");
+        assert_eq!(boxes[3].y, 30.0, "it escapes below");
+        let root = Element::new("div")
+            .push(Element::new("div").attr("class", "a"))
+            .push(Element::new("div").attr("class", "k"))
+            .push(Element::new("p").text("x"));
+        let frags = fragments_of(
+            root,
+            "div, p { margin: 0; } .a { height: 10px; }
+             .k { min-height: min-content; margin: 20px 0; } p { margin-top: 20px; }",
+        );
+        let boxes = box_fragments(&frags);
+        assert_eq!((boxes[2].y, boxes[2].h), (30.0, 0.0));
+        assert_eq!(boxes[3].y, 30.0, "one 20px margin in all");
     }
 
     #[test]

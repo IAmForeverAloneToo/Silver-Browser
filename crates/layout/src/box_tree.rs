@@ -600,8 +600,9 @@ fn build_inside(styled: &Styled<'_>, item: Item, style: &ComputedStyle) -> Vec<L
 /// an absolutely positioned child is the out-of-flow box it is, not an
 /// item; and each run of consecutive text children is an anonymous flex
 /// item, an anonymous block container around the run, unless the run is
-/// nothing but white space, which is not rendered. Layout takes the
-/// items in `order` (§5.4).
+/// nothing but white space, which is not rendered. An element with no
+/// box does not end a run; an absolutely positioned one does, as in the
+/// reference browsers. Layout takes the items in `order` (§5.4).
 fn build_flex_container(styled: &Styled<'_>, item: Item) -> Vec<LayoutBox> {
     let mut out = Vec::new();
     let mut run = Vec::new();
@@ -610,12 +611,11 @@ fn build_flex_container(styled: &Styled<'_>, item: Item) -> Vec<LayoutBox> {
             run.push(child);
             continue;
         }
-        flush_text_run(styled, item, &mut run, &mut out);
-        let Some(style) = styled.style(child) else {
+        let Some(style) = styled.style(child).filter(|s| s.display != Display::None) else {
             continue;
         };
+        flush_text_run(styled, item, &mut run, &mut out);
         let kind = match style.display {
-            Display::None => continue,
             _ if style.position.is_out_of_flow() => BoxKind::Absolute,
             Display::Table => BoxKind::Table,
             Display::Flex => BoxKind::Flex,
@@ -3321,6 +3321,32 @@ mod tests {
             assert!(!x.is_block_level(), "{css}");
             assert_eq!(x.children[0].kind, BoxKind::Block, "{css}");
         }
+    }
+
+    #[test]
+    fn an_element_with_no_box_does_not_end_a_flex_text_run() {
+        // As in the reference browsers (css-flexbox WPT
+        // anonymous-flex-item-002): the text either side of a `display:
+        // none` element is one item, one line of text; an absolutely
+        // positioned element ends the run. Nodes: div 4, span 5, b 6.
+        let tree = tree_of(
+            "<div>two <span class=none></span>words <b class=abs></b>more</div>",
+            "div { display: flex } .none { display: none } .abs { position: absolute }",
+        );
+        assert_eq!(
+            tree.shape_of(&tree.body().children),
+            pairs(&[
+                ("flex", 4),
+                ("block", 4),
+                ("anon", 4),
+                ("text two ", 4),
+                ("text words ", 4),
+                ("absolute", 6),
+                ("block", 4),
+                ("anon", 4),
+                ("text more", 4),
+            ])
+        );
     }
 
     #[test]
