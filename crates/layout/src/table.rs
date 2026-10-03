@@ -603,9 +603,10 @@ pub(crate) fn layout_table_contents<'a>(
         self_collapsing: false,
         // The first row's baseline is the table's own (an inline table
         // aligns by it); the last row's is what a box ending in the table
-        // takes as its last.
+        // takes as its last, an inline-block's included.
         first_baseline: first_row_baseline.map(|b| top_height + b),
         last_baseline: last_row_baseline.map(|b| top_height + b),
+        inline_block_baseline: last_row_baseline.map(|b| top_height + b),
         absolutes,
         // As with `height: auto`: the captions and the rows, the table's
         // own `height` and anything imposed left out — what a flex item

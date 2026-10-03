@@ -17,9 +17,10 @@
 //! line, by `align-self` and `auto` margins in it, and the lines by
 //! `align-content` (§8, css-align-3): each value resolved to a place in
 //! the flex-relative axis, the positions found from main-start and
-//! cross-start, and mapped to physical ones once. Baseline alignment
-//! places an item at cross-start for now. An absolutely positioned
-//! child's static position is the content box's top-left corner.
+//! cross-start, and mapped to physical ones once. Items aligned by a
+//! baseline share it with their line's group, which the line grows to
+//! hold. An absolutely positioned child's static position is the content
+//! box's top-left corner.
 
 use std::cell::OnceCell;
 use std::ops::Range;
@@ -224,7 +225,8 @@ fn align_content(value: ContentAlignment, forward: bool, horizontal: bool) -> Al
 /// `align-self`, `auto` already resolved, in a cross axis that runs from
 /// its physical start when `forward` and is `horizontal` or not (§8.3).
 /// `normal` and `stretch` place an item that does not stretch at
-/// cross-start, and so does baseline alignment for now.
+/// cross-start. A baseline value is the groups' to place (see
+/// [`Item::baseline`]); one reaching here is `flex-start`.
 fn self_alignment(value: SelfAlignment, forward: bool, horizontal: bool) -> Alignment {
     match value {
         SelfAlignment::Position(position, overflow) => {
@@ -264,6 +266,14 @@ struct Item<'a> {
     target: f32,
     /// Whether the item is stretched in the cross axis (step 11).
     stretches: bool,
+    /// The baseline-sharing group of its line the item is in, if any: the
+    /// first or the last (§8.3, css-align-3 §9.3).
+    group: Option<BaselinePosition>,
+    /// A row item's first and last baselines from its border-box top, of
+    /// the layout that gave its hypothetical cross size: its final
+    /// layout's too when it does not stretch, as an item in a group does
+    /// not.
+    baselines: (Option<f32>, Option<f32>),
     /// The border-box cross size: hypothetical, then used.
     cross: f32,
     /// A row item's content height as with `height: auto`, from the
@@ -309,11 +319,16 @@ impl<'a> Item<'a> {
             style.margin[TOP].is_auto() || style.margin[BOTTOM].is_auto()
         };
         let cross_property = if c.column { style.width } else { style.height };
-        let stretches = matches!(
-            align_self(style, c.align_items),
-            SelfAlignment::Stretch | SelfAlignment::Normal
-        ) && cross_property.is_auto()
+        let alignment = align_self(style, c.align_items);
+        let stretches = matches!(alignment, SelfAlignment::Stretch | SelfAlignment::Normal)
+            && cross_property.is_auto()
             && !auto_cross_margin;
+        // An item takes part in baseline alignment unless a cross-axis
+        // margin is `auto` (§8.3).
+        let group = match alignment {
+            SelfAlignment::Baseline(position) if !auto_cross_margin => Some(position),
+            _ => None,
+        };
         let mut item = Item {
             b,
             intrinsic: Intrinsic::of(b, pass.fonts),
@@ -329,6 +344,8 @@ impl<'a> Item<'a> {
             hypothetical: 0.0,
             target: 0.0,
             stretches,
+            group,
+            baselines: (None, None),
             cross: 0.0,
             auto_height: 0.0,
             width: 0.0,
@@ -493,6 +510,40 @@ impl<'a> Item<'a> {
         })
     }
 
+    /// For an item in a baseline-sharing group, the group and the
+    /// distance from the item's outer cross-start edge to its first
+    /// baseline, in the first group, or from its outer cross-end edge to
+    /// its last, in the last (§9.4 step 8, §8.3). A row item's baselines
+    /// are its layout's, each synthesized from its border box's bottom
+    /// edge when it has none. A column item's cross axis is its inline
+    /// axis, across its baselines: the reference browsers synthesize both
+    /// from its border box's left edge, so that the group aligns those
+    /// (css-align-3 §9.1).
+    fn baseline(&self, c: &Container) -> Option<(BaselinePosition, f32)> {
+        let group = self.group?;
+        let outer = self.cross + self.cross_margins;
+        // From the outer top or left edge, physical.
+        let baseline = if c.column {
+            self.margin[LEFT]
+        } else {
+            let (first, last) = self.baselines;
+            let own = match group {
+                BaselinePosition::First => first,
+                BaselinePosition::Last => last,
+            };
+            self.margin[TOP] + own.unwrap_or(self.cross)
+        };
+        let from_start = if c.wrap_reverse {
+            outer - baseline
+        } else {
+            baseline
+        };
+        Some(match group {
+            BaselinePosition::First => (group, from_start),
+            BaselinePosition::Last => (group, outer - from_start),
+        })
+    }
+
     /// A column item's content width (§9.4 step 7): its own `width`;
     /// else `stretched`, the room its line leaves it, when it is
     /// stretched; else `fit-content` in the container's width less its
@@ -649,26 +700,36 @@ pub(crate) fn layout_flex_contents<'a>(
             let layout = item.lay_out(&c, item.target, None, pass);
             item.cross = layout.height;
             item.auto_height = layout.auto_content_height;
+            item.baselines = (layout.first_baseline, layout.last_baseline);
         }
     }
 
     // §9.4 steps 8, 9 and 15: each line's cross size, the largest outer
-    // hypothetical cross size on it, and the container's cross size: a
-    // column container's its width, a row container's its known height,
-    // else its lines' and the gaps between them clamped as a block's
-    // height is. Its automatic height, which a keyword limit is, is the
-    // lines' — a single line's being the known height, as the reference
-    // browsers have it (step 8). A single-line container's line is as
-    // large as the container; in a multi-line one, `align-content:
-    // normal` and `stretch` share the free space among the lines (step
-    // 16, done here so that the items stretch to their lines).
+    // hypothetical cross size on it or, if larger, a baseline-sharing
+    // group's extent, and the container's cross size: a column
+    // container's its width, a row container's its known height, else its
+    // lines' and the gaps between them clamped as a block's height is.
+    // Its automatic height, which a keyword limit is, is the lines' — a
+    // single line's being the known height, as the reference browsers
+    // have it (step 8). A single-line container's line is as large as the
+    // container; in a multi-line one, `align-content: normal` and
+    // `stretch` share the free space among the lines (step 16, done here
+    // so that the items stretch to their lines).
     let mut line_cross: Vec<f32> = lines
         .iter()
         .map(|line| {
-            items[line.clone()]
+            let line = &items[line.clone()];
+            let largest = line
                 .iter()
                 .map(|item| item.cross + item.cross_margins)
-                .fold(0.0, f32::max)
+                .fold(0.0, f32::max);
+            [BaselinePosition::First, BaselinePosition::Last]
+                .into_iter()
+                .map(|group| {
+                    let (to, beyond) = group_extent(line, &c, group);
+                    to + beyond
+                })
+                .fold(largest, f32::max)
         })
         .collect();
     let lines_sum = line_cross.iter().sum::<f32>() + gaps(lines.len(), c.cross_gap);
@@ -720,10 +781,11 @@ pub(crate) fn layout_flex_contents<'a>(
     // main-axis auto margins share the positive free space, else
     // `justify-content` places the items; in its line, an item's
     // cross-axis auto margins share the free space, else the start one is
-    // zero, and an item with neither is placed by `align-self`; in a
-    // multi-line container, `align-content` places the lines. Positions
-    // are flex-relative, from main-start and cross-start, until each is
-    // made physical, `*-reverse` and `wrap-reverse` turning it around.
+    // zero, and an item with neither is placed by `align-self`, an item in
+    // a baseline-sharing group with the group; in a multi-line container,
+    // `align-content` places the lines. Positions are flex-relative, from
+    // main-start and cross-start, until each is made physical, `*-reverse`
+    // and `wrap-reverse` turning it around.
     let (main_start, main_end) = c.main_sides();
     let (cross_start, cross_end) = c.cross_sides();
     let (forward_main, forward_cross) = (!c.reverse, !c.wrap_reverse);
@@ -758,6 +820,8 @@ pub(crate) fn layout_flex_contents<'a>(
         } else {
             (0.0, justify.offsets(free, line.len(), forward_main))
         };
+        let first_group = group_extent(line, &c, BaselinePosition::First).0;
+        let last_group = group_extent(line, &c, BaselinePosition::Last).0;
         for item in line.iter_mut() {
             let margin = &item.b.style.margin;
             let auto = |side: usize| if margin[side].is_auto() { share } else { 0.0 };
@@ -775,12 +839,20 @@ pub(crate) fn layout_flex_contents<'a>(
                 (true, true) if free > 0.0 => free / 2.0,
                 (true, false) if free > 0.0 => free,
                 (true, _) | (_, true) => 0.0,
-                (false, false) => {
-                    let alignment = align_self(&item.b.style, c.align_items);
-                    self_alignment(alignment, forward_cross, column)
-                        .offsets(free, 1, forward_cross)
-                        .0
-                }
+                // §8.3: a group's baselines together, the item furthest
+                // from its baseline at the edge the group aligns at flush
+                // with that edge of the line, cross-start for the first
+                // group and cross-end for the last, however it overflows.
+                (false, false) => match item.baseline(&c) {
+                    Some((BaselinePosition::First, distance)) => first_group - distance,
+                    Some((BaselinePosition::Last, distance)) => free - (last_group - distance),
+                    None => {
+                        let alignment = align_self(&item.b.style, c.align_items);
+                        self_alignment(alignment, forward_cross, column)
+                            .offsets(free, 1, forward_cross)
+                            .0
+                    }
+                },
             };
             let flow_cross = line_position + item.margin[cross_start] + offset;
             let cross = if c.wrap_reverse {
@@ -819,7 +891,7 @@ pub(crate) fn layout_flex_contents<'a>(
 
     let content_x = border[LEFT] + padding[LEFT];
     let content_y = border[TOP] + padding[TOP];
-    let (first_baseline, last_baseline) = baselines(&items, &layouts, &lines, column);
+    let (first_baseline, last_baseline) = baselines(&items, &layouts, &lines, &c);
     let content_height = if column { main_size } else { cross_size };
     let height = content_height + vertical_edges;
     let mut root = box_fragment(content_width + edges.horizontal(), height, b);
@@ -881,6 +953,9 @@ pub(crate) fn layout_flex_contents<'a>(
         self_collapsing: false,
         first_baseline: first_baseline.map(|y| content_y + y),
         last_baseline: last_baseline.map(|y| content_y + y),
+        // An inline-block takes a flex container's first baseline, as the
+        // reference browsers have it.
+        inline_block_baseline: first_baseline.map(|y| content_y + y),
         absolutes,
         // The content as if `height` were `auto`: a row container's
         // lines, a column container's longest line.
@@ -1054,40 +1129,76 @@ fn resolve_flexible_lengths(items: &mut [Item<'_>], main_size: f32, gap: f32) {
     }
 }
 
-/// The container's first and last baselines from its content box's
-/// top (§8.5): a row container's the first item on its first line, in
-/// order-modified document order, that has a baseline, its last
-/// baseline from its last line the same way from the end, each else
-/// synthesized from the border box's bottom edge of the startmost or
-/// endmost item on the line (css-align-3 §9.1); a column container's
-/// its startmost item's and its endmost item's, synthesized the same
-/// way. With no item, none.
+/// A line's baseline-sharing group `group` (§9.4 step 8): the largest
+/// distance among its items from the outer edge the group aligns at to
+/// their baseline, and the largest from there to their other outer edge;
+/// both zero when the group is empty.
+fn group_extent(line: &[Item<'_>], c: &Container, group: BaselinePosition) -> (f32, f32) {
+    line.iter()
+        .filter_map(|item| {
+            let (own, distance) = item.baseline(c)?;
+            (own == group).then_some((distance, item.cross + item.cross_margins - distance))
+        })
+        .fold((0.0, 0.0), |(to, beyond), (distance, rest)| {
+            (to.max(distance), beyond.max(rest))
+        })
+}
+
+/// The container's first and last baselines from its content box's top
+/// (§8.5), as the reference browsers find them: from the lines and the
+/// items as placed, physically. A row container's first is its top
+/// line's: the shared baseline of the line's first baseline-sharing
+/// group, else of its last, else the first baseline of its leftmost item.
+/// Its last is its bottom line's the same way, the last group before the
+/// first, else the rightmost item's last baseline. A column container's
+/// first is that of the top item in its leftmost line, its last that of
+/// the bottom item in its rightmost line, its groups, which align across
+/// these baselines, not counting. An item without the baseline has one
+/// synthesized from its border box's bottom edge (css-align-3 §9.1).
+/// With no item, none.
 fn baselines(
     items: &[Item<'_>],
     layouts: &[BlockLayout<'_>],
     lines: &[Range<usize>],
-    column: bool,
+    c: &Container,
 ) -> (Option<f32>, Option<f32>) {
-    let bottom = |i: usize| items[i].y + layouts[i].height;
-    let first = |i: usize| layouts[i].first_baseline.map(|b| items[i].y + b);
-    let last = |i: usize| layouts[i].last_baseline.map(|b| items[i].y + b);
-    if column {
-        let n = items.len();
-        return (
-            (n > 0).then(|| first(0).unwrap_or_else(|| bottom(0))),
-            (n > 0).then(|| last(n - 1).unwrap_or_else(|| bottom(n - 1))),
-        );
-    }
-    let first_baseline = lines.first().map(|line| {
+    let first = |i: usize| items[i].y + layouts[i].first_baseline.unwrap_or(layouts[i].height);
+    let last = |i: usize| items[i].y + layouts[i].last_baseline.unwrap_or(layouts[i].height);
+    // A line's items from the left in a row, from the top in a column.
+    let ends = |line: &Range<usize>| {
+        if c.reverse {
+            (line.end - 1, line.start)
+        } else {
+            (line.start, line.end - 1)
+        }
+    };
+    let in_group = |line: &Range<usize>, group: BaselinePosition| {
         line.clone()
-            .find_map(first)
-            .unwrap_or_else(|| bottom(line.start))
+            .find(|&i| !c.column && items[i].group == Some(group))
+    };
+    // The lines from the top in a row, from the left in a column.
+    let (head, tail) = if c.wrap_reverse {
+        (lines.last(), lines.first())
+    } else {
+        (lines.first(), lines.last())
+    };
+    let first_baseline = head.map(|line| {
+        if let Some(i) = in_group(line, BaselinePosition::First) {
+            first(i)
+        } else if let Some(i) = in_group(line, BaselinePosition::Last) {
+            last(i)
+        } else {
+            first(ends(line).0)
+        }
     });
-    let last_baseline = lines.last().map(|line| {
-        line.clone()
-            .rev()
-            .find_map(last)
-            .unwrap_or_else(|| bottom(line.end - 1))
+    let last_baseline = tail.map(|line| {
+        if let Some(i) = in_group(line, BaselinePosition::Last) {
+            last(i)
+        } else if let Some(i) = in_group(line, BaselinePosition::First) {
+            first(i)
+        } else {
+            last(ends(line).1)
+        }
     });
     (first_baseline, last_baseline)
 }
@@ -2336,5 +2447,581 @@ mod tests {
              #a { width: 60px; height: 20px }",
         );
         assert_eq!(rect(&l, "a").1, 0.0);
+    }
+
+    /// An item `id` whose first and last baseline is `baseline` from its
+    /// border-box top, under `font-size: 0; line-height: 0`: its one line
+    /// holds an inline-block as tall, with `below` of padding under it.
+    fn item(id: &str, baseline: u32, below: u32, style: &str) -> String {
+        format!(
+            "<div id={id} style='padding-bottom: {below}px; {style}'>\
+             <i style='height: {baseline}px'></i></div>"
+        )
+    }
+
+    /// An item `id` with two lines, its first baseline `first` and its last
+    /// `first + second`.
+    fn two_lines(id: &str, first: u32, second: u32, style: &str) -> String {
+        format!(
+            "<div id={id} style='{style}'><div><i style='height: {first}px'></i></div>\
+             <div><i style='height: {second}px'></i></div></div>"
+        )
+    }
+
+    /// The `y` of each element of `ids`.
+    fn ys_of(l: &Laid, ids: &[&str]) -> Vec<f32> {
+        ids.iter().map(|id| rect(l, id).1).collect()
+    }
+
+    /// The style the baseline tests share: no strut, so that a line is
+    /// as tall as its inline-block and its baseline at that block's
+    /// bottom.
+    const BASELINE_CSS: &str = "body { font-size: 0; line-height: 0 }
+         .c { display: flex; width: 400px; height: 100px }
+         .c > div { width: 40px; flex: none }
+         i { display: inline-block; width: 10px }";
+
+    #[test]
+    fn a_baseline_group_shares_its_baseline_on_its_line() {
+        // §8.3 and §9.4 step 8, as the reference browser has it: items
+        // whose baselines are 30, 10 and 20px down, 35, 50 and 20px tall.
+        // The first group puts the item furthest from its baseline at
+        // cross-start, the last group at cross-end, and `wrap-reverse`
+        // turns both round.
+        let row = format!(
+            "{}{}{}",
+            item("a", 30, 5, ""),
+            item("b", 10, 40, ""),
+            item("d", 20, 0, "")
+        );
+        for (align, wrap, expected) in [
+            ("baseline", "nowrap", [0.0, 20.0, 10.0]),
+            ("first baseline", "nowrap", [0.0, 20.0, 10.0]),
+            ("baseline", "wrap-reverse", [30.0, 50.0, 40.0]),
+            ("last baseline", "nowrap", [30.0, 50.0, 40.0]),
+            ("last baseline", "wrap-reverse", [0.0, 20.0, 10.0]),
+        ] {
+            let l = laid(
+                &format!(
+                    "<div class=c style='align-items: {align}; flex-wrap: {wrap}'>{row}</div>"
+                ),
+                BASELINE_CSS,
+            );
+            assert_eq!(ys_of(&l, &["a", "b", "d"]), expected, "{align}, {wrap}");
+        }
+        // With an automatic height the line holds the group: the largest
+        // distance above the baseline and the largest below.
+        let l = laid(
+            &format!("<div id=c class=c style='align-items: baseline; height: auto'>{row}</div>"),
+            BASELINE_CSS,
+        );
+        assert_eq!(ys_of(&l, &["a", "b", "d"]), [0.0, 20.0, 10.0]);
+        assert_eq!(rect(&l, "c").3, 70.0);
+        // Margins count from the outer edge; an item with an `auto`
+        // cross-axis margin takes no part, its margin taking the space.
+        let l = laid(
+            &format!(
+                "<div class=c style='align-items: baseline'>{}{}{}</div>",
+                item("a", 30, 5, ""),
+                item("b", 10, 40, "margin-top: 25px"),
+                item("d", 20, 0, "")
+            ),
+            BASELINE_CSS,
+        );
+        assert_eq!(ys_of(&l, &["a", "b", "d"]), [5.0, 25.0, 15.0]);
+        let l = laid(
+            &format!(
+                "<div class=c style='align-items: baseline'>{}{}{}</div>",
+                item("a", 30, 5, ""),
+                item("b", 10, 40, "margin-top: auto"),
+                item("d", 20, 0, "")
+            ),
+            BASELINE_CSS,
+        );
+        assert_eq!(ys_of(&l, &["a", "b", "d"]), [0.0, 50.0, 10.0]);
+        // Even when its baseline is the furthest down: the group is the
+        // other two.
+        let l = laid(
+            &format!(
+                "<div class=c style='align-items: baseline'>{}{}{}</div>",
+                item("a", 30, 5, ""),
+                item("b", 40, 0, "margin-top: auto"),
+                item("d", 20, 0, "")
+            ),
+            BASELINE_CSS,
+        );
+        assert_eq!(ys_of(&l, &["a", "b", "d"]), [0.0, 60.0, 10.0]);
+        // An item without a baseline has one at its border box's bottom.
+        let l = laid(
+            &format!(
+                "<div class=c style='align-items: baseline'>{}\
+                 <div id=b style='height: 20px'></div><div id=d style='height: 50px'></div></div>",
+                item("a", 30, 5, "")
+            ),
+            BASELINE_CSS,
+        );
+        assert_eq!(ys_of(&l, &["a", "b", "d"]), [20.0, 30.0, 0.0]);
+        // An item's first baseline is its first line's, its last its last.
+        let lines = format!("{}{}", two_lines("a", 10, 30, ""), item("b", 20, 0, ""));
+        for (align, expected) in [
+            ("first baseline", [10.0, 0.0]),
+            ("last baseline", [60.0, 80.0]),
+        ] {
+            let l = laid(
+                &format!("<div class=c style='align-items: {align}'>{lines}</div>"),
+                BASELINE_CSS,
+            );
+            assert_eq!(ys_of(&l, &["a", "b"]), expected, "{align}");
+        }
+        // The two groups and another alignment on one line; a scroll
+        // container keeps its content's baseline.
+        let l = laid(
+            &format!(
+                "<div class=c style='align-items: baseline'>{}{}{}{}</div>",
+                item("a", 30, 5, ""),
+                item("b", 10, 40, "align-self: last baseline"),
+                item("d", 20, 0, "align-self: last baseline"),
+                item("e", 5, 5, "align-self: center")
+            ),
+            BASELINE_CSS,
+        );
+        assert_eq!(ys_of(&l, &["a", "b", "d", "e"]), [0.0, 50.0, 40.0, 45.0]);
+        let l = laid(
+            &format!(
+                "<div class=c style='align-items: baseline'>{}{}</div>",
+                item("a", 30, 5, ""),
+                item("b", 10, 40, "overflow: hidden")
+            ),
+            BASELINE_CSS,
+        );
+        assert_eq!(ys_of(&l, &["a", "b"]), [0.0, 20.0]);
+        // A group too large for its line stays flush with its edge, past
+        // the other one: unsafe.
+        let pair = format!("{}{}", item("a", 30, 5, ""), item("b", 10, 40, ""));
+        for (align, expected) in [("baseline", [0.0, 20.0]), ("last baseline", [-40.0, -20.0])] {
+            let l = laid(
+                &format!("<div class=c style='align-items: {align}; height: 30px'>{pair}</div>"),
+                BASELINE_CSS,
+            );
+            assert_eq!(ys_of(&l, &["a", "b"]), expected, "{align}");
+        }
+    }
+
+    #[test]
+    fn a_line_grows_to_hold_its_baseline_groups() {
+        // §9.4 step 8, as the reference browser has it, in a 100px wide
+        // container two items to a line: the first line holds a group
+        // reaching 30px above its baseline and 40px below.
+        let four = format!(
+            "{}{}{}{}",
+            item("a", 30, 5, ""),
+            item("b", 10, 40, ""),
+            item("d", 20, 0, ""),
+            item("e", 5, 5, "")
+        );
+        for align in ["baseline", "last baseline"] {
+            let l = laid(
+                &format!(
+                    "<div class=c style='align-items: {align}; flex-wrap: wrap; width: 100px;
+                       height: auto; align-content: flex-start'>{four}</div>"
+                ),
+                BASELINE_CSS,
+            );
+            assert_eq!(
+                ys_of(&l, &["a", "b", "d", "e"]),
+                [0.0, 20.0, 70.0, 85.0],
+                "{align}"
+            );
+        }
+        // Lines stretched by `align-content` keep their group at the
+        // start.
+        let l = laid(
+            &format!(
+                "<div class=c style='align-items: baseline; flex-wrap: wrap; width: 100px;
+                   height: 300px'>{four}</div>"
+            ),
+            BASELINE_CSS,
+        );
+        assert_eq!(ys_of(&l, &["a", "b", "d", "e"]), [0.0, 20.0, 172.5, 187.5]);
+        // The last group of a line with a stretched item; a line already
+        // taller than its group.
+        let l = laid(
+            &format!(
+                "<div class=c style='flex-wrap: wrap; height: auto; align-content: flex-start'>\
+                 {}{}{}</div>",
+                item("a", 30, 5, "width: 10px"),
+                item("b", 10, 40, "width: 10px; align-self: last baseline"),
+                item("d", 5, 70, "width: 10px; align-self: last baseline")
+            ),
+            BASELINE_CSS,
+        );
+        assert_eq!(rect(&l, "a").3, 80.0, "stretched to the line");
+        assert_eq!(ys_of(&l, &["b", "d"]), [0.0, 5.0]);
+        let l = laid(
+            &format!(
+                "<div class=c style='flex-wrap: wrap; height: auto; align-items: baseline;
+                   align-content: flex-start'>{}{}<div id=d style='height: 90px;
+                   align-self: flex-start'></div></div>",
+                item("a", 30, 5, ""),
+                item("b", 10, 40, "")
+            ),
+            BASELINE_CSS,
+        );
+        assert_eq!(ys_of(&l, &["a", "b", "d"]), [0.0, 20.0, 0.0]);
+        // An inline flex container as tall as its group, from the margin
+        // above one item to the margin below another.
+        let l = laid(
+            "<div id=c style='display: inline-flex; align-items: baseline'>\
+             <div style='width: 10px; height: 30px; margin-top: 20px'></div>\
+             <div style='width: 10px; height: 40px; margin-bottom: 5px'></div></div>",
+            BASELINE_CSS,
+        );
+        assert_eq!(rect(&l, "c").3, 55.0);
+    }
+
+    #[test]
+    fn a_column_group_aligns_its_items_left_edges() {
+        // As the reference browser has it: a column item's cross axis is
+        // its inline axis, and both its baselines are synthesized from its
+        // border box's left edge (css-align-3 §9.1). The items, 50, 100
+        // and 30px wide, the last with a 15px left margin, line up their
+        // left edges; the group goes to cross-start, or to cross-end for
+        // `last baseline`, `wrap-reverse` turning both round.
+        let css = "body { font-size: 0 }
+             .c { display: flex; flex-direction: column; width: 400px; height: 100px }
+             .c > div { height: 10px; flex: none }
+             #a { width: 50px } #b { width: 100px } #d { width: 30px; margin-left: 15px }";
+        let items = "<div id=a></div><div id=b></div><div id=d></div>";
+        for (align, extra, x) in [
+            ("baseline", "", 15.0),
+            ("baseline", "flex-wrap: wrap-reverse", 300.0),
+            ("baseline", "flex-direction: column-reverse", 15.0),
+            ("last baseline", "", 300.0),
+            ("last baseline", "flex-wrap: wrap-reverse", 15.0),
+        ] {
+            let l = laid(
+                &format!("<div class=c style='align-items: {align}; {extra}'>{items}</div>"),
+                css,
+            );
+            for id in ["a", "b", "d"] {
+                assert_eq!(rect(&l, id).0, x, "{align}, {extra}: #{id}");
+            }
+        }
+        // The group widens its line: from the margin's 15px to the widest
+        // item's 100px.
+        let l = laid(
+            "<div class=c style='align-items: baseline; flex-wrap: wrap; height: 20px;
+               align-content: flex-start'><div id=d></div><div id=b></div><div id=a></div></div>",
+            css,
+        );
+        assert_eq!(
+            [rect(&l, "d").0, rect(&l, "b").0, rect(&l, "a").0],
+            [15.0, 15.0, 115.0]
+        );
+    }
+
+    /// The first or the last baseline of the flex container `#c` in
+    /// `inner`, from its border-box top: where an outer row container
+    /// aligning by that baseline puts a 5px square's bottom, beside it.
+    fn container_baseline(inner: &str, container: &str, last: bool) -> f32 {
+        let align = if last { "last baseline" } else { "baseline" };
+        let l = laid(
+            &format!(
+                "<div style='display: flex; height: 300px; align-items: {align}'>\
+                 <div id=c class=c style='{container}'>{inner}</div><div id=m></div></div>"
+            ),
+            "body { font-size: 0; line-height: 0 }
+             .c { display: flex; width: 200px; height: 100px; flex: none }
+             .c > div { width: 20px; flex: none }
+             i { display: inline-block; width: 10px }
+             #m { width: 5px; height: 5px; flex: none }",
+        );
+        rect(&l, "m").1 + 5.0 - rect(&l, "c").1
+    }
+
+    #[test]
+    fn a_flex_containers_baselines_are_its_first_and_last_lines() {
+        // §8.5, as the reference browser has it, physically: the first
+        // baseline is the top line's, the last the bottom line's; on that
+        // line, a baseline group's, else the leftmost item's first or the
+        // rightmost item's last, synthesized from its bottom edge when it
+        // has none.
+        let both = |inner: &str, container: &str| {
+            [
+                container_baseline(inner, container, false),
+                container_baseline(inner, container, true),
+            ]
+        };
+        let pair = format!("{}{}", item("a", 30, 5, ""), item("b", 10, 40, ""));
+        let lines = format!(
+            "{}{}",
+            two_lines("a", 10, 30, ""),
+            two_lines("b", 20, 5, "")
+        );
+        assert_eq!(both(&pair, ""), [30.0, 10.0]);
+        assert_eq!(both(&lines, ""), [10.0, 25.0]);
+        assert_eq!(
+            both(
+                &format!(
+                    "{}<div id=b style='height: 20px'></div>",
+                    item("a", 30, 5, "")
+                ),
+                ""
+            ),
+            [30.0, 20.0]
+        );
+        assert_eq!(
+            both(
+                "<div style='height: 20px'></div><div style='height: 50px'></div>",
+                ""
+            ),
+            [20.0, 50.0]
+        );
+        // `order` and `row-reverse` change which item is leftmost.
+        assert_eq!(
+            both(
+                &format!("{}{}", item("a", 30, 5, ""), item("b", 10, 40, "order: -1")),
+                ""
+            ),
+            [10.0, 30.0]
+        );
+        assert_eq!(both(&lines, "flex-direction: row-reverse"), [20.0, 40.0]);
+        // A group on the line comes first: the first group for the first
+        // baseline and the last for the last, else the other one.
+        assert_eq!(
+            both(
+                &format!(
+                    "{}{}",
+                    item("a", 30, 5, "align-self: baseline"),
+                    item("b", 10, 40, "")
+                ),
+                ""
+            ),
+            [30.0, 30.0]
+        );
+        assert_eq!(
+            both(
+                &format!(
+                    "{}{}",
+                    item("a", 30, 5, "align-self: last baseline"),
+                    item("b", 10, 40, "")
+                ),
+                ""
+            ),
+            [95.0, 95.0]
+        );
+        assert_eq!(
+            both(
+                &format!(
+                    "{}{}",
+                    item("a", 30, 5, "align-self: last baseline"),
+                    item("b", 10, 40, "align-self: baseline")
+                ),
+                ""
+            ),
+            [10.0, 95.0]
+        );
+        // An item moved by its alignment moves its baseline.
+        assert_eq!(
+            container_baseline(
+                &format!(
+                    "{}{}",
+                    item("a", 30, 5, "align-self: center"),
+                    item("b", 10, 40, "")
+                ),
+                "",
+                false
+            ),
+            62.5
+        );
+        // Lines: the top one and the bottom one, `wrap-reverse` turning
+        // them round; the bottom line's own group.
+        let wrap = "flex-wrap: wrap; width: 30px; align-content: flex-start";
+        let reverse = "flex-wrap: wrap-reverse; width: 30px; align-content: flex-start";
+        assert_eq!(both(&lines, wrap), [10.0, 65.0]);
+        assert_eq!(both(&lines, reverse), [55.0, 100.0]);
+        let three = |style: &str| {
+            format!(
+                "{}{}{}",
+                two_lines("a", 10, 30, ""),
+                two_lines("b", 20, 5, ""),
+                two_lines("d", 3, 4, style)
+            )
+        };
+        let wide = "flex-wrap: wrap; width: 50px; align-content: flex-start";
+        assert_eq!(both(&three(""), wide), [10.0, 47.0]);
+        assert_eq!(both(&three("align-self: baseline"), wide), [10.0, 43.0]);
+        assert_eq!(
+            both(
+                &three(""),
+                "flex-wrap: wrap-reverse; width: 50px; align-content: flex-start"
+            ),
+            [56.0, 85.0]
+        );
+        assert_eq!(
+            both(
+                &three(""),
+                "flex-direction: row-reverse; flex-wrap: wrap; width: 50px; align-content: flex-start"
+            ),
+            [20.0, 47.0]
+        );
+    }
+
+    #[test]
+    fn a_column_containers_baselines_are_its_top_and_bottom_items() {
+        // §8.5, as the reference browser has it: the top item of the
+        // leftmost line and the bottom item of the rightmost, whatever
+        // aligns by a baseline in the cross axis.
+        let lines = format!(
+            "{}{}",
+            two_lines("a", 10, 30, ""),
+            two_lines("b", 20, 5, "")
+        );
+        let both = |inner: &str, container: &str| {
+            [
+                container_baseline(inner, container, false),
+                container_baseline(inner, container, true),
+            ]
+        };
+        assert_eq!(both(&lines, "flex-direction: column"), [10.0, 65.0]);
+        assert_eq!(
+            both(&lines, "flex-direction: column-reverse"),
+            [55.0, 100.0]
+        );
+        assert_eq!(
+            both(
+                &format!(
+                    "{}{}",
+                    two_lines("a", 10, 30, ""),
+                    two_lines("b", 20, 5, "align-self: baseline")
+                ),
+                "flex-direction: column"
+            ),
+            [10.0, 65.0]
+        );
+        assert_eq!(
+            both(
+                &format!("<div style='height: 20px'></div>{}", item("b", 10, 40, "")),
+                "flex-direction: column"
+            ),
+            [20.0, 30.0]
+        );
+        let three = format!(
+            "{}{}{}",
+            two_lines("a", 10, 30, ""),
+            two_lines("b", 20, 5, ""),
+            two_lines("d", 3, 4, "")
+        );
+        let wrap = |direction: &str, wrap: &str| {
+            format!(
+                "flex-direction: {direction}; flex-wrap: {wrap}; height: 70px; align-content: flex-start"
+            )
+        };
+        assert_eq!(both(&three, &wrap("column", "wrap")), [10.0, 7.0]);
+        assert_eq!(both(&three, &wrap("column", "wrap-reverse")), [3.0, 65.0]);
+        assert_eq!(both(&three, &wrap("column-reverse", "wrap")), [25.0, 70.0]);
+    }
+
+    #[test]
+    fn an_inline_flex_container_sits_on_its_first_baseline() {
+        // css-align-3 §9.1 and §8.5, as the reference browser has it: on
+        // its line by its first baseline, inside its padding and border;
+        // a scroll container too; with no item, by its margin box's
+        // bottom, as an inline-block with no line is.
+        let on_line = |inner: &str, container: &str| {
+            let l = laid(
+                &format!(
+                    "<div><div id=c class=c style='{container}'>{inner}</div><i id=m></i></div>"
+                ),
+                "body { font-size: 0; line-height: 0 }
+                 .c { display: inline-flex; width: 200px; height: 100px }
+                 .c > div { width: 20px; flex: none }
+                 i { display: inline-block; width: 10px }
+                 #m { width: 5px; height: 5px }",
+            );
+            rect(&l, "m").1 + 5.0 - rect(&l, "c").1
+        };
+        let pair = format!("{}{}", item("a", 30, 5, ""), item("b", 10, 40, ""));
+        assert_eq!(on_line(&pair, ""), 30.0);
+        assert_eq!(on_line(&pair, "padding: 7px; border: 3px solid"), 40.0);
+        assert_eq!(on_line(&pair, "overflow: hidden"), 30.0);
+        assert_eq!(
+            on_line("", "padding: 3px; margin: 4px; border: 2px solid"),
+            114.0
+        );
+    }
+
+    #[test]
+    fn a_box_around_a_flex_container_takes_its_baselines() {
+        // As the reference browser has it: a block's first and last
+        // baselines are a flex container's inside it, as they are a table's,
+        // and so is a table cell's; but an inline-block takes a flex
+        // container's first baseline, where it takes a table's last row's.
+        let flex = format!(
+            "<div class=c>{}{}</div>",
+            two_lines("a", 10, 30, ""),
+            two_lines("b", 20, 5, "")
+        );
+        let block = "<div><i style='height: 7px'></i></div>";
+        let css = "body { font-size: 0; line-height: 0 }
+             .c { display: flex; width: 200px; height: 100px }
+             .c > div { width: 20px; flex: none }
+             i { display: inline-block; width: 10px }
+             #m { width: 5px; height: 5px }
+             table { border-spacing: 0 } td { padding: 0 }";
+        let inline_block = |inner: &str| {
+            let l = laid(
+                &format!(
+                    "<div><span id=w style='display: inline-block'>{inner}</span><i id=m></i></div>"
+                ),
+                css,
+            );
+            rect(&l, "m").1 + 5.0 - rect(&l, "w").1
+        };
+        assert_eq!(inline_block(&flex), 10.0);
+        assert_eq!(inline_block(&format!("{block}{flex}")), 17.0);
+        assert_eq!(inline_block(&format!("<div>{flex}</div>")), 10.0);
+        assert_eq!(inline_block(&format!("{flex}{block}")), 107.0);
+        assert_eq!(
+            inline_block(
+                "<table><tr><td><i style='height: 10px'></i></td></tr>\
+                 <tr><td><i style='height: 20px'></i></td></tr></table>"
+            ),
+            30.0
+        );
+        let in_flex = |inner: &str, last: bool| {
+            let align = if last { "last baseline" } else { "baseline" };
+            let l = laid(
+                &format!(
+                    "<div style='display: flex; height: 300px; align-items: {align}'>\
+                     <div id=w style='flex: none'>{inner}</div><i id=m style='flex: none'></i></div>"
+                ),
+                css,
+            );
+            rect(&l, "m").1 + 5.0 - rect(&l, "w").1
+        };
+        assert_eq!(in_flex(&format!("{block}{flex}"), false), 7.0);
+        assert_eq!(in_flex(&format!("{block}{flex}"), true), 32.0);
+        assert_eq!(in_flex(&format!("<div>{flex}</div>"), true), 25.0);
+        let cell = |inner: &str| {
+            let l = laid(
+                &format!(
+                    "<table><tr><td id=w style='vertical-align: baseline'>{inner}</td>\
+                     <td style='vertical-align: baseline'><i id=m></i></td></tr></table>"
+                ),
+                css,
+            );
+            rect(&l, "m").1 + 5.0 - rect(&l, "w").1
+        };
+        assert_eq!(cell(&flex), 10.0);
+        assert_eq!(cell(&format!("{block}{flex}")), 7.0);
+        assert_eq!(
+            cell(&format!(
+                "<div class=c style='flex-direction: column'>{}{}</div>",
+                two_lines("a", 10, 30, ""),
+                two_lines("b", 20, 5, "")
+            )),
+            10.0
+        );
     }
 }

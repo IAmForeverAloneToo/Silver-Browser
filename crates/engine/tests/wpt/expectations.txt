@@ -3,10 +3,6 @@
 # named here fails the run, and so does one named here that passes.
 # The steps are M17's (docs/design/flexbox.md, section 3).
 
-# Baseline alignment, M17 step 7.
-css/css-flexbox/align-baseline.html               waits on step 7: baseline alignment, which in a column wrap-reverse container aligns the items as a group
-css/css-flexbox/flexbox_align-items-baseline.html waits on step 7: baseline alignment
-
 # Absolute positioning, M17 step 8.
 css/css-flexbox/abspos/position-absolute-015.html                  waits on step 8: an absolutely positioned child's static position, which justify-content and align-items place
 css/css-flexbox/abspos/position-absolute-containing-block-001.html waits on step 8: an absolutely positioned child's static position, which justify-content and align-items place

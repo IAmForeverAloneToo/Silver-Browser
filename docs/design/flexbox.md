@@ -296,8 +296,8 @@ steps:
    minimum and maximum.
 8. *Line cross size*: a single-line container with a definite cross size
    gives its line that size. Otherwise each line is as large as its
-   largest outer hypothetical cross size, and as large as the baseline
-   group's largest ascent plus its largest descent (below).
+   largest outer hypothetical cross size, and as large as each baseline
+   group's extent (below).
 9. *Single-line clamp*: the line clamped by the container's minimum and
    maximum cross size.
 10. *`visibility: collapse`*: not done (section 2).
@@ -397,33 +397,50 @@ count as zero (§9.9).
 
 **Baselines** (§8.3, §8.5, css-align-3 §9). An item takes part in
 baseline alignment when its `align-self` is `baseline`, `first baseline`
-or `last baseline`, neither cross-axis margin is `auto`, and the
-container is a row container. In a column container the cross axis is
-the items' inline axis, and they align by their fallback, `safe
-self-start` or `safe self-end`. An item's first and last baselines are
-its layout's, measured from its border box. One with none synthesizes
-both from its border box's bottom edge, as a flex item does (css-align-3
-§9.1).
+or `last baseline` and neither cross-axis margin is `auto`. In a row
+container an item's first and last baselines are its layout's, measured
+from its border box; one with none synthesizes both from its border
+box's bottom edge (css-align-3 §9.1). A column container's cross axis is
+the items' inline axis, across their baselines. css-align-3 would have
+them take the fallback, `safe self-start` or `safe self-end`; the
+reference browsers instead synthesize both baselines from the item's
+border box's left edge, so that the group lines up the items' left edges
+and is placed as a group. The engine does as they do.
 
-On each line, the first-baseline items are shifted so their baselines
-meet at the largest distance from cross-start to baseline among them.
-The last-baseline items are aligned the same way from cross-end. The
-line is at least as large as that group's largest ascent plus its
-largest descent.
+On each line, the items in the first baseline-sharing group are shifted
+so that their baselines meet, the item whose baseline is furthest from
+its outer cross-start edge flush with the line's cross-start. The last
+group is aligned the same way at cross-end. Both are flex-relative, so
+`wrap-reverse` turns them round, and neither is safe: a group larger
+than its line overflows at the other edge. The line is at least as large
+as each group's largest distance from its aligning edge to the baseline
+plus its largest distance beyond it, in a column container too, as in
+the reference browsers (§9.4 step 8 counts only items whose inline axis
+is the main axis). The container's intrinsic sizes leave the groups out.
 
-A flex container's own first baseline (§8.5) is:
+A flex container's own baselines (§8.5) are found physically, as the
+reference browsers find them, rather than from main-start:
 
-1. the shared baseline of its first line's first-baseline items, if any;
-2. else its last-baseline group's;
-3. else the baseline of the first item on that line, in order-modified
-   document order, that has one;
-4. else one synthesized from the startmost item's border box;
-5. with no items, none, and its context synthesizes one as it does for
-   any box.
+- a row container's first baseline is its top line's: the shared
+  baseline of that line's first group, else of its last group, else the
+  first baseline of the line's leftmost item;
+- its last baseline is its bottom line's: the last group's, else the
+  first group's, else the last baseline of the rightmost item;
+- a column container's first baseline is the first baseline of the top
+  item in its leftmost line, and its last baseline the last baseline of
+  the bottom item in its rightmost line, whatever aligns by a baseline in
+  the cross axis;
+- an item without the baseline asked for has one synthesized from its
+  border box's bottom edge, and with no items the container has none and
+  its context synthesizes one as it does for any box.
 
-Its last baseline is the same from its last line. An `inline-flex`
-aligns on its line by its first baseline, as an inline table does, and a
-flex container gives a table cell its baseline as a line box does.
+An `inline-flex` aligns on its line by its first baseline, as an inline
+table does, whatever its `overflow`. A flex container gives a table cell
+its first baseline, and a block around it both its baselines. An
+inline-block around it, though, takes its first baseline where it would
+take a block's last line's or a table's last row's: a legacy rule of the
+reference browsers, which the engine follows. A box's layout therefore
+carries an inline-block baseline beside its first and last baselines.
 
 **Absolutely positioned children** (§4.1). An absolutely positioned
 child of a flex container is not an item. Its static position is where
@@ -560,7 +577,7 @@ lead.
   make the tests pass, and a last one for those that wait on nothing in
   this milestone (section 2). At step 5, 287 of the 350 pass; 55 wait on
   steps 6 to 9 and 8 on nothing here. At step 6, 332 pass; 10 wait on
-  steps 7 to 9.
+  steps 7 to 9. At step 7, 334 pass; 8 wait on steps 8 and 9.
 - *Triage.* Every run writes `target/wpt/report.html`. It lists each
   test with its result and reason, and for a failing reftest shows the
   test's render, the reference's and the difference side by side. That
