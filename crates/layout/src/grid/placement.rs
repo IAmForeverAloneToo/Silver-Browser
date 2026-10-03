@@ -481,6 +481,36 @@ pub(crate) fn resolve(start: &GridLine, end: &GridLine, axis: &ExplicitAxis) -> 
     }
 }
 
+/// An absolutely positioned box's `*-start` and `*-end` in one axis
+/// resolved against the explicit grid `axis` (§10.1), its containing
+/// block being the grid container: there is no auto-placement, so an
+/// `auto` line stays `None`, the padding edge on its side, and a span
+/// alone is two of them; two lines, or a line and a span, resolve as an
+/// item's would ([`resolve`]). Whether the grid has the lines found is
+/// for the caller to say.
+pub(crate) fn resolve_absolute(
+    start: &GridLine,
+    end: &GridLine,
+    axis: &ExplicitAxis,
+) -> [Option<i32>; 2] {
+    let is_line = |g: &GridLine| matches!(g, GridLine::Ident(_) | GridLine::Line(..));
+    match (is_line(start), is_line(end)) {
+        (false, false) => [None, None],
+        (true, false) if *end == GridLine::Auto => match resolve(start, end, axis) {
+            AxisPlacement::Definite(s, _) => [Some(s), None],
+            AxisPlacement::Auto(_) => [None, None],
+        },
+        (false, true) if *start == GridLine::Auto => match resolve(start, end, axis) {
+            AxisPlacement::Definite(_, e) => [None, Some(e)],
+            AxisPlacement::Auto(_) => [None, None],
+        },
+        _ => match resolve(start, end, axis) {
+            AxisPlacement::Definite(s, e) => [Some(s), Some(e)],
+            AxisPlacement::Auto(_) => [None, None],
+        },
+    }
+}
+
 /// How many rows an area may cross and still be kept in each of them;
 /// a taller one is kept once, so that a page cannot make every item cost
 /// thousands of entries.

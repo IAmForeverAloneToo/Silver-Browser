@@ -1665,24 +1665,37 @@ pub(crate) fn settle_absolutes<'a>(
     absolutes: Vec<Deferred<'a>>,
     pass: &Pass<'a>,
 ) -> Vec<Deferred<'a>> {
+    let padding_w = (root.w - border[LEFT] - border[RIGHT]).max(0.0);
+    let padding_h = (root.h - border[TOP] - border[BOTTOM]).max(0.0);
+    settle_absolutes_in(b, root, border, absolutes, pass, &|_| {
+        [0.0, 0.0, padding_w, padding_h]
+    })
+}
+
+/// [`settle_absolutes`], each box laid out against the rectangle `area`
+/// gives it, `[x, y, width, height]` from the padding box's top-left,
+/// rather than against the padding box: a grid area when `b` is a grid
+/// container (M18).
+pub(crate) fn settle_absolutes_in<'a>(
+    b: &LayoutBox,
+    root: &mut Fragment,
+    border: &[f32; 4],
+    absolutes: Vec<Deferred<'a>>,
+    pass: &Pass<'a>,
+    area: &dyn Fn(&LayoutBox) -> [f32; 4],
+) -> Vec<Deferred<'a>> {
     if !b.style.position.is_positioned() {
         return absolutes;
     }
     let (mine, mut up): (Vec<_>, Vec<_>) = absolutes
         .into_iter()
         .partition(|d| d.b.style.position == Position::Absolute);
-    let padding_w = (root.w - border[LEFT] - border[RIGHT]).max(0.0);
-    let padding_h = (root.h - border[TOP] - border[BOTTOM]).max(0.0);
     for d in mine {
-        let (fragment, fixed) = layout_absolute(
-            &d.moved(-border[LEFT], -border[TOP]),
-            padding_w,
-            Some(padding_h),
-            pass,
-        );
-        up.extend(carried(fixed, border[LEFT], border[TOP]));
-        root.children
-            .push(fragment.translated(border[LEFT], border[TOP]));
+        let [x, y, w, h] = area(d.b);
+        let (dx, dy) = (border[LEFT] + x, border[TOP] + y);
+        let (fragment, fixed) = layout_absolute(&d.moved(-dx, -dy), w, Some(h), pass);
+        up.extend(carried(fixed, dx, dy));
+        root.children.push(fragment.translated(dx, dy));
     }
     up
 }

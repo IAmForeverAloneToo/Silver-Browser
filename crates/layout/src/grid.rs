@@ -18,19 +18,19 @@ use std::ops::Range;
 
 use style::computed::{
     BOTTOM, BaselinePosition, BoxSizing, ComputedStyle, ContentAlignment, LEFT, LengthPercentage,
-    LengthPercentageAuto, MaxSize, RIGHT, SelfAlignment, Size, TOP, TrackBreadth, TrackList,
-    TrackSize,
+    LengthPercentageAuto, MaxSize, Position, RIGHT, SelfAlignment, Size, TOP, TrackBreadth,
+    TrackList, TrackSize,
 };
 
 use crate::align::{Alignment, align_content, justify_content, self_alignment};
 use crate::block::{
     AdjoiningMargins, BlockLayout, Content, Deferred, Edges, Imposed, Intrinsic, box_fragment,
     carried, clamp_height, definite_height, extent_bottom, height_bounds, layout_contents,
-    relative_offset, settle_absolutes, width_constraints,
+    relative_offset, settle_absolutes_in, width_constraints,
 };
 use crate::box_tree::{BoxKind, LayoutBox};
 use crate::pass::{ItemKey, Pass};
-use placement::{Axis, ExplicitAxis, Room, place, repetitions, resolve};
+use placement::{Axis, ExplicitAxis, Room, place, repetitions, resolve, resolve_absolute};
 use tracks::{Available, Contribution, Sizing, Space, Track, size_tracks};
 
 /// An item placed in the grid: its box, its place among the
@@ -150,11 +150,18 @@ fn track(size: TrackSize, percent_of: Option<f32>, collapsed: bool) -> Track {
     }
 }
 
-/// The grid: its items, placed, and its tracks in each axis.
+/// The grid: its items, placed, and its tracks in each axis; and, for
+/// the absolutely positioned boxes it is the containing block of, each
+/// axis's explicit grid and the line coordinate of its first track,
+/// zero or negative, the explicit grid's first line being 0.
 struct Grid<'a> {
     items: Vec<GridItem<'a>>,
     rows: AxisTracks,
     columns: AxisTracks,
+    row_axis: ExplicitAxis,
+    column_axis: ExplicitAxis,
+    first_row: i32,
+    first_column: i32,
 }
 
 /// The room an axis gives an automatic repetition (§7.2.3.2), from the
@@ -268,6 +275,10 @@ fn build<'a>(b: &'a LayoutBox, columns: AxisInputs, rows: AxisInputs) -> Grid<'a
         items,
         rows,
         columns,
+        row_axis,
+        column_axis,
+        first_row: placed.first_row,
+        first_column: placed.first_column,
     }
 }
 
@@ -297,6 +308,21 @@ impl Lines {
         let start = self.starts[span.start];
         let last = span.end - 1;
         (start, self.starts[last] + self.sizes[last] - start)
+    }
+
+    /// Where the line before track `k` is as an area's start edge: that
+    /// track's start, or the last track's end for the last line.
+    fn start_edge(&self, k: usize) -> f32 {
+        self.starts.get(k).copied().unwrap_or_else(|| self.extent())
+    }
+
+    /// Where the line after track `k - 1` is as an area's end edge: that
+    /// track's end, or the first track's start for the first line.
+    fn end_edge(&self, k: usize) -> f32 {
+        match k.checked_sub(1) {
+            Some(t) => self.starts[t] + self.sizes[t],
+            None => self.starts.first().copied().unwrap_or(0.0),
+        }
     }
 
     /// From the first track's start to the last's end.
@@ -1227,17 +1253,55 @@ pub(crate) fn layout_grid_contents<'a>(
     let (first_baseline, last_baseline) =
         container_baselines(&grid.items, &row_groups, &item_baselines);
 
-    // An absolutely positioned child is no item; until the grid aligns
-    // it (M18 step 7), its static position is the content box's start.
+    // An absolutely positioned box whose containing block the grid
+    // container is takes its grid area for it (§10.1).
+    let padding_box = [
+        content_width + padding[LEFT] + padding[RIGHT],
+        content_height + padding[TOP] + padding[BOTTOM],
+    ];
+    let area = |abs: &LayoutBox| {
+        absolute_area(
+            abs,
+            &grid,
+            [&column_lines, &row_lines],
+            padding,
+            padding_box,
+        )
+    };
+    // An absolutely positioned child is no item (§10.2). Its
+    // static-position rectangle is the content box, or its grid area when
+    // the grid container is its containing block too, where it is placed
+    // as the sole item would be: by its `justify-self` and `align-self`,
+    // `auto` being the container's `justify-items` and `align-items`, and
+    // `normal` and `stretch` being `start`; never safe.
+    let contains = style.position.is_positioned();
     let mut absolutes = Vec::new();
     for (child, carried) in b.children.iter().zip(carried_up) {
         if child.kind == BoxKind::Absolute {
-            absolutes.push(Deferred::at(child, content_x, content_y));
+            let [x, y, w, h] = if contains && child.style.position == Position::Absolute {
+                let [x, y, w, h] = area(child);
+                [border[LEFT] + x, border[TOP] + y, w, h]
+            } else {
+                [content_x, content_y, content_width, content_height]
+            };
+            let align = [
+                self_alignment(justify_self(&child.style, style), true, true),
+                self_alignment(align_self(&child.style, style), true, false),
+            ];
+            absolutes.push(Deferred {
+                b: child,
+                x,
+                y,
+                w,
+                h,
+                align: align.map(|alignment| alignment.static_align(true)),
+                float: None,
+            });
         } else {
             absolutes.extend(carried);
         }
     }
-    let absolutes = settle_absolutes(b, &mut root, border, absolutes, pass);
+    let absolutes = settle_absolutes_in(b, &mut root, border, absolutes, pass, &area);
     if style.overflow.clips() {
         // The scrollable overflow area (§5.3): the items' margin boxes and
         // the grid's tracks, with the end padding after them, or anything
@@ -1273,6 +1337,56 @@ pub(crate) fn layout_grid_contents<'a>(
         auto_content_height,
         held: Vec::new(),
     }
+}
+
+/// The grid area that is the containing block of an absolutely
+/// positioned box `b` whose containing block the grid container is
+/// (§10.1), as `[x, y, width, height]` from the padding box's top-left:
+/// its lines resolved against the explicit grid with no auto-placement
+/// ([`resolve_absolute`]), an `auto` line, or one the grid as laid out
+/// does not have, being the padding edge on its side. An area's edges
+/// are its tracks' edges, the gutters outside it; `padding` puts the
+/// tracks, which are placed from the content box, in the padding box,
+/// `size` across.
+fn absolute_area(
+    b: &LayoutBox,
+    grid: &Grid<'_>,
+    [columns, rows]: [&Lines; 2],
+    padding: &[f32; 4],
+    size: [f32; 2],
+) -> [f32; 4] {
+    let style = b.style.grid();
+    let axis = |start, end, explicit, first: i32, lines: &Lines, offset: f32, size: f32| {
+        let count = lines.sizes.len() as i32;
+        let index = |line: Option<i32>| {
+            line.map(|line| line - first)
+                .filter(|k| (0..=count).contains(k))
+                .map(|k| k as usize)
+        };
+        let [start, end] = resolve_absolute(start, end, explicit).map(index);
+        let from = start.map_or(0.0, |k| offset + lines.start_edge(k));
+        let to = end.map_or(size, |k| offset + lines.end_edge(k));
+        (from, (to - from).max(0.0))
+    };
+    let (x, width) = axis(
+        &style.column_start,
+        &style.column_end,
+        &grid.column_axis,
+        grid.first_column,
+        columns,
+        padding[LEFT],
+        size[0],
+    );
+    let (y, height) = axis(
+        &style.row_start,
+        &style.row_end,
+        &grid.row_axis,
+        grid.first_row,
+        rows,
+        padding[TOP],
+        size[1],
+    );
+    [x, y, width, height]
 }
 
 /// The grid container's first and last baselines from its border box's
@@ -2762,6 +2876,228 @@ mod tests {
             );
             assert_eq!(rect(&l, "w").1, y, "{align}");
         }
+    }
+
+    /// The grid the tests of absolutely positioned boxes share: its
+    /// border box at the top-left, 5px border, padding 10px 20px 30px
+    /// 40px, so its padding box is 5 to 465 across and 5 to 245 down and
+    /// its content box 45 to 445 and 15 to 215; columns of 100 and 200 at
+    /// 45 and 145, rows of 50 and 70 at 15 and 65. `.a` is an absolutely
+    /// positioned box 20 by 20.
+    const ABSOLUTE_CSS: &str = "
+        .g { display: grid; position: relative; border: 5px solid; padding: 10px 20px 30px 40px;
+             width: 400px; height: 200px; grid-template-columns: 100px 200px;
+             grid-template-rows: 50px 70px }
+        .a { position: absolute; width: 20px; height: 20px }
+        .s { height: 10px }";
+
+    /// `#x`'s border box in a grid `.g` with the style `grid` holding
+    /// `body`.
+    fn absolute_at(body: &str, grid: &str) -> (f32, f32, f32, f32) {
+        let l = laid(
+            &format!("<div class=g style='{grid}'>{body}</div>"),
+            ABSOLUTE_CSS,
+        );
+        rect(&l, "x")
+    }
+
+    /// A box `#x` with the style `style` that fills its containing block.
+    fn filling(style: &str) -> String {
+        format!(
+            "<div id=x class=a style='{style}; top: 0; right: 0; bottom: 0; left: 0; \
+             width: auto; height: auto'></div>"
+        )
+    }
+
+    #[test]
+    fn an_absolutely_positioned_box_takes_its_grid_area_for_containing_block() {
+        // §10.1, as the reference browser has it: the area its own lines
+        // give, the gutters outside it, an `auto` line the padding edge,
+        // percentages and insets of the area; a descendant of an item the
+        // same, and a positioned item its own containing block.
+        for (style, grid, expected) in [
+            (
+                "grid-column: 2; grid-row: 2",
+                "",
+                (145.0, 65.0, 320.0, 180.0),
+            ),
+            ("grid-column: auto / 2", "", (5.0, 5.0, 140.0, 240.0)),
+            (
+                "grid-area: 1 / 2 / 3 / 3",
+                "gap: 10px 15px",
+                (160.0, 15.0, 200.0, 130.0),
+            ),
+            (
+                "grid-area: 1 / 1 / 2 / 2",
+                "gap: 10px 15px",
+                (45.0, 15.0, 100.0, 50.0),
+            ),
+            (
+                "grid-area: 1 / 1 / 2 / 2",
+                "justify-content: center; align-content: end",
+                (95.0, 95.0, 100.0, 50.0),
+            ),
+        ] {
+            assert_eq!(
+                absolute_at(&filling(style), grid),
+                expected,
+                "{style}, {grid}"
+            );
+        }
+        let x = absolute_at(
+            "<div id=x class=a style='grid-area: 2 / 2; width: 50%; height: 50%; left: 10px'></div>",
+            "",
+        );
+        assert_eq!(x, (155.0, 65.0, 160.0, 90.0));
+        let x = absolute_at(
+            &format!("<div class=s>{}</div>", filling("grid-area: 2 / 2 / 3 / 3")),
+            "",
+        );
+        assert_eq!(x, (145.0, 65.0, 200.0, 70.0));
+        let x = absolute_at(
+            "<div style='position: relative; grid-area: 2 / 2; height: 30px'>\
+             <div id=x class=a style='grid-column: 1; left: 0; right: 0; width: auto; \
+             height: 5px'></div></div>",
+            "",
+        );
+        assert_eq!(x, (145.0, 65.0, 200.0, 5.0));
+    }
+
+    #[test]
+    fn a_line_the_grid_does_not_have_is_the_padding_edge() {
+        // §10.1: no auto-placement and no implicit tracks: a span alone
+        // is two `auto` lines, and a line the grid as laid out does not
+        // have, named, numbered or reached by a span, is `auto` too; two
+        // lines the same are a span of one. Lines the items made exist.
+        let padding_box = (5.0, 5.0, 460.0, 240.0);
+        for (style, grid, body, expected) in [
+            ("grid-column: 5; grid-row: 4 / 7", "", "", padding_box),
+            ("grid-column: span 2; grid-row: span 1", "", "", padding_box),
+            ("grid-column: -2 / -1", "", "", (145.0, 5.0, 200.0, 240.0)),
+            ("grid-column: 2 / 2", "", "", (145.0, 5.0, 200.0, 240.0)),
+            ("grid-column: 1 / span 2", "", "", (45.0, 5.0, 300.0, 240.0)),
+            (
+                "grid-column: 2 / span 3",
+                "",
+                "",
+                (145.0, 5.0, 320.0, 240.0),
+            ),
+            (
+                "grid-column: b / c",
+                "grid-template-columns: [a] 100px [b] 200px [c]",
+                "",
+                (145.0, 5.0, 200.0, 240.0),
+            ),
+            (
+                "grid-column: zz / c",
+                "grid-template-columns: [a] 100px [b] 200px [c]",
+                "",
+                (345.0, 5.0, 120.0, 240.0),
+            ),
+            (
+                "grid-column: 3 / 4",
+                "",
+                "<div class=s style='grid-column: 3'></div>",
+                (345.0, 5.0, 100.0, 240.0),
+            ),
+            (
+                "grid-column: -4 / -3",
+                "",
+                "<div class=s style='grid-column: -4'></div>",
+                (45.0, 5.0, 100.0, 240.0),
+            ),
+        ] {
+            let body = format!("{body}{}", filling(style));
+            assert_eq!(absolute_at(&body, grid), expected, "{style}");
+        }
+    }
+
+    #[test]
+    fn an_absolutely_positioned_child_is_placed_in_its_static_rectangle() {
+        // §10.2: as the sole item of an area whose edges are the content
+        // box's, or its grid area when the grid container is its
+        // containing block too; by `justify-self` and `align-self`, `auto`
+        // being the container's `justify-items` and `align-items`, and
+        // `normal` and `stretch` being `start`, at its shrink-to-fit size.
+        for (style, grid, expected) in [
+            ("grid-area: 2 / 2", "", (145.0, 65.0)),
+            (
+                "grid-area: 2 / 2; justify-self: end; align-self: center",
+                "",
+                (445.0, 145.0),
+            ),
+            ("grid-area: 2 / 2; justify-self: center", "", (295.0, 65.0)),
+            ("", "", (5.0, 5.0)),
+            ("justify-self: end; align-self: end", "", (445.0, 225.0)),
+            (
+                "",
+                "justify-items: center; align-items: end",
+                (225.0, 225.0),
+            ),
+        ] {
+            let x = absolute_at(&format!("<div id=x class=a style='{style}'></div>"), grid);
+            assert_eq!((x.0, x.1), expected, "{style}, {grid}");
+        }
+        for style in ["justify-self: stretch; align-self: stretch", ""] {
+            let x = absolute_at(
+                &format!(
+                    "<div id=x style='position: absolute; grid-area: 2 / 2; {style}'>\
+                     <span style='display: inline-block; width: 30px; height: 10px'></span></div>"
+                ),
+                "",
+            );
+            assert_eq!((x.0, x.1, x.2), (145.0, 65.0, 30.0), "{style}");
+        }
+        let x = absolute_at(
+            "<div id=x class=a style='grid-area: 2 / 2; margin: 5px 6px 7px 8px; \
+             justify-self: end; align-self: end'></div>",
+            "",
+        );
+        assert_eq!((x.0, x.1), (439.0, 218.0));
+        // Not its containing block: the content box, whatever its own
+        // placement, in a grid inside a positioned box 7 in.
+        let in_wrapper = |child: &str| {
+            let l = laid(
+                &format!(
+                    "<div style='position: relative; padding: 7px'><div class=g style='position: static'>\
+                     {child}</div></div>"
+                ),
+                ABSOLUTE_CSS,
+            );
+            let x = rect(&l, "x");
+            (x.0, x.1)
+        };
+        assert_eq!(
+            in_wrapper("<div id=x class=a style='justify-self: center; align-self: end'></div>"),
+            (242.0, 202.0)
+        );
+        assert_eq!(
+            in_wrapper(
+                "<div id=x class=a style='grid-area: 2 / 2; justify-self: end; align-self: end'></div>"
+            ),
+            (432.0, 202.0)
+        );
+        // A fixed child of a positioned grid container: the grid is not
+        // its containing block, so the content box, as §10.2 has it; the
+        // reference browser takes its grid area here too (design note).
+        let x = absolute_at(
+            "<div id=x style='position: fixed; width: 20px; height: 20px; grid-area: 2 / 2; \
+             justify-self: end'></div>",
+            "",
+        );
+        assert_eq!((x.0, x.1), (425.0, 15.0));
+    }
+
+    #[test]
+    fn an_absolutely_positioned_child_takes_no_cell() {
+        // It is no item: the items are placed as if it were not there.
+        let l = laid(
+            "<div class=g><div id=x class=a style='grid-row: 1; grid-column: 1'></div>\
+             <div id=y class=s></div><div id=z class=s></div></div>",
+            ABSOLUTE_CSS,
+        );
+        assert_eq!((rect(&l, "y").0, rect(&l, "z").0), (45.0, 145.0));
+        assert_eq!((rect(&l, "x").0, rect(&l, "x").1), (45.0, 15.0));
     }
 
     #[test]
