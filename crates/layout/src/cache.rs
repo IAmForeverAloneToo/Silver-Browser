@@ -319,8 +319,13 @@ fn rebuild(entries: &HashMap<NodeId, Entry>, entry: &Entry, tree_order: u32) -> 
 }
 
 /// A copy of `fragment` and its subtree, every box's place in tree order
-/// moved `by` on; a text fragment's, which is no box's, stays zero.
+/// moved `by` on; a text fragment's, which is no box's, stays zero. A
+/// subtree that has not moved, as when a box is appended after it, is
+/// copied whole, which is cheaper than rebuilding it a fragment at a time.
 fn moved_along(fragment: &Fragment, by: u32) -> Fragment {
+    if by == 0 {
+        return fragment.clone();
+    }
     let mut moved = childless(fragment);
     if !matches!(moved.kind, FragmentKind::Text(_)) {
         moved.tree_order = moved.tree_order.wrapping_add(by);
