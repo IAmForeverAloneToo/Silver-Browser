@@ -566,6 +566,8 @@ dictionaries.
   (M23).
 - *The sizing functions and keywords of css-sizing-4*: `fit-content()`,
   `stretch`, `contain` and `calc-size()`.
+- *The intrinsic keywords on table cells and columns*: the table
+  algorithms take them as `auto`.
 - *The multi-line column container's max-content width*, which §9.9.2
   computes by laying the container out under a max-content constraint.
   This engine gives the largest contribution, the single-line answer,

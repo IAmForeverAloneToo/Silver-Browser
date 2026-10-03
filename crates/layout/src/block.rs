@@ -78,6 +78,8 @@
 //! scrolls over.
 
 use dom::NodeId;
+use std::cell::Cell;
+
 use style::computed::{
     BOTTOM, BoxSizing, ComputedStyle, Display, Float, LEFT, LengthPercentage, LengthPercentageAuto,
     MaxSize, Position, RIGHT, Size, TOP,
@@ -493,30 +495,93 @@ fn effective_border_width(style: &ComputedStyle) -> [f32; 4] {
 /// widths against `cb_width` (M10.2, M10.3): a percentage resolved, and
 /// under `box-sizing: border-box` the padding and border taken out,
 /// never below zero. `width` is `None` for `auto`, `max` for `none`.
-struct WidthConstraints {
-    width: Option<f32>,
-    min: f32,
-    max: Option<f32>,
+pub(crate) struct WidthConstraints {
+    pub(crate) width: Option<f32>,
+    pub(crate) min: f32,
+    pub(crate) max: Option<f32>,
 }
 
-fn width_constraints(style: &ComputedStyle, cb_width: f32, non_content: f32) -> WidthConstraints {
+/// A box's content widths for the intrinsic size keywords (M17,
+/// css-sizing-3 §3.2), measured the first time one is met: most boxes
+/// have none, and measuring walks the subtree.
+pub(crate) struct Intrinsic<'b> {
+    b: &'b LayoutBox,
+    fonts: &'b FontCollection,
+    widths: Cell<Option<(f32, f32)>>,
+}
+
+impl<'b> Intrinsic<'b> {
+    pub(crate) fn of(b: &'b LayoutBox, fonts: &'b FontCollection) -> Self {
+        Intrinsic {
+            b,
+            fonts,
+            widths: Cell::new(None),
+        }
+    }
+
+    /// The box's min-content and max-content content widths.
+    pub(crate) fn widths(&self) -> (f32, f32) {
+        if let Some(widths) = self.widths.get() {
+            return widths;
+        }
+        let widths = crate::intrinsic::content_widths(self.b, self.fonts);
+        self.widths.set(Some(widths));
+        widths
+    }
+
+    /// The content width a keyword stands for: `min-content`,
+    /// `max-content`, or `fit-content` in `stretch`, the content width
+    /// the box would take filling its room, `min(max-content,
+    /// max(min-content, stretch))`; `None` for anything else.
+    pub(crate) fn keyword(&self, size: Size, stretch: f32) -> Option<f32> {
+        let (min, max) = match size {
+            Size::MinContent | Size::MaxContent | Size::FitContent => self.widths(),
+            Size::Auto | Size::Px(_) | Size::Percent(_) => return None,
+        };
+        Some(match size {
+            Size::MinContent => min,
+            Size::MaxContent => max,
+            _ => max.min(min.max(stretch)),
+        })
+    }
+}
+
+/// [`MaxSize`]'s keywords as the [`Size`] keyword they measure the
+/// same way.
+fn max_keyword(size: MaxSize) -> Size {
+    match size {
+        MaxSize::MinContent => Size::MinContent,
+        MaxSize::MaxContent => Size::MaxContent,
+        MaxSize::FitContent => Size::FitContent,
+        MaxSize::None | MaxSize::Px(_) | MaxSize::Percent(_) => Size::Auto,
+    }
+}
+
+/// The box's width constraints, the intrinsic keywords (M17) measured
+/// by `intrinsic`, `fit-content` in `stretch`. A keyword is a
+/// content-box size: `box-sizing` does not apply to it.
+pub(crate) fn width_constraints(
+    style: &ComputedStyle,
+    cb_width: f32,
+    non_content: f32,
+    intrinsic: &Intrinsic<'_>,
+    stretch: f32,
+) -> WidthConstraints {
     let inner = |v: f32| match style.box_sizing {
         BoxSizing::ContentBox => v.max(0.0),
         BoxSizing::BorderBox => (v - non_content).max(0.0),
     };
+    let size = |v: Size| match v.length_percentage() {
+        Some(v) => Some(inner(v.resolve(cb_width))),
+        None => intrinsic.keyword(v, stretch),
+    };
     WidthConstraints {
-        width: style
-            .width
-            .length_percentage()
-            .map(|w| inner(w.resolve(cb_width))),
-        min: style
-            .min_width
-            .length_percentage()
-            .map_or(0.0, |m| inner(m.resolve(cb_width))),
-        max: style
-            .max_width
-            .length_percentage()
-            .map(|m| inner(m.resolve(cb_width))),
+        width: size(style.width),
+        min: size(style.min_width).unwrap_or(0.0),
+        max: match style.max_width.length_percentage() {
+            Some(v) => Some(inner(v.resolve(cb_width))),
+            None => intrinsic.keyword(max_keyword(style.max_width), stretch),
+        },
     }
 }
 
@@ -528,14 +593,36 @@ fn width_constraints(style: &ComputedStyle, cb_width: f32, non_content: f32) -> 
 /// Percentages are of `cb_width`; the room the margin box fills is
 /// `available_width` — the containing block's width, or for a block
 /// formatting context root beside floats the room between them (CSS2
-/// §9.5, M11).
+/// §9.5, M11). The intrinsic keywords are the box's content widths
+/// (M17), `fit-content` in the width an `auto` one would take.
 pub(crate) fn resolve_width_and_margins(
+    b: &LayoutBox,
+    cb_width: f32,
+    available_width: f32,
+    non_content_width: f32,
+    fonts: &FontCollection,
+) -> (f32, f32, f32) {
+    let style = &b.style;
+    let (stretch, _, _) =
+        tentative_width(style, cb_width, available_width, non_content_width, None);
+    let c = width_constraints(
+        style,
+        cb_width,
+        non_content_width,
+        &Intrinsic::of(b, fonts),
+        stretch,
+    );
+    solve_width(style, &c, cb_width, available_width, non_content_width)
+}
+
+/// [`resolve_width_and_margins`] for constraints already known.
+fn solve_width(
     style: &ComputedStyle,
+    c: &WidthConstraints,
     cb_width: f32,
     available_width: f32,
     non_content_width: f32,
 ) -> (f32, f32, f32) {
-    let c = width_constraints(style, cb_width, non_content_width);
     let tentative =
         |width| tentative_width(style, cb_width, available_width, non_content_width, width);
     let mut used = tentative(c.width);
@@ -557,7 +644,9 @@ pub(crate) fn resolve_width_and_margins(
 /// than its minimum (MIN, CAPMIN); a given width is used as given, never
 /// less than the minimum either; `min-width` and `max-width` clamp it,
 /// the minimum still winning. The margins are then resolved for the
-/// width so found, so `margin: auto` centres the table (§10.3.3).
+/// width so found, so `margin: auto` centres the table (§10.3.3). The
+/// intrinsic keywords (M17) are the table's own widths, `fit-content`
+/// the same as `auto`.
 fn table_width_and_margins(
     b: &LayoutBox,
     cb_width: f32,
@@ -566,29 +655,30 @@ fn table_width_and_margins(
     fonts: &FontCollection,
 ) -> (f32, f32, f32) {
     let style = &b.style;
-    let c = width_constraints(style, cb_width, non_content_width);
-    let (min_content, max_content) = crate::intrinsic::content_widths(b, fonts);
-    let used = match c.width {
-        Some(w) => w,
-        None => {
-            // The room the margins leave, an `auto` margin counting as
-            // zero: what an `auto` block would fill.
-            let (room, _, _) =
-                tentative_width(style, cb_width, available_width, non_content_width, None);
-            room.min(max_content)
-        }
-    };
+    // The room the margins leave, an `auto` margin counting as zero:
+    // what an `auto` block would fill.
+    let (room, _, _) = tentative_width(style, cb_width, available_width, non_content_width, None);
+    let intrinsic = Intrinsic::of(b, fonts);
+    let c = width_constraints(style, cb_width, non_content_width, &intrinsic, room);
+    let (min_content, max_content) = intrinsic.widths();
+    let used = c.width.unwrap_or(room.min(max_content));
     let used = c
         .max
         .map_or(used, |max| used.min(max))
         .max(c.min)
         .max(min_content);
-    let mut definite = style.clone();
-    definite.width = Size::Px(used);
-    definite.box_sizing = BoxSizing::ContentBox;
-    definite.min_width = Size::Auto;
-    definite.max_width = MaxSize::None;
-    resolve_width_and_margins(&definite, cb_width, available_width, non_content_width)
+    let definite = WidthConstraints {
+        width: Some(used),
+        min: 0.0,
+        max: None,
+    };
+    solve_width(
+        style,
+        &definite,
+        cb_width,
+        available_width,
+        non_content_width,
+    )
 }
 
 /// CSS2.1 §10.3.3 for one value of `width` (`None` for `auto`), as the
@@ -944,7 +1034,7 @@ fn layout_block<'a>(
     let (content_width, margin_left, _margin_right) = if b.is_table() {
         table_width_and_margins(b, cb_width, available_width, edges.horizontal(), fonts)
     } else {
-        resolve_width_and_margins(&b.style, cb_width, available_width, edges.horizontal())
+        resolve_width_and_margins(b, cb_width, available_width, edges.horizontal(), fonts)
     };
     let content = if establishes_bfc(&b.style) {
         Content::Root
@@ -1060,14 +1150,22 @@ pub(crate) fn layout_inline_block<'a>(
     let margin = |side: usize| b.style.margin[side].resolve(cb_width, 0.0);
     let (margin_left, margin_right) = (margin(LEFT), margin(RIGHT));
     let (margin_top, margin_bottom) = (margin(TOP), margin(BOTTOM));
-    let c = width_constraints(&b.style, cb_width, edges.horizontal());
+    // The shrink-to-fit width is `fit-content` in the room the margins
+    // leave (M17).
+    let available = (cb_width - margin_left - margin_right - edges.horizontal()).max(0.0);
+    let intrinsic = Intrinsic::of(b, fonts);
+    let c = width_constraints(
+        &b.style,
+        cb_width,
+        edges.horizontal(),
+        &intrinsic,
+        available,
+    );
     let mut content_width = match c.width {
         Some(w) => w,
-        None => {
-            let (min_content, max_content) = crate::intrinsic::content_widths(b, fonts);
-            let available = (cb_width - margin_left - margin_right - edges.horizontal()).max(0.0);
-            min_content.max(available.min(max_content))
-        }
+        None => intrinsic
+            .keyword(Size::FitContent, available)
+            .unwrap_or(available),
     };
     if let Some(max) = c.max {
         content_width = content_width.min(max);
@@ -1497,10 +1595,26 @@ fn layout_absolute<'a>(
 
     // §10.3.7, for one value of `width` (`None` for `auto`): the left
     // edge, the content width and the two margins.
-    let c = width_constraints(style, cb_width, horizontal_edges);
+    // The intrinsic keywords (M17), `fit-content` in the room between
+    // the insets given, or from the static position.
+    let intrinsic = Intrinsic::of(b, fonts);
+    let stretch = cb_width
+        - left.unwrap_or(sx)
+        - right.unwrap_or(0.0)
+        - margin_left.unwrap_or(0.0)
+        - margin_right.unwrap_or(0.0)
+        - horizontal_edges;
+    let c = width_constraints(
+        style,
+        cb_width,
+        horizontal_edges,
+        &intrinsic,
+        stretch.max(0.0),
+    );
     let shrink = |available: f32| {
-        let (min_content, max_content) = crate::intrinsic::content_widths(b, fonts);
-        min_content.max(available.max(0.0).min(max_content))
+        intrinsic
+            .keyword(Size::FitContent, available.max(0.0))
+            .unwrap_or(0.0)
     };
     let solve_width = |width: Option<f32>| -> (f32, f32, f32, f32) {
         let ml = margin_left.unwrap_or(0.0);
@@ -2304,6 +2418,166 @@ mod tests {
             "div { max-width: 100px; padding: 10px; margin: 0; height: 0; box-sizing: border-box; }",
         );
         assert_eq!(frags[0].w, 100.0);
+    }
+
+    #[test]
+    fn the_intrinsic_keywords_size_a_box_by_its_content() {
+        // M17, css-sizing-3 §3.2: two inline-blocks, 30 and 50 wide, are
+        // a min-content width of 50 and a max-content width of 80 and a
+        // space, in a 60px wrapper and in the viewport.
+        let space = test_fonts().measure(" ", 16.0);
+        let root = Element::new("div").attr("class", "w").push(
+            Element::new("div")
+                .attr("class", "k")
+                .push(Element::new("span").attr("class", "a"))
+                .text(" ")
+                .push(Element::new("span").attr("class", "b")),
+        );
+        let base = "div { margin: 0; } span { display: inline-block; height: 10px; }
+                    .a { width: 30px; } .b { width: 50px; }";
+        let k = |css: &str| {
+            let layout = document_of(root.clone(), &format!("{base} {css}"));
+            let k = by_node(&layout, 2);
+            (k.x, k.w)
+        };
+        let (min, max) = (50.0, 80.0 + space);
+        assert_eq!(k(".k { width: min-content }").1, min);
+        assert_eq!(k(".k { width: max-content }").1, max);
+        assert_eq!(k(".k { width: fit-content }").1, max);
+        assert_eq!(k(".w { width: 60px } .k { width: fit-content }").1, 60.0);
+        assert_eq!(k(".w { width: 40px } .k { width: fit-content }").1, min);
+        // `fit-content`'s room is what an `auto` width would take: the
+        // margins come out of it.
+        assert_eq!(
+            k(".w { width: 70px } .k { width: fit-content; margin-left: 15px }").1,
+            55.0
+        );
+        assert_eq!(k(".w { width: 10px } .k { width: max-content }").1, max);
+        // As limits: a floor and a ceiling.
+        assert_eq!(k(".k { width: 10px; min-width: max-content }").1, max);
+        assert_eq!(k(".k { max-width: min-content }").1, min);
+        assert_eq!(
+            k(".w { width: 60px } .k { width: 500px; max-width: fit-content }").1,
+            60.0
+        );
+        // A keyword is a content-box size: box-sizing does not apply.
+        assert_eq!(
+            k(".k { width: min-content; padding: 0 10px; box-sizing: border-box }").1,
+            min + 20.0
+        );
+        // An auto margin centres a box the keyword sized.
+        assert_eq!(
+            k(".k { width: min-content; margin: 0 auto }"),
+            ((800.0 - min) / 2.0, min)
+        );
+        // In the block axis a keyword is the automatic size, `auto` for
+        // `height` and `min-height`, `none` for `max-height`.
+        let layout = document_of(
+            root.clone(),
+            &format!(
+                "{base} .k {{ height: min-content; min-height: max-content; max-height: fit-content }}"
+            ),
+        );
+        let auto = document_of(root.clone(), base);
+        assert_eq!(by_node(&layout, 2).h, by_node(&auto, 2).h);
+        // `min-width: auto` is zero on a block.
+        assert_eq!(k(".k { width: 0; min-width: auto }").1, 0.0);
+    }
+
+    #[test]
+    fn the_intrinsic_keywords_size_floats_inline_blocks_and_positioned_boxes() {
+        let space = test_fonts().measure(" ", 16.0);
+        let root = Element::new("div").attr("class", "w").push(
+            Element::new("div")
+                .attr("class", "k")
+                .push(Element::new("span").attr("class", "a"))
+                .text(" ")
+                .push(Element::new("span").attr("class", "b")),
+        );
+        let base = "div { margin: 0; } span { display: inline-block; height: 10px; }
+                    .a { width: 30px; } .b { width: 50px; }";
+        let k = |css: &str| {
+            let layout = document_of(root.clone(), &format!("{base} {css}"));
+            let k = by_node(&layout, 2);
+            (k.x, k.w)
+        };
+        let (min, max) = (50.0, 80.0 + space);
+        assert_eq!(k(".k { display: inline-block; width: min-content }").1, min);
+        // Wider than its room, as the keyword says.
+        assert_eq!(
+            k(".w { width: 60px } .k { float: left; width: max-content }").1,
+            max
+        );
+        assert_eq!(
+            k(".w { width: 60px } .k { float: left; min-width: max-content }").1,
+            max
+        );
+        // Between `left` and `right`, `fit-content` shrinks where `auto`
+        // stretches, and auto margins centre it.
+        assert_eq!(
+            k(".w { position: relative } .k { position: absolute; left: 0; right: 0 }").1,
+            800.0
+        );
+        assert_eq!(
+            k(".w { position: relative }
+               .k { position: absolute; left: 0; right: 0; width: fit-content; margin: 0 auto }"),
+            ((800.0 - max) / 2.0, max)
+        );
+        assert_eq!(
+            k(".w { position: relative } .k { position: absolute; width: min-content }").1,
+            min
+        );
+        // The room between the insets is what `fit-content` fits.
+        assert_eq!(
+            k(".w { position: relative }
+               .k { position: absolute; left: 0; right: 740px; width: fit-content }")
+            .1,
+            60.0
+        );
+    }
+
+    #[test]
+    fn a_keyword_width_contributes_its_own_size_to_an_ancestor() {
+        let space = test_fonts().measure(" ", 16.0);
+        // A shrink-to-fit inline-block around a box the keyword sizes:
+        // the box contributes the width it takes, under either constraint.
+        let root = Element::new("div").attr("class", "w").push(
+            Element::new("div").attr("class", "o").push(
+                Element::new("div")
+                    .attr("class", "k")
+                    .push(Element::new("span").attr("class", "a"))
+                    .text(" ")
+                    .push(Element::new("span").attr("class", "b")),
+            ),
+        );
+        let base = "div { margin: 0; } span { display: inline-block; height: 10px; }
+                    .a { width: 30px; } .b { width: 50px; } .o { display: inline-block; }";
+        let o = |css: &str| by_node(&document_of(root.clone(), &format!("{base} {css}")), 2).w;
+        let (min, max) = (50.0, 80.0 + space);
+        assert_eq!(o(".k { width: min-content }"), min);
+        assert_eq!(o(".k { max-width: min-content }"), min);
+        assert_eq!(o(".w { width: 10px } .k { width: max-content }"), max);
+        assert_eq!(o(".w { width: 10px } .k { min-width: max-content }"), max);
+        assert_eq!(o(".w { width: 10px } .k { width: fit-content }"), min);
+        assert_eq!(o(".k { width: fit-content }"), max);
+    }
+
+    #[test]
+    fn a_table_sized_by_a_keyword_takes_its_own_widths() {
+        let root = Element::new("div").attr("class", "w").push(
+            Element::new("table").attr("class", "t").push(
+                Element::new("tr")
+                    .push(Element::new("td").attr("class", "a"))
+                    .push(Element::new("td").attr("class", "b")),
+            ),
+        );
+        let base = "div { margin: 0; } td { padding: 0; height: 10px; }
+                    .a { width: 30px; } .b { width: 50px; }";
+        let t = |css: &str| by_node(&document_of(root.clone(), &format!("{base} {css}")), 2).w;
+        // Its minimum is its width in a room too narrow for it.
+        let narrow = t(".w { width: 1px }");
+        assert_eq!(t(".t { width: min-content }"), narrow);
+        assert_eq!(t(".t { width: max-content }"), t(""));
     }
 
     #[test]

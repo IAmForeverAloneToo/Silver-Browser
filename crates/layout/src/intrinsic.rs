@@ -7,9 +7,11 @@
 //! piece is exactly what layout breaks by.
 //!
 //! A length `width` is used as given, a percentage one as `auto` (CSS2
-//! §10.3.5); `min-width` and `max-width` clamp the contribution, a
-//! percentage `max-width` counting as `none` and a percentage
-//! `min-width` as zero; percentage margins and paddings count as zero
+//! §10.3.5), an intrinsic keyword (M17) as the box's own min-content or
+//! max-content width, whichever the constraint asks for (`fit-content`
+//! both, by constraint); `min-width` and `max-width` clamp the
+//! contribution the same way, a percentage `max-width` counting as
+//! `none` and a percentage `min-width` as zero; percentage margins and paddings count as zero
 //! (css-sizing-3 §5.2.1: a percentage against a size that is being
 //! computed). `box-sizing: border-box` applies to the given sizes as it
 //! does in layout. A contribution is never negative. A table's widths
@@ -56,30 +58,45 @@ pub(crate) fn contribution(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32) 
         BoxSizing::ContentBox => v.max(0.0),
         BoxSizing::BorderBox => (v - non_content).max(0.0),
     };
-    // A table's minimum is a floor under every other size it is given.
-    let (floor, (mut min, mut max)) = if b.is_table() {
-        let (table_min, table_max) = content_widths(b, fonts);
-        let sizes = match style.width {
-            Size::Px(w) => (inner(w).max(table_min), inner(w).max(table_min)),
-            _ => (table_min, table_max),
-        };
-        (table_min, sizes)
-    } else {
-        let sizes = match style.width {
-            Size::Px(w) => (inner(w), inner(w)),
-            _ => content_widths(b, fonts),
-        };
-        (0.0, sizes)
+    // The box's own widths, measured once if anything asks: under a
+    // min-content constraint a keyword (M17) is its min-content width
+    // and `fit-content` too; under a max-content one, its max-content
+    // width, `fit-content` too.
+    let own = std::cell::OnceCell::new();
+    let own = || *own.get_or_init(|| content_widths(b, fonts));
+    let keyword = |size: Size| match size {
+        Size::MinContent => Some((own().0, own().0)),
+        Size::MaxContent => Some((own().1, own().1)),
+        Size::FitContent => Some(own()),
+        Size::Auto | Size::Px(_) | Size::Percent(_) => None,
     };
-    if let MaxSize::Px(limit) = style.max_width {
-        let limit = inner(limit).max(floor);
-        min = min.min(limit);
-        max = max.min(limit);
+    let max_keyword = |size: MaxSize| match size {
+        MaxSize::MinContent => keyword(Size::MinContent),
+        MaxSize::MaxContent => keyword(Size::MaxContent),
+        MaxSize::FitContent => keyword(Size::FitContent),
+        MaxSize::None | MaxSize::Px(_) | MaxSize::Percent(_) => None,
+    };
+    // A table's minimum is a floor under every other size it is given.
+    let floor = if b.is_table() { own().0 } else { 0.0 };
+    let (mut min, mut max) = match style.width {
+        Size::Px(w) => (inner(w).max(floor), inner(w).max(floor)),
+        width => keyword(width).unwrap_or_else(own),
+    };
+    let limit = match style.max_width {
+        MaxSize::Px(limit) => Some((inner(limit), inner(limit))),
+        limit => max_keyword(limit),
+    };
+    if let Some((under_min, under_max)) = limit {
+        min = min.min(under_min.max(floor));
+        max = max.min(under_max.max(floor));
     }
-    if let Size::Px(floor) = style.min_width {
-        let floor = inner(floor);
-        min = min.max(floor);
-        max = max.max(floor);
+    let raise = match style.min_width {
+        Size::Px(floor) => Some((inner(floor), inner(floor))),
+        floor => keyword(floor),
+    };
+    if let Some((under_min, under_max)) = raise {
+        min = min.max(under_min);
+        max = max.max(under_max);
     }
     (
         (min + non_content + margins).max(0.0),
@@ -215,6 +232,67 @@ mod tests {
             "div { max-width: 1%; min-width: 90%; }",
         );
         assert_eq!(contribution(&t[0], &fonts), (w("aaaa"), w("aaaa")));
+    }
+
+    #[test]
+    fn a_keyword_contributes_the_size_it_stands_for() {
+        // M17: under each constraint the keyword's own width, the limits
+        // likewise, plus the edges as for any width.
+        let fonts = test_fonts();
+        let w = |s: &str| fonts.measure(s, 16.0);
+        let (min, max) = (w("aaaa"), w("aaaa") + fonts.measure(" ", 16.0) + w("bb"));
+        let of =
+            |css: &str| contribution(&tree(Element::new("div").text("aaaa bb"), css)[0], &fonts);
+        assert_eq!(of("div { width: min-content }"), (min, min));
+        assert_eq!(of("div { width: max-content }"), (max, max));
+        assert_eq!(of("div { width: fit-content }"), (min, max));
+        assert_eq!(
+            of("div { width: min-content; padding: 0 3px; box-sizing: border-box }"),
+            (min + 6.0, min + 6.0)
+        );
+        assert_eq!(of("div { max-width: min-content }"), (min, min));
+        assert_eq!(of("div { width: 1px; min-width: max-content }"), (max, max));
+        assert_eq!(of("div { width: 1px; min-width: fit-content }"), (min, max));
+        assert_eq!(
+            of("div { width: 999px; max-width: fit-content }"),
+            (min, max)
+        );
+        // `min-width: auto` is no floor.
+        assert_eq!(of("div { width: 1px; min-width: auto }"), (1.0, 1.0));
+    }
+
+    #[test]
+    fn a_table_contributes_no_less_than_its_minimum() {
+        // A table is never narrower than its columns need (M12), whatever
+        // its width and maximum say.
+        let fonts = test_fonts();
+        // Cells holding boxes 30 and 50 wide: a cell's own `width` is
+        // its column's maximum, not a minimum (M12), so the content
+        // gives the grid its minimum.
+        let table = |css: &str| {
+            tree(
+                Element::new("table").push(
+                    Element::new("tr")
+                        .push(Element::new("td").push(Element::new("span").attr("class", "a")))
+                        .push(Element::new("td").push(Element::new("span").attr("class", "b"))),
+                ),
+                &format!(
+                    "td {{ padding: 0 }} span {{ display: inline-block }}
+                     .a {{ width: 30px }} .b {{ width: 50px }} {css}"
+                ),
+            )
+        };
+        let t = table("");
+        let (grid_min, _) = content_widths(&t[0], &fonts);
+        assert!(grid_min > 80.0, "{grid_min}");
+        for css in [
+            "table { width: 10px }",
+            "table { max-width: 10px }",
+            "table { max-width: min-content; width: 5px }",
+        ] {
+            let t = table(css);
+            assert_eq!(contribution(&t[0], &fonts), (grid_min, grid_min), "{css}");
+        }
     }
 
     #[test]

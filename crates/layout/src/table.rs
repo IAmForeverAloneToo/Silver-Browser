@@ -1452,7 +1452,7 @@ fn layout_caption<'a>(
 ) -> BlockLayout<'a> {
     let edges = Edges::of(&b.style, wrapper_width);
     let (content_width, margin_left, _) =
-        resolve_width_and_margins(&b.style, wrapper_width, wrapper_width, edges.horizontal());
+        resolve_width_and_margins(b, wrapper_width, wrapper_width, edges.horizontal(), fonts);
     layout_block_contents(
         b,
         &edges,
