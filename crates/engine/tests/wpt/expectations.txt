@@ -5,93 +5,65 @@
 # note's section 3: docs/design/flexbox.md for M17, docs/design/grid.md
 # for M18.
 
-# Grid alignment, M18 step 5.
-css/css-grid/alignment/grid-align-content-end-001.html                          waits on step 5: justify-content and align-content
-css/css-grid/alignment/grid-align-content-space-between-001.html                waits on step 5: justify-content and align-content
-css/css-grid/alignment/grid-content-distribution-001.html                       waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-002.html                       waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-003.html                       waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-006.html                       waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-007.html                       waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-008.html                       waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-009.html                       waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-010.html                       waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-011.html                       waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-012.html                       waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-013.html                       waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-014.html                       waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-015.html                       waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-016.html                       waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-017.html                       waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-018.html                       waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-019.html                       waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-020.html                       waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-with-collapsed-tracks-001.html waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-with-collapsed-tracks-002.html waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-with-collapsed-tracks-003.html waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-with-collapsed-tracks-005.html waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-with-collapsed-tracks-006.html waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-with-collapsed-tracks-007.html waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-with-collapsed-tracks-008.html waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-with-collapsed-tracks-009.html waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-with-collapsed-tracks-010.html waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-with-collapsed-tracks-011.html waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-with-collapsed-tracks-012.html waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-with-collapsed-tracks-013.html waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-with-collapsed-tracks-014.html waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-with-collapsed-tracks-015.html waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-with-collapsed-tracks-016.html waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-with-collapsed-tracks-017.html waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-with-collapsed-tracks-018.html waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-content-distribution-with-collapsed-tracks-019.html waits on step 5: justify-content and align-content, the distributed space in the gaps
-css/css-grid/alignment/grid-justify-content-end-001.html                        waits on step 5: justify-content and align-content
-css/css-grid/alignment/grid-justify-content-space-between-001.html              waits on step 5: justify-content and align-content
-
 # Grid baselines, M18 step 6.
-css/css-grid/grid-model/display-inline-grid.html                                waits on step 6: an inline-grid's baseline on its line
-css/css-grid/layout-algorithm/grid-minimum-contribution-baseline-shim.html      waits on step 6: baseline alignment and its shims in the minimum contribution; step 7: an absolutely positioned item in its grid area
+css/css-grid/grid-model/display-inline-grid.html                                         waits on step 6: an inline-grid's baseline on its line
+css/css-grid/layout-algorithm/grid-minimum-contribution-baseline-shim.html               waits on step 6: baseline alignment and its shims in the minimum contribution; step 7: an absolutely positioned item in its grid area
 
 # Absolutely positioned boxes in a grid, M18 step 7.
-css/css-grid/abspos/grid-abspos-staticpos-align-self-last-baseline-001.html     waits on step 7: an absolutely positioned child's static position, aligned by justify-self and align-self, last baseline taking its fallback
-css/css-grid/abspos/grid-abspos-staticpos-align-self-last-baseline-002.html     waits on step 7: an absolutely positioned child's static position, aligned by justify-self and align-self, last baseline taking its fallback
-css/css-grid/abspos/grid-abspos-staticpos-justify-self-last-baseline-001.html   waits on step 7: an absolutely positioned child's static position, aligned by justify-self and align-self, last baseline taking its fallback
-css/css-grid/abspos/grid-abspos-staticpos-justify-self-last-baseline-002.html   waits on step 7: an absolutely positioned child's static position, aligned by justify-self and align-self, last baseline taking its fallback
-css/css-grid/abspos/positioned-grid-descendant-containing-block-014.html        waits on step 7: the grid area as an absolutely positioned box's containing block
-css/css-grid/abspos/positioned-grid-descendant-containing-block-015.html        waits on step 7: the grid area as an absolutely positioned box's containing block
-css/css-grid/abspos/positioned-grid-items-001.html                              waits on step 7: the grid area as an absolutely positioned box's containing block
-css/css-grid/abspos/positioned-grid-items-002.html                              waits on step 7: the grid area as an absolutely positioned box's containing block
-css/css-grid/abspos/positioned-grid-items-003.html                              waits on step 7: the grid area as an absolutely positioned box's containing block
-css/css-grid/abspos/positioned-grid-items-004.html                              waits on step 7: the grid area as an absolutely positioned box's containing block
-css/css-grid/abspos/positioned-grid-items-005.html                              waits on step 7: the grid area as an absolutely positioned box's containing block
-css/css-grid/abspos/positioned-grid-items-006.html                              waits on step 7: the grid area as an absolutely positioned box's containing block
-css/css-grid/abspos/positioned-grid-items-007.html                              waits on step 7: the grid area as an absolutely positioned box's containing block
-css/css-grid/abspos/positioned-grid-items-008.html                              waits on step 7: the grid area as an absolutely positioned box's containing block
-css/css-grid/abspos/positioned-grid-items-009.html                              waits on step 7: the grid area as an absolutely positioned box's containing block
-css/css-grid/abspos/positioned-grid-items-010.html                              waits on step 7: the grid area as an absolutely positioned box's containing block
-css/css-grid/abspos/positioned-grid-items-011.html                              waits on step 7: the grid area as an absolutely positioned box's containing block
-css/css-grid/abspos/positioned-grid-items-012.html                              waits on step 7: the grid area as an absolutely positioned box's containing block
-css/css-grid/abspos/positioned-grid-items-013.html                              waits on step 7: the grid area as an absolutely positioned box's containing block
-css/css-grid/abspos/positioned-grid-items-014.html                              waits on step 7: the grid area as an absolutely positioned box's containing block
-css/css-grid/abspos/positioned-grid-items-015.html                              waits on step 7: the grid area as an absolutely positioned box's containing block
-css/css-grid/abspos/positioned-grid-items-016.html                              waits on step 7: the grid area as an absolutely positioned box's containing block
-css/css-grid/abspos/positioned-grid-items-017.html                              waits on step 7: the grid area as an absolutely positioned box's containing block
-css/css-grid/abspos/positioned-grid-items-022.html                              waits on step 7: the grid area as an absolutely positioned box's containing block
-css/css-grid/abspos/positioned-grid-items-negative-indices-001.html             waits on step 7: the grid area as an absolutely positioned box's containing block
-css/css-grid/abspos/positioned-grid-items-negative-indices-003.html             waits on step 7: the grid area as an absolutely positioned box's containing block
+css/css-grid/abspos/grid-abspos-staticpos-align-items-center.html                        waits on step 7: an absolutely positioned child's static position, aligned by align-items and align-self (its reference, a grid item, aligns from step 5)
+css/css-grid/abspos/grid-abspos-staticpos-align-items-end-large-border-padding.html      waits on step 7: an absolutely positioned child's static position, aligned by align-items and align-self (its reference, a grid item, aligns from step 5)
+css/css-grid/abspos/grid-abspos-staticpos-align-items-end.html                           waits on step 7: an absolutely positioned child's static position, aligned by align-items and align-self (its reference, a grid item, aligns from step 5)
+css/css-grid/abspos/grid-abspos-staticpos-align-items-flex-end-large-border-padding.html waits on step 7: an absolutely positioned child's static position, aligned by align-items and align-self (its reference, a grid item, aligns from step 5)
+css/css-grid/abspos/grid-abspos-staticpos-align-items-flex-end.html                      waits on step 7: an absolutely positioned child's static position, aligned by align-items and align-self (its reference, a grid item, aligns from step 5)
+css/css-grid/abspos/grid-abspos-staticpos-align-items-self-end-large-border-padding.html waits on step 7: an absolutely positioned child's static position, aligned by align-items and align-self (its reference, a grid item, aligns from step 5)
+css/css-grid/abspos/grid-abspos-staticpos-align-items-self-end.html                      waits on step 7: an absolutely positioned child's static position, aligned by align-items and align-self (its reference, a grid item, aligns from step 5)
+css/css-grid/abspos/grid-abspos-staticpos-align-self-center.html                         waits on step 7: an absolutely positioned child's static position, aligned by align-items and align-self (its reference, a grid item, aligns from step 5)
+css/css-grid/abspos/grid-abspos-staticpos-align-self-end-large-border-padding.html       waits on step 7: an absolutely positioned child's static position, aligned by align-items and align-self (its reference, a grid item, aligns from step 5)
+css/css-grid/abspos/grid-abspos-staticpos-align-self-end.html                            waits on step 7: an absolutely positioned child's static position, aligned by align-items and align-self (its reference, a grid item, aligns from step 5)
+css/css-grid/abspos/grid-abspos-staticpos-align-self-flex-end-large-border-padding.html  waits on step 7: an absolutely positioned child's static position, aligned by align-items and align-self (its reference, a grid item, aligns from step 5)
+css/css-grid/abspos/grid-abspos-staticpos-align-self-flex-end.html                       waits on step 7: an absolutely positioned child's static position, aligned by align-items and align-self (its reference, a grid item, aligns from step 5)
+css/css-grid/abspos/grid-abspos-staticpos-align-self-last-baseline-001.html              waits on step 7: an absolutely positioned child's static position, aligned by justify-self and align-self, last baseline taking its fallback
+css/css-grid/abspos/grid-abspos-staticpos-align-self-last-baseline-002.html              waits on step 7: an absolutely positioned child's static position, aligned by justify-self and align-self, last baseline taking its fallback
+css/css-grid/abspos/grid-abspos-staticpos-align-self-self-end-large-border-padding.html  waits on step 7: an absolutely positioned child's static position, aligned by align-items and align-self (its reference, a grid item, aligns from step 5)
+css/css-grid/abspos/grid-abspos-staticpos-align-self-self-end.html                       waits on step 7: an absolutely positioned child's static position, aligned by align-items and align-self (its reference, a grid item, aligns from step 5)
+css/css-grid/abspos/grid-abspos-staticpos-justify-self-last-baseline-001.html            waits on step 7: an absolutely positioned child's static position, aligned by justify-self and align-self, last baseline taking its fallback
+css/css-grid/abspos/grid-abspos-staticpos-justify-self-last-baseline-002.html            waits on step 7: an absolutely positioned child's static position, aligned by justify-self and align-self, last baseline taking its fallback
+css/css-grid/abspos/positioned-grid-descendant-containing-block-014.html                 waits on step 7: the grid area as an absolutely positioned box's containing block
+css/css-grid/abspos/positioned-grid-descendant-containing-block-015.html                 waits on step 7: the grid area as an absolutely positioned box's containing block
+css/css-grid/abspos/positioned-grid-items-001.html                                       waits on step 7: the grid area as an absolutely positioned box's containing block
+css/css-grid/abspos/positioned-grid-items-002.html                                       waits on step 7: the grid area as an absolutely positioned box's containing block
+css/css-grid/abspos/positioned-grid-items-003.html                                       waits on step 7: the grid area as an absolutely positioned box's containing block
+css/css-grid/abspos/positioned-grid-items-004.html                                       waits on step 7: the grid area as an absolutely positioned box's containing block
+css/css-grid/abspos/positioned-grid-items-005.html                                       waits on step 7: the grid area as an absolutely positioned box's containing block
+css/css-grid/abspos/positioned-grid-items-006.html                                       waits on step 7: the grid area as an absolutely positioned box's containing block
+css/css-grid/abspos/positioned-grid-items-007.html                                       waits on step 7: the grid area as an absolutely positioned box's containing block
+css/css-grid/abspos/positioned-grid-items-008.html                                       waits on step 7: the grid area as an absolutely positioned box's containing block
+css/css-grid/abspos/positioned-grid-items-009.html                                       waits on step 7: the grid area as an absolutely positioned box's containing block
+css/css-grid/abspos/positioned-grid-items-010.html                                       waits on step 7: the grid area as an absolutely positioned box's containing block
+css/css-grid/abspos/positioned-grid-items-011.html                                       waits on step 7: the grid area as an absolutely positioned box's containing block
+css/css-grid/abspos/positioned-grid-items-012.html                                       waits on step 7: the grid area as an absolutely positioned box's containing block
+css/css-grid/abspos/positioned-grid-items-013.html                                       waits on step 7: the grid area as an absolutely positioned box's containing block
+css/css-grid/abspos/positioned-grid-items-014.html                                       waits on step 7: the grid area as an absolutely positioned box's containing block
+css/css-grid/abspos/positioned-grid-items-015.html                                       waits on step 7: the grid area as an absolutely positioned box's containing block
+css/css-grid/abspos/positioned-grid-items-016.html                                       waits on step 7: the grid area as an absolutely positioned box's containing block
+css/css-grid/abspos/positioned-grid-items-017.html                                       waits on step 7: the grid area as an absolutely positioned box's containing block
+css/css-grid/abspos/positioned-grid-items-022.html                                       waits on step 7: the grid area as an absolutely positioned box's containing block
+css/css-grid/abspos/positioned-grid-items-negative-indices-001.html                      waits on step 7: the grid area as an absolutely positioned box's containing block
+css/css-grid/abspos/positioned-grid-items-negative-indices-003.html                      waits on step 7: the grid area as an absolutely positioned box's containing block
 
 # Paint order in a grid, M18 step 8.
-css/css-grid/grid-items/grid-layout-z-order-a.html                              waits on step 8: z-index on grid items, which paint as inline-blocks
-css/css-grid/grid-items/grid-layout-z-order-b.html                              waits on step 8: z-index on grid items, which paint as inline-blocks
+css/css-grid/grid-items/grid-layout-z-order-a.html                                       waits on step 8: z-index on grid items, which paint as inline-blocks
+css/css-grid/grid-items/grid-layout-z-order-b.html                                       waits on step 8: z-index on grid items, which paint as inline-blocks
 
 # Not in either milestone (docs/design/flexbox.md and docs/design/grid.md,
 # section 2).
-css/css-flexbox/content-height-with-scrollbars.html                             the reference has classic scrollbars, whose room the content loses; this engine's are overlays (M10.5)
-css/css-flexbox/fixed-table-layout-with-percentage-width-in-flex-item.html      a fixed-layout table with a percentage width has an unbounded max-content width in the reference browsers, in a float as in a flex item; this engine's is its columns'
-css/css-flexbox/flexbox-definite-sizes-003.html                                 the body's overflow is not carried to the viewport (css-overflow-3 3.3), so the body is a formatting context root here and its child's top margin does not collapse through it
-css/css-flexbox/flexbox-definite-sizes-004.html                                 the body's overflow is not carried to the viewport (css-overflow-3 3.3), so the body is a formatting context root here and its child's top margin does not collapse through it
-css/css-flexbox/item-with-table-with-infinite-max-intrinsic-width.html          a 100% column makes a table's max-content width unbounded (CSS2 17.5.2.2); the reference browsers keep that out of a flex item's base size, this engine does not
-css/css-flexbox/multiline-shrink-to-fit.html                                    a multi-line column container's max-content width is its largest item's here, not its lines' (design note, section 2)
-css/css-flexbox/percentage-size-quirks-002.html                                 quirks mode, which this engine does not have (roadmap D14): the percentage height quirk
-css/css-flexbox/table-with-infinite-max-intrinsic-width.html                    a 100% column makes a table's max-content width unbounded (CSS2 17.5.2.2); the reference browsers keep that out of a flex item's base size, this engine does not
-css/css-grid/grid-items/item-with-table-with-infinite-max-intrinsic-width.html  a 100% column makes a table's max-content width unbounded (CSS2 17.5.2.2); the reference browsers keep that out of a grid item's contribution, this engine does not
-css/css-grid/grid-items/table-with-infinite-max-intrinsic-width.html            a 100% column makes a table's max-content width unbounded (CSS2 17.5.2.2); the reference browsers keep that out of a grid item's contribution, this engine does not
+css/css-flexbox/content-height-with-scrollbars.html                                      the reference has classic scrollbars, whose room the content loses; this engine's are overlays (M10.5)
+css/css-flexbox/fixed-table-layout-with-percentage-width-in-flex-item.html               a fixed-layout table with a percentage width has an unbounded max-content width in the reference browsers, in a float as in a flex item; this engine's is its columns'
+css/css-flexbox/flexbox-definite-sizes-003.html                                          the body's overflow is not carried to the viewport (css-overflow-3 3.3), so the body is a formatting context root here and its child's top margin does not collapse through it
+css/css-flexbox/flexbox-definite-sizes-004.html                                          the body's overflow is not carried to the viewport (css-overflow-3 3.3), so the body is a formatting context root here and its child's top margin does not collapse through it
+css/css-flexbox/item-with-table-with-infinite-max-intrinsic-width.html                   a 100% column makes a table's max-content width unbounded (CSS2 17.5.2.2); the reference browsers keep that out of a flex item's base size, this engine does not
+css/css-flexbox/multiline-shrink-to-fit.html                                             a multi-line column container's max-content width is its largest item's here, not its lines' (design note, section 2)
+css/css-flexbox/percentage-size-quirks-002.html                                          quirks mode, which this engine does not have (roadmap D14): the percentage height quirk
+css/css-flexbox/table-with-infinite-max-intrinsic-width.html                             a 100% column makes a table's max-content width unbounded (CSS2 17.5.2.2); the reference browsers keep that out of a flex item's base size, this engine does not
+css/css-grid/grid-items/item-with-table-with-infinite-max-intrinsic-width.html           a 100% column makes a table's max-content width unbounded (CSS2 17.5.2.2); the reference browsers keep that out of a grid item's contribution, this engine does not
+css/css-grid/grid-items/table-with-infinite-max-intrinsic-width.html                     a 100% column makes a table's max-content width unbounded (CSS2 17.5.2.2); the reference browsers keep that out of a grid item's contribution, this engine does not

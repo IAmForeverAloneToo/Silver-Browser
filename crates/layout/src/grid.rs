@@ -22,6 +22,7 @@ use style::computed::{
     TrackSize,
 };
 
+use crate::align::{Alignment, align_content, justify_content, self_alignment};
 use crate::block::{
     AdjoiningMargins, BlockLayout, Content, Deferred, Edges, Imposed, Intrinsic, box_fragment,
     carried, clamp_height, definite_height, extent_bottom, height_bounds, layout_contents,
@@ -304,6 +305,43 @@ impl Lines {
             (Some(last), Some(size)) => last + size,
             _ => 0.0,
         }
+    }
+}
+
+/// The tracks of an axis placed in a content box `size` long (§11.5,
+/// css-align-3 §5): laid end to end with the gutters between them, then
+/// moved and spaced by the axis's content distribution, `alignment`.
+/// The tracks that have not collapsed are the alignment subjects, and
+/// the room they leave is shared among them alone: the gutters around a
+/// collapsed track take none of it (§7.2.3.2).
+fn aligned_lines(
+    sizes: Vec<f32>,
+    gutters: &[f32],
+    collapsed: &[bool],
+    alignment: Alignment,
+    size: f32,
+) -> Lines {
+    let extent = sizes.iter().sum::<f32>() + gutters.iter().sum::<f32>();
+    let subjects: Vec<usize> = (0..sizes.len()).filter(|&t| !collapsed[t]).collect();
+    let (offset, between) = alignment.offsets(size - extent, subjects.len(), true);
+    let mut gutters = gutters.to_vec();
+    for pair in subjects.windows(2) {
+        gutters[pair[0]] += between;
+    }
+    Lines::new(sizes, &gutters, offset)
+}
+
+/// Where an item's margin box goes in its area along one axis, from the
+/// area's start (§11.2, css-align-3 §6), `free` being the room the area
+/// leaves it: `auto` margins, `[start, end]`, take what is positive,
+/// equally when both are, and turn the axis's self-alignment off; else
+/// `alignment` places it, an overflowing item at the start when `safe`.
+fn self_offset(free: f32, auto_margins: [bool; 2], alignment: Alignment) -> f32 {
+    match auto_margins {
+        [true, true] => (free / 2.0).max(0.0),
+        [true, false] => free.max(0.0),
+        [false, true] => 0.0,
+        [false, false] => alignment.offsets(free, 1, true).0,
     }
 }
 
@@ -667,10 +705,15 @@ pub(crate) fn layout_grid_contents<'a>(
             stretch: stretches_tracks(style.justify_content),
         },
     );
-    let column_lines = Lines::new(
+    // `justify-content` places the columns now, so that an item spanning
+    // a gutter the distribution widens is measured at its final width
+    // (§12.1 step 2).
+    let column_lines = aligned_lines(
         columns.iter().map(Track::size).collect(),
         &column_gutters,
-        0.0,
+        &grid.columns.collapsed,
+        justify_content(style.justify_content, true, true),
+        content_width,
     );
 
     // The rows (§12.1 step 2), from each item's height at its columns'
@@ -760,10 +803,17 @@ pub(crate) fn layout_grid_contents<'a>(
             &row_space(Available::Definite(content_height), &row_gutters),
         );
     }
-    let row_lines = Lines::new(rows.iter().map(Track::size).collect(), &row_gutters, 0.0);
+    let row_lines = aligned_lines(
+        rows.iter().map(Track::size).collect(),
+        &row_gutters,
+        &grid.rows.collapsed,
+        align_content(style.align_content, true, false),
+        content_height,
+    );
 
     // §12 step 5: each item laid out in its area, stretched where it
-    // stretches, at the start otherwise.
+    // stretches, and placed there by its `auto` margins or its
+    // self-alignment (§11).
     let content_x = border[LEFT] + padding[LEFT];
     let content_y = border[TOP] + padding[TOP];
     let height = content_height + vertical_edges;
@@ -822,9 +872,22 @@ pub(crate) fn layout_grid_contents<'a>(
             )
         });
         let (dx, dy) = relative_offset(item_style, width, Some(area_height));
+        let auto = |side: usize| item_style.margin[side].is_auto();
+        let outer_width = s.content_width + s.edges.horizontal() + margin[LEFT] + margin[RIGHT];
+        let outer_height = layout.height + margin[TOP] + margin[BOTTOM];
+        let x = x + self_offset(
+            width - outer_width,
+            [auto(LEFT), auto(RIGHT)],
+            self_alignment(justify_self(item_style, style), true, true),
+        );
+        let y = y + self_offset(
+            area_height - outer_height,
+            [auto(TOP), auto(BOTTOM)],
+            self_alignment(align_self(item_style, style), true, false),
+        );
         let left = content_x + x + margin[LEFT];
         let top = content_y + y + margin[TOP];
-        content_bottom = content_bottom.max(y + margin[TOP] + layout.height + margin[BOTTOM]);
+        content_bottom = content_bottom.max(y + outer_height);
         carried_up[item.child] = carried(layout.absolutes, left + dx, top + dy);
         root.children
             .push(layout.root.translated(left + dx, top + dy));
@@ -1474,6 +1537,213 @@ mod tests {
     }
 
     #[test]
+    fn content_distribution_places_and_spaces_the_tracks() {
+        // Each as the reference browser lays it out: two 50 by 40 tracks
+        // each way in a grid 300 by 200, the first and the last item's
+        // place.
+        let grid = "#g { display: grid; width: 300px; height: 200px;
+                         grid-template-columns: 50px 50px; grid-template-rows: 40px 40px;";
+        for (value, columns, rows) in [
+            ("start", (0.0, 50.0), (0.0, 40.0)),
+            ("end", (200.0, 250.0), (120.0, 160.0)),
+            ("center", (100.0, 150.0), (60.0, 100.0)),
+            ("space-between", (0.0, 250.0), (0.0, 160.0)),
+            ("space-around", (50.0, 200.0), (30.0, 130.0)),
+            (
+                "space-evenly",
+                (200.0 / 3.0, 200.0 / 3.0 * 2.0 + 50.0),
+                (40.0, 120.0),
+            ),
+        ] {
+            let l = laid(
+                &items(4),
+                &format!("{grid} justify-content: {value}; align-content: {value} }}"),
+            );
+            let (first, last) = (rect(&l, "i0"), rect(&l, "i3"));
+            assert_eq!((first.0, last.0), columns, "{value}");
+            assert_eq!((first.1, last.1), rows, "{value}");
+        }
+    }
+
+    #[test]
+    fn a_distribution_that_cannot_apply_takes_its_fallback() {
+        // Tracks 100 wide in a grid 80 wide: `center` overflows both
+        // sides, `end` the start; `space-between` falls back to `start`,
+        // `space-around` and `space-evenly` to `safe center`, so start.
+        let grid = "#g { display: grid; width: 80px; height: 60px;
+                         grid-template-columns: 50px 50px; grid-template-rows: 40px 40px;";
+        for (value, at) in [
+            ("center", (-10.0, -10.0)),
+            ("end", (-20.0, -20.0)),
+            ("space-between", (0.0, 0.0)),
+            ("space-around", (0.0, 0.0)),
+            ("space-evenly", (0.0, 0.0)),
+            ("safe center", (0.0, 0.0)),
+            ("safe end", (0.0, 0.0)),
+        ] {
+            let l = laid(
+                &items(4),
+                &format!("{grid} justify-content: {value}; align-content: {value} }}"),
+            );
+            assert_eq!((rect(&l, "i0").0, rect(&l, "i0").1), at, "{value}");
+        }
+        // `stretch` with no `auto` track to grow places them at the start;
+        // with one, that one takes the room.
+        let l = laid(
+            &items(2),
+            "#g { display: grid; width: 300px; grid-template-columns: auto 50px; justify-content: stretch }",
+        );
+        assert_eq!((rect(&l, "i0").2, rect(&l, "i1").0), (250.0, 250.0));
+    }
+
+    #[test]
+    fn an_item_spanning_a_distributed_gap_gains_it() {
+        // The design note's case, the reference browser's: rows of 20, 20
+        // and 5 with `space-between` in a grid 100 tall, an item across
+        // the first two 67.5 tall.
+        let l = laid(
+            "<div id=g><div id=a></div><div id=b></div></div>",
+            "#g { display: grid; height: 100px; grid-template-columns: 50px;
+                  grid-template-rows: 20px 20px 5px; align-content: space-between }
+             #a { grid-row: 1 / 3 } #b { grid-row: 3 }",
+        );
+        assert_eq!(rect(&l, "a").3, 67.5);
+        assert_eq!(rect(&l, "b").1, 95.0);
+        // Collapsed tracks are no subjects and take none of the space.
+        let l = laid(
+            &items(2),
+            "#g { display: grid; width: 400px; grid-auto-rows: 10px; justify-content: space-between;
+                  grid-template-columns: repeat(auto-fit, 50px) 100px } #i1 { grid-column: -2 }",
+        );
+        assert_eq!((rect(&l, "i0").0, rect(&l, "i1").0), (0.0, 300.0));
+        // With `space-around`, the two tracks left share the 250 pixels.
+        let l = laid(
+            &items(2),
+            "#g { display: grid; width: 400px; grid-auto-rows: 10px; justify-content: space-around;
+                  grid-template-columns: repeat(auto-fit, 50px) 100px } #i1 { grid-column: -2 }",
+        );
+        assert_eq!((rect(&l, "i0").0, rect(&l, "i1").0), (62.5, 237.5));
+    }
+
+    #[test]
+    fn self_alignment_places_an_item_in_its_area() {
+        // A 30 by 20 item in a 100 by 100 area.
+        let html = "<div id=g><div id=a><div style='width: 30px; height: 20px'></div></div></div>";
+        let grid = "#g { display: grid; grid-template-columns: 100px; grid-template-rows: 100px }";
+        let at = |css: &str| {
+            let l = laid(html, &format!("{grid} {css}"));
+            (rect(&l, "a").0, rect(&l, "a").1)
+        };
+        for (value, x) in [
+            ("start", 0.0),
+            ("end", 70.0),
+            ("center", 35.0),
+            ("left", 0.0),
+            ("right", 70.0),
+            ("self-start", 0.0),
+            ("self-end", 70.0),
+            ("flex-start", 0.0),
+            ("flex-end", 70.0),
+        ] {
+            let (left, _) = at(&format!(
+                "#a {{ justify-self: {value}; align-self: start }}"
+            ));
+            assert_eq!(left, x, "{value}");
+        }
+        for (value, y) in [
+            ("start", 0.0),
+            ("end", 80.0),
+            ("center", 40.0),
+            ("self-end", 80.0),
+        ] {
+            let (_, top) = at(&format!(
+                "#a {{ align-self: {value}; justify-self: start }}"
+            ));
+            assert_eq!(top, y, "{value}");
+        }
+        assert_eq!(
+            at("#g { justify-items: center; align-items: end }"),
+            (35.0, 80.0)
+        );
+        // Border and padding count in the item's outer size, and so do
+        // margins.
+        let l = laid(
+            "<div id=g><div id=a style='width: 30px; height: 20px; padding: 5px; border: 5px solid'></div></div>",
+            &format!("{grid} #a {{ justify-self: center; align-self: center }}"),
+        );
+        assert_eq!(rect(&l, "a"), (25.0, 30.0, 50.0, 40.0));
+        assert_eq!(
+            at("#a { margin: 10px 20px 5px 0; justify-self: center; align-self: center }"),
+            (25.0, 42.5)
+        );
+    }
+
+    #[test]
+    fn an_overflowing_item_is_unsafe_unless_it_is_safe() {
+        let html = "<div id=g><div id=a style='width: 150px; height: 150px'></div></div>";
+        let grid = "#g { display: grid; grid-template-columns: 100px; grid-template-rows: 100px }";
+        for (value, at) in [
+            ("center", -25.0),
+            ("end", -50.0),
+            ("unsafe center", -25.0),
+            ("safe center", 0.0),
+            ("safe end", 0.0),
+        ] {
+            let l = laid(
+                html,
+                &format!("{grid} #a {{ justify-self: {value}; align-self: {value} }}"),
+            );
+            assert_eq!((rect(&l, "a").0, rect(&l, "a").1), (at, at), "{value}");
+        }
+    }
+
+    #[test]
+    fn auto_margins_take_the_free_space_before_alignment() {
+        let html = "<div id=g><div id=a><div style='width: 30px; height: 20px'></div></div></div>";
+        let grid = "#g { display: grid; grid-template-columns: 100px; grid-template-rows: 100px }";
+        let at = |css: &str| {
+            let l = laid(html, &format!("{grid} {css}"));
+            (rect(&l, "a").0, rect(&l, "a").1)
+        };
+        assert_eq!(at("#a { margin: auto }"), (35.0, 40.0));
+        assert_eq!(
+            at("#a { margin-left: auto; margin-top: auto }"),
+            (70.0, 80.0)
+        );
+        assert_eq!(
+            at("#a { margin-right: auto; justify-self: end }").0,
+            0.0,
+            "the margin wins"
+        );
+        // An item that overflows has `auto` margins of zero.
+        for margins in ["margin: auto", "margin-left: auto; margin-top: auto"] {
+            let l = laid(
+                &format!(
+                    "<div id=g><div id=a style='width: 150px; height: 150px; {margins}'></div></div>"
+                ),
+                grid,
+            );
+            assert_eq!((rect(&l, "a").0, rect(&l, "a").1), (0.0, 0.0), "{margins}");
+        }
+    }
+
+    #[test]
+    fn stretch_that_cannot_stretch_falls_back_to_start() {
+        let grid = "#g { display: grid; grid-template-columns: 100px; grid-template-rows: 100px }
+                    #a { justify-self: stretch; align-self: stretch }";
+        for item in [
+            "max-width: 40px; max-height: 30px",
+            "width: 40px; height: 30px",
+        ] {
+            let l = laid(
+                &format!("<div id=g><div id=a style='{item}'></div></div>"),
+                grid,
+            );
+            assert_eq!(rect(&l, "a"), (0.0, 0.0, 40.0, 30.0), "{item}");
+        }
+    }
+
+    #[test]
     fn a_scrolling_grid_scrolls_to_the_end_of_its_tracks() {
         let l = laid(
             "<div id=g><div id=a style='height: 10px'></div></div>",
@@ -1481,6 +1751,16 @@ mod tests {
              #a { align-self: start }",
         );
         assert_eq!(fragment(&l, "g").scroll_height, 300.0);
+        // Or to an item's margin box below them, wherever its row starts
+        // (css-overflow-3 §2.2: a grid item's margins are in it, as a
+        // flex item's are; the reference browser counts a grid item's
+        // border box alone, 200 here).
+        let l = laid(
+            "<div id=g><div id=a style='height: 150px; margin-bottom: 20px; grid-row: 2'></div></div>",
+            "#g { display: grid; height: 100px; overflow: hidden; grid-template-rows: 50px 50px }
+             #a { align-self: start }",
+        );
+        assert_eq!(fragment(&l, "g").scroll_height, 220.0);
     }
 
     #[test]
