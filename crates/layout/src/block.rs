@@ -80,7 +80,7 @@
 use dom::NodeId;
 use style::computed::{
     BOTTOM, BoxSizing, ComputedStyle, Display, Float, LEFT, LengthPercentage, LengthPercentageAuto,
-    Position, RIGHT, TOP,
+    MaxSize, Position, RIGHT, Size, TOP,
 };
 use style::selector_matching::PseudoElement;
 use text::FontCollection;
@@ -416,12 +416,11 @@ fn layout_document_with(
     );
     let depends_on_viewport_height = viewport_height.is_some()
         && boxes.iter().any(|b| {
-            let percent = |v: LengthPercentage| matches!(v, LengthPercentage::Percent(_));
             let percent_or_auto =
                 |v: LengthPercentageAuto| matches!(v, LengthPercentageAuto::Percent(_));
-            percent_or_auto(b.style.height)
-                || percent(b.style.min_height)
-                || b.style.max_height.is_some_and(percent)
+            matches!(b.style.height, Size::Percent(_))
+                || matches!(b.style.min_height, Size::Percent(_))
+                || matches!(b.style.max_height, MaxSize::Percent(_))
                 || (b.style.position == Position::Relative
                     && (percent_or_auto(b.style.inset[TOP])
                         || percent_or_auto(b.style.inset[BOTTOM])))
@@ -506,13 +505,18 @@ fn width_constraints(style: &ComputedStyle, cb_width: f32, non_content: f32) -> 
         BoxSizing::BorderBox => (v - non_content).max(0.0),
     };
     WidthConstraints {
-        width: match style.width {
-            LengthPercentageAuto::Auto => None,
-            LengthPercentageAuto::Px(v) => Some(inner(v)),
-            LengthPercentageAuto::Percent(p) => Some(inner(cb_width * p / 100.0)),
-        },
-        min: inner(style.min_width.resolve(cb_width)),
-        max: style.max_width.map(|m| inner(m.resolve(cb_width))),
+        width: style
+            .width
+            .length_percentage()
+            .map(|w| inner(w.resolve(cb_width))),
+        min: style
+            .min_width
+            .length_percentage()
+            .map_or(0.0, |m| inner(m.resolve(cb_width))),
+        max: style
+            .max_width
+            .length_percentage()
+            .map(|m| inner(m.resolve(cb_width))),
     }
 }
 
@@ -580,10 +584,10 @@ fn table_width_and_margins(
         .max(c.min)
         .max(min_content);
     let mut definite = style.clone();
-    definite.width = LengthPercentageAuto::Px(used);
+    definite.width = Size::Px(used);
     definite.box_sizing = BoxSizing::ContentBox;
-    definite.min_width = LengthPercentage::Px(0.0);
-    definite.max_width = None;
+    definite.min_width = Size::Auto;
+    definite.max_width = MaxSize::None;
     resolve_width_and_margins(&definite, cb_width, available_width, non_content_width)
 }
 
@@ -653,10 +657,9 @@ pub(crate) fn definite_height(
         BoxSizing::ContentBox => v.max(0.0),
         BoxSizing::BorderBox => (v - non_content).max(0.0),
     };
-    match style.height {
-        LengthPercentageAuto::Auto => None,
-        LengthPercentageAuto::Px(v) => Some(inner(v)),
-        LengthPercentageAuto::Percent(p) => cb_height.map(|h| inner(h * p / 100.0)),
+    match style.height.length_percentage()? {
+        LengthPercentage::Px(v) => Some(inner(v)),
+        LengthPercentage::Percent(p) => cb_height.map(|h| inner(h * p / 100.0)),
     }
 }
 
@@ -677,8 +680,12 @@ pub(crate) fn height_bounds(
         LengthPercentage::Percent(p) => cb_height.map(|h| inner(h * p / 100.0)),
     };
     (
-        resolve(style.min_height).unwrap_or(0.0),
-        style.max_height.and_then(resolve),
+        style
+            .min_height
+            .length_percentage()
+            .and_then(resolve)
+            .unwrap_or(0.0),
+        style.max_height.length_percentage().and_then(resolve),
     )
 }
 
@@ -1435,12 +1442,11 @@ fn used(v: LengthPercentageAuto, of: Option<f32>) -> Option<f32> {
 /// `top`, `height`, `min-height` or `max-height`, or a `bottom` that
 /// is not `auto`.
 fn uses_cb_height(style: &ComputedStyle) -> bool {
-    let percent = |v: LengthPercentage| matches!(v, LengthPercentage::Percent(_));
     matches!(style.inset[TOP], LengthPercentageAuto::Percent(_))
         || !style.inset[BOTTOM].is_auto()
-        || matches!(style.height, LengthPercentageAuto::Percent(_))
-        || percent(style.min_height)
-        || style.max_height.is_some_and(percent)
+        || matches!(style.height, Size::Percent(_))
+        || matches!(style.min_height, Size::Percent(_))
+        || matches!(style.max_height, MaxSize::Percent(_))
 }
 
 /// Lays out an absolutely positioned box (M11) against its containing

@@ -17,7 +17,9 @@
 //! width is a floor over them, never a ceiling: a table is never
 //! narrower than its columns need.
 
-use style::computed::{BoxSizing, LEFT, LengthPercentage, LengthPercentageAuto, RIGHT};
+use style::computed::{
+    BoxSizing, LEFT, LengthPercentage, LengthPercentageAuto, MaxSize, RIGHT, Size,
+};
 use text::FontCollection;
 
 use crate::box_tree::{BoxKind, LayoutBox};
@@ -58,25 +60,23 @@ pub(crate) fn contribution(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32) 
     let (floor, (mut min, mut max)) = if b.is_table() {
         let (table_min, table_max) = content_widths(b, fonts);
         let sizes = match style.width {
-            LengthPercentageAuto::Px(w) => (inner(w).max(table_min), inner(w).max(table_min)),
-            LengthPercentageAuto::Percent(_) | LengthPercentageAuto::Auto => (table_min, table_max),
+            Size::Px(w) => (inner(w).max(table_min), inner(w).max(table_min)),
+            _ => (table_min, table_max),
         };
         (table_min, sizes)
     } else {
         let sizes = match style.width {
-            LengthPercentageAuto::Px(w) => (inner(w), inner(w)),
-            LengthPercentageAuto::Percent(_) | LengthPercentageAuto::Auto => {
-                content_widths(b, fonts)
-            }
+            Size::Px(w) => (inner(w), inner(w)),
+            _ => content_widths(b, fonts),
         };
         (0.0, sizes)
     };
-    if let Some(LengthPercentage::Px(limit)) = style.max_width {
+    if let MaxSize::Px(limit) = style.max_width {
         let limit = inner(limit).max(floor);
         min = min.min(limit);
         max = max.min(limit);
     }
-    if let LengthPercentage::Px(floor) = style.min_width {
+    if let Size::Px(floor) = style.min_width {
         let floor = inner(floor);
         min = min.max(floor);
         max = max.max(floor);

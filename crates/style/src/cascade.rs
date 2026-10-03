@@ -10,9 +10,9 @@
 //!   `@media` evaluation; applying them unconditionally in the meantime
 //!   would risk *wrong* results, e.g. `@media print` rules bleeding into
 //!   screen rendering, which is worse than not applying them at all).
-//! * Colors: hex (`#rgb`/`#rgba`/`#rrggbb`/`#rrggbbaa`) and a small,
-//!   high-confidence named-color set — not the full CSS Color 148-name
-//!   table, and not `rgb()`/`hsl()` functions yet.
+//! * Colors: hex (`#rgb`/`#rgba`/`#rrggbb`/`#rrggbbaa`) and CSS Color
+//!   4's 148 names (M17; eighteen before), not `rgb()`/`hsl()`
+//!   functions yet.
 //! * Lengths (M10.1): `px`, the absolute units (`in`, `cm`, `mm`, `q`,
 //!   `pt`, `pc`), `em`, `rem`, `ex`, `ch`, and the viewport units `vw`,
 //!   `vh`, `vmin`, `vmax`. The relative ones resolve here, against the
@@ -26,8 +26,20 @@
 //!   block's, which only layout knows. `font-size: <percentage>` is of the
 //!   parent's font size and resolves here.
 //! * `display`: `block`, `inline`, `inline-block` and `none` (M5.1's
-//!   own v1 scope, plus M10.4's `inline-block`), and the table values
-//!   of CSS2 §17.2 (M12). `flex` and `grid` land with their milestones.
+//!   own v1 scope, plus M10.4's `inline-block`), the table values of
+//!   CSS2 §17.2 (M12), and `flex` and `inline-flex` with the
+//!   Compatibility Standard's `-webkit-` forms of the two (M17). `grid`
+//!   lands with its milestone.
+//! * Flexbox (M17): `flex-direction`, `flex-wrap`, `flex-flow`, `order`,
+//!   `flex-grow`, `flex-shrink`, `flex-basis` and `flex`; the alignment
+//!   properties `justify-content`, `align-content`, `align-items` and
+//!   `align-self` with the `place-*` shorthands; `row-gap`, `column-gap`
+//!   and `gap`. A flex container's children are blockified. The
+//!   `-webkit-` aliases the Compatibility Standard requires (§3.4.1) are
+//!   the properties under a second name ([`canonical_name`]).
+//! * Sizes: `width`, `height` and the minimums and maximums take
+//!   css-sizing-3's `min-content`, `max-content` and `fit-content`, and
+//!   `min-width` and `min-height` start at `auto` (M17).
 //! * `float`, `clear`, `position`, `top`/`right`/`bottom`/`left` and
 //!   `z-index` (M11), with CSS2 §9.7's computed-value rules applied
 //!   after the longhands: an absolutely positioned box does not float,
@@ -63,10 +75,12 @@ use css::Token;
 use dom::{Change, Document, NodeId};
 
 use crate::computed::{
-    BOTTOM, BorderCollapse, BorderSpacing, BorderStyle, BoxSizing, CaptionSide, Clear, Color,
-    ComputedStyle, Content, ContentItem, Direction, Display, Edges, EmptyCells, Float, LEFT,
-    LengthPercentage, LengthPercentageAuto, MarginEdges, Overflow, PaddingEdges, Position, Quotes,
-    RIGHT, TOP, TableLayout, TextAlign, TextTransform, VerticalAlign, WhiteSpace,
+    AlignPosition, BOTTOM, BaselinePosition, BorderCollapse, BorderSpacing, BorderStyle, BoxSizing,
+    CaptionSide, Clear, Color, ComputedStyle, Content, ContentAlignment, ContentItem, Direction,
+    Display, Edges, EmptyCells, FlexBasis, FlexDirection, FlexWrap, Float, LEFT, LengthPercentage,
+    LengthPercentageAuto, MarginEdges, MaxSize, Overflow, OverflowAlign, PaddingEdges, Position,
+    Quotes, RIGHT, SelfAlignment, Size, TOP, TableLayout, TextAlign, TextTransform, VerticalAlign,
+    WhiteSpace,
 };
 use crate::invalidation::{Reach, SelectorFeatures, invalidate};
 use crate::selector_matching::{
@@ -1063,10 +1077,18 @@ fn compute_style(
     };
     let mut border_color_set = [false; 4];
     for a in &sorted {
-        if !target.applies(&a.decl.name) {
+        let name = canonical_name(&a.decl.name);
+        if !target.applies(name) {
             continue;
         }
-        apply_declaration(&mut style, &a.decl, &bases, parent, &mut border_color_set);
+        apply_declaration(
+            &mut style,
+            name,
+            &a.decl.value,
+            &bases,
+            parent,
+            &mut border_color_set,
+        );
     }
     // `normal` computes to `none` on `::before` and `::after`.
     if target.takes_content() && style.content == Content::Normal {
@@ -1092,6 +1114,17 @@ fn compute_style(
     if style.float != Float::None || style.position.is_out_of_flow() {
         style.display = style.display.blockified();
     }
+    // The children of a flex container are its items, blockified
+    // (css-display-3 §2.7, css-flexbox-1 §4, M17): an element and its
+    // `::before` and `::after`, whose parent here is the element. A
+    // `::first-letter` or `::first-line` is not one, nor is an element
+    // inheriting from a `::first-line`, whose `display` is never a flex
+    // container's.
+    if matches!(target, Target::Element | Target::Before | Target::After)
+        && parent.display.is_flex()
+    {
+        style.display = style.display.blockified();
+    }
     style
 }
 
@@ -1101,64 +1134,65 @@ fn compute_style(
 /// encounters unsupported properties on every real page, constantly.
 fn apply_declaration(
     style: &mut ComputedStyle,
-    decl: &css::Declaration,
+    name: &str,
+    value: &[Token],
     bases: &LengthBases<'_>,
     parent: &ComputedStyle,
     border_color_set: &mut [bool; 4],
 ) {
-    if let Some(keyword) = css_wide_keyword(&decl.value) {
-        apply_css_wide(style, &decl.name, keyword, parent, border_color_set);
+    if let Some(keyword) = css_wide_keyword(value) {
+        apply_css_wide(style, name, keyword, parent, border_color_set);
         return;
     }
-    match decl.name.as_str() {
+    match name {
         "color" => {
-            if let Some(c) = parse_color(&decl.value) {
+            if let Some(c) = parse_color(value) {
                 style.color = c;
             }
         }
         "background-color" => {
-            if let Some(c) = parse_color(&decl.value) {
+            if let Some(c) = parse_color(value) {
                 style.background_color = c;
             }
         }
         "font-size" => {} // first pass, above
         "font-family" => {
-            if let Some(f) = parse_font_family(&decl.value) {
+            if let Some(f) = parse_font_family(value) {
                 style.font_family = f.into();
             }
         }
         "display" => {
-            if let Some(d) = parse_display(&decl.value) {
+            if let Some(d) = parse_display(value) {
                 style.display = d;
             }
         }
         "text-align" => {
-            if let Some(a) = parse_text_align(&decl.value) {
+            if let Some(a) = parse_text_align(value) {
                 style.text_align = a;
             }
         }
         "text-transform" => {
-            if let Some(t) = parse_text_transform(&decl.value) {
+            if let Some(t) = parse_text_transform(value) {
                 style.text_transform = t;
             }
         }
         "white-space" => {
-            if let Some(w) = parse_white_space(&decl.value) {
+            if let Some(w) = parse_white_space(value) {
                 style.white_space = w;
             }
         }
         "letter-spacing" => {
-            if let Some(v) = parse_spacing(&decl.value, bases) {
+            if let Some(v) = parse_spacing(value, bases) {
                 style.letter_spacing = v;
             }
         }
         "word-spacing" => {
-            if let Some(v) = parse_spacing(&decl.value, bases) {
+            if let Some(v) = parse_spacing(value, bases) {
                 style.word_spacing = v;
             }
         }
         "width" => {
-            if let Some(w) = parse_length_percentage_or_auto(&decl.value, bases) {
+            if let Some(w) = parse_size(value, bases) {
                 style.width = w;
             }
         }
@@ -1166,168 +1200,258 @@ fn apply_declaration(
             // A percentage is kept as one (M10.1); layout resolves it
             // against the containing block's height when that is
             // definite, and treats it as `auto` otherwise (CSS2 §10.5).
-            if let Some(h) = parse_length_percentage_or_auto(&decl.value, bases) {
+            if let Some(h) = parse_size(value, bases) {
                 style.height = h;
             }
         }
         "margin" => {
-            if let Some(e) = parse_margin_shorthand(&decl.value, bases) {
+            if let Some(e) = parse_margin_shorthand(value, bases) {
                 style.margin = e;
             }
         }
-        "margin-top" => set_margin_edge(&mut style.margin, TOP, &decl.value, bases),
-        "margin-right" => set_margin_edge(&mut style.margin, RIGHT, &decl.value, bases),
-        "margin-bottom" => set_margin_edge(&mut style.margin, BOTTOM, &decl.value, bases),
-        "margin-left" => set_margin_edge(&mut style.margin, LEFT, &decl.value, bases),
+        "margin-top" => set_margin_edge(&mut style.margin, TOP, value, bases),
+        "margin-right" => set_margin_edge(&mut style.margin, RIGHT, value, bases),
+        "margin-bottom" => set_margin_edge(&mut style.margin, BOTTOM, value, bases),
+        "margin-left" => set_margin_edge(&mut style.margin, LEFT, value, bases),
         "padding" => {
-            if let Some(e) = parse_padding_shorthand(&decl.value, bases) {
+            if let Some(e) = parse_padding_shorthand(value, bases) {
                 style.padding = e;
             }
         }
-        "padding-top" => set_padding_edge(&mut style.padding, TOP, &decl.value, bases),
-        "padding-right" => set_padding_edge(&mut style.padding, RIGHT, &decl.value, bases),
-        "padding-bottom" => set_padding_edge(&mut style.padding, BOTTOM, &decl.value, bases),
-        "padding-left" => set_padding_edge(&mut style.padding, LEFT, &decl.value, bases),
+        "padding-top" => set_padding_edge(&mut style.padding, TOP, value, bases),
+        "padding-right" => set_padding_edge(&mut style.padding, RIGHT, value, bases),
+        "padding-bottom" => set_padding_edge(&mut style.padding, BOTTOM, value, bases),
+        "padding-left" => set_padding_edge(&mut style.padding, LEFT, value, bases),
         "border-width" => {
-            if let Some(e) = parse_border_width_shorthand(&decl.value, bases) {
+            if let Some(e) = parse_border_width_shorthand(value, bases) {
                 style.border_width = e;
             }
         }
-        "border-top-width" => set_border_width(style, TOP, &decl.value, bases),
-        "border-right-width" => set_border_width(style, RIGHT, &decl.value, bases),
-        "border-bottom-width" => set_border_width(style, BOTTOM, &decl.value, bases),
-        "border-left-width" => set_border_width(style, LEFT, &decl.value, bases),
+        "border-top-width" => set_border_width(style, TOP, value, bases),
+        "border-right-width" => set_border_width(style, RIGHT, value, bases),
+        "border-bottom-width" => set_border_width(style, BOTTOM, value, bases),
+        "border-left-width" => set_border_width(style, LEFT, value, bases),
         "border-color" => {
-            if let Some(colors) = parse_1_to_4(&decl.value, parse_color) {
+            if let Some(colors) = parse_1_to_4(value, parse_color) {
                 style.border_color = colors;
                 *border_color_set = [true; 4];
             }
         }
-        "border-top-color" => set_border_color(style, TOP, &decl.value, border_color_set),
-        "border-right-color" => set_border_color(style, RIGHT, &decl.value, border_color_set),
-        "border-bottom-color" => set_border_color(style, BOTTOM, &decl.value, border_color_set),
-        "border-left-color" => set_border_color(style, LEFT, &decl.value, border_color_set),
+        "border-top-color" => set_border_color(style, TOP, value, border_color_set),
+        "border-right-color" => set_border_color(style, RIGHT, value, border_color_set),
+        "border-bottom-color" => set_border_color(style, BOTTOM, value, border_color_set),
+        "border-left-color" => set_border_color(style, LEFT, value, border_color_set),
         "border-style" => {
-            if let Some(styles) = parse_1_to_4(&decl.value, parse_border_style) {
+            if let Some(styles) = parse_1_to_4(value, parse_border_style) {
                 style.border_style = styles;
             }
         }
-        "border-top-style" => set_border_style(style, TOP, &decl.value),
-        "border-right-style" => set_border_style(style, RIGHT, &decl.value),
-        "border-bottom-style" => set_border_style(style, BOTTOM, &decl.value),
-        "border-left-style" => set_border_style(style, LEFT, &decl.value),
+        "border-top-style" => set_border_style(style, TOP, value),
+        "border-right-style" => set_border_style(style, RIGHT, value),
+        "border-bottom-style" => set_border_style(style, BOTTOM, value),
+        "border-left-style" => set_border_style(style, LEFT, value),
         "border" => apply_border_shorthand(
             style,
             &[TOP, RIGHT, BOTTOM, LEFT],
-            &decl.value,
+            value,
             bases,
             border_color_set,
         ),
-        "border-top" => apply_border_shorthand(style, &[TOP], &decl.value, bases, border_color_set),
-        "border-right" => {
-            apply_border_shorthand(style, &[RIGHT], &decl.value, bases, border_color_set)
-        }
-        "border-bottom" => {
-            apply_border_shorthand(style, &[BOTTOM], &decl.value, bases, border_color_set)
-        }
-        "border-left" => {
-            apply_border_shorthand(style, &[LEFT], &decl.value, bases, border_color_set)
-        }
+        "border-top" => apply_border_shorthand(style, &[TOP], value, bases, border_color_set),
+        "border-right" => apply_border_shorthand(style, &[RIGHT], value, bases, border_color_set),
+        "border-bottom" => apply_border_shorthand(style, &[BOTTOM], value, bases, border_color_set),
+        "border-left" => apply_border_shorthand(style, &[LEFT], value, bases, border_color_set),
         "overflow" => {
-            if let Some(o) = parse_overflow(&decl.value) {
+            if let Some(o) = parse_overflow(value) {
                 style.overflow = o;
             }
         }
         "float" => {
-            if let Some(f) = parse_float(&decl.value) {
+            if let Some(f) = parse_float(value) {
                 style.float = f;
             }
         }
         "clear" => {
-            if let Some(c) = parse_clear(&decl.value) {
+            if let Some(c) = parse_clear(value) {
                 style.clear = c;
             }
         }
         "position" => {
-            if let Some(p) = parse_position(&decl.value) {
+            if let Some(p) = parse_position(value) {
                 style.position = p;
             }
         }
         "top" | "right" | "bottom" | "left" => {
             // Kept as written (M11.3): a percentage is of the containing
             // block's height or width, which only layout knows.
-            if let Some(v) = parse_length_percentage_or_auto(&decl.value, bases) {
-                style.inset[edge_index(&decl.name)] = v;
+            if let Some(v) = parse_length_percentage_or_auto(value, bases) {
+                style.inset[edge_index(name)] = v;
             }
         }
         "z-index" => {
-            if let Some(z) = parse_z_index(&decl.value) {
+            if let Some(z) = parse_z_index(value) {
                 style.z_index = z;
             }
         }
         "box-sizing" => {
-            if let Some(b) = parse_box_sizing(&decl.value) {
+            if let Some(b) = parse_box_sizing(value) {
                 style.box_sizing = b;
             }
         }
         "min-width" => {
-            if let Some(v) = parse_non_negative_length_percentage(&decl.value, bases) {
+            if let Some(v) = parse_size(value, bases) {
                 style.min_width = v;
             }
         }
         "min-height" => {
-            if let Some(v) = parse_non_negative_length_percentage(&decl.value, bases) {
+            if let Some(v) = parse_size(value, bases) {
                 style.min_height = v;
             }
         }
         "max-width" => {
-            if let Some(v) = parse_max_size(&decl.value, bases) {
+            if let Some(v) = parse_max_size(value, bases) {
                 style.max_width = v;
             }
         }
         "max-height" => {
-            if let Some(v) = parse_max_size(&decl.value, bases) {
+            if let Some(v) = parse_max_size(value, bases) {
                 style.max_height = v;
             }
         }
         "table-layout" => {
-            if let Some(t) = parse_table_layout(&decl.value) {
+            if let Some(t) = parse_table_layout(value) {
                 style.table_layout = t;
             }
         }
         "border-collapse" => {
-            if let Some(b) = parse_border_collapse(&decl.value) {
+            if let Some(b) = parse_border_collapse(value) {
                 style.border_collapse = b;
             }
         }
         "border-spacing" => {
-            if let Some(s) = parse_border_spacing(&decl.value, bases) {
+            if let Some(s) = parse_border_spacing(value, bases) {
                 style.border_spacing = s;
             }
         }
         "caption-side" => {
-            if let Some(c) = parse_caption_side(&decl.value) {
+            if let Some(c) = parse_caption_side(value) {
                 style.caption_side = c;
             }
         }
         "empty-cells" => {
-            if let Some(e) = parse_empty_cells(&decl.value) {
+            if let Some(e) = parse_empty_cells(value) {
                 style.empty_cells = e;
             }
         }
         "vertical-align" => {
-            if let Some(v) = parse_vertical_align(&decl.value, bases) {
+            if let Some(v) = parse_vertical_align(value, bases) {
                 style.vertical_align = v;
             }
         }
         "content" => {
-            if let Some(c) = parse_content(&decl.value, bases.resolution.attributes) {
+            if let Some(c) = parse_content(value, bases.resolution.attributes) {
                 style.content = c;
             }
         }
         "quotes" => {
-            if let Some(q) = parse_quotes(&decl.value) {
+            if let Some(q) = parse_quotes(value) {
                 style.quotes = q;
+            }
+        }
+        "flex-direction" => {
+            if let Some(d) = parse_flex_direction(value) {
+                style.flex_direction = d;
+            }
+        }
+        "flex-wrap" => {
+            if let Some(w) = parse_flex_wrap(value) {
+                style.flex_wrap = w;
+            }
+        }
+        "flex-flow" => {
+            if let Some((d, w)) = parse_flex_flow(value) {
+                style.flex_direction = d;
+                style.flex_wrap = w;
+            }
+        }
+        "order" => {
+            if let Some(o) = parse_order(value) {
+                style.order = o;
+            }
+        }
+        "flex-grow" => {
+            if let Some(g) = parse_flex_factor(value) {
+                style.flex_grow = g;
+            }
+        }
+        "flex-shrink" => {
+            if let Some(s) = parse_flex_factor(value) {
+                style.flex_shrink = s;
+            }
+        }
+        "flex-basis" => {
+            if let Some(b) = parse_flex_basis(value, bases) {
+                style.flex_basis = b;
+            }
+        }
+        "flex" => {
+            if let Some((grow, shrink, basis)) = parse_flex(value, bases) {
+                style.flex_grow = grow;
+                style.flex_shrink = shrink;
+                style.flex_basis = basis;
+            }
+        }
+        "justify-content" | "align-content" => {
+            let justify = name == "justify-content";
+            let words = idents(&split_whitespace_groups(value));
+            if let Some(a) = words.and_then(|w| content_alignment(&w, justify)) {
+                if justify {
+                    style.justify_content = a;
+                } else {
+                    style.align_content = a;
+                }
+            }
+        }
+        "align-items" | "align-self" => {
+            let items = name == "align-items";
+            let words = idents(&split_whitespace_groups(value));
+            if let Some(a) = words.and_then(|w| self_alignment(&w, !items)) {
+                if items {
+                    style.align_items = a;
+                } else {
+                    style.align_self = a;
+                }
+            }
+        }
+        "place-content" => {
+            if let Some((align, justify)) = parse_place_content(value) {
+                style.align_content = align;
+                style.justify_content = justify;
+            }
+        }
+        "place-items" => {
+            if let Some(a) = parse_place_self(value, true) {
+                style.align_items = a;
+            }
+        }
+        "place-self" => {
+            if let Some(a) = parse_place_self(value, false) {
+                style.align_self = a;
+            }
+        }
+        "row-gap" | "column-gap" => {
+            if let Some(g) = parse_gap(value, bases) {
+                if name == "row-gap" {
+                    style.row_gap = g;
+                } else {
+                    style.column_gap = g;
+                }
+            }
+        }
+        "gap" => {
+            if let Some((row, column)) = parse_gap_shorthand(value, bases) {
+                style.row_gap = row;
+                style.column_gap = column;
             }
         }
         _ => {} // not in the v1 property set (or not a real property) — ignored, never an error
@@ -1543,6 +1667,35 @@ fn apply_css_wide(
         "vertical-align" => style.vertical_align = src.vertical_align,
         "content" => style.content = src.content.clone(),
         "quotes" => style.quotes = src.quotes.clone(),
+        "flex-direction" => style.flex_direction = src.flex_direction,
+        "flex-wrap" => style.flex_wrap = src.flex_wrap,
+        "flex-flow" => {
+            style.flex_direction = src.flex_direction;
+            style.flex_wrap = src.flex_wrap;
+        }
+        "order" => style.order = src.order,
+        "flex-grow" => style.flex_grow = src.flex_grow,
+        "flex-shrink" => style.flex_shrink = src.flex_shrink,
+        "flex-basis" => style.flex_basis = src.flex_basis,
+        "flex" => {
+            style.flex_grow = src.flex_grow;
+            style.flex_shrink = src.flex_shrink;
+            style.flex_basis = src.flex_basis;
+        }
+        "justify-content" => style.justify_content = src.justify_content,
+        "align-content" => style.align_content = src.align_content,
+        "place-content" => {
+            style.align_content = src.align_content;
+            style.justify_content = src.justify_content;
+        }
+        "align-items" | "place-items" => style.align_items = src.align_items,
+        "align-self" | "place-self" => style.align_self = src.align_self,
+        "row-gap" => style.row_gap = src.row_gap,
+        "column-gap" => style.column_gap = src.column_gap,
+        "gap" => {
+            style.row_gap = src.row_gap;
+            style.column_gap = src.column_gap;
+        }
         "border-color" => {
             // The parent's border color is a real color; the initial
             // value is `currentcolor`, resolved once the cascade is done.
@@ -1800,7 +1953,10 @@ fn parse_display(tokens: &[Token]) -> Option<Display> {
         "table-column" => Some(Display::TableColumn),
         "table-cell" => Some(Display::TableCell),
         "table-caption" => Some(Display::TableCaption),
-        _ => None, // flex/grid/list-item/... land with their milestones
+        // The `-webkit-` forms are the Compatibility Standard's (§3.4.5).
+        "flex" | "-webkit-flex" => Some(Display::Flex),
+        "inline-flex" | "-webkit-inline-flex" => Some(Display::InlineFlex),
+        _ => None, // grid/list-item/... land with their milestones
     }
 }
 
@@ -1953,14 +2109,407 @@ fn parse_box_sizing(tokens: &[Token]) -> Option<BoxSizing> {
     }
 }
 
-/// `max-width`/`max-height` (M10.3): `none`, or a non-negative length
-/// or percentage. The outer `Option` is "parsed at all"; the inner is
-/// the value, `None` for `none`.
-fn parse_max_size(tokens: &[Token], bases: &LengthBases<'_>) -> Option<Option<LengthPercentage>> {
-    if single_ident(tokens).is_some_and(|s| s.eq_ignore_ascii_case("none")) {
+/// A size keyword of css-sizing-3 §3.2 (M17), shared by [`Size`] and
+/// [`MaxSize`].
+fn size_keyword(name: &str) -> Option<Size> {
+    match name.to_ascii_lowercase().as_str() {
+        "min-content" => Some(Size::MinContent),
+        "max-content" => Some(Size::MaxContent),
+        "fit-content" => Some(Size::FitContent),
+        _ => None,
+    }
+}
+
+/// `width`, `height`, `min-width` and `min-height` (M10.3, M17): `auto`,
+/// a non-negative length or percentage, or `min-content`,
+/// `max-content` or `fit-content` (css-sizing-3 §3.2).
+fn parse_size(tokens: &[Token], bases: &LengthBases<'_>) -> Option<Size> {
+    if let Some(name) = single_ident(tokens) {
+        if name.eq_ignore_ascii_case("auto") {
+            return Some(Size::Auto);
+        }
+        return size_keyword(name);
+    }
+    parse_non_negative_length_percentage(tokens, bases).map(|v| match v {
+        LengthPercentage::Px(px) => Size::Px(px),
+        LengthPercentage::Percent(p) => Size::Percent(p),
+    })
+}
+
+/// `max-width` and `max-height` (M10.3, M17): `none`, a non-negative
+/// length or percentage, or an intrinsic keyword.
+fn parse_max_size(tokens: &[Token], bases: &LengthBases<'_>) -> Option<MaxSize> {
+    if let Some(name) = single_ident(tokens) {
+        if name.eq_ignore_ascii_case("none") {
+            return Some(MaxSize::None);
+        }
+        return size_keyword(name).map(|keyword| match keyword {
+            Size::MinContent => MaxSize::MinContent,
+            Size::MaxContent => MaxSize::MaxContent,
+            _ => MaxSize::FitContent,
+        });
+    }
+    parse_non_negative_length_percentage(tokens, bases).map(|v| match v {
+        LengthPercentage::Px(px) => MaxSize::Px(px),
+        LengthPercentage::Percent(p) => MaxSize::Percent(p),
+    })
+}
+
+/// `flex-direction` (css-flexbox-1 §5.1, M17).
+fn parse_flex_direction(tokens: &[Token]) -> Option<FlexDirection> {
+    match single_ident(tokens)?.to_ascii_lowercase().as_str() {
+        "row" => Some(FlexDirection::Row),
+        "row-reverse" => Some(FlexDirection::RowReverse),
+        "column" => Some(FlexDirection::Column),
+        "column-reverse" => Some(FlexDirection::ColumnReverse),
+        _ => None,
+    }
+}
+
+/// `flex-wrap` (css-flexbox-1 §5.2, M17).
+fn parse_flex_wrap(tokens: &[Token]) -> Option<FlexWrap> {
+    match single_ident(tokens)?.to_ascii_lowercase().as_str() {
+        "nowrap" => Some(FlexWrap::NoWrap),
+        "wrap" => Some(FlexWrap::Wrap),
+        "wrap-reverse" => Some(FlexWrap::WrapReverse),
+        _ => None,
+    }
+}
+
+/// `flex-flow` (css-flexbox-1 §5.3, M17): a direction, a wrap, or both
+/// in either order, each at most once; the one left out takes its
+/// initial value.
+fn parse_flex_flow(tokens: &[Token]) -> Option<(FlexDirection, FlexWrap)> {
+    let groups = split_whitespace_groups(tokens);
+    if groups.is_empty() {
+        return None;
+    }
+    // Each part at most once: a third is always a repeat.
+    let (mut direction, mut wrap) = (None, None);
+    for g in &groups {
+        if direction.is_none()
+            && let Some(d) = parse_flex_direction(g)
+        {
+            direction = Some(d);
+        } else if wrap.is_none()
+            && let Some(w) = parse_flex_wrap(g)
+        {
+            wrap = Some(w);
+        } else {
+            return None;
+        }
+    }
+    Some((
+        direction.unwrap_or(FlexDirection::Row),
+        wrap.unwrap_or(FlexWrap::NoWrap),
+    ))
+}
+
+/// `order` (css-flexbox-1 §5.4, M17): an integer.
+fn parse_order(tokens: &[Token]) -> Option<i32> {
+    match single_token(tokens)? {
+        Token::Number {
+            value,
+            is_integer: true,
+        } if *value >= i32::MIN as f64 && *value <= i32::MAX as f64 => Some(*value as i32),
+        _ => None,
+    }
+}
+
+/// A flex factor (`flex-grow`, `flex-shrink`; css-flexbox-1 §7.2): a
+/// number not below zero, as large as `f32` holds.
+fn flex_factor(value: f64) -> Option<f32> {
+    (value.is_finite() && value >= 0.0).then(|| value.min(f32::MAX as f64) as f32)
+}
+
+/// `flex-grow` and `flex-shrink` alone.
+fn parse_flex_factor(tokens: &[Token]) -> Option<f32> {
+    match single_token(tokens)? {
+        Token::Number { value, .. } => flex_factor(*value),
+        _ => None,
+    }
+}
+
+/// `flex-basis` (css-flexbox-1 §7.2.3, M17): `content`, or what `width`
+/// takes.
+fn parse_flex_basis(tokens: &[Token], bases: &LengthBases<'_>) -> Option<FlexBasis> {
+    if single_ident(tokens).is_some_and(|s| s.eq_ignore_ascii_case("content")) {
+        return Some(FlexBasis::Content);
+    }
+    parse_size(tokens, bases).map(FlexBasis::Size)
+}
+
+/// The `flex` shorthand (css-flexbox-1 §7.1, M17): `none`, `auto`, or
+/// a grow factor followed at once by an optional shrink factor, and a
+/// basis before or after them. A unitless zero is a factor unless two
+/// came before it. The grow and shrink factors left out are `1`, and a
+/// basis left out is `0%`: the draft says `0`, but the
+/// web-platform-tests and the browsers have `0%`.
+fn parse_flex(tokens: &[Token], bases: &LengthBases<'_>) -> Option<(f32, f32, FlexBasis)> {
+    if let Some(keyword) = single_ident(tokens) {
+        match keyword.to_ascii_lowercase().as_str() {
+            "none" => return Some((0.0, 0.0, FlexBasis::Size(Size::Auto))),
+            "auto" => return Some((1.0, 1.0, FlexBasis::Size(Size::Auto))),
+            _ => {}
+        }
+    }
+    let groups = split_whitespace_groups(tokens);
+    if groups.is_empty() || groups.len() > 3 {
+        return None;
+    }
+    let (mut grow, mut shrink, mut basis) = (None, None, None);
+    let mut after_grow = false;
+    for g in &groups {
+        if let Some(Token::Number { value, .. }) = single_token(g)
+            && !(grow.is_some() && shrink.is_some())
+        {
+            if grow.is_none() {
+                grow = Some(flex_factor(*value)?);
+                after_grow = true;
+                continue;
+            }
+            if after_grow {
+                shrink = Some(flex_factor(*value)?);
+                after_grow = false;
+                continue;
+            }
+            // A factor that is neither the grow factor nor the shrink
+            // factor right after it.
+            return None;
+        }
+        after_grow = false;
+        if basis.is_some() {
+            return None;
+        }
+        basis = Some(parse_flex_basis(g, bases)?);
+    }
+    Some((
+        grow.unwrap_or(1.0),
+        shrink.unwrap_or(1.0),
+        basis.unwrap_or(FlexBasis::Size(Size::Percent(0.0))),
+    ))
+}
+
+/// A positional alignment keyword (css-align-3 §4.1).
+fn align_position(name: &str) -> Option<AlignPosition> {
+    match name.to_ascii_lowercase().as_str() {
+        "center" => Some(AlignPosition::Center),
+        "start" => Some(AlignPosition::Start),
+        "end" => Some(AlignPosition::End),
+        "self-start" => Some(AlignPosition::SelfStart),
+        "self-end" => Some(AlignPosition::SelfEnd),
+        "flex-start" => Some(AlignPosition::FlexStart),
+        "flex-end" => Some(AlignPosition::FlexEnd),
+        "left" => Some(AlignPosition::Left),
+        "right" => Some(AlignPosition::Right),
+        _ => None,
+    }
+}
+
+/// The identifiers of `groups`, one per group, or `None` when a group
+/// is anything else.
+fn idents(groups: &[Vec<Token>]) -> Option<Vec<String>> {
+    groups
+        .iter()
+        .map(|g| single_ident(g).map(str::to_ascii_lowercase))
+        .collect()
+}
+
+/// `baseline`, `first baseline` or `last baseline` (css-align-3 §4.2).
+fn baseline_position(words: &[String]) -> Option<BaselinePosition> {
+    match words {
+        [b] if b == "baseline" => Some(BaselinePosition::First),
+        [f, b] if f == "first" && b == "baseline" => Some(BaselinePosition::First),
+        [l, b] if l == "last" && b == "baseline" => Some(BaselinePosition::Last),
+        _ => None,
+    }
+}
+
+/// `[ safe | unsafe ]? <position>`, the position one of `allowed`
+/// (css-align-3 §4.4).
+fn positional(
+    words: &[String],
+    allowed: &[AlignPosition],
+) -> Option<(AlignPosition, OverflowAlign)> {
+    let (overflow, position) = match words {
+        [p] => (OverflowAlign::Default, p),
+        [o, p] if o == "safe" => (OverflowAlign::Safe, p),
+        [o, p] if o == "unsafe" => (OverflowAlign::Unsafe, p),
+        _ => return None,
+    };
+    let position = align_position(position).filter(|p| allowed.contains(p))?;
+    Some((position, overflow))
+}
+
+/// `justify-content` (`justify`) or `align-content` (css-align-3 §5.1,
+/// M17), from its words: `justify-content` takes `left` and `right`
+/// and no baseline.
+fn content_alignment(words: &[String], justify: bool) -> Option<ContentAlignment> {
+    use AlignPosition::*;
+    if let [w] = words {
+        match w.as_str() {
+            "normal" => return Some(ContentAlignment::Normal),
+            "space-between" => return Some(ContentAlignment::SpaceBetween),
+            "space-around" => return Some(ContentAlignment::SpaceAround),
+            "space-evenly" => return Some(ContentAlignment::SpaceEvenly),
+            "stretch" => return Some(ContentAlignment::Stretch),
+            _ => {}
+        }
+    }
+    if !justify && let Some(b) = baseline_position(words) {
+        return Some(ContentAlignment::Baseline(b));
+    }
+    let allowed: &[AlignPosition] = if justify {
+        &[Center, Start, End, FlexStart, FlexEnd, Left, Right]
+    } else {
+        &[Center, Start, End, FlexStart, FlexEnd]
+    };
+    positional(words, allowed).map(|(p, o)| ContentAlignment::Position(p, o))
+}
+
+/// `align-items`, or `align-self` with `auto` (css-align-3 §6, M17),
+/// from its words.
+fn self_alignment(words: &[String], allow_auto: bool) -> Option<SelfAlignment> {
+    use AlignPosition::*;
+    if let [w] = words {
+        match w.as_str() {
+            "auto" if allow_auto => return Some(SelfAlignment::Auto),
+            "normal" => return Some(SelfAlignment::Normal),
+            "stretch" => return Some(SelfAlignment::Stretch),
+            _ => {}
+        }
+    }
+    if let Some(b) = baseline_position(words) {
+        return Some(SelfAlignment::Baseline(b));
+    }
+    positional(
+        words,
+        &[Center, Start, End, SelfStart, SelfEnd, FlexStart, FlexEnd],
+    )
+    .map(|(p, o)| SelfAlignment::Position(p, o))
+}
+
+/// Whether `words` are a `justify-self` (or, with `legacy`, a
+/// `justify-items`) value (css-align-3 §6.1, §6.3): what `place-self`
+/// and `place-items` check of their second half before dropping it,
+/// since no layout here reads it yet.
+fn is_justify_self(words: &[String], items: bool) -> bool {
+    use AlignPosition::*;
+    let legacy = |w: &String| w == "legacy";
+    let side = |w: &String| matches!(w.as_str(), "left" | "right" | "center");
+    match words {
+        [w] if w == "auto" => !items,
+        [w] if items && legacy(w) => true,
+        [a, b] if items && ((legacy(a) && side(b)) || (side(a) && legacy(b))) => true,
+        _ => {
+            matches!(words, [w] if w == "normal" || w == "stretch")
+                || baseline_position(words).is_some()
+                || positional(
+                    words,
+                    &[
+                        Center, Start, End, SelfStart, SelfEnd, FlexStart, FlexEnd, Left, Right,
+                    ],
+                )
+                .is_some()
+        }
+    }
+}
+
+/// A two-part alignment shorthand's words split at the first place
+/// where both halves parse: `first(words[..k])` and `second(words[k..])`,
+/// the second `None` when it is left out.
+fn split_pair<A, B>(
+    words: &[String],
+    first: impl Fn(&[String]) -> Option<A>,
+    second: impl Fn(&[String]) -> Option<B>,
+) -> Option<(A, Option<B>)> {
+    (1..=words.len()).find_map(|k| {
+        let a = first(&words[..k])?;
+        if k == words.len() {
+            return Some((a, None));
+        }
+        Some((a, Some(second(&words[k..])?)))
+    })
+}
+
+/// `place-content` (css-align-3 §5.2, M17): `align-content`, then
+/// `justify-content`, which when left out is the first value, or
+/// `start` when that is a baseline.
+fn parse_place_content(tokens: &[Token]) -> Option<(ContentAlignment, ContentAlignment)> {
+    let words = idents(&split_whitespace_groups(tokens))?;
+    let (align, justify) = split_pair(
+        &words,
+        |w| content_alignment(w, false),
+        |w| content_alignment(w, true),
+    )?;
+    let justify = justify.unwrap_or(match align {
+        ContentAlignment::Baseline(_) => {
+            ContentAlignment::Position(AlignPosition::Start, OverflowAlign::Default)
+        }
+        other => other,
+    });
+    Some((align, justify))
+}
+
+/// `place-items` and `place-self` (css-align-3 §6.3, §6.2.1, M17): the
+/// `align-items` or `align-self` value; the `justify-items` or
+/// `justify-self` after it is checked and dropped.
+fn parse_place_self(tokens: &[Token], items: bool) -> Option<SelfAlignment> {
+    let words = idents(&split_whitespace_groups(tokens))?;
+    let (align, _) = split_pair(
+        &words,
+        |w| self_alignment(w, !items),
+        |w| is_justify_self(w, items).then_some(()),
+    )?;
+    Some(align)
+}
+
+/// `row-gap` and `column-gap` (CSS Gaps 1 §2, M17): `normal`, or a
+/// non-negative length or percentage. The outer `Option` is "parsed at
+/// all"; the inner is `None` for `normal`.
+fn parse_gap(tokens: &[Token], bases: &LengthBases<'_>) -> Option<Option<LengthPercentage>> {
+    if is_normal(tokens) {
         return Some(None);
     }
     parse_non_negative_length_percentage(tokens, bases).map(Some)
+}
+
+/// The `gap` shorthand: the row gap, then the column gap, which is the
+/// row gap when left out.
+fn parse_gap_shorthand(
+    tokens: &[Token],
+    bases: &LengthBases<'_>,
+) -> Option<(Option<LengthPercentage>, Option<LengthPercentage>)> {
+    match split_whitespace_groups(tokens).as_slice() {
+        [row] => {
+            let row = parse_gap(row, bases)?;
+            Some((row, row))
+        }
+        [row, column] => Some((parse_gap(row, bases)?, parse_gap(column, bases)?)),
+        _ => None,
+    }
+}
+
+/// The name a property is known by here: a `-webkit-` alias the
+/// Compatibility Standard requires (§3.4.1) as the property itself,
+/// every other name as it is.
+fn canonical_name(name: &str) -> &str {
+    match name {
+        "-webkit-align-content" => "align-content",
+        "-webkit-align-items" => "align-items",
+        "-webkit-align-self" => "align-self",
+        "-webkit-flex" => "flex",
+        "-webkit-flex-basis" => "flex-basis",
+        "-webkit-flex-direction" => "flex-direction",
+        "-webkit-flex-flow" => "flex-flow",
+        "-webkit-flex-grow" => "flex-grow",
+        "-webkit-flex-shrink" => "flex-shrink",
+        "-webkit-flex-wrap" => "flex-wrap",
+        "-webkit-justify-content" => "justify-content",
+        "-webkit-order" => "order",
+        "-webkit-box-sizing" => "box-sizing",
+        other => other,
+    }
 }
 
 /// `overflow` (M9.3): the four keywords, one value for both axes. The
@@ -2263,32 +2812,172 @@ fn parse_hex_color(hex: &str) -> Option<Color> {
     }
 }
 
-/// A small, high-confidence set of named colors (CSS1/CSS2's basic
-/// keywords, plus `orange` and `transparent`) — not the full CSS Color
-/// 148-name table (deliberately: getting an obscure one wrong silently
-/// would be worse than not supporting it yet).
+/// The named colours of CSS Color 4 §6.1 (M17: all 148, where M5 had
+/// eighteen), by name in ASCII order for a binary search: the table's
+/// RGB values as the standard gives them. `transparent` is the one
+/// keyword besides them; `currentcolor` is not a colour here.
+const NAMED_COLORS: [(&str, [u8; 3]); 148] = [
+    ("aliceblue", [240, 248, 255]),
+    ("antiquewhite", [250, 235, 215]),
+    ("aqua", [0, 255, 255]),
+    ("aquamarine", [127, 255, 212]),
+    ("azure", [240, 255, 255]),
+    ("beige", [245, 245, 220]),
+    ("bisque", [255, 228, 196]),
+    ("black", [0, 0, 0]),
+    ("blanchedalmond", [255, 235, 205]),
+    ("blue", [0, 0, 255]),
+    ("blueviolet", [138, 43, 226]),
+    ("brown", [165, 42, 42]),
+    ("burlywood", [222, 184, 135]),
+    ("cadetblue", [95, 158, 160]),
+    ("chartreuse", [127, 255, 0]),
+    ("chocolate", [210, 105, 30]),
+    ("coral", [255, 127, 80]),
+    ("cornflowerblue", [100, 149, 237]),
+    ("cornsilk", [255, 248, 220]),
+    ("crimson", [220, 20, 60]),
+    ("cyan", [0, 255, 255]),
+    ("darkblue", [0, 0, 139]),
+    ("darkcyan", [0, 139, 139]),
+    ("darkgoldenrod", [184, 134, 11]),
+    ("darkgray", [169, 169, 169]),
+    ("darkgreen", [0, 100, 0]),
+    ("darkgrey", [169, 169, 169]),
+    ("darkkhaki", [189, 183, 107]),
+    ("darkmagenta", [139, 0, 139]),
+    ("darkolivegreen", [85, 107, 47]),
+    ("darkorange", [255, 140, 0]),
+    ("darkorchid", [153, 50, 204]),
+    ("darkred", [139, 0, 0]),
+    ("darksalmon", [233, 150, 122]),
+    ("darkseagreen", [143, 188, 143]),
+    ("darkslateblue", [72, 61, 139]),
+    ("darkslategray", [47, 79, 79]),
+    ("darkslategrey", [47, 79, 79]),
+    ("darkturquoise", [0, 206, 209]),
+    ("darkviolet", [148, 0, 211]),
+    ("deeppink", [255, 20, 147]),
+    ("deepskyblue", [0, 191, 255]),
+    ("dimgray", [105, 105, 105]),
+    ("dimgrey", [105, 105, 105]),
+    ("dodgerblue", [30, 144, 255]),
+    ("firebrick", [178, 34, 34]),
+    ("floralwhite", [255, 250, 240]),
+    ("forestgreen", [34, 139, 34]),
+    ("fuchsia", [255, 0, 255]),
+    ("gainsboro", [220, 220, 220]),
+    ("ghostwhite", [248, 248, 255]),
+    ("gold", [255, 215, 0]),
+    ("goldenrod", [218, 165, 32]),
+    ("gray", [128, 128, 128]),
+    ("green", [0, 128, 0]),
+    ("greenyellow", [173, 255, 47]),
+    ("grey", [128, 128, 128]),
+    ("honeydew", [240, 255, 240]),
+    ("hotpink", [255, 105, 180]),
+    ("indianred", [205, 92, 92]),
+    ("indigo", [75, 0, 130]),
+    ("ivory", [255, 255, 240]),
+    ("khaki", [240, 230, 140]),
+    ("lavender", [230, 230, 250]),
+    ("lavenderblush", [255, 240, 245]),
+    ("lawngreen", [124, 252, 0]),
+    ("lemonchiffon", [255, 250, 205]),
+    ("lightblue", [173, 216, 230]),
+    ("lightcoral", [240, 128, 128]),
+    ("lightcyan", [224, 255, 255]),
+    ("lightgoldenrodyellow", [250, 250, 210]),
+    ("lightgray", [211, 211, 211]),
+    ("lightgreen", [144, 238, 144]),
+    ("lightgrey", [211, 211, 211]),
+    ("lightpink", [255, 182, 193]),
+    ("lightsalmon", [255, 160, 122]),
+    ("lightseagreen", [32, 178, 170]),
+    ("lightskyblue", [135, 206, 250]),
+    ("lightslategray", [119, 136, 153]),
+    ("lightslategrey", [119, 136, 153]),
+    ("lightsteelblue", [176, 196, 222]),
+    ("lightyellow", [255, 255, 224]),
+    ("lime", [0, 255, 0]),
+    ("limegreen", [50, 205, 50]),
+    ("linen", [250, 240, 230]),
+    ("magenta", [255, 0, 255]),
+    ("maroon", [128, 0, 0]),
+    ("mediumaquamarine", [102, 205, 170]),
+    ("mediumblue", [0, 0, 205]),
+    ("mediumorchid", [186, 85, 211]),
+    ("mediumpurple", [147, 112, 219]),
+    ("mediumseagreen", [60, 179, 113]),
+    ("mediumslateblue", [123, 104, 238]),
+    ("mediumspringgreen", [0, 250, 154]),
+    ("mediumturquoise", [72, 209, 204]),
+    ("mediumvioletred", [199, 21, 133]),
+    ("midnightblue", [25, 25, 112]),
+    ("mintcream", [245, 255, 250]),
+    ("mistyrose", [255, 228, 225]),
+    ("moccasin", [255, 228, 181]),
+    ("navajowhite", [255, 222, 173]),
+    ("navy", [0, 0, 128]),
+    ("oldlace", [253, 245, 230]),
+    ("olive", [128, 128, 0]),
+    ("olivedrab", [107, 142, 35]),
+    ("orange", [255, 165, 0]),
+    ("orangered", [255, 69, 0]),
+    ("orchid", [218, 112, 214]),
+    ("palegoldenrod", [238, 232, 170]),
+    ("palegreen", [152, 251, 152]),
+    ("paleturquoise", [175, 238, 238]),
+    ("palevioletred", [219, 112, 147]),
+    ("papayawhip", [255, 239, 213]),
+    ("peachpuff", [255, 218, 185]),
+    ("peru", [205, 133, 63]),
+    ("pink", [255, 192, 203]),
+    ("plum", [221, 160, 221]),
+    ("powderblue", [176, 224, 230]),
+    ("purple", [128, 0, 128]),
+    ("rebeccapurple", [102, 51, 153]),
+    ("red", [255, 0, 0]),
+    ("rosybrown", [188, 143, 143]),
+    ("royalblue", [65, 105, 225]),
+    ("saddlebrown", [139, 69, 19]),
+    ("salmon", [250, 128, 114]),
+    ("sandybrown", [244, 164, 96]),
+    ("seagreen", [46, 139, 87]),
+    ("seashell", [255, 245, 238]),
+    ("sienna", [160, 82, 45]),
+    ("silver", [192, 192, 192]),
+    ("skyblue", [135, 206, 235]),
+    ("slateblue", [106, 90, 205]),
+    ("slategray", [112, 128, 144]),
+    ("slategrey", [112, 128, 144]),
+    ("snow", [255, 250, 250]),
+    ("springgreen", [0, 255, 127]),
+    ("steelblue", [70, 130, 180]),
+    ("tan", [210, 180, 140]),
+    ("teal", [0, 128, 128]),
+    ("thistle", [216, 191, 216]),
+    ("tomato", [255, 99, 71]),
+    ("turquoise", [64, 224, 208]),
+    ("violet", [238, 130, 238]),
+    ("wheat", [245, 222, 179]),
+    ("white", [255, 255, 255]),
+    ("whitesmoke", [245, 245, 245]),
+    ("yellow", [255, 255, 0]),
+    ("yellowgreen", [154, 205, 50]),
+];
+
+/// A named colour, in any ASCII case, or `transparent`.
 fn named_color(name: &str) -> Option<Color> {
-    Some(match name.to_ascii_lowercase().as_str() {
-        "black" => Color::rgb8(0, 0, 0),
-        "silver" => Color::rgb8(192, 192, 192),
-        "gray" | "grey" => Color::rgb8(128, 128, 128),
-        "white" => Color::rgb8(255, 255, 255),
-        "maroon" => Color::rgb8(128, 0, 0),
-        "red" => Color::rgb8(255, 0, 0),
-        "purple" => Color::rgb8(128, 0, 128),
-        "fuchsia" | "magenta" => Color::rgb8(255, 0, 255),
-        "green" => Color::rgb8(0, 128, 0),
-        "lime" => Color::rgb8(0, 255, 0),
-        "olive" => Color::rgb8(128, 128, 0),
-        "yellow" => Color::rgb8(255, 255, 0),
-        "navy" => Color::rgb8(0, 0, 128),
-        "blue" => Color::rgb8(0, 0, 255),
-        "teal" => Color::rgb8(0, 128, 128),
-        "aqua" | "cyan" => Color::rgb8(0, 255, 255),
-        "orange" => Color::rgb8(255, 165, 0),
-        "transparent" => Color::TRANSPARENT,
-        _ => return None,
-    })
+    let name = name.to_ascii_lowercase();
+    if name == "transparent" {
+        return Some(Color::TRANSPARENT);
+    }
+    let at = NAMED_COLORS
+        .binary_search_by(|(known, _)| known.cmp(&name.as_str()))
+        .ok()?;
+    let [r, g, b] = NAMED_COLORS[at].1;
+    Some(Color::rgb8(r, g, b))
 }
 
 #[cfg(test)]
@@ -2561,7 +3250,7 @@ mod tests {
             s.border_width, [3.0; 4],
             "negative border-width is ignored: medium stays"
         );
-        assert_eq!(s.width, LengthPercentageAuto::Px(MAX_LENGTH_PX));
+        assert_eq!(s.width, Size::Px(MAX_LENGTH_PX));
         assert_eq!(
             s.margin[TOP],
             LengthPercentageAuto::Px(0.0),
@@ -2853,10 +3542,10 @@ mod tests {
         )];
         let s = style_of("<p>x</p>", &sheets, "p");
         assert_eq!(s.box_sizing, BoxSizing::BorderBox);
-        assert_eq!(s.min_width, LengthPercentage::Px(10.0));
-        assert_eq!(s.max_width, Some(LengthPercentage::Percent(50.0)));
-        assert_eq!(s.min_height, LengthPercentage::Px(32.0));
-        assert_eq!(s.max_height, None);
+        assert_eq!(s.min_width, Size::Px(10.0));
+        assert_eq!(s.max_width, MaxSize::Percent(50.0));
+        assert_eq!(s.min_height, Size::Px(32.0));
+        assert_eq!(s.max_height, MaxSize::None);
         // Negative sizes and unknown keywords are ignored; `max-width:
         // none` undoes an earlier value; the properties are not
         // inherited and take the css-wide keywords.
@@ -2866,14 +3555,14 @@ mod tests {
              p { max-width: none; }",
         )];
         let s = style_of("<div><p>x</p></div>", &sheets, "p");
-        assert_eq!(s.min_width, LengthPercentage::Px(0.0));
-        assert_eq!(s.max_height, None);
+        assert_eq!(s.min_width, Size::Auto);
+        assert_eq!(s.max_height, MaxSize::None);
         assert_eq!(s.box_sizing, BoxSizing::ContentBox);
-        assert_eq!(s.max_width, None);
+        assert_eq!(s.max_width, MaxSize::None);
         let sheets = [sheet("div { max-width: 100px; } p { max-width: inherit; }")];
         assert_eq!(
             style_of("<div><p>x</p></div>", &sheets, "p").max_width,
-            Some(LengthPercentage::Px(100.0))
+            MaxSize::Px(100.0)
         );
     }
 
@@ -2934,35 +3623,29 @@ mod tests {
     #[test]
     fn width_accepts_auto_px_and_percent() {
         let auto = style_of("<p>x</p>", &[], "p");
-        assert_eq!(auto.width, LengthPercentageAuto::Auto); // initial value
+        assert_eq!(auto.width, Size::Auto); // initial value
 
         let sheets = [sheet("p { width: 200px; }")];
-        assert_eq!(
-            style_of("<p>x</p>", &sheets, "p").width,
-            LengthPercentageAuto::Px(200.0)
-        );
+        assert_eq!(style_of("<p>x</p>", &sheets, "p").width, Size::Px(200.0));
 
         let sheets = [sheet("p { width: 50%; }")];
         assert_eq!(
             style_of("<p>x</p>", &sheets, "p").width,
-            LengthPercentageAuto::Percent(50.0)
+            Size::Percent(50.0)
         );
     }
 
     #[test]
     fn height_margins_and_padding_keep_percentages_for_layout() {
         let sheets = [sheet("p { height: 300px; }")];
-        assert_eq!(
-            style_of("<p>x</p>", &sheets, "p").height,
-            LengthPercentageAuto::Px(300.0)
-        );
+        assert_eq!(style_of("<p>x</p>", &sheets, "p").height, Size::Px(300.0));
         // A percentage is kept as written (M10.1): only layout knows the
         // containing block it is a percentage of.
         let sheets = [sheet(
             "p { height: 50%; margin: 5% auto; padding: 10% 2px; }",
         )];
         let s = style_of("<p>x</p>", &sheets, "p");
-        assert_eq!(s.height, LengthPercentageAuto::Percent(50.0));
+        assert_eq!(s.height, Size::Percent(50.0));
         assert_eq!(
             s.margin,
             [
@@ -3049,7 +3732,7 @@ mod tests {
             ],
             "vw, vh, vmin, vmax of 800 by 600"
         );
-        assert_eq!(s.width, Px(96.0), "an inch is 96px");
+        assert_eq!(s.width, Size::Px(96.0), "an inch is 96px");
         assert_eq!(s.letter_spacing, 16.0, "12pt is 16px");
         for (value, px) in [
             ("2.54cm", 96.0),
@@ -3059,7 +3742,7 @@ mod tests {
         ] {
             let sheets = [sheet(&format!("p {{ width: {value} }}"))];
             let w = style_of_in("<p>x</p>", &sheets, "p", &context).width;
-            let LengthPercentageAuto::Px(got) = w else {
+            let Size::Px(got) = w else {
                 panic!("{value} is a length");
             };
             assert!((got - px).abs() < 1e-3, "{value}: {got} != {px}");
@@ -3096,7 +3779,7 @@ mod tests {
         let styles = cascade_document(&document, &sheets, &CascadeContext::default());
         assert!(styles.uses_viewport_units);
         let p = styles.get(first(&document, "p")).expect("styled");
-        assert_eq!(p.width, LengthPercentageAuto::Px(0.0));
+        assert_eq!(p.width, Size::Px(0.0));
         assert_eq!(p.margin[TOP], LengthPercentageAuto::Px(8.0));
         assert_eq!(p.margin[RIGHT], LengthPercentageAuto::Px(8.0));
         // A document without viewport units says so, so a resize need
@@ -3108,7 +3791,7 @@ mod tests {
         // rejected even through a viewport unit.
         let sheets = [sheet("p { width: 10furlong; margin-top: 1e39vw }")];
         let s = style_of("<p>x</p>", &sheets, "p");
-        assert_eq!(s.width, LengthPercentageAuto::Auto);
+        assert_eq!(s.width, Size::Auto);
         assert_eq!(
             s.margin[TOP],
             LengthPercentageAuto::Px(16.0),
@@ -3527,7 +4210,7 @@ mod tests {
         assert_eq!(s.float, Float::Left);
         // A float's `display` is blockified from the initial `inline`.
         assert_eq!(s.display, Display::Block);
-        assert_eq!(s.width, LengthPercentageAuto::Auto);
+        assert_eq!(s.width, Size::Auto);
         assert_eq!(s.position, Position::Static);
         assert_eq!(s.content, Content::Normal);
         assert_eq!(s.white_space, WhiteSpace::PreWrap);
@@ -3744,13 +4427,552 @@ mod tests {
             ("table-column", Display::TableColumn),
             ("Table-Cell", Display::TableCell),
             ("table-caption", Display::TableCaption),
+            ("flex", Display::Flex),
+            ("inline-flex", Display::InlineFlex),
+            // The Compatibility Standard's keywords (§3.4.5).
+            ("-webkit-flex", Display::Flex),
+            ("-WEBKIT-INLINE-FLEX", Display::InlineFlex),
         ] {
             let sheets = [sheet(&format!("span {{ display: {value}; }}"))];
             assert_eq!(style_of(html, &sheets, "span").display, expected, "{value}");
         }
-        // An unknown keyword leaves the UA value in place.
-        let sheets = [sheet("div { display: flex; }")];
-        assert_eq!(style_of(html, &sheets, "div").display, Display::Block);
+        // An unknown keyword leaves the UA value in place, and so does
+        // `-webkit-box`, whose mapping the Standard calls not web
+        // compatible.
+        for value in ["grid", "-webkit-box", "-webkit-inline-box"] {
+            let sheets = [sheet(&format!("div {{ display: {value}; }}"))];
+            assert_eq!(
+                style_of(html, &sheets, "div").display,
+                Display::Block,
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_children_of_a_flex_container_are_blockified() {
+        // css-display-3 §2.7: each child's display as a flex item; a
+        // grandchild keeps its own; `none` stays.
+        let html = "<div><span>a<b>b</b></span><i>i</i><em>e</em><u>u</u><s>s</s>\
+                    <q>q</q><small>n</small><code>c</code></div>";
+        let sheets = [sheet(
+            "div { display: flex; } i { display: inline-block; } em { display: inline-table; }
+             u { display: inline-flex; } s { display: table-cell; } q { display: none; }
+             small { float: left; } code { position: absolute; }",
+        )];
+        for (selector, expected) in [
+            ("span", Display::Block),
+            ("b", Display::Inline),
+            ("i", Display::Block),
+            ("em", Display::Table),
+            ("u", Display::Flex),
+            ("s", Display::Block),
+            ("q", Display::None),
+            ("small", Display::Block),
+            ("code", Display::Block),
+        ] {
+            assert_eq!(
+                style_of(html, &sheets, selector).display,
+                expected,
+                "{selector}"
+            );
+        }
+        // A floated item keeps its `float`: the box tree ignores it.
+        assert_eq!(style_of(html, &sheets, "small").float, Float::Left);
+        // An inline flex container's children are items too.
+        let sheets = [sheet("div { display: inline-flex; }")];
+        assert_eq!(style_of(html, &sheets, "span").display, Display::Block);
+        // The container's `::before` and `::after` are items; its
+        // `::first-letter` is not one, and does not apply anyway.
+        let sheets = [sheet(
+            "div { display: flex; } div::before, div::after { content: 'x'; }
+             div::first-letter { color: red; }",
+        )];
+        for pseudo in [PseudoElement::Before, PseudoElement::After] {
+            assert_eq!(
+                pseudo_of("<div>x</div>", &sheets, "div", pseudo).map(|s| s.display),
+                Some(Display::Block),
+                "{pseudo:?}"
+            );
+        }
+        assert_eq!(
+            pseudo_of("<div>x</div>", &sheets, "div", PseudoElement::FirstLetter)
+                .map(|s| s.display),
+            Some(Display::Inline)
+        );
+    }
+
+    #[test]
+    fn the_flex_longhands_parse_and_are_not_inherited() {
+        let html = "<div><p>x</p></div>";
+        let p = |css: &str| style_of(html, &[sheet(css)], "p");
+        for (value, expected) in [
+            ("row", FlexDirection::Row),
+            ("row-reverse", FlexDirection::RowReverse),
+            ("Column", FlexDirection::Column),
+            ("column-reverse", FlexDirection::ColumnReverse),
+        ] {
+            let s = p(&format!("p {{ flex-direction: {value} }}"));
+            assert_eq!(s.flex_direction, expected, "{value}");
+        }
+        for (value, expected) in [
+            ("nowrap", FlexWrap::NoWrap),
+            ("wrap", FlexWrap::Wrap),
+            ("wrap-reverse", FlexWrap::WrapReverse),
+        ] {
+            assert_eq!(
+                p(&format!("p {{ flex-wrap: {value} }}")).flex_wrap,
+                expected
+            );
+        }
+        for (value, expected) in [
+            ("column", (FlexDirection::Column, FlexWrap::NoWrap)),
+            ("wrap", (FlexDirection::Row, FlexWrap::Wrap)),
+            (
+                "wrap-reverse row-reverse",
+                (FlexDirection::RowReverse, FlexWrap::WrapReverse),
+            ),
+            ("column wrap", (FlexDirection::Column, FlexWrap::Wrap)),
+        ] {
+            let s = p(&format!(
+                "p {{ flex-direction: column-reverse; flex-wrap: wrap; flex-flow: {value} }}"
+            ));
+            assert_eq!((s.flex_direction, s.flex_wrap), expected, "{value}");
+        }
+        // Invalid: a part twice, an unknown part, three parts.
+        for value in ["row column", "wrap nowrap", "row sideways", "row wrap row"] {
+            let s = p(&format!("p {{ flex-flow: {value} }}"));
+            assert_eq!(
+                (s.flex_direction, s.flex_wrap),
+                (FlexDirection::Row, FlexWrap::NoWrap),
+                "{value}"
+            );
+        }
+        // An empty value is no value: what was set stays.
+        let s = p("p { flex-flow: column wrap; flex-flow: ; }");
+        assert_eq!(
+            (s.flex_direction, s.flex_wrap),
+            (FlexDirection::Column, FlexWrap::Wrap)
+        );
+        assert_eq!(p("p { order: -3 }").order, -3);
+        assert_eq!(p("p { order: 2.5 }").order, 0, "an integer only");
+        assert_eq!(p("p { order: 1e10 }").order, 0, "out of range");
+        let s = p("p { flex-grow: 2.5; flex-shrink: 0 }");
+        assert_eq!((s.flex_grow, s.flex_shrink), (2.5, 0.0));
+        let s = p("p { flex-grow: -1; flex-shrink: 1px }");
+        assert_eq!((s.flex_grow, s.flex_shrink), (0.0, 1.0), "invalid ones");
+        assert_eq!(p("p { flex-grow: 1e300 }").flex_grow, f32::MAX);
+        for (value, expected) in [
+            ("content", FlexBasis::Content),
+            ("auto", FlexBasis::Size(Size::Auto)),
+            ("10px", FlexBasis::Size(Size::Px(10.0))),
+            ("50%", FlexBasis::Size(Size::Percent(50.0))),
+            ("0", FlexBasis::Size(Size::Px(0.0))),
+            ("max-content", FlexBasis::Size(Size::MaxContent)),
+            ("-1px", FlexBasis::Size(Size::Auto)),
+            ("none", FlexBasis::Size(Size::Auto)),
+        ] {
+            let s = p(&format!("p {{ flex-basis: {value} }}"));
+            assert_eq!(s.flex_basis, expected, "{value}");
+        }
+        // None of them inherits from a parent that sets them all.
+        let s = style_of(
+            html,
+            &[sheet(
+                "div { flex-flow: column wrap; order: 2; flex: 2 3 4px; }",
+            )],
+            "p",
+        );
+        let initial = ComputedStyle::default();
+        assert_eq!(
+            (s.flex_direction, s.flex_wrap, s.order),
+            (initial.flex_direction, initial.flex_wrap, initial.order)
+        );
+        assert_eq!(
+            (s.flex_grow, s.flex_shrink, s.flex_basis),
+            (initial.flex_grow, initial.flex_shrink, initial.flex_basis)
+        );
+    }
+
+    #[test]
+    fn the_flex_shorthand_expands_as_the_tests_and_browsers_have_it() {
+        let flex = |value: &str| {
+            let s = style_of(
+                "<p>x</p>",
+                &[sheet(&format!(
+                    "p {{ flex-grow: 9; flex-shrink: 9; flex-basis: 9px; flex: {value} }}"
+                ))],
+                "p",
+            );
+            (s.flex_grow, s.flex_shrink, s.flex_basis)
+        };
+        let auto = FlexBasis::Size(Size::Auto);
+        let zero_percent = FlexBasis::Size(Size::Percent(0.0));
+        let px = |v| FlexBasis::Size(Size::Px(v));
+        for (value, expected) in [
+            ("none", (0.0, 0.0, auto)),
+            ("auto", (1.0, 1.0, auto)),
+            ("initial", (0.0, 1.0, auto)),
+            // The basis left out is 0% (web-platform-tests'
+            // flex-computed.html), the factors 1.
+            ("1", (1.0, 1.0, zero_percent)),
+            ("2 3", (2.0, 3.0, zero_percent)),
+            ("4 5 6px", (4.0, 5.0, px(6.0))),
+            ("7% 8", (8.0, 1.0, FlexBasis::Size(Size::Percent(7.0)))),
+            ("8 auto", (8.0, 1.0, auto)),
+            ("10px 1 2", (1.0, 2.0, px(10.0))),
+            ("content", (1.0, 1.0, FlexBasis::Content)),
+            // A unitless zero is a factor unless two came before it.
+            ("0", (0.0, 1.0, zero_percent)),
+            ("1 0", (1.0, 0.0, zero_percent)),
+            ("0 0 0", (0.0, 0.0, px(0.0))),
+        ] {
+            assert_eq!(flex(value), expected, "{value}");
+        }
+        // Invalid: the declaration is dropped and the longhands stay.
+        for value in [
+            "1 10px 2",
+            "1 2 3",
+            "-1",
+            "1 -1",
+            "1 2 3px 4",
+            "10px 20px",
+            "1 none",
+            "",
+        ] {
+            assert_eq!(flex(value), (9.0, 9.0, px(9.0)), "{value}");
+        }
+    }
+
+    #[test]
+    fn the_alignment_properties_take_their_grammars() {
+        use AlignPosition::*;
+        let p = |css: &str| style_of("<p>x</p>", &[sheet(css)], "p");
+        let pos = |p, o| ContentAlignment::Position(p, o);
+        for (value, expected) in [
+            ("normal", ContentAlignment::Normal),
+            ("space-between", ContentAlignment::SpaceBetween),
+            ("space-around", ContentAlignment::SpaceAround),
+            ("space-evenly", ContentAlignment::SpaceEvenly),
+            ("stretch", ContentAlignment::Stretch),
+            ("center", pos(Center, OverflowAlign::Default)),
+            ("flex-end", pos(FlexEnd, OverflowAlign::Default)),
+            ("safe end", pos(End, OverflowAlign::Safe)),
+            ("unsafe left", pos(Left, OverflowAlign::Unsafe)),
+            ("Right", pos(Right, OverflowAlign::Default)),
+        ] {
+            let s = p(&format!("p {{ justify-content: {value} }}"));
+            assert_eq!(s.justify_content, expected, "{value}");
+        }
+        // justify-content takes no baseline and no self position.
+        for value in [
+            "baseline",
+            "self-start",
+            "safe",
+            "safe normal",
+            "center center",
+        ] {
+            let s = p(&format!("p {{ justify-content: {value} }}"));
+            assert_eq!(s.justify_content, ContentAlignment::Normal, "{value}");
+        }
+        for (value, expected) in [
+            (
+                "baseline",
+                ContentAlignment::Baseline(BaselinePosition::First),
+            ),
+            (
+                "first baseline",
+                ContentAlignment::Baseline(BaselinePosition::First),
+            ),
+            (
+                "last baseline",
+                ContentAlignment::Baseline(BaselinePosition::Last),
+            ),
+            ("space-evenly", ContentAlignment::SpaceEvenly),
+            ("safe flex-start", pos(FlexStart, OverflowAlign::Safe)),
+        ] {
+            let s = p(&format!("p {{ align-content: {value} }}"));
+            assert_eq!(s.align_content, expected, "{value}");
+        }
+        for value in ["left", "baseline first", "last", "self-end"] {
+            let s = p(&format!("p {{ align-content: {value} }}"));
+            assert_eq!(s.align_content, ContentAlignment::Normal, "{value}");
+        }
+        let sp = |p, o| SelfAlignment::Position(p, o);
+        for (value, expected) in [
+            ("stretch", SelfAlignment::Stretch),
+            ("baseline", SelfAlignment::Baseline(BaselinePosition::First)),
+            (
+                "last baseline",
+                SelfAlignment::Baseline(BaselinePosition::Last),
+            ),
+            ("self-end", sp(SelfEnd, OverflowAlign::Default)),
+            ("unsafe center", sp(Center, OverflowAlign::Unsafe)),
+        ] {
+            let s = p(&format!(
+                "p {{ align-items: {value}; align-self: {value} }}"
+            ));
+            assert_eq!(
+                (s.align_items, s.align_self),
+                (expected, expected),
+                "{value}"
+            );
+        }
+        // `auto` is align-self's alone; neither takes left or right.
+        let s = p("p { align-items: auto; align-self: auto }");
+        assert_eq!(
+            (s.align_items, s.align_self),
+            (SelfAlignment::Normal, SelfAlignment::Auto)
+        );
+        let s = p("p { align-items: left; align-self: right }");
+        assert_eq!(
+            (s.align_items, s.align_self),
+            (SelfAlignment::Normal, SelfAlignment::Auto)
+        );
+    }
+
+    #[test]
+    fn the_place_shorthands_set_the_halves_this_engine_has() {
+        use AlignPosition::*;
+        let p = |css: &str| style_of("<p>x</p>", &[sheet(css)], "p");
+        let pos = |p| ContentAlignment::Position(p, OverflowAlign::Default);
+        let s = p("p { place-content: center space-between }");
+        assert_eq!(
+            (s.align_content, s.justify_content),
+            (pos(Center), ContentAlignment::SpaceBetween)
+        );
+        // One value is both, but a baseline gives `start` to the second.
+        let s = p("p { place-content: end }");
+        assert_eq!((s.align_content, s.justify_content), (pos(End), pos(End)));
+        let s = p("p { place-content: last baseline }");
+        assert_eq!(
+            (s.align_content, s.justify_content),
+            (
+                ContentAlignment::Baseline(BaselinePosition::Last),
+                pos(Start)
+            )
+        );
+        // Two-word halves on either side.
+        let s = p("p { place-content: safe center unsafe right }");
+        assert_eq!(
+            (s.align_content, s.justify_content),
+            (
+                ContentAlignment::Position(Center, OverflowAlign::Safe),
+                ContentAlignment::Position(Right, OverflowAlign::Unsafe)
+            )
+        );
+        // `left` is no align-content: the whole declaration is invalid.
+        let s = p("p { place-content: left center }");
+        assert_eq!(
+            (s.align_content, s.justify_content),
+            (ContentAlignment::Normal, ContentAlignment::Normal)
+        );
+        let s = p("p { place-items: center; place-self: end }");
+        assert_eq!(
+            (s.align_items, s.align_self),
+            (
+                SelfAlignment::Position(Center, OverflowAlign::Default),
+                SelfAlignment::Position(End, OverflowAlign::Default)
+            )
+        );
+        // The justify half is checked: `legacy` is justify-items',
+        // `auto` justify-self's.
+        let s = p("p { place-items: start legacy left; place-self: stretch auto }");
+        assert_eq!(
+            (s.align_items, s.align_self),
+            (
+                SelfAlignment::Position(Start, OverflowAlign::Default),
+                SelfAlignment::Stretch
+            )
+        );
+        let s = p("p { place-items: start auto; place-self: stretch legacy }");
+        assert_eq!(
+            (s.align_items, s.align_self),
+            (SelfAlignment::Normal, SelfAlignment::Auto)
+        );
+    }
+
+    #[test]
+    fn gaps_are_normal_or_lengths() {
+        let p = |css: &str| style_of("<p>x</p>", &[sheet(css)], "p");
+        let s = p("p { row-gap: 10px; column-gap: 5% }");
+        assert_eq!(
+            (s.row_gap, s.column_gap),
+            (
+                Some(LengthPercentage::Px(10.0)),
+                Some(LengthPercentage::Percent(5.0))
+            )
+        );
+        let s = p("p { gap: 1em }");
+        assert_eq!(
+            (s.row_gap, s.column_gap),
+            (
+                Some(LengthPercentage::Px(16.0)),
+                Some(LengthPercentage::Px(16.0))
+            )
+        );
+        let s = p("p { gap: 2px normal }");
+        assert_eq!(
+            (s.row_gap, s.column_gap),
+            (Some(LengthPercentage::Px(2.0)), None)
+        );
+        // Negative, three values: invalid; css-wide keywords reset both.
+        for css in [
+            "p { gap: 3px; gap: -1px }",
+            "p { gap: 3px; gap: 1px 2px 3px }",
+            "p { row-gap: 3px; column-gap: 3px; row-gap: -2px; column-gap: auto }",
+        ] {
+            let s = p(css);
+            assert_eq!(
+                (s.row_gap, s.column_gap),
+                (
+                    Some(LengthPercentage::Px(3.0)),
+                    Some(LengthPercentage::Px(3.0))
+                ),
+                "{css}"
+            );
+        }
+        let s = p("p { gap: 3px; gap: initial }");
+        assert_eq!((s.row_gap, s.column_gap), (None, None));
+    }
+
+    #[test]
+    fn sizes_take_the_intrinsic_keywords_and_no_negative_value() {
+        let p = |css: &str| style_of("<p>x</p>", &[sheet(css)], "p");
+        let s = p(
+            "p { width: min-content; height: MAX-CONTENT; min-width: fit-content;
+                       max-width: max-content; max-height: min-content; min-height: auto }",
+        );
+        assert_eq!(
+            (s.width, s.height, s.min_width, s.min_height),
+            (
+                Size::MinContent,
+                Size::MaxContent,
+                Size::FitContent,
+                Size::Auto
+            )
+        );
+        assert_eq!(
+            (s.max_width, s.max_height),
+            (MaxSize::MaxContent, MaxSize::MinContent)
+        );
+        // `auto` is no maximum, `none` no size; negative sizes are invalid.
+        let s = p(
+            "p { width: 5px; width: -5px; max-width: 5px; max-width: auto;
+                       min-height: 5px; min-height: none; height: 5%; height: -5% }",
+        );
+        assert_eq!(
+            (s.width, s.max_width, s.min_height, s.height),
+            (
+                Size::Px(5.0),
+                MaxSize::Px(5.0),
+                Size::Px(5.0),
+                Size::Percent(5.0)
+            )
+        );
+    }
+
+    #[test]
+    fn the_webkit_aliases_are_the_properties_under_a_second_name() {
+        let p = |css: &str| style_of("<p>x</p>", &[sheet(css)], "p");
+        let s = p(
+            "p { -webkit-flex: 2; -webkit-flex-flow: column wrap; -webkit-order: 3;
+                       -webkit-justify-content: center; -webkit-align-items: end;
+                       -webkit-align-self: start; -webkit-align-content: stretch;
+                       -webkit-box-sizing: border-box }",
+        );
+        assert_eq!(
+            (s.flex_grow, s.flex_shrink, s.flex_basis),
+            (2.0, 1.0, FlexBasis::Size(Size::Percent(0.0)))
+        );
+        assert_eq!(
+            (s.flex_direction, s.flex_wrap, s.order),
+            (FlexDirection::Column, FlexWrap::Wrap, 3)
+        );
+        assert_eq!(
+            s.justify_content,
+            ContentAlignment::Position(AlignPosition::Center, OverflowAlign::Default)
+        );
+        assert_eq!(s.align_content, ContentAlignment::Stretch);
+        assert_eq!(s.box_sizing, BoxSizing::BorderBox);
+        let s = p(
+            "p { -webkit-flex-grow: 4; -webkit-flex-shrink: 5; -webkit-flex-basis: 6px;
+                       -webkit-flex-direction: row-reverse; -webkit-flex-wrap: wrap-reverse }",
+        );
+        assert_eq!(
+            (s.flex_grow, s.flex_shrink, s.flex_basis),
+            (4.0, 5.0, FlexBasis::Size(Size::Px(6.0)))
+        );
+        assert_eq!(
+            (s.flex_direction, s.flex_wrap),
+            (FlexDirection::RowReverse, FlexWrap::WrapReverse)
+        );
+        // An alias competes as the property: the later declaration wins,
+        // whichever name it uses, and css-wide keywords work through it.
+        let s = p("p { flex-grow: 1; -webkit-flex-grow: 2 }");
+        assert_eq!(s.flex_grow, 2.0);
+        let s = p("p { -webkit-flex-grow: 2; flex-grow: 1 }");
+        assert_eq!(s.flex_grow, 1.0);
+        let s = p("p { flex: 3; -webkit-flex: initial }");
+        assert_eq!(s.flex_grow, 0.0);
+        // Not an alias the Standard lists.
+        assert_eq!(p("p { -webkit-gap: 5px }").row_gap, None);
+    }
+
+    #[test]
+    fn css_wide_keywords_reach_the_flex_shorthands() {
+        let html = "<div><p>x</p></div>";
+        let s = style_of(
+            html,
+            &[sheet(
+                "div { flex: 2 3 4px; flex-flow: column wrap; gap: 5px 6px;
+                       place-content: center end; place-items: end; place-self: start }
+                 p { flex: inherit; flex-flow: inherit; gap: inherit;
+                     place-content: inherit; place-items: inherit; place-self: inherit }",
+            )],
+            "p",
+        );
+        let parent = style_of(
+            html,
+            &[sheet(
+                "div { flex: 2 3 4px; flex-flow: column wrap; gap: 5px 6px;
+                       place-content: center end; place-items: end; place-self: start }",
+            )],
+            "div",
+        );
+        assert_eq!(
+            (s.flex_grow, s.flex_shrink, s.flex_basis),
+            (parent.flex_grow, parent.flex_shrink, parent.flex_basis)
+        );
+        assert_eq!(
+            (s.flex_direction, s.flex_wrap),
+            (parent.flex_direction, parent.flex_wrap)
+        );
+        assert_eq!(
+            (s.row_gap, s.column_gap),
+            (parent.row_gap, parent.column_gap)
+        );
+        assert_eq!(
+            (
+                s.align_content,
+                s.justify_content,
+                s.align_items,
+                s.align_self
+            ),
+            (
+                parent.align_content,
+                parent.justify_content,
+                parent.align_items,
+                parent.align_self
+            )
+        );
+        // `unset` on a property that is not inherited is `initial`.
+        let s = style_of(
+            html,
+            &[sheet("div { order: 4 } p { order: 2; order: unset }")],
+            "p",
+        );
+        assert_eq!(s.order, 0);
     }
 
     #[test]
@@ -3960,8 +5182,8 @@ mod tests {
         let input = control("input:first-child");
         assert_eq!(input.display, Display::InlineBlock);
         assert_eq!(input.font_size_px, 13.3333);
-        assert_eq!(input.width, LengthPercentageAuto::Px(20.0 * 0.5 * 13.3333));
-        assert_eq!(input.height, LengthPercentageAuto::Px(1.2 * 13.3333));
+        assert_eq!(input.width, Size::Px(20.0 * 0.5 * 13.3333));
+        assert_eq!(input.height, Size::Px(1.2 * 13.3333));
         assert_eq!(input.used_border_width(), [1.0; 4]);
         assert_eq!(input.padding[TOP], LengthPercentage::Px(1.0));
         assert_eq!(input.padding[LEFT], LengthPercentage::Px(2.0));
@@ -3972,16 +5194,16 @@ mod tests {
             "the UA rule matches the type whatever its case"
         );
         let checkbox = control("input[type=checkbox]");
-        assert_eq!(checkbox.width, LengthPercentageAuto::Px(13.0));
+        assert_eq!(checkbox.width, Size::Px(13.0));
         assert_eq!(checkbox.box_sizing, BoxSizing::BorderBox);
         let button = control("button");
-        assert_eq!(button.width, LengthPercentageAuto::Auto);
+        assert_eq!(button.width, Size::Auto);
         assert_eq!(button.text_align, TextAlign::Center);
         assert_eq!(button.background_color, Color::rgb8(0xef, 0xef, 0xef));
         assert_eq!(control("select").width, input.width);
         assert_eq!(control("option").display, Display::None);
         let textarea = control("textarea");
-        assert_eq!(textarea.height, LengthPercentageAuto::Px(2.4 * 13.3333));
+        assert_eq!(textarea.height, Size::Px(2.4 * 13.3333));
         assert_eq!(textarea.white_space, WhiteSpace::PreWrap);
         assert_eq!(textarea.overflow, Overflow::Auto);
     }
@@ -4024,7 +5246,34 @@ mod tests {
             parse_color(&css::tokenize("RED")),
             Some(Color::rgb8(255, 0, 0))
         );
-        assert_eq!(parse_color(&css::tokenize("CornflowerBlue")), None); // not in the small set — documented gap
+        assert_eq!(
+            parse_color(&css::tokenize("CornflowerBlue")),
+            Some(Color::rgb8(100, 149, 237))
+        );
+        assert_eq!(parse_color(&css::tokenize("cornflowerblu")), None);
+    }
+
+    #[test]
+    fn the_named_colours_are_css_color_4s_whole_table() {
+        // Sorted and distinct, so the binary search finds every one.
+        assert!(NAMED_COLORS.windows(2).all(|w| w[0].0 < w[1].0));
+        // Both spellings of every grey, and the ones M5 lacked.
+        for (name, rgb) in [
+            ("aliceblue", [240, 248, 255]),
+            ("darkslategray", [47, 79, 79]),
+            ("darkslategrey", [47, 79, 79]),
+            ("lightblue", [173, 216, 230]),
+            ("lightgreen", [144, 238, 144]),
+            ("pink", [255, 192, 203]),
+            ("rebeccapurple", [102, 51, 153]),
+            ("yellowgreen", [154, 205, 50]),
+            ("orange", [255, 165, 0]),
+        ] {
+            let [r, g, b] = rgb;
+            assert_eq!(named_color(name), Some(Color::rgb8(r, g, b)), "{name}");
+        }
+        assert_eq!(named_color("Transparent"), Some(Color::TRANSPARENT));
+        assert_eq!(named_color("currentcolor"), None);
     }
 
     #[test]

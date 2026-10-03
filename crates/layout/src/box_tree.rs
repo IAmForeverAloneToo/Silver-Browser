@@ -685,7 +685,7 @@ impl BlockContainer<'_> {
             // is `table`; outside it is out of flow, and goes where it
             // is met: into the run or inline open around it, else among
             // the container's blocks.
-            Display::Block | Display::Table
+            Display::Block | Display::Table | Display::Flex
                 if style.float != Float::None || style.position.is_out_of_flow() =>
             {
                 let kind = if style.position.is_out_of_flow() {
@@ -706,7 +706,9 @@ impl BlockContainer<'_> {
                     self.add_inline_level(out_of_flow);
                 }
             }
-            Display::Block => {
+            // A flex container is built as the block container it would
+            // otherwise be until flex layout lands (M17 step 4).
+            Display::Block | Display::Flex => {
                 let block = styled.own_box(child, style, BoxKind::Block, || {
                     build_block_container(styled, child)
                 });
@@ -724,7 +726,7 @@ impl BlockContainer<'_> {
                 let inline = self.open.pop().expect("the inline just opened");
                 self.add_inline_level(inline);
             }
-            Display::InlineBlock => {
+            Display::InlineBlock | Display::InlineFlex => {
                 let block = styled.own_box(child, style, BoxKind::InlineBlock, || {
                     build_block_container(styled, child)
                 });

@@ -56,8 +56,9 @@ impl Color {
     };
 }
 
-/// `display` (css-display-3, the box-generation values of CSS2 §9.2.4
-/// and the table values of §17.2, M12).
+/// `display` (css-display-3, the box-generation values of CSS2 §9.2.4,
+/// the table values of §17.2, M12, and the flex values of
+/// css-flexbox-1 §3, M17).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Display {
     /// Generates a block-level box.
@@ -92,25 +93,42 @@ pub enum Display {
     TableCell,
     /// A table's caption: `caption`.
     TableCaption,
+    /// A block-level flex container (css-flexbox-1 §3, M17): its
+    /// children are flex items, laid out along its main axis.
+    Flex,
+    /// An inline-level flex container: atomic on its line like an
+    /// inline-block, a flex container inside.
+    InlineFlex,
 }
 
 impl Display {
     /// Whether this value is an atomic inline-level box (CSS2 §9.2.2):
-    /// an inline-block or an inline table, one item on its line and a
-    /// formatting context of its own inside.
+    /// an inline-block, an inline table or an inline flex container, one
+    /// item on its line and a formatting context of its own inside.
     pub fn is_atomic_inline(self) -> bool {
-        matches!(self, Display::InlineBlock | Display::InlineTable)
+        matches!(
+            self,
+            Display::InlineBlock | Display::InlineTable | Display::InlineFlex
+        )
     }
 
-    /// The value a float or an absolutely positioned box computes to
-    /// (CSS2 §9.7's table, css-display-3 §2.7's blockification): an
-    /// inline table becomes a table; an inline box, an inline-block and
-    /// every table-internal box become a block; a block, a table and
-    /// `none` stay what they are.
+    /// Whether this value makes a flex container (M17), whose children
+    /// are flex items and so blockified (css-flexbox-1 §4).
+    pub fn is_flex(self) -> bool {
+        matches!(self, Display::Flex | Display::InlineFlex)
+    }
+
+    /// The value a float, an absolutely positioned box or a flex item
+    /// computes to (CSS2 §9.7's table, css-display-3 §2.7's
+    /// blockification): an inline table becomes a table and an inline
+    /// flex container a flex container; an inline box, an inline-block
+    /// and every table-internal box become a block; a block, a table, a
+    /// flex container and `none` stay what they are.
     pub fn blockified(self) -> Display {
         match self {
-            Display::Block | Display::Table | Display::None => self,
+            Display::Block | Display::Table | Display::Flex | Display::None => self,
             Display::InlineTable => Display::Table,
+            Display::InlineFlex => Display::Flex,
             Display::Inline
             | Display::InlineBlock
             | Display::TableRowGroup
@@ -422,6 +440,188 @@ impl LengthPercentage {
     }
 }
 
+/// A box's preferred or minimum size in one axis: `width`, `height`,
+/// `min-width`, `min-height` and the `<'width'>` of `flex-basis`
+/// (css-sizing-3 §3.2, M17), kept as written until layout resolves it.
+/// The intrinsic keywords are sizes in the inline axis; in the block
+/// axis a box's size, unless otherwise specified, takes them as its
+/// automatic size (§3.2).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Size {
+    /// `auto`: what it means depends on the property and the layout. For
+    /// `min-width` and `min-height` it is zero, but on a flex item's main
+    /// axis (css-flexbox-1 §4.5).
+    Auto,
+    /// A length, in CSS pixels, never negative.
+    Px(f32),
+    /// A percentage, as written, never negative.
+    Percent(f32),
+    /// The box's min-content size.
+    MinContent,
+    /// The box's max-content size.
+    MaxContent,
+    /// `fit-content`: `min(max-content, max(min-content, stretch))`.
+    FitContent,
+}
+
+impl Size {
+    /// The size as a length or a percentage; `None` for `auto` and the
+    /// keywords.
+    pub fn length_percentage(self) -> Option<LengthPercentage> {
+        match self {
+            Size::Px(px) => Some(LengthPercentage::Px(px)),
+            Size::Percent(p) => Some(LengthPercentage::Percent(p)),
+            Size::Auto | Size::MinContent | Size::MaxContent | Size::FitContent => None,
+        }
+    }
+
+    /// Whether this is `auto`.
+    pub fn is_auto(self) -> bool {
+        self == Size::Auto
+    }
+}
+
+/// A box's maximum size in one axis: `max-width` and `max-height`
+/// (css-sizing-3 §3.2, M17). In the block axis the keywords are `none`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MaxSize {
+    /// `none`: no limit. The initial value.
+    None,
+    /// A length, in CSS pixels, never negative.
+    Px(f32),
+    /// A percentage, as written, never negative.
+    Percent(f32),
+    /// The box's min-content size.
+    MinContent,
+    /// The box's max-content size.
+    MaxContent,
+    /// `fit-content`.
+    FitContent,
+}
+
+impl MaxSize {
+    /// The limit as a length or a percentage; `None` for `none` and the
+    /// keywords.
+    pub fn length_percentage(self) -> Option<LengthPercentage> {
+        match self {
+            MaxSize::Px(px) => Some(LengthPercentage::Px(px)),
+            MaxSize::Percent(p) => Some(LengthPercentage::Percent(p)),
+            MaxSize::None | MaxSize::MinContent | MaxSize::MaxContent | MaxSize::FitContent => None,
+        }
+    }
+}
+
+/// `flex-direction` (css-flexbox-1 §5.1, M17): the main axis and its
+/// direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlexDirection {
+    /// Along the inline axis, left to right here. The initial value.
+    Row,
+    RowReverse,
+    /// Along the block axis, top to bottom.
+    Column,
+    ColumnReverse,
+}
+
+impl FlexDirection {
+    /// Whether the main axis is the block axis, vertical here.
+    pub fn is_column(self) -> bool {
+        matches!(self, FlexDirection::Column | FlexDirection::ColumnReverse)
+    }
+
+    /// Whether main-start and main-end are swapped.
+    pub fn is_reverse(self) -> bool {
+        matches!(
+            self,
+            FlexDirection::RowReverse | FlexDirection::ColumnReverse
+        )
+    }
+}
+
+/// `flex-wrap` (css-flexbox-1 §5.2, M17).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlexWrap {
+    /// One line. The initial value.
+    NoWrap,
+    Wrap,
+    /// Wrapping, with cross-start and cross-end swapped.
+    WrapReverse,
+}
+
+/// `flex-basis` (css-flexbox-1 §7.2.3, M17): `content`, or a size as
+/// `width` takes one; `auto` is the initial value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FlexBasis {
+    /// The item's content size.
+    Content,
+    /// `auto` (the item's main size property) or a size.
+    Size(Size),
+}
+
+/// The positional alignment keywords (css-align-3 §4.1, M17), each
+/// property taking the ones its grammar lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlignPosition {
+    Center,
+    Start,
+    End,
+    SelfStart,
+    SelfEnd,
+    FlexStart,
+    FlexEnd,
+    Left,
+    Right,
+}
+
+/// The overflow alignment written before a positional keyword
+/// (css-align-3 §4.4, M17).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverflowAlign {
+    /// Neither: unsafe, as the reference browsers have it.
+    Default,
+    /// `safe`: an overflowing subject is aligned as `start`.
+    Safe,
+    /// `unsafe`.
+    Unsafe,
+}
+
+/// Which baseline set a baseline alignment uses (css-align-3 §4.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BaselinePosition {
+    /// `baseline` or `first baseline`.
+    First,
+    /// `last baseline`.
+    Last,
+}
+
+/// `justify-content` and `align-content` (css-align-3 §5.1, M17).
+/// `justify-content` takes no baseline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContentAlignment {
+    /// The initial value.
+    Normal,
+    Baseline(BaselinePosition),
+    SpaceBetween,
+    SpaceAround,
+    SpaceEvenly,
+    Stretch,
+    Position(AlignPosition, OverflowAlign),
+}
+
+/// `align-items` and `align-self` (css-align-3 §6, M17). `Auto` is
+/// `align-self`'s alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelfAlignment {
+    /// `align-self: auto`, its initial value: the parent's
+    /// `align-items`.
+    Auto,
+    /// `align-items`'s initial value.
+    Normal,
+    Stretch,
+    Baseline(BaselinePosition),
+    Position(AlignPosition, OverflowAlign),
+}
+
 /// The box-model edges, one value per side, in CSS's `top, right,
 /// bottom, left` order (matches `margin`/`padding`/`border-width`
 /// shorthand order, so parsing and storage share one shape).
@@ -552,18 +752,18 @@ pub struct ComputedStyle {
     /// `dir`/`direction` (M8.3) — inherited; see [`Direction`]'s doc for
     /// why this is read differently than most properties here.
     pub direction: Direction,
-    /// `width` (M6) — not inherited. `auto` (the initial value) means
-    /// "fill the containing block" in block layout (CSS2.1 §10.3.3);
-    /// other formatting contexts (inline, later) mean something else,
-    /// which is why this stays unresolved (not a plain `f32`) until a
-    /// layout algorithm resolves it against a containing block.
-    pub width: LengthPercentageAuto,
+    /// `width` (M6; the intrinsic keywords since M17) — not inherited.
+    /// `auto` (the initial value) means "fill the containing block" in
+    /// block layout (CSS2.1 §10.3.3); other formatting contexts mean
+    /// something else, which is why this stays unresolved (not a plain
+    /// `f32`) until a layout algorithm resolves it against a containing
+    /// block.
+    pub width: Size,
     /// `height` (M6) — not inherited. `auto` (the initial value) means
-    /// "as tall as the content" in block layout. Percentage heights
-    /// aren't resolved yet (roadmap M6.4 defers that to M10) — the
-    /// *parser* already keeps `Percent` for `width`, but for `height` it
-    /// deliberately never produces one yet (see `cascade`).
-    pub height: LengthPercentageAuto,
+    /// "as tall as the content" in block layout; a percentage is of the
+    /// containing block's height when that is definite (M10), and
+    /// `auto` otherwise, as an intrinsic keyword is (M17).
+    pub height: Size,
     /// `margin-{top,right,bottom,left}` — not inherited. Unlike
     /// `padding`/`border-width`, `margin` accepts `auto` (M6.3's
     /// auto-centering).
@@ -591,17 +791,19 @@ pub struct ComputedStyle {
     /// `box-sizing` (M10.2) — not inherited.
     pub box_sizing: BoxSizing,
     /// `min-width` (M10.3) — not inherited; a percentage of the
-    /// containing block's width. The initial value is `0`.
-    pub min_width: LengthPercentage,
-    /// `max-width` (M10.3) — not inherited; `None` is the initial
-    /// `none`.
-    pub max_width: Option<LengthPercentage>,
+    /// containing block's width. The initial value is `auto` (M17),
+    /// which is `0` but on a flex item's main axis.
+    pub min_width: Size,
+    /// `max-width` (M10.3) — not inherited; `none` is the initial value.
+    pub max_width: MaxSize,
     /// `min-height` (M10.3) — not inherited; a percentage of the
-    /// containing block's height when that is definite, else `0`.
-    pub min_height: LengthPercentage,
-    /// `max-height` (M10.3) — not inherited; `None` is `none`, and so
-    /// is a percentage of an indefinite containing-block height.
-    pub max_height: Option<LengthPercentage>,
+    /// containing block's height when that is definite, else `0`. The
+    /// initial value is `auto`, as for `min-width`.
+    pub min_height: Size,
+    /// `max-height` (M10.3) — not inherited; `none` is the initial
+    /// value, and a percentage of an indefinite containing-block height
+    /// counts as it.
+    pub max_height: MaxSize,
     /// `float` (M11.1) — not inherited. `none` on an absolutely
     /// positioned box whatever was written (CSS2 §9.7).
     pub float: Float,
@@ -637,6 +839,32 @@ pub struct ComputedStyle {
     pub content: Content,
     /// `quotes` (M16) — inherited.
     pub quotes: Quotes,
+    /// `flex-direction` (M17) — not inherited.
+    pub flex_direction: FlexDirection,
+    /// `flex-wrap` (M17) — not inherited.
+    pub flex_wrap: FlexWrap,
+    /// `order` (M17) — not inherited: where a flex item goes among its
+    /// siblings, which keep document order among equals.
+    pub order: i32,
+    /// `flex-grow` (M17) — not inherited; finite, never negative.
+    pub flex_grow: f32,
+    /// `flex-shrink` (M17) — not inherited; finite, never negative.
+    pub flex_shrink: f32,
+    /// `flex-basis` (M17) — not inherited.
+    pub flex_basis: FlexBasis,
+    /// `justify-content` (M17) — not inherited.
+    pub justify_content: ContentAlignment,
+    /// `align-content` (M17) — not inherited.
+    pub align_content: ContentAlignment,
+    /// `align-items` (M17) — not inherited; never `auto`.
+    pub align_items: SelfAlignment,
+    /// `align-self` (M17) — not inherited.
+    pub align_self: SelfAlignment,
+    /// `row-gap` (M17) — not inherited; `None` is the initial `normal`,
+    /// which is zero in a flex container.
+    pub row_gap: Option<LengthPercentage>,
+    /// `column-gap` (M17) — not inherited; `None` is `normal`.
+    pub column_gap: Option<LengthPercentage>,
 }
 
 /// `font-family`'s initial value, one for every style that has it.
@@ -657,8 +885,8 @@ impl Default for ComputedStyle {
             letter_spacing: 0.0,
             word_spacing: 0.0,
             direction: Direction::Ltr,
-            width: LengthPercentageAuto::Auto,
-            height: LengthPercentageAuto::Auto,
+            width: Size::Auto,
+            height: Size::Auto,
             margin: [LengthPercentageAuto::Px(0.0); 4], // margin's initial value is `0`, not `auto`
             padding: [LengthPercentage::Px(0.0); 4],
             border_width: [3.0; 4],          // `medium`
@@ -666,10 +894,10 @@ impl Default for ComputedStyle {
             border_style: [BorderStyle::None; 4],
             overflow: Overflow::Visible,
             box_sizing: BoxSizing::ContentBox,
-            min_width: LengthPercentage::Px(0.0),
-            max_width: None,
-            min_height: LengthPercentage::Px(0.0),
-            max_height: None,
+            min_width: Size::Auto,
+            max_width: MaxSize::None,
+            min_height: Size::Auto,
+            max_height: MaxSize::None,
             float: Float::None,
             clear: Clear::None,
             position: Position::Static,
@@ -686,6 +914,18 @@ impl Default for ComputedStyle {
             vertical_align: VerticalAlign::Baseline,
             content: Content::Normal,
             quotes: Quotes::Auto,
+            flex_direction: FlexDirection::Row,
+            flex_wrap: FlexWrap::NoWrap,
+            order: 0,
+            flex_grow: 0.0,
+            flex_shrink: 1.0,
+            flex_basis: FlexBasis::Size(Size::Auto),
+            justify_content: ContentAlignment::Normal,
+            align_content: ContentAlignment::Normal,
+            align_items: SelfAlignment::Normal,
+            align_self: SelfAlignment::Auto,
+            row_gap: None,
+            column_gap: None,
         }
     }
 }
@@ -768,8 +1008,8 @@ mod tests {
         assert_eq!(s.letter_spacing, 0.0);
         assert_eq!(s.word_spacing, 0.0);
         assert_eq!(s.direction, Direction::Ltr);
-        assert_eq!(s.width, LengthPercentageAuto::Auto);
-        assert_eq!(s.height, LengthPercentageAuto::Auto);
+        assert_eq!(s.width, Size::Auto);
+        assert_eq!(s.height, Size::Auto);
         assert_eq!(s.margin, [LengthPercentageAuto::Px(0.0); 4]);
         assert_eq!(s.border_style, [BorderStyle::None; 4]);
         assert_eq!(s.border_width, [3.0; 4], "medium");
@@ -778,10 +1018,10 @@ mod tests {
         assert_eq!(s.overflow, Overflow::Visible);
         assert!(!s.overflow.clips());
         assert_eq!(s.box_sizing, BoxSizing::ContentBox);
-        assert_eq!(s.min_width, LengthPercentage::Px(0.0));
-        assert_eq!(s.max_width, None);
-        assert_eq!(s.min_height, LengthPercentage::Px(0.0));
-        assert_eq!(s.max_height, None);
+        assert_eq!(s.min_width, Size::Auto);
+        assert_eq!(s.max_width, MaxSize::None);
+        assert_eq!(s.min_height, Size::Auto);
+        assert_eq!(s.max_height, MaxSize::None);
         assert_eq!(s.float, Float::None);
         assert_eq!(s.clear, Clear::None);
         assert_eq!(s.position, Position::Static);
@@ -799,6 +1039,16 @@ mod tests {
         assert_eq!(s.caption_side, CaptionSide::Top);
         assert_eq!(s.empty_cells, EmptyCells::Show);
         assert_eq!(s.vertical_align, VerticalAlign::Baseline);
+        assert_eq!(s.flex_direction, FlexDirection::Row);
+        assert_eq!(s.flex_wrap, FlexWrap::NoWrap);
+        assert_eq!(s.order, 0);
+        assert_eq!((s.flex_grow, s.flex_shrink), (0.0, 1.0));
+        assert_eq!(s.flex_basis, FlexBasis::Size(Size::Auto));
+        assert_eq!(s.justify_content, ContentAlignment::Normal);
+        assert_eq!(s.align_content, ContentAlignment::Normal);
+        assert_eq!(s.align_items, SelfAlignment::Normal);
+        assert_eq!(s.align_self, SelfAlignment::Auto);
+        assert_eq!((s.row_gap, s.column_gap), (None, None));
     }
 
     #[test]
@@ -848,6 +1098,10 @@ mod tests {
         assert!(Display::InlineTable.is_atomic_inline());
         assert!(!Display::Inline.is_atomic_inline());
         assert!(!Display::Table.is_atomic_inline());
+        assert!(Display::InlineFlex.is_atomic_inline());
+        assert!(!Display::Flex.is_atomic_inline());
+        assert!(Display::Flex.is_flex() && Display::InlineFlex.is_flex());
+        assert!(!Display::Block.is_flex() && !Display::InlineBlock.is_flex());
         for (value, expected) in [
             (Display::Block, Display::Block),
             (Display::Inline, Display::Block),
@@ -863,6 +1117,8 @@ mod tests {
             (Display::TableColumn, Display::Block),
             (Display::TableCell, Display::Block),
             (Display::TableCaption, Display::Block),
+            (Display::Flex, Display::Flex),
+            (Display::InlineFlex, Display::Flex),
         ] {
             assert_eq!(value.blockified(), expected, "{value:?}");
         }

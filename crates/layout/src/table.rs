@@ -84,7 +84,7 @@
 use style::computed::{
     BOTTOM, BorderCollapse, BorderStyle, BoxSizing, CaptionSide, Color, ComputedStyle, Display,
     EmptyCells, Float, LEFT, LengthPercentage, LengthPercentageAuto, Overflow, Position, RIGHT,
-    TOP, TableLayout, VerticalAlign,
+    Size, TOP, TableLayout, VerticalAlign,
 };
 use text::FontCollection;
 
@@ -186,8 +186,8 @@ pub(crate) fn layout_table_contents<'a>(
         .rows
         .iter()
         .map(|row| match row.b.style.height {
-            LengthPercentageAuto::Px(h) => h.max(0.0),
-            LengthPercentageAuto::Auto | LengthPercentageAuto::Percent(_) => 0.0,
+            Size::Px(h) => h.max(0.0),
+            _ => 0.0,
         })
         .collect();
     let constrained: Vec<bool> = grid
@@ -239,7 +239,7 @@ pub(crate) fn layout_table_contents<'a>(
         heights[group.span()].iter().sum::<f32>() + group.rows.saturating_sub(1) as f32 * vspacing
     };
     for group in grid.groups.iter().filter(|g| g.rows > 0) {
-        let Some(LengthPercentageAuto::Px(h)) = group.b.map(|g| g.style.height) else {
+        let Some(Size::Px(h)) = group.b.map(|g| g.style.height) else {
             continue;
         };
         let have = group_extent(&heights, group);
@@ -862,24 +862,21 @@ fn fixed_column_widths(grid: &Grid<'_>, assignable: f32, hspacing: f32) -> Vec<f
     widths
 }
 
-/// A `width` as a length, a percentage of `of`, or `None` for `auto`.
-fn resolve_width(width: LengthPercentageAuto, of: f32) -> Option<f32> {
-    match width {
-        LengthPercentageAuto::Auto => None,
-        LengthPercentageAuto::Px(w) => Some(w),
-        LengthPercentageAuto::Percent(p) => Some(of * p / 100.0),
-    }
+/// A `width` as a length, a percentage of `of`, or `None` for `auto`
+/// or an intrinsic keyword, which the table algorithms take as `auto`.
+fn resolve_width(width: Size, of: f32) -> Option<f32> {
+    width.length_percentage().map(|w| w.resolve(of))
 }
 
 /// The `width` a column's boxes give it: its column box's, else its
 /// column group's when the column box gives none (or there is none);
 /// `None` when neither does.
-fn column_box_width(cref: &ColumnRef<'_>) -> Option<LengthPercentageAuto> {
+fn column_box_width(cref: &ColumnRef<'_>) -> Option<Size> {
     [cref.column, cref.group]
         .into_iter()
         .flatten()
         .map(|part| part.style.width)
-        .find(|w| !w.is_auto())
+        .find(|w| w.length_percentage().is_some())
 }
 
 /// The spacing around and between `columns` columns in the separated
@@ -896,7 +893,7 @@ fn columns_spacing(columns: usize, hspacing: f32) -> f32 {
 /// fixed` and a `width` other than `auto` (CSS2 §17.5.2.1; with `auto`,
 /// the automatic algorithm is used).
 fn uses_fixed_layout(style: &ComputedStyle) -> bool {
-    style.table_layout == TableLayout::Fixed && !style.width.is_auto()
+    style.table_layout == TableLayout::Fixed && style.width.length_percentage().is_some()
 }
 
 /// The table's horizontal border spacing, and its vertical: the
@@ -952,23 +949,23 @@ fn measure_cell(
         BoxSizing::BorderBox => v.max(edges),
     };
     let mut min = content_min + edges;
-    if let LengthPercentage::Px(floor) = style.min_width {
+    if let Size::Px(floor) = style.min_width {
         min = min.max(border_box(floor));
     }
     match style.width {
-        LengthPercentageAuto::Px(w) => ColumnMeasure {
+        Size::Px(w) => ColumnMeasure {
             min,
             max: min.max(border_box(w)),
             percent: None,
             constrained: true,
         },
-        LengthPercentageAuto::Percent(p) => ColumnMeasure {
+        Size::Percent(p) => ColumnMeasure {
             min,
             max: min.max(content_max + edges),
             percent: Some(p.max(0.0)),
             constrained: false,
         },
-        LengthPercentageAuto::Auto => ColumnMeasure {
+        Size::Auto | Size::MinContent | Size::MaxContent | Size::FitContent => ColumnMeasure {
             min,
             max: min.max(content_max + edges),
             percent: None,
@@ -999,12 +996,12 @@ fn measure_columns(
     let mut columns = vec![ColumnMeasure::default(); grid.columns];
     for (column, cref) in columns.iter_mut().zip(&grid.column_boxes) {
         match column_box_width(cref) {
-            Some(LengthPercentageAuto::Px(w)) => {
+            Some(Size::Px(w)) => {
                 column.max = column.max.max(w.max(0.0));
                 column.constrained = true;
             }
-            Some(LengthPercentageAuto::Percent(p)) => column.percent = Some(p.max(0.0)),
-            Some(LengthPercentageAuto::Auto) | None => {}
+            Some(Size::Percent(p)) => column.percent = Some(p.max(0.0)),
+            Some(_) | None => {}
         }
     }
     let measures: Vec<ColumnMeasure> = grid
@@ -1264,8 +1261,8 @@ pub(crate) fn content_widths(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32
 
 /// Whether a size is a length, which makes a row or a row group
 /// constrained.
-fn is_length(size: LengthPercentageAuto) -> bool {
-    matches!(size, LengthPercentageAuto::Px(_))
+fn is_length(size: Size) -> bool {
+    matches!(size, Size::Px(_))
 }
 
 /// Gives `extra`, what a cell spanning `rows` needs beyond their heights
