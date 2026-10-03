@@ -2427,15 +2427,14 @@ fn layout_children<'a>(
                 absolutes.extend(carried(layout.absolutes, x, child_y + dy));
                 y = child_y + layout.height;
                 pending = layout.margin_bottom;
-                if at.origin.is_none() {
-                    // The margins above a box that is not self-collapsing
-                    // end at its top (CSS2 §8.3.1): the flow position
-                    // resolves there, and a float still waiting — met
-                    // before the box, or inside it before any content —
-                    // is placed level with it.
-                    floats.resolve_pending(root_top);
-                    at.origin = Some(root_top);
-                }
+                // The margins above a box that is not self-collapsing end
+                // at its top (CSS2 §8.3.1): the flow position resolves
+                // there, and a float still waiting — met before the box,
+                // or inside it before any content — is placed level with
+                // it. That holds for a box after the first too: its own
+                // top margin left the floats inside it waiting.
+                floats.resolve_pending(root_top);
+                at.origin.get_or_insert(root_top);
                 at.anchor = root_top + layout.height;
                 at.strut = pending;
             }
@@ -4654,6 +4653,34 @@ mod tests {
         let layout = document_of(root, &format!("{css} .o {{ border-top: 1px solid #000; }}"));
         assert_eq!(at(&layout, 4), (0.0, 18.0, 50.0));
         assert_eq!(at(&layout, 5), (0.0, 18.0, 200.0));
+    }
+
+    #[test]
+    fn floats_in_a_box_of_fixed_height_after_another_sit_at_its_top() {
+        // Two boxes 30 tall holding nothing but floats, the first after a
+        // paragraph: each one's floats sit at its own top, as in the
+        // reference browser, not where the flow ends. Nodes: div 1, p 2,
+        // a 3, f 4, b 5, g 6.
+        let root = Element::new("div")
+            .push(Element::new("p"))
+            .push(
+                Element::new("div")
+                    .attr("class", "a")
+                    .push(Element::new("div").attr("class", "f")),
+            )
+            .push(
+                Element::new("div")
+                    .attr("class", "a")
+                    .push(Element::new("div").attr("class", "f")),
+            );
+        let layout = document_of(
+            root,
+            "div, p { margin: 0; } p { height: 10px; margin-bottom: 16px; }
+             .a { height: 30px; border-bottom: 2px solid #000; }
+             .f { float: left; width: 20px; height: 30px; }",
+        );
+        assert_eq!(by_node(&layout, 4).y, 26.0);
+        assert_eq!(by_node(&layout, 6).y, 58.0);
     }
 
     #[test]
