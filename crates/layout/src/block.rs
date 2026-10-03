@@ -78,7 +78,6 @@
 //! scrolls over.
 
 use dom::NodeId;
-use std::cell::Cell;
 
 use style::computed::{
     BOTTOM, BoxSizing, Clear, ComputedStyle, Display, Float, LEFT, LengthPercentage,
@@ -509,30 +508,21 @@ pub(crate) struct WidthConstraints {
 
 /// A box's content widths for the intrinsic size keywords (M17,
 /// css-sizing-3 §3.2), measured the first time one is met: most boxes
-/// have none, and measuring walks the subtree.
-pub(crate) struct Intrinsic<'b> {
-    b: &'b LayoutBox,
-    fonts: &'b FontCollection,
-    widths: Cell<Option<(f32, f32)>>,
+/// have none, and measuring walks the subtree. The pass keeps them once
+/// measured.
+pub(crate) struct Intrinsic<'p, 'a> {
+    b: &'a LayoutBox,
+    pass: &'p Pass<'a>,
 }
 
-impl<'b> Intrinsic<'b> {
-    pub(crate) fn of(b: &'b LayoutBox, fonts: &'b FontCollection) -> Self {
-        Intrinsic {
-            b,
-            fonts,
-            widths: Cell::new(None),
-        }
+impl<'p, 'a> Intrinsic<'p, 'a> {
+    pub(crate) fn of(b: &'a LayoutBox, pass: &'p Pass<'a>) -> Self {
+        Intrinsic { b, pass }
     }
 
     /// The box's min-content and max-content content widths.
     pub(crate) fn widths(&self) -> (f32, f32) {
-        if let Some(widths) = self.widths.get() {
-            return widths;
-        }
-        let widths = crate::intrinsic::content_widths(self.b, self.fonts);
-        self.widths.set(Some(widths));
-        widths
+        crate::intrinsic::content_widths(self.b, self.pass)
     }
 
     /// The content width a keyword stands for: `min-content`,
@@ -570,7 +560,7 @@ pub(crate) fn width_constraints(
     style: &ComputedStyle,
     cb_width: f32,
     non_content: f32,
-    intrinsic: &Intrinsic<'_>,
+    intrinsic: &Intrinsic<'_, '_>,
     stretch: f32,
 ) -> WidthConstraints {
     let inner = |v: f32| match style.box_sizing {
@@ -601,12 +591,12 @@ pub(crate) fn width_constraints(
 /// formatting context root beside floats the room between them (CSS2
 /// §9.5, M11). The intrinsic keywords are the box's content widths
 /// (M17), `fit-content` in the width an `auto` one would take.
-pub(crate) fn resolve_width_and_margins(
-    b: &LayoutBox,
+pub(crate) fn resolve_width_and_margins<'a>(
+    b: &'a LayoutBox,
     cb_width: f32,
     available_width: f32,
     non_content_width: f32,
-    fonts: &FontCollection,
+    pass: &Pass<'a>,
 ) -> (f32, f32, f32) {
     let style = &b.style;
     let (stretch, _, _) =
@@ -615,7 +605,7 @@ pub(crate) fn resolve_width_and_margins(
         style,
         cb_width,
         non_content_width,
-        &Intrinsic::of(b, fonts),
+        &Intrinsic::of(b, pass),
         stretch,
     );
     solve_width(style, &c, cb_width, available_width, non_content_width)
@@ -653,18 +643,18 @@ fn solve_width(
 /// width so found, so `margin: auto` centres the table (§10.3.3). The
 /// intrinsic keywords (M17) are the table's own widths, `fit-content`
 /// the same as `auto`.
-fn table_width_and_margins(
-    b: &LayoutBox,
+fn table_width_and_margins<'a>(
+    b: &'a LayoutBox,
     cb_width: f32,
     available_width: f32,
     non_content_width: f32,
-    fonts: &FontCollection,
+    pass: &Pass<'a>,
 ) -> (f32, f32, f32) {
     let style = &b.style;
     // The room the margins leave, an `auto` margin counting as zero:
     // what an `auto` block would fill.
     let (room, _, _) = tentative_width(style, cb_width, available_width, non_content_width, None);
-    let intrinsic = Intrinsic::of(b, fonts);
+    let intrinsic = Intrinsic::of(b, pass);
     let c = width_constraints(style, cb_width, non_content_width, &intrinsic, room);
     let (min_content, max_content) = intrinsic.widths();
     let used = c.width.unwrap_or(room.min(max_content));
@@ -1112,9 +1102,9 @@ fn layout_block<'a>(
     // `BlockLayout::margin_left`'s doc for why that's correct, not an
     // oversight.
     let (content_width, margin_left, _margin_right) = if b.is_table() {
-        table_width_and_margins(b, cb_width, available_width, edges.horizontal(), pass.fonts)
+        table_width_and_margins(b, cb_width, available_width, edges.horizontal(), pass)
     } else {
-        resolve_width_and_margins(b, cb_width, available_width, edges.horizontal(), pass.fonts)
+        resolve_width_and_margins(b, cb_width, available_width, edges.horizontal(), pass)
     };
     let content = if establishes_bfc(&b.style) {
         Content::Root
@@ -1251,7 +1241,7 @@ pub(crate) fn layout_inline_block<'a>(
     // The shrink-to-fit width is `fit-content` in the room the margins
     // leave (M17).
     let available = (cb_width - margin_left - margin_right - edges.horizontal()).max(0.0);
-    let intrinsic = Intrinsic::of(b, pass.fonts);
+    let intrinsic = Intrinsic::of(b, pass);
     let c = width_constraints(
         &b.style,
         cb_width,
@@ -1753,7 +1743,7 @@ fn layout_absolute<'a>(
     };
     // The intrinsic keywords (M17), `fit-content` in the room between
     // the insets given, or that room.
-    let intrinsic = Intrinsic::of(b, pass.fonts);
+    let intrinsic = Intrinsic::of(b, pass);
     let stretch = match (left, right) {
         (None, None) => room_right - room_left,
         _ => cb_width - left.unwrap_or(d.x) - right.unwrap_or(0.0),

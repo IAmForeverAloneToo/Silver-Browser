@@ -1,17 +1,29 @@
 //! One layout pass's context (M17): what every function that lays a box
 //! out in a pass shares, made by `block::layout_document` and its
 //! siblings and dropped when the pass ends. That is the font collection
-//! the pass measures text with, and the flex items' layouts kept for the
-//! rest of the pass.
+//! the pass measures text with, the flex items' layouts kept for the
+//! rest of the pass, and the content widths of the boxes measured so
+//! far.
 //!
 //! A flex item is laid out more than once, to measure it and then at its
 //! flexed or stretched size, and a flex container inside an item each
 //! time its item is: a chain of nested containers would cost two to the
 //! power of its depth. So `crate::flex` lays each item out through
 //! [`Pass::item`], which keeps the result under the box and every input
-//! it depends on, and gives a clone of it when asked again. Nothing kept
+//! it depends on, and gives a clone of it when asked again, or lets a
+//! step that only measures the item read it where it is kept. Nothing kept
 //! outlives the pass, so nothing kept outlives the box tree it was made
 //! from; the layout cache (M13.2) is what keeps results across passes.
+//!
+//! A box's min-content and max-content widths are the same for the
+//! whole pass, as they depend on nothing but the box and the fonts,
+//! and measuring them walks the box's subtree. A flex item's are
+//! measured for its automatic minimum size, and an item's content
+//! holds the next container's items: measured afresh each time, a
+//! chain of nested containers would measure the box at its foot once
+//! for every container above it, and cost the square of its depth. So
+//! [`crate::intrinsic::content_widths`] keeps them through
+//! [`Pass::widths`], under the box alone.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -28,8 +40,12 @@ pub(crate) struct Pass<'a> {
     pub(crate) fonts: &'a FontCollection,
     /// The flex items' layouts so far, by box and inputs.
     items: RefCell<HashMap<ItemKey, BlockLayout<'a>>>,
+    /// The boxes' content widths measured so far, by box address.
+    widths: RefCell<HashMap<usize, (f32, f32)>>,
     /// How many item layouts were computed rather than taken.
     computed: Cell<usize>,
+    /// How many boxes' content widths were measured.
+    measured: Cell<usize>,
 }
 
 /// What a flex item's layout depends on (M17): the box, by its address,
@@ -87,7 +103,9 @@ impl<'a> Pass<'a> {
         Pass {
             fonts,
             items: RefCell::new(HashMap::new()),
+            widths: RefCell::new(HashMap::new()),
             computed: Cell::new(0),
+            measured: Cell::new(0),
         }
     }
 
@@ -108,10 +126,66 @@ impl<'a> Pass<'a> {
         layout
     }
 
+    /// What `read` takes from the flex item layout `key` names, the one
+    /// kept or `lay_out`'s, which is then kept: [`Pass::item`] for a
+    /// step that wants the layout's sizes and baselines, which reads it
+    /// where it is kept rather than copying its fragments. A copy costs
+    /// as much as the item's subtree, and a container laid out more
+    /// than once, at each level of a chain of nested ones, would copy
+    /// what is below it each time. `read` runs with the kept layouts
+    /// borrowed, so it reads and lays nothing out.
+    pub(crate) fn read_item<T>(
+        &self,
+        key: ItemKey,
+        lay_out: impl FnOnce() -> BlockLayout<'a>,
+        read: impl FnOnce(&BlockLayout<'a>) -> T,
+    ) -> T {
+        if let Some(layout) = self.items.borrow().get(&key) {
+            return read(layout);
+        }
+        let layout = lay_out();
+        self.computed.set(self.computed.get() + 1);
+        let value = read(&layout);
+        self.items.borrow_mut().insert(key, layout);
+        value
+    }
+
+    /// `b`'s `(min-content, max-content)` widths: the ones kept, or
+    /// `measure`'s, which are then kept. The box is borrowed for the
+    /// whole pass, so no other box takes its address while the pass
+    /// lasts. `measure` may measure other boxes through the pass, so
+    /// no borrow of the kept widths is held while it runs.
+    pub(crate) fn widths(
+        &self,
+        b: &'a LayoutBox,
+        measure: impl FnOnce() -> (f32, f32),
+    ) -> (f32, f32) {
+        let key = std::ptr::from_ref(b) as usize;
+        if let Some(&widths) = self.widths.borrow().get(&key) {
+            return widths;
+        }
+        let widths = measure();
+        self.widths.borrow_mut().insert(key, widths);
+        widths
+    }
+
+    /// Counts a box's content widths measured: what measures them says
+    /// so, for the tests to see each box measured once a pass, however
+    /// the measuring is reached.
+    pub(crate) fn measuring(&self) {
+        self.measured.set(self.measured.get() + 1);
+    }
+
     /// How many item layouts the pass has computed so far.
     #[cfg(test)]
     pub(crate) fn computed(&self) -> usize {
         self.computed.get()
+    }
+
+    /// How many boxes' content widths the pass has measured so far.
+    #[cfg(test)]
+    pub(crate) fn measured(&self) -> usize {
+        self.measured.get()
     }
 }
 

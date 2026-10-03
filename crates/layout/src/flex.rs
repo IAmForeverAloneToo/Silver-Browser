@@ -29,7 +29,6 @@ use style::computed::{
     AlignPosition, BOTTOM, BaselinePosition, BoxSizing, ComputedStyle, ContentAlignment, FlexBasis,
     FlexWrap, LEFT, LengthPercentage, MaxSize, OverflowAlign, RIGHT, SelfAlignment, Size, TOP,
 };
-use text::FontCollection;
 
 use crate::block::{
     AdjoiningMargins, BlockLayout, Content, Deferred, Edges, Imposed, Intrinsic, StaticAlign,
@@ -276,8 +275,6 @@ fn self_alignment(value: SelfAlignment, forward: bool, horizontal: bool) -> Alig
 /// A flex item as the algorithm sizes it.
 struct Item<'a> {
     b: &'a LayoutBox,
-    /// The item's content widths, measured if anything asks.
-    intrinsic: Intrinsic<'a>,
     edges: Edges,
     /// The margins, top, right, bottom and left, an `auto` one zero.
     margin: [f32; 4],
@@ -365,7 +362,6 @@ impl<'a> Item<'a> {
         };
         let mut item = Item {
             b,
-            intrinsic: Intrinsic::of(b, pass.fonts),
             edges,
             margin,
             main_edges,
@@ -392,6 +388,8 @@ impl<'a> Item<'a> {
             BoxSizing::ContentBox => v.max(0.0),
             BoxSizing::BorderBox => (v - main_edges).max(0.0),
         };
+        // The item's content widths, measured if anything asks.
+        let intrinsic = Intrinsic::of(b, pass);
         // The room `fit-content` fills in the inline axis, a row item's
         // main axis: the container's width less the item's margins,
         // border and padding.
@@ -405,7 +403,7 @@ impl<'a> Item<'a> {
             Size::Px(px) => Some(inner(px)),
             Size::Percent(p) => c.definite_main().map(|of| inner(of * p / 100.0)),
             Size::Auto => None,
-            keyword if !c.column => item.intrinsic.keyword(keyword, room),
+            keyword if !c.column => intrinsic.keyword(keyword, room),
             _ => None,
         };
         let main_property = if c.column { style.height } else { style.width };
@@ -428,9 +426,10 @@ impl<'a> Item<'a> {
             *measured.get_or_init(|| {
                 let room = (c.width - cross_margins - item.edges.horizontal()).max(0.0);
                 let stretched = (single_line && item.stretches).then_some(room);
-                let width = item.column_width(c, stretched);
-                let layout = item.lay_out_in(c, width, None, None, pass);
-                layout.auto_content_height
+                let width = item.column_width(c, stretched, pass);
+                item.measure_in(c, width, None, None, pass, |layout| {
+                    layout.auto_content_height
+                })
             })
         };
         // The content size in the main axis, measured if anything asks:
@@ -441,14 +440,14 @@ impl<'a> Item<'a> {
             if c.column {
                 content_height()
             } else {
-                item.intrinsic.widths().0
+                intrinsic.widths().0
             }
         };
         let max_content = || {
             if c.column {
                 content_height()
             } else {
-                item.intrinsic.widths().1
+                intrinsic.widths().1
             }
         };
         // A keyword in `min-height` or `max-height` is the column item's
@@ -464,7 +463,7 @@ impl<'a> Item<'a> {
             MaxSize::MinContent => Some(min_content()),
             MaxSize::MaxContent => Some(max_content()),
             MaxSize::FitContent if c.column => Some(content_height()),
-            MaxSize::FitContent => item.intrinsic.keyword(Size::FitContent, room),
+            MaxSize::FitContent => intrinsic.keyword(Size::FitContent, room),
         };
         let max = max.unwrap_or(f32::INFINITY);
         // §4.5: the content-based minimum size, for an item that is not
@@ -491,10 +490,7 @@ impl<'a> Item<'a> {
             Size::MinContent => min_content(),
             Size::MaxContent => max_content(),
             Size::FitContent if c.column => content_height(),
-            Size::FitContent => item
-                .intrinsic
-                .keyword(Size::FitContent, room)
-                .unwrap_or(0.0),
+            Size::FitContent => intrinsic.keyword(Size::FitContent, room).unwrap_or(0.0),
         };
         item.base = basis.unwrap_or_else(max_content);
         item.definite_basis = basis.is_some();
@@ -529,19 +525,51 @@ impl<'a> Item<'a> {
     ) -> BlockLayout<'a> {
         let key = ItemKey::of(self.b, width, imposed, c.width, cb_height);
         pass.item(key, || {
-            layout_contents(
-                self.b,
-                &self.edges,
-                c.width,
-                cb_height,
-                width,
-                0.0,
-                Content::Root,
-                pass,
-                None,
-                imposed,
-            )
+            self.layout_contents(c, width, imposed, cb_height, pass)
         })
+    }
+
+    /// What `read` takes from the item's layout as [`Item::lay_out_in`]
+    /// lays it out, read where the pass keeps it: for a step that
+    /// measures the item.
+    fn measure_in<T>(
+        &self,
+        c: &Container,
+        width: f32,
+        imposed: Option<Imposed>,
+        cb_height: Option<f32>,
+        pass: &Pass<'a>,
+        read: impl FnOnce(&BlockLayout<'a>) -> T,
+    ) -> T {
+        let key = ItemKey::of(self.b, width, imposed, c.width, cb_height);
+        pass.read_item(
+            key,
+            || self.layout_contents(c, width, imposed, cb_height, pass),
+            read,
+        )
+    }
+
+    /// The item laid out, as the pass computes it when it keeps none.
+    fn layout_contents(
+        &self,
+        c: &Container,
+        width: f32,
+        imposed: Option<Imposed>,
+        cb_height: Option<f32>,
+        pass: &Pass<'a>,
+    ) -> BlockLayout<'a> {
+        layout_contents(
+            self.b,
+            &self.edges,
+            c.width,
+            cb_height,
+            width,
+            0.0,
+            Content::Root,
+            pass,
+            None,
+            imposed,
+        )
     }
 
     /// For an item in a baseline-sharing group, the group and the
@@ -583,15 +611,15 @@ impl<'a> Item<'a> {
     /// stretched; else `fit-content` in the container's width less its
     /// margins, border and padding; clamped by `min-width` and
     /// `max-width`.
-    fn column_width(&self, c: &Container, stretched: Option<f32>) -> f32 {
+    fn column_width(&self, c: &Container, stretched: Option<f32>, pass: &Pass<'a>) -> f32 {
         let horizontal = self.edges.horizontal();
         let room = (c.width - self.cross_margins - horizontal).max(0.0);
-        let w = width_constraints(&self.b.style, c.width, horizontal, &self.intrinsic, room);
-        let width = w.width.or(stretched).unwrap_or_else(|| {
-            self.intrinsic
-                .keyword(Size::FitContent, room)
-                .unwrap_or(room)
-        });
+        let intrinsic = Intrinsic::of(self.b, pass);
+        let w = width_constraints(&self.b.style, c.width, horizontal, &intrinsic, room);
+        let width = w
+            .width
+            .or(stretched)
+            .unwrap_or_else(|| intrinsic.keyword(Size::FitContent, room).unwrap_or(room));
         w.max.map_or(width, |max| width.min(max)).max(w.min)
     }
 }
@@ -728,13 +756,18 @@ pub(crate) fn layout_flex_contents<'a>(
     // its width.
     for item in &mut items {
         if column {
-            item.width = item.column_width(&c, None);
+            item.width = item.column_width(&c, None, pass);
             item.cross = item.width + item.edges.horizontal();
         } else {
-            let layout = item.lay_out(&c, item.target, None, pass);
-            item.cross = layout.height;
-            item.auto_height = layout.auto_content_height;
-            item.baselines = (layout.first_baseline, layout.last_baseline);
+            let measured =
+                item.measure_in(&c, item.target, None, c.definite_height, pass, |layout| {
+                    (
+                        layout.height,
+                        layout.auto_content_height,
+                        (layout.first_baseline, layout.last_baseline),
+                    )
+                });
+            (item.cross, item.auto_height, item.baselines) = measured;
         }
     }
 
@@ -795,7 +828,7 @@ pub(crate) fn layout_flex_contents<'a>(
             let outer = (size - item.cross_margins).max(0.0);
             if column {
                 let room = (outer - item.edges.horizontal()).max(0.0);
-                item.width = item.column_width(&c, Some(room));
+                item.width = item.column_width(&c, Some(room), pass);
                 item.cross = item.width + item.edges.horizontal();
             } else {
                 let vertical = item.edges.vertical();
@@ -1261,7 +1294,7 @@ fn baselines(
 /// container's as a single-line one's, design note section 2). A
 /// percentage gap is of the width being found, zero here (css-sizing-3
 /// §5.2.1).
-pub(crate) fn content_widths(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32) {
+pub(crate) fn content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32) {
     let style = &b.style;
     let items = b
         .children
@@ -1269,7 +1302,7 @@ pub(crate) fn content_widths(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32
         .filter(|child| child.kind != BoxKind::Absolute);
     if style.flex_direction.is_column() {
         return items
-            .map(|item| crate::intrinsic::contribution(item, fonts))
+            .map(|item| crate::intrinsic::contribution(item, pass))
             .fold((0.0, 0.0), |(min, max), (item_min, item_max)| {
                 (min.max(item_min), max.max(item_max))
             });
@@ -1280,7 +1313,7 @@ pub(crate) fn content_widths(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32
     };
     let (mut count, mut min_sum, mut max_sum, mut widest_min) = (0usize, 0.0f32, 0.0f32, 0.0f32);
     for item in items {
-        let (min, max) = main_contribution(item, fonts);
+        let (min, max) = main_contribution(item, pass);
         count += 1;
         min_sum += min;
         max_sum += max;
@@ -1305,7 +1338,7 @@ pub(crate) fn content_widths(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32
 /// else the content size. A percentage is of the width being found, so
 /// `auto` for a size and zero for an edge, and `auto` margins are zero;
 /// a table is never narrower than its minimum, as in a block.
-fn main_contribution(item: &LayoutBox, fonts: &FontCollection) -> (f32, f32) {
+fn main_contribution<'a>(item: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32) {
     let style = &item.style;
     let (non_content, margins) = crate::intrinsic::fixed_edges(item);
     let inner = |v: f32| match style.box_sizing {
@@ -1313,7 +1346,7 @@ fn main_contribution(item: &LayoutBox, fonts: &FontCollection) -> (f32, f32) {
         BoxSizing::BorderBox => (v - non_content).max(0.0),
     };
     let own = OnceCell::new();
-    let own = || *own.get_or_init(|| crate::intrinsic::content_widths(item, fonts));
+    let own = || *own.get_or_init(|| crate::intrinsic::content_widths(item, pass));
     // A size under the constraint: `max_content` or min-content.
     let size = |v: Size, max_content: bool| match v {
         Size::Px(px) => Some(inner(px)),
@@ -1370,6 +1403,7 @@ mod tests {
     use super::*;
     use crate::block::{Fragment, FragmentKind, layout_document};
     use crate::testing::{Laid, boxes_of};
+    use text::FontCollection;
 
     const VIEWPORT: f32 = 800.0;
 
@@ -2002,7 +2036,7 @@ mod tests {
             .expect("test css is valid");
             let (_, boxes) = boxes_of(&doc, &[sheet]);
             // html > body > div
-            content_widths(&boxes[0].children[0].children[0], &fonts)
+            content_widths(&boxes[0].children[0].children[0], &Pass::new(&fonts))
         };
         assert_eq!(widths(""), (90.0, 90.0));
         assert_eq!(widths("div { flex-wrap: wrap }"), (50.0, 90.0));
@@ -2054,8 +2088,14 @@ mod tests {
     fn a_chain_of_nested_flex_containers_lays_each_item_out_a_few_times() {
         // The pass keeps every item's layouts (M17): the chain costs a
         // constant number of layouts per level, not two to the power of
-        // its depth.
+        // its depth. And it keeps every box's content widths: measured
+        // afresh for each container's items, the widths at the foot of
+        // the chain would be measured once for every level above them,
+        // the square of the depth in all.
         let fonts = test_fonts();
+        fn count(b: &LayoutBox) -> usize {
+            1 + b.children.iter().map(count).sum::<usize>()
+        }
         let computed = |depth: usize| {
             let mut html = String::new();
             for i in 0..depth {
@@ -2084,6 +2124,12 @@ mod tests {
                 None,
             );
             assert!(layout.height > 0.0);
+            assert!(
+                pass.measured() <= count(root),
+                "{} boxes measured of {} at depth {depth}",
+                pass.measured(),
+                count(root)
+            );
             pass.computed()
         };
         // Two or three layouts a level: measured or laid out at its

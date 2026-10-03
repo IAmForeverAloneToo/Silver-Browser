@@ -86,7 +86,6 @@ use style::computed::{
     EmptyCells, Float, LEFT, LengthPercentage, LengthPercentageAuto, Overflow, Position, RIGHT,
     Size, TOP, TableLayout, VerticalAlign,
 };
-use text::FontCollection;
 
 use crate::block::{
     AdjoiningMargins, BlockLayout, Content, Deferred, Edges, Fragment, Imposed, box_fragment,
@@ -134,12 +133,12 @@ pub(crate) fn layout_table_contents<'a>(
         let needed = widths.iter().sum::<f32>() + spacing;
         (widths, content_width.max(needed))
     } else {
-        let measures = measure_columns(&grid, hspacing, cell_borders, pass.fonts);
+        let measures = measure_columns(&grid, hspacing, cell_borders, pass);
         let (grid_min, _) = grid_widths(&measures, hspacing);
         let content_width =
             content_width
                 .max(grid_min)
-                .max(caption_min(b, edges.horizontal(), pass.fonts));
+                .max(caption_min(b, edges.horizontal(), pass));
         let widths = auto_column_widths(&measures, (content_width - spacing).max(0.0));
         (widths, content_width)
     };
@@ -941,13 +940,13 @@ struct ColumnMeasure {
 /// In the collapsed border model its border is its share of the grid
 /// lines, which a column counts where the separated model counts
 /// spacing.
-fn measure_cell(
-    b: &LayoutBox,
+fn measure_cell<'a>(
+    b: &'a LayoutBox,
     collapsed_border: Option<[f32; 4]>,
-    fonts: &FontCollection,
+    pass: &Pass<'a>,
 ) -> ColumnMeasure {
     let style = &b.style;
-    let (content_min, content_max) = crate::intrinsic::content_widths(b, fonts);
+    let (content_min, content_max) = crate::intrinsic::content_widths(b, pass);
     let fixed = |v: LengthPercentage| match v {
         LengthPercentage::Px(px) => px,
         LengthPercentage::Percent(_) => 0.0,
@@ -998,11 +997,11 @@ fn measure_cell(
 /// equally among those that have none. Last, the percentages are cut,
 /// in column order, so that together they ask for no more than the
 /// whole.
-fn measure_columns(
-    grid: &Grid<'_>,
+fn measure_columns<'a>(
+    grid: &Grid<'a>,
     hspacing: f32,
     cell_borders: Option<&[[f32; 4]]>,
-    fonts: &FontCollection,
+    pass: &Pass<'a>,
 ) -> Vec<ColumnMeasure> {
     let mut columns = vec![ColumnMeasure::default(); grid.columns];
     for (column, cref) in columns.iter_mut().zip(&grid.column_boxes) {
@@ -1019,7 +1018,7 @@ fn measure_columns(
         .cells
         .iter()
         .enumerate()
-        .map(|(i, cell)| measure_cell(cell.b, cell_borders.map(|b| b[i]), fonts))
+        .map(|(i, cell)| measure_cell(cell.b, cell_borders.map(|b| b[i]), pass))
         .collect();
     let raise_percent = |column: &mut ColumnMeasure, p: f32| {
         column.percent = Some(column.percent.map_or(p, |q| q.max(p)));
@@ -1225,11 +1224,11 @@ fn auto_column_widths(columns: &[ColumnMeasure], width: f32) -> Vec<f32> {
 /// boxes, less the table's own horizontal border and padding
 /// `table_edges`: the content width the table needs so that a caption,
 /// as wide as the table, holds its content (CAPMIN, CSS2 §17.5.2.2).
-fn caption_min(b: &LayoutBox, table_edges: f32, fonts: &FontCollection) -> f32 {
+fn caption_min<'a>(b: &'a LayoutBox, table_edges: f32, pass: &Pass<'a>) -> f32 {
     b.children
         .iter()
         .filter(|part| part.kind == BoxKind::Caption)
-        .map(|caption| crate::intrinsic::contribution(caption, fonts).0 - table_edges)
+        .map(|caption| crate::intrinsic::contribution(caption, pass).0 - table_edges)
         .fold(0.0, f32::max)
 }
 
@@ -1239,7 +1238,7 @@ fn caption_min(b: &LayoutBox, table_edges: f32, fonts: &FontCollection) -> f32 {
 /// MIN and MAX, never narrower than its captions' minimum (CAPMIN). A
 /// table the fixed algorithm lays out measures no cell: it needs the
 /// widths its columns are given.
-pub(crate) fn content_widths(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32) {
+pub(crate) fn content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32) {
     let style = &b.style;
     let grid = Grid::of(b);
     let (hspacing, _) = spacing(style);
@@ -1251,7 +1250,7 @@ pub(crate) fn content_widths(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32
         let collapsed = collapses(style).then(|| collapse_borders(b, &grid));
         let cell_borders = collapsed.as_ref().map(|c| c.cells.as_slice());
         grid_widths(
-            &measure_columns(&grid, hspacing, cell_borders, fonts),
+            &measure_columns(&grid, hspacing, cell_borders, pass),
             hspacing,
         )
     };
@@ -1266,7 +1265,7 @@ pub(crate) fn content_widths(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32
     } else {
         border[LEFT] + border[RIGHT] + fixed(style.padding[LEFT]) + fixed(style.padding[RIGHT])
     };
-    let min = min.max(caption_min(b, edges, fonts));
+    let min = min.max(caption_min(b, edges, pass));
     (min, max.max(min))
 }
 
@@ -1464,13 +1463,8 @@ fn layout_cell<'a>(
 /// table box's (CSS2 §17.4).
 fn layout_caption<'a>(b: &'a LayoutBox, wrapper_width: f32, pass: &Pass<'a>) -> BlockLayout<'a> {
     let edges = Edges::of(&b.style, wrapper_width);
-    let (content_width, margin_left, _) = resolve_width_and_margins(
-        b,
-        wrapper_width,
-        wrapper_width,
-        edges.horizontal(),
-        pass.fonts,
-    );
+    let (content_width, margin_left, _) =
+        resolve_width_and_margins(b, wrapper_width, wrapper_width, edges.horizontal(), pass);
     layout_block_contents(
         b,
         &edges,
@@ -2014,6 +2008,7 @@ mod tests {
     use crate::block::{FragmentKind, layout_document};
     use crate::testing::{Laid, boxes_of};
     use style::computed::{LengthPercentage, VerticalAlign};
+    use text::FontCollection;
 
     const VIEWPORT: f32 = 800.0;
 

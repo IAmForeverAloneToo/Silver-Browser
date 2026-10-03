@@ -222,13 +222,23 @@ input the result depends on:
   out afresh each time.
 
 Each pair of box and inputs is laid out once per pass, and asking again
-clones the kept result. The kept results live in a pass context that the
-layout functions of `block`, `inline` and `table` take in place of the
-font collection they take today: the fonts, and the item layouts. It is
-made by `layout_document` and its siblings and dropped at the end, so
-nothing outlives the box tree it describes. The layout cache (M13) is
+clones the kept result; a step that only measures the item, for its
+content height or its hypothetical cross size, reads the kept result
+where it is instead, since a copy costs as much as the item's subtree.
+The kept results live in a pass context that the layout functions of
+`block`, `inline` and `table` take in place of the font collection they
+take today: the fonts, the item layouts, and the boxes' content widths.
+It is made by `layout_document` and its siblings and dropped at the end,
+so nothing outlives the box tree it describes. The layout cache (M13) is
 unchanged: it keeps results across passes by node, and this keeps them
 within one pass by box.
+
+A box's min-content and max-content widths are kept under the box alone,
+since they depend on nothing else: the intrinsic size keywords and a
+flex item's automatic minimum size measure them, and measuring walks the
+box's subtree. Measured afresh for each container's items, a chain of
+nested containers would measure the box at its foot once for every
+container above it, and cost the square of its depth.
 
 **The imposed height.** `layout_contents`, through which every block,
 table and flex container's content is laid out, takes the height the
@@ -719,6 +729,22 @@ must stay within 10% (T4.3): the pass context and the new size types
 touch every layout. The three fuzz targets run for fifteen minutes each
 with flex pages among their seeds and the new keywords in their
 dictionaries.
+
+The benchmark found the pass keeping too little. Its item layouts held
+a chain to a few layouts a level, 317 of them at 64 levels, but each
+container measured its item's content widths afresh for the automatic
+minimum size, and that walk went to the foot of the chain: 10,018 boxes
+measured, and 210ms. The pass now keeps the content widths too (above),
+the chain measures each box once, and 64 levels take 25ms, 0.24 to
+0.39ms a level from 8 levels to 64. What still grows faster than the
+depth is copying: a container laid out at more than one size places a
+copy of its item's kept layout in each, so the fragments below a level
+are copied a few times over, 12% of the instructions at 64 levels and
+21% at 128. Fragments shared rather than copied are M35.9's. The grid of
+cards is a case of M35.8's instead: its time is text measurement, which
+parses the font's face and builds its shaping plan on every call. A trial
+that kept both, for each font, laid out 200 cards in 95ms rather than
+676ms; following the roadmap, that is left to M35.8, with the number.
 
 ## 2. Not in this milestone, said rather than hidden
 

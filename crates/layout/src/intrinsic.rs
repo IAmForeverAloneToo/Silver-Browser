@@ -25,19 +25,19 @@
 use style::computed::{
     BoxSizing, LEFT, LengthPercentage, LengthPercentageAuto, MaxSize, RIGHT, Size,
 };
-use text::FontCollection;
 
 use crate::box_tree::{BoxKind, LayoutBox};
 use crate::inline::{
     collect_first_line_items, collect_inline_items, restyled_on_first_line, run_intrinsic_widths,
 };
+use crate::pass::Pass;
 
 /// The `(min-content, max-content)` contribution of a block-level box
 /// or an inline-block to the box it sits in: its own intrinsic size
 /// under its `width`, `min-width` and `max-width`, plus its horizontal
 /// padding, border and margins. A table (M12) is never narrower than
 /// its own minimum, whatever its `width` and `max-width` say.
-pub(crate) fn contribution(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32) {
+pub(crate) fn contribution<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32) {
     let style = &b.style;
     let (non_content, margins) = fixed_edges(b);
     let inner = |v: f32| match style.box_sizing {
@@ -49,7 +49,7 @@ pub(crate) fn contribution(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32) 
     // and `fit-content` too; under a max-content one, its max-content
     // width, `fit-content` too.
     let own = std::cell::OnceCell::new();
-    let own = || *own.get_or_init(|| content_widths(b, fonts));
+    let own = || *own.get_or_init(|| content_widths(b, pass));
     let keyword = |size: Size| match size {
         Size::MinContent => Some((own().0, own().0)),
         Size::MaxContent => Some((own().1, own().1)),
@@ -125,13 +125,23 @@ pub(crate) fn fixed_edges(b: &LayoutBox) -> (f32, f32) {
 /// adjacent floats, taken for all the floats of the container: a
 /// float below content that has ended it would not add, a case this
 /// over-estimates).
-pub(crate) fn content_widths(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32) {
+///
+/// Measured once a pass (M17): the pass keeps them (see
+/// [`Pass::widths`]).
+pub(crate) fn content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32) {
+    pass.widths(b, || measure_content_widths(b, pass))
+}
+
+/// [`content_widths`], measured.
+fn measure_content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32) {
+    pass.measuring();
     if b.is_table() {
-        return crate::table::content_widths(b, fonts);
+        return crate::table::content_widths(b, pass);
     }
     if b.is_flex_container() {
-        return crate::flex::content_widths(b, fonts);
+        return crate::flex::content_widths(b, pass);
     }
+    let fonts = pass.fonts;
     let mut min = 0.0f32;
     let mut in_flow_max = 0.0f32;
     let mut floats_max = 0.0f32;
@@ -150,7 +160,7 @@ pub(crate) fn content_widths(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32
             | BoxKind::ColumnGroup { .. }
             | BoxKind::Column { .. }
             | BoxKind::Cell { .. }
-            | BoxKind::Caption => contribution(child, fonts),
+            | BoxKind::Caption => contribution(child, pass),
             BoxKind::Absolute => (0.0, 0.0),
             // A run holding a first formatted line counts it in its
             // styles there (M16), where any differ from its own.
@@ -161,12 +171,12 @@ pub(crate) fn content_widths(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32
                     .as_ref()
                     .filter(|_| restyled_on_first_line(&child.children))
                     .map(|_| collect_first_line_items(&child.children, fonts, None));
-                run_intrinsic_widths(&items, first.as_deref(), fonts)
+                run_intrinsic_widths(&items, first.as_deref(), pass)
             }
             // A hand-built tree's stray inline-level child: a run of one.
             BoxKind::Inline | BoxKind::Text(_) => {
                 let items = collect_inline_items(std::slice::from_ref(child), fonts);
-                run_intrinsic_widths(&items, None, fonts)
+                run_intrinsic_widths(&items, None, pass)
             }
         };
         min = min.max(child_min);
@@ -184,6 +194,7 @@ pub(crate) fn content_widths(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32
 mod tests {
     use super::*;
     use dom::Element;
+    use text::FontCollection;
 
     fn test_fonts() -> FontCollection {
         FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0).expect("the bundled font parses")
@@ -207,7 +218,7 @@ mod tests {
             Element::new("div").text("aaa bb"),
             "div { padding: 0 5px; border-left: 2px solid #000; margin: 0 3px 0 4px; }",
         );
-        let (min, max) = contribution(&t[0], &fonts);
+        let (min, max) = contribution(&t[0], &Pass::new(&fonts));
         assert_eq!(min, w("aaa") + 5.0 + 5.0 + 2.0 + 3.0 + 4.0);
         assert_eq!(
             max,
@@ -219,15 +230,18 @@ mod tests {
             Element::new("div").text("aaaa"),
             "div { width: 10px; padding: 0 10%; margin: 0 10%; }",
         );
-        assert_eq!(contribution(&t[0], &fonts), (10.0, 10.0));
+        assert_eq!(contribution(&t[0], &Pass::new(&fonts)), (10.0, 10.0));
         let t = tree(Element::new("div").text("aaaa"), "div { width: 50%; }");
-        assert_eq!(contribution(&t[0], &fonts), (w("aaaa"), w("aaaa")));
+        assert_eq!(
+            contribution(&t[0], &Pass::new(&fonts)),
+            (w("aaaa"), w("aaaa"))
+        );
         // Under border-box the width includes the edges.
         let t = tree(
             Element::new("div"),
             "div { width: 50px; padding: 0 10px; box-sizing: border-box; }",
         );
-        assert_eq!(contribution(&t[0], &fonts), (50.0, 50.0));
+        assert_eq!(contribution(&t[0], &Pass::new(&fonts)), (50.0, 50.0));
     }
 
     #[test]
@@ -238,15 +252,18 @@ mod tests {
             Element::new("div").text("aaaa bbbb"),
             "div { max-width: 10px; }",
         );
-        assert_eq!(contribution(&t[0], &fonts), (10.0, 10.0));
+        assert_eq!(contribution(&t[0], &Pass::new(&fonts)), (10.0, 10.0));
         let t = tree(Element::new("div").text("a"), "div { min-width: 300px; }");
-        assert_eq!(contribution(&t[0], &fonts), (300.0, 300.0));
+        assert_eq!(contribution(&t[0], &Pass::new(&fonts)), (300.0, 300.0));
         // Percentage limits are no limit and no floor.
         let t = tree(
             Element::new("div").text("aaaa"),
             "div { max-width: 1%; min-width: 90%; }",
         );
-        assert_eq!(contribution(&t[0], &fonts), (w("aaaa"), w("aaaa")));
+        assert_eq!(
+            contribution(&t[0], &Pass::new(&fonts)),
+            (w("aaaa"), w("aaaa"))
+        );
     }
 
     #[test]
@@ -256,8 +273,12 @@ mod tests {
         let fonts = test_fonts();
         let w = |s: &str| fonts.measure(s, 16.0);
         let (min, max) = (w("aaaa"), w("aaaa") + fonts.measure(" ", 16.0) + w("bb"));
-        let of =
-            |css: &str| contribution(&tree(Element::new("div").text("aaaa bb"), css)[0], &fonts);
+        let of = |css: &str| {
+            contribution(
+                &tree(Element::new("div").text("aaaa bb"), css)[0],
+                &Pass::new(&fonts),
+            )
+        };
         assert_eq!(of("div { width: min-content }"), (min, min));
         assert_eq!(of("div { width: max-content }"), (max, max));
         assert_eq!(of("div { width: fit-content }"), (min, max));
@@ -298,7 +319,7 @@ mod tests {
             )
         };
         let t = table("");
-        let (grid_min, _) = content_widths(&t[0], &fonts);
+        let (grid_min, _) = content_widths(&t[0], &Pass::new(&fonts));
         assert!(grid_min > 80.0, "{grid_min}");
         for css in [
             "table { width: 10px }",
@@ -306,7 +327,11 @@ mod tests {
             "table { max-width: min-content; width: 5px }",
         ] {
             let t = table(css);
-            assert_eq!(contribution(&t[0], &fonts), (grid_min, grid_min), "{css}");
+            assert_eq!(
+                contribution(&t[0], &Pass::new(&fonts)),
+                (grid_min, grid_min),
+                "{css}"
+            );
         }
     }
 
@@ -323,7 +348,7 @@ mod tests {
                 .text("c"),
             "p { margin: 0; }",
         );
-        assert_eq!(content_widths(&t[0], &fonts), (300.0, 300.0));
+        assert_eq!(content_widths(&t[0], &Pass::new(&fonts)), (300.0, 300.0));
         // Without the fixed one: the first p's word and line.
         let t = tree(
             Element::new("div")
@@ -331,7 +356,7 @@ mod tests {
                 .text("c"),
             "p { margin: 0; }",
         );
-        let (min, max) = content_widths(&t[0], &fonts);
+        let (min, max) = content_widths(&t[0], &Pass::new(&fonts));
         assert_eq!(min, w("aaaa"));
         assert_eq!(max, w("aaaa") + fonts.measure(" ", 16.0) + w("bb"));
     }
@@ -350,7 +375,7 @@ mod tests {
                 .push(Element::new("p").text("aaaa bb")),
             ".f { float: left; width: 30px; } .g { float: right; width: 20px; } p { margin: 0; }",
         );
-        let (min, max) = content_widths(&t[0], &fonts);
+        let (min, max) = content_widths(&t[0], &Pass::new(&fonts));
         assert_eq!(min, w("aaaa").max(30.0));
         assert_eq!(
             max,
@@ -364,7 +389,7 @@ mod tests {
                 .text(" bb"),
             ".f { float: left; width: 30px; }",
         );
-        let (min, max) = content_widths(&t[0], &fonts);
+        let (min, max) = content_widths(&t[0], &Pass::new(&fonts));
         assert_eq!(min, w("aaaa").max(30.0));
         assert_eq!(max, w("aaaa") + fonts.measure(" ", 16.0) + w("bb") + 30.0);
     }

@@ -1079,11 +1079,12 @@ impl<'a> Collector<'a, '_> {
 /// measured in them —
 /// the first that only a forced break ends for the widest line, the
 /// first piece for the widest piece — and the rest in `items`.
-pub(crate) fn run_intrinsic_widths(
-    items: &[InlineItem<'_>],
-    first: Option<&[InlineItem<'_>]>,
-    fonts: &FontCollection,
+pub(crate) fn run_intrinsic_widths<'a>(
+    items: &[InlineItem<'a>],
+    first: Option<&[InlineItem<'a>]>,
+    pass: &Pass<'a>,
 ) -> (f32, f32) {
+    let fonts = pass.fonts;
     let first = first.filter(|first| is_prefix(first, items));
     let mut min = 0.0f32;
     let mut max = 0.0f32;
@@ -1161,7 +1162,7 @@ pub(crate) fn run_intrinsic_widths(
             }
             // An atomic inline keeps its style on the first line.
             (InlineItem::Atomic { b, gap_before }, _) => {
-                let (piece_min, piece_max) = crate::intrinsic::contribution(b, fonts);
+                let (piece_min, piece_max) = crate::intrinsic::contribution(b, pass);
                 let gap = if line_empty || !gap_before {
                     0.0
                 } else {
@@ -1173,7 +1174,7 @@ pub(crate) fn run_intrinsic_widths(
                 after_atomic = true;
             }
             (InlineItem::Float(b), _) => {
-                let (float_min, float_max) = crate::intrinsic::contribution(b, fonts);
+                let (float_min, float_max) = crate::intrinsic::contribution(b, pass);
                 min = min.max(float_min);
                 line += float_max;
             }
@@ -2304,7 +2305,7 @@ mod tests {
         let space = fonts.measure(" ", 16.0);
         let run = [text_box("aaa bb cccc", 16.0)];
         let items = collect_inline_items(&run, &fonts);
-        let (min, max) = run_intrinsic_widths(&items, None, &fonts);
+        let (min, max) = run_intrinsic_widths(&items, None, &Pass::new(&fonts));
         assert_eq!(min, w("cccc"));
         assert_eq!(max, w("aaa") + space + w("bb") + space + w("cccc"));
         // Words set flush are one unbreakable piece.
@@ -2313,7 +2314,7 @@ mod tests {
             inline_box(vec![text_box("bb", 16.0)]),
         ];
         let items = collect_inline_items(&run, &fonts);
-        let (min, max) = run_intrinsic_widths(&items, None, &fonts);
+        let (min, max) = run_intrinsic_widths(&items, None, &Pass::new(&fonts));
         assert_eq!(min, w("aaa") + w("bb"));
         assert_eq!(max, min);
         // Under `pre` a line is one piece, and a newline ends it.
@@ -2323,7 +2324,7 @@ mod tests {
         };
         let run = [styled_text_box("a b\ncccc", pre)];
         let items = collect_inline_items(&run, &fonts);
-        let (min, max) = run_intrinsic_widths(&items, None, &fonts);
+        let (min, max) = run_intrinsic_widths(&items, None, &Pass::new(&fonts));
         assert_eq!(min, w("cccc").max(w("a") + space + w("b")));
         assert_eq!(max, min);
     }
@@ -2352,7 +2353,7 @@ mod tests {
         let items = collect_inline_items(&boxes, &fonts);
         let first = collect_first_line_items(&boxes, &fonts, None);
         assert_eq!(
-            run_intrinsic_widths(&items, Some(&first), &fonts),
+            run_intrinsic_widths(&items, Some(&first), &Pass::new(&fonts)),
             (
                 w("aa", 32.0).max(w("bb", 16.0)),
                 w("aa", 32.0) + w(" ", 32.0) + w("bb", 32.0)
@@ -2362,7 +2363,7 @@ mod tests {
         let boxes = [on_first_line("aa\nbbbbbb", WhiteSpace::Pre)];
         let items = collect_inline_items(&boxes, &fonts);
         let first = collect_first_line_items(&boxes, &fonts, None);
-        let (min, max) = run_intrinsic_widths(&items, Some(&first), &fonts);
+        let (min, max) = run_intrinsic_widths(&items, Some(&first), &Pass::new(&fonts));
         assert_eq!(min, max);
         assert_eq!(max, w("aa", 32.0).max(w("bbbbbb", 16.0)));
     }
