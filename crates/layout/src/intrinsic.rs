@@ -7,7 +7,8 @@
 //! piece is exactly what layout breaks by.
 //!
 //! A flex container's widths are its items' (M17,
-//! `crate::flex::content_widths`).
+//! `crate::flex::content_widths`), and a grid container's its columns'
+//! (M18, `crate::grid::content_widths`).
 //!
 //! A length `width` is used as given, a percentage one as `auto` (CSS2
 //! §10.3.5), an intrinsic keyword (M17) as the box's own min-content or
@@ -140,6 +141,9 @@ fn measure_content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32) {
     }
     if b.is_flex_container() {
         return crate::flex::content_widths(b, pass);
+    }
+    if b.is_grid_container() {
+        return crate::grid::content_widths(b, pass);
     }
     let fonts = pass.fonts;
     let mut min = 0.0f32;

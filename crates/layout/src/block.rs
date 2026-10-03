@@ -1003,7 +1003,11 @@ pub(crate) fn establishes_bfc(style: &ComputedStyle) -> bool {
         || style.display.is_atomic_inline()
         || matches!(
             style.display,
-            Display::Table | Display::TableCell | Display::TableCaption | Display::Flex
+            Display::Table
+                | Display::TableCell
+                | Display::TableCaption
+                | Display::Flex
+                | Display::Grid
         )
         || style.float != Float::None
         || style.position.is_out_of_flow()
@@ -1146,6 +1150,18 @@ pub(crate) fn layout_contents<'a>(
 ) -> BlockLayout<'a> {
     if b.is_table() {
         return crate::table::layout_table_contents(
+            b,
+            edges,
+            cb_width,
+            cb_height,
+            content_width,
+            margin_left,
+            pass,
+            imposed,
+        );
+    }
+    if b.is_grid_container() {
+        return crate::grid::layout_grid_contents(
             b,
             edges,
             cb_width,
