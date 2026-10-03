@@ -1361,9 +1361,12 @@ pub(crate) fn layout_block_contents<'a>(
         pass,
         cache,
     );
-    if bfc_root {
+    if bfc_root || children.end.origin.is_some() {
         // A float still waiting at the end of its context is placed
-        // where the content would have been.
+        // where the content would have been; so is one at the end of a
+        // box whose content resolved the flow position, met in an empty
+        // block after that content: it does not wait for content after
+        // the box, as in the browsers.
         floats.resolve_pending(children.end.position());
     }
 
@@ -4142,6 +4145,57 @@ mod tests {
             "the cleared child, below the float"
         );
         assert_eq!(by_node(&layout, 3).h, 40.0 + lh);
+    }
+
+    #[test]
+    fn a_float_in_an_empty_block_at_the_end_of_a_box_waits_no_further() {
+        // A paragraph 20 tall with a 16px bottom margin, then an empty
+        // block holding a float, at the end of a box whose content (the
+        // paragraph) resolved the flow position: the float is placed at
+        // the end of that box, after the margin, not level with content
+        // after the box — 36, as in the browsers, where a later sibling's
+        // 30px margin would have put it at 50. Nodes: div 1, o 2, p 3,
+        // e 4, f 5, q 6.
+        let css = "div, p { margin: 0; } p { height: 20px; margin-bottom: 16px; }
+                   .f { float: left; width: 10px; height: 10px; }
+                   .q { margin-top: 30px; height: 5px; }";
+        let empty = || {
+            Element::new("div")
+                .attr("class", "e")
+                .push(Element::new("div").attr("class", "f"))
+        };
+        let layout = document_of(
+            Element::new("div")
+                .push(
+                    Element::new("div")
+                        .attr("class", "o")
+                        .push(Element::new("p"))
+                        .push(empty()),
+                )
+                .push(Element::new("div").attr("class", "q")),
+            css,
+        );
+        assert_eq!(by_node(&layout, 5).y, 36.0);
+        assert_eq!(by_node(&layout, 6).y, 50.0);
+        // So at the end of the document.
+        let layout = document_of(
+            Element::new("div").push(Element::new("p")).push(empty()),
+            css,
+        );
+        assert_eq!(by_node(&layout, 4).y, 36.0);
+        // A box with nothing in flow before the float resolves nothing:
+        // the float waits for the box's own top, where the box goes.
+        let layout = document_of(
+            Element::new("div")
+                .push(
+                    Element::new("div")
+                        .attr("style", "height: 50px")
+                        .push(empty()),
+                )
+                .push(Element::new("div").attr("class", "q")),
+            css,
+        );
+        assert_eq!(by_node(&layout, 4).y, 0.0);
     }
 
     #[test]
