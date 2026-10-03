@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+<head>
+<title>Grid: inline-grid on a line and its baseline, nested grids with fr tracks in auto tracks, and grids sized to fit in floats, a table cell, an absolutely positioned box, an inline-block and fit-content</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; font-size: 0; }
+  .g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+  .g > div { background-color: #a07a3a; }
+  .g > div:nth-child(2n) { background-color: #c8a46a; }
+  .g > div:nth-child(3n) { background-color: #604a20; }
+  i { display: block; background-color: #3a5a7a; }
+  .line { margin: 12px 20px; padding: 8px 0; background-color: #e0d4bc; }
+  .ib { display: inline-block; width: 24px; height: 40px; margin: 0 6px; background-color: #3a5a7a; }
+  .ig { display: inline-grid; margin: 0 6px; padding: 4px; grid-template-columns: 20px 20px; gap: 4px; background-color: #c8b48c; }
+  .ig > div { height: 20px; background-color: #604a20; }
+  .ig > div:nth-child(2n) { height: 30px; background-color: #a07a3a; }
+  .end { align-items: end; height: 50px; }
+  .rows { grid-template-rows: 10px 10px; padding-top: 12px; }
+  .empty { width: 30px; height: 20px; margin-bottom: 10px; }
+  .clip { overflow: hidden; }
+  .group > div:nth-child(2) { align-self: baseline; margin-top: 15px; }
+  .group > div:nth-child(1) { align-self: baseline; }
+  .nest { width: 360px; grid-template-columns: auto 1fr; }
+  .nest > .g { margin: 4px; grid-template-columns: 1fr 1fr; background-color: #d4c4a4; }
+  .s { float: left; margin: 12px 0 0 20px; padding: 4px; background-color: #d0c0a0; }
+  .s .g { margin: 0; grid-template-columns: 1fr 2fr; }
+  .s .g > div { height: 16px; }
+</style>
+</head>
+<body>
+  <div class="line"><span class="ib"></span><span class="ig"><div></div><div></div><div></div></span><span class="ig end"><div></div><div></div></span><span class="ig rows"><div></div><div></div><div></div><div></div></span><span class="ig group"><div></div><div></div></span><span class="ig empty"></span><span class="ig clip"><div></div><div></div></span><span class="ib"></span></div>
+  <div class="g nest"><div class="g"><div><i style="width: 30px; height: 20px"></i></div><div><i style="width: 50px; height: 20px"></i></div></div><div></div></div>
+  <div class="g nest"><div class="g" style="grid-template-columns: 1fr 2fr"><div><i style="width: 30px; height: 20px"></i></div><div><i style="width: 50px; height: 20px"></i></div></div><div></div></div>
+  <div class="s"><div class="g"><div><i style="width: 40px; height: 16px"></i></div><div><i style="width: 30px; height: 16px"></i></div></div></div>
+  <div class="s"><div class="g" style="column-gap: 10px"><div style="width: 20px"></div><div><i style="width: 50px; height: 16px"></i></div></div></div>
+  <div class="s"><table style="border-spacing: 0"><tr><td style="padding: 0"><div class="g"><div><i style="width: 30px; height: 16px"></i></div><div><i style="width: 30px; height: 16px"></i></div></div></td><td style="padding: 0; width: 20px; background-color: #3a5a7a"></td></tr></table></div>
+  <div class="s" style="position: relative; width: 140px; height: 24px"><div class="g" style="position: absolute; left: 4px; top: 4px"><div><i style="width: 20px; height: 16px"></i></div><div><i style="width: 40px; height: 16px"></i></div></div></div>
+  <div class="s"><span style="display: inline-block"><span class="g" style="grid-template-columns: auto auto"><span style="display: block; width: 30px; height: 16px; background-color: #604a20"></span><span style="display: block; width: 50px; height: 16px; background-color: #a07a3a"></span></span></span></div>
+  <div class="s" style="width: 200px"><div class="g" style="width: fit-content; grid-template-columns: repeat(3, auto)"><div><i style="width: 30px; height: 16px"></i></div><div><i style="width: 20px; height: 16px"></i></div><div><i style="width: 40px; height: 16px"></i></div></div></div>
+  <div class="s" style="width: 50px"><div class="g" style="grid-template-columns: auto auto"><div><i style="width: 40px; height: 16px"></i></div><div><i style="width: 40px; height: 16px"></i></div></div></div>
+  <div class="s"><div class="g" style="width: min-content; grid-template-columns: minmax(20px, max-content) 30px"><div><i style="width: 60px; height: 16px"></i></div><div></div></div></div>
+</body>
+</html>

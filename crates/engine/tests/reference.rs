@@ -161,8 +161,9 @@ fn every_reference_page_renders_as_its_capture() {
     let pages = pages();
     assert_eq!(
         pages.len(),
-        49,
-        "the ten cases of M10's design note, the eleven of M11's, the five of M12's, the three of M16's and the twenty of M17's"
+        69,
+        "the ten cases of M10's design note, the eleven of M11's, the five of M12's, the three of M16's, \
+         the twenty of M17's and the twenty of M18's"
     );
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/reference");
     let mut failures = Vec::new();

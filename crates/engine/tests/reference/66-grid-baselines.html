@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+<head>
+<title>Grid: baseline alignment without text — baselines from inline-blocks and synthesized from border boxes, first and last, in rows that grow for it, across a spanning item, in a column, and of a nested grid</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; font-size: 0; }
+  .g { display: grid; margin: 8px 20px; background-color: #e6dcc8; }
+  .g > div { background-color: #a07a3a; }
+  .g > div:nth-child(2n) { background-color: #c8a46a; }
+  .g > div:nth-child(3n) { background-color: #604a20; }
+  .col { float: left; width: 400px; }
+  .ib { display: inline-block; width: 30px; height: 20px; background-color: #1a2a3a; }
+  .a { width: 360px; grid-template-columns: repeat(6, 50px); gap: 6px; align-items: baseline; }
+  .a > div { height: 20px; }
+  .a > .t { height: auto; }
+  .last { align-items: last baseline; }
+  .s { width: 360px; grid-template-columns: repeat(4, 50px); grid-auto-rows: minmax(30px, auto); gap: 6px; }
+  .s > div { align-self: baseline; height: 20px; }
+  .s > .t { height: auto; }
+  .s > .end { align-self: last baseline; }
+  .k { width: 360px; grid-template-columns: 80px 80px; grid-auto-rows: 30px; gap: 6px; justify-items: baseline; }
+  .k > div { width: 40px; }
+  .n > div:first-child { display: grid; grid-template-columns: 12px 12px; align-items: end; padding: 4px; height: auto; }
+  .n > div:first-child > div { height: 16px; background-color: #f0e8d8; }
+  .n > div:first-child > div + div { height: 30px; }
+</style>
+</head>
+<body>
+  <div class="col">
+    <div class="g a"><div></div><div style="height: 40px"></div><div style="height: 30px; margin-top: 10px"></div><div style="padding-bottom: 10px"></div><div style="border-bottom: 8px solid #3a2a10"></div><div style="margin-bottom: 14px"></div></div>
+    <div class="g a"><div class="t"><span class="ib" style="height: 30px"></span></div><div class="t" style="padding-top: 20px"><span class="ib" style="height: 10px"></span></div><div></div><div class="t" style="padding: 5px 0 20px"><span class="ib"></span></div><div class="t"><div style="height: 10px; background-color: #f0e8d8"></div><span class="ib"></span></div><div class="t" style="margin-top: 12px"><span class="ib" style="height: 6px"></span></div></div>
+    <div class="g a last"><div class="t"><span class="ib"></span> <span class="ib" style="height: 10px"></span></div><div class="t" style="padding-bottom: 15px"><span class="ib"></span> <span class="ib"></span></div><div style="height: 30px"></div><div class="t" style="margin-bottom: 10px"><span class="ib" style="height: 40px"></span></div><div class="t" style="align-self: baseline"><span class="ib"></span> <span class="ib"></span></div><div class="t" style="align-self: start"><span class="ib"></span></div></div>
+    <div class="g a n"><div><div></div><div></div></div><div></div><div class="t" style="padding-top: 8px"><span class="ib" style="height: 34px"></span></div></div>
+  </div>
+  <div class="col">
+    <div class="g s"><div class="t" style="grid-row: span 2; padding-top: 10px"><span class="ib"></span> <span class="ib" style="height: 30px"></span></div><div class="t"><span class="ib" style="height: 40px"></span></div><div></div><div class="t end" style="grid-row: span 2"><span class="ib"></span> <span class="ib" style="height: 30px"></span></div><div class="t"><span class="ib" style="height: 6px"></span></div><div class="t end"><span class="ib" style="height: 16px"></span></div></div>
+    <div class="g k"><div style="margin-left: 0"></div><div style="margin-left: 10px"></div><div style="margin-left: 25px"></div><div style="padding-left: 6px; border-left: 4px solid #3a2a10"></div><div style="justify-self: last baseline; margin-right: 10px"></div><div style="justify-self: last baseline"></div></div>
+  </div>
+</body>
+</html>
