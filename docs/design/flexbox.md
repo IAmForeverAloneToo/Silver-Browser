@@ -446,38 +446,52 @@ carries an inline-block baseline beside its first and last baselines.
 child of a flex container is not an item. Its static position is where
 it would be as the sole item, both it and the container at their used
 sizes. This uses css-position-3's static-position rectangle (§3.5.3,
-§4.3): the deferred box carries a rectangle and an alignment per axis,
-where it carried a point. The rectangle is the container's content box.
-The alignment is:
+§4.3): the deferred box carries a rectangle and a physical alignment per
+axis, start, centre or end, where it carried a point. The rectangle is
+the container's content box. The alignment, as the reference browsers
+have it, is:
 
-- in the main axis, the container's `justify-content`, its distributed
-  values taking their fallbacks and `normal` and `stretch` taking
-  `flex-start`;
+- in the main axis, the container's `justify-content` as for an item:
+  `normal` and `stretch` are `flex-start`, `space-between` falls back to
+  `flex-start` and `space-around` and `space-evenly` to the centre;
 - in the cross axis, the child's `align-self`, `auto` taking the
-  container's `align-items`, `normal` and `stretch` taking `flex-start`
-  and a baseline its fallback;
-- `*-reverse` and `wrap-reverse` turned around as for an item.
+  container's `align-items`, as for an item, `normal` and `stretch`
+  being `flex-start`; a baseline takes its fallback, `start` or, for
+  `last baseline`, `end`, which `wrap-reverse` does not turn round;
+- `*-reverse` and `wrap-reverse` turned around as for an item;
+- never safe: `safe` is ignored, and a child larger than the content box
+  overflows it as its alignment puts it;
+- `align-content` takes no part: the child is on no line.
 
 `layout_absolute` aligns the box's margin box in the rectangle along an
 axis whose two insets are both `auto`, its `auto` margins zero. Its
-shrink-to-fit width then takes the rectangle's width as the room. A box
-with a point keeps today's behaviour.
+shrink-to-fit width takes the room css-position-3 §4.1's inset-modified
+containing block gives it, as the reference browsers do: from the
+rectangle's start to the containing block's end for a box at the start,
+from the containing block's start to the rectangle's end for one at the
+end, and for a centred one as wide as the containing block allows,
+centred on the rectangle. A box met in block or inline flow carries a
+point at the start, which leaves CSS2's room and position as they were.
+Nothing stretches the child.
 
 A flex container that is positioned is the containing block of its
 absolutely positioned descendants, settled as a block's are.
 
 The same step gives an absolutely positioned box whose height does not
 depend on its content its height before its content is laid out:
-
-- `top`, `height` and `bottom` with `height` a length;
-- `top` and `bottom` with `height: auto` against a known containing
-  block.
-
-That height is imposed and definite. Today the content is laid out at
-its own height and the box resized after, which is wrong for any box
-whose content depends on its height. It is wrong first of all for the
-overlay that centres its content with `position: absolute; inset: 0;
-display: flex`.
+between a `top` and a `bottom` against a known containing block, with
+`height: auto`, the room between them, `auto` margins zero, clamped by
+`min-height` and `max-height`. That height is imposed and definite, so
+the percentages inside resolve against it (CSS2 §10.5) and a flex
+container lays its items out in it; a `height` that is a length was
+definite already. The content used to be laid out at its own height and
+the box resized after, which is wrong for any box whose content depends
+on its height. It is wrong first of all for the overlay that centres its
+content with `position: absolute`, its four insets zero, and `display:
+flex` (the `inset` shorthand itself is not parsed, as the floats and
+positioning note records). A keyword `min-height` or `max-height` is the
+content's height, so such a box is laid out as before and clamped after,
+the percentages inside it `auto`, as in the reference browsers.
 
 **Paint and hit testing** (§4.3). A flex item paints as an inline-block
 does: as a unit in the inline-level pass of its stacking context, its
@@ -577,7 +591,8 @@ lead.
   make the tests pass, and a last one for those that wait on nothing in
   this milestone (section 2). At step 5, 287 of the 350 pass; 55 wait on
   steps 6 to 9 and 8 on nothing here. At step 6, 332 pass; 10 wait on
-  steps 7 to 9. At step 7, 334 pass; 8 wait on steps 8 and 9.
+  steps 7 to 9. At step 7, 334 pass; 8 wait on steps 8 and 9. At step
+  8, 340 pass; 2 wait on step 9.
 - *Triage.* Every run writes `target/wpt/report.html`. It lists each
   test with its result and reason, and for a failing reftest shows the
   test's render, the reference's and the difference side by side. That

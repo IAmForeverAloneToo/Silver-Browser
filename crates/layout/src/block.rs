@@ -459,8 +459,7 @@ fn layout_document_with(
     while !waiting.is_empty() {
         for d in std::mem::take(&mut waiting) {
             depends_on_viewport_height |= viewport_height.is_some() && uses_cb_height(&d.b.style);
-            let (fragment, fixed) =
-                layout_absolute(d.b, d.x, d.y, viewport_width, viewport_height, &pass);
+            let (fragment, fixed) = layout_absolute(&d, viewport_width, viewport_height, &pass);
             if d.b.style.position == Position::Absolute {
                 height = height.max(fragment.y + fragment.h);
             }
@@ -793,30 +792,75 @@ pub(crate) fn clamp_height(height: f32, (min, max): (f32, Option<f32>)) -> f32 {
     max.map_or(height, |max| height.min(max)).max(min)
 }
 
+/// Where an absolutely positioned box's margin box goes, in one axis, in
+/// its static-position rectangle (css-position-3 §4.3), physically: at
+/// its start (its left or top), centred, or at its end. A box met in
+/// block or inline flow is at the start of a point; a flex container
+/// aligns its children as it would its sole item (M17).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum StaticAlign {
+    Start,
+    Center,
+    End,
+}
+
+impl StaticAlign {
+    /// The start of a margin box `outer` long so placed in the span
+    /// `size` long from `start`, overflowing it at either end as it may.
+    fn place(self, outer: f32, start: f32, size: f32) -> f32 {
+        match self {
+            StaticAlign::Start => start,
+            StaticAlign::Center => start + (size - outer) / 2.0,
+            StaticAlign::End => start + size - outer,
+        }
+    }
+}
+
 /// An absolutely positioned box met in flow (M11), on its way up to
-/// its containing block: the box, and the static position of its
-/// margin box's top-left (CSS2 §10.3.7, §10.6.4: where the box would
-/// have been in flow), relative to the fragment carrying it — a
+/// its containing block: the box, and its static-position rectangle
+/// (css-position-3 §4.3) relative to the fragment carrying it — a
 /// [`BlockLayout`]'s or [`AtomicLayout`]'s border box, a
-/// [`ChildrenLayout`]'s or `InlineLayout`'s content-box origin — and
-/// moved along as that fragment is placed, until the nearest positioned
+/// [`ChildrenLayout`]'s or `InlineLayout`'s content-box origin — moved
+/// along as that fragment is placed, until the nearest positioned
 /// ancestor (or the initial containing block; the viewport, for
-/// `position: fixed`) lays it out against its padding box.
+/// `position: fixed`) lays it out against its padding box. The
+/// rectangle of a box met in flow is a point, the static position of
+/// its margin box's top-left (CSS2 §10.3.7, §10.6.4: where the box
+/// would have been in flow); a flex container's child's is the
+/// container's content box (M17).
 #[derive(Clone)]
 pub(crate) struct Deferred<'a> {
     pub(crate) b: &'a LayoutBox,
+    /// The rectangle's top-left, width and height.
     pub(crate) x: f32,
     pub(crate) y: f32,
+    pub(crate) w: f32,
+    pub(crate) h: f32,
+    /// The margin box's place in it, horizontally and vertically, along
+    /// an axis whose insets are both `auto`.
+    pub(crate) align: [StaticAlign; 2],
 }
 
-impl Deferred<'_> {
+impl<'a> Deferred<'a> {
+    /// The box `b` met in flow, its static position `(x, y)`.
+    pub(crate) fn at(b: &'a LayoutBox, x: f32, y: f32) -> Self {
+        Deferred {
+            b,
+            x,
+            y,
+            w: 0.0,
+            h: 0.0,
+            align: [StaticAlign::Start; 2],
+        }
+    }
+
     /// The same box carried by a fragment placed at `(dx, dy)` in the
     /// one it was relative to.
     pub(crate) fn moved(self, dx: f32, dy: f32) -> Self {
         Deferred {
-            b: self.b,
             x: self.x + dx,
             y: self.y + dy,
+            ..self
         }
     }
 }
@@ -1600,9 +1644,7 @@ pub(crate) fn settle_absolutes<'a>(
     let padding_h = (root.h - border[TOP] - border[BOTTOM]).max(0.0);
     for d in mine {
         let (fragment, fixed) = layout_absolute(
-            d.b,
-            d.x - border[LEFT],
-            d.y - border[TOP],
+            &d.moved(-border[LEFT], -border[TOP]),
             padding_w,
             Some(padding_h),
             pass,
@@ -1637,35 +1679,38 @@ fn uses_cb_height(style: &ComputedStyle) -> bool {
         || matches!(style.max_height, MaxSize::Percent(_))
 }
 
-/// Lays out an absolutely positioned box (M11) against its containing
-/// block's padding box, `cb_width` by `cb_height` — `None` when the
-/// height is not known, the initial containing block's without a
-/// viewport height, which makes `bottom` and a percentage `top` or
-/// height `auto` — from the static position `(sx, sy)` its margin box
-/// would have had in flow, in the padding box's coordinates. Returns
-/// the box's fragment positioned there, with its content, and the
-/// `position: fixed` boxes met inside, relative to the padding box.
+/// Lays out the absolutely positioned box `d.b` (M11) against its
+/// containing block's padding box, `cb_width` by `cb_height` — `None`
+/// when the height is not known, the initial containing block's without
+/// a viewport height, which makes `bottom` and a percentage `top` or
+/// height `auto` — from its static-position rectangle, in the padding
+/// box's coordinates. Returns the box's fragment positioned there, with
+/// its content, and the `position: fixed` boxes met inside, relative to
+/// the padding box.
 ///
 /// Width is CSS2 §10.3.7: `left`, `width` and `right` all `auto` is a
-/// shrink-to-fit width at the static position; one `auto` among them
-/// is solved from the other two, `auto` margins zero; none `auto`
-/// solves the margins — both `auto` centres the box, one `auto` takes
-/// the rest — and ignores `right` when over-constrained (this engine
-/// being left-to-right throughout). `min-width` and `max-width` clamp
-/// the width with the edge solved again (§10.4). Height is §10.6.4 the
-/// same way with `top`, `height` and `bottom`, an `auto` height the
-/// content's, `bottom` ignored when over-constrained, `min-height` and
-/// `max-height` clamping (§10.7). The box is a block formatting context
-/// root; its content's percentages are of the padding box.
+/// shrink-to-fit width in the room css-position-3 §4.1 gives it, placed
+/// in the static-position rectangle; one `auto` among them is solved
+/// from the other two, `auto` margins zero; none `auto` solves the
+/// margins — both `auto` centres the box, one `auto` takes the rest —
+/// and ignores `right` when over-constrained (this engine being
+/// left-to-right throughout). `min-width` and `max-width` clamp the
+/// width with the edge solved again (§10.4). Height is §10.6.4 the same
+/// way with `top`, `height` and `bottom`, an `auto` height the
+/// content's — or, between a `top` and a `bottom` against a known
+/// height, the room between them, imposed on the content (M17) —
+/// `bottom` ignored when over-constrained, `min-height` and `max-height`
+/// clamping (§10.7). The box is a block formatting context root; its
+/// content's percentages are of the padding box.
 fn layout_absolute<'a>(
-    b: &'a LayoutBox,
-    sx: f32,
-    sy: f32,
+    d: &Deferred<'a>,
     cb_width: f32,
     cb_height: Option<f32>,
     pass: &Pass<'a>,
 ) -> (Fragment, Vec<Deferred<'a>>) {
+    let b = d.b;
     let style = &b.style;
+    let [align_x, align_y] = d.align;
     let edges = Edges::of_box(b, cb_width);
     let horizontal_edges = edges.horizontal();
     let vertical_edges = edges.vertical();
@@ -1685,13 +1730,29 @@ fn layout_absolute<'a>(
 
     // §10.3.7, for one value of `width` (`None` for `auto`): the left
     // edge, the content width and the two margins.
+    // With `left` and `right` both `auto`, the room the box has
+    // (css-position-3 §4.1, as the reference browsers have it): from the
+    // static-position rectangle's left to the containing block's right
+    // for a box at its start, from the containing block's left to the
+    // rectangle's right for one at its end, and for a centred one as wide
+    // as the containing block allows, centred on the rectangle. A point
+    // at the start leaves the room CSS2 does.
+    let (room_left, room_right) = match align_x {
+        StaticAlign::Start => (d.x, cb_width),
+        StaticAlign::End => (0.0, d.x + d.w),
+        StaticAlign::Center => {
+            let middle = d.x + d.w / 2.0;
+            let half = middle.min(cb_width - middle).max(0.0);
+            (middle - half, middle + half)
+        }
+    };
     // The intrinsic keywords (M17), `fit-content` in the room between
-    // the insets given, or from the static position.
+    // the insets given, or that room.
     let intrinsic = Intrinsic::of(b, pass.fonts);
-    let stretch = cb_width
-        - left.unwrap_or(sx)
-        - right.unwrap_or(0.0)
-        - margin_left.unwrap_or(0.0)
+    let stretch = match (left, right) {
+        (None, None) => room_right - room_left,
+        _ => cb_width - left.unwrap_or(d.x) - right.unwrap_or(0.0),
+    } - margin_left.unwrap_or(0.0)
         - margin_right.unwrap_or(0.0)
         - horizontal_edges;
     let c = width_constraints(
@@ -1709,10 +1770,13 @@ fn layout_absolute<'a>(
     let solve_width = |width: Option<f32>| -> (f32, f32, f32, f32) {
         let ml = margin_left.unwrap_or(0.0);
         let mr = margin_right.unwrap_or(0.0);
+        // The margin box's left edge in the static-position rectangle,
+        // for a content width `w`.
+        let placed = |w: f32| align_x.place(ml + horizontal_edges + w + mr, d.x, d.w);
         match (left, width, right) {
             (None, None, None) => {
-                let w = shrink(cb_width - sx - ml - horizontal_edges - mr);
-                (sx, w, ml, mr)
+                let w = shrink(room_right - room_left - ml - horizontal_edges - mr);
+                (placed(w), w, ml, mr)
             }
             (Some(l), Some(w), Some(r)) => {
                 let rest = cb_width - l - horizontal_edges - w - r;
@@ -1729,7 +1793,7 @@ fn layout_absolute<'a>(
                 let w = shrink(cb_width - r - mr - horizontal_edges - ml);
                 (cb_width - r - mr - horizontal_edges - w - ml, w, ml, mr)
             }
-            (None, Some(w), None) => (sx, w, ml, mr),
+            (None, Some(w), None) => (placed(w), w, ml, mr),
             (Some(l), None, None) => {
                 let w = shrink(cb_width - l - ml - horizontal_edges - mr);
                 (l, w, ml, mr)
@@ -1754,8 +1818,33 @@ fn layout_absolute<'a>(
     let (left, content_width, margin_left, _margin_right) = solved;
 
     // The content, as a block formatting context root's, with the
-    // style's own height (or the content's); the box's used height
-    // may then come from `top` and `bottom` instead.
+    // style's own height (or the content's). With `top` and `bottom`
+    // against a known height and `height: auto`, the height does not
+    // depend on the content: the room between them, `auto` margins zero,
+    // clamped, is imposed on it and definite, so that the percentages
+    // inside resolve against it (CSS2 §10.5) and a flex container lays
+    // its items out in it (M17). A keyword limit, the content's height,
+    // leaves the height to the content as before, to be clamped after.
+    let specified_height = definite_height(style, cb_height, vertical_edges);
+    let keyword_limit = !matches!(
+        style.min_height,
+        Size::Auto | Size::Px(_) | Size::Percent(_)
+    ) || matches!(
+        style.max_height,
+        MaxSize::MinContent | MaxSize::MaxContent | MaxSize::FitContent
+    );
+    let imposed = match (top, style.height, bottom, cb_height) {
+        (Some(t), Size::Auto, Some(btm), Some(cb_h)) if !keyword_limit => {
+            let room = (cb_h - t - margin_top.unwrap_or(0.0) - margin_bottom.unwrap_or(0.0) - btm)
+                .max(0.0);
+            let bounds = height_bounds(style, cb_height, vertical_edges, None);
+            Some(Imposed {
+                height: clamp_height(room - vertical_edges, bounds) + vertical_edges,
+                definite: true,
+            })
+        }
+        _ => None,
+    };
     let layout = layout_contents(
         b,
         &edges,
@@ -1766,10 +1855,9 @@ fn layout_absolute<'a>(
         Content::Root,
         pass,
         None,
-        None,
+        imposed,
     );
     let mut fragment = layout.root;
-    let specified_height = definite_height(style, cb_height, vertical_edges);
     let bounds = height_bounds(
         style,
         cb_height,
@@ -1803,7 +1891,10 @@ fn layout_absolute<'a>(
                 (cb_h - btm - mb - h - mt, h, mt, mb)
             }
             (Some(t), h, _, _) => (t, content(h), mt, mb),
-            (None, h, _, _) => (sy, content(h), mt, mb),
+            (None, h, _, _) => {
+                let h = content(h);
+                (align_y.place(mt + h + mb, d.y, d.h), h, mt, mb)
+            }
         }
     };
     let mut solved = solve_height(specified_height);
@@ -2317,11 +2408,7 @@ fn layout_children<'a>(
                 } else {
                     y + pending.resolve()
                 };
-                absolutes.push(Deferred {
-                    b: child,
-                    x: 0.0,
-                    y: flow_y,
-                });
+                absolutes.push(Deferred::at(child, 0.0, flow_y));
             }
             BoxKind::AnonymousBlock | BoxKind::Inline | BoxKind::InlineBlock | BoxKind::Text(_) => {
                 // One inline formatting context (M7): the anonymous
@@ -2625,6 +2712,54 @@ mod tests {
             100.0
         );
         assert_eq!(k(".k { position: absolute; top: 0; bottom: 0 }"), 300.0);
+    }
+
+    #[test]
+    fn an_absolutely_positioned_box_between_top_and_bottom_has_their_room_inside() {
+        // CSS2 §10.6.4 and §10.5, as the reference browser has it: with
+        // `top` and `bottom` against a known height and `height: auto`,
+        // the box's height is the room between them, clamped, and a
+        // percentage height inside it resolves against that, as against
+        // a specified height. Node 2 is the box, 3 its child.
+        let root = Element::new("div").attr("class", "w").push(
+            Element::new("div")
+                .attr("class", "a")
+                .push(Element::new("div").attr("class", "k")),
+        );
+        let base = ".w { position: relative; width: 300px; height: 200px }
+                    .a { position: absolute; left: 0; right: 0; top: 0; bottom: 0 }
+                    .k { height: 50% }";
+        let heights = |css: &str| {
+            let layout = document_of(root.clone(), &format!("{base} {css}"));
+            let (a, k) = (by_node(&layout, 2), by_node(&layout, 3));
+            (a.y, a.h, k.h)
+        };
+        assert_eq!(heights(""), (0.0, 200.0, 100.0));
+        assert_eq!(heights(".a { min-height: 300px }"), (0.0, 300.0, 150.0));
+        assert_eq!(heights(".a { max-height: 120px }"), (0.0, 120.0, 60.0));
+        assert_eq!(
+            heights(".a { padding: 10px; border: 5px solid }"),
+            (0.0, 200.0, 85.0)
+        );
+        assert_eq!(heights(".a { margin: 10px auto }"), (10.0, 180.0, 90.0));
+        assert_eq!(
+            heights(".a { top: 20px; bottom: 30% }"),
+            (20.0, 120.0, 60.0)
+        );
+        // A keyword limit is the content's height: the content keeps the
+        // height, and the percentage inside it, of a height that depends
+        // on the content, is `auto`.
+        let root = Element::new("div").attr("class", "w").push(
+            Element::new("div")
+                .attr("class", "a")
+                .push(Element::new("div").attr("class", "k"))
+                .push(Element::new("div").attr("class", "m")),
+        );
+        let layout = document_of(
+            root,
+            &format!("{base} .a {{ min-height: min-content }} .m {{ height: 250px }}"),
+        );
+        assert_eq!((by_node(&layout, 2).h, by_node(&layout, 3).h), (250.0, 0.0));
     }
 
     #[test]

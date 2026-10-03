@@ -1407,7 +1407,7 @@ fn flush_line<'a>(
                 LineItem::Close(..) => {
                     open.pop();
                 }
-                LineItem::Absolute(b) => absolutes.push(Deferred { b, x, y: *y }),
+                LineItem::Absolute(b) => absolutes.push(Deferred::at(b, x, *y)),
                 LineItem::Word(_) | LineItem::Atomic(_) => {}
             }
         }
@@ -1512,7 +1512,7 @@ fn flush_line<'a>(
                 let fragment = close_inline(inline, x, true, baseline_y, fonts, cb, absolutes);
                 innermost(&mut stack, fragments).push(fragment);
             }
-            LineItem::Absolute(b) => absolutes.push(Deferred { b, x, y: *y }),
+            LineItem::Absolute(b) => absolutes.push(Deferred::at(b, x, *y)),
         }
     }
     // The inline elements still open are sliced at the line's end: no

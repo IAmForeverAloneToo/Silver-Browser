@@ -3,14 +3,6 @@
 # named here fails the run, and so does one named here that passes.
 # The steps are M17's (docs/design/flexbox.md, section 3).
 
-# Absolute positioning, M17 step 8.
-css/css-flexbox/abspos/position-absolute-015.html                  waits on step 8: an absolutely positioned child's static position, which justify-content and align-items place
-css/css-flexbox/abspos/position-absolute-containing-block-001.html waits on step 8: an absolutely positioned child's static position, which justify-content and align-items place
-css/css-flexbox/abspos/position-absolute-containing-block-002.html waits on step 8: an absolutely positioned child's static position, which justify-content and align-items place
-css/css-flexbox/columns-height-set-via-top-bottom.html             waits on step 8: the height of an absolutely positioned flex container from its insets, imposed on its layout
-css/css-flexbox/percentage-heights-002.html                        waits on step 8: the height of an absolutely positioned flex container from its insets, imposed on its layout
-css/css-flexbox/percentage-widths-001.html                         waits on step 8: the height of an absolutely positioned flex container from its insets, imposed on its layout
-
 # Paint order, M17 step 9.
 css/css-flexbox/flex-item-position-relative-001.html         waits on step 9: positioned boxes paint in tree order (CSS2 Appendix E), not in the order of their fragments, where an absolutely positioned box comes after the relatively positioned item that follows it
 css/css-flexbox/order/order-abs-children-painting-order.html waits on step 9: items paint in order-modified document order, and the positioned boxes in them with them

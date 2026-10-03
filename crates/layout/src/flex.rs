@@ -19,8 +19,8 @@
 //! the flex-relative axis, the positions found from main-start and
 //! cross-start, and mapped to physical ones once. Items aligned by a
 //! baseline share it with their line's group, which the line grows to
-//! hold. An absolutely positioned child's static position is the content
-//! box's top-left corner.
+//! hold. An absolutely positioned child is placed in the content box as
+//! the sole item would be.
 
 use std::cell::OnceCell;
 use std::ops::Range;
@@ -32,9 +32,9 @@ use style::computed::{
 use text::FontCollection;
 
 use crate::block::{
-    AdjoiningMargins, BlockLayout, Content, Deferred, Edges, Imposed, Intrinsic, box_fragment,
-    carried, clamp_height, definite_height, extent_bottom, height_bounds, layout_contents,
-    relative_offset, settle_absolutes, used, width_constraints,
+    AdjoiningMargins, BlockLayout, Content, Deferred, Edges, Imposed, Intrinsic, StaticAlign,
+    box_fragment, carried, clamp_height, definite_height, extent_bottom, height_bounds,
+    layout_contents, relative_offset, settle_absolutes, used, width_constraints,
 };
 use crate::box_tree::{BoxKind, LayoutBox};
 use crate::pass::{ItemKey, Pass};
@@ -191,6 +191,27 @@ impl Alignment {
     }
 }
 
+impl Alignment {
+    /// Where an absolutely positioned child's margin box goes, physically,
+    /// in its static-position rectangle along an axis that runs from its
+    /// physical start when `forward`: as the sole subject, a distribution
+    /// taking its fallback, `flex-start` for `space-between` and the
+    /// centre for the others; and never safe, as in the reference
+    /// browsers.
+    fn static_align(self, forward: bool) -> StaticAlign {
+        let at_start = match self.place {
+            Place::Start | Place::SpaceBetween => true,
+            Place::End => false,
+            Place::Center | Place::SpaceAround | Place::SpaceEvenly => return StaticAlign::Center,
+        };
+        if at_start == forward {
+            StaticAlign::Start
+        } else {
+            StaticAlign::End
+        }
+    }
+}
+
 /// `justify-content` in a main axis that runs from its physical start
 /// when `forward` and is `horizontal` or not: `normal` and `stretch` are
 /// `flex-start`, flex items growing by `flex-grow` instead (§8.2).
@@ -226,16 +247,29 @@ fn align_content(value: ContentAlignment, forward: bool, horizontal: bool) -> Al
 /// its physical start when `forward` and is `horizontal` or not (§8.3).
 /// `normal` and `stretch` place an item that does not stretch at
 /// cross-start. A baseline value is the groups' to place (see
-/// [`Item::baseline`]); one reaching here is `flex-start`.
+/// [`Item::baseline`]); for an absolutely positioned child, which has no
+/// group, it takes its fallback, `start` or `end` for `last baseline`,
+/// which `wrap-reverse` does not flip, as in the reference browsers.
 fn self_alignment(value: SelfAlignment, forward: bool, horizontal: bool) -> Alignment {
     match value {
         SelfAlignment::Position(position, overflow) => {
             Alignment::position(position, overflow, forward, horizontal)
         }
-        SelfAlignment::Auto
-        | SelfAlignment::Normal
-        | SelfAlignment::Stretch
-        | SelfAlignment::Baseline(_) => Alignment::at(Place::Start),
+        SelfAlignment::Baseline(BaselinePosition::First) => Alignment::position(
+            AlignPosition::Start,
+            OverflowAlign::Default,
+            forward,
+            horizontal,
+        ),
+        SelfAlignment::Baseline(BaselinePosition::Last) => Alignment::position(
+            AlignPosition::End,
+            OverflowAlign::Default,
+            forward,
+            horizontal,
+        ),
+        SelfAlignment::Auto | SelfAlignment::Normal | SelfAlignment::Stretch => {
+            Alignment::at(Place::Start)
+        }
     }
 }
 
@@ -912,13 +946,27 @@ pub(crate) fn layout_flex_contents<'a>(
         carried_up[index] = carried(layout.absolutes, x, y);
         root.children.push(layout.root.translated(x, y));
     }
+    // An absolutely positioned child's static-position rectangle is the
+    // content box, where it is placed as the sole item would be (§4.1):
+    // by `justify-content` in the main axis and its `align-self` in the
+    // cross axis, never by `align-content`, as in the reference browsers.
     let mut absolutes = Vec::new();
     for (child, carried) in b.children.iter().zip(carried_up) {
         if child.kind == BoxKind::Absolute {
+            let main = justify.static_align(forward_main);
+            let cross = self_alignment(
+                align_self(&child.style, c.align_items),
+                forward_cross,
+                column,
+            )
+            .static_align(forward_cross);
             absolutes.push(Deferred {
                 b: child,
                 x: content_x,
                 y: content_y,
+                w: content_width,
+                h: content_height,
+                align: if column { [cross, main] } else { [main, cross] },
             });
         } else {
             absolutes.extend(carried);
@@ -3023,5 +3071,264 @@ mod tests {
             )),
             10.0
         );
+    }
+
+    /// Where the absolutely positioned child `#a` of the positioned flex
+    /// container `#c` goes under `container` and `child`, from the
+    /// container's border box: `(x, y, w, h)`. The container is 300 by 200
+    /// inside a 10px padding and a 5px border, so its content box starts
+    /// at 15.
+    fn abspos(container: &str, child: &str) -> (f32, f32, f32, f32) {
+        let l = laid(
+            "<div id=c><div id=a></div></div>",
+            &format!(
+                "#c {{ display: flex; position: relative; width: 300px; height: 200px;
+                       padding: 10px; border: 5px solid; {container} }}
+                 #a {{ position: absolute; {child} }}"
+            ),
+        );
+        let (c, a) = (rect(&l, "c"), rect(&l, "a"));
+        (a.0 - c.0, a.1 - c.1, a.2, a.3)
+    }
+
+    #[test]
+    fn an_absolutely_positioned_child_is_placed_as_the_sole_item_would_be() {
+        // §4.1, as the reference browser has it: a 50 by 30 child in the
+        // content box, by `justify-content` in the main axis and its
+        // `align-self` in the cross axis, each as for an item, and
+        // `*-reverse` and `wrap-reverse` turning them round. A 50 by 30
+        // box leaves 250 by 170 to place it in.
+        let small = "width: 50px; height: 30px";
+        let at = |container: &str| {
+            let (x, y, _, _) = abspos(container, small);
+            (x, y)
+        };
+        for (container, expected) in [
+            ("justify-content: normal", (15.0, 15.0)),
+            ("justify-content: flex-end", (265.0, 15.0)),
+            ("justify-content: center", (140.0, 15.0)),
+            ("justify-content: space-between", (15.0, 15.0)),
+            ("justify-content: space-around", (140.0, 15.0)),
+            ("justify-content: space-evenly", (140.0, 15.0)),
+            ("justify-content: end", (265.0, 15.0)),
+            ("justify-content: right", (265.0, 15.0)),
+            ("justify-content: stretch", (15.0, 15.0)),
+            ("flex-direction: row-reverse", (265.0, 15.0)),
+            (
+                "flex-direction: row-reverse; justify-content: flex-end",
+                (15.0, 15.0),
+            ),
+            (
+                "flex-direction: row-reverse; justify-content: start",
+                (15.0, 15.0),
+            ),
+            (
+                "flex-direction: row-reverse; justify-content: space-between",
+                (265.0, 15.0),
+            ),
+            (
+                "flex-direction: column; justify-content: flex-end",
+                (15.0, 185.0),
+            ),
+            (
+                "flex-direction: column; justify-content: right",
+                (15.0, 15.0),
+            ),
+            ("flex-direction: column-reverse", (15.0, 185.0)),
+            (
+                "flex-direction: column-reverse; justify-content: start",
+                (15.0, 15.0),
+            ),
+            ("align-items: flex-end", (15.0, 185.0)),
+            ("align-items: center", (15.0, 100.0)),
+            ("align-items: stretch", (15.0, 15.0)),
+            ("align-items: last baseline", (15.0, 185.0)),
+            ("flex-wrap: wrap-reverse", (15.0, 185.0)),
+            (
+                "flex-wrap: wrap-reverse; align-items: flex-end",
+                (15.0, 15.0),
+            ),
+            ("flex-wrap: wrap-reverse; align-items: start", (15.0, 15.0)),
+            (
+                "flex-wrap: wrap-reverse; align-items: self-end",
+                (15.0, 185.0),
+            ),
+            // A baseline is its fallback, `start` or `end`, which
+            // `wrap-reverse` does not turn round.
+            (
+                "flex-wrap: wrap-reverse; align-items: baseline",
+                (15.0, 15.0),
+            ),
+            (
+                "flex-wrap: wrap-reverse; align-items: last baseline",
+                (15.0, 185.0),
+            ),
+            (
+                "flex-direction: column; align-items: flex-end",
+                (265.0, 15.0),
+            ),
+            ("flex-direction: column; align-items: center", (140.0, 15.0)),
+            (
+                "flex-direction: column; flex-wrap: wrap-reverse",
+                (265.0, 15.0),
+            ),
+            (
+                "flex-direction: column-reverse; align-items: center",
+                (140.0, 185.0),
+            ),
+            // `align-content` places lines, which the child is on none of.
+            ("flex-wrap: wrap; align-content: center", (15.0, 15.0)),
+            (
+                "flex-wrap: wrap; align-content: center; align-items: flex-end",
+                (15.0, 185.0),
+            ),
+        ] {
+            assert_eq!(at(container), expected, "{container}");
+        }
+        assert_eq!(
+            abspos(
+                "align-items: center",
+                "width: 50px; height: 30px; align-self: flex-end"
+            ),
+            (15.0, 185.0, 50.0, 30.0)
+        );
+        // Its margin box is placed, an `auto` margin being zero; a side
+        // with an inset given is placed by it.
+        for (child, expected) in [
+            ("margin: 20px", (245.0, 165.0)),
+            ("margin: 20px 10px 5px 30px; --center: 1", (150.0, 107.5)),
+            ("margin: auto", (140.0, 100.0)),
+            ("left: 7px", (12.0, 100.0)),
+            ("top: 7px", (140.0, 12.0)),
+            ("right: 7px", (268.0, 100.0)),
+            ("bottom: 7px", (140.0, 188.0)),
+        ] {
+            let container = if child == "margin: 20px" {
+                "justify-content: flex-end; align-items: flex-end"
+            } else {
+                "justify-content: center; align-items: center"
+            };
+            let (x, y, _, _) = abspos(container, &format!("{small}; {child}"));
+            assert_eq!((x, y), expected, "{child}");
+        }
+        // Nothing stretches it.
+        assert_eq!(abspos("", "width: 50px").3, 0.0);
+        assert_eq!(abspos("flex-direction: column", "height: 30px").2, 0.0);
+        // One too large overflows by its alignment, `safe` or not, and a
+        // distribution's fallback is never safe.
+        let big = "width: 400px; height: 300px";
+        for (container, expected) in [
+            ("justify-content: center", (-35.0, 15.0)),
+            ("justify-content: safe center", (-35.0, 15.0)),
+            ("justify-content: space-around", (-35.0, 15.0)),
+            ("justify-content: flex-end", (-85.0, 15.0)),
+            ("justify-content: safe end", (-85.0, 15.0)),
+            ("justify-content: space-between", (15.0, 15.0)),
+            ("flex-direction: row-reverse", (-85.0, 15.0)),
+            (
+                "flex-direction: row-reverse; justify-content: flex-end",
+                (15.0, 15.0),
+            ),
+            ("align-items: safe center", (15.0, -35.0)),
+            ("align-items: last baseline", (15.0, -85.0)),
+            (
+                "flex-wrap: wrap-reverse; align-items: flex-end",
+                (15.0, 15.0),
+            ),
+        ] {
+            let (x, y, _, _) = abspos(container, big);
+            assert_eq!((x, y), expected, "{container}, overflowing");
+        }
+    }
+
+    #[test]
+    fn an_absolutely_positioned_childs_room_depends_on_its_alignment() {
+        // css-position-3 §4.1, as the reference browser has it: a child
+        // whose width is its content's, twelve 60px boxes, has the room
+        // from its static-position rectangle's start to its containing
+        // block's end when it is at the start, from the containing block's
+        // start to the rectangle's end at the end, and centred on the
+        // rectangle as wide as the containing block allows in the centre.
+        // The containing block is 800px wide, the container's content box
+        // 115px to 415px in it, or the container's padding box itself.
+        let boxes = "<i></i> ".repeat(12);
+        let room = |container: &str, child: &str| {
+            let l = laid(
+                &format!("<div id=w><div id=c><div id=a>{boxes}</div></div></div>"),
+                &format!(
+                    "body {{ font-size: 0 }}
+                     #w {{ position: relative; width: 800px; height: 300px }}
+                     #c {{ display: flex; margin-left: 100px; width: 300px; height: 200px;
+                           padding: 10px; border: 5px solid; {container} }}
+                     #a {{ position: absolute; {child} }}
+                     i {{ display: inline-block; width: 60px; height: 10px }}"
+                ),
+            );
+            let (c, a) = (rect(&l, "c"), rect(&l, "a"));
+            (a.0 - c.0, a.2)
+        };
+        for (container, expected) in [
+            ("justify-content: flex-start", (15.0, 685.0)),
+            ("justify-content: flex-end", (-100.0, 415.0)),
+            ("justify-content: center", (-100.0, 530.0)),
+            ("flex-direction: row-reverse", (-100.0, 415.0)),
+            (
+                "flex-direction: column; align-items: center",
+                (-100.0, 530.0),
+            ),
+            ("position: relative", (15.0, 310.0)),
+            (
+                "position: relative; justify-content: flex-end",
+                (5.0, 310.0),
+            ),
+            ("position: relative; justify-content: center", (5.0, 320.0)),
+        ] {
+            assert_eq!(room(container, ""), expected, "{container}");
+        }
+        assert_eq!(
+            room("", "margin-left: 30px; margin-right: 20px"),
+            (45.0, 635.0)
+        );
+        // A keyword width fits the same room, or ignores it, and is
+        // placed the same way.
+        for (container, child, expected) in [
+            (
+                "justify-content: flex-end",
+                "width: fit-content",
+                (-100.0, 415.0),
+            ),
+            (
+                "justify-content: center",
+                "width: fit-content",
+                (-100.0, 530.0),
+            ),
+            (
+                "justify-content: flex-end",
+                "width: max-content",
+                (-405.0, 720.0),
+            ),
+            (
+                "justify-content: center",
+                "width: min-content",
+                (135.0, 60.0),
+            ),
+        ] {
+            assert_eq!(room(container, child), expected, "{container}, {child}");
+        }
+    }
+
+    #[test]
+    fn an_absolutely_positioned_flex_container_between_top_and_bottom_flexes_in_their_room() {
+        // As the reference browser has it: its height is the room between
+        // `top` and `bottom`, known before its items are laid out.
+        let l = laid(
+            "<div id=w><div id=c><div id=a></div><div id=b></div></div></div>",
+            "#w { position: relative; width: 300px; height: 200px }
+             #c { position: absolute; top: 0; right: 0; bottom: 0; left: 0; display: flex;
+                  flex-direction: column }
+             #a { height: 30px } #b { flex: 1 }",
+        );
+        assert_eq!(rect(&l, "c").3, 200.0);
+        assert_eq!((rect(&l, "a").3, rect(&l, "b").3), (30.0, 170.0));
     }
 }
