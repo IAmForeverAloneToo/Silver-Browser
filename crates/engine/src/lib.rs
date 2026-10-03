@@ -2705,6 +2705,37 @@ mod tests {
     }
 
     #[test]
+    fn grid_items_in_the_same_cell_are_hit_in_the_order_they_paint() {
+        // css-grid-2 §6.5 (M18): items in the same cell overlap in
+        // order-modified document order, and hit testing reads the same
+        // steps. #b, after #a, is on top; `order` puts #a after it, and a
+        // `z-index` makes #a a stacking context though it is not
+        // positioned, on top of #b.
+        for (extra, expected) in [
+            ("", "b"),
+            ("#a { order: 1 }", "a"),
+            ("#a { z-index: 1 }", "a"),
+        ] {
+            let mut engine = test_engine();
+            engine.load_document(&format!(
+                "<style>body {{ margin: 0 }} .g {{ display: grid; grid-template-columns: 60px 60px }}
+                        .g > div {{ grid-area: 1 / 1; height: 50px }} {extra}</style>\
+                 <div class=g><div id=a></div><div id=b></div></div>"
+            ));
+            engine.frame(200, 100);
+            let document = engine.document().clone();
+            let id = |node: Option<NodeId>| {
+                node.and_then(|n| document.attr(n, "id").map(str::to_string))
+            };
+            assert_eq!(
+                id(engine.hit_test(30.0, 25.0)).as_deref(),
+                Some(expected),
+                "{extra}"
+            );
+        }
+    }
+
+    #[test]
     fn inline_blocks_are_hit_and_painted_through_the_real_pipeline() {
         // Two 50px inline-blocks on one line of a font-less row (M10.4):
         // the pointer over the second one answers with it, over its

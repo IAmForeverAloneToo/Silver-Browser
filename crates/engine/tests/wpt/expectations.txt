@@ -5,10 +5,6 @@
 # note's section 3: docs/design/flexbox.md for M17, docs/design/grid.md
 # for M18.
 
-# Paint order in a grid, M18 step 8.
-css/css-grid/grid-items/grid-layout-z-order-a.html                                       waits on step 8: z-index on grid items, which paint as inline-blocks
-css/css-grid/grid-items/grid-layout-z-order-b.html                                       waits on step 8: z-index on grid items, which paint as inline-blocks
-
 # Not in either milestone (docs/design/flexbox.md and docs/design/grid.md,
 # section 2).
 css/css-flexbox/content-height-with-scrollbars.html                                      the reference has classic scrollbars, whose room the content loses; this engine's are overlays (M10.5)

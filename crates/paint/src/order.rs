@@ -29,11 +29,12 @@
 //! Tree order is the boxes' own, which each fragment carries (M17,
 //! `Fragment::tree_order`): layout moves an absolutely positioned box
 //! to its containing block's fragment or among the roots, but the
-//! layers are sorted by it all the same. A flex container's children
-//! are in order-modified document order there, and its items paint as
-//! inline-blocks do, as units in the inline pass, an item whose
+//! layers are sorted by it all the same. A flex or grid container's
+//! children are in order-modified document order there, and its items
+//! paint as inline-blocks do, as units in the inline pass, an item whose
 //! `z-index` is not `auto` making a stacking context painted at its
-//! layer, positioned or not (css-flexbox-1 §4.3).
+//! layer, positioned or not (css-flexbox-1 §4.3, css-grid-2 §6.5): grid
+//! items in the same cells overlap in that order.
 //!
 //! Every rectangle a step carries is in viewport coordinates: the
 //! viewport's scroll offset and, inside a scroll container, its offset
@@ -240,10 +241,10 @@ enum Kind {
     Block,
 }
 
-/// Whether the in-flow children of the box `f` are flex items (M17): it
-/// is a flex container.
+/// Whether the in-flow children of the box `f` are items: it is a flex
+/// container (M17) or a grid container (M18).
 fn has_items(f: &Fragment) -> bool {
-    f.style.display.is_flex()
+    f.style.display.has_items()
 }
 
 fn kind_of(f: &Fragment) -> Kind {
@@ -405,10 +406,10 @@ impl<'a> Walk<'a, '_> {
     /// Gathers the positioned boxes among `fragments` and their
     /// descendants, each with the walk's state where the fragment tree
     /// has it, into `out`: a stacking context's own positioned
-    /// descendants (Appendix E), and the flex items among them with a
-    /// `z-index`, which make stacking contexts without being positioned
-    /// (css-flexbox-1 §4.3); `items` says whether `fragments` are flex
-    /// items. The walk goes through everything but a stacking context,
+    /// descendants (Appendix E), and the flex and grid items among them
+    /// with a `z-index`, which make stacking contexts without being
+    /// positioned (css-flexbox-1 §4.3, css-grid-2 §6.5); `items` says
+    /// whether `fragments` are items. The walk goes through everything but a stacking context,
     /// whose positioned descendants are its own.
     fn collect(
         &mut self,
@@ -471,7 +472,8 @@ impl<'a> Walk<'a, '_> {
 
     /// One pass over in-flow content: the fragments in tree order, each
     /// as the pass has it, through the content of every in-flow
-    /// block-level box; `items` says whether `fragments` are flex items.
+    /// block-level box; `items` says whether `fragments` are flex or grid
+    /// items.
     fn phase(&mut self, fragments: &'a [Fragment], containing: Rect, phase: Phase, items: bool) {
         for f in fragments {
             match f.kind {
@@ -490,12 +492,12 @@ impl<'a> Walk<'a, '_> {
                         self.phase(&f.children, containing, phase, false);
                     }
                 }
-                // A flex item paints as an inline-block does, as a unit
-                // in the inline pass, its `float` ignored, in the
+                // A flex or grid item paints as an inline-block does, as
+                // a unit in the inline pass, its `float` ignored, in the
                 // order-modified document order of the fragments; one
                 // with a `z-index` makes a stacking context and is
                 // painted at its layer, as a positioned one is
-                // (css-flexbox-1 §4.3).
+                // (css-flexbox-1 §4.3, css-grid-2 §6.5).
                 FragmentKind::Box if items && !f.style.position.is_positioned() => {
                     if phase == Phase::Inlines && f.style.z_index.is_none() {
                         self.unit(f, containing);
@@ -1279,12 +1281,12 @@ mod tests {
     }
 
     #[test]
-    fn a_flex_item_paints_as_a_unit_in_the_inline_pass() {
-        // css-flexbox-1 §4.3: <div class=f><p>a</p><p>b</p></div>, nodes
-        // div 1, p 2 and 3. Each item paints as an inline-block does, its
-        // background and then its content, in the inline pass, where
-        // blocks paint every background before any text; a `float` on an
-        // item changes nothing.
+    fn a_flex_or_grid_item_paints_as_a_unit_in_the_inline_pass() {
+        // css-flexbox-1 §4.3, css-grid-2 §6.5: <div class=f><p>a</p>
+        // <p>b</p></div>, nodes div 1, p 2 and 3. Each item paints as an
+        // inline-block does, its background and then its content, in the
+        // inline pass, where blocks paint every background before any
+        // text; a `float` on an item changes nothing.
         let page = || {
             Element::new("div")
                 .attr("class", "f")
@@ -1299,6 +1301,11 @@ mod tests {
                 "div, p { margin: 0 } .f { display: flex } p { float: left }",
                 items,
             ),
+            ("div, p { margin: 0 } .f { display: grid }", items),
+            (
+                "div, p { margin: 0 } .f { display: grid } p { float: left }",
+                items,
+            ),
             ("div, p { margin: 0 }", blocks),
         ] {
             let layout = layout_of(page(), css);
@@ -1308,12 +1315,12 @@ mod tests {
     }
 
     #[test]
-    fn a_flex_item_with_a_z_index_is_a_stacking_context_at_its_layer() {
-        // css-flexbox-1 §4.3: an item whose `z-index` is not `auto` makes
-        // a stacking context, positioned or not, painted at its layer:
-        // nodes div 1, p.z 2 (`z-index: 1`), p 3, p.n 4 (`z-index: -1`).
-        // A block that is not an item keeps its place: `z-index` does
-        // nothing to a box that is not positioned.
+    fn a_flex_or_grid_item_with_a_z_index_is_a_stacking_context_at_its_layer() {
+        // css-flexbox-1 §4.3, css-grid-2 §6.5: an item whose `z-index` is
+        // not `auto` makes a stacking context, positioned or not, painted
+        // at its layer: nodes div 1, p.z 2 (`z-index: 1`), p 3, p.n 4
+        // (`z-index: -1`). A block that is not an item keeps its place:
+        // `z-index` does nothing to a box that is not positioned.
         let page = || {
             Element::new("div")
                 .attr("class", "f")
@@ -1322,14 +1329,17 @@ mod tests {
                 .push(Element::new("p").attr("class", "n").text("c"))
         };
         let base = "div, p { margin: 0 } .z { z-index: 1 } .n { z-index: -1 }";
-        let layout = layout_of(page(), &format!("{base} .f {{ display: flex }}"));
-        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
-        assert_eq!(
-            names(&layout, &steps),
-            [
-                "box 1", "box 4", "text c", "box 3", "text b", "box 2", "text a"
-            ]
-        );
+        for display in ["flex", "grid"] {
+            let layout = layout_of(page(), &format!("{base} .f {{ display: {display} }}"));
+            let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+            assert_eq!(
+                names(&layout, &steps),
+                [
+                    "box 1", "box 4", "text c", "box 3", "text b", "box 2", "text a"
+                ],
+                "{display}"
+            );
+        }
         let layout = layout_of(page(), base);
         let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
         assert_eq!(
@@ -1381,27 +1391,32 @@ mod tests {
 
     #[test]
     fn positioned_items_and_the_boxes_in_them_paint_in_order_modified_order() {
-        // css-flexbox-1 §5.4: order-modified document order. Nodes: div.f
-        // 1, div.i 2 (`order: 1`) holding div.a 3, div 4 holding div.a 5:
-        // the second item comes first, and the absolutely positioned box
-        // in it, laid out against the container, with it.
-        let page = Element::new("div")
-            .attr("class", "f")
-            .push(
-                Element::new("div")
-                    .attr("class", "i")
-                    .push(Element::new("div").attr("class", "a").text("x")),
-            )
-            .push(Element::new("div").push(Element::new("div").attr("class", "a").text("y")));
-        let layout = layout_of(
-            page,
-            "div { margin: 0 } .f { display: flex; position: relative } .i { order: 1 }
-             .a { position: absolute; top: 0 }",
-        );
-        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
-        let names = names(&layout, &steps);
-        let at = |name: &str| names.iter().position(|n| n == name);
-        assert!(at("box 5") < at("box 3"), "{names:?}");
-        assert!(at("text y") < at("text x"), "{names:?}");
+        // css-flexbox-1 §5.4, css-grid-2 §6.3: order-modified document
+        // order. Nodes: div.f 1, div.i 2 (`order: 1`) holding div.a 3, div
+        // 4 holding div.a 5: the second item comes first, and the
+        // absolutely positioned box in it, laid out against the
+        // container, with it.
+        for display in ["flex", "grid"] {
+            let page = Element::new("div")
+                .attr("class", "f")
+                .push(
+                    Element::new("div")
+                        .attr("class", "i")
+                        .push(Element::new("div").attr("class", "a").text("x")),
+                )
+                .push(Element::new("div").push(Element::new("div").attr("class", "a").text("y")));
+            let layout = layout_of(
+                page,
+                &format!(
+                    "div {{ margin: 0 }} .f {{ display: {display}; position: relative }}
+                 .i {{ order: 1 }} .a {{ position: absolute; top: 0 }}"
+                ),
+            );
+            let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+            let names = names(&layout, &steps);
+            let at = |name: &str| names.iter().position(|n| n == name);
+            assert!(at("box 5") < at("box 3"), "{display}: {names:?}");
+            assert!(at("text y") < at("text x"), "{display}: {names:?}");
+        }
     }
 }

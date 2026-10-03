@@ -2025,14 +2025,17 @@ fn place_block<'a>(
     cache: Option<&LayoutCache>,
 ) -> BlockPlacement<'a> {
     // Only an element's own box is kept under its node — a block, a
-    // table or a flex container (M17), whose items are laid out with it
-    // — and only one no float can have reached and no ancestor's
-    // pseudo-element styles (M16); the boxes inside it may be, whatever
-    // it is.
+    // table, or a flex or grid container (M17, M18), whose items are laid
+    // out with it — and only one no float can have reached and no
+    // ancestor's pseudo-element styles (M16); the boxes inside it may
+    // be, whatever it is.
     let held = cache.filter(|_| {
         !child.anonymous
             && !child.styled_by_ancestor
-            && matches!(child.kind, BoxKind::Block | BoxKind::Table | BoxKind::Flex)
+            && matches!(
+                child.kind,
+                BoxKind::Block | BoxKind::Table | BoxKind::Flex | BoxKind::Grid
+            )
             && floats.is_untouched()
     });
     let inputs = Inputs {

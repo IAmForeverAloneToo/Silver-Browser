@@ -41,9 +41,9 @@
 //! distance between the two when the entry was kept.
 //!
 //! Boxes laid out in other ways — inside an inline-block, a float, an
-//! absolutely positioned box, a table cell or a flex item — are laid
-//! out again with the box that holds them, which is itself kept when it
-//! can be.
+//! absolutely positioned box, a table cell, or a flex or grid item —
+//! are laid out again with the box that holds them, which is itself
+//! kept when it can be.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -761,6 +761,33 @@ mod tests {
         // html, body, the container and the paragraph after it.
         assert_eq!(s.pass(), (4, 0));
         assert!(s.kept("f") && !s.kept("a") && s.kept("q"));
+        let q = s.id("q");
+        s.change(|d| {
+            let text = d.first_child(q).unwrap();
+            d.set_text(text, "later").unwrap();
+        });
+        // html, body and the paragraph; the container taken.
+        assert_eq!(s.pass(), (3, 1));
+        // A change inside an item lays the container out again.
+        let a = s.id("a");
+        s.change(|d| {
+            let text = d.first_child(a).unwrap();
+            d.set_text(text, "uno").unwrap();
+        });
+        assert_eq!(s.pass(), (3, 1));
+    }
+
+    #[test]
+    fn a_grid_container_is_kept_with_its_items() {
+        // M18: a grid container placed in flow is kept as a flex container
+        // is; its items, laid out with it, are not kept on their own.
+        let mut s = Session::new(
+            "<div id=g><p id=a>one</p><p>two</p></div><p id=q>after</p>",
+            "#g { display: grid; grid-template-columns: 1fr 1fr }",
+        );
+        // html, body, the container and the paragraph after it.
+        assert_eq!(s.pass(), (4, 0));
+        assert!(s.kept("g") && !s.kept("a") && s.kept("q"));
         let q = s.id("q");
         s.change(|d| {
             let text = d.first_child(q).unwrap();
