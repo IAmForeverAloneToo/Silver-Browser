@@ -91,6 +91,7 @@ use crate::box_tree::{BoxKind, LayoutBox};
 use crate::cache::{Held, Inputs, LayoutCache};
 use crate::float::{At, FloatContext, PendingFloat, attach_floats};
 use crate::inline::layout_inline;
+use crate::pass::Pass;
 
 /// A positioned, sized box ready for painting (roadmap M6.7), one node
 /// of the fragment tree (M9.1): a block box's fragment holds the
@@ -403,6 +404,7 @@ fn layout_document_with(
     fonts: &FontCollection,
     cache: Option<&LayoutCache>,
 ) -> DocumentLayout {
+    let pass = Pass::new(fonts);
     // The initial containing block is the outermost block formatting
     // context: its float context is the document's, and its content
     // top is the root of the coordinates floats are placed in.
@@ -413,7 +415,7 @@ fn layout_document_with(
         viewport_height,
         &mut floats,
         At::root(),
-        fonts,
+        &pass,
         cache,
     );
     let depends_on_viewport_height = viewport_height.is_some()
@@ -458,7 +460,7 @@ fn layout_document_with(
         for d in std::mem::take(&mut waiting) {
             depends_on_viewport_height |= viewport_height.is_some() && uses_cb_height(&d.b.style);
             let (fragment, fixed) =
-                layout_absolute(d.b, d.x, d.y, viewport_width, viewport_height, fonts);
+                layout_absolute(d.b, d.x, d.y, viewport_width, viewport_height, &pass);
             if d.b.style.position == Position::Absolute {
                 height = height.max(fragment.y + fragment.h);
             }
@@ -1024,7 +1026,7 @@ fn layout_block<'a>(
     cb_height: Option<f32>,
     floats: &mut FloatContext,
     at: At,
-    fonts: &FontCollection,
+    pass: &Pass<'a>,
     cache: Option<&LayoutCache>,
 ) -> BlockLayout<'a> {
     let edges = Edges::of_box(b, cb_width);
@@ -1032,9 +1034,9 @@ fn layout_block<'a>(
     // `BlockLayout::margin_left`'s doc for why that's correct, not an
     // oversight.
     let (content_width, margin_left, _margin_right) = if b.is_table() {
-        table_width_and_margins(b, cb_width, available_width, edges.horizontal(), fonts)
+        table_width_and_margins(b, cb_width, available_width, edges.horizontal(), pass.fonts)
     } else {
-        resolve_width_and_margins(b, cb_width, available_width, edges.horizontal(), fonts)
+        resolve_width_and_margins(b, cb_width, available_width, edges.horizontal(), pass.fonts)
     };
     let content = if establishes_bfc(&b.style) {
         Content::Root
@@ -1049,7 +1051,7 @@ fn layout_block<'a>(
         content_width,
         margin_left,
         content,
-        fonts,
+        pass,
         cache,
     )
 }
@@ -1067,7 +1069,7 @@ fn layout_contents<'a>(
     content_width: f32,
     margin_left: f32,
     content: Content<'_>,
-    fonts: &FontCollection,
+    pass: &Pass<'a>,
     cache: Option<&LayoutCache>,
 ) -> BlockLayout<'a> {
     if b.is_table() {
@@ -1078,7 +1080,7 @@ fn layout_contents<'a>(
             cb_height,
             content_width,
             margin_left,
-            fonts,
+            pass,
         );
     }
     layout_block_contents(
@@ -1089,7 +1091,7 @@ fn layout_contents<'a>(
         content_width,
         margin_left,
         content,
-        fonts,
+        pass,
         cache,
     )
 }
@@ -1103,9 +1105,9 @@ pub(crate) fn layout_float<'a>(
     b: &'a LayoutBox,
     cb_width: f32,
     cb_height: Option<f32>,
-    fonts: &FontCollection,
+    pass: &Pass<'a>,
 ) -> AtomicLayout<'a> {
-    layout_inline_block(b, cb_width, cb_height, fonts)
+    layout_inline_block(b, cb_width, cb_height, pass)
 }
 
 /// The float the atomic layout of `b` describes, for a containing
@@ -1144,7 +1146,7 @@ pub(crate) fn layout_inline_block<'a>(
     b: &'a LayoutBox,
     cb_width: f32,
     cb_height: Option<f32>,
-    fonts: &FontCollection,
+    pass: &Pass<'a>,
 ) -> AtomicLayout<'a> {
     let edges = Edges::of_box(b, cb_width);
     let margin = |side: usize| b.style.margin[side].resolve(cb_width, 0.0);
@@ -1153,7 +1155,7 @@ pub(crate) fn layout_inline_block<'a>(
     // The shrink-to-fit width is `fit-content` in the room the margins
     // leave (M17).
     let available = (cb_width - margin_left - margin_right - edges.horizontal()).max(0.0);
-    let intrinsic = Intrinsic::of(b, fonts);
+    let intrinsic = Intrinsic::of(b, pass.fonts);
     let c = width_constraints(
         &b.style,
         cb_width,
@@ -1179,7 +1181,7 @@ pub(crate) fn layout_inline_block<'a>(
         content_width,
         margin_left,
         Content::Root,
-        fonts,
+        pass,
         None,
     );
     let height = margin_top + layout.height + margin_bottom;
@@ -1209,8 +1211,9 @@ pub(crate) fn layout_inline_block<'a>(
 /// The body of a block container's layout once its content width and
 /// left margin are known: its height, the stacking of its children and
 /// the margins it exposes. `content` says which float context the
-/// children are laid out in (M11); `cache` is the layout cache those
-/// placed in flow are taken from and kept in, if any (M13.2).
+/// children are laid out in (M11): a box given a context of its own is
+/// a block formatting context root (M17); `cache` is the layout cache
+/// those placed in flow are taken from and kept in, if any (M13.2).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn layout_block_contents<'a>(
     b: &'a LayoutBox,
@@ -1220,7 +1223,7 @@ pub(crate) fn layout_block_contents<'a>(
     content_width: f32,
     margin_left: f32,
     content: Content<'_>,
-    fonts: &FontCollection,
+    pass: &Pass<'a>,
     cache: Option<&LayoutCache>,
 ) -> BlockLayout<'a> {
     let Edges { border, padding } = edges;
@@ -1229,8 +1232,10 @@ pub(crate) fn layout_block_contents<'a>(
     // block formatting context root, whose children are in a different
     // formatting context from its own margins (§8.3.1's first
     // condition) — on both sides at once, and its own top and bottom
-    // margins never adjoin each other either.
-    let bfc_root = establishes_bfc(&b.style);
+    // margins never adjoin each other either. A box laid out as a root
+    // is one whatever its style says: a flex item (M17) establishes an
+    // independent formatting context for its content (css-flexbox-1 §4).
+    let bfc_root = establishes_bfc(&b.style) || matches!(content, Content::Root);
     let stops_top = bfc_root || border[TOP] > 0.0 || padding[TOP] > 0.0;
     let stops_bottom = bfc_root || border[BOTTOM] > 0.0 || padding[BOTTOM] > 0.0;
     let non_content_height = edges.vertical();
@@ -1308,7 +1313,7 @@ pub(crate) fn layout_block_contents<'a>(
         specified_height,
         floats,
         at,
-        fonts,
+        pass,
         cache,
     );
     if bfc_root {
@@ -1334,7 +1339,7 @@ pub(crate) fn layout_block_contents<'a>(
             &mut root,
             border,
             carried(children.absolutes, content_x, 0.0),
-            fonts,
+            pass,
         );
         return BlockLayout {
             root,
@@ -1450,7 +1455,7 @@ pub(crate) fn layout_block_contents<'a>(
         &mut root,
         border,
         carried(children.absolutes, content_x, content_y),
-        fonts,
+        pass,
     );
     if b.style.overflow.clips() {
         // The scrollable overflow area (M10.5, see `Fragment::
@@ -1498,7 +1503,7 @@ pub(crate) fn settle_absolutes<'a>(
     root: &mut Fragment,
     border: &[f32; 4],
     absolutes: Vec<Deferred<'a>>,
-    fonts: &FontCollection,
+    pass: &Pass<'a>,
 ) -> Vec<Deferred<'a>> {
     if !b.style.position.is_positioned() {
         return absolutes;
@@ -1515,7 +1520,7 @@ pub(crate) fn settle_absolutes<'a>(
             d.y - border[TOP],
             padding_w,
             Some(padding_h),
-            fonts,
+            pass,
         );
         up.extend(carried(fixed, border[LEFT], border[TOP]));
         root.children
@@ -1573,7 +1578,7 @@ fn layout_absolute<'a>(
     sy: f32,
     cb_width: f32,
     cb_height: Option<f32>,
-    fonts: &FontCollection,
+    pass: &Pass<'a>,
 ) -> (Fragment, Vec<Deferred<'a>>) {
     let style = &b.style;
     let edges = Edges::of_box(b, cb_width);
@@ -1597,7 +1602,7 @@ fn layout_absolute<'a>(
     // edge, the content width and the two margins.
     // The intrinsic keywords (M17), `fit-content` in the room between
     // the insets given, or from the static position.
-    let intrinsic = Intrinsic::of(b, fonts);
+    let intrinsic = Intrinsic::of(b, pass.fonts);
     let stretch = cb_width
         - left.unwrap_or(sx)
         - right.unwrap_or(0.0)
@@ -1674,7 +1679,7 @@ fn layout_absolute<'a>(
         content_width,
         margin_left,
         Content::Root,
-        fonts,
+        pass,
         None,
     );
     let mut fragment = layout.root;
@@ -1794,7 +1799,7 @@ fn place_block<'a>(
     cb_height: Option<f32>,
     floats: &mut FloatContext,
     at: At,
-    fonts: &FontCollection,
+    pass: &Pass<'a>,
     cache: Option<&LayoutCache>,
 ) -> BlockPlacement<'a> {
     // Only an element's own box is kept under its node, and only one no
@@ -1832,7 +1837,7 @@ fn place_block<'a>(
     }
     if !root || floats.is_empty() {
         let layout = layout_block(
-            child, cb_width, cb_width, cb_height, floats, at, fonts, cache,
+            child, cb_width, cb_width, cb_height, floats, at, pass, cache,
         );
         // Laid out untouched, it is kept if it placed no float either.
         let kept =
@@ -1874,7 +1879,7 @@ fn place_block<'a>(
                 strut: above,
             };
             layout_block(
-                child, cb_width, cb_width, cb_height, floats, inside, fonts, cache,
+                child, cb_width, cb_width, cb_height, floats, inside, pass, cache,
             )
         };
         return BlockPlacement {
@@ -1911,7 +1916,7 @@ fn place_block<'a>(
                 cb_right - margin_right
             };
             let room = border_right - border_left + margin_left + margin_right;
-            let layout = layout_block(child, cb_width, room, cb_height, floats, at, fonts, cache);
+            let layout = layout_block(child, cb_width, room, cb_height, floats, at, pass, cache);
             let alone = left == cb_left && right == cb_right;
             if !alone && layout.root.w > border_right - border_left {
                 break None;
@@ -2032,7 +2037,7 @@ fn layout_children<'a>(
     cb_height: Option<f32>,
     floats: &mut FloatContext,
     at: At,
-    fonts: &FontCollection,
+    pass: &Pass<'a>,
     cache: Option<&LayoutCache>,
 ) -> ChildrenLayout<'a> {
     let mut fragments = Vec::new();
@@ -2071,7 +2076,7 @@ fn layout_children<'a>(
                     x,
                     separated,
                     held: serial,
-                } = place_block(child, cb_width, cb_height, floats, at, fonts, cache);
+                } = place_block(child, cb_width, cb_height, floats, at, pass, cache);
                 // Its fragment goes next, whichever way it is placed.
                 held.extend(serial.map(|serial| Held {
                     index: fragments.len(),
@@ -2187,7 +2192,7 @@ fn layout_children<'a>(
                 // The absolutely positioned boxes it carries are moved
                 // to where it was placed — or, while it waits, to where
                 // it will be placed in the common case, the content top.
-                let atomic = layout_float(child, cb_width, cb_height, fonts);
+                let atomic = layout_float(child, cb_width, cb_height, pass);
                 let float = pending_float(child, &atomic, at.x, cb_width);
                 let (fx, fy) = match at.origin {
                     Some(origin) => {
@@ -2242,7 +2247,7 @@ fn layout_children<'a>(
                     first_line,
                     floats,
                     at,
-                    fonts,
+                    pass,
                 );
                 if lines.last_baseline.is_none() {
                     // No line box at all (an empty inline element, or
@@ -2578,6 +2583,43 @@ mod tests {
         let narrow = t(".w { width: 1px }");
         assert_eq!(t(".t { width: min-content }"), narrow);
         assert_eq!(t(".t { width: max-content }"), t(""));
+    }
+
+    #[test]
+    fn a_box_given_a_context_of_its_own_is_a_root_whatever_its_style() {
+        // M17: a flex item is laid out as a formatting context root
+        // whatever its style says (css-flexbox-1 §4). A plain block laid
+        // out with a context of its own keeps its child's top margin and
+        // its float inside; in its parent's context, the margin escapes.
+        let fonts = test_fonts();
+        let pass = Pass::new(&fonts);
+        let root = Element::new("div")
+            .push(Element::new("p").attr("class", "f"))
+            .push(Element::new("p").attr("class", "m"));
+        let sheet = css::parse_stylesheet(
+            "div { margin: 0 } p { margin: 0 } .m { margin-top: 20px; height: 10px }
+             .f { float: left; width: 5px; height: 50px }",
+        )
+        .expect("test css is valid");
+        let (_, boxes) = boxes_of(&dom::Node::document(vec![root.into()]), &[sheet]);
+        let div = &boxes[0];
+        let edges = Edges::of(&div.style, VIEWPORT);
+        let lay = |content| {
+            layout_block_contents(
+                div, &edges, VIEWPORT, None, VIEWPORT, 0.0, content, &pass, None,
+            )
+        };
+        let own = lay(Content::Root);
+        assert_eq!(own.margin_top.resolve(), 0.0);
+        assert_eq!(own.height, 50.0, "the float is inside: its context root's");
+        assert_eq!(own.root.children[1].y, 20.0);
+        let mut floats = FloatContext::default();
+        let shared = lay(Content::In {
+            floats: &mut floats,
+            at: At::root(),
+        });
+        assert_eq!(shared.margin_top.resolve(), 20.0, "the margin escapes");
+        assert_eq!(shared.height, 10.0, "the float overflows");
     }
 
     #[test]

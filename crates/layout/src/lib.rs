@@ -24,6 +24,7 @@ mod cache;
 mod float;
 pub mod inline;
 mod intrinsic;
+mod pass;
 mod table;
 
 pub use block::{

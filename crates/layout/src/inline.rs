@@ -108,6 +108,7 @@ use crate::block::{
 };
 use crate::box_tree::{BoxKind, FirstLine, LayoutBox};
 use crate::float::{At, FloatContext, PendingFloat};
+use crate::pass::Pass;
 
 /// One flattened piece of inline content, in document order.
 pub(crate) enum InlineItem<'a> {
@@ -285,15 +286,15 @@ pub(crate) fn layout_inline<'a>(
     first_line: Option<&'a FirstLine>,
     floats: &mut FloatContext,
     at: At,
-    fonts: &FontCollection,
+    pass: &Pass<'a>,
 ) -> InlineLayout<'a> {
-    let flat = collect_inline_items(items, fonts);
-    let strut = fonts.metrics_for_text(" ", container.font_size_px);
+    let flat = collect_inline_items(items, pass.fonts);
+    let strut = pass.fonts.metrics_for_text(" ", container.font_size_px);
     // The items as on the first line, as far as it can reach; the run's
     // own when nothing in it is restyled there.
     let first_items = first_line
         .filter(|_| restyled_on_first_line(items))
-        .map(|_| collect_first_line_items(items, fonts, Some(cb_width)));
+        .map(|_| collect_first_line_items(items, pass.fonts, Some(cb_width)));
     let first = first_line
         .map(|line| (line, first_items.as_deref().unwrap_or(&flat)))
         .filter(|(_, items)| is_prefix(items, &flat))
@@ -313,10 +314,10 @@ pub(crate) fn layout_inline<'a>(
         available_width: cb_width,
         text_align: container.text_align,
         strut: match (&first, first_line) {
-            (Some(_), Some(line)) => fonts.metrics_for_text(" ", line.style.font_size_px),
+            (Some(_), Some(line)) => pass.fonts.metrics_for_text(" ", line.style.font_size_px),
             _ => strut,
         },
-        fonts,
+        pass,
         items: &flat,
         first,
         line: Vec::new(),
@@ -357,7 +358,7 @@ pub(crate) fn layout_inline<'a>(
                 after_atomic = false;
             }
             InlineItem::Atomic { b, gap_before } => {
-                let atomic = layout_inline_block(b, cb_width, cb_height, fonts);
+                let atomic = layout_inline_block(b, cb_width, cb_height, pass);
                 lines.place(LineItem::Atomic(Box::new(atomic)), index, *gap_before, true);
                 after_atomic = true;
             }
@@ -392,7 +393,10 @@ pub(crate) fn layout_inline<'a>(
                 // not nothing.
                 if !lines.flush() {
                     lines.start_line();
-                    let m = join(lines.strut, fonts.metrics_for_text(" ", style.font_size_px));
+                    let m = join(
+                        lines.strut,
+                        pass.fonts.metrics_for_text(" ", style.font_size_px),
+                    );
                     lines.last_baseline = Some(lines.y + m.ascent);
                     lines.first_baseline = lines.first_baseline.or(lines.last_baseline);
                     lines.y += m.line_height();
@@ -459,7 +463,8 @@ struct Lines<'a, 'i, 'f, 'c> {
     /// The containing block's own font metrics, the least any line is:
     /// on the first line, the innermost `::first-line`'s (M16).
     strut: FontMetrics,
-    fonts: &'f FontCollection,
+    /// The pass the run is laid out in (M17), and its fonts.
+    pass: &'f Pass<'a>,
     /// The run's items, and while the first line is being filled the
     /// `::first-line` styling it, if any.
     items: &'i [InlineItem<'a>],
@@ -600,7 +605,7 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
         let gap = if !self.has_content || !gap_before {
             0.0
         } else {
-            space_width(item.style(), self.fonts)
+            space_width(item.style(), self.pass.fonts)
         };
         // Greedy line breaking at a soft-wrap opportunity (M7.3): if
         // this item doesn't fit, start a new line — unless the line is
@@ -628,7 +633,7 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
                 .filter(|at| *at > 0)
             {
                 let tail: Vec<Placed<'a, 'i>> = self.line.drain(at..).collect();
-                (self.line_width, self.has_content) = measure_line(&self.line, self.fonts);
+                (self.line_width, self.has_content) = measure_line(&self.line, self.pass.fonts);
                 self.flush();
                 for p in tail {
                     let tail_item = self.settled(p.item, p.index, was_first);
@@ -657,7 +662,7 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
     /// is unresolved. Its fragment goes in its place, positioned by the
     /// root's `attach_floats`.
     fn float(&mut self, b: &'a LayoutBox) {
-        let atomic = layout_float(b, self.cb_width, self.cb_height, self.fonts);
+        let atomic = layout_float(b, self.cb_width, self.cb_height, self.pass);
         let float = pending_float(b, &atomic, self.cb_left, self.cb_width);
         self.fragments.push(atomic.root);
         if self.line.is_empty() {
@@ -697,7 +702,7 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
             self.available_width,
             self.text_align,
             &self.strut,
-            self.fonts,
+            self.pass.fonts,
             (self.cb_width, self.cb_height),
             &mut self.y,
             &mut self.fragments,
@@ -1707,7 +1712,7 @@ mod tests {
             None,
             &mut floats,
             At::root(),
-            fonts,
+            &Pass::new(fonts),
         );
         (l.fragments, l.height)
     }

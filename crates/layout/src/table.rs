@@ -94,6 +94,7 @@ use crate::block::{
     resolve_width_and_margins, settle_absolutes,
 };
 use crate::box_tree::{BoxKind, LayoutBox, RowGroupKind};
+use crate::pass::Pass;
 
 /// Lays out the table box `b` whose content box is `content_width` wide
 /// — the `width` given, or the containing block's width for `auto` —
@@ -110,7 +111,7 @@ pub(crate) fn layout_table_contents<'a>(
     cb_height: Option<f32>,
     content_width: f32,
     margin_left: f32,
-    fonts: &FontCollection,
+    pass: &Pass<'a>,
 ) -> BlockLayout<'a> {
     let style = &b.style;
     let grid = Grid::of(b);
@@ -132,12 +133,12 @@ pub(crate) fn layout_table_contents<'a>(
         let needed = widths.iter().sum::<f32>() + spacing;
         (widths, content_width.max(needed))
     } else {
-        let measures = measure_columns(&grid, hspacing, cell_borders, fonts);
+        let measures = measure_columns(&grid, hspacing, cell_borders, pass.fonts);
         let (grid_min, _) = grid_widths(&measures, hspacing);
         let content_width =
             content_width
                 .max(grid_min)
-                .max(caption_min(b, edges.horizontal(), fonts));
+                .max(caption_min(b, edges.horizontal(), pass.fonts));
         let widths = auto_column_widths(&measures, (content_width - spacing).max(0.0));
         (widths, content_width)
     };
@@ -150,13 +151,7 @@ pub(crate) fn layout_table_contents<'a>(
             .sum::<f32>()
             + (cell.colspan - 1) as f32 * hspacing;
         let border = cell_borders.map(|borders| borders[i]);
-        cells.push(layout_cell(
-            cell.b,
-            span_width,
-            content_width,
-            border,
-            fonts,
-        ));
+        cells.push(layout_cell(cell.b, span_width, content_width, border, pass));
     }
 
     // The row baselines: the lowest baseline among the cells aligned to
@@ -546,7 +541,7 @@ pub(crate) fn layout_table_contents<'a>(
         } else {
             (&mut bottom_captions, &mut bottom_height)
         };
-        let layout = layout_caption(part, table_width, fonts);
+        let layout = layout_caption(part, table_width, pass);
         let margin_top = layout.margin_top.resolve();
         let margin_bottom = layout.margin_bottom.resolve();
         let y = *height + margin_top;
@@ -581,7 +576,7 @@ pub(crate) fn layout_table_contents<'a>(
     // precede.
     let mut table_absolutes = carried(cell_absolutes, 0.0, top_height);
     table_absolutes.extend(carried(caption_absolutes, 0.0, top_height));
-    let absolutes = settle_absolutes(b, &mut root, border, table_absolutes, fonts);
+    let absolutes = settle_absolutes(b, &mut root, border, table_absolutes, pass);
 
     let own_top = AdjoiningMargins::of(style.margin[TOP].resolve(cb_width, 0.0));
     let own_bottom = AdjoiningMargins::of(style.margin[BOTTOM].resolve(cb_width, 0.0));
@@ -1410,7 +1405,7 @@ fn layout_cell<'a>(
     span_width: f32,
     table_width: f32,
     collapsed_border: Option<[f32; 4]>,
-    fonts: &FontCollection,
+    pass: &Pass<'a>,
 ) -> CellLayout<'a> {
     let mut edges = Edges::of(&b.style, table_width);
     if let Some(border) = collapsed_border {
@@ -1425,7 +1420,7 @@ fn layout_cell<'a>(
         content_width,
         0.0,
         Content::Root,
-        fonts,
+        pass,
         None,
     );
     let specified = definite_height(&b.style, None, edges.vertical()).unwrap_or(0.0);
@@ -1445,14 +1440,15 @@ fn layout_cell<'a>(
 
 /// A caption laid out as a block in the wrapper box, whose width is the
 /// table box's (CSS2 §17.4).
-fn layout_caption<'a>(
-    b: &'a LayoutBox,
-    wrapper_width: f32,
-    fonts: &FontCollection,
-) -> BlockLayout<'a> {
+fn layout_caption<'a>(b: &'a LayoutBox, wrapper_width: f32, pass: &Pass<'a>) -> BlockLayout<'a> {
     let edges = Edges::of(&b.style, wrapper_width);
-    let (content_width, margin_left, _) =
-        resolve_width_and_margins(b, wrapper_width, wrapper_width, edges.horizontal(), fonts);
+    let (content_width, margin_left, _) = resolve_width_and_margins(
+        b,
+        wrapper_width,
+        wrapper_width,
+        edges.horizontal(),
+        pass.fonts,
+    );
     layout_block_contents(
         b,
         &edges,
@@ -1461,7 +1457,7 @@ fn layout_caption<'a>(
         content_width,
         margin_left,
         Content::Root,
-        fonts,
+        pass,
         None,
     )
 }

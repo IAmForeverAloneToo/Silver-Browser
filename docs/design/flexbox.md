@@ -602,13 +602,14 @@ tests pass.
    maximums of blocks, floats, inline-blocks, absolutely positioned
    boxes and tables, and their contributions.
 3. *The layout pass*: the pass context in place of the font collection;
-   the imposed height through `layout_contents`; context roots taken
-   from the content. No result changes.
-4. *Flex layout*: the box kind and the items; `order`; §9's steps with
-   `flex-start` packing and stretch in both directions and both
-   reverses, wrapping, gaps, the automatic minimum, the definite sizes,
-   the kept item layouts; `inline-flex` on its line; the intrinsic
-   sizes; the first-line and first-letter finders. M17.1 to M17.4.
+   context roots taken from the content. No result changes.
+4. *Flex layout*: the imposed height through `layout_contents`, which
+   nothing could impose before; the box kind and the items; `order`;
+   §9's steps with `flex-start` packing and stretch in both directions
+   and both reverses, wrapping, gaps, the automatic minimum, the
+   definite sizes, the kept item layouts; `inline-flex` on its line; the
+   intrinsic sizes; the first-line and first-letter finders. M17.1 to
+   M17.4.
 5. *The WPT runner*: `supports`, the pull, the vendored subset, the
    runner, the expectations and the report. From here on, each step runs
    it and shortens `expectations.txt`.
