@@ -192,7 +192,14 @@ input the result depends on:
 
 - its content width;
 - the height imposed on it, and whether that height is definite;
-- its containing block's width and height.
+- its containing block's width;
+- its containing block's height, when its own `height`, `min-height` or
+  `max-height` is a percentage. Nothing else in a box's layout reads
+  that height: its children resolve their percentages against the box's
+  own height, and its relative offset is applied by its parent. Keying
+  on it regardless would undo the point, since a container laid out at
+  an indefinite height and then at a definite one would lay its items
+  out afresh each time.
 
 Each pair of box and inputs is laid out once per pass, and asking again
 clones the kept result. The kept results live in a pass context that the
@@ -247,7 +254,8 @@ steps:
    height, else the sum of its items' outer hypothetical main sizes and
    gaps on one line (with infinite room nothing wraps), clamped by its
    `min-height` and `max-height`. With a `max-height` that clamps it, a
-   wrapping column container wraps at that height.
+   wrapping column container wraps at that height, and is then as tall
+   as its longest line, clamped again, as the reference browser has it.
 5. *Lines*: one line for `nowrap`. Otherwise items are collected until
    the next one's outer hypothetical main size, plus a gap, would not
    fit; the first item of a line goes on it whatever its size. Sums are

@@ -48,7 +48,10 @@ pub(super) fn apply(styled: &Styled<'_>, boxes: &mut [LayoutBox]) {
 /// Adds the `::first-line` of `b`, if it has one, to its first line's
 /// run, then those of the boxes inside it: outermost first.
 fn visit(styled: &Styled<'_>, b: &mut LayoutBox) {
+    // A flex container has no first formatted line (css-flexbox-1 §3,
+    // M17); its items, block containers, have theirs.
     if !b.anonymous
+        && !b.is_flex_container()
         && styled
             .styles
             .pseudo(b.node, PseudoElement::FirstLine)
@@ -88,7 +91,8 @@ fn in_blocks(children: &[LayoutBox], path: &mut Vec<usize>) -> Found {
             BoxKind::Block => in_blocks(&child.children, path),
             // Out of flow.
             BoxKind::Float | BoxKind::Absolute => Found::Empty,
-            // A table's lines are its cells'.
+            // A table's lines are its cells', a flex container's its
+            // items' (M17).
             _ => Found::Blocked,
         };
         match found {
@@ -117,7 +121,7 @@ fn has_line(items: &[LayoutBox]) -> bool {
                 .any(|c| !crate::inline::is_css_space(c) || (c == '\n' && breaks_kept))
         }
         BoxKind::Inline => has_edges(&b.style) || has_line(&b.children),
-        BoxKind::InlineBlock | BoxKind::Table => true,
+        BoxKind::InlineBlock | BoxKind::Table | BoxKind::Flex => true,
         _ => false,
     })
 }

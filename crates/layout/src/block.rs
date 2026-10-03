@@ -224,7 +224,7 @@ impl Fragment {
 /// The bottom edge of `f`'s box, or of anything inside it reaching
 /// lower, relative to the origin `f`'s own coordinates are in. Content
 /// inside a box that clips does not count: its overflow is its own.
-fn extent_bottom(f: &Fragment) -> f32 {
+pub(crate) fn extent_bottom(f: &Fragment) -> f32 {
     let own = f.top() + f.h;
     if f.clips() {
         return own;
@@ -790,6 +790,7 @@ pub(crate) fn height_bounds(
 /// moved along as that fragment is placed, until the nearest positioned
 /// ancestor (or the initial containing block; the viewport, for
 /// `position: fixed`) lays it out against its padding box.
+#[derive(Clone)]
 pub(crate) struct Deferred<'a> {
     pub(crate) b: &'a LayoutBox,
     pub(crate) x: f32,
@@ -816,6 +817,7 @@ pub(crate) fn carried<'a>(list: Vec<Deferred<'a>>, dx: f32, dy: f32) -> Vec<Defe
 /// One box's layout, relative to its own border-box top-left `(0, 0)` —
 /// the caller (`layout_children`) translates once collapsed-margin
 /// placement among siblings is resolved.
+#[derive(Clone)]
 pub(crate) struct BlockLayout<'a> {
     /// The box's own fragment; its content's fragments are the
     /// children, relative to the box's border-box top-left `(0, 0)`.
@@ -945,7 +947,7 @@ pub(crate) fn establishes_bfc(style: &ComputedStyle) -> bool {
         || style.display.is_atomic_inline()
         || matches!(
             style.display,
-            Display::Table | Display::TableCell | Display::TableCaption
+            Display::Table | Display::TableCell | Display::TableCaption | Display::Flex
         )
         || style.float != Float::None
         || style.position.is_out_of_flow()
@@ -1012,6 +1014,16 @@ impl Edges {
     }
 }
 
+/// A height the formatting context around a box imposes on it (M17):
+/// the border-box height a flex item is stretched or flexed to.
+/// `definite` says whether the box's children resolve percentage
+/// heights against it (css-flexbox-1 §9.8).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Imposed {
+    pub(crate) height: f32,
+    pub(crate) definite: bool,
+}
+
 /// Lays out one [`BoxKind::Block`] box (an anonymous block never comes
 /// here: [`layout_children`] lays its lines out directly) in the float
 /// context `floats`, met at `at`, its margin box filling
@@ -1053,15 +1065,18 @@ fn layout_block<'a>(
         content,
         pass,
         cache,
+        None,
     )
 }
 
 /// The content of `b` laid out at `content_width`: a table's grid
-/// (M12, [`crate::table`]) — an in-flow, inline, floated or absolutely
+/// (M12, [`crate::table`]) or a flex container's items (M17,
+/// [`crate::flex`]) — an in-flow, inline, floated or absolutely
 /// positioned one alike — else a block container's children
-/// ([`layout_block_contents`]).
+/// ([`layout_block_contents`]); at the height `imposed`, when the
+/// formatting context around the box imposes one (M17).
 #[allow(clippy::too_many_arguments)]
-fn layout_contents<'a>(
+pub(crate) fn layout_contents<'a>(
     b: &'a LayoutBox,
     edges: &Edges,
     cb_width: f32,
@@ -1071,6 +1086,7 @@ fn layout_contents<'a>(
     content: Content<'_>,
     pass: &Pass<'a>,
     cache: Option<&LayoutCache>,
+    imposed: Option<Imposed>,
 ) -> BlockLayout<'a> {
     if b.is_table() {
         return crate::table::layout_table_contents(
@@ -1081,6 +1097,19 @@ fn layout_contents<'a>(
             content_width,
             margin_left,
             pass,
+            imposed,
+        );
+    }
+    if b.is_flex_container() {
+        return crate::flex::layout_flex_contents(
+            b,
+            edges,
+            cb_width,
+            cb_height,
+            content_width,
+            margin_left,
+            pass,
+            imposed,
         );
     }
     layout_block_contents(
@@ -1093,6 +1122,7 @@ fn layout_contents<'a>(
         content,
         pass,
         cache,
+        imposed,
     )
 }
 
@@ -1183,11 +1213,14 @@ pub(crate) fn layout_inline_block<'a>(
         Content::Root,
         pass,
         None,
+        None,
     );
     let height = margin_top + layout.height + margin_bottom;
     // An inline table aligns by its first row's baseline (CSS2 §10.8.1,
-    // M12), whatever its `overflow`, which a table does not apply.
-    let baseline = if b.is_table() {
+    // M12), whatever its `overflow`, which a table does not apply; an
+    // inline flex container by its first baseline (css-align-3 §9.1,
+    // M17), in its initial scroll position (css-flexbox-1 §8.5).
+    let baseline = if b.is_table() || b.is_flex_container() {
         layout.first_baseline
     } else {
         layout.last_baseline.filter(|_| !b.style.overflow.clips())
@@ -1225,6 +1258,7 @@ pub(crate) fn layout_block_contents<'a>(
     content: Content<'_>,
     pass: &Pass<'a>,
     cache: Option<&LayoutCache>,
+    imposed: Option<Imposed>,
 ) -> BlockLayout<'a> {
     let Edges { border, padding } = edges;
     // What keeps this box's margins from adjoining its children's: a
@@ -1239,8 +1273,19 @@ pub(crate) fn layout_block_contents<'a>(
     let stops_top = bfc_root || border[TOP] > 0.0 || padding[TOP] > 0.0;
     let stops_bottom = bfc_root || border[BOTTOM] > 0.0 || padding[BOTTOM] > 0.0;
     let non_content_height = edges.vertical();
-    let specified_height = definite_height(&b.style, cb_height, non_content_height);
-    let (min_height, max_height) = height_bounds(&b.style, cb_height, non_content_height);
+    // An imposed height is the box's, already clamped (M17); its
+    // children resolve percentages against it when it is definite.
+    let (specified_height, min_height, max_height, children_cb_height) = match imposed {
+        Some(imposed) => {
+            let height = (imposed.height - non_content_height).max(0.0);
+            (Some(height), 0.0, None, imposed.definite.then_some(height))
+        }
+        None => {
+            let specified = definite_height(&b.style, cb_height, non_content_height);
+            let (min, max) = height_bounds(&b.style, cb_height, non_content_height);
+            (specified, min, max, specified)
+        }
+    };
     // CSS2 §8.3.1: a box collapses its own margins through, or lets a
     // child's bottom margin escape, only with `height: auto` and
     // `min-height: 0`. Vertical margins resolve a percentage against
@@ -1310,7 +1355,7 @@ pub(crate) fn layout_block_contents<'a>(
     let children = layout_children(
         &b.children,
         content_width,
-        specified_height,
+        children_cb_height,
         floats,
         at,
         pass,
@@ -1532,7 +1577,7 @@ pub(crate) fn settle_absolutes<'a>(
 /// A `<length-percentage> | auto` inset or margin as a used value:
 /// `None` for `auto`, a percentage of `of` — or `auto` too when `of`,
 /// a containing block's height, is not known (CSS2 §9.3.2, §10.5).
-fn used(v: LengthPercentageAuto, of: Option<f32>) -> Option<f32> {
+pub(crate) fn used(v: LengthPercentageAuto, of: Option<f32>) -> Option<f32> {
     match v {
         LengthPercentageAuto::Auto => None,
         LengthPercentageAuto::Px(px) => Some(px),
@@ -1680,6 +1725,7 @@ fn layout_absolute<'a>(
         margin_left,
         Content::Root,
         pass,
+        None,
         None,
     );
     let mut fragment = layout.root;
@@ -2065,6 +2111,7 @@ fn layout_children<'a>(
             // is built as inside.
             BoxKind::Block
             | BoxKind::Table
+            | BoxKind::Flex
             | BoxKind::RowGroup(_)
             | BoxKind::Row
             | BoxKind::ColumnGroup { .. }
@@ -2606,7 +2653,7 @@ mod tests {
         let edges = Edges::of(&div.style, VIEWPORT);
         let lay = |content| {
             layout_block_contents(
-                div, &edges, VIEWPORT, None, VIEWPORT, 0.0, content, &pass, None,
+                div, &edges, VIEWPORT, None, VIEWPORT, 0.0, content, &pass, None, None,
             )
         };
         let own = lay(Content::Root);

@@ -941,9 +941,10 @@ impl<'a> Collector<'a, '_> {
                     }
                     self.push(InlineItem::Close(style));
                 }
-                // An inline-block, or a table in a run, which is an
-                // inline table (M12): atomic on the line.
-                BoxKind::InlineBlock | BoxKind::Table => {
+                // An inline-block, or a table or a flex container in a
+                // run, which is an inline table (M12) or an inline flex
+                // container (M17): atomic on the line.
+                BoxKind::InlineBlock | BoxKind::Table | BoxKind::Flex => {
                     let gap_before = std::mem::take(&mut self.space_pending);
                     self.gap_placed = false;
                     self.at_word_start = true;

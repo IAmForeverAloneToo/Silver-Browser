@@ -89,8 +89,8 @@ use style::computed::{
 use text::FontCollection;
 
 use crate::block::{
-    AdjoiningMargins, BlockLayout, Content, Deferred, Edges, Fragment, box_fragment, carried,
-    definite_height, height_bounds, layout_block_contents, relative_offset,
+    AdjoiningMargins, BlockLayout, Content, Deferred, Edges, Fragment, Imposed, box_fragment,
+    carried, definite_height, height_bounds, layout_block_contents, relative_offset,
     resolve_width_and_margins, settle_absolutes,
 };
 use crate::box_tree::{BoxKind, LayoutBox, RowGroupKind};
@@ -112,6 +112,7 @@ pub(crate) fn layout_table_contents<'a>(
     content_width: f32,
     margin_left: f32,
     pass: &Pass<'a>,
+    imposed: Option<Imposed>,
 ) -> BlockLayout<'a> {
     let style = &b.style;
     let grid = Grid::of(b);
@@ -258,7 +259,12 @@ pub(crate) fn layout_table_contents<'a>(
     };
     let specified = definite_height(style, cb_height, edges.vertical());
     let (min_height, _) = height_bounds(style, cb_height, edges.vertical());
-    let wanted = specified.unwrap_or(0.0).max(min_height);
+    // A height imposed on the table (M17: a stretched or flexed flex
+    // item's) is a minimum, as its own `height` is.
+    let wanted = specified
+        .unwrap_or(0.0)
+        .max(min_height)
+        .max(imposed.map_or(0.0, |i| i.height - edges.vertical()));
     if wanted > rows_height && !heights.is_empty() {
         let with_rows = || grid.groups.iter().filter(|g| g.rows > 0);
         let mut groups: Vec<&GridGroup<'_>> = with_rows().filter(|g| g.is_body()).collect();
@@ -1422,6 +1428,7 @@ fn layout_cell<'a>(
         Content::Root,
         pass,
         None,
+        None,
     );
     let specified = definite_height(&b.style, None, edges.vertical()).unwrap_or(0.0);
     let (min_height, _) = height_bounds(&b.style, None, edges.vertical());
@@ -1458,6 +1465,7 @@ fn layout_caption<'a>(b: &'a LayoutBox, wrapper_width: f32, pass: &Pass<'a>) -> 
         margin_left,
         Content::Root,
         pass,
+        None,
         None,
     )
 }

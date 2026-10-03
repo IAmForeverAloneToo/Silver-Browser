@@ -112,9 +112,9 @@ pub struct FirstLine {
     pub chain: Vec<LayoutBox>,
 }
 
-/// A box's kind, per `display` (block, inline, inline-block and the
-/// table values — flex, grid and so on generate real boxes only from
-/// their own milestones on).
+/// A box's kind, per `display` (block, inline, inline-block, the table
+/// values and the flex values, M17 — grid and so on generate real boxes
+/// only from their own milestones on).
 ///
 /// The builder's contract (CSS2 §9.2.1.1 and §17.2.1), which `block`
 /// relies on: a block container's ([`BoxKind::Block`]'s,
@@ -128,6 +128,11 @@ pub struct FirstLine {
 /// [`BoxKind::Text`]) or out of flow; a table's children are captions,
 /// column groups, columns, row groups and rows; a row group's are rows;
 /// a row's are cells; a column group's are columns; a column has none.
+/// A flex container's children ([`BoxKind::Flex`]'s, or a float's or an
+/// absolutely positioned box's whose `display` is `flex`) are its flex
+/// items — block containers ([`BoxKind::Block`], an anonymous one for a
+/// run of text), tables and flex containers — and its absolutely
+/// positioned children ([`BoxKind::Absolute`]), in document order.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BoxKind {
     Block,
@@ -218,6 +223,13 @@ pub enum BoxKind {
     /// A caption: a block container inside, placed by its
     /// `style.caption_side` at the top or the bottom of its table.
     Caption,
+    /// A flex container (css-flexbox-1, M17): block-level, or an
+    /// inline-level item on its line like an inline-block when its
+    /// `style.display` is `inline-flex`, as a table is by its display.
+    /// Its children are its flex items and its absolutely positioned
+    /// children; a floated or absolutely positioned flex container is
+    /// the `Float` or `Absolute` kind with a flex container's children.
+    Flex,
 }
 
 /// Which of CSS2 §17.2's three row-group values a [`BoxKind::RowGroup`]
@@ -245,6 +257,18 @@ impl LayoutBox {
         }
     }
 
+    /// Whether this box is a flex container, laid out by `crate::flex`
+    /// (M17): a [`BoxKind::Flex`], or a float or an absolutely positioned
+    /// box whose `display` is `flex`, which the builder gives a flex
+    /// container's children.
+    pub fn is_flex_container(&self) -> bool {
+        match self.kind {
+            BoxKind::Flex => true,
+            BoxKind::Float | BoxKind::Absolute => self.style.display == Display::Flex,
+            _ => false,
+        }
+    }
+
     /// Whether this box is block-level: a child of a block container,
     /// stacked vertically by `block::layout_children`. A table is,
     /// unless it is an inline table; a float is neither block-level nor
@@ -254,6 +278,7 @@ impl LayoutBox {
         match self.kind {
             BoxKind::Block | BoxKind::AnonymousBlock => true,
             BoxKind::Table => self.style.display == Display::Table,
+            BoxKind::Flex => self.style.display == Display::Flex,
             _ => false,
         }
     }
@@ -557,6 +582,65 @@ fn build_block_container_of(styled: &Styled<'_>, item: Item, children: &[Item]) 
     container.finish()
 }
 
+/// The children of a box whose inside is what its block-level
+/// `display` says: a table's parts, a flex container's items (M17), or
+/// a block container's children.
+fn build_inside(styled: &Styled<'_>, item: Item, style: &ComputedStyle) -> Vec<LayoutBox> {
+    match style.display {
+        Display::Table => build_table(styled, item),
+        Display::Flex => build_flex_container(styled, item),
+        _ => build_block_container(styled, item),
+    }
+}
+
+/// The children of the flex container `item` generates (css-flexbox-1
+/// §4, M17), in document order: each in-flow child element, `::before`
+/// and `::after` is a flex item, the box its `display`, blockified by
+/// the cascade, generates — a floated one as if it did not float (§3);
+/// an absolutely positioned child is the out-of-flow box it is, not an
+/// item; and each run of consecutive text children is an anonymous flex
+/// item, an anonymous block container around the run, unless the run is
+/// nothing but white space, which is not rendered. Layout takes the
+/// items in `order` (§5.4).
+fn build_flex_container(styled: &Styled<'_>, item: Item) -> Vec<LayoutBox> {
+    let mut out = Vec::new();
+    let mut run = Vec::new();
+    for child in styled.children(item) {
+        if !styled.is_element(child) {
+            run.push(child);
+            continue;
+        }
+        flush_text_run(styled, item, &mut run, &mut out);
+        let Some(style) = styled.style(child) else {
+            continue;
+        };
+        let kind = match style.display {
+            Display::None => continue,
+            _ if style.position.is_out_of_flow() => BoxKind::Absolute,
+            Display::Table => BoxKind::Table,
+            Display::Flex => BoxKind::Flex,
+            _ => BoxKind::Block,
+        };
+        out.push(styled.own_box(child, style, kind, || build_inside(styled, child, style)));
+    }
+    flush_text_run(styled, item, &mut run, &mut out);
+    out
+}
+
+/// The anonymous flex item around the text children in `run`, if
+/// there is anything but white space in them, added to `out`.
+fn flush_text_run(styled: &Styled<'_>, item: Item, run: &mut Vec<Item>, out: &mut Vec<LayoutBox>) {
+    if run.is_empty() {
+        return;
+    }
+    let quote_depth = styled.quote_depth.get();
+    let children = build_block_container_of(styled, item, run);
+    run.clear();
+    if !children.is_empty() {
+        out.push(styled.anonymous_box(item, Display::Block, BoxKind::Block, children, quote_depth));
+    }
+}
+
 /// The style of an anonymous box: inherited from `item`, the element
 /// or generated box it belongs to, every other property initial (so no
 /// margin, padding, border, background or size of its own), and the
@@ -693,26 +777,25 @@ impl BlockContainer<'_> {
                 } else {
                     BoxKind::Float
                 };
-                let out_of_flow = styled.own_box(child, style, kind, || {
-                    if style.display == Display::Table {
-                        build_table(styled, child)
-                    } else {
-                        build_block_container(styled, child)
-                    }
-                });
+                let out_of_flow =
+                    styled.own_box(child, style, kind, || build_inside(styled, child, style));
                 if self.open.is_empty() && self.run.is_empty() {
                     self.out.push(out_of_flow);
                 } else {
                     self.add_inline_level(out_of_flow);
                 }
             }
-            // A flex container is built as the block container it would
-            // otherwise be until flex layout lands (M17 step 4).
-            Display::Block | Display::Flex => {
+            Display::Block => {
                 let block = styled.own_box(child, style, BoxKind::Block, || {
                     build_block_container(styled, child)
                 });
                 self.add_block(block);
+            }
+            Display::Flex => {
+                let flex = styled.own_box(child, style, BoxKind::Flex, || {
+                    build_flex_container(styled, child)
+                });
+                self.add_block(flex);
             }
             Display::Table => {
                 let table =
@@ -726,11 +809,17 @@ impl BlockContainer<'_> {
                 let inline = self.open.pop().expect("the inline just opened");
                 self.add_inline_level(inline);
             }
-            Display::InlineBlock | Display::InlineFlex => {
+            Display::InlineBlock => {
                 let block = styled.own_box(child, style, BoxKind::InlineBlock, || {
                     build_block_container(styled, child)
                 });
                 self.add_inline_level(block);
+            }
+            Display::InlineFlex => {
+                let flex = styled.own_box(child, style, BoxKind::Flex, || {
+                    build_flex_container(styled, child)
+                });
+                self.add_inline_level(flex);
             }
             Display::InlineTable => {
                 let table =
@@ -1233,6 +1322,10 @@ mod tests {
                 BoxKind::Column { span } => format!("col {span}"),
                 BoxKind::Cell { colspan, rowspan } => format!("cell {colspan}x{rowspan}"),
                 BoxKind::Caption => "caption".to_string(),
+                BoxKind::Flex if b.style.display == Display::InlineFlex => {
+                    "inline-flex".to_string()
+                }
+                BoxKind::Flex => "flex".to_string(),
             };
             // A `::before` or `::after` box, or one in it, is marked
             // with a `+`, a `::first-letter` one with a `^`.
@@ -3167,5 +3260,132 @@ mod tests {
                 b.kind
             );
         }
+    }
+
+    #[test]
+    fn a_flex_containers_children_are_its_items() {
+        // M17, css-flexbox-1 §4. Nodes: div 4, span 5, p 6, i 7, b 8, em
+        // 9. Each child element is an item, its display blockified; each
+        // run of text an anonymous item, a block around the run's
+        // anonymous block, unless the run is nothing but white space; an
+        // absolutely positioned child is no item; a floated one is an
+        // item as if it did not float; a `::before` is an item too.
+        let tree = tree_of(
+            "<div> a <span>b</span> <p>c</p>d<i>e</i> <b class=abs></b> <em class=f>f</em> </div>",
+            "div { display: flex } .abs { position: absolute } .f { float: left }
+             div::before { content: 'g' }",
+        );
+        assert_eq!(
+            tree.shape_of(&tree.body().children),
+            pairs(&[
+                ("flex", 4),
+                ("+block", 4),
+                ("+anon", 4),
+                ("+text g", 4),
+                ("block", 4),
+                ("anon", 4),
+                ("text  a ", 4),
+                ("block", 5),
+                ("anon", 5),
+                ("text b", 5),
+                ("block", 6),
+                ("anon", 6),
+                ("text c", 6),
+                ("block", 4),
+                ("anon", 4),
+                ("text d", 4),
+                ("block", 7),
+                ("anon", 7),
+                ("text e", 7),
+                ("absolute", 8),
+                ("block", 9),
+                ("anon", 9),
+                ("text f", 9),
+            ])
+        );
+        let flex = &tree.body().children[0];
+        assert!(flex.is_flex_container() && flex.is_block_level());
+        // The anonymous item is anonymous, and inherits from the
+        // container as an anonymous block does.
+        assert!(flex.children[1].anonymous);
+        assert_eq!(flex.children[1].style.display, Display::Block);
+        // A floated or absolutely positioned flex container is a flex
+        // container too, and its children are items.
+        for css in [".x { float: left }", ".x { position: absolute }"] {
+            let tree = tree_of(
+                "<p><span class=x><i>y</i></span></p>",
+                &format!(".x {{ display: flex }} {css}"),
+            );
+            let x = &tree.body().children[0].children[0];
+            assert!(x.is_flex_container(), "{css}");
+            assert!(!x.is_block_level(), "{css}");
+            assert_eq!(x.children[0].kind, BoxKind::Block, "{css}");
+        }
+    }
+
+    #[test]
+    fn an_inline_flex_container_is_an_atomic_item_on_its_line() {
+        // Nodes: p 4, span 5, i 6.
+        let tree = tree_of(
+            "<p>x<span>y<i>z</i></span>w</p>",
+            "span { display: inline-flex }",
+        );
+        assert_eq!(
+            tree.shape_of(&tree.body().children),
+            pairs(&[
+                ("block", 4),
+                ("anon", 4),
+                ("text x", 4),
+                ("inline-flex", 5),
+                ("block", 5),
+                ("anon", 5),
+                ("text y", 5),
+                ("block", 6),
+                ("anon", 6),
+                ("text z", 6),
+                ("text w", 4),
+            ])
+        );
+        let span = &tree.body().children[0].children[0].children[1];
+        assert!(span.is_flex_container() && !span.is_block_level());
+    }
+
+    #[test]
+    fn a_flex_container_has_no_first_line_or_first_letter_but_its_items_do() {
+        // css-flexbox-1 §3: neither applies to a flex container, nor
+        // reaches through one from a block around it; an item, a block
+        // container, has its own. Nodes: div 4, p 5.
+        for (html, css) in [
+            ("<div>Text</div>", "div { display: flex }"),
+            ("<div><p>Text</p></div>", "div { display: flex }"),
+            (
+                "<div><p>Text</p></div>",
+                "p { display: flex } div { display: block }",
+            ),
+            ("<div>Text</div>", "div { display: inline-flex }"),
+        ] {
+            let tree = tree_of(
+                html,
+                &format!(
+                    "{css} div::first-letter {{ color: #f00 }} div::first-line {{ color: #f00 }}"
+                ),
+            );
+            let shape = tree.shape_of(&tree.body().children);
+            assert!(
+                shape.iter().all(|(k, _)| !k.starts_with('^')),
+                "{html} {css}"
+            );
+            assert!(
+                first_line_styles(&tree, &tree.body().children).is_empty(),
+                "{html} {css}"
+            );
+        }
+        let tree = tree_of(
+            "<div><p>Text</p></div>",
+            "div { display: flex } p::first-letter { color: #f00 } p::first-line { color: #f00 }",
+        );
+        let shape = tree.shape_of(&tree.body().children);
+        assert_eq!(shape.iter().filter(|(k, _)| k == "^text T").count(), 1);
+        assert!(!first_line_styles(&tree, &tree.body().children).is_empty());
     }
 }

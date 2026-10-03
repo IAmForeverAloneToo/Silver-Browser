@@ -56,7 +56,10 @@ fn visit(styled: &Styled<'_>, b: &mut LayoutBox) {
 /// container's children are blocks, and an inline element's are on
 /// its line, a table's its parts.
 fn originates(styled: &Styled<'_>, b: &LayoutBox) -> bool {
+    // Nor a flex container (css-flexbox-1 §3, M17), whose children are
+    // blocks but not its lines.
     !b.anonymous
+        && !b.is_flex_container()
         && styled
             .styles
             .pseudo(b.node, PseudoElement::FirstLetter)
@@ -88,7 +91,8 @@ fn in_blocks(children: &[LayoutBox], path: &mut Vec<usize>) -> Found {
             // Out of flow. (An ancestor's floated first letter is in a
             // line, where it was a text's.)
             BoxKind::Float | BoxKind::Absolute => Found::Empty,
-            // A table's lines are its cells'.
+            // A table's lines are its cells', a flex container's its
+            // items' (M17).
             _ => Found::Blocked,
         };
         match found {
@@ -113,7 +117,8 @@ fn in_line(items: &[LayoutBox], path: &mut Vec<usize>) -> Found {
                 in_blocks(&item.children, path)
             }
             BoxKind::Float | BoxKind::Absolute => Found::Empty,
-            // An inline-block or an inline table: an atomic inline first.
+            // An inline-block, an inline table or an inline flex
+            // container: an atomic inline first.
             _ => Found::Blocked,
         };
         match found {

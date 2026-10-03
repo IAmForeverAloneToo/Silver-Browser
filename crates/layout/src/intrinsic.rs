@@ -6,6 +6,9 @@
 //! collection, so that what counts as a word, a gap or an unbreakable
 //! piece is exactly what layout breaks by.
 //!
+//! A flex container's widths are its items' (M17,
+//! `crate::flex::content_widths`).
+//!
 //! A length `width` is used as given, a percentage one as `auto` (CSS2
 //! §10.3.5), an intrinsic keyword (M17) as the box's own min-content or
 //! max-content width, whichever the constraint asks for (`fit-content`
@@ -36,24 +39,7 @@ use crate::inline::{
 /// its own minimum, whatever its `width` and `max-width` say.
 pub(crate) fn contribution(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32) {
     let style = &b.style;
-    let fixed = |v: LengthPercentage| match v {
-        LengthPercentage::Px(px) => px,
-        LengthPercentage::Percent(_) => 0.0,
-    };
-    let fixed_margin = |v: LengthPercentageAuto| match v {
-        LengthPercentageAuto::Px(px) => px,
-        LengthPercentageAuto::Percent(_) | LengthPercentageAuto::Auto => 0.0,
-    };
-    let border = style.used_border_width();
-    // A table whose borders collapse has no padding, and half its outer
-    // grid lines for its border (M12).
-    let non_content = if crate::table::collapses(style) {
-        let border = crate::table::collapsed_table_border(b);
-        border[LEFT] + border[RIGHT]
-    } else {
-        border[LEFT] + border[RIGHT] + fixed(style.padding[LEFT]) + fixed(style.padding[RIGHT])
-    };
-    let margins = fixed_margin(style.margin[LEFT]) + fixed_margin(style.margin[RIGHT]);
+    let (non_content, margins) = fixed_edges(b);
     let inner = |v: f32| match style.box_sizing {
         BoxSizing::ContentBox => v.max(0.0),
         BoxSizing::BorderBox => (v - non_content).max(0.0),
@@ -104,6 +90,31 @@ pub(crate) fn contribution(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32) 
     )
 }
 
+/// What `b`'s horizontal padding and border, and its horizontal margins,
+/// add to its content width in a contribution: a percentage is zero, as
+/// an `auto` margin is. A table whose borders collapse has no padding,
+/// and half its outer grid lines for its border (M12).
+pub(crate) fn fixed_edges(b: &LayoutBox) -> (f32, f32) {
+    let style = &b.style;
+    let fixed = |v: LengthPercentage| match v {
+        LengthPercentage::Px(px) => px,
+        LengthPercentage::Percent(_) => 0.0,
+    };
+    let fixed_margin = |v: LengthPercentageAuto| match v {
+        LengthPercentageAuto::Px(px) => px,
+        LengthPercentageAuto::Percent(_) | LengthPercentageAuto::Auto => 0.0,
+    };
+    let border = style.used_border_width();
+    let non_content = if crate::table::collapses(style) {
+        let border = crate::table::collapsed_table_border(b);
+        border[LEFT] + border[RIGHT]
+    } else {
+        border[LEFT] + border[RIGHT] + fixed(style.padding[LEFT]) + fixed(style.padding[RIGHT])
+    };
+    let margins = fixed_margin(style.margin[LEFT]) + fixed_margin(style.margin[RIGHT]);
+    (non_content, margins)
+}
+
 /// The `(min-content, max-content)` widths of a block container's
 /// content: the widest contribution among its block-level children,
 /// an anonymous block's being its inline run's. The floats among them
@@ -118,6 +129,9 @@ pub(crate) fn content_widths(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32
     if b.is_table() {
         return crate::table::content_widths(b, fonts);
     }
+    if b.is_flex_container() {
+        return crate::flex::content_widths(b, fonts);
+    }
     let mut min = 0.0f32;
     let mut in_flow_max = 0.0f32;
     let mut floats_max = 0.0f32;
@@ -130,6 +144,7 @@ pub(crate) fn content_widths(b: &LayoutBox, fonts: &FontCollection) -> (f32, f32
             | BoxKind::InlineBlock
             | BoxKind::Float
             | BoxKind::Table
+            | BoxKind::Flex
             | BoxKind::RowGroup(_)
             | BoxKind::Row
             | BoxKind::ColumnGroup { .. }

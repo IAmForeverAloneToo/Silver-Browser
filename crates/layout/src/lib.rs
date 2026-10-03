@@ -21,6 +21,7 @@
 pub mod block;
 pub mod box_tree;
 mod cache;
+mod flex;
 mod float;
 pub mod inline;
 mod intrinsic;
