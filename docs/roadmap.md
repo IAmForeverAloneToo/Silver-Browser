@@ -672,7 +672,11 @@ since that's the concrete, testable exit criterion.
        quantization policy is still undocumented — carried forward,
        not forgotten; it matters more once M19's compositing/transform
        work is in play than it does for today's whole-pixel software
-       rasterizer.
+       rasterizer. Corrected by M17: the reference browser takes
+       `hhea`'s metrics unless the font sets OS/2's USE_TYPO_METRICS,
+       rounds each to a whole pixel and places glyphs at hinted,
+       whole-pixel advances, and `text` now does too (the flexbox
+       note, "Vertical metrics, found at step 11").
 - [x] M8.6 Acceptance: a mixed LTR/RTL paragraph with an embedded number
        and punctuation orders correctly. Landed as
        `layout::inline::tests::bidi_reorders_mixed_direction_text_

@@ -3345,11 +3345,13 @@ mod tests {
         // padding and a red background (M11.6): its padding is red, is
         // the link for the pointer and for a click, and ends with its
         // content area, the rest of the line below being the
-        // paragraph's.
+        // paragraph's. The link's font is smaller than the paragraph's,
+        // whose strut makes the line 19px tall, the baseline at 15: the
+        // link's content area runs from 6 to 17.
         let mut engine = test_engine();
         engine.load_document(
             "<style>body { margin: 0 } p { margin: 0 }
-                    a { padding: 0 10px; background-color: #ff0000 }</style>\
+                    a { padding: 0 10px; background-color: #ff0000; font-size: 10px }</style>\
              <p id=p><a href=\"https://example.test/t\" id=a>b</a></p>",
         );
         let pixels = engine.frame(200, 100);

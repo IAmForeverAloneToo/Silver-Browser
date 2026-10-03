@@ -1515,25 +1515,31 @@ mod fragment_tests {
             } => {
                 assert_eq!(text, "hi");
                 // The baseline is the font's own ascent at this size
-                // (M7.1/M7.4) — not simply the font-size — on the pixel
-                // grid (M17): 9.12 is 9.
+                // (M7.1/M7.4) — not simply the font-size — a whole
+                // pixel, as the reference browser rounds it (M17).
                 let ascent = fonts.primary().metrics(12.0).ascent;
-                assert_eq!((ascent * 100.0).round(), 912.0);
-                assert_eq!((*x, *y, *size), (0.0, 9.0, 12.0));
+                assert_eq!(ascent, 11.0);
+                assert_eq!((*x, *y, *size), (0.0, 11.0, 12.0));
                 assert_eq!(*color, Rgba8::rgb(0, 0, 255));
             }
             _ => unreachable!(),
         }
-        // Half a pixel lower, 9.62 is 10.
-        let list = display_list_of(
-            Element::new("p").text("hi"),
-            "p { display: block; margin: 0; padding-top: 0.5px; font-size: 12px; }",
-        );
-        let baseline = list.items.iter().find_map(|i| match i {
-            DisplayItem::Text { y, .. } => Some(*y),
-            _ => None,
-        });
-        assert_eq!(baseline, Some(10.0));
+        // A box at a fraction of a pixel puts it on the pixel grid
+        // (M17), half up: half a pixel lower, 11.5 is 12, and a quarter
+        // lower, 11.25 is 11.
+        for (padding, snapped) in [("0.5px", 12.0), ("0.25px", 11.0)] {
+            let list = display_list_of(
+                Element::new("p").text("hi"),
+                &format!(
+                    "p {{ display: block; margin: 0; padding-top: {padding}; font-size: 12px; }}"
+                ),
+            );
+            let baseline = list.items.iter().find_map(|i| match i {
+                DisplayItem::Text { y, .. } => Some(*y),
+                _ => None,
+            });
+            assert_eq!(baseline, Some(snapped), "{padding}");
+        }
     }
 
     #[test]

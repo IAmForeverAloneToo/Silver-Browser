@@ -133,6 +133,10 @@ pub struct FontStore {
     line_gap_units: f32,
     /// The OS/2 table's x-height, in font units, when the font gives one.
     x_height_units: Option<f32>,
+    /// Whether the `head` table's flags ask for whole pixels per em in
+    /// all of the scaler's arithmetic (bit 3), which FreeType honours
+    /// when it hints an advance (see [`FontStore::advance`]).
+    integer_ppem: bool,
     /// ab_glyph handle for outline rasterization.
     glyph_font: ab_glyph::FontArc,
 }
@@ -203,32 +207,28 @@ impl FontStore {
         // Read everything out of `ttf` before `data` moves into the `Arc`
         // below (`ttf` borrows it).
         //
-        // Vertical metrics (M8.5): prefer the OS/2 table's *typographic*
-        // ascender/descender/line-gap (`sTypo*`) when the font provides
-        // them — real browsers do the same, because `hhea`'s metrics are
-        // historically tuned for *clipping avoidance* on Windows (hence
-        // often taller than the font actually needs for comfortable line
-        // spacing), while OS/2's typo metrics are the ones font designers
-        // actually intend for line-height. Fall back to `hhea` for fonts
-        // with no (or a too-old) OS/2 table. ttf_parser's descender
-        // fields are conventionally <= 0 (how far below the baseline);
-        // `.max(0.0)` guards the (rare, malformed-font) case where that
-        // doesn't hold, so `descent` stays a sane non-negative "height"
-        // rather than silently subtracting space.
-        let (ascender_units, descender_units, line_gap_units) = match (
-            ttf.typographic_ascender(),
-            ttf.typographic_descender(),
-            ttf.typographic_line_gap(),
-        ) {
-            (Some(a), Some(d), gap) => (a as f32, (-d as f32).max(0.0), gap.unwrap_or(0) as f32),
-            _ => (
-                ttf.ascender() as f32,
-                (-ttf.descender() as f32).max(0.0),
-                ttf.line_gap() as f32,
-            ),
-        };
-        let line_gap_units = line_gap_units.max(0.0);
+        // Vertical metrics (M8.5, corrected by M17): the browsers' —
+        // `hhea`'s ascender, descender and line gap, the OS/2 table's
+        // typographic ones only when the font sets its USE_TYPO_METRICS
+        // bit, or when `hhea` has none, and then the Windows ones —
+        // which is the choice ttf_parser's `ascender`, `descender` and
+        // `line_gap` make. M8.5 preferred the typographic metrics
+        // whenever a font had them, on the belief that browsers do; the
+        // reference browser does not, and M17's acceptance pages, text
+        // laid out on both sides in one font, found the lines apart.
+        // ttf_parser's descender is conventionally <= 0 (how far below
+        // the baseline); `.max(0.0)` guards the (rare, malformed-font)
+        // case where that doesn't hold, so `descent` stays a sane
+        // non-negative "height" rather than silently subtracting space.
+        let ascender_units = f32::from(ttf.ascender());
+        let descender_units = (-f32::from(ttf.descender())).max(0.0);
+        let line_gap_units = f32::from(ttf.line_gap()).max(0.0);
         let x_height_units = ttf.x_height().map(f32::from).filter(|x| *x > 0.0);
+        let integer_ppem = ttf
+            .raw_face()
+            .table(ttf_parser::Tag::from_bytes(b"head"))
+            .and_then(|head| head.get(16..18))
+            .is_some_and(|flags| flags[1] & 0x08 != 0);
 
         // TODO(M2): honor non-zero indices for .ttc collections in ab_glyph.
         let glyph_font =
@@ -241,6 +241,7 @@ impl FontStore {
             descender_units,
             line_gap_units,
             x_height_units,
+            integer_ppem,
             glyph_font,
         })
     }
@@ -285,13 +286,17 @@ impl FontStore {
         &self.glyph_font
     }
 
-    /// This font's vertical metrics at `font_size_px` (roadmap M7.1).
+    /// This font's vertical metrics at `font_size_px` (roadmap M7.1),
+    /// each rounded to a whole pixel, half up, as the reference browser
+    /// rounds them (M17): a line of normal height is a whole number of
+    /// pixels tall, and its baseline a whole number below its top.
     pub fn metrics(&self, font_size_px: f32) -> FontMetrics {
         let scale = font_size_px / self.units_per_em;
+        let px = |units: f32| (units * scale + 0.5).floor();
         FontMetrics {
-            ascent: self.ascender_units * scale,
-            descent: self.descender_units * scale,
-            line_gap: self.line_gap_units * scale,
+            ascent: px(self.ascender_units),
+            descent: px(self.descender_units),
+            line_gap: px(self.line_gap_units),
         }
     }
 
@@ -301,20 +306,19 @@ impl FontStore {
     /// Returns an empty vector if the face cannot be constructed — never
     /// panics on untrusted input.
     pub fn shape(&self, text: &str, font_size_px: f32) -> Vec<ShapedGlyph> {
-        let Some(shaped) = self.shape_raw(text) else {
+        let Some((face, shaped)) = self.shape_raw(text) else {
             return Vec::new();
         };
-        let scale = font_size_px / self.units_per_em;
         let mut pen_x = 0.0_f32;
         let mut out = Vec::with_capacity(shaped.len());
         for (info, pos) in shaped.glyph_infos().iter().zip(shaped.glyph_positions()) {
             out.push(ShapedGlyph {
                 glyph_id: info.glyph_id as u16,
-                x: pen_x + pos.x_offset as f32 * scale,
+                x: pen_x + whole_pixels(pos.x_offset, font_size_px, self.units_per_em),
                 // harfbuzz y_offset is positive-up; we store positive-down.
-                y: -(pos.y_offset as f32) * scale,
+                y: -whole_pixels(pos.y_offset, font_size_px, self.units_per_em),
             });
-            pen_x += pos.x_advance as f32 * scale;
+            pen_x += self.advance(&face, info, pos, font_size_px);
         }
         out
     }
@@ -324,14 +328,14 @@ impl FontStore {
     /// positions `layout`'s word-measurement doesn't need. `0.0` if the
     /// face can't be constructed, same never-panics guarantee as `shape`.
     pub fn measure(&self, text: &str, font_size_px: f32) -> f32 {
-        let Some(shaped) = self.shape_raw(text) else {
+        let Some((face, shaped)) = self.shape_raw(text) else {
             return 0.0;
         };
-        let scale = font_size_px / self.units_per_em;
         shaped
-            .glyph_positions()
+            .glyph_infos()
             .iter()
-            .map(|pos| pos.x_advance as f32 * scale)
+            .zip(shaped.glyph_positions())
+            .map(|(info, pos)| self.advance(&face, info, pos, font_size_px))
             .sum()
     }
 
@@ -349,12 +353,12 @@ impl FontStore {
         let count = text.chars().count();
         let mut stops = Vec::with_capacity(count + 1);
         stops.push(0.0);
-        if let Some(shaped) = self.shape_raw(text) {
-            let scale = font_size_px / self.units_per_em;
+        if let Some((face, shaped)) = self.shape_raw(text) {
             let mut advances: std::collections::BTreeMap<usize, f32> =
                 std::collections::BTreeMap::new();
             for (info, pos) in shaped.glyph_infos().iter().zip(shaped.glyph_positions()) {
-                *advances.entry(info.cluster as usize).or_default() += pos.x_advance as f32 * scale;
+                *advances.entry(info.cluster as usize).or_default() +=
+                    self.advance(&face, info, pos, font_size_px);
             }
             let starts: Vec<usize> = advances.keys().copied().collect();
             let mut x = 0.0f32;
@@ -379,13 +383,72 @@ impl FontStore {
     }
 
     /// Shared rustybuzz plumbing for [`FontStore::shape`] and
-    /// [`FontStore::measure`] — font-unit positions, unscaled.
-    fn shape_raw(&self, text: &str) -> Option<rustybuzz::GlyphBuffer> {
+    /// [`FontStore::measure`] — font-unit positions, unscaled, with the
+    /// face they were shaped in, whose own advances
+    /// [`FontStore::advance`] reads.
+    fn shape_raw(&self, text: &str) -> Option<(rustybuzz::Face<'_>, rustybuzz::GlyphBuffer)> {
         let face = rustybuzz::Face::from_slice(&self.raw, self.index)?;
         let mut buffer = rustybuzz::UnicodeBuffer::new();
         buffer.push_str(text);
-        Some(rustybuzz::shape(&face, &[], buffer))
+        let shaped = rustybuzz::shape(&face, &[], buffer);
+        Some((face, shaped))
     }
+
+    /// A shaped glyph's advance at `font_size_px`, as the reference
+    /// browser takes it with no subpixel positioning (M17, the flexbox
+    /// note's "Vertical metrics" and what follows it): the font's own
+    /// advance for the glyph hinted as FreeType hints it, and the
+    /// shaper's adjustment to it — kerning — scaled at the size and
+    /// rounded to a whole pixel, half up. A glyph the shaper gives no
+    /// advance, a mark, has none.
+    fn advance(
+        &self,
+        face: &rustybuzz::Face<'_>,
+        info: &rustybuzz::GlyphInfo,
+        pos: &rustybuzz::GlyphPosition,
+        font_size_px: f32,
+    ) -> f32 {
+        if pos.x_advance == 0 {
+            return 0.0;
+        }
+        let own = face
+            .glyph_hor_advance(ttf_parser::GlyphId(info.glyph_id as u16))
+            .map_or(0, i32::from);
+        self.hinted(own, font_size_px)
+            + whole_pixels(pos.x_advance - own, font_size_px, self.units_per_em)
+    }
+
+    /// `units` of advance at `font_size_px` as FreeType's hinting gives
+    /// it: scaled in its 26.6 fixed point (`FT_DivFix`, `FT_MulFix`) at
+    /// the pixels per em — the size, or the size rounded to a whole
+    /// pixel when the font asks for that — and rounded to a whole pixel
+    /// (`FT_PIX_ROUND`). In 128 bits, the size held below a trillion
+    /// pixels and a size that is not a number taken as none, so that no
+    /// size overflows it.
+    fn hinted(&self, units: i32, font_size_px: f32) -> f32 {
+        let size = if self.integer_ppem {
+            (font_size_px + 0.5).floor()
+        } else {
+            font_size_px
+        };
+        let size26 = (f64::from(size) * 64.0).round().clamp(0.0, 64e12) as i128;
+        let upem = self.units_per_em as i128;
+        let x_scale = ((size26 << 16) + upem / 2) / upem;
+        let product = i128::from(units) * x_scale;
+        let scaled = product.signum() * ((product.abs() + 0x8000) >> 16);
+        ((scaled + 32) >> 6) as f32
+    }
+}
+
+/// `units` of a font scaled to `font_size_px` and rounded to a whole
+/// pixel, half up, as the reference browser places glyphs with no
+/// subpixel positioning (M17). No units are no pixels at any size, an
+/// infinite one included.
+fn whole_pixels(units: i32, font_size_px: f32, units_per_em: f32) -> f32 {
+    if units == 0 {
+        return 0.0;
+    }
+    (units as f32 * font_size_px / units_per_em + 0.5).floor()
 }
 
 /// The most pixels one glyph mask may hold: a glyph drawn at a size
@@ -945,14 +1008,82 @@ mod tests {
     }
 
     #[test]
-    fn measure_scales_linearly_with_font_size() {
+    fn measure_scales_with_font_size_a_glyph_at_a_time_in_whole_pixels() {
+        // Each of the four glyphs is rounded at its size (M17), so twice
+        // the size is twice the width within half a pixel a glyph at
+        // each size.
         let store = test_store();
         let at_10 = store.measure("word", 10.0);
         let at_20 = store.measure("word", 20.0);
-        if at_10 > 0.0 {
-            assert!(
-                (at_20 - at_10 * 2.0).abs() < 0.01,
-                "{at_20} should be ~2x {at_10}"
+        assert!(at_10 > 0.0);
+        assert_eq!((at_10.fract(), at_20.fract()), (0.0, 0.0));
+        assert!(
+            (at_20 - at_10 * 2.0).abs() <= 4.0 * 1.5,
+            "{at_20} should be about twice {at_10}"
+        );
+    }
+
+    #[test]
+    fn glyphs_are_placed_as_the_reference_browser_places_them_with_no_subpixel_positioning() {
+        // Widths the reference browser gives runs of DejaVu Sans (M17):
+        // each glyph's own advance hinted at a whole pixel per em, the
+        // kerning rounded on its own. At 20px `z` is 1075 units, 10.498
+        // pixels exactly but 10.5 in FreeType's fixed point, so 11; at
+        // 10.5px a run is as wide as at 11; "AV" and "To" kern.
+        let store = test_store();
+        for (text, size, width) in [
+            ("The quick brown fox jumps over the lazy dog", 16.0, 358.0),
+            ("The quick brown fox jumps over the lazy dog", 20.0, 449.0),
+            ("Navigation", 13.0, 71.0),
+            ("AVAWAy To", 16.0, 86.0),
+            ("AVAWAy To", 12.0, 62.0),
+            ("lazy", 10.5, 23.0),
+            ("Zebra puzzle", 15.5, 103.0),
+        ] {
+            assert_eq!(store.measure(text, size), width, "{text:?} at {size}px");
+        }
+        // The glyphs' own positions add up to the same, and a size that
+        // is not a number measures nothing.
+        let glyphs = store.shape("To", 16.0);
+        assert_eq!(
+            glyphs[1].x,
+            store.measure("To", 16.0) - store.measure("o", 16.0)
+        );
+        assert_eq!(store.measure("Ab", f32::NAN), 0.0);
+        assert!(store.measure("Ab", f32::INFINITY).is_finite());
+        // A combining mark adds nothing to the width, as there, and its
+        // offset is on whole pixels too: the acute over `x` is 90 units
+        // left of the pen, 0.7 pixels at 16px, so one.
+        let marked = store.shape("x\u{301}", 16.0);
+        assert_eq!(store.measure("x\u{301}", 16.0), store.measure("x", 16.0));
+        assert_eq!((marked[0].x, marked[1].x), (0.0, 8.0));
+    }
+
+    #[test]
+    fn metrics_are_hheas_rounded_to_whole_pixels_as_the_reference_browser_has_them() {
+        // DejaVu Sans does not set OS/2's USE_TYPO_METRICS: its `hhea`
+        // ascender 1901 and descender 483 (of 2048) are taken, not its
+        // typographic 1556, 492 and 410, and each is rounded at the
+        // size, half up. The lines and baselines the reference browser
+        // gives it, as measured (M17).
+        let store = test_store();
+        for (size, ascent, descent) in [
+            (1.0, 1.0, 0.0),
+            (3.0, 3.0, 1.0),
+            (7.0, 6.0, 2.0),
+            (10.5, 10.0, 2.0),
+            (12.0, 11.0, 3.0),
+            (13.0, 12.0, 3.0),
+            (16.0, 15.0, 4.0),
+            (21.0, 19.0, 5.0),
+            (24.0, 22.0, 6.0),
+            (48.0, 45.0, 11.0),
+        ] {
+            let m = store.metrics(size);
+            assert_eq!(
+                (m.ascent, m.descent, m.line_gap),
+                (ascent, descent, 0.0),
+                "at {size}px"
             );
         }
     }

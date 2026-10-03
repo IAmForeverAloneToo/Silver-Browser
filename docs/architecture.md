@@ -167,7 +167,13 @@ Vertical metrics (M8.5) now prefer the OS/2 table's typographic
 ascender/descender/line-gap over `hhea`'s (real browsers do the same —
 `hhea`'s are historically tuned for Windows clipping-avoidance, often
 taller than comfortable line spacing actually needs), falling back to
-`hhea` for fonts without a (new-enough) OS/2 table. `letter-spacing`/
+`hhea` for fonts without a (new-enough) OS/2 table. (Corrected by
+M17, whose acceptance pages put text beside the reference browser's:
+that browser takes `hhea`'s unless the font sets OS/2's
+USE_TYPO_METRICS, rounds each metric to a whole pixel, and places each
+glyph at a hinted, whole-pixel advance; `text` now does the same. The
+flexbox note, "Vertical metrics, found at step 11", has the
+measurements.) `letter-spacing`/
 `word-spacing`/`text-transform` (uppercase/lowercase/capitalize)/
 `white-space` (normal/pre/pre-wrap/pre-line) (M8.4) landed in
 `style::ComputedStyle` and `layout::inline`: `text-transform` runs
