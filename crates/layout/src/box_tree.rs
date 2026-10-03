@@ -140,8 +140,10 @@ pub struct FirstLine {
 /// A flex container's children ([`BoxKind::Flex`]'s, or a float's or an
 /// absolutely positioned box's whose `display` is `flex`) are its flex
 /// items — block containers ([`BoxKind::Block`], an anonymous one for a
-/// run of text), tables and flex containers — and its absolutely
-/// positioned children ([`BoxKind::Absolute`]), in document order.
+/// run of text), tables, flex containers and grid containers — and its
+/// absolutely positioned children ([`BoxKind::Absolute`]), in document
+/// order; a grid container's ([`BoxKind::Grid`]'s) are its grid items,
+/// the same boxes.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BoxKind {
     Block,
@@ -239,6 +241,13 @@ pub enum BoxKind {
     /// children; a floated or absolutely positioned flex container is
     /// the `Float` or `Absolute` kind with a flex container's children.
     Flex,
+    /// A grid container (css-grid-2, M18): block-level, or an
+    /// inline-level item on its line when its `style.display` is
+    /// `inline-grid`. Its children are its grid items and its absolutely
+    /// positioned children, as a flex container's are; a floated or
+    /// absolutely positioned grid container is the `Float` or `Absolute`
+    /// kind with a grid container's children.
+    Grid,
 }
 
 /// Which of CSS2 §17.2's three row-group values a [`BoxKind::RowGroup`]
@@ -278,6 +287,24 @@ impl LayoutBox {
         }
     }
 
+    /// Whether this box is a grid container, laid out by `crate::grid`
+    /// (M18): a [`BoxKind::Grid`], or a float or an absolutely
+    /// positioned box whose `display` is `grid`, which the builder gives
+    /// a grid container's children.
+    pub fn is_grid_container(&self) -> bool {
+        match self.kind {
+            BoxKind::Grid => true,
+            BoxKind::Float | BoxKind::Absolute => self.style.display == Display::Grid,
+            _ => false,
+        }
+    }
+
+    /// Whether this box's in-flow children are items: it is a flex or a
+    /// grid container.
+    pub fn has_items(&self) -> bool {
+        self.is_flex_container() || self.is_grid_container()
+    }
+
     /// Whether this box is block-level: a child of a block container,
     /// stacked vertically by `block::layout_children`. A table is,
     /// unless it is an inline table; a float is neither block-level nor
@@ -288,6 +315,7 @@ impl LayoutBox {
             BoxKind::Block | BoxKind::AnonymousBlock => true,
             BoxKind::Table => self.style.display == Display::Table,
             BoxKind::Flex => self.style.display == Display::Flex,
+            BoxKind::Grid => self.style.display == Display::Grid,
             _ => false,
         }
     }
@@ -324,17 +352,18 @@ pub fn build_box_tree(
 
 /// Numbers `boxes` and everything in them in tree order from `next`
 /// ([`LayoutBox::tree_order`]): each box before its children, and the
-/// children of a flex container, as `flex` says `boxes` are, by `order`
-/// (css-flexbox-1 §5.4), a stable sort keeping document order among
-/// equals, an absolutely positioned child counting as `order: 0`.
-fn number(boxes: &mut [LayoutBox], next: &mut u32, flex: bool) {
+/// children of a flex or a grid container, as `items` says `boxes` are,
+/// by `order` (css-flexbox-1 §5.4, css-grid-2 §6.3), a stable sort
+/// keeping document order among equals, an absolutely positioned child
+/// counting as `order: 0`.
+fn number(boxes: &mut [LayoutBox], next: &mut u32, items: bool) {
     let number_one = |b: &mut LayoutBox, next: &mut u32| {
         b.tree_order = *next;
         *next = next.saturating_add(1);
-        let flex = b.is_flex_container();
-        number(&mut b.children, next, flex);
+        let items = b.has_items();
+        number(&mut b.children, next, items);
     };
-    if !flex {
+    if !items {
         for b in boxes {
             number_one(b, next);
         }
@@ -623,27 +652,29 @@ fn build_block_container_of(styled: &Styled<'_>, item: Item, children: &[Item]) 
 }
 
 /// The children of a box whose inside is what its block-level
-/// `display` says: a table's parts, a flex container's items (M17), or
-/// a block container's children.
+/// `display` says: a table's parts, a flex or a grid container's items
+/// (M17, M18), or a block container's children.
 fn build_inside(styled: &Styled<'_>, item: Item, style: &ComputedStyle) -> Vec<LayoutBox> {
     match style.display {
         Display::Table => build_table(styled, item),
-        Display::Flex => build_flex_container(styled, item),
+        Display::Flex | Display::Grid => build_items(styled, item),
         _ => build_block_container(styled, item),
     }
 }
 
-/// The children of the flex container `item` generates (css-flexbox-1
-/// §4, M17), in document order: each in-flow child element, `::before`
-/// and `::after` is a flex item, the box its `display`, blockified by
-/// the cascade, generates — a floated one as if it did not float (§3);
-/// an absolutely positioned child is the out-of-flow box it is, not an
-/// item; and each run of consecutive text children is an anonymous flex
-/// item, an anonymous block container around the run, unless the run is
-/// nothing but white space, which is not rendered. An element with no
-/// box does not end a run; an absolutely positioned one does, as in the
-/// reference browsers. Layout takes the items in `order` (§5.4).
-fn build_flex_container(styled: &Styled<'_>, item: Item) -> Vec<LayoutBox> {
+/// The children of the flex or grid container `item` generates
+/// (css-flexbox-1 §4, M17; css-grid-2 §6, M18, which says the same), in
+/// document order: each in-flow child element, `::before` and `::after`
+/// is an item, the box its `display`, blockified by the cascade,
+/// generates — a floated one as if it did not float; an absolutely
+/// positioned child is the out-of-flow box it is, not an item; and each
+/// run of consecutive text children is an anonymous item, an anonymous
+/// block container around the run, unless the run is nothing but white
+/// space, which is not rendered. An element with no box does not end a
+/// run; an absolutely positioned one does, as in the reference browsers.
+/// Layout takes the items in `order` (css-flexbox-1 §5.4, css-grid-2
+/// §6.3).
+fn build_items(styled: &Styled<'_>, item: Item) -> Vec<LayoutBox> {
     let mut out = Vec::new();
     let mut run = Vec::new();
     for child in styled.children(item) {
@@ -659,6 +690,7 @@ fn build_flex_container(styled: &Styled<'_>, item: Item) -> Vec<LayoutBox> {
             _ if style.position.is_out_of_flow() => BoxKind::Absolute,
             Display::Table => BoxKind::Table,
             Display::Flex => BoxKind::Flex,
+            Display::Grid => BoxKind::Grid,
             _ => BoxKind::Block,
         };
         out.push(styled.own_box(child, style, kind, || build_inside(styled, child, style)));
@@ -667,7 +699,7 @@ fn build_flex_container(styled: &Styled<'_>, item: Item) -> Vec<LayoutBox> {
     out
 }
 
-/// The anonymous flex item around the text children in `run`, if
+/// The anonymous item around the text children in `run`, if
 /// there is anything but white space in them, added to `out`.
 fn flush_text_run(styled: &Styled<'_>, item: Item, run: &mut Vec<Item>, out: &mut Vec<LayoutBox>) {
     if run.is_empty() {
@@ -826,19 +858,21 @@ impl BlockContainer<'_> {
                     self.add_inline_level(out_of_flow);
                 }
             }
-            // A grid container is laid out as a block container until
-            // its own box kind arrives (M18).
-            Display::Block | Display::Grid => {
+            Display::Block => {
                 let block = styled.own_box(child, style, BoxKind::Block, || {
                     build_block_container(styled, child)
                 });
                 self.add_block(block);
             }
             Display::Flex => {
-                let flex = styled.own_box(child, style, BoxKind::Flex, || {
-                    build_flex_container(styled, child)
-                });
+                let flex =
+                    styled.own_box(child, style, BoxKind::Flex, || build_items(styled, child));
                 self.add_block(flex);
+            }
+            Display::Grid => {
+                let grid =
+                    styled.own_box(child, style, BoxKind::Grid, || build_items(styled, child));
+                self.add_block(grid);
             }
             Display::Table => {
                 let table =
@@ -852,17 +886,21 @@ impl BlockContainer<'_> {
                 let inline = self.open.pop().expect("the inline just opened");
                 self.add_inline_level(inline);
             }
-            Display::InlineBlock | Display::InlineGrid => {
+            Display::InlineBlock => {
                 let block = styled.own_box(child, style, BoxKind::InlineBlock, || {
                     build_block_container(styled, child)
                 });
                 self.add_inline_level(block);
             }
             Display::InlineFlex => {
-                let flex = styled.own_box(child, style, BoxKind::Flex, || {
-                    build_flex_container(styled, child)
-                });
+                let flex =
+                    styled.own_box(child, style, BoxKind::Flex, || build_items(styled, child));
                 self.add_inline_level(flex);
+            }
+            Display::InlineGrid => {
+                let grid =
+                    styled.own_box(child, style, BoxKind::Grid, || build_items(styled, child));
+                self.add_inline_level(grid);
             }
             Display::InlineTable => {
                 let table =
@@ -1371,6 +1409,10 @@ mod tests {
                     "inline-flex".to_string()
                 }
                 BoxKind::Flex => "flex".to_string(),
+                BoxKind::Grid if b.style.display == Display::InlineGrid => {
+                    "inline-grid".to_string()
+                }
+                BoxKind::Grid => "grid".to_string(),
             };
             // A `::before` or `::after` box, or one in it, is marked
             // with a `+`, a `::first-letter` one with a `^`.
@@ -3422,6 +3464,91 @@ mod tests {
     }
 
     #[test]
+    fn a_grid_containers_children_are_items_as_a_flex_containers_are() {
+        // M18, css-grid-2 §6, whose rules are css-flexbox-1 §4's word
+        // for word: the same page makes the same boxes under a grid.
+        let html =
+            "<div> a <span>b</span> <p>c</p>d<i>e</i> <b class=abs></b> <em class=f>f</em> </div>";
+        let css = ".abs { position: absolute } .f { float: left } div::before { content: 'g' }";
+        let flex = tree_of(html, &format!("div {{ display: flex }} {css}"));
+        let grid = tree_of(html, &format!("div {{ display: grid }} {css}"));
+        let mut expected = flex.shape_of(&flex.body().children);
+        assert_eq!(expected[0], ("flex".to_string(), 4));
+        expected[0].0 = "grid".to_string();
+        assert_eq!(grid.shape_of(&grid.body().children), expected);
+        let container = &grid.body().children[0];
+        assert!(container.is_grid_container() && container.is_block_level());
+        // An item that is a grid container itself is one.
+        let nested = tree_of("<div><p>x</p></div>", "div, p { display: grid }");
+        let item = &nested.body().children[0].children[0];
+        assert_eq!(item.kind, BoxKind::Grid);
+        assert!(!container.is_flex_container() && container.has_items());
+        assert!(container.children[1].anonymous);
+        // A floated or absolutely positioned grid container is a grid
+        // container too, and its children are items.
+        for extra in [".x { float: left }", ".x { position: absolute }"] {
+            let tree = tree_of(
+                "<p><span class=x><i>y</i></span></p>",
+                &format!(".x {{ display: inline-grid }} {extra}"),
+            );
+            let x = &tree.body().children[0].children[0];
+            assert!(x.is_grid_container() && !x.is_block_level(), "{extra}");
+            assert_eq!(x.style.display, Display::Grid, "{extra}");
+            assert_eq!(x.children[0].kind, BoxKind::Block, "{extra}");
+        }
+    }
+
+    #[test]
+    fn an_inline_grid_container_is_an_atomic_item_on_its_line() {
+        // Nodes: p 4, span 5, i 6.
+        let tree = tree_of(
+            "<p>x<span>y<i>z</i></span>w</p>",
+            "span { display: inline-grid }",
+        );
+        assert_eq!(
+            tree.shape_of(&tree.body().children),
+            pairs(&[
+                ("block", 4),
+                ("anon", 4),
+                ("text x", 4),
+                ("inline-grid", 5),
+                ("block", 5),
+                ("anon", 5),
+                ("text y", 5),
+                ("block", 6),
+                ("anon", 6),
+                ("text z", 6),
+                ("text w", 4),
+            ])
+        );
+        let span = &tree.body().children[0].children[0].children[1];
+        assert!(span.is_grid_container() && !span.is_block_level());
+    }
+
+    #[test]
+    fn a_grid_containers_children_are_numbered_in_order_modified_document_order() {
+        // css-grid-2 §6.3: `order` decides the paint order, as in a flex
+        // container; an absolutely positioned child counts as `order: 0`.
+        // Nodes: div 4, i 5, b 6, em 7, u 8.
+        let tree = tree_of(
+            "<div><i></i><b></b><em></em><u></u></div>",
+            "div { display: grid } i { order: 2 } b { order: -1 } u { position: absolute; order: -5 }",
+        );
+        let grid = &tree.body().children[0];
+        let order: Vec<(usize, u32)> = grid
+            .children
+            .iter()
+            .map(|b| (b.node.index(), b.tree_order))
+            .collect();
+        let rank = |node: usize| order.iter().find(|(n, _)| *n == node).expect("a child").1;
+        assert!(
+            rank(6) < rank(7) && rank(7) < rank(8) && rank(8) < rank(5),
+            "{order:?}"
+        );
+        assert!(grid.tree_order < rank(6));
+    }
+
+    #[test]
     fn a_flex_container_has_no_first_line_or_first_letter_but_its_items_do() {
         // css-flexbox-1 §3: neither applies to a flex container, nor
         // reaches through one from a block around it; an item, a block
@@ -3434,6 +3561,13 @@ mod tests {
                 "p { display: flex } div { display: block }",
             ),
             ("<div>Text</div>", "div { display: inline-flex }"),
+            // Nor to a grid container (css-grid-2 §5.1, M18).
+            ("<div>Text</div>", "div { display: grid }"),
+            (
+                "<div><p>Text</p></div>",
+                "p { display: grid } div { display: block }",
+            ),
+            ("<div>Text</div>", "div { display: inline-grid }"),
         ] {
             let tree = tree_of(
                 html,

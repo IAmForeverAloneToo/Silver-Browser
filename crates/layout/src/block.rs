@@ -2298,6 +2298,7 @@ fn layout_children<'a>(
             BoxKind::Block
             | BoxKind::Table
             | BoxKind::Flex
+            | BoxKind::Grid
             | BoxKind::RowGroup(_)
             | BoxKind::Row
             | BoxKind::ColumnGroup { .. }

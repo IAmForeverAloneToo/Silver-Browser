@@ -56,10 +56,10 @@ fn visit(styled: &Styled<'_>, b: &mut LayoutBox) {
 /// container's children are blocks, and an inline element's are on
 /// its line, a table's its parts.
 fn originates(styled: &Styled<'_>, b: &LayoutBox) -> bool {
-    // Nor a flex container (css-flexbox-1 §3, M17), whose children are
-    // blocks but not its lines.
+    // Nor a flex or a grid container (css-flexbox-1 §3, M17; css-grid-2
+    // §5.1, M18), whose children are blocks but not its lines.
     !b.anonymous
-        && !b.is_flex_container()
+        && !b.has_items()
         && styled
             .styles
             .pseudo(b.node, PseudoElement::FirstLetter)

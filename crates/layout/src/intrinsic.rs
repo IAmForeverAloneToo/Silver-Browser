@@ -155,6 +155,7 @@ fn measure_content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32) {
             | BoxKind::Float
             | BoxKind::Table
             | BoxKind::Flex
+            | BoxKind::Grid
             | BoxKind::RowGroup(_)
             | BoxKind::Row
             | BoxKind::ColumnGroup { .. }
