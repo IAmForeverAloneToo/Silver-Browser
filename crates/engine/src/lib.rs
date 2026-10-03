@@ -2229,6 +2229,50 @@ mod tests {
         );
     }
 
+    // ---- M16 acceptance (roadmap M16.6) -------------------------------------
+
+    #[test]
+    fn the_builtin_page_shows_each_pseudo_element() {
+        use style::selector_matching::PseudoElement::{After, Before, FirstLetter};
+        let engine = builtin_engine();
+        let fragments = engine.fragments(800.0);
+        let text = |f: &layout::Fragment| match &f.kind {
+            layout::FragmentKind::Text(t) => Some(t.clone()),
+            _ => None,
+        };
+        let generated = |pseudo| -> Vec<String> {
+            fragments
+                .iter()
+                .filter(|f| f.generated == Some(pseudo))
+                .filter_map(text)
+                .collect()
+        };
+        let texts: Vec<String> = fragments.iter().filter_map(text).collect();
+        // A drop cap: the lead paragraph's first letter, floated.
+        assert!(
+            fragments.iter().any(|f| f.generated == Some(FirstLetter)
+                && f.style.float == style::computed::Float::Left)
+        );
+        assert_eq!(generated(FirstLetter), ["P"]);
+        // Its first line in capitals, and its last in its own case.
+        assert!(texts.iter().any(|t| t == "SEUDO-ELEMENTS"));
+        assert!(texts.iter().any(|t| t == "citation"));
+        // The cards labelled from their attributes, and closed.
+        let before = generated(Before);
+        for label in ["MODEL", "HIDDEN", "AUTO"] {
+            assert!(before.iter().any(|t| t == label), "{label}");
+        }
+        let after = generated(After);
+        assert!(after.iter().any(|t| t == "\u{a7}"));
+        // Quotation marks, a quotation in a quotation, and French ones.
+        for mark in ["\u{201c}", "\u{2018}", "\u{ab}\u{a0}"] {
+            assert!(before.iter().any(|t| t == mark), "{mark}");
+        }
+        for mark in ["\u{2019}", "\u{201d}", "\u{a0}\u{bb}"] {
+            assert!(after.iter().any(|t| t == mark), "{mark}");
+        }
+    }
+
     // ---- M7 acceptance (roadmap M7.8) --------------------------------------
 
     #[test]

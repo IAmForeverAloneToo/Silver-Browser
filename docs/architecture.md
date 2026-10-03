@@ -99,8 +99,9 @@ M26) and matches them right-to-left against a flattened DOM view
 `tests/selector_table.rs`); a hand-rolled baseline bench
 (`benches/match.rs`) measures ~200ms matching 1k selectors against a
 10k-element synthetic DOM — over the milestone's <100ms aspirational
-budget, expected until the M16.5/M35.2 optimization passes (bloom
-filters, rule-hash bucketing) land.
+budget, expected until M35.2's optimization pass (rule-hash bucketing,
+style sharing) lands; M16.5 measured it again and found no call for a
+Bloom filter.
 
 Milestone 6 (Box tree + block layout v1): `layout::box_tree` turns a
 `style::StyledDom` (since M13, the document and its `style::Styles`)
@@ -817,3 +818,51 @@ the field (M42); an input method's preedit text (M45); scaling for
 high-density displays; the toolbar's accessibility (M44). 940 tests
 workspace-wide. Next milestone: selectors v2 and pseudo-elements
 (M16).
+
+Milestone 16 (selectors v2 and pseudo-elements), designed in
+`docs/design/selectors-pseudo.md` and built in its eight steps. A
+selector may end in a pseudo-element (step 1): `::before`, `::after`,
+`::first-letter` and `::first-line`, also with CSS 2's one colon;
+`::marker`, `::placeholder` and `::selection`, recognised and set
+aside; and any `::-webkit-` name, which matches nothing. Names compare
+in ASCII lowercase; the attribute selector's `i` and `s` flags work,
+and without one the values of the 46 attributes HTML lists compare
+case-insensitively; `:nth-child(An+B of S)` counts S's specificity.
+`:lang()` (step 2) filters by RFC 4647 against the language HTML gives
+an element, from `lang`, a `content-language` pragma or the response's
+header; `:link` and `:any-link` match links, and `:disabled`,
+`:enabled`, `:checked`, `:required` and `:optional` the states HTML
+gives controls from their attributes, each with the restyles its
+inputs call for. `Styles` keeps an element's pseudo-element styles
+beside its own (step 3), cascaded with its style as their parent;
+`content` (strings, `attr()`, the quote keywords) and `quotes` join
+the computed style, and the UA sheet gains HTML's rules for `q`. The
+box tree builder walks items (step 4): a `::before` or `::after` box is
+built for every display, at the quote depth the build has reached,
+names its originating element and is marked as generated, and hit
+testing answers with the element. `::first-letter` (step 5) splits the
+text holding the first formatted line's first letter, by
+Pseudo-Elements 4's pattern, into an inline box or a float.
+`::first-line` (step 6) gives the run holding a block's first line its
+chain of styles, and every inline box in the run its style on the line,
+in which the inline layout fills the line; layout asks the cascade for
+these styles through `style::Recascade`. Step 7 is M16.5: matching
+takes 1.4–1.6 times what the code as imported did, so there is no
+Bloom filter. A benchmark of what the pseudo-elements cost led to three
+changes, and a computed style's `font-family`, shared rather than
+copied, undid the 12% that M16's new properties had cost an appended
+paragraph's frame (`docs/perf-budgets.md`, measured again on a new
+machine). `about:silver` (step 8) shows a floated drop cap, a first
+line in capitals, cards labelled by `::before` from an attribute and
+closed by `::after`, and quotations in English and in French marks.
+Not in this milestone, said rather than hidden: `::marker` and list
+items (M21.6); counters in `content` (M21.4); images in `content`
+(M23); `::placeholder` and `::selection` drawn, and the user-action
+and form states (M26); `:has()`, `:dir()` and `:scope`; quotes chosen
+by language and language tags canonicalised (M42); an atomic inline
+on the first line, which keeps its own style; the first line's boxes
+cascaded again at every build of the box tree, until the box tree is
+kept (M35.9); and two gaps older than this milestone that it found,
+`br`, which makes no box and breaks no line, and white space alone at
+the ends of a run under `pre`, which is dropped. 1,060 tests
+workspace-wide. Next milestone: flexbox (M17).

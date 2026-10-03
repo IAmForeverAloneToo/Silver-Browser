@@ -470,9 +470,11 @@ are there.
 
 **Acceptance (M16.6).** `about:silver` shows each pseudo-element: a
 drop cap by `::first-letter` floated left, a first line in capitals by
-`::first-line`, `::before` and `::after` content on the cards, a `<q>`
-with its quotation marks, and a `:lang()` rule giving a quotation in
-another language its own marks. Beyond the page:
+`::first-line`, the cards labelled by `::before` from their
+`data-label` attributes through `attr()` and closed by `::after`, a
+`<q>` with its quotation marks and a quotation inside it, and
+`q:lang(fr)` giving a quotation in French its guillemets. An engine
+test reads each of them from the page's fragments. Beyond the page:
 
 - unit tests for the parser (every pseudo-element, the legacy forms,
   `-webkit-`, what may follow, specificity), the matcher (HTML's
@@ -485,11 +487,12 @@ another language its own marks. Beyond the page:
   layout (the first line restyled and measured, the nesting, the
   strut);
 - reference pages for the boxes, built of boxes alone as the others
-  are and captured from the reference browser: `::before` and
-  `::after` as blocks, inline-blocks, floats, absolutely positioned
-  boxes and tables; the clearfix (`::after { content: ""; display:
-  table; clear: both }`); generated boxes on `html` and `body`; and the
-  reference pages' mutation test, run over them;
+  are and captured from the reference browser (pages 27 to 29):
+  `::before` and `::after` as blocks, inline-blocks, floats,
+  absolutely positioned boxes and tables; the clearfix (`::after {
+  content: ""; display: table; clear: both }`); generated boxes on
+  `html` and `body`; and the reference pages' mutation test, run over
+  them;
 - the fuzz targets that parse selectors, style documents and run the
   pipeline cover the new grammar and the new boxes; the selector
   target also matches each selector that ends in a pseudo-element
@@ -527,6 +530,10 @@ layout with the styles it cascaded.
   this milestone found and does not change; it has no milestone yet.
   Once it breaks a line, a `br` first will end the search for a first
   letter as a kept line break does now.
+- *White space alone at the start or end of a run under `pre`*: the
+  box tree builder drops it, which a test of a kept line break ran
+  into. It predates this milestone, which does not change it, and has
+  no milestone yet.
 - *Other pseudo-elements*: `::backdrop`, `::file-selector-button`,
   `::details-content`, `::part()`, `::slotted()`, `::cue`,
   `::view-transition` and the rest stay invalid, each with the feature

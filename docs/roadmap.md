@@ -1010,18 +1010,33 @@ code and corrected to it after; built in its twelve steps on
 
 ## M16 — Selectors v2 + pseudo-elements  ·  `style`  ·  Effort: M  ·  Depends: M4, M26 (dynamic parts)
 
-- [ ] M16.1 `::before` / `::after` with `content` (strings, `attr()`,
-       counters via M21; url() images via M23).
-- [ ] M16.2 `::first-line`, `::first-letter` (layout-aware pseudo styling).
-- [ ] M16.3 `::selection`, `::placeholder`, `::marker` as recognized
-       stubs.
-- [ ] M16.4 Case-insensitive attribute flags end-to-end; `:lang()`;
+- [x] M16.1 `::before` / `::after` with `content` (strings, `attr()`,
+       counters via M21; url() images via M23). Done 2026-10-02:
+       `content` with strings, `attr()` and the quote keywords,
+       `quotes`, HTML's `q` rules; generated boxes of every display at
+       their quote depth, the element's to the pointer.
+- [x] M16.2 `::first-line`, `::first-letter` (layout-aware pseudo styling).
+       Done 2026-10-03: the first letter split by Pseudo-Elements 4's
+       pattern into an inline box or a float; the first line's run
+       restyled as the box tree is built and filled in those styles,
+       through `style::Recascade`.
+- [x] M16.3 `::selection`, `::placeholder`, `::marker` as recognized
+       stubs. Done 2026-10-02: parsed, and their rules set aside
+       unmatched until list items (M21.6) and selection (M26).
+- [x] M16.4 Case-insensitive attribute flags end-to-end; `:lang()`;
        form pseudo-classes (`:disabled`, `:checked`, `:required` — stubs
-       until M26 wires state).
-- [ ] M16.5 Selector matching performance pass: bloom-filter ancestor
+       until M26 wires state). Done 2026-10-02: the `i` and `s` flags and
+       HTML's case-insensitive attributes; `:lang()` by RFC 4647 against
+       HTML's language; the form states from attributes, and `:link`.
+- [x] M16.5 Selector matching performance pass: bloom-filter ancestor
        rejection (Blink-style) if micro-bench regresses >2× on 1k
-       selectors × 10k DOM.
-- [ ] M16.6 Acceptance: pseudo-elements visible on the built-in demo page.
+       selectors × 10k DOM. Done 2026-10-03: 1.4–1.6 times the code as
+       imported, so no filter; the pseudo-elements' cost measured and
+       cut, and the computed style copied without allocating
+       (`docs/perf-budgets.md`).
+- [x] M16.6 Acceptance: pseudo-elements visible on the built-in demo page.
+       Done 2026-10-03: `about:silver`'s drop cap, first line in
+       capitals, labelled cards and quotations in two languages' marks.
 
 ---
 

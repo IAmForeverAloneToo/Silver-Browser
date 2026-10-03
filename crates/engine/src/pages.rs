@@ -33,6 +33,23 @@ pub(crate) const ABOUT_SILVER: &str = "\
         border-color: #89b4fa;\
         background-color: #313244;\
       }\
+      .card::before {\
+        content: attr(data-label);\
+        display: block;\
+        margin-bottom: 4px;\
+        color: #89b4fa;\
+        font-size: 12px;\
+        text-transform: uppercase;\
+      }\
+      .card::after { content: \"\u{a7}\"; display: block; text-align: right; color: #6c7086; }\
+      .lead::first-letter {\
+        float: left;\
+        font-size: 52px;\
+        padding-right: 6px;\
+        color: #f9e2af;\
+      }\
+      .lead::first-line { text-transform: uppercase; color: #cdd6f4; }\
+      q:lang(fr) { quotes: \"\u{ab}\u{a0}\" \"\u{a0}\u{bb}\" \"\u{2039}\u{a0}\" \"\u{a0}\u{203a}\"; }\
       .clipped { height: 40px; overflow: hidden; }\
       .scrolls { height: 60px; overflow: auto; }\
       a { color: #89b4fa; }\
@@ -42,13 +59,14 @@ pub(crate) const ABOUT_SILVER: &str = "\
     <h1 id=top>Hello from Silver Browser</h1>\
     <p>A hobby browser engine in Rust. This is about:silver, the browser's own page.</p>\
     <p class=\"highlight\">This page is laid out by our own block formatting context — real width/margin resolution and margin collapsing, not a flat vertical list.</p>\
-    <div class=\"card\">\
+    <p class=\"lead\">Pseudo-elements (M16): this paragraph opens with a drop cap, its first letter floated left and set large by ::first-letter, and its first line is in capitals by ::first-line, however wide the window makes it. The cards below are labelled by ::before, from their data-label attributes, and closed by ::after. Quotation marks come from the quotes property: <q>a quotation, with <q>one inside it</q></q>, and in French, chosen by :lang(fr), <q lang=\"fr\">une citation</q>.</p>\
+    <div class=\"card\" data-label=\"The box model\">\
       <p>This card's background and border are painted from real fragment geometry (M6.8) — the box model actually exists now.</p>\
     </div>\
-    <div class=\"card clipped\">\
+    <div class=\"card clipped\" data-label=\"overflow: hidden\">\
       <p>This card is 40px tall with overflow: hidden, so this second sentence is clipped away at its padding edge rather than painted over whatever follows. The clip is a rectangle in the display list (M9.3).</p>\
     </div>\
-    <div class=\"card scrolls\">\
+    <div class=\"card scrolls\" data-label=\"overflow: auto\">\
       <p>This card is 60px tall with overflow: auto, so it scrolls on its own: turn the wheel over it and its content moves inside the clip, with the overlay scrollbar at its right edge showing where it is (M10.5). At the end of its content the wheel goes on to the page, which is scroll chaining.</p>\
       <p>A second paragraph, to give the card something more to scroll through.</p>\
     </div>\
