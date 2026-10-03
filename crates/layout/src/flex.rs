@@ -13,19 +13,20 @@
 //! sizes while the algorithm runs, as the draft's inner flex base size
 //! is; an item's outer size adds its border, padding and margins.
 //!
-//! Every line is packed at main-start, and every item is stretched or
-//! placed at its line's cross-start: `justify-content`, the other
-//! values of `align-items` and `align-self`, `align-content` but for
-//! `stretch`, and `auto` margins, which count as zero, are not applied
-//! yet. An absolutely positioned child's static position is the content
-//! box's top-left corner.
+//! The items are placed by `justify-content` and `auto` margins on each
+//! line, by `align-self` and `auto` margins in it, and the lines by
+//! `align-content` (§8, css-align-3): each value resolved to a place in
+//! the flex-relative axis, the positions found from main-start and
+//! cross-start, and mapped to physical ones once. Baseline alignment
+//! places an item at cross-start for now. An absolutely positioned
+//! child's static position is the content box's top-left corner.
 
 use std::cell::OnceCell;
 use std::ops::Range;
 
 use style::computed::{
-    BOTTOM, BoxSizing, ComputedStyle, ContentAlignment, FlexBasis, FlexWrap, LEFT,
-    LengthPercentage, MaxSize, RIGHT, SelfAlignment, Size, TOP,
+    AlignPosition, BOTTOM, BaselinePosition, BoxSizing, ComputedStyle, ContentAlignment, FlexBasis,
+    FlexWrap, LEFT, LengthPercentage, MaxSize, OverflowAlign, RIGHT, SelfAlignment, Size, TOP,
 };
 use text::FontCollection;
 
@@ -82,14 +83,157 @@ impl Container {
         }
     }
 
-    /// The physical side at cross-start.
-    fn cross_start(&self) -> usize {
+    /// The physical sides at cross-start and cross-end.
+    fn cross_sides(&self) -> (usize, usize) {
         match (self.column, self.wrap_reverse) {
-            (false, false) => TOP,
-            (false, true) => BOTTOM,
-            (true, false) => LEFT,
-            (true, true) => RIGHT,
+            (false, false) => (TOP, BOTTOM),
+            (false, true) => (BOTTOM, TOP),
+            (true, false) => (LEFT, RIGHT),
+            (true, true) => (RIGHT, LEFT),
         }
+    }
+}
+
+/// Where alignment puts its subjects in one axis, flex-relative: at the
+/// start (main-start or cross-start), at the end, centred, or spread
+/// with the free space between them (css-align-3 §4).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Place {
+    Start,
+    End,
+    Center,
+    SpaceBetween,
+    SpaceAround,
+    SpaceEvenly,
+}
+
+/// An alignment value resolved for one axis: where its subjects go, and
+/// whether subjects that overflow go to the axis's physical start
+/// instead (`safe`, css-align-3 §4.4). Without `safe` the alignment is
+/// unsafe, as the reference browsers have it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Alignment {
+    place: Place,
+    safe: bool,
+}
+
+impl Alignment {
+    /// `place`, unsafe.
+    fn at(place: Place) -> Self {
+        Alignment { place, safe: false }
+    }
+
+    /// A positional keyword in an axis that runs from its physical start
+    /// when `forward`, and is `horizontal` or not. `start` and `end` are
+    /// the container's own, which `*-reverse` and `wrap-reverse` do not
+    /// flip, and so are `self-start` and `self-end` with one writing
+    /// mode; `left` and `right` are physical in a horizontal axis and
+    /// `start` in a vertical one (css-align-3 §4.1).
+    fn position(
+        position: AlignPosition,
+        overflow: OverflowAlign,
+        forward: bool,
+        horizontal: bool,
+    ) -> Self {
+        let (start, end) = if forward {
+            (Place::Start, Place::End)
+        } else {
+            (Place::End, Place::Start)
+        };
+        let place = match position {
+            AlignPosition::FlexStart => Place::Start,
+            AlignPosition::FlexEnd => Place::End,
+            AlignPosition::Center => Place::Center,
+            AlignPosition::Start | AlignPosition::SelfStart | AlignPosition::Left => start,
+            AlignPosition::End | AlignPosition::SelfEnd => end,
+            AlignPosition::Right if horizontal => end,
+            AlignPosition::Right => start,
+        };
+        Alignment {
+            place,
+            safe: overflow == OverflowAlign::Safe,
+        }
+    }
+
+    /// The offset of the first of `count` subjects from the axis's
+    /// flex-relative start, and the space added after each, given the
+    /// `free` space they leave in an axis that runs from its physical
+    /// start when `forward`. A distribution that cannot distribute takes
+    /// its fallback, as the reference browsers have it: `flex-start` for
+    /// `space-between`, unsafe where css-align-3 would make it safe, and
+    /// `safe center` for `space-around` and `space-evenly`.
+    fn offsets(self, free: f32, count: usize, forward: bool) -> (f32, f32) {
+        let n = count as f32;
+        let fallback = match self.place {
+            Place::SpaceBetween if count > 1 && free >= 0.0 => return (0.0, free / (n - 1.0)),
+            Place::SpaceAround if count > 0 && free >= 0.0 => return (free / n / 2.0, free / n),
+            Place::SpaceEvenly if count > 0 && free >= 0.0 => {
+                return (free / (n + 1.0), free / (n + 1.0));
+            }
+            Place::SpaceBetween => Alignment::at(Place::Start),
+            Place::SpaceAround | Place::SpaceEvenly => Alignment {
+                place: Place::Center,
+                safe: true,
+            },
+            _ => self,
+        };
+        let place = match fallback.place {
+            _ if fallback.safe && free < 0.0 && forward => Place::Start,
+            _ if fallback.safe && free < 0.0 => Place::End,
+            place => place,
+        };
+        match place {
+            Place::End => (free, 0.0),
+            Place::Center => (free / 2.0, 0.0),
+            _ => (0.0, 0.0),
+        }
+    }
+}
+
+/// `justify-content` in a main axis that runs from its physical start
+/// when `forward` and is `horizontal` or not: `normal` and `stretch` are
+/// `flex-start`, flex items growing by `flex-grow` instead (§8.2).
+fn justify_content(value: ContentAlignment, forward: bool, horizontal: bool) -> Alignment {
+    match value {
+        ContentAlignment::SpaceBetween => Alignment::at(Place::SpaceBetween),
+        ContentAlignment::SpaceAround => Alignment::at(Place::SpaceAround),
+        ContentAlignment::SpaceEvenly => Alignment::at(Place::SpaceEvenly),
+        ContentAlignment::Position(position, overflow) => {
+            Alignment::position(position, overflow, forward, horizontal)
+        }
+        ContentAlignment::Normal | ContentAlignment::Stretch | ContentAlignment::Baseline(_) => {
+            Alignment::at(Place::Start)
+        }
+    }
+}
+
+/// `align-content` in a cross axis that runs from its physical start
+/// when `forward` and is `horizontal` or not (§8.4). `normal` and
+/// `stretch` place the lines, already grown, at cross-start; `baseline`
+/// is `flex-start` as in the reference browsers, and `last baseline`,
+/// which they do not parse, its css-align-3 fallback, `safe end`.
+fn align_content(value: ContentAlignment, forward: bool, horizontal: bool) -> Alignment {
+    match value {
+        ContentAlignment::Baseline(BaselinePosition::Last) => {
+            Alignment::position(AlignPosition::End, OverflowAlign::Safe, forward, horizontal)
+        }
+        value => justify_content(value, forward, horizontal),
+    }
+}
+
+/// `align-self`, `auto` already resolved, in a cross axis that runs from
+/// its physical start when `forward` and is `horizontal` or not (§8.3).
+/// `normal` and `stretch` place an item that does not stretch at
+/// cross-start, and so does baseline alignment for now.
+fn self_alignment(value: SelfAlignment, forward: bool, horizontal: bool) -> Alignment {
+    match value {
+        SelfAlignment::Position(position, overflow) => {
+            Alignment::position(position, overflow, forward, horizontal)
+        }
+        SelfAlignment::Auto
+        | SelfAlignment::Normal
+        | SelfAlignment::Stretch
+        | SelfAlignment::Baseline(_) => Alignment::at(Place::Start),
     }
 }
 
@@ -572,32 +716,81 @@ pub(crate) fn layout_flex_contents<'a>(
         }
     }
 
-    // §9.5 and §9.6, in their simplest form: the lines from
-    // cross-start, the items on each from main-start, `*-reverse` and
-    // `wrap-reverse` turned around at the end.
+    // §9.5 step 12 and §9.6 steps 13, 14 and 16: on each line, the
+    // main-axis auto margins share the positive free space, else
+    // `justify-content` places the items; in its line, an item's
+    // cross-axis auto margins share the free space, else the start one is
+    // zero, and an item with neither is placed by `align-self`; in a
+    // multi-line container, `align-content` places the lines. Positions
+    // are flex-relative, from main-start and cross-start, until each is
+    // made physical, `*-reverse` and `wrap-reverse` turning it around.
     let (main_start, main_end) = c.main_sides();
-    let cross_start = c.cross_start();
-    let mut line_position = 0.0f32;
+    let (cross_start, cross_end) = c.cross_sides();
+    let (forward_main, forward_cross) = (!c.reverse, !c.wrap_reverse);
+    let justify = justify_content(style.justify_content, forward_main, !column);
+    let (mut line_position, line_between) = if single_line {
+        (0.0, 0.0)
+    } else {
+        let free = cross_size - line_cross.iter().sum::<f32>() - gaps(lines.len(), c.cross_gap);
+        align_content(style.align_content, forward_cross, column).offsets(
+            free,
+            lines.len(),
+            forward_cross,
+        )
+    };
     for (line, &size) in lines.iter().zip(&line_cross) {
-        let mut position = 0.0f32;
-        for item in &mut items[line.clone()] {
-            position += item.margin[main_start];
+        let line = &mut items[line.clone()];
+        let used = line
+            .iter()
+            .map(|item| item.target + item.main_extra)
+            .sum::<f32>()
+            + gaps(line.len(), c.main_gap);
+        let free = main_size - used;
+        let auto_margins: usize = line
+            .iter()
+            .map(|item| {
+                let margin = &item.b.style.margin;
+                usize::from(margin[main_start].is_auto()) + usize::from(margin[main_end].is_auto())
+            })
+            .sum();
+        let (share, (mut position, between)) = if free > 0.0 && auto_margins > 0 {
+            (free / auto_margins as f32, (0.0, 0.0))
+        } else {
+            (0.0, justify.offsets(free, line.len(), forward_main))
+        };
+        for item in line.iter_mut() {
+            let margin = &item.b.style.margin;
+            let auto = |side: usize| if margin[side].is_auto() { share } else { 0.0 };
+            position += item.margin[main_start] + auto(main_start);
             let border_main = item.target + item.main_edges;
             let main = if c.reverse {
                 main_size - position - border_main
             } else {
                 position
             };
-            let flow_cross = line_position + item.margin[cross_start];
+            position += border_main + item.margin[main_end] + auto(main_end) + c.main_gap + between;
+
+            let free = size - item.cross - item.cross_margins;
+            let offset = match (margin[cross_start].is_auto(), margin[cross_end].is_auto()) {
+                (true, true) if free > 0.0 => free / 2.0,
+                (true, false) if free > 0.0 => free,
+                (true, _) | (_, true) => 0.0,
+                (false, false) => {
+                    let alignment = align_self(&item.b.style, c.align_items);
+                    self_alignment(alignment, forward_cross, column)
+                        .offsets(free, 1, forward_cross)
+                        .0
+                }
+            };
+            let flow_cross = line_position + item.margin[cross_start] + offset;
             let cross = if c.wrap_reverse {
                 cross_size - flow_cross - item.cross
             } else {
                 flow_cross
             };
             (item.x, item.y) = if column { (cross, main) } else { (main, cross) };
-            position += border_main + item.margin[main_end] + c.main_gap;
         }
-        line_position += size + c.cross_gap;
+        line_position += size + c.cross_gap + line_between;
     }
 
     // Every item laid out at its used size, the kept layout when there
@@ -1761,5 +1954,387 @@ mod tests {
             assert_eq!(rect(&l, "i").3, 100.0, "{outer}{inner}");
             assert_eq!(rect(&l, "b").3, 100.0, "{outer}{inner}");
         }
+    }
+
+    /// The `x` and `y` of `#a` and `#b` in `html` under `css`.
+    fn two(html: &str, css: &str) -> [(f32, f32); 2] {
+        let l = laid(html, css);
+        ["a", "b"].map(|id| {
+            let (x, y, _, _) = rect(&l, id);
+            (x, y)
+        })
+    }
+
+    /// Whether `a` is `b` to within a hundredth of a pixel.
+    fn near(a: (f32, f32), b: (f32, f32)) -> bool {
+        (a.0 - b.0).abs() < 0.01 && (a.1 - b.1).abs() < 0.01
+    }
+
+    #[test]
+    fn justify_content_places_the_items_on_their_line() {
+        // §8.2, as the reference browser has it: two 50px items in a
+        // 200px container. `start` and `end` are the container's own,
+        // which `*-reverse` does not flip; `left` and `right` are
+        // physical in a row and `start` in a column; `normal` and
+        // `stretch` are `flex-start`.
+        let html = "<div id=c><div id=a></div><div id=b></div></div>";
+        let at = |direction: &str, value: &str| {
+            two(
+                html,
+                &format!(
+                    "#c {{ display: flex; width: 200px; height: 200px;
+                           flex-direction: {direction}; justify-content: {value} }}
+                     #a, #b {{ width: 50px; height: 20px; flex: none }}"
+                ),
+            )
+        };
+        let third = 100.0 / 3.0;
+        for (direction, value, a, b) in [
+            ("row", "flex-start", (0.0, 0.0), (50.0, 0.0)),
+            ("row", "flex-end", (100.0, 0.0), (150.0, 0.0)),
+            ("row", "center", (50.0, 0.0), (100.0, 0.0)),
+            ("row", "space-between", (0.0, 0.0), (150.0, 0.0)),
+            ("row", "space-around", (25.0, 0.0), (125.0, 0.0)),
+            ("row", "space-evenly", (third, 0.0), (150.0 - third, 0.0)),
+            ("row", "end", (100.0, 0.0), (150.0, 0.0)),
+            ("row", "right", (100.0, 0.0), (150.0, 0.0)),
+            ("row", "stretch", (0.0, 0.0), (50.0, 0.0)),
+            ("row", "normal", (0.0, 0.0), (50.0, 0.0)),
+            ("row-reverse", "flex-start", (150.0, 0.0), (100.0, 0.0)),
+            ("row-reverse", "flex-end", (50.0, 0.0), (0.0, 0.0)),
+            ("row-reverse", "start", (50.0, 0.0), (0.0, 0.0)),
+            ("row-reverse", "end", (150.0, 0.0), (100.0, 0.0)),
+            ("row-reverse", "left", (50.0, 0.0), (0.0, 0.0)),
+            ("row-reverse", "right", (150.0, 0.0), (100.0, 0.0)),
+            ("row-reverse", "space-between", (150.0, 0.0), (0.0, 0.0)),
+            ("column", "flex-end", (0.0, 160.0), (0.0, 180.0)),
+            ("column", "center", (0.0, 80.0), (0.0, 100.0)),
+            ("column", "space-around", (0.0, 40.0), (0.0, 140.0)),
+            ("column", "right", (0.0, 0.0), (0.0, 20.0)),
+            ("column-reverse", "start", (0.0, 20.0), (0.0, 0.0)),
+            ("column-reverse", "end", (0.0, 180.0), (0.0, 160.0)),
+            ("column-reverse", "left", (0.0, 20.0), (0.0, 0.0)),
+            ("column-reverse", "right", (0.0, 20.0), (0.0, 0.0)),
+        ] {
+            let [ra, rb] = at(direction, value);
+            assert!(
+                near(ra, a) && near(rb, b),
+                "{direction} {value}: {ra:?} {rb:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_line_that_overflows_takes_the_fallback_and_safe_its_start() {
+        // §8.2 and css-align-3 §4.3, §4.4, as the reference browser has
+        // it: two 80px items in a 100px container. `space-between` falls
+        // back to `flex-start`, unsafe; `space-around` and `space-evenly`
+        // to `safe center`; `safe` puts the items at the container's
+        // start, which in `row-reverse` is the left, main-end.
+        let html = "<div id=c><div id=a></div><div id=b></div></div>";
+        let at = |direction: &str, value: &str| {
+            two(
+                html,
+                &format!(
+                    "#c {{ display: flex; width: 100px; flex-direction: {direction};
+                           justify-content: {value} }}
+                     #a, #b {{ width: 80px; height: 20px; flex: none }}"
+                ),
+            )
+        };
+        for (direction, value, a, b) in [
+            ("row", "center", -30.0, 50.0),
+            ("row", "safe center", 0.0, 80.0),
+            ("row", "unsafe center", -30.0, 50.0),
+            ("row", "flex-end", -60.0, 20.0),
+            ("row", "safe flex-end", 0.0, 80.0),
+            ("row", "space-between", 0.0, 80.0),
+            ("row", "space-around", 0.0, 80.0),
+            ("row", "space-evenly", 0.0, 80.0),
+            ("row-reverse", "center", 50.0, -30.0),
+            ("row-reverse", "safe center", 80.0, 0.0),
+            ("row-reverse", "flex-start", 20.0, -60.0),
+            ("row-reverse", "safe flex-start", 80.0, 0.0),
+            ("row-reverse", "space-between", 20.0, -60.0),
+            ("row-reverse", "space-around", 80.0, 0.0),
+            ("row-reverse", "safe right", 80.0, 0.0),
+        ] {
+            let [ra, rb] = at(direction, value);
+            assert_eq!((ra.0, rb.0), (a, b), "{direction} {value}");
+        }
+        // One item cannot be spread: `space-between` puts it at
+        // main-start, the other two in the middle.
+        let one = |direction: &str, value: &str| {
+            let l = laid(
+                "<div id=c><div id=a></div></div>",
+                &format!(
+                    "#c {{ display: flex; width: 200px; flex-direction: {direction};
+                           justify-content: {value} }}
+                     #a {{ width: 50px; height: 20px; flex: none }}"
+                ),
+            );
+            rect(&l, "a").0
+        };
+        assert_eq!(one("row", "space-between"), 0.0);
+        assert_eq!(one("row-reverse", "space-between"), 150.0);
+        assert_eq!(one("row-reverse", "space-around"), 75.0);
+        assert_eq!(one("row", "space-evenly"), 75.0);
+    }
+
+    #[test]
+    fn auto_margins_take_the_free_space_before_alignment_does() {
+        // §8.1 and §9.5 step 12, §9.6 step 13, as the reference browser
+        // has it: in a 200 by 100 container, two 50 by 20 items.
+        let html = "<div id=c><div id=a></div><div id=b></div></div>";
+        let at = |container: &str, a: &str| {
+            two(
+                html,
+                &format!(
+                    "#c {{ display: flex; width: 200px; height: 100px; {container} }}
+                     #a, #b {{ width: 50px; height: 20px; flex: none }} #a {{ {a} }}"
+                ),
+            )
+        };
+        let a = |container: &str, item: &str| at(container, item)[0];
+        // In the main axis, before `justify-content`, shared equally.
+        assert_eq!(
+            at("justify-content: center", "margin-left: auto"),
+            [(100.0, 0.0), (150.0, 0.0)]
+        );
+        assert_eq!(at("", "margin: 0 auto"), [(50.0, 0.0), (150.0, 0.0)]);
+        assert_eq!(at("", "margin: auto"), [(50.0, 40.0), (150.0, 0.0)]);
+        assert_eq!(
+            at("flex-direction: row-reverse", "margin-left: auto"),
+            [(150.0, 0.0), (0.0, 0.0)]
+        );
+        // In the cross axis, before `align-self`; a stretchable item
+        // with one does not stretch.
+        assert_eq!(a("", "margin-top: auto; align-self: center"), (0.0, 80.0));
+        assert_eq!(a("", "margin: auto 0"), (0.0, 40.0));
+        assert_eq!(
+            a("flex-wrap: wrap-reverse", "margin-top: auto"),
+            (0.0, 80.0)
+        );
+        let l = laid(
+            html,
+            "#c { display: flex; width: 200px; height: 100px }
+             #a, #b { width: 50px; flex: none } #a { margin-top: auto }",
+        );
+        assert_eq!(rect(&l, "a").1, 100.0);
+        assert_eq!(rect(&l, "a").3, 0.0, "not stretched");
+        // With no free space they are zero, the cross-start one first.
+        let l = laid(
+            html,
+            "#c { display: flex; width: 100px; height: 100px; justify-content: center }
+             #a, #b { width: 80px; height: 20px; flex: none }
+             #a { margin-left: auto; height: 150px; margin-top: auto }",
+        );
+        assert_eq!(rect(&l, "a").0, -30.0, "justify-content applies");
+        assert_eq!(rect(&l, "a").1, 0.0);
+    }
+
+    #[test]
+    fn align_self_places_an_item_in_its_line() {
+        // §8.3, as the reference browser has it: a 50 by 20 or 50 by 150
+        // item in a 100px line. `flex-start` and `flex-end` follow
+        // `wrap-reverse`; `start`, `end`, `self-start` and `self-end` do
+        // not; `safe` puts an overflowing item at the start.
+        let y = |container: &str, value: &str, height: &str| {
+            let l = laid(
+                "<div id=c><div id=a></div><div id=b></div></div>",
+                &format!(
+                    "#c {{ display: flex; width: 200px; height: 100px; {container} }}
+                     #a, #b {{ width: 50px; height: 20px; flex: none }}
+                     #a {{ align-self: {value}; height: {height} }}"
+                ),
+            );
+            rect(&l, "a").1
+        };
+        for (value, short, tall) in [
+            ("flex-start", 0.0, 0.0),
+            ("flex-end", 80.0, -50.0),
+            ("center", 40.0, -25.0),
+            ("start", 0.0, 0.0),
+            ("end", 80.0, -50.0),
+            ("self-start", 0.0, 0.0),
+            ("self-end", 80.0, -50.0),
+            ("safe center", 40.0, 0.0),
+            ("safe flex-end", 80.0, 0.0),
+            ("unsafe flex-end", 80.0, -50.0),
+            ("safe end", 80.0, 0.0),
+        ] {
+            assert_eq!(y("", value, "20px"), short, "{value}");
+            assert_eq!(y("", value, "150px"), tall, "{value}, overflowing");
+        }
+        for (value, short) in [
+            ("flex-start", 80.0),
+            ("flex-end", 0.0),
+            ("center", 40.0),
+            ("start", 0.0),
+            ("end", 80.0),
+            ("self-end", 80.0),
+            ("normal", 80.0),
+        ] {
+            assert_eq!(
+                y("flex-wrap: wrap-reverse", value, "20px"),
+                short,
+                "{value}"
+            );
+        }
+        // `align-self: auto` is the container's `align-items`.
+        assert_eq!(y("align-items: center", "auto", "20px"), 40.0);
+        assert_eq!(y("align-items: center", "flex-end", "20px"), 80.0);
+        // The line of a multi-line container is as large as its items:
+        // an item larger than the container is its line.
+        assert_eq!(y("flex-wrap: wrap-reverse", "center", "150px"), -50.0);
+        // In a column the cross axis is horizontal.
+        let x = |container: &str, value: &str, width: &str| {
+            let l = laid(
+                "<div id=c><div id=a></div></div>",
+                &format!(
+                    "#c {{ display: flex; flex-direction: column; width: 200px; {container} }}
+                     #a {{ height: 20px; align-self: {value}; width: {width} }}"
+                ),
+            );
+            rect(&l, "a").0
+        };
+        assert_eq!(x("", "flex-end", "50px"), 150.0);
+        assert_eq!(x("", "center", "250px"), -25.0);
+        assert_eq!(x("", "safe center", "250px"), 0.0);
+        assert_eq!(x("flex-wrap: wrap-reverse", "flex-start", "50px"), 150.0);
+        assert_eq!(x("flex-wrap: wrap-reverse", "start", "50px"), 0.0);
+    }
+
+    #[test]
+    fn align_content_places_the_lines_of_a_multi_line_container() {
+        // §8.4, as the reference browser has it: three 60 by 20 items on
+        // three lines, in a container 100 wide and 200 or 40 tall.
+        let html = "<div id=c><div id=a></div><div id=b></div><div id=d></div></div>";
+        let ys = |wrap: &str, value: &str, height: &str| {
+            let l = laid(
+                html,
+                &format!(
+                    "#c {{ display: flex; flex-wrap: {wrap}; width: 100px; height: {height};
+                           align-items: flex-start; align-content: {value} }}
+                     #a, #b, #d {{ width: 60px; height: 20px; flex: none }}"
+                ),
+            );
+            ["a", "b", "d"].map(|id| rect(&l, id).1)
+        };
+        let close = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(a, b)| (a - b).abs() < 0.01);
+        let grown = 140.0 / 3.0;
+        for (wrap, value, tall, short) in [
+            ("wrap", "flex-start", [0.0, 20.0, 40.0], [0.0, 20.0, 40.0]),
+            (
+                "wrap",
+                "flex-end",
+                [140.0, 160.0, 180.0],
+                [-20.0, 0.0, 20.0],
+            ),
+            ("wrap", "center", [70.0, 90.0, 110.0], [-10.0, 10.0, 30.0]),
+            (
+                "wrap",
+                "space-between",
+                [0.0, 90.0, 180.0],
+                [0.0, 20.0, 40.0],
+            ),
+            (
+                "wrap",
+                "space-around",
+                [grown / 2.0, grown * 1.5 + 20.0, grown * 2.5 + 40.0],
+                [0.0, 20.0, 40.0],
+            ),
+            (
+                "wrap",
+                "space-evenly",
+                [35.0, 90.0, 145.0],
+                [0.0, 20.0, 40.0],
+            ),
+            ("wrap", "end", [140.0, 160.0, 180.0], [-20.0, 0.0, 20.0]),
+            (
+                "wrap",
+                "normal",
+                [0.0, 20.0 + grown, 40.0 + 2.0 * grown],
+                [0.0, 20.0, 40.0],
+            ),
+            (
+                "wrap",
+                "safe center",
+                [70.0, 90.0, 110.0],
+                [0.0, 20.0, 40.0],
+            ),
+            ("wrap", "baseline", [0.0, 20.0, 40.0], [0.0, 20.0, 40.0]),
+            (
+                "wrap-reverse",
+                "flex-start",
+                [180.0, 160.0, 140.0],
+                [20.0, 0.0, -20.0],
+            ),
+            (
+                "wrap-reverse",
+                "flex-end",
+                [40.0, 20.0, 0.0],
+                [40.0, 20.0, 0.0],
+            ),
+            (
+                "wrap-reverse",
+                "start",
+                [40.0, 20.0, 0.0],
+                [40.0, 20.0, 0.0],
+            ),
+            (
+                "wrap-reverse",
+                "end",
+                [180.0, 160.0, 140.0],
+                [20.0, 0.0, -20.0],
+            ),
+            (
+                "wrap-reverse",
+                "space-between",
+                [180.0, 90.0, 0.0],
+                [20.0, 0.0, -20.0],
+            ),
+            (
+                "wrap-reverse",
+                "space-around",
+                [180.0 - grown / 2.0, 90.0, grown / 2.0],
+                [40.0, 20.0, 0.0],
+            ),
+            (
+                "wrap-reverse",
+                "safe end",
+                [180.0, 160.0, 140.0],
+                [40.0, 20.0, 0.0],
+            ),
+            (
+                "wrap-reverse",
+                "baseline",
+                [180.0, 160.0, 140.0],
+                [20.0, 0.0, -20.0],
+            ),
+        ] {
+            let (t, s) = (ys(wrap, value, "200px"), ys(wrap, value, "40px"));
+            assert!(close(t, tall), "{wrap} {value}: {t:?}");
+            assert!(close(s, short), "{wrap} {value}, overflowing: {s:?}");
+        }
+        // `last baseline`, which the reference browsers do not parse
+        // here, is css-align-3's fallback, `safe end`.
+        assert!(close(
+            ys("wrap", "last baseline", "200px"),
+            [140.0, 160.0, 180.0]
+        ));
+        assert!(close(
+            ys("wrap", "last baseline", "40px"),
+            [0.0, 20.0, 40.0]
+        ));
+        // A single-line container's line is the container: nothing to
+        // place.
+        let l = laid(
+            "<div id=c><div id=a></div></div>",
+            "#c { display: flex; width: 100px; height: 100px; align-items: flex-start;
+                  align-content: center }
+             #a { width: 60px; height: 20px }",
+        );
+        assert_eq!(rect(&l, "a").1, 0.0);
     }
 }

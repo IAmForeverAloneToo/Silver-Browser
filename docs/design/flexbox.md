@@ -80,13 +80,20 @@ too: flex items grow with `flex-grow`, not with `justify-content`.
 `*-reverse` does not flip. `self-start` and `self-end` are the item's,
 the same thing with one writing mode. `left` and `right` are physical in
 a row container and behave as `start` in a column container. A
-distributed value that cannot distribute takes its fallback: `safe
-flex-start` for `space-between`, `safe center` for `space-around` and
-`space-evenly`, `flex-start` for `stretch` when the free space is
+distributed value that cannot distribute, its free space negative or a
+single subject for `space-between`, takes its fallback: `flex-start`
+for `space-between`, unsafe as the reference browsers have it where
+css-align-3 makes it safe; `safe center` for `space-around` and
+`space-evenly`; `flex-start` for `stretch` when the free space is
 negative. `safe` aligns an alignment subject that overflows its
-container as `start`. Without `safe` or `unsafe` the alignment is
-unsafe, as the reference browsers have it, rather than css-align-3
-§4.4's blend of the two, which none of them ships.
+container as `start`, the container's own start, which in `row-reverse`
+is main-end. Without `safe` or `unsafe` the alignment is unsafe, as the
+reference browsers have it, rather than css-align-3 §4.4's blend of the
+two, which none of them ships. In `align-content`, `baseline` is
+`flex-start`, as in the reference browsers, and `last baseline`, which
+they do not parse there, takes css-align-3's fallback, `safe end`.
+`align-content` places nothing in a single-line container, whose line
+is the container.
 
 **Sizes.** `width`, `height`, `min-width` and `min-height` take `auto |
 <length-percentage [0,∞]> | min-content | max-content | fit-content`,
@@ -301,8 +308,8 @@ steps:
     that height, imposed and definite. In a column container that width
     is the width of its final layout.
 12. *Main-axis alignment*: auto margins in the main axis share the
-    positive free space equally. Without any, `justify-content` places
-    the items.
+    positive free space equally. Without any, or without positive free
+    space, they are zero and `justify-content` places the items.
 13. *Cross-axis auto margins*: these share the line's free cross space
     equally. When there is none, the start margin is zero and the end
     margin takes the rest.
@@ -510,11 +517,13 @@ than by hand:
 For the subset, the cascade takes the `background` shorthand in its
 one-layer colour form: a `<color>`, `none`, or both, setting the colour,
 transparent when none is given. With anything else in it, an image or a
-position, the declaration is dropped whole, as a parse error is. At the commit vendored here, the rule takes
-350 tests: 310 reftests, 32 check-layout tests and 8 crashtests. The
-directory's README counts the tests it leaves out by the first reason
-found: scripts (160), CDATA sections (127), writing modes (113), images
-(82) and `line-height` (65) lead.
+position, the declaration is dropped whole, as a parse error is.
+
+At the commit vendored here, the rule takes 350 tests: 310 reftests, 32
+check-layout tests and 8 crashtests. The directory's README counts the
+tests it leaves out by the first reason found: scripts (160), CDATA
+sections (127), writing modes (113), images (82) and `line-height` (65)
+lead.
 
 - *Pulling.* `cargo run -p engine --example wpt -- pull <checkout>`
   applies the rule to a checkout of web-platform-tests. It copies the
@@ -550,7 +559,8 @@ found: scripts (160), CDATA sections (127), writing modes (113), images
   of what does not work and why. Its sections are the steps that will
   make the tests pass, and a last one for those that wait on nothing in
   this milestone (section 2). At step 5, 287 of the 350 pass; 55 wait on
-  steps 6 to 9 and 8 on nothing here.
+  steps 6 to 9 and 8 on nothing here. At step 6, 332 pass; 10 wait on
+  steps 7 to 9.
 - *Triage.* Every run writes `target/wpt/report.html`. It lists each
   test with its result and reason, and for a failing reftest shows the
   test's render, the reference's and the difference side by side. That

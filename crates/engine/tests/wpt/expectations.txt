@@ -3,63 +3,17 @@
 # named here fails the run, and so does one named here that passes.
 # The steps are M17's (docs/design/flexbox.md, section 3).
 
-# Alignment, M17 step 6.
-css/css-flexbox/abspos/position-absolute-015.html                  waits on step 6: justify-content; step 8: absolutely positioned children
-css/css-flexbox/abspos/position-absolute-containing-block-001.html waits on step 6: justify-content, align-items and align-self; step 8: absolutely positioned children
-css/css-flexbox/abspos/position-absolute-containing-block-002.html waits on step 6: justify-content, align-items and align-self; step 8: absolutely positioned children
-css/css-flexbox/align-content-horiz-001a.html                      waits on step 6: align-content
-css/css-flexbox/align-content-horiz-001b.html                      waits on step 6: align-content
-css/css-flexbox/align-content-horiz-002.html                       waits on step 6: align-content, wrap-reverse alignment
-css/css-flexbox/align-content-vert-001a.html                       waits on step 6: align-content
-css/css-flexbox/align-content-vert-001b.html                       waits on step 6: align-content
-css/css-flexbox/align-content-vert-002.html                        waits on step 6: align-content, wrap-reverse alignment
-css/css-flexbox/flex-align-content-center.html                     waits on step 6: align-content
-css/css-flexbox/flex-align-content-end.html                        waits on step 6: align-content
-css/css-flexbox/flex-align-content-space-around.html               waits on step 6: align-content
-css/css-flexbox/flex-align-content-space-between.html              waits on step 6: align-content
-css/css-flexbox/flexbox-align-items-center-nested-001.html         waits on step 6: align-items and align-self; step 8: absolutely positioned children
-css/css-flexbox/flexbox-column-row-gap-001.html                    waits on step 6: justify-content, auto margins, align-content
-css/css-flexbox/flexbox-items-as-stacking-contexts-003.html        waits on step 6: justify-content; step 9: z-index on items
-css/css-flexbox/flexbox-overflow-horiz-002.html                    waits on step 6: align-items and align-self
-css/css-flexbox/flexbox-overflow-vert-002.html                     waits on step 6: align-items and align-self
-css/css-flexbox/flexbox_align-content-center.html                  waits on step 6: align-content
-css/css-flexbox/flexbox_align-content-flexend.html                 waits on step 6: align-content
-css/css-flexbox/flexbox_align-content-spacearound.html             waits on step 6: align-content
-css/css-flexbox/flexbox_align-content-spacebetween.html            waits on step 6: align-content
-css/css-flexbox/flexbox_align-items-center-2.html                  waits on step 6: align-items and align-self
-css/css-flexbox/flexbox_align-items-center.html                    waits on step 6: align-items and align-self
-css/css-flexbox/flexbox_align-items-flexend-2.html                 waits on step 6: align-items and align-self
-css/css-flexbox/flexbox_align-items-flexend.html                   waits on step 6: align-items and align-self
-css/css-flexbox/flexbox_align-self-auto.html                       waits on step 6: align-items and align-self
-css/css-flexbox/flexbox_align-self-baseline.html                   waits on step 6: align-items and align-self; step 7: baseline alignment
-css/css-flexbox/flexbox_align-self-center.html                     waits on step 6: align-items and align-self
-css/css-flexbox/flexbox_align-self-flexend.html                    waits on step 6: align-items and align-self
-css/css-flexbox/flexbox_align-self-flexstart.html                  waits on step 6: align-items and align-self
-css/css-flexbox/flexbox_align-self-stretch.html                    waits on step 6: align-items and align-self
-css/css-flexbox/flexbox_justifycontent-center-overflow.html        waits on step 6: justify-content
-css/css-flexbox/flexbox_justifycontent-center.html                 waits on step 6: justify-content
-css/css-flexbox/flexbox_justifycontent-flex-end.html               waits on step 6: justify-content
-css/css-flexbox/flexbox_justifycontent-flex-start.html             waits on step 6: auto margins
-css/css-flexbox/flexbox_justifycontent-left-001.html               waits on step 6: justify-content: left in a row-reverse container
-css/css-flexbox/flexbox_justifycontent-left-002.html               waits on step 6: justify-content: left in a column container
-css/css-flexbox/flexbox_justifycontent-right-001.html              waits on step 6: justify-content
-css/css-flexbox/flexbox_justifycontent-right-002.html              waits on step 6: justify-content
-css/css-flexbox/flexbox_justifycontent-spacearound-only.html       waits on step 6: justify-content
-css/css-flexbox/flexbox_justifycontent-spacearound.html            waits on step 6: justify-content
-css/css-flexbox/flexbox_justifycontent-spacebetween.html           waits on step 6: justify-content
-css/css-flexbox/flexbox_margin-auto.html                           waits on step 6: auto margins
-css/css-flexbox/flexbox_margin-left-ex.html                        waits on step 6: auto margins
-css/css-flexbox/flexbox_order-abspos-space-around.html             waits on step 6: justify-content; step 8: absolutely positioned children
-css/css-flexbox/justify-content-006.html                           waits on step 6: justify-content
-
 # Baseline alignment, M17 step 7.
 css/css-flexbox/align-baseline.html               waits on step 7: baseline alignment, which in a column wrap-reverse container aligns the items as a group
 css/css-flexbox/flexbox_align-items-baseline.html waits on step 7: baseline alignment
 
 # Absolute positioning, M17 step 8.
-css/css-flexbox/columns-height-set-via-top-bottom.html waits on step 8: the height of an absolutely positioned flex container from its insets, imposed on its layout
-css/css-flexbox/percentage-heights-002.html            waits on step 8: the height of an absolutely positioned flex container from its insets, imposed on its layout
-css/css-flexbox/percentage-widths-001.html             waits on step 8: the height of an absolutely positioned flex container from its insets, imposed on its layout
+css/css-flexbox/abspos/position-absolute-015.html                  waits on step 8: an absolutely positioned child's static position, which justify-content and align-items place
+css/css-flexbox/abspos/position-absolute-containing-block-001.html waits on step 8: an absolutely positioned child's static position, which justify-content and align-items place
+css/css-flexbox/abspos/position-absolute-containing-block-002.html waits on step 8: an absolutely positioned child's static position, which justify-content and align-items place
+css/css-flexbox/columns-height-set-via-top-bottom.html             waits on step 8: the height of an absolutely positioned flex container from its insets, imposed on its layout
+css/css-flexbox/percentage-heights-002.html                        waits on step 8: the height of an absolutely positioned flex container from its insets, imposed on its layout
+css/css-flexbox/percentage-widths-001.html                         waits on step 8: the height of an absolutely positioned flex container from its insets, imposed on its layout
 
 # Paint order, M17 step 9.
 css/css-flexbox/flex-item-position-relative-001.html         waits on step 9: positioned boxes paint in tree order (CSS2 Appendix E), not in the order of their fragments, where an absolutely positioned box comes after the relatively positioned item that follows it
