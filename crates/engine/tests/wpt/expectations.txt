@@ -5,10 +5,6 @@
 # note's section 3: docs/design/flexbox.md for M17, docs/design/grid.md
 # for M18.
 
-# Grid baselines, M18 step 6.
-css/css-grid/grid-model/display-inline-grid.html                                         waits on step 6: an inline-grid's baseline on its line
-css/css-grid/layout-algorithm/grid-minimum-contribution-baseline-shim.html               waits on step 6: baseline alignment and its shims in the minimum contribution; step 7: an absolutely positioned item in its grid area
-
 # Absolutely positioned boxes in a grid, M18 step 7.
 css/css-grid/abspos/grid-abspos-staticpos-align-items-center.html                        waits on step 7: an absolutely positioned child's static position, aligned by align-items and align-self (its reference, a grid item, aligns from step 5)
 css/css-grid/abspos/grid-abspos-staticpos-align-items-end-large-border-padding.html      waits on step 7: an absolutely positioned child's static position, aligned by align-items and align-self (its reference, a grid item, aligns from step 5)
@@ -67,3 +63,5 @@ css/css-flexbox/percentage-size-quirks-002.html                                 
 css/css-flexbox/table-with-infinite-max-intrinsic-width.html                             a 100% column makes a table's max-content width unbounded (CSS2 17.5.2.2); the reference browsers keep that out of a flex item's base size, this engine does not
 css/css-grid/grid-items/item-with-table-with-infinite-max-intrinsic-width.html           a 100% column makes a table's max-content width unbounded (CSS2 17.5.2.2); the reference browsers keep that out of a grid item's contribution, this engine does not
 css/css-grid/grid-items/table-with-infinite-max-intrinsic-width.html                     a 100% column makes a table's max-content width unbounded (CSS2 17.5.2.2); the reference browsers keep that out of a grid item's contribution, this engine does not
+css/css-grid/grid-model/display-inline-grid.html                                         the reference sets vertical-align: top on an inline box, which inline layout does not read (roadmap M7.7); the inline grid itself sits on its first baseline as in the reference browser
+css/css-grid/layout-algorithm/grid-minimum-contribution-baseline-shim.html               one item's baseline is from an inline-block with vertical-align: top, which inline layout does not read (roadmap M7.7), and the box that shows the row's size is absolutely positioned in its grid area (step 7); built without either, the shims and the row match the reference browser

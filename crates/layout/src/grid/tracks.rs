@@ -29,7 +29,7 @@ impl Sizing {
     /// Whether this is an intrinsic sizing function: `min-content`,
     /// `max-content` or `auto` (`fit-content()` is a `max-content`
     /// maximum with a limit).
-    fn is_intrinsic(self) -> bool {
+    pub(crate) fn is_intrinsic(self) -> bool {
         matches!(self, Sizing::MinContent | Sizing::MaxContent | Sizing::Auto)
     }
 }

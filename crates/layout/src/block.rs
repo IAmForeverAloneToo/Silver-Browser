@@ -905,17 +905,19 @@ pub(crate) struct BlockLayout<'a> {
     pub(crate) self_collapsing: bool,
     /// The box's last baseline, from its border-box top: its last line
     /// box's, or the last baseline of the last box in it that has one, a
-    /// table's last row's or a flex container's (css-align-3 §9.1, M17);
-    /// `None` when there is none. A flex item aligns by it.
+    /// table's last row's or a flex or grid container's (css-align-3
+    /// §9.1, M17, M18); `None` when there is none. A flex or grid item
+    /// aligns by it.
     pub(crate) last_baseline: Option<f32>,
     /// Its first baseline, the same way from the first: its first line
     /// box's, or that of the first box in it that has one, a table's
     /// first row's (CSS2 §17.5.3: a table cell's baseline; §10.8.1: an
-    /// inline table's, M12) or a flex container's.
+    /// inline table's, M12) or a flex or grid container's.
     pub(crate) first_baseline: Option<f32>,
     /// The baseline an inline-block of this content takes (CSS2
-    /// §10.8.1): its last baseline, but for a flex container inside it,
-    /// which counts by its first, as in the reference browsers.
+    /// §10.8.1): its last baseline, but for a flex or grid container
+    /// inside it, which counts by its first, as in the reference
+    /// browsers.
     pub(crate) inline_block_baseline: Option<f32>,
     /// The absolutely positioned boxes met inside whose containing
     /// block is further up (M11), relative to the border box.
@@ -1290,11 +1292,11 @@ pub(crate) fn layout_inline_block<'a>(
     let height = margin_top + layout.height + margin_bottom;
     // An inline table aligns by its first row's baseline (CSS2 §10.8.1,
     // M12), whatever its `overflow`, which a table does not apply; an
-    // inline flex container by its first baseline (css-align-3 §9.1,
-    // M17), in its initial scroll position (css-flexbox-1 §8.5); an
-    // inline-block by its last line box's, a flex container in it
-    // counting by its first.
-    let baseline = if b.is_table() || b.is_flex_container() {
+    // inline flex or grid container by its first baseline (css-align-3
+    // §9.1, M17, M18), in its initial scroll position (css-flexbox-1
+    // §8.5, css-grid-2 §11.6); an inline-block by its last line box's, a
+    // flex or grid container in it counting by its first.
+    let baseline = if b.is_table() || b.has_items() {
         layout.first_baseline
     } else {
         layout

@@ -17,7 +17,7 @@ pub(crate) mod tracks;
 use std::ops::Range;
 
 use style::computed::{
-    BOTTOM, BoxSizing, ComputedStyle, ContentAlignment, LEFT, LengthPercentage,
+    BOTTOM, BaselinePosition, BoxSizing, ComputedStyle, ContentAlignment, LEFT, LengthPercentage,
     LengthPercentageAuto, MaxSize, RIGHT, SelfAlignment, Size, TOP, TrackBreadth, TrackList,
     TrackSize,
 };
@@ -345,6 +345,205 @@ fn self_offset(free: f32, auto_margins: [bool; 2], alignment: Alignment) -> f32 
     }
 }
 
+/// A baseline-sharing group along one axis (§11.6, css-align-3 §9.1):
+/// the items that align by their first baseline and whose area starts in
+/// `track`, or by their last baseline and whose area ends there.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Group {
+    position: BaselinePosition,
+    track: usize,
+}
+
+/// The group an item takes part in along one axis, its self-alignment
+/// there being `alignment` and its margins there `margins` (§11.3,
+/// §11.4): a baseline value's, unless either margin is `auto` or the
+/// item's size there depends on the size of an intrinsically sized track
+/// its area `span` crosses, which would make the two depend on each
+/// other. Here that is a `percentage` size, minimum or maximum in the
+/// axis, and a track whose minimum or maximum is intrinsic, or a
+/// flexible track when the container's size in the axis is not
+/// `definite`: a flexible track counts by that alone, whatever its
+/// minimum. Such an item takes the fallback alignment.
+fn baseline_group(
+    alignment: SelfAlignment,
+    margins: [LengthPercentageAuto; 2],
+    percentage: bool,
+    tracks: &[Track],
+    span: &Range<usize>,
+    definite: bool,
+) -> Option<Group> {
+    let SelfAlignment::Baseline(position) = alignment else {
+        return None;
+    };
+    let intrinsic = |t: &Track| match t.max {
+        Sizing::Flex(_) => !definite,
+        max => t.min.is_intrinsic() || max.is_intrinsic(),
+    };
+    if margins.iter().any(|m| m.is_auto())
+        || (percentage && span.clone().any(|t| intrinsic(&tracks[t])))
+    {
+        return None;
+    }
+    let track = match position {
+        BaselinePosition::First => span.start,
+        BaselinePosition::Last => span.end - 1,
+    };
+    Some(Group { position, track })
+}
+
+/// Whether a size, a minimum or a maximum is a percentage.
+fn has_percentage(size: Size, min: Size, max: MaxSize) -> bool {
+    matches!(size, Size::Percent(_))
+        || matches!(min, Size::Percent(_))
+        || matches!(max, MaxSize::Percent(_))
+}
+
+/// The distance from the outer edge an item's group aligns it at to its
+/// baseline: its outer start edge for the first baseline, its outer end
+/// edge for the last; `from_start` is the distance from the outer start
+/// edge to the baseline and `outer` the item's outer size.
+fn distance(position: BaselinePosition, from_start: f32, outer: f32) -> f32 {
+    match position {
+        BaselinePosition::First => from_start,
+        BaselinePosition::Last => outer - from_start,
+    }
+}
+
+/// The largest distance (see [`distance`]) among each group's items, by
+/// track: where the group's baseline is from the edge it aligns at.
+struct Extents {
+    first: Vec<f32>,
+    last: Vec<f32>,
+}
+
+impl Extents {
+    /// The extents of the groups of an axis with `tracks` tracks, each
+    /// item in `groups` at its distance in `distances`.
+    fn of(groups: &[Option<Group>], distances: &[f32], tracks: usize) -> Self {
+        let mut extents = Extents {
+            first: vec![f32::NEG_INFINITY; tracks],
+            last: vec![f32::NEG_INFINITY; tracks],
+        };
+        for (group, &distance) in groups.iter().zip(distances) {
+            if let Some(group) = group {
+                let largest = match group.position {
+                    BaselinePosition::First => &mut extents.first[group.track],
+                    BaselinePosition::Last => &mut extents.last[group.track],
+                };
+                *largest = largest.max(distance);
+            }
+        }
+        extents
+    }
+
+    /// How far an item at `distance` in `group` lies from the edge its
+    /// group aligns at, so that its baseline meets the group's: its shim
+    /// (§12.5 step 1), and its offset in its area (css-align-3 §9.3);
+    /// zero for an item in no group.
+    fn shim(&self, group: Option<Group>, distance: f32) -> f32 {
+        group.map_or(0.0, |group| {
+            let largest = match group.position {
+                BaselinePosition::First => self.first[group.track],
+                BaselinePosition::Last => self.last[group.track],
+            };
+            largest - distance
+        })
+    }
+}
+
+/// Where an item in a baseline-sharing group goes in its area along the
+/// axis, from the area's start: `shim` from the start for the first
+/// baseline, from the end for the last, `free` being the room the area
+/// leaves it. The group as a whole is aligned at that edge, however it
+/// overflows (css-align-3 §9.3).
+fn baseline_offset(position: BaselinePosition, shim: f32, free: f32) -> f32 {
+    match position {
+        BaselinePosition::First => shim,
+        BaselinePosition::Last => free - shim,
+    }
+}
+
+/// A margin's size where the area it is a percentage of is not known
+/// yet: zero for a percentage or `auto`.
+fn fixed_margin(margin: LengthPercentageAuto) -> f32 {
+    match margin {
+        LengthPercentageAuto::Px(px) => px,
+        _ => 0.0,
+    }
+}
+
+/// An item's shims along the columns (§12.5 step 1): one for its
+/// min-content contribution, which its minimum contribution takes too,
+/// and one for its max-content contribution. They differ only in a
+/// last-baseline group, whose items' distances from their right edges
+/// depend on their widths.
+#[derive(Debug, Clone, Copy, Default)]
+struct Shims {
+    min_content: f32,
+    max_content: f32,
+}
+
+/// Each item's baseline-sharing group along the columns, its
+/// `justify-self` a baseline value, and its shims, the container's width
+/// being `definite` or not. Items have no baselines in this axis in this
+/// engine's one writing mode, so each takes both from its border box's
+/// left edge, as the reference browser has it (css-align-3 §9.1): the
+/// group lines up their left border edges.
+fn column_groups<'a>(
+    items: &[GridItem<'a>],
+    container: &ComputedStyle,
+    columns: &[Track],
+    definite: bool,
+    pass: &Pass<'a>,
+) -> (Vec<Option<Group>>, Vec<Shims>) {
+    let groups: Vec<Option<Group>> = items
+        .iter()
+        .map(|item| {
+            let style = &item.b.style;
+            baseline_group(
+                justify_self(style, container),
+                [style.margin[LEFT], style.margin[RIGHT]],
+                has_percentage(style.width, style.min_width, style.max_width),
+                columns,
+                &item.columns,
+                definite,
+            )
+        })
+        .collect();
+    // Each item's distances at its min-content and its max-content
+    // contribution.
+    let distances: Vec<[f32; 2]> = items
+        .iter()
+        .zip(&groups)
+        .map(|(item, group)| match group {
+            None => [0.0; 2],
+            Some(group) => {
+                let left = fixed_margin(item.b.style.margin[LEFT]);
+                let (min, max) = crate::intrinsic::contribution(item.b, pass);
+                [min, max].map(|outer| distance(group.position, left, outer))
+            }
+        })
+        .collect();
+    let shims_at = |k: usize| -> Vec<f32> {
+        let distances: Vec<f32> = distances.iter().map(|d| d[k]).collect();
+        let extents = Extents::of(&groups, &distances, columns.len());
+        groups
+            .iter()
+            .zip(&distances)
+            .map(|(&group, &distance)| extents.shim(group, distance))
+            .collect()
+    };
+    let shims = shims_at(0)
+        .into_iter()
+        .zip(shims_at(1))
+        .map(|(min_content, max_content)| Shims {
+            min_content,
+            max_content,
+        })
+        .collect();
+    (groups, shims)
+}
+
 /// A gap's size: a percentage of a size not known is zero (css-align-3
 /// §8.1), and `normal` is zero in a grid container.
 fn gap(gap: Option<LengthPercentage>, of: Option<f32>) -> f32 {
@@ -428,11 +627,12 @@ fn inner(style: &ComputedStyle, v: f32, non_content: f32) -> f32 {
 /// An item's automatic minimum width as a content-box width (§6.6),
 /// zero when it does not apply: its min-content width, clamped by a
 /// definite `max-width` and, when every column it spans has a fixed
-/// maximum, by what those leave it.
+/// maximum, by what those leave it after its margins and its `shim`.
 fn automatic_minimum_width<'a>(
     item: &GridItem<'a>,
     columns: &[Track],
     gutters: &[f32],
+    shim: f32,
     pass: &Pass<'a>,
 ) -> f32 {
     let style = &item.b.style;
@@ -445,7 +645,7 @@ fn automatic_minimum_width<'a>(
         content = content.min(inner(style, max, non_content));
     }
     if let Some(limit) = fixed_maximum(columns, gutters, &item.columns) {
-        content = content.min((limit - margins - non_content).max(0.0));
+        content = content.min((limit - margins - shim - non_content).max(0.0));
     }
     content
 }
@@ -454,8 +654,13 @@ fn automatic_minimum_width<'a>(
 /// its min-content and max-content contributions as a block container's
 /// child gives them, and its minimum contribution, the outer size its
 /// minimum width, `automatic` for `auto`, would give it when its `width`
-/// is `auto` or a percentage.
-fn column_contribution<'a>(item: &GridItem<'a>, automatic: f32, pass: &Pass<'a>) -> Contribution {
+/// is `auto` or a percentage; each with its baseline shim (§12.5 step 1).
+fn column_contribution<'a>(
+    item: &GridItem<'a>,
+    automatic: f32,
+    shims: Shims,
+    pass: &Pass<'a>,
+) -> Contribution {
     let style = &item.b.style;
     let (min_content, max_content) = crate::intrinsic::contribution(item.b, pass);
     let minimum = match style.width {
@@ -475,9 +680,9 @@ fn column_contribution<'a>(item: &GridItem<'a>, automatic: f32, pass: &Pass<'a>)
     };
     Contribution {
         span: item.columns.clone(),
-        minimum,
-        min_content,
-        max_content,
+        minimum: minimum + shims.min_content,
+        min_content: min_content + shims.min_content,
+        max_content: max_content + shims.max_content,
     }
 }
 
@@ -541,12 +746,15 @@ struct Measured {
     outer: f32,
     /// Its content height as with `height: auto`.
     auto_height: f32,
+    /// Its first and last baselines from its border box's top, each
+    /// synthesized from the border box's bottom edge when it has none.
+    baselines: [f32; 2],
 }
 
 /// An item's automatic minimum height as a content-box height (§6.6),
 /// zero when it does not apply: its content height, clamped by a
 /// definite `max-height` and, when every row it spans has a fixed
-/// maximum, by what those leave it.
+/// maximum, by what those leave it after its margins and its `shim`.
 fn automatic_minimum_height(
     item: &GridItem<'_>,
     auto_height: f32,
@@ -554,6 +762,7 @@ fn automatic_minimum_height(
     gutters: &[f32],
     vertical: f32,
     margin: &[f32; 4],
+    shim: f32,
 ) -> f32 {
     let style = &item.b.style;
     if !has_automatic_minimum(style, rows, &item.rows) {
@@ -564,7 +773,7 @@ fn automatic_minimum_height(
         content = content.min(inner(style, max, vertical));
     }
     if let Some(limit) = fixed_maximum(rows, gutters, &item.rows) {
-        content = content.min((limit - margin[TOP] - margin[BOTTOM] - vertical).max(0.0));
+        content = content.min((limit - margin[TOP] - margin[BOTTOM] - shim - vertical).max(0.0));
     }
     content
 }
@@ -573,7 +782,8 @@ fn automatic_minimum_height(
 /// columns' width, both its min-content and its max-content
 /// contribution; and its minimum contribution, from its minimum height
 /// when its `height` is `auto` or a percentage, an `auto` one its
-/// content-based minimum (§6.6).
+/// content-based minimum (§6.6); each with its baseline `shim` (§12.5
+/// step 1).
 fn row_contribution(
     item: &GridItem<'_>,
     measured: &Measured,
@@ -581,6 +791,7 @@ fn row_contribution(
     gutters: &[f32],
     edges: &Edges,
     margin: &[f32; 4],
+    shim: f32,
 ) -> Contribution {
     let style = &item.b.style;
     let vertical = edges.vertical();
@@ -596,6 +807,7 @@ fn row_contribution(
                     gutters,
                     vertical,
                     margin,
+                    shim,
                 ),
                 Size::MinContent | Size::MaxContent | Size::FitContent => measured.auto_height,
             };
@@ -605,9 +817,9 @@ fn row_contribution(
     };
     Contribution {
         span: item.rows.clone(),
-        minimum,
-        min_content: measured.outer,
-        max_content: measured.outer,
+        minimum: minimum + shim,
+        min_content: measured.outer + shim,
+        max_content: measured.outer + shim,
     }
 }
 
@@ -683,16 +895,21 @@ pub(crate) fn layout_grid_contents<'a>(
     // The columns (§12.1 step 1), sized in the content width.
     let mut columns = grid.columns.tracks(Some(content_width));
     let column_gutters = grid.columns.gutters(column_gap);
+    let (column_groups, column_shims) = column_groups(&grid.items, style, &columns, true, pass);
     let automatic_widths: Vec<f32> = grid
         .items
         .iter()
-        .map(|item| automatic_minimum_width(item, &columns, &column_gutters, pass))
+        .zip(&column_shims)
+        .map(|(item, shims)| {
+            automatic_minimum_width(item, &columns, &column_gutters, shims.min_content, pass)
+        })
         .collect();
     let column_items: Vec<Contribution> = grid
         .items
         .iter()
         .zip(&automatic_widths)
-        .map(|(item, &automatic)| column_contribution(item, automatic, pass))
+        .zip(&column_shims)
+        .map(|((item, &automatic), &shims)| column_contribution(item, automatic, shims, pass))
         .collect();
     size_tracks(
         &mut columns,
@@ -751,6 +968,8 @@ pub(crate) fn layout_grid_contents<'a>(
             let measured = pass.read_item(key, lay_out, |layout| Measured {
                 outer: layout.height + margin[TOP] + margin[BOTTOM],
                 auto_height: layout.auto_content_height,
+                baselines: [layout.first_baseline, layout.last_baseline]
+                    .map(|baseline| baseline.unwrap_or(layout.height)),
             });
             Sized {
                 edges,
@@ -760,12 +979,60 @@ pub(crate) fn layout_grid_contents<'a>(
             }
         })
         .collect();
+    // §12.5 step 1: the items in baseline-sharing groups along the rows
+    // and their shims, from their baselines as measured.
+    let row_groups: Vec<Option<Group>> = grid
+        .items
+        .iter()
+        .map(|item| {
+            let item_style = &item.b.style;
+            baseline_group(
+                align_self(item_style, style),
+                [item_style.margin[TOP], item_style.margin[BOTTOM]],
+                has_percentage(
+                    item_style.height,
+                    item_style.min_height,
+                    item_style.max_height,
+                ),
+                &rows,
+                &item.rows,
+                definite.is_some(),
+            )
+        })
+        .collect();
+    let row_distance = |group: Option<Group>, margin_top: f32, baselines: [f32; 2], outer: f32| {
+        group.map_or(0.0, |group| {
+            let baseline = match group.position {
+                BaselinePosition::First => baselines[0],
+                BaselinePosition::Last => baselines[1],
+            };
+            distance(group.position, margin_top + baseline, outer)
+        })
+    };
+    let distances: Vec<f32> = row_groups
+        .iter()
+        .zip(&sized)
+        .map(|(&group, s)| {
+            row_distance(group, s.margin[TOP], s.measured.baselines, s.measured.outer)
+        })
+        .collect();
+    let extents = Extents::of(&row_groups, &distances, rows.len());
     let row_items: Vec<Contribution> = grid
         .items
         .iter()
         .zip(&sized)
-        .map(|(item, s)| {
-            row_contribution(item, &s.measured, &rows, &row_gutters, &s.edges, &s.margin)
+        .zip(row_groups.iter().zip(&distances))
+        .map(|((item, s), (&group, &distance))| {
+            let shim = extents.shim(group, distance);
+            row_contribution(
+                item,
+                &s.measured,
+                &rows,
+                &row_gutters,
+                &s.edges,
+                &s.margin,
+                shim,
+            )
         })
         .collect();
     let row_space = |available, gutters: &[f32]| Space {
@@ -812,86 +1079,153 @@ pub(crate) fn layout_grid_contents<'a>(
     );
 
     // §12 step 5: each item laid out in its area, stretched where it
-    // stretches, and placed there by its `auto` margins or its
-    // self-alignment (§11).
+    // stretches, and placed there by its `auto` margins, its
+    // baseline-sharing group or its self-alignment (§11).
     let content_x = border[LEFT] + padding[LEFT];
     let content_y = border[TOP] + padding[TOP];
     let height = content_height + vertical_edges;
     let mut root = box_fragment(content_width + edges.horizontal(), height, b);
+    let laid: Vec<BlockLayout<'a>> = grid
+        .items
+        .iter()
+        .zip(&sized)
+        .map(|(item, s)| {
+            let item_style = &item.b.style;
+            let (_, width) = column_lines.area(&item.columns);
+            let (_, area_height) = row_lines.area(&item.rows);
+            let vertical = s.edges.vertical();
+            let margin = s.margin;
+            let stretched = stretches(
+                align_self(item_style, style),
+                item_style.height,
+                [item_style.margin[TOP], item_style.margin[BOTTOM]],
+            );
+            let imposed = stretched.then(|| {
+                let bounds = height_bounds(
+                    item_style,
+                    Some(area_height),
+                    vertical,
+                    Some(s.measured.auto_height),
+                );
+                let room = (area_height - margin[TOP] - margin[BOTTOM] - vertical).max(0.0);
+                let mut height = clamp_height(room, bounds);
+                if item_style.min_height.is_auto() {
+                    let automatic = automatic_minimum_height(
+                        item,
+                        s.measured.auto_height,
+                        &rows,
+                        &row_gutters,
+                        vertical,
+                        &margin,
+                        0.0,
+                    );
+                    height = height.max(automatic);
+                }
+                Imposed {
+                    height: height + vertical,
+                    definite: true,
+                }
+            });
+            let key = ItemKey::of(item.b, s.content_width, imposed, width, Some(area_height));
+            pass.item(key, || {
+                layout_contents(
+                    item.b,
+                    &s.edges,
+                    width,
+                    Some(area_height),
+                    s.content_width,
+                    0.0,
+                    Content::Root,
+                    pass,
+                    None,
+                    imposed,
+                )
+            })
+        })
+        .collect();
+    // Each item's outer size, and its baselines from its border box's
+    // top, as laid out; the groups align by these.
+    let outer: Vec<(f32, f32)> = laid
+        .iter()
+        .zip(&sized)
+        .map(|(layout, s)| {
+            let width = s.content_width + s.edges.horizontal() + s.margin[LEFT] + s.margin[RIGHT];
+            (width, layout.height + s.margin[TOP] + s.margin[BOTTOM])
+        })
+        .collect();
+    let baselines: Vec<[f32; 2]> = laid
+        .iter()
+        .map(|layout| {
+            [layout.first_baseline, layout.last_baseline]
+                .map(|baseline| baseline.unwrap_or(layout.height))
+        })
+        .collect();
+    let column_distances: Vec<f32> = column_groups
+        .iter()
+        .zip(&sized)
+        .zip(&outer)
+        .map(|((group, s), &(width, _))| {
+            group.map_or(0.0, |group| distance(group.position, s.margin[LEFT], width))
+        })
+        .collect();
+    let row_distances: Vec<f32> = row_groups
+        .iter()
+        .zip(&sized)
+        .zip(baselines.iter().zip(&outer))
+        .map(|((&group, s), (&baselines, &(_, height)))| {
+            row_distance(group, s.margin[TOP], baselines, height)
+        })
+        .collect();
+    let column_extents = Extents::of(&column_groups, &column_distances, columns.len());
+    let row_extents = Extents::of(&row_groups, &row_distances, rows.len());
+
     let mut carried_up: Vec<Vec<Deferred<'a>>> = b.children.iter().map(|_| Vec::new()).collect();
     let mut content_bottom = 0.0f32;
-    for (item, s) in grid.items.iter().zip(sized) {
+    // Each item's first and last baselines from the container's border
+    // box's top, for the container's own.
+    let mut item_baselines = Vec::with_capacity(laid.len());
+    for (i, ((item, s), layout)) in grid.items.iter().zip(&sized).zip(laid).enumerate() {
         let item_style = &item.b.style;
         let (x, width) = column_lines.area(&item.columns);
         let (y, area_height) = row_lines.area(&item.rows);
-        let vertical = s.edges.vertical();
         let margin = s.margin;
-        let stretched = stretches(
-            align_self(item_style, style),
-            item_style.height,
-            [item_style.margin[TOP], item_style.margin[BOTTOM]],
-        );
-        let imposed = stretched.then(|| {
-            let bounds = height_bounds(
-                item_style,
-                Some(area_height),
-                vertical,
-                Some(s.measured.auto_height),
-            );
-            let room = (area_height - margin[TOP] - margin[BOTTOM] - vertical).max(0.0);
-            let mut height = clamp_height(room, bounds);
-            if item_style.min_height.is_auto() {
-                let automatic = automatic_minimum_height(
-                    item,
-                    s.measured.auto_height,
-                    &rows,
-                    &row_gutters,
-                    vertical,
-                    &margin,
-                );
-                height = height.max(automatic);
-            }
-            Imposed {
-                height: height + vertical,
-                definite: true,
-            }
-        });
-        let key = ItemKey::of(item.b, s.content_width, imposed, width, Some(area_height));
-        let layout = pass.item(key, || {
-            layout_contents(
-                item.b,
-                &s.edges,
-                width,
-                Some(area_height),
-                s.content_width,
-                0.0,
-                Content::Root,
-                pass,
-                None,
-                imposed,
-            )
-        });
         let (dx, dy) = relative_offset(item_style, width, Some(area_height));
         let auto = |side: usize| item_style.margin[side].is_auto();
-        let outer_width = s.content_width + s.edges.horizontal() + margin[LEFT] + margin[RIGHT];
-        let outer_height = layout.height + margin[TOP] + margin[BOTTOM];
-        let x = x + self_offset(
-            width - outer_width,
-            [auto(LEFT), auto(RIGHT)],
-            self_alignment(justify_self(item_style, style), true, true),
-        );
-        let y = y + self_offset(
-            area_height - outer_height,
-            [auto(TOP), auto(BOTTOM)],
-            self_alignment(align_self(item_style, style), true, false),
-        );
+        let (outer_width, outer_height) = outer[i];
+        let x = x + match column_groups[i] {
+            Some(group) => baseline_offset(
+                group.position,
+                column_extents.shim(Some(group), column_distances[i]),
+                width - outer_width,
+            ),
+            None => self_offset(
+                width - outer_width,
+                [auto(LEFT), auto(RIGHT)],
+                self_alignment(justify_self(item_style, style), true, true),
+            ),
+        };
+        let y = y + match row_groups[i] {
+            Some(group) => baseline_offset(
+                group.position,
+                row_extents.shim(Some(group), row_distances[i]),
+                area_height - outer_height,
+            ),
+            None => self_offset(
+                area_height - outer_height,
+                [auto(TOP), auto(BOTTOM)],
+                self_alignment(align_self(item_style, style), true, false),
+            ),
+        };
         let left = content_x + x + margin[LEFT];
         let top = content_y + y + margin[TOP];
         content_bottom = content_bottom.max(y + outer_height);
+        item_baselines.push(baselines[i].map(|baseline| top + baseline));
         carried_up[item.child] = carried(layout.absolutes, left + dx, top + dy);
         root.children
             .push(layout.root.translated(left + dx, top + dy));
     }
+    let (first_baseline, last_baseline) =
+        container_baselines(&grid.items, &row_groups, &item_baselines);
 
     // An absolutely positioned child is no item; until the grid aligns
     // it (M18 step 7), its static position is the content box's start.
@@ -930,13 +1264,74 @@ pub(crate) fn layout_grid_contents<'a>(
         top_edge: own_top,
         bottom_edge: own_bottom,
         self_collapsing: false,
-        first_baseline: None,
-        last_baseline: None,
-        inline_block_baseline: None,
+        first_baseline,
+        last_baseline,
+        // An inline-block takes a grid container's first baseline, as it
+        // does a flex container's (M17), in the reference browser.
+        inline_block_baseline: first_baseline,
         absolutes,
         auto_content_height,
         held: Vec::new(),
     }
+}
+
+/// The grid container's first and last baselines from its border box's
+/// top (§11.6), as the reference browser finds them, from `baselines`,
+/// each item's first and last baselines from there, and `groups`, its
+/// baseline-sharing group along the rows if any. The first is from the
+/// first row an item's area starts in: the shared baseline of the items
+/// there that take part in baseline alignment in that row, a
+/// first-baseline group before a last; else the first baseline of the
+/// first of them in grid order, which goes by the column the area starts
+/// in and then by order-modified document order. The last is the same
+/// from the last row an item's area ends in, first and last turned
+/// round: a last-baseline group before a first, else the last baseline
+/// of the last item there in grid order, which goes by the column the
+/// area ends in. An item's relative offset does not move them. With no
+/// item, none.
+fn container_baselines(
+    items: &[GridItem<'_>],
+    groups: &[Option<Group>],
+    baselines: &[[f32; 2]],
+) -> (Option<f32>, Option<f32>) {
+    let in_group = |i: usize, position: BaselinePosition, track: usize| {
+        groups[i] == Some(Group { position, track })
+    };
+    let first = items.iter().map(|item| item.rows.start).min().map(|row| {
+        let mut there: Vec<usize> = (0..items.len())
+            .filter(|&i| items[i].rows.start == row)
+            .collect();
+        there.sort_by_key(|&i| items[i].columns.start);
+        let found = |position| there.iter().copied().find(|&i| in_group(i, position, row));
+        if let Some(i) = found(BaselinePosition::First) {
+            baselines[i][0]
+        } else if let Some(i) = found(BaselinePosition::Last) {
+            baselines[i][1]
+        } else {
+            baselines[there[0]][0]
+        }
+    });
+    let last = items.iter().map(|item| item.rows.end - 1).max().map(|row| {
+        let mut there: Vec<usize> = (0..items.len())
+            .filter(|&i| items[i].rows.end - 1 == row)
+            .collect();
+        there.sort_by_key(|&i| items[i].columns.end);
+        let found = |position| {
+            there
+                .iter()
+                .rev()
+                .copied()
+                .find(|&i| in_group(i, position, row))
+        };
+        if let Some(i) = found(BaselinePosition::Last) {
+            baselines[i][1]
+        } else if let Some(i) = found(BaselinePosition::First) {
+            baselines[i][0]
+        } else {
+            baselines[there[there.len() - 1]][1]
+        }
+    });
+    (first, last)
 }
 
 /// The grid container `b`'s min-content and max-content content widths
@@ -981,12 +1376,15 @@ pub(crate) fn content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32
     );
     let columns = grid.columns.tracks(None);
     let gutters = grid.columns.gutters(column_gap);
+    let (_, shims) = column_groups(&grid.items, style, &columns, false, pass);
     let items: Vec<Contribution> = grid
         .items
         .iter()
-        .map(|item| {
-            let automatic = automatic_minimum_width(item, &columns, &gutters, pass);
-            column_contribution(item, automatic, pass)
+        .zip(&shims)
+        .map(|(item, &shims)| {
+            let automatic =
+                automatic_minimum_width(item, &columns, &gutters, shims.min_content, pass);
+            column_contribution(item, automatic, shims, pass)
         })
         .collect();
     let size_under = |available| {
@@ -1740,6 +2138,629 @@ mod tests {
                 grid,
             );
             assert_eq!(rect(&l, "a"), (0.0, 0.0, 40.0, 30.0), "{item}");
+        }
+    }
+
+    /// An item `id` whose first and last baseline is `baseline` from its
+    /// border-box top, under [`BASELINE_CSS`]: its one line holds an
+    /// inline-block as tall, with `below` of padding under it.
+    fn item(id: &str, baseline: u32, below: u32, style: &str) -> String {
+        format!(
+            "<div id={id} style='padding-bottom: {below}px; {style}'>\
+             <i style='height: {baseline}px'></i></div>"
+        )
+    }
+
+    /// An item `id` with two lines, its first baseline `first` and its last
+    /// `first + second`.
+    fn two_lines(id: &str, first: u32, second: u32, style: &str) -> String {
+        format!(
+            "<div id={id} style='{style}'><div><i style='height: {first}px'></i></div>\
+             <div><i style='height: {second}px'></i></div></div>"
+        )
+    }
+
+    /// The `y` of each element of `ids`.
+    fn ys_of(l: &Laid, ids: &[&str]) -> Vec<f32> {
+        ids.iter().map(|id| rect(l, id).1).collect()
+    }
+
+    /// The style the baseline tests share: no strut, so that a line is as
+    /// tall as its inline-block and its baseline at that block's bottom;
+    /// a grid `.g` of three 40px columns and a 100px row.
+    const BASELINE_CSS: &str = "body { font-size: 0; line-height: 0 }
+         i { display: inline-block; width: 10px }
+         .g { display: grid; grid-template-columns: repeat(3, 40px); grid-template-rows: 100px }";
+
+    #[test]
+    fn a_baseline_group_shares_its_baseline_in_its_row() {
+        // §11.4 and css-align-3 §9.3, as the reference browser has it:
+        // items whose baselines are 30, 10 and 20px down, 35, 50 and 20px
+        // tall. The first group puts the item furthest from its baseline
+        // at the row's top, the last group at its bottom.
+        let row = format!(
+            "{}{}{}",
+            item("a", 30, 5, ""),
+            item("b", 10, 40, ""),
+            item("d", 20, 0, "")
+        );
+        let ys = |style: &str, ids: &[&str], body: &str| {
+            let l = laid(
+                &format!("<div id=g class=g style='{style}'>{body}</div>"),
+                BASELINE_CSS,
+            );
+            (ys_of(&l, ids), rect(&l, "g").3)
+        };
+        let abd = ["a", "b", "d"];
+        for (style, expected) in [
+            ("align-items: baseline", [0.0, 20.0, 10.0]),
+            ("align-items: first baseline", [0.0, 20.0, 10.0]),
+            ("align-items: last baseline", [30.0, 50.0, 40.0]),
+        ] {
+            assert_eq!(ys(style, &abd, &row).0, expected, "{style}");
+        }
+        // An `auto` row holds the group: the largest distance above the
+        // baseline and the largest below; both groups, when there are two.
+        for style in ["align-items: baseline", "align-items: last baseline"] {
+            let style = format!("{style}; grid-template-rows: auto");
+            assert_eq!(ys(&style, &abd, &row), (vec![0.0, 20.0, 10.0], 70.0));
+        }
+        let both = format!(
+            "{}{}{}",
+            item("a", 30, 5, "align-self: baseline"),
+            item("b", 10, 40, "align-self: last baseline"),
+            item("d", 20, 0, "align-self: baseline")
+        );
+        assert_eq!(
+            ys("grid-template-rows: auto", &abd, &both),
+            (vec![0.0, 0.0, 10.0], 50.0)
+        );
+        // The shim is in each contribution: #b's minimum, 40 with
+        // `min-height: 0`, is 60 with it, and its min-content contribution
+        // 70, which the row takes.
+        let low = format!(
+            "{}{}{}",
+            item("a", 30, 5, ""),
+            item("b", 10, 40, "min-height: 0"),
+            item("d", 20, 0, "")
+        );
+        for style in ["align-items: baseline", "align-items: last baseline"] {
+            let style = format!("{style}; grid-template-rows: auto");
+            assert_eq!(ys(&style, &abd, &low), (vec![0.0, 20.0, 10.0], 70.0));
+        }
+        // Margins count from the outer edge; an item with an `auto` margin
+        // takes no part, its margin taking the space.
+        let body = format!(
+            "{}{}{}",
+            item("a", 30, 5, ""),
+            item("b", 10, 40, "margin-top: 25px"),
+            item("d", 20, 0, "")
+        );
+        assert_eq!(
+            ys("align-items: baseline", &abd, &body).0,
+            [5.0, 25.0, 15.0]
+        );
+        let body = format!(
+            "{}{}{}",
+            item("a", 30, 5, ""),
+            item("b", 40, 0, "margin-top: auto"),
+            item("d", 20, 0, "")
+        );
+        assert_eq!(
+            ys("align-items: baseline", &abd, &body).0,
+            [0.0, 60.0, 10.0]
+        );
+        // An item without a baseline has one at its border box's bottom.
+        let body = format!(
+            "{}<div id=b style='height: 20px'></div><div id=d style='height: 50px'></div>",
+            item("a", 30, 5, "")
+        );
+        assert_eq!(
+            ys("align-items: baseline", &abd, &body).0,
+            [20.0, 30.0, 0.0]
+        );
+        // An item's first baseline is its first line's, its last its last.
+        let lines = format!("{}{}", two_lines("a", 10, 30, ""), item("b", 20, 0, ""));
+        assert_eq!(
+            ys("align-items: first baseline", &["a", "b"], &lines).0,
+            [10.0, 0.0]
+        );
+        assert_eq!(
+            ys("align-items: last baseline", &["a", "b"], &lines).0,
+            [60.0, 80.0]
+        );
+        // A scroll container keeps its content's baseline.
+        let body = format!(
+            "{}{}",
+            item("a", 30, 5, ""),
+            item("b", 10, 40, "overflow: hidden")
+        );
+        assert_eq!(
+            ys("align-items: baseline", &["a", "b"], &body).0,
+            [0.0, 20.0]
+        );
+        // A group too large for its row stays flush with the row's edge,
+        // past the other one: unsafe.
+        let pair = format!("{}{}", item("a", 30, 5, ""), item("b", 10, 40, ""));
+        for (style, expected) in [
+            ("align-items: baseline", [0.0, 20.0]),
+            ("align-items: last baseline", [-40.0, -20.0]),
+        ] {
+            let style = format!("{style}; grid-template-rows: 30px");
+            assert_eq!(ys(&style, &["a", "b"], &pair).0, expected, "{style}");
+        }
+        // The others in the row align as they would without the group.
+        for (style, expected) in [("", (0.0, 70.0)), ("align-self: center", (30.0, 10.0))] {
+            let body = format!(
+                "{}{}{}",
+                item("a", 30, 5, "align-self: baseline"),
+                item("b", 10, 40, "align-self: baseline"),
+                item("d", 5, 5, style)
+            );
+            let l = laid(
+                &format!("<div class=g style='grid-template-rows: auto'>{body}</div>"),
+                BASELINE_CSS,
+            );
+            let d = rect(&l, "d");
+            assert_eq!((d.1, d.3), expected, "{style}");
+        }
+    }
+
+    #[test]
+    fn a_spanning_item_shares_the_group_of_the_row_it_starts_or_ends_in() {
+        // #a spans both rows: its first baseline joins the first row's
+        // group, its last the second's (§11.4).
+        let body = format!(
+            "{}{}{}{}",
+            item("a", 30, 5, "grid-row: 1 / 3"),
+            item("b", 10, 40, ""),
+            item("d", 20, 0, "grid-row: 2; grid-column: 2"),
+            item("e", 5, 0, "grid-row: 2; grid-column: 3")
+        );
+        for (align, expected, height) in [
+            ("baseline", [0.0, 20.0, 70.0, 85.0], 90.0),
+            ("last baseline", [40.0, 0.0, 50.0, 65.0], 75.0),
+        ] {
+            let l = laid(
+                &format!(
+                    "<div id=g class=g style='align-items: {align}; grid-template-rows: auto auto'>\
+                     {body}</div>"
+                ),
+                BASELINE_CSS,
+            );
+            assert_eq!(ys_of(&l, &["a", "b", "d", "e"]), expected, "{align}");
+            assert_eq!(rect(&l, "g").3, height, "{align}");
+        }
+    }
+
+    #[test]
+    fn an_item_whose_size_depends_on_its_track_takes_no_part() {
+        // A percentage height in a row sized by its content would depend on
+        // the baseline alignment that sizes the row: the item takes the
+        // fallback, `start` (§11.4), a flexible row counting as sized by
+        // content only when the grid's height is not definite. The
+        // reference browser aligns it all the same (design note).
+        let at = |grid: &str, b: &str| {
+            let l = laid(
+                &format!(
+                    "<div class=g style='align-items: baseline; {grid}'>{}\
+                     <div id=b style='{b}'><i style='height: 10px'></i></div>{}</div>",
+                    item("a", 30, 5, ""),
+                    item("d", 20, 0, "")
+                ),
+                BASELINE_CSS,
+            );
+            rect(&l, "b").1
+        };
+        for (grid, b, y) in [
+            ("grid-template-rows: auto", "height: 50%", 0.0),
+            (
+                "grid-template-rows: auto; height: 100px",
+                "min-height: 50%",
+                0.0,
+            ),
+            ("grid-template-rows: 1fr", "height: 50%", 0.0),
+            (
+                "grid-template-rows: 1fr; height: 100px",
+                "height: 50%",
+                20.0,
+            ),
+            ("grid-template-rows: 100px", "height: 50%", 20.0),
+            ("grid-template-rows: auto", "height: 50px", 20.0),
+            (
+                "grid-template-rows: minmax(auto, 100px)",
+                "height: 50%",
+                0.0,
+            ),
+            (
+                "grid-template-rows: auto; height: 100px",
+                "max-height: 50%",
+                0.0,
+            ),
+        ] {
+            assert_eq!(at(grid, b), y, "{grid}, {b}");
+        }
+    }
+
+    #[test]
+    fn a_column_group_lines_up_its_items_left_border_edges() {
+        // Items have no baselines across their lines here: the reference
+        // browser synthesizes both from the left border edge, which the
+        // group lines up, the first group from the column's start and the
+        // last from its end (css-align-3 §9.1).
+        let boxes = "<div id=a style='width: 30px'></div>\
+             <div id=b style='width: 30px; margin-left: 10px; margin-right: 5px'></div>\
+             <div id=d style='width: 30px; margin-left: 20px'></div>";
+        let css = format!(
+            "{BASELINE_CSS} .g {{ grid-template-columns: 100px; grid-template-rows: repeat(3, 20px) }}
+             .g > div {{ height: 10px }}"
+        );
+        for (align, x) in [("baseline", 20.0), ("last baseline", 65.0)] {
+            let l = laid(
+                &format!("<div class=g style='justify-items: {align}'>{boxes}</div>"),
+                &css,
+            );
+            let xs: Vec<f32> = ["a", "b", "d"].iter().map(|id| rect(&l, id).0).collect();
+            assert_eq!(xs, [x, x, x], "{align}");
+        }
+        // The shims widen an `auto` column (§12.5 step 1): to 47, #a's 37
+        // after its shim of 10, so that #d and #e line up 20 into the
+        // next. Padding does not move the edge.
+        let l = laid(
+            "<div class=g style='justify-items: baseline; grid-template-columns: auto 1fr'>\
+             <div id=a style='width: 30px; padding-left: 7px'></div>\
+             <div id=b style='width: 30px; margin-left: 10px'></div>\
+             <div id=d style='width: 30px; margin-left: 20px'></div>\
+             <div id=e style='grid-column: 2; grid-row: 1'></div></div>",
+            &css,
+        );
+        let xs: Vec<f32> = ["a", "b", "d", "e"]
+            .iter()
+            .map(|id| rect(&l, id).0)
+            .collect();
+        assert_eq!(xs, [10.0, 10.0, 67.0, 67.0]);
+        // And the intrinsic width of a grid sized to fit: in a last-baseline
+        // group the items are 30, 35 and 30 from their right edges to their
+        // left border edges, so #a and #d take shims of 5, and #d is 55
+        // wide with its.
+        let l = laid(
+            &format!(
+                "<div id=g class=g style='display: inline-grid; justify-items: last baseline; \
+                 grid-template-columns: auto'>{boxes}</div>"
+            ),
+            &css,
+        );
+        assert_eq!(rect(&l, "g").2, 55.0);
+    }
+
+    #[test]
+    fn a_column_shim_counts_in_each_contribution() {
+        // #b's margin puts the group's edge 50 in, so #a, 25 wide, has a
+        // shim of 50: its minimum contribution is 75, and a fixed maximum
+        // limits its content-based minimum after the shim (§6.6), as in the
+        // reference browser. #r, in the next column, shows the first one's
+        // width; the grid is too narrow to grow it.
+        let width = |columns: &str| {
+            let l = laid(
+                &format!(
+                    "<div class=g style='width: 0; grid-template-columns: {columns} 10px; \
+                     grid-template-rows: auto auto; justify-items: baseline'>\
+                     <div id=a><i style='width: 25px; height: 5px'></i></div>\
+                     <div id=b style='margin-left: 50px; grid-column: 1'></div>\
+                     <div id=r style='grid-column: 2; grid-row: 1'></div></div>"
+                ),
+                BASELINE_CSS,
+            );
+            rect(&l, "r").0
+        };
+        for (columns, expected) in [
+            ("minmax(auto, 0px)", 50.0),
+            ("minmax(auto, 60px)", 60.0),
+            ("minmax(auto, 75px)", 75.0),
+            ("minmax(auto, 100px)", 75.0),
+            ("auto", 75.0),
+        ] {
+            assert_eq!(width(columns), expected, "{columns}");
+        }
+        // #a is 20 wide at its narrowest and 40 at its widest, #b nothing
+        // past its 30px margin. In a first-baseline group #a's shim is 30
+        // in both contributions; in a last-baseline group #b's is 20 in its
+        // min-content contribution and 40 in its max-content one (§12.5
+        // step 1: each contribution its own), so the grid is 50 at its
+        // narrowest and 70 at its widest. The reference browser takes the
+        // min-content shim for both and is 50 wide at its widest too.
+        let at = |align: &str, narrow: bool| {
+            let grid = format!(
+                "<div id=g class=g style='display: inline-grid; grid-template-columns: auto; \
+                 grid-template-rows: auto auto; justify-items: {align}'>\
+                 <div id=a><i style='width: 20px; height: 5px'></i> \
+                 <i style='width: 20px; height: 5px'></i></div>\
+                 <div id=b style='margin-left: 30px'></div></div>"
+            );
+            let html = if narrow {
+                format!("<div style='width: 0'>{grid}</div>")
+            } else {
+                grid
+            };
+            let l = laid(&html, BASELINE_CSS);
+            (rect(&l, "g").2, rect(&l, "a").0, rect(&l, "b").0)
+        };
+        assert_eq!(at("baseline", false), (70.0, 30.0, 30.0));
+        assert_eq!(at("baseline", true), (50.0, 30.0, 30.0));
+        assert_eq!(at("last baseline", false), (70.0, 30.0, 30.0));
+        assert_eq!(at("last baseline", true), (50.0, 10.0, 10.0));
+    }
+
+    #[test]
+    fn shims_count_in_the_minimum_contribution() {
+        // WPT grid-minimum-contribution-baseline-shim, built without its
+        // vertical-align: #b's baseline is at its top, #a's at its bottom,
+        // 50 down, so #b's shim is 50 and its minimum contribution 75 at
+        // the least; a fixed maximum limits the content-based minimum
+        // after the shim (§6.6). #r, stretched in a column of its own,
+        // shows the row.
+        let at = |rows: &str, align: &str| {
+            let l = laid(
+                &format!(
+                    "<div class=g style='grid-template-rows: {rows}; align-items: {align}'>\
+                     <div id=a style='padding-top: 25px'><i style='height: 25px; width: 25px'></i></div>\
+                     <div id=b style='padding-bottom: 25px'><i style='height: 0; width: 25px'></i>\
+                     <div style='height: 25px'></div></div>\
+                     <div id=r style='grid-column: 3; grid-row: 1; min-height: 0; align-self: stretch'></div></div>"
+                ),
+                "body { font-size: 0; line-height: 0 } i { display: inline-block }
+                 .g { display: grid; height: 0; width: 0; grid-template-columns: 50px 50px 10px }",
+            );
+            (rect(&l, "a").1, rect(&l, "b").1, rect(&l, "r").3)
+        };
+        for (rows, row) in [
+            ("minmax(auto, 0px)", 75.0),
+            ("minmax(auto, 75px)", 75.0),
+            ("minmax(auto, 88px)", 88.0),
+            ("minmax(auto, 100px)", 100.0),
+            ("minmax(auto, 150px)", 100.0),
+            ("minmax(auto, auto)", 100.0),
+        ] {
+            assert_eq!(at(rows, "baseline"), (0.0, 50.0, row), "{rows}");
+        }
+        // In a last-baseline group the shim is after #a, at its end.
+        for (rows, expected) in [
+            ("minmax(auto, 0px)", (-25.0, 25.0, 75.0)),
+            ("minmax(auto, 88px)", (-12.0, 38.0, 88.0)),
+            ("minmax(auto, auto)", (0.0, 50.0, 100.0)),
+        ] {
+            assert_eq!(at(rows, "last baseline"), expected, "{rows}");
+        }
+    }
+
+    #[test]
+    fn a_grid_container_has_the_baselines_of_its_first_and_last_rows() {
+        // §11.6, as the reference browser has it: an inline grid sits on
+        // its first baseline, which is where a 50px inline-block beside it
+        // ends, so that baseline is that far below the grid's top.
+        let baseline = |grid: &str, items: &str| {
+            let l = laid(
+                &format!(
+                    "<div><i id=r style='height: 50px'></i><div id=g style='display: inline-grid; \
+                     grid-template-columns: 40px 40px; {grid}'>{items}</div></div>"
+                ),
+                BASELINE_CSS,
+            );
+            rect(&l, "r").1 + 50.0 - rect(&l, "g").1
+        };
+        // The first row's first item in grid order, by column and then in
+        // order-modified document order; relative offsets do not count.
+        let cases = [
+            (
+                "",
+                format!("{}{}", item("a", 30, 5, ""), item("b", 10, 40, "")),
+                30.0,
+            ),
+            (
+                "",
+                format!(
+                    "{}{}",
+                    item("x", 30, 5, "grid-column: 2; grid-row: 1"),
+                    item("y", 10, 5, "grid-column: 1; grid-row: 1")
+                ),
+                10.0,
+            ),
+            (
+                "",
+                format!(
+                    "{}{}",
+                    item("a", 12, 0, "grid-area: 1 / 1; order: 2"),
+                    item("b", 8, 0, "grid-area: 1 / 1; order: 1")
+                ),
+                8.0,
+            ),
+            ("", item("a", 30, 5, "position: relative; top: 10px"), 30.0),
+            ("", two_lines("a", 10, 30, ""), 10.0),
+            // The first row an item starts in.
+            (
+                "grid-template-rows: 20px",
+                item("x", 30, 5, "grid-row: 2"),
+                50.0,
+            ),
+            (
+                "grid-template-rows: 20px 20px",
+                format!(
+                    "{}{}",
+                    item("x", 8, 0, "grid-row: 2; grid-column: 1"),
+                    item("y", 30, 5, "grid-row: 1 / 3; grid-column: 2")
+                ),
+                30.0,
+            ),
+            // A group in that row before its first item, a first-baseline
+            // group before a last; an item whose last-baseline group is in
+            // another row does not count.
+            (
+                "grid-template-rows: 100px",
+                format!(
+                    "{}{}",
+                    item("x", 30, 5, "align-self: start"),
+                    item("y", 10, 5, "align-self: baseline; margin-top: 7px")
+                ),
+                17.0,
+            ),
+            (
+                "grid-template-rows: 100px",
+                format!(
+                    "{}{}",
+                    item("x", 30, 5, "align-self: start"),
+                    item("y", 10, 5, "align-self: last baseline")
+                ),
+                95.0,
+            ),
+            (
+                "grid-template-rows: 100px",
+                format!(
+                    "{}{}",
+                    item("x", 30, 5, "align-self: last baseline"),
+                    item("y", 10, 5, "align-self: baseline; margin-top: 3px")
+                ),
+                13.0,
+            ),
+            (
+                "grid-template-rows: 20px 20px",
+                format!(
+                    "{}{}",
+                    item("a", 12, 0, "grid-row: 1; grid-column: 1"),
+                    item(
+                        "b",
+                        8,
+                        0,
+                        "grid-row: 1 / 3; grid-column: 2; align-self: last baseline"
+                    )
+                ),
+                12.0,
+            ),
+            // An item without a baseline gives its border box's bottom;
+            // a scroll container keeps its items' baseline.
+            (
+                "",
+                "<div style='height: 20px; margin-top: 4px'></div>".to_string(),
+                24.0,
+            ),
+            (
+                "overflow: hidden; height: 100px",
+                item("a", 30, 5, ""),
+                30.0,
+            ),
+            // With no item, the inline grid's bottom margin edge.
+            ("height: 40px; margin-bottom: 5px", String::new(), 45.0),
+        ];
+        for (grid, items, expected) in &cases {
+            assert_eq!(baseline(grid, items), *expected, "{grid} {items}");
+        }
+    }
+
+    #[test]
+    fn a_grid_containers_last_baseline_is_its_last_rows() {
+        // A flex container's last-baseline group shows it: the grid's
+        // last baseline meets that of a 50px item beside it, at its end.
+        let baseline = |rows: &str, items: &str| {
+            let l = laid(
+                &format!(
+                    "<div style='display: flex; align-items: last baseline'>{}\
+                     <div id=g style='display: grid; grid-template-columns: 40px 40px; \
+                     grid-template-rows: {rows}'>{items}</div></div>",
+                    item("r", 50, 0, "")
+                ),
+                BASELINE_CSS,
+            );
+            rect(&l, "r").1 + 50.0 - rect(&l, "g").1
+        };
+        for (rows, items, expected) in [
+            // The last item in grid order in the last row an item ends
+            // in: by the column it ends in, then in order-modified
+            // document order.
+            (
+                "20px 20px",
+                format!(
+                    "{}{}",
+                    item("a", 30, 5, "grid-row: 1 / 3; grid-column: 2"),
+                    item("b", 8, 0, "grid-row: 2; grid-column: 1")
+                ),
+                30.0,
+            ),
+            (
+                "20px 20px",
+                format!(
+                    "{}{}",
+                    item("a", 30, 5, "grid-row: 1 / 3; grid-column: 1"),
+                    item("b", 8, 0, "grid-row: 2; grid-column: 2")
+                ),
+                28.0,
+            ),
+            (
+                "20px 20px",
+                format!(
+                    "{}{}",
+                    item("a", 12, 0, "grid-area: 2 / 2; order: 2"),
+                    item("b", 8, 0, "grid-area: 2 / 2; order: 1")
+                ),
+                32.0,
+            ),
+            // A last-baseline group in that row first.
+            (
+                "20px 60px",
+                format!(
+                    "{}{}{}",
+                    item("a", 30, 5, "grid-row: 1"),
+                    item(
+                        "b",
+                        10,
+                        5,
+                        "grid-row: 2; grid-column: 1; align-self: baseline"
+                    ),
+                    item(
+                        "c",
+                        12,
+                        5,
+                        "grid-row: 2; grid-column: 2; align-self: last baseline"
+                    )
+                ),
+                75.0,
+            ),
+        ] {
+            assert_eq!(baseline(rows, &items), expected, "{items}");
+        }
+    }
+
+    #[test]
+    fn around_a_grid_its_baselines_are_used() {
+        // A grid whose first baseline is 30 and last 45 down: an
+        // inline-block and a table cell around it take its first, as the
+        // reference browser has it, a block both (css-align-3 §9.1).
+        let grid = format!(
+            "<div id=g style='display: grid'>{}{}</div>",
+            item("a", 30, 5, ""),
+            item("b", 10, 5, "")
+        );
+        let reference = "<i style='height: 50px'></i>";
+        let l = laid(
+            &format!("<div>{reference}<div id=w style='display: inline-block'>{grid}</div></div>"),
+            BASELINE_CSS,
+        );
+        assert_eq!(rect(&l, "w").1, 20.0);
+        let l = laid(
+            &format!(
+                "<table style='border-spacing: 0'><tr><td style='padding: 0; vertical-align: baseline'>\
+                 {reference}</td><td style='padding: 0; vertical-align: baseline'>{grid}</td></tr></table>"
+            ),
+            BASELINE_CSS,
+        );
+        assert_eq!(rect(&l, "g").1, 20.0);
+        for (align, y) in [("baseline", 20.0), ("last baseline", 5.0)] {
+            let l = laid(
+                &format!(
+                    "<div style='display: flex; align-items: {align}'>{}<div id=w>{grid}</div></div>",
+                    item("r", 50, 0, "")
+                ),
+                BASELINE_CSS,
+            );
+            assert_eq!(rect(&l, "w").1, y, "{align}");
         }
     }
 
