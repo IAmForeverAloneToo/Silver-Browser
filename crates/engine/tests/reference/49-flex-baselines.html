@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+<head>
+<title>Flex: baseline alignment without text, baselines synthesized from border boxes and taken from line boxes of inline-blocks, first and last, in wrapped lines, from a nested container, with an auto margin, and in a column</title>
+<style>
+  html { background-color: #f6f0f0; }
+  body { margin: 0; font-size: 0; }
+  .f { display: flex; align-items: baseline; float: left; width: 340px; height: 90px; margin: 16px 0 0 30px; background-color: #ecdcdc; }
+  .f > div { flex: none; width: 40px; height: 20px; margin-right: 6px; background-color: #a05050; }
+  .f > div:nth-child(even) { background-color: #d09090; }
+  .ib { display: inline-block; width: 30px; height: 20px; background-color: #401010; }
+  .f > .t { height: auto; }
+  .last { align-items: last baseline; }
+  .wrap { flex-wrap: wrap; width: 140px; height: 180px; align-content: flex-start; }
+  .col { flex-direction: column; width: 160px; height: 180px; }
+  .nest > div:first-child { display: flex; height: auto; width: 60px; padding: 4px; align-items: flex-end; }
+  .nest > div:first-child > div { width: 12px; height: 16px; margin-right: 0; background-color: #f8eeee; }
+  .nest > div:first-child > div + div { height: 30px; }
+</style>
+</head>
+<body>
+  <div class="f"><div></div><div style="height: 40px"></div><div style="height: 30px; margin-top: 10px"></div><div style="padding-bottom: 10px"></div><div style="border-bottom: 8px solid #300000"></div><div style="margin-bottom: 14px"></div></div>
+  <div class="f"><div class="t"><span class="ib" style="height: 30px"></span></div><div class="t" style="padding-top: 20px"><span class="ib" style="height: 10px"></span></div><div></div><div class="t" style="padding: 5px 0 20px"><span class="ib"></span></div><div class="t"><div style="height: 10px; background-color: #f8eeee"></div><span class="ib"></span></div></div>
+  <div class="f last"><div class="t"><span class="ib"></span> <span class="ib" style="height: 10px"></span></div><div class="t" style="padding-bottom: 15px"><span class="ib"></span> <span class="ib"></span></div><div style="height: 30px"></div><div class="t" style="margin-bottom: 10px"><span class="ib" style="height: 40px"></span></div></div>
+  <div class="f"><div class="t" style="align-self: last baseline"><span class="ib"></span> <span class="ib"></span></div><div class="t" style="align-self: last baseline"><span class="ib" style="height: 35px"></span></div><div class="t"><span class="ib"></span> <span class="ib"></span></div><div class="t" style="padding-top: 10px"><span class="ib" style="height: 35px"></span></div><div style="align-self: flex-start"></div></div>
+  <div class="f wrap"><div></div><div style="height: 40px"></div><div class="t" style="padding-top: 6px"><span class="ib"></span></div><div style="height: 30px"></div><div style="height: 10px; margin-top: auto"></div><div style="height: 50px; margin-top: 4px"></div></div>
+  <div class="f nest" style="width: 200px; height: 180px"><div><div></div><div></div></div><div></div><div class="t"><span class="ib" style="height: 34px"></span></div></div>
+  <div class="f col"><div></div><div style="width: 60px; margin-left: 10px"></div><div class="t"><span class="ib"></span></div></div>
+</body>
+</html>

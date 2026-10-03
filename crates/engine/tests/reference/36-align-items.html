@@ -1,0 +1,34 @@
+<!doctype html>
+<html>
+<head>
+<title>Flex: align-items and align-self in a row, stretch with margins and a maximum, every position, start and end</title>
+<style>
+  html { background-color: #f2f2f6; }
+  body { margin: 0; }
+  .f { display: flex; width: 360px; height: 60px; margin: 10px 20px; background-color: #dcdcec; }
+  .f div { flex: none; width: 40px; height: 20px; background-color: #4a4a8a; }
+  .f div:nth-child(even) { background-color: #8a8aca; }
+  .s div { height: auto; }
+  .s div:nth-child(2) { margin: 5px 0 15px; }
+  .s div:nth-child(3) { max-height: 30px; }
+  .s div:nth-child(4) { min-height: 70px; }
+  .s div:nth-child(5) { height: 10px; }
+  .sf { align-self: flex-start; }
+  .se { align-self: flex-end; }
+  .sc { align-self: center; }
+  .ss { align-self: stretch; height: auto !important; }
+  .st { align-self: start; }
+  .sn { align-self: end; }
+  .sz { align-self: self-end; }
+  .sa { align-self: auto; }
+</style>
+</head>
+<body>
+  <div class="f s"><div></div><div></div><div></div><div></div><div></div></div>
+  <div class="f" style="align-items: flex-start"><div></div><div class="se"></div><div class="sc"></div><div class="ss"></div><div class="sa"></div></div>
+  <div class="f" style="align-items: flex-end"><div></div><div class="sf"></div><div class="sc"></div><div class="st"></div><div class="sa"></div></div>
+  <div class="f" style="align-items: center"><div></div><div class="sf"></div><div class="se"></div><div class="sn"></div><div class="sz"></div></div>
+  <div class="f" style="align-items: center"><div style="height: 80px"></div><div style="height: 70px; margin-top: 10px"></div><div class="sf" style="height: 70px"></div></div>
+  <div class="f" style="align-items: safe center"><div style="height: 80px"></div><div class="se" style="height: 70px"></div></div>
+</body>
+</html>

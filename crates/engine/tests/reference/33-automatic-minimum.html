@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+<head>
+<title>Flex: the automatic minimum size, with content wider than the room, the specified size suggestion, a maximum, a scroll container, a column</title>
+<style>
+  html { background-color: #eef4ee; }
+  body { margin: 0; }
+  .f { display: flex; width: 100px; height: 40px; margin: 16px 20px 16px 200px; background-color: #d5e6d5; }
+  .f > div { height: 30px; background-color: #4a8a4a; }
+  .f > div:nth-child(2) { background-color: #9aca9a; }
+  .f > div > div { width: 150px; height: 10px; background-color: #1a3a1a; }
+  .grow > div { flex: 1 1 0; }
+  .clip > div { flex: 1 1 0; overflow: hidden; }
+  .spec > div { width: 80px; }
+  .zero > div { width: 80px; min-width: 0; }
+  .max > div { flex: 1 1 0; max-width: 120px; }
+  .col { flex-direction: column; height: 100px; width: 60px; }
+  .col > div { flex: 1 1 0; width: 40px; height: auto; }
+  .col > div > div { width: 20px; height: 70px; }
+</style>
+</head>
+<body>
+  <div class="f grow"><div><div></div></div><div></div></div>
+  <div class="f clip"><div><div></div></div><div></div></div>
+  <div class="f spec"><div><div></div></div><div></div></div>
+  <div class="f zero"><div><div></div></div><div></div></div>
+  <div class="f max"><div><div></div></div><div></div></div>
+  <div class="f col"><div><div></div></div><div></div></div>
+</body>
+</html>

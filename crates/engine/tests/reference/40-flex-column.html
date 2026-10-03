@@ -1,0 +1,49 @@
+<!doctype html>
+<html>
+<head>
+<title>Flex: columns, growing into a definite height, an auto height from the items, shrinking, wrapping into columns, justify-content, a minimum and a maximum on the items and on the container</title>
+<style>
+  html { background-color: #eef0f6; }
+  body { margin: 0; }
+  .f { display: flex; flex-direction: column; float: left; width: 90px; height: 240px; margin: 20px 0 0 30px; background-color: #d6dbec; }
+  .f div { flex: none; height: 30px; background-color: #3a4a8a; }
+  .f div:nth-child(3n+2) { background-color: #7a8aca; }
+  .f div:nth-child(3n) { background-color: #1a2a5a; }
+  .grow div:nth-child(1) { flex-grow: 1; }
+  .grow div:nth-child(2) { flex-grow: 2; }
+  .grow div:nth-child(3) { flex-grow: 3; }
+  .auto { height: auto; }
+  .auto div:nth-child(2) { height: 40px; margin: 10px 0; }
+  .auto div:nth-child(3) { height: 50px; flex-grow: 1; }
+  .shrink { height: 150px; }
+  .shrink div { flex: 0 1 100px; min-height: 0; }
+  .shrink div:nth-child(2) { flex-shrink: 3; }
+  .wrap { flex-wrap: wrap; height: 150px; width: 150px; }
+  .wrap div { width: 30px; height: 40px; margin-bottom: 5px; }
+  .center { justify-content: center; }
+  .center div:nth-child(2) { margin: 10px 20px; }
+  .max div { flex-grow: 1; }
+  .max div:first-child { max-height: 50px; }
+  .max div:last-child { min-height: 120px; }
+  .under { clear: left; }
+  .cmax { height: auto; max-height: 100px; }
+  .cmax div { flex: 0 1 auto; height: 60px; }
+  .cmin { height: auto; min-height: 200px; }
+  .cmin div:nth-child(1) { flex-grow: 1; }
+  .cmin div:nth-child(2) { flex-grow: 2; }
+  .cmin div:nth-child(3) { flex-grow: 2; }
+  .pad div { flex: 1 1 0; padding: 10px 0; border-bottom: 4px solid #0a0a2a; }
+</style>
+</head>
+<body>
+  <div class="f grow"><div></div><div></div><div></div></div>
+  <div class="f auto"><div></div><div></div><div></div></div>
+  <div class="f shrink"><div></div><div></div><div></div></div>
+  <div class="f wrap"><div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div></div>
+  <div class="f center"><div></div><div></div><div></div></div>
+  <div class="f max"><div></div><div></div><div></div></div>
+  <div class="f cmax under"><div></div><div></div></div>
+  <div class="f cmin"><div></div><div></div><div></div></div>
+  <div class="f pad"><div></div><div></div><div></div></div>
+</body>
+</html>

@@ -1,0 +1,35 @@
+<!doctype html>
+<html>
+<head>
+<title>Flex: shrinking by the scaled factors, a factor of zero, a minimum frozen, an item that cannot shrink, padding outside the scaled base</title>
+<style>
+  html { background-color: #eef2f6; }
+  body { margin: 0; }
+  .f { display: flex; width: 300px; height: 40px; margin: 20px; background-color: #d5dde6; }
+  .f div { height: 30px; background-color: #4a6a8a; }
+  .f div:nth-child(2) { background-color: #7a9aba; }
+  .f div:nth-child(3) { background-color: #2a3a4a; }
+  .a div:nth-child(1) { flex-basis: 100px; }
+  .a div:nth-child(2) { flex-basis: 200px; }
+  .a div:nth-child(3) { flex-basis: 300px; }
+  .b div:nth-child(1) { flex: 0 1 100px; }
+  .b div:nth-child(2) { flex: 0 3 100px; }
+  .b div:nth-child(3) { flex: 0 0 200px; }
+  .c div { flex-basis: 200px; }
+  .c div:first-child { min-width: 180px; }
+  .d div { flex: none; width: 200px; }
+  .e { width: 400px; }
+  .e div { flex-basis: 200px; padding: 0 20px; }
+  .g div { flex-basis: 250px; min-width: 0; }
+  .g div:nth-child(1) { flex-shrink: 4; }
+</style>
+</head>
+<body>
+  <div class="f a"><div></div><div></div><div></div></div>
+  <div class="f b"><div></div><div></div><div></div></div>
+  <div class="f c"><div></div><div></div></div>
+  <div class="f d"><div></div><div></div></div>
+  <div class="f e"><div></div><div></div></div>
+  <div class="f g"><div></div><div></div></div>
+</body>
+</html>

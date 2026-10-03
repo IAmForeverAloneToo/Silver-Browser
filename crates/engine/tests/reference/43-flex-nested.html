@@ -1,0 +1,45 @@
+<!doctype html>
+<html>
+<head>
+<title>Flex: nested containers, rows in columns in rows, heights definite by stretching and by flexing, percentages inside them, and a column whose height is not definite</title>
+<style>
+  html { background-color: #eef6f4; }
+  body { margin: 0; }
+  .row { display: flex; }
+  .col { display: flex; flex-direction: column; }
+  .a { float: left; width: 360px; height: 200px; margin: 20px 0 0 20px; padding: 10px; background-color: #d0e6e0; }
+  .a > .col { flex: 1 1 0px; padding: 5px; background-color: #a8d0c6; }
+  .a > .col > div { flex: 1; background-color: #4a8a7a; }
+  .a > .col > .row { flex: 2; padding: 5px; background-color: #7ab0a2; }
+  .a .row > div { flex: 1; margin-right: 5px; background-color: #2a5a4e; }
+  .a .row > div > div { width: 20px; background-color: #e0f4ee; }
+  .a > .side { width: 100px; background-color: #3a7a6a; }
+  .a > .side > div { width: 50px; height: 50%; background-color: #c0e4da; }
+  .b { float: left; width: 160px; height: 200px; margin: 20px 0 0 20px; padding: 10px; background-color: #d0e6e0; align-items: flex-start; }
+  .b > .col { width: 60px; background-color: #a8d0c6; }
+  .b > .col > div { flex-grow: 1; height: 20px; margin-bottom: 5px; background-color: #2a5a4e; }
+  .b > .col > .half { height: 50%; min-height: 10px; background-color: #7ab0a2; }
+  .c { clear: left; float: left; width: 400px; height: 220px; margin: 20px 0 0 20px; background-color: #d0e6e0; }
+  .c .row, .c .col { flex: 1; padding: 6px; }
+  .c .l1 { background-color: #b4dad0; }
+  .c .l2 { background-color: #8ac2b4; }
+  .c .l3 { background-color: #5e9e8e; }
+  .c .l4 { background-color: #3a7a6a; }
+  .c .l5 > div { background-color: #e0f4ee; flex: 1 1 0px; margin: 2px; }
+  .c .l5 > div:last-child { flex-grow: 3; background-color: #12382e; }
+</style>
+</head>
+<body>
+  <div class="row a">
+    <div class="col"><div></div><div class="row"><div><div style="height: 50%"></div></div><div><div style="height: 25%"></div></div></div></div>
+    <div class="side"><div></div></div>
+  </div>
+  <div class="row b">
+    <div class="col"><div></div><div class="half"></div><div></div></div>
+  </div>
+  <div class="row c">
+    <div class="col l1"><div class="row l2"><div class="col l3"><div class="row l4"><div class="col l5"><div></div><div></div></div></div><div class="row l4"><div class="row l5"><div></div><div></div></div></div></div></div><div style="height: 40px; background-color: #5e9e8e"></div></div>
+    <div class="col l2" style="flex: none; width: 80px; justify-content: center"><div class="row l3" style="flex: none; height: 50px"><div class="col l5"><div></div><div></div></div></div></div>
+  </div>
+</body>
+</html>

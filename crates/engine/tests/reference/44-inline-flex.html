@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+<head>
+<title>Flex: inline-flex on a line, its baseline from its first item, from a baseline group, from the first item in order, from its first line, an empty one and one that clips at its bottom margin edge; and flex containers sized to fit, in floats, a table cell, an absolutely positioned box and fit-content</title>
+<style>
+  html { background-color: #f4f4ec; }
+  body { margin: 0; font-size: 0; }
+  .line { margin: 20px; padding: 10px 0; background-color: #e4e4cc; }
+  .ib { display: inline-block; width: 30px; height: 40px; margin: 0 6px; background-color: #6a6a2a; }
+  .if { display: inline-flex; margin: 0 6px; padding: 4px; background-color: #b0b070; }
+  .if > div { width: 20px; height: 20px; background-color: #3a3a10; }
+  .if > div:nth-child(2) { height: 30px; background-color: #8a8a40; }
+  .if > div:nth-child(3) { height: 10px; background-color: #d8d8a0; }
+  .end { align-items: flex-end; height: 50px; }
+  .col { flex-direction: column; }
+  .group > div:nth-child(2) { align-self: baseline; margin-top: 15px; }
+  .group > div:nth-child(3) { align-self: baseline; }
+  .empty { width: 30px; height: 20px; margin-bottom: 10px; }
+  .boxed { margin-top: 10px; border: 3px solid #1a1a00; padding: 8px 4px 2px; }
+  .ordered > div:nth-child(2) { order: -1; }
+  .reverse { flex-direction: row-reverse; }
+  .wrap { flex-wrap: wrap; width: 50px; }
+  .wrap > div { margin-bottom: 4px; }
+  .wrap-reverse { flex-wrap: wrap-reverse; width: 50px; }
+  .clip { overflow: hidden; }
+  .col-reverse { flex-direction: column-reverse; }
+  .nest > div:first-child { display: flex; width: auto; height: auto; padding: 6px; align-items: flex-end; }
+  .nest > div:first-child > div { width: 12px; height: 16px; background-color: #ecece0; }
+  .nest > div:first-child > div + div { height: 30px; }
+  .fits { clear: both; padding-top: 4px; }
+  .s { float: left; margin: 16px 0 0 20px; padding: 4px; background-color: #d0d0a8; }
+  .s .flex { display: flex; background-color: #b0b070; }
+  .s .flex > div { height: 20px; background-color: #3a3a10; }
+  .s .flex > div:nth-child(2) { background-color: #8a8a40; }
+  .s .flex > div:nth-child(3) { background-color: #ecece0; }
+  .s .x { display: block; height: 8px; background-color: #ecece0; }
+  .s .ib { width: 20px; height: 10px; margin: 0; background-color: #1a1a00; }
+</style>
+</head>
+<body>
+  <div class="line"><span class="ib"></span><span class="if"><div></div><div></div><div></div></span><span class="if end"><div></div><div></div><div></div></span><span class="if col"><div></div><div></div><div></div></span><span class="if group"><div></div><div></div><div></div></span><span class="if empty"></span><span class="ib"></span></div>
+  <div class="line"><span class="ib"></span><span class="if boxed"><div></div><div></div></span><span class="if ordered"><div></div><div></div><div></div></span><span class="if reverse"><div></div><div></div><div></div></span><span class="if nest"><div><div></div><div></div></div><div></div></span><span class="ib"></span></div>
+  <div class="line"><span class="ib"></span><span class="if wrap"><div></div><div></div><div></div></span><span class="if wrap-reverse"><div></div><div></div><div></div></span><span class="if clip"><div></div><div></div></span><span class="if col-reverse"><div></div><div></div><div></div></span><span class="ib" style="height: 90px"></span></div>
+  <div class="fits">
+    <div class="s"><div class="flex" style="gap: 10px"><div style="width: 30px"></div><div style="width: 50px"></div></div></div>
+    <div class="s"><div class="flex"><div style="flex: 1 1 0"><span class="x" style="width: 40px"></span></div><div style="flex: 1 1 0"><span class="x" style="width: 60px"></span></div></div></div>
+    <div class="s"><div class="flex" style="flex-direction: column"><div style="width: 30px"></div><div style="width: 70px"></div></div></div>
+    <div class="s" style="width: min-content"><div class="flex"><div><span class="ib"></span> <span class="ib"></span></div><div><span class="ib"></span> <span class="ib"></span></div></div></div>
+    <div class="s" style="width: min-content"><div class="flex" style="flex-wrap: wrap"><div><span class="ib"></span> <span class="ib"></span></div><div><span class="ib"></span> <span class="ib"></span></div></div></div>
+    <div class="s"><table style="border-spacing: 0"><tr><td style="padding: 0"><div class="flex"><div style="width: 30px"></div><div style="width: 50px"></div></div></td><td style="padding: 0; width: 20px; background-color: #6a6a2a"></td></tr></table></div>
+    <div class="s" style="position: relative; width: 120px; height: 20px"><div class="flex" style="position: absolute; left: 4px; top: 4px"><div style="width: 30px"></div><div style="width: 50px"></div></div></div>
+    <div class="s" style="width: 60px"><div class="flex" style="width: fit-content"><div><span class="ib"></span> <span class="ib"></span></div><div><span class="ib"></span> <span class="ib"></span></div></div></div>
+    <div class="s" style="width: 30px"><div class="flex"><div class="flex" style="height: auto"><div style="width: 25px"></div><div style="width: 25px"></div></div><div style="width: 10px"></div></div></div>
+  </div>
+</body>
+</html>

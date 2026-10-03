@@ -1,0 +1,35 @@
+<!doctype html>
+<html>
+<head>
+<title>Flex: gaps between items and between lines, the gap shorthand, percentages against a definite and an indefinite size, gaps with growing, distributed space, auto margins and columns</title>
+<style>
+  html { background-color: #f6f2ee; }
+  body { margin: 0; }
+  .f { display: flex; width: 300px; margin: 16px 20px; background-color: #e8dccf; }
+  .f div { flex: none; width: 40px; height: 20px; background-color: #8a5a3a; }
+  .f div:nth-child(3n+2) { background-color: #c89a7a; }
+  .f div:nth-child(3n) { background-color: #4a2a1a; }
+  .wrap { flex-wrap: wrap; }
+  .grow div { flex-grow: 1; }
+  .left { float: left; width: 340px; }
+  .c { flex-direction: column; float: left; width: 60px; height: 200px; margin: 16px 0 0 20px; }
+</style>
+</head>
+<body>
+  <div class="left">
+    <div class="f" style="column-gap: 10px"><div></div><div></div><div></div><div></div></div>
+    <div class="f wrap" style="gap: 10px 20px"><div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div></div>
+    <div class="f" style="column-gap: 10%"><div></div><div></div><div></div><div></div></div>
+    <div class="f wrap" style="row-gap: 25%; column-gap: 30px"><div></div><div></div><div></div><div></div><div></div><div></div><div></div></div>
+    <div class="f wrap" style="height: 100px; row-gap: 10%; align-content: flex-start"><div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div></div>
+    <div class="f" style="gap: 20px; justify-content: space-between"><div></div><div></div><div></div></div>
+    <div class="f" style="gap: 20px; justify-content: space-between"><div style="width: 100px"></div><div style="width: 100px"></div><div style="width: 100px"></div></div>
+    <div class="f grow" style="gap: 15px"><div></div><div></div><div></div></div>
+    <div class="f" style="gap: 10px"><div></div><div style="margin-left: auto"></div><div></div></div>
+  </div>
+  <div class="f c" style="gap: 10px"><div></div><div></div><div></div></div>
+  <div class="f c grow" style="row-gap: 5%; column-gap: 50px"><div></div><div></div><div></div></div>
+  <div class="f c wrap" style="height: 110px; width: 120px; gap: 10px 20px"><div></div><div></div><div></div><div></div><div></div></div>
+  <div class="f c wrap" style="height: 110px; width: 120px; column-gap: 10px; align-content: space-between"><div></div><div></div><div></div><div></div><div></div><div></div><div></div></div>
+</body>
+</html>

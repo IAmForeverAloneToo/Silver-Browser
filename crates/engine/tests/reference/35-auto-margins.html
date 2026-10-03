@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+<head>
+<title>Flex: auto margins in the main axis before justify-content, in the cross axis before align-self, and with no room to share</title>
+<style>
+  html { background-color: #eaf4f6; }
+  body { margin: 0; }
+  .f { display: flex; width: 340px; height: 50px; margin: 10px 20px; background-color: #c8e2e6; justify-content: center; align-items: flex-end; }
+  .f div { flex: none; width: 60px; height: 20px; background-color: #2a7a8a; }
+  .f div:nth-child(2) { background-color: #6ab0ba; }
+  .f div:nth-child(3) { background-color: #12404a; }
+  .push { margin-left: auto; }
+  .both { margin: 0 auto; }
+  .top { margin-top: auto; }
+  .bottom { margin-bottom: auto; }
+  .middle { margin-top: auto; margin-bottom: auto; }
+  .tall { height: 70px !important; }
+  .narrow { width: 100px; }
+</style>
+</head>
+<body>
+  <div class="f"><div class="push"></div><div></div><div></div></div>
+  <div class="f"><div></div><div class="push"></div><div></div></div>
+  <div class="f"><div class="both"></div><div></div><div class="both"></div></div>
+  <div class="f"><div class="bottom"></div><div class="middle"></div><div class="top"></div></div>
+  <div class="f"><div class="bottom tall"></div><div class="middle tall"></div><div class="top tall"></div></div>
+  <div class="f narrow"><div class="push"></div><div class="both"></div></div>
+  <div class="f" style="flex-direction: column; height: 200px; align-items: center"><div class="push"></div><div class="top"></div><div class="middle"></div></div>
+</body>
+</html>

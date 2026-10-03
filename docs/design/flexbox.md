@@ -624,9 +624,25 @@ the algorithm with fixed-size boxes, no text:
 - column and reverse directions;
 - `order` with overlapping items and `z-index`;
 - nested containers;
-- `inline-flex` on a line;
+- `inline-flex` on a line, and flex containers sized to fit;
 - absolutely positioned children;
-- gaps, percentages, and an item that is a scroll container.
+- gaps, percentages, and an item that is a scroll container;
+- first and last baseline alignment, the baselines taken from the
+  line boxes of inline-blocks.
+
+At step 10 all twenty match. They found one bug, outside flexbox: a
+box with `clear` measured its clearance against its own floats, and
+placed them twice when it was laid out again
+(`docs/design/floats-positioning.md` has the correction). The
+inline-flex page's containers sized to fit met it. Two cases written
+first used `vertical-align: top` and `bottom`, which this engine does
+not read (M7.7), and were replaced by cases that stay in this
+milestone. Beyond the pages, the intrinsic widths of flex containers
+were probed against the reference browser: in floats, in a table cell,
+absolutely positioned, under `fit-content` and `min-content`, with
+gaps, wrapping and nested containers. They match; the inline-flex page
+keeps nine of the cases, and the one difference is the multi-line
+column container's max-content width (section 2).
 
 **Acceptance (M17.10).** Five real layouts, with text, live under
 `crates/engine/tests/layouts/`: a navigation bar, a card grid, the holy
