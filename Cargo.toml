@@ -39,6 +39,10 @@ ab_glyph = "0.2"
 ttf-parser = "0.25"
 unicode-bidi = "0.3"
 unicode-script = "0.5"
+# The Unicode general category, for the first-letter pattern (M16,
+# docs/design/selectors-pseudo.md); already in the tree through the
+# shaper, with the same feature alone.
+unicode-properties = { version = "0.1", default-features = false, features = ["general-category"] }
 # UTS #46 for the URL parser's domains (D17; docs/design/net.md).
 idna = "1.1"
 # TLS for https: (D4; docs/design/net.md): rustls over the aws-lc-rs

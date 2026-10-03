@@ -24,7 +24,9 @@
 //! [`Item`]s, which are nodes or these boxes or their text, so a
 //! generated box is built by the code an element's is, anonymous boxes
 //! and all. The quote marks of `open-quote` and `close-quote` are
-//! chosen as the build reaches them, which is in document order.
+//! chosen as the build reaches them, which is in document order. Once
+//! the tree is built, a block container's `::first-letter` takes its
+//! first letter out of the text box it is in ([`first_letter`]).
 
 use std::borrow::Cow;
 use std::cell::Cell;
@@ -32,7 +34,9 @@ use std::cell::Cell;
 use dom::{Document, NodeId};
 use style::computed::{CaptionSide, Content, ContentItem, Display, Float};
 use style::selector_matching::PseudoElement;
-use style::{ComputedStyle, Styles};
+use style::{ComputedStyle, Recascade, Styles};
+
+mod first_letter;
 
 /// One node in the box tree.
 #[derive(Debug, Clone)]
@@ -78,6 +82,12 @@ pub struct LayoutBox {
     /// on it as on the box's own subtree, and the layout cache keeps an
     /// element's results under it.
     pub quote_depth: u32,
+    /// Whether the box's layout reads the style of an ancestor's
+    /// pseudo-element (M16): a block between a block container and the
+    /// text its `::first-letter` takes. A restyle of the ancestor does
+    /// not reach the box, so the layout cache neither keeps nor takes
+    /// it.
+    pub styled_by_ancestor: bool,
 }
 
 /// A box's kind, per `display` (block, inline, inline-block and the
@@ -235,14 +245,23 @@ impl LayoutBox {
 /// top-level content: an inline run at the top goes into an anonymous
 /// block inheriting from the document's (initial-valued) style. An
 /// element `styles` has no style for generates no box, nor does
-/// anything under it, as if it were `display: none`.
-pub fn build_box_tree(document: &Document, styles: &Styles) -> Vec<LayoutBox> {
+/// anything under it, as if it were `display: none`. `recascade` gives
+/// the styles that depend on where content falls (M16): a
+/// `::first-letter`'s, which inherits from the element its text is in.
+pub fn build_box_tree(
+    document: &Document,
+    styles: &Styles,
+    recascade: &dyn Recascade,
+) -> Vec<LayoutBox> {
     let styled = Styled {
         document,
         styles,
+        recascade,
         quote_depth: Cell::new(0),
     };
-    build_block_container(&styled, Item::Node(document.root()))
+    let mut boxes = build_block_container(&styled, Item::Node(document.root()));
+    first_letter::apply(&styled, &mut boxes);
+    boxes
 }
 
 /// What the builder walks (M16): a node of the document; or the box an
@@ -294,6 +313,7 @@ impl Item {
 struct Styled<'a> {
     document: &'a Document,
     styles: &'a Styles,
+    recascade: &'a dyn Recascade,
     /// The `open-quote`s and `no-open-quote`s in the generated text
     /// built so far, in document order, less the `close-quote`s and
     /// `no-close-quote`s, never below zero (CSS 2.2 §12.3.2).
@@ -438,6 +458,7 @@ impl<'a> Styled<'a> {
             anonymous: item.generated().is_some(),
             generated: item.generated(),
             quote_depth,
+            styled_by_ancestor: false,
         }
     }
 
@@ -460,6 +481,7 @@ impl<'a> Styled<'a> {
             anonymous: true,
             generated: item.generated(),
             quote_depth,
+            styled_by_ancestor: false,
         }
     }
 }
@@ -605,6 +627,7 @@ impl BlockContainer<'_> {
                 anonymous: true,
                 generated: parent.generated(),
                 quote_depth,
+                styled_by_ancestor: false,
             });
         }
         self.flush_misplaced(parent, &mut misplaced);
@@ -790,6 +813,7 @@ impl BlockContainer<'_> {
                 anonymous: b.anonymous,
                 generated: b.generated,
                 quote_depth,
+                styled_by_ancestor: false,
             })
             .collect();
         while let Some(inline) = self.open.pop() {
@@ -822,6 +846,7 @@ impl BlockContainer<'_> {
             anonymous: true,
             generated: self.item.generated(),
             quote_depth,
+            styled_by_ancestor: false,
         });
     }
 
@@ -1179,8 +1204,13 @@ mod tests {
                 BoxKind::Cell { colspan, rowspan } => format!("cell {colspan}x{rowspan}"),
                 BoxKind::Caption => "caption".to_string(),
             };
-            // A generated box, or one in it, is marked with a `+`.
-            let mark = if b.generated.is_some() { "+" } else { "" };
+            // A `::before` or `::after` box, or one in it, is marked
+            // with a `+`, a `::first-letter` one with a `^`.
+            let mark = match b.generated {
+                None => "",
+                Some(PseudoElement::FirstLetter) => "^",
+                Some(_) => "+",
+            };
             out.push((format!("{mark}{kind}"), self.number(b.node)));
             for c in &b.children {
                 self.shape(c, out);
@@ -1192,8 +1222,7 @@ mod tests {
             self.shape_of(boxes)
                 .into_iter()
                 .filter_map(|(k, _)| {
-                    k.strip_prefix('+')
-                        .unwrap_or(&k)
+                    k.trim_start_matches(['+', '^'])
                         .strip_prefix("text ")
                         .map(str::to_string)
                 })
@@ -1204,7 +1233,7 @@ mod tests {
         fn boxes_of(&self, boxes: &[LayoutBox]) -> Vec<(String, usize)> {
             self.shape_of(boxes)
                 .into_iter()
-                .filter(|(k, _)| !k.trim_start_matches('+').starts_with("text"))
+                .filter(|(k, _)| !k.trim_start_matches(['+', '^']).starts_with("text"))
                 .collect()
         }
 
@@ -2567,5 +2596,248 @@ mod tests {
             tree.boxes_of(&table.children[..1]),
             pairs(&[("colgroup 3", 5), ("+col 1", 5)])
         );
+    }
+
+    #[test]
+    fn the_first_letter_goes_into_a_box_of_its_own() {
+        // Nodes: p 4.
+        let tree = tree_of(
+            "<p>The end</p>",
+            "p { color: #00f } p::first-letter { font-size: 30px }",
+        );
+        assert_eq!(
+            tree.shape_of(&tree.body().children),
+            pairs(&[
+                ("block", 4),
+                ("anon", 4),
+                ("^inline", 4),
+                ("^text T", 4),
+                ("text he end", 4),
+            ])
+        );
+        let letter = &tree.body().children[0].children[0].children[0];
+        assert!(letter.anonymous);
+        // Its style is the `::first-letter`'s, inheriting from the p's.
+        assert_eq!(
+            (letter.style.font_size_px, letter.style.color),
+            (30.0, style::computed::Color::rgb8(0, 0, 255))
+        );
+        assert_eq!(letter.style.display, Display::Inline);
+        assert_eq!(letter.children[0].style.font_size_px, 30.0);
+    }
+
+    #[test]
+    fn the_first_letter_inherits_from_the_element_its_text_is_in() {
+        // Nodes: p 4, span 5. The box is the span's, inside it.
+        let tree = tree_of(
+            "<p><span>The</span></p>",
+            "span { color: #00f; font-size: 10px } p::first-letter { font-size: 2em }",
+        );
+        assert_eq!(
+            tree.shape_of(&tree.body().children[0].children),
+            pairs(&[
+                ("anon", 4),
+                ("inline", 5),
+                ("^inline", 5),
+                ("^text T", 5),
+                ("text he", 5),
+            ])
+        );
+        let letter = &tree.body().children[0].children[0].children[0].children[0];
+        assert_eq!(
+            (letter.style.font_size_px, letter.style.color),
+            (20.0, style::computed::Color::rgb8(0, 0, 255))
+        );
+    }
+
+    #[test]
+    fn the_first_letter_takes_its_punctuation_and_leaves_white_space_before_it() {
+        let tree = tree_of(
+            "<p>  \u{201C}Hi\u{201D} said</p>",
+            "p::first-letter { color: #f00 }",
+        );
+        assert_eq!(
+            tree.texts(&tree.body().children),
+            ["  ", "\u{201C}H", "i\u{201D} said"]
+        );
+        // A `::before`'s text counts: "N" of "Note: ".
+        let tree = tree_of(
+            "<p>x</p>",
+            "p::before { content: 'Note: ' } p::first-letter { color: #f00 }",
+        );
+        assert_eq!(
+            tree.shape_of(&tree.body().children[0].children),
+            pairs(&[
+                ("anon", 4),
+                ("+inline", 4),
+                ("^inline", 4),
+                ("^text N", 4),
+                ("+text ote: ", 4),
+                ("text x", 4),
+            ])
+        );
+    }
+
+    #[test]
+    fn the_first_formatted_line_may_be_a_block_childs() {
+        // Nodes: div 4, p 5, span 6, p 7. An empty block and a float are
+        // passed over; the p holding the letter is marked, the div not.
+        let tree = tree_of(
+            "<div><p></p><span class=f>F</span><p>Text</p></div>",
+            ".f { float: left } div::first-letter { color: #f00 }",
+        );
+        assert_eq!(tree.texts(&tree.body().children), ["F", "T", "ext"]);
+        let div = &tree.body().children[0];
+        let p = &div.children[2];
+        assert_eq!(tree.number(p.node), 7);
+        assert!(p.styled_by_ancestor && !div.styled_by_ancestor);
+        assert_eq!(
+            p.children[0].children[0].generated,
+            Some(PseudoElement::FirstLetter)
+        );
+        assert_eq!(tree.number(p.children[0].children[0].node), 7);
+        // A floated `::before` is passed over too: it is out of flow, and
+        // no block container of the div's own.
+        let tree = tree_of(
+            "<div>Cd</div>",
+            "div::before { content: 'Ab'; float: left } div::first-letter { color: #f00 }",
+        );
+        assert_eq!(tree.texts(&tree.body().children), ["Ab", "C", "d"]);
+    }
+
+    #[test]
+    fn out_of_flow_boxes_and_white_space_alone_are_passed_over() {
+        // Among blocks, and on the line (in an inline element, where
+        // they are met in a run): floats, absolutely positioned boxes,
+        // and a text of white space alone kept in an inline.
+        for html in [
+            "<div><p class=a>A</p><p>Text</p></div>",
+            "<div><span class=f>F</span><span class=a>A</span><b> </b>Text</div>",
+            "<div><b><span class=f>F</span>Text</b></div>",
+            "<div><b><span class=a>A</span>Text</b></div>",
+        ] {
+            let tree = tree_of(
+                html,
+                ".f { float: left } .a { position: absolute }
+                 div::first-letter { color: #f00 }",
+            );
+            let letters: Vec<_> = tree
+                .shape_of(&tree.body().children)
+                .into_iter()
+                .filter(|(k, _)| k.starts_with("^text"))
+                .map(|(k, _)| k)
+                .collect();
+            assert_eq!(letters, ["^text T"], "{html}");
+        }
+    }
+
+    #[test]
+    fn there_is_no_first_letter_after_other_content_or_an_empty_first_line() {
+        for (html, css) in [
+            // An inline-block, an inline table, a table: content first.
+            (
+                "<div><span class=x>X</span>y</div>",
+                ".x { display: inline-block }",
+            ),
+            (
+                "<div><span class=x>X</span>y</div>",
+                ".x { display: inline-table }",
+            ),
+            ("<div><table><tr><td>X</td></tr></table>y</div>", ""),
+            // A kept line break first: the first line is empty.
+            ("<div class=pre>\nText</div>", ".pre { white-space: pre }"),
+            // The punctuation's element is not the letter's.
+            ("<div>\u{201C}<b>T</b>he</div>", ""),
+            // An inline element has none of its own, nor a table row,
+            // whose text is in an anonymous cell.
+            (
+                "<p><span>The</span></p>",
+                "span::first-letter { color: #f00 }",
+            ),
+            ("<div class=row>Text</div>", ".row { display: table-row }"),
+        ] {
+            let tree = tree_of(html, &format!("{css} div::first-letter {{ color: #f00 }}"));
+            assert!(
+                tree.shape_of(&tree.body().children)
+                    .iter()
+                    .all(|(k, _)| !k.starts_with('^')),
+                "{html}"
+            );
+        }
+        // But a cell, a caption, an inline-block and a float have theirs.
+        for (html, tag) in [
+            ("<table><tr><td>Cell</td></tr></table>", "td"),
+            ("<table><caption>Cap</caption></table>", "caption"),
+            ("<p><span class=x>Ib</span></p>", "span"),
+            ("<p><span class=f>Fl</span></p>", "span"),
+        ] {
+            let tree = tree_of(
+                html,
+                &format!(
+                    ".x {{ display: inline-block }} .f {{ float: left }}
+                     {tag}::first-letter {{ color: #f00 }}"
+                ),
+            );
+            assert_eq!(
+                tree.shape_of(&tree.body().children)
+                    .iter()
+                    .filter(|(k, _)| k.starts_with("^text"))
+                    .count(),
+                1,
+                "{tag}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_floated_first_letter_is_a_float_holding_its_line() {
+        let tree = tree_of(
+            "<p>The</p>",
+            "p::first-letter { float: left; font-size: 3em }",
+        );
+        assert_eq!(
+            tree.shape_of(&tree.body().children[0].children),
+            pairs(&[
+                ("anon", 4),
+                ("^float", 4),
+                ("^anon", 4),
+                ("^text T", 4),
+                ("text he", 4),
+            ])
+        );
+    }
+
+    #[test]
+    fn several_first_letters_nest_outermost_first() {
+        // Nodes: div 4, p 5. The p's inherits from the div's.
+        for (outer, shape) in [
+            (
+                "color: #f00",
+                vec![("^inline", 5), ("^inline", 5), ("^text T", 5)],
+            ),
+            (
+                "color: #f00; float: left",
+                vec![("^float", 5), ("^anon", 5), ("^inline", 5), ("^text T", 5)],
+            ),
+        ] {
+            let tree = tree_of(
+                "<div><p>The</p></div>",
+                &format!("div::first-letter {{ {outer} }} p::first-letter {{ font-size: 20px }}"),
+            );
+            let p = &tree.body().children[0].children[0];
+            let line = &p.children[0];
+            let mut expected = shape.clone();
+            expected.push(("text he", 5));
+            assert_eq!(tree.shape_of(&line.children), pairs(&expected), "{outer}");
+            let mut inner = &line.children[0];
+            while inner.kind != BoxKind::Inline || inner.style.font_size_px != 20.0 {
+                inner = &inner.children[0];
+            }
+            assert_eq!(
+                inner.style.color,
+                style::computed::Color::rgb8(255, 0, 0),
+                "{outer}"
+            );
+        }
     }
 }

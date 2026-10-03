@@ -48,6 +48,7 @@ fuzz_target!(|data: &[u8]| {
     if let Ok(sheet) = css::parse_stylesheet(s) {
         sheets.push(sheet);
     }
+    let sheets = style::Stylesheets::new(sheets);
     for width in [0.0f32, 1.0, 97.0, 800.0] {
         let context = style::CascadeContext {
             viewport_width: width,
@@ -55,8 +56,9 @@ fuzz_target!(|data: &[u8]| {
             fonts: None,
             language: None,
         };
-        let styles = style::cascade_document(&doc, &sheets, &context);
-        let boxes = layout::build_box_tree(&doc, &styles);
+        let styles = sheets.cascade(&doc, &context);
+        let recascade = sheets.recascader(&doc, &styles, &context);
+        let boxes = layout::build_box_tree(&doc, &styles, &recascade);
         let document = layout::layout_document(&boxes, width, fonts());
         for scroll_y in [0.0f32, 30.0, document.height] {
             let viewport = paint::Viewport {

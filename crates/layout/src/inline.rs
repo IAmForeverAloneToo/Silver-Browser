@@ -623,6 +623,7 @@ pub(crate) fn collect_inline_items<'a>(
         out: Vec::new(),
         space_pending: false,
         gap_placed: false,
+        at_word_start: true,
     };
     collector.collect(boxes);
     collector.out
@@ -638,6 +639,11 @@ struct Collector<'a, 'f> {
     /// followed it: white space seen now collapses into that gap
     /// (css-text-3 §4.1.1, across the boundary of the inline).
     gap_placed: bool,
+    /// The next text starts a word: nothing came before it in the run,
+    /// or white space or an atomic inline did. A word split across
+    /// boxes — by an inline element, or a `::first-letter` (M16) — is
+    /// one word to `text-transform: capitalize`.
+    at_word_start: bool,
 }
 
 impl<'a> Collector<'a, '_> {
@@ -657,6 +663,7 @@ impl<'a> Collector<'a, '_> {
                 BoxKind::InlineBlock | BoxKind::Table => {
                     let gap_before = std::mem::take(&mut self.space_pending);
                     self.gap_placed = false;
+                    self.at_word_start = true;
                     self.out.push(InlineItem::Atomic { b, gap_before });
                 }
                 // A float or an absolutely positioned box is invisible
@@ -681,7 +688,10 @@ impl<'a> Collector<'a, '_> {
     }
 
     fn text(&mut self, b: &'a LayoutBox, text: &str) {
-        let transformed = apply_text_transform(text, b.style.text_transform);
+        let transformed = apply_text_transform(text, b.style.text_transform, self.at_word_start);
+        if let Some(last) = text.chars().next_back() {
+            self.at_word_start = last.is_whitespace();
+        }
         let no_wrap = b.style.white_space == WhiteSpace::Pre;
         // `pre`/`pre-wrap`/`pre-line` all keep literal newlines as
         // forced breaks; only `normal` collapses them away like any
@@ -868,15 +878,19 @@ fn to_text_direction(direction: Direction) -> text::Direction {
 }
 
 /// `text-transform` (M8.4), applied before any whitespace/word
-/// processing. Borrows (no allocation) for the common `None` case.
-fn apply_text_transform(text: &str, transform: TextTransform) -> Cow<'_, str> {
+/// processing, to a text that starts a word when `at_word_start`.
+/// Borrows (no allocation) for the common `None` case.
+fn apply_text_transform(
+    text: &str,
+    transform: TextTransform,
+    mut at_word_start: bool,
+) -> Cow<'_, str> {
     match transform {
         TextTransform::None => Cow::Borrowed(text),
         TextTransform::Uppercase => Cow::Owned(text.to_uppercase()),
         TextTransform::Lowercase => Cow::Owned(text.to_lowercase()),
         TextTransform::Capitalize => {
             let mut out = String::with_capacity(text.len());
-            let mut at_word_start = true;
             for c in text.chars() {
                 if c.is_whitespace() {
                     at_word_start = true;
@@ -1316,6 +1330,7 @@ mod tests {
             anonymous: true,
             generated: None,
             quote_depth: 0,
+            styled_by_ancestor: false,
         }
     }
 
@@ -1328,6 +1343,7 @@ mod tests {
             anonymous: false,
             generated: None,
             quote_depth: 0,
+            styled_by_ancestor: false,
         }
     }
 
@@ -1526,6 +1542,7 @@ mod tests {
             anonymous: true,
             generated: None,
             quote_depth: 0,
+            styled_by_ancestor: false,
         }
     }
 
@@ -1558,6 +1575,39 @@ mod tests {
             &fonts,
         );
         assert_eq!(texts_of(&cap), vec!["Hello", "World"]);
+
+        // A word split across boxes is one word: only its start is
+        // capitalized, and white space or an atomic inline ends it.
+        let (cap, _) = lay(
+            &[
+                styled_text_box("t", style(TextTransform::Capitalize)),
+                styled_text_box("he end ", style(TextTransform::Capitalize)),
+                styled_text_box("now", style(TextTransform::Capitalize)),
+            ],
+            10_000.0,
+            TextAlign::Left,
+            &fonts,
+        );
+        assert_eq!(texts_of(&cap), vec!["T", "he", "End", "Now"]);
+        let atomic = LayoutBox {
+            style: ComputedStyle {
+                display: style::computed::Display::InlineBlock,
+                ..ComputedStyle::default()
+            },
+            kind: BoxKind::InlineBlock,
+            ..inline_box(Vec::new())
+        };
+        let (cap, _) = lay(
+            &[
+                styled_text_box("a", style(TextTransform::Capitalize)),
+                atomic,
+                styled_text_box("b", style(TextTransform::Capitalize)),
+            ],
+            10_000.0,
+            TextAlign::Left,
+            &fonts,
+        );
+        assert_eq!(texts_of(&cap), vec!["A", "B"]);
     }
 
     #[test]

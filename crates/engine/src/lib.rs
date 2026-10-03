@@ -398,6 +398,22 @@ struct CachedStyle {
 /// The engine's fonts, lent to the cascade for `ex` and `ch`.
 struct FontMeasurer<'a>(&'a text::FontCollection);
 
+/// What a cascade of a document knows from outside it: the `viewport`,
+/// the engine's fonts as `fonts` measures them, and the `language` its
+/// response gave.
+fn cascade_context<'a>(
+    viewport: (u32, u32),
+    fonts: &'a FontMeasurer<'a>,
+    language: Option<&'a str>,
+) -> CascadeContext<'a> {
+    CascadeContext {
+        viewport_width: viewport.0 as f32,
+        viewport_height: viewport.1 as f32,
+        fonts: Some(fonts),
+        language,
+    }
+}
+
 impl FontMeasure for FontMeasurer<'_> {
     fn x_height(&self, font_size_px: f32) -> f32 {
         self.0.x_height(font_size_px)
@@ -1221,12 +1237,7 @@ impl Engine {
 
     fn cascade(&self, viewport: (u32, u32)) -> Styles {
         let fonts = FontMeasurer(&self.layout_fonts);
-        let context = CascadeContext {
-            viewport_width: viewport.0 as f32,
-            viewport_height: viewport.1 as f32,
-            fonts: Some(&fonts),
-            language: self.shown.page.language(),
-        };
+        let context = cascade_context(viewport, &fonts, self.shown.page.language());
         self.shown
             .stylesheets
             .cascade(&self.shown.document, &context)
@@ -1248,8 +1259,15 @@ impl Engine {
     /// tree order, flat — a fresh computation for inspection; the
     /// frame pipeline uses [`Engine::layout`].
     pub fn fragments(&self, viewport_width: f32) -> Vec<Fragment> {
-        let styles = self.cascade((viewport_width as u32, self.viewport.1));
-        let boxes = layout::build_box_tree(&self.shown.document, &styles);
+        let viewport = (viewport_width as u32, self.viewport.1);
+        let styles = self.cascade(viewport);
+        let fonts = FontMeasurer(&self.layout_fonts);
+        let context = cascade_context(viewport, &fonts, self.shown.page.language());
+        let recascade = self
+            .shown
+            .stylesheets
+            .recascader(&self.shown.document, &styles, &context);
+        let boxes = layout::build_box_tree(&self.shown.document, &styles, &recascade);
         layout::flatten(
             layout::layout_document_in(
                 &boxes,
@@ -1285,12 +1303,7 @@ impl Engine {
         } else if !self.shown.pending.is_empty() {
             let changes = std::mem::take(&mut self.shown.pending);
             let fonts = FontMeasurer(&self.layout_fonts);
-            let context = CascadeContext {
-                viewport_width: self.viewport.0 as f32,
-                viewport_height: self.viewport.1 as f32,
-                fonts: Some(&fonts),
-                language: self.shown.page.language(),
-            };
+            let context = cascade_context(self.viewport, &fonts, self.shown.page.language());
             let cached = self.shown.styled.as_mut().expect("not stale");
             let restyle = self.shown.stylesheets.restyle(
                 &self.shown.document,
@@ -1332,7 +1345,13 @@ impl Engine {
         });
         if stale {
             let styles = &self.shown.styled.as_ref().expect("just computed").styles;
-            let boxes = layout::build_box_tree(&self.shown.document, styles);
+            let fonts = FontMeasurer(&self.layout_fonts);
+            let context = cascade_context(self.viewport, &fonts, self.shown.page.language());
+            let recascade =
+                self.shown
+                    .stylesheets
+                    .recascader(&self.shown.document, styles, &context);
+            let boxes = layout::build_box_tree(&self.shown.document, styles, &recascade);
             let layout = layout::layout_document_cached(
                 &boxes,
                 viewport_width,
@@ -3192,6 +3211,23 @@ mod tests {
     }
 
     #[test]
+    fn a_drop_cap_in_a_link_is_the_link_to_the_pointer() {
+        // The p's first letter is in the link's text: its box is the
+        // link's, and a click on it follows the link.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0 } p { margin: 0 }
+                    p::first-letter { float: left; font-size: 60px; color: #f00 }</style>\
+             <p><a href=\"https://example.test/t\" id=a>Once</a> upon a time</p>",
+        );
+        engine.frame(200, 100);
+        let a = node_by_id(&engine, "a");
+        // Low in the 60px letter, below the first 16px line.
+        assert_eq!(engine.hit_test(5.0, 40.0), Some(a));
+        assert_eq!(engine.link_at(5.0, 40.0).map(|link| link.node()), Some(a));
+    }
+
+    #[test]
     fn a_generated_box_is_its_element_to_the_pointer_but_never_its_scroller() {
         // The link's `::before` is a 40px block above its text: the
         // pointer over it is over the link, and a click follows it.
@@ -3728,6 +3764,8 @@ mod tests {
           div::after { content: ''; display: table; clear: both }\
           td::before { content: no-open-quote 'T'; display: table-cell; width: 4px }\
           p::before { content: 'O'; display: block; overflow: hidden; height: 4px }\
+          .a::first-letter { font-size: 14px; color: #00f } div::first-letter { padding: 1px }\
+          td::first-letter { float: left; font-size: 20px }\
         </style>\
         <div class=a><p class=b title=t>one <q>two <q>three</q></q></p></div>\
         <p class='b c' title=u><span class=c>x</span> y</p>\

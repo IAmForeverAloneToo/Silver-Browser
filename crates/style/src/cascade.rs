@@ -55,7 +55,7 @@
 //! built-in user-agent sheet and its selectors are parsed once per
 //! process.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
 
@@ -211,6 +211,54 @@ impl Target {
     /// (CSS 2.2 §12.2).
     fn takes_content(self) -> bool {
         matches!(self, Target::Before | Target::After)
+    }
+
+    /// The target a pseudo-element's style is kept as; `None` for the
+    /// ones matched and set aside, which nothing draws yet.
+    fn of(pseudo: PseudoElement) -> Option<Target> {
+        match pseudo {
+            PseudoElement::Before => Some(Target::Before),
+            PseudoElement::After => Some(Target::After),
+            PseudoElement::FirstLetter => Some(Target::FirstLetter),
+            PseudoElement::FirstLine => Some(Target::FirstLine),
+            PseudoElement::Marker
+            | PseudoElement::Placeholder
+            | PseudoElement::Selection
+            | PseudoElement::WebkitPrefixed => None,
+        }
+    }
+
+    /// Whether a declaration of the property `name` applies to the
+    /// target. `content` applies to `::before` and `::after` only;
+    /// `::first-letter` takes the properties Pseudo-Elements 4 §2.2.4
+    /// lists that this engine has — the font's, colour, background,
+    /// `text-transform`, letter and word spacing, `vertical-align`,
+    /// margins, padding and borders — and `float`, which every browser
+    /// honours for a drop cap (M16); every other target takes every
+    /// other property.
+    fn applies(self, name: &str) -> bool {
+        match self {
+            Target::FirstLetter => {
+                matches!(
+                    name,
+                    "font-size"
+                        | "font-family"
+                        | "color"
+                        | "background-color"
+                        | "text-transform"
+                        | "letter-spacing"
+                        | "word-spacing"
+                        | "vertical-align"
+                        | "float"
+                ) || (["margin", "padding", "border"]
+                    .iter()
+                    .any(|prefix| name.starts_with(prefix))
+                    // A table's, not the box's border.
+                    && !matches!(name, "border-collapse" | "border-spacing"))
+            }
+            Target::Element | Target::FirstLine => name != "content",
+            Target::Before | Target::After => true,
+        }
     }
 }
 
@@ -413,6 +461,96 @@ impl Stylesheets {
             return Restyle::full(styles);
         }
         restyle
+    }
+}
+
+/// What layout asks of the cascade once it knows where an element's
+/// content falls (M16): the style of a pseudo-element that inherits
+/// from something other than its originating element. A
+/// `::first-letter` inherits from the element its text is in, or from
+/// the `::first-letter` around it (Pseudo-Elements 4 §2.2.3), which
+/// only the box tree finds; `layout` defines no cascade of its own, so
+/// it asks through this.
+pub trait Recascade {
+    /// The style of the element `element`'s `pseudo`, cascaded from its
+    /// rules as [`Styles::pseudo`]'s is, but inheriting from `parent`;
+    /// `None` when no rule styles it.
+    fn pseudo_element(
+        &self,
+        element: NodeId,
+        pseudo: PseudoElement,
+        parent: &ComputedStyle,
+    ) -> Option<ComputedStyle>;
+}
+
+/// [`Recascade`] over a document, the [`Stylesheets`] and context it was
+/// cascaded with, and the styles that gave (for `rem`): an element's
+/// rules are matched again for each question, which layout asks once per
+/// `::first-letter` box.
+pub struct Recascader<'a> {
+    document: &'a Document,
+    styles: &'a Styles,
+    cascader: RefCell<Cascader<'a>>,
+}
+
+impl Stylesheets {
+    /// A [`Recascade`] over `document` and these sheets, with
+    /// `context`, the cascade's, and `styles`, what it gave.
+    pub fn recascader<'a>(
+        &'a self,
+        document: &'a Document,
+        styles: &'a Styles,
+        context: &'a CascadeContext<'a>,
+    ) -> Recascader<'a> {
+        let author = rules_of(&self.sheets, &self.selectors);
+        Recascader {
+            document,
+            styles,
+            cascader: RefCell::new(Cascader::new(
+                document,
+                ua().rules.as_slice(),
+                author,
+                context,
+            )),
+        }
+    }
+}
+
+impl Recascade for Recascader<'_> {
+    fn pseudo_element(
+        &self,
+        element: NodeId,
+        pseudo: PseudoElement,
+        parent: &ComputedStyle,
+    ) -> Option<ComputedStyle> {
+        let target = Target::of(pseudo)?;
+        let mut cascader = self.cascader.borrow_mut();
+        let cascader = &mut *cascader;
+        let matched = declarations_for(
+            self.document,
+            &mut cascader.matcher,
+            element,
+            cascader.ua,
+            &cascader.author,
+        );
+        let applied = matched.of(target);
+        if applied.is_empty() {
+            return None;
+        }
+        // As the cascade has it: the root element's `rem` is the initial
+        // font size, every other element's the root's.
+        let rem = if self.document.document_element() == Some(element) {
+            ComputedStyle::default().font_size_px
+        } else {
+            self.styles.rem
+        };
+        let resolution = Resolution {
+            rem,
+            context: cascader.context,
+            viewport_used: &cascader.viewport_used,
+            attributes: self.document.attrs(element).unwrap_or_default(),
+        };
+        Some(compute_style(applied, parent, target, None, &resolution))
     }
 }
 
@@ -782,16 +920,10 @@ fn collect_from_sheet<'a>(
         for selector in &list.0 {
             let target = match &selector.pseudo_element {
                 None => Target::Element,
-                Some(ending) => match ending.element {
-                    PseudoElement::Before => Target::Before,
-                    PseudoElement::After => Target::After,
-                    PseudoElement::FirstLetter => Target::FirstLetter,
-                    PseudoElement::FirstLine => Target::FirstLine,
-                    // Matched and set aside: nothing draws them yet.
-                    PseudoElement::Marker
-                    | PseudoElement::Placeholder
-                    | PseudoElement::Selection
-                    | PseudoElement::WebkitPrefixed => continue,
+                // One matched and set aside: nothing draws it yet.
+                Some(ending) => match Target::of(ending.element) {
+                    Some(target) => target,
+                    None => continue,
                 },
             };
             let matches = match &selector.pseudo_element {
@@ -887,8 +1019,8 @@ fn compute_style(
     };
     let mut border_color_set = [false; 4];
     for a in &sorted {
-        if a.decl.name == "content" && !target.takes_content() {
-            continue; // it applies to `::before` and `::after` only
+        if !target.applies(&a.decl.name) {
+            continue;
         }
         apply_declaration(&mut style, &a.decl, &bases, parent, &mut border_color_set);
     }
@@ -3317,6 +3449,118 @@ mod tests {
         // job, walking `display` — so a display:none subtree's children
         // still have well-defined styles.
         assert_eq!(style("span").color, Color::rgb8(255, 0, 0));
+    }
+
+    #[test]
+    fn a_first_letter_takes_only_the_properties_that_apply_to_it() {
+        // Its fonts, colour, background, spacing, margins, padding,
+        // borders and `float` apply; `width`, `display`, `position`,
+        // `content`, `white-space` and a table's borders do not, so the
+        // inherited ones stay the element's and the others initial.
+        let sheets = [sheet(
+            "p { white-space: pre-wrap; border-spacing: 1px; }
+             p::first-letter { color: #f00; background-color: #0f0; font-size: 30px;
+                 font-family: serif; text-transform: uppercase; letter-spacing: 2px;
+                 word-spacing: 3px; vertical-align: top; margin: 2px; padding-left: 3px;
+                 border: 1px solid #00f; float: left; width: 100px; display: inline-block;
+                 position: absolute; content: 'x'; white-space: normal; overflow: hidden;
+                 border-collapse: collapse; border-spacing: 9px; }",
+        )];
+        let document = Document::from_node(&html::parse_document("<p>x</p>").unwrap());
+        let styles = cascade_document(&document, &sheets, &CascadeContext::default());
+        let s = styles
+            .pseudo(first(&document, "p"), PseudoElement::FirstLetter)
+            .expect("styled");
+        assert_eq!(s.color, Color::rgb8(255, 0, 0));
+        assert_eq!(s.background_color, Color::rgb8(0, 255, 0));
+        assert_eq!((s.font_size_px, s.font_family.as_str()), (30.0, "serif"));
+        assert_eq!(s.text_transform, TextTransform::Uppercase);
+        assert_eq!((s.letter_spacing, s.word_spacing), (2.0, 3.0));
+        assert_eq!(s.vertical_align, VerticalAlign::Top);
+        assert_eq!(s.margin[TOP], LengthPercentageAuto::Px(2.0));
+        assert_eq!(s.padding[LEFT], LengthPercentage::Px(3.0));
+        assert_eq!(s.border_style, [BorderStyle::Solid; 4]);
+        assert_eq!(s.float, Float::Left);
+        // A float's `display` is blockified from the initial `inline`.
+        assert_eq!(s.display, Display::Block);
+        assert_eq!(s.width, LengthPercentageAuto::Auto);
+        assert_eq!(s.position, Position::Static);
+        assert_eq!(s.content, Content::Normal);
+        assert_eq!(s.white_space, WhiteSpace::PreWrap);
+        assert_eq!(s.overflow, Overflow::Visible);
+        assert_eq!(s.border_collapse, BorderCollapse::Separate);
+        assert_eq!(
+            (s.border_spacing.horizontal, s.border_spacing.vertical),
+            (1.0, 1.0)
+        );
+    }
+
+    #[test]
+    fn a_recascade_gives_a_pseudo_elements_style_from_another_parent() {
+        let sheets = Stylesheets::new(vec![sheet(
+            "p { font-size: 16px; color: #00f; } p::first-letter { font-size: 2em; }",
+        )]);
+        let document = Document::from_node(&html::parse_document("<p>x</p><div>y</div>").unwrap());
+        let context = CascadeContext::default();
+        let styles = sheets.cascade(&document, &context);
+        let p = first(&document, "p");
+        let cascaded = styles.pseudo(p, PseudoElement::FirstLetter).unwrap();
+        assert_eq!(
+            (cascaded.font_size_px, cascaded.color),
+            (32.0, Color::rgb8(0, 0, 255))
+        );
+        let recascade = sheets.recascader(&document, &styles, &context);
+        let parent = ComputedStyle {
+            font_size_px: 10.0,
+            color: Color::rgb8(1, 2, 3),
+            ..ComputedStyle::default()
+        };
+        // `em` and the inherited colour are the given parent's.
+        let s = recascade
+            .pseudo_element(p, PseudoElement::FirstLetter, &parent)
+            .unwrap();
+        assert_eq!((s.font_size_px, s.color), (20.0, Color::rgb8(1, 2, 3)));
+        // Nothing styles the div's, nor the p's `::first-line`.
+        let div = first(&document, "div");
+        assert!(
+            recascade
+                .pseudo_element(div, PseudoElement::FirstLetter, &parent)
+                .is_none()
+        );
+        assert!(
+            recascade
+                .pseudo_element(p, PseudoElement::FirstLine, &parent)
+                .is_none()
+        );
+        assert!(
+            recascade
+                .pseudo_element(p, PseudoElement::Marker, &parent)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_recascade_resolves_rem_as_the_cascade_does() {
+        // The root's `rem` is the initial font size, every other
+        // element's the root's.
+        let sheets = Stylesheets::new(vec![sheet(
+            "html { font-size: 20px; } ::first-letter { font-size: 2rem; }",
+        )]);
+        let document = Document::from_node(&html::parse_document("<p>x</p>").unwrap());
+        let context = CascadeContext::default();
+        let styles = sheets.cascade(&document, &context);
+        let recascade = sheets.recascader(&document, &styles, &context);
+        let size = |tag: &str| {
+            let element = first(&document, tag);
+            let parent = styles.get(element).expect("styled");
+            let cascaded = styles.pseudo(element, PseudoElement::FirstLetter).unwrap();
+            let recascaded = recascade
+                .pseudo_element(element, PseudoElement::FirstLetter, parent)
+                .unwrap();
+            (cascaded.font_size_px, recascaded.font_size_px)
+        };
+        assert_eq!(size("html"), (32.0, 32.0));
+        assert_eq!(size("p"), (40.0, 40.0));
     }
 
     #[test]

@@ -48,8 +48,11 @@ pub(crate) mod testing {
     /// the UA sheet and `sheets` with no viewport and no font.
     pub(crate) fn boxes_of(node: &Node, sheets: &[css::Stylesheet]) -> (Document, Vec<LayoutBox>) {
         let document = Document::from_node(node);
-        let styles = style::cascade_document(&document, sheets, &style::CascadeContext::default());
-        let boxes = crate::build_box_tree(&document, &styles);
+        let sheets = style::Stylesheets::new(sheets.to_vec());
+        let context = style::CascadeContext::default();
+        let styles = sheets.cascade(&document, &context);
+        let recascade = sheets.recascader(&document, &styles, &context);
+        let boxes = crate::build_box_tree(&document, &styles, &recascade);
         (document, boxes)
     }
 

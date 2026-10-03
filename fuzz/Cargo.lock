@@ -382,6 +382,7 @@ dependencies = [
  "dom",
  "style",
  "text",
+ "unicode-properties",
 ]
 
 [[package]]

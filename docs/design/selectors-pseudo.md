@@ -275,39 +275,67 @@ browsers measure it from the containing block and let it lie under
 the float (docs/design/floats-positioning.md is corrected).
 
 **`::first-letter` (M16.2).** It applies to block containers — a
-block, an inline-block, a table cell or caption — and is found when the
-box tree is built:
+block, an inline-block, a float or an absolutely positioned box that
+is not a table, a table cell or caption; not an inline element, nor a
+table row, whose text is in an anonymous cell — and is found by a pass
+over the box tree once it is built (`layout::box_tree::first_letter`):
 
 - the first-letter text is looked for in the inline content at the
   start of the originating element's first formatted line: its own, or
-  that of its first in-flow block-level child, recursively (not into an
-  inline-block, a table or a replaced element, which have their own).
-  Collapsible white space at the start is skipped; generated
-  `::before` text counts, as Pseudo-Elements 4 says (`p::before
-  { content: "Note: " }` makes "N" the first letter); a forced line
-  break, an atomic inline or any other in-flow content first means
-  there is none;
-- the text is Pseudo-Elements 4's pattern: punctuation (Unicode P\*)
-  with any spaces (Zs but U+3000) between, then one letter, number or
-  symbol (L\*, N\*, S\*) with the combining marks after it, then any
-  punctuation but opening punctuation and dashes (Ps, Pd), with spaces
-  between that are not word separators. Typographic character units
+  that of its first in-flow block-level child that has a line,
+  recursively, so an empty block is passed over, as in the browsers.
+  Floats and absolutely positioned boxes, a floated `::before` among
+  them, are out of flow and passed over; a table, an inline-block or
+  an inline table first has lines of its own, and there is none.
+  Generated `::before` text counts, as Pseudo-Elements 4 says
+  (`p::before { content: "Note: " }` makes "N" the first letter);
+- white space at the start is passed over, whether it collapses or is
+  kept (`white-space: pre`), and is left in a text box before the
+  letter's; a line break kept by `pre`, `pre-wrap` or `pre-line` first
+  makes the first line empty, and there is none, as Pseudo-Elements 4
+  says of `<p><br>First`. In this engine `br` makes no box and breaks
+  no line (since M7, section 2), so that example finds "F" here;
+- the text is Pseudo-Elements 4's pattern within one text box:
+  punctuation (Unicode P\*) with any spaces (Zs but U+3000) between,
+  then one letter, number or symbol (L\*, N\*, S\*) with the combining
+  marks after it, then any punctuation but opening punctuation and
+  dashes (Ps, Pd), with spaces between that are not word separators.
+  Punctuation in another element than the letter's (`“<b>T</b>he`) is
+  not taken across it, and there is none. Typographic character units
   are taken as one scalar value with its combining marks; Dutch "ij"
   and other language tailorings wait for M42;
 - the text box that holds it is split: the first-letter text goes into
-  a box of its own, styled by the `::first-letter` style with the
-  element the text is in as its parent. That box is an inline box, or,
-  with `float` other than `none`, a float, which every browser honours
-  for drop caps though Pseudo-Elements 4 leaves it to the user agent.
-  When several ancestors whose first formatted line this is have
-  `::first-letter` styles, their boxes nest outermost first, as the
-  fictional tag sequence in Pseudo-Elements 4 nests them;
+  a box of its own, which names the element the text is in, as its
+  text does, so a drop cap in a link is the link to the pointer, and is
+  marked as the `::first-letter`'s. Its style is the
+  `::first-letter`'s, cascaded again with the style of what the text
+  is in as its parent (Pseudo-Elements 4 §2.2.3): the cascade keeps it
+  with the originating element as parent (above), and layout asks
+  `style` for it through the `Recascade` trait, which the engine makes
+  from its sheets. That box is an inline box, or, with `float` other
+  than `none`, a float holding the letter's line, which every browser
+  honours for drop caps though Pseudo-Elements 4 leaves it to the user
+  agent. When several ancestors whose first formatted line this is
+  have `::first-letter` styles, their boxes nest outermost first, as
+  the fictional tag sequence in Pseudo-Elements 4 nests them, each
+  inheriting from the one outside it;
 - the properties that apply are the ones Pseudo-Elements 4 lists that
   this engine has (font size and family, colour, background,
   `text-transform`, letter and word spacing, `vertical-align`,
-  margins, padding, borders) and `float`; the others are ignored;
+  margins, padding, borders but a table's `border-collapse` and
+  `border-spacing`) and `float`; the cascade leaves the others out of
+  the `::first-letter` style, so `display`, `position` and `width` stay
+  initial and the inherited ones the parent's;
 - the inline layout already keeps text with no white space between it
-  flush and unbroken, so "T" and "he" stay one word.
+  flush and unbroken, so "T" and "he" stay one word. `text-transform:
+  capitalize` now takes a word split across boxes, by an inline
+  element or by the first letter, as one word: "the" with its first
+  letter split off is "The", not "THe", and so is `<b>t</b>he`;
+- the blocks on the way down to the letter, from the originating
+  element's box, lay out a style that is not their own: their
+  element's restyle does not see the ancestor's `::first-letter`
+  change. They are marked, and the layout cache (M13.2) neither keeps
+  nor takes them.
 
 Part of the first-letter text wrapped to the next line stays in the
 pseudo-element (Pseudo-Elements 4 drops it out);
@@ -333,12 +361,14 @@ breaking finds, so it is applied by the inline layout:
   family, colour, background, `text-transform`, letter and word
   spacing, `vertical-align`); the restyled inline elements keep all
   their own;
-- the restyling needs the cascade during layout, so layout takes a
-  `Restyle` from the engine, which runs an element's rules again with
-  a given parent style, and gives a pseudo-element's style with a given
-  parent. It is called only for elements on a first line, and for the
-  `::first-letter` box when one is on it (which then inherits from the
-  first line, as Pseudo-Elements 4 says);
+- the restyling needs the cascade during layout, through the
+  `Recascade` that `::first-letter` brought (named so beside the
+  `Restyle` that `Stylesheets::restyle` returns), which gains running
+  an element's rules again with a given parent style, beside giving a
+  pseudo-element's style with a given parent. It is called only for
+  elements on a first line, and for the `::first-letter` box when one
+  is on it (which then inherits from the first line, as
+  Pseudo-Elements 4 says);
 - the words are measured with their first-line styles while the first
   line is filled, and with their own after it: the first line breaks
   where its own text, in its own fonts, runs out of room, and the
@@ -422,8 +452,10 @@ another language its own marks. Beyond the page:
 
 **The layering contract.** Nothing moves. `style` keeps selectors,
 the cascade and the pseudo-element styles; `layout` builds the
-generated boxes and applies the first line, through the `Restyle`
-trait `style` defines and the engine implements over its sheets.
+generated boxes, splits off the first letter and applies the first
+line, through the `Recascade` trait `style` defines and implements over
+the sheets (`Stylesheets::recascader`), which the engine hands to
+layout with the styles it cascaded.
 
 ## 2. Not in this milestone, said rather than hidden
 
@@ -441,6 +473,10 @@ trait `style` defines and the engine implements over its sheets.
 - *`::first-letter::prefix` and `::suffix`*, *`initial-letter`*, and
   the language tailorings of a first letter (Dutch "ij"): not on the
   roadmap yet, and M42 for the tailorings.
+- *`br`*: it makes no box and breaks no line in this engine, which
+  this milestone found and does not change; it has no milestone yet.
+  Once it breaks a line, a `br` first will end the search for a first
+  letter as a kept line break does now.
 - *Other pseudo-elements*: `::backdrop`, `::file-selector-button`,
   `::details-content`, `::part()`, `::slotted()`, `::cue`,
   `::view-transition` and the rest stay invalid, each with the feature
@@ -482,7 +518,7 @@ run before the next. A step is done when its tests pass.
 5. *`::first-letter`.* Finding the text, the pattern, the split, the
    inline or floating box, nesting.
 6. *`::first-line`.* The first formatted line through blocks, the
-   chain, the `Restyle` hook, measuring the first line in its styles,
+   chain, the `Recascade` element hook, measuring the first line in its styles,
    its fragment, the strut, the cache rule.
 7. *Performance and fuzzing.* M16.5's measurement, and the filter if
    it is due; the fuzz targets run.

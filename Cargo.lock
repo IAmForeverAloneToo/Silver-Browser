@@ -967,6 +967,7 @@ dependencies = [
  "html",
  "style",
  "text",
+ "unicode-properties",
 ]
 
 [[package]]

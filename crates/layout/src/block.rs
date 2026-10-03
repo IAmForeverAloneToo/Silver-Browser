@@ -1678,9 +1678,11 @@ fn place_block<'a>(
     cache: Option<&LayoutCache>,
 ) -> BlockPlacement<'a> {
     // Only an element's own box is kept under its node, and only one no
-    // float can have reached; the boxes inside it may be, whatever it is.
+    // float can have reached and no ancestor's pseudo-element styles
+    // (M16); the boxes inside it may be, whatever it is.
     let held = cache.filter(|_| {
         !child.anonymous
+            && !child.styled_by_ancestor
             && matches!(child.kind, BoxKind::Block | BoxKind::Table)
             && floats.is_untouched()
     });
@@ -2776,6 +2778,7 @@ mod tests {
             anonymous: true,
             generated: None,
             quote_depth: 0,
+            styled_by_ancestor: false,
         };
         let block = LayoutBox {
             style: ComputedStyle {
@@ -2788,6 +2791,7 @@ mod tests {
             anonymous: false,
             generated: None,
             quote_depth: 0,
+            styled_by_ancestor: false,
         };
         let layout = layout_document(&[block], VIEWPORT, &fonts);
         let m = fonts.primary().metrics(16.0);
@@ -4538,5 +4542,74 @@ mod tests {
             .map(|b| (layout.number(b.node), b.generated))
             .collect();
         assert_eq!(boxes, [(2, None), (2, Some(PseudoElement::After))]);
+    }
+
+    #[test]
+    fn a_first_letter_stays_flush_with_the_rest_of_its_word() {
+        // <p>The end</p>, 1px wide so that each word is a line of its
+        // own: "T" and "he" are one word, on one line, the "T" larger.
+        // Nodes: p 1.
+        let fonts = test_fonts();
+        let layout = document_of(
+            Element::new("p").text("the end"),
+            "p { margin: 0; width: 1px; text-transform: capitalize }
+             p::first-letter { font-size: 30px; color: #f00 }",
+        );
+        let (t, he, end) = (
+            text_of(&layout, "T"),
+            text_of(&layout, "he"),
+            text_of(&layout, "End"),
+        );
+        assert_eq!(t.generated, Some(PseudoElement::FirstLetter));
+        assert_eq!(t.style.font_size_px, 30.0);
+        assert_eq!(he.x, t.x + fonts.measure("T", 30.0));
+        assert_eq!(he.y, t.y, "one baseline");
+        assert!(end.y > he.y, "the next word on the next line");
+        // The letter's inline box is the p's, marked as the first
+        // letter's.
+        let boxes = inline_boxes(&layout);
+        assert_eq!(boxes.len(), 1);
+        assert_eq!(
+            (layout.number(boxes[0].node), boxes[0].generated),
+            (1, Some(PseudoElement::FirstLetter))
+        );
+    }
+
+    #[test]
+    fn a_floated_first_letter_is_a_drop_cap_the_lines_run_beside() {
+        // Nodes: p 1.
+        let fonts = test_fonts();
+        let m = fonts.primary().metrics(16.0);
+        let layout = document_of(
+            Element::new("p").text("Once upon a time"),
+            "p { margin: 0; width: 300px }
+             p::first-letter { float: left; font-size: 48px; padding-right: 4px }",
+        );
+        let cap = layout
+            .iter()
+            .find(|f| f.style.float == Float::Left)
+            .expect("the drop cap is a float")
+            .clone();
+        assert_eq!(cap.generated, Some(PseudoElement::FirstLetter));
+        assert_eq!((cap.x, cap.y), (0.0, 0.0));
+        assert_eq!(cap.w, fonts.measure("O", 48.0) + 4.0);
+        assert_eq!(cap.h, fonts.primary().metrics(48.0).line_height());
+        let rest = text_of(&layout, "nce");
+        assert_eq!((rest.x, rest.top()), (cap.w, 0.0));
+        // Two lines of 16px text fit beside the 48px letter.
+        assert!(2.0 * m.line_height() < cap.h);
+        assert_eq!(text_of(&layout, "nce").y, m.ascent);
+        // A small letter: its line's strut is its own font's, not the
+        // paragraph's.
+        let layout = document_of(
+            Element::new("p").text("Once"),
+            "p { margin: 0; width: 300px }
+             p::first-letter { float: left; font-size: 8px }",
+        );
+        let cap = layout
+            .iter()
+            .find(|f| f.style.float == Float::Left)
+            .expect("the letter is a float");
+        assert_eq!(cap.h, fonts.primary().metrics(8.0).line_height());
     }
 }

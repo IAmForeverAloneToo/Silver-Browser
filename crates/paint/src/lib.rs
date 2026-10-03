@@ -979,8 +979,12 @@ mod testing {
         width: f32,
         fonts: &text::FontCollection,
     ) -> Laid {
-        let Styled { document, styles } = styled(node, sheets);
-        let boxes = layout::build_box_tree(&document, &styles);
+        let document = Document::from_node(node);
+        let sheets = style::Stylesheets::new(sheets.to_vec());
+        let context = style::CascadeContext::default();
+        let styles = sheets.cascade(&document, &context);
+        let recascade = sheets.recascader(&document, &styles, &context);
+        let boxes = layout::build_box_tree(&document, &styles, &recascade);
         let layout = layout::layout_document(&boxes, width, fonts);
         Laid { document, layout }
     }

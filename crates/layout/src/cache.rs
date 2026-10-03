@@ -21,7 +21,10 @@
 //!   none: its layout then neither met a float nor moved one, and its
 //!   place in the flow cannot have mattered to it;
 //! - no absolutely positioned box was carried out of it: such a box is
-//!   laid out against an ancestor, which lays it out again.
+//!   laid out against an ancestor, which lays it out again;
+//! - its layout reads no ancestor's pseudo-element style (M16): an
+//!   ancestor's `::first-letter` taking its text, whose change restyles
+//!   the ancestor alone.
 //!
 //! An entry does not copy the fragments of the children the cache
 //! holds too: it names each by its node and the serial its entry was
@@ -395,13 +398,18 @@ mod tests {
         /// A pass with the cache, held to a pass over a full cascade
         /// without one: the boxes it laid out and those it reused.
         fn pass(&mut self) -> (usize, usize) {
-            let boxes = build_box_tree(&self.document, &self.styles);
+            let context = CascadeContext::default();
+            let recascade = self
+                .sheets
+                .recascader(&self.document, &self.styles, &context);
+            let boxes = build_box_tree(&self.document, &self.styles, &recascade);
             let cached =
                 layout_document_cached(&boxes, self.width, Some(HEIGHT), &self.fonts, &self.cache);
             let styles = self
                 .sheets
                 .cascade(&self.document, &CascadeContext::default());
-            let boxes = build_box_tree(&self.document, &styles);
+            let recascade = self.sheets.recascader(&self.document, &styles, &context);
+            let boxes = build_box_tree(&self.document, &styles, &recascade);
             let fresh = layout_document_in(&boxes, self.width, Some(HEIGHT), &self.fonts);
             assert_eq!(
                 snapshot(&cached),
@@ -661,5 +669,23 @@ mod tests {
             d.set_text(text, "uno").unwrap();
         });
         assert_eq!(s.pass(), (3, 1));
+    }
+
+    #[test]
+    fn a_block_holding_an_ancestors_first_letter_is_neither_kept_nor_taken() {
+        // #p's line holds #d's first letter: #d's restyle does not reach
+        // #p, whose layout reads it, so #p is laid out each time.
+        let mut s = Session::new(
+            "<div id=d class=big><p id=p>Text</p></div><p id=q>after</p>",
+            ".big::first-letter { font-size: 40px }",
+        );
+        s.pass();
+        assert!(!s.kept("p"));
+        assert!(s.kept("q"));
+        let d = s.id("d");
+        s.change(|doc| doc.remove_attribute(d, "class").unwrap());
+        // html, body, #d and #p; #q taken. `pass` holds the result to a
+        // fresh one, the letter back to the paragraph's size.
+        assert_eq!(s.pass(), (4, 1));
     }
 }

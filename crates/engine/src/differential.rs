@@ -82,7 +82,7 @@ const STYLES: &[&str] = &[
 
 /// The data a [`Mutator`] gives text nodes: empty, white space, words,
 /// right-to-left letters, and stylesheets for a `style` element.
-const TEXTS: [&str; 15] = [
+const TEXTS: [&str; 16] = [
     "",
     " ",
     "x",
@@ -98,6 +98,7 @@ const TEXTS: [&str; 15] = [
     ":checked { display: block; width: 7px } :disabled + span { display: none }",
     "p::before { content: attr(title) } .a::after { content: 'x'; color: #f00 }",
     ".b::before { content: open-quote; display: block } q::after { display: table-cell }",
+    "p::first-letter { float: left; font-size: 20px } div::first-letter { color: #f00 }",
 ];
 
 /// Turns bytes into mutations of a document: each step reads an

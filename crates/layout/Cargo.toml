@@ -8,6 +8,7 @@ license.workspace = true
 dom.workspace = true
 style.workspace = true
 text.workspace = true
+unicode-properties.workspace = true
 
 # css: only tests need to build fixture stylesheets; html: the box tree
 # tests build table fixtures from real markup (M12), a downward edge
