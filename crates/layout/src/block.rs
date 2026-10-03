@@ -1529,16 +1529,19 @@ pub(crate) fn layout_block_contents<'a>(
     );
     if b.style.overflow.clips() {
         // The scrollable overflow area (M10.5, see `Fragment::
-        // scroll_height`): the content as if the height were auto, or
-        // a descendant reaching lower, from the padding box's top to
-        // the bottom padding's end, and never less than the padding
-        // box itself.
+        // scroll_height`), from the padding box's top: the content as if
+        // the height were auto with the bottom padding after it, or a
+        // descendant reaching lower, by its own border box, as the
+        // reference browsers have it (css-overflow-3 §2.2 adds the end
+        // padding to the in-flow content alone); and never less than the
+        // padding box itself.
         let extent = root.children.iter().map(extent_bottom).fold(0.0, f32::max)
             - border[TOP]
             - padding[TOP];
         let padding_box = padding[TOP] + content_height + padding[BOTTOM];
-        root.scroll_height =
-            (padding[TOP] + auto_content_height.max(extent) + padding[BOTTOM]).max(padding_box);
+        root.scroll_height = (padding[TOP] + auto_content_height + padding[BOTTOM])
+            .max(padding[TOP] + extent)
+            .max(padding_box);
     }
 
     BlockLayout {
@@ -3246,14 +3249,33 @@ mod tests {
         );
         assert_eq!(box_fragments(&frags)[0].scroll_height, 150.0);
         // A descendant overflowing a child with a fixed height reaches
-        // lower than the content height says.
+        // lower than the content height says, by its own border box: the
+        // bottom padding follows the in-flow content alone, as in the
+        // reference browsers. So does a relatively positioned child, and
+        // an absolutely positioned one.
         let frags = fragments_of(
             Element::new("div")
                 .attr("class", "s")
                 .push(Element::new("p").push(Element::new("span"))),
             &s("p { margin: 0; height: 10px; } span { display: block; height: 80px; }"),
         );
-        assert_eq!(box_fragments(&frags)[0].scroll_height, 100.0);
+        assert_eq!(box_fragments(&frags)[0].scroll_height, 90.0);
+        let frags = fragments_of(
+            Element::new("div")
+                .attr("class", "s")
+                .push(Element::new("p")),
+            &s("p { margin: 0; height: 50px; position: relative; top: 10px; }"),
+        );
+        assert_eq!(box_fragments(&frags)[0].scroll_height, 70.0, "it fits");
+        let frags = fragments_of(
+            Element::new("div")
+                .attr("class", "s")
+                .push(Element::new("p")),
+            &s(
+                ".s { position: relative; } p { margin: 0; position: absolute; top: 0; height: 75px; }",
+            ),
+        );
+        assert_eq!(box_fragments(&frags)[0].scroll_height, 75.0);
         // Unless that child clips: its overflow is its own.
         let frags = fragments_of(
             Element::new("div")

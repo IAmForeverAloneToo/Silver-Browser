@@ -661,15 +661,18 @@ pub(crate) fn layout_flex_contents<'a>(
     }
     let absolutes = settle_absolutes(b, &mut root, border, absolutes, pass);
     if style.overflow.clips() {
-        // The scrollable overflow area (M10.5): the items' margin boxes
-        // and anything inside them reaching lower, from the padding box's
-        // top, then the bottom padding; never less than the padding box.
+        // The scrollable overflow area (M10.5), from the padding box's
+        // top: the items' margin boxes where the algorithm put them, with
+        // the bottom padding after them, or anything reaching lower by
+        // its own border box, a relatively positioned item's included, as
+        // a block container's is; never less than the padding box.
         let extent = root.children.iter().map(extent_bottom).fold(0.0, f32::max)
             - border[TOP]
             - padding[TOP];
         let padding_box = padding[TOP] + content_height + padding[BOTTOM];
-        root.scroll_height =
-            (padding[TOP] + content_bottom.max(extent) + padding[BOTTOM]).max(padding_box);
+        root.scroll_height = (padding[TOP] + content_bottom + padding[BOTTOM])
+            .max(padding[TOP] + extent)
+            .max(padding_box);
     }
 
     let own_top = AdjoiningMargins::of(style.margin[TOP].resolve(cb_width, 0.0));
@@ -1573,6 +1576,16 @@ mod tests {
              #a { height: 80px; margin-bottom: 10px; width: 10px }",
         );
         assert_eq!(fragment(&l, "c").scroll_height, 90.0);
+        // A relatively positioned item counts by its own border box, the
+        // end padding following only where the algorithm put it: moved
+        // down into the padding, it fits (css-flexbox WPT
+        // overflow-area-003).
+        let l = laid(
+            "<div id=c><div id=a></div></div>",
+            "#c { display: flex; width: 60px; height: 60px; padding: 10px; overflow: auto }
+             #a { width: 60px; height: 60px; flex: none; position: relative; top: 10px }",
+        );
+        assert_eq!(fragment(&l, "c").scroll_height, 80.0);
     }
 
     #[test]

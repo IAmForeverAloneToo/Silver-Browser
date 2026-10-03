@@ -51,7 +51,6 @@ css/css-flexbox/flexbox_margin-auto.html                           waits on step
 css/css-flexbox/flexbox_margin-left-ex.html                        waits on step 6: auto margins
 css/css-flexbox/flexbox_order-abspos-space-around.html             waits on step 6: justify-content; step 8: absolutely positioned children
 css/css-flexbox/justify-content-006.html                           waits on step 6: justify-content
-css/css-flexbox/overflow-area-003.html                             waits on step 6: justify-content, align-items and align-self; step 8: absolutely positioned children
 
 # Baseline alignment, M17 step 7.
 css/css-flexbox/align-baseline.html               waits on step 7: baseline alignment, which in a column wrap-reverse container aligns the items as a group

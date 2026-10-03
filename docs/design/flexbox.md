@@ -477,10 +477,14 @@ inside an inline-block or a table cell are.
 
 **Scroll containers.** A flex container whose `overflow` clips records
 its scrollable overflow area as a block container does (M10.5). That
-area is the items' margin boxes plus the end padding, from the padding
-box's top. An item that is a scroll container has no automatic minimum
-size, so a row of them can shrink below their content. That is the
-reason `overflow: hidden` on an item is the usual remedy for text
+area is the items' margin boxes where the algorithm put them, plus the
+end padding, from the padding box's top; and anything reaching further,
+a relatively positioned item among them, by its own border box, without
+the padding. So the reference browsers have it, for a block container
+too, whose area until this milestone took the end padding past such a
+descendant as well. An item that is a scroll container has no automatic
+minimum size, so a row of them can shrink below their content. That is
+the reason `overflow: hidden` on an item is the usual remedy for text
 overflowing a flex row.
 
 **The web-platform-tests runner (T1.1).** M17.9's subset comes from the
