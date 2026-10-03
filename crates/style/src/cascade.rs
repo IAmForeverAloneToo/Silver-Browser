@@ -2189,11 +2189,18 @@ fn parse_z_index(tokens: &[Token]) -> Option<Option<i32>> {
     if is_auto(tokens) {
         return Some(None);
     }
+    integer(tokens).map(Some)
+}
+
+/// A lone `<integer>`, one beyond what an `i32` holds clamped to it
+/// (css-values-4 §5: a value outside the range an implementation
+/// supports is clamped, not dropped).
+fn integer(tokens: &[Token]) -> Option<i32> {
     match single_token(tokens)? {
         Token::Number {
             value,
             is_integer: true,
-        } if *value >= i32::MIN as f64 && *value <= i32::MAX as f64 => Some(Some(*value as i32)),
+        } => Some(value.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32),
         _ => None,
     }
 }
@@ -2305,13 +2312,7 @@ fn parse_flex_flow(tokens: &[Token]) -> Option<(FlexDirection, FlexWrap)> {
 
 /// `order` (css-flexbox-1 §5.4, M17): an integer.
 fn parse_order(tokens: &[Token]) -> Option<i32> {
-    match single_token(tokens)? {
-        Token::Number {
-            value,
-            is_integer: true,
-        } if *value >= i32::MIN as f64 && *value <= i32::MAX as f64 => Some(*value as i32),
-        _ => None,
-    }
+    integer(tokens)
 }
 
 /// A flex factor (`flex-grow`, `flex-shrink`; css-flexbox-1 §7.2): a
@@ -3655,6 +3656,10 @@ mod tests {
             ("-1", Some(-1)),
             ("0", Some(0)),
             ("2147483647", Some(i32::MAX)),
+            // Beyond an `i32`, clamped (css-values-4 §5); `1e10` is a
+            // number, not an integer.
+            ("2147483648", Some(i32::MAX)),
+            ("-17014118346", Some(i32::MIN)),
             ("1.5", None),
             ("1e10", None),
             ("10px", None),
@@ -4784,7 +4789,9 @@ mod tests {
         );
         assert_eq!(p("p { order: -3 }").order, -3);
         assert_eq!(p("p { order: 2.5 }").order, 0, "an integer only");
-        assert_eq!(p("p { order: 1e10 }").order, 0, "out of range");
+        assert_eq!(p("p { order: 1e10 }").order, 0, "a number, not an integer");
+        assert_eq!(p("p { order: -17014118346 }").order, i32::MIN, "clamped");
+        assert_eq!(p("p { order: 17014118346 }").order, i32::MAX, "clamped");
         let s = p("p { flex-grow: 2.5; flex-shrink: 0 }");
         assert_eq!((s.flex_grow, s.flex_shrink), (2.5, 0.0));
         let s = p("p { flex-grow: -1; flex-shrink: 1px }");
