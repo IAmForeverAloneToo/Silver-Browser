@@ -18,6 +18,7 @@
 //! a change to the document lays out what the change reached and
 //! reuses the rest.
 
+mod align;
 pub mod block;
 pub mod box_tree;
 mod cache;

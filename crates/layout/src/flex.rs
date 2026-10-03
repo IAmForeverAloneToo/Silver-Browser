@@ -26,14 +26,15 @@ use std::cell::OnceCell;
 use std::ops::Range;
 
 use style::computed::{
-    AlignPosition, BOTTOM, BaselinePosition, BoxSizing, ComputedStyle, ContentAlignment, FlexBasis,
-    FlexWrap, LEFT, LengthPercentage, MaxSize, OverflowAlign, RIGHT, SelfAlignment, Size, TOP,
+    BOTTOM, BaselinePosition, BoxSizing, ComputedStyle, ContentAlignment, FlexBasis, FlexWrap,
+    LEFT, LengthPercentage, MaxSize, RIGHT, SelfAlignment, Size, TOP,
 };
 
+use crate::align::{align_content, justify_content, self_alignment};
 use crate::block::{
-    AdjoiningMargins, BlockLayout, Content, Deferred, Edges, Imposed, Intrinsic, StaticAlign,
-    box_fragment, carried, clamp_height, definite_height, extent_bottom, height_bounds,
-    layout_contents, relative_offset, settle_absolutes, used, width_constraints,
+    AdjoiningMargins, BlockLayout, Content, Deferred, Edges, Imposed, Intrinsic, box_fragment,
+    carried, clamp_height, definite_height, extent_bottom, height_bounds, layout_contents,
+    relative_offset, settle_absolutes, used, width_constraints,
 };
 use crate::box_tree::{BoxKind, LayoutBox};
 use crate::pass::{ItemKey, Pass};
@@ -90,184 +91,6 @@ impl Container {
             (false, true) => (BOTTOM, TOP),
             (true, false) => (LEFT, RIGHT),
             (true, true) => (RIGHT, LEFT),
-        }
-    }
-}
-
-/// Where alignment puts its subjects in one axis, flex-relative: at the
-/// start (main-start or cross-start), at the end, centred, or spread
-/// with the free space between them (css-align-3 §4).
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum Place {
-    Start,
-    End,
-    Center,
-    SpaceBetween,
-    SpaceAround,
-    SpaceEvenly,
-}
-
-/// An alignment value resolved for one axis: where its subjects go, and
-/// whether subjects that overflow go to the axis's physical start
-/// instead (`safe`, css-align-3 §4.4). Without `safe` the alignment is
-/// unsafe, as the reference browsers have it.
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct Alignment {
-    place: Place,
-    safe: bool,
-}
-
-impl Alignment {
-    /// `place`, unsafe.
-    fn at(place: Place) -> Self {
-        Alignment { place, safe: false }
-    }
-
-    /// A positional keyword in an axis that runs from its physical start
-    /// when `forward`, and is `horizontal` or not. `start` and `end` are
-    /// the container's own, which `*-reverse` and `wrap-reverse` do not
-    /// flip, and so are `self-start` and `self-end` with one writing
-    /// mode; `left` and `right` are physical in a horizontal axis and
-    /// `start` in a vertical one (css-align-3 §4.1).
-    fn position(
-        position: AlignPosition,
-        overflow: OverflowAlign,
-        forward: bool,
-        horizontal: bool,
-    ) -> Self {
-        let (start, end) = if forward {
-            (Place::Start, Place::End)
-        } else {
-            (Place::End, Place::Start)
-        };
-        let place = match position {
-            AlignPosition::FlexStart => Place::Start,
-            AlignPosition::FlexEnd => Place::End,
-            AlignPosition::Center => Place::Center,
-            AlignPosition::Start | AlignPosition::SelfStart | AlignPosition::Left => start,
-            AlignPosition::End | AlignPosition::SelfEnd => end,
-            AlignPosition::Right if horizontal => end,
-            AlignPosition::Right => start,
-        };
-        Alignment {
-            place,
-            safe: overflow == OverflowAlign::Safe,
-        }
-    }
-
-    /// The offset of the first of `count` subjects from the axis's
-    /// flex-relative start, and the space added after each, given the
-    /// `free` space they leave in an axis that runs from its physical
-    /// start when `forward`. A distribution that cannot distribute takes
-    /// its fallback, as the reference browsers have it: `flex-start` for
-    /// `space-between`, unsafe where css-align-3 would make it safe, and
-    /// `safe center` for `space-around` and `space-evenly`.
-    fn offsets(self, free: f32, count: usize, forward: bool) -> (f32, f32) {
-        let n = count as f32;
-        let fallback = match self.place {
-            Place::SpaceBetween if count > 1 && free >= 0.0 => return (0.0, free / (n - 1.0)),
-            Place::SpaceAround if count > 0 && free >= 0.0 => return (free / n / 2.0, free / n),
-            Place::SpaceEvenly if count > 0 && free >= 0.0 => {
-                return (free / (n + 1.0), free / (n + 1.0));
-            }
-            Place::SpaceBetween => Alignment::at(Place::Start),
-            Place::SpaceAround | Place::SpaceEvenly => Alignment {
-                place: Place::Center,
-                safe: true,
-            },
-            _ => self,
-        };
-        let place = match fallback.place {
-            _ if fallback.safe && free < 0.0 && forward => Place::Start,
-            _ if fallback.safe && free < 0.0 => Place::End,
-            place => place,
-        };
-        match place {
-            Place::End => (free, 0.0),
-            Place::Center => (free / 2.0, 0.0),
-            _ => (0.0, 0.0),
-        }
-    }
-}
-
-impl Alignment {
-    /// Where an absolutely positioned child's margin box goes, physically,
-    /// in its static-position rectangle along an axis that runs from its
-    /// physical start when `forward`: as the sole subject, a distribution
-    /// taking its fallback, `flex-start` for `space-between` and the
-    /// centre for the others; and never safe, as in the reference
-    /// browsers.
-    fn static_align(self, forward: bool) -> StaticAlign {
-        let at_start = match self.place {
-            Place::Start | Place::SpaceBetween => true,
-            Place::End => false,
-            Place::Center | Place::SpaceAround | Place::SpaceEvenly => return StaticAlign::Center,
-        };
-        if at_start == forward {
-            StaticAlign::Start
-        } else {
-            StaticAlign::End
-        }
-    }
-}
-
-/// `justify-content` in a main axis that runs from its physical start
-/// when `forward` and is `horizontal` or not: `normal` and `stretch` are
-/// `flex-start`, flex items growing by `flex-grow` instead (§8.2).
-fn justify_content(value: ContentAlignment, forward: bool, horizontal: bool) -> Alignment {
-    match value {
-        ContentAlignment::SpaceBetween => Alignment::at(Place::SpaceBetween),
-        ContentAlignment::SpaceAround => Alignment::at(Place::SpaceAround),
-        ContentAlignment::SpaceEvenly => Alignment::at(Place::SpaceEvenly),
-        ContentAlignment::Position(position, overflow) => {
-            Alignment::position(position, overflow, forward, horizontal)
-        }
-        ContentAlignment::Normal | ContentAlignment::Stretch | ContentAlignment::Baseline(_) => {
-            Alignment::at(Place::Start)
-        }
-    }
-}
-
-/// `align-content` in a cross axis that runs from its physical start
-/// when `forward` and is `horizontal` or not (§8.4). `normal` and
-/// `stretch` place the lines, already grown, at cross-start; `baseline`
-/// is `flex-start` as in the reference browsers, and `last baseline`,
-/// which they do not parse, its css-align-3 fallback, `safe end`.
-fn align_content(value: ContentAlignment, forward: bool, horizontal: bool) -> Alignment {
-    match value {
-        ContentAlignment::Baseline(BaselinePosition::Last) => {
-            Alignment::position(AlignPosition::End, OverflowAlign::Safe, forward, horizontal)
-        }
-        value => justify_content(value, forward, horizontal),
-    }
-}
-
-/// `align-self`, `auto` already resolved, in a cross axis that runs from
-/// its physical start when `forward` and is `horizontal` or not (§8.3).
-/// `normal` and `stretch` place an item that does not stretch at
-/// cross-start. A baseline value is the groups' to place (see
-/// [`Item::baseline`]); for an absolutely positioned child, which has no
-/// group, it takes its fallback, `start` or `end` for `last baseline`,
-/// which `wrap-reverse` does not flip, as in the reference browsers.
-fn self_alignment(value: SelfAlignment, forward: bool, horizontal: bool) -> Alignment {
-    match value {
-        SelfAlignment::Position(position, overflow) => {
-            Alignment::position(position, overflow, forward, horizontal)
-        }
-        SelfAlignment::Baseline(BaselinePosition::First) => Alignment::position(
-            AlignPosition::Start,
-            OverflowAlign::Default,
-            forward,
-            horizontal,
-        ),
-        SelfAlignment::Baseline(BaselinePosition::Last) => Alignment::position(
-            AlignPosition::End,
-            OverflowAlign::Default,
-            forward,
-            horizontal,
-        ),
-        SelfAlignment::Auto | SelfAlignment::Normal | SelfAlignment::Stretch => {
-            Alignment::at(Place::Start)
         }
     }
 }
