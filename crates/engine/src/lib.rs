@@ -2635,6 +2635,38 @@ mod tests {
     }
 
     #[test]
+    fn overlapping_flex_items_are_hit_in_the_order_they_paint() {
+        // css-flexbox-1 §4.3 (M17): items paint as units in order-modified
+        // document order, and hit testing reads the same steps. #b overlaps
+        // #a by 30px and paints over it; given a `z-index`, #a makes a
+        // stacking context though it is not positioned, and is on top.
+        for (extra, expected) in [("", "b"), ("#a { z-index: 1 }", "a")] {
+            let mut engine = test_engine();
+            engine.load_document(&format!(
+                "<style>body {{ margin: 0 }} .f {{ display: flex }}
+                        .f > div {{ width: 60px; height: 50px; flex: none }}
+                        #b {{ margin-left: -30px }} {extra}</style>\
+                 <div class=f><div id=a></div><div id=b></div></div>"
+            ));
+            engine.frame(200, 100);
+            let document = engine.document().clone();
+            let id = |node: Option<NodeId>| {
+                node.and_then(|n| document.attr(n, "id").map(str::to_string))
+            };
+            assert_eq!(
+                id(engine.hit_test(45.0, 25.0)).as_deref(),
+                Some(expected),
+                "{extra}"
+            );
+            assert_eq!(
+                id(engine.hit_test(10.0, 25.0)).as_deref(),
+                Some("a"),
+                "{extra}"
+            );
+        }
+    }
+
+    #[test]
     fn inline_blocks_are_hit_and_painted_through_the_real_pipeline() {
         // Two 50px inline-blocks on one line of a font-less row (M10.4):
         // the pointer over the second one answers with it, over its

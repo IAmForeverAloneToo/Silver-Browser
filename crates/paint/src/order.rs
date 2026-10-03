@@ -26,6 +26,15 @@
 //! its containing block's: the walk closes the clips in force down to
 //! the ones it shares and opens its own around it.
 //!
+//! Tree order is the boxes' own, which each fragment carries (M17,
+//! `Fragment::tree_order`): layout moves an absolutely positioned box
+//! to its containing block's fragment or among the roots, but the
+//! layers are sorted by it all the same. A flex container's children
+//! are in order-modified document order there, and its items paint as
+//! inline-blocks do, as units in the inline pass, an item whose
+//! `z-index` is not `auto` making a stacking context painted at its
+//! layer, positioned or not (css-flexbox-1 §4.3).
+//!
 //! Every rectangle a step carries is in viewport coordinates: the
 //! viewport's scroll offset and, inside a scroll container, its offset
 //! (M10.5) are already applied, and so is the shift of a `position:
@@ -159,7 +168,7 @@ pub fn paint_order<'a>(
         // Not a box tree at all: whatever is there, in flow.
         Some(_) => {
             for phase in PHASES {
-                walk.phase(roots, initial, phase);
+                walk.phase(roots, initial, phase, false);
             }
         }
         None => {}
@@ -229,6 +238,12 @@ enum Kind {
     /// In flow and block-level: its own background in the blocks pass,
     /// its content in every pass.
     Block,
+}
+
+/// Whether the in-flow children of the box `f` are flex items (M17): it
+/// is a flex container.
+fn has_items(f: &Fragment) -> bool {
+    f.style.display.is_flex()
 }
 
 fn kind_of(f: &Fragment) -> Kind {
@@ -378,31 +393,36 @@ impl<'a> Walk<'a, '_> {
             w.own(f);
             let mut positioned = Vec::new();
             w.content(f, Emit::Nothing, |w, padding| {
-                w.collect(&f.children, padding, &mut positioned);
+                w.collect(&f.children, padding, &mut positioned, has_items(f));
             });
-            w.collect(extra, containing, &mut positioned);
+            w.collect(extra, containing, &mut positioned, false);
             w.content(f, Emit::ClipAndScrollbar, |w, padding| {
-                w.layers(&f.children, padding, positioned);
+                w.layers(&f.children, padding, positioned, has_items(f));
             });
         });
     }
 
     /// Gathers the positioned boxes among `fragments` and their
-    /// descendants in tree order, each with the walk's state where the
-    /// tree has it, into `out`: a stacking context's own positioned
-    /// descendants (Appendix E). The walk goes through everything but a
-    /// stacking context, whose positioned descendants are its own.
+    /// descendants, each with the walk's state where the fragment tree
+    /// has it, into `out`: a stacking context's own positioned
+    /// descendants (Appendix E), and the flex items among them with a
+    /// `z-index`, which make stacking contexts without being positioned
+    /// (css-flexbox-1 §4.3); `items` says whether `fragments` are flex
+    /// items. The walk goes through everything but a stacking context,
+    /// whose positioned descendants are its own.
     fn collect(
         &mut self,
         fragments: &'a [Fragment],
         containing: Rect,
         out: &mut Vec<Positioned<'a>>,
+        items: bool,
     ) {
         for f in fragments {
             if !matches!(f.kind, FragmentKind::Box | FragmentKind::InlineBox) {
                 continue;
             }
-            if f.style.position.is_positioned() {
+            let item_context = items && f.style.z_index.is_some();
+            if f.style.position.is_positioned() || item_context {
                 out.push(Positioned {
                     f,
                     containing,
@@ -416,30 +436,33 @@ impl<'a> Walk<'a, '_> {
             }
             self.shifted(f, containing, |w| {
                 w.content(f, Emit::Nothing, |w, padding| {
-                    w.collect(&f.children, padding, out);
+                    w.collect(&f.children, padding, out, has_items(f));
                 });
             });
         }
     }
 
     /// The layers of a stacking context's content (Appendix E), `children`
-    /// its in-flow content and `positioned` its positioned descendants
-    /// in tree order.
+    /// its in-flow content, flex items as `items` says, and `positioned`
+    /// its positioned descendants.
     fn layers(
         &mut self,
         children: &'a [Fragment],
         containing: Rect,
         mut positioned: Vec<Positioned<'a>>,
+        items: bool,
     ) {
-        // A stable sort keeps tree order within one `z-index`; `auto`
-        // and `0` share the middle.
-        positioned.sort_by_key(Positioned::z);
+        // By `z-index`, `auto` and `0` sharing the middle, then in tree
+        // order: the boxes' own (M17), as layout put some elsewhere in
+        // the fragment tree — an absolutely positioned box under its
+        // containing block's fragment, or among the roots.
+        positioned.sort_by_key(|p| (p.z(), p.f.tree_order));
         let mut positioned = positioned.into_iter().peekable();
         while let Some(p) = positioned.next_if(|p| p.z() < 0) {
             self.positioned(p);
         }
         for phase in PHASES {
-            self.phase(children, containing, phase);
+            self.phase(children, containing, phase, items);
         }
         for p in positioned {
             self.positioned(p);
@@ -448,8 +471,8 @@ impl<'a> Walk<'a, '_> {
 
     /// One pass over in-flow content: the fragments in tree order, each
     /// as the pass has it, through the content of every in-flow
-    /// block-level box.
-    fn phase(&mut self, fragments: &'a [Fragment], containing: Rect, phase: Phase) {
+    /// block-level box; `items` says whether `fragments` are flex items.
+    fn phase(&mut self, fragments: &'a [Fragment], containing: Rect, phase: Phase, items: bool) {
         for f in fragments {
             match f.kind {
                 FragmentKind::Text(_) => {
@@ -464,7 +487,18 @@ impl<'a> Walk<'a, '_> {
                 FragmentKind::InlineBox => {
                     if phase == Phase::Inlines && !f.style.position.is_positioned() {
                         self.own(f);
-                        self.phase(&f.children, containing, phase);
+                        self.phase(&f.children, containing, phase, false);
+                    }
+                }
+                // A flex item paints as an inline-block does, as a unit
+                // in the inline pass, its `float` ignored, in the
+                // order-modified document order of the fragments; one
+                // with a `z-index` makes a stacking context and is
+                // painted at its layer, as a positioned one is
+                // (css-flexbox-1 §4.3).
+                FragmentKind::Box if items && !f.style.position.is_positioned() => {
+                    if phase == Phase::Inlines && f.style.z_index.is_none() {
+                        self.unit(f, containing);
                     }
                 }
                 FragmentKind::Box => match kind_of(f) {
@@ -490,7 +524,9 @@ impl<'a> Walk<'a, '_> {
                         } else {
                             Emit::Clip
                         };
-                        self.content(f, emit, |w, padding| w.phase(&f.children, padding, phase));
+                        self.content(f, emit, |w, padding| {
+                            w.phase(&f.children, padding, phase, has_items(f));
+                        });
                     }
                 },
             }
@@ -508,7 +544,7 @@ impl<'a> Walk<'a, '_> {
             w.own(f);
             w.content(f, Emit::ClipAndScrollbar, |w, padding| {
                 for phase in PHASES {
-                    w.phase(&f.children, padding, phase);
+                    w.phase(&f.children, padding, phase, has_items(f));
                 }
             });
         });
@@ -1240,5 +1276,132 @@ mod tests {
         };
         assert!(!a.meets(&c));
         assert_eq!(a.intersect(&c).w, 0.0);
+    }
+
+    #[test]
+    fn a_flex_item_paints_as_a_unit_in_the_inline_pass() {
+        // css-flexbox-1 §4.3: <div class=f><p>a</p><p>b</p></div>, nodes
+        // div 1, p 2 and 3. Each item paints as an inline-block does, its
+        // background and then its content, in the inline pass, where
+        // blocks paint every background before any text; a `float` on an
+        // item changes nothing.
+        let page = || {
+            Element::new("div")
+                .attr("class", "f")
+                .push(Element::new("p").text("a"))
+                .push(Element::new("p").text("b"))
+        };
+        let items = ["box 1", "box 2", "text a", "box 3", "text b"];
+        let blocks = ["box 1", "box 2", "box 3", "text a", "text b"];
+        for (css, expected) in [
+            ("div, p { margin: 0 } .f { display: flex }", items),
+            (
+                "div, p { margin: 0 } .f { display: flex } p { float: left }",
+                items,
+            ),
+            ("div, p { margin: 0 }", blocks),
+        ] {
+            let layout = layout_of(page(), css);
+            let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+            assert_eq!(names(&layout, &steps), expected, "{css}");
+        }
+    }
+
+    #[test]
+    fn a_flex_item_with_a_z_index_is_a_stacking_context_at_its_layer() {
+        // css-flexbox-1 §4.3: an item whose `z-index` is not `auto` makes
+        // a stacking context, positioned or not, painted at its layer:
+        // nodes div 1, p.z 2 (`z-index: 1`), p 3, p.n 4 (`z-index: -1`).
+        // A block that is not an item keeps its place: `z-index` does
+        // nothing to a box that is not positioned.
+        let page = || {
+            Element::new("div")
+                .attr("class", "f")
+                .push(Element::new("p").attr("class", "z").text("a"))
+                .push(Element::new("p").text("b"))
+                .push(Element::new("p").attr("class", "n").text("c"))
+        };
+        let base = "div, p { margin: 0 } .z { z-index: 1 } .n { z-index: -1 }";
+        let layout = layout_of(page(), &format!("{base} .f {{ display: flex }}"));
+        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+        assert_eq!(
+            names(&layout, &steps),
+            [
+                "box 1", "box 4", "text c", "box 3", "text b", "box 2", "text a"
+            ]
+        );
+        let layout = layout_of(page(), base);
+        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+        assert_eq!(
+            names(&layout, &steps),
+            [
+                "box 1", "box 2", "box 3", "box 4", "text a", "text b", "text c"
+            ]
+        );
+    }
+
+    #[test]
+    fn positioned_boxes_paint_in_tree_order_wherever_layout_put_them() {
+        // CSS2 Appendix E: the positioned descendants in tree order. An
+        // absolutely positioned box goes up to its containing block's
+        // fragment, after the content in flow, or becomes a root of the
+        // layout; it still paints before a positioned box after it in the
+        // document. Nodes: div 1, div 2, div.a 3, p.r 4.
+        let page = || {
+            Element::new("div")
+                .attr("class", "cb")
+                .push(Element::new("div").push(Element::new("div").attr("class", "a").text("a")))
+                .push(Element::new("p").attr("class", "r").text("r"))
+        };
+        let base =
+            "div, p { margin: 0 } .a { position: absolute; top: 0 } .r { position: relative }";
+        for css in [
+            format!("{base} .cb {{ position: relative }}"),
+            base.to_string(),
+        ] {
+            let layout = layout_of(page(), &css);
+            let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+            let names = names(&layout, &steps);
+            let at = |name: &str| names.iter().position(|n| n == name);
+            assert!(at("box 3") < at("box 4"), "{css}: {names:?}");
+            assert!(at("text a") < at("box 4"), "{css}: {names:?}");
+        }
+        // A positioned inline element's box on its line is in tree order
+        // too: span.r 5 after div.a 3.
+        let page = Element::new("div")
+            .attr("class", "cb")
+            .push(Element::new("div").push(Element::new("div").attr("class", "a").text("a")))
+            .push(Element::new("p").push(Element::new("span").attr("class", "r").text("r")));
+        let layout = layout_of(page, &format!("{base} .cb {{ position: relative }}"));
+        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+        let names = names(&layout, &steps);
+        let at = |name: &str| names.iter().position(|n| n == name);
+        assert!(at("box 3") < at("box 5"), "{names:?}");
+    }
+
+    #[test]
+    fn positioned_items_and_the_boxes_in_them_paint_in_order_modified_order() {
+        // css-flexbox-1 §5.4: order-modified document order. Nodes: div.f
+        // 1, div.i 2 (`order: 1`) holding div.a 3, div 4 holding div.a 5:
+        // the second item comes first, and the absolutely positioned box
+        // in it, laid out against the container, with it.
+        let page = Element::new("div")
+            .attr("class", "f")
+            .push(
+                Element::new("div")
+                    .attr("class", "i")
+                    .push(Element::new("div").attr("class", "a").text("x")),
+            )
+            .push(Element::new("div").push(Element::new("div").attr("class", "a").text("y")));
+        let layout = layout_of(
+            page,
+            "div { margin: 0 } .f { display: flex; position: relative } .i { order: 1 }
+             .a { position: absolute; top: 0 }",
+        );
+        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+        let names = names(&layout, &steps);
+        let at = |name: &str| names.iter().position(|n| n == name);
+        assert!(at("box 5") < at("box 3"), "{names:?}");
+        assert!(at("text y") < at("text x"), "{names:?}");
     }
 }

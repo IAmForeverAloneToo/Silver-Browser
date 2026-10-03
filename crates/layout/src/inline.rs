@@ -1626,6 +1626,7 @@ fn close_inline<'a>(
         ascent: 0.0,
         scroll_height: 0.0,
         children,
+        tree_order: b.tree_order,
     }
 }
 /// A text fragment for `word` at `x` on a line whose baseline is
@@ -1651,6 +1652,7 @@ fn text_fragment(
         ascent,
         scroll_height: 0.0,
         children: Vec::new(),
+        tree_order: 0,
     }
 }
 
@@ -1733,6 +1735,7 @@ mod tests {
             quote_depth: 0,
             styled_by_ancestor: false,
             first_line: None,
+            tree_order: 0,
         }
     }
 
@@ -1747,6 +1750,7 @@ mod tests {
             quote_depth: 0,
             styled_by_ancestor: false,
             first_line: None,
+            tree_order: 0,
         }
     }
 
@@ -1947,6 +1951,7 @@ mod tests {
             quote_depth: 0,
             styled_by_ancestor: false,
             first_line: None,
+            tree_order: 0,
         }
     }
 

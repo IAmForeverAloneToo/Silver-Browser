@@ -271,6 +271,7 @@ fn split(
         quote_depth: text_box.quote_depth,
         styled_by_ancestor: false,
         first_line: text_box.first_line.clone(),
+        tree_order: 0,
     };
     let generated = |kind, style: ComputedStyle, children| LayoutBox {
         style,
@@ -282,6 +283,7 @@ fn split(
         quote_depth: text_box.quote_depth,
         styled_by_ancestor: false,
         first_line: None,
+        tree_order: 0,
     };
     let letter = generated(
         BoxKind::Text(text[start..end].to_string()),

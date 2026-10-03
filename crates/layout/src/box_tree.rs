@@ -96,6 +96,15 @@ pub struct LayoutBox {
     /// whose first line some `::first-line` styles, and on that run's
     /// anonymous block, which holds the `::first-line`s too.
     pub first_line: Option<Box<FirstLine>>,
+    /// The box's place in tree order (CSS2 Appendix E's "tree order"),
+    /// order-modified among a flex container's children (css-flexbox-1
+    /// §5.4): its index in a walk of the box tree that visits a box
+    /// before its children and a flex container's children by `order`,
+    /// an absolutely positioned one counting as `order: 0`. The builder
+    /// numbers the tree last ([`build_box_tree`]); the fragments made
+    /// from the box carry it, and the paint order puts positioned boxes
+    /// in it (M17).
+    pub tree_order: u32,
 }
 
 /// What a box is on the first formatted line (M16).
@@ -309,7 +318,36 @@ pub fn build_box_tree(
     let mut boxes = build_block_container(&styled, Item::Node(document.root()));
     first_line::apply(&styled, &mut boxes);
     first_letter::apply(&styled, &mut boxes);
+    number(&mut boxes, &mut 0, false);
     boxes
+}
+
+/// Numbers `boxes` and everything in them in tree order from `next`
+/// ([`LayoutBox::tree_order`]): each box before its children, and the
+/// children of a flex container, as `flex` says `boxes` are, by `order`
+/// (css-flexbox-1 §5.4), a stable sort keeping document order among
+/// equals, an absolutely positioned child counting as `order: 0`.
+fn number(boxes: &mut [LayoutBox], next: &mut u32, flex: bool) {
+    let number_one = |b: &mut LayoutBox, next: &mut u32| {
+        b.tree_order = *next;
+        *next = next.saturating_add(1);
+        let flex = b.is_flex_container();
+        number(&mut b.children, next, flex);
+    };
+    if !flex {
+        for b in boxes {
+            number_one(b, next);
+        }
+        return;
+    }
+    let mut visit: Vec<usize> = (0..boxes.len()).collect();
+    visit.sort_by_key(|&i| match boxes[i].kind {
+        BoxKind::Absolute => 0,
+        _ => boxes[i].style.order,
+    });
+    for i in visit {
+        number_one(&mut boxes[i], next);
+    }
 }
 
 /// What the builder walks (M16): a node of the document; or the box an
@@ -508,6 +546,7 @@ impl<'a> Styled<'a> {
             quote_depth,
             styled_by_ancestor: false,
             first_line: None,
+            tree_order: 0,
         }
     }
 
@@ -532,6 +571,7 @@ impl<'a> Styled<'a> {
             quote_depth,
             styled_by_ancestor: false,
             first_line: None,
+            tree_order: 0,
         }
     }
 }
@@ -738,6 +778,7 @@ impl BlockContainer<'_> {
                 quote_depth,
                 styled_by_ancestor: false,
                 first_line: None,
+                tree_order: 0,
             });
         }
         self.flush_misplaced(parent, &mut misplaced);
@@ -932,6 +973,7 @@ impl BlockContainer<'_> {
                 quote_depth,
                 styled_by_ancestor: false,
                 first_line: None,
+                tree_order: 0,
             })
             .collect();
         while let Some(inline) = self.open.pop() {
@@ -966,6 +1008,7 @@ impl BlockContainer<'_> {
             quote_depth,
             styled_by_ancestor: false,
             first_line: None,
+            tree_order: 0,
         });
     }
 

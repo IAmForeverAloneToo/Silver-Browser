@@ -501,12 +501,23 @@ layer. The paint-order walk knows an item by its parent fragment, a flex
 container's, whose in-flow children are its items. Order-modified
 document order comes from the fragment order above. Hit testing reads
 the same steps, so it agrees. Positioned boxes are another matter:
-CSS2's Appendix E paints them in tree order, which M11's walk takes
-from the fragments. An absolutely positioned box goes up to its
-containing block's fragment, or becomes a root of the layout, so it
-comes after the positioned boxes that follow it in the document. The
-WPT subset found the difference, and the walk takes positioned boxes in
-document order, order-modified among items, in step 9.
+CSS2's Appendix E paints them in tree order, which M11's walk took from
+the fragments. An absolutely positioned box goes up to its containing
+block's fragment, or becomes a root of the layout, so it came after the
+positioned boxes that follow it in the document. The WPT subset found
+the difference. Every box now carries its place in tree order, numbered
+when the box tree is built: a box before its children, a flex
+container's children by `order`, an absolutely positioned one counting
+as `order: 0` (§5.4). Its fragments carry the number, and the walk sorts
+each layer by it. The layout cache moves the numbers along when it
+reuses a box after an insertion before it: an unchanged subtree moves
+by as much as its box, and a held child keeps its distance from it.
+
+Painting items as units showed one more difference: a glyph's
+anti-aliased edge, on a baseline left at a fraction of a pixel, fell in
+a pixel row the next item's background, with its edges snapped (M11),
+then covered. A text run's baseline is now snapped as an edge is, as a
+browser does, which M11's note left for a text reference case to need.
 
 **The layout cache.** An in-flow flex container placed by `block` is
 kept under its node like a block or a table, with the same conditions.
@@ -592,7 +603,8 @@ lead.
   this milestone (section 2). At step 5, 287 of the 350 pass; 55 wait on
   steps 6 to 9 and 8 on nothing here. At step 6, 332 pass; 10 wait on
   steps 7 to 9. At step 7, 334 pass; 8 wait on steps 8 and 9. At step
-  8, 340 pass; 2 wait on step 9.
+  8, 340 pass; 2 wait on step 9. At step 9, 342 pass, and the 8 left
+  wait on nothing in this milestone.
 - *Triage.* Every run writes `target/wpt/report.html`. It lists each
   test with its result and reason, and for a failing reftest shows the
   test's render, the reference's and the difference side by side. That

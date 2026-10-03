@@ -3,10 +3,6 @@
 # named here fails the run, and so does one named here that passes.
 # The steps are M17's (docs/design/flexbox.md, section 3).
 
-# Paint order, M17 step 9.
-css/css-flexbox/flex-item-position-relative-001.html         waits on step 9: positioned boxes paint in tree order (CSS2 Appendix E), not in the order of their fragments, where an absolutely positioned box comes after the relatively positioned item that follows it
-css/css-flexbox/order/order-abs-children-painting-order.html waits on step 9: items paint in order-modified document order, and the positioned boxes in them with them
-
 # Not in this milestone (docs/design/flexbox.md, section 2).
 css/css-flexbox/content-height-with-scrollbars.html                        the reference has classic scrollbars, whose room the content loses; this engine's are overlays (M10.5)
 css/css-flexbox/fixed-table-layout-with-percentage-width-in-flex-item.html a fixed-layout table with a percentage width has an unbounded max-content width in the reference browsers, in a float as in a flex item; this engine's is its columns'

@@ -140,6 +140,11 @@ pub struct Fragment {
     /// order is the walk's (M11.6, in `paint`). A text fragment has
     /// none; an inline box's are its line's items inside it.
     pub children: Vec<Fragment>,
+    /// The box's place in tree order, order-modified among a flex
+    /// container's children ([`crate::LayoutBox::tree_order`], M17): what
+    /// the paint order puts positioned boxes in, whichever fragment layout
+    /// put them under. Zero for a text fragment, which nothing orders.
+    pub tree_order: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -1979,13 +1984,15 @@ fn place_block<'a>(
     pass: &Pass<'a>,
     cache: Option<&LayoutCache>,
 ) -> BlockPlacement<'a> {
-    // Only an element's own box is kept under its node, and only one no
-    // float can have reached and no ancestor's pseudo-element styles
-    // (M16); the boxes inside it may be, whatever it is.
+    // Only an element's own box is kept under its node — a block, a
+    // table or a flex container (M17), whose items are laid out with it
+    // — and only one no float can have reached and no ancestor's
+    // pseudo-element styles (M16); the boxes inside it may be, whatever
+    // it is.
     let held = cache.filter(|_| {
         !child.anonymous
             && !child.styled_by_ancestor
-            && matches!(child.kind, BoxKind::Block | BoxKind::Table)
+            && matches!(child.kind, BoxKind::Block | BoxKind::Table | BoxKind::Flex)
             && floats.is_untouched()
     });
     let inputs = Inputs {
@@ -1994,7 +2001,9 @@ fn place_block<'a>(
         cb_height,
         quote_depth: child.quote_depth,
     };
-    if let Some((layout, serial)) = held.and_then(|cache| cache.take(child.node, inputs)) {
+    if let Some((layout, serial)) =
+        held.and_then(|cache| cache.take(child.node, inputs, child.tree_order))
+    {
         return BlockPlacement {
             x: layout.margin_left,
             layout,
@@ -2137,6 +2146,7 @@ pub(crate) fn box_fragment(w: f32, h: f32, b: &LayoutBox) -> Fragment {
         ascent: 0.0,
         scroll_height: 0.0,
         children: Vec::new(),
+        tree_order: b.tree_order,
     }
 }
 
@@ -3471,6 +3481,7 @@ mod tests {
             quote_depth: 0,
             styled_by_ancestor: false,
             first_line: None,
+            tree_order: 0,
         };
         let block = LayoutBox {
             style: ComputedStyle {
@@ -3485,6 +3496,7 @@ mod tests {
             quote_depth: 0,
             styled_by_ancestor: false,
             first_line: None,
+            tree_order: 0,
         };
         let layout = layout_document(&[block], VIEWPORT, &fonts);
         let m = fonts.primary().metrics(16.0);

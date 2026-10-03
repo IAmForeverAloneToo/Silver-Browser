@@ -3,11 +3,11 @@
 //! the rest.
 //!
 //! An entry is kept by node for an element's principal box placed in
-//! flow by [`crate::block`] — a block, or a table and its wrapper — and
-//! holds the box's whole result: its fragment subtree relative to the
-//! box, its height, the margins it exposes and its baselines, with the
-//! inputs it was computed from. A later pass takes the entry instead
-//! of laying the box out when:
+//! flow by [`crate::block`] — a block, a table and its wrapper, or a
+//! flex container (M17) — and holds the box's whole result: its fragment
+//! subtree relative to the box, its height, the margins it exposes and
+//! its baselines, with the inputs it was computed from. A later pass
+//! takes the entry instead of laying the box out when:
 //!
 //! - nothing in the element's subtree changed since: the caller forgets
 //!   the entries of every node a change can affect and of its
@@ -34,16 +34,23 @@
 //! has since gone or been replaced makes the entry useless, and the box
 //! is laid out again.
 //!
+//! The fragments carry their boxes' places in tree order (M17), which
+//! a change before a box moves without changing the box. Taking an
+//! entry moves them along: every place in an unchanged subtree moves by
+//! as much as the box's own, and a held child's is the box's and the
+//! distance between the two when the entry was kept.
+//!
 //! Boxes laid out in other ways — inside an inline-block, a float, an
-//! absolutely positioned box or a table cell — are laid out again with
-//! the box that holds them, which is itself kept when it can be.
+//! absolutely positioned box, a table cell or a flex item — are laid
+//! out again with the box that holds them, which is itself kept when it
+//! can be.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
 use dom::{Change, Document, NodeId};
 
-use crate::block::{AdjoiningMargins, BlockLayout, Fragment};
+use crate::block::{AdjoiningMargins, BlockLayout, Fragment, FragmentKind};
 
 /// The layout results kept between passes, and what the last pass did.
 #[derive(Debug, Default)]
@@ -100,8 +107,8 @@ struct Entry {
     auto_content_height: f32,
 }
 
-/// A held child left out of an entry: its place, its entry and where
-/// its fragment was.
+/// A held child left out of an entry: its place, its entry, where its
+/// fragment was, and how far after the box it comes in tree order.
 #[derive(Debug, Clone, Copy)]
 struct Hole {
     index: usize,
@@ -109,6 +116,7 @@ struct Hole {
     serial: u64,
     x: f32,
     y: f32,
+    after: u32,
 }
 
 impl LayoutCache {
@@ -191,13 +199,19 @@ impl LayoutCache {
         self.laid_out.set(self.laid_out.get() + 1);
     }
 
-    /// The kept result for `node`'s box laid out with `inputs`, and the
-    /// serial of its entry, if there is one whose held children's
-    /// entries are all still there.
-    pub(crate) fn take<'a>(&self, node: NodeId, inputs: Inputs) -> Option<(BlockLayout<'a>, u64)> {
+    /// The kept result for `node`'s box laid out with `inputs`, its
+    /// place in tree order now `tree_order`, and the serial of its
+    /// entry, if there is one whose held children's entries are all
+    /// still there.
+    pub(crate) fn take<'a>(
+        &self,
+        node: NodeId,
+        inputs: Inputs,
+        tree_order: u32,
+    ) -> Option<(BlockLayout<'a>, u64)> {
         let entries = self.entries.borrow();
         let entry = entries.get(&node).filter(|e| e.inputs == inputs)?;
-        let root = rebuild(&entries, entry)?;
+        let root = rebuild(&entries, entry, tree_order)?;
         self.reused.set(self.reused.get() + 1);
         let layout = BlockLayout {
             root,
@@ -247,6 +261,7 @@ impl LayoutCache {
                     serial: h.serial,
                     x: child.x,
                     y: child.y,
+                    after: child.tree_order.wrapping_sub(layout.root.tree_order),
                 }),
                 None => root.children.push(child.clone()),
             }
@@ -275,28 +290,47 @@ impl LayoutCache {
     }
 }
 
-/// `entry`'s fragment subtree whole: its own fragments with each held
-/// child's put back in its place from the child's entry, where it was.
-/// `None` when a held child's entry is gone or was replaced.
-fn rebuild(entries: &HashMap<NodeId, Entry>, entry: &Entry) -> Option<Fragment> {
+/// `entry`'s fragment subtree whole, its box's place in tree order now
+/// `tree_order`: its own fragments, moved along in tree order with it,
+/// with each held child's put back in its place from the child's entry,
+/// where it was. `None` when a held child's entry is gone or was
+/// replaced.
+fn rebuild(entries: &HashMap<NodeId, Entry>, entry: &Entry, tree_order: u32) -> Option<Fragment> {
+    let by = tree_order.wrapping_sub(entry.root.tree_order);
     let mut root = childless(&entry.root);
+    root.tree_order = tree_order;
     root.children
         .reserve(entry.root.children.len() + entry.holes.len());
-    let mut own = entry.root.children.iter();
+    let mut own = entry.root.children.iter().map(|f| moved_along(f, by));
     for hole in &entry.holes {
         while root.children.len() < hole.index {
-            root.children.push(own.next()?.clone());
+            root.children.push(own.next()?);
         }
         let child = entries
             .get(&hole.node)
             .filter(|e| e.serial == hole.serial)?;
-        let mut fragment = rebuild(entries, child)?;
+        let mut fragment = rebuild(entries, child, tree_order.wrapping_add(hole.after))?;
         fragment.x = hole.x;
         fragment.y = hole.y;
         root.children.push(fragment);
     }
-    root.children.extend(own.cloned());
+    root.children.extend(own);
     Some(root)
+}
+
+/// A copy of `fragment` and its subtree, every box's place in tree order
+/// moved `by` on; a text fragment's, which is no box's, stays zero.
+fn moved_along(fragment: &Fragment, by: u32) -> Fragment {
+    let mut moved = childless(fragment);
+    if !matches!(moved.kind, FragmentKind::Text(_)) {
+        moved.tree_order = moved.tree_order.wrapping_add(by);
+    }
+    moved.children = fragment
+        .children
+        .iter()
+        .map(|child| moved_along(child, by))
+        .collect();
+    moved
 }
 
 /// A copy of `fragment` without its children.
@@ -313,6 +347,7 @@ fn childless(fragment: &Fragment) -> Fragment {
         ascent: fragment.ascent,
         scroll_height: fragment.scroll_height,
         children: Vec::new(),
+        tree_order: fragment.tree_order,
     }
 }
 
@@ -708,5 +743,59 @@ mod tests {
         // html, body, #d and #p; #q taken. `pass` holds the result to a
         // fresh one, the line back to the paragraph's size.
         assert_eq!(s.pass(), (4, 1));
+    }
+
+    #[test]
+    fn a_flex_container_is_kept_with_its_items() {
+        // M17: a flex container placed in flow is kept as a block is; its
+        // items, laid out with it, are not kept on their own.
+        let mut s = Session::new(
+            "<div id=f><p id=a>one</p><p>two</p></div><p id=q>after</p>",
+            "#f { display: flex }",
+        );
+        // html, body, the container and the paragraph after it.
+        assert_eq!(s.pass(), (4, 0));
+        assert!(s.kept("f") && !s.kept("a") && s.kept("q"));
+        let q = s.id("q");
+        s.change(|d| {
+            let text = d.first_child(q).unwrap();
+            d.set_text(text, "later").unwrap();
+        });
+        // html, body and the paragraph; the container taken.
+        assert_eq!(s.pass(), (3, 1));
+        // A change inside an item lays the container out again.
+        let a = s.id("a");
+        s.change(|d| {
+            let text = d.first_child(a).unwrap();
+            d.set_text(text, "uno").unwrap();
+        });
+        assert_eq!(s.pass(), (3, 1));
+    }
+
+    #[test]
+    fn a_box_taken_after_an_insertion_before_it_moves_along_in_tree_order() {
+        // M17: the fragments carry their boxes' places in tree order, which
+        // an insertion before a kept box moves. The box taken from the
+        // cache has its new ones, and so does the kept child it holds:
+        // `pass` holds the layout to a fresh one.
+        // Fragments of the kept boxes' own, not held: a positioned span
+        // on a line, a flex container's items.
+        let mut s = Session::new(
+            "<p id=a>one</p><div id=d><p id=r>two <span>and</span></p>\
+             <div id=i><p>three</p></div><div id=f><p id=g>four</p></div></div>",
+            "#d { position: relative } #r { position: relative; top: 2px }
+             span { position: relative; left: 1px } #f { display: flex }",
+        );
+        s.pass();
+        assert!(s.kept("d") && s.kept("i") && s.kept("f") && !s.kept("g"));
+        let (body, a) = (s.body(), s.id("a"));
+        s.change(|d| {
+            let p = d.create_element("p").unwrap();
+            let data = d.create_text("zero").unwrap();
+            d.append_child(p, data).unwrap();
+            d.insert_before(body, p, Some(a)).unwrap();
+        });
+        // html, body and the new paragraph; #a and #d taken.
+        assert_eq!(s.pass(), (3, 2));
     }
 }

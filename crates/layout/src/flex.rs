@@ -3331,4 +3331,23 @@ mod tests {
         assert_eq!(rect(&l, "c").3, 200.0);
         assert_eq!((rect(&l, "a").3, rect(&l, "b").3), (30.0, 170.0));
     }
+
+    #[test]
+    fn a_flex_containers_children_are_in_order_modified_tree_order() {
+        // css-flexbox-1 §5.4: the boxes are numbered in tree order, a box
+        // before its children, a flex container's children by `order`, an
+        // absolutely positioned one counting as `order: 0` whatever its
+        // own, equal ones in document order.
+        let l = laid(
+            "<div id=c><div id=a><p id=x>x</p></div><div id=b></div><div id=p></div>\
+             <div id=d></div></div><div id=after></div>",
+            "#c { display: flex; position: relative } #a { order: 2 } #b { order: -1 }
+             #p { position: absolute; order: 5 } #d { order: 0 }",
+        );
+        let order: Vec<u32> = ["c", "b", "p", "d", "a", "x", "after"]
+            .iter()
+            .map(|id| fragment(&l, id).tree_order)
+            .collect();
+        assert!(order.windows(2).all(|w| w[0] < w[1]), "{order:?}");
+    }
 }
