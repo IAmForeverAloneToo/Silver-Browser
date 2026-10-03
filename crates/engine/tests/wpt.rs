@@ -19,8 +19,8 @@
 //!   a pixel, the CSSOM View values computed from the engine's fragments;
 //! - a crashtest must load and render without panicking.
 //!
-//! The acceptance layouts of M17 (`tests/layouts/`, M17.10) are
-//! check-layout pages too, their expectations captured from the
+//! The acceptance layouts of M17 and M18 (`tests/layouts/`, M17.10 and
+//! M18.7) are check-layout pages too, their expectations captured from the
 //! reference browser by `examples/layouts.rs`, and run here the same
 //! way, every element of the body checked.
 //!
@@ -827,8 +827,9 @@ fn the_acceptance_layouts_lay_out_as_the_reference_browser_lays_them_out() {
     pages.sort();
     assert_eq!(
         pages.len(),
-        5,
-        "a navigation bar, a card grid, the holy grail, media objects and an application shell"
+        11,
+        "M17's navigation bar, card grid, holy grail, media objects and application shell, and \
+         M18's grid garden, dashboard, photo gallery, form grid, page of named areas and calendar"
     );
     let server = serve(dir.clone());
     let mut failures = Vec::new();

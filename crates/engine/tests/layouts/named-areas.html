@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Layout: a page laid out by named areas</title>
+<style>
+  @font-face { font-family: "Layout Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #fbfaf7; color: #26231e; }
+  body { margin: 0; font-family: "Layout Test Sans"; font-size: 15px; }
+  h1, h2, p { margin: 0; font-weight: normal; }
+  .page { display: grid; grid-template-areas: "header header header" "nav main aside" "footer footer footer"; grid-template-columns: 160px 1fr 200px; grid-template-rows: auto 1fr auto; min-height: 600px; }
+  header { grid-area: header; display: grid; grid-template-columns: auto 1fr auto; align-items: baseline; gap: 16px; padding: 14px 20px; background-color: #2f3b2c; color: #f4f1e8; }
+  header h1 { font-size: 22px; }
+  header .tagline { color: #c5cdb9; font-size: 13px; }
+  header .search { padding: 4px 10px; border: 1px solid #66745f; font-size: 13px; }
+  nav { grid-area: nav; padding: 16px 0; background-color: #eeeadf; }
+  nav a { display: block; padding: 6px 20px; color: #26231e; }
+  main { grid-area: main; padding: 20px 24px; }
+  main h2 { font-size: 20px; margin-bottom: 10px; }
+  main p { margin-bottom: 12px; }
+  aside { grid-area: aside; padding: 20px 16px; border-left: 1px solid #e2ddd0; }
+  aside h2 { font-size: 14px; margin-bottom: 8px; color: #6b6556; }
+  aside p { margin-bottom: 8px; font-size: 13px; }
+  footer { grid-area: footer; display: grid; grid-auto-flow: column; justify-content: space-between; padding: 12px 20px; background-color: #eeeadf; font-size: 12px; color: #6b6556; }
+</style>
+</head>
+<body data-expected-width="800" data-expected-height="600">
+  <div class="page" data-expected-width="800" data-expected-height="600" data-offset-x="0" data-offset-y="0">
+    <header data-expected-width="800" data-expected-height="56" data-offset-x="0" data-offset-y="0"><h1 data-expected-width="155" data-expected-height="25" data-offset-x="20" data-offset-y="14">The Allotment</h1><span class="tagline" data-expected-width="507" data-expected-height="15" data-offset-x="191" data-offset-y="22">Notes from plot nineteen</span><span class="search" data-expected-width="66" data-expected-height="25" data-offset-x="714" data-offset-y="17">Search</span></header>
+    <nav data-expected-width="160" data-expected-height="506" data-offset-x="0" data-offset-y="56"><a data-expected-width="160" data-expected-height="30" data-offset-x="0" data-offset-y="72">This week</a><a data-expected-width="160" data-expected-height="30" data-offset-x="0" data-offset-y="102">Sowing</a><a data-expected-width="160" data-expected-height="30" data-offset-x="0" data-offset-y="132">Harvest</a><a data-expected-width="160" data-expected-height="30" data-offset-x="0" data-offset-y="162">Pests</a><a data-expected-width="160" data-expected-height="30" data-offset-x="0" data-offset-y="192">Tools</a><a data-expected-width="160" data-expected-height="30" data-offset-x="0" data-offset-y="222">Archive</a></nav>
+    <main data-expected-width="440" data-expected-height="506" data-offset-x="160" data-offset-y="56">
+      <h2 data-expected-width="392" data-expected-height="24" data-offset-x="184" data-offset-y="76">Beans at last</h2>
+      <p data-expected-width="392" data-expected-height="72" data-offset-x="184" data-offset-y="110">After three weeks of cold nights the runner beans have finally found the canes, and the first flowers opened on Tuesday. The broad beans, sown in November, are already past their best.</p>
+      <p data-expected-width="392" data-expected-height="72" data-offset-x="184" data-offset-y="194">The slugs have taken most of the lettuce again. The copper tape slows them down but does not stop them, and the beer traps catch more snails than slugs.</p>
+      <p data-expected-width="392" data-expected-height="36" data-offset-x="184" data-offset-y="278">Next week: the leeks go out, and the shed roof needs a new sheet of felt before the autumn.</p>
+    </main>
+    <aside data-expected-width="200" data-expected-height="506" data-offset-x="600" data-offset-y="56"><h2 data-expected-width="167" data-expected-height="16" data-offset-x="617" data-offset-y="76">On the plot</h2><p data-expected-width="167" data-expected-height="15" data-offset-x="617" data-offset-y="100">Runner beans flowering</p><p data-expected-width="167" data-expected-height="15" data-offset-x="617" data-offset-y="123">Courgettes, too many</p><p data-expected-width="167" data-expected-height="30" data-offset-x="617" data-offset-y="146">Leeks waiting in their pots</p><h2 data-expected-width="167" data-expected-height="16" data-offset-x="617" data-offset-y="184">Rain this month</h2><p data-expected-width="167" data-expected-height="15" data-offset-x="617" data-offset-y="208">38 millimetres</p></aside>
+    <footer data-expected-width="800" data-expected-height="38" data-offset-x="0" data-offset-y="562"><span data-expected-width="154" data-expected-height="14" data-offset-x="20" data-offset-y="574">Plot nineteen, since 2019</span><span data-expected-width="227" data-expected-height="14" data-offset-x="553" data-offset-y="574">Written on a bench by the water butt</span></footer>
+  </div>
+</body>
+</html>

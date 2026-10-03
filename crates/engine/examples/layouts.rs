@@ -1,7 +1,7 @@
-//! The acceptance layouts of M17 (M17.10, the flexbox note's
-//! "Acceptance"): pages under `tests/layouts/`, real layouts with text,
-//! whose every element's box `tests/wpt.rs` checks as the
-//! web-platform-tests runner checks a check-layout test.
+//! The acceptance layouts of M17 and M18 (M17.10 and M18.7, the flexbox
+//! and grid notes' "Acceptance"): pages under `tests/layouts/`, real
+//! layouts with text, whose every element's box `tests/wpt.rs` checks as
+//! the web-platform-tests runner checks a check-layout test.
 //!
 //! `cargo run -p engine --example layouts -- capture [page.html ...]`
 //! writes the expectations into the pages, as the reference browser

@@ -49,6 +49,16 @@ pub(crate) const ABOUT_SILVER: &str = "\
         text-transform: uppercase;\
       }\
       .card::after { content: \"\u{a7}\"; display: block; text-align: right; color: #6c7086; }\
+      .tiles {\
+        display: grid;\
+        grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));\
+        grid-auto-flow: dense;\
+        gap: 8px;\
+        margin: 16px 0;\
+      }\
+      .tile { padding: 8px; background-color: #313244; color: #cdd6f4; }\
+      .tile.wide { grid-column: span 2; }\
+      .tile.all { grid-column: 1 / -1; color: #a6adc8; }\
       .lead::first-letter {\
         float: left;\
         font-size: 52px;\
@@ -81,6 +91,19 @@ pub(crate) const ABOUT_SILVER: &str = "\
       <p>This card is 60px tall with overflow: auto, so it scrolls on its own: turn the wheel over it and its content moves inside the clip, with the overlay scrollbar at its right edge showing where it is (M10.5). At the end of its content the wheel goes on to the page, which is scroll chaining.</p>\
       <p>A second paragraph, to give the card something more to scroll through.</p>\
     </div>\
+    </div>\
+    <div class=\"tiles\">\
+    <div class=\"tile all\">These tiles are grid items (M18): as many columns as the window has room for, by repeat(auto-fill, minmax(150px, 1fr)), each at least 150px wide and all sharing what is left. A wide tile spans two of them, and dense packing fills the holes the wide ones leave behind.</div>\
+    <div class=\"tile\">M9 Scrolling</div>\
+    <div class=\"tile wide\">M10 The box model, in full</div>\
+    <div class=\"tile wide\">M11 Floats and positioning</div>\
+    <div class=\"tile\">M12 Tables</div>\
+    <div class=\"tile\">M13 Incremental layout</div>\
+    <div class=\"tile wide\">M14 Networking, from URLs to TLS</div>\
+    <div class=\"tile\">M15 Navigation</div>\
+    <div class=\"tile\">M16 Selectors</div>\
+    <div class=\"tile\">M17 Flexbox</div>\
+    <div class=\"tile\">M18 Grid</div>\
     </div>\
     <p>Scroll with the wheel, the arrow keys, Page Up and Page Down, Home and End, the space bar, or by dragging the scrollbar at the right (M9.2). <a href=\"#end\">This link</a> goes to the end of the page without leaving it, a navigation to a fragment (M15); Back comes back here.</p>\
     <p>The paragraphs below only exist to make the page taller than the window.</p>\

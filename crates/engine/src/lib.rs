@@ -2311,6 +2311,58 @@ mod tests {
         );
     }
 
+    // ---- M18 acceptance (roadmap M18.7) ------------------------------------
+
+    #[test]
+    fn the_builtin_page_lays_its_tiles_out_with_grid() {
+        // The tiles are grid items in as many 150px-or-wider columns as
+        // the page has room for: five at 800px and two at 400px, the
+        // first tile across them all and the wide ones over two columns
+        // and the gap between. Dense packing puts a later narrow tile in
+        // a hole a wide one left: at 400px, M12 beside M9.
+        let engine = builtin_engine();
+        let tiles = |width: f32| -> Vec<(f32, f32, f32)> {
+            let document = engine.document();
+            engine
+                .fragments(width)
+                .into_iter()
+                .filter(|f| {
+                    matches!(f.kind, layout::FragmentKind::Box)
+                        && f.generated.is_none()
+                        && document
+                            .attr(f.node, "class")
+                            .is_some_and(|c| c.split(' ').any(|c| c == "tile"))
+                })
+                .map(|f| (f.x, f.y, f.w))
+                .collect()
+        };
+        for (width, columns) in [(800.0, 5), (400.0, 2)] {
+            let tiles = tiles(width);
+            assert_eq!(tiles.len(), 11, "{tiles:?}");
+            let (all, rest) = tiles.split_first().expect("a tile");
+            let mut lefts: Vec<f32> = rest.iter().map(|t| t.0).collect();
+            lefts.sort_by(f32::total_cmp);
+            lefts.dedup();
+            assert_eq!(lefts.len(), columns, "{width}: {tiles:?}");
+            let right = rest.iter().map(|t| t.0 + t.2).fold(0.0, f32::max);
+            assert!(
+                all.0 == lefts[0] && all.0 + all.2 == right,
+                "{width}: {tiles:?}"
+            );
+            assert!(rest.iter().all(|t| t.1 > all.1), "{width}: {tiles:?}");
+            let narrow = rest[0].2;
+            for wide in [rest[1], rest[2], rest[5]] {
+                assert!(
+                    (wide.2 - (2.0 * narrow + 8.0)).abs() < 0.01,
+                    "{width}: {tiles:?}"
+                );
+            }
+        }
+        let narrow = tiles(400.0);
+        let (m9, m10, m12) = (narrow[1], narrow[2], narrow[4]);
+        assert!(m12.1 == m9.1 && m12.0 > m9.0 && m10.1 > m9.1, "{narrow:?}");
+    }
+
     // ---- M7 acceptance (roadmap M7.8) --------------------------------------
 
     #[test]

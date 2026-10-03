@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Layout: a dashboard</title>
+<style>
+  @font-face { font-family: "Layout Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #eef1f5; color: #1c2330; }
+  body { margin: 0; font-family: "Layout Test Sans"; font-size: 14px; }
+  h1, h2, p { margin: 0; font-weight: normal; }
+  .dashboard { display: grid; grid-template-columns: auto repeat(3, 1fr); grid-auto-rows: minmax(64px, auto); gap: 12px; padding: 12px; }
+  .header { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 16px; padding: 0 16px; background-color: #1c2330; color: #f2f5f9; }
+  .header h1 { font-size: 20px; }
+  .header span { font-size: 12px; color: #a9b4c4; }
+  .nav { grid-row: span 3; display: grid; align-content: start; gap: 2px; padding: 8px; background-color: #ffffff; border: 1px solid #d5dbe3; }
+  .nav a { padding: 6px 10px; color: #1c2330; }
+  .nav a.current { background-color: #dbe7f8; }
+  .card { padding: 12px 14px; background-color: #ffffff; border: 1px solid #d5dbe3; }
+  .card h2 { font-size: 12px; color: #5b6576; }
+  .stat .value { font-size: 24px; }
+  .stat .change { font-size: 12px; color: #1d7a46; }
+  .chart { grid-column: span 2; display: grid; grid-template-rows: auto 1fr; gap: 8px; }
+  .chart .bars { display: grid; grid-template-columns: repeat(7, 1fr); align-items: end; gap: 6px; height: 120px; }
+  .chart .bars div { background-color: #5b8fd6; }
+  .list { grid-row: span 2; }
+  .list p { padding: 6px 0; border-bottom: 1px solid #e7ebf0; }
+  .table { grid-column: 2 / 4; display: grid; grid-template-columns: 3fr 1fr 1fr; }
+  .table h2 { grid-column: 1 / -1; margin-bottom: 6px; }
+  .table span { padding: 4px 0; border-top: 1px solid #e7ebf0; }
+</style>
+</head>
+<body data-expected-width="800" data-expected-height="495">
+  <div class="dashboard" data-expected-width="800" data-expected-height="495" data-offset-x="0" data-offset-y="0">
+    <header class="header" data-expected-width="776" data-expected-height="64" data-offset-x="12" data-offset-y="12"><h1 data-expected-width="539" data-expected-height="24" data-offset-x="28" data-offset-y="32">Operations</h1><span data-expected-width="92" data-expected-height="14" data-offset-x="583" data-offset-y="37">Updated 09:41</span><span data-expected-width="81" data-expected-height="14" data-offset-x="691" data-offset-y="37">Region: north</span></header>
+    <nav class="nav" data-expected-width="114" data-expected-height="395" data-offset-x="12" data-offset-y="88"><a class="current" data-expected-width="96" data-expected-height="28" data-offset-x="21" data-offset-y="97">Overview</a><a data-expected-width="96" data-expected-height="28" data-offset-x="21" data-offset-y="127">Orders</a><a data-expected-width="96" data-expected-height="28" data-offset-x="21" data-offset-y="157">Customers</a><a data-expected-width="96" data-expected-height="28" data-offset-x="21" data-offset-y="187">Inventory</a><a data-expected-width="96" data-expected-height="28" data-offset-x="21" data-offset-y="217">Reports</a><a data-expected-width="96" data-expected-height="28" data-offset-x="21" data-offset-y="247">Settings</a></nav>
+    <section class="card stat" data-expected-width="209" data-expected-height="82" data-offset-x="138" data-offset-y="88"><h2 data-expected-width="179" data-expected-height="14" data-offset-x="153" data-offset-y="101">Orders today</h2><p class="value" data-expected-width="179" data-expected-height="28" data-offset-x="153" data-offset-y="115">1,284</p><p class="change" data-expected-width="179" data-expected-height="14" data-offset-x="153" data-offset-y="143">+8% on yesterday</p></section>
+    <section class="card stat" data-expected-width="209" data-expected-height="82" data-offset-x="359" data-offset-y="88"><h2 data-expected-width="179" data-expected-height="14" data-offset-x="374" data-offset-y="101">Revenue</h2><p class="value" data-expected-width="179" data-expected-height="28" data-offset-x="374" data-offset-y="115">$48,920</p><p class="change" data-expected-width="179" data-expected-height="14" data-offset-x="374" data-offset-y="143">+3% on yesterday</p></section>
+    <section class="card stat" data-expected-width="209" data-expected-height="82" data-offset-x="579" data-offset-y="88"><h2 data-expected-width="179" data-expected-height="14" data-offset-x="594" data-offset-y="101">Returns</h2><p class="value" data-expected-width="179" data-expected-height="28" data-offset-x="594" data-offset-y="115">37</p><p class="change" data-expected-width="179" data-expected-height="14" data-offset-x="594" data-offset-y="143">Fewer than last week</p></section>
+    <section class="card chart" data-expected-width="429" data-expected-height="168" data-offset-x="138" data-offset-y="182"><h2 data-expected-width="399" data-expected-height="14" data-offset-x="153" data-offset-y="195">Orders this week</h2><div class="bars" data-expected-width="399" data-expected-height="120" data-offset-x="153" data-offset-y="217"><div style="height: 40%" data-expected-width="52" data-expected-height="48" data-offset-x="153" data-offset-y="289"></div><div style="height: 65%" data-expected-width="52" data-expected-height="78" data-offset-x="211" data-offset-y="259"></div><div style="height: 55%" data-expected-width="52" data-expected-height="66" data-offset-x="269" data-offset-y="271"></div><div style="height: 80%" data-expected-width="52" data-expected-height="96" data-offset-x="327" data-offset-y="241"></div><div style="height: 70%" data-expected-width="52" data-expected-height="84" data-offset-x="385" data-offset-y="253"></div><div style="height: 95%" data-expected-width="52" data-expected-height="114" data-offset-x="443" data-offset-y="223"></div><div style="height: 60%" data-expected-width="52" data-expected-height="72" data-offset-x="500" data-offset-y="265"></div></div></section>
+    <section class="card list" data-expected-width="209" data-expected-height="301" data-offset-x="579" data-offset-y="182"><h2 data-expected-width="179" data-expected-height="14" data-offset-x="594" data-offset-y="195">Alerts</h2><p data-expected-width="179" data-expected-height="29" data-offset-x="594" data-offset-y="209">Stock low on two items</p><p data-expected-width="179" data-expected-height="29" data-offset-x="594" data-offset-y="238">A refund waits for review</p><p data-expected-width="179" data-expected-height="61" data-offset-x="594" data-offset-y="267">The north depot reports a delay of a day on its outgoing parcels</p></section>
+    <section class="card table" data-expected-width="429" data-expected-height="121" data-offset-x="138" data-offset-y="362"><h2 data-expected-width="399" data-expected-height="14" data-offset-x="153" data-offset-y="375">Top products</h2><span data-expected-width="240" data-expected-height="25" data-offset-x="153" data-offset-y="395">Desk lamp</span><span data-expected-width="80" data-expected-height="25" data-offset-x="393" data-offset-y="395">312</span><span data-expected-width="80" data-expected-height="25" data-offset-x="472" data-offset-y="395">$9,360</span><span data-expected-width="240" data-expected-height="25" data-offset-x="153" data-offset-y="420">Notebook, ruled</span><span data-expected-width="80" data-expected-height="25" data-offset-x="393" data-offset-y="420">280</span><span data-expected-width="80" data-expected-height="25" data-offset-x="472" data-offset-y="420">$1,400</span><span data-expected-width="240" data-expected-height="25" data-offset-x="153" data-offset-y="445">Fountain pen</span><span data-expected-width="80" data-expected-height="25" data-offset-x="393" data-offset-y="445">145</span><span data-expected-width="80" data-expected-height="25" data-offset-x="472" data-offset-y="445">$5,075</span></section>
+  </div>
+</body>
+</html>
