@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Layout: an application shell with a sticky footer</title>
+<style>
+  @font-face { font-family: "Layout Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f4f5f7; color: #1f2328; }
+  body { margin: 0; font-family: "Layout Test Sans"; font-size: 16px; }
+  h1, h2, h3, p { margin: 0; font-weight: normal; }
+  html, body { height: 100%; }
+  body { display: flex; flex-direction: column; }
+  .toolbar { display: flex; align-items: center; gap: 12px; flex: none; height: 48px; padding: 0 12px; background-color: #24292f; color: #f6f8fa; }
+  .toolbar .title { font-size: 18px; }
+  .toolbar .spacer { flex: 1; }
+  .toolbar .action { padding: 4px 10px; border: 1px solid #57606a; font-size: 13px; }
+  .content { display: flex; flex: 1 0 auto; }
+  .sidebar { display: flex; flex-direction: column; flex: 0 0 200px; padding: 8px 0; background-color: #f6f8fa; border-right: 1px solid #d0d7de; }
+  .sidebar .item { padding: 6px 16px; font-size: 14px; }
+  .sidebar .item.current { background-color: #ddf4ff; border-left: 3px solid #0969da; padding-left: 13px; }
+  .sidebar .bottom { margin-top: auto; padding: 8px 16px; font-size: 12px; color: #57606a; }
+  .main { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+  .main .heading { display: flex; justify-content: space-between; align-items: baseline; padding: 16px 24px 8px; }
+  .main .heading h1 { font-size: 24px; }
+  .main .heading span { font-size: 13px; color: #57606a; }
+  .rows { display: flex; flex-direction: column; gap: 1px; margin: 0 24px; background-color: #d0d7de; border: 1px solid #d0d7de; }
+  .row { display: flex; align-items: center; gap: 12px; padding: 8px 12px; background-color: #ffffff; font-size: 14px; }
+  .row .name { flex: 1; }
+  .row .state { flex: none; width: 72px; text-align: right; color: #1a7f37; }
+  .footer { display: flex; justify-content: space-between; flex: none; padding: 8px 12px; background-color: #ffffff; border-top: 1px solid #d0d7de; font-size: 12px; color: #57606a; }
+</style>
+</head>
+<body data-expected-width="800" data-expected-height="600">
+  <header class="toolbar" data-expected-width="800" data-expected-height="48" data-offset-x="0" data-offset-y="0"><div class="title" data-expected-width="127" data-expected-height="21" data-offset-x="12" data-offset-y="14">Silver Console</div><div class="spacer" data-expected-width="487" data-expected-height="0" data-offset-x="151" data-offset-y="24"></div><div class="action" data-expected-width="51" data-expected-height="25" data-offset-x="650" data-offset-y="12">New</div><div class="action" data-expected-width="75" data-expected-height="25" data-offset-x="713" data-offset-y="12">Settings</div></header>
+  <div class="content" data-expected-width="800" data-expected-height="521" data-offset-x="0" data-offset-y="48">
+    <nav class="sidebar" data-expected-width="201" data-expected-height="521" data-offset-x="0" data-offset-y="48"><div class="item current" data-expected-width="200" data-expected-height="28" data-offset-x="0" data-offset-y="56">Builds</div><div class="item" data-expected-width="200" data-expected-height="28" data-offset-x="0" data-offset-y="84">Releases</div><div class="item" data-expected-width="200" data-expected-height="28" data-offset-x="0" data-offset-y="112">Benchmarks</div><div class="bottom" data-expected-width="200" data-expected-height="30" data-offset-x="0" data-offset-y="531">Signed in</div></nav>
+    <main class="main" data-expected-width="599" data-expected-height="521" data-offset-x="201" data-offset-y="48">
+      <div class="heading" data-expected-width="599" data-expected-height="52" data-offset-x="201" data-offset-y="48"><h1 data-expected-width="73" data-expected-height="28" data-offset-x="225" data-offset-y="64">Builds</h1><span data-expected-width="75" data-expected-height="15" data-offset-x="701" data-offset-y="74">three today</span></div>
+      <div class="rows" data-expected-width="551" data-expected-height="100" data-offset-x="225" data-offset-y="100">
+        <div class="row" data-expected-width="549" data-expected-height="32" data-offset-x="226" data-offset-y="101"><span class="name" data-expected-width="441" data-expected-height="16" data-offset-x="238" data-offset-y="109">main, the reference pages</span><span class="state" data-expected-width="72" data-expected-height="16" data-offset-x="691" data-offset-y="109">passed</span></div>
+        <div class="row" data-expected-width="549" data-expected-height="32" data-offset-x="226" data-offset-y="134"><span class="name" data-expected-width="441" data-expected-height="16" data-offset-x="238" data-offset-y="142">main, the web-platform tests</span><span class="state" data-expected-width="72" data-expected-height="16" data-offset-x="691" data-offset-y="142">passed</span></div>
+        <div class="row" data-expected-width="549" data-expected-height="32" data-offset-x="226" data-offset-y="167"><span class="name" data-expected-width="441" data-expected-height="16" data-offset-x="238" data-offset-y="175">main, the benchmarks against their budgets</span><span class="state" data-expected-width="72" data-expected-height="16" data-offset-x="691" data-offset-y="175">passed</span></div>
+      </div>
+    </main>
+  </div>
+  <footer class="footer" data-expected-width="800" data-expected-height="31" data-offset-x="0" data-offset-y="569"><span data-expected-width="85" data-expected-height="14" data-offset-x="12" data-offset-y="578">Silver Browser</span><span data-expected-width="276" data-expected-height="14" data-offset-x="512" data-offset-y="578">The footer stays at the bottom of the window.</span></footer>
+</body>
+</html>

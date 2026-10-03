@@ -24,9 +24,16 @@ pub(crate) const ABOUT_SILVER: &str = "\
       h1 { color: #cdd6f4; }\
       p { color: #a6adc8; }\
       .highlight { color: #f9e2af; font-size: 20px; }\
+      .cards {\
+        display: flex;\
+        flex-wrap: wrap;\
+        align-items: flex-start;\
+        gap: 16px;\
+        margin: 16px 0;\
+      }\
       .card {\
         display: block;\
-        margin: 16px 0;\
+        flex: 1 1 220px;\
         padding: 12px;\
         border-width: 2px;\
         border-style: solid;\
@@ -60,6 +67,10 @@ pub(crate) const ABOUT_SILVER: &str = "\
     <p>A hobby browser engine in Rust. This is about:silver, the browser's own page.</p>\
     <p class=\"highlight\">This page is laid out by our own block formatting context — real width/margin resolution and margin collapsing, not a flat vertical list.</p>\
     <p class=\"lead\">Pseudo-elements (M16): this paragraph opens with a drop cap, its first letter floated left and set large by ::first-letter, and its first line is in capitals by ::first-line, however wide the window makes it. The cards below are labelled by ::before, from their data-label attributes, and closed by ::after. Quotation marks come from the quotes property: <q>a quotation, with <q>one inside it</q></q>, and in French, chosen by :lang(fr), <q lang=\"fr\">une citation</q>.</p>\
+    <div class=\"cards\">\
+    <div class=\"card\" data-label=\"Flexible boxes\">\
+      <p>These cards are flex items (M17): they share a row, grow into the room it leaves, and wrap onto another when the window is too narrow for them, with a gap between them either way.</p>\
+    </div>\
     <div class=\"card\" data-label=\"The box model\">\
       <p>This card's background and border are painted from real fragment geometry (M6.8) — the box model actually exists now.</p>\
     </div>\
@@ -69,6 +80,7 @@ pub(crate) const ABOUT_SILVER: &str = "\
     <div class=\"card scrolls\" data-label=\"overflow: auto\">\
       <p>This card is 60px tall with overflow: auto, so it scrolls on its own: turn the wheel over it and its content moves inside the clip, with the overlay scrollbar at its right edge showing where it is (M10.5). At the end of its content the wheel goes on to the page, which is scroll chaining.</p>\
       <p>A second paragraph, to give the card something more to scroll through.</p>\
+    </div>\
     </div>\
     <p>Scroll with the wheel, the arrow keys, Page Up and Page Down, Home and End, the space bar, or by dragging the scrollbar at the right (M9.2). <a href=\"#end\">This link</a> goes to the end of the page without leaving it, a navigation to a fragment (M15); Back comes back here.</p>\
     <p>The paragraphs below only exist to make the page taller than the window.</p>\

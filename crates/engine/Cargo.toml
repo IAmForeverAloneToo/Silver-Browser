@@ -22,6 +22,12 @@ text.workspace = true
 name = "wpt"
 test = true
 
+[[example]]
+# The capture of the acceptance layouts (M17); its tests run with the
+# crate's.
+name = "layouts"
+test = true
+
 [[bench]]
 name = "scroll"
 harness = false

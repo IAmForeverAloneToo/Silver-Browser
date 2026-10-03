@@ -2273,6 +2273,44 @@ mod tests {
         }
     }
 
+    // ---- M17 acceptance (roadmap M17.10) ------------------------------------
+
+    #[test]
+    fn the_builtin_page_lays_its_cards_out_with_flexbox() {
+        // The cards are flex items: at 800px three share the first row,
+        // side by side and grown alike, and the fourth wraps onto a row
+        // of its own, which it fills; at 400px each has a row.
+        let engine = builtin_engine();
+        let cards = |width: f32| -> Vec<(f32, f32, f32)> {
+            let document = engine.document();
+            engine
+                .fragments(width)
+                .into_iter()
+                .filter(|f| {
+                    matches!(f.kind, layout::FragmentKind::Box)
+                        && f.generated.is_none()
+                        && document
+                            .attr(f.node, "class")
+                            .is_some_and(|c| c.split(' ').any(|c| c == "card"))
+                })
+                .map(|f| (f.x, f.y, f.w))
+                .collect()
+        };
+        let wide = cards(800.0);
+        assert_eq!(wide.len(), 4);
+        assert!(wide[0].1 == wide[1].1 && wide[1].1 == wide[2].1, "{wide:?}");
+        assert!(wide[0].0 < wide[1].0 && wide[1].0 < wide[2].0, "{wide:?}");
+        assert!(wide[0].2 == wide[1].2 && wide[1].2 == wide[2].2, "{wide:?}");
+        assert!(wide[3].1 > wide[0].1 && wide[3].2 > wide[0].2, "{wide:?}");
+        let narrow = cards(400.0);
+        assert!(
+            narrow
+                .windows(2)
+                .all(|p| p[1].1 > p[0].1 && p[1].0 == p[0].0),
+            "{narrow:?}"
+        );
+    }
+
     // ---- M7 acceptance (roadmap M7.8) --------------------------------------
 
     #[test]

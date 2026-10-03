@@ -18,6 +18,11 @@
 //!   a pixel, the CSSOM View values computed from the engine's fragments;
 //! - a crashtest must load and render without panicking.
 //!
+//! The acceptance layouts of M17 (`tests/layouts/`, M17.10) are
+//! check-layout pages too, their expectations captured from the
+//! reference browser by `examples/layouts.rs`, and run here the same
+//! way, every element of the body checked.
+//!
 //! `expectations.txt` names each test expected to fail, with the reason.
 //! A test that fails without being named fails the run, and so does one
 //! named that passes, so that the file stays the true list of what does
@@ -184,9 +189,8 @@ fn content_type(path: &str) -> &'static str {
     }
 }
 
-/// The server of the vendored directory.
-fn serve() -> TestServer {
-    let root = root();
+/// The server of `root`, the vendored directory or the layouts'.
+fn serve(root: PathBuf) -> TestServer {
     TestServer::plain(move |request| {
         let path = request.target.split(['?', '#']).next().unwrap_or("");
         let file = path.trim_start_matches('/');
@@ -408,14 +412,13 @@ fn own(f: &Fragment, inline: bool) -> Boxes {
     }
 }
 
-/// A rounding as a browser's integer CSSOM values have it.
+/// A rounding as a browser's integer CSSOM values have it: half up,
+/// for a size as for a position. The reference browser's `offsetWidth`
+/// and `clientWidth` are the size rounded, wherever the box starts —
+/// not the distance between its two edges rounded, which M17's layouts
+/// found a pixel apart for a box a third of a pixel into one.
 fn round(v: f32) -> f64 {
-    f64::from(v).round()
-}
-
-/// A size snapped to whole pixels where it starts at `at`.
-fn snap(size: f32, at: f32) -> f64 {
-    round(at + size) - round(at)
+    (f64::from(v) + 0.5).floor()
 }
 
 /// The values `check-layout-th.js` reads, for one page.
@@ -485,22 +488,22 @@ impl Checker<'_> {
         let b = self.boxes.get(&id).copied();
         let number = |f: &dyn Fn(Boxes) -> f64| Value::Number(b.map_or(0.0, f));
         match attribute {
-            "data-expected-width" => number(&|b| snap(b.w, b.x)),
-            "data-expected-height" => number(&|b| snap(b.h, b.y)),
+            "data-expected-width" => number(&|b| round(b.w)),
+            "data-expected-height" => number(&|b| round(b.h)),
             "data-offset-x" => Value::Number(self.offset(id).0),
             "data-offset-y" => Value::Number(self.offset(id).1),
             "data-expected-client-width" => number(&|b| {
                 if b.inline {
                     0.0
                 } else {
-                    snap(b.w - b.border_left - b.border_right, b.x + b.border_left)
+                    round(b.w - b.border_left - b.border_right)
                 }
             }),
             "data-expected-client-height" => number(&|b| {
                 if b.inline {
                     0.0
                 } else {
-                    snap(b.h - b.border_top - b.border_bottom, b.y + b.border_top)
+                    round(b.h - b.border_top - b.border_bottom)
                 }
             }),
             "data-expected-bounding-client-rect-width" => number(&|b| f64::from(b.w)),
@@ -758,7 +761,7 @@ fn the_web_platform_tests_subset_runs_as_expected() {
             "expectations.txt names {path}, which is not in the manifest"
         );
     }
-    let server = serve();
+    let server = serve(root());
     let next = AtomicUsize::new(0);
     let results: Mutex<Vec<Option<Outcome>>> = Mutex::new((0..tests.len()).map(|_| None).collect());
     let threads = thread::available_parallelism()
@@ -808,4 +811,39 @@ fn the_web_platform_tests_subset_runs_as_expected() {
         unexpected.len(),
         unexpected.join("\n")
     );
+}
+
+#[test]
+fn the_acceptance_layouts_lay_out_as_the_reference_browser_lays_them_out() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/layouts");
+    let mut pages: Vec<String> = fs::read_dir(&dir)
+        .expect("the layouts are there")
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|name| name.ends_with(".html"))
+        .collect();
+    pages.sort();
+    assert_eq!(
+        pages.len(),
+        5,
+        "a navigation bar, a card grid, the holy grail, media objects and an application shell"
+    );
+    let server = serve(dir.clone());
+    let mut failures = Vec::new();
+    for page in &pages {
+        // A page without its expectations would pass on nothing.
+        let source = fs::read_to_string(dir.join(page)).expect("the page reads");
+        assert!(
+            source.matches("data-expected-width").count() >= 10,
+            "{page} has not been captured"
+        );
+        let test = Test::CheckLayout {
+            path: page.clone(),
+            selectors: vec!["body".to_string()],
+        };
+        let outcome = run(&server, &test);
+        if !outcome.passed {
+            failures.push(format!("{page}: {}", outcome.message.replace("; ", "\n  ")));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

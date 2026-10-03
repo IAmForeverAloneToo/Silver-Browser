@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Layout: media objects</title>
+<style>
+  @font-face { font-family: "Layout Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f4f5f7; color: #1f2328; }
+  body { margin: 0; font-family: "Layout Test Sans"; font-size: 16px; }
+  h1, h2, h3, p { margin: 0; font-weight: normal; }
+  .list { width: 560px; margin: 16px; }
+  .media { display: flex; align-items: flex-start; gap: 12px; padding: 12px; margin-bottom: 8px; background-color: #ffffff; border: 1px solid #d0d7de; }
+  .figure { flex: none; width: 64px; height: 64px; background-color: #a475f9; }
+  .small { width: 40px; height: 40px; background-color: #54aeff; }
+  .body { flex: 1; min-width: 0; }
+  .body h3 { font-size: 16px; margin-bottom: 4px; }
+  .body p { font-size: 14px; color: #57606a; }
+  .meta { flex: none; font-size: 12px; color: #8c959f; }
+  .reverse { flex-direction: row-reverse; }
+  .centered { align-items: center; }
+  .nested { margin-top: 8px; padding: 8px; margin-bottom: 0; background-color: #f6f8fa; }
+</style>
+</head>
+<body data-expected-width="800" data-expected-height="408">
+  <div class="list" data-expected-width="560" data-expected-height="408" data-offset-x="16" data-offset-y="16">
+    <div class="media" data-expected-width="560" data-expected-height="97" data-offset-x="16" data-offset-y="16"><div class="figure" data-expected-width="64" data-expected-height="64" data-offset-x="29" data-offset-y="29"></div><div class="body" data-expected-width="374" data-expected-height="71" data-offset-x="105" data-offset-y="29"><h3 data-expected-width="374" data-expected-height="19" data-offset-x="105" data-offset-y="29">A media object</h3><p data-expected-width="374" data-expected-height="48" data-offset-x="105" data-offset-y="52">The figure keeps its size and the body takes the rest of the row, its text wrapping beside the figure rather than under it.</p></div><div class="meta" data-expected-width="72" data-expected-height="14" data-offset-x="491" data-offset-y="29">2 hours ago</div></div>
+    <div class="media reverse" data-expected-width="560" data-expected-height="90" data-offset-x="16" data-offset-y="121"><div class="figure" data-expected-width="64" data-expected-height="64" data-offset-x="499" data-offset-y="134"></div><div class="body" data-expected-width="458" data-expected-height="39" data-offset-x="29" data-offset-y="134"><h3 data-expected-width="458" data-expected-height="19" data-offset-x="29" data-offset-y="134">Turned round</h3><p data-expected-width="458" data-expected-height="16" data-offset-x="29" data-offset-y="157">The figure on the right, by the direction alone.</p></div></div>
+    <div class="media centered" data-expected-width="560" data-expected-height="66" data-offset-x="16" data-offset-y="219"><div class="figure small" data-expected-width="40" data-expected-height="40" data-offset-x="29" data-offset-y="232"></div><div class="body" data-expected-width="411" data-expected-height="39" data-offset-x="81" data-offset-y="233"><h3 data-expected-width="411" data-expected-height="19" data-offset-x="81" data-offset-y="233">Centred</h3><p data-expected-width="411" data-expected-height="16" data-offset-x="81" data-offset-y="256">A short body, centred on the figure.</p></div><div class="meta" data-expected-width="59" data-expected-height="14" data-offset-x="504" data-offset-y="245">yesterday</div></div>
+    <div class="media" data-expected-width="560" data-expected-height="131" data-offset-x="16" data-offset-y="293"><div class="figure" data-expected-width="64" data-expected-height="64" data-offset-x="29" data-offset-y="306"></div><div class="body" data-expected-width="458" data-expected-height="105" data-offset-x="105" data-offset-y="306"><h3 data-expected-width="458" data-expected-height="19" data-offset-x="105" data-offset-y="306">With a reply</h3><p data-expected-width="458" data-expected-height="16" data-offset-x="105" data-offset-y="329">Media objects nest: a reply is one inside the body of another.</p><div class="media nested" data-expected-width="458" data-expected-height="58" data-offset-x="105" data-offset-y="353"><div class="figure small" data-expected-width="40" data-expected-height="40" data-offset-x="114" data-offset-y="362"></div><div class="body" data-expected-width="388" data-expected-height="39" data-offset-x="166" data-offset-y="362"><h3 data-expected-width="388" data-expected-height="19" data-offset-x="166" data-offset-y="362">A reply</h3><p data-expected-width="388" data-expected-height="16" data-offset-x="166" data-offset-y="385">Its own figure and body, narrower by the indent.</p></div></div></div></div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,39 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Layout: the holy grail</title>
+<style>
+  @font-face { font-family: "Layout Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f4f5f7; color: #1f2328; }
+  body { margin: 0; font-family: "Layout Test Sans"; font-size: 16px; }
+  h1, h2, h3, p { margin: 0; font-weight: normal; }
+  .page { display: flex; flex-direction: column; min-height: 600px; }
+  .page > header { padding: 16px 24px; background-color: #0969da; color: #ffffff; font-size: 22px; }
+  .columns { display: flex; flex: 1; }
+  .columns > nav { flex: 0 0 160px; order: -1; padding: 16px; background-color: #ddf4ff; font-size: 14px; }
+  .columns > nav a { display: block; padding: 4px 0; color: #0969da; }
+  .columns > article { flex: 1; min-width: 0; padding: 16px 24px; background-color: #ffffff; }
+  .columns > article h1 { font-size: 26px; margin-bottom: 12px; }
+  .columns > article p { margin-bottom: 12px; }
+  .columns > aside { flex: 0 0 180px; order: 1; padding: 16px; background-color: #fff8c5; font-size: 13px; }
+  .columns > aside h2 { font-size: 15px; margin-bottom: 8px; }
+  .page > footer { padding: 12px 24px; background-color: #24292f; color: #d0d7de; font-size: 13px; }
+</style>
+</head>
+<body data-expected-width="800" data-expected-height="600">
+  <div class="page" data-expected-width="800" data-expected-height="600" data-offset-x="0" data-offset-y="0">
+    <header data-expected-width="800" data-expected-height="57" data-offset-x="0" data-offset-y="0">The holy grail</header>
+    <div class="columns" data-expected-width="800" data-expected-height="504" data-offset-x="0" data-offset-y="57">
+      <aside data-expected-width="212" data-expected-height="504" data-offset-x="588" data-offset-y="57"><h2 data-expected-width="180" data-expected-height="18" data-offset-x="604" data-offset-y="73">Aside</h2><p data-expected-width="180" data-expected-height="30" data-offset-x="604" data-offset-y="99">Last in the row by its order, first in the source.</p></aside>
+      <article data-expected-width="396" data-expected-height="504" data-offset-x="192" data-offset-y="57">
+        <h1 data-expected-width="348" data-expected-height="60" data-offset-x="216" data-offset-y="73">Three columns, one flexible</h1>
+        <p data-expected-width="348" data-expected-height="133" data-offset-x="216" data-offset-y="145">The navigation and the aside keep their widths, and the article between them takes the rest of the row, however wide the window is. The columns are as tall as the tallest of them, and the footer stays at the bottom of the page when there is little to read.</p>
+        <p data-expected-width="348" data-expected-height="57" data-offset-x="216" data-offset-y="290">An article's minimum width is zero here, so a long word cannot push the aside off the page.</p>
+      </article>
+      <nav data-expected-width="192" data-expected-height="504" data-offset-x="0" data-offset-y="57"><a href="#" data-expected-width="160" data-expected-height="24" data-offset-x="16" data-offset-y="73">Getting started</a><a href="#" data-expected-width="160" data-expected-height="24" data-offset-x="16" data-offset-y="97">Layout</a><a href="#" data-expected-width="160" data-expected-height="24" data-offset-x="16" data-offset-y="121">Painting</a><a href="#" data-expected-width="160" data-expected-height="24" data-offset-x="16" data-offset-y="145">Networking</a></nav>
+    </div>
+    <footer data-expected-width="800" data-expected-height="39" data-offset-x="0" data-offset-y="561">Footer, at the bottom of a page six hundred pixels tall.</footer>
+  </div>
+</body>
+</html>

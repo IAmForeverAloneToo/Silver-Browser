@@ -647,14 +647,30 @@ column container's max-content width (section 2).
 **Acceptance (M17.10).** Five real layouts, with text, live under
 `crates/engine/tests/layouts/`: a navigation bar, a card grid, the holy
 grail, a list of media objects, and an application shell with a sticky
-footer. They are check-layout pages. A capture script loads each in the
-reference browser and writes every element's border box into its
-`data-expected-*` and `data-offset-*` attributes. The engine test runs
-them through the WPT runner's check-layout code, at its tolerance of a
-pixel. The capture gives the reference browser the engine's own font,
-DejaVu Sans, by an `@font-face` this engine ignores, so both sides
-measure the same glyphs. `about:silver` lays its cards out with flexbox,
-so the built-in page shows it.
+footer. They are check-layout pages. A capture, `cargo run -p engine
+--example layouts -- capture`, loads each in the reference browser and
+writes every element's border box into its `data-expected-*` and
+`data-offset-*` attributes, an inline box's aside (its offsets are its
+first fragment's, not the rectangle around them all). It pairs the
+browser's elements with the page's start tags in order, and stops when
+they differ rather than put one box's numbers on another element. The
+engine test runs them through the WPT runner's check-layout code, at
+its tolerance of a pixel, every element of the body checked. The
+capture gives the reference browser the engine's own font, DejaVu Sans,
+by an `@font-face` this engine ignores, so both sides measure the same
+glyphs, and stops if that browser did not load it. The pages use only
+what this engine has: no `font-weight` (their headings are set to
+`normal`, or the reference browser would embolden them), no
+`line-height`, lists, images or form controls. `about:silver` lays its
+cards out with flexbox, so the built-in page shows it.
+
+At step 11 all five match, every element of them, after what the
+pages found: the two text rules below, and the runner's rounding of
+a size. The reference browser's `offsetWidth` and `clientWidth` are
+the size rounded, wherever the box starts; the runner rounded the
+distance between the box's two edges, which is a pixel more for a card
+a third of a pixel into one. It now rounds as that browser does, and
+no web-platform test's result moves.
 
 **Vertical metrics, found at step 11.** The same glyphs did not make
 the same lines. The reference browser takes a font's ascent, descent

@@ -1,0 +1,42 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Layout: navigation bars</title>
+<style>
+  @font-face { font-family: "Layout Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f4f5f7; color: #1f2328; }
+  body { margin: 0; font-family: "Layout Test Sans"; font-size: 16px; }
+  h1, h2, h3, p { margin: 0; font-weight: normal; }
+  .bar { display: flex; align-items: center; gap: 24px; height: 56px; padding: 0 16px; margin-bottom: 16px; background-color: #24292f; color: #f6f8fa; }
+  .logo { font-size: 20px; margin-right: 8px; }
+  .links { display: flex; gap: 16px; }
+  .links a { color: #d0d7de; text-decoration: none; padding: 4px 8px; }
+  .links a.current { background-color: #3d444d; }
+  .search { margin-left: auto; width: 180px; padding: 6px 10px; border: 1px solid #57606a; color: #8c959f; font-size: 14px; }
+  .account { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+  .avatar { width: 28px; height: 28px; background-color: #8250df; }
+  .narrow { width: 380px; height: auto; flex-wrap: wrap; row-gap: 8px; padding: 10px 16px; }
+  .tabs { display: flex; width: 640px; margin: 0 16px 16px; border-bottom: 2px solid #d0d7de; background-color: #ffffff; }
+  .tabs a { flex: 1; text-align: center; padding: 12px 0; color: #57606a; text-decoration: none; font-size: 15px; }
+  .tabs a.current { color: #1f2328; border-bottom: 2px solid #fd8c73; margin-bottom: -2px; }
+  .crumbs { display: flex; align-items: baseline; gap: 6px; margin: 0 16px; font-size: 13px; color: #57606a; }
+  .crumbs .here { font-size: 20px; color: #1f2328; }
+</style>
+</head>
+<body data-expected-width="800" data-expected-height="289">
+  <header class="bar" data-expected-width="800" data-expected-height="56" data-offset-x="0" data-offset-y="0">
+    <div class="logo" data-expected-width="57" data-expected-height="24" data-offset-x="16" data-offset-y="16">Silver</div>
+    <nav class="links" data-expected-width="385" data-expected-height="27" data-offset-x="105" data-offset-y="15"><a class="current" href="#" data-expected-width="91" data-expected-height="27" data-offset-x="105" data-offset-y="15">Overview</a><a href="#" data-expected-width="80" data-expected-height="27" data-offset-x="212" data-offset-y="15">Projects</a><a href="#" data-expected-width="86" data-expected-height="27" data-offset-x="308" data-offset-y="15">Releases</a><a href="#" data-expected-width="80" data-expected-height="27" data-offset-x="410" data-offset-y="15">Settings</a></nav>
+    <div class="search" data-expected-width="132" data-expected-height="46" data-offset-x="514" data-offset-y="5">Search or jump to</div>
+    <div class="account" data-expected-width="114" data-expected-height="28" data-offset-x="670" data-offset-y="14"><div class="avatar" data-expected-width="28" data-expected-height="28" data-offset-x="670" data-offset-y="14"></div><span data-expected-width="78" data-expected-height="16" data-offset-x="706" data-offset-y="20">maintainer</span></div>
+  </header>
+  <header class="bar narrow" data-expected-width="412" data-expected-height="117" data-offset-x="0" data-offset-y="72">
+    <div class="logo" data-expected-width="57" data-expected-height="24" data-offset-x="16" data-offset-y="82">Silver</div>
+    <nav class="links" data-expected-width="385" data-expected-height="27" data-offset-x="16" data-offset-y="114"><a class="current" href="#" data-expected-width="91" data-expected-height="27" data-offset-x="16" data-offset-y="114">Overview</a><a href="#" data-expected-width="80" data-expected-height="27" data-offset-x="123" data-offset-y="114">Projects</a><a href="#" data-expected-width="86" data-expected-height="27" data-offset-x="219" data-offset-y="114">Releases</a><a href="#" data-expected-width="80" data-expected-height="27" data-offset-x="321" data-offset-y="114">Settings</a></nav>
+    <div class="search" data-expected-width="202" data-expected-height="30" data-offset-x="194" data-offset-y="149">Search</div>
+  </header>
+  <nav class="tabs" data-expected-width="640" data-expected-height="44" data-offset-x="16" data-offset-y="205"><a class="current" href="#" data-expected-width="160" data-expected-height="44" data-offset-x="16" data-offset-y="205">Code</a><a href="#" data-expected-width="160" data-expected-height="42" data-offset-x="176" data-offset-y="205">Issues</a><a href="#" data-expected-width="160" data-expected-height="42" data-offset-x="336" data-offset-y="205">Pull requests</a><a href="#" data-expected-width="160" data-expected-height="42" data-offset-x="496" data-offset-y="205">Wiki</a></nav>
+  <nav class="crumbs" data-expected-width="768" data-expected-height="24" data-offset-x="16" data-offset-y="265"><a href="#" data-expected-width="39" data-expected-height="15" data-offset-x="16" data-offset-y="272">Home</a><span data-expected-width="4" data-expected-height="15" data-offset-x="61" data-offset-y="272">/</span><a href="#" data-expected-width="44" data-expected-height="15" data-offset-x="71" data-offset-y="272">Engine</a><span data-expected-width="4" data-expected-height="15" data-offset-x="121" data-offset-y="272">/</span><span class="here" data-expected-width="68" data-expected-height="24" data-offset-x="131" data-offset-y="265">Layout</span></nav>
+</body>
+</html>
