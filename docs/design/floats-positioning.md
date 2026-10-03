@@ -119,7 +119,11 @@ the clearance rather than joining them. A cleared box that is
 self-collapsing is treated as not self-collapsing for the margins above
 it (§9.5.2's finer rules for that case wait for a page that needs
 them). A float with `clear` is placed below the floats it clears by the
-same rule.
+same rule. The floats a box clears are those placed before it, not the
+ones inside it, which its layout at the hypothetical top has placed by
+the time its clearance is known; a box moved by clearance is laid out
+again from where it is, with the context as it was before the box, so
+that its own floats are placed once.
 
 **Block formatting context roots beside floats (M11.2).** An in-flow
 block that is a context root (an `overflow` other than `visible`,
@@ -388,3 +392,11 @@ should have avoided it included, to the context's end. And a context
 root beside a float had its margin measured from the float's edge,
 where the browsers measure it from the containing block's: the first
 version took the space between the floats for its containing block.
+
+M17's reference pages found one more, corrected above as well. A
+cleared box whose top padding or border placed its own floats measured
+its clearance against them too: with no float before it, it still
+moved below its own; with one, its floats were placed a second time
+when it was laid out again, the first copy, beside the float it
+cleared, the one painted, and the second where later floats and the
+page's height met it.

@@ -32,7 +32,7 @@ use style::selector_matching::PseudoElement;
 use crate::block::{AdjoiningMargins, Fragment, FragmentKind};
 
 /// The floats of one block formatting context.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct FloatContext {
     /// The floats placed, in placement order.
     placed: Vec<PlacedFloat>,

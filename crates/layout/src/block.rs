@@ -81,8 +81,8 @@ use dom::NodeId;
 use std::cell::Cell;
 
 use style::computed::{
-    BOTTOM, BoxSizing, ComputedStyle, Display, Float, LEFT, LengthPercentage, LengthPercentageAuto,
-    MaxSize, Position, RIGHT, Size, TOP,
+    BOTTOM, BoxSizing, Clear, ComputedStyle, Display, Float, LEFT, LengthPercentage,
+    LengthPercentageAuto, MaxSize, Position, RIGHT, Size, TOP,
 };
 use style::selector_matching::PseudoElement;
 use text::FontCollection;
@@ -1944,9 +1944,10 @@ fn separates_top(style: &ComputedStyle, cb_width: f32) -> bool {
 
 /// Lays out a [`BoxKind::Block`] child of a container whose content
 /// box is at `at` and places it against the floats (M11): with
-/// clearance when its `clear` names floats its hypothetical top border
-/// edge is not past (CSS2 §9.5.2 — the top is put level with the
-/// lowest such float's bottom margin edge), and, for a block
+/// clearance when its `clear` names floats placed before it that its
+/// hypothetical top border edge is not past (CSS2 §9.5.2 — the top is
+/// put level with the lowest such float's bottom margin edge; the
+/// floats inside the box are not ones it clears), and, for a block
 /// formatting context root, in the room between the floats at its top
 /// (§9.5: its border box must not overlap a float's margin box): its
 /// border box as far left as that room and its own left margin allow,
@@ -2021,53 +2022,49 @@ fn place_block<'a>(
     } else if separates_top(&child.style, cb_width) {
         floats.resolve_pending(at.anchor + at.strut.join(own_top).resolve());
     }
-    if !root || floats.is_empty() {
-        let layout = layout_block(
-            child, cb_width, cb_width, cb_height, floats, at, pass, cache,
-        );
-        // Laid out untouched, it is kept if it placed no float either.
-        let kept =
-            held.and_then(|cache| cache.keep(child.node, inputs, &layout, floats.is_untouched()));
-        let above = if layout.self_collapsing {
-            layout.top_edge
-        } else {
-            layout.margin_top
+    if root && !floats.is_empty() {
+        return place_beside_floats(child, cb_width, cb_height, floats, at, own_top, pass, cache);
+    }
+    // The floats placed before the box, which its layout at the
+    // hypothetical top adds its own to: what its clearance is measured
+    // against, and what the context goes back to when clearance has it
+    // laid out again, so that its own floats are placed once, from where
+    // it really is. Only a box with `clear` needs them. They are boxed,
+    // and the two rarer ways of placing a box are functions of their
+    // own, to keep small the frame each level of nesting adds here.
+    let before = (child.style.clear != Clear::None).then(|| Box::new(floats.clone()));
+    let layout = layout_block(
+        child, cb_width, cb_width, cb_height, floats, at, pass, cache,
+    );
+    // Laid out untouched, it is kept if it placed no float either.
+    let kept =
+        held.and_then(|cache| cache.keep(child.node, inputs, &layout, floats.is_untouched()));
+    let above = if layout.self_collapsing {
+        layout.top_edge
+    } else {
+        layout.margin_top
+    };
+    let hypothetical = at.anchor + at.strut.join(above).resolve();
+    let Some(top) = before
+        .as_deref()
+        .and_then(|before| before.clear_bottom(child.style.clear))
+        .filter(|bottom| hypothetical < *bottom)
+    else {
+        return BlockPlacement {
+            x: layout.margin_left,
+            layout,
+            separated: None,
+            held: kept,
         };
-        let hypothetical = at.anchor + at.strut.join(above).resolve();
-        let Some(top) = floats
-            .clear_bottom(child.style.clear)
-            .filter(|bottom| hypothetical < *bottom)
-        else {
-            return BlockPlacement {
-                x: layout.margin_left,
-                layout,
-                separated: None,
-                held: kept,
-            };
-        };
-        // Clearance: the box's top border edge is at `top`, the margins
-        // above it — its own, and what escaped from its first child —
-        // inside the clearance. Its content was laid out as if at the
-        // hypothetical top; a root's content does not depend on where
-        // the box is, an empty box has none, any other's does (its
-        // lines beside floats, its own floats), so it is laid out
-        // again from where it really is: the pending margins put so
-        // that joining the box's resolve to its top. No box kept comes
-        // here: a float to clear was in the context before it, or the
-        // box placed it.
-        let layout = if root || layout.self_collapsing {
-            layout
-        } else {
-            let inside = At {
-                x: at.x,
-                origin: None,
-                anchor: top - above.resolve(),
-                strut: above,
-            };
-            layout_block(
-                child, cb_width, cb_width, cb_height, floats, inside, pass, cache,
-            )
-        };
+    };
+    // Clearance: the box's top border edge is at `top`, the margins
+    // above it — its own, and what escaped from its first child — inside
+    // the clearance. Its content was laid out as if at the hypothetical
+    // top; a root's content does not depend on where the box is, and an
+    // empty box has none (a float in it still waits for the position).
+    // No box kept comes here: a float to clear was in the context before
+    // it.
+    if root || layout.self_collapsing {
         return BlockPlacement {
             x: layout.margin_left,
             layout,
@@ -2075,8 +2072,64 @@ fn place_block<'a>(
             held: None,
         };
     }
-    // A context root's top is its own margin's, no child's escaping
-    // through it; from there, the first room that holds it.
+    let before = before
+        .as_deref()
+        .expect("only a box with `clear` has clearance");
+    relaid_below_floats(
+        child, cb_width, cb_height, floats, before, at.x, above, top, pass, cache,
+    )
+}
+
+/// [`place_block`]'s box with clearance whose content depends on where
+/// it is — its lines beside floats, its own floats — laid out again
+/// with its top border edge at `top`, from the float context as it was
+/// `before` the box: the pending margins put so that joining the box's
+/// own, `above`, resolves to its top.
+#[allow(clippy::too_many_arguments)]
+fn relaid_below_floats<'a>(
+    child: &'a LayoutBox,
+    cb_width: f32,
+    cb_height: Option<f32>,
+    floats: &mut FloatContext,
+    before: &FloatContext,
+    x: f32,
+    above: AdjoiningMargins,
+    top: f32,
+    pass: &Pass<'a>,
+    cache: Option<&LayoutCache>,
+) -> BlockPlacement<'a> {
+    floats.clone_from(before);
+    let inside = At {
+        x,
+        origin: None,
+        anchor: top - above.resolve(),
+        strut: above,
+    };
+    let layout = layout_block(
+        child, cb_width, cb_width, cb_height, floats, inside, pass, cache,
+    );
+    BlockPlacement {
+        x: layout.margin_left,
+        layout,
+        separated: Some(top),
+        held: None,
+    }
+}
+
+/// [`place_block`]'s block formatting context root in a context with
+/// floats: its top is its own margin's, no child's escaping through it,
+/// and from there it goes in the first room that holds it.
+#[allow(clippy::too_many_arguments)]
+fn place_beside_floats<'a>(
+    child: &'a LayoutBox,
+    cb_width: f32,
+    cb_height: Option<f32>,
+    floats: &mut FloatContext,
+    at: At,
+    own_top: AdjoiningMargins,
+    pass: &Pass<'a>,
+    cache: Option<&LayoutCache>,
+) -> BlockPlacement<'a> {
     let hypothetical = at.anchor + at.strut.join(own_top).resolve();
     let mut top = floats
         .clear_bottom(child.style.clear)
@@ -4466,6 +4519,52 @@ mod tests {
             "the cleared child, below the float"
         );
         assert_eq!(by_node(&layout, 3).h, 40.0 + lh);
+    }
+
+    #[test]
+    fn a_box_clears_the_floats_before_it_and_places_its_own_once() {
+        // A box with `clear` whose padding resolves the flow position
+        // places its own float at its hypothetical top before its
+        // clearance is known; that float is not one it clears, so with
+        // none before it the box stays where it is, and the float is
+        // placed once: the page is as tall as it. Nodes: div 1, c 2,
+        // b 3.
+        let layout = document_of(
+            Element::new("div").push(
+                Element::new("div")
+                    .attr("class", "c")
+                    .push(Element::new("div").attr("class", "b")),
+            ),
+            "div { margin: 0; } .c { clear: both; padding-top: 4px; }
+             .b { float: left; width: 30px; height: 30px; }",
+        );
+        assert_eq!(by_node(&layout, 2).y, 0.0, "no clearance");
+        assert_eq!(by_node(&layout, 3).y, 4.0);
+        assert_eq!(layout.height, 34.0);
+        // With a float to clear, the box goes below it and is laid out
+        // again from there: its float is placed once, below the cleared
+        // one, and a float after the box goes beside that, not below a
+        // copy left where the box was first laid out. Nodes: div 1, a 2,
+        // c 3, b 4, after 5.
+        let layout = document_of(
+            Element::new("div")
+                .push(Element::new("div").attr("class", "a"))
+                .push(
+                    Element::new("div")
+                        .attr("class", "c")
+                        .push(Element::new("div").attr("class", "b")),
+                )
+                .push(Element::new("div").attr("class", "after")),
+            "div { margin: 0; } .a { float: left; width: 50px; height: 60px; }
+             .c { clear: left; padding-top: 4px; }
+             .b { float: left; width: 30px; height: 30px; }
+             .after { float: left; width: 20px; height: 20px; }",
+        );
+        assert_eq!(by_node(&layout, 3).y, 60.0);
+        let (b, after) = (by_node(&layout, 4), by_node(&layout, 5));
+        assert_eq!((b.x, b.y), (0.0, 64.0), "below the cleared float");
+        assert_eq!((after.x, after.y), (30.0, 64.0), "beside it");
+        assert_eq!(layout.height, 94.0);
     }
 
     #[test]
