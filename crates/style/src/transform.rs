@@ -229,9 +229,13 @@ impl Matrix {
     }
 
     /// The matrix flattened onto the plane (css-transforms-2 §5): what
-    /// it does to a point of the plane `z = 0`, its `z` then dropped.
-    /// A box's matrix is flattened when its parent's used
-    /// `transform-style` is `flat`.
+    /// it does to a point of the plane `z = 0`, its `z` then dropped,
+    /// which is all a raster of the plane needs; a flattened matrix
+    /// whose `w` row is `(0, 0, 0, k)` is divided through by `k`, so
+    /// that a `translateZ()` under a perspective, which only scales the
+    /// plane, reads as the scale it is. A box's matrix is flattened
+    /// when its parent's used `transform-style` is `flat`, and a 3D
+    /// rendering context's accumulated matrices are flattened last.
     pub fn flattened(&self) -> Matrix {
         let mut m = self.0;
         // The z input column and the z output row become the identity's.
@@ -242,7 +246,28 @@ impl Matrix {
         m[6] = 0.0;
         m[14] = 0.0;
         m[10] = 1.0;
+        let k = m[15];
+        if m[3] == 0.0 && m[7] == 0.0 && k != 1.0 && k.is_finite() && k != 0.0 {
+            for (i, v) in m.iter_mut().enumerate() {
+                if i != 10 {
+                    *v /= k;
+                }
+            }
+        }
         Matrix(m)
+    }
+
+    /// The depth of the point `(x, y)` of the plane `z = 0` under the
+    /// matrix: its `z` divided by its `w`, which orders the members of
+    /// a 3D rendering context (css-transforms-2 §9), further off the
+    /// lesser; a point at or behind the eye is furthest of all.
+    pub fn depth(&self, x: f32, y: f32) -> f32 {
+        let [_, _, z, w] = self.apply(x, y, 0.0);
+        if w > 0.0 && (z / w).is_finite() {
+            z / w
+        } else {
+            f32::NEG_INFINITY
+        }
     }
 
     /// The determinant.
@@ -795,5 +820,50 @@ mod tests {
         assert_eq!(inf.inverse(), None);
         assert_eq!(inf.project(0.0, 0.0), None);
         assert_eq!(inf.bounds(0.0, 0.0, 1.0, 1.0), None);
+    }
+
+    #[test]
+    fn a_perspective_parent_and_a_turned_child_project_as_the_reference_browser_does() {
+        // A 200px box with `perspective: 300px` (origin at its centre,
+        // (100, 100)) holding a 100px box at (20, 20) turned by
+        // `rotateY(60deg)` about its centre: the reference browser's
+        // bounding box is 59.91 by 116.87 at (35.72, 6.51). With the
+        // origin at (0, 0) and the child at `translateZ(100px)`, the
+        // child scales by 300 / (300 - 100) about the origin: (30, 30),
+        // 150 square, which flattening reads as that scale.
+        let own = Matrix::translate(70.0, 70.0, 0.0)
+            .then(&Matrix::rotate(0.0, 1.0, 0.0, 60.0))
+            .then(&Matrix::translate(-70.0, -70.0, 0.0));
+        let full = Matrix::perspective_at(300.0, 100.0, 100.0).then(&own);
+        let (l, t, r, b) = full.bounds(20.0, 20.0, 100.0, 100.0).unwrap();
+        for (got, want) in [(l, 35.72), (t, 6.51), (r - l, 59.91), (b - t, 116.87)] {
+            assert!((got - want).abs() < 0.05, "{got} for {want}");
+        }
+        // The flattened matrix does the same to the plane.
+        let flat = full.flattened();
+        assert_eq!(
+            flat.bounds(20.0, 20.0, 100.0, 100.0),
+            full.bounds(20.0, 20.0, 100.0, 100.0)
+        );
+        assert!(flat.inverse().is_some());
+        let (x, y) = flat.project(20.0, 20.0).unwrap();
+        let (bx, by) = flat.inverse().unwrap().project(x, y).unwrap();
+        assert!((bx - 20.0).abs() < 1e-3 && (by - 20.0).abs() < 1e-3);
+        let own = Matrix::translate(70.0, 70.0, 0.0)
+            .then(&Matrix::translate(0.0, 0.0, 100.0))
+            .then(&Matrix::translate(-70.0, -70.0, 0.0));
+        let full = Matrix::perspective_at(300.0, 0.0, 0.0).then(&own);
+        let flat = full.flattened();
+        let [a, b2, c, d, e, f] = flat.to_2d().expect("a scale");
+        for (got, want) in [(a, 1.5), (b2, 0.0), (c, 0.0), (d, 1.5), (e, 0.0), (f, 0.0)] {
+            assert!((got - want).abs() < 1e-5, "{got} for {want}");
+        }
+        assert!(flat.translates_and_scales_only());
+        // Depth: nearer the viewer is greater, and a point behind the
+        // eye is furthest of all.
+        assert_eq!(Matrix::translate(0.0, 0.0, 10.0).depth(5.0, 5.0), 10.0);
+        assert!(full.depth(70.0, 70.0) > 0.0);
+        let behind = Matrix::perspective(Some(100.0)).then(&Matrix::translate(0.0, 0.0, 200.0));
+        assert_eq!(behind.depth(0.0, 0.0), f32::NEG_INFINITY);
     }
 }

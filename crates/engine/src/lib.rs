@@ -4434,4 +4434,115 @@ mod tests {
         assert!(engine.layers().is_empty());
         assert_eq!(engine.layer_bytes(), 0);
     }
+
+    #[test]
+    fn a_3d_rendering_context_paints_and_hits_by_depth_as_the_reference_browser_does() {
+        // M19.5, against the reference browser's answers for the same
+        // pages: a 200px grey box with `transform-style: preserve-3d`
+        // holding a red 100px box at (20, 20) and a blue one at (60,
+        // 60), each positioned. The red box pushed back goes under the
+        // grey plane, and the plane is hit where it covers it; brought
+        // forward, it covers the blue one. With the plane transparent,
+        // the red shows through from behind, but the plane's box is
+        // still what is hit. A box turned away with its backface hidden
+        // is neither painted nor hit; turned away with it shown, both.
+        // Turned by 60 degrees about y with no perspective, the box is
+        // half as wide about its centre; under a perspective of 300px
+        // from the plane's centre, its near edge grows and its far edge
+        // shrinks. A child with `preserve-3d` extends the context, so
+        // its pushed-back box goes under the plane too, while one that
+        // clips flattens it and keeps the box in its own plane, over
+        // the grey.
+        let page = |css: &str| {
+            format!(
+                "<style>body {{ margin: 0 }}
+                        .ctx {{ transform-style: preserve-3d; position: absolute; left: 0; top: 0;
+                                width: 200px; height: 200px; background-color: #eeeeee }}
+                        .mid {{ position: absolute; left: 0; top: 0; width: 200px; height: 200px }}
+                        .a {{ position: absolute; left: 20px; top: 20px; width: 100px;
+                              height: 100px; background-color: #ff0000 }}
+                        .b {{ position: absolute; left: 60px; top: 60px; width: 100px;
+                              height: 100px; background-color: #0000ff }}
+                        {css}</style>\
+                 <div class=ctx id=ctx><div class=mid id=mid><div class=a id=a></div></div>\
+                 <div class=b id=b></div></div>"
+            )
+        };
+        let grey = [0xee, 0xee, 0xee, 0xff];
+        let red = [0xff, 0, 0, 0xff];
+        let blue = [0, 0, 0xff, 0xff];
+        let white = [0xff, 0xff, 0xff, 0xff];
+        // Each case: the CSS, then (x, y, the colour, the id hit).
+        type Check = (usize, usize, [u8; 4], &'static str);
+        let cases: [(&str, Vec<Check>); 9] = [
+            (
+                ".mid { transform-style: preserve-3d } .a { transform: translateZ(-10px) }",
+                vec![(30, 30, grey, "mid"), (80, 80, blue, "b")],
+            ),
+            (
+                ".mid { transform-style: preserve-3d } .a { transform: translateZ(10px) }",
+                vec![(80, 80, red, "a"), (30, 30, red, "a")],
+            ),
+            (
+                ".mid { transform-style: preserve-3d } .ctx { background-color: transparent }
+                 .a { transform: translateZ(-10px) }",
+                vec![(30, 30, red, "mid"), (80, 80, blue, "b")],
+            ),
+            (
+                ".mid { transform-style: preserve-3d } .b { display: none }
+                 .a { transform: rotateY(180deg); backface-visibility: hidden }",
+                vec![(70, 70, grey, "mid")],
+            ),
+            (
+                ".mid { transform-style: preserve-3d } .b { display: none }
+                 .a { transform: rotateY(180deg) }",
+                vec![(70, 70, red, "a")],
+            ),
+            (
+                ".mid { transform-style: preserve-3d } .b { display: none }
+                 .a { transform: rotateY(60deg) }",
+                vec![
+                    (50, 70, red, "a"),
+                    (40, 70, grey, "mid"),
+                    (94, 70, red, "a"),
+                ],
+            ),
+            (
+                ".mid { transform-style: preserve-3d; perspective: 300px } .b { display: none }
+                 .a { transform: rotateY(60deg) }",
+                vec![
+                    (37, 70, red, "a"),
+                    (34, 70, grey, "mid"),
+                    (94, 70, red, "a"),
+                    (97, 70, grey, "mid"),
+                    (90, 40, red, "a"),
+                    (90, 20, grey, "mid"),
+                ],
+            ),
+            (
+                ".mid { transform-style: preserve-3d } .a { transform: translateZ(-10px) }
+                 .b { display: none }",
+                vec![(30, 30, grey, "mid"), (150, 150, grey, "mid")],
+            ),
+            (
+                ".mid { overflow: hidden; transform-style: preserve-3d }
+                 .a { transform: translateZ(-10px) }",
+                vec![(30, 30, red, "a"), (80, 80, blue, "b")],
+            ),
+        ];
+        for (css, checks) in cases {
+            let mut engine = test_engine();
+            engine.load_document(&page(css));
+            let pixels = engine.frame(200, 200);
+            for (x, y, colour, id) in checks {
+                assert_eq!(px(&pixels, 200, x, y), colour, "{css}: ({x}, {y})");
+                let hit = engine.hit_test(x as f32 + 0.5, y as f32 + 0.5);
+                assert_eq!(hit, Some(node_by_id(&engine, id)), "{css}: hit ({x}, {y})");
+            }
+            let mut fresh = test_engine();
+            fresh.load_document(&page(css));
+            assert_eq!(pixels, fresh.frame(200, 200));
+        }
+        let _ = white;
+    }
 }
