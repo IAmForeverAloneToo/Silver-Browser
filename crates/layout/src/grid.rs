@@ -3173,4 +3173,67 @@ mod tests {
         assert_eq!(rect(&l, "i0").3, 10.0);
         assert_eq!(rect(&l, "i1"), (0.0, 55.0, 800.0, 45.0));
     }
+
+    #[test]
+    fn grids_that_ask_for_a_lot_of_work_stop_at_the_limit_and_soon() {
+        // The grid note's three ("Performance and fuzzing"), each held to
+        // the limit of §5.4, lines -10,000 to 10,000, and to a time, in
+        // the unoptimised build the tests run in.
+        let quickly = |what: &str, started: std::time::Instant, seconds: u64| {
+            let took = started.elapsed();
+            assert!(took.as_secs() < seconds, "{what} took {took:?}");
+        };
+        // Items at line 10,000 of both axes and at -10,000: the implicit
+        // grid has the 19,999 tracks between them. Lines past the limit
+        // are clamped to it, and the grid has 20,000 tracks, no more.
+        let lines = |a: i32, b: i32| {
+            laid(
+                "<div id=g><div id=a></div><div id=b></div></div>",
+                &format!(
+                    "#g {{ display: grid; grid-auto-columns: 1px; grid-auto-rows: 1px }} \
+                     #a {{ grid-area: {a} / {a} }} #b {{ grid-area: {b} / {b} }}"
+                ),
+            )
+        };
+        let started = std::time::Instant::now();
+        let l = lines(10_000, -10_000);
+        assert_eq!(rect(&l, "a"), (19_998.0, 19_998.0, 1.0, 1.0));
+        assert_eq!(rect(&l, "b"), (0.0, 0.0, 1.0, 1.0));
+        assert_eq!(rect(&l, "g").3, 19_999.0);
+        let l = lines(50_000, -50_000);
+        assert_eq!(rect(&l, "a"), (19_999.0, 19_999.0, 1.0, 1.0));
+        assert_eq!(rect(&l, "g").3, 20_000.0);
+        quickly("lines at the limit", started, 5);
+        // One-pixel tracks repeated to fill a million pixels: the
+        // explicit grid stops at 10,000 of them.
+        let started = std::time::Instant::now();
+        let l = laid(
+            "<div id=g><div id=a></div></div>",
+            "#g { display: grid; width: 1000000px; grid-template-columns: repeat(auto-fill, 1px) } \
+             #a { grid-column: 1 / -1 }",
+        );
+        assert_eq!(rect(&l, "a").2, 10_000.0);
+        quickly("an auto-fill of one-pixel tracks", started, 5);
+        // A thousand items, each spanning a thousand of two thousand
+        // `auto` tracks, two to a row: every item goes through the
+        // spanning steps of §12.5, in time that grows with the items
+        // times their spans (two thousand items over two thousand
+        // tracks take four times as long).
+        let started = std::time::Instant::now();
+        let items: String = (0..1000)
+            .map(|i| format!("<div id=i{i}>{}</div>", wide(50)))
+            .collect();
+        let l = laid(
+            &format!("<div id=g>{items}</div>"),
+            "#g { display: grid; grid-template-columns: repeat(2000, auto) } \
+             #g > div { grid-column: span 1000 }",
+        );
+        let (first, last) = (rect(&l, "i0"), rect(&l, "i999"));
+        assert!((first.2 - 400.0).abs() < 0.1, "{first:?}");
+        assert!(
+            (last.0 - 400.0).abs() < 0.1 && last.1 == 499.0 * first.3,
+            "{last:?}"
+        );
+        quickly("a thousand items spanning a thousand tracks", started, 20);
+    }
 }
