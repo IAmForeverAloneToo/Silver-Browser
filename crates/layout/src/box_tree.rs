@@ -32,9 +32,12 @@
 
 use std::borrow::Cow;
 use std::cell::Cell;
+use std::collections::HashMap;
 
 use dom::{Document, NodeId};
-use style::computed::{CaptionSide, Content, ContentItem, Display, Float};
+use style::computed::{
+    BackfaceVisibility, CaptionSide, Content, ContentItem, Display, Float, TransformStyle,
+};
 use style::selector_matching::PseudoElement;
 use style::{ComputedStyle, Recascade, Styles};
 
@@ -110,6 +113,20 @@ pub struct LayoutBox {
     /// though it is not positioned (css-flexbox-1 §4.3, css-grid-2
     /// §6.5). The builder sets it when it numbers the tree.
     pub item: bool,
+    /// The node of the box above this one in the tree (M19.5): the
+    /// element whose box it is a child of, an anonymous box standing
+    /// for the element it is in. What a parent's `perspective` and 3D
+    /// rendering context reach: its children's boxes, wherever layout
+    /// puts their fragments. `None` for a root. The builder sets it when
+    /// it numbers the tree.
+    pub parent: Option<NodeId>,
+    /// Whether the box takes part in a 3D rendering context (M19.5,
+    /// css-transforms-2 §9): the box above it, through any anonymous
+    /// boxes, is transformable with a used `transform-style` of
+    /// `preserve-3d`. A box in one whose `backface-visibility` is
+    /// `hidden` is a stacking context and a containing block for all
+    /// its descendants. The builder sets it when it numbers the tree.
+    pub in_3d: bool,
 }
 
 /// What a box is on the first formatted line (M16).
@@ -307,6 +324,49 @@ impl LayoutBox {
 
     /// Whether this box's in-flow children are items: it is a flex or a
     /// grid container.
+    /// Whether the box is a transformable element's (css-transforms-1
+    /// §3): a block-level or atomic inline-level box, a table part,
+    /// anything but an inline box.
+    pub fn is_transformable(&self) -> bool {
+        !matches!(self.kind, BoxKind::Inline)
+    }
+
+    /// Whether the box is a stacking context (CSS2 Appendix E, M11,
+    /// M19): [`ComputedStyle::is_stacking_context_of`] for its kind, or
+    /// a box in a 3D rendering context whose `backface-visibility` is
+    /// `hidden` (css-transforms-2 §9).
+    pub fn is_stacking_context(&self) -> bool {
+        self.style
+            .is_stacking_context_of(self.item, self.is_transformable())
+            || self.backface_hidden_in_3d()
+    }
+
+    /// Whether the box is a containing block for all its descendants,
+    /// the fixed ones included (M19): [`Effects::contains_all_of`] for
+    /// its kind, or a box in a 3D rendering context whose
+    /// `backface-visibility` is `hidden`.
+    pub fn contains_all_descendants(&self) -> bool {
+        self.style
+            .effects()
+            .contains_all_of(self.is_transformable())
+            || self.backface_hidden_in_3d()
+    }
+
+    /// Whether the box is a containing block for its absolutely
+    /// positioned descendants by its effects (M19): as
+    /// [`LayoutBox::contains_all_descendants`], or a `will-change`
+    /// naming `position`.
+    pub fn contains_absolutes(&self) -> bool {
+        self.style
+            .effects()
+            .contains_absolutes_of(self.is_transformable())
+            || self.backface_hidden_in_3d()
+    }
+
+    fn backface_hidden_in_3d(&self) -> bool {
+        self.in_3d && self.style.effects().backface_visibility == BackfaceVisibility::Hidden
+    }
+
     pub fn has_items(&self) -> bool {
         self.is_flex_container() || self.is_grid_container()
     }
@@ -352,7 +412,14 @@ pub fn build_box_tree(
     let mut boxes = build_block_container(&styled, Item::Node(document.root()));
     first_line::apply(&styled, &mut boxes);
     first_letter::apply(&styled, &mut boxes);
-    number(&mut boxes, &mut 0, false);
+    number(
+        &mut boxes,
+        &mut 0,
+        false,
+        None,
+        document,
+        &mut HashMap::new(),
+    );
     boxes
 }
 
@@ -361,18 +428,74 @@ pub fn build_box_tree(
 /// children of a flex or a grid container, as `items` says `boxes` are,
 /// by `order` (css-flexbox-1 §5.4, css-grid-2 §6.3), a stable sort
 /// keeping document order among equals, an absolutely positioned child
-/// counting as `order: 0`.
-fn number(boxes: &mut [LayoutBox], next: &mut u32, items: bool) {
-    let number_one = |b: &mut LayoutBox, next: &mut u32| {
+/// counting as `order: 0`. Each box is given its parent and whether it
+/// takes part in a 3D rendering context ([`LayoutBox::parent`],
+/// [`LayoutBox::in_3d`]): an element's own box names the element's
+/// parent element in the document, which a block hoisted out of an
+/// inline element (CSS2 §9.2.1.1) keeps; a generated box its
+/// originating element; an anonymous box the box above it, `parent`.
+/// `holds` records, by element, whether its box holds a 3D rendering
+/// context, which a parent's box is always numbered before its
+/// children's.
+fn number(
+    boxes: &mut [LayoutBox],
+    next: &mut u32,
+    items: bool,
+    parent: Option<(NodeId, bool)>,
+    document: &Document,
+    holds: &mut HashMap<NodeId, bool>,
+) {
+    let number_one = |b: &mut LayoutBox, next: &mut u32, holds: &mut HashMap<NodeId, bool>| {
         b.tree_order = *next;
         b.item = items;
+        let anonymous = b.anonymous && b.generated.is_none();
+        let (above, in_3d) = if anonymous {
+            (
+                parent.map(|(node, _)| node),
+                parent.is_some_and(|(_, in_3d)| in_3d),
+            )
+        } else if b.generated.is_some() {
+            (Some(b.node), holds.get(&b.node).copied().unwrap_or(false))
+        } else {
+            let element = document.parent_element(b.node);
+            (
+                element,
+                element
+                    .and_then(|p| holds.get(&p))
+                    .copied()
+                    .unwrap_or(false),
+            )
+        };
+        b.parent = above;
+        b.in_3d = in_3d;
         *next = next.saturating_add(1);
         let items = b.has_items();
-        number(&mut b.children, next, items);
+        // An anonymous box standing for the box above it, a block
+        // around a run of inline content say, passes its parent's
+        // context on to the text in it; an element's box holds one
+        // when it is transformable with a used `transform-style` of
+        // `preserve-3d`.
+        let holds_3d = if anonymous {
+            in_3d && parent.is_some_and(|(node, _)| node == b.node)
+        } else {
+            let holds_3d = b.is_transformable()
+                && b.style.effects().used_transform_style(b.style.overflow)
+                    == TransformStyle::Preserve3d;
+            holds.insert(b.node, holds_3d);
+            holds_3d
+        };
+        number(
+            &mut b.children,
+            next,
+            items,
+            Some((b.node, holds_3d)),
+            document,
+            holds,
+        );
     };
     if !items {
         for b in boxes {
-            number_one(b, next);
+            number_one(b, next, holds);
         }
         return;
     }
@@ -382,7 +505,7 @@ fn number(boxes: &mut [LayoutBox], next: &mut u32, items: bool) {
         _ => boxes[i].style.order,
     });
     for i in visit {
-        number_one(&mut boxes[i], next);
+        number_one(&mut boxes[i], next, holds);
     }
 }
 
@@ -584,6 +707,8 @@ impl<'a> Styled<'a> {
             first_line: None,
             tree_order: 0,
             item: false,
+            parent: None,
+            in_3d: false,
         }
     }
 
@@ -610,6 +735,8 @@ impl<'a> Styled<'a> {
             first_line: None,
             tree_order: 0,
             item: false,
+            parent: None,
+            in_3d: false,
         }
     }
 }
@@ -821,6 +948,8 @@ impl BlockContainer<'_> {
                 first_line: None,
                 tree_order: 0,
                 item: false,
+                parent: None,
+                in_3d: false,
             });
         }
         self.flush_misplaced(parent, &mut misplaced);
@@ -1025,6 +1154,8 @@ impl BlockContainer<'_> {
                 first_line: None,
                 tree_order: 0,
                 item: false,
+                parent: None,
+                in_3d: false,
             })
             .collect();
         while let Some(inline) = self.open.pop() {
@@ -1061,6 +1192,8 @@ impl BlockContainer<'_> {
             first_line: None,
             tree_order: 0,
             item: false,
+            parent: None,
+            in_3d: false,
         });
     }
 

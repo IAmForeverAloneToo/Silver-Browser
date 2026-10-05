@@ -1067,7 +1067,7 @@ pub enum BackfaceVisibility {
 /// themselves are not kept, beyond these bits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct WillChange {
-    bits: u16,
+    bits: u32,
 }
 
 impl WillChange {
@@ -1091,10 +1091,35 @@ impl WillChange {
     pub const SCROLL_POSITION: WillChange = WillChange { bits: 1 << 7 };
     /// Names `contents`.
     pub const CONTENTS: WillChange = WillChange { bits: 1 << 8 };
+    /// Names `filter`, a property this engine has not got (M23) whose
+    /// other values make a stacking context and a containing block for
+    /// all descendants, which naming it does too.
+    pub const FILTER: WillChange = WillChange { bits: 1 << 9 };
+    /// Names `backdrop-filter`: as `filter`.
+    pub const BACKDROP_FILTER: WillChange = WillChange { bits: 1 << 10 };
+    /// Names `contain`, whose `paint` and `layout` make a containing
+    /// block for all descendants.
+    pub const CONTAIN: WillChange = WillChange { bits: 1 << 11 };
+    /// Names `offset-path` (Motion Path 1): as `filter`.
+    pub const OFFSET_PATH: WillChange = WillChange { bits: 1 << 12 };
+    /// Names `position`, whose other values make a containing block for
+    /// absolutely positioned descendants and, `fixed` and `sticky`, a
+    /// stacking context.
+    pub const POSITION: WillChange = WillChange { bits: 1 << 13 };
+    /// Names `z-index`, whose other values make a positioned box or an
+    /// item a stacking context.
+    pub const Z_INDEX: WillChange = WillChange { bits: 1 << 14 };
+    /// Names `clip-path`, `mask`, `mask-image`, `mask-border`,
+    /// `isolation`, `mix-blend-mode` or `view-transition-name`,
+    /// properties this engine has not got whose other values make a
+    /// stacking context.
+    pub const COMPOSITED: WillChange = WillChange { bits: 1 << 15 };
 
     /// The feature `name` stands for, or `None` for a name this engine
-    /// does not act on.
+    /// does not act on. A `-webkit-` name stands for the property it is
+    /// an alias of.
     pub fn feature(name: &str) -> Option<WillChange> {
+        let name = name.strip_prefix("-webkit-").unwrap_or(name);
         Some(match name {
             "transform" => WillChange::TRANSFORM,
             "translate" => WillChange::TRANSLATE,
@@ -1105,6 +1130,19 @@ impl WillChange {
             "transform-style" => WillChange::TRANSFORM_STYLE,
             "scroll-position" => WillChange::SCROLL_POSITION,
             "contents" => WillChange::CONTENTS,
+            "filter" => WillChange::FILTER,
+            "backdrop-filter" => WillChange::BACKDROP_FILTER,
+            "contain" => WillChange::CONTAIN,
+            "offset-path" => WillChange::OFFSET_PATH,
+            "position" => WillChange::POSITION,
+            "z-index" => WillChange::Z_INDEX,
+            "clip-path"
+            | "mask"
+            | "mask-image"
+            | "mask-border"
+            | "isolation"
+            | "mix-blend-mode"
+            | "view-transition-name" => WillChange::COMPOSITED,
             _ => return None,
         })
     }
@@ -1132,30 +1170,54 @@ impl WillChange {
     }
 
     /// The features whose non-initial values make a box a containing
-    /// block for all its descendants: the transform properties and
-    /// `perspective` (css-will-change-1 §2.2, css-transforms-1 §2,
-    /// css-transforms-2 §2, §10).
+    /// block for all its descendants, the fixed ones included: the
+    /// transform properties, `perspective`, `transform-style`,
+    /// `filter`, `backdrop-filter`, `contain` and `offset-path`
+    /// (css-will-change-1 §2.2, css-transforms-1 §2, css-transforms-2
+    /// §2, §9, §10).
     pub const CONTAINING: WillChange = WillChange {
         bits: WillChange::TRANSFORM.bits
             | WillChange::TRANSLATE.bits
             | WillChange::ROTATE.bits
             | WillChange::SCALE.bits
-            | WillChange::PERSPECTIVE.bits,
+            | WillChange::PERSPECTIVE.bits
+            | WillChange::TRANSFORM_STYLE.bits
+            | WillChange::FILTER.bits
+            | WillChange::BACKDROP_FILTER.bits
+            | WillChange::CONTAIN.bits
+            | WillChange::OFFSET_PATH.bits,
+    };
+
+    /// The features whose non-initial values make a box a containing
+    /// block for its absolutely positioned descendants:
+    /// [`WillChange::CONTAINING`] and `position`.
+    pub const CONTAINING_ABSOLUTES: WillChange = WillChange {
+        bits: WillChange::CONTAINING.bits | WillChange::POSITION.bits,
     };
 
     /// The features whose non-initial values make a box a stacking
-    /// context: [`WillChange::CONTAINING`], `opacity` and
-    /// `transform-style`.
+    /// context: [`WillChange::CONTAINING`], `opacity`, `position` and
+    /// the composited properties; `z-index` on a positioned box or an
+    /// item, which the box decides.
     pub const STACKING: WillChange = WillChange {
         bits: WillChange::CONTAINING.bits
             | WillChange::OPACITY.bits
-            | WillChange::TRANSFORM_STYLE.bits,
+            | WillChange::POSITION.bits
+            | WillChange::COMPOSITED.bits,
     };
 
     /// The features that make a box's group a layer of its own (the
     /// compositing note's policy): the author's word that its matrix or
     /// its opacity is about to change.
-    pub const LAYER: WillChange = WillChange::STACKING;
+    pub const LAYER: WillChange = WillChange {
+        bits: WillChange::TRANSFORM.bits
+            | WillChange::TRANSLATE.bits
+            | WillChange::ROTATE.bits
+            | WillChange::SCALE.bits
+            | WillChange::PERSPECTIVE.bits
+            | WillChange::TRANSFORM_STYLE.bits
+            | WillChange::OPACITY.bits,
+    };
 }
 
 /// The transform, opacity and will-change properties of one element
@@ -1212,27 +1274,54 @@ impl Default for Effects {
 }
 
 impl Effects {
-    /// Whether the box is a containing block for all its descendants,
-    /// the fixed-positioned ones included: it has a transform, a
-    /// `perspective`, or a `will-change` naming either (css-transforms-1
-    /// §2, css-transforms-2 §2, §10, css-will-change-1 §2.2). A `fixed`
+    /// Whether a transformable box with these properties is a
+    /// containing block for all its descendants, the fixed-positioned
+    /// ones included: it has a transform, a `perspective`,
+    /// `transform-style: preserve-3d`, or a `will-change` naming any
+    /// property that would make one (css-transforms-1 §2,
+    /// css-transforms-2 §2, §9, §10, css-will-change-1 §2.2). A `fixed`
     /// box inside it is positioned against its padding box, and scrolls
-    /// with it.
+    /// with it. On a box that is not transformable, an inline box, only
+    /// the `will-change` counts: see [`Effects::contains_all_of`].
     pub fn contains_all_descendants(&self) -> bool {
-        self.has_transform()
-            || self.perspective.is_some()
+        self.contains_all_of(true)
+    }
+
+    /// [`Effects::contains_all_descendants`] for a box that is
+    /// transformable or not: the transform properties apply to a
+    /// transformable element alone (css-transforms-1 §3), while a
+    /// `will-change` naming a `filter` applies to any box.
+    pub fn contains_all_of(&self, transformable: bool) -> bool {
+        (transformable
+            && (self.has_transform()
+                || self.perspective.is_some()
+                || self.transform_style == TransformStyle::Preserve3d))
             || self.will_change.names_any(WillChange::CONTAINING)
     }
 
-    /// Whether the box is a stacking context by these properties:
-    /// [`Effects::contains_all_descendants`], an `opacity` below one,
-    /// `transform-style: preserve-3d`, or a `will-change` naming any of
-    /// them (css-color-4 §3.2, css-transforms-2 §9, css-will-change-1
+    /// Whether the box is a containing block for its absolutely
+    /// positioned descendants by these properties:
+    /// [`Effects::contains_all_of`], or a `will-change` naming
+    /// `position` (css-will-change-1 §2.2).
+    pub fn contains_absolutes_of(&self, transformable: bool) -> bool {
+        self.contains_all_of(transformable)
+            || self.will_change.names_any(WillChange::CONTAINING_ABSOLUTES)
+    }
+
+    /// Whether a transformable box is a stacking context by these
+    /// properties: [`Effects::contains_all_descendants`], an `opacity`
+    /// below one, or a `will-change` naming any property that would
+    /// make one (css-color-4 §3.2, css-transforms-2 §9, css-will-change-1
     /// §2.2).
     pub fn is_stacking_context(&self) -> bool {
-        self.contains_all_descendants()
+        self.is_stacking_context_of(true)
+    }
+
+    /// [`Effects::is_stacking_context`] for a box that is transformable
+    /// or not: `perspective` on an inline box makes none.
+    pub fn is_stacking_context_of(&self, transformable: bool) -> bool {
+        self.contains_all_of(transformable)
             || self.opacity < 1.0
-            || self.transform_style == TransformStyle::Preserve3d
             || self.will_change.names_any(WillChange::STACKING)
     }
 
@@ -1641,8 +1730,18 @@ impl ComputedStyle {
     /// properties make one ([`Effects::is_stacking_context`]). The root
     /// element's box is one besides, which the paint order knows.
     pub fn is_stacking_context(&self, item: bool) -> bool {
-        ((self.position.is_positioned() || item) && self.z_index.is_some())
-            || self.effects().is_stacking_context()
+        self.is_stacking_context_of(item, true)
+    }
+
+    /// [`ComputedStyle::is_stacking_context`] for a box that is
+    /// transformable or not (css-transforms-1 §3): an inline box's
+    /// transform properties do nothing, so make no context, while its
+    /// `opacity` and `will-change` do. A `will-change` naming `z-index`
+    /// counts as a `z-index` would.
+    pub fn is_stacking_context_of(&self, item: bool, transformable: bool) -> bool {
+        ((self.position.is_positioned() || item)
+            && (self.z_index.is_some() || self.effects().will_change.names(WillChange::Z_INDEX)))
+            || self.effects().is_stacking_context_of(transformable)
     }
 
     /// This style with its inherited properties taken from `from` and
@@ -1822,11 +1921,13 @@ mod tests {
             ..Default::default()
         };
         assert!(!e.contains_all_descendants() && e.is_stacking_context());
+        // A `preserve-3d` box is a containing block for its descendants,
+        // as the reference browser has it (M19 step 7).
         let mut e = Effects {
             transform_style: TransformStyle::Preserve3d,
             ..Default::default()
         };
-        assert!(!e.contains_all_descendants() && e.is_stacking_context());
+        assert!(e.contains_all_descendants() && e.is_stacking_context());
         // The used transform-style is flat under a grouping property.
         assert_eq!(
             e.used_transform_style(Overflow::Visible),
@@ -2015,5 +2116,80 @@ mod tests {
         );
         assert!(LengthPercentageAuto::Auto.is_auto());
         assert!(!LengthPercentageAuto::Px(0.0).is_auto());
+    }
+
+    #[test]
+    fn effects_make_stacking_contexts_and_containing_blocks_as_their_properties_would() {
+        // css-will-change-1 §2.2, css-transforms-1 §3, css-transforms-2
+        // §9 (M19): what a transformable box's effects make of it, and
+        // what an inline box's do, whose transform properties do
+        // nothing.
+        let with = |will_change: WillChange| Effects {
+            will_change,
+            ..Default::default()
+        };
+        let stacking = [
+            WillChange::FILTER,
+            WillChange::BACKDROP_FILTER,
+            WillChange::CONTAIN,
+            WillChange::OFFSET_PATH,
+            WillChange::POSITION,
+            WillChange::COMPOSITED,
+            WillChange::OPACITY,
+            WillChange::TRANSFORM_STYLE,
+        ];
+        for feature in stacking {
+            assert!(with(feature).is_stacking_context_of(true), "{feature:?}");
+            assert!(with(feature).is_stacking_context_of(false), "{feature:?}");
+        }
+        for feature in [
+            WillChange::FILTER,
+            WillChange::BACKDROP_FILTER,
+            WillChange::CONTAIN,
+            WillChange::OFFSET_PATH,
+            WillChange::TRANSFORM_STYLE,
+        ] {
+            assert!(with(feature).contains_all_of(false), "{feature:?}");
+        }
+        assert!(!with(WillChange::POSITION).contains_all_of(true));
+        assert!(with(WillChange::POSITION).contains_absolutes_of(true));
+        for feature in [
+            WillChange::Z_INDEX,
+            WillChange::SCROLL_POSITION,
+            WillChange::CONTENTS,
+            WillChange::AUTO,
+        ] {
+            assert!(!with(feature).is_stacking_context_of(true), "{feature:?}");
+            assert!(!with(feature).contains_absolutes_of(true), "{feature:?}");
+        }
+        // A `z-index` named applies where a `z-index` would: on a
+        // positioned box or an item.
+        let mut style = ComputedStyle::default();
+        style.effects_mut().will_change = WillChange::Z_INDEX;
+        assert!(!style.is_stacking_context(false));
+        assert!(style.is_stacking_context(true));
+        style.position = Position::Relative;
+        assert!(style.is_stacking_context(false));
+        // The transform properties on an inline box make nothing.
+        let transformed = Effects {
+            perspective: Some(100.0),
+            ..Default::default()
+        };
+        assert!(transformed.is_stacking_context_of(true));
+        assert!(!transformed.is_stacking_context_of(false));
+        assert!(transformed.contains_all_of(true));
+        assert!(!transformed.contains_all_of(false));
+        let preserved = Effects {
+            transform_style: TransformStyle::Preserve3d,
+            ..Default::default()
+        };
+        assert!(preserved.contains_all_of(true));
+        assert!(!preserved.contains_all_of(false));
+        let faded = Effects {
+            opacity: 0.5,
+            ..Default::default()
+        };
+        assert!(faded.is_stacking_context_of(false));
+        assert!(!faded.contains_absolutes_of(true));
     }
 }

@@ -155,6 +155,14 @@ pub struct Fragment {
     /// where its clips and scroll offsets are; the paint order hands it
     /// to the stacking context named here. `None` otherwise.
     pub stacking_parent: Option<StackingKey>,
+    /// The node of the box above this one in the box tree (M19.5,
+    /// [`crate::LayoutBox::parent`]): what a parent's `perspective` and
+    /// 3D rendering context reach, wherever layout put the fragment;
+    /// a text fragment's is its containing element.
+    pub parent: Option<NodeId>,
+    /// Whether the box takes part in a 3D rendering context (M19.5,
+    /// [`crate::LayoutBox::in_3d`]).
+    pub in_3d: bool,
 }
 
 /// What names a box's stacking context across the fragment tree: the
@@ -963,7 +971,7 @@ impl<'a> Deferred<'a> {
     /// that is not its containing block: the nearest stacking context
     /// on the way is the one the box's fragment belongs to.
     pub(crate) fn carried_through(&mut self, through: &LayoutBox) {
-        if self.stacking_parent.is_none() && through.style.is_stacking_context(through.item) {
+        if self.stacking_parent.is_none() && through.is_stacking_context() {
             self.stacking_parent = Some((through.node, through.generated));
         }
     }
@@ -1805,7 +1813,8 @@ pub(crate) fn settle_absolutes_in<'a>(
     pass: &Pass<'a>,
     area: &dyn Fn(&LayoutBox) -> [f32; 4],
 ) -> Vec<Deferred<'a>> {
-    let contains_all = b.style.effects().contains_all_descendants();
+    let contains_all = b.contains_all_descendants();
+    let contains_absolutes = b.style.position.is_positioned() || b.contains_absolutes();
     let mut up = Vec::new();
     let mut waiting = absolutes;
     // The fixed boxes met inside a box laid out here are met again:
@@ -1813,9 +1822,7 @@ pub(crate) fn settle_absolutes_in<'a>(
     while !waiting.is_empty() {
         let (mine, rest): (Vec<_>, Vec<_>) =
             std::mem::take(&mut waiting).into_iter().partition(|d| {
-                contains_all
-                    || (b.style.position.is_positioned()
-                        && d.b.style.position == Position::Absolute)
+                contains_all || (contains_absolutes && d.b.style.position == Position::Absolute)
             });
         up.extend(rest);
         for d in mine {
@@ -2378,6 +2385,8 @@ pub(crate) fn box_fragment(w: f32, h: f32, b: &LayoutBox) -> Fragment {
         children: Vec::new(),
         tree_order: b.tree_order,
         stacking_parent: None,
+        parent: b.parent,
+        in_3d: b.in_3d,
     }
 }
 
@@ -3721,6 +3730,8 @@ mod tests {
             first_line: None,
             tree_order: 0,
             item: false,
+            parent: None,
+            in_3d: false,
         };
         let block = LayoutBox {
             style: ComputedStyle {
@@ -3737,6 +3748,8 @@ mod tests {
             first_line: None,
             tree_order: 0,
             item: false,
+            parent: None,
+            in_3d: false,
         };
         let layout = layout_document(&[block], VIEWPORT, &fonts);
         let m = fonts.primary().metrics(16.0);
@@ -5971,11 +5984,14 @@ mod tests {
 
     #[test]
     fn a_transformed_box_is_the_containing_block_of_the_fixed_boxes_inside_it() {
-        // css-transforms-1 §2, css-will-change-1 §2.2 (M19): a box with
-        // a transform, a perspective or a will-change naming either
-        // positions the fixed boxes inside it against its padding box,
-        // and keeps their fragments; a will-change naming opacity does
-        // not. Nodes: w 1, f 2.
+        // css-transforms-1 §2, css-transforms-2 §9, css-will-change-1
+        // §2.2 (M19): a box with a transform, a perspective, a
+        // `transform-style` of `preserve-3d`, or a will-change naming
+        // any of them or a property that would make a containing block
+        // for all descendants positions the fixed boxes inside it
+        // against its padding box, and keeps their fragments; a
+        // will-change naming opacity or position does not. Nodes: w 1,
+        // f 2.
         let fonts = test_fonts();
         let doc = |css: &str| {
             let docu = dom::Node::document(vec![
@@ -6002,6 +6018,13 @@ mod tests {
             "will-change: transform",
             "will-change: scale, color",
             "will-change: perspective",
+            "transform-style: preserve-3d",
+            "will-change: transform-style",
+            "will-change: filter",
+            "will-change: backdrop-filter",
+            "will-change: contain",
+            "will-change: offset-path",
+            "will-change: -webkit-perspective",
         ] {
             let layout = doc(&wrapper.replace("TRANSFORM", contains));
             assert_eq!(parent_of(&layout, 2), Some(1), "{contains}");
@@ -6022,8 +6045,9 @@ mod tests {
             "opacity: 0.5",
             "will-change: opacity",
             "will-change: scroll-position",
+            "will-change: position",
+            "will-change: z-index",
             "transform: none",
-            "transform-style: preserve-3d",
         ] {
             let layout = doc(&wrapper.replace("TRANSFORM", not_containing));
             assert_eq!(parent_of(&layout, 2), None, "{not_containing}");
@@ -6253,5 +6277,161 @@ mod tests {
             by_node(&layout, 4).stacking_parent,
             Some((layout.element(3), None))
         );
+    }
+
+    #[test]
+    fn will_change_position_contains_absolute_boxes_but_not_fixed_ones() {
+        // css-will-change-1 §2.2 (M19): `position` would make a
+        // containing block for absolutely positioned descendants, not
+        // for fixed ones, so naming it does the same. Nodes: w 1, a 2,
+        // f 3.
+        let fonts = test_fonts();
+        let docu = dom::Node::document(vec![
+            Element::new("div")
+                .attr("class", "w")
+                .push(Element::new("div").attr("class", "a"))
+                .push(Element::new("div").attr("class", "f"))
+                .into(),
+        ]);
+        let sheet = css::parse_stylesheet(
+            ".w { margin: 20px; width: 200px; height: 100px; will-change: position }
+             .a { position: absolute; top: 0; left: 0; width: 10px; height: 10px }
+             .f { position: fixed; top: 0; left: 0; width: 10px; height: 10px }",
+        )
+        .expect("test css is valid");
+        let (document, boxes) = boxes_of(&docu, &[sheet]);
+        let layout = layout_document_in(&boxes, VIEWPORT, Some(600.0), &fonts);
+        let layout = Laid { document, layout };
+        assert_eq!(parent_of(&layout, 2), Some(1));
+        assert_eq!((by_node(&layout, 2).x, by_node(&layout, 2).y), (20.0, 20.0));
+        assert_eq!(parent_of(&layout, 3), None);
+        assert_eq!((by_node(&layout, 3).x, by_node(&layout, 3).y), (0.0, 0.0));
+    }
+
+    #[test]
+    fn a_box_knows_its_parent_and_whether_it_is_in_a_3d_rendering_context() {
+        // M19.5: each box names the box above it in the tree, through
+        // anonymous boxes, and whether that box holds a 3D rendering
+        // context; an absolutely positioned box hangs under its
+        // containing block's fragment but names its parent all the
+        // same; a box in a context whose backface is hidden is a
+        // containing block for the fixed boxes in it. Nodes: cb 1, p3 2,
+        // mid 3, a 4, bf 5, f 6.
+        let fonts = test_fonts();
+        let docu = dom::Node::document(vec![
+            Element::new("div")
+                .attr("class", "cb")
+                .push(
+                    Element::new("div")
+                        .attr("class", "p3")
+                        .push(
+                            Element::new("div")
+                                .attr("class", "mid")
+                                .push(Element::new("div").attr("class", "a")),
+                        )
+                        .push(
+                            Element::new("div")
+                                .attr("class", "bf")
+                                .push(Element::new("div").attr("class", "f")),
+                        ),
+                )
+                .into(),
+        ]);
+        let sheet = css::parse_stylesheet(
+            "div { margin: 0 } .cb { position: relative; height: 100px }
+             .p3 { transform-style: preserve-3d; padding: 5px }
+             .mid { opacity: 0.5 }
+             .a { position: absolute; top: 0; left: 0; width: 10px; height: 10px }
+             .bf { backface-visibility: hidden }
+             .f { position: fixed; top: 0; left: 0; width: 10px; height: 10px }",
+        )
+        .expect("test css is valid");
+        let (document, boxes) = boxes_of(&docu, &[sheet]);
+        let layout = layout_document_in(&boxes, VIEWPORT, Some(600.0), &fonts);
+        let layout = Laid { document, layout };
+        let node = |n: usize| layout.element(n);
+        assert_eq!(by_node(&layout, 2).parent, Some(node(1)));
+        assert!(!by_node(&layout, 2).in_3d);
+        assert_eq!(by_node(&layout, 3).parent, Some(node(2)));
+        assert!(by_node(&layout, 3).in_3d);
+        // The faded box is a containing block for nothing, so the
+        // absolute box hangs under the preserve-3d box, the containing
+        // block, and names the faded box as its parent.
+        assert_eq!(parent_of(&layout, 4), Some(2));
+        assert_eq!(by_node(&layout, 4).parent, Some(node(3)));
+        assert!(!by_node(&layout, 4).in_3d);
+        // The hidden backface in the context contains the fixed box.
+        assert!(by_node(&layout, 5).in_3d);
+        assert_eq!(parent_of(&layout, 6), Some(5));
+        assert_eq!(by_node(&layout, 6).parent, Some(node(5)));
+        // Against the box's padding box, which begins at its border box
+        // with no border: at the box, 5px into the preserve-3d box.
+        assert_eq!((by_node(&layout, 6).x, by_node(&layout, 6).y), (5.0, 5.0));
+    }
+
+    #[test]
+    fn transformed_table_parts_are_containing_blocks_for_the_fixed_boxes_in_them() {
+        // css-transforms-1 §2 (M19): a transformed cell, row, row group
+        // or caption positions the fixed and absolute boxes inside it
+        // against its own padding box, as a transformed block does, and
+        // keeps their fragments; one with no transform hands them up.
+        // Nodes: table 1, caption 2, tbody 3, tr 4, td 5, div.f 6.
+        let fonts = test_fonts();
+        let doc = |css: &str| {
+            let docu = dom::Node::document(vec![
+                Element::new("table")
+                    .push(Element::new("caption").text("c"))
+                    .push(
+                        Element::new("tbody").push(
+                            Element::new("tr").push(
+                                Element::new("td")
+                                    .text("d")
+                                    .push(Element::new("div").attr("class", "f")),
+                            ),
+                        ),
+                    )
+                    .into(),
+            ]);
+            let sheet = css::parse_stylesheet(&format!(
+                "table, td {{ padding: 0; border-spacing: 0 }} td {{ width: 50px; height: 30px }}
+                 .f {{ position: fixed; top: 1px; left: 2px; width: 10px; height: 10px }} {css}"
+            ))
+            .expect("test css is valid");
+            let (document, boxes) = boxes_of(&docu, &[sheet]);
+            let layout = layout_document_in(&boxes, VIEWPORT, Some(600.0), &fonts);
+            Laid { document, layout }
+        };
+        let layout = doc("td { transform: translateX(0px) }");
+        assert_eq!(parent_of(&layout, 6), Some(5), "the cell");
+        let layout = doc("tr { transform: translateX(0px) }");
+        assert_eq!(parent_of(&layout, 6), Some(4), "the row");
+        let layout = doc("tbody { transform: translateX(0px) }");
+        assert_eq!(parent_of(&layout, 6), Some(3), "the row group");
+        let layout = doc("table { transform: translateX(0px) }");
+        assert_eq!(parent_of(&layout, 6), Some(1), "the table");
+        let layout = doc("");
+        assert_eq!(parent_of(&layout, 6), None, "the viewport");
+        // A caption's own fixed box: nodes as above with the box in the
+        // caption instead, caption 2 holding div.f 3.
+        let docu = dom::Node::document(vec![
+            Element::new("table")
+                .push(
+                    Element::new("caption")
+                        .text("c")
+                        .push(Element::new("div").attr("class", "f")),
+                )
+                .push(Element::new("tr").push(Element::new("td").text("d")))
+                .into(),
+        ]);
+        let sheet = css::parse_stylesheet(
+            "caption { transform: translateX(0px); padding: 4px }
+             .f { position: fixed; top: 1px; left: 2px; width: 10px; height: 10px }",
+        )
+        .expect("test css is valid");
+        let (document, boxes) = boxes_of(&docu, &[sheet]);
+        let layout = layout_document_in(&boxes, VIEWPORT, Some(600.0), &fonts);
+        let layout = Laid { document, layout };
+        assert_eq!(parent_of(&layout, 3), Some(2), "the caption");
+        assert_eq!((by_node(&layout, 3).x, by_node(&layout, 3).y), (2.0, 1.0));
     }
 }

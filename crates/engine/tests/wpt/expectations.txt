@@ -3,7 +3,7 @@
 # named here fails the run, and so does one named here that passes.
 # The steps are those of the milestone a section names, in its design
 # note's section 3: docs/design/flexbox.md for M17, docs/design/grid.md
-# for M18.
+# for M18, docs/design/compositing.md for M19.
 
 # Not in either milestone (docs/design/flexbox.md and docs/design/grid.md,
 # section 2).
@@ -19,3 +19,32 @@ css/css-grid/grid-items/item-with-table-with-infinite-max-intrinsic-width.html  
 css/css-grid/grid-items/table-with-infinite-max-intrinsic-width.html                     a 100% column makes a table's max-content width unbounded (CSS2 17.5.2.2); the reference browsers keep that out of a grid item's contribution, this engine does not
 css/css-grid/grid-model/display-inline-grid.html                                         the reference sets vertical-align: top on an inline box, which inline layout does not read (roadmap M7.7); the inline grid itself sits on its first baseline as in the reference browser
 css/css-grid/layout-algorithm/grid-minimum-contribution-baseline-shim.html               one item's baseline is from an inline-block with vertical-align: top, which inline layout does not read (roadmap M7.7); built without it, the shims and the row match the reference browser
+
+# Not in M19 (docs/design/compositing.md, section 2): the planes of a 3D
+# rendering context are painted whole by the depth of their centres, with
+# no splitting where they cross; a turned, skewed or reflected box is
+# resampled from a layer of its own plane rather than rasterized through
+# its transform as the reference browser rasterizes it.
+css/css-transforms/css-transform-3d-transform-style.html                       the two planes of the context cross along the box's middle, and each shows in front of the other on its side of the line; painted whole by their depth, the child's plane covers the parent's
+css/css-transforms/transform3d-sorting-006.html                                the two planes cross, and each shows in front of the other on its side of the line; painted whole by their depth, one covers the other
+css/css-transforms/ttwf-css-3d-polygon-cycle.html                              the three planes form a cycle, each over the next; painted whole by their depth, no order of them is right
+css/css-transforms/transforms-rotate-translate-scale.html                      a turned box is resampled from a layer of its own plane, and its edges differ from the reference's, rasterized through the transform, by up to 78 levels in 1200 pixels
+css/css-transforms/transform-compound-001.html                                 a turned box is resampled from a layer of its own plane, and its edges differ from the reference's, rasterized through the transform, by up to 48 levels in 892 pixels, past the test's fuzziness of 30 in 500
+css/css-transforms/scale-transform-overlap.html                                a `will-change: transform` box inside a scaled group is a layer resampled under the scale, where the reference draws it through: 340 pixels differ by up to 33 levels
+css/css-transforms/transform3d-perspective-001.html                            a turned box is resampled from a layer of its own plane: 7 pixels differ from the reference by one level, where the test allows none
+css/css-transforms/transform3d-preserve3d-011.html                             two quarter turns about x flatten to a reflection, a negative scale, which is resampled rather than drawn through: the box's edges differ by up to 112 levels
+
+# Gaps outside M19, named at their milestones.
+css/css-transforms/huge-length-tiny-scale.html                                 the body's overflow is not carried to the viewport (css-overflow-3 3.3), so the viewport shows a scrollbar for the 44000px box, which the body's `overflow: hidden` hides in the reference browser
+css/css-transforms/transform-inherit-001.html                                  the body's overflow is not carried to the viewport (css-overflow-3 3.3), so the transformed body clips the box moved past its bottom, which the reference browser's does not
+css/css-transforms/transform-transformed-caption-contains-fixed-position.html  the reference's body has `overflow: hidden`, which is not carried to the viewport (css-overflow-3 3.3), so the body clips the turned box in this engine's render of the reference; the test itself renders as the reference browser renders it
+css/css-transforms/transform-transformed-tbody-contains-fixed-position.html    as transform-transformed-caption-contains-fixed-position.html: the reference's body clips here
+css/css-transforms/transform-transformed-td-contains-fixed-position.html       as transform-transformed-caption-contains-fixed-position.html: the reference's body clips here
+css/css-transforms/transform-transformed-tfoot-contains-fixed-position.html    as transform-transformed-caption-contains-fixed-position.html: the reference's body clips here
+css/css-transforms/transform-transformed-thead-contains-fixed-position.html    as transform-transformed-caption-contains-fixed-position.html: the reference's body clips here
+css/css-transforms/transform-transformed-tr-contains-fixed-position.html       as transform-transformed-caption-contains-fixed-position.html: the reference's body clips here
+css/css-transforms/transform-table-007.html                                    the HTML parser does not insert the `tbody` that HTML's tree construction puts around a `tr` in a `table` (roadmap M15), so the row's parent is the table and the row takes part in the table's 3D rendering context, where the reference browser's `tbody`, flat, ends it
+css/css-transforms/preserve3d-and-flattening-z-order-005.html                  a line holding a 100px inline-block with `vertical-align: top`, which inline layout does not read (roadmap M7.7), is 104px tall here, and the red block after it shows 4px below the green
+css/css-will-change/will-change-fixedpos-cb-002.html                           an inline box is no containing block here (CSS2 10.1), so the span's `will-change: filter` does not position the fixed box in it
+css/css-will-change/will-change-fixedpos-cb-005.html                           an inline box is no containing block here (CSS2 10.1), so the span's `will-change: backdrop-filter` does not position the fixed box in it
+css/css-will-change/will-change-stacking-context-opacity-2.html                an inline element with no content makes no box here (CSS2 9.4.2's empty inline box), so the stacking context its `will-change: opacity` makes has no box to paint the absolutely positioned box in, which paints at the root's layer by its `z-index`

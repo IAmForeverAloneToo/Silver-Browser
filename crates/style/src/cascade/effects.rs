@@ -1025,6 +1025,36 @@ mod tests {
             will_change("Transform-Style"),
             Some(WillChange::TRANSFORM_STYLE)
         );
+        // The properties this engine has not got whose other values
+        // would make a stacking context or a containing block, and the
+        // `-webkit-` aliases.
+        assert_eq!(will_change("filter"), Some(WillChange::FILTER));
+        assert_eq!(
+            will_change("-webkit-backdrop-filter"),
+            Some(WillChange::BACKDROP_FILTER)
+        );
+        assert_eq!(will_change("contain"), Some(WillChange::CONTAIN));
+        assert_eq!(will_change("offset-path"), Some(WillChange::OFFSET_PATH));
+        assert_eq!(will_change("position"), Some(WillChange::POSITION));
+        assert_eq!(will_change("z-index"), Some(WillChange::Z_INDEX));
+        for name in [
+            "clip-path",
+            "mask",
+            "mask-image",
+            "isolation",
+            "mix-blend-mode",
+            "view-transition-name",
+        ] {
+            assert_eq!(will_change(name), Some(WillChange::COMPOSITED), "{name}");
+        }
+        assert_eq!(
+            will_change("-webkit-perspective"),
+            Some(WillChange::PERSPECTIVE)
+        );
+        assert_eq!(
+            will_change("-webkit-transform"),
+            Some(WillChange::TRANSFORM)
+        );
         for value in [
             "",
             "none",

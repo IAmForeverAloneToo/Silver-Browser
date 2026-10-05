@@ -354,6 +354,8 @@ fn childless(fragment: &Fragment) -> Fragment {
         children: Vec::new(),
         tree_order: fragment.tree_order,
         stacking_parent: fragment.stacking_parent,
+        parent: fragment.parent,
+        in_3d: fragment.in_3d,
     }
 }
 

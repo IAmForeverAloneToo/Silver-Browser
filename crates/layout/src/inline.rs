@@ -1681,6 +1681,8 @@ fn close_inline<'a>(
         children,
         tree_order: b.tree_order,
         stacking_parent: None,
+        parent: b.parent,
+        in_3d: b.in_3d,
     }
 }
 /// A text fragment for `word` at `x` on a line whose baseline is
@@ -1708,6 +1710,8 @@ fn text_fragment(
         children: Vec::new(),
         tree_order: 0,
         stacking_parent: None,
+        parent: Some(word.node),
+        in_3d: false,
     }
 }
 
@@ -1792,6 +1796,8 @@ mod tests {
             first_line: None,
             tree_order: 0,
             item: false,
+            parent: None,
+            in_3d: false,
         }
     }
 
@@ -1808,6 +1814,8 @@ mod tests {
             first_line: None,
             tree_order: 0,
             item: false,
+            parent: None,
+            in_3d: false,
         }
     }
 
@@ -2010,6 +2018,8 @@ mod tests {
             first_line: None,
             tree_order: 0,
             item: false,
+            parent: None,
+            in_3d: false,
         }
     }
 

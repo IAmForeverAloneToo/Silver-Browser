@@ -40,7 +40,12 @@ use std::process::{Command, ExitCode};
 use dom::{Document, NodeId};
 
 /// The directories of the checkout whose tests are taken.
-const DIRECTORIES: &[&str] = &["css/css-flexbox", "css/css-grid"];
+const DIRECTORIES: &[&str] = &[
+    "css/css-flexbox",
+    "css/css-grid",
+    "css/css-transforms",
+    "css/css-will-change",
+];
 
 /// Elements that make no box here, or not the box the tests mean.
 const NO_BOX: &[&str] = &[
@@ -258,10 +263,13 @@ fn is_test(rel: &str) -> bool {
         .iter()
         .any(|ext| name.ends_with(ext));
     let stem = name.split('.').next().unwrap_or(name);
+    // A `-manual` test needs a person at the pointer, and wptrunner
+    // does not run it either.
     page && !stem.ends_with("-ref")
         && !stem.ends_with("-notref")
         && !stem.contains("-ref-")
         && !stem.ends_with("-print")
+        && !stem.ends_with("-manual")
 }
 
 /// The test at `rel`, if the rule takes it: how it is run and the files

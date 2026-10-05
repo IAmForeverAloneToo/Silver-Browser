@@ -476,6 +476,10 @@ pub(crate) fn layout_table_contents<'a>(
                         group.children.push(background);
                     }
                 }
+                // The rows' positioned boxes, in the table box's
+                // coordinates, settled at the group when it is a
+                // containing block for them, a transformed one (M19).
+                let mut group_absolutes = Vec::new();
                 for row in &part.children {
                     let mut row_fragment = row_fragment(
                         row,
@@ -486,13 +490,17 @@ pub(crate) fn layout_table_contents<'a>(
                         collapsed.is_some(),
                         &row_rect,
                         &cell_rect,
-                        &mut cell_absolutes,
+                        &mut group_absolutes,
+                        pass,
                     );
                     row_fragment.x -= group.x;
                     row_fragment.y -= group.y;
                     group.children.push(row_fragment);
                     row_index += 1;
                 }
+                let mine = carried(group_absolutes, -group.x, -group.y);
+                let up = settle_absolutes(part, &mut group, &[0.0; 4], mine, pass);
+                cell_absolutes.extend(carried(up, group.x, group.y));
                 table_box.children.push(group);
             }
             BoxKind::Row => {
@@ -506,6 +514,7 @@ pub(crate) fn layout_table_contents<'a>(
                     &row_rect,
                     &cell_rect,
                     &mut cell_absolutes,
+                    pass,
                 );
                 table_box.children.push(fragment);
                 row_index += 1;
@@ -552,7 +561,7 @@ pub(crate) fn layout_table_contents<'a>(
         } else {
             (&mut bottom_captions, &mut bottom_height)
         };
-        let layout = layout_caption(part, table_width, pass);
+        let mut layout = layout_caption(part, table_width, pass);
         let margin_top = layout.margin_top.resolve();
         let margin_bottom = layout.margin_bottom.resolve();
         let y = *height + margin_top;
@@ -563,7 +572,12 @@ pub(crate) fn layout_table_contents<'a>(
         } else {
             table_height
         };
-        caption_absolutes.extend(carried(layout.absolutes, x, y + below));
+        // A positioned or a transformed caption is a containing block
+        // for the positioned boxes in it (M19).
+        let caption_border = Edges::of(&part.style, table_width).border;
+        let mine = std::mem::take(&mut layout.absolutes);
+        let up = settle_absolutes(part, &mut layout.root, &caption_border, mine, pass);
+        caption_absolutes.extend(carried(up, x, y + below));
         stack.push(layout.root.translated(x, y));
         *height = y + layout.height + margin_bottom;
     }
@@ -1393,6 +1407,10 @@ impl CellAlign {
 /// A cell's content laid out at its columns' width.
 struct CellLayout<'a> {
     layout: BlockLayout<'a>,
+    /// The cell's border widths, the collapsed ones in that model: what
+    /// its padding box is inset by, against which it settles the
+    /// positioned boxes it contains (M19).
+    border: [f32; 4],
     /// The border-box height the cell needs: its content's, or its own
     /// `height` and `min-height` when taller (CSS2 §17.5.3: a cell's
     /// height is a minimum), plus its padding and border.
@@ -1449,6 +1467,7 @@ fn layout_cell<'a>(
     let content_height = layout.auto_content_height.max(specified).max(min_height);
     let content_bottom = edges.border[TOP] + edges.padding[TOP] + layout.auto_content_height;
     CellLayout {
+        border: edges.border,
         natural_height: content_height + edges.vertical(),
         extent: layout.auto_content_height + edges.vertical(),
         content_bottom,
@@ -1493,9 +1512,12 @@ fn row_fragment<'a>(
     row_rect: &dyn Fn(usize) -> Rect,
     cell_rect: &dyn Fn(&GridCell<'_>) -> Rect,
     absolutes: &mut Vec<Deferred<'a>>,
+    pass: &Pass<'a>,
 ) -> Fragment {
     let rect = row_rect(index);
     let mut fragment = part_fragment(row, rect);
+    // The positioned boxes the cells hand up, relative to the row.
+    let mut row_absolutes: Vec<Deferred<'a>> = Vec::new();
     let own = grid.row_cells[index].clone();
     if row.style.background_color.a > 0.0 {
         for i in own.clone() {
@@ -1526,23 +1548,26 @@ fn row_fragment<'a>(
         let (dx, dy) = layout.relative;
         cell_fragment.x = r.x - rect.x + dx;
         cell_fragment.y = r.y - rect.y + dy;
-        // The content moves by the cell's alignment; the absolutely
-        // positioned boxes the cell itself places against its padding box
-        // do not, and those carried up keep their static positions in
-        // the content.
+        // The content moves by the cell's alignment, and so do the
+        // static positions of the positioned boxes in it; a cell that
+        // is a containing block for them, a positioned or a transformed
+        // one (M19), settles them against its padding box, at its full
+        // height, and the rest go up through the row.
         let offset = offsets[i];
         for child in &mut cell_fragment.children {
             if !child.style.position.is_out_of_flow() {
                 child.y += offset;
             }
         }
-        absolutes.extend(carried(
-            layout.layout.absolutes,
-            r.x + dx,
-            r.y + dy + offset,
-        ));
+        let mine = carried(layout.layout.absolutes, 0.0, offset);
+        let up = settle_absolutes(cell.b, &mut cell_fragment, &layout.border, mine, pass);
+        row_absolutes.extend(carried(up, r.x - rect.x + dx, r.y - rect.y + dy));
         fragment.children.push(cell_fragment);
     }
+    // A transformed row is a containing block too (M19); it has no
+    // border of its own.
+    let up = settle_absolutes(row, &mut fragment, &[0.0; 4], row_absolutes, pass);
+    absolutes.extend(carried(up, rect.x, rect.y));
     fragment
 }
 
@@ -1999,6 +2024,10 @@ fn inner_style(style: &ComputedStyle) -> ComputedStyle {
     inner.float = Float::None;
     inner.z_index = None;
     inner.inset = [LengthPercentageAuto::Auto; 4];
+    // The transform, opacity and will-change properties apply to the
+    // wrapper, which the captions turn with (css-transforms-1 §3,
+    // M19); the table box inside is not transformed again.
+    inner.effects = None;
     inner
 }
 

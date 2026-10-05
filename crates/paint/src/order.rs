@@ -432,6 +432,10 @@ struct Positioned<'a> {
 /// it is a stacking context; and the accumulated matrix of the
 /// context above the box, the root's full matrix down to the parent's,
 /// multiplied before the perspective, the identity outside a context.
+/// The parent is the box's parent in the box tree, `Fragment::parent`,
+/// not the fragment its own hangs under: an absolutely positioned box
+/// is under its containing block's fragment, while its parent's
+/// perspective and context are what reach it.
 #[derive(Debug, Clone, Copy)]
 struct Space {
     perspective: Option<Matrix>,
@@ -446,6 +450,17 @@ impl Space {
         in_3d: false,
         ahead: Matrix::IDENTITY,
     };
+
+    /// What the children of the box `node`, which gives `self`, give a
+    /// box under its fragment: `self` for the box's own children, and
+    /// nothing for a box whose parent is another.
+    fn for_child(self, f: &Fragment, node: NodeId) -> Space {
+        if f.parent == Some(node) {
+            self
+        } else {
+            Space::FLAT
+        }
+    }
 
     /// The full matrix of the box `f`, at `rect` in the walk's
     /// coordinates with a containing block `cb_width` wide: its own
@@ -487,19 +502,21 @@ impl Positioned<'_> {
     }
 }
 
-/// Why the group of the box `f`, whose matrix is `matrix`, is a layer,
-/// or `None` for a group drawn through (M19, the compositing note's
-/// policy): its matrix rotates, skews or is 3D, it is a `member` of a
-/// 3D rendering context with a matrix that does anything, or its
+/// Why the group of the box `f`, whose matrix is `matrix` flattened, is
+/// a layer, or `None` for a group drawn through (M19, the compositing
+/// note's policy): its matrix rotates, skews or is projective, or its
 /// `will-change` names a transform property, `opacity`, `perspective`
 /// or `transform-style`; a `will-change` naming `contents` makes no
-/// layer.
-fn layer_reason(f: &Fragment, matrix: &Matrix, member: bool) -> Option<LayerReason> {
+/// layer. A member of a 3D rendering context is no layer for being
+/// one: a member whose flattened matrix only scales, a `translateZ()`
+/// under a perspective, is drawn through, sharp, where a layer would
+/// be resampled.
+fn layer_reason(f: &Fragment, matrix: &Matrix) -> Option<LayerReason> {
     let will_change = f.style.effects().will_change;
     if will_change.names(WillChange::CONTENTS) {
         return None;
     }
-    if !matrix.is_identity() && (member || !matrix.translates_and_scales_only()) {
+    if !matrix.is_identity() && !matrix.translates_and_scales_only() {
         return Some(LayerReason::Transformed);
     }
     if will_change.names_any(WillChange::LAYER) {
@@ -511,10 +528,18 @@ fn layer_reason(f: &Fragment, matrix: &Matrix, member: bool) -> Option<LayerReas
 /// Whether the box `f` is a stacking context (CSS2 Appendix E, M19): a
 /// positioned box or a flex or grid item (`item`) whose `z-index` is not
 /// `auto`, or a box whose transform, opacity or will-change properties
-/// make one.
+/// make one — the transform ones on a transformable box alone, not an
+/// inline box (css-transforms-1 §3) — or a box in a 3D rendering
+/// context whose `backface-visibility` is `hidden` (M19.5).
 fn stacking_context(f: &Fragment, item: bool) -> bool {
-    ((f.style.position.is_positioned() || item) && f.style.z_index.is_some())
-        || f.style.effects().is_stacking_context()
+    f.style.is_stacking_context_of(item, transformable(f))
+        || (f.in_3d && f.style.effects().backface_visibility == BackfaceVisibility::Hidden)
+}
+
+/// Whether the fragment is a transformable box's (css-transforms-1 §3):
+/// any box but an inline box's.
+fn transformable(f: &Fragment) -> bool {
+    matches!(f.kind, FragmentKind::Box)
 }
 
 /// Appendix E's passes over the in-flow content of a stacking context,
@@ -755,7 +780,8 @@ impl<'a> Walk<'a, '_> {
     /// the box clips and the viewport does not meet it: nothing under
     /// its clip can show. A clip with no step inside it is left out.
     fn content(&mut self, f: &'a Fragment, emit: Emit, body: impl FnOnce(&mut Self, Rect)) {
-        let contains_all = f.style.effects().contains_all_descendants();
+        let contains_all = f.style.effects().contains_all_of(transformable(f))
+            || (f.in_3d && f.style.effects().backface_visibility == BackfaceVisibility::Hidden);
         if contains_all {
             self.contained += 1;
         }
@@ -898,22 +924,26 @@ impl<'a> Walk<'a, '_> {
             if full.as_ref().is_some_and(|m| m.inverse().is_none()) {
                 return;
             }
-            if f.style.effects().backface_visibility == BackfaceVisibility::Hidden
-                && full.as_ref().is_some_and(|m| m.at(2, 2) < 0.0)
-            {
+            // The 3D rendering context the box establishes, or extends
+            // (§9): its children take part, with its full matrix ahead
+            // of theirs, under its perspective.
+            let preserve = transformable(f)
+                && f.style.effects().used_transform_style(f.style.overflow)
+                    == TransformStyle::Preserve3d;
+            let root_3d = preserve && !space.in_3d;
+            // A hidden backface turned away (§12) hides the box's own
+            // plane; the members of a context it holds are planes of
+            // their own, shown or hidden by their own backfaces.
+            let hidden = f.style.effects().backface_visibility == BackfaceVisibility::Hidden
+                && full.as_ref().is_some_and(|m| m.at(2, 2) < 0.0);
+            if hidden && !preserve {
                 return;
             }
             let opacity = f.style.effects().opacity;
             let transformed = full.is_some();
             let full = full.unwrap_or(Matrix::IDENTITY);
             let matrix = full.flattened();
-            let layer = layer_reason(f, &matrix, space.in_3d);
-            // The 3D rendering context the box establishes, or extends
-            // (§9): its children take part, with its full matrix ahead
-            // of theirs, under its perspective.
-            let preserve = f.style.effects().used_transform_style(f.style.overflow)
-                == TransformStyle::Preserve3d;
-            let root_3d = preserve && !space.in_3d;
+            let layer = layer_reason(f, &matrix);
             let inside = Space {
                 perspective: w.perspective_of(f, rect),
                 in_3d: preserve,
@@ -950,13 +980,18 @@ impl<'a> Walk<'a, '_> {
             // around its plane by depth, furthest first, and those at
             // the plane's own depth in it, at their layers among its
             // positioned descendants (Appendix E), as the reference
-            // browser orders what lies in one plane.
+            // browser orders what lies in one plane — when the box's own
+            // matrix is 2D, under which the group's matrix and a
+            // member's compose as the member's full matrix does; under
+            // a 3D one they do not, and the members at the plane's
+            // depth go after it. A hidden plane keeps nothing in it.
             let (before, after) = if root_3d {
                 let plane = full.depth(rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
+                let nested = full.is_2d() && !hidden;
                 let mut before = Vec::new();
                 let mut after = Vec::new();
                 let mut rest = Vec::new();
-                for p in positioned {
+                for mut p in positioned {
                     if !(p.space.in_3d && stacking_context(p.f, p.item)) {
                         rest.push(p);
                         continue;
@@ -964,9 +999,12 @@ impl<'a> Walk<'a, '_> {
                     let depth = w.depth_of(&p);
                     if depth < plane {
                         before.push((depth, p));
-                    } else if depth > plane {
+                    } else if depth > plane || !nested {
                         after.push((depth, p));
                     } else {
+                        // Inside the group, which has the box's own
+                        // matrix.
+                        p.space.ahead = Matrix::IDENTITY;
                         rest.push(p);
                     }
                 }
@@ -991,28 +1029,30 @@ impl<'a> Walk<'a, '_> {
             for p in before {
                 w.positioned(p);
             }
-            let group = grouped.then(|| {
-                w.steps.push(Step::PushGroup {
-                    fragment: Some(f),
-                    matrix,
-                    opacity,
-                    key: GroupKey::Box(key),
-                    layer,
+            if !hidden {
+                let group = grouped.then(|| {
+                    w.steps.push(Step::PushGroup {
+                        fragment: Some(f),
+                        matrix,
+                        opacity,
+                        key: GroupKey::Box(key),
+                        layer,
+                    });
+                    w.groups.push(composed);
+                    w.steps.len()
                 });
-                w.groups.push(composed);
-                w.steps.len()
-            });
-            w.own(f);
-            w.content(f, Emit::ClipAndScrollbar, |w, padding| {
-                w.layers(&f.children, padding, positioned, has_items(f));
-            });
-            if let Some(inside) = group {
-                w.groups.pop();
-                if w.steps.len() == inside {
-                    // Nothing of it shows: the group is left out with it.
-                    w.steps.pop();
-                } else {
-                    w.steps.push(Step::PopGroup);
+                w.own(f);
+                w.content(f, Emit::ClipAndScrollbar, |w, padding| {
+                    w.layers(&f.children, padding, positioned, has_items(f));
+                });
+                if let Some(inside) = group {
+                    w.groups.pop();
+                    if w.steps.len() == inside {
+                        // Nothing of it shows: the group is left out with it.
+                        w.steps.pop();
+                    } else {
+                        w.steps.push(Step::PopGroup);
+                    }
                 }
             }
             for p in after {
@@ -1052,30 +1092,56 @@ impl<'a> Walk<'a, '_> {
     ) {
         self.shifted(c, containing, |w| {
             w.content(c, Emit::Nothing, |w, padding| {
-                let items = has_items(c);
-                let owner = c.stacking_key();
-                for f in &c.children {
-                    if !matches!(f.kind, FragmentKind::Box)
-                        || !stacking_context(f, items)
-                        || f.stacking_parent.is_some_and(|parent| parent != owner)
-                    {
-                        continue;
-                    }
-                    w.taken.insert(f.stacking_key());
-                    out.push(Positioned {
-                        f,
-                        containing: padding,
-                        chain: w.chain.clone(),
-                        dx: w.dx,
-                        dy: w.dy,
-                        contained: w.contained,
-                        item: items,
-                        space,
-                    });
-                    w.members_under(f, padding, out, space);
-                }
+                w.members_among(&c.children, padding, c, out, space, has_items(c));
             });
         });
+    }
+
+    /// [`Walk::members`] over `fragments` under the context box `c`:
+    /// the stacking contexts among them whose parent is `c`, and those
+    /// under the boxes that are no stacking context, an anonymous box
+    /// say, whose parent is `c` all the same.
+    fn members_among(
+        &mut self,
+        fragments: &'a [Fragment],
+        containing: Rect,
+        c: &'a Fragment,
+        out: &mut Vec<Positioned<'a>>,
+        space: Space,
+        items: bool,
+    ) {
+        let owner = c.stacking_key();
+        for f in fragments {
+            if !matches!(f.kind, FragmentKind::Box)
+                || f.stacking_parent.is_some_and(|parent| parent != owner)
+                || self.taken.contains(&f.stacking_key())
+            {
+                continue;
+            }
+            if !stacking_context(f, items) {
+                self.shifted(f, containing, |w| {
+                    w.content(f, Emit::Nothing, |w, padding| {
+                        w.members_among(&f.children, padding, c, out, space, has_items(f));
+                    });
+                });
+                continue;
+            }
+            if f.parent != Some(c.node) {
+                continue;
+            }
+            self.taken.insert(f.stacking_key());
+            out.push(Positioned {
+                f,
+                containing,
+                chain: self.chain.clone(),
+                dx: self.dx,
+                dy: self.dy,
+                contained: self.contained,
+                item: items,
+                space,
+            });
+            self.members_under(f, containing, out, space);
+        }
     }
 
     /// [`Walk::members`] under the member `f` of a 3D rendering
@@ -1135,6 +1201,9 @@ impl<'a> Walk<'a, '_> {
             }
             let context = stacking_context(f, items);
             let elsewhere = f.stacking_parent.filter(|parent| *parent != owner);
+            // The owner's perspective and context reach its own
+            // children, wherever their fragments hang.
+            let own = space.for_child(f, owner.0);
             if f.style.position.is_positioned() || context {
                 let p = Positioned {
                     f,
@@ -1144,22 +1213,24 @@ impl<'a> Walk<'a, '_> {
                     dy: self.dy,
                     contained: self.contained,
                     item: items,
-                    space,
+                    space: own,
                 };
                 match elsewhere {
                     Some(parent) => self.adopted.entry(parent).or_default().push(p),
                     None => out.push(p),
                 }
                 if context {
-                    if space.in_3d && elsewhere.is_none() {
-                        self.members_under(f, containing, out, space);
+                    if own.in_3d && elsewhere.is_none() {
+                        self.members_under(f, containing, out, own);
                     }
                     continue;
                 }
             }
             // The children of a box that is no stacking context are
-            // under no perspective and in no 3D rendering context: both
-            // make one.
+            // under no perspective and in no 3D rendering context of
+            // its own, both making one; the owner's reach its children
+            // among them, inside an anonymous box say, which `space`
+            // carries on for.
             match elsewhere {
                 Some(parent) => {
                     let mut inside = Vec::new();
@@ -1179,7 +1250,7 @@ impl<'a> Walk<'a, '_> {
                 }
                 None => self.shifted(f, containing, |w| {
                     w.content(f, Emit::Nothing, |w, padding| {
-                        w.collect(&f.children, padding, owner, out, has_items(f), Space::FLAT);
+                        w.collect(&f.children, padding, owner, out, has_items(f), space);
                     });
                 }),
             }
@@ -2825,5 +2896,238 @@ mod tests {
                 "text p"
             ]
         );
+    }
+
+    #[test]
+    fn perspective_on_an_inline_box_makes_no_stacking_context() {
+        // css-transforms-1 §3, css-transforms-2 §10: an inline box is
+        // not transformable, so its `perspective` makes no stacking
+        // context, and the box with a negative `z-index` inside it goes
+        // under the root's content rather than inside a group of the
+        // span's. Nodes div 1, span.p 2, div.a 3.
+        let layout = layout_of(
+            Element::new("div").push(
+                Element::new("span")
+                    .attr("class", "p")
+                    .text("x")
+                    .push(Element::new("div").attr("class", "a")),
+            ),
+            "div { margin: 0; } .p { perspective: 100px; }
+             .a { position: absolute; z-index: -1; width: 10px; height: 10px; }",
+        );
+        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+        assert_eq!(
+            content(&layout, &steps),
+            ["box 1", "box 3", "box 2", "text x"]
+        );
+    }
+
+    #[test]
+    fn a_member_with_its_backface_hidden_is_a_stacking_context() {
+        // css-transforms-2 §9 (M19.5): in a 3D rendering context, a box
+        // whose `backface-visibility` is `hidden` is a stacking context
+        // and a containing block, so the box inside it with a negative
+        // `z-index` paints inside its group, over the sibling before it.
+        // Nodes div.outer 1, div.sibling 2, div.inner 3, div.positioned
+        // 4.
+        let layout = layout_of(
+            Element::new("div")
+                .attr("class", "outer")
+                .push(Element::new("div").attr("class", "sibling"))
+                .push(
+                    Element::new("div")
+                        .attr("class", "inner")
+                        .push(Element::new("div").attr("class", "positioned")),
+                ),
+            "div { margin: 0; width: 100px; height: 100px; }
+             .outer { transform-style: preserve-3d; }
+             .inner { backface-visibility: hidden; }
+             .positioned { position: absolute; top: -100px; z-index: -1; }",
+        );
+        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+        assert_eq!(
+            content(&layout, &steps),
+            ["box 1", "box 2", "group 3 1", "box 3", "box 4", "endgroup"]
+        );
+        let rect = |node: usize| {
+            steps
+                .iter()
+                .find_map(|s| match s {
+                    Step::Box { fragment, rect } if layout.number(fragment.node) == node => {
+                        Some(*rect)
+                    }
+                    _ => None,
+                })
+                .expect("the box has a step")
+        };
+        assert_eq!(rect(4).y, 0.0, "against the hidden backface's box at 100");
+    }
+
+    #[test]
+    fn a_contexts_membership_and_a_perspective_follow_the_boxes_parent() {
+        // css-transforms-2 §9, §10 (M19.5): an absolutely positioned box
+        // hangs under its containing block's fragment, but takes part in
+        // a 3D rendering context, and is under a perspective, by its
+        // parent in the box tree alone. Nodes div.cb 1, div.parent 2,
+        // div.abspos 3, div.sibling 4: the box pushed forward further
+        // than its sibling is no member, and stays at its layer in the
+        // plane, before the sibling, which comes after the plane.
+        let layout = layout_of(
+            Element::new("div")
+                .attr("class", "cb")
+                .push(
+                    Element::new("div")
+                        .attr("class", "parent")
+                        .push(Element::new("div").attr("class", "abspos")),
+                )
+                .push(Element::new("div").attr("class", "sibling")),
+            "div { margin: 0; width: 100px; height: 100px; }
+             .cb { transform-style: preserve-3d; position: relative; }
+             .abspos { position: absolute; top: 0; left: 0; transform: translateZ(20px); }
+             .sibling { position: absolute; top: 0; left: 0; transform: translateZ(10px); }",
+        );
+        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+        assert_eq!(
+            content(&layout, &steps),
+            [
+                "box 1",
+                "box 2",
+                "group 3 1",
+                "box 3",
+                "endgroup",
+                "group 4 1",
+                "box 4",
+                "endgroup"
+            ]
+        );
+        // The perspective of a box reaches its children, not a grandchild
+        // whose containing block it is: nodes div.outer 1, div.middle 2,
+        // div.inner 3, the inner box's matrix the identity, flattened,
+        // not the half scale the perspective would make of it.
+        let layout = layout_of(
+            Element::new("div").attr("class", "outer").push(
+                Element::new("div")
+                    .attr("class", "middle")
+                    .push(Element::new("div").attr("class", "inner")),
+            ),
+            "div { margin: 0; width: 100px; height: 100px; }
+             .outer { position: relative; perspective: 100px; }
+             .inner { transform: translateZ(-100px); position: absolute; top: 0; left: 0; }",
+        );
+        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+        assert_eq!(
+            content(&layout, &steps),
+            ["box 1", "box 2", "group 3 1", "box 3", "endgroup"]
+        );
+    }
+
+    #[test]
+    fn members_in_the_plane_of_a_2d_root_nest_in_its_group_with_their_own_matrices() {
+        // M19.5: a root moved by a translation, which is 2D, holds the
+        // members at its plane's depth inside its group, each with its
+        // own matrix alone, so a member's translation cancels the
+        // root's: nodes div.o 1, div.m 2, div.g 3, the last at the
+        // origin again.
+        let layout = layout_of(
+            Element::new("div").attr("class", "o").push(
+                Element::new("div")
+                    .attr("class", "m")
+                    .push(Element::new("div").attr("class", "g")),
+            ),
+            "div { margin: 0; width: 100px; height: 100px; }
+             .o { transform-style: preserve-3d; transform: translateX(200%); }
+             .m { transform-style: preserve-3d; }
+             .g { transform: translateX(-200px); }",
+        );
+        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+        assert_eq!(
+            content(&layout, &steps),
+            [
+                "group 1 1 [1.0, 0.0, 0.0, 1.0, 200.0, 0.0]",
+                "box 1",
+                "group 2 1",
+                "box 2",
+                "endgroup",
+                "group 3 1 [1.0, 0.0, 0.0, 1.0, -200.0, 0.0]",
+                "box 3",
+                "endgroup",
+                "endgroup"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_hidden_plane_turned_away_keeps_the_members_of_its_context() {
+        // css-transforms-2 §12 (M19.5): a box turned away with its
+        // backface hidden paints nothing of its own plane, while a
+        // member of the context it holds, whose backface is shown, is
+        // painted, turned with it. Nodes div.o 1, div.w 2.
+        let layout = layout_of(
+            Element::new("div")
+                .attr("class", "o")
+                .push(Element::new("div").attr("class", "w")),
+            "div { margin: 0; width: 100px; height: 100px; }
+             .o { transform: rotateY(180deg); backface-visibility: hidden;
+                  transform-style: preserve-3d; }
+             .w { will-change: transform; }",
+        );
+        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+        assert_eq!(
+            content(&layout, &steps),
+            [
+                "group 2 1 [-1.0, 0.0, 0.0, 1.0, 100.0, 0.0] Transformed",
+                "box 2",
+                "endgroup"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_table_is_transformed_once_with_its_caption() {
+        // css-transforms-1 §3 (M19): the transform of a table applies
+        // to its wrapper box, which the caption is in, and the table box
+        // inside is not transformed again. Nodes table 1, caption 2,
+        // tr 3, td 4, with the wrapper's and the table box's steps both
+        // the table's.
+        let layout = layout_of(
+            Element::new("table")
+                .push(Element::new("caption").text("c"))
+                .push(Element::new("tr").push(Element::new("td").text("d"))),
+            "table { transform: translate(100px); } caption, td { padding: 0; }",
+        );
+        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+        let names = content(&layout, &steps);
+        assert_eq!(
+            names.iter().filter(|n| n.starts_with("group")).count(),
+            1,
+            "{names:?}"
+        );
+        assert_eq!(names[0], "group 1 1 [1.0, 0.0, 0.0, 1.0, 100.0, 0.0]");
+    }
+
+    #[test]
+    fn a_block_hoisted_out_of_an_inline_keeps_the_inline_as_its_parent() {
+        // CSS2 §9.2.1.1, css-transforms-2 §9 (M19.5): the block inside
+        // a span is hoisted beside the span's halves, but its parent is
+        // the span, which is not transformable and holds no 3D
+        // rendering context, so the block is no member of the box's
+        // around it: it stays in the plane, inside the box's group,
+        // with the identity its `translateZ()` flattens to. Nodes
+        // div.outer 1, span 2, div.inner 3.
+        let layout = layout_of(
+            Element::new("div").attr("class", "outer").push(
+                Element::new("span")
+                    .text("a")
+                    .push(Element::new("div").attr("class", "inner").text("b")),
+            ),
+            "div { margin: 0; } .outer { transform-style: preserve-3d; transform: translateX(10px); }
+             .inner { transform: translateZ(5px); }",
+        );
+        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+        let names = content(&layout, &steps);
+        assert_eq!(names[0], "group 1 1 [1.0, 0.0, 0.0, 1.0, 10.0, 0.0]");
+        assert_eq!(names[names.len() - 1], "endgroup", "{names:?}");
+        assert!(names.contains(&"group 3 1".to_string()), "{names:?}");
+        assert_eq!(names.iter().filter(|n| n.starts_with("group")).count(), 2);
     }
 }

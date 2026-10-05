@@ -839,12 +839,20 @@ fn push_border(items: &mut Vec<DisplayItem>, f: &Fragment, rect: Rect, widths: [
             // A run's end is cut where the side beyond it has a band of
             // this slot, which a run painted before this one holds: the
             // run before it at its start, and at the last run's end the
-            // first run, round the corner.
+            // first run, round the corner; and where the side beyond it
+            // is transparent, since nothing paints over the corner then
+            // and the mitre is the band's own edge (a transparent side
+            // keeps its width, CSS2 §8.5.2).
             let (first, last) = (run[0], run[run.len() - 1]);
+            let (before, beyond) = ((first + 3) % 4, (last + 1) % 4);
+            let clear = |side: usize| band_of(side).is_some_and(|b| b.color.a == 0);
             let cuts = (
-                i > 0 && band_of((first + 3) % 4).is_some(),
-                i + 1 == count && band_of((last + 1) % 4).is_some(),
+                band_of(before).is_some() && (i > 0 || clear(before)),
+                band_of(beyond).is_some() && (i + 1 == count || clear(beyond)),
             );
+            if band.color.a == 0 {
+                continue;
+            }
             items.push(DisplayItem::Polygon {
                 points: run_polygon(run, geometry, band.a, band.b, cuts),
                 color: band.color,
@@ -1316,6 +1324,42 @@ mod fragment_tests {
         );
         assert!(quads(&list).is_empty() && polygons(&list).is_empty());
         assert_eq!(rects(&list).len(), 5);
+    }
+
+    #[test]
+    fn a_transparent_border_side_keeps_its_width_at_the_mitre() {
+        // CSS2 §8.5.2: a transparent border has its width, so the side
+        // next to it ends on the mitre to it, with nothing painted over
+        // the corner: the top side is a trapezoid cut at its start, and
+        // the transparent side paints nothing.
+        let list = display_list_of(
+            Element::new("div"),
+            "div { width: 100px; height: 50px; margin: 0; box-sizing: border-box;
+                   border-top: 10px solid #ff0000; border-left: 20px solid transparent;
+                   border-right: 0 solid #000000; border-bottom: 0 solid #000000; }",
+        );
+        let bands = polygons(&list);
+        assert_eq!(bands.len(), 1, "{bands:?}");
+        let (top, red) = &bands[0];
+        assert_eq!(*red, Rgba8::rgb(255, 0, 0));
+        assert_eq!(
+            *top,
+            vec![(0.0, 0.0), (100.0, 0.0), (100.0, 10.0), (20.0, 10.0)]
+        );
+        // The triangle a border makes of a box with no size: its top
+        // side cut at both ends by the transparent sides.
+        let list = display_list_of(
+            Element::new("div"),
+            "div { width: 0; height: 0; margin: 0;
+                   border-top: 100px solid #00ff00; border-left: 100px solid transparent;
+                   border-right: 100px solid transparent; border-bottom: 0 solid #000000; }",
+        );
+        let bands = polygons(&list);
+        assert_eq!(bands.len(), 1, "{bands:?}");
+        assert_eq!(
+            bands[0].0,
+            vec![(0.0, 0.0), (200.0, 0.0), (100.0, 100.0), (100.0, 100.0)]
+        );
     }
 
     #[test]

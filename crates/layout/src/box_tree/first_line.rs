@@ -177,6 +177,8 @@ fn add(recascade: &dyn Recascade, container: &mut LayoutBox, path: &[usize]) {
         first_line: None,
         tree_order: 0,
         item: false,
+        parent: None,
+        in_3d: false,
     };
     match &mut run.first_line {
         Some(line) => {
