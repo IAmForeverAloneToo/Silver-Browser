@@ -1801,6 +1801,7 @@ impl Engine {
                 Step::PopClip => {
                     clips.pop();
                 }
+                Step::PushGroup { .. } | Step::PopGroup => {}
                 Step::Scrollbar { .. } => {}
             }
         }
@@ -1932,6 +1933,7 @@ impl Engine {
                 Step::PopClip => {
                     chain.pop();
                 }
+                Step::PushGroup { .. } | Step::PopGroup => {}
                 Step::Scrollbar { .. } => {}
             }
         }
@@ -3253,6 +3255,69 @@ mod tests {
         );
         assert_eq!(engine.hit_test(110.0, 20.0), Some(g));
         assert_eq!(engine.layout(200.0).height, 1040.0);
+    }
+
+    #[test]
+    fn transformed_and_faded_boxes_are_drawn_where_their_matrices_put_them() {
+        // M19: a translated box's pixels are where the translation puts
+        // them and not where layout did; a scaled box covers its scaled
+        // area; a faded box blends with what is under it; a turned box
+        // keeps its centre and bares its old corner; and a changed
+        // transform is drawn again in part.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0 }
+                    div { width: 20px; height: 20px; background-color: #ff0000 }
+                    .t { transform: translate(100px, 10px) }
+                    .s { transform: scale(2); transform-origin: 0 0; margin-top: 10px }
+                    .o { opacity: 0.5; margin-top: 30px }
+                    .r { transform: rotate(45deg); margin-top: 10px }</style>\
+             <div class=t id=t></div><div class=s id=s></div><div class=o id=o></div>\
+             <div class=r id=r></div>",
+        );
+        let pixels = engine.frame(200, 160);
+        let at = |x, y| px(&pixels, 200, x, y);
+        let red = [0xff, 0x00, 0x00, 0xff];
+        let white = [0xff, 0xff, 0xff, 0xff];
+        assert_eq!(at(110, 20), red, "translated");
+        assert_eq!(at(10, 10), white, "not where layout put it");
+        assert_eq!(at(30, 60), red, "scaled to 40 by 40 from (0, 30)");
+        assert_eq!(at(45, 60), white);
+        let faded = at(10, 90);
+        assert!(
+            faded[0] == 255 && (faded[1] as i32 - 128).abs() <= 1 && faded[1] == faded[2],
+            "half red over white: {faded:?}"
+        );
+        // The turned box, 20 by 20 at (0, 110), about its centre (10,
+        // 120): the centre red, the old corner bare, the point 12px
+        // below the centre, inside the turned box, red.
+        assert_eq!(at(10, 120), red);
+        assert_eq!(at(1, 111), white);
+        assert_eq!(at(10, 132), red);
+        // A new transform redraws the box's old and new places, not the
+        // frame.
+        let t = node_by_id(&engine, "t");
+        engine.mutate(|document| {
+            document
+                .set_attribute(t, "style", "transform: translate(50px, 10px)")
+                .expect("an element");
+        });
+        let pixels = engine.frame(200, 160);
+        let at = |x, y| px(&pixels, 200, x, y);
+        assert_eq!(at(60, 20), red);
+        assert_eq!(at(110, 20), white);
+        match engine.redrawn() {
+            render::Redrawn::Rects(rects) => {
+                let covers = |x: u32, y: u32| {
+                    rects
+                        .iter()
+                        .any(|r| r.x0 <= x && x < r.x1 && r.y0 <= y && y < r.y1)
+                };
+                assert!(covers(60, 20) && covers(110, 20), "{rects:?}");
+                assert!(!covers(10, 120), "the turned box is left alone: {rects:?}");
+            }
+            render::Redrawn::Whole => panic!("drawn whole"),
+        }
     }
 
     #[test]

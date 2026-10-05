@@ -1747,7 +1747,9 @@ name = "render"
 version = "0.0.1"
 dependencies = [
  "ab_glyph",
+ "dom",
  "paint",
+ "style",
  "text",
  "tiny-skia",
 ]

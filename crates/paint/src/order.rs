@@ -64,6 +64,7 @@ use layout::{Fragment, FragmentKind, StackingKey};
 use style::computed::{
     BOTTOM, ComputedStyle, Float, LEFT, LengthPercentageAuto, Overflow, Position, RIGHT, TOP,
 };
+use style::transform::Matrix;
 
 use crate::{ScrollOffsets, Viewport};
 
@@ -130,6 +131,22 @@ pub enum Step<'a> {
     PushClip { node: Option<NodeId>, rect: Rect },
     /// The end of the innermost [`Step::PushClip`].
     PopClip,
+    /// Everything up to the matching [`Step::PopGroup`] is the stacking
+    /// context of `fragment`, a box with a transform or an opacity below
+    /// one (M19): its own step, its content and its positioned
+    /// descendants. The steps inside are in the coordinates the box
+    /// would have with no transform, and `matrix` maps them to the
+    /// coordinates the group sits in, in viewport coordinates, the box's
+    /// own matrix about its border box where the walk has it; the
+    /// group is composited with `opacity`. A box whose matrix is
+    /// singular is not displayed at all, and has no steps.
+    PushGroup {
+        fragment: &'a Fragment,
+        matrix: Matrix,
+        opacity: f32,
+    },
+    /// The end of the innermost [`Step::PushGroup`].
+    PopGroup,
     /// A scroll container's place for its overlay scrollbar (M10.5):
     /// over its padding box `rect`, scrolled to `offset`. An indicator,
     /// not a control: hit testing passes over it.
@@ -459,6 +476,27 @@ impl<'a> Walk<'a, '_> {
     /// tree order: the roots layout moved out of the root element's.
     fn stacking(&mut self, f: &'a Fragment, containing: Rect, extra: &'a [Fragment]) {
         self.shifted(f, containing, |w| {
+            // The group the context is (M19): its matrix in viewport
+            // coordinates, about the box where the walk has it, and its
+            // opacity. A singular matrix displays nothing.
+            let rect = w.rect_of(f);
+            let matrix = f.matrix(containing.w).map(|m| {
+                Matrix::translate(rect.x, rect.y, 0.0)
+                    .then(&m)
+                    .then(&Matrix::translate(-rect.x, -rect.y, 0.0))
+            });
+            if matrix.as_ref().is_some_and(|m| m.inverse().is_none()) {
+                return;
+            }
+            let opacity = f.style.effects().opacity;
+            let group = (matrix.is_some() || opacity < 1.0).then(|| {
+                w.steps.push(Step::PushGroup {
+                    fragment: f,
+                    matrix: matrix.unwrap_or(Matrix::IDENTITY),
+                    opacity,
+                });
+                w.steps.len()
+            });
             w.own(f);
             let key = f.stacking_key();
             let mut positioned = Vec::new();
@@ -472,6 +510,14 @@ impl<'a> Walk<'a, '_> {
             w.content(f, Emit::ClipAndScrollbar, |w, padding| {
                 w.layers(&f.children, padding, positioned, has_items(f));
             });
+            if let Some(inside) = group {
+                if w.steps.len() == inside {
+                    // Nothing of it shows: the group is left out with it.
+                    w.steps.pop();
+                } else {
+                    w.steps.push(Step::PopGroup);
+                }
+            }
         });
     }
 
@@ -814,6 +860,20 @@ mod tests {
                     format!("clip {node} {} {} {} {}", rect.x, rect.y, rect.w, rect.h)
                 }
                 Step::PopClip => "pop".to_string(),
+                Step::PushGroup {
+                    fragment,
+                    matrix,
+                    opacity,
+                } => {
+                    let node = layout.number(fragment.node);
+                    match matrix.to_2d() {
+                        Some(m) if !matrix.is_identity() => {
+                            format!("group {node} {opacity} {m:?}")
+                        }
+                        _ => format!("group {node} {opacity}"),
+                    }
+                }
+                Step::PopGroup => "endgroup".to_string(),
                 Step::Scrollbar { offset, .. } => format!("scrollbar {offset}"),
             })
             .collect()
@@ -1526,11 +1586,11 @@ mod tests {
     fn a_transform_or_an_opacity_makes_a_stacking_context_painted_at_the_zero_layer() {
         // css-transforms-1 §2, css-color-4 §3.2 (M19): a box with an
         // opacity below one or a transform is a stacking context,
-        // painted as one, at the layer of positioned boxes with
-        // `z-index: auto` or `0` in tree order; a `z-index` on one that
-        // is not positioned does not apply. <div><p class=o>a</p>
-        // <p>b</p><p class=t>c</p><p class=z>d</p></div>: nodes div 1,
-        // p.o 2, p 3, p.t 4, p.z 5.
+        // painted as one, in a group of its own, at the layer of
+        // positioned boxes with `z-index: auto` or `0` in tree order; a
+        // `z-index` on one that is not positioned does not apply.
+        // <div><p class=o>a</p><p>b</p><p class=t>c</p><p class=z>d</p>
+        // </div>: nodes div 1, p.o 2, p 3, p.t 4, p.z 5.
         let layout = layout_of(
             Element::new("div")
                 .push(Element::new("p").attr("class", "o").text("a"))
@@ -1544,11 +1604,24 @@ mod tests {
         assert_eq!(
             names(&layout, &steps),
             [
-                "box 1", "box 3", "text b", "box 2", "text a", "box 4", "text c", "box 5", "text d"
+                "box 1",
+                "box 3",
+                "text b",
+                "group 2 0.5",
+                "box 2",
+                "text a",
+                "endgroup",
+                "group 4 1 [1.0, 0.0, 0.0, 1.0, 1.0, 0.0]",
+                "box 4",
+                "text c",
+                "endgroup",
+                "box 5",
+                "text d"
             ]
         );
         // A positioned transformed box takes its `z-index`: a negative
-        // one goes under the in-flow content; a flex item's applies too.
+        // one goes under the in-flow content, and an identity matrix
+        // still makes a group; a flex item's `z-index` applies too.
         let layout = layout_of(
             Element::new("div")
                 .push(Element::new("p").attr("class", "n").text("a"))
@@ -1558,7 +1631,15 @@ mod tests {
         let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
         assert_eq!(
             names(&layout, &steps),
-            ["box 1", "box 2", "text a", "box 3", "text b"]
+            [
+                "box 1",
+                "group 2 1",
+                "box 2",
+                "text a",
+                "endgroup",
+                "box 3",
+                "text b"
+            ]
         );
         let layout = layout_of(
             Element::new("div")
@@ -1569,19 +1650,27 @@ mod tests {
         let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
         assert_eq!(
             names(&layout, &steps),
-            ["box 1", "box 2", "text a", "box 3", "text b"]
+            [
+                "box 1",
+                "group 2 0.5",
+                "box 2",
+                "text a",
+                "endgroup",
+                "box 3",
+                "text b"
+            ]
         );
         // A stacking context keeps its own positioned descendants, even
         // one whose containing block is above it: an absolutely
         // positioned box with `z-index: 9` inside a faded box, which is
         // not positioned, hangs under the root's fragment by layout and
-        // still paints inside the faded box, under a sibling with
-        // `z-index: 1` outside. <div><div class=o><div class=a>a</div>
-        // </div><p class=z>b</p></div>: nodes div 1, div.o 2, div.a 3,
-        // p.z 4; with the root `position: relative` too, so that the
-        // box hangs under it rather than among the roots; and with a
-        // faded `span` for the box, an inline box being no containing
-        // block but a stacking context all the same.
+        // still paints inside the faded box's group, under a sibling
+        // with `z-index: 1` outside. <div><div class=o><div class=a>a
+        // </div></div><p class=z>b</p></div>: nodes div 1, div.o 2,
+        // div.a 3, p.z 4; with the root `position: relative` too, so
+        // that the box hangs under it rather than among the roots; and
+        // with a faded `span` for the box, an inline box being no
+        // containing block but a stacking context all the same.
         for root_css in ["", "div { position: relative; }"] {
             let layout = layout_of(
                 Element::new("div")
@@ -1600,14 +1689,23 @@ mod tests {
             let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
             assert_eq!(
                 names(&layout, &steps),
-                ["box 1", "box 2", "box 3", "text a", "box 4", "text b"],
+                [
+                    "box 1",
+                    "group 2 0.5",
+                    "box 2",
+                    "box 3",
+                    "text a",
+                    "endgroup",
+                    "box 4",
+                    "text b"
+                ],
                 "{root_css:?}"
             );
         }
         // <div><p><span class=o>x<b class=a>a</b></span></p><p class=z>b
         // </p></div>: nodes div 1, p 2, span.o 3, b.a 4, p.z 5. The
         // span's box on its line is painted at the zero layer with the
-        // absolutely positioned box inside it.
+        // absolutely positioned box inside its group.
         let layout = layout_of(
             Element::new("div")
                 .push(
@@ -1626,8 +1724,50 @@ mod tests {
         assert_eq!(
             names(&layout, &steps),
             [
-                "box 1", "box 2", "box 3", "text x", "box 4", "text a", "box 5", "text b"
+                "box 1",
+                "box 2",
+                "group 3 0.5",
+                "box 3",
+                "text x",
+                "box 4",
+                "text a",
+                "endgroup",
+                "box 5",
+                "text b"
             ]
+        );
+        // A box whose matrix is singular, and all inside it, is not
+        // displayed: no steps at all. Nodes div 1, p.s 2, p 3.
+        let layout = layout_of(
+            Element::new("div")
+                .push(Element::new("p").attr("class", "s").text("a"))
+                .push(Element::new("p").text("b")),
+            "div, p { margin: 0; } .s { transform: scale(0); }",
+        );
+        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+        assert_eq!(names(&layout, &steps), ["box 1", "box 3", "text b"]);
+        // The group's matrix is about the box where the walk has it, in
+        // viewport coordinates: a box at (0, 20) 100 by 50, scaled by 2
+        // about its centre, with the viewport scrolled by 5.
+        let layout = layout_of(
+            Element::new("div")
+                .push(Element::new("p").text("a"))
+                .push(Element::new("p").attr("class", "s").text("b")),
+            "div, p { margin: 0; height: 20px; } .s { transform: scale(2); width: 100px; height: 50px; }",
+        );
+        let viewport = Viewport {
+            width: 800.0,
+            height: 600.0,
+            scroll_y: 5.0,
+        };
+        let steps = paint_order(&layout.roots, viewport, &());
+        // Origin at (50, 40) in viewport coordinates: translate(50, 40)
+        // scale(2) translate(-50, -40) is matrix(2, 0, 0, 2, -50, -40).
+        assert!(
+            names(&layout, &steps)
+                .contains(&"group 3 1 [2.0, 0.0, 0.0, 2.0, -50.0, -40.0]".to_string()),
+            "{:?}",
+            names(&layout, &steps)
         );
     }
 

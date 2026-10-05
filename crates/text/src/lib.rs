@@ -24,7 +24,7 @@ use std::fmt;
 use std::ops::Range;
 use std::sync::Arc;
 
-use ab_glyph::{Font as _, Glyph, GlyphId, Point, PxScale};
+use ab_glyph::{Font as _, Glyph, GlyphId, Point, PxScale, ScaleFont as _};
 // Re-exported: `Script` is already part of this crate's own public API
 // (`itemize`, `FontCollection::font_for`/`shape`), so a consumer like
 // `render` can name it as `text::Script` without taking its own direct
@@ -543,6 +543,52 @@ pub fn rasterize_glyph(font: &ab_glyph::FontArc, glyph_id: u16, size_px: f32) ->
         top,
         coverage,
     }
+}
+
+/// One curve of a glyph's outline (M19): points in CSS pixels from the
+/// pen position on the baseline, y down. The curves of a contour follow
+/// one another, each starting where the one before it ends, and a
+/// contour ends where it started; a curve that starts elsewhere begins
+/// the next contour.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Curve {
+    /// A straight line.
+    Line((f32, f32), (f32, f32)),
+    /// A quadratic Bézier curve, its control point in the middle.
+    Quad((f32, f32), (f32, f32), (f32, f32)),
+    /// A cubic Bézier curve, its two control points in the middle.
+    Cubic((f32, f32), (f32, f32), (f32, f32), (f32, f32)),
+}
+
+/// The outline of one glyph of `font` at `size_px`, the em, as curves
+/// in pixels from the pen (M19): what a raster draws when the glyph is
+/// transformed in a way a mask cannot be, scaled unevenly say. `None`
+/// for a glyph without an outline, or a size that is not a finite
+/// positive number.
+pub fn glyph_outline(font: &ab_glyph::FontArc, glyph_id: u16, size_px: f32) -> Option<Vec<Curve>> {
+    if !size_px.is_finite() || size_px <= 0.0 {
+        return None;
+    }
+    let outline = font.outline(GlyphId(glyph_id))?;
+    let factor = font.as_scaled(px_scale(font, size_px)).scale_factor();
+    let (h, v) = (factor.horizontal, factor.vertical);
+    if !(h.is_finite() && v.is_finite()) {
+        return None;
+    }
+    let at = |p: Point| (p.x * h, -p.y * v);
+    Some(
+        outline
+            .curves
+            .iter()
+            .map(|curve| match *curve {
+                ab_glyph::OutlineCurve::Line(a, b) => Curve::Line(at(a), at(b)),
+                ab_glyph::OutlineCurve::Quad(a, b, c) => Curve::Quad(at(a), at(b), at(c)),
+                ab_glyph::OutlineCurve::Cubic(a, b, c, d) => {
+                    Curve::Cubic(at(a), at(b), at(c), at(d))
+                }
+            })
+            .collect(),
+    )
 }
 
 /// Splits `text` into maximal same-script runs (roadmap M8.1's

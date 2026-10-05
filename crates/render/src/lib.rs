@@ -8,7 +8,11 @@
 use std::collections::HashMap;
 
 use paint::{DisplayItem, DisplayList, Rgba8};
-use text::{FontCollection, FontError, GlyphMask, Script, ShapedGlyph, rasterize_glyph};
+use style::transform::Matrix;
+use text::{
+    Curve, FontCollection, FontError, GlyphMask, MAX_MASK_PIXELS, Script, ShapedGlyph,
+    glyph_outline, rasterize_glyph,
+};
 
 /// The most pixels one frame may have: an 8192-by-8192 frame is 256 MiB
 /// of pixels. A larger request gets an empty buffer rather than an
@@ -93,16 +97,6 @@ impl Clip {
         let (x0, x1) = self.columns(width as i64);
         let (y0, y1) = self.rows(height as i64);
         PixelRect::new(x0, y0, x1, y1)
-    }
-
-    /// Every pixel it reaches into, within a `width` by `height` frame:
-    /// those anything drawn under the clip can change, an anti-aliased
-    /// edge along it included.
-    fn reach(self, width: u32, height: u32) -> Option<PixelRect> {
-        if self.is_empty() {
-            return None;
-        }
-        PixelRect::around(self.x0, self.y0, self.x1, self.y1, width, height)
     }
 }
 
@@ -203,40 +197,173 @@ pub enum Redrawn {
     Rects(Vec<PixelRect>),
 }
 
-/// The clips in force (M9.3), as a raster meets them in a list: each
-/// entry is already intersected with the ones under it, so the
-/// innermost is the whole clip, and the frame is the clip when none is.
-struct Clips {
-    frame: Clip,
-    stack: Vec<Clip>,
+/// A group being drawn into (M19): the groups around it composed into
+/// one matrix, from the group's coordinates to the raster's; whether
+/// the group is composited from a scratch of its own rather than drawn
+/// through the raster, which [`State::needs_scratch`] decides; and how
+/// many clips were in force when it began, since a clip the group
+/// leaves open ends with it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct GroupState {
+    matrix: Matrix,
+    scratch: bool,
+    clips: usize,
 }
 
-impl Clips {
+/// The state a raster carries through a list (M9.3, M19): the clips in
+/// force, each already intersected with the ones under it and mapped
+/// to the raster's coordinates, so that the innermost is the whole clip
+/// and the frame is the clip when none is; and the groups being drawn
+/// into.
+#[derive(Debug, Clone, PartialEq)]
+struct State {
+    frame: Clip,
+    clips: Vec<Clip>,
+    groups: Vec<GroupState>,
+}
+
+impl State {
     fn new(width: u32, height: u32) -> Self {
-        Clips {
+        State {
             frame: Clip::new(0.0, 0.0, width as f32, height as f32),
-            stack: Vec::new(),
+            clips: Vec::new(),
+            groups: Vec::new(),
         }
+    }
+
+    /// The state of a walk over a group's items in the group's own
+    /// coordinates, which reach any distance either way.
+    fn unbounded() -> Self {
+        State {
+            frame: Clip::new(-1e9, -1e9, 2e9, 2e9),
+            clips: Vec::new(),
+            groups: Vec::new(),
+        }
+    }
+
+    /// The state of a raster into a scratch whose coordinates are the
+    /// list's mapped by `base`, which only translates and scales.
+    fn based(width: u32, height: u32, base: Matrix) -> Self {
+        let mut state = State::new(width, height);
+        state.groups.push(GroupState {
+            matrix: base,
+            scratch: false,
+            clips: 0,
+        });
+        state
     }
 
     /// The clip in force.
-    fn current(&self) -> Clip {
-        self.stack.last().copied().unwrap_or(self.frame)
+    fn clip(&self) -> Clip {
+        self.clips.last().copied().unwrap_or(self.frame)
     }
 
-    /// Takes `item` into account: a clip begins or ends, or for a
-    /// drawing nothing changes. An unmatched end is ignored.
+    /// From the list's coordinates here to the raster's; `None` outside
+    /// every group, where they are the same.
+    fn matrix(&self) -> Option<Matrix> {
+        self.groups.last().map(|g| g.matrix)
+    }
+
+    /// Whether a group composited from a scratch is being walked into:
+    /// its items are drawn there, resampled into the raster.
+    fn in_scratch(&self) -> bool {
+        self.groups.last().is_some_and(|g| g.scratch)
+    }
+
+    /// The scale and translation the items here are drawn through, as
+    /// `(sx, sy, tx, ty)`: the identity outside every group. A raster
+    /// draws only through groups that have one; inside a scratch group
+    /// it draws nothing here.
+    fn through(&self) -> (f32, f32, f32, f32) {
+        self.matrix()
+            .and_then(|m| m.scale_and_translation())
+            .unwrap_or((1.0, 1.0, 0.0, 0.0))
+    }
+
+    /// Whether a group with `matrix` and `opacity` is composited from a
+    /// scratch of its own: its matrix does more than translate and
+    /// scale, or its opacity is below one.
+    fn needs_scratch(matrix: &Matrix, opacity: f32) -> bool {
+        !(matrix.translates_and_scales_only() && opacity >= 1.0)
+    }
+
+    /// The rectangle at `(x, y)` of size `w` by `h` in the list's
+    /// coordinates here, in the raster's: exact under groups drawn
+    /// through, the bounds of its image inside a scratch group. `None`
+    /// when it has no image.
+    fn map(&self, x: f32, y: f32, w: f32, h: f32) -> Option<Clip> {
+        match self.matrix() {
+            None => Some(Clip::new(x, y, w, h)),
+            Some(m) => match m.scale_and_translation() {
+                Some((sx, sy, tx, ty)) => Some(Clip::new(x * sx + tx, y * sy + ty, w * sx, h * sy)),
+                None => m
+                    .bounds(x, y, w, h)
+                    .map(|(x0, y0, x1, y1)| Clip { x0, y0, x1, y1 }),
+            },
+        }
+    }
+
+    /// Takes `item` into account: a clip or a group begins or ends, or
+    /// for a drawing nothing changes. An unmatched end is ignored, and
+    /// a clip's end never reaches past the group it is in.
     fn apply(&mut self, item: &DisplayItem) {
         match item {
             DisplayItem::PushClip { x, y, w, h } => {
-                let clip = self.current().intersect(Clip::new(*x, *y, *w, *h));
-                self.stack.push(clip);
+                // A clip with no image clips everything.
+                let clip = self
+                    .map(*x, *y, *w, *h)
+                    .unwrap_or(Clip::new(0.0, 0.0, 0.0, 0.0));
+                self.clips.push(self.clip().intersect(clip));
             }
             DisplayItem::PopClip => {
-                self.stack.pop();
+                let floor = self.groups.last().map_or(0, |g| g.clips);
+                if self.clips.len() > floor {
+                    self.clips.pop();
+                }
+            }
+            DisplayItem::PushGroup {
+                matrix, opacity, ..
+            } => {
+                let composed = self.matrix().map_or(*matrix, |m| m.then(matrix));
+                let scratch = self.in_scratch() || State::needs_scratch(matrix, *opacity);
+                self.groups.push(GroupState {
+                    matrix: composed,
+                    scratch,
+                    clips: self.clips.len(),
+                });
+            }
+            DisplayItem::PopGroup => {
+                if let Some(group) = self.groups.pop() {
+                    self.clips.truncate(group.clips);
+                }
             }
             _ => {}
         }
+    }
+}
+
+/// The index of the [`DisplayItem::PopGroup`] that ends the group
+/// `items[start]` begins, or `items.len()` when none does.
+fn group_end(items: &[DisplayItem], start: usize) -> usize {
+    let mut depth = 0usize;
+    for (i, item) in items.iter().enumerate().skip(start + 1) {
+        match item {
+            DisplayItem::PushGroup { .. } => depth += 1,
+            DisplayItem::PopGroup if depth == 0 => return i,
+            DisplayItem::PopGroup => depth -= 1,
+            _ => {}
+        }
+    }
+    items.len()
+}
+
+/// The paint tiny-skia composites a group's scratch with: its opacity,
+/// over what is there, sampled `quality`.
+fn pixmap_paint(opacity: f32, quality: tiny_skia::FilterQuality) -> tiny_skia::PixmapPaint {
+    tiny_skia::PixmapPaint {
+        opacity,
+        blend_mode: tiny_skia::BlendMode::SourceOver,
+        quality,
     }
 }
 
@@ -292,7 +419,13 @@ pub struct SoftwareBackend {
     /// the same font (e.g. Hiragana and Katakana, see
     /// `fallback_families_for`).
     masks: HashMap<(Script, u16, u32), GlyphMask>,
-    /// Coverage bytes held in `masks`, against [`MASK_CACHE_BUDGET`].
+    /// The masks of glyphs scaled unevenly (M19), by script, glyph id,
+    /// font size bits and the two scales' bits: their outlines filled
+    /// through the scale, which a mask at another size cannot stand in
+    /// for. Counted and emptied with `masks`.
+    outlined: HashMap<(Script, u16, u32, u32, u32), GlyphMask>,
+    /// Coverage bytes held in `masks` and `outlined`, against
+    /// [`MASK_CACHE_BUDGET`].
     cached_bytes: usize,
     /// Shaped runs by font size (bits) and text (M9.5): a scroll draws
     /// the same runs frame after frame, and shaping them anew was most
@@ -341,6 +474,7 @@ impl SoftwareBackend {
         SoftwareBackend {
             fonts,
             masks: HashMap::new(),
+            outlined: HashMap::new(),
             cached_bytes: 0,
             shaped: HashMap::new(),
             cached_glyphs: 0,
@@ -355,6 +489,7 @@ impl SoftwareBackend {
     /// one's.
     pub fn clear_glyph_cache(&mut self) {
         self.masks.clear();
+        self.outlined.clear();
         self.cached_bytes = 0;
         self.shaped.clear();
         self.cached_glyphs = 0;
@@ -468,7 +603,38 @@ impl SoftwareBackend {
         &self.masks[&key]
     }
 
-    /// Draws `text` with its baseline's left end at `origin`.
+    /// The mask of a glyph scaled by `(sx, sy)`, two different scales
+    /// (M19): its outline at `size` filled through the scale, from the
+    /// pen at a whole pixel, as [`outline_mask`] makes it.
+    fn scaled_mask(
+        &mut self,
+        script: Script,
+        glyph_id: u16,
+        size: f32,
+        (sx, sy): (f32, f32),
+    ) -> &GlyphMask {
+        let key = (script, glyph_id, size.to_bits(), sx.to_bits(), sy.to_bits());
+        if !self.outlined.contains_key(&key) {
+            let font = self.fonts.font_for(script).glyph_font();
+            let mask = outline_mask(font, glyph_id, size, (sx, sy));
+            let bytes = mask.coverage.len();
+            if self.cached_bytes + bytes > MASK_CACHE_BUDGET {
+                self.clear_glyph_cache();
+            }
+            self.cached_bytes += bytes;
+            self.outlined.insert(key, mask);
+        }
+        &self.outlined[&key]
+    }
+
+    /// Draws `text` with its baseline's left end at `origin`, in the
+    /// raster's coordinates, its glyphs scaled by `scale` (M19): the run
+    /// is shaped at `size` and its glyphs placed from the scaled
+    /// origin; a glyph is rasterized at the size the scale makes when
+    /// the scale is the same both ways, which is as sharp as text of
+    /// that size, and its outline is filled through the scale
+    /// otherwise.
+    #[allow(clippy::too_many_arguments)]
     fn draw_text(
         &mut self,
         pixmap: &mut tiny_skia::Pixmap,
@@ -477,33 +643,241 @@ impl SoftwareBackend {
         size: f32,
         color: &Rgba8,
         clip: Clip,
+        scale: (f32, f32),
     ) {
         let (x, y) = origin;
+        let (sx, sy) = scale;
         let glyphs = self.shaped(text, size);
         for (script, g) in glyphs {
-            let mask = self.mask_for(script, g.glyph_id, size);
-            let base_x = x + g.x + mask.left as f32;
-            let base_y = y + g.y + mask.top as f32;
+            let (gx, gy) = (x + g.x * sx, y + g.y * sy);
+            let mask = if sx == sy {
+                self.mask_for(script, g.glyph_id, size * sx)
+            } else {
+                self.scaled_mask(script, g.glyph_id, size, scale)
+            };
+            let base_x = gx + mask.left as f32;
+            let base_y = gy + mask.top as f32;
             blit_mask(pixmap, mask, color, base_x, base_y, clip);
         }
     }
 
     /// Draws `list` whole onto `pixmap`, which is clear.
     fn draw_all(&mut self, pixmap: &mut tiny_skia::Pixmap, list: &DisplayList) {
-        let mut clips = Clips::new(pixmap.width(), pixmap.height());
-        for item in &list.items {
-            let clip = clips.current();
-            clips.apply(item);
-            self.draw(pixmap, item, clip);
+        let state = State::new(pixmap.width(), pixmap.height());
+        self.draw_items(pixmap, &list.items, state);
+    }
+
+    /// Draws `items` onto `pixmap` from `state`, as a whole raster does:
+    /// each through the groups it is in, and a group that needs a
+    /// scratch of its own composited from one (M19).
+    fn draw_items(
+        &mut self,
+        pixmap: &mut tiny_skia::Pixmap,
+        items: &[DisplayItem],
+        mut state: State,
+    ) {
+        let mut i = 0;
+        while i < items.len() {
+            let item = &items[i];
+            if let DisplayItem::PushGroup {
+                matrix, opacity, ..
+            } = item
+                && State::needs_scratch(matrix, *opacity)
+            {
+                let end = group_end(items, i);
+                let composed = state.matrix().map_or(*matrix, |m| m.then(matrix));
+                self.composite(
+                    pixmap,
+                    &items[i + 1..end],
+                    composed,
+                    *opacity,
+                    state.clip(),
+                    None,
+                );
+                i = end + 1;
+                continue;
+            }
+            let clip = state.clip();
+            let through = state.through();
+            state.apply(item);
+            self.draw(pixmap, item, clip, through);
+            i += 1;
         }
     }
 
-    /// Draws one item under `clip`, as a whole raster does.
-    fn draw(&mut self, pixmap: &mut tiny_skia::Pixmap, item: &DisplayItem, clip: Clip) {
+    /// Composites the group `items`, whose coordinates `matrix` maps to
+    /// `pixmap`'s, over `pixmap` with `opacity` under `clip`, from a
+    /// scratch (M19). When the matrix only translates and scales, the
+    /// scratch is in the pixmap's coordinates and the items are drawn
+    /// through the matrix into it, so that the pixels are those a
+    /// raster of them there would give, and the scratch is laid over
+    /// the pixmap pixel for pixel; otherwise the scratch is in the
+    /// group's own coordinates, and is resampled into the pixmap
+    /// through the matrix, bilinearly. Only the pixels of `only` are
+    /// written when it is given (M13.3). A group whose scratch would
+    /// have more pixels than a frame may is not drawn.
+    fn composite(
+        &mut self,
+        pixmap: &mut tiny_skia::Pixmap,
+        items: &[DisplayItem],
+        matrix: Matrix,
+        opacity: f32,
+        clip: Clip,
+        only: Option<PixelRect>,
+    ) {
+        let (width, height) = (pixmap.width(), pixmap.height());
+        let Some(within) = clip.pixels(width, height) else {
+            return;
+        };
+        let within = match only {
+            Some(rect) => match within.intersect(rect) {
+                Some(within) => within,
+                None => return,
+            },
+            None => within,
+        };
+        if matrix.translates_and_scales_only() {
+            // The items' reach in the pixmap, drawn through.
+            let mut state = State::based(width, height, matrix);
+            let mut reach: Option<PixelRect> = None;
+            for item in items {
+                if let Some(bounds) = self.bounds(item, &state, width, height) {
+                    reach = Some(reach.map_or(bounds, |r| r.union(bounds)));
+                }
+                state.apply(item);
+            }
+            let Some(region) = reach.and_then(|r| r.intersect(within)) else {
+                return;
+            };
+            let (w, h) = (region.x1 - region.x0, region.y1 - region.y0);
+            let Some(mut scratch) = tiny_skia::Pixmap::new(w, h) else {
+                return;
+            };
+            let base =
+                Matrix::translate(-(region.x0 as f32), -(region.y0 as f32), 0.0).then(&matrix);
+            self.draw_items(&mut scratch, items, State::based(w, h, base));
+            pixmap.draw_pixmap(
+                region.x0 as i32,
+                region.y0 as i32,
+                scratch.as_ref(),
+                &pixmap_paint(opacity, tiny_skia::FilterQuality::Nearest),
+                tiny_skia::Transform::identity(),
+                None,
+            );
+            return;
+        }
+        // The group's own coordinates: its items' reach there, within
+        // what can land in the region, two pixels more all round for
+        // the resampling.
+        let Some(inverse) = matrix.inverse() else {
+            return;
+        };
+        let (wx, wy) = (within.x0 as f32, within.y0 as f32);
+        let (ww, wh) = (
+            (within.x1 - within.x0) as f32,
+            (within.y1 - within.y0) as f32,
+        );
+        let Some((lx0, ly0, lx1, ly1)) = inverse.bounds(wx, wy, ww, wh) else {
+            return;
+        };
+        let landing = Clip {
+            x0: lx0 - 2.0,
+            y0: ly0 - 2.0,
+            x1: lx1 + 2.0,
+            y1: ly1 + 2.0,
+        };
+        let mut reach: Option<Clip> = None;
+        let mut state = State::unbounded();
+        for item in items {
+            if let Some(extent) = self.extent(item, &state) {
+                reach = Some(match reach {
+                    None => extent,
+                    Some(r) => Clip {
+                        x0: r.x0.min(extent.x0),
+                        y0: r.y0.min(extent.y0),
+                        x1: r.x1.max(extent.x1),
+                        y1: r.y1.max(extent.y1),
+                    },
+                });
+            }
+            state.apply(item);
+        }
+        let Some(reach) = reach.filter(|r| !r.is_empty()) else {
+            return;
+        };
+        // A clear texel all round, so that the resampling blends the
+        // content's edges with nothing rather than with the edge texel
+        // again, which padding the scratch with would give: the edges
+        // come out anti-aliased. The scratch is the whole reach, so that
+        // a region of it composited alone (M13.3) samples the same
+        // texels from the same place as the whole, to the bit; only a
+        // reach with more pixels than a frame may have is cut to what
+        // can land in the region.
+        let whole = |r: Clip| {
+            (
+                r.x0.floor() - 1.0,
+                r.y0.floor() - 1.0,
+                r.x1.ceil() + 1.0,
+                r.y1.ceil() + 1.0,
+            )
+        };
+        let fits = |(x0, y0, x1, y1): (f32, f32, f32, f32)| {
+            [x0, y0, x1, y1].iter().all(|v| v.is_finite())
+                && (x1 - x0) as f64 * (y1 - y0) as f64 <= MAX_FRAME_PIXELS as f64
+        };
+        let mut corners = whole(reach);
+        if !fits(corners) {
+            let cut = reach.intersect(landing);
+            if cut.is_empty() {
+                return;
+            }
+            corners = whole(cut);
+            if !fits(corners) {
+                return;
+            }
+        }
+        let (gx0, gy0, gx1, gy1) = corners;
+        let (gw, gh) = ((gx1 - gx0) as f64, (gy1 - gy0) as f64);
+        if gw < 1.0 || gh < 1.0 {
+            return;
+        }
+        let (gw, gh) = (gw as u32, gh as u32);
+        let Some(mut scratch) = tiny_skia::Pixmap::new(gw, gh) else {
+            return;
+        };
+        let base = Matrix::translate(-gx0, -gy0, 0.0);
+        self.draw_items(&mut scratch, items, State::based(gw, gh, base));
+        // Where the scratch lands, cut to the region, and the pixels
+        // there sampled from it.
+        let Some((fx0, fy0, fx1, fy1)) = matrix.bounds(gx0, gy0, gw as f32, gh as f32) else {
+            return;
+        };
+        let Some(landed) =
+            PixelRect::around(fx0 - 1.0, fy0 - 1.0, fx1 + 1.0, fy1 + 1.0, width, height)
+                .and_then(|r| r.intersect(within))
+        else {
+            return;
+        };
+        resample(pixmap, &scratch, (gx0, gy0), &inverse, opacity, landed);
+    }
+
+    /// Draws one item under `clip`, through the scale and translation
+    /// `(sx, sy, tx, ty)` of the groups it is in, as a whole raster does.
+    fn draw(
+        &mut self,
+        pixmap: &mut tiny_skia::Pixmap,
+        item: &DisplayItem,
+        clip: Clip,
+        (sx, sy, tx, ty): (f32, f32, f32, f32),
+    ) {
+        let point = |(x, y): (f32, f32)| (x * sx + tx, y * sy + ty);
         match item {
-            DisplayItem::PushClip { .. } | DisplayItem::PopClip => {}
+            DisplayItem::PushClip { .. }
+            | DisplayItem::PopClip
+            | DisplayItem::PushGroup { .. }
+            | DisplayItem::PopGroup => {}
             DisplayItem::Rect { x, y, w, h, color } => {
-                let r = Clip::new(*x, *y, *w, *h).intersect(clip);
+                let r = Clip::new(x * sx + tx, y * sy + ty, w * sx, h * sy).intersect(clip);
                 if r.is_empty() {
                     return;
                 }
@@ -534,7 +908,7 @@ impl SoftwareBackend {
                 if clip.is_empty() {
                     return;
                 }
-                self.draw_text(pixmap, text, (*x, *y), *size, color, clip);
+                self.draw_text(pixmap, text, point((*x, *y)), *size, color, clip, (sx, sy));
             }
             // No anti-aliasing for a quad: quads that share an
             // edge must tile it without a seam (a border's bands in
@@ -544,7 +918,7 @@ impl SoftwareBackend {
             // a browser's do (M11), and its axis-aligned edges lie
             // on whole pixels, where the area is all or nothing.
             DisplayItem::Quad { points, color } => {
-                fill_polygon(pixmap, points, color, clip);
+                fill_polygon(pixmap, &points.map(point), color, clip);
             }
             DisplayItem::Polygon { points, color } => {
                 let frame = PixelRect {
@@ -553,82 +927,106 @@ impl SoftwareBackend {
                     x1: pixmap.width(),
                     y1: pixmap.height(),
                 };
-                fill_polygon_by_area(pixmap, points, color, clip, frame);
+                let points: Vec<(f32, f32)> = points.iter().map(|p| point(*p)).collect();
+                fill_polygon_by_area(pixmap, &points, color, clip, frame);
             }
         }
     }
 
-    /// The pixels `item`, drawn under `clip`, can change in a `width`
-    /// by `height` frame; `None` when it changes none. A rectangle and a
-    /// polygon reach exactly as far as their raster can; a quad and a
-    /// run of text are given a pixel more all round, against rounding,
-    /// the run's glyphs placed from the extent of their masks; text
-    /// whose origin is not a number may land anywhere in the clip.
-    fn bounds(
-        &mut self,
-        item: &DisplayItem,
-        clip: Clip,
-        width: u32,
-        height: u32,
-    ) -> Option<PixelRect> {
-        match item {
-            DisplayItem::PushClip { .. } | DisplayItem::PopClip => None,
-            DisplayItem::Rect { x, y, w, h, .. } => {
-                let r = Clip::new(*x, *y, *w, *h).intersect(clip);
-                if r.is_empty() {
-                    return None;
-                }
-                PixelRect::around(r.x0, r.y0, r.x1, r.y1, width, height)
-            }
+    /// How far `item`, drawn from `state`, reaches in the raster's
+    /// coordinates, before the pixel grid, within the clip in force;
+    /// `None` when it draws nothing. The item's reach in the group's
+    /// coordinates is mapped to the raster's, grown first by what the
+    /// group's own raster can add there and after by what the raster
+    /// can add here: a rectangle and a polygon reach exactly as far as
+    /// their raster does; a quad and a run of text are given a pixel
+    /// more all round against rounding, the run's glyphs placed from the
+    /// extent of their masks, and the run another under a scale, which
+    /// the masks' rounding does not follow exactly; inside a scratch
+    /// group, a texel more all round before the mapping, which is how
+    /// far the resampling reaches, and a pixel after. Text whose origin
+    /// is not a number may land anywhere in the clip.
+    fn extent(&mut self, item: &DisplayItem, state: &State) -> Option<Clip> {
+        let clip = state.clip();
+        let in_scratch = state.in_scratch();
+        let scaled = state.through() != (1.0, 1.0, 0.0, 0.0);
+        let grown = |r: Clip, by: f32| Clip {
+            x0: r.x0 - by,
+            y0: r.y0 - by,
+            x1: r.x1 + by,
+            y1: r.y1 + by,
+        };
+        let hull = |points: &[(f32, f32)]| {
+            let (x0, y0, x1, y1) = extent(points);
+            [x0, y0, x1, y1]
+                .iter()
+                .all(|v| v.is_finite())
+                .then_some(Clip { x0, y0, x1, y1 })
+        };
+        // The reach in the group's coordinates, the texels to add there
+        // and the pixels to add after the mapping.
+        let (reach, texels, pixels) = match item {
+            DisplayItem::PushClip { .. }
+            | DisplayItem::PopClip
+            | DisplayItem::PushGroup { .. }
+            | DisplayItem::PopGroup => return None,
+            DisplayItem::Rect { x, y, w, h, .. } => (Clip::new(*x, *y, *w, *h), 0.0, 0.0),
             DisplayItem::Text {
                 text, x, y, size, ..
             } => {
-                let within = clip.pixels(width, height)?;
                 if !x.is_finite() || !y.is_finite() {
-                    return Some(within);
+                    return (!clip.is_empty()).then_some(clip);
                 }
                 let ink = self.ink(text, *size)?;
-                PixelRect::around(
-                    x + ink.left - 1.0,
-                    y + ink.top - 1.0,
-                    x + ink.right + 1.0,
-                    y + ink.bottom + 1.0,
-                    width,
-                    height,
-                )?
-                .intersect(within)
+                let reach = Clip {
+                    x0: x + ink.left,
+                    y0: y + ink.top,
+                    x1: x + ink.right,
+                    y1: y + ink.bottom,
+                };
+                (reach, 1.0, 1.0 + if scaled { 1.0 } else { 0.0 })
             }
-            DisplayItem::Quad { points, .. } => {
-                let polygon = clip_polygon(points, clip);
-                if polygon.len() < 3 {
-                    return None;
-                }
-                let (x0, y0, x1, y1) = extent(&polygon);
-                if ![x0, y0, x1, y1].iter().all(|v| v.is_finite()) {
-                    // tiny-skia fills no such path; were it to, its
-                    // pixels would be in the clip.
-                    return clip.reach(width, height);
-                }
-                PixelRect::around(x0 - 1.0, y0 - 1.0, x1 + 1.0, y1 + 1.0, width, height)
-            }
-            DisplayItem::Polygon { points, .. } => {
-                let polygon = clip_polygon(points, clip);
-                if polygon.len() < 3 || polygon.iter().any(|p| !p.0.is_finite() || !p.1.is_finite())
-                {
-                    return None;
-                }
-                let (x0, y0, x1, y1) = extent(&polygon);
-                PixelRect::around(x0, y0, x1, y1, width, height)
-            }
-        }
+            DisplayItem::Quad { points, .. } => match hull(points) {
+                Some(reach) => (reach, 0.0, 1.0),
+                // tiny-skia fills no such path; were it to, its pixels
+                // would be in the clip.
+                None => return (!clip.is_empty()).then_some(clip),
+            },
+            DisplayItem::Polygon { points, .. } => (hull(points)?, 0.0, 0.0),
+        };
+        let texels = texels + if in_scratch { 1.0 } else { 0.0 };
+        let pixels = pixels + if in_scratch { 1.0 } else { 0.0 };
+        let reach = grown(reach, texels);
+        let mapped = state.map(reach.x0, reach.y0, reach.x1 - reach.x0, reach.y1 - reach.y0)?;
+        let extent = grown(mapped, pixels).intersect(clip);
+        (!extent.is_empty()).then_some(extent)
+    }
+
+    /// The pixels `item`, drawn from `state`, can change in a `width` by
+    /// `height` frame: its [`Self::extent`] on the pixel grid; `None`
+    /// when it changes none.
+    fn bounds(
+        &mut self,
+        item: &DisplayItem,
+        state: &State,
+        width: u32,
+        height: u32,
+    ) -> Option<PixelRect> {
+        let extent = self.extent(item, state)?;
+        PixelRect::around(extent.x0, extent.y0, extent.x1, extent.y1, width, height)
     }
 
     /// What drawing `new` over the frame `old` drew can change: the
     /// pixels the items between the lists' shared start and shared end
-    /// can change, in either list, and wherever the shared end draws
-    /// under clips that differ between the two, all of both clips.
-    /// `None` when that is half the frame or more, which is better
-    /// drawn whole.
+    /// can change, in either list, each through the groups it is in
+    /// (M19); and the pixels each item of the shared end can change in
+    /// either list while the clips and groups in force differ between
+    /// the two, a group's matrix or opacity having changed say, under
+    /// which the item draws elsewhere. A group begun before the shared
+    /// start's end is one scratch drawn again whole, but what did not
+    /// change in it comes out the same, so the items of it outside the
+    /// range are not damage. `None` when the damage is half the frame
+    /// or more, which is better drawn whole.
     fn damage(
         &mut self,
         old: &DisplayList,
@@ -647,36 +1045,29 @@ impl SoftwareBackend {
             .take_while(|(x, y)| x == y)
             .count();
         let mut rects = Vec::new();
-        let mut clips = [Clips::new(width, height), Clips::new(width, height)];
-        for (clips, items) in clips.iter_mut().zip([a, b]) {
+        let mut states = [State::new(width, height), State::new(width, height)];
+        for (state, items) in states.iter_mut().zip([a, b]) {
             for item in &items[..start] {
-                clips.apply(item);
+                state.apply(item);
             }
             for item in &items[start..items.len() - end] {
-                rects.extend(self.bounds(item, clips.current(), width, height));
-                clips.apply(item);
+                rects.extend(self.bounds(item, state, width, height));
+                state.apply(item);
             }
         }
-        // The shared end draws alike where the clips in force are the
-        // same in both lists, and once the stacks are, they stay so. A
-        // clip begun or ended in between, or a stack deeper in one list
-        // than in the other, puts it under different clips, in which
-        // it may draw differently anywhere.
-        let [mut old_clips, mut new_clips] = clips;
-        let mut added = None;
+        // The shared end draws alike from where the clips and groups in
+        // force are the same in both lists, and once they are, they
+        // stay so; until then each item of it may draw elsewhere in the
+        // two, and is damage in both.
+        let [mut old_state, mut new_state] = states;
         for item in &b[b.len() - end..] {
-            if old_clips.stack == new_clips.stack {
+            if old_state == new_state {
                 break;
             }
-            let pair = (old_clips.current(), new_clips.current());
-            let draws = !matches!(item, DisplayItem::PushClip { .. } | DisplayItem::PopClip);
-            if draws && pair.0 != pair.1 && added != Some(pair) {
-                rects.extend(pair.0.reach(width, height));
-                rects.extend(pair.1.reach(width, height));
-                added = Some(pair);
-            }
-            old_clips.apply(item);
-            new_clips.apply(item);
+            rects.extend(self.bounds(item, &old_state, width, height));
+            rects.extend(self.bounds(item, &new_state, width, height));
+            old_state.apply(item);
+            new_state.apply(item);
         }
         let rects = merge(rects);
         let area: u64 = rects.iter().map(|r| r.area()).sum();
@@ -687,7 +1078,9 @@ impl SoftwareBackend {
     /// last frame: the rectangle is cleared, then every item that can
     /// change a pixel in it is drawn again there (see the type's
     /// documentation), every clip and its end met whatever its place,
-    /// so that the pixels inside come out as a whole raster's.
+    /// so that the pixels inside come out as a whole raster's. A group
+    /// composited from a scratch is composited again, inside the
+    /// rectangle alone (M19).
     fn redraw(&mut self, pixmap: &mut tiny_skia::Pixmap, list: &DisplayList, rect: PixelRect) {
         let (width, height) = (pixmap.width(), pixmap.height());
         let row = width as usize * 4;
@@ -696,26 +1089,55 @@ impl SoftwareBackend {
             pixmap.data_mut()[y * row + x0..y * row + x1].fill(0);
         }
         let inside = rect.clip();
-        let mut clips = Clips::new(width, height);
-        for item in &list.items {
-            let clip = clips.current();
-            clips.apply(item);
-            let Some(bounds) = self.bounds(item, clip, width, height) else {
+        let items = &list.items;
+        let mut state = State::new(width, height);
+        let mut i = 0;
+        while i < items.len() {
+            let item = &items[i];
+            if let DisplayItem::PushGroup {
+                matrix, opacity, ..
+            } = item
+                && State::needs_scratch(matrix, *opacity)
+            {
+                let end = group_end(items, i);
+                let composed = state.matrix().map_or(*matrix, |m| m.then(matrix));
+                self.composite(
+                    pixmap,
+                    &items[i + 1..end],
+                    composed,
+                    *opacity,
+                    state.clip(),
+                    Some(rect),
+                );
+                i = end + 1;
+                continue;
+            }
+            i += 1;
+            let clip = state.clip();
+            let through = state.through();
+            let bounds = self.bounds(item, &state, width, height);
+            state.apply(item);
+            let Some(bounds) = bounds else {
                 continue;
             };
             if bounds.intersect(rect).is_none() {
                 continue;
             }
             if rect.contains(bounds) {
-                self.draw(pixmap, item, clip);
+                self.draw(pixmap, item, clip, through);
                 continue;
             }
             match item {
                 DisplayItem::Rect { .. } | DisplayItem::Text { .. } => {
-                    self.draw(pixmap, item, clip.intersect(inside));
+                    self.draw(pixmap, item, clip.intersect(inside), through);
                 }
                 DisplayItem::Polygon { points, color } => {
-                    fill_polygon_by_area(pixmap, points, color, clip, rect);
+                    let (sx, sy, tx, ty) = through;
+                    let points: Vec<(f32, f32)> = points
+                        .iter()
+                        .map(|(x, y)| (x * sx + tx, y * sy + ty))
+                        .collect();
+                    fill_polygon_by_area(pixmap, &points, color, clip, rect);
                 }
                 DisplayItem::Quad { .. } => {
                     // Drawn on a copy of what is under it, of which
@@ -728,15 +1150,102 @@ impl SoftwareBackend {
                         },
                     };
                     copy_pixels(pixmap, &mut scratch, bounds);
-                    self.draw(&mut scratch, item, clip);
+                    self.draw(&mut scratch, item, clip, through);
                     if let Some(back) = bounds.intersect(rect) {
                         copy_pixels(&scratch, pixmap, back);
                     }
                     self.scratch = Some(scratch);
                 }
-                DisplayItem::PushClip { .. } | DisplayItem::PopClip => {}
+                DisplayItem::PushClip { .. }
+                | DisplayItem::PopClip
+                | DisplayItem::PushGroup { .. }
+                | DisplayItem::PopGroup => {}
             }
         }
+    }
+}
+
+/// The mask of the glyph `glyph_id` of `font` at `size`, its outline
+/// filled through the scale `(sx, sy)` with the pen at a whole pixel
+/// (M19): coverage from tiny-skia's anti-aliased fill of the outline's
+/// contours, placed like a mask [`rasterize_glyph`] makes. Empty for a
+/// glyph without an outline, or one larger than [`MAX_MASK_PIXELS`].
+fn outline_mask(
+    font: &ab_glyph::FontArc,
+    glyph_id: u16,
+    size: f32,
+    (sx, sy): (f32, f32),
+) -> GlyphMask {
+    let Some(curves) = glyph_outline(font, glyph_id, size) else {
+        return GlyphMask::empty();
+    };
+    let mut pb = tiny_skia::PathBuilder::new();
+    let mut at: Option<(f32, f32)> = None;
+    for curve in curves {
+        let (start, end) = match curve {
+            Curve::Line(a, b) => (a, b),
+            Curve::Quad(a, _, c) => (a, c),
+            Curve::Cubic(a, _, _, d) => (a, d),
+        };
+        if at != Some(start) {
+            if at.is_some() {
+                pb.close();
+            }
+            pb.move_to(start.0 * sx, start.1 * sy);
+        }
+        match curve {
+            Curve::Line(_, b) => pb.line_to(b.0 * sx, b.1 * sy),
+            Curve::Quad(_, b, c) => pb.quad_to(b.0 * sx, b.1 * sy, c.0 * sx, c.1 * sy),
+            Curve::Cubic(_, b, c, d) => {
+                pb.cubic_to(b.0 * sx, b.1 * sy, c.0 * sx, c.1 * sy, d.0 * sx, d.1 * sy)
+            }
+        }
+        at = Some(end);
+    }
+    if at.is_some() {
+        pb.close();
+    }
+    let Some(path) = pb.finish() else {
+        return GlyphMask::empty();
+    };
+    let bounds = path.bounds();
+    let (left, top) = (bounds.left().floor() as f64, bounds.top().floor() as f64);
+    let (right, bottom) = (bounds.right().ceil() as f64, bounds.bottom().ceil() as f64);
+    let (width, height) = ((right - left).max(0.0), (bottom - top).max(0.0));
+    if !(left.is_finite() && top.is_finite() && width >= 1.0 && height >= 1.0)
+        || width * height > MAX_MASK_PIXELS as f64
+    {
+        return GlyphMask::empty();
+    }
+    let (Ok(left), Ok(top)) = (i32::try_from(left as i64), i32::try_from(top as i64)) else {
+        return GlyphMask::empty();
+    };
+    let (width, height) = (width as u32, height as u32);
+    let Some(mut pixmap) = tiny_skia::Pixmap::new(width, height) else {
+        return GlyphMask::empty();
+    };
+    let mut paint = tiny_skia::Paint::default();
+    paint.set_color(tiny_skia::Color::WHITE);
+    paint.anti_alias = true;
+    pixmap.fill_path(
+        &path,
+        &paint,
+        tiny_skia::FillRule::Winding,
+        tiny_skia::Transform::from_translate(-(left as f32), -(top as f32)),
+        None,
+    );
+    GlyphMask {
+        width,
+        height,
+        left,
+        top,
+        coverage: pixmap
+            .data()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|px| px[3])
+            .collect(),
     }
 }
 
@@ -938,9 +1447,7 @@ fn fill_polygon_by_area(
             }
             let idx = (py * pw + px) as usize * 4;
             let a = coverage * color.a as f32 / 255.0;
-            data[idx] = (data[idx] as f32 * (1.0 - a) + color.r as f32 * a).round() as u8;
-            data[idx + 1] = (data[idx + 1] as f32 * (1.0 - a) + color.g as f32 * a).round() as u8;
-            data[idx + 2] = (data[idx + 2] as f32 * (1.0 - a) + color.b as f32 * a).round() as u8;
+            blend(&mut data[idx..idx + 4], color, a);
         }
     }
 }
@@ -1085,6 +1592,86 @@ fn intersect_y(a: (f32, f32), b: (f32, f32), y: f32) -> (f32, f32) {
     (a.0 + (b.0 - a.0) * t, y)
 }
 
+/// Composites the scratch `src`, whose texel `(0, 0)` is at `origin` in
+/// the group's coordinates, into the pixels of `region` of `dst`,
+/// through `inverse`, from the raster's coordinates to the group's
+/// (M19): each pixel's centre is mapped back, and where it lands inside
+/// the scratch, the scratch is sampled bilinearly between texel
+/// centres, the edge texels standing in beyond the edge, and the
+/// sample blended over the pixel at `opacity`, premultiplied. The
+/// mapping is of the raster's point alone, the integer origin taken
+/// off after, so that the same pixel samples the same place whatever
+/// the scratch's origin, and a region composited on its own comes out
+/// as the whole does.
+fn resample(
+    dst: &mut tiny_skia::Pixmap,
+    src: &tiny_skia::Pixmap,
+    origin: (f32, f32),
+    inverse: &Matrix,
+    opacity: f32,
+    region: PixelRect,
+) {
+    let (sw, sh) = (src.width() as i64, src.height() as i64);
+    let source = src.data();
+    let stride = dst.width() as usize;
+    let data = dst.data_mut();
+    let texel = |tx: i64, ty: i64| -> [f32; 4] {
+        let tx = tx.clamp(0, sw - 1) as usize;
+        let ty = ty.clamp(0, sh - 1) as usize;
+        let i = (ty * sw as usize + tx) * 4;
+        [
+            source[i] as f32,
+            source[i + 1] as f32,
+            source[i + 2] as f32,
+            source[i + 3] as f32,
+        ]
+    };
+    for y in region.y0..region.y1 {
+        for x in region.x0..region.x1 {
+            let Some((qx, qy)) = inverse.project(x as f32 + 0.5, y as f32 + 0.5) else {
+                continue;
+            };
+            let (lx, ly) = (qx - origin.0, qy - origin.1);
+            if !(lx >= 0.0 && ly >= 0.0 && lx < sw as f32 && ly < sh as f32) {
+                continue;
+            }
+            let (sx, sy) = (lx - 0.5, ly - 0.5);
+            let (fx, fy) = (sx.floor(), sy.floor());
+            let (wx, wy) = (sx - fx, sy - fy);
+            let (ix, iy) = (fx as i64, fy as i64);
+            let mut c = [0.0f32; 4];
+            for (dx, dy, weight) in [
+                (0, 0, (1.0 - wx) * (1.0 - wy)),
+                (1, 0, wx * (1.0 - wy)),
+                (0, 1, (1.0 - wx) * wy),
+                (1, 1, wx * wy),
+            ] {
+                let t = texel(ix + dx, iy + dy);
+                for (k, channel) in c.iter_mut().enumerate() {
+                    *channel += t[k] * weight;
+                }
+            }
+            let i = (y as usize * stride + x as usize) * 4;
+            let a = c[3] * opacity / 255.0;
+            for (k, channel) in c.iter().enumerate() {
+                data[i + k] = (channel * opacity + data[i + k] as f32 * (1.0 - a)).round() as u8;
+            }
+        }
+    }
+}
+
+/// Blends `color` at the coverage `a`, in `[0, 1]`, over the
+/// premultiplied pixel `px`: source-over on every channel, so that a
+/// pixel of a clear scratch (M19) comes out premultiplied as a pixmap's
+/// must be, and an opaque frame's pixel is the straight blend it was.
+fn blend(px: &mut [u8], color: &Rgba8, a: f32) {
+    let over = |dst: u8, src: u8| (dst as f32 * (1.0 - a) + src as f32 * a).round() as u8;
+    px[0] = over(px[0], color.r);
+    px[1] = over(px[1], color.g);
+    px[2] = over(px[2], color.b);
+    px[3] = over(px[3], 255);
+}
+
 /// Alpha-composites a glyph mask onto the pixmap at `(base_x, base_y)`
 /// (the mask's top-left, in pixel coordinates), touching only pixels
 /// inside `clip` (M9.3).
@@ -1131,11 +1718,7 @@ fn blit_mask(
             }
             let a = alpha * ca;
             let idx = (py * pw + px) as usize * 4;
-            // Milestone-1 colors are opaque, so straight==premultiplied
-            // and we can leave the alpha channel untouched.
-            data[idx] = (data[idx] as f32 * (1.0 - a) + color.r as f32 * a).round() as u8;
-            data[idx + 1] = (data[idx + 1] as f32 * (1.0 - a) + color.g as f32 * a).round() as u8;
-            data[idx + 2] = (data[idx + 2] as f32 * (1.0 - a) + color.b as f32 * a).round() as u8;
+            blend(&mut data[idx..idx + 4], color, a);
         }
     }
 }
@@ -1564,11 +2147,52 @@ mod tests {
         }
     }
 
+    /// A key for a group in a test: every group the same one.
+    fn group_key() -> paint::GroupKey {
+        let document = dom::Document::from_node(&dom::Node::document(Vec::new()));
+        (document.root(), None)
+    }
+
     /// A random item for a `w` by `h` frame, of every kind, reaching
-    /// past the frame's edges now and then.
+    /// past the frame's edges now and then: the groups (M19) translate,
+    /// scale, rotate or fade, and nest or go unmatched as the clips do.
     fn random_item(rng: &mut Rng, w: f32, h: f32) -> DisplayItem {
         let (x, y) = (rng.coord(-8.0, w), rng.coord(-8.0, h));
-        match rng.below(10) {
+        match rng.below(13) {
+            10 => {
+                let (dx, dy) = (rng.coord(-20.0, 20.0), rng.coord(-20.0, 20.0));
+                let (matrix, opacity) = match rng.below(5) {
+                    0 => (Matrix::translate(dx, dy, 0.0), 1.0),
+                    1 => (
+                        Matrix::translate(dx, dy, 0.0).then(&Matrix::scale(
+                            rng.coord(0.5, 2.5),
+                            rng.coord(0.5, 2.5),
+                            1.0,
+                        )),
+                        1.0,
+                    ),
+                    2 => (
+                        Matrix::translate(x, y, 0.0)
+                            .then(&Matrix::rotate_z(rng.coord(-180.0, 180.0)))
+                            .then(&Matrix::translate(-x, -y, 0.0)),
+                        1.0,
+                    ),
+                    3 => (Matrix::translate(dx, dy, 0.0), rng.coord(0.2, 0.95)),
+                    _ => (
+                        Matrix::translate(x, y, 0.0)
+                            .then(&Matrix::rotate_z(rng.coord(-180.0, 180.0)))
+                            .then(&Matrix::scale(rng.coord(0.5, 2.0), 1.0, 1.0))
+                            .then(&Matrix::translate(-x, -y, 0.0)),
+                        rng.coord(0.2, 0.95),
+                    ),
+                };
+                DisplayItem::PushGroup {
+                    matrix,
+                    opacity,
+                    key: group_key(),
+                }
+            }
+            11..=12 => DisplayItem::PopGroup,
             0..=2 => DisplayItem::Rect {
                 x,
                 y,
@@ -1787,8 +2411,13 @@ mod tests {
             let mut whole = tiny_skia::Pixmap::new(w, h).expect("a frame");
             whole.fill(tiny_skia::Color::from_rgba8(40, 90, 200, 255));
             let mut clipped = whole.clone();
-            backend.draw(&mut whole, &item, clip);
-            backend.draw(&mut clipped, &item, clip.intersect(rect.clip()));
+            backend.draw(&mut whole, &item, clip, (1.0, 1.0, 0.0, 0.0));
+            backend.draw(
+                &mut clipped,
+                &item,
+                clip.intersect(rect.clip()),
+                (1.0, 1.0, 0.0, 0.0),
+            );
             for y in rect.y0 as usize..rect.y1 as usize {
                 for x in rect.x0 as usize..rect.x1 as usize {
                     assert_eq!(
@@ -1918,7 +2547,8 @@ mod tests {
     #[test]
     fn a_clip_that_changed_under_a_shared_end_damages_what_it_held() {
         // The lists differ only in a clip's extent; the rectangle after
-        // it is the same item in both, drawn under either clip.
+        // it is the same item in both, drawn under either clip: the
+        // damage is what it draws under each, the wider clip's 9 by 5.
         let mut backend = test_backend();
         let list = |clip_w: f32| DisplayList {
             items: vec![
@@ -1949,7 +2579,7 @@ mod tests {
                 x0: 0,
                 y0: 0,
                 x1: 9,
-                y1: 20
+                y1: 5
             }])
         );
     }
@@ -2028,5 +2658,296 @@ mod tests {
         backend.clear_glyph_cache();
         assert_eq!(backend.glyph_cache_len(), 0);
         assert_eq!(backend.cached_bytes, 0);
+    }
+
+    /// The pixels of `list` rasterized whole on a `w` by `h` frame.
+    fn raster(list: &DisplayList, w: u32, h: u32) -> Vec<u8> {
+        test_backend().rasterize(list, w, h).to_vec()
+    }
+
+    fn rect(x: f32, y: f32, w: f32, h: f32, color: Rgba8) -> DisplayItem {
+        DisplayItem::Rect { x, y, w, h, color }
+    }
+
+    fn group(matrix: Matrix, opacity: f32) -> DisplayItem {
+        DisplayItem::PushGroup {
+            matrix,
+            opacity,
+            key: group_key(),
+        }
+    }
+
+    /// The pixels where two frames differ, as `(x, y, a, b)`.
+    fn differing(a: &[u8], b: &[u8], w: usize, h: usize) -> Vec<(usize, usize, [u8; 4], [u8; 4])> {
+        let mut out = Vec::new();
+        for y in 0..h {
+            for x in 0..w {
+                if px(a, w, x, y) != px(b, w, x, y) {
+                    out.push((x, y, px(a, w, x, y), px(b, w, x, y)));
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_group_drawn_through_gives_the_pixels_of_a_raster_of_its_items_there() {
+        // M19: a group that only translates and scales is drawn into the
+        // frame, its items mapped, so that a box moved or scaled matches
+        // a box laid out there, byte for byte.
+        let (w, h) = (64u32, 48u32);
+        let red = Rgba8::rgb(255, 0, 0);
+        let list = |items: Vec<DisplayItem>| {
+            let mut all = vec![white_frame(w as f32, h as f32)];
+            all.extend(items);
+            DisplayList { items: all }
+        };
+        // Moved by (10, 6), fractional edge and all.
+        let moved = list(vec![
+            group(Matrix::translate(10.0, 6.0, 0.0), 1.0),
+            rect(5.5, 4.0, 20.0, 10.0, red),
+            DisplayItem::PopGroup,
+        ]);
+        let direct = list(vec![rect(15.5, 10.0, 20.0, 10.0, red)]);
+        assert_eq!(raster(&moved, w, h), raster(&direct, w, h));
+        // Scaled by 2 about the origin.
+        let scaled = list(vec![
+            group(Matrix::scale(2.0, 2.0, 1.0), 1.0),
+            rect(5.0, 4.0, 10.0, 5.0, red),
+            DisplayItem::PopGroup,
+        ]);
+        let direct = list(vec![rect(10.0, 8.0, 20.0, 10.0, red)]);
+        assert_eq!(raster(&scaled, w, h), raster(&direct, w, h));
+        // A clip inside the group is mapped with it.
+        let clipped = list(vec![
+            group(Matrix::scale(2.0, 2.0, 1.0), 1.0),
+            DisplayItem::PushClip {
+                x: 0.0,
+                y: 0.0,
+                w: 10.0,
+                h: 5.0,
+            },
+            rect(0.0, 0.0, 30.0, 30.0, red),
+            DisplayItem::PopClip,
+            DisplayItem::PopGroup,
+        ]);
+        let direct = list(vec![rect(0.0, 0.0, 20.0, 10.0, red)]);
+        assert_eq!(raster(&clipped, w, h), raster(&direct, w, h));
+        // Groups nest, the matrices composing from the inside out.
+        let nested = list(vec![
+            group(Matrix::translate(10.0, 0.0, 0.0), 1.0),
+            group(Matrix::scale(2.0, 2.0, 1.0), 1.0),
+            rect(1.0, 1.0, 4.0, 4.0, red),
+            DisplayItem::PopGroup,
+            DisplayItem::PopGroup,
+        ]);
+        let direct = list(vec![rect(12.0, 2.0, 8.0, 8.0, red)]);
+        assert_eq!(raster(&nested, w, h), raster(&direct, w, h));
+        // Text in a group scaled by 2 is rasterized at twice its size:
+        // the glyph of 32px text, placed from the mapped origin.
+        let text = |x: f32, y: f32, size: f32| DisplayItem::Text {
+            text: "M".to_string(),
+            x,
+            y,
+            size,
+            color: Rgba8::rgb(0, 0, 0),
+        };
+        let scaled = list(vec![
+            group(Matrix::scale(2.0, 2.0, 1.0), 1.0),
+            text(4.0, 20.0, 16.0),
+            DisplayItem::PopGroup,
+        ]);
+        let direct = list(vec![text(8.0, 40.0, 32.0)]);
+        let (a, b) = (raster(&scaled, w, h), raster(&direct, w, h));
+        assert_eq!(differing(&a, &b, w as usize, h as usize), []);
+        assert_ne!(a, raster(&list(vec![]), w, h), "the glyph is drawn");
+    }
+
+    #[test]
+    fn an_opacity_group_is_composited_as_one() {
+        // css-color-4 §3.2 (M19): the group's items do not show through
+        // one another; the whole is blended at the opacity.
+        let (w, h) = (48u32, 32u32);
+        let list = DisplayList {
+            items: vec![
+                white_frame(w as f32, h as f32),
+                group(Matrix::IDENTITY, 0.5),
+                rect(10.0, 10.0, 20.0, 15.0, Rgba8::rgb(255, 0, 0)),
+                rect(20.0, 10.0, 20.0, 15.0, Rgba8::rgb(0, 0, 255)),
+                DisplayItem::PopGroup,
+            ],
+        };
+        let pixels = raster(&list, w, h);
+        let near = |got: [u8; 4], want: [u8; 4]| {
+            got.iter()
+                .zip(want.iter())
+                .all(|(g, w)| (*g as i32 - *w as i32).abs() <= 1)
+        };
+        let at = |x, y| px(&pixels, w as usize, x, y);
+        assert!(near(at(15, 15), [255, 128, 128, 255]), "{:?}", at(15, 15));
+        assert!(
+            near(at(25, 15), [128, 128, 255, 255]),
+            "where the two overlap, the later one alone at half: {:?}",
+            at(25, 15)
+        );
+        assert_eq!(at(5, 5), [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn a_rotated_group_is_composited_from_a_scratch_and_a_right_angle_is_exact() {
+        // M19: a 20 by 10 box at (20, 10) turned a quarter about its
+        // centre (30, 15) is the 10 by 20 box at (25, 5), pixel for
+        // pixel, the resampling landing on whole pixels.
+        let (w, h) = (64u32, 48u32);
+        let red = Rgba8::rgb(255, 0, 0);
+        let about = Matrix::translate(30.0, 15.0, 0.0)
+            .then(&Matrix::rotate_z(90.0))
+            .then(&Matrix::translate(-30.0, -15.0, 0.0));
+        let rotated = DisplayList {
+            items: vec![
+                white_frame(w as f32, h as f32),
+                group(about, 1.0),
+                rect(20.0, 10.0, 20.0, 10.0, red),
+                DisplayItem::PopGroup,
+            ],
+        };
+        let direct = DisplayList {
+            items: vec![
+                white_frame(w as f32, h as f32),
+                rect(25.0, 5.0, 10.0, 20.0, red),
+            ],
+        };
+        let (a, b) = (raster(&rotated, w, h), raster(&direct, w, h));
+        assert_eq!(differing(&a, &b, w as usize, h as usize), []);
+        // Turned by 45 degrees, the box's corners are where the matrix
+        // puts them: its centre stays red, the old corners are white.
+        let about = Matrix::translate(30.0, 15.0, 0.0)
+            .then(&Matrix::rotate_z(45.0))
+            .then(&Matrix::translate(-30.0, -15.0, 0.0));
+        let turned = DisplayList {
+            items: vec![
+                white_frame(w as f32, h as f32),
+                group(about, 1.0),
+                rect(20.0, 10.0, 20.0, 10.0, red),
+                DisplayItem::PopGroup,
+            ],
+        };
+        let pixels = raster(&turned, w, h);
+        assert_eq!(px(&pixels, w as usize, 30, 15), [255, 0, 0, 255]);
+        assert_eq!(px(&pixels, w as usize, 30, 20), [255, 0, 0, 255]);
+        assert_eq!(px(&pixels, w as usize, 38, 11), [255, 255, 255, 255]);
+        assert_eq!(px(&pixels, w as usize, 22, 19), [255, 255, 255, 255]);
+    }
+
+    /// A reference for a group composited from a scratch: `items`
+    /// rasterized in their own coordinates on a clear pixmap at
+    /// `(ox, oy)`, then each pixel of a `w` by `h` frame over `under`
+    /// taken from the point `matrix` maps to its centre, sampled
+    /// bilinearly between texel centres, clamped to the scratch, and
+    /// blended over at `opacity`; `None` where the frame is left alone.
+    fn reference_composite(
+        items: &[DisplayItem],
+        (ox, oy, sw, sh): (f32, f32, u32, u32),
+        matrix: Matrix,
+        opacity: f32,
+        under: &[u8],
+        w: u32,
+        h: u32,
+    ) -> Vec<u8> {
+        let mut backend = test_backend();
+        let mut scratch = tiny_skia::Pixmap::new(sw, sh).unwrap();
+        let base = Matrix::translate(-ox, -oy, 0.0);
+        backend.draw_items(&mut scratch, items, State::based(sw, sh, base));
+        let inverse = matrix.inverse().unwrap();
+        let texel = |x: i64, y: i64| -> [f32; 4] {
+            let x = x.clamp(0, sw as i64 - 1) as usize;
+            let y = y.clamp(0, sh as i64 - 1) as usize;
+            let p = px(scratch.data(), sw as usize, x, y);
+            p.map(|c| c as f32 / 255.0)
+        };
+        let mut out = under.to_vec();
+        for y in 0..h as usize {
+            for x in 0..w as usize {
+                let (gx, gy) = inverse.project(x as f32 + 0.5, y as f32 + 0.5).unwrap();
+                // Inside the scratch's rectangle, as the fill of it is.
+                let (lx, ly) = (gx - ox, gy - oy);
+                if lx < 0.0 || ly < 0.0 || lx >= sw as f32 || ly >= sh as f32 {
+                    continue;
+                }
+                let (sx, sy) = (lx - 0.5, ly - 0.5);
+                let (x0, y0) = (sx.floor(), sy.floor());
+                let (fx, fy) = (sx - x0, sy - y0);
+                let (x0, y0) = (x0 as i64, y0 as i64);
+                let mut c = [0.0f32; 4];
+                for (dx, dy, wgt) in [
+                    (0, 0, (1.0 - fx) * (1.0 - fy)),
+                    (1, 0, fx * (1.0 - fy)),
+                    (0, 1, (1.0 - fx) * fy),
+                    (1, 1, fx * fy),
+                ] {
+                    let t = texel(x0 + dx, y0 + dy);
+                    for k in 0..4 {
+                        c[k] += t[k] * wgt;
+                    }
+                }
+                let i = (y * w as usize + x) * 4;
+                for k in 0..4 {
+                    let src = c[k] * opacity;
+                    let dst = out[i + k] as f32 / 255.0;
+                    out[i + k] = ((src + dst * (1.0 - c[3] * opacity)) * 255.0).round() as u8;
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_scratch_composite_samples_as_the_reference_does() {
+        // The backend's composite of a turned group against a reference
+        // written out in full: where they differ says how tiny-skia
+        // samples. A translucent box with fractional edges, turned by
+        // 30 degrees, over a white frame.
+        let (w, h) = (64u32, 48u32);
+        let color = Rgba8 {
+            r: 122,
+            g: 238,
+            b: 153,
+            a: 200,
+        };
+        let about = Matrix::translate(30.0, 20.0, 0.0)
+            .then(&Matrix::rotate_z(30.0))
+            .then(&Matrix::translate(-30.0, -20.0, 0.0));
+        let items = vec![rect(21.4, 14.8, 18.6, 11.2, color)];
+        let list = DisplayList {
+            items: vec![
+                white_frame(w as f32, h as f32),
+                group(about, 1.0),
+                items[0].clone(),
+                DisplayItem::PopGroup,
+            ],
+        };
+        let got = raster(&list, w, h);
+        let white = raster(
+            &DisplayList {
+                items: vec![white_frame(w as f32, h as f32)],
+            },
+            w,
+            h,
+        );
+        let want = reference_composite(&items, (20.0, 13.0, 22, 15), about, 1.0, &white, w, h);
+        let diff = differing(&got, &want, w as usize, h as usize);
+        let big: Vec<&(usize, usize, [u8; 4], [u8; 4])> = diff
+            .iter()
+            .filter(|(_, _, a, b)| {
+                a.iter()
+                    .zip(b)
+                    .any(|(x, y)| (*x as i32 - *y as i32).abs() > 2)
+            })
+            .collect();
+        assert!(
+            big.is_empty(),
+            "{big:?}; {} pixels differ in all",
+            diff.len()
+        );
     }
 }

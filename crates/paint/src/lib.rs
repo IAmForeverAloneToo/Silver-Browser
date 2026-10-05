@@ -31,8 +31,14 @@ use dom::{Document, Node, NodeData, NodeId};
 use layout::{Fragment, FragmentKind};
 use style::Styles;
 use style::computed::{BOTTOM, BorderStyle, Color, Display, LEFT, RIGHT, TOP};
+use style::transform::Matrix;
 
 pub use order::{Rect, Step, padding_box, paint_order};
+
+/// What names a group across frames (M19): the box's node and the
+/// pseudo-element that generated it, if any, as
+/// [`layout::StackingKey`] names a stacking context.
+pub type GroupKey = layout::StackingKey;
 
 /// The scrollbar track's colour, the viewport's and an element's alike.
 pub const SCROLLBAR_TRACK: Rgba8 = Rgba8::rgb(0x31, 0x32, 0x44);
@@ -168,6 +174,29 @@ pub enum DisplayItem {
     },
     /// End the innermost [`DisplayItem::PushClip`].
     PopClip,
+    /// Everything up to the matching [`DisplayItem::PopGroup`] is one
+    /// group (M19): a stacking context with a transform or an opacity
+    /// below one. The items inside are in the group's own coordinates,
+    /// the viewport coordinates the box would have had with no
+    /// transform at all, and `matrix` maps them to the coordinates the
+    /// group sits in, those of the group around it or the viewport's;
+    /// the group is composited with `opacity`, so that its items do not
+    /// show through one another (css-color-4 §3.2). A clip inside the
+    /// group is in the group's coordinates too. Groups nest, their
+    /// matrices composing from the inside out; an unmatched pop is
+    /// ignored. The backend draws a group through the raster it sits
+    /// in when the matrix only translates and scales and the opacity is
+    /// one, and through a scratch of its own otherwise.
+    PushGroup {
+        /// From the group's coordinates to those it sits in.
+        matrix: Matrix,
+        /// In `[0, 1]`.
+        opacity: f32,
+        /// What names the group across frames.
+        key: GroupKey,
+    },
+    /// End the innermost [`DisplayItem::PushGroup`].
+    PopGroup,
 }
 
 /// The window onto the document a display list is painted for (M9.1):
@@ -496,6 +525,16 @@ pub fn paint_fragments_in(
                 })
             }
             Step::PopClip => items.push(DisplayItem::PopClip),
+            Step::PushGroup {
+                fragment,
+                matrix,
+                opacity,
+            } => items.push(DisplayItem::PushGroup {
+                matrix,
+                opacity,
+                key: fragment.stacking_key(),
+            }),
+            Step::PopGroup => items.push(DisplayItem::PopGroup),
             Step::Scrollbar {
                 fragment,
                 rect,

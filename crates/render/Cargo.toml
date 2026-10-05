@@ -6,6 +6,10 @@ license.workspace = true
 
 [dependencies]
 paint.workspace = true
+style.workspace = true
 text.workspace = true
 tiny-skia.workspace = true
 ab_glyph.workspace = true
+
+[dev-dependencies]
+dom.workspace = true
