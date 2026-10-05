@@ -880,6 +880,378 @@ impl Default for GridStyle {
 /// gives a style that sets none of them.
 static INITIAL_GRID: LazyLock<GridStyle> = LazyLock::new(GridStyle::default);
 
+/// One function of a `transform` list (css-transforms-1 §7,
+/// css-transforms-2 §13, M19), as computed: lengths absolute,
+/// percentages kept for the box they are of, angles in degrees. The 2D
+/// form of a function and its 3D form are kept as one, the 3D one,
+/// which is the primitive they share when they are interpolated (M22,
+/// css-transforms-2 §16); `matrix()` is kept apart from `matrix3d()`
+/// for the same reason.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TransformFunction {
+    /// `matrix(a, b, c, d, e, f)`.
+    Matrix([f32; 6]),
+    /// `matrix3d()`: its sixteen numbers in column-major order, as
+    /// written.
+    Matrix3d([f32; 16]),
+    /// `translate()`, `translateX()`, `translateY()`, `translateZ()` and
+    /// `translate3d()`: the x and y translations, percentages of the
+    /// reference box's width and height, and the z one, a length.
+    Translate(LengthPercentage, LengthPercentage, f32),
+    /// `scale()`, `scaleX()`, `scaleY()`, `scaleZ()` and `scale3d()`.
+    Scale(f32, f32, f32),
+    /// `rotate()`, `rotateX()`, `rotateY()`, `rotateZ()` and
+    /// `rotate3d()`: the axis as written, and the angle in degrees.
+    Rotate {
+        /// The axis's x component.
+        x: f32,
+        /// The axis's y component.
+        y: f32,
+        /// The axis's z component.
+        z: f32,
+        /// The angle, in degrees.
+        angle: f32,
+    },
+    /// `skew()`, `skewX()` and `skewY()`: the angles along x and y, in
+    /// degrees.
+    Skew(f32, f32),
+    /// `perspective()`: `None` for `none`, else the depth, a length.
+    Perspective(Option<f32>),
+}
+
+/// An offset along one axis of a box: a percentage of the box's size
+/// along it plus a length, which is what the forms of `<position>`
+/// (css-values-4 §4.3) and `transform-origin` resolve to: `right 10px`
+/// is 100% minus 10px.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Offset {
+    /// The percentage, as written (`50%` is `50.0`).
+    pub percent: f32,
+    /// The length, in CSS pixels.
+    pub px: f32,
+}
+
+impl Offset {
+    /// The centre: `50%`.
+    pub const CENTER: Offset = Offset {
+        percent: 50.0,
+        px: 0.0,
+    };
+
+    /// The offset of `basis`, the box's size along the axis.
+    pub fn resolve(&self, basis: f32) -> f32 {
+        basis * self.percent / 100.0 + self.px
+    }
+}
+
+/// `transform-origin` (css-transforms-1 §8, css-transforms-2 §8): the
+/// point the transform is about, offsets from the reference box's top
+/// left, and a length along z. The initial value is `50% 50%`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TransformOrigin {
+    /// Along x, of the box's width.
+    pub x: Offset,
+    /// Along y, of the box's height.
+    pub y: Offset,
+    /// Along z, a length.
+    pub z: f32,
+}
+
+impl TransformOrigin {
+    /// The initial value, `50% 50%`.
+    pub const CENTER: TransformOrigin = TransformOrigin {
+        x: Offset::CENTER,
+        y: Offset::CENTER,
+        z: 0.0,
+    };
+}
+
+/// `perspective-origin` (css-transforms-2 §11): the vanishing point of
+/// a box's `perspective`, offsets from its border box's top left. The
+/// initial value is `50% 50%`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PerspectiveOrigin {
+    /// Along x, of the box's width.
+    pub x: Offset,
+    /// Along y, of the box's height.
+    pub y: Offset,
+}
+
+impl PerspectiveOrigin {
+    /// The initial value, `50% 50%`.
+    pub const CENTER: PerspectiveOrigin = PerspectiveOrigin {
+        x: Offset::CENTER,
+        y: Offset::CENTER,
+    };
+}
+
+/// `transform-box` (css-transforms-1 §9): the reference box of the
+/// transform, which its origin and its percentages are of. For an
+/// element with a CSS layout box, which every element here has (SVG is
+/// M32), `fill-box` is used as `content-box`, and `stroke-box` and
+/// `view-box`, the initial value, as `border-box`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransformBox {
+    /// `content-box`.
+    ContentBox,
+    /// `border-box`.
+    BorderBox,
+    /// `fill-box`.
+    FillBox,
+    /// `stroke-box`.
+    StrokeBox,
+    /// `view-box`, the initial value.
+    ViewBox,
+}
+
+impl TransformBox {
+    /// Whether the reference box is the content box, rather than the
+    /// border box, for an element with a CSS layout box.
+    pub fn uses_content_box(self) -> bool {
+        matches!(self, TransformBox::ContentBox | TransformBox::FillBox)
+    }
+}
+
+/// The `translate` property (css-transforms-2 §2.1), other than `none`:
+/// percentages of the reference box's width and height, and a length
+/// along z.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Translate {
+    /// Along x.
+    pub x: LengthPercentage,
+    /// Along y.
+    pub y: LengthPercentage,
+    /// Along z, a length.
+    pub z: f32,
+}
+
+/// The `rotate` property (css-transforms-2 §2.2), other than `none`: a
+/// rotation about an axis. `rotate: 30deg` is about the z axis,
+/// `(0, 0, 1)`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Rotate {
+    /// The axis's x component.
+    pub x: f32,
+    /// The axis's y component.
+    pub y: f32,
+    /// The axis's z component.
+    pub z: f32,
+    /// The angle, in degrees.
+    pub angle: f32,
+}
+
+/// `transform-style` (css-transforms-2 §9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransformStyle {
+    /// `flat`, the initial value: the box's children are drawn into
+    /// its plane.
+    Flat,
+    /// `preserve-3d`: the box's children keep their place in 3D, in
+    /// the 3D rendering context the box opens or takes part in.
+    Preserve3d,
+}
+
+/// `backface-visibility` (css-transforms-2 §12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackfaceVisibility {
+    /// `visible`, the initial value.
+    Visible,
+    /// `hidden`: the box is not drawn when its accumulated matrix turns
+    /// its back to the viewer.
+    Hidden,
+}
+
+/// `will-change`'s computed value (css-will-change-1 §2, M19): which of
+/// the features this engine acts on the declaration names. `auto`, and
+/// a list naming only other properties, keep none of them; the names
+/// themselves are not kept, beyond these bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WillChange {
+    bits: u16,
+}
+
+impl WillChange {
+    /// `auto`, the initial value: nothing is expected to change.
+    pub const AUTO: WillChange = WillChange { bits: 0 };
+    /// Names `transform`.
+    pub const TRANSFORM: WillChange = WillChange { bits: 1 };
+    /// Names `translate`.
+    pub const TRANSLATE: WillChange = WillChange { bits: 1 << 1 };
+    /// Names `rotate`.
+    pub const ROTATE: WillChange = WillChange { bits: 1 << 2 };
+    /// Names `scale`.
+    pub const SCALE: WillChange = WillChange { bits: 1 << 3 };
+    /// Names `opacity`.
+    pub const OPACITY: WillChange = WillChange { bits: 1 << 4 };
+    /// Names `perspective`.
+    pub const PERSPECTIVE: WillChange = WillChange { bits: 1 << 5 };
+    /// Names `transform-style`.
+    pub const TRANSFORM_STYLE: WillChange = WillChange { bits: 1 << 6 };
+    /// Names `scroll-position`.
+    pub const SCROLL_POSITION: WillChange = WillChange { bits: 1 << 7 };
+    /// Names `contents`.
+    pub const CONTENTS: WillChange = WillChange { bits: 1 << 8 };
+
+    /// The feature `name` stands for, or `None` for a name this engine
+    /// does not act on.
+    pub fn feature(name: &str) -> Option<WillChange> {
+        Some(match name {
+            "transform" => WillChange::TRANSFORM,
+            "translate" => WillChange::TRANSLATE,
+            "rotate" => WillChange::ROTATE,
+            "scale" => WillChange::SCALE,
+            "opacity" => WillChange::OPACITY,
+            "perspective" => WillChange::PERSPECTIVE,
+            "transform-style" => WillChange::TRANSFORM_STYLE,
+            "scroll-position" => WillChange::SCROLL_POSITION,
+            "contents" => WillChange::CONTENTS,
+            _ => return None,
+        })
+    }
+
+    /// This value with `other`'s features named too.
+    pub fn with(self, other: WillChange) -> WillChange {
+        WillChange {
+            bits: self.bits | other.bits,
+        }
+    }
+
+    /// Whether every feature of `features` is named.
+    pub fn names(self, features: WillChange) -> bool {
+        self.bits & features.bits == features.bits
+    }
+
+    /// Whether any feature of `features` is named.
+    pub fn names_any(self, features: WillChange) -> bool {
+        self.bits & features.bits != 0
+    }
+
+    /// Whether this is `auto`, or names nothing this engine acts on.
+    pub fn is_auto(self) -> bool {
+        self.bits == 0
+    }
+
+    /// The features whose non-initial values make a box a containing
+    /// block for all its descendants: the transform properties and
+    /// `perspective` (css-will-change-1 §2.2, css-transforms-1 §2,
+    /// css-transforms-2 §2, §10).
+    pub const CONTAINING: WillChange = WillChange {
+        bits: WillChange::TRANSFORM.bits
+            | WillChange::TRANSLATE.bits
+            | WillChange::ROTATE.bits
+            | WillChange::SCALE.bits
+            | WillChange::PERSPECTIVE.bits,
+    };
+
+    /// The features whose non-initial values make a box a stacking
+    /// context: [`WillChange::CONTAINING`], `opacity` and
+    /// `transform-style`.
+    pub const STACKING: WillChange = WillChange {
+        bits: WillChange::CONTAINING.bits
+            | WillChange::OPACITY.bits
+            | WillChange::TRANSFORM_STYLE.bits,
+    };
+
+    /// The features that make a box's group a layer of its own (the
+    /// compositing note's policy): the author's word that its matrix or
+    /// its opacity is about to change.
+    pub const LAYER: WillChange = WillChange::STACKING;
+}
+
+/// The transform, opacity and will-change properties of one element
+/// (css-transforms-1, css-transforms-2, css-color-4 §3.2,
+/// css-will-change-1; M19): what [`ComputedStyle::effects`] points to
+/// when any of them is not its initial value. None of them is inherited.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Effects {
+    /// `transform`: its functions in order; empty is `none`.
+    pub transform: Vec<TransformFunction>,
+    /// `transform-origin`.
+    pub transform_origin: TransformOrigin,
+    /// `transform-box`.
+    pub transform_box: TransformBox,
+    /// `translate`; `None` is `none`.
+    pub translate: Option<Translate>,
+    /// `rotate`; `None` is `none`.
+    pub rotate: Option<Rotate>,
+    /// `scale`, its factors along x, y and z; `None` is `none`.
+    pub scale: Option<[f32; 3]>,
+    /// `transform-style`.
+    pub transform_style: TransformStyle,
+    /// `perspective`, a length; `None` is `none`. A value below one
+    /// pixel is used as one pixel (css-transforms-2 §10).
+    pub perspective: Option<f32>,
+    /// `perspective-origin`.
+    pub perspective_origin: PerspectiveOrigin,
+    /// `backface-visibility`.
+    pub backface_visibility: BackfaceVisibility,
+    /// `opacity`, in `[0, 1]`.
+    pub opacity: f32,
+    /// `will-change`.
+    pub will_change: WillChange,
+}
+
+impl Default for Effects {
+    /// Every property's initial value.
+    fn default() -> Self {
+        Effects {
+            transform: Vec::new(),
+            transform_origin: TransformOrigin::CENTER,
+            transform_box: TransformBox::ViewBox,
+            translate: None,
+            rotate: None,
+            scale: None,
+            transform_style: TransformStyle::Flat,
+            perspective: None,
+            perspective_origin: PerspectiveOrigin::CENTER,
+            backface_visibility: BackfaceVisibility::Visible,
+            opacity: 1.0,
+            will_change: WillChange::AUTO,
+        }
+    }
+}
+
+impl Effects {
+    /// Whether the box is a containing block for all its descendants,
+    /// the fixed-positioned ones included: it has a transform, a
+    /// `perspective`, or a `will-change` naming either (css-transforms-1
+    /// §2, css-transforms-2 §2, §10, css-will-change-1 §2.2). A `fixed`
+    /// box inside it is positioned against its padding box, and scrolls
+    /// with it.
+    pub fn contains_all_descendants(&self) -> bool {
+        self.has_transform()
+            || self.perspective.is_some()
+            || self.will_change.names_any(WillChange::CONTAINING)
+    }
+
+    /// Whether the box is a stacking context by these properties:
+    /// [`Effects::contains_all_descendants`], an `opacity` below one,
+    /// `transform-style: preserve-3d`, or a `will-change` naming any of
+    /// them (css-color-4 §3.2, css-transforms-2 §9, css-will-change-1
+    /// §2.2).
+    pub fn is_stacking_context(&self) -> bool {
+        self.contains_all_descendants()
+            || self.opacity < 1.0
+            || self.transform_style == TransformStyle::Preserve3d
+            || self.will_change.names_any(WillChange::STACKING)
+    }
+
+    /// The used `transform-style` (css-transforms-2 §9.1): `flat` when
+    /// the box has a grouping property, an `overflow` that clips or an
+    /// `opacity` below one, whatever was written.
+    pub fn used_transform_style(&self, overflow: Overflow) -> TransformStyle {
+        if overflow.clips() || self.opacity < 1.0 {
+            TransformStyle::Flat
+        } else {
+            self.transform_style
+        }
+    }
+}
+
+/// The effects properties' initial values, which
+/// [`ComputedStyle::effects`] gives a style that sets none of them.
+static INITIAL_EFFECTS: LazyLock<Effects> = LazyLock::new(Effects::default);
+
 /// The box-model edges, one value per side, in CSS's `top, right,
 /// bottom, left` order (matches `margin`/`padding`/`border-width`
 /// shorthand order, so parsing and storage share one shape).
@@ -1128,6 +1500,10 @@ pub struct ComputedStyle {
     /// carry eight bytes for them; `None` is every initial value. Read
     /// through [`ComputedStyle::grid`].
     pub grid: Option<Arc<GridStyle>>,
+    /// The transform, opacity and will-change properties (M19), behind
+    /// one pointer likewise; `None` is every initial value. Read through
+    /// [`ComputedStyle::effects`].
+    pub effects: Option<Arc<Effects>>,
 }
 
 /// `font-family`'s initial value, one for every style that has it.
@@ -1190,6 +1566,7 @@ impl Default for ComputedStyle {
             row_gap: None,
             column_gap: None,
             grid: None,
+            effects: None,
         }
     }
 }
@@ -1243,6 +1620,18 @@ impl ComputedStyle {
     /// if it shares them or has none.
     pub fn grid_mut(&mut self) -> &mut GridStyle {
         Arc::make_mut(self.grid.get_or_insert_with(Default::default))
+    }
+
+    /// The transform, opacity and will-change properties (M19): this
+    /// style's, or their initial values.
+    pub fn effects(&self) -> &Effects {
+        self.effects.as_deref().unwrap_or(&INITIAL_EFFECTS)
+    }
+
+    /// The effects properties to change, this style's own copy made
+    /// first if it shares them or has none.
+    pub fn effects_mut(&mut self) -> &mut Effects {
+        Arc::make_mut(self.effects.get_or_insert_with(Default::default))
     }
 
     /// This style with its inherited properties taken from `from` and
@@ -1339,11 +1728,135 @@ mod tests {
     fn the_style_is_the_size_it_is_meant_to_be() {
         // Every byte here is copied with every box and fragment (M17's
         // T4.3). The grid properties (M18) cost a pointer and no more:
-        // 424 bytes before them. Growing this is a decision, not an
-        // accident; say why where the number changes.
-        assert_eq!(std::mem::size_of::<ComputedStyle>(), 432);
+        // 424 bytes before them; the transform, opacity and will-change
+        // properties (M19) another, 432 before them. Growing this is a
+        // decision, not an accident; say why where the number changes.
+        assert_eq!(std::mem::size_of::<ComputedStyle>(), 440);
         assert_eq!(ComputedStyle::default().grid, None);
         assert_eq!(*ComputedStyle::default().grid(), GridStyle::default());
+        assert_eq!(ComputedStyle::default().effects, None);
+        assert_eq!(*ComputedStyle::default().effects(), Effects::default());
+    }
+
+    #[test]
+    fn the_effects_default_to_their_initial_values_and_mean_nothing() {
+        let e = Effects::default();
+        assert!(e.transform.is_empty());
+        assert_eq!(e.transform_origin, TransformOrigin::CENTER);
+        assert_eq!(e.transform_box, TransformBox::ViewBox);
+        assert_eq!((e.translate, e.rotate, e.scale), (None, None, None));
+        assert_eq!(e.transform_style, TransformStyle::Flat);
+        assert_eq!(e.perspective, None);
+        assert_eq!(e.perspective_origin, PerspectiveOrigin::CENTER);
+        assert_eq!(e.backface_visibility, BackfaceVisibility::Visible);
+        assert_eq!(e.opacity, 1.0);
+        assert!(e.will_change.is_auto());
+        assert!(!e.has_transform());
+        assert!(!e.contains_all_descendants());
+        assert!(!e.is_stacking_context());
+        assert_eq!(Offset::CENTER.resolve(200.0), 100.0);
+        assert_eq!(
+            Offset {
+                percent: 100.0,
+                px: -10.0
+            }
+            .resolve(200.0),
+            190.0
+        );
+    }
+
+    #[test]
+    fn the_effects_say_what_a_box_becomes() {
+        // A transform, an identity one included, a perspective, and a
+        // will-change naming either make a containing block for all
+        // descendants and a stacking context (css-transforms-1 §2,
+        // css-transforms-2 §2, §10, css-will-change-1 §2.2); an opacity
+        // below one, preserve-3d and a will-change naming them a
+        // stacking context only.
+        let e = Effects {
+            translate: Some(Translate {
+                x: LengthPercentage::Px(0.0),
+                y: LengthPercentage::Px(0.0),
+                z: 0.0,
+            }),
+            ..Default::default()
+        };
+        assert!(e.has_transform() && e.contains_all_descendants() && e.is_stacking_context());
+        let e = Effects {
+            perspective: Some(500.0),
+            ..Default::default()
+        };
+        assert!(!e.has_transform() && e.contains_all_descendants());
+        let mut e = Effects {
+            will_change: WillChange::SCALE,
+            ..Default::default()
+        };
+        assert!(e.contains_all_descendants());
+        e.will_change = WillChange::OPACITY.with(WillChange::CONTENTS);
+        assert!(!e.contains_all_descendants() && e.is_stacking_context());
+        assert!(e.will_change.names(WillChange::OPACITY));
+        assert!(e.will_change.names(WillChange::CONTENTS));
+        assert!(
+            !e.will_change
+                .names(WillChange::OPACITY.with(WillChange::SCALE))
+        );
+        assert!(
+            e.will_change
+                .names_any(WillChange::OPACITY.with(WillChange::SCALE))
+        );
+        e.will_change = WillChange::SCROLL_POSITION;
+        assert!(!e.is_stacking_context());
+        let e = Effects {
+            opacity: 0.5,
+            ..Default::default()
+        };
+        assert!(!e.contains_all_descendants() && e.is_stacking_context());
+        let mut e = Effects {
+            transform_style: TransformStyle::Preserve3d,
+            ..Default::default()
+        };
+        assert!(!e.contains_all_descendants() && e.is_stacking_context());
+        // The used transform-style is flat under a grouping property.
+        assert_eq!(
+            e.used_transform_style(Overflow::Visible),
+            TransformStyle::Preserve3d
+        );
+        assert_eq!(
+            e.used_transform_style(Overflow::Hidden),
+            TransformStyle::Flat
+        );
+        e.opacity = 0.9;
+        assert_eq!(
+            e.used_transform_style(Overflow::Visible),
+            TransformStyle::Flat
+        );
+        assert_eq!(
+            WillChange::feature("transform"),
+            Some(WillChange::TRANSFORM)
+        );
+        assert_eq!(WillChange::feature("left"), None);
+    }
+
+    #[test]
+    fn effects_mut_copies_a_shared_value_once() {
+        let mut a = ComputedStyle::default();
+        a.effects_mut().opacity = 0.5;
+        let b = a.clone();
+        assert!(Arc::ptr_eq(
+            a.effects.as_ref().unwrap(),
+            b.effects.as_ref().unwrap()
+        ));
+        let mut c = b.clone();
+        c.effects_mut().perspective = Some(100.0);
+        assert!(!Arc::ptr_eq(
+            b.effects.as_ref().unwrap(),
+            c.effects.as_ref().unwrap()
+        ));
+        assert_eq!((b.effects().opacity, b.effects().perspective), (0.5, None));
+        assert_eq!(
+            (c.effects().opacity, c.effects().perspective),
+            (0.5, Some(100.0))
+        );
     }
 
     #[test]

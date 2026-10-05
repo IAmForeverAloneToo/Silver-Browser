@@ -92,12 +92,13 @@ use crate::computed::{
     Quotes, RIGHT, SelfAlignment, Size, TOP, TableLayout, TextAlign, TextTransform, VerticalAlign,
     WhiteSpace,
 };
-use crate::computed::{GridStyle, JustifyItems};
+use crate::computed::{Effects, GridStyle, JustifyItems};
 use crate::invalidation::{Reach, SelectorFeatures, invalidate};
 use crate::selector_matching::{
     Matcher, PseudoElement, SelectorList, Specificity, parse_selector_list,
 };
 
+mod effects;
 mod grid;
 
 /// The built-in default stylesheet (M5.6), compiled in — loading it is
@@ -1133,10 +1134,13 @@ fn compute_style(
     {
         style.display = style.display.blockified();
     }
-    // Grid properties set back to their initial values leave no copy of
-    // them behind, so that two styles alike compare equal.
+    // Grid and effects properties set back to their initial values leave
+    // no copy of them behind, so that two styles alike compare equal.
     if style.grid.as_deref() == Some(&GridStyle::default()) {
         style.grid = None;
+    }
+    if style.effects.as_deref() == Some(&Effects::default()) {
+        style.effects = None;
     }
     style
 }
@@ -1430,6 +1434,42 @@ fn apply_declaration(
                 style.column_gap = column;
             })
             .is_some(),
+        "transform" => set_effects(style, effects::parse_transform(value, bases), |e, v| {
+            e.transform = v
+        }),
+        "transform-origin" => set_effects(
+            style,
+            effects::parse_transform_origin(value, bases),
+            |e, v| e.transform_origin = v,
+        ),
+        "transform-box" => set_effects(style, effects::parse_transform_box(value), |e, v| {
+            e.transform_box = v
+        }),
+        "translate" => set_effects(style, effects::parse_translate(value, bases), |e, v| {
+            e.translate = v
+        }),
+        "rotate" => set_effects(style, effects::parse_rotate(value), |e, v| e.rotate = v),
+        "scale" => set_effects(style, effects::parse_scale(value), |e, v| e.scale = v),
+        "transform-style" => set_effects(style, effects::parse_transform_style(value), |e, v| {
+            e.transform_style = v
+        }),
+        "perspective" => set_effects(style, effects::parse_perspective(value, bases), |e, v| {
+            e.perspective = v
+        }),
+        "perspective-origin" => set_effects(
+            style,
+            effects::parse_perspective_origin(value, bases),
+            |e, v| e.perspective_origin = v,
+        ),
+        "backface-visibility" => {
+            set_effects(style, effects::parse_backface_visibility(value), |e, v| {
+                e.backface_visibility = v
+            })
+        }
+        "opacity" => set_effects(style, effects::parse_opacity(value), |e, v| e.opacity = v),
+        "will-change" => set_effects(style, effects::parse_will_change(value), |e, v| {
+            e.will_change = v
+        }),
         // Not in the v1 property set, or not a real property: ignored,
         // never an error.
         _ => false,
@@ -1476,6 +1516,29 @@ fn copy_grid(
     }
     let src = src.grid().clone();
     copy(style.grid_mut(), &src);
+}
+
+/// [`set`] for the transform, opacity and will-change properties (M19),
+/// which live behind [`ComputedStyle::effects`].
+fn set_effects<T>(
+    style: &mut ComputedStyle,
+    v: Option<T>,
+    update: impl FnOnce(&mut Effects, T),
+) -> bool {
+    v.map(|v| update(style.effects_mut(), v)).is_some()
+}
+
+/// [`copy_grid`] for the effects properties.
+fn copy_effects(
+    style: &mut ComputedStyle,
+    src: &ComputedStyle,
+    copy: impl FnOnce(&mut Effects, &Effects),
+) {
+    if style.effects.is_none() && src.effects.is_none() {
+        return;
+    }
+    let src = src.effects().clone();
+    copy(style.effects_mut(), &src);
 }
 
 /// Writes a `border-*-width` longhand: a width keyword or a length; a
@@ -1783,6 +1846,24 @@ fn apply_css_wide(
             g.column_start = s.column_start.clone();
             g.column_end = s.column_end.clone();
         }),
+        "transform" => copy_effects(style, src, |e, s| e.transform = s.transform.clone()),
+        "transform-origin" => {
+            copy_effects(style, src, |e, s| e.transform_origin = s.transform_origin)
+        }
+        "transform-box" => copy_effects(style, src, |e, s| e.transform_box = s.transform_box),
+        "translate" => copy_effects(style, src, |e, s| e.translate = s.translate),
+        "rotate" => copy_effects(style, src, |e, s| e.rotate = s.rotate),
+        "scale" => copy_effects(style, src, |e, s| e.scale = s.scale),
+        "transform-style" => copy_effects(style, src, |e, s| e.transform_style = s.transform_style),
+        "perspective" => copy_effects(style, src, |e, s| e.perspective = s.perspective),
+        "perspective-origin" => copy_effects(style, src, |e, s| {
+            e.perspective_origin = s.perspective_origin
+        }),
+        "backface-visibility" => copy_effects(style, src, |e, s| {
+            e.backface_visibility = s.backface_visibility
+        }),
+        "opacity" => copy_effects(style, src, |e, s| e.opacity = s.opacity),
+        "will-change" => copy_effects(style, src, |e, s| e.will_change = s.will_change),
         "row-gap" => style.row_gap = src.row_gap,
         "column-gap" => style.column_gap = src.column_gap,
         "gap" => {
@@ -2610,6 +2691,12 @@ fn canonical_name(name: &str) -> &str {
         "-webkit-justify-content" => "justify-content",
         "-webkit-order" => "order",
         "-webkit-box-sizing" => "box-sizing",
+        "-webkit-transform" => "transform",
+        "-webkit-transform-origin" => "transform-origin",
+        "-webkit-transform-style" => "transform-style",
+        "-webkit-perspective" => "perspective",
+        "-webkit-perspective-origin" => "perspective-origin",
+        "-webkit-backface-visibility" => "backface-visibility",
         other => other,
     }
 }
@@ -3179,8 +3266,54 @@ mod tests {
             ("justify-self", "safe right"),
             ("grid-gap", "1px"),
             ("grid-row-gap", "inherit"),
+            ("transform", "none"),
+            ("transform", "translate(10px, 5%) rotate(45deg) scale(1.5)"),
+            (
+                "transform",
+                "perspective(500px) rotateY(30deg) matrix3d(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1)",
+            ),
+            ("-webkit-transform", "skewX(10deg)"),
+            ("transform-origin", "left top 10px"),
+            ("-webkit-transform-origin", "bottom"),
+            ("transform-box", "content-box"),
+            ("translate", "10px 20%"),
+            ("rotate", "x 45deg"),
+            ("scale", "2 50%"),
+            ("transform-style", "preserve-3d"),
+            ("-webkit-transform-style", "flat"),
+            ("perspective", "none"),
+            ("-webkit-perspective", "800px"),
+            ("perspective-origin", "right 10px bottom 20px"),
+            ("-webkit-perspective-origin", "25% 75%"),
+            ("backface-visibility", "hidden"),
+            ("-webkit-backface-visibility", "visible"),
+            ("opacity", "0.5"),
+            ("opacity", "50%"),
+            ("will-change", "transform, opacity"),
+            ("will-change", "scroll-position"),
+            ("will-change", "left"),
+            ("transform", "inherit"),
+            ("opacity", "unset"),
         ] {
             assert!(supports(name, value), "{name}: {value}");
+        }
+        for (name, value) in [
+            ("transform", "rotate(45)"),
+            ("transform", "translate(10px 20px)"),
+            ("transform", "bogus(1)"),
+            ("transform-origin", "top 50px"),
+            ("transform-box", "padding-box"),
+            ("rotate", "0"),
+            ("scale", "1px"),
+            ("perspective", "-1px"),
+            ("perspective", "500"),
+            ("perspective-origin", "right 10px bottom"),
+            ("opacity", "1px"),
+            ("will-change", "none"),
+            ("will-change", "transform, auto"),
+            ("-webkit-opacity", "0.5"),
+        ] {
+            assert!(!supports(name, value), "{name}: {value}");
         }
         for (name, value) in [
             ("background", "green"),
@@ -3218,7 +3351,7 @@ mod tests {
 
     /// Runs `f` with the length bases of a 16px element whose root is
     /// 16px, in an 800 by 600 viewport, with no font.
-    fn with_bases<R>(f: impl FnOnce(&LengthBases<'_>) -> R) -> R {
+    pub(super) fn with_bases<R>(f: impl FnOnce(&LengthBases<'_>) -> R) -> R {
         let context = CascadeContext {
             viewport_width: 800.0,
             viewport_height: 600.0,
@@ -4146,7 +4279,7 @@ mod tests {
     #[test]
     fn unrecognized_properties_and_values_are_ignored_not_errors() {
         let sheets = [sheet(
-            "p { transform: rotate(5deg); color: red; margin: banana; }",
+            "p { filter: blur(5px); color: red; margin: banana; }",
         )];
         let s = style_of("<p>x</p>", &sheets, "p");
         assert_eq!(s.color, Color::rgb8(255, 0, 0)); // the recognized one still applied
@@ -6225,5 +6358,151 @@ mod tests {
         // One property under two names: the later declaration wins.
         let s = p("p { grid-gap: 5px; row-gap: 6px }");
         assert_eq!(s.row_gap, Some(LengthPercentage::Px(6.0)));
+    }
+
+    #[test]
+    fn the_effects_properties_cascade_behind_one_pointer() {
+        // M19: the transform, opacity and will-change properties, none
+        // inherited, land in `effects`; an element that sets none has
+        // no pointer at all.
+        use crate::computed::{
+            BackfaceVisibility, Offset, TransformBox, TransformFunction, TransformStyle, WillChange,
+        };
+        let html = "<div><p>x</p></div>";
+        let s = style_of(
+            html,
+            &[sheet(
+                "div { transform: translate(10px, 20%) rotate(45deg); transform-origin: left top;
+                       transform-box: content-box; translate: 1px 2px 3px; rotate: y 90deg;
+                       scale: 2; transform-style: preserve-3d; perspective: 800px;
+                       perspective-origin: right 10px bottom 20px; backface-visibility: hidden;
+                       opacity: 150%; will-change: transform, opacity, contents }",
+            )],
+            "div",
+        );
+        let e = s.effects();
+        assert_eq!(
+            e.transform,
+            vec![
+                TransformFunction::Translate(
+                    LengthPercentage::Px(10.0),
+                    LengthPercentage::Percent(20.0),
+                    0.0
+                ),
+                TransformFunction::Rotate {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 1.0,
+                    angle: 45.0
+                },
+            ]
+        );
+        let zero = Offset {
+            percent: 0.0,
+            px: 0.0,
+        };
+        assert_eq!((e.transform_origin.x, e.transform_origin.y), (zero, zero));
+        assert_eq!(e.transform_box, TransformBox::ContentBox);
+        assert_eq!(
+            e.translate.map(|t| (t.x, t.y, t.z)),
+            Some((LengthPercentage::Px(1.0), LengthPercentage::Px(2.0), 3.0))
+        );
+        assert_eq!(
+            e.rotate.map(|r| (r.x, r.y, r.z, r.angle)),
+            Some((0.0, 1.0, 0.0, 90.0))
+        );
+        assert_eq!(e.scale, Some([2.0, 2.0, 1.0]));
+        assert_eq!(e.transform_style, TransformStyle::Preserve3d);
+        assert_eq!(e.perspective, Some(800.0));
+        assert_eq!(
+            (e.perspective_origin.x, e.perspective_origin.y),
+            (
+                Offset {
+                    percent: 100.0,
+                    px: -10.0
+                },
+                Offset {
+                    percent: 100.0,
+                    px: -20.0
+                }
+            )
+        );
+        assert_eq!(e.backface_visibility, BackfaceVisibility::Hidden);
+        assert_eq!(e.opacity, 1.0, "clamped");
+        assert_eq!(
+            e.will_change,
+            WillChange::TRANSFORM
+                .with(WillChange::OPACITY)
+                .with(WillChange::CONTENTS)
+        );
+        assert!(e.is_stacking_context() && e.contains_all_descendants());
+        // Nothing is inherited.
+        let child = style_of(
+            html,
+            &[sheet(
+                "div { transform: scale(2); opacity: 0.5; will-change: transform }",
+            )],
+            "p",
+        );
+        assert_eq!(child.effects, None);
+        assert!(!child.effects().is_stacking_context());
+        // The `-webkit-` names are the properties.
+        let s = style_of(
+            html,
+            &[sheet(
+                "p { -webkit-transform: scale(2); -webkit-transform-origin: 0 0;
+                     -webkit-transform-style: preserve-3d; -webkit-perspective: 1px;
+                     -webkit-perspective-origin: 0 0; -webkit-backface-visibility: hidden }",
+            )],
+            "p",
+        );
+        let e = s.effects();
+        assert_eq!(e.transform, vec![TransformFunction::Scale(2.0, 2.0, 1.0)]);
+        assert_eq!(e.transform_origin.x, zero);
+        assert_eq!(e.transform_style, TransformStyle::Preserve3d);
+        assert_eq!(e.perspective, Some(1.0));
+        assert_eq!(e.perspective_origin.y, zero);
+        assert_eq!(e.backface_visibility, BackfaceVisibility::Hidden);
+        // A later invalid declaration leaves the earlier value.
+        let s = style_of(
+            html,
+            &[sheet(
+                "p { opacity: 0.25; opacity: 1px; transform: scale(2); transform: bogus(1) }",
+            )],
+            "p",
+        );
+        assert_eq!(s.effects().opacity, 0.25);
+        assert_eq!(s.effects().transform.len(), 1);
+    }
+
+    #[test]
+    fn the_effects_properties_take_the_css_wide_keywords_and_keep_no_initial_copy() {
+        let child = |css: &str| style_of("<div><p>x</p></div>", &[sheet(css)], "p");
+        let parent = "div { transform: rotate(10deg); transform-origin: 1px 2px; opacity: 0.5;
+                       will-change: scroll-position; perspective: 100px; rotate: 30deg }";
+        let s = child(&format!(
+            "{parent} p {{ transform: inherit; transform-origin: inherit; opacity: inherit;
+                          will-change: inherit; perspective: inherit; rotate: inherit }}"
+        ));
+        let d = style_of("<div><p>x</p></div>", &[sheet(parent)], "div");
+        assert_eq!(s.effects(), d.effects());
+        // `unset` is `initial` for every one of them.
+        let s = child(&format!(
+            "{parent} p {{ transform: unset; opacity: unset; will-change: unset }}"
+        ));
+        assert_eq!(s.effects, None);
+        // Back to initial values: no copy is kept.
+        for css in [
+            "p { transform: scale(2); transform: initial }",
+            "p { opacity: 0.5; opacity: 1 }",
+            "p { will-change: transform; will-change: auto }",
+            "p { translate: 1px; translate: none; perspective: 1px; perspective: none }",
+            "p { transform-origin: 50% 50%; transform-box: view-box; scale: none }",
+            "p { opacity: 2 }",
+        ] {
+            assert_eq!(child(css).effects, None, "{css}");
+        }
+        let s = child("p { opacity: 0.5; transform: initial }");
+        assert_eq!(s.effects().opacity, 0.5);
     }
 }

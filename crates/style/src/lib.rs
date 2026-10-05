@@ -52,6 +52,11 @@ pub mod invalidation;
 /// grammar and its documented omissions.
 pub mod selector_matching;
 
+/// The transformation matrix (M19): a four-by-four matrix, the matrix of
+/// each transform function, and the arithmetic over it that layout,
+/// paint and hit testing share.
+pub mod transform;
+
 pub use selector_matching::{matches_selector, matches_selector_list, parse_selector_list};
 
 pub use cascade::{
