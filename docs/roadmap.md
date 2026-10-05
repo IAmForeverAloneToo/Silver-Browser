@@ -1107,22 +1107,49 @@ after; built in its thirteen steps.
 
 Per css-grid-1 (level 2 subgrid included):
 
-- [ ] M18.1 `display: grid`; explicit tracks: `grid-template-columns |
+- [x] M18.1 `display: grid`; explicit tracks: `grid-template-columns |
        rows` (`none`, fixed, `fr`, `minmax()`, `auto`, `repeat()` incl.
-       `auto-fill`/`auto-fit`), line names, `gap`.
-- [ ] M18.2 Implicit tracks (`grid-auto-rows | columns`), auto-placement
-       algorithm (sparse v1; dense v2).
-- [ ] M18.3 Item placement: line/area/span forms of
-       `grid-column|row-start|end`, `grid-area`, z-order in grid.
-- [ ] M18.4 Track sizing algorithm (§12): base sizes, growth limits,
+       `auto-fill`/`auto-fit`), line names, `gap`. Done 2026-10-03:
+       `grid` and `inline-grid`, every track form with `fit-content()`,
+       named areas, `grid-template` and `grid`, percentage gaps and the
+       legacy gap names; the grid properties behind one pointer in the
+       computed style, which grows by its eight bytes.
+- [x] M18.2 Implicit tracks (`grid-auto-rows | columns`), auto-placement
+       algorithm (sparse v1; dense v2). Done 2026-10-03: implicit
+       tracks before and after the explicit grid, sized by patterns;
+       §8.5 sparse and dense, by row and by column; lines limited to
+       ±10,000.
+- [x] M18.3 Item placement: line/area/span forms of
+       `grid-column|row-start|end`, `grid-area`, z-order in grid. Done
+       2026-10-03: every form, named and counted from either end, with
+       §8.3.1's conflicts; items painted and hit in order-modified
+       document order, `z-index` on items; absolutely positioned boxes
+       in grid areas (§10).
+- [x] M18.4 Track sizing algorithm (§12): base sizes, growth limits,
        intrinsic contributions, `fr` distribution, spanning items
-       (single-span-only v1 for intrinsic sizing).
-- [ ] M18.5 Alignment: `justify-items|self`, `align-items|self`,
-       `place-*`, `justify|align-content`; safe/unsafe alignment.
-- [ ] M18.6 `subgrid` (grid-2) and `masonry` deferred — registered as
-       G-track items, not blocking.
-- [ ] M18.7 Acceptance: CSS grid garden-style suite + 5 real layouts
-       (dashboard, photo gallery, form grid) render correctly.
+       (single-span-only v1 for intrinsic sizing). Done 2026-10-03:
+       §12 for one axis, spanning items of every span with §12.5.1's
+       distribution, `fr` in definite and indefinite space, the
+       automatic minimum (§6.6); where the reference browser parts from
+       the draft is recorded in the design note.
+- [x] M18.5 Alignment: `justify-items|self`, `align-items|self`,
+       `place-*`, `justify|align-content`; safe/unsafe alignment. Done
+       2026-10-03: every value with `safe` and `unsafe`, `auto`
+       margins, distributed gaps, the arithmetic shared with flexbox in
+       `layout::align`; first and last baseline groups in both axes,
+       with shims, and a grid's own baselines.
+- [x] M18.6 `subgrid` (grid-2) and `masonry` deferred — registered as
+       G-track items, not blocking. Done 2026-10-03: G1 and G2 in the
+       long tail.
+- [x] M18.7 Acceptance: CSS grid garden-style suite + 5 real layouts
+       (dashboard, photo gallery, form grid) render correctly. Done
+       2026-10-03: a grid garden of twenty-four levels, a dashboard, a
+       photo gallery, a form grid, a page of named areas and a calendar
+       month, with text, every element of each (363 boxes) within a
+       pixel of where the reference browser puts it; twenty reference
+       pages, 50 to 69, byte for byte; 213 of the 217 web-platform
+       tests of `css/css-grid` taken by the rule; `about:silver`'s
+       tiles laid out by grid.
 
 ---
 
@@ -1551,6 +1578,21 @@ gold-plate unstarted work.
 - [ ] M46 Password manager, autofill (gate: T4, security-reviewed).
 - [ ] M47+ WPT-driven everything: the forever list (T1 track becomes the
        primary driver — see track below).
+
+Deferred from the milestones above, each with what it waits on:
+
+- [ ] G1 `subgrid` (css-grid-2 §9): a grid item's tracks taken from its
+       parent grid's, with the parent's line names and gaps. Deferred
+       from M18.6; `docs/design/grid.md`, section 2.
+- [ ] G2 Masonry (css-grid-3, now `grid-lanes`): one axis of tracks, the
+       other packed item by item. Deferred from M18.6, the draft still
+       moving.
+- [ ] G3 Self-alignment of an absolutely positioned box in its
+       inset-modified containing block (css-align-3 §6.1,
+       css-position-3 §4): `justify-self` and `align-self` place a box
+       whose insets leave it room, as the reference browsers do, in a
+       grid area or a padding box alike. Positioning's (M11), found at
+       M18, which uses the two properties only for a static position.
 
 ---
 

@@ -933,3 +933,62 @@ of it text measurement that parses the font's face on every call
 (M35.8), and an appended paragraph's frame is 8% slower than before
 the milestone for the larger computed style that every fragment copies
 (M35.9). 1,155 tests workspace-wide. Next milestone: grid (M18).
+
+Milestone 18 (grid), designed in `docs/design/grid.md` and built in its
+twelve steps. The cascade (step 1) knows `display: grid` and
+`inline-grid`, every grid property and shorthand, `justify-items` and
+`justify-self` with `legacy`, the `place-*` shorthands' justify halves
+and the legacy gap names; the grid properties live behind one pointer in
+the computed style, `GridStyle`, so the style grows by eight bytes. The
+box tree (step 2) has a `Grid` kind whose items the builder makes as it
+makes a flex container's; `layout::grid::placement` resolves every
+placement form, runs css-grid-2 §8.5's auto-placement sparse and dense,
+by row and by column, grows the implicit grid, and keeps the lines
+inside ±10,000. `layout::grid::tracks` (step 3) is §12 for one axis,
+sizing columns and then rows with the items' contributions, the spanning
+items' distribution of §12.5.1, `fr` in definite and indefinite space,
+`fit-content()`, the automatic minimum of §6.6 and `auto-fit`'s
+collapse; `layout::grid` lays the items out in their areas through the
+pass's kept layouts, sizes the container, resolves percentage tracks and
+gaps against the size they help find, and gives the intrinsic sizes that
+`inline-grid`, floats and cells need. The web-platform-tests subset
+(step 4) took 217 of `css/css-grid`'s tests by M17's rule. Then came
+alignment (step 5), its arithmetic moved into `layout::align` for flex
+and grid alike; baseline groups in both axes with their shims, and a
+grid's own baselines (step 6); the grid area as the containing block of
+absolutely positioned boxes, and a child's static position in its area
+(step 7); and items painted as inline-blocks in order-modified document
+order, with `z-index`, hit testing and the layout cache (step 8). 213 of
+the 217 grid tests pass, 559 of the 571 with flexbox's; of the 12 left,
+two found `vertical-align` on an inline box (M7.7), and none waits on
+grid. Twenty box-only reference pages, 50 to 69, match the reference
+browser byte for byte (step 9), each page's declarations checked against
+its computed values so that agreement is not two engines ignoring the
+same rule. Six real layouts with text, a grid garden of twenty-four
+levels, a dashboard, a photo gallery, a form, a page of named areas and
+a calendar month, match it within a pixel in every one of their 363
+elements (step 10); `about:silver` lays its tiles out by grid. The grid
+benchmark (step 11) shows a chain of 64 nested grids costing what 8 do a
+level, and the benchmarks before M18 stay within T4.3's 10%
+(`docs/perf-budgets.md`), the one that read over under cachegrind within
+0.2%; the three fuzz targets that lay pages out ran fifteen minutes each
+with grid pages among their seeds and the grid keywords in a dictionary,
+and found no crash, hang or input over the memory limit in 8,311, 6,180
+and 259,818 runs. Where the reference browser parts from the drafts,
+this engine follows the drafts and the note records each with the
+reference browser's numbers: four corners of §12's track sizing, a grid
+item's margin box in the scroll extent, an item whose percentage size
+depends on an intrinsic track taking no part in baseline alignment, the
+max-content shim across, and a fixed child's static rectangle. Not in
+this milestone, said rather than hidden: subgrid and masonry (G1, G2);
+self-alignment of an absolutely positioned box in its inset-modified
+containing block (G3, found here, positioning's); writing modes and
+`direction: rtl` (M42); aspect ratios and replaced items (M23);
+fragmentation (M20); `calc()` in tracks (M21); the resolved track values
+of `getComputedStyle` (M25); the line limit, where the reference browser
+allows far more; and what the milestone found outside grid: the `inset`
+shorthand not parsed, `vertical-align` other than `baseline` (M7.7), the
+layout unit's rounding against the reference browser's 64ths of a pixel,
+and absolutely positioned boxes inside floats placed before the float
+was, fixed here with tests. 1,272 tests workspace-wide. Next milestone:
+compositing, transforms and accelerated scroll (M19).

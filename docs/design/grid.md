@@ -116,12 +116,12 @@ them. So they live in one value, `style::computed::GridStyle`, behind
 value, and `ComputedStyle::grid()` reads either through one accessor. A
 declaration sets one through `Arc::make_mut`, which copies the shared
 value once for the element that changes it. None of the properties is
-inherited, so a child starts from `None`. The two justify properties are
-a few bytes each, and sit in `ComputedStyle` beside `align-items` and
-`align-self`, since `justify-items` has to read its parent's for
-`legacy`. The struct grows by the pointer's eight bytes and whatever of
-the pair its padding does not absorb; a test states its size, so that
-growth is a decision rather than a discovery.
+inherited, so a child starts from `None`. The two justify properties
+live in `GridStyle` too, since nothing but a grid item and an absolutely
+positioned box reads them; `justify-items` reads its parent's for
+`legacy` through the parent's `grid()`. So the struct grows by the
+pointer's eight bytes alone, to 432 from M17's 424, and a test states
+its size, so that growth is a decision rather than a discovery.
 
 Inside `GridStyle`:
 
@@ -340,13 +340,46 @@ Sums of factors and sizes are taken in `f64`, as flex's loop takes them,
 so that a page of very large values stays finite; the sizes come back
 as `f32`.
 
+*Where the reference browser parts from the draft, found at step 3.* Put
+to the corners of §12, the reference browser does four things the draft
+does not say. This engine follows the draft in each, and its tests give
+the reference browser's numbers beside its own:
+
+- under a min-content constraint, an item that crosses no flexible track
+  gives an `auto` minimum its limited min-content contribution (§12.5),
+  where the reference browser gives its minimum contribution, zero for
+  an item with `min-width: 0`;
+- space that a spanned track not affected by a contribution has room for
+  goes to it before the affected tracks pass their limits (§12.5.1), a
+  step the reference browser does not take;
+- a `fit-content()` track is capped at its argument when space goes
+  beyond the limits, and counts as fixed at it, so that the other
+  affected tracks share what is left, where the reference browser gives
+  it all to the `fit-content()` track;
+- items that cross flexible tracks whose factors sum to less than one
+  give that share of the space by factor and the rest equally (§12.5),
+  where the reference browser gives all of it by factor.
+
+Where the reference browser and the web-platform-tests agree against
+the draft, this engine follows them: items that cross a flexible track
+keep their minimum contribution under a min-content constraint
+(grid-flex-spanning-items-001), where the draft's "repeat the previous
+step" would give their limited min-content one; and a container's own
+`width` does not count in its intrinsic widths, so one 200 pixels wide
+with `repeat(auto-fill, 50px)` is 50 pixels at its narrowest
+(flex-item-grid-container-auto-repeat-002), where §7.2.3.2's text would
+repeat four times.
+
 **The available space and percentages.** The available grid space in an
 axis is the content box when its size is definite, and otherwise the
 constraint the container is being sized under (§12.2). A block-level
 grid's columns are sized in its content width; its rows, when its height
 is not definite, under a max-content constraint, since an `auto` block
 size is the max-content size (§5.2). Its height is then the rows and
-gaps, clamped by `min-height` and `max-height`. A percentage track
+gaps, clamped by `min-height` and `max-height`. A height its context
+imposes without making it definite, as a column flex container does on
+an item it flexes, is still the room the rows fill, as in the reference
+browser; only percentages do not resolve against it. A percentage track
 resolves against the content box. When the container's size depends on
 its tracks, the percentage counts as `auto` while that size is found,
 and resolves against the size found for the layout itself (§7.2.1).
@@ -384,10 +417,13 @@ its outer height is both its min-content and its max-content
 contribution, as a block container's min-content height is its height
 at its width (css-sizing-3 §5.1). Its minimum contribution is found the
 same way from `min-height`. While the rows are being sized, the item's
-area has no height, so a percentage height inside it is `auto`, unless
-every row it spans has a fixed maximum. In that case the area's height
-is taken as those rows' maximums and the gaps between them (§12.1's
-estimate for the block axis).
+area has no height, so a percentage of it in the item's `height`,
+`min-height` or `max-height` is cyclic and counts as that property's
+initial value (css-sizing-3 §5.2.1c), whatever the rows it spans; its
+final layout resolves it against the area. This note first had the
+area's height estimated from rows of fixed maximum, §12.1's estimate for
+the block axis; the reference browser makes no such estimate, and
+neither does this engine.
 
 An item's `min-width: auto` or `min-height: auto` is its automatic
 minimum size (§6.6): the content-based minimum size when the item is not
@@ -473,9 +509,10 @@ container:
   two rows is 67.5 pixels tall. The fallbacks are flexbox's: `start` for
   `space-between`, `safe center` for `space-around` and `space-evenly`,
   and `start` for `stretch` with negative free space. `baseline` in
-  `align-content` is `start`, and `last baseline` `safe end`, as for a
-  flex container, which step 5 checks against the reference browser for
-  a grid. Collapsed tracks take none of the space.
+  `align-content` is `start`, and `last baseline`, which the reference
+  browser does not parse for a grid either, takes css-align-3's
+  fallback, `safe end`, as for a flex container. Collapsed tracks take
+  none of the space.
 - Without `safe` or `unsafe`, alignment is unsafe, as in the reference
   browser: an item wider than its area, centred in it, overflows on both
   sides. With `safe`, an item that overflows is aligned at the start.
@@ -491,9 +528,17 @@ running left to right and top to bottom.
 alignment when its `align-self` (or `justify-self`) is a baseline value,
 neither margin in that axis is `auto`, and its size in that axis does
 not depend on an intrinsically sized track it spans (§11.3, §11.4): a
-percentage size in a track sized by content. When the container's size
-in that axis is indefinite, a flexible track counts as intrinsically
-sized. Such an item takes the fallback, `start` or `end`.
+percentage `height`, `min-height` or `max-height` in an `auto`,
+`min-content`, `max-content`, `fit-content()` or `minmax(auto, …)` row,
+and the same across. A flexible track counts as intrinsically sized
+when the container's size in its axis is indefinite, whatever its `auto`
+minimum, which is this engine's reading of the draft's clause and
+agrees with the reference browser. Such an item takes the fallback,
+`start` or `end`. The reference browser aligns it all the same: with an
+`auto` row and an item of `height: 50%`, it puts the item 20 pixels down
+where this engine leaves it at the top. This engine follows the draft;
+the web-platform-tests check the rule only with writing modes
+(grid-baseline-align-cycles-001).
 
 - *Groups.* The items with `align-self: baseline` (or `first baseline`)
   whose area starts in the same row share that row's first baseline. The
@@ -506,7 +551,17 @@ sized. Such an item takes the fallback, `start` or `end`.
   so that the row is as tall as the group needs. The shim is the
   group's largest distance from its aligning edge to a baseline, less
   the item's own: at the item's start for the first baseline, at its
-  end for the last. It is counted in the item's contributions.
+  end for the last. It is counted in all three of the item's
+  contributions and in the fixed-maximum limit on its automatic
+  minimum, as the web-platform-tests' shim test has it, rebuilt here
+  without its `vertical-align`. Across, each contribution takes its own
+  shim: the min-content one for the minimum contribution and that limit,
+  the max-content one for the max-content contribution. The reference
+  browser takes the min-content shim for both in a last-baseline column
+  group: an `inline-grid` with one `auto` column, an item whose content
+  is 20 pixels wide at its narrowest and 40 at its widest, and another
+  with a left margin of 30 is 50 pixels wide there and 70 here; at
+  min-content both give 50.
 - *The item's baselines.* An item's first and last baselines are its
   layout's. One with none synthesizes them from its border box's bottom
   edge, as a flex item's are (css-align-3 §9.1).
@@ -514,29 +569,34 @@ sized. Such an item takes the fallback, `start` or `end`.
   baselines in this engine's one writing mode, and the reference browser
   synthesizes them from the border box's left edge, as it does for a
   column flex container. So the column group lines up its items' left
-  edges. Step 6 confirms that against the reference browser.
+  edges, for the first baseline and the last alike.
 
-A grid container's first baseline (§11.6) is taken from its first row
-that has an item. If items there take part in first-baseline alignment,
-it is their group's baseline; else, if items there take part in
-last-baseline alignment, theirs; else the first baseline of the first
-item in grid order in that row that has one; else one synthesized from
-the first item in grid order. For this purpose an item that spans rows
-counts only in the row where its area starts, except for last-baseline
-alignment, where it counts in the row where its area ends. Grid order is
-the order of the cells row by row, items in the same cell taken in
-order-modified document order. The last baseline is the same from the
-last row, with first and last turned round. A grid with no items has no
-baseline, and its context synthesizes one as it does for any box.
+A grid container's first baseline (§11.6) is taken from the first row
+in which an item's area starts, from the items whose areas start there.
+If a first-baseline group belongs to that row, it is the group's
+baseline; else, if a last-baseline group does, that one's; else the
+first baseline of the first of those items in grid order, synthesized if
+it has none. Grid order here goes by the column the area starts in, then
+by order-modified document order. The last baseline is the same from
+the last row in which an item's area ends, from the items whose areas
+end there, first and last turned round, and grid order going by the
+column the area ends in. A first-baseline group belongs to the row its
+items start in, a last-baseline group to the row they end in. An item's
+relative offset does not move the container's baselines. A grid with no
+items has none, and its context synthesizes one from its margin box, as
+it does for any box. This is how the reference browser finds them; the
+note had an item spanning rows count in the row its area starts in, for
+a last baseline too.
 
 Around the container, the baselines are used as a flex container's are:
 
-- an `inline-grid` sits on its line by its first baseline;
+- an `inline-grid` sits on its line by its first baseline, which it
+  keeps when its `overflow` clips;
 - a grid container gives a table cell its first baseline, and a block
   around it both of its baselines;
 - an inline-block around it takes its first baseline, by the legacy rule
-  M17 found for flex containers; step 6 confirms the rule holds for grid
-  in the reference browser.
+  M17 found for flex containers, which holds for grid in the reference
+  browser too.
 
 **Absolutely positioned boxes (§10).** When a grid container is an
 absolutely positioned box's containing block, the containing block is
@@ -553,21 +613,32 @@ In the reference browser, `grid-column: 2` with the four insets zero
 covers the padding box from the start of the second column to the right
 edge, since the end is `auto`. This holds for every box whose
 containing block the grid container is, not only for its own children:
-`settle_absolutes` takes, from the grid, a way to find each box's
-rectangle, and lays the box out against that rectangle as it lays one
-out against the padding box now.
+`settle_absolutes_in` takes, from the grid, a way to find each box's
+rectangle, and lays the box out against that rectangle as
+`settle_absolutes` lays one out against the padding box. For it the grid
+keeps its explicit axes, their names, and where its first explicit
+lines fell among the implicit ones. Content distribution moves the
+tracks, and the areas with them.
 
 An absolutely positioned child of a grid container, whether or not the
 container is its containing block, is no item and takes no part in the
 placement or the sizing. Its static position is found as if it were the
-sole item in an area whose edges are the content box's (§10.2). That is
-M17's static-position rectangle, the content box, with its alignment
-taken from the child's `justify-self` and `align-self`, `auto` being the
-container's `justify-items` and `align-items`, and `normal` and
-`stretch` being `start`; never safe. In the reference browser, a
-10-pixel box in a 200 by 100 grid with `justify-items: center` and
-`align-items: end` sits at 95 across and 90 down, and `justify-self:
-end` on it moves it to 190.
+sole item in an area whose edges are the content box's (§10.2), with its
+alignment taken from the child's `justify-self` and `align-self`,
+`auto` being the container's `justify-items` and `align-items`, and
+`normal` and `stretch` placing it at the start at its shrink-to-fit
+size; never safe. In the reference browser, a 10-pixel box in a 200 by
+100 grid with `justify-items: center` and `align-items: end` sits at 95
+across and 90 down, and `justify-self: end` on it moves it to 190.
+When the grid container is also the child's containing block, the
+static-position rectangle is instead the grid area the child's placement
+gives, as above (§10.2's "however" clause, which this note first left
+out). A fixed child of a positioned grid has the viewport for its
+containing block, so its rectangle is the content box; the reference
+browser takes the grid area for it too (with an area of 2 / 2 and
+`justify-self: end`, (445, 65) there against (425, 15) here), and this
+engine follows the draft. The descendants of an item take their own
+static positions in their own containers.
 
 **Paint and hit testing (§6.5).** A grid item paints as an inline-block
 does, as a flex item does: as a unit in the inline-level pass of its
@@ -586,10 +657,15 @@ own.
 
 **Scroll containers (§5.3).** A grid container whose `overflow` clips
 records its scrollable overflow area as a flex container does: the
-items' margin boxes where the grid put them, and the grid itself, its
-tracks and gaps, with the end padding after them; anything reaching
-further by its own border box; never less than the padding box. An item
-that is a scroll container has no automatic minimum size (§6.6).
+items' margin boxes where the grid put them (css-overflow-3 §2.2), and
+the grid itself, its tracks and gaps, with the end padding after them;
+anything reaching further by its own border box; never less than the
+padding box. The reference browser counts a grid item's border box
+alone, with no end padding after it: with rows of 50 and 50 and an item
+150 tall in the second, its bottom margin 20, the area is 200 tall there
+and 220 here. This engine follows the draft, as it does for flex items.
+An item that is a scroll container has no automatic minimum size
+(§6.6).
 
 **The layout pass.** A grid inside a grid item is laid out each time its
 item is. The item is measured at its area's width for the rows, then
@@ -613,6 +689,18 @@ right-to-left text, 898 the Ahem font, and 405 are check-layout tests.
 The subset is pulled at step 4 from that same commit, so the README
 still names one, and `expectations.txt` gains a section for each step
 that will make failing tests pass, emptied as the steps land.
+
+It took 217 of the directory's tests, and four flexbox tests that use
+grid came in with them. 491 of the 571 passed at step 4. The sections
+for alignment (40 tests), absolutely positioned boxes (26) and paint
+order (2) emptied as their steps landed; the two of the baselines
+section turned out to wait on `vertical-align` other than `baseline` on
+an inline box (M7.7), not on grid: `display-inline-grid`, whose
+reference sets it, and the shim test, one of whose items takes its
+baseline from such a box. In both, the grid lays out as the reference
+browser lays it out. So 213 of the 217 grid tests pass, and 559 of the
+571 in all; the other two grid tests left wait on a table whose 100%
+column makes its max-content width unbounded, as two flexbox tests do.
 
 **The golden cases.** Twenty box-only pages join `tests/reference/`,
 numbered 50 to 69, captured from the reference browser by `capture.sh`
@@ -643,6 +731,15 @@ text cover the corners of the algorithm:
 - baseline alignment in rows, and a grid's baselines on its line;
 - `grid-auto-flow: column` and each form of the `grid` shorthand.
 
+All twenty match the reference browser byte for byte, and found nothing
+in grid. The one page that differed at first put `br` between
+inline-blocks, which in this engine breaks no line, a gap older than
+this milestone, and wraps them at spaces now. Each page's declarations
+were checked against the reference browser's computed values, so that
+agreement is not both engines ignoring the same rule; one of them was
+found not to test what it said, an item meant to overflow its area that
+widened its `1fr` column instead, and takes `minmax(0, 1fr)` now.
+
 **Acceptance (M18.7).** Two parts, both check-layout pages under
 `crates/engine/tests/layouts/`, captured from the reference browser by
 M17's `layouts -- capture` and checked by the WPT runner's check-layout
@@ -668,8 +765,21 @@ engine ignores.
   aside and footer by `grid-template-areas`) and a calendar month (seven
   columns, a week a row, events that span days).
 
-`about:silver` gains a section laid out by grid, so the built-in page
-shows it.
+All six match, 363 boxes: the garden's 147, the dashboard's 51, the
+gallery's 52, the form's 22, the named areas' 28 and the calendar's 63.
+The form has real `input` and `textarea` elements, their boxes set by
+the page. The calendar lays each week out as a grid of its own, the days
+down every row of it and the events across them: in one grid of the
+month, the events, placed first since their lines are definite, would
+push the auto-placed days out of their cells. One dashboard cell missed
+by a pixel at first, not because of grid: an even split put it at
+452.5, where the reference browser, counting in 64ths of a pixel, has
+452.484, and `offsetLeft` rounds the two to either side. The page's
+split is uneven now; this engine's layout unit stays a float.
+
+`about:silver` gains tiles laid out by grid, `repeat(auto-fill,
+minmax(150px, 1fr))` with dense packing and wide tiles across two
+columns, and a test checks them at 800 and 400 pixels.
 
 **Performance and fuzzing.** A benchmark, `benches/grid.rs`, lays out:
 
@@ -697,8 +807,9 @@ the limit above and to a time.
 **The roadmap.** M18.6 asks for subgrid and masonry to be registered as
 items of the long tail, Phase G, rather than built here: G1 for subgrid
 (css-grid-2 §9) and G2 for masonry (css-grid-3, which now names it
-`grid-lanes`). Neither blocks this milestone. The documents step adds
-them.
+`grid-lanes`). Neither blocks this milestone. The documents step added
+them to the roadmap's long tail, with the positioning item of section 2
+as G3.
 
 ## 2. Not in this milestone, said rather than hidden
 
@@ -729,12 +840,28 @@ them.
   `left: 0` and `right: 0` in a 200-pixel container goes to 150 with
   `justify-self: end`, where CSS2 puts it at 0. That holds whatever the
   containing block, a grid area or a padding box, so it is
-  positioning's, M11's area, and is registered in the long tail at the
-  documents step rather than built for grid alone. Grid uses the two
+  positioning's, M11's area, and is registered in the long tail as G3
+  rather than built for grid alone. Grid uses the two
   properties where §10.2 does, for a child's static position.
 - *What the WPT subset leaves out*, among it the Ahem font, writing
   modes, scripts, images and `line-height`: the tests that need them
   wait for them, and the rule picks them up when they land.
+
+Found by the milestone, outside grid:
+
+- *`vertical-align` other than `baseline`* on an inline box is not read
+  (M7.7), which two of the subset's grid tests need.
+- *The `inset` shorthand* is not parsed; its four longhands are.
+- *The layout unit.* The reference browser lays out in 64ths of a pixel
+  and this engine in floats, so a box that this engine puts exactly
+  half way between two pixels may round to the other one there.
+- *Absolutely positioned boxes inside a float* were placed as if a
+  float that waits to be placed would land at its containing block's
+  left, and stayed there when it went beside or below an earlier float;
+  inside a float met in a line, they were never laid out. Two of the
+  grid web-platform-tests found it, floats side by side holding such
+  boxes, and it was fixed before step 7, the reference browser agreeing
+  in every case.
 
 ## 3. Order of work
 

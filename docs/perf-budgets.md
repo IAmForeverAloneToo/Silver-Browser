@@ -365,6 +365,90 @@ faster than the depth is the kept item layouts copied into each layout
 of the container above them, 12% of the instructions at 64 levels and
 21% at 128 (M35.9).
 
+### Grid (M18)
+
+**T4.3.** The benchmarks above, run on the same kind of machine as M17's:
+the code before M18 (`ef22f07`) and M18's built side by side in
+release, four rounds of each in turn. The ranges are over the rounds.
+
+| | Before M18 | M18 |
+| --- | --- | --- |
+| Scrolling: the layout, once | 370–406ms, median 377 | 373–420ms, median 393 |
+| Scrolling: a scroll frame, median | 2.9–3.0ms | 2.9–3.2ms |
+| Changing the document: the first frame | 691–779ms | 696–790ms |
+| An appended paragraph's frame, median | 11.4–15.3ms, median 13.2 | 13.3–15.3ms, median 13.5 |
+| Its layout, median | 10.0–13.3ms | 11.6–13.4ms |
+| Those frames over 16.7ms | 114–345 of 1,000 | 211–378 of 1,000 |
+| 1,000 appended in one frame | 729–768ms | 721–776ms |
+| Loading: `load` to the first frame drawn | 763–773ms | 766–777ms |
+| Going back to the page from the cache | 5.7–5.9ms | 5.8–6.2ms |
+| Going back to the page fetched again | 738–783ms | 754–784ms |
+| Matching: 1,000 selectors over 10,003 elements | 295–414ms, median 345 | 303–322ms, median 309 |
+| Flex: a grid of 1,000 cards, the first frame | 2.44–2.51s | 2.44–2.73s, median 2.46 |
+| Flex: after a card's title changes, a frame, median | 2.48–2.52s | 2.42–2.47s |
+| Flex: a chain of 64 nested containers, its layout | 21.1–22.2ms | 22.7–27.3ms, median 24.4 |
+
+The pseudo benchmark, the same four rounds:
+
+| Sheet | The first frame, before | M18 | An appended paragraph's frame, median, before | M18 |
+| --- | --- | --- | --- | --- |
+| None | 2.13–2.28s | 2.03–2.15s | 25.3–27.3ms | 25.3–28.8ms |
+| `::before` and `::after` | 2.18–2.28s | 2.13–2.31s | 32.7–34.8ms | 33.6–35.9ms |
+| `::first-letter` | 2.14–2.29s | 2.08–2.28s | 30.2–33.0ms | 30.2–31.6ms |
+| `::first-line`, colour and size | 2.54–2.60s | 2.64–2.86s | 35.6–38.0ms | 35.8–41.3ms |
+| `::first-line`, a background | 2.16–2.29s | 2.10–2.25s | 28.8–34.4ms | 28.5–33.9ms |
+| All of them | 2.62–2.83s | 2.64–2.78s | 64.2–67.2ms | 62.8–73.7ms |
+
+All are inside T4.3's 10%. The appended paragraph's frame, the row
+nearest the line at M17, is 2% longer by its median; the computed style
+grew by the grid pointer's eight bytes (432 bytes, from 424), and a
+`Fragment` and a `LayoutBox` with it (520 and 512, from 512 and 504),
+as M17's row grew by 48. The flex chain of 64 reads 12% over by the
+rounds' medians, and that is the clock, not the code: the two sides
+run again in turn, twenty engines a run, take 17.1–18.1ms and
+17.1–18.9ms; and under cachegrind the layout is 139.8 million
+instructions before M18 against 140.1 million, 0.2% apart, with 1%
+more first-level data cache misses for the larger structures. The
+`::first-line` row's first frame reads 4% over by its median, with its
+appended paragraph's frame unchanged, where M17's rounds moved as much
+for no change.
+
+**What grid layout costs.** The grid benchmark (`benches/grid.rs`), at
+1280 by 800, in release:
+
+| | Release |
+| --- | --- |
+| A gallery of 1,000 figures, the first frame | 875ms |
+| Its layout | 862ms |
+| The gallery after a caption changes, a frame, median of 20 | 848ms |
+| A dashboard of 200 spanning cards, the first frame, median of 5 | 314ms |
+| A chain of 8 nested grids, its layout | 1.4ms, 0.18ms a level |
+| 16 | 2.9ms, 0.18ms a level |
+| 32 | 5.8ms, 0.18ms a level |
+| 64 | 15.8ms, 0.25ms a level |
+
+The gallery's figure is a grid of a picture and a caption that wraps,
+auto-placed in `repeat(auto-fill, minmax(160px, 1fr))` columns. Its time
+is text measurement, as the flex benchmark's is (M35.8). A change inside
+a grid container lays all its items out again, since they are kept only
+with the container, as a flex container's are, so the frame after a
+caption changes costs what the first one did. The dashboard's cards span
+one to three columns of `auto` and `fr` tracks and one or two rows, and
+go through §12.5's spanning steps. The chain nests each grid in the
+`auto` column of the one above, beside a paragraph: an item there is
+measured for its contributions, laid out for the rows and laid out
+again in its area, and the pass keeps each, so a level costs about the
+same at 64 as at 8.
+
+Grid lets a page ask for a lot of work in a few bytes. A unit test, in
+the unoptimised build, holds three such pages to the limit of ±10,000
+lines and to a time: an item at line 10,000 of both axes and one at
+-10,000, 19,999 tracks between them, lays out in 21ms; an `auto-fill`
+of one-pixel tracks in a container a million pixels wide stops at
+10,000 tracks, 11ms; a thousand items each spanning a thousand of two
+thousand `auto` tracks take 0.7s, growing with the items times their
+spans (two thousand over two thousand, 2.8s).
+
 ### Over budget, and why
 
 These are known and recorded rather than hidden. Each has the item that
@@ -383,6 +467,11 @@ is to take it on.
   out again, since they are kept only with the container (the flexbox
   note, "The layout cache"), so a change to one card costs the grid's
   whole layout.
+- **A large grid layout, and a change inside one.** A gallery of 1,000
+  figures takes 0.86s to lay out, text measurement again, and a change
+  to one caption costs the gallery's whole layout, since a grid's items
+  are kept only with the container, as a flex container's are (the grid
+  note, "The layout cache"). M35.8 and M35.9.
 - **The first layout of a large page.** 490ms for the 1,000 paragraphs
   M13.2 was measured on, 630–680ms for the mutation benchmark's page,
   and 690–700ms for the load benchmark's, with its sheets. Most of it is text shaping, at about 25µs a word. Caching word
