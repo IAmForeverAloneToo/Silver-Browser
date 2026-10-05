@@ -105,6 +105,11 @@ pub struct LayoutBox {
     /// from the box carry it, and the paint order puts positioned boxes
     /// in it (M17).
     pub tree_order: u32,
+    /// Whether the box is a flex or grid item (M17, M18): an in-flow
+    /// child of a flex or grid container, whose `z-index` applies
+    /// though it is not positioned (css-flexbox-1 §4.3, css-grid-2
+    /// §6.5). The builder sets it when it numbers the tree.
+    pub item: bool,
 }
 
 /// What a box is on the first formatted line (M16).
@@ -167,9 +172,10 @@ pub enum BoxKind {
     /// flow, a block container inside and a block formatting context
     /// root, laid out against its containing block — the nearest
     /// positioned ancestor's padding box, or the initial containing
-    /// block; the viewport for `fixed` — once that is known, from the
-    /// static position it is met at. As for a float, a table that is
-    /// absolutely positioned is this kind with a table's children.
+    /// block; the viewport for `fixed`, or the nearest ancestor with a
+    /// transform or a `perspective` (M19) — once that is known, from
+    /// the static position it is met at. As for a float, a table that
+    /// is absolutely positioned is this kind with a table's children.
     Absolute,
     /// An anonymous block box (CSS2 §9.2.1.1, M10.4) wrapping one run of
     /// inline-level boxes inside a block container, so that the
@@ -359,6 +365,7 @@ pub fn build_box_tree(
 fn number(boxes: &mut [LayoutBox], next: &mut u32, items: bool) {
     let number_one = |b: &mut LayoutBox, next: &mut u32| {
         b.tree_order = *next;
+        b.item = items;
         *next = next.saturating_add(1);
         let items = b.has_items();
         number(&mut b.children, next, items);
@@ -576,6 +583,7 @@ impl<'a> Styled<'a> {
             styled_by_ancestor: false,
             first_line: None,
             tree_order: 0,
+            item: false,
         }
     }
 
@@ -601,6 +609,7 @@ impl<'a> Styled<'a> {
             styled_by_ancestor: false,
             first_line: None,
             tree_order: 0,
+            item: false,
         }
     }
 }
@@ -811,6 +820,7 @@ impl BlockContainer<'_> {
                 styled_by_ancestor: false,
                 first_line: None,
                 tree_order: 0,
+                item: false,
             });
         }
         self.flush_misplaced(parent, &mut misplaced);
@@ -1014,6 +1024,7 @@ impl BlockContainer<'_> {
                 styled_by_ancestor: false,
                 first_line: None,
                 tree_order: 0,
+                item: false,
             })
             .collect();
         while let Some(inline) = self.open.pop() {
@@ -1049,6 +1060,7 @@ impl BlockContainer<'_> {
             styled_by_ancestor: false,
             first_line: None,
             tree_order: 0,
+            item: false,
         });
     }
 

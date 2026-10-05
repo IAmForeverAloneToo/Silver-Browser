@@ -1441,7 +1441,9 @@ fn flush_line<'a>(
                 LineItem::Close(..) => {
                     open.pop();
                 }
-                LineItem::Absolute(b) => absolutes.push(Deferred::at(b, x, *y)),
+                LineItem::Absolute(b) => {
+                    absolutes.push(through_inlines(Deferred::at(b, x, *y), open));
+                }
                 LineItem::Word(_) | LineItem::Atomic(_) => {}
             }
         }
@@ -1518,7 +1520,11 @@ fn flush_line<'a>(
                 let (bx, by) = (x + a.margin_left + dx, top + a.margin_top + dy);
                 let a = *a;
                 innermost(&mut stack, fragments).push(a.root.translated(bx, by));
-                absolutes.extend(carried(a.absolutes, bx, by));
+                absolutes.extend(
+                    carried(a.absolutes, bx, by)
+                        .into_iter()
+                        .map(|d| through_inlines(d, &next_open)),
+                );
                 x += width;
             }
             LineItem::Open(b, style, edge) => {
@@ -1546,7 +1552,9 @@ fn flush_line<'a>(
                 let fragment = close_inline(inline, x, true, baseline_y, fonts, cb, absolutes);
                 innermost(&mut stack, fragments).push(fragment);
             }
-            LineItem::Absolute(b) => absolutes.push(Deferred::at(b, x, *y)),
+            LineItem::Absolute(b) => {
+                absolutes.push(through_inlines(Deferred::at(b, x, *y), &next_open));
+            }
         }
     }
     // The inline elements still open are sliced at the line's end: no
@@ -1559,6 +1567,17 @@ fn flush_line<'a>(
     *open = next_open;
     *y += max_ascent + max_below;
     Some(baseline_y)
+}
+
+/// An absolutely positioned box met inside the inline elements `open`,
+/// innermost last, carried up through them (M19): an inline box is no
+/// containing block here, but it can be the stacking context the box
+/// belongs to, a faded `span` say.
+fn through_inlines<'a>(mut d: Deferred<'a>, open: &[&'a LayoutBox]) -> Deferred<'a> {
+    for inline in open.iter().rev() {
+        d.carried_through(inline);
+    }
+    d
 }
 
 /// An inline element open on the line being flushed, with the
@@ -1661,6 +1680,7 @@ fn close_inline<'a>(
         scroll_height: 0.0,
         children,
         tree_order: b.tree_order,
+        stacking_parent: None,
     }
 }
 /// A text fragment for `word` at `x` on a line whose baseline is
@@ -1687,6 +1707,7 @@ fn text_fragment(
         scroll_height: 0.0,
         children: Vec::new(),
         tree_order: 0,
+        stacking_parent: None,
     }
 }
 
@@ -1770,6 +1791,7 @@ mod tests {
             styled_by_ancestor: false,
             first_line: None,
             tree_order: 0,
+            item: false,
         }
     }
 
@@ -1785,6 +1807,7 @@ mod tests {
             styled_by_ancestor: false,
             first_line: None,
             tree_order: 0,
+            item: false,
         }
     }
 
@@ -1986,6 +2009,7 @@ mod tests {
             styled_by_ancestor: false,
             first_line: None,
             tree_order: 0,
+            item: false,
         }
     }
 

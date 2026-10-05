@@ -1296,6 +1296,7 @@ pub(crate) fn layout_grid_contents<'a>(
                 h,
                 align: align.map(|alignment| alignment.static_align(true)),
                 float: None,
+                stacking_parent: None,
             });
         } else {
             absolutes.extend(carried);
@@ -1307,7 +1308,11 @@ pub(crate) fn layout_grid_contents<'a>(
         // the grid's tracks, with the end padding after them, or anything
         // reaching lower by its own border box; never less than the
         // padding box.
-        let extent = root.children.iter().map(extent_bottom).fold(0.0, f32::max)
+        let extent = root
+            .children
+            .iter()
+            .map(|c| extent_bottom(c, content_width))
+            .fold(0.0, f32::max)
             - border[TOP]
             - padding[TOP];
         let padding_box = padding[TOP] + content_height + padding[BOTTOM];

@@ -353,6 +353,7 @@ fn childless(fragment: &Fragment) -> Fragment {
         scroll_height: fragment.scroll_height,
         children: Vec::new(),
         tree_order: fragment.tree_order,
+        stacking_parent: fragment.stacking_parent,
     }
 }
 

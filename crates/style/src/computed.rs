@@ -1634,6 +1634,17 @@ impl ComputedStyle {
         Arc::make_mut(self.effects.get_or_insert_with(Default::default))
     }
 
+    /// Whether a box with this style is a stacking context (CSS2
+    /// Appendix E, M11; M19): a positioned box, or a flex or grid
+    /// `item` (css-flexbox-1 §4.3, css-grid-2 §6.5), whose `z-index` is
+    /// not `auto`; or a box whose transform, opacity or will-change
+    /// properties make one ([`Effects::is_stacking_context`]). The root
+    /// element's box is one besides, which the paint order knows.
+    pub fn is_stacking_context(&self, item: bool) -> bool {
+        ((self.position.is_positioned() || item) && self.z_index.is_some())
+            || self.effects().is_stacking_context()
+    }
+
     /// This style with its inherited properties taken from `from` and
     /// the others kept: the parent a child on the first formatted line
     /// inherits from, its inherited properties from the `::first-line`

@@ -3163,8 +3163,11 @@ mod tests {
         let r = node_by_id(&engine, "r");
         assert_eq!(engine.hit_test(110.0, 20.0), Some(r));
         assert_ne!(engine.hit_test(10.0, 20.0), Some(r));
-        // The page is as tall as the box in flow, not where it moved to.
-        assert_eq!(engine.layout(200.0).height, 50.0);
+        // The page reaches the box where it moved to (css-overflow-3
+        // §2.2, as the reference browser has it: a relatively positioned
+        // box counts at its offset position), not only where it is in
+        // flow.
+        assert_eq!(engine.layout(200.0).height, 60.0);
     }
 
     #[test]
@@ -3208,6 +3211,48 @@ mod tests {
         );
         assert_eq!(engine.hit_test(30.0, 60.0), Some(a));
         assert_eq!(engine.layout(200.0).height, 1000.0);
+    }
+
+    #[test]
+    fn a_fixed_box_inside_a_transformed_box_scrolls_with_the_page() {
+        // css-transforms-1 §2 (M19): a transformed box is the containing
+        // block of the fixed boxes inside it, so the red box, fixed
+        // inside a translated wrapper, scrolls away with the page, while
+        // the blue one, fixed outside it, stays put; painting and hit
+        // testing agree.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0 }
+                    .w { transform: translateX(0px); height: 40px }
+                    .tall { height: 1000px }
+                    .f { position: fixed; left: 10px; top: 10px; width: 30px; height: 30px;
+                         background-color: #ff0000 }
+                    .g { position: fixed; left: 100px; top: 10px; width: 30px; height: 30px;
+                         background-color: #0000ff }</style>\
+             <div class=w><div class=f id=f></div></div><div class=tall></div>\
+             <div class=g id=g></div>",
+        );
+        let pixels = engine.frame(200, 100);
+        let (f, g) = (node_by_id(&engine, "f"), node_by_id(&engine, "g"));
+        assert_eq!(px(&pixels, 200, 20, 20), [0xff, 0x00, 0x00, 0xff]);
+        assert_eq!(px(&pixels, 200, 110, 20), [0x00, 0x00, 0xff, 0xff]);
+        assert_eq!(engine.hit_test(20.0, 20.0), Some(f));
+        assert_eq!(engine.hit_test(110.0, 20.0), Some(g));
+        engine.set_scroll(100.0);
+        let pixels = engine.frame(200, 100);
+        assert_ne!(
+            px(&pixels, 200, 20, 20),
+            [0xff, 0x00, 0x00, 0xff],
+            "scrolled away with its wrapper"
+        );
+        assert_ne!(engine.hit_test(20.0, 20.0), Some(f));
+        assert_eq!(
+            px(&pixels, 200, 110, 20),
+            [0x00, 0x00, 0xff, 0xff],
+            "fixed to the viewport"
+        );
+        assert_eq!(engine.hit_test(110.0, 20.0), Some(g));
+        assert_eq!(engine.layout(200.0).height, 1040.0);
     }
 
     #[test]

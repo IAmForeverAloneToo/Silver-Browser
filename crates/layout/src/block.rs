@@ -84,6 +84,7 @@ use style::computed::{
     LengthPercentageAuto, MaxSize, Position, RIGHT, Size, TOP,
 };
 use style::selector_matching::PseudoElement;
+use style::transform::{Matrix, ReferenceBox};
 use text::FontCollection;
 
 use crate::box_tree::{BoxKind, LayoutBox};
@@ -144,7 +145,22 @@ pub struct Fragment {
     /// the paint order puts positioned boxes in, whichever fragment layout
     /// put them under. Zero for a text fragment, which nothing orders.
     pub tree_order: u32,
+    /// For an absolutely positioned box, the stacking context it
+    /// belongs to when that is not the one whose subtree its fragment
+    /// hangs in (CSS2 Appendix E, M19): the nearest ancestor box that
+    /// is a stacking context, as a [`StackingKey`], when one lies
+    /// between the box and its containing block — a faded box around
+    /// it, say, which is not positioned and so not its containing
+    /// block. Layout hangs the fragment under the containing block's,
+    /// where its clips and scroll offsets are; the paint order hands it
+    /// to the stacking context named here. `None` otherwise.
+    pub stacking_parent: Option<StackingKey>,
 }
+
+/// What names a box's stacking context across the fragment tree: the
+/// box's node and the pseudo-element that generated it, if any, which
+/// together name one box of an element (M16).
+pub type StackingKey = (NodeId, Option<PseudoElement>);
 
 #[derive(Debug, Clone)]
 pub enum FragmentKind {
@@ -216,6 +232,12 @@ impl Fragment {
         px >= self.x && px < self.x + self.w && py >= top && py < top + self.h
     }
 
+    /// The key that names this box's stacking context to the fragments
+    /// whose [`Fragment::stacking_parent`] it is.
+    pub fn stacking_key(&self) -> StackingKey {
+        (self.node, self.generated)
+    }
+
     /// How far a scroll container's content can scroll (M10.5): its
     /// [`Fragment::scroll_height`] past its padding box's height, never
     /// negative — and zero for a box that does not clip, or a text.
@@ -223,20 +245,85 @@ impl Fragment {
         let [top, _, bottom, _] = self.style.used_border_width();
         (self.scroll_height - (self.h - top - bottom)).max(0.0)
     }
+
+    /// The width of the box's content box, the containing block of its
+    /// in-flow children, given `cb_width`, the width of its own
+    /// containing block, which its percentage padding is of. An inline
+    /// box's or a text's children are in the same containing block as
+    /// it is.
+    pub fn content_width(&self, cb_width: f32) -> f32 {
+        if !matches!(self.kind, FragmentKind::Box) {
+            return cb_width;
+        }
+        let [_, right, _, left] = self.style.used_border_width();
+        let padding_left = self.style.padding[LEFT].resolve(cb_width);
+        let padding_right = self.style.padding[RIGHT].resolve(cb_width);
+        (self.w - left - right - padding_left - padding_right).max(0.0)
+    }
+
+    /// The reference box of the box's transform (css-transforms-1 §9,
+    /// M19), as its `transform-box` picks it: the border box, or the
+    /// content box, whose padding is of `cb_width`, the containing
+    /// block's width. In the border box's coordinates.
+    pub fn reference_box(&self, cb_width: f32) -> ReferenceBox {
+        if !self.style.effects().transform_box.uses_content_box() {
+            return ReferenceBox::border(self.w, self.h);
+        }
+        let [top, right, bottom, left] = self.style.used_border_width();
+        let padding = self.style.padding.map(|p| p.resolve(cb_width));
+        ReferenceBox {
+            x: left + padding[LEFT],
+            y: top + padding[TOP],
+            width: (self.w - left - right - padding[LEFT] - padding[RIGHT]).max(0.0),
+            height: (self.h - top - bottom - padding[TOP] - padding[BOTTOM]).max(0.0),
+        }
+    }
+
+    /// The transformation matrix of the box (css-transforms-1 §2, M19),
+    /// in its border box's coordinates, or `None` when it has no
+    /// transform: a `transform`, `translate`, `rotate` or `scale` other
+    /// than `none` on a box fragment. A transform applies to a
+    /// transformable element (§3): a block-level or atomic inline-level
+    /// box, or a table part, never an inline box or a text.
+    pub fn matrix(&self, cb_width: f32) -> Option<Matrix> {
+        if !matches!(self.kind, FragmentKind::Box) {
+            return None;
+        }
+        let effects = self.style.effects();
+        if !effects.has_transform() {
+            return None;
+        }
+        effects.matrix(&self.reference_box(cb_width))
+    }
 }
 
 /// The bottom edge of `f`'s box, or of anything inside it reaching
-/// lower, relative to the origin `f`'s own coordinates are in. Content
-/// inside a box that clips does not count: its overflow is its own.
-pub(crate) fn extent_bottom(f: &Fragment) -> f32 {
+/// lower, relative to the origin `f`'s own coordinates are in; `cb_width`
+/// is the width of `f`'s containing block. Content inside a box that
+/// clips does not count: its overflow is its own. A transformed box
+/// contributes the bounds of its transformed extent instead (M19,
+/// css-overflow-3 §2.2: boxes are projected through their transforms),
+/// and a box whose matrix is singular, which is not displayed, nothing
+/// at all (css-transforms-1 §2); the box is as wide as its border box
+/// for the projection, horizontal overflow not being tracked.
+pub(crate) fn extent_bottom(f: &Fragment, cb_width: f32) -> f32 {
     let own = f.top() + f.h;
-    if f.clips() {
-        return own;
+    let untransformed = if f.clips() {
+        own
+    } else {
+        let content_width = f.content_width(cb_width);
+        f.children
+            .iter()
+            .map(|c| f.y + extent_bottom(c, content_width))
+            .fold(own, f32::max)
+    };
+    match f.matrix(cb_width) {
+        None => untransformed,
+        Some(matrix) => match matrix.bounds(0.0, 0.0, f.w, untransformed - f.y) {
+            Some((_, _, _, bottom)) if matrix.inverse().is_some() => f.y + bottom,
+            _ => f.y,
+        },
     }
-    f.children
-        .iter()
-        .map(|c| f.y + extent_bottom(c))
-        .fold(own, f32::max)
 }
 
 /// A laid-out document (M9.1): the fragment tree of its top-level
@@ -455,20 +542,19 @@ fn layout_document_with(
     let mut roots = children.fragments;
     // The absolutely positioned boxes no positioned ancestor took are
     // the initial containing block's — the viewport's rectangle at the
-    // document's top — and so is every `position: fixed` box, those
-    // met inside the others included (M11). Their fragments are the
-    // document's last roots; a fixed one is not scrolled with the
-    // document (`paint` leaves the viewport's offset out of it), an
-    // absolute one is, and the page reaches down to it.
+    // document's top — and so is every `position: fixed` box no
+    // transformed ancestor took, those met inside the others included
+    // (M11, M19). Their fragments are the document's last roots; a
+    // fixed one is not scrolled with the document (`paint` leaves the
+    // viewport's offset out of it), an absolute one is, and the page
+    // reaches down to it.
     let mut waiting = children.absolutes;
     let mut depends_on_viewport_height = depends_on_viewport_height;
+    let flow_roots = roots.len();
     while !waiting.is_empty() {
         for d in std::mem::take(&mut waiting) {
             depends_on_viewport_height |= viewport_height.is_some() && uses_cb_height(&d.b.style);
             let (fragment, fixed) = layout_absolute(&d, viewport_width, viewport_height, &pass);
-            if d.b.style.position == Position::Absolute {
-                height = height.max(fragment.y + fragment.h);
-            }
             roots.push(fragment);
             waiting.extend(fixed);
         }
@@ -476,6 +562,18 @@ fn layout_document_with(
     // The floats' fragments get their positions while every fragment
     // is still relative to its parent, as the attaching assumes.
     attach_floats(&mut roots, floats.placed(), 0.0, 0.0, 0.0, 0.0);
+    // The viewport is a scroll container (css-overflow-3 §2.2): the page
+    // reaches down to whatever its content reaches, a box overflowing
+    // its parent, an absolutely positioned box, a transformed box by its
+    // transformed bounds (M19); a fixed box, which does not scroll, adds
+    // nothing. Every fragment is still relative to its parent here, as
+    // the extents assume.
+    for (i, root) in roots.iter().enumerate() {
+        if i >= flow_roots && root.style.position == Position::Fixed {
+            continue;
+        }
+        height = height.max(extent_bottom(root, viewport_width));
+    }
     make_absolute(&mut roots, 0.0, 0.0);
     DocumentLayout {
         roots,
@@ -840,6 +938,10 @@ pub(crate) struct Deferred<'a> {
     /// position (M11): the rectangle is where the float was taken to be,
     /// and moves with it once it is placed.
     pub(crate) float: Option<FloatKey>,
+    /// The nearest stacking context the box was carried through (M19,
+    /// [`Fragment::stacking_parent`]): set by the first box on the way
+    /// up that is one and does not settle it.
+    pub(crate) stacking_parent: Option<StackingKey>,
 }
 
 impl<'a> Deferred<'a> {
@@ -853,6 +955,16 @@ impl<'a> Deferred<'a> {
             h: 0.0,
             align: [StaticAlign::Start; 2],
             float: None,
+            stacking_parent: None,
+        }
+    }
+
+    /// Records that the box is carried up through `through`, a box
+    /// that is not its containing block: the nearest stacking context
+    /// on the way is the one the box's fragment belongs to.
+    pub(crate) fn carried_through(&mut self, through: &LayoutBox) {
+        if self.stacking_parent.is_none() && through.style.is_stacking_context(through.item) {
+            self.stacking_parent = Some((through.node, through.generated));
         }
     }
 
@@ -1621,7 +1733,11 @@ pub(crate) fn layout_block_contents<'a>(
         // reference browsers have it (css-overflow-3 §2.2 adds the end
         // padding to the in-flow content alone); and never less than the
         // padding box itself.
-        let extent = root.children.iter().map(extent_bottom).fold(0.0, f32::max)
+        let extent = root
+            .children
+            .iter()
+            .map(|c| extent_bottom(c, content_width))
+            .fold(0.0, f32::max)
             - border[TOP]
             - padding[TOP];
         let padding_box = padding[TOP] + content_height + padding[BOTTOM];
@@ -1655,9 +1771,14 @@ pub(crate) fn layout_block_contents<'a>(
 /// padding box, from the static position carried, and its fragment
 /// goes under `root` after the in-flow content — so an `overflow`
 /// box between the two does not clip it, and a scroll container
-/// between them does not scroll it. A `position: fixed` box, and
-/// anything carried by a box that is not positioned, goes on up;
-/// returned relative to `root`'s border box.
+/// between them does not scroll it. A box with a transform, a
+/// `perspective` or a `will-change` naming either is the containing
+/// block of the `position: fixed` boxes below it as well
+/// (css-transforms-1 §2, css-will-change-1 §2.2, M19), positioned or
+/// not: a fixed box is laid out against its padding box the same way,
+/// and scrolls with it. Any other `position: fixed` box, and anything
+/// carried by a box that is neither, goes on up; returned relative to
+/// `root`'s border box.
 pub(crate) fn settle_absolutes<'a>(
     b: &LayoutBox,
     root: &mut Fragment,
@@ -1684,18 +1805,31 @@ pub(crate) fn settle_absolutes_in<'a>(
     pass: &Pass<'a>,
     area: &dyn Fn(&LayoutBox) -> [f32; 4],
 ) -> Vec<Deferred<'a>> {
-    if !b.style.position.is_positioned() {
-        return absolutes;
+    let contains_all = b.style.effects().contains_all_descendants();
+    let mut up = Vec::new();
+    let mut waiting = absolutes;
+    // The fixed boxes met inside a box laid out here are met again:
+    // this box's when it contains all descendants, carried up otherwise.
+    while !waiting.is_empty() {
+        let (mine, rest): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut waiting).into_iter().partition(|d| {
+                contains_all
+                    || (b.style.position.is_positioned()
+                        && d.b.style.position == Position::Absolute)
+            });
+        up.extend(rest);
+        for d in mine {
+            let [x, y, w, h] = area(d.b);
+            let (dx, dy) = (border[LEFT] + x, border[TOP] + y);
+            let (fragment, fixed) = layout_absolute(&d.moved(-dx, -dy), w, Some(h), pass);
+            waiting.extend(carried(fixed, dx, dy));
+            root.children.push(fragment.translated(dx, dy));
+        }
     }
-    let (mine, mut up): (Vec<_>, Vec<_>) = absolutes
-        .into_iter()
-        .partition(|d| d.b.style.position == Position::Absolute);
-    for d in mine {
-        let [x, y, w, h] = area(d.b);
-        let (dx, dy) = (border[LEFT] + x, border[TOP] + y);
-        let (fragment, fixed) = layout_absolute(&d.moved(-dx, -dy), w, Some(h), pass);
-        up.extend(carried(fixed, dx, dy));
-        root.children.push(fragment.translated(dx, dy));
+    // What goes on up is carried through this box, which may be the
+    // stacking context it belongs to (M19).
+    for d in &mut up {
+        d.carried_through(b);
     }
     up
 }
@@ -1951,6 +2085,7 @@ fn layout_absolute<'a>(
     fragment.h = border_height.max(0.0);
     fragment.x = left + margin_left;
     fragment.y = top + margin_top;
+    fragment.stacking_parent = d.stacking_parent;
     let fixed = carried(layout.absolutes, fragment.x, fragment.y);
     (fragment, fixed)
 }
@@ -2242,6 +2377,7 @@ pub(crate) fn box_fragment(w: f32, h: f32, b: &LayoutBox) -> Fragment {
         scroll_height: 0.0,
         children: Vec::new(),
         tree_order: b.tree_order,
+        stacking_parent: None,
     }
 }
 
@@ -3584,6 +3720,7 @@ mod tests {
             styled_by_ancestor: false,
             first_line: None,
             tree_order: 0,
+            item: false,
         };
         let block = LayoutBox {
             style: ComputedStyle {
@@ -3599,6 +3736,7 @@ mod tests {
             styled_by_ancestor: false,
             first_line: None,
             tree_order: 0,
+            item: false,
         };
         let layout = layout_document(&[block], VIEWPORT, &fonts);
         let m = fonts.primary().metrics(16.0);
@@ -5363,7 +5501,9 @@ mod tests {
             b.children[0].x, 10.0,
             "absolute, as the final pass leaves it"
         );
-        assert_eq!(layout.height, m.line_height());
+        // The page reaches the inline box's border box, 2px below the
+        // line (css-overflow-3 §2.2, as the reference browser has it).
+        assert_eq!(layout.height, m.line_height() + 2.0);
     }
 
     #[test]
@@ -5487,7 +5627,9 @@ mod tests {
         assert_eq!((b.x, b.y), (5.0, 2.0));
         let text = text_of(&layout, "ab");
         assert_eq!((text.x, text.y), (5.0, m.ascent + 2.0));
-        assert_eq!(layout.height, m.line_height(), "the flow is not affected");
+        // The flow is not affected, but the page reaches the moved box
+        // (css-overflow-3 §2.2, as the reference browser has it).
+        assert_eq!(layout.height, m.line_height() + 2.0);
     }
 
     #[test]
@@ -5825,5 +5967,291 @@ mod tests {
                 assert_eq!((f.style.font_size_px, f.y > first), (16.0, true), "{word}");
             }
         }
+    }
+
+    #[test]
+    fn a_transformed_box_is_the_containing_block_of_the_fixed_boxes_inside_it() {
+        // css-transforms-1 §2, css-will-change-1 §2.2 (M19): a box with
+        // a transform, a perspective or a will-change naming either
+        // positions the fixed boxes inside it against its padding box,
+        // and keeps their fragments; a will-change naming opacity does
+        // not. Nodes: w 1, f 2.
+        let fonts = test_fonts();
+        let doc = |css: &str| {
+            let docu = dom::Node::document(vec![
+                Element::new("div")
+                    .attr("class", "w")
+                    .push(Element::new("div").attr("class", "f"))
+                    .into(),
+            ]);
+            let sheet = css::parse_stylesheet(css).expect("test css is valid");
+            let (document, boxes) = boxes_of(&docu, &[sheet]);
+            let layout = layout_document_in(&boxes, VIEWPORT, Some(600.0), &fonts);
+            Laid { document, layout }
+        };
+        let wrapper = ".w { margin: 20px; width: 200px; height: 100px; padding: 10px; \
+                       border: 5px solid; TRANSFORM }
+                      .f { position: fixed; top: 0; left: 0; width: 10px; height: 10px; }";
+        for contains in [
+            "transform: translateX(0px)",
+            "transform: rotate(1deg)",
+            "translate: 1px",
+            "rotate: 10deg",
+            "scale: 1",
+            "perspective: 500px",
+            "will-change: transform",
+            "will-change: scale, color",
+            "will-change: perspective",
+        ] {
+            let layout = doc(&wrapper.replace("TRANSFORM", contains));
+            assert_eq!(parent_of(&layout, 2), Some(1), "{contains}");
+            // Against the padding box: 5px in from the wrapper's border
+            // box at (20, 20).
+            assert_eq!(
+                (by_node(&layout, 2).x, by_node(&layout, 2).y),
+                (25.0, 25.0),
+                "{contains}"
+            );
+            assert!(!layout.depends_on_viewport_height, "{contains}");
+            assert_eq!(
+                layout.height, 170.0,
+                "{contains}: the wrapper's margin box; the fixed box adds nothing"
+            );
+        }
+        for not_containing in [
+            "opacity: 0.5",
+            "will-change: opacity",
+            "will-change: scroll-position",
+            "transform: none",
+            "transform-style: preserve-3d",
+        ] {
+            let layout = doc(&wrapper.replace("TRANSFORM", not_containing));
+            assert_eq!(parent_of(&layout, 2), None, "{not_containing}");
+            assert_eq!(
+                (by_node(&layout, 2).x, by_node(&layout, 2).y),
+                (0.0, 0.0),
+                "{not_containing}"
+            );
+        }
+        // Against a known height, `bottom` works and does not make the
+        // layout depend on the viewport's.
+        let layout = doc(
+            ".w { margin: 20px; width: 200px; height: 100px; padding: 10px; border: 5px solid; \
+                  transform: translateX(0px) }
+             .f { position: fixed; bottom: 0; right: 0; width: 10px; height: 10px; }",
+        );
+        assert_eq!(
+            (by_node(&layout, 2).x, by_node(&layout, 2).y),
+            (20.0 + 5.0 + 220.0 - 10.0, 20.0 + 5.0 + 120.0 - 10.0)
+        );
+        assert!(!layout.depends_on_viewport_height);
+        // A fixed box inside an absolutely positioned box inside a
+        // transformed one goes to the transformed one. Nodes: w 1, a 2,
+        // f 3.
+        let docu = dom::Node::document(vec![
+            Element::new("div")
+                .attr("class", "w")
+                .push(
+                    Element::new("div")
+                        .attr("class", "a")
+                        .push(Element::new("div").attr("class", "f")),
+                )
+                .into(),
+        ]);
+        let sheet = css::parse_stylesheet(
+            ".w { margin: 20px; width: 200px; height: 100px; transform: translateX(0px) }
+             .a { position: absolute; left: 50px; top: 50px; width: 20px; height: 20px; }
+             .f { position: fixed; top: 0; left: 0; width: 10px; height: 10px; }",
+        )
+        .expect("test css is valid");
+        let (document, boxes) = boxes_of(&docu, &[sheet]);
+        let layout = Laid {
+            document,
+            layout: layout_document_in(&boxes, VIEWPORT, Some(600.0), &fonts),
+        };
+        assert_eq!(parent_of(&layout, 3), Some(1));
+        assert_eq!(parent_of(&layout, 2), Some(1));
+        assert_eq!((by_node(&layout, 3).x, by_node(&layout, 3).y), (20.0, 20.0));
+    }
+
+    #[test]
+    fn the_scrollable_overflow_projects_transformed_boxes() {
+        // css-overflow-3 §2.2, css-transforms-1 §2 (M19): a transformed
+        // box reaches as far as its transformed bounds, not its
+        // untransformed ones; the flow's own height, the content as if
+        // it were `auto`, still counts; a box whose matrix is singular
+        // is not displayed and adds nothing. The numbers are the
+        // reference browser's. Nodes: s 1, then the content.
+        let scroller = |inner: Element, css: &str| {
+            let root = Element::new("div").attr("class", "s").push(inner);
+            let layout = document_of(
+                root,
+                &format!(
+                    ".s {{ overflow: auto; height: 100px; width: 200px; margin: 0; }}
+                     .c {{ height: 300px; margin: 0; }} .w {{ height: 50px; margin: 0; }} {css}"
+                ),
+            );
+            by_node(&layout, 1).scroll_height
+        };
+        let child = |class: &str| Element::new("div").attr("class", class);
+        let wrapped = |css_class: &str| child(css_class).push(child("c"));
+        // A direct child translated up: the flow is still 300 tall.
+        assert_eq!(
+            scroller(child("c"), ".c { transform: translateY(-250px) }"),
+            300.0
+        );
+        // Translated down: its transformed bottom.
+        assert_eq!(
+            scroller(child("c"), ".c { transform: translateY(250px) }"),
+            550.0
+        );
+        // Rotated about its centre: 300 wide and 200 tall, from 50 to
+        // 250, inside the flow's 300.
+        assert_eq!(
+            scroller(child("c"), ".c { transform: rotate(90deg) }"),
+            300.0
+        );
+        // A grandchild translated up: its transformed bounds alone.
+        assert_eq!(
+            scroller(wrapped("w"), ".c { transform: translateY(-100px) }"),
+            200.0
+        );
+        // A scaled wrapper: its content's extent scaled about its centre.
+        assert_eq!(
+            scroller(wrapped("w"), ".w { transform: scale(0.5) }"),
+            162.5
+        );
+        // The origin moves what the scale is about.
+        assert_eq!(
+            scroller(
+                wrapped("w"),
+                ".w { transform: scale(0.5); transform-origin: 0 0 }"
+            ),
+            150.0
+        );
+        // A singular matrix: nothing but the padding box.
+        assert_eq!(scroller(wrapped("w"), ".w { transform: scale(0) }"), 100.0);
+        // An opacity changes nothing of it.
+        assert_eq!(scroller(child("c"), ".c { opacity: 0.5 }"), 300.0);
+        // The individual properties and a transform compose.
+        assert_eq!(
+            scroller(
+                wrapped("w"),
+                ".w { translate: 0 100px; transform: translateY(50px) }"
+            ),
+            450.0
+        );
+    }
+
+    #[test]
+    fn the_page_reaches_what_its_content_reaches() {
+        // The viewport is a scroll container (css-overflow-3 §2.2): the
+        // page reaches a box overflowing its parent, and a transformed
+        // box by its transformed bounds (M19); a fixed box adds nothing.
+        // Nodes: w 1, c 2.
+        let page = |css: &str| {
+            document_of(
+                Element::new("div")
+                    .attr("class", "w")
+                    .push(Element::new("div").attr("class", "c")),
+                &format!("body, .w, .c {{ margin: 0 }} .w {{ height: 100px }} .c {{ height: 20px }} {css}"),
+            )
+            .height
+        };
+        assert_eq!(page(""), 100.0);
+        assert_eq!(page(".c { height: 2000px }"), 2000.0);
+        assert_eq!(page(".c { transform: translateY(3000px) }"), 3020.0);
+        assert_eq!(
+            page(".w { transform: translateY(-50px) }"),
+            100.0,
+            "the flow's own height"
+        );
+        assert_eq!(page(".w { transform: scale(2) }"), 150.0);
+        assert_eq!(page(".c { position: fixed; top: 3000px }"), 100.0);
+        assert_eq!(page(".c { position: absolute; top: 3000px }"), 3020.0);
+        assert_eq!(
+            page(".w { overflow: hidden } .c { height: 2000px }"),
+            100.0,
+            "clipped overflow is the clipper's own"
+        );
+    }
+
+    #[test]
+    fn an_absolutely_positioned_box_names_the_stacking_context_it_was_carried_through() {
+        // CSS2 Appendix E (M19): the box's fragment hangs under its
+        // containing block, and names the nearest stacking context
+        // between the two, which the paint order hands it to. Nodes:
+        // cb 1, o 2, a 3.
+        let page = |css: &str| {
+            document_of(
+                Element::new("div").attr("class", "cb").push(
+                    Element::new("div")
+                        .attr("class", "o")
+                        .push(Element::new("div").attr("class", "a")),
+                ),
+                &format!(
+                    "div {{ margin: 0 }} .cb {{ position: relative; height: 50px }}
+                     .a {{ position: absolute; width: 10px; height: 10px }} {css}"
+                ),
+            )
+        };
+        let layout = page(".o { opacity: 0.5 }");
+        assert_eq!(parent_of(&layout, 3), Some(1));
+        let a = by_node(&layout, 3);
+        assert_eq!(a.stacking_parent, Some((layout.element(2), None)));
+        // Nothing between: none named.
+        let layout = page("");
+        assert_eq!(by_node(&layout, 3).stacking_parent, None);
+        // A context that is the containing block too: none named, the
+        // fragment being under it.
+        let layout = page(".o { transform: scale(1) }");
+        assert_eq!(parent_of(&layout, 3), Some(2));
+        assert_eq!(by_node(&layout, 3).stacking_parent, None);
+        // The nearest one, of two.
+        let layout = document_of(
+            Element::new("div").attr("class", "cb").push(
+                Element::new("div").attr("class", "o").push(
+                    Element::new("div")
+                        .attr("class", "i")
+                        .push(Element::new("div").attr("class", "a")),
+                ),
+            ),
+            "div { margin: 0 } .cb { position: relative; height: 50px }
+             .o { opacity: 0.5 } .i { will-change: opacity }
+             .a { position: absolute; width: 10px; height: 10px }",
+        );
+        assert_eq!(
+            by_node(&layout, 4).stacking_parent,
+            Some((layout.element(3), None))
+        );
+        // A `z-index` on a box that is neither positioned nor an item
+        // makes no context; on a flex item it does.
+        let layout = page(".o { z-index: 3 }");
+        assert_eq!(by_node(&layout, 3).stacking_parent, None);
+        let layout = page(".cb { display: flex } .o { z-index: 3 }");
+        assert_eq!(
+            by_node(&layout, 3).stacking_parent,
+            Some((layout.element(2), None))
+        );
+        // A faded inline box around the box: the box's static position
+        // is on the line, its containing block above, and the span is
+        // its context. Nodes: cb 1, p 2, span 3, a 4.
+        let layout = document_of(
+            Element::new("div").attr("class", "cb").push(
+                Element::new("p").push(
+                    Element::new("span")
+                        .attr("class", "o")
+                        .text("x")
+                        .push(Element::new("b").attr("class", "a").text("a")),
+                ),
+            ),
+            "div, p { margin: 0 } .cb { position: relative; height: 50px }
+             .o { opacity: 0.5 } .a { position: absolute }",
+        );
+        assert_eq!(parent_of(&layout, 4), Some(1));
+        assert_eq!(
+            by_node(&layout, 4).stacking_parent,
+            Some((layout.element(3), None))
+        );
     }
 }
