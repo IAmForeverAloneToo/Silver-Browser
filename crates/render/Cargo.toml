@@ -4,12 +4,21 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# The GPU backend (M19.3, roadmap D3 and D8): `gpu::GpuBackend` on
+# wgpu, which the shell chooses where an adapter exists. Off, the
+# software backend is the only one and nothing of wgpu is built.
+default = ["gpu"]
+gpu = ["dep:wgpu", "dep:pollster"]
+
 [dependencies]
 paint.workspace = true
 style.workspace = true
 text.workspace = true
 tiny-skia.workspace = true
 ab_glyph.workspace = true
+wgpu = { workspace = true, optional = true }
+pollster = { workspace = true, optional = true }
 
 [dev-dependencies]
 dom.workspace = true

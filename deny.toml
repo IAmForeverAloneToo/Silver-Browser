@@ -47,17 +47,20 @@ allow = [
 # A crate in the tree twice is more code in the binary and one more
 # thing to track advisories for. Every duplicate below is upstream's to
 # converge (the windowing and font crates pinning older generations of
-# the same crate, and the clipboard crate a newer generation of the
-# macOS bindings than the windowing crate's), so each is skipped by
-# name rather than by version, and the versions move without touching
-# this file. What the deny catches is a new name joining the list: a
+# the same crate, the clipboard crate a newer generation of the macOS
+# bindings than the windowing crate's, and the GPU crates newer
+# generations of the hashing, error and macOS-binding crates than the
+# windowing crate's), so each is skipped by name rather than by
+# version, and the versions move without touching this file. What the deny catches is a new name joining the list: a
 # duplicate this repository introduced, which wants a look before it is
 # accepted.
 multiple-versions = "deny"
 wildcards = "allow"
 skip = [
     { name = "bitflags" },
+    { name = "block2" },
     { name = "getrandom" },
+    { name = "hashbrown" },
     { name = "linux-raw-sys" },
     { name = "miniz_oxide" },
     { name = "objc2" },
@@ -65,6 +68,8 @@ skip = [
     { name = "objc2-foundation" },
     { name = "rustix" },
     { name = "syn" },
+    { name = "thiserror" },
+    { name = "thiserror-impl" },
     { name = "windows-sys" },
 ]
 

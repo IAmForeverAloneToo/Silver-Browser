@@ -4,6 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# The GPU backend (M19.3): `Engine::new_on(Backend::Gpu)` draws on it
+# where the machine has an adapter. Off, nothing of wgpu is built.
+default = ["gpu"]
+gpu = ["render/gpu"]
+
 [dependencies]
 css.workspace = true
 dom.workspace = true

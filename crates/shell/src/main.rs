@@ -33,7 +33,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use engine::address::Address;
-use engine::{Engine, FrameTime, Url};
+use engine::{Backend, Engine, FrameTime, Url};
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
@@ -380,6 +380,9 @@ struct CommandLine {
     /// `--layer-budget <MiB>`: how much the engine may hold in layers
     /// (M19.6), in bytes, when given.
     layer_budget: Option<usize>,
+    /// `--software`: draw in software even where there is a GPU
+    /// (M19.3, roadmap D3).
+    software: bool,
 }
 
 /// The command line parsed: at most one URL or path, and the options
@@ -392,10 +395,15 @@ fn command_line(args: impl Iterator<Item = OsString>) -> Result<CommandLine, Str
     let mut line = CommandLine {
         start: None,
         layer_budget: None,
+        software: false,
     };
     let mut page: Option<OsString> = None;
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
+        if arg == "--software" {
+            line.software = true;
+            continue;
+        }
         if arg == "--layer-budget" {
             let value = args
                 .next()
@@ -446,19 +454,27 @@ fn main() {
         Ok(line) => line,
         Err(message) => {
             eprintln!("silver-browser: {message}");
-            eprintln!("usage: silver-browser [--layer-budget <MiB>] [URL or path]");
+            eprintln!("usage: silver-browser [--software] [--layer-budget <MiB>] [URL or path]");
             std::process::exit(2);
         }
     };
     let start = line.start;
 
-    let mut engine = match Engine::new() {
-        Ok(engine) => engine,
+    let wanted = if line.software {
+        Backend::Software
+    } else {
+        Backend::Gpu
+    };
+    let (mut engine, fallback) = match Engine::new_on(wanted) {
+        Ok(made) => made,
         Err(e) => {
             eprintln!("engine initialization failed: {e}");
             return;
         }
     };
+    if let Some(why) = fallback {
+        eprintln!("silver-browser: {why}; drawing in software");
+    }
     if let Some(bytes) = line.layer_budget {
         engine.set_layer_budget(bytes);
     }
@@ -504,13 +520,15 @@ mod tests {
             Ok(CommandLine {
                 start: Some(Url::parse("https://example.com/").unwrap()),
                 layer_budget: Some(16 << 20),
+                software: false,
             })
         );
         assert_eq!(
-            line(&["https://example.com/", "--layer-budget", "0"]),
+            line(&["https://example.com/", "--layer-budget", "0", "--software"]),
             Ok(CommandLine {
                 start: Some(Url::parse("https://example.com/").unwrap()),
                 layer_budget: Some(0),
+                software: true,
             })
         );
         assert_eq!(

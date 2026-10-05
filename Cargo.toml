@@ -25,8 +25,10 @@ layout = { path = "crates/layout" }
 text = { path = "crates/text" }
 net = { path = "crates/net" }
 paint = { path = "crates/paint" }
-render = { path = "crates/render" }
-engine = { path = "crates/engine" }
+# Without their default features: the GPU backend (M19.3) is a feature
+# of each, `gpu`, which the shell's own turns on down the line.
+render = { path = "crates/render", default-features = false }
+engine = { path = "crates/engine", default-features = false }
 ui = { path = "crates/ui" }
 
 # External crates
@@ -63,6 +65,13 @@ mio = { version = "1", features = ["net", "os-poll"] }
 # Certificates the tests' TLS server presents, made when they run, with
 # the same cryptography provider as rustls.
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs"] }
+# The GPU backend (M19.3, D3): wgpu over Vulkan, Metal and Direct3D 12,
+# the backends the desktop platforms have, shaders in WGSL alone;
+# without the OpenGL and browser backends its default would bring, and
+# the crates behind them.
+wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "dx12", "wgsl"] }
+# Blocking on wgpu's futures: the adapter, the device and a readback.
+pollster = "0.4"
 
 # Dependencies are optimised even in the dev profile: the rasterizer,
 # the shaper and the font parser are not what a debug build is for

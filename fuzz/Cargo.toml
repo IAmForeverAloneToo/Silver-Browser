@@ -24,12 +24,14 @@ libfuzzer-sys = "0.4"
 css = { path = "../crates/css" }
 dom = { path = "../crates/dom" }
 encoding = { path = "../crates/encoding" }
-engine = { path = "../crates/engine" }
+# Without the GPU backend: the targets draw in software, and wgpu is
+# nothing to fuzz through.
+engine = { path = "../crates/engine", default-features = false }
 html = { path = "../crates/html" }
 layout = { path = "../crates/layout" }
 net = { path = "../crates/net" }
 paint = { path = "../crates/paint" }
-render = { path = "../crates/render" }
+render = { path = "../crates/render", default-features = false }
 style = { path = "../crates/style" }
 text = { path = "../crates/text" }
 

@@ -101,7 +101,8 @@ use paint::{
     DisplayItem, Rect, SCROLLBAR_THUMB, SCROLLBAR_TRACK, Step, Viewport, padding_box,
     paint_fragments_in, paint_order, scrollbar_thumb,
 };
-use render::{RenderBackend as _, SoftwareBackend};
+pub use render::Backend;
+use render::{RenderBackend, SoftwareBackend};
 use style::computed::Overflow;
 use style::{CascadeContext, FontMeasure, Styles, Stylesheets};
 use text::FontError;
@@ -165,7 +166,9 @@ pub const SCROLLBAR_WIDTH: f32 = 12.0;
 /// A browsing session: the document shown, the session history and the
 /// documents it keeps, the network, and the rasterizer.
 pub struct Engine {
-    backend: SoftwareBackend,
+    /// The rasterizer (M19.3, roadmap D3): the software backend unless
+    /// the session was made on the GPU's.
+    backend: Box<dyn RenderBackend>,
     /// Loaded once and reused every frame — `text::FontCollection::new()`
     /// runs real system-font queries plus file reads/parses (the primary
     /// font and, since M8.1, its per-script fallbacks), not something to
@@ -448,16 +451,55 @@ impl Scrollbar {
 
 impl Engine {
     /// Creates a session showing the initial `about:blank`, with the
-    /// system's fonts.
+    /// system's fonts, drawing in software.
     pub fn new() -> Result<Self, FontError> {
         Ok(Self::with_fonts(text::FontCollection::new()?))
     }
 
+    /// Creates a session with the system's fonts on `backend` (M19.3):
+    /// the GPU's where the machine has an adapter and the build has
+    /// the backend, else the software's, with why the GPU's could not
+    /// be had. [`Engine::backend`] says which it is on.
+    pub fn new_on(backend: Backend) -> Result<(Self, Option<String>), FontError> {
+        let fonts = text::FontCollection::new()?;
+        match backend {
+            Backend::Software => Ok((Self::with_fonts(fonts), None)),
+            Backend::Gpu => match Self::on_gpu(fonts.clone()) {
+                Ok(engine) => Ok((engine, None)),
+                Err(why) => Ok((Self::with_fonts(fonts), Some(why))),
+            },
+        }
+    }
+
+    /// Creates a session with `fonts` on the GPU backend (M19.3), or
+    /// says why there is none to be had.
+    #[cfg(feature = "gpu")]
+    pub fn on_gpu(fonts: text::FontCollection) -> Result<Self, String> {
+        let backend =
+            render::gpu::GpuBackend::with_fonts(fonts.clone()).map_err(|e| e.to_string())?;
+        Ok(Self::with_backend(fonts, Box::new(backend)))
+    }
+
+    /// Creates a session with `fonts` on the GPU backend (M19.3), or
+    /// says why there is none to be had: this build has none.
+    #[cfg(not(feature = "gpu"))]
+    pub fn on_gpu(fonts: text::FontCollection) -> Result<Self, String> {
+        let _ = fonts;
+        Err("this build has no GPU backend".to_owned())
+    }
+
     /// Creates a session showing the initial `about:blank`, as HTML's
     /// new navigable does (M15), with fonts already loaded (a test's
-    /// bundled font, say). Layout and the rasterizer share the
-    /// collection by cloning its handles.
+    /// bundled font, say), drawing in software. Layout and the
+    /// rasterizer share the collection by cloning its handles.
     pub fn with_fonts(fonts: text::FontCollection) -> Self {
+        Self::with_backend(fonts.clone(), Box::new(SoftwareBackend::with_fonts(fonts)))
+    }
+
+    /// Creates a session showing the initial `about:blank` with
+    /// `fonts`, drawing on `backend`, which must be over the same
+    /// fonts.
+    pub fn with_backend(fonts: text::FontCollection, backend: Box<dyn RenderBackend>) -> Self {
         let mut network = Network::new();
         let mut page = Page::given(0);
         let document = parsed_or_empty("");
@@ -466,7 +508,7 @@ impl Engine {
         shown.initial = true;
         let blank = Url::parse("about:blank").expect("about:blank parses");
         Engine {
-            backend: SoftwareBackend::with_fonts(fonts.clone()),
+            backend,
             layout_fonts: fonts,
             shown,
             history: History::new(Some(blank)),
@@ -1404,6 +1446,11 @@ impl Engine {
     /// last frame, with what each costs.
     pub fn layers(&self) -> Vec<render::LayerInfo> {
         self.backend.layers()
+    }
+
+    /// Which rasterizer the session draws on (M19.3).
+    pub fn backend(&self) -> Backend {
+        self.backend.backend()
     }
 
     /// How many bytes of layer pixmaps the backend holds (M19.6).

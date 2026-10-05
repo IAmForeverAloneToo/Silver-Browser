@@ -1,11 +1,16 @@
 //! Rasterization backends: display list in, pixels out.
 //!
-//! Owns the pixel pipeline. The backend trait is the seam behind which the
-//! future wgpu (GPU) backend will drop in; `SoftwareBackend` (tiny-skia +
-//! CPU) is the default. Only this crate (and `shell`) touches pixel
-//! buffers — per the layering contract in `docs/architecture.md`.
+//! Owns the pixel pipeline. `SoftwareBackend` (tiny-skia + CPU) is the
+//! default and the fallback forever (roadmap D3); `gpu::GpuBackend`
+//! (M19.3), behind the `gpu` feature, draws the same lists on wgpu and
+//! composites the same layers. Only this crate (and `shell`) touches
+//! pixel buffers — per the layering contract in `docs/architecture.md`.
+
+#[cfg(feature = "gpu")]
+pub mod gpu;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt;
 use std::ops::RangeInclusive;
 use std::time::Instant;
 
@@ -422,8 +427,29 @@ pub struct LayerInfo {
     pub tiles: u32,
 }
 
+/// Which rasterizer a backend is (M19.3, roadmap D3): the software
+/// one, the fallback forever, or the GPU one where the machine has an
+/// adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backend {
+    Software,
+    Gpu,
+}
+
+impl fmt::Display for Backend {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Backend::Software => "software",
+            Backend::Gpu => "GPU",
+        })
+    }
+}
+
 /// A rasterizer: display list + viewport size in, framebuffer out.
 pub trait RenderBackend {
+    /// Which backend this is.
+    fn backend(&self) -> Backend;
+
     /// Rasterizes `list` into a `width` x `height` RGBA8 frame (row-major,
     /// 4 bytes per pixel, alpha-premultiplied as produced by tiny-skia —
     /// everything Milestone-1 draws is opaque, so premultiplied and
@@ -470,49 +496,81 @@ pub trait RenderBackend {
     fn layered(&self) -> Layered {
         Layered::default()
     }
+
+    /// Empties the glyph-mask and shaped-run caches: what a new
+    /// document calls for, since the text it draws is not the last
+    /// one's.
+    fn clear_glyph_cache(&mut self) {}
+
+    /// Forgets the last frame and the layers (M19): the next raster
+    /// draws the whole frame and every layer anew, as a new document
+    /// calls for.
+    fn forget_frame(&mut self) {}
+
+    /// Forgets the last frame but keeps the layers: the next raster
+    /// draws the whole frame from them.
+    #[doc(hidden)]
+    fn forget_last_frame(&mut self) {}
+
+    /// What the last raster drew anew (M13.3): the whole frame, for a
+    /// backend that draws every frame whole.
+    fn redrawn(&self) -> &Redrawn {
+        static WHOLE: Redrawn = Redrawn::Whole;
+        &WHOLE
+    }
+}
+
+/// Where a backend keeps a layer's pixels: a pixmap in the software
+/// backend, a texture on the GPU (M19.3).
+trait Pixels {
+    /// The bytes it holds, what the budget counts.
+    fn bytes(&self) -> usize;
+}
+
+impl Pixels for tiny_skia::Pixmap {
+    fn bytes(&self) -> usize {
+        self.data().len()
+    }
 }
 
 /// A layer (M19): a group's pixels kept from frame to frame under its
 /// key, in the group's own coordinates, with the items they are of.
-struct Layer {
+struct Layer<P> {
     reason: LayerReason,
     items: Vec<DisplayItem>,
-    store: Store,
+    store: Store<P>,
     /// The last frame to composite the layer, or make it.
     used: u64,
 }
 
 /// Where a layer keeps its pixels.
-enum Store {
+enum Store<P> {
     /// One pixmap of the group's whole reach, whose top-left texel is
     /// at `origin` in the group's coordinates.
-    Whole {
-        pixmap: tiny_skia::Pixmap,
-        origin: (f32, f32),
-    },
+    Whole { pixels: P, origin: (f32, f32) },
     /// Tiles (M19.4): strips `width` pixels across from `left`, each
     /// [`TILE_HEIGHT`] tall, by their row, row `r` holding the texels
     /// from `r * TILE_HEIGHT` down.
     Tiles {
         left: i32,
         width: u32,
-        rows: BTreeMap<i32, Tile>,
+        rows: BTreeMap<i32, Tile<P>>,
     },
 }
 
 /// One tile of a layer, and the last frame to composite it, or make
 /// it.
-struct Tile {
-    pixmap: tiny_skia::Pixmap,
+struct Tile<P> {
+    pixels: P,
     used: u64,
 }
 
-impl Layer {
-    /// The bytes of pixmaps it holds.
+impl<P: Pixels> Layer<P> {
+    /// The bytes of pixels it holds.
     fn bytes(&self) -> usize {
         match &self.store {
-            Store::Whole { pixmap, .. } => pixmap_bytes(pixmap),
-            Store::Tiles { rows, .. } => rows.values().map(|t| pixmap_bytes(&t.pixmap)).sum(),
+            Store::Whole { pixels, .. } => pixels.bytes(),
+            Store::Tiles { rows, .. } => rows.values().map(|t| t.pixels.bytes()).sum(),
         }
     }
 
@@ -525,8 +583,199 @@ impl Layer {
     }
 }
 
-fn pixmap_bytes(pixmap: &tiny_skia::Pixmap) -> usize {
-    pixmap.data().len()
+/// The layers a backend holds (M19), by their groups' keys, and the
+/// bytes of pixels they hold against the budget (M19.6).
+struct Layers<P> {
+    held: HashMap<GroupKey, Layer<P>>,
+    bytes: usize,
+    budget: usize,
+}
+
+impl<P: Pixels> Layers<P> {
+    fn new() -> Self {
+        Layers {
+            held: HashMap::new(),
+            bytes: 0,
+            budget: DEFAULT_LAYER_BUDGET,
+        }
+    }
+
+    /// Lets every layer go.
+    fn clear(&mut self) {
+        self.held.clear();
+        self.bytes = 0;
+    }
+
+    /// Whether a layer is held under `key`.
+    fn contains(&self, key: &GroupKey) -> bool {
+        self.held.contains_key(key)
+    }
+
+    fn get_mut(&mut self, key: &GroupKey) -> Option<&mut Layer<P>> {
+        self.held.get_mut(key)
+    }
+
+    /// Takes the layer held under `key` out, its bytes off the count.
+    fn remove(&mut self, key: &GroupKey) -> Option<Layer<P>> {
+        let layer = self.held.remove(key)?;
+        self.bytes -= layer.bytes();
+        Some(layer)
+    }
+
+    /// Holds `layer` under `key`, in place of any held there.
+    fn insert(&mut self, key: GroupKey, layer: Layer<P>) {
+        self.remove(&key);
+        self.bytes += layer.bytes();
+        self.held.insert(key, layer);
+    }
+
+    /// Lets the layer of `key` go.
+    fn drop(&mut self, key: GroupKey) {
+        self.remove(&key);
+    }
+
+    /// The bytes of pixels held.
+    fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// How many bytes may be held.
+    fn budget(&self) -> usize {
+        self.budget
+    }
+
+    fn set_budget(&mut self, bytes: usize) {
+        self.budget = bytes;
+    }
+
+    /// Makes room for `bytes` more of layer pixels, beside `held`
+    /// bytes kept outside the count for the moment (M19.6): the layers
+    /// and tiles the frame `frame` has not used go, least recently used
+    /// first, until the budget holds it. Whether it does.
+    fn reserve(&mut self, bytes: usize, held: usize, frame: u64) -> bool {
+        while self.bytes + held + bytes > self.budget {
+            if !self.evict_oldest(frame) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Lets layers and tiles go, least recently used first, until the
+    /// budget holds what is left (M19.6): what a lowered budget calls
+    /// for, after the frame that found it so.
+    fn trim(&mut self) {
+        while self.bytes > self.budget && self.evict_oldest(u64::MAX) {}
+    }
+
+    /// Lets the layer or tile least recently used go, among those used
+    /// before the frame `before`; whether there was one.
+    fn evict_oldest(&mut self, before: u64) -> bool {
+        let mut oldest: Option<(u64, String, GroupKey, Option<i32>)> = None;
+        let mut consider = |used: u64, key: GroupKey, row: Option<i32>| {
+            if used >= before {
+                return;
+            }
+            // Ties by the key's name, so that the order is fixed.
+            let name = format!("{key:?}");
+            if oldest
+                .as_ref()
+                .is_none_or(|(u, n, _, _)| used < *u || (used == *u && name < *n))
+            {
+                oldest = Some((used, name, key, row));
+            }
+        };
+        for (key, layer) in &self.held {
+            match &layer.store {
+                Store::Whole { .. } => consider(layer.used, *key, None),
+                Store::Tiles { rows, .. } => {
+                    for (row, tile) in rows {
+                        consider(tile.used, *key, Some(*row));
+                    }
+                }
+            }
+        }
+        let Some((_, _, key, row)) = oldest else {
+            return false;
+        };
+        match row {
+            None => self.drop(key),
+            Some(row) => {
+                let mut empty = false;
+                if let Some(layer) = self.held.get_mut(&key)
+                    && let Store::Tiles { rows, .. } = &mut layer.store
+                {
+                    if let Some(tile) = rows.remove(&row) {
+                        self.bytes -= tile.pixels.bytes();
+                    }
+                    empty = rows.is_empty();
+                }
+                if empty {
+                    self.drop(key);
+                }
+            }
+        }
+        true
+    }
+
+    /// The layers held, in a fixed order by key.
+    fn info(&self) -> Vec<LayerInfo> {
+        let mut layers: Vec<LayerInfo> = self
+            .held
+            .iter()
+            .map(|(key, layer)| LayerInfo {
+                key: *key,
+                reason: layer.reason,
+                bytes: layer.bytes(),
+                tiles: layer.tiles(),
+            })
+            .collect();
+        layers.sort_by_key(|layer| format!("{:?}", layer.key));
+        layers
+    }
+
+    /// Marks the layers the frame `frame`'s `items` use (M19.6), walked
+    /// from `state`: a layer whose group is listed, and the tiles of it
+    /// the raster shows, are this frame's, which the budget's eviction
+    /// leaves alone, so that making room for one layer never costs
+    /// another the frame needs.
+    fn mark(&mut self, items: &[DisplayItem], state: &State, frame: u64) {
+        let mut state = state.clone();
+        let mut i = 0;
+        while i < items.len() {
+            let item = &items[i];
+            if let DisplayItem::PushGroup {
+                matrix,
+                key,
+                layer: Some(_),
+                ..
+            } = item
+            {
+                let end = group_end(items, i);
+                let composed = state.matrix().map_or(*matrix, |m| m.then(matrix));
+                let clip = state.clip();
+                if let Some(layer) = self.held.get_mut(key) {
+                    layer.used = frame;
+                    if let Store::Tiles { rows, .. } = &mut layer.store
+                        && let Some((_, y0, _, y1)) = visible_in(&composed, clip)
+                    {
+                        for row in tile_rows(y0, y1) {
+                            if let Some(tile) = rows.get_mut(&row) {
+                                tile.used = frame;
+                            }
+                        }
+                    }
+                }
+                let mut inner = state.clone();
+                inner.apply(item);
+                self.mark(&items[i + 1..end], &inner, frame);
+                i = end + 1;
+                continue;
+            }
+            state.apply(item);
+            i += 1;
+        }
+    }
 }
 
 /// The rows of tiles that hold any texel row from `y0` to `y1`, as a
@@ -573,6 +822,36 @@ fn visible_in(composed: &Matrix, clip: Clip) -> Option<(f32, f32, f32, f32)> {
 /// drawn on a copy whose inside is copied back. The bytes are a whole
 /// raster's.
 pub struct SoftwareBackend {
+    /// The fonts, the shaped runs and the glyph masks.
+    text: GlyphCache,
+    /// The last frame and its list (M13.3).
+    retained: Option<Retained>,
+    /// A frame-sized copy a quad across a damaged rectangle's edge is
+    /// drawn on.
+    scratch: Option<tiny_skia::Pixmap>,
+    /// What the last raster drew anew.
+    redrawn: Redrawn,
+    /// The layers (M19), by their groups' keys, under the budget.
+    layers: Layers<tiny_skia::Pixmap>,
+    /// Which raster this is, counting them: what a layer's and a tile's
+    /// `used` are against.
+    frame: u64,
+    /// What the last raster did with the layers.
+    layered: Layered,
+    /// The groups whose key the last list gave to two groups: neither
+    /// is composited from the layer under it, since a layer holds one.
+    doubled: HashSet<GroupKey>,
+    /// The tiles of the margin around the viewport not yet drawn, as
+    /// the layer's key and the row, with how far the row is from the
+    /// viewport's middle in rows; drawn after the frame, nearest first.
+    deferred: Vec<(GroupKey, i32, i32)>,
+}
+
+/// The text a backend draws (M19.3): the fonts, the shaped runs and the
+/// glyph masks, cached, which the software backend blits and the GPU
+/// backend keeps in its atlas, from the same rasterizer, so that text
+/// is the same coverage in both.
+pub struct GlyphCache {
     fonts: FontCollection,
     /// Glyph mask cache, keyed by (script, glyph id, font size bits).
     ///
@@ -604,31 +883,6 @@ pub struct SoftwareBackend {
     shaped: HashMap<u32, HashMap<String, Run>>,
     /// Glyphs held in `shaped`, against [`SHAPE_CACHE_GLYPHS`].
     cached_glyphs: usize,
-    /// The last frame and its list (M13.3).
-    retained: Option<Retained>,
-    /// A frame-sized copy a quad across a damaged rectangle's edge is
-    /// drawn on.
-    scratch: Option<tiny_skia::Pixmap>,
-    /// What the last raster drew anew.
-    redrawn: Redrawn,
-    /// The layers (M19), by their groups' keys.
-    layers: HashMap<GroupKey, Layer>,
-    /// The bytes of pixmaps held in `layers`, against `layer_budget`.
-    layer_bytes: usize,
-    /// How many bytes of layer pixmaps may be held (M19.6).
-    layer_budget: usize,
-    /// Which raster this is, counting them: what a layer's and a tile's
-    /// `used` are against.
-    frame: u64,
-    /// What the last raster did with the layers.
-    layered: Layered,
-    /// The groups whose key the last list gave to two groups: neither
-    /// is composited from the layer under it, since a layer holds one.
-    doubled: HashSet<GroupKey>,
-    /// The tiles of the margin around the viewport not yet drawn, as
-    /// the layer's key and the row, with how far the row is from the
-    /// viewport's middle in rows; drawn after the frame, nearest first.
-    deferred: Vec<(GroupKey, i32, i32)>,
 }
 
 /// A shaped run, and how far its ink reaches.
@@ -649,39 +903,21 @@ struct Ink {
     bottom: f32,
 }
 
-impl SoftwareBackend {
-    /// Creates the backend, loading a system font plus whatever
-    /// per-script fallbacks are available (M8.1).
-    pub fn new() -> Result<Self, FontError> {
-        Ok(Self::with_fonts(FontCollection::new()?))
-    }
-
-    /// Creates the backend over fonts already loaded.
-    pub fn with_fonts(fonts: FontCollection) -> Self {
-        SoftwareBackend {
+impl GlyphCache {
+    /// A cache over `fonts`, empty.
+    pub fn new(fonts: FontCollection) -> Self {
+        GlyphCache {
             fonts,
             masks: HashMap::new(),
             outlined: HashMap::new(),
             cached_bytes: 0,
             shaped: HashMap::new(),
             cached_glyphs: 0,
-            retained: None,
-            scratch: None,
-            redrawn: Redrawn::Whole,
-            layers: HashMap::new(),
-            layer_bytes: 0,
-            layer_budget: DEFAULT_LAYER_BUDGET,
-            frame: 0,
-            layered: Layered::default(),
-            doubled: HashSet::new(),
-            deferred: Vec::new(),
         }
     }
 
-    /// Empties the glyph-mask and shaped-run caches: what a new
-    /// document calls for, since the text it draws is not the last
-    /// one's.
-    pub fn clear_glyph_cache(&mut self) {
+    /// Empties the glyph-mask and shaped-run caches.
+    pub fn clear(&mut self) {
         self.masks.clear();
         self.outlined.clear();
         self.cached_bytes = 0;
@@ -689,37 +925,13 @@ impl SoftwareBackend {
         self.cached_glyphs = 0;
     }
 
-    /// Forgets the last frame and the layers (M19): the next raster
-    /// draws the whole frame and every layer anew, as a new document
-    /// calls for.
-    pub fn forget_frame(&mut self) {
-        self.retained = None;
-        self.layers.clear();
-        self.layer_bytes = 0;
-        self.deferred.clear();
-    }
-
-    /// Forgets the last frame but keeps the layers: the next raster
-    /// draws the whole frame from them.
-    #[doc(hidden)]
-    pub fn forget_last_frame(&mut self) {
-        self.retained = None;
-    }
-
-    /// What the last raster drew anew (M13.3).
-    pub fn redrawn(&self) -> &Redrawn {
-        &self.redrawn
-    }
-
     /// Glyph masks cached right now.
-    #[doc(hidden)]
-    pub fn glyph_cache_len(&self) -> usize {
+    pub fn masks_len(&self) -> usize {
         self.masks.len()
     }
 
     /// Shaped runs cached right now.
-    #[doc(hidden)]
-    pub fn shape_cache_len(&self) -> usize {
+    pub fn runs_len(&self) -> usize {
         self.shaped.values().map(HashMap::len).sum()
     }
 
@@ -749,8 +961,9 @@ impl SoftwareBackend {
     }
 
     /// How far the ink of `text` at `size` reaches from its origin:
-    /// the union of its glyphs' masks where [`Self::draw_text`] puts
-    /// them, before the origin's rounding.
+    /// the union of its glyphs' masks where
+    /// [`SoftwareBackend::draw_text`] puts them, before the origin's
+    /// rounding.
     fn ink(&mut self, text: &str, size: f32) -> Option<Ink> {
         let key = size.to_bits();
         if let Some(ink) = self
@@ -801,7 +1014,7 @@ impl SoftwareBackend {
             let mask = rasterize_glyph(self.fonts.font_for(script).glyph_font(), glyph_id, size);
             let bytes = mask.coverage.len();
             if self.cached_bytes + bytes > MASK_CACHE_BUDGET {
-                self.clear_glyph_cache();
+                self.clear();
             }
             self.cached_bytes += bytes;
             self.masks.insert(key, mask);
@@ -825,12 +1038,47 @@ impl SoftwareBackend {
             let mask = outline_mask(font, glyph_id, size, (sx, sy));
             let bytes = mask.coverage.len();
             if self.cached_bytes + bytes > MASK_CACHE_BUDGET {
-                self.clear_glyph_cache();
+                self.clear();
             }
             self.cached_bytes += bytes;
             self.outlined.insert(key, mask);
         }
         &self.outlined[&key]
+    }
+}
+
+impl SoftwareBackend {
+    /// Creates the backend, loading a system font plus whatever
+    /// per-script fallbacks are available (M8.1).
+    pub fn new() -> Result<Self, FontError> {
+        Ok(Self::with_fonts(FontCollection::new()?))
+    }
+
+    /// Creates the backend over fonts already loaded.
+    pub fn with_fonts(fonts: FontCollection) -> Self {
+        SoftwareBackend {
+            text: GlyphCache::new(fonts),
+            retained: None,
+            scratch: None,
+            redrawn: Redrawn::Whole,
+            layers: Layers::new(),
+            frame: 0,
+            layered: Layered::default(),
+            doubled: HashSet::new(),
+            deferred: Vec::new(),
+        }
+    }
+
+    /// Glyph masks cached right now.
+    #[doc(hidden)]
+    pub fn glyph_cache_len(&self) -> usize {
+        self.text.masks_len()
+    }
+
+    /// Shaped runs cached right now.
+    #[doc(hidden)]
+    pub fn shape_cache_len(&self) -> usize {
+        self.text.runs_len()
     }
 
     /// Draws `text` with its baseline's left end at `origin`, in the
@@ -853,13 +1101,13 @@ impl SoftwareBackend {
     ) {
         let (x, y) = origin;
         let (sx, sy) = scale;
-        let glyphs = self.shaped(text, size);
+        let glyphs = self.text.shaped(text, size);
         for (script, g) in glyphs {
             let (gx, gy) = (x + g.x * sx, y + g.y * sy);
             let mask = if sx == sy {
-                self.mask_for(script, g.glyph_id, size * sx)
+                self.text.mask_for(script, g.glyph_id, size * sx)
             } else {
-                self.scaled_mask(script, g.glyph_id, size, scale)
+                self.text.scaled_mask(script, g.glyph_id, size, scale)
             };
             let base_x = gx + mask.left as f32;
             let base_y = gy + mask.top as f32;
@@ -876,7 +1124,7 @@ impl SoftwareBackend {
     /// Whether the group `key`, a layer when `layer` says so, is
     /// composited from the layer held under its key (M19).
     fn is_held(&self, key: &GroupKey, layer: Option<LayerReason>) -> bool {
-        layer.is_some() && self.layers.contains_key(key) && !self.doubled.contains(key)
+        layer.is_some() && self.layers.contains(key) && !self.doubled.contains(key)
     }
 
     /// Draws `items` onto `pixmap` from `state`, as a whole raster does:
@@ -967,7 +1215,7 @@ impl SoftwareBackend {
             let mut state = State::based(width, height, matrix);
             let mut reach: Option<PixelRect> = None;
             for item in items {
-                if let Some(bounds) = self.bounds(item, &state, width, height) {
+                if let Some(bounds) = bounds(&mut self.text, item, &state, width, height) {
                     reach = Some(reach.map_or(bounds, |r| r.union(bounds)));
                 }
                 state.apply(item);
@@ -1011,7 +1259,7 @@ impl SoftwareBackend {
             x1: lx1 + 2.0,
             y1: ly1 + 2.0,
         };
-        let Some(reach) = self.reach(items) else {
+        let Some(reach) = reach(&mut self.text, items) else {
             return;
         };
         // The scratch is the whole reach, so that a region of it
@@ -1052,29 +1300,6 @@ impl SoftwareBackend {
         );
     }
 
-    /// How far `items`, in their own coordinates, reach: the union of
-    /// their extents, walked without bounds; `None` when they draw
-    /// nothing.
-    fn reach(&mut self, items: &[DisplayItem]) -> Option<Clip> {
-        let mut reach: Option<Clip> = None;
-        let mut state = State::unbounded();
-        for item in items {
-            if let Some(extent) = self.extent(item, &state) {
-                reach = Some(match reach {
-                    None => extent,
-                    Some(r) => Clip {
-                        x0: r.x0.min(extent.x0),
-                        y0: r.y0.min(extent.y0),
-                        x1: r.x1.max(extent.x1),
-                        y1: r.y1.max(extent.y1),
-                    },
-                });
-            }
-            state.apply(item);
-        }
-        reach.filter(|r| !r.is_empty())
-    }
-
     /// Composites the layer held under `key`, if one is, over `pixmap`
     /// by `matrix`, from the layer's coordinates to the pixmap's, at
     /// `opacity`, writing the pixels of `within` alone (M19): a whole
@@ -1096,7 +1321,7 @@ impl SoftwareBackend {
         if let Some(inverse) = matrix.inverse() {
             match &mut layer.store {
                 Store::Whole {
-                    pixmap: src,
+                    pixels: src,
                     origin,
                 } => {
                     composite_pixmap(pixmap, src, *origin, &matrix, &inverse, opacity, within);
@@ -1107,7 +1332,7 @@ impl SoftwareBackend {
                             let origin = (*left as f32, *row as f32 * TILE_HEIGHT as f32);
                             if composite_pixmap(
                                 pixmap,
-                                &tile.pixmap,
+                                &tile.pixels,
                                 origin,
                                 &matrix,
                                 &inverse,
@@ -1150,50 +1375,6 @@ impl SoftwareBackend {
             self.layered.composited.push(key);
         }
         true
-    }
-
-    /// Marks the layers this frame's `items` use (M19.6), walked from
-    /// `state`: a layer whose group is listed, and the tiles of it the
-    /// raster shows, are this frame's, which the budget's eviction
-    /// leaves alone, so that making room for one layer never costs
-    /// another the frame needs.
-    fn mark_layers(&mut self, items: &[DisplayItem], state: &State) {
-        let mut state = state.clone();
-        let mut i = 0;
-        while i < items.len() {
-            let item = &items[i];
-            if let DisplayItem::PushGroup {
-                matrix,
-                key,
-                layer: Some(_),
-                ..
-            } = item
-            {
-                let end = group_end(items, i);
-                let composed = state.matrix().map_or(*matrix, |m| m.then(matrix));
-                let clip = state.clip();
-                let frame = self.frame;
-                if let Some(layer) = self.layers.get_mut(key) {
-                    layer.used = frame;
-                    if let Store::Tiles { rows, .. } = &mut layer.store
-                        && let Some((_, y0, _, y1)) = visible_in(&composed, clip)
-                    {
-                        for row in tile_rows(y0, y1) {
-                            if let Some(tile) = rows.get_mut(&row) {
-                                tile.used = frame;
-                            }
-                        }
-                    }
-                }
-                let mut inner = state.clone();
-                inner.apply(item);
-                self.mark_layers(&items[i + 1..end], &inner);
-                i = end + 1;
-                continue;
-            }
-            state.apply(item);
-            i += 1;
-        }
     }
 
     /// Brings the layers of the groups among `items` up to date (M19):
@@ -1244,11 +1425,11 @@ impl SoftwareBackend {
                     seen,
                     &mut inner_extra,
                 );
-                let was = self.layers.contains_key(key) && !self.doubled.contains(key);
+                let was = self.layers.contains(key) && !self.doubled.contains(key);
                 let held = if seen.insert(*key) {
                     self.update_layer(*key, *reason, inner, &composed, clip, &inner_extra)
                 } else {
-                    self.drop_layer(*key);
+                    self.layers.drop(*key);
                     self.doubled.insert(*key);
                     false
                 };
@@ -1257,7 +1438,7 @@ impl SoftwareBackend {
                 // and what changed inside it, which an outer layer's
                 // pixels of it hold too.
                 if was != held
-                    && let Some(reach) = self.reach(inner)
+                    && let Some(reach) = reach(&mut self.text, inner)
                     && let Some(mapped) = outward_clip(&outward, reach)
                 {
                     extra.push(mapped);
@@ -1292,13 +1473,10 @@ impl SoftwareBackend {
         extra: &[Clip],
     ) -> bool {
         let Some(visible) = visible_in(composed, clip) else {
-            self.drop_layer(key);
+            self.layers.drop(key);
             return false;
         };
         let mut old = self.layers.remove(&key);
-        if let Some(layer) = &old {
-            self.layer_bytes -= layer.bytes();
-        }
         if old.as_ref().is_some_and(|layer| layer.reason != reason) {
             old = None;
         }
@@ -1310,7 +1488,6 @@ impl SoftwareBackend {
         };
         match kept {
             Some(layer) => {
-                self.layer_bytes += layer.bytes();
                 self.layers.insert(key, layer);
                 true
             }
@@ -1327,11 +1504,11 @@ impl SoftwareBackend {
         &mut self,
         key: GroupKey,
         reason: LayerReason,
-        old: Option<Layer>,
+        old: Option<Layer<tiny_skia::Pixmap>>,
         items: &[DisplayItem],
         extra: &[Clip],
-    ) -> Option<Layer> {
-        let reach = self.reach(items)?;
+    ) -> Option<Layer<tiny_skia::Pixmap>> {
+        let reach = reach(&mut self.text, items)?;
         let corners = whole_reach(reach);
         if !fits_a_frame(corners) {
             return None;
@@ -1353,7 +1530,7 @@ impl SoftwareBackend {
         if let Some(Layer {
             store:
                 Store::Whole {
-                    mut pixmap,
+                    pixels: mut pixmap,
                     origin: was,
                 },
             items: were,
@@ -1365,7 +1542,7 @@ impl SoftwareBackend {
         {
             if were != items || !extra.is_empty() {
                 let partial = gw <= MAX_PARTIAL_SIDE && gh <= MAX_PARTIAL_SIDE;
-                let mut rects = self.damaged(&were, items, gw, gh, Some(base));
+                let mut rects = damaged(&mut self.text, &were, items, gw, gh, Some(base));
                 rects.extend(extra);
                 let rects = merge(rects);
                 let area: u64 = rects.iter().map(|r| r.area()).sum();
@@ -1384,11 +1561,17 @@ impl SoftwareBackend {
             return Some(Layer {
                 reason,
                 items: items.to_vec(),
-                store: Store::Whole { pixmap, origin },
+                store: Store::Whole {
+                    pixels: pixmap,
+                    origin,
+                },
                 used: self.frame,
             });
         }
-        if !self.reserve(gw as usize * gh as usize * 4, 0) {
+        if !self
+            .layers
+            .reserve(gw as usize * gh as usize * 4, 0, self.frame)
+        {
             return None;
         }
         let mut pixmap = tiny_skia::Pixmap::new(gw, gh)?;
@@ -1397,7 +1580,10 @@ impl SoftwareBackend {
         Some(Layer {
             reason,
             items: items.to_vec(),
-            store: Store::Whole { pixmap, origin },
+            store: Store::Whole {
+                pixels: pixmap,
+                origin,
+            },
             used: self.frame,
         })
     }
@@ -1414,11 +1600,11 @@ impl SoftwareBackend {
         &mut self,
         key: GroupKey,
         reason: LayerReason,
-        old: Option<Layer>,
+        old: Option<Layer<tiny_skia::Pixmap>>,
         items: &[DisplayItem],
         (vx0, vy0, vx1, vy1): (f32, f32, f32, f32),
         extra: &[Clip],
-    ) -> Option<Layer> {
+    ) -> Option<Layer<tiny_skia::Pixmap>> {
         let (left, right) = (vx0.floor(), vx1.ceil());
         if !(left.is_finite() && right.is_finite())
             || right - left < 1.0
@@ -1434,7 +1620,7 @@ impl SoftwareBackend {
         let margin = tile_rows(vy0 - span, vy1 + span);
         let tile_bytes = width as usize * tall as usize * 4;
         let base = |row: i32| Matrix::translate(-(left as f32), -(row as f32 * tall as f32), 0.0);
-        let mut rows: BTreeMap<i32, Tile> = BTreeMap::new();
+        let mut rows: BTreeMap<i32, Tile<tiny_skia::Pixmap>> = BTreeMap::new();
         let mut drawn = 0u32;
         if let Some(Layer {
             store:
@@ -1460,7 +1646,14 @@ impl SoftwareBackend {
                 let last = *rows.keys().next_back().expect("a row");
                 let height = ((last - first + 1) as u32).saturating_mul(tall);
                 let top = first as f32 * tall as f32;
-                let mut rects = self.damaged(&were, items, width, height, Some(base(first)));
+                let mut rects = damaged(
+                    &mut self.text,
+                    &were,
+                    items,
+                    width,
+                    height,
+                    Some(base(first)),
+                );
                 rects.extend(extra.iter().filter_map(|r| {
                     PixelRect::around(
                         r.x0 - left as f32,
@@ -1497,11 +1690,11 @@ impl SoftwareBackend {
                 for (row, rect) in per_row {
                     let tile = rows.get_mut(&row).expect("a row held");
                     if partial && rect.area() * 2 < width as u64 * tall as u64 {
-                        self.redraw(&mut tile.pixmap, items, rect, Some(base(row)));
+                        self.redraw(&mut tile.pixels, items, rect, Some(base(row)));
                     } else {
-                        tile.pixmap.fill(tiny_skia::Color::TRANSPARENT);
+                        tile.pixels.fill(tiny_skia::Color::TRANSPARENT);
                         self.draw_items(
-                            &mut tile.pixmap,
+                            &mut tile.pixels,
                             items,
                             State::based(width, tall, base(row)),
                         );
@@ -1511,13 +1704,13 @@ impl SoftwareBackend {
             }
         }
         // The tiles the raster shows, which it cannot do without.
-        let mut held: usize = rows.values().map(|t| pixmap_bytes(&t.pixmap)).sum();
+        let mut held: usize = rows.values().map(|t| t.pixels.bytes()).sum();
         for row in now.clone() {
             if let Some(tile) = rows.get_mut(&row) {
                 tile.used = self.frame;
                 continue;
             }
-            if !self.reserve(tile_bytes, held) {
+            if !self.layers.reserve(tile_bytes, held, self.frame) {
                 return None;
             }
             let mut pixmap = tiny_skia::Pixmap::new(width, tall)?;
@@ -1527,7 +1720,7 @@ impl SoftwareBackend {
             rows.insert(
                 row,
                 Tile {
-                    pixmap,
+                    pixels: pixmap,
                     used: self.frame,
                 },
             );
@@ -1554,83 +1747,6 @@ impl SoftwareBackend {
         })
     }
 
-    /// Lets the layer of `key` go.
-    fn drop_layer(&mut self, key: GroupKey) {
-        if let Some(layer) = self.layers.remove(&key) {
-            self.layer_bytes -= layer.bytes();
-        }
-    }
-
-    /// Makes room for `bytes` more of layer pixmaps, beside `held`
-    /// bytes kept outside the count for the moment (M19.6): the layers
-    /// and tiles this frame has not used go, least recently used first,
-    /// until the budget holds it. Whether it does.
-    fn reserve(&mut self, bytes: usize, held: usize) -> bool {
-        while self.layer_bytes + held + bytes > self.layer_budget {
-            if !self.evict_oldest(self.frame) {
-                return false;
-            }
-        }
-        true
-    }
-
-    /// Lets layers and tiles go, least recently used first, until the
-    /// budget holds what is left (M19.6): what a lowered budget calls
-    /// for, after the frame that found it so.
-    fn trim(&mut self) {
-        while self.layer_bytes > self.layer_budget && self.evict_oldest(u64::MAX) {}
-    }
-
-    /// Lets the layer or tile least recently used go, among those used
-    /// before the frame `before`; whether there was one.
-    fn evict_oldest(&mut self, before: u64) -> bool {
-        let mut oldest: Option<(u64, String, GroupKey, Option<i32>)> = None;
-        let mut consider = |used: u64, key: GroupKey, row: Option<i32>| {
-            if used >= before {
-                return;
-            }
-            // Ties by the key's name, so that the order is fixed.
-            let name = format!("{key:?}");
-            if oldest
-                .as_ref()
-                .is_none_or(|(u, n, _, _)| used < *u || (used == *u && name < *n))
-            {
-                oldest = Some((used, name, key, row));
-            }
-        };
-        for (key, layer) in &self.layers {
-            match &layer.store {
-                Store::Whole { .. } => consider(layer.used, *key, None),
-                Store::Tiles { rows, .. } => {
-                    for (row, tile) in rows {
-                        consider(tile.used, *key, Some(*row));
-                    }
-                }
-            }
-        }
-        let Some((_, _, key, row)) = oldest else {
-            return false;
-        };
-        match row {
-            None => self.drop_layer(key),
-            Some(row) => {
-                let mut empty = false;
-                if let Some(layer) = self.layers.get_mut(&key)
-                    && let Store::Tiles { rows, .. } = &mut layer.store
-                {
-                    if let Some(tile) = rows.remove(&row) {
-                        self.layer_bytes -= pixmap_bytes(&tile.pixmap);
-                    }
-                    empty = rows.is_empty();
-                }
-                if empty {
-                    self.drop_layer(key);
-                }
-            }
-        }
-        true
-    }
-
     /// Draws the tiles of the margin not yet drawn, nearest the
     /// viewport first, while there is time before `deadline` and room
     /// under the budget without letting anything go (M19.4); the rest
@@ -1649,15 +1765,12 @@ impl SoftwareBackend {
             let Some(mut layer) = self.layers.remove(&key) else {
                 continue;
             };
-            let bytes = layer.bytes();
-            self.layer_bytes -= bytes;
             if let Store::Tiles { left, width, rows } = &mut layer.store
                 && !rows.contains_key(&row)
             {
                 let (left, width) = (*left, *width);
                 let tile_bytes = width as usize * TILE_HEIGHT as usize * 4;
-                if self.layer_bytes + bytes + tile_bytes > self.layer_budget {
-                    self.layer_bytes += bytes;
+                if self.layers.bytes() + layer.bytes() + tile_bytes > self.layers.budget() {
                     self.layers.insert(key, layer);
                     break;
                 }
@@ -1673,7 +1786,7 @@ impl SoftwareBackend {
                         rows.insert(
                             row,
                             Tile {
-                                pixmap,
+                                pixels: pixmap,
                                 used: self.frame,
                             },
                         );
@@ -1681,7 +1794,6 @@ impl SoftwareBackend {
                     self.layered.prepainted += 1;
                 }
             }
-            self.layer_bytes += layer.bytes();
             self.layers.insert(key, layer);
         }
     }
@@ -1758,142 +1870,6 @@ impl SoftwareBackend {
         }
     }
 
-    /// How far `item`, drawn from `state`, reaches in the raster's
-    /// coordinates, before the pixel grid, within the clip in force;
-    /// `None` when it draws nothing. The item's reach in the group's
-    /// coordinates is mapped to the raster's, grown first by what the
-    /// group's own raster can add there and after by what the raster
-    /// can add here: a rectangle and a polygon reach exactly as far as
-    /// their raster does; a quad and a run of text are given a pixel
-    /// more all round against rounding, the run's glyphs placed from the
-    /// extent of their masks, and the run another under a scale, which
-    /// the masks' rounding does not follow exactly; inside a scratch
-    /// group, a texel more all round before the mapping, which is how
-    /// far the resampling reaches, and a pixel after. Text whose origin
-    /// is not a number may land anywhere in the clip.
-    fn extent(&mut self, item: &DisplayItem, state: &State) -> Option<Clip> {
-        let clip = state.clip();
-        let in_scratch = state.resampling();
-        let scaled = state.through() != (1.0, 1.0, 0.0, 0.0);
-        let grown = |r: Clip, by: f32| Clip {
-            x0: r.x0 - by,
-            y0: r.y0 - by,
-            x1: r.x1 + by,
-            y1: r.y1 + by,
-        };
-        let hull = |points: &[(f32, f32)]| {
-            let (x0, y0, x1, y1) = extent(points);
-            [x0, y0, x1, y1]
-                .iter()
-                .all(|v| v.is_finite())
-                .then_some(Clip { x0, y0, x1, y1 })
-        };
-        // The reach in the group's coordinates, the texels to add there
-        // and the pixels to add after the mapping.
-        let (reach, texels, pixels) = match item {
-            DisplayItem::PushClip { .. }
-            | DisplayItem::PopClip
-            | DisplayItem::PushGroup { .. }
-            | DisplayItem::PopGroup => return None,
-            DisplayItem::Rect { x, y, w, h, .. } => (Clip::new(*x, *y, *w, *h), 0.0, 0.0),
-            DisplayItem::Text {
-                text, x, y, size, ..
-            } => {
-                if !x.is_finite() || !y.is_finite() {
-                    return (!clip.is_empty()).then_some(clip);
-                }
-                let ink = self.ink(text, *size)?;
-                let reach = Clip {
-                    x0: x + ink.left,
-                    y0: y + ink.top,
-                    x1: x + ink.right,
-                    y1: y + ink.bottom,
-                };
-                (reach, 1.0, 1.0 + if scaled { 1.0 } else { 0.0 })
-            }
-            DisplayItem::Quad { points, .. } => match hull(points) {
-                Some(reach) => (reach, 0.0, 1.0),
-                // tiny-skia fills no such path; were it to, its pixels
-                // would be in the clip.
-                None => return (!clip.is_empty()).then_some(clip),
-            },
-            DisplayItem::Polygon { points, .. } => (hull(points)?, 0.0, 0.0),
-        };
-        let texels = texels + if in_scratch { 1.0 } else { 0.0 };
-        let pixels = pixels + if in_scratch { 1.0 } else { 0.0 };
-        let reach = grown(reach, texels);
-        let mapped = state.map(reach.x0, reach.y0, reach.x1 - reach.x0, reach.y1 - reach.y0)?;
-        let extent = grown(mapped, pixels).intersect(clip);
-        (!extent.is_empty()).then_some(extent)
-    }
-
-    /// The pixels `item`, drawn from `state`, can change in a `width` by
-    /// `height` frame: its [`Self::extent`] on the pixel grid; `None`
-    /// when it changes none.
-    fn bounds(
-        &mut self,
-        item: &DisplayItem,
-        state: &State,
-        width: u32,
-        height: u32,
-    ) -> Option<PixelRect> {
-        let extent = self.extent(item, state)?;
-        PixelRect::around(extent.x0, extent.y0, extent.x1, extent.y1, width, height)
-    }
-
-    /// What drawing `b` over the raster `a` drew can change, in a
-    /// `width` by `height` raster whose coordinates are the lists'
-    /// mapped by `base`, if given: the items of either list that
-    /// [`align`] does not match with one of the other, each through the
-    /// groups it is in (M19), can change the pixels they reach; and an
-    /// item matched can, in both lists, while the clips and groups in
-    /// force differ between the two where it is — a group's matrix or
-    /// opacity having changed, say, under which the item draws
-    /// elsewhere. A group begun before a change is one scratch drawn
-    /// again whole, but what did not change in it comes out the same,
-    /// so the items of it that are matched are not damage. The
-    /// rectangles overlap as they may.
-    fn damaged(
-        &mut self,
-        a: &[DisplayItem],
-        b: &[DisplayItem],
-        width: u32,
-        height: u32,
-        base: Option<Matrix>,
-    ) -> Vec<PixelRect> {
-        let state = || match base {
-            Some(base) => State::based(width, height, base),
-            None => State::new(width, height),
-        };
-        let (mut sa, mut sb) = (state(), state());
-        let mut rects = Vec::new();
-        let (mut i, mut j) = (0, 0);
-        for (pi, pj) in align(a, b).into_iter().chain([(a.len(), b.len())]) {
-            while i < pi {
-                rects.extend(self.bounds(&a[i], &sa, width, height));
-                sa.apply(&a[i]);
-                i += 1;
-            }
-            while j < pj {
-                rects.extend(self.bounds(&b[j], &sb, width, height));
-                sb.apply(&b[j]);
-                j += 1;
-            }
-            if pi == a.len() {
-                break;
-            }
-            if sa != sb {
-                rects.extend(self.bounds(&a[pi], &sa, width, height));
-                rects.extend(self.bounds(&b[pj], &sb, width, height));
-            }
-            sa.apply(&a[pi]);
-            sb.apply(&b[pj]);
-            i += 1;
-            j += 1;
-        }
-        rects
-    }
-
     /// Draws `items` again inside `rect` of `pixmap`, which holds their
     /// last raster, in coordinates the lists' mapped by `base`, if
     /// given: the rectangle is cleared, then every item that can change
@@ -1949,7 +1925,7 @@ impl SoftwareBackend {
             i += 1;
             let clip = state.clip();
             let through = state.through();
-            let bounds = self.bounds(item, &state, width, height);
+            let bounds = bounds(&mut self.text, item, &state, width, height);
             state.apply(item);
             let Some(bounds) = bounds else {
                 continue;
@@ -1997,6 +1973,169 @@ impl SoftwareBackend {
             }
         }
     }
+}
+
+/// How far `item`, drawn from `state`, reaches in the raster's
+/// coordinates, before the pixel grid, within the clip in force;
+/// `None` when it draws nothing. The item's reach in the group's
+/// coordinates is mapped to the raster's, grown first by what the
+/// group's own raster can add there and after by what the raster
+/// can add here: a rectangle and a polygon reach exactly as far as
+/// their raster does; a quad and a run of text are given a pixel
+/// more all round against rounding, the run's glyphs placed from the
+/// extent of their masks, and the run another under a scale, which
+/// the masks' rounding does not follow exactly; inside a scratch
+/// group, a texel more all round before the mapping, which is how
+/// far the resampling reaches, and a pixel after. Text whose origin
+/// is not a number may land anywhere in the clip.
+fn extent(text: &mut GlyphCache, item: &DisplayItem, state: &State) -> Option<Clip> {
+    let clip = state.clip();
+    let in_scratch = state.resampling();
+    let scaled = state.through() != (1.0, 1.0, 0.0, 0.0);
+    let grown = |r: Clip, by: f32| Clip {
+        x0: r.x0 - by,
+        y0: r.y0 - by,
+        x1: r.x1 + by,
+        y1: r.y1 + by,
+    };
+    let hull = |points: &[(f32, f32)]| {
+        let (x0, y0, x1, y1) = hull_of(points);
+        [x0, y0, x1, y1]
+            .iter()
+            .all(|v| v.is_finite())
+            .then_some(Clip { x0, y0, x1, y1 })
+    };
+    // The reach in the group's coordinates, the texels to add there
+    // and the pixels to add after the mapping.
+    let (reach, texels, pixels) = match item {
+        DisplayItem::PushClip { .. }
+        | DisplayItem::PopClip
+        | DisplayItem::PushGroup { .. }
+        | DisplayItem::PopGroup => return None,
+        DisplayItem::Rect { x, y, w, h, .. } => (Clip::new(*x, *y, *w, *h), 0.0, 0.0),
+        DisplayItem::Text {
+            text: run,
+            x,
+            y,
+            size,
+            ..
+        } => {
+            if !x.is_finite() || !y.is_finite() {
+                return (!clip.is_empty()).then_some(clip);
+            }
+            let ink = text.ink(run, *size)?;
+            let reach = Clip {
+                x0: x + ink.left,
+                y0: y + ink.top,
+                x1: x + ink.right,
+                y1: y + ink.bottom,
+            };
+            (reach, 1.0, 1.0 + if scaled { 1.0 } else { 0.0 })
+        }
+        DisplayItem::Quad { points, .. } => match hull(points) {
+            Some(reach) => (reach, 0.0, 1.0),
+            // tiny-skia fills no such path; were it to, its pixels
+            // would be in the clip.
+            None => return (!clip.is_empty()).then_some(clip),
+        },
+        DisplayItem::Polygon { points, .. } => (hull(points)?, 0.0, 0.0),
+    };
+    let texels = texels + if in_scratch { 1.0 } else { 0.0 };
+    let pixels = pixels + if in_scratch { 1.0 } else { 0.0 };
+    let reach = grown(reach, texels);
+    let mapped = state.map(reach.x0, reach.y0, reach.x1 - reach.x0, reach.y1 - reach.y0)?;
+    let extent = grown(mapped, pixels).intersect(clip);
+    (!extent.is_empty()).then_some(extent)
+}
+
+/// The pixels `item`, drawn from `state`, can change in a `width` by
+/// `height` frame: its [`extent`] on the pixel grid; `None` when it
+/// changes none.
+fn bounds(
+    text: &mut GlyphCache,
+    item: &DisplayItem,
+    state: &State,
+    width: u32,
+    height: u32,
+) -> Option<PixelRect> {
+    let extent = extent(text, item, state)?;
+    PixelRect::around(extent.x0, extent.y0, extent.x1, extent.y1, width, height)
+}
+
+/// How far `items`, in their own coordinates, reach: the union of
+/// their extents, walked without bounds; `None` when they draw
+/// nothing.
+fn reach(text: &mut GlyphCache, items: &[DisplayItem]) -> Option<Clip> {
+    let mut reach: Option<Clip> = None;
+    let mut state = State::unbounded();
+    for item in items {
+        if let Some(extent) = extent(text, item, &state) {
+            reach = Some(match reach {
+                None => extent,
+                Some(r) => Clip {
+                    x0: r.x0.min(extent.x0),
+                    y0: r.y0.min(extent.y0),
+                    x1: r.x1.max(extent.x1),
+                    y1: r.y1.max(extent.y1),
+                },
+            });
+        }
+        state.apply(item);
+    }
+    reach.filter(|r| !r.is_empty())
+}
+
+/// What drawing `b` over the raster `a` drew can change, in a
+/// `width` by `height` raster whose coordinates are the lists'
+/// mapped by `base`, if given: the items of either list that
+/// [`align`] does not match with one of the other, each through the
+/// groups it is in (M19), can change the pixels they reach; and an
+/// item matched can, in both lists, while the clips and groups in
+/// force differ between the two where it is — a group's matrix or
+/// opacity having changed, say, under which the item draws
+/// elsewhere. A group begun before a change is one scratch drawn
+/// again whole, but what did not change in it comes out the same,
+/// so the items of it that are matched are not damage. The
+/// rectangles overlap as they may.
+fn damaged(
+    text: &mut GlyphCache,
+    a: &[DisplayItem],
+    b: &[DisplayItem],
+    width: u32,
+    height: u32,
+    base: Option<Matrix>,
+) -> Vec<PixelRect> {
+    let state = || match base {
+        Some(base) => State::based(width, height, base),
+        None => State::new(width, height),
+    };
+    let (mut sa, mut sb) = (state(), state());
+    let mut rects = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    for (pi, pj) in align(a, b).into_iter().chain([(a.len(), b.len())]) {
+        while i < pi {
+            rects.extend(bounds(text, &a[i], &sa, width, height));
+            sa.apply(&a[i]);
+            i += 1;
+        }
+        while j < pj {
+            rects.extend(bounds(text, &b[j], &sb, width, height));
+            sb.apply(&b[j]);
+            j += 1;
+        }
+        if pi == a.len() {
+            break;
+        }
+        if sa != sb {
+            rects.extend(bounds(text, &a[pi], &sa, width, height));
+            rects.extend(bounds(text, &b[pj], &sb, width, height));
+        }
+        sa.apply(&a[pi]);
+        sb.apply(&b[pj]);
+        i += 1;
+        j += 1;
+    }
+    rects
 }
 
 /// The mask of the glyph `glyph_id` of `font` at `size`, its outline
@@ -2084,7 +2223,7 @@ fn outline_mask(
 }
 
 /// The least and greatest `x` and `y` of `points`.
-fn extent(points: &[(f32, f32)]) -> (f32, f32, f32, f32) {
+fn hull_of(points: &[(f32, f32)]) -> (f32, f32, f32, f32) {
     points.iter().fold(
         (
             f32::INFINITY,
@@ -2254,6 +2393,10 @@ fn copy_pixels(from: &tiny_skia::Pixmap, to: &mut tiny_skia::Pixmap, rect: Pixel
 }
 
 impl RenderBackend for SoftwareBackend {
+    fn backend(&self) -> Backend {
+        Backend::Software
+    }
+
     fn rasterize(&mut self, list: &DisplayList, width: u32, height: u32) -> &[u8] {
         self.rasterize_by(list, width, height, None)
     }
@@ -2279,7 +2422,7 @@ impl RenderBackend for SoftwareBackend {
         // where its items changed, and the groups whose layer came or
         // went are damage.
         let base = State::new(width, height);
-        self.mark_layers(&list.items, &base);
+        self.layers.mark(&list.items, &base, self.frame);
         let mut seen = HashSet::new();
         let mut transitions = Vec::new();
         self.update_layers(&list.items, &base, &base, &mut seen, &mut transitions);
@@ -2298,7 +2441,8 @@ impl RenderBackend for SoftwareBackend {
                      list: old,
                      mut pixmap,
                  }| {
-                    let mut rects = self.damaged(&old.items, &list.items, width, height, None);
+                    let mut rects =
+                        damaged(&mut self.text, &old.items, &list.items, width, height, None);
                     rects.extend(transitions);
                     let rects = merge(rects);
                     let area: u64 = rects.iter().map(|r| r.area()).sum();
@@ -2323,7 +2467,7 @@ impl RenderBackend for SoftwareBackend {
             }
         };
         self.prepaint(deadline);
-        self.trim();
+        self.layers.trim();
         let retained = self.retained.insert(Retained {
             list: list.clone(),
             pixmap,
@@ -2332,30 +2476,37 @@ impl RenderBackend for SoftwareBackend {
     }
 
     fn set_layer_budget(&mut self, bytes: usize) {
-        self.layer_budget = bytes;
+        self.layers.set_budget(bytes);
     }
 
     fn layer_bytes(&self) -> usize {
-        self.layer_bytes
+        self.layers.bytes()
     }
 
     fn layers(&self) -> Vec<LayerInfo> {
-        let mut layers: Vec<LayerInfo> = self
-            .layers
-            .iter()
-            .map(|(key, layer)| LayerInfo {
-                key: *key,
-                reason: layer.reason,
-                bytes: layer.bytes(),
-                tiles: layer.tiles(),
-            })
-            .collect();
-        layers.sort_by_key(|layer| format!("{:?}", layer.key));
-        layers
+        self.layers.info()
     }
 
     fn layered(&self) -> Layered {
         self.layered.clone()
+    }
+
+    fn clear_glyph_cache(&mut self) {
+        self.text.clear();
+    }
+
+    fn forget_frame(&mut self) {
+        self.retained = None;
+        self.layers.clear();
+        self.deferred.clear();
+    }
+
+    fn forget_last_frame(&mut self) {
+        self.retained = None;
+    }
+
+    fn redrawn(&self) -> &Redrawn {
+        &self.redrawn
     }
 }
 
@@ -2406,11 +2557,59 @@ fn fill_polygon_by_area(
     clip: Clip,
     write: PixelRect,
 ) {
+    let Some(coverage) = polygon_coverage(points, clip, (pixmap.width(), pixmap.height())) else {
+        return;
+    };
+    let pw = pixmap.width() as i64;
+    let data = pixmap.data_mut();
+    for row in 0..coverage.height {
+        let py = coverage.y0 + row as i64;
+        if !(write.y0 as i64..write.y1 as i64).contains(&py) {
+            continue;
+        }
+        for col in 0..coverage.width {
+            let covered = coverage.values[row * coverage.width + col];
+            let px = coverage.x0 + col as i64;
+            if covered <= 0.0 || !(write.x0 as i64..write.x1 as i64).contains(&px) {
+                continue;
+            }
+            let idx = (py * pw + px) as usize * 4;
+            let a = covered * color.a as f32 / 255.0;
+            blend(&mut data[idx..idx + 4], color, a);
+        }
+    }
+}
+
+/// The coverage of a polygon's pixels (see [`polygon_coverage`]): the
+/// share of each pixel of the `width` by `height` block at `(x0, y0)`
+/// the polygon covers, row-major, in `[0, 1]`.
+struct Coverage {
+    x0: i64,
+    y0: i64,
+    width: usize,
+    height: usize,
+    values: Vec<f32>,
+}
+
+/// The coverage of the simple polygon `points` clipped to `clip`, in a
+/// `width` by `height` raster, by exact area: the share of each pixel
+/// the polygon covers, over the pixels of its bounds within the raster,
+/// from the signed-area accumulation of the polygon's edges (the way
+/// font rasterizers compute it): every edge adds, to the pixels of each
+/// row it crosses, the area it sweeps and the cover it carries to the
+/// pixels right of it, and a running sum along the row gives each
+/// pixel's covered area, exact for a polygon that does not cross itself
+/// whichever way it winds. `None` when nothing is covered.
+fn polygon_coverage(
+    points: &[(f32, f32)],
+    clip: Clip,
+    (width, height): (u32, u32),
+) -> Option<Coverage> {
     let polygon = clip_polygon(points, clip);
     if polygon.len() < 3 || polygon.iter().any(|p| !p.0.is_finite() || !p.1.is_finite()) {
-        return;
+        return None;
     }
-    let (pw, ph) = (pixmap.width() as i64, pixmap.height() as i64);
+    let (pw, ph) = (width as i64, height as i64);
     // The pixels the polygon can touch: its bounds, within the frame.
     let min_x = polygon
         .iter()
@@ -2435,7 +2634,7 @@ fn fill_polygon_by_area(
     let (x0, y0) = (min_x.max(0), min_y.max(0));
     let (x1, y1) = (max_x.min(pw), max_y.min(ph));
     if x1 <= x0 || y1 <= y0 {
-        return;
+        return None;
     }
     let (bw, bh) = ((x1 - x0) as usize, (y1 - y0) as usize);
     // One extra column: an edge's cover spills into the pixel after it.
@@ -2452,24 +2651,21 @@ fn fill_polygon_by_area(
             (bx - x0 as f32, by - y0 as f32),
         );
     }
-    let data = pixmap.data_mut();
+    let mut values = vec![0.0f32; bw * bh];
     for row in 0..bh {
         let mut sum = 0.0f32;
-        let py = y0 + row as i64;
-        let row_written = (write.y0 as i64..write.y1 as i64).contains(&py);
         for col in 0..bw {
             sum += acc[row * stride + col];
-            let coverage = sum.abs().min(1.0);
-            let px = x0 + col as i64;
-            if coverage <= 0.0 || !row_written || !(write.x0 as i64..write.x1 as i64).contains(&px)
-            {
-                continue;
-            }
-            let idx = (py * pw + px) as usize * 4;
-            let a = coverage * color.a as f32 / 255.0;
-            blend(&mut data[idx..idx + 4], color, a);
+            values[row * bw + col] = sum.abs().min(1.0);
         }
     }
+    Some(Coverage {
+        x0,
+        y0,
+        width: bw,
+        height: bh,
+        values,
+    })
 }
 
 /// Adds one edge of a polygon to the accumulation buffer `acc` of
@@ -2710,7 +2906,7 @@ impl Texels for Placed<'_> {
 /// the rows held, from the first to the last; a row not held is clear,
 /// and the texels at the sides stand in beyond them.
 struct Tiled<'a> {
-    rows: &'a BTreeMap<i32, Tile>,
+    rows: &'a BTreeMap<i32, Tile<tiny_skia::Pixmap>>,
     left: i32,
     width: u32,
 }
@@ -2735,7 +2931,7 @@ impl Texels for Tiled<'_> {
         let Some(tile) = i32::try_from(row).ok().and_then(|row| self.rows.get(&row)) else {
             return [0.0; 4];
         };
-        texel_of(&tile.pixmap, tx, (y - row * tall) as usize)
+        texel_of(&tile.pixels, tx, (y - row * tall) as usize)
     }
 }
 
@@ -3132,7 +3328,7 @@ mod tests {
         assert_eq!(first, second, "a cached run draws the same pixels");
         assert_eq!(backend.shape_cache_len(), 2);
         // Past the glyph budget the cache starts again.
-        backend.cached_glyphs = SHAPE_CACHE_GLYPHS - 1;
+        backend.text.cached_glyphs = SHAPE_CACHE_GLYPHS - 1;
         backend.rasterize(
             &DisplayList {
                 items: vec![item("another", 16.0)],
@@ -3141,9 +3337,12 @@ mod tests {
             20,
         );
         assert_eq!(backend.shape_cache_len(), 1);
-        assert!(backend.cached_glyphs <= SHAPE_CACHE_GLYPHS);
+        assert!(backend.text.cached_glyphs <= SHAPE_CACHE_GLYPHS);
         backend.clear_glyph_cache();
-        assert_eq!((backend.shape_cache_len(), backend.cached_glyphs), (0, 0));
+        assert_eq!(
+            (backend.shape_cache_len(), backend.text.cached_glyphs),
+            (0, 0)
+        );
     }
 
     #[test]
@@ -3505,7 +3704,8 @@ mod tests {
             backend.frame += 1;
             backend.doubled.clear();
             let base = State::new(w, h);
-            backend.mark_layers(&list.items, &base);
+            let frame = backend.frame;
+            backend.layers.mark(&list.items, &base, frame);
             let (mut seen, mut extra) = (HashSet::new(), Vec::new());
             backend.update_layers(&list.items, &base, &base, &mut seen, &mut extra);
             backend.redraw(&mut pixmap, &list.items, rect, None);
@@ -3811,10 +4011,10 @@ mod tests {
         // cache entry. The glyph id itself doesn't need to be real;
         // this is about the cache key, not what gets rasterized.
         let mut backend = test_backend();
-        backend.mask_for(Script::Latin, 1, 16.0);
-        backend.mask_for(Script::Han, 1, 16.0);
+        backend.text.mask_for(Script::Latin, 1, 16.0);
+        backend.text.mask_for(Script::Han, 1, 16.0);
         assert_eq!(
-            backend.masks.len(),
+            backend.text.masks.len(),
             2,
             "same (glyph_id, size) from two scripts must not share a cache slot"
         );
@@ -3857,7 +4057,7 @@ mod tests {
             backend.glyph_cache_len() < 60,
             "the cache was emptied at the budget"
         );
-        assert!(backend.cached_bytes <= MASK_CACHE_BUDGET);
+        assert!(backend.text.cached_bytes <= MASK_CACHE_BUDGET);
         backend.rasterize(
             &DisplayList {
                 items: vec![item(16.0)],
@@ -3868,7 +4068,7 @@ mod tests {
         assert!(backend.glyph_cache_len() >= 1);
         backend.clear_glyph_cache();
         assert_eq!(backend.glyph_cache_len(), 0);
-        assert_eq!(backend.cached_bytes, 0);
+        assert_eq!(backend.text.cached_bytes, 0);
     }
 
     /// The pixels of `list` rasterized whole on a `w` by `h` frame.

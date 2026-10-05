@@ -87,6 +87,11 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/rust
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # Mesa's software Vulkan driver, so that the GPU backend's tests
+      # and its equivalence suite against the software backend (M19.3)
+      # run here; where no adapter exists they say so and pass.
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers
       - run: cargo build --workspace --all-targets --locked
       - run: cargo test --workspace --locked
 

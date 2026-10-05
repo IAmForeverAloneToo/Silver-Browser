@@ -4,6 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# The GPU backend (M19.3): the browser draws on it where the machine
+# has an adapter, unless `--software` is given. Off, nothing of wgpu
+# is built.
+default = ["gpu"]
+gpu = ["engine/gpu"]
+
 [dependencies]
 engine.workspace = true
 ui.workspace = true
