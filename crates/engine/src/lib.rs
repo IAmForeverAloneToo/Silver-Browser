@@ -1749,8 +1749,13 @@ impl Engine {
     /// when its rectangle holds the point and so does the innermost clip
     /// in force, since content clipped away is not hit. The steps are
     /// in viewport coordinates with every scroll offset applied, so the
-    /// point is compared as it is. A scrollbar step is passed over: the
-    /// bar is an indicator over its container, not a control.
+    /// point is compared as it is — inside a group (M19), the point
+    /// mapped by the inverse of the group's matrix, the inverses
+    /// composing from the outside in, since the steps inside are in the
+    /// group's own coordinates; a group whose matrix cannot be inverted,
+    /// or that maps the point behind its eye, is passed over whole. A
+    /// scrollbar step is passed over: the bar is an indicator over its
+    /// container, not a control.
     fn hit(&mut self, x: f32, y: f32) -> Option<(NodeId, Vec<NodeId>)> {
         let (width, height) = self.viewport;
         if width == 0 || !x.is_finite() || !y.is_finite() {
@@ -1768,24 +1773,59 @@ impl Engine {
             scroll_y: self.shown.scroll_y,
         };
         let layout = self.layout(width as f32);
-        // The clips in force, outermost first: the chain around a hit,
-        // which a generated box's clip is not part of, as it does not
-        // scroll.
-        let mut clips: Vec<(Option<NodeId>, Rect)> = Vec::new();
-        let under = |rect: &Rect, clips: &[(Option<NodeId>, Rect)]| {
-            rect.contains(x, y) && clips.last().is_none_or(|(_, clip)| clip.contains(x, y))
+        // The clips in force, outermost first, each with how many
+        // groups deep it was met: the chain around a hit, which a
+        // generated box's clip is not part of, as it does not scroll.
+        let mut clips: Vec<(Option<NodeId>, Rect, usize)> = Vec::new();
+        // The point in the coordinates of the groups being walked into
+        // (M19), outermost first: a group's inverse matrix maps the
+        // point outside it to the point inside it.
+        let mut points: Vec<(f32, f32)> = vec![(x, y)];
+        // How deep inside a group nothing of which is hit: its matrix
+        // singular, or the point behind its eye.
+        let mut passed = 0u32;
+        // Whether the point is in `rect`, and inside the innermost clip
+        // of every group around, each in that group's coordinates.
+        let under =
+            |rect: &Rect, clips: &[(Option<NodeId>, Rect, usize)], points: &[(f32, f32)]| {
+                let (px, py) = points[points.len() - 1];
+                if !rect.contains(px, py) {
+                    return false;
+                }
+                let mut checked = usize::MAX;
+                for (_, clip, depth) in clips.iter().rev() {
+                    if *depth == checked {
+                        continue;
+                    }
+                    checked = *depth;
+                    let (cx, cy) = points[(*depth).min(points.len() - 1)];
+                    if !clip.contains(cx, cy) {
+                        return false;
+                    }
+                }
+                true
+            };
+        let chain = |clips: &[(Option<NodeId>, Rect, usize)]| {
+            clips.iter().filter_map(|(node, _, _)| *node).collect()
         };
-        let chain =
-            |clips: &[(Option<NodeId>, Rect)]| clips.iter().filter_map(|(node, _)| *node).collect();
         let mut hit = None;
         for step in paint_order(&layout.roots, viewport, &offsets) {
+            if passed > 0 {
+                match step {
+                    Step::PushGroup { .. } => passed += 1,
+                    Step::PopGroup => passed -= 1,
+                    _ => {}
+                }
+                continue;
+            }
             match step {
                 Step::Box { fragment, rect } => {
-                    if under(&rect, &clips) {
+                    if under(&rect, &clips, &points) {
+                        let (px, py) = points[points.len() - 1];
                         let mut chain: Vec<NodeId> = chain(&clips);
                         if fragment.clips()
                             && fragment.generated.is_none()
-                            && padding_box(fragment, rect).contains(x, y)
+                            && padding_box(fragment, rect).contains(px, py)
                         {
                             chain.push(fragment.node);
                         }
@@ -1793,15 +1833,26 @@ impl Engine {
                     }
                 }
                 Step::Text { fragment, rect, .. } => {
-                    if under(&rect, &clips) {
+                    if under(&rect, &clips, &points) {
                         hit = Some((fragment.node, chain(&clips)));
                     }
                 }
-                Step::PushClip { node, rect } => clips.push((node, rect)),
+                Step::PushClip { node, rect } => clips.push((node, rect, points.len() - 1)),
                 Step::PopClip => {
                     clips.pop();
                 }
-                Step::PushGroup { .. } | Step::PopGroup => {}
+                Step::PushGroup { matrix, .. } => {
+                    let (px, py) = points[points.len() - 1];
+                    match matrix.inverse().and_then(|inverse| inverse.project(px, py)) {
+                        Some(inside) => points.push(inside),
+                        None => passed = 1,
+                    }
+                }
+                Step::PopGroup => {
+                    if points.len() > 1 {
+                        points.pop();
+                    }
+                }
                 Step::Scrollbar { .. } => {}
             }
         }
@@ -3318,6 +3369,88 @@ mod tests {
             }
             render::Redrawn::Whole => panic!("drawn whole"),
         }
+    }
+
+    #[test]
+    fn transformed_boxes_are_hit_where_they_are_drawn() {
+        // M19: the pointer finds a box where its matrix put it, through
+        // the inverse of the matrix, not where layout did; a scaled box
+        // across its scaled area; a turned box inside its turned edges;
+        // a box whose matrix is singular never; a clip inside a group in
+        // the group's coordinates; a box translated into view from far
+        // below, drawn and hit; and the wheel over a scroll container
+        // moved by a transform scrolls it.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0 }
+                    div { width: 20px; height: 20px; background-color: #ff0000 }
+                    .t { transform: translate(100px, 10px) }
+                    .s { transform: scale(2); transform-origin: 0 0; margin-top: 10px }
+                    .r { transform: rotate(45deg); margin-top: 10px }
+                    .z { transform: scale(0); margin-top: 10px }
+                    .c { transform: translate(60px, 0); overflow: hidden; margin-top: 10px }
+                    .c div { width: 50px; height: 10px; background-color: #0000ff }
+                    .sc { transform: translateX(100px); overflow: auto; margin-top: 10px }
+                    .sc div { height: 100px }
+                    .far { transform: translateY(-1000px); margin-top: 1000px }</style>\
+             <div class=t id=t></div><div class=s id=s></div><div class=r id=r></div>\
+             <div class=z id=z></div><div class=c id=c><div id=in></div></div>\
+             <div class=sc id=sc><div></div></div><div class=far id=far></div>",
+        );
+        let pixels = engine.frame(200, 200);
+        let node = |id: &str| node_by_id(&engine, id);
+        let (t, s, r, z, c, inner, sc, far) = (
+            node("t"),
+            node("s"),
+            node("r"),
+            node("z"),
+            node("c"),
+            node("in"),
+            node("sc"),
+            node("far"),
+        );
+        assert_eq!(engine.hit_test(110.0, 20.0), Some(t));
+        assert_ne!(engine.hit_test(10.0, 10.0), Some(t));
+        assert_eq!(engine.hit_test(35.0, 65.0), Some(s), "scaled past its box");
+        assert_eq!(
+            engine.hit_test(10.0, 70.0),
+            Some(r),
+            "the centre of the turned box"
+        );
+        assert_ne!(
+            engine.hit_test(1.0, 61.0),
+            Some(r),
+            "its old corner is bare"
+        );
+        assert_ne!(
+            engine.hit_test(10.0, 100.0),
+            Some(z),
+            "singular: not displayed"
+        );
+        assert_eq!(engine.hit_test(70.0, 125.0), Some(inner));
+        assert_ne!(
+            engine.hit_test(85.0, 125.0),
+            Some(inner),
+            "clipped by its moved box"
+        );
+        assert_ne!(engine.hit_test(85.0, 125.0), Some(c));
+        assert_eq!(px(&pixels, 200, 70, 125), [0x00, 0x00, 0xff, 0xff]);
+        assert_eq!(px(&pixels, 200, 85, 125), [0xff, 0xff, 0xff, 0xff]);
+        assert_eq!(
+            px(&pixels, 200, 10, 180),
+            [0xff, 0x00, 0x00, 0xff],
+            "moved into view"
+        );
+        assert_eq!(engine.hit_test(10.0, 180.0), Some(far));
+        // The scroll container, laid out at (0, 150) and drawn at
+        // (100, 150): the wheel over it there scrolls it; over where it
+        // was, the page.
+        engine.wheel(110.0, 160.0, 40.0);
+        assert_eq!(engine.element_scroll_target(sc), 40.0);
+        assert_eq!(engine.scroll_target(), 0.0);
+        engine.wheel(10.0, 160.0, 40.0);
+        assert_eq!(engine.element_scroll_target(sc), 40.0);
+        assert!(engine.scroll_target() > 0.0);
     }
 
     #[test]

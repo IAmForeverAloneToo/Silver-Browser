@@ -175,6 +175,7 @@ pub fn paint_order<'a>(
         dx: 0.0,
         dy: -viewport.scroll_y,
         chain: Vec::new(),
+        groups: Vec::new(),
         contained: 0,
         adopted: HashMap::new(),
         offsets,
@@ -230,8 +231,15 @@ struct Walk<'a, 'o> {
     dy: f32,
     /// The clips in force, outermost first: each clipping box being
     /// walked into, as [`Step::PushClip`] names it, with its effective
-    /// clip rectangle.
-    chain: Vec<(Option<NodeId>, Rect)>,
+    /// clip rectangle and how many groups deep it was met (M19): a clip
+    /// is intersected with the ones around it in the same group, whose
+    /// coordinates it shares, and the consumers of the steps intersect
+    /// across groups themselves, each in its own coordinates.
+    chain: Vec<(Option<NodeId>, Rect, usize)>,
+    /// The groups being walked into (M19), outermost first: each one's
+    /// matrix composed with those around it, from its coordinates to the
+    /// viewport's, for what the viewport meets.
+    groups: Vec<Matrix>,
     /// How many boxes that are containing blocks for all their
     /// descendants (M19) are being walked into: a `position: fixed` box
     /// inside one scrolls with it.
@@ -256,7 +264,7 @@ struct Walk<'a, 'o> {
 struct Positioned<'a> {
     f: &'a Fragment,
     containing: Rect,
-    chain: Vec<(Option<NodeId>, Rect)>,
+    chain: Vec<(Option<NodeId>, Rect, usize)>,
     dx: f32,
     dy: f32,
     contained: u32,
@@ -341,9 +349,34 @@ enum Emit {
 }
 
 impl<'a> Walk<'a, '_> {
-    /// The effective clip in force, if any.
+    /// The effective clip in force in the group being walked into, if
+    /// any: the clips of the groups around are in other coordinates.
     fn clip(&self) -> Option<Rect> {
-        self.chain.last().map(|(_, rect)| *rect)
+        let depth = self.groups.len();
+        self.chain
+            .iter()
+            .rev()
+            .find(|(_, _, d)| *d == depth)
+            .map(|(_, rect, _)| *rect)
+    }
+
+    /// Whether the viewport meets `rect`, a rectangle in the coordinates
+    /// of the group being walked into: through the group's matrix
+    /// (M19). A rectangle whose image cannot be told is taken to be met.
+    fn visible(&self, rect: Rect) -> bool {
+        match self.groups.last() {
+            None => rect.meets(&self.viewport),
+            Some(m) => match m.bounds(rect.x, rect.y, rect.w, rect.h) {
+                Some((x0, y0, x1, y1)) => Rect {
+                    x: x0,
+                    y: y0,
+                    w: x1 - x0,
+                    h: y1 - y0,
+                }
+                .meets(&self.viewport),
+                None => true,
+            },
+        }
     }
 
     /// A fragment's box in viewport coordinates.
@@ -360,7 +393,7 @@ impl<'a> Walk<'a, '_> {
     /// run — when the viewport meets it.
     fn own(&mut self, f: &'a Fragment) {
         let rect = self.rect_of(f);
-        if !rect.meets(&self.viewport) {
+        if !self.visible(rect) {
             return;
         }
         self.steps.push(match f.kind {
@@ -423,7 +456,7 @@ impl<'a> Walk<'a, '_> {
     fn content_within(&mut self, f: &'a Fragment, emit: Emit, body: impl FnOnce(&mut Self, Rect)) {
         let rect = self.rect_of(f);
         let clips = f.clips();
-        if clips && !rect.meets(&self.viewport) {
+        if clips && !self.visible(rect) {
             return;
         }
         let padding_box = padding_box(f, rect);
@@ -443,7 +476,7 @@ impl<'a> Walk<'a, '_> {
                 rect: effective,
             });
         }
-        self.chain.push((node, effective));
+        self.chain.push((node, effective, self.groups.len()));
         let offset = node.map_or(0.0, |node| self.offsets.offset(node));
         self.dy -= offset;
         body(self, padding_box);
@@ -490,11 +523,14 @@ impl<'a> Walk<'a, '_> {
             }
             let opacity = f.style.effects().opacity;
             let group = (matrix.is_some() || opacity < 1.0).then(|| {
+                let matrix = matrix.unwrap_or(Matrix::IDENTITY);
                 w.steps.push(Step::PushGroup {
                     fragment: f,
-                    matrix: matrix.unwrap_or(Matrix::IDENTITY),
+                    matrix,
                     opacity,
                 });
+                let composed = w.groups.last().map_or(matrix, |outer| outer.then(&matrix));
+                w.groups.push(composed);
                 w.steps.len()
             });
             w.own(f);
@@ -511,6 +547,7 @@ impl<'a> Walk<'a, '_> {
                 w.layers(&f.children, padding, positioned, has_items(f));
             });
             if let Some(inside) = group {
+                w.groups.pop();
                 if w.steps.len() == inside {
                     // Nothing of it shows: the group is left out with it.
                     w.steps.pop();
@@ -716,7 +753,7 @@ impl<'a> Walk<'a, '_> {
             self.steps.push(Step::PopClip);
         }
         let mark = self.steps.len();
-        for &(node, rect) in &self.chain[shared..] {
+        for &(node, rect, _) in &self.chain[shared..] {
             self.steps.push(Step::PushClip { node, rect });
         }
         let opened = self.chain.len() - shared;
@@ -736,7 +773,7 @@ impl<'a> Walk<'a, '_> {
                 self.steps.push(Step::PopClip);
             }
         }
-        for &(node, rect) in &current[shared..] {
+        for &(node, rect, _) in &current[shared..] {
             self.steps.push(Step::PushClip { node, rect });
         }
         self.chain = current;
@@ -1809,5 +1846,53 @@ mod tests {
         assert_eq!(rect(3).y, 5.0, "scrolled with the page");
         assert_eq!(rect(4).y, 10.0, "fixed to the viewport");
         assert_eq!(rect(2).y, -5.0);
+    }
+
+    #[test]
+    fn the_viewport_meets_a_box_through_its_matrix_and_a_clip_is_its_groups_own() {
+        // M19: a box far below the viewport, translated into it, has
+        // its step; one in view, translated out of it, has none. A clip
+        // inside a group is intersected with the clips in the same
+        // group only: the one outside is in other coordinates, and the
+        // consumers of the steps intersect across groups themselves.
+        // <div><div class=far></div><div class=away></div></div>: nodes
+        // div 1, div.far 2, div.away 3; the margin collapses through the
+        // root, which is far below the viewport too.
+        let layout = layout_of(
+            Element::new("div")
+                .push(Element::new("div").attr("class", "far"))
+                .push(Element::new("div").attr("class", "away")),
+            "div { margin: 0; height: 20px; }
+             .far { transform: translateY(-2000px); margin-top: 2000px; }
+             .away { transform: translateX(5000px); }",
+        );
+        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+        assert_eq!(
+            names(&layout, &steps),
+            [
+                "group 2 1 [1.0, 0.0, 0.0, 1.0, 0.0, -2000.0]",
+                "box 2",
+                "endgroup"
+            ]
+        );
+        // <div class=o><div class=c><p>x</p></div></div>: nodes div.o 1,
+        // div.c 2, p 3. The inner clip is the inner box's padding box,
+        // not cut by the outer clip.
+        let layout = layout_of(
+            Element::new("div").attr("class", "o").push(
+                Element::new("div")
+                    .attr("class", "c")
+                    .push(Element::new("p").text("x")),
+            ),
+            "div, p { margin: 0; } .o { overflow: hidden; width: 50px; height: 50px; }
+             .c { transform: translateX(100px); overflow: hidden; width: 30px; height: 30px;
+                  margin-left: 40px; }",
+        );
+        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+        let names = names(&layout, &steps);
+        assert!(
+            names.contains(&"clip 2 40 0 30 30".to_string()),
+            "{names:?}"
+        );
     }
 }
