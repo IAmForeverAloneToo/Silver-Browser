@@ -33,12 +33,50 @@ use style::Styles;
 use style::computed::{BOTTOM, BorderStyle, Color, Display, LEFT, RIGHT, TOP};
 use style::transform::Matrix;
 
-pub use order::{Rect, Step, padding_box, paint_order};
+pub use order::{Rect, Step, padding_box, paint_order, paint_order_in};
 
-/// What names a group across frames (M19): the box's node and the
-/// pseudo-element that generated it, if any, as
-/// [`layout::StackingKey`] names a stacking context.
-pub type GroupKey = layout::StackingKey;
+/// What names a group across frames (M19), which a backend keeps a
+/// layer under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GroupKey {
+    /// A stacking context's group: its box, by the node and the
+    /// pseudo-element that generated it, as [`layout::StackingKey`]
+    /// names it.
+    Box(layout::StackingKey),
+    /// The scrolled content of the scroll container of this element,
+    /// one whose `will-change` names `scroll-position`.
+    Scroll(NodeId),
+    /// The document's content, one piece of it: the content is cut
+    /// where a `position: fixed` box, which does not scroll, is painted
+    /// among it, and each piece is a group of its own, numbered from
+    /// zero in paint order.
+    Document(u32),
+}
+
+/// Why a group is a layer (M19): the compositing note's policy, which
+/// is a function of the computed style and the matrix alone, so that a
+/// page's layers are the same from frame to frame until its styles
+/// change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LayerReason {
+    /// Its matrix rotates, skews, or is 3D: the clips inside stay
+    /// axis-aligned in the layer's own coordinates.
+    Transformed,
+    /// Its box's `will-change` names a transform property, `opacity`,
+    /// `perspective` or `transform-style`: the author's word that the
+    /// matrix or the opacity is about to change.
+    WillChange,
+    /// It is the scrolled content of a scroll container: the viewport's
+    /// always, an element's when its `will-change` names
+    /// `scroll-position`. A scroll is then a composite.
+    Scrolled,
+}
+
+/// The height of a tile of a scrolled layer (M19): a layer of scrolled
+/// content is kept as strips of its full width and this many pixels
+/// tall, so that it never holds a page of sixteen thousand pixels at
+/// once.
+pub const TILE_HEIGHT: u32 = 256;
 
 /// The scrollbar track's colour, the viewport's and an element's alike.
 pub const SCROLLBAR_TRACK: Rgba8 = Rgba8::rgb(0x31, 0x32, 0x44);
@@ -194,6 +232,12 @@ pub enum DisplayItem {
         opacity: f32,
         /// What names the group across frames.
         key: GroupKey,
+        /// Whether the group is a layer, kept from frame to frame under
+        /// its key and composited by its matrix, and why; `None` for a
+        /// group drawn through, or from a scratch that is not kept. A
+        /// backend may still draw a layer the other way, when its
+        /// budget has no room for it.
+        layer: Option<LayerReason>,
     },
     /// End the innermost [`DisplayItem::PushGroup`].
     PopGroup,
@@ -490,7 +534,13 @@ pub fn paint_fragments_in(
             to_rgba8(f.style.background_color)
         }),
     }];
-    for step in paint_order(roots, viewport, offsets) {
+    // The document's content comes in groups that scroll it (M19), the
+    // items inside in document coordinates and the group's matrix the
+    // scroll offset, and the content a viewport's height above and
+    // below the viewport is listed too, for the tiles a scroll brings
+    // in next. A `position: fixed` box, which does not scroll, is
+    // outside them, in viewport coordinates.
+    for step in paint_order_in(roots, viewport, offsets, viewport.height) {
         match step {
             Step::Box { fragment, rect } => push_box(&mut items, fragment, rect, canvas_node),
             Step::Text {
@@ -526,13 +576,16 @@ pub fn paint_fragments_in(
             }
             Step::PopClip => items.push(DisplayItem::PopClip),
             Step::PushGroup {
-                fragment,
                 matrix,
                 opacity,
+                key,
+                layer,
+                ..
             } => items.push(DisplayItem::PushGroup {
                 matrix,
                 opacity,
-                key: fragment.stacking_key(),
+                key,
+                layer,
             }),
             Step::PopGroup => items.push(DisplayItem::PopGroup),
             Step::Scrollbar {
@@ -1607,33 +1660,60 @@ mod fragment_tests {
     }
 
     #[test]
-    fn the_scroll_offset_moves_items_up_and_culls_what_the_viewport_misses() {
-        // Three 100px boxes at document y = 0, 100, 200. A 150px-tall
-        // viewport scrolled to 120 sees the second (at -20) and the
-        // third (at 80); the first ends at 100, above the viewport.
+    fn the_scroll_offset_is_the_documents_groups_matrix_and_the_margin_culls_the_rest() {
+        // Three 100px boxes at document y = 0, 100, 200, and a fourth
+        // 1000px further down, at 1300. The items are in document
+        // coordinates inside the document's group, whose matrix is the
+        // scroll offset (M19); a 150px-tall viewport lists what it and
+        // a viewport's height on either side of it meet: unscrolled, the
+        // first three (c, at 200, is in the margin below); scrolled to
+        // 1200, the fourth alone.
         let root = Element::new("div")
             .push(Element::new("div").attr("class", "a"))
             .push(Element::new("div").attr("class", "b"))
-            .push(Element::new("div").attr("class", "c"));
+            .push(Element::new("div").attr("class", "c"))
+            .push(Element::new("div").attr("class", "d"));
         let css = "div { margin: 0; height: 100px; background-color: #ff0000; }
                    div div { height: 100px; }
-                   .a, .b, .c { background-color: #00ff00; }";
+                   .a, .b, .c, .d { background-color: #00ff00; }
+                   .d { margin-top: 1000px; }";
         let unscrolled = display_list_for(root.clone(), css, Viewport::new(VIEWPORT, 150.0));
         assert_eq!(
             rect_rows(&unscrolled),
-            vec![(0.0, 100.0), (0.0, 100.0), (100.0, 100.0)],
-            "the outer div (100 tall), a, b; c at 200 is out of view"
+            vec![(0.0, 100.0), (0.0, 100.0), (100.0, 100.0), (200.0, 100.0)],
+            "the outer div (100 tall), a, b, c; d at 1300 is past the margin"
         );
-        let scrolled = display_list_for(
-            root,
-            css,
-            Viewport {
-                width: VIEWPORT,
-                height: 150.0,
-                scroll_y: 120.0,
-            },
-        );
-        assert_eq!(rect_rows(&scrolled), vec![(-20.0, 100.0), (80.0, 100.0)]);
+        let scroll = |scroll_y: f32| {
+            display_list_for(
+                root.clone(),
+                css,
+                Viewport {
+                    width: VIEWPORT,
+                    height: 150.0,
+                    scroll_y,
+                },
+            )
+        };
+        let scrolled = scroll(1200.0);
+        assert_eq!(rect_rows(&scrolled), vec![(1300.0, 100.0)]);
+        let document_group = |list: &DisplayList| match list.items.get(1) {
+            Some(DisplayItem::PushGroup {
+                matrix,
+                key: GroupKey::Document(0),
+                layer: Some(LayerReason::Scrolled),
+                opacity,
+            }) if *opacity == 1.0 => matrix.scale_and_translation(),
+            other => panic!("the document's group follows the canvas: {other:?}"),
+        };
+        assert_eq!(document_group(&unscrolled), Some((1.0, 1.0, 0.0, 0.0)));
+        assert_eq!(document_group(&scrolled), Some((1.0, 1.0, 0.0, -1200.0)));
+        assert_eq!(scrolled.items.last(), Some(&DisplayItem::PopGroup));
+        // The items are the same from one offset to the next: a scroll
+        // changes the group's matrix alone.
+        let a = scroll(120.0);
+        let b = scroll(121.0);
+        assert_eq!(a.items[2..], b.items[2..]);
+        assert_ne!(a.items[1], b.items[1]);
     }
 
     #[test]
@@ -1749,10 +1829,11 @@ mod fragment_tests {
         };
         assert_eq!(rect_y(Rgba8::rgb(255, 0, 0)), Some(-20.0));
         assert_eq!(rect_y(Rgba8::rgb(0, 0, 255)), Some(10.0));
-        // Scrolled past the top of the viewport, the red box is culled
-        // like anything else out of view.
+        // Scrolled past the top of its clip, the red box is listed
+        // still, at -40, since the viewport's margin meets it (M19);
+        // the clip hides it.
         let offsets = [(3, 40.0)];
-        let culled = display_list_scrolled(
+        let scrolled = display_list_scrolled(
             Element::new("div")
                 .attr("class", "s")
                 .push(Element::new("p").attr("class", "r"))
@@ -1761,9 +1842,10 @@ mod fragment_tests {
             Viewport::new(VIEWPORT, 600.0),
             &offsets,
         );
-        assert!(!culled.items.iter().any(
-            |i| matches!(i, DisplayItem::Rect { color, .. } if *color == Rgba8::rgb(255, 0, 0))
-        ));
+        assert!(scrolled.items.iter().any(|i| matches!(
+            i,
+            DisplayItem::Rect { y, color, .. } if *color == Rgba8::rgb(255, 0, 0) && *y == -40.0
+        )));
         assert!(matches!(
             list.items
                 .iter()

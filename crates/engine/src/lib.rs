@@ -214,10 +214,6 @@ pub struct Engine {
     animation_clock: Option<Duration>,
     /// What the last frame took (M13.4).
     stats: FrameStats,
-    /// The scroll offset the last frame showed: a frame at another moves
-    /// everything in it, and is rasterized whole without comparing its
-    /// display list with the last one's (M13.3).
-    drawn_scroll_y: f32,
     /// Whether the document was replaced or changed, or a scroll offset
     /// set, since the last frame.
     changed: bool,
@@ -488,7 +484,6 @@ impl Engine {
             viewport: (0, 0),
             animation_clock: None,
             stats: FrameStats::default(),
-            drawn_scroll_y: 0.0,
             changed: true,
         }
     }
@@ -537,7 +532,6 @@ impl Engine {
         let left = std::mem::replace(&mut self.shown, shown);
         self.backend.clear_glyph_cache();
         self.backend.forget_frame();
-        self.drawn_scroll_y = self.shown.scroll_y;
         self.animation_clock = None;
         self.changed = true;
         left
@@ -1398,6 +1392,48 @@ impl Engine {
         self.backend.redrawn()
     }
 
+    /// What the last frame did with the layers (M19): which groups it
+    /// composited from a layer, which layers it drew into and how many
+    /// tiles it drew ahead of a scroll.
+    pub fn layered(&self) -> render::Layered {
+        self.backend.layered()
+    }
+
+    /// The layers the backend holds (M19), in a fixed order: the
+    /// compositing note's policy, as the backend decided it for the
+    /// last frame, with what each costs.
+    pub fn layers(&self) -> Vec<render::LayerInfo> {
+        self.backend.layers()
+    }
+
+    /// How many bytes of layer pixmaps the backend holds (M19.6).
+    pub fn layer_bytes(&self) -> usize {
+        self.backend.layer_bytes()
+    }
+
+    /// Sets how many bytes of layer pixmaps the backend may hold
+    /// (M19.6), [`render::DEFAULT_LAYER_BUDGET`] unless set: the layers
+    /// least recently composited go when a frame needs more, and a
+    /// frame that cannot hold its layers draws them through.
+    pub fn set_layer_budget(&mut self, bytes: usize) {
+        self.backend.set_layer_budget(bytes);
+    }
+
+    /// The scroll offsets of the frame: the viewport's and each scroll
+    /// container's, rounded to whole pixels (M19), since a composited
+    /// scroll is snapped to the pixel grid as the reference browser
+    /// snaps it; the animation keeps its fraction. Hit testing and the
+    /// display list read the same offsets.
+    fn drawn_offsets(&self) -> (f32, HashMap<NodeId, f32>) {
+        let offsets = self
+            .shown
+            .element_scroll
+            .iter()
+            .map(|(node, scroll)| (*node, scroll.y.round()))
+            .collect();
+        (self.shown.scroll_y.round(), offsets)
+    }
+
     /// Draws the frame for `time` (M13.4): the scroll animations are
     /// advanced to `time.now` — by the time since the last frame drawn
     /// while one ran, or by one frame of [`FRAME_BUDGET`] for one begun
@@ -1476,23 +1512,14 @@ impl Engine {
                 self.goal = None;
             }
         }
-        let offsets: HashMap<NodeId, f32> = self
-            .shown
-            .element_scroll
-            .iter()
-            .map(|(node, scroll)| (*node, scroll.y))
-            .collect();
+        let (scroll_y, offsets) = self.drawn_offsets();
         let stage = Instant::now();
         let viewport = Viewport {
             width: width as f32,
             height: height as f32,
-            scroll_y: self.shown.scroll_y,
+            scroll_y,
         };
         let scrollbar = self.scrollbar();
-        if self.shown.scroll_y != self.drawn_scroll_y {
-            self.backend.forget_frame();
-            self.drawn_scroll_y = self.shown.scroll_y;
-        }
         let layout = self.layout(width as f32);
         let mut list = paint_fragments_in(&layout.roots, viewport, &offsets);
         if let Some(bar) = scrollbar {
@@ -1513,7 +1540,12 @@ impl Engine {
         }
         let paint = stage.elapsed();
         let stage = Instant::now();
-        let pixels = self.backend.rasterize(&list, width, height);
+        // The backend may draw ahead of a scroll until the deadline
+        // (M19.4), which M13.4 reserved for work the frame can do
+        // without.
+        let pixels = self
+            .backend
+            .rasterize_by(&list, width, height, Some(start + budget));
         let raster = stage.elapsed();
         let total = start.elapsed();
         self.stats = FrameStats {
@@ -1761,16 +1793,11 @@ impl Engine {
         if width == 0 || !x.is_finite() || !y.is_finite() {
             return None;
         }
-        let offsets: HashMap<NodeId, f32> = self
-            .shown
-            .element_scroll
-            .iter()
-            .map(|(node, scroll)| (*node, scroll.y))
-            .collect();
+        let (scroll_y, offsets) = self.drawn_offsets();
         let viewport = Viewport {
             width: width as f32,
             height: height as f32,
-            scroll_y: self.shown.scroll_y,
+            scroll_y,
         };
         let layout = self.layout(width as f32);
         // The clips in force, outermost first, each with how many
@@ -1945,12 +1972,7 @@ impl Engine {
         if width == 0 {
             return None;
         }
-        let offsets: HashMap<NodeId, f32> = self
-            .shown
-            .element_scroll
-            .iter()
-            .map(|(node, scroll)| (*node, scroll.y))
-            .collect();
+        let (_, offsets) = self.drawn_offsets();
         let layout = self.layout(width as f32);
         let whole = Viewport {
             width: width as f32,
@@ -4113,10 +4135,21 @@ mod tests {
         // A new size: drawn whole.
         engine.frame(200, 30);
         assert_eq!(engine.redrawn(), &render::Redrawn::Whole);
-        // A scroll moves everything: drawn whole, without comparing.
+        // A scroll moves the document's group (M19): drawn again where
+        // its content is, composited from the document's tiles, with
+        // nothing drawn into them.
         engine.set_scroll(10.0);
         engine.frame(200, 30);
-        assert_eq!(engine.redrawn(), &render::Redrawn::Whole);
+        let render::Redrawn::Rects(rects) = engine.redrawn().clone() else {
+            panic!("drawn whole: {:?}", engine.redrawn());
+        };
+        assert!(!rects.is_empty());
+        let layered = engine.layered();
+        assert!(layered.rasterized.is_empty(), "{layered:?}");
+        assert!(
+            layered.composited.contains(&paint::GroupKey::Document(0)),
+            "{layered:?}"
+        );
         engine.frame(200, 30);
         assert_eq!(engine.redrawn(), &render::Redrawn::Rects(Vec::new()));
     }
@@ -4276,5 +4309,129 @@ mod tests {
             "{name} page, seed {seed}: no box reused"
         );
         changed
+    }
+
+    #[test]
+    fn the_document_is_a_layer_of_tiles_that_a_scroll_composites() {
+        // M19.4: the document's content is a layer of tiles kept from
+        // frame to frame; a scroll composites them, drawing nothing
+        // into them while the rows it shows are held, and the frame is
+        // what a fresh engine draws at that offset. The offset drawn is
+        // a whole pixel: a fraction is rounded, for painting and hit
+        // testing alike.
+        // The paragraphs are all within the margin at the top, and the
+        // tall box after them has no pixels of its own, so a scroll
+        // lists the same items.
+        let page = "<style>body { margin: 0 } p { margin: 0; height: 30px }
+                           .r { background-color: #f00 } .tall { height: 2000px }</style>\
+                    <p>one</p><p class=r id=r>two</p><p>three</p><p>four</p><p>five</p>\
+                    <div class=tall></div>";
+        let mut engine = test_engine();
+        engine.load_document(page);
+        engine.frame(200, 100);
+        let layers = engine.layers();
+        assert!(
+            layers.iter().any(|l| l.key == paint::GroupKey::Document(0)
+                && l.reason == paint::LayerReason::Scrolled
+                && l.tiles >= 1),
+            "{layers:?}"
+        );
+        assert!(
+            engine
+                .layered()
+                .rasterized
+                .iter()
+                .any(|(key, _)| *key == paint::GroupKey::Document(0))
+        );
+        engine.set_scroll(60.0);
+        let pixels = engine.frame(200, 100);
+        let layered = engine.layered();
+        assert!(layered.rasterized.is_empty(), "{layered:?}");
+        assert!(layered.composited.contains(&paint::GroupKey::Document(0)));
+        let mut fresh = test_engine();
+        fresh.load_document(page);
+        fresh.frame(200, 100);
+        fresh.set_scroll(60.0);
+        assert_eq!(pixels, fresh.frame(200, 100), "the composited scroll");
+        // Scrolled far past the rows drawn ahead, the rows the viewport
+        // shows are drawn now.
+        engine.set_scroll(1000.0);
+        engine.frame(200, 100);
+        assert!(
+            engine
+                .layered()
+                .rasterized
+                .iter()
+                .any(|(key, tiles)| *key == paint::GroupKey::Document(0) && *tiles >= 1),
+            "{:?}",
+            engine.layered()
+        );
+        // A fraction of a pixel is rounded: the frame at 29.6 is the
+        // frame at 30, where the red box's top is the viewport's, and
+        // the hit test agrees.
+        engine.set_scroll(29.6);
+        let rounded = engine.frame(200, 100);
+        assert_eq!(engine.scroll_y(), 29.6, "the animation keeps its fraction");
+        assert_eq!(px(&rounded, 200, 10, 0), [0xff, 0, 0, 0xff]);
+        let r = node_by_id(&engine, "r");
+        assert_eq!(
+            engine.hit_test(10.0, 0.5),
+            Some(r),
+            "the red box's first row"
+        );
+        engine.set_scroll(30.0);
+        assert_eq!(rounded, engine.frame(200, 100));
+    }
+
+    #[test]
+    fn will_change_makes_a_layer_that_a_new_transform_composites() {
+        // M19.2: a box whose `will-change` names `transform` is a layer
+        // under its own key; a new transform on it composites the layer
+        // where the matrix puts it, drawing nothing into it, and the
+        // frame is what a fresh engine draws. Under a budget of nothing
+        // (M19.6) the box is drawn through, the same.
+        let page = "<style>body { margin: 0 }
+                           .w { will-change: transform; width: 20px; height: 20px;
+                                background-color: #00f }</style>\
+                    <div class=w id=w></div>";
+        let mut engine = test_engine();
+        engine.load_document(page);
+        let pixels = engine.frame(100, 60);
+        assert_eq!(px(&pixels, 100, 10, 10), [0, 0, 0xff, 0xff]);
+        let w = node_by_id(&engine, "w");
+        let key = paint::GroupKey::Box((w, None));
+        let layers = engine.layers();
+        assert!(
+            layers
+                .iter()
+                .any(|l| l.key == key && l.reason == paint::LayerReason::WillChange),
+            "{layers:?}"
+        );
+        engine.mutate(|document| {
+            document
+                .set_attribute(w, "style", "transform: translate(30px, 20px)")
+                .expect("an element");
+        });
+        let pixels = engine.frame(100, 60);
+        let layered = engine.layered();
+        assert!(
+            !layered.rasterized.iter().any(|(k, _)| *k == key),
+            "{layered:?}"
+        );
+        assert!(layered.composited.contains(&key), "{layered:?}");
+        assert_eq!(px(&pixels, 100, 40, 30), [0, 0, 0xff, 0xff]);
+        assert_eq!(px(&pixels, 100, 10, 10), [0xff, 0xff, 0xff, 0xff]);
+        let mut fresh = test_engine();
+        fresh.load_document(page);
+        fresh.mutate(|document| {
+            document
+                .set_attribute(w, "style", "transform: translate(30px, 20px)")
+                .expect("an element");
+        });
+        assert_eq!(pixels, fresh.frame(100, 60));
+        engine.set_layer_budget(0);
+        assert_eq!(engine.frame(100, 60), pixels);
+        assert!(engine.layers().is_empty());
+        assert_eq!(engine.layer_bytes(), 0);
     }
 }

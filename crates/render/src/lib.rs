@@ -5,9 +5,11 @@
 //! CPU) is the default. Only this crate (and `shell`) touches pixel
 //! buffers — per the layering contract in `docs/architecture.md`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ops::RangeInclusive;
+use std::time::Instant;
 
-use paint::{DisplayItem, DisplayList, Rgba8};
+use paint::{DisplayItem, DisplayList, GroupKey, LayerReason, Rgba8, TILE_HEIGHT};
 use style::transform::Matrix;
 use text::{
     Curve, FontCollection, FontError, GlyphMask, MAX_MASK_PIXELS, Script, ShapedGlyph,
@@ -40,6 +42,16 @@ const MAX_PARTIAL_SIDE: u32 = 8191;
 /// At most this many damaged rectangles are redrawn one by one; more
 /// are redrawn as the one rectangle around them all.
 const MAX_DAMAGE_RECTS: usize = 32;
+
+/// How many edits apart two lists may be for [`align`] to match their
+/// items one by one (M19): past this many, the items between their
+/// shared start and end are all taken as changed, which is right if
+/// more than it need be, and the cost of looking stays bounded.
+const MAX_DIFF_EDITS: usize = 512;
+
+/// How many bytes of layer pixmaps the backend holds unless told
+/// otherwise (M19.6): sixteen frames of 1280 by 800, modest on purpose.
+pub const DEFAULT_LAYER_BUDGET: usize = 64 << 20;
 
 /// An axis-aligned clip in pixel coordinates: a pixel is inside when
 /// its centre is, `x0 <= px + 0.5 < x1` and likewise for `y`.
@@ -199,14 +211,15 @@ pub enum Redrawn {
 
 /// A group being drawn into (M19): the groups around it composed into
 /// one matrix, from the group's coordinates to the raster's; whether
-/// the group is composited from a scratch of its own rather than drawn
-/// through the raster, which [`State::needs_scratch`] decides; and how
+/// the group's pixels are resampled into the raster from a pixmap of
+/// its own, a scratch or a layer, rather than drawn where a raster of
+/// them would put them, which [`State::is_resampled`] decides; and how
 /// many clips were in force when it began, since a clip the group
 /// leaves open ends with it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct GroupState {
     matrix: Matrix,
-    scratch: bool,
+    resampled: bool,
     clips: usize,
 }
 
@@ -241,13 +254,14 @@ impl State {
         }
     }
 
-    /// The state of a raster into a scratch whose coordinates are the
-    /// list's mapped by `base`, which only translates and scales.
+    /// The state of a raster into a scratch or a layer whose
+    /// coordinates are the list's mapped by `base`, which only
+    /// translates and scales.
     fn based(width: u32, height: u32, base: Matrix) -> Self {
         let mut state = State::new(width, height);
         state.groups.push(GroupState {
             matrix: base,
-            scratch: false,
+            resampled: false,
             clips: 0,
         });
         state
@@ -264,10 +278,11 @@ impl State {
         self.groups.last().map(|g| g.matrix)
     }
 
-    /// Whether a group composited from a scratch is being walked into:
-    /// its items are drawn there, resampled into the raster.
-    fn in_scratch(&self) -> bool {
-        self.groups.last().is_some_and(|g| g.scratch)
+    /// Whether a group resampled from a pixmap of its own is being
+    /// walked into: its items are drawn there, and sampled from there
+    /// into the raster.
+    fn resampling(&self) -> bool {
+        self.groups.last().is_some_and(|g| g.resampled)
     }
 
     /// The scale and translation the items here are drawn through, as
@@ -285,6 +300,20 @@ impl State {
     /// scale, or its opacity is below one.
     fn needs_scratch(matrix: &Matrix, opacity: f32) -> bool {
         !(matrix.translates_and_scales_only() && opacity >= 1.0)
+    }
+
+    /// Whether a group with `matrix`, a layer when `layer` says so, is
+    /// resampled from a pixmap of its own: a scratch, when the matrix
+    /// does more than translate and scale; a layer, when it is kept and
+    /// its matrix is not a translation by whole pixels, which lays the
+    /// layer over the raster pixel for pixel. A group with an opacity
+    /// alone is drawn through into a scratch in the raster's own
+    /// coordinates, which resamples nothing. A layer the backend's
+    /// budget refuses is drawn as a group that is no layer, which this
+    /// cannot know: it then errs towards more reach, which only costs.
+    fn is_resampled(matrix: &Matrix, layer: Option<LayerReason>) -> bool {
+        !matrix.translates_and_scales_only()
+            || (layer.is_some() && whole_pixel_translation(matrix).is_none())
     }
 
     /// The rectangle at `(x, y)` of size `w` by `h` in the list's
@@ -321,14 +350,12 @@ impl State {
                     self.clips.pop();
                 }
             }
-            DisplayItem::PushGroup {
-                matrix, opacity, ..
-            } => {
+            DisplayItem::PushGroup { matrix, layer, .. } => {
                 let composed = self.matrix().map_or(*matrix, |m| m.then(matrix));
-                let scratch = self.in_scratch() || State::needs_scratch(matrix, *opacity);
+                let resampled = self.resampling() || State::is_resampled(matrix, *layer);
                 self.groups.push(GroupState {
                     matrix: composed,
-                    scratch,
+                    resampled,
                     clips: self.clips.len(),
                 });
             }
@@ -357,20 +384,42 @@ fn group_end(items: &[DisplayItem], start: usize) -> usize {
     items.len()
 }
 
-/// The paint tiny-skia composites a group's scratch with: its opacity,
-/// over what is there, sampled `quality`.
-fn pixmap_paint(opacity: f32, quality: tiny_skia::FilterQuality) -> tiny_skia::PixmapPaint {
-    tiny_skia::PixmapPaint {
-        opacity,
-        blend_mode: tiny_skia::BlendMode::SourceOver,
-        quality,
-    }
+/// The whole pixels `matrix` translates by, as `(dx, dy)`, when it
+/// does nothing else: a pixmap drawn through it is a copy of its
+/// pixels, moved.
+fn whole_pixel_translation(matrix: &Matrix) -> Option<(i64, i64)> {
+    let (sx, sy, tx, ty) = matrix.scale_and_translation()?;
+    let whole = |v: f32| v.fract() == 0.0 && v.abs() < 1e9;
+    (sx == 1.0 && sy == 1.0 && whole(tx) && whole(ty)).then_some((tx as i64, ty as i64))
 }
 
 /// The frame a raster left, kept to draw the next one by (M13.3).
 struct Retained {
     list: DisplayList,
     pixmap: tiny_skia::Pixmap,
+}
+
+/// What the last raster did with the layers (M19): the groups it
+/// composited from a layer, those whose layer it drew into, with how
+/// many pixmaps of each — a whole layer is one, a layer of tiles as
+/// many tiles as were drawn — and how many tiles it drew after the
+/// frame, ahead of a scroll.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Layered {
+    pub composited: Vec<GroupKey>,
+    pub rasterized: Vec<(GroupKey, u32)>,
+    pub prepainted: u32,
+}
+
+/// A layer a backend holds (M19): its group, why it is a layer, how
+/// many bytes of pixmaps it holds and in how many tiles, none for a
+/// layer kept whole.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LayerInfo {
+    pub key: GroupKey,
+    pub reason: LayerReason,
+    pub bytes: usize,
+    pub tiles: u32,
 }
 
 /// A rasterizer: display list + viewport size in, framebuffer out.
@@ -381,9 +430,129 @@ pub trait RenderBackend {
     /// straight alpha coincide), lent out until the next call: the
     /// backend keeps it. The frame is the list's whole raster, however
     /// the backend comes by it: it may draw again only what changed
-    /// since the last frame (M13.3), but the bytes are the same. A size
+    /// since the last frame (M13.3), and keep groups that are layers
+    /// from frame to frame (M19), but the bytes are the same. A size
     /// the backend refuses gives an empty frame.
     fn rasterize(&mut self, list: &DisplayList, width: u32, height: u32) -> &[u8];
+
+    /// [`RenderBackend::rasterize`] with the time the frame has (M19):
+    /// work the frame can do without, the tiles of a scrolled layer
+    /// next to what the viewport shows, is done after the frame until
+    /// `deadline`, and not at all without one.
+    fn rasterize_by(
+        &mut self,
+        list: &DisplayList,
+        width: u32,
+        height: u32,
+        deadline: Option<Instant>,
+    ) -> &[u8] {
+        let _ = deadline;
+        self.rasterize(list, width, height)
+    }
+
+    /// Sets how many bytes of layer pixmaps the backend may hold
+    /// (M19.6); a backend without layers holds none.
+    fn set_layer_budget(&mut self, bytes: usize) {
+        let _ = bytes;
+    }
+
+    /// How many bytes of layer pixmaps the backend holds.
+    fn layer_bytes(&self) -> usize {
+        0
+    }
+
+    /// The layers the backend holds, in a fixed order by key.
+    fn layers(&self) -> Vec<LayerInfo> {
+        Vec::new()
+    }
+
+    /// What the last raster did with the layers.
+    fn layered(&self) -> Layered {
+        Layered::default()
+    }
+}
+
+/// A layer (M19): a group's pixels kept from frame to frame under its
+/// key, in the group's own coordinates, with the items they are of.
+struct Layer {
+    reason: LayerReason,
+    items: Vec<DisplayItem>,
+    store: Store,
+    /// The last frame to composite the layer, or make it.
+    used: u64,
+}
+
+/// Where a layer keeps its pixels.
+enum Store {
+    /// One pixmap of the group's whole reach, whose top-left texel is
+    /// at `origin` in the group's coordinates.
+    Whole {
+        pixmap: tiny_skia::Pixmap,
+        origin: (f32, f32),
+    },
+    /// Tiles (M19.4): strips `width` pixels across from `left`, each
+    /// [`TILE_HEIGHT`] tall, by their row, row `r` holding the texels
+    /// from `r * TILE_HEIGHT` down.
+    Tiles {
+        left: i32,
+        width: u32,
+        rows: BTreeMap<i32, Tile>,
+    },
+}
+
+/// One tile of a layer, and the last frame to composite it, or make
+/// it.
+struct Tile {
+    pixmap: tiny_skia::Pixmap,
+    used: u64,
+}
+
+impl Layer {
+    /// The bytes of pixmaps it holds.
+    fn bytes(&self) -> usize {
+        match &self.store {
+            Store::Whole { pixmap, .. } => pixmap_bytes(pixmap),
+            Store::Tiles { rows, .. } => rows.values().map(|t| pixmap_bytes(&t.pixmap)).sum(),
+        }
+    }
+
+    /// How many tiles it holds; none when kept whole.
+    fn tiles(&self) -> u32 {
+        match &self.store {
+            Store::Whole { .. } => 0,
+            Store::Tiles { rows, .. } => rows.len() as u32,
+        }
+    }
+}
+
+fn pixmap_bytes(pixmap: &tiny_skia::Pixmap) -> usize {
+    pixmap.data().len()
+}
+
+/// The rows of tiles that hold any texel row from `y0` to `y1`, as a
+/// range, empty when there is none.
+fn tile_rows(y0: f32, y1: f32) -> RangeInclusive<i32> {
+    let tall = TILE_HEIGHT as f32;
+    if !(y0.is_finite() && y1.is_finite()) || y1 <= y0 {
+        return RangeInclusive::new(1, 0);
+    }
+    let row = |y: f32| (y / tall).floor().clamp(-1e8, 1e8) as i32;
+    row(y0.floor())..=row(y1.ceil() - 1.0)
+}
+
+/// What of a group whose coordinates `composed` maps to the raster's
+/// can show under `clip`, in the group's own coordinates, as `(x0, y0,
+/// x1, y1)`: the clip's bounds back through the matrix. `None` when
+/// nothing can.
+fn visible_in(composed: &Matrix, clip: Clip) -> Option<(f32, f32, f32, f32)> {
+    if clip.is_empty() {
+        return None;
+    }
+    let inverse = composed.inverse()?;
+    let (x0, y0, x1, y1) =
+        inverse.bounds(clip.x0, clip.y0, clip.x1 - clip.x0, clip.y1 - clip.y0)?;
+    ([x0, y0, x1, y1].iter().all(|v| v.is_finite()) && x1 > x0 && y1 > y0)
+        .then_some((x0, y0, x1, y1))
 }
 
 /// The CPU rasterizer: tiny-skia for geometry, cached glyph masks for text.
@@ -442,6 +611,24 @@ pub struct SoftwareBackend {
     scratch: Option<tiny_skia::Pixmap>,
     /// What the last raster drew anew.
     redrawn: Redrawn,
+    /// The layers (M19), by their groups' keys.
+    layers: HashMap<GroupKey, Layer>,
+    /// The bytes of pixmaps held in `layers`, against `layer_budget`.
+    layer_bytes: usize,
+    /// How many bytes of layer pixmaps may be held (M19.6).
+    layer_budget: usize,
+    /// Which raster this is, counting them: what a layer's and a tile's
+    /// `used` are against.
+    frame: u64,
+    /// What the last raster did with the layers.
+    layered: Layered,
+    /// The groups whose key the last list gave to two groups: neither
+    /// is composited from the layer under it, since a layer holds one.
+    doubled: HashSet<GroupKey>,
+    /// The tiles of the margin around the viewport not yet drawn, as
+    /// the layer's key and the row, with how far the row is from the
+    /// viewport's middle in rows; drawn after the frame, nearest first.
+    deferred: Vec<(GroupKey, i32, i32)>,
 }
 
 /// A shaped run, and how far its ink reaches.
@@ -481,6 +668,13 @@ impl SoftwareBackend {
             retained: None,
             scratch: None,
             redrawn: Redrawn::Whole,
+            layers: HashMap::new(),
+            layer_bytes: 0,
+            layer_budget: DEFAULT_LAYER_BUDGET,
+            frame: 0,
+            layered: Layered::default(),
+            doubled: HashSet::new(),
+            deferred: Vec::new(),
         }
     }
 
@@ -495,8 +689,20 @@ impl SoftwareBackend {
         self.cached_glyphs = 0;
     }
 
-    /// Forgets the last frame: the next raster draws the whole frame.
+    /// Forgets the last frame and the layers (M19): the next raster
+    /// draws the whole frame and every layer anew, as a new document
+    /// calls for.
     pub fn forget_frame(&mut self) {
+        self.retained = None;
+        self.layers.clear();
+        self.layer_bytes = 0;
+        self.deferred.clear();
+    }
+
+    /// Forgets the last frame but keeps the layers: the next raster
+    /// draws the whole frame from them.
+    #[doc(hidden)]
+    pub fn forget_last_frame(&mut self) {
         self.retained = None;
     }
 
@@ -667,9 +873,16 @@ impl SoftwareBackend {
         self.draw_items(pixmap, &list.items, state);
     }
 
+    /// Whether the group `key`, a layer when `layer` says so, is
+    /// composited from the layer held under its key (M19).
+    fn is_held(&self, key: &GroupKey, layer: Option<LayerReason>) -> bool {
+        layer.is_some() && self.layers.contains_key(key) && !self.doubled.contains(key)
+    }
+
     /// Draws `items` onto `pixmap` from `state`, as a whole raster does:
-    /// each through the groups it is in, and a group that needs a
-    /// scratch of its own composited from one (M19).
+    /// each through the groups it is in, a group held as a layer
+    /// composited from it, and a group that needs a scratch of its own
+    /// composited from one (M19).
     fn draw_items(
         &mut self,
         pixmap: &mut tiny_skia::Pixmap,
@@ -680,12 +893,16 @@ impl SoftwareBackend {
         while i < items.len() {
             let item = &items[i];
             if let DisplayItem::PushGroup {
-                matrix, opacity, ..
+                matrix,
+                opacity,
+                key,
+                layer,
             } = item
-                && State::needs_scratch(matrix, *opacity)
+                && (State::needs_scratch(matrix, *opacity) || self.is_held(key, *layer))
             {
                 let end = group_end(items, i);
                 let composed = state.matrix().map_or(*matrix, |m| m.then(matrix));
+                let held = self.is_held(key, *layer).then_some(*key);
                 self.composite(
                     pixmap,
                     &items[i + 1..end],
@@ -693,6 +910,7 @@ impl SoftwareBackend {
                     *opacity,
                     state.clip(),
                     None,
+                    held,
                 );
                 i = end + 1;
                 continue;
@@ -706,16 +924,18 @@ impl SoftwareBackend {
     }
 
     /// Composites the group `items`, whose coordinates `matrix` maps to
-    /// `pixmap`'s, over `pixmap` with `opacity` under `clip`, from a
-    /// scratch (M19). When the matrix only translates and scales, the
-    /// scratch is in the pixmap's coordinates and the items are drawn
-    /// through the matrix into it, so that the pixels are those a
-    /// raster of them there would give, and the scratch is laid over
-    /// the pixmap pixel for pixel; otherwise the scratch is in the
-    /// group's own coordinates, and is resampled into the pixmap
-    /// through the matrix, bilinearly. Only the pixels of `only` are
-    /// written when it is given (M13.3). A group whose scratch would
-    /// have more pixels than a frame may is not drawn.
+    /// `pixmap`'s, over `pixmap` with `opacity` under `clip`: from the
+    /// layer `held` names, when one is (M19), else from a scratch. When
+    /// the matrix only translates and scales, the scratch is in the
+    /// pixmap's coordinates and the items are drawn through the matrix
+    /// into it, so that the pixels are those a raster of them there
+    /// would give, and the scratch is laid over the pixmap pixel for
+    /// pixel; otherwise the scratch is in the group's own coordinates,
+    /// and is resampled into the pixmap through the matrix, bilinearly.
+    /// Only the pixels of `only` are written when it is given (M13.3).
+    /// A group whose scratch would have more pixels than a frame may is
+    /// not drawn.
+    #[allow(clippy::too_many_arguments)]
     fn composite(
         &mut self,
         pixmap: &mut tiny_skia::Pixmap,
@@ -724,6 +944,7 @@ impl SoftwareBackend {
         opacity: f32,
         clip: Clip,
         only: Option<PixelRect>,
+        held: Option<GroupKey>,
     ) {
         let (width, height) = (pixmap.width(), pixmap.height());
         let Some(within) = clip.pixels(width, height) else {
@@ -736,6 +957,11 @@ impl SoftwareBackend {
             },
             None => within,
         };
+        if let Some(key) = held
+            && self.composite_layer(pixmap, key, matrix, opacity, within)
+        {
+            return;
+        }
         if matrix.translates_and_scales_only() {
             // The items' reach in the pixmap, drawn through.
             let mut state = State::based(width, height, matrix);
@@ -756,13 +982,12 @@ impl SoftwareBackend {
             let base =
                 Matrix::translate(-(region.x0 as f32), -(region.y0 as f32), 0.0).then(&matrix);
             self.draw_items(&mut scratch, items, State::based(w, h, base));
-            pixmap.draw_pixmap(
-                region.x0 as i32,
-                region.y0 as i32,
-                scratch.as_ref(),
-                &pixmap_paint(opacity, tiny_skia::FilterQuality::Nearest),
-                tiny_skia::Transform::identity(),
-                None,
+            blit(
+                pixmap,
+                &scratch,
+                (region.x0 as i64, region.y0 as i64),
+                opacity,
+                region,
             );
             return;
         }
@@ -786,6 +1011,51 @@ impl SoftwareBackend {
             x1: lx1 + 2.0,
             y1: ly1 + 2.0,
         };
+        let Some(reach) = self.reach(items) else {
+            return;
+        };
+        // The scratch is the whole reach, so that a region of it
+        // composited alone (M13.3) samples the same texels from the
+        // same place as the whole, to the bit; only a reach with more
+        // pixels than a frame may have is cut to what can land in the
+        // region.
+        let mut corners = whole_reach(reach);
+        if !fits_a_frame(corners) {
+            let cut = reach.intersect(landing);
+            if cut.is_empty() {
+                return;
+            }
+            corners = whole_reach(cut);
+            if !fits_a_frame(corners) {
+                return;
+            }
+        }
+        let (gx0, gy0, gx1, gy1) = corners;
+        let (gw, gh) = ((gx1 - gx0) as f64, (gy1 - gy0) as f64);
+        if gw < 1.0 || gh < 1.0 {
+            return;
+        }
+        let (gw, gh) = (gw as u32, gh as u32);
+        let Some(mut scratch) = tiny_skia::Pixmap::new(gw, gh) else {
+            return;
+        };
+        let base = Matrix::translate(-gx0, -gy0, 0.0);
+        self.draw_items(&mut scratch, items, State::based(gw, gh, base));
+        composite_pixmap(
+            pixmap,
+            &scratch,
+            (gx0, gy0),
+            &matrix,
+            &inverse,
+            opacity,
+            within,
+        );
+    }
+
+    /// How far `items`, in their own coordinates, reach: the union of
+    /// their extents, walked without bounds; `None` when they draw
+    /// nothing.
+    fn reach(&mut self, items: &[DisplayItem]) -> Option<Clip> {
         let mut reach: Option<Clip> = None;
         let mut state = State::unbounded();
         for item in items {
@@ -802,63 +1072,618 @@ impl SoftwareBackend {
             }
             state.apply(item);
         }
-        let Some(reach) = reach.filter(|r| !r.is_empty()) else {
-            return;
+        reach.filter(|r| !r.is_empty())
+    }
+
+    /// Composites the layer held under `key`, if one is, over `pixmap`
+    /// by `matrix`, from the layer's coordinates to the pixmap's, at
+    /// `opacity`, writing the pixels of `within` alone (M19): a whole
+    /// layer as one pixmap, a layer of tiles each tile the region
+    /// meets, marking what it used for the budget. Whether one was.
+    fn composite_layer(
+        &mut self,
+        pixmap: &mut tiny_skia::Pixmap,
+        key: GroupKey,
+        matrix: Matrix,
+        opacity: f32,
+        within: PixelRect,
+    ) -> bool {
+        let frame = self.frame;
+        let Some(layer) = self.layers.get_mut(&key) else {
+            return false;
         };
-        // A clear texel all round, so that the resampling blends the
-        // content's edges with nothing rather than with the edge texel
-        // again, which padding the scratch with would give: the edges
-        // come out anti-aliased. The scratch is the whole reach, so that
-        // a region of it composited alone (M13.3) samples the same
-        // texels from the same place as the whole, to the bit; only a
-        // reach with more pixels than a frame may have is cut to what
-        // can land in the region.
-        let whole = |r: Clip| {
-            (
-                r.x0.floor() - 1.0,
-                r.y0.floor() - 1.0,
-                r.x1.ceil() + 1.0,
-                r.y1.ceil() + 1.0,
-            )
-        };
-        let fits = |(x0, y0, x1, y1): (f32, f32, f32, f32)| {
-            [x0, y0, x1, y1].iter().all(|v| v.is_finite())
-                && (x1 - x0) as f64 * (y1 - y0) as f64 <= MAX_FRAME_PIXELS as f64
-        };
-        let mut corners = whole(reach);
-        if !fits(corners) {
-            let cut = reach.intersect(landing);
-            if cut.is_empty() {
-                return;
+        layer.used = frame;
+        if let Some(inverse) = matrix.inverse() {
+            match &mut layer.store {
+                Store::Whole {
+                    pixmap: src,
+                    origin,
+                } => {
+                    composite_pixmap(pixmap, src, *origin, &matrix, &inverse, opacity, within);
+                }
+                Store::Tiles { left, width, rows } => {
+                    if whole_pixel_translation(&matrix).is_some() {
+                        for (row, tile) in rows.iter_mut() {
+                            let origin = (*left as f32, *row as f32 * TILE_HEIGHT as f32);
+                            if composite_pixmap(
+                                pixmap,
+                                &tile.pixmap,
+                                origin,
+                                &matrix,
+                                &inverse,
+                                opacity,
+                                within,
+                            ) {
+                                tile.used = frame;
+                            }
+                        }
+                    } else {
+                        // Resampled across the tiles as one, so that the
+                        // seams between them sample both sides.
+                        let tiled = Tiled {
+                            rows,
+                            left: *left,
+                            width: *width,
+                        };
+                        let (x0, y0, x1, y1) = tiled.reach();
+                        if let Some((fx0, fy0, fx1, fy1)) = matrix.bounds(x0, y0, x1 - x0, y1 - y0)
+                            && let Some(landed) = PixelRect::around(
+                                fx0 - 1.0,
+                                fy0 - 1.0,
+                                fx1 + 1.0,
+                                fy1 + 1.0,
+                                pixmap.width(),
+                                pixmap.height(),
+                            )
+                            .and_then(|r| r.intersect(within))
+                        {
+                            resample(pixmap, &tiled, &inverse, opacity, landed);
+                            for tile in rows.values_mut() {
+                                tile.used = frame;
+                            }
+                        }
+                    }
+                }
             }
-            corners = whole(cut);
-            if !fits(corners) {
-                return;
+        }
+        if !self.layered.composited.contains(&key) {
+            self.layered.composited.push(key);
+        }
+        true
+    }
+
+    /// Marks the layers this frame's `items` use (M19.6), walked from
+    /// `state`: a layer whose group is listed, and the tiles of it the
+    /// raster shows, are this frame's, which the budget's eviction
+    /// leaves alone, so that making room for one layer never costs
+    /// another the frame needs.
+    fn mark_layers(&mut self, items: &[DisplayItem], state: &State) {
+        let mut state = state.clone();
+        let mut i = 0;
+        while i < items.len() {
+            let item = &items[i];
+            if let DisplayItem::PushGroup {
+                matrix,
+                key,
+                layer: Some(_),
+                ..
+            } = item
+            {
+                let end = group_end(items, i);
+                let composed = state.matrix().map_or(*matrix, |m| m.then(matrix));
+                let clip = state.clip();
+                let frame = self.frame;
+                if let Some(layer) = self.layers.get_mut(key) {
+                    layer.used = frame;
+                    if let Store::Tiles { rows, .. } = &mut layer.store
+                        && let Some((_, y0, _, y1)) = visible_in(&composed, clip)
+                    {
+                        for row in tile_rows(y0, y1) {
+                            if let Some(tile) = rows.get_mut(&row) {
+                                tile.used = frame;
+                            }
+                        }
+                    }
+                }
+                let mut inner = state.clone();
+                inner.apply(item);
+                self.mark_layers(&items[i + 1..end], &inner);
+                i = end + 1;
+                continue;
             }
+            state.apply(item);
+            i += 1;
+        }
+    }
+
+    /// Brings the layers of the groups among `items` up to date (M19):
+    /// a group that is a layer is rasterized into its layer where its
+    /// own items changed, inner groups first so that an outer one's
+    /// raster finds them, and a layer the budget has no room for is let
+    /// go, its group drawn as one that is no layer. `frame` is the walk's
+    /// state in the raster's coordinates, for what can show; `local` in
+    /// the coordinates of the layer being walked into, or the raster's
+    /// outside every layer, where `extra` collects the rectangles whose
+    /// pixels change for reasons the lists cannot tell: a group held as
+    /// a layer that was not before, or the other way, is drawn another
+    /// way, which can differ by a hair, so its reach is one. `seen` is
+    /// the keys met: a key met twice names no layer, since a layer
+    /// holds one group.
+    fn update_layers(
+        &mut self,
+        items: &[DisplayItem],
+        frame: &State,
+        local: &State,
+        seen: &mut HashSet<GroupKey>,
+        extra: &mut Vec<Clip>,
+    ) {
+        let mut frame = frame.clone();
+        let mut local = local.clone();
+        let mut i = 0;
+        while i < items.len() {
+            let item = &items[i];
+            if let DisplayItem::PushGroup {
+                matrix,
+                key,
+                layer: Some(reason),
+                ..
+            } = item
+            {
+                let end = group_end(items, i);
+                let inner = &items[i + 1..end];
+                let composed = frame.matrix().map_or(*matrix, |m| m.then(matrix));
+                let outward = local.matrix().map_or(*matrix, |m| m.then(matrix));
+                let clip = frame.clip();
+                let mut inner_frame = frame.clone();
+                inner_frame.apply(item);
+                let mut inner_extra = Vec::new();
+                self.update_layers(
+                    inner,
+                    &inner_frame,
+                    &State::unbounded(),
+                    seen,
+                    &mut inner_extra,
+                );
+                let was = self.layers.contains_key(key) && !self.doubled.contains(key);
+                let held = if seen.insert(*key) {
+                    self.update_layer(*key, *reason, inner, &composed, clip, &inner_extra)
+                } else {
+                    self.drop_layer(*key);
+                    self.doubled.insert(*key);
+                    false
+                };
+                // The group's reach outside it, where it is drawn
+                // another way now, two pixels more for the resampling;
+                // and what changed inside it, which an outer layer's
+                // pixels of it hold too.
+                if was != held
+                    && let Some(reach) = self.reach(inner)
+                    && let Some(mapped) = outward_clip(&outward, reach)
+                {
+                    extra.push(mapped);
+                }
+                for r in inner_extra {
+                    if let Some(mapped) = outward_clip(&outward, r) {
+                        extra.push(mapped);
+                    }
+                }
+                i = end + 1;
+                continue;
+            }
+            frame.apply(item);
+            local.apply(item);
+            i += 1;
+        }
+    }
+
+    /// Brings the layer of the group `key` up to date with `items`, its
+    /// content in its own coordinates, which `composed` maps to the
+    /// raster's, where `clip` is in force, `extra` being rectangles of
+    /// it whose pixels changed for reasons its lists cannot tell: a
+    /// scrolled group's as tiles (M19.4), another's as one pixmap.
+    /// Whether the layer is held.
+    fn update_layer(
+        &mut self,
+        key: GroupKey,
+        reason: LayerReason,
+        items: &[DisplayItem],
+        composed: &Matrix,
+        clip: Clip,
+        extra: &[Clip],
+    ) -> bool {
+        let Some(visible) = visible_in(composed, clip) else {
+            self.drop_layer(key);
+            return false;
+        };
+        let mut old = self.layers.remove(&key);
+        if let Some(layer) = &old {
+            self.layer_bytes -= layer.bytes();
+        }
+        if old.as_ref().is_some_and(|layer| layer.reason != reason) {
+            old = None;
+        }
+        let kept = match reason {
+            LayerReason::Scrolled => self.update_tiles(key, reason, old, items, visible, extra),
+            LayerReason::Transformed | LayerReason::WillChange => {
+                self.update_whole(key, reason, old, items, extra)
+            }
+        };
+        match kept {
+            Some(layer) => {
+                self.layer_bytes += layer.bytes();
+                self.layers.insert(key, layer);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The layer of the group `key` kept whole: one pixmap of the
+    /// items' reach, a clear texel all round, drawn again where the
+    /// items changed since `old`, whose pixmap is kept when the reach
+    /// is where it was. `None` when the items draw nothing, or the
+    /// budget has no room.
+    fn update_whole(
+        &mut self,
+        key: GroupKey,
+        reason: LayerReason,
+        old: Option<Layer>,
+        items: &[DisplayItem],
+        extra: &[Clip],
+    ) -> Option<Layer> {
+        let reach = self.reach(items)?;
+        let corners = whole_reach(reach);
+        if !fits_a_frame(corners) {
+            return None;
         }
         let (gx0, gy0, gx1, gy1) = corners;
         let (gw, gh) = ((gx1 - gx0) as f64, (gy1 - gy0) as f64);
         if gw < 1.0 || gh < 1.0 {
-            return;
+            return None;
         }
         let (gw, gh) = (gw as u32, gh as u32);
-        let Some(mut scratch) = tiny_skia::Pixmap::new(gw, gh) else {
-            return;
-        };
+        let origin = (gx0, gy0);
         let base = Matrix::translate(-gx0, -gy0, 0.0);
-        self.draw_items(&mut scratch, items, State::based(gw, gh, base));
-        // Where the scratch lands, cut to the region, and the pixels
-        // there sampled from it.
-        let Some((fx0, fy0, fx1, fy1)) = matrix.bounds(gx0, gy0, gw as f32, gh as f32) else {
+        let extra: Vec<PixelRect> = extra
+            .iter()
+            .filter_map(|r| {
+                PixelRect::around(r.x0 - gx0, r.y0 - gy0, r.x1 - gx0, r.y1 - gy0, gw, gh)
+            })
+            .collect();
+        if let Some(Layer {
+            store:
+                Store::Whole {
+                    mut pixmap,
+                    origin: was,
+                },
+            items: were,
+            ..
+        }) = old
+            && was == origin
+            && pixmap.width() == gw
+            && pixmap.height() == gh
+        {
+            if were != items || !extra.is_empty() {
+                let partial = gw <= MAX_PARTIAL_SIDE && gh <= MAX_PARTIAL_SIDE;
+                let mut rects = self.damaged(&were, items, gw, gh, Some(base));
+                rects.extend(extra);
+                let rects = merge(rects);
+                let area: u64 = rects.iter().map(|r| r.area()).sum();
+                if partial && area * 2 < gw as u64 * gh as u64 {
+                    for rect in &rects {
+                        self.redraw(&mut pixmap, items, *rect, Some(base));
+                    }
+                } else {
+                    pixmap.fill(tiny_skia::Color::TRANSPARENT);
+                    self.draw_items(&mut pixmap, items, State::based(gw, gh, base));
+                }
+                if !rects.is_empty() {
+                    self.layered.rasterized.push((key, 1));
+                }
+            }
+            return Some(Layer {
+                reason,
+                items: items.to_vec(),
+                store: Store::Whole { pixmap, origin },
+                used: self.frame,
+            });
+        }
+        if !self.reserve(gw as usize * gh as usize * 4, 0) {
+            return None;
+        }
+        let mut pixmap = tiny_skia::Pixmap::new(gw, gh)?;
+        self.draw_items(&mut pixmap, items, State::based(gw, gh, base));
+        self.layered.rasterized.push((key, 1));
+        Some(Layer {
+            reason,
+            items: items.to_vec(),
+            store: Store::Whole { pixmap, origin },
+            used: self.frame,
+        })
+    }
+
+    /// The layer of the scrolled group `key` kept as tiles (M19.4):
+    /// strips as wide as what of the group can show, `visible`, the
+    /// tiles that meet it drawn now, those within a `visible`'s height
+    /// above and below it, the margin, left for the time after the
+    /// frame, and those further off let go. The tiles of `old` are
+    /// kept when the strips are where they were, drawn again where the
+    /// items changed. `None` when the budget has no room for a tile the
+    /// raster shows.
+    fn update_tiles(
+        &mut self,
+        key: GroupKey,
+        reason: LayerReason,
+        old: Option<Layer>,
+        items: &[DisplayItem],
+        (vx0, vy0, vx1, vy1): (f32, f32, f32, f32),
+        extra: &[Clip],
+    ) -> Option<Layer> {
+        let (left, right) = (vx0.floor(), vx1.ceil());
+        if !(left.is_finite() && right.is_finite())
+            || right - left < 1.0
+            || right - left > MAX_PARTIAL_SIDE as f32
+            || left.abs() > 1e8
+        {
+            return None;
+        }
+        let (left, width) = (left as i32, (right - left) as u32);
+        let tall = TILE_HEIGHT;
+        let now = tile_rows(vy0, vy1);
+        let span = vy1 - vy0;
+        let margin = tile_rows(vy0 - span, vy1 + span);
+        let tile_bytes = width as usize * tall as usize * 4;
+        let base = |row: i32| Matrix::translate(-(left as f32), -(row as f32 * tall as f32), 0.0);
+        let mut rows: BTreeMap<i32, Tile> = BTreeMap::new();
+        let mut drawn = 0u32;
+        if let Some(Layer {
+            store:
+                Store::Tiles {
+                    left: had_left,
+                    width: had_width,
+                    rows: had,
+                },
+            items: were,
+            ..
+        }) = old
+            && had_left == left
+            && had_width == width
+        {
+            rows = had
+                .into_iter()
+                .filter(|(row, _)| margin.contains(row))
+                .collect();
+            if (were != items || !extra.is_empty()) && !rows.is_empty() {
+                // The damage over the rows held, end to end, in the
+                // coordinates of the first, cut to each tile.
+                let first = *rows.keys().next().expect("a row");
+                let last = *rows.keys().next_back().expect("a row");
+                let height = ((last - first + 1) as u32).saturating_mul(tall);
+                let top = first as f32 * tall as f32;
+                let mut rects = self.damaged(&were, items, width, height, Some(base(first)));
+                rects.extend(extra.iter().filter_map(|r| {
+                    PixelRect::around(
+                        r.x0 - left as f32,
+                        r.y0 - top,
+                        r.x1 - left as f32,
+                        r.y1 - top,
+                        width,
+                        height,
+                    )
+                }));
+                let mut per_row: BTreeMap<i32, PixelRect> = BTreeMap::new();
+                for rect in rects {
+                    for offset in tile_rows(rect.y0 as f32, rect.y1 as f32) {
+                        let row = first + offset;
+                        if !rows.contains_key(&row) {
+                            continue;
+                        }
+                        let ty = offset as i64 * tall as i64;
+                        let Some(cut) = PixelRect::new(
+                            rect.x0 as i64,
+                            rect.y0 as i64 - ty,
+                            rect.x1 as i64,
+                            (rect.y1 as i64 - ty).min(tall as i64),
+                        ) else {
+                            continue;
+                        };
+                        per_row
+                            .entry(row)
+                            .and_modify(|r| *r = r.union(cut))
+                            .or_insert(cut);
+                    }
+                }
+                let partial = width <= MAX_PARTIAL_SIDE;
+                for (row, rect) in per_row {
+                    let tile = rows.get_mut(&row).expect("a row held");
+                    if partial && rect.area() * 2 < width as u64 * tall as u64 {
+                        self.redraw(&mut tile.pixmap, items, rect, Some(base(row)));
+                    } else {
+                        tile.pixmap.fill(tiny_skia::Color::TRANSPARENT);
+                        self.draw_items(
+                            &mut tile.pixmap,
+                            items,
+                            State::based(width, tall, base(row)),
+                        );
+                    }
+                    drawn += 1;
+                }
+            }
+        }
+        // The tiles the raster shows, which it cannot do without.
+        let mut held: usize = rows.values().map(|t| pixmap_bytes(&t.pixmap)).sum();
+        for row in now.clone() {
+            if let Some(tile) = rows.get_mut(&row) {
+                tile.used = self.frame;
+                continue;
+            }
+            if !self.reserve(tile_bytes, held) {
+                return None;
+            }
+            let mut pixmap = tiny_skia::Pixmap::new(width, tall)?;
+            self.draw_items(&mut pixmap, items, State::based(width, tall, base(row)));
+            held += tile_bytes;
+            drawn += 1;
+            rows.insert(
+                row,
+                Tile {
+                    pixmap,
+                    used: self.frame,
+                },
+            );
+        }
+        // The margin's tiles missing, for the time after the frame.
+        let middle = (*now.start() as i64 + *now.end() as i64) / 2;
+        for row in margin {
+            if !rows.contains_key(&row) {
+                self.deferred.push((
+                    key,
+                    row,
+                    (row as i64 - middle).unsigned_abs().min(i32::MAX as u64) as i32,
+                ));
+            }
+        }
+        if drawn > 0 {
+            self.layered.rasterized.push((key, drawn));
+        }
+        Some(Layer {
+            reason,
+            items: items.to_vec(),
+            store: Store::Tiles { left, width, rows },
+            used: self.frame,
+        })
+    }
+
+    /// Lets the layer of `key` go.
+    fn drop_layer(&mut self, key: GroupKey) {
+        if let Some(layer) = self.layers.remove(&key) {
+            self.layer_bytes -= layer.bytes();
+        }
+    }
+
+    /// Makes room for `bytes` more of layer pixmaps, beside `held`
+    /// bytes kept outside the count for the moment (M19.6): the layers
+    /// and tiles this frame has not used go, least recently used first,
+    /// until the budget holds it. Whether it does.
+    fn reserve(&mut self, bytes: usize, held: usize) -> bool {
+        while self.layer_bytes + held + bytes > self.layer_budget {
+            if !self.evict_oldest(self.frame) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Lets layers and tiles go, least recently used first, until the
+    /// budget holds what is left (M19.6): what a lowered budget calls
+    /// for, after the frame that found it so.
+    fn trim(&mut self) {
+        while self.layer_bytes > self.layer_budget && self.evict_oldest(u64::MAX) {}
+    }
+
+    /// Lets the layer or tile least recently used go, among those used
+    /// before the frame `before`; whether there was one.
+    fn evict_oldest(&mut self, before: u64) -> bool {
+        let mut oldest: Option<(u64, String, GroupKey, Option<i32>)> = None;
+        let mut consider = |used: u64, key: GroupKey, row: Option<i32>| {
+            if used >= before {
+                return;
+            }
+            // Ties by the key's name, so that the order is fixed.
+            let name = format!("{key:?}");
+            if oldest
+                .as_ref()
+                .is_none_or(|(u, n, _, _)| used < *u || (used == *u && name < *n))
+            {
+                oldest = Some((used, name, key, row));
+            }
+        };
+        for (key, layer) in &self.layers {
+            match &layer.store {
+                Store::Whole { .. } => consider(layer.used, *key, None),
+                Store::Tiles { rows, .. } => {
+                    for (row, tile) in rows {
+                        consider(tile.used, *key, Some(*row));
+                    }
+                }
+            }
+        }
+        let Some((_, _, key, row)) = oldest else {
+            return false;
+        };
+        match row {
+            None => self.drop_layer(key),
+            Some(row) => {
+                let mut empty = false;
+                if let Some(layer) = self.layers.get_mut(&key)
+                    && let Store::Tiles { rows, .. } = &mut layer.store
+                {
+                    if let Some(tile) = rows.remove(&row) {
+                        self.layer_bytes -= pixmap_bytes(&tile.pixmap);
+                    }
+                    empty = rows.is_empty();
+                }
+                if empty {
+                    self.drop_layer(key);
+                }
+            }
+        }
+        true
+    }
+
+    /// Draws the tiles of the margin not yet drawn, nearest the
+    /// viewport first, while there is time before `deadline` and room
+    /// under the budget without letting anything go (M19.4); the rest
+    /// wait for a frame that shows them.
+    fn prepaint(&mut self, deadline: Option<Instant>) {
+        let Some(deadline) = deadline else {
+            self.deferred.clear();
             return;
         };
-        let Some(landed) =
-            PixelRect::around(fx0 - 1.0, fy0 - 1.0, fx1 + 1.0, fy1 + 1.0, width, height)
-                .and_then(|r| r.intersect(within))
-        else {
-            return;
-        };
-        resample(pixmap, &scratch, (gx0, gy0), &inverse, opacity, landed);
+        let mut deferred = std::mem::take(&mut self.deferred);
+        deferred.sort_by_key(|(_, _, distance)| *distance);
+        for (key, row, _) in deferred {
+            if Instant::now() >= deadline {
+                break;
+            }
+            let Some(mut layer) = self.layers.remove(&key) else {
+                continue;
+            };
+            let bytes = layer.bytes();
+            self.layer_bytes -= bytes;
+            if let Store::Tiles { left, width, rows } = &mut layer.store
+                && !rows.contains_key(&row)
+            {
+                let (left, width) = (*left, *width);
+                let tile_bytes = width as usize * TILE_HEIGHT as usize * 4;
+                if self.layer_bytes + bytes + tile_bytes > self.layer_budget {
+                    self.layer_bytes += bytes;
+                    self.layers.insert(key, layer);
+                    break;
+                }
+                if let Some(mut pixmap) = tiny_skia::Pixmap::new(width, TILE_HEIGHT) {
+                    let base =
+                        Matrix::translate(-(left as f32), -(row as f32 * TILE_HEIGHT as f32), 0.0);
+                    self.draw_items(
+                        &mut pixmap,
+                        &layer.items,
+                        State::based(width, TILE_HEIGHT, base),
+                    );
+                    if let Store::Tiles { rows, .. } = &mut layer.store {
+                        rows.insert(
+                            row,
+                            Tile {
+                                pixmap,
+                                used: self.frame,
+                            },
+                        );
+                    }
+                    self.layered.prepainted += 1;
+                }
+            }
+            self.layer_bytes += layer.bytes();
+            self.layers.insert(key, layer);
+        }
     }
 
     /// Draws one item under `clip`, through the scale and translation
@@ -948,7 +1773,7 @@ impl SoftwareBackend {
     /// is not a number may land anywhere in the clip.
     fn extent(&mut self, item: &DisplayItem, state: &State) -> Option<Clip> {
         let clip = state.clip();
-        let in_scratch = state.in_scratch();
+        let in_scratch = state.resampling();
         let scaled = state.through() != (1.0, 1.0, 0.0, 0.0);
         let grown = |r: Clip, by: f32| Clip {
             x0: r.x0 - by,
@@ -1016,72 +1841,74 @@ impl SoftwareBackend {
         PixelRect::around(extent.x0, extent.y0, extent.x1, extent.y1, width, height)
     }
 
-    /// What drawing `new` over the frame `old` drew can change: the
-    /// pixels the items between the lists' shared start and shared end
-    /// can change, in either list, each through the groups it is in
-    /// (M19); and the pixels each item of the shared end can change in
-    /// either list while the clips and groups in force differ between
-    /// the two, a group's matrix or opacity having changed say, under
-    /// which the item draws elsewhere. A group begun before the shared
-    /// start's end is one scratch drawn again whole, but what did not
-    /// change in it comes out the same, so the items of it outside the
-    /// range are not damage. `None` when the damage is half the frame
-    /// or more, which is better drawn whole.
-    fn damage(
+    /// What drawing `b` over the raster `a` drew can change, in a
+    /// `width` by `height` raster whose coordinates are the lists'
+    /// mapped by `base`, if given: the items of either list that
+    /// [`align`] does not match with one of the other, each through the
+    /// groups it is in (M19), can change the pixels they reach; and an
+    /// item matched can, in both lists, while the clips and groups in
+    /// force differ between the two where it is — a group's matrix or
+    /// opacity having changed, say, under which the item draws
+    /// elsewhere. A group begun before a change is one scratch drawn
+    /// again whole, but what did not change in it comes out the same,
+    /// so the items of it that are matched are not damage. The
+    /// rectangles overlap as they may.
+    fn damaged(
         &mut self,
-        old: &DisplayList,
-        new: &DisplayList,
+        a: &[DisplayItem],
+        b: &[DisplayItem],
         width: u32,
         height: u32,
-    ) -> Option<Vec<PixelRect>> {
-        let (a, b) = (&old.items, &new.items);
-        let start = a.iter().zip(b).take_while(|(x, y)| x == y).count();
-        let most = a.len().min(b.len()) - start;
-        let end = a
-            .iter()
-            .rev()
-            .zip(b.iter().rev())
-            .take(most)
-            .take_while(|(x, y)| x == y)
-            .count();
+        base: Option<Matrix>,
+    ) -> Vec<PixelRect> {
+        let state = || match base {
+            Some(base) => State::based(width, height, base),
+            None => State::new(width, height),
+        };
+        let (mut sa, mut sb) = (state(), state());
         let mut rects = Vec::new();
-        let mut states = [State::new(width, height), State::new(width, height)];
-        for (state, items) in states.iter_mut().zip([a, b]) {
-            for item in &items[..start] {
-                state.apply(item);
+        let (mut i, mut j) = (0, 0);
+        for (pi, pj) in align(a, b).into_iter().chain([(a.len(), b.len())]) {
+            while i < pi {
+                rects.extend(self.bounds(&a[i], &sa, width, height));
+                sa.apply(&a[i]);
+                i += 1;
             }
-            for item in &items[start..items.len() - end] {
-                rects.extend(self.bounds(item, state, width, height));
-                state.apply(item);
+            while j < pj {
+                rects.extend(self.bounds(&b[j], &sb, width, height));
+                sb.apply(&b[j]);
+                j += 1;
             }
-        }
-        // The shared end draws alike from where the clips and groups in
-        // force are the same in both lists, and once they are, they
-        // stay so; until then each item of it may draw elsewhere in the
-        // two, and is damage in both.
-        let [mut old_state, mut new_state] = states;
-        for item in &b[b.len() - end..] {
-            if old_state == new_state {
+            if pi == a.len() {
                 break;
             }
-            rects.extend(self.bounds(item, &old_state, width, height));
-            rects.extend(self.bounds(item, &new_state, width, height));
-            old_state.apply(item);
-            new_state.apply(item);
+            if sa != sb {
+                rects.extend(self.bounds(&a[pi], &sa, width, height));
+                rects.extend(self.bounds(&b[pj], &sb, width, height));
+            }
+            sa.apply(&a[pi]);
+            sb.apply(&b[pj]);
+            i += 1;
+            j += 1;
         }
-        let rects = merge(rects);
-        let area: u64 = rects.iter().map(|r| r.area()).sum();
-        (area * 2 < width as u64 * height as u64).then_some(rects)
+        rects
     }
 
-    /// Draws `list` again inside `rect` of `pixmap`, which holds the
-    /// last frame: the rectangle is cleared, then every item that can
-    /// change a pixel in it is drawn again there (see the type's
+    /// Draws `items` again inside `rect` of `pixmap`, which holds their
+    /// last raster, in coordinates the lists' mapped by `base`, if
+    /// given: the rectangle is cleared, then every item that can change
+    /// a pixel in it is drawn again there (see the type's
     /// documentation), every clip and its end met whatever its place,
     /// so that the pixels inside come out as a whole raster's. A group
-    /// composited from a scratch is composited again, inside the
-    /// rectangle alone (M19).
-    fn redraw(&mut self, pixmap: &mut tiny_skia::Pixmap, list: &DisplayList, rect: PixelRect) {
+    /// composited from a layer or a scratch is composited again, inside
+    /// the rectangle alone (M19).
+    fn redraw(
+        &mut self,
+        pixmap: &mut tiny_skia::Pixmap,
+        items: &[DisplayItem],
+        rect: PixelRect,
+        base: Option<Matrix>,
+    ) {
         let (width, height) = (pixmap.width(), pixmap.height());
         let row = width as usize * 4;
         let (x0, x1) = (rect.x0 as usize * 4, rect.x1 as usize * 4);
@@ -1089,18 +1916,24 @@ impl SoftwareBackend {
             pixmap.data_mut()[y * row + x0..y * row + x1].fill(0);
         }
         let inside = rect.clip();
-        let items = &list.items;
-        let mut state = State::new(width, height);
+        let mut state = match base {
+            Some(base) => State::based(width, height, base),
+            None => State::new(width, height),
+        };
         let mut i = 0;
         while i < items.len() {
             let item = &items[i];
             if let DisplayItem::PushGroup {
-                matrix, opacity, ..
+                matrix,
+                opacity,
+                key,
+                layer,
             } = item
-                && State::needs_scratch(matrix, *opacity)
+                && (State::needs_scratch(matrix, *opacity) || self.is_held(key, *layer))
             {
                 let end = group_end(items, i);
                 let composed = state.matrix().map_or(*matrix, |m| m.then(matrix));
+                let held = self.is_held(key, *layer).then_some(*key);
                 self.composite(
                     pixmap,
                     &items[i + 1..end],
@@ -1108,6 +1941,7 @@ impl SoftwareBackend {
                     *opacity,
                     state.clip(),
                     Some(rect),
+                    held,
                 );
                 i = end + 1;
                 continue;
@@ -1262,6 +2096,130 @@ fn extent(points: &[(f32, f32)]) -> (f32, f32, f32, f32) {
     )
 }
 
+/// The corners of a pixmap that holds all of `reach` with a clear
+/// texel all round, `(x0, y0, x1, y1)` on whole texels: the resampling
+/// then blends the content's edges with nothing rather than with the
+/// edge texel again, which padding the pixmap with would give, and the
+/// edges come out anti-aliased.
+fn whole_reach(reach: Clip) -> (f32, f32, f32, f32) {
+    (
+        reach.x0.floor() - 1.0,
+        reach.y0.floor() - 1.0,
+        reach.x1.ceil() + 1.0,
+        reach.y1.ceil() + 1.0,
+    )
+}
+
+/// Whether a pixmap with these corners has no more pixels than a frame
+/// may.
+fn fits_a_frame((x0, y0, x1, y1): (f32, f32, f32, f32)) -> bool {
+    [x0, y0, x1, y1].iter().all(|v| v.is_finite())
+        && (x1 - x0) as f64 * (y1 - y0) as f64 <= MAX_FRAME_PIXELS as f64
+}
+
+/// The bounds of `reach` through `matrix`, two pixels more all round
+/// for what a resampling adds; `None` when it has no image.
+fn outward_clip(matrix: &Matrix, reach: Clip) -> Option<Clip> {
+    let (x0, y0, x1, y1) =
+        matrix.bounds(reach.x0, reach.y0, reach.x1 - reach.x0, reach.y1 - reach.y0)?;
+    Some(Clip {
+        x0: x0 - 2.0,
+        y0: y0 - 2.0,
+        x1: x1 + 2.0,
+        y1: y1 + 2.0,
+    })
+}
+
+/// The pairs `(i, j)` with `a[i] == b[j]` matched in order, as many as
+/// can be: the lists' shared start and end, and between them a longest
+/// common subsequence (Myers, 1986). The items of either list left out
+/// are what changed between them. Lists more than [`MAX_DIFF_EDITS`]
+/// edits apart match their shared start and end alone.
+fn align(a: &[DisplayItem], b: &[DisplayItem]) -> Vec<(usize, usize)> {
+    let start = a.iter().zip(b).take_while(|(x, y)| x == y).count();
+    let most = a.len().min(b.len()) - start;
+    let end = a
+        .iter()
+        .rev()
+        .zip(b.iter().rev())
+        .take(most)
+        .take_while(|(x, y)| x == y)
+        .count();
+    let mut pairs: Vec<(usize, usize)> = (0..start).map(|k| (k, k)).collect();
+    let (x, y) = (&a[start..a.len() - end], &b[start..b.len() - end]);
+    if !x.is_empty() && !y.is_empty() {
+        pairs.extend(
+            myers(x, y)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(i, j)| (i + start, j + start)),
+        );
+    }
+    pairs.extend((0..end).map(|k| (a.len() - end + k, b.len() - end + k)));
+    pairs
+}
+
+/// Myers's shortest edit script between `x` and `y`, as the pairs it
+/// matches, in order; `None` past [`MAX_DIFF_EDITS`] edits.
+fn myers(x: &[DisplayItem], y: &[DisplayItem]) -> Option<Vec<(usize, usize)>> {
+    let (n, m) = (x.len() as isize, y.len() as isize);
+    let max = (n + m).min(MAX_DIFF_EDITS as isize);
+    // `v[k]` is the furthest `x` reached on the diagonal `k = x - y`,
+    // kept for `k` from `-max - 1` to `max + 1`; its state before each
+    // step `d` is kept for the walk back, the diagonals `-d - 1` to
+    // `d + 1` of it.
+    let at = |k: isize| (k + max + 1) as usize;
+    let mut v = vec![0isize; (2 * max + 3) as usize];
+    let mut trace: Vec<Vec<isize>> = Vec::new();
+    let mut shortest = None;
+    'steps: for d in 0..=max {
+        trace.push(v[at(-d - 1)..=at(d + 1)].to_vec());
+        for k in (-d..=d).step_by(2) {
+            let mut px = if k == -d || (k != d && v[at(k - 1)] < v[at(k + 1)]) {
+                v[at(k + 1)]
+            } else {
+                v[at(k - 1)] + 1
+            };
+            let mut py = px - k;
+            while px < n && py < m && x[px as usize] == y[py as usize] {
+                px += 1;
+                py += 1;
+            }
+            v[at(k)] = px;
+            if px >= n && py >= m {
+                shortest = Some(d);
+                break 'steps;
+            }
+        }
+    }
+    let shortest = shortest?;
+    let mut pairs = Vec::new();
+    let (mut px, mut py) = (n, m);
+    for d in (0..=shortest).rev() {
+        let v = &trace[d as usize];
+        let vk = |k: isize| v[(k + d + 1) as usize];
+        let k = px - py;
+        let prev_k = if k == -d || (k != d && vk(k - 1) < vk(k + 1)) {
+            k + 1
+        } else {
+            k - 1
+        };
+        let prev_x = vk(prev_k);
+        let prev_y = prev_x - prev_k;
+        while px > prev_x && py > prev_y {
+            px -= 1;
+            py -= 1;
+            pairs.push((px as usize, py as usize));
+        }
+        if d > 0 {
+            px = prev_x;
+            py = prev_y;
+        }
+    }
+    pairs.reverse();
+    Some(pairs)
+}
+
 /// `rects` with every two that overlap or share an edge replaced by the
 /// rectangle around them, until none do; more than
 /// [`MAX_DAMAGE_RECTS`] become the one around them all.
@@ -1297,11 +2255,38 @@ fn copy_pixels(from: &tiny_skia::Pixmap, to: &mut tiny_skia::Pixmap, rect: Pixel
 
 impl RenderBackend for SoftwareBackend {
     fn rasterize(&mut self, list: &DisplayList, width: u32, height: u32) -> &[u8] {
+        self.rasterize_by(list, width, height, None)
+    }
+
+    fn rasterize_by(
+        &mut self,
+        list: &DisplayList,
+        width: u32,
+        height: u32,
+        deadline: Option<Instant>,
+    ) -> &[u8] {
         self.redrawn = Redrawn::Whole;
+        self.frame += 1;
+        self.layered = Layered::default();
+        self.deferred.clear();
+        self.doubled.clear();
         let last = self.retained.take();
         if width as u64 * height as u64 > MAX_FRAME_PIXELS {
             return &[];
         }
+        // The layers first (M19): this frame's are marked, so that the
+        // budget never lets one go for another, then each is drawn
+        // where its items changed, and the groups whose layer came or
+        // went are damage.
+        let base = State::new(width, height);
+        self.mark_layers(&list.items, &base);
+        let mut seen = HashSet::new();
+        let mut transitions = Vec::new();
+        self.update_layers(&list.items, &base, &base, &mut seen, &mut transitions);
+        let transitions: Vec<PixelRect> = transitions
+            .into_iter()
+            .filter_map(|r| PixelRect::around(r.x0, r.y0, r.x1, r.y1, width, height))
+            .collect();
         // The last frame, when it is this size, drawn again where the
         // lists differ; otherwise a frame drawn whole, on a new pixmap,
         // which comes cleared.
@@ -1313,9 +2298,15 @@ impl RenderBackend for SoftwareBackend {
                      list: old,
                      mut pixmap,
                  }| {
-                    let rects = self.damage(&old, list, width, height)?;
+                    let mut rects = self.damaged(&old.items, &list.items, width, height, None);
+                    rects.extend(transitions);
+                    let rects = merge(rects);
+                    let area: u64 = rects.iter().map(|r| r.area()).sum();
+                    if area * 2 >= width as u64 * height as u64 {
+                        return None;
+                    }
                     for &rect in &rects {
-                        self.redraw(&mut pixmap, list, rect);
+                        self.redraw(&mut pixmap, &list.items, rect, None);
                     }
                     self.redrawn = Redrawn::Rects(rects);
                     Some(pixmap)
@@ -1331,11 +2322,40 @@ impl RenderBackend for SoftwareBackend {
                 pixmap
             }
         };
+        self.prepaint(deadline);
+        self.trim();
         let retained = self.retained.insert(Retained {
             list: list.clone(),
             pixmap,
         });
         retained.pixmap.data()
+    }
+
+    fn set_layer_budget(&mut self, bytes: usize) {
+        self.layer_budget = bytes;
+    }
+
+    fn layer_bytes(&self) -> usize {
+        self.layer_bytes
+    }
+
+    fn layers(&self) -> Vec<LayerInfo> {
+        let mut layers: Vec<LayerInfo> = self
+            .layers
+            .iter()
+            .map(|(key, layer)| LayerInfo {
+                key: *key,
+                reason: layer.reason,
+                bytes: layer.bytes(),
+                tiles: layer.tiles(),
+            })
+            .collect();
+        layers.sort_by_key(|layer| format!("{:?}", layer.key));
+        layers
+    }
+
+    fn layered(&self) -> Layered {
+        self.layered.clone()
     }
 }
 
@@ -1592,50 +2612,36 @@ fn intersect_y(a: (f32, f32), b: (f32, f32), y: f32) -> (f32, f32) {
     (a.0 + (b.0 - a.0) * t, y)
 }
 
-/// Composites the scratch `src`, whose texel `(0, 0)` is at `origin` in
+/// Composites the texels of `src`, a scratch or the tiles of a layer in
 /// the group's coordinates, into the pixels of `region` of `dst`,
 /// through `inverse`, from the raster's coordinates to the group's
-/// (M19): each pixel's centre is mapped back, and where it lands inside
-/// the scratch, the scratch is sampled bilinearly between texel
-/// centres, the edge texels standing in beyond the edge, and the
-/// sample blended over the pixel at `opacity`, premultiplied. The
-/// mapping is of the raster's point alone, the integer origin taken
-/// off after, so that the same pixel samples the same place whatever
-/// the scratch's origin, and a region composited on its own comes out
-/// as the whole does.
+/// (M19): each pixel's centre is mapped back, and where it lands within
+/// the source's reach, the source is sampled bilinearly between texel
+/// centres, the texels beyond the reach standing in as the source
+/// says, and the sample blended over the pixel at `opacity`,
+/// premultiplied. The mapping is of the raster's point alone, the
+/// whole-texel origin of the source taken off after, so that the same
+/// pixel samples the same place whatever the origin, and a region
+/// composited on its own comes out as the whole does.
 fn resample(
     dst: &mut tiny_skia::Pixmap,
-    src: &tiny_skia::Pixmap,
-    origin: (f32, f32),
+    src: &impl Texels,
     inverse: &Matrix,
     opacity: f32,
     region: PixelRect,
 ) {
-    let (sw, sh) = (src.width() as i64, src.height() as i64);
-    let source = src.data();
+    let (rx0, ry0, rx1, ry1) = src.reach();
     let stride = dst.width() as usize;
     let data = dst.data_mut();
-    let texel = |tx: i64, ty: i64| -> [f32; 4] {
-        let tx = tx.clamp(0, sw - 1) as usize;
-        let ty = ty.clamp(0, sh - 1) as usize;
-        let i = (ty * sw as usize + tx) * 4;
-        [
-            source[i] as f32,
-            source[i + 1] as f32,
-            source[i + 2] as f32,
-            source[i + 3] as f32,
-        ]
-    };
     for y in region.y0..region.y1 {
         for x in region.x0..region.x1 {
             let Some((qx, qy)) = inverse.project(x as f32 + 0.5, y as f32 + 0.5) else {
                 continue;
             };
-            let (lx, ly) = (qx - origin.0, qy - origin.1);
-            if !(lx >= 0.0 && ly >= 0.0 && lx < sw as f32 && ly < sh as f32) {
+            if !(qx >= rx0 && qy >= ry0 && qx < rx1 && qy < ry1) {
                 continue;
             }
-            let (sx, sy) = (lx - 0.5, ly - 0.5);
+            let (sx, sy) = (qx - 0.5, qy - 0.5);
             let (fx, fy) = (sx.floor(), sy.floor());
             let (wx, wy) = (sx - fx, sy - fy);
             let (ix, iy) = (fx as i64, fy as i64);
@@ -1646,15 +2652,191 @@ fn resample(
                 (0, 1, (1.0 - wx) * wy),
                 (1, 1, wx * wy),
             ] {
-                let t = texel(ix + dx, iy + dy);
+                let t = src.texel(ix + dx, iy + dy);
                 for (k, channel) in c.iter_mut().enumerate() {
                     *channel += t[k] * weight;
                 }
             }
             let i = (y as usize * stride + x as usize) * 4;
-            let a = c[3] * opacity / 255.0;
-            for (k, channel) in c.iter().enumerate() {
-                data[i + k] = (channel * opacity + data[i + k] as f32 * (1.0 - a)).round() as u8;
+            over(&mut data[i..i + 4], c, opacity);
+        }
+    }
+}
+
+/// Lays the premultiplied colour `src`, at `opacity`, over the
+/// premultiplied pixel `px`: source-over on every channel, rounded.
+fn over(px: &mut [u8], src: [f32; 4], opacity: f32) {
+    let a = src[3] * opacity / 255.0;
+    for (k, channel) in src.iter().enumerate() {
+        px[k] = (channel * opacity + px[k] as f32 * (1.0 - a)).round() as u8;
+    }
+}
+
+/// A source of texels for [`resample`]: where it reaches in its own
+/// coordinates, as `(x0, y0, x1, y1)`, outside which nothing is drawn,
+/// and the texel at a point, which stands in beyond its edges.
+trait Texels {
+    fn reach(&self) -> (f32, f32, f32, f32);
+    fn texel(&self, x: i64, y: i64) -> [f32; 4];
+}
+
+/// A pixmap whose top-left texel is at `origin`, a whole texel: its
+/// edge texels stand in beyond its edges.
+struct Placed<'a> {
+    pixmap: &'a tiny_skia::Pixmap,
+    origin: (f32, f32),
+}
+
+impl Texels for Placed<'_> {
+    fn reach(&self) -> (f32, f32, f32, f32) {
+        let (ox, oy) = self.origin;
+        (
+            ox,
+            oy,
+            ox + self.pixmap.width() as f32,
+            oy + self.pixmap.height() as f32,
+        )
+    }
+
+    fn texel(&self, x: i64, y: i64) -> [f32; 4] {
+        let (sw, sh) = (self.pixmap.width() as i64, self.pixmap.height() as i64);
+        let tx = (x - self.origin.0 as i64).clamp(0, sw - 1) as usize;
+        let ty = (y - self.origin.1 as i64).clamp(0, sh - 1) as usize;
+        texel_of(self.pixmap, tx, ty)
+    }
+}
+
+/// The tiles of a layer (M19.4): `width` texels across from `left`, and
+/// the rows held, from the first to the last; a row not held is clear,
+/// and the texels at the sides stand in beyond them.
+struct Tiled<'a> {
+    rows: &'a BTreeMap<i32, Tile>,
+    left: i32,
+    width: u32,
+}
+
+impl Texels for Tiled<'_> {
+    fn reach(&self) -> (f32, f32, f32, f32) {
+        let tall = TILE_HEIGHT as f32;
+        let first = self.rows.keys().next().copied().unwrap_or(0) as f32;
+        let last = self.rows.keys().next_back().copied().unwrap_or(-1) as f32;
+        (
+            self.left as f32,
+            first * tall,
+            self.left as f32 + self.width as f32,
+            (last + 1.0) * tall,
+        )
+    }
+
+    fn texel(&self, x: i64, y: i64) -> [f32; 4] {
+        let tall = TILE_HEIGHT as i64;
+        let tx = (x - self.left as i64).clamp(0, self.width as i64 - 1) as usize;
+        let row = y.div_euclid(tall);
+        let Some(tile) = i32::try_from(row).ok().and_then(|row| self.rows.get(&row)) else {
+            return [0.0; 4];
+        };
+        texel_of(&tile.pixmap, tx, (y - row * tall) as usize)
+    }
+}
+
+/// The texel at column `x` of row `y` of `pixmap`, as floats.
+fn texel_of(pixmap: &tiny_skia::Pixmap, x: usize, y: usize) -> [f32; 4] {
+    let i = (y * pixmap.width() as usize + x) * 4;
+    let source = pixmap.data();
+    [
+        source[i] as f32,
+        source[i + 1] as f32,
+        source[i + 2] as f32,
+        source[i + 3] as f32,
+    ]
+}
+
+/// Draws `src`, whose top-left texel is at `origin` in its own
+/// coordinates, which `matrix` maps to `dst`'s and `inverse` back, over
+/// `dst` at `opacity`, writing the pixels of `within` alone: a copy of
+/// its pixels, moved, when the matrix is a translation by whole pixels
+/// and the origin is whole, else each pixel sampled as [`resample`]
+/// does. Whether any pixel was reached.
+fn composite_pixmap(
+    dst: &mut tiny_skia::Pixmap,
+    src: &tiny_skia::Pixmap,
+    origin: (f32, f32),
+    matrix: &Matrix,
+    inverse: &Matrix,
+    opacity: f32,
+    within: PixelRect,
+) -> bool {
+    let (sw, sh) = (src.width() as i64, src.height() as i64);
+    if let Some((dx, dy)) = whole_pixel_translation(matrix)
+        && origin.0.fract() == 0.0
+        && origin.1.fract() == 0.0
+    {
+        let at = (origin.0 as i64 + dx, origin.1 as i64 + dy);
+        let Some(region) =
+            PixelRect::new(at.0, at.1, at.0 + sw, at.1 + sh).and_then(|r| r.intersect(within))
+        else {
+            return false;
+        };
+        blit(dst, src, at, opacity, region);
+        return true;
+    }
+    let Some((fx0, fy0, fx1, fy1)) = matrix.bounds(origin.0, origin.1, sw as f32, sh as f32) else {
+        return false;
+    };
+    let Some(landed) = PixelRect::around(
+        fx0 - 1.0,
+        fy0 - 1.0,
+        fx1 + 1.0,
+        fy1 + 1.0,
+        dst.width(),
+        dst.height(),
+    )
+    .and_then(|r| r.intersect(within)) else {
+        return false;
+    };
+    resample(
+        dst,
+        &Placed {
+            pixmap: src,
+            origin,
+        },
+        inverse,
+        opacity,
+        landed,
+    );
+    true
+}
+
+/// Lays `src`, its top-left pixel at `at` in `dst`'s coordinates, over
+/// `dst` at `opacity`, pixel for pixel, writing the pixels of `region`
+/// alone, which is inside both: an opaque pixel at full opacity is
+/// copied, any other laid over as [`over`] does.
+fn blit(
+    dst: &mut tiny_skia::Pixmap,
+    src: &tiny_skia::Pixmap,
+    at: (i64, i64),
+    opacity: f32,
+    region: PixelRect,
+) {
+    let (dw, sw) = (dst.width() as usize, src.width() as usize);
+    let source = src.data();
+    let data = dst.data_mut();
+    for y in region.y0..region.y1 {
+        let sy = (y as i64 - at.1) as usize;
+        for x in region.x0..region.x1 {
+            let sx = (x as i64 - at.0) as usize;
+            let s = (sy * sw + sx) * 4;
+            let d = (y as usize * dw + x as usize) * 4;
+            if opacity >= 1.0 && source[s + 3] == 255 {
+                data[d..d + 4].copy_from_slice(&source[s..s + 4]);
+            } else {
+                let src = [
+                    source[s] as f32,
+                    source[s + 1] as f32,
+                    source[s + 2] as f32,
+                    source[s + 3] as f32,
+                ];
+                over(&mut data[d..d + 4], src, opacity);
             }
         }
     }
@@ -2148,9 +3330,15 @@ mod tests {
     }
 
     /// A key for a group in a test: every group the same one.
-    fn group_key() -> paint::GroupKey {
+    fn group_key() -> GroupKey {
         let document = dom::Document::from_node(&dom::Node::document(Vec::new()));
-        (document.root(), None)
+        GroupKey::Box((document.root(), None))
+    }
+
+    /// A key no other group in any test has.
+    fn fresh_key() -> GroupKey {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        GroupKey::Document(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
     }
 
     /// A random item for a `w` by `h` frame, of every kind, reaching
@@ -2186,10 +3374,21 @@ mod tests {
                         rng.coord(0.2, 0.95),
                     ),
                 };
+                // A layer now and then (M19), of every reason, under a
+                // key the test's lists share, so that one list's layer
+                // serves the next.
+                let layer = [
+                    None,
+                    None,
+                    Some(LayerReason::Transformed),
+                    Some(LayerReason::WillChange),
+                    Some(LayerReason::Scrolled),
+                ][rng.below(5)];
                 DisplayItem::PushGroup {
                     matrix,
                     opacity,
-                    key: group_key(),
+                    key: GroupKey::Document(rng.below(6) as u32),
+                    layer,
                 }
             }
             11..=12 => DisplayItem::PopGroup,
@@ -2291,13 +3490,25 @@ mod tests {
                 x1: x0 + 1 + rng.below((w - x0) as usize) as u32,
                 y1: y0 + 1 + rng.below((h - y0) as usize) as u32,
             };
+            // The layers are brought to `list` again after the raster
+            // of `before`, as a raster of `list` would bring them, so
+            // that the redraw composites them as the whole raster did:
+            // a group held as a layer and one drawn otherwise differ
+            // where the layer is resampled; and a layer drawn again
+            // where its items changed must come out as one drawn anew.
             backend.forget_frame();
             let whole = backend.rasterize(&list, w, h).to_vec();
-            backend.forget_frame();
+            backend.forget_last_frame();
             let old = backend.rasterize(&before, w, h).to_vec();
             let mut pixmap = tiny_skia::Pixmap::new(w, h).expect("a frame");
             pixmap.data_mut().copy_from_slice(&old);
-            backend.redraw(&mut pixmap, &list, rect);
+            backend.frame += 1;
+            backend.doubled.clear();
+            let base = State::new(w, h);
+            backend.mark_layers(&list.items, &base);
+            let (mut seen, mut extra) = (HashSet::new(), Vec::new());
+            backend.update_layers(&list.items, &base, &base, &mut seen, &mut extra);
+            backend.redraw(&mut pixmap, &list.items, rect, None);
             for y in 0..h as usize {
                 for x in 0..w as usize {
                     let inside = (rect.x0 as usize..rect.x1 as usize).contains(&x)
@@ -2469,7 +3680,7 @@ mod tests {
         };
         let mut backend = test_backend();
         let mut pixmap = tiny_skia::Pixmap::new(w, h).expect("a frame");
-        backend.redraw(&mut pixmap, &list, rect);
+        backend.redraw(&mut pixmap, &list.items, rect, None);
         for y in 0..h as usize {
             for x in 0..w as usize {
                 let inside = (35..46).contains(&x) && (11..25).contains(&y);
@@ -2674,6 +3885,7 @@ mod tests {
             matrix,
             opacity,
             key: group_key(),
+            layer: None,
         }
     }
 
@@ -2949,5 +4161,384 @@ mod tests {
             "{big:?}; {} pixels differ in all",
             diff.len()
         );
+    }
+
+    #[test]
+    fn a_layer_is_drawn_once_and_composited_after_wherever_its_matrix_puts_it() {
+        // M19: a group that is a layer is rasterized into its layer the
+        // first time and composited from it after; a new matrix or
+        // opacity draws nothing into it, and the frame is a fresh
+        // raster's, whether the matrix moves it by whole pixels, by a
+        // fraction, or turns it.
+        let (w, h) = (48u32, 40u32);
+        let mut backend = test_backend();
+        let key = fresh_key();
+        let list = |matrix: Matrix, opacity: f32| DisplayList {
+            items: vec![
+                white_frame(w as f32, h as f32),
+                DisplayItem::PushGroup {
+                    matrix,
+                    opacity,
+                    key,
+                    layer: Some(LayerReason::WillChange),
+                },
+                rect(4.0, 4.0, 10.0, 10.0, Rgba8::rgb(0, 0, 255)),
+                DisplayItem::Text {
+                    text: "Ag".to_string(),
+                    x: 4.0,
+                    y: 30.0,
+                    size: 12.0,
+                    color: Rgba8::rgb(0, 0, 0),
+                },
+                DisplayItem::PopGroup,
+            ],
+        };
+        let first = list(Matrix::translate(10.0, 10.0, 0.0), 1.0);
+        let pixels = backend.rasterize(&first, w, h).to_vec();
+        assert_eq!(backend.layered().rasterized, vec![(key, 1)]);
+        assert_eq!(backend.layered().composited, vec![key]);
+        assert_eq!(px(&pixels, w as usize, 15, 15), [0, 0, 255, 255]);
+        let layers = backend.layers();
+        assert_eq!(layers.len(), 1);
+        assert_eq!(
+            (layers[0].key, layers[0].reason),
+            (key, LayerReason::WillChange)
+        );
+        assert_eq!(layers[0].tiles, 0);
+        assert!(layers[0].bytes > 0 && backend.layer_bytes() == layers[0].bytes);
+        for (matrix, opacity) in [
+            (Matrix::translate(20.0, 12.0, 0.0), 1.0),
+            (Matrix::translate(20.5, 12.25, 0.0), 1.0),
+            (Matrix::translate(20.0, 12.0, 0.0), 0.5),
+            (
+                Matrix::translate(24.0, 20.0, 0.0)
+                    .then(&Matrix::rotate_z(30.0))
+                    .then(&Matrix::translate(-9.0, -9.0, 0.0)),
+                0.8,
+            ),
+            (Matrix::scale(1.5, 1.5, 1.0), 1.0),
+        ] {
+            let moved = list(matrix, opacity);
+            let pixels = backend.rasterize(&moved, w, h).to_vec();
+            let layered = backend.layered();
+            assert!(layered.rasterized.is_empty(), "{layered:?}");
+            assert_eq!(layered.composited, vec![key]);
+            let mut fresh = test_backend();
+            assert_eq!(
+                pixels,
+                fresh.rasterize(&moved, w, h).to_vec(),
+                "{matrix:?} {opacity}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_scrolled_layer_is_tiles_that_a_scroll_composites_and_time_draws_ahead() {
+        // M19.4: a scrolled group is kept as tiles of the rows the
+        // raster shows, with the rows a viewport's height either side
+        // drawn after the frame while there is time; a scroll by whole
+        // pixels composites the tiles, drawing into none while the
+        // rows it shows are held, and the frame is a fresh raster's.
+        let (w, h) = (40u32, 64u32);
+        let mut backend = test_backend();
+        let key = fresh_key();
+        let list = |scroll: f32| {
+            let mut items = vec![
+                white_frame(w as f32, h as f32),
+                DisplayItem::PushGroup {
+                    matrix: Matrix::translate(0.0, -scroll, 0.0),
+                    opacity: 1.0,
+                    key,
+                    layer: Some(LayerReason::Scrolled),
+                },
+            ];
+            for i in 0..40 {
+                let y = i as f32 * 50.0;
+                items.push(rect(
+                    4.0,
+                    y + 2.0,
+                    20.0,
+                    30.0,
+                    Rgba8::rgb(i * 6, 0, 255 - i * 6),
+                ));
+            }
+            items.push(DisplayItem::PopGroup);
+            DisplayList { items }
+        };
+        backend.rasterize_by(&list(0.0), w, h, None);
+        let layers = backend.layers();
+        assert_eq!(layers.len(), 1);
+        assert_eq!(layers[0].reason, LayerReason::Scrolled);
+        assert_eq!(layers[0].tiles, 1, "the row the frame shows alone");
+        assert_eq!(backend.layered().rasterized, vec![(key, 1)]);
+        assert_eq!(backend.layered().prepainted, 0);
+        // With time after the frame, the margin's rows are drawn.
+        let far = Instant::now() + std::time::Duration::from_secs(5);
+        backend.rasterize_by(&list(0.0), w, h, Some(far));
+        assert!(backend.layered().prepainted >= 1);
+        assert!(backend.layers()[0].tiles >= 2, "{:?}", backend.layers());
+        assert!(backend.layered().rasterized.is_empty());
+        // A scroll within the rows held, each frame drawing the rows
+        // the margin reaches next ahead of time: composited, nothing
+        // drawn into the rows shown.
+        let mut prepainted = 0;
+        for scroll in [30.0, 100.0, 140.0, 250.0, 300.0] {
+            let pixels = backend
+                .rasterize_by(&list(scroll), w, h, Some(far))
+                .to_vec();
+            let layered = backend.layered();
+            assert!(layered.rasterized.is_empty(), "{scroll}: {layered:?}");
+            assert_eq!(layered.composited, vec![key]);
+            prepainted += layered.prepainted;
+            let mut fresh = test_backend();
+            assert_eq!(
+                pixels,
+                fresh.rasterize(&list(scroll), w, h).to_vec(),
+                "{scroll}"
+            );
+        }
+        assert!(prepainted >= 1);
+        // A scroll far off: the rows it shows, two across a tile's
+        // edge, are drawn now, and the rows far behind let go.
+        let pixels = backend.rasterize_by(&list(1500.0), w, h, None).to_vec();
+        assert_eq!(backend.layered().rasterized, vec![(key, 2)]);
+        let mut fresh = test_backend();
+        assert_eq!(pixels, fresh.rasterize(&list(1500.0), w, h).to_vec());
+        assert!(backend.layers()[0].tiles <= 3, "{:?}", backend.layers());
+        // A change in the content draws again in the tiles it reaches,
+        // and nowhere else: one rectangle's colour, in the row shown.
+        let mut changed = list(1500.0);
+        changed.items[2 + 30] = rect(4.0, 1502.0, 20.0, 30.0, Rgba8::rgb(0, 255, 0));
+        let pixels = backend.rasterize_by(&changed, w, h, None).to_vec();
+        assert_eq!(backend.layered().rasterized, vec![(key, 1)]);
+        assert_eq!(px(&pixels, w as usize, 10, 10), [0, 255, 0, 255]);
+        let mut fresh = test_backend();
+        assert_eq!(pixels, fresh.rasterize(&changed, w, h).to_vec());
+    }
+
+    #[test]
+    fn the_budget_caps_the_layers_and_a_frame_without_room_draws_through() {
+        // M19.6: a thousand groups that are layers hold no more than
+        // the budget allows, the frame is a fresh raster's all the
+        // same, and a budget of nothing keeps no layer at all.
+        let (w, h) = (64u32, 64u32);
+        let mut items = vec![white_frame(w as f32, h as f32)];
+        for i in 0..1000u32 {
+            items.push(DisplayItem::PushGroup {
+                matrix: Matrix::translate((i % 50) as f32, (i / 50) as f32 * 3.0, 0.0),
+                opacity: 1.0,
+                key: GroupKey::Document(i),
+                layer: Some(LayerReason::WillChange),
+            });
+            items.push(rect(
+                0.0,
+                0.0,
+                6.0,
+                6.0,
+                Rgba8::rgb((i * 7) as u8, (i * 3) as u8, 9),
+            ));
+            items.push(DisplayItem::PopGroup);
+        }
+        let list = DisplayList { items };
+        let mut unbounded = test_backend();
+        let want = unbounded.rasterize(&list, w, h).to_vec();
+        assert_eq!(unbounded.layers().len(), 1000);
+        let mut capped = test_backend();
+        capped.set_layer_budget(20_000);
+        assert_eq!(capped.rasterize(&list, w, h), &want[..]);
+        assert!(capped.layer_bytes() <= 20_000, "{}", capped.layer_bytes());
+        let held = capped.layers().len();
+        assert!(held > 0 && held < 1000, "{held}");
+        // The same list again: the same layers held, none let go for
+        // another, and the frame the same.
+        assert_eq!(capped.rasterize(&list, w, h), &want[..]);
+        assert_eq!(capped.layers().len(), held);
+        let mut none = test_backend();
+        none.set_layer_budget(0);
+        assert_eq!(none.rasterize(&list, w, h), &want[..]);
+        assert!(none.layers().is_empty());
+        assert_eq!(none.layer_bytes(), 0);
+    }
+
+    #[test]
+    fn eviction_takes_the_least_recently_used_and_never_a_tile_the_frame_shows() {
+        // M19.6: under a budget of two tiles, a scrolled layer keeps
+        // the row the frame shows and one more, the one used last; a
+        // whole layer used by this frame is never let go for a tile.
+        let (w, h) = (16u32, 32u32);
+        let key = fresh_key();
+        let other = fresh_key();
+        let list = |scroll: f32| {
+            let mut items = vec![
+                white_frame(w as f32, h as f32),
+                DisplayItem::PushGroup {
+                    matrix: Matrix::translate(0.0, -scroll, 0.0),
+                    opacity: 1.0,
+                    key,
+                    layer: Some(LayerReason::Scrolled),
+                },
+            ];
+            for i in 0..20 {
+                items.push(rect(
+                    2.0,
+                    i as f32 * 100.0,
+                    8.0,
+                    8.0,
+                    Rgba8::rgb(i * 10, 0, 0),
+                ));
+            }
+            items.push(DisplayItem::PopGroup);
+            items.push(DisplayItem::PushGroup {
+                matrix: Matrix::translate(8.0, 8.0, 0.0),
+                opacity: 1.0,
+                key: other,
+                layer: Some(LayerReason::WillChange),
+            });
+            items.push(rect(0.0, 0.0, 4.0, 4.0, Rgba8::rgb(0, 0, 255)));
+            items.push(DisplayItem::PopGroup);
+            DisplayList { items }
+        };
+        let tile = w as usize * TILE_HEIGHT as usize * 4;
+        let mut backend = test_backend();
+        backend.set_layer_budget(2 * tile + 1024);
+        let far = Instant::now() + std::time::Duration::from_secs(5);
+        backend.rasterize_by(&list(0.0), w, h, Some(far));
+        let tiles = |backend: &SoftwareBackend| {
+            backend
+                .layers()
+                .iter()
+                .find(|l| l.key == key)
+                .map_or(0, |l| l.tiles)
+        };
+        assert!(tiles(&backend) <= 2, "{:?}", backend.layers());
+        assert!(backend.layers().iter().any(|l| l.key == other));
+        // Row by row down the content: the budget holds, the frame is
+        // right, and the whole layer stays.
+        for scroll in [300.0, 600.0, 900.0, 300.0] {
+            let pixels = backend
+                .rasterize_by(&list(scroll), w, h, Some(far))
+                .to_vec();
+            assert!(backend.layer_bytes() <= 2 * tile + 1024);
+            assert!(
+                tiles(&backend) >= 1 && tiles(&backend) <= 2,
+                "{:?}",
+                backend.layers()
+            );
+            assert!(backend.layers().iter().any(|l| l.key == other));
+            let mut fresh = test_backend();
+            assert_eq!(
+                pixels,
+                fresh.rasterize(&list(scroll), w, h).to_vec(),
+                "{scroll}"
+            );
+        }
+        // Under a budget below one tile, the scrolled group is drawn
+        // through, and the frame is still right.
+        backend.set_layer_budget(tile / 2);
+        let pixels = backend.rasterize_by(&list(300.0), w, h, Some(far)).to_vec();
+        assert_eq!(tiles(&backend), 0);
+        let mut fresh = test_backend();
+        assert_eq!(pixels, fresh.rasterize(&list(300.0), w, h).to_vec());
+    }
+
+    #[test]
+    fn a_key_two_groups_share_names_no_layer_and_a_layer_that_comes_or_goes_is_damage() {
+        // Two groups under one key are drawn as groups that are no
+        // layers, since a layer holds one; and a group that becomes a
+        // layer, or stops being one, with a matrix that resamples, is
+        // drawn again where it is, as a fresh raster has it.
+        let (w, h) = (40u32, 30u32);
+        let key = fresh_key();
+        let twice = DisplayList {
+            items: vec![
+                white_frame(w as f32, h as f32),
+                DisplayItem::PushGroup {
+                    matrix: Matrix::translate(2.0, 2.0, 0.0),
+                    opacity: 1.0,
+                    key,
+                    layer: Some(LayerReason::WillChange),
+                },
+                rect(0.0, 0.0, 8.0, 8.0, Rgba8::rgb(255, 0, 0)),
+                DisplayItem::PopGroup,
+                DisplayItem::PushGroup {
+                    matrix: Matrix::translate(20.0, 2.0, 0.0),
+                    opacity: 1.0,
+                    key,
+                    layer: Some(LayerReason::WillChange),
+                },
+                rect(0.0, 0.0, 8.0, 8.0, Rgba8::rgb(0, 255, 0)),
+                DisplayItem::PopGroup,
+            ],
+        };
+        let mut backend = test_backend();
+        let pixels = backend.rasterize(&twice, w, h).to_vec();
+        assert_eq!(px(&pixels, w as usize, 5, 5), [255, 0, 0, 255]);
+        assert_eq!(px(&pixels, w as usize, 23, 5), [0, 255, 0, 255]);
+        assert!(backend.layered().composited.is_empty());
+        let fractional = |layer: Option<LayerReason>| DisplayList {
+            items: vec![
+                white_frame(w as f32, h as f32),
+                DisplayItem::PushGroup {
+                    matrix: Matrix::translate(2.5, 2.5, 0.0),
+                    opacity: 1.0,
+                    key,
+                    layer,
+                },
+                rect(0.0, 0.0, 8.0, 8.0, Rgba8::rgb(255, 0, 0)),
+                DisplayItem::PopGroup,
+            ],
+        };
+        let mut backend = test_backend();
+        backend.rasterize(&fractional(None), w, h);
+        let pixels = backend
+            .rasterize(&fractional(Some(LayerReason::WillChange)), w, h)
+            .to_vec();
+        let mut fresh = test_backend();
+        assert_eq!(
+            pixels,
+            fresh.rasterize(&fractional(Some(LayerReason::WillChange)), w, h)
+        );
+        let pixels = backend.rasterize(&fractional(None), w, h).to_vec();
+        let mut fresh = test_backend();
+        assert_eq!(pixels, fresh.rasterize(&fractional(None), w, h));
+    }
+
+    #[test]
+    fn alignment_matches_the_most_items_in_order_and_tile_rows_hold_the_texels() {
+        let items: Vec<DisplayItem> = (0..8)
+            .map(|i| rect(i as f32, 0.0, 1.0, 1.0, Rgba8::rgb(i, 0, 0)))
+            .collect();
+        // Two taken from the start, two added at the end: the six in
+        // the middle match.
+        let a: Vec<DisplayItem> = items[..6].to_vec();
+        let b: Vec<DisplayItem> = items[2..8].to_vec();
+        assert_eq!(
+            align(&a, &b),
+            (2..6).map(|i| (i, i - 2)).collect::<Vec<_>>()
+        );
+        // One moved from the start to the end: the rest match.
+        let mut moved = a.clone();
+        let first = moved.remove(0);
+        moved.push(first);
+        assert_eq!(
+            align(&a, &moved),
+            (1..6).map(|i| (i, i - 1)).collect::<Vec<_>>()
+        );
+        assert_eq!(align(&a, &a), (0..6).map(|i| (i, i)).collect::<Vec<_>>());
+        assert_eq!(align(&a, &[]), Vec::new());
+        // Past the edit limit, the shared start and end alone.
+        let many: Vec<DisplayItem> = (0..MAX_DIFF_EDITS as u32 + 4)
+            .map(|i| rect(0.0, i as f32, 1.0, 1.0, Rgba8::rgb(0, 0, 0)))
+            .collect();
+        let mut other = many.clone();
+        other.reverse();
+        other[0] = many[0].clone();
+        assert_eq!(align(&many, &other), vec![(0, 0)]);
+        assert_eq!(tile_rows(0.0, 256.0), 0..=0);
+        assert_eq!(tile_rows(0.0, 256.5), 0..=1);
+        assert_eq!(tile_rows(-0.5, 10.0), -1..=0);
+        assert!(tile_rows(300.0, 300.0).is_empty());
+        assert!(tile_rows(10.0, f32::NAN).is_empty());
+        assert_eq!(tile_rows(1000.0, 1001.0), 3..=3);
     }
 }

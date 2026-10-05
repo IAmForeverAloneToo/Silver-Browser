@@ -42,14 +42,22 @@
 //! layer, positioned or not (css-flexbox-1 §4.3, css-grid-2 §6.5): grid
 //! items in the same cells overlap in that order.
 //!
-//! Every rectangle a step carries is in viewport coordinates: the
-//! viewport's scroll offset and, inside a scroll container, its offset
-//! (M10.5) are already applied, and so is the shift of a `position:
-//! sticky` box ([`sticky_shift`], M11), which paint and hit testing
-//! thereby agree on. A `position: fixed` box is placed against the
-//! viewport and left out of the scroll, unless it is inside a box that
-//! is a containing block for all its descendants, a transformed one
-//! (M19), with which it scrolls. A clip's rectangle is the effective one,
+//! Every rectangle a step carries is in the coordinates of the group
+//! it is in ([`Step::PushGroup`], M19), and the groups' matrices lead
+//! to the viewport's: the document's content is in groups of its own
+//! whose matrix is the viewport's scroll offset, so the rectangles
+//! inside are in document coordinates, the same from frame to frame as
+//! the document scrolls; inside a scroll container its offset (M10.5)
+//! is applied as the rectangles are listed, and so is the shift of a
+//! `position: sticky` box ([`sticky_shift`], M11), which paint and hit
+//! testing thereby agree on. A `position: fixed` box is placed against
+//! the viewport and left out of the scroll: it is listed outside the
+//! document's groups, in viewport coordinates, cutting the document's
+//! content into groups around it — unless it is inside a box that is a
+//! containing block for all its descendants, a transformed one (M19),
+//! with which it scrolls, or inside a group that is not, an opacity
+//! group, where it is listed in the group's coordinates at the place the
+//! scroll offset gives it. A clip's rectangle is the effective one,
 //! intersected with the clips around it, so a consumer needs only the
 //! innermost. Content the viewport cannot show is left out: a box or a
 //! line it does not meet has no step, and a clipping box it does not
@@ -66,7 +74,8 @@ use style::computed::{
 };
 use style::transform::Matrix;
 
-use crate::{ScrollOffsets, Viewport};
+use crate::{GroupKey, LayerReason, ScrollOffsets, Viewport};
+use style::computed::WillChange;
 
 /// An axis-aligned rectangle in viewport coordinates.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -131,19 +140,29 @@ pub enum Step<'a> {
     PushClip { node: Option<NodeId>, rect: Rect },
     /// The end of the innermost [`Step::PushClip`].
     PopClip,
-    /// Everything up to the matching [`Step::PopGroup`] is the stacking
-    /// context of `fragment`, a box with a transform or an opacity below
-    /// one (M19): its own step, its content and its positioned
-    /// descendants. The steps inside are in the coordinates the box
-    /// would have with no transform, and `matrix` maps them to the
-    /// coordinates the group sits in, in viewport coordinates, the box's
-    /// own matrix about its border box where the walk has it; the
-    /// group is composited with `opacity`. A box whose matrix is
-    /// singular is not displayed at all, and has no steps.
+    /// Everything up to the matching [`Step::PopGroup`] is a group
+    /// (M19): the stacking context of `fragment`, a box with a
+    /// transform or an opacity below one — its own step, its content
+    /// and its positioned descendants — or, with no fragment, a piece
+    /// of the document's scrolled content. The steps inside are in the
+    /// group's own coordinates, those the box would have with no
+    /// transform, or document coordinates, and `matrix` maps them to
+    /// the coordinates the group sits in: the box's own matrix about
+    /// its border box where the walk has it, or the viewport's scroll
+    /// offset; the group is composited with `opacity`. A box whose
+    /// matrix is singular is not displayed at all, and has no steps.
     PushGroup {
-        fragment: &'a Fragment,
+        fragment: Option<&'a Fragment>,
         matrix: Matrix,
         opacity: f32,
+        /// What names the group across frames: the box's own; the
+        /// scroll group of a scroll container whose `will-change` names
+        /// `scroll-position`, whose matrix is its offset; or the
+        /// document's content, one piece of it.
+        key: GroupKey,
+        /// Whether the group is a layer, and why (the compositing
+        /// note's policy).
+        layer: Option<LayerReason>,
     },
     /// The end of the innermost [`Step::PushGroup`].
     PopGroup,
@@ -164,19 +183,50 @@ pub fn paint_order<'a>(
     viewport: Viewport,
     offsets: &dyn ScrollOffsets,
 ) -> Vec<Step<'a>> {
+    paint_order_in(roots, viewport, offsets, 0.0)
+}
+
+/// [`paint_order`] with the content `margin` pixels above and below the
+/// viewport listed as well (M19): what a scroll brings into view next,
+/// drawn ahead of it into the tiles of the document's layer. The
+/// margin is in viewport coordinates, around the viewport itself; a
+/// `position: fixed` box, which does not scroll, is listed only when
+/// the viewport meets it.
+///
+/// The document's content is in groups keyed [`GroupKey::Document`],
+/// numbered from zero in order, whose matrix is the scroll offset
+/// negated and whose steps are in document coordinates; a fixed box
+/// placed against the viewport is listed between two of them, in
+/// viewport coordinates. A group with nothing in it is left out.
+pub fn paint_order_in<'a>(
+    roots: &'a [Fragment],
+    viewport: Viewport,
+    offsets: &dyn ScrollOffsets,
+    margin: f32,
+) -> Vec<Step<'a>> {
     let mut walk = Walk {
         steps: Vec::new(),
         viewport: Rect {
+            x: 0.0,
+            y: -margin,
+            w: viewport.width,
+            h: viewport.height + 2.0 * margin,
+        },
+        window: Rect {
             x: 0.0,
             y: 0.0,
             w: viewport.width,
             h: viewport.height,
         },
+        scroll: viewport.scroll_y,
         dx: 0.0,
-        dy: -viewport.scroll_y,
+        dy: 0.0,
         chain: Vec::new(),
         groups: Vec::new(),
         contained: 0,
+        fixed: 0,
+        segment: None,
+        segments: 0,
         adopted: HashMap::new(),
         offsets,
     };
@@ -184,10 +234,11 @@ pub fn paint_order<'a>(
     // viewport, from the document's top down without end.
     let initial = Rect {
         x: 0.0,
-        y: -viewport.scroll_y,
+        y: 0.0,
         w: viewport.width,
         h: f32::INFINITY,
     };
+    walk.open_segment();
     match roots.split_first() {
         // The first root is the root element's box, the root stacking
         // context; the roots after it — the boxes the initial
@@ -214,20 +265,90 @@ pub fn paint_order<'a>(
     for p in left {
         walk.positioned(p);
     }
-    walk.steps
+    walk.close_segment();
+    tidy_segments(walk.steps)
+}
+
+/// `steps` with the document's groups tidied: one with nothing in it
+/// is left out, two with nothing between them are one, and the ones
+/// left are numbered from zero in order. The walk closes a group
+/// before a fixed box and opens another after it, whether or not the
+/// box or anything after it is listed.
+fn tidy_segments(steps: Vec<Step<'_>>) -> Vec<Step<'_>> {
+    let is_segment = |step: &Step<'_>| {
+        matches!(
+            step,
+            Step::PushGroup {
+                key: GroupKey::Document(_),
+                ..
+            }
+        )
+    };
+    let mut out: Vec<Step<'_>> = Vec::with_capacity(steps.len());
+    // Whether each group open in `out` is a document group, innermost
+    // last; and whether the last step of `out` ended one.
+    let mut open: Vec<bool> = Vec::new();
+    let mut just_closed = false;
+    for step in steps {
+        match step {
+            Step::PushGroup { .. } => {
+                let segment = is_segment(&step);
+                if segment && just_closed {
+                    // The one just ended goes on instead.
+                    out.pop();
+                    open.push(true);
+                    just_closed = false;
+                    continue;
+                }
+                open.push(segment);
+                out.push(step);
+            }
+            Step::PopGroup => {
+                let segment = open.pop().unwrap_or(false);
+                if segment && out.last().is_some_and(is_segment) {
+                    out.pop();
+                    just_closed = false;
+                    continue;
+                }
+                out.push(step);
+                just_closed = segment;
+                continue;
+            }
+            step => out.push(step),
+        }
+        just_closed = false;
+    }
+    let mut n = 0;
+    for step in &mut out {
+        if let Step::PushGroup {
+            key: GroupKey::Document(number),
+            ..
+        } = step
+        {
+            *number = n;
+            n += 1;
+        }
+    }
+    out
 }
 
 /// The walk's state: where the document is relative to the viewport,
 /// and the clips in force.
 struct Walk<'a, 'o> {
     steps: Vec<Step<'a>>,
+    /// What is listed: the viewport and the margin around it.
     viewport: Rect,
-    /// From a document `x` to the viewport's: the shifts of the sticky
-    /// boxes being walked into (M11).
+    /// The viewport itself, which a fixed box is listed for.
+    window: Rect,
+    /// The viewport's scroll offset: the document's groups' matrix.
+    scroll: f32,
+    /// From a document `x` to the coordinates of the group being walked
+    /// into: the shifts of the sticky boxes being walked into (M11).
     dx: f32,
-    /// From a document `y` to the viewport's: the viewport's scroll
-    /// offset and the offsets of the scroll containers being walked
-    /// into, negated, and the shifts of the sticky boxes.
+    /// From a document `y` to the coordinates of the group being walked
+    /// into: the offsets of the scroll containers being walked into,
+    /// negated, and the shifts of the sticky boxes; inside a fixed box
+    /// placed against the viewport, from the viewport's `y`.
     dy: f32,
     /// The clips in force, outermost first: each clipping box being
     /// walked into, as [`Step::PushClip`] names it, with its effective
@@ -244,6 +365,14 @@ struct Walk<'a, 'o> {
     /// descendants (M19) are being walked into: a `position: fixed` box
     /// inside one scrolls with it.
     contained: u32,
+    /// How many `position: fixed` boxes placed against the viewport are
+    /// being walked into.
+    fixed: u32,
+    /// Where the open group of the document's content begins in
+    /// `steps`, if one is open (M19).
+    segment: Option<usize>,
+    /// How many groups of the document's content have been opened.
+    segments: u32,
     /// The positioned boxes met under one stacking context that belong
     /// to another, the one their [`Fragment::stacking_parent`] names
     /// (M19), with the walk's state where they were met, waiting for
@@ -282,6 +411,25 @@ impl Positioned<'_> {
             .filter(|_| self.f.style.position.is_positioned() || self.item)
             .unwrap_or(0)
     }
+}
+
+/// Why the group of the box `f`, whose matrix is `matrix`, is a layer,
+/// or `None` for a group drawn through (M19, the compositing note's
+/// policy): its matrix rotates, skews or is 3D, or its `will-change`
+/// names a transform property, `opacity`, `perspective` or
+/// `transform-style`; a `will-change` naming `contents` makes no layer.
+fn layer_reason(f: &Fragment, matrix: &Matrix) -> Option<LayerReason> {
+    let will_change = f.style.effects().will_change;
+    if will_change.names(WillChange::CONTENTS) {
+        return None;
+    }
+    if !matrix.is_identity() && !matrix.translates_and_scales_only() {
+        return Some(LayerReason::Transformed);
+    }
+    if will_change.names_any(WillChange::LAYER) {
+        return Some(LayerReason::WillChange);
+    }
+    None
 }
 
 /// Whether the box `f` is a stacking context (CSS2 Appendix E, M19): a
@@ -349,6 +497,47 @@ enum Emit {
 }
 
 impl<'a> Walk<'a, '_> {
+    /// Opens a group of the document's content (M19): its steps are in
+    /// document coordinates, and its matrix is the scroll offset.
+    fn open_segment(&mut self) {
+        let matrix = Matrix::translate(0.0, -self.scroll, 0.0);
+        self.segment = Some(self.steps.len());
+        self.steps.push(Step::PushGroup {
+            fragment: None,
+            matrix,
+            opacity: 1.0,
+            key: GroupKey::Document(self.segments),
+            layer: Some(LayerReason::Scrolled),
+        });
+        self.segments += 1;
+        self.groups.push(matrix);
+    }
+
+    /// Closes the open group of the document's content, if any.
+    fn close_segment(&mut self) {
+        if self.segment.take().is_some() {
+            self.steps.push(Step::PopGroup);
+            self.groups.pop();
+        }
+    }
+
+    /// The viewport in the coordinates of the group being walked into:
+    /// the bounds of its image through the inverse of the group's
+    /// matrix, or the viewport itself when it has none.
+    fn window_in_group(&self) -> Rect {
+        let window = self.window;
+        self.groups
+            .last()
+            .and_then(|m| m.inverse())
+            .and_then(|inverse| inverse.bounds(window.x, window.y, window.w, window.h))
+            .map_or(window, |(x0, y0, x1, y1)| Rect {
+                x: x0,
+                y: y0,
+                w: x1 - x0,
+                h: y1 - y0,
+            })
+    }
+
     /// The effective clip in force in the group being walked into, if
     /// any: the clips of the groups around are in other coordinates.
     fn clip(&self) -> Option<Rect> {
@@ -360,26 +549,42 @@ impl<'a> Walk<'a, '_> {
             .map(|(_, rect, _)| *rect)
     }
 
-    /// Whether the viewport meets `rect`, a rectangle in the coordinates
-    /// of the group being walked into: through the group's matrix
-    /// (M19). A rectangle whose image cannot be told is taken to be met.
+    /// Whether what is listed meets `rect`, a rectangle in the
+    /// coordinates of the group being walked into: through the group's
+    /// matrix (M19). A rectangle whose image cannot be told is taken to
+    /// be met. Inside a fixed box, the viewport alone is listed.
     fn visible(&self, rect: Rect) -> bool {
+        let listed = if self.fixed > 0 {
+            self.window
+        } else {
+            self.viewport
+        };
+        match self.to_viewport(rect) {
+            Some(rect) => rect.meets(&listed),
+            None => true,
+        }
+    }
+
+    /// `rect`, in the coordinates of the group being walked into, in
+    /// viewport coordinates: the bounds of its image through the
+    /// group's matrix, or `None` when it has none. Outside every group,
+    /// inside a fixed box, they are the same.
+    fn to_viewport(&self, rect: Rect) -> Option<Rect> {
         match self.groups.last() {
-            None => rect.meets(&self.viewport),
-            Some(m) => match m.bounds(rect.x, rect.y, rect.w, rect.h) {
-                Some((x0, y0, x1, y1)) => Rect {
+            None => Some(rect),
+            Some(m) => m
+                .bounds(rect.x, rect.y, rect.w, rect.h)
+                .map(|(x0, y0, x1, y1)| Rect {
                     x: x0,
                     y: y0,
                     w: x1 - x0,
                     h: y1 - y0,
-                }
-                .meets(&self.viewport),
-                None => true,
-            },
+                }),
         }
     }
 
-    /// A fragment's box in viewport coordinates.
+    /// A fragment's box in the coordinates of the group being walked
+    /// into.
     fn rect_of(&self, f: &Fragment) -> Rect {
         Rect {
             x: f.x + self.dx,
@@ -409,21 +614,50 @@ impl<'a> Walk<'a, '_> {
     /// Runs `body` with the shifts the box `f` gets in force, for it
     /// and its subtree. A `position: fixed` box (M11), a root of the
     /// document's fragments by layout, is placed against the viewport
-    /// and does not scroll with the document: the viewport's offset is
-    /// left out — unless the box is inside a containing block for all
-    /// descendants (M19), under whose fragment layout put it, and with
-    /// which it scrolls. A `position: sticky` box is shifted to keep its
-    /// insets from the edges of the visible part of its scrollport — the
-    /// innermost clip, else the viewport — within its containing block,
-    /// whose padding box is `containing`.
+    /// and does not scroll with the document: it is listed outside the
+    /// document's groups, in viewport coordinates, the open group
+    /// closed before it and another opened after (M19) — unless the
+    /// box is inside a containing block for all descendants, under
+    /// whose fragment layout put it, and with which it scrolls; or
+    /// inside a group that is no containing block, an opacity group,
+    /// which it cannot leave, where it is listed in the group's
+    /// coordinates at the place the scroll offset gives it, and scrolls
+    /// as the group's content is listed again each frame. A `position:
+    /// sticky` box is shifted to keep its insets from the edges of the
+    /// visible part of its scrollport — the innermost clip, else the
+    /// viewport — within its containing block, whose padding box is
+    /// `containing`, all in the group's coordinates.
     fn shifted(&mut self, f: &'a Fragment, containing: Rect, body: impl FnOnce(&mut Self)) {
         let (dx, dy) = (self.dx, self.dy);
+        let mut fixed = false;
         match f.style.position {
-            Position::Fixed if self.contained == 0 => self.dy = 0.0,
+            Position::Fixed if self.contained == 0 => match self.groups.len() {
+                // The document's group alone is open: closed around it.
+                0 | 1 => {
+                    self.close_segment();
+                    self.dx = 0.0;
+                    self.dy = 0.0;
+                    fixed = true;
+                    self.fixed += 1;
+                }
+                _ => {
+                    // Where the viewport is in the group's coordinates:
+                    // the groups around translate, since one that does
+                    // more is a containing block.
+                    let (tx, ty) = self
+                        .groups
+                        .last()
+                        .and_then(|m| m.scale_and_translation())
+                        .map_or((0.0, 0.0), |(_, _, tx, ty)| (tx, ty));
+                    self.dx = -tx;
+                    self.dy = -ty;
+                }
+            },
             Position::Fixed => {}
             Position::Sticky => {
-                let scrollport = self.clip().unwrap_or(self.viewport);
-                let (sx, sy) = sticky_shift(&f.style, self.rect_of(f), containing, scrollport);
+                let scrollport = self.clip().unwrap_or_else(|| self.window_in_group());
+                let rect = self.rect_of(f);
+                let (sx, sy) = sticky_shift(&f.style, rect, containing, scrollport);
                 self.dx += sx;
                 self.dy += sy;
             }
@@ -432,6 +666,10 @@ impl<'a> Walk<'a, '_> {
         body(self);
         self.dx = dx;
         self.dy = dy;
+        if fixed {
+            self.fixed -= 1;
+            self.open_segment();
+        }
     }
 
     /// Runs `body` over the content of the box `f`, given its padding
@@ -478,9 +716,55 @@ impl<'a> Walk<'a, '_> {
         }
         self.chain.push((node, effective, self.groups.len()));
         let offset = node.map_or(0.0, |node| self.offsets.offset(node));
-        self.dy -= offset;
+        // The scrolled content of a container whose `will-change` names
+        // `scroll-position` is a group that is a layer (M19), its matrix
+        // the offset, its steps inside unscrolled: a scroll of it is a
+        // composite. Any other container's content is moved by the
+        // offset as it is listed.
+        let scroll_layer = node.filter(|_| {
+            f.style
+                .effects()
+                .will_change
+                .names(WillChange::SCROLL_POSITION)
+        });
+        let opened = match scroll_layer {
+            Some(node) => {
+                let matrix = Matrix::translate(0.0, -offset, 0.0);
+                if emit != Emit::Nothing {
+                    self.steps.push(Step::PushGroup {
+                        fragment: Some(f),
+                        matrix,
+                        opacity: 1.0,
+                        key: GroupKey::Scroll(node),
+                        layer: Some(LayerReason::Scrolled),
+                    });
+                }
+                let composed = self
+                    .groups
+                    .last()
+                    .map_or(matrix, |outer| outer.then(&matrix));
+                self.groups.push(composed);
+                2
+            }
+            None => {
+                self.dy -= offset;
+                1
+            }
+        };
         body(self, padding_box);
-        self.dy += offset;
+        match scroll_layer {
+            Some(_) => {
+                self.groups.pop();
+                if emit != Emit::Nothing {
+                    if self.steps.len() == mark + opened {
+                        self.steps.pop();
+                    } else {
+                        self.steps.push(Step::PopGroup);
+                    }
+                }
+            }
+            None => self.dy += offset,
+        }
         self.chain.pop();
         if emit == Emit::ClipAndScrollbar && shows_scrollbar(f) {
             self.steps.push(Step::Scrollbar {
@@ -509,9 +793,10 @@ impl<'a> Walk<'a, '_> {
     /// tree order: the roots layout moved out of the root element's.
     fn stacking(&mut self, f: &'a Fragment, containing: Rect, extra: &'a [Fragment]) {
         self.shifted(f, containing, |w| {
-            // The group the context is (M19): its matrix in viewport
-            // coordinates, about the box where the walk has it, and its
-            // opacity. A singular matrix displays nothing.
+            // The group the context is (M19): its matrix in the
+            // coordinates of the group around, about the box where the
+            // walk has it, and its opacity. A singular matrix displays
+            // nothing.
             let rect = w.rect_of(f);
             let matrix = f.matrix(containing.w).map(|m| {
                 Matrix::translate(rect.x, rect.y, 0.0)
@@ -522,12 +807,20 @@ impl<'a> Walk<'a, '_> {
                 return;
             }
             let opacity = f.style.effects().opacity;
-            let group = (matrix.is_some() || opacity < 1.0).then(|| {
-                let matrix = matrix.unwrap_or(Matrix::IDENTITY);
+            let transformed = matrix.is_some();
+            let matrix = matrix.unwrap_or(Matrix::IDENTITY);
+            let layer = layer_reason(f, &matrix);
+            // A group when the box has a transform, an identity one
+            // too, or an opacity below one; or is a layer by its
+            // `will-change` alone, the author's word that its matrix or
+            // opacity is about to change.
+            let group = (transformed || opacity < 1.0 || layer.is_some()).then(|| {
                 w.steps.push(Step::PushGroup {
-                    fragment: f,
+                    fragment: Some(f),
                     matrix,
                     opacity,
+                    key: GroupKey::Box(f.stacking_key()),
+                    layer,
                 });
                 let composed = w.groups.last().map_or(matrix, |outer| outer.then(&matrix));
                 w.groups.push(composed);
@@ -901,19 +1194,54 @@ mod tests {
                     fragment,
                     matrix,
                     opacity,
+                    key,
+                    layer,
                 } => {
+                    let Some(fragment) = fragment else {
+                        let GroupKey::Document(n) = key else {
+                            panic!("a group without a box is the document's");
+                        };
+                        return match matrix.to_2d() {
+                            Some([_, _, _, _, _, dy]) if dy != 0.0 => {
+                                format!("document {n} at {}", -dy)
+                            }
+                            _ => format!("document {n}"),
+                        };
+                    };
                     let node = layout.number(fragment.node);
+                    let kind = match key {
+                        GroupKey::Scroll(_) => "scroll ",
+                        _ => "",
+                    };
+                    let layer = layer.map_or(String::new(), |l| format!(" {l:?}"));
                     match matrix.to_2d() {
                         Some(m) if !matrix.is_identity() => {
-                            format!("group {node} {opacity} {m:?}")
+                            format!("{kind}group {node} {opacity} {m:?}{layer}")
                         }
-                        _ => format!("group {node} {opacity}"),
+                        _ => format!("{kind}group {node} {opacity}{layer}"),
                     }
                 }
                 Step::PopGroup => "endgroup".to_string(),
                 Step::Scrollbar { offset, .. } => format!("scrollbar {offset}"),
             })
             .collect()
+    }
+
+    /// The names of the steps inside the document's group, which is one
+    /// and holds every step of a document without fixed boxes (M19).
+    fn content(layout: &Laid, steps: &[Step<'_>]) -> Vec<String> {
+        let names = names(layout, steps);
+        assert_eq!(
+            names.first().map(String::as_str),
+            Some("document 0"),
+            "{names:?}"
+        );
+        assert_eq!(
+            names.last().map(String::as_str),
+            Some("endgroup"),
+            "{names:?}"
+        );
+        names[1..names.len() - 1].to_vec()
     }
 
     #[test]
@@ -937,7 +1265,7 @@ mod tests {
         let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
         let clip = format!("clip 3 5 {} 100 50", m.line_height() + 5.0);
         assert_eq!(
-            names(&layout, &steps),
+            content(&layout, &steps),
             vec![
                 "box 1".to_string(),
                 "box 2".to_string(),
@@ -998,10 +1326,11 @@ mod tests {
     }
 
     #[test]
-    fn rectangles_are_in_viewport_coordinates_and_offsets_apply_inside_the_clip() {
+    fn rectangles_are_in_document_coordinates_and_offsets_apply_inside_the_clip() {
         // The page scrolled by 20, the 100px scroll container (node 2)
-        // scrolled by 30: its own box is at document 0, viewport -20;
-        // its child (node 3, 200px tall) at viewport -20 - 30. The clip
+        // scrolled by 30: the document's group carries the page's
+        // offset (M19), so its own box is at document 0 as the walk
+        // lists it; its child (node 3, 200px tall) at 0 - 30. The clip
         // rectangle is the container's padding box, not moved by the
         // container's own offset; with no clip around it, the effective
         // clip is that padding box itself.
@@ -1032,32 +1361,44 @@ mod tests {
                 })
                 .expect("the box has a step")
         };
-        assert_eq!(rect(2).y, -20.0);
-        assert_eq!(rect(3).y, -50.0);
+        assert_eq!(rect(2).y, 0.0);
+        assert_eq!(rect(3).y, -30.0);
         assert!(matches!(
-            steps[2],
+            steps[3],
             Step::PushClip {
                 node,
                 rect: Rect {
-                    y: -20.0,
+                    y: 0.0,
                     h: 100.0,
                     ..
                 }
             } if node.map(|node| layout.number(node)) == Some(2)
         ));
+        assert!(matches!(
+            steps[0],
+            Step::PushGroup {
+                fragment: None,
+                key: GroupKey::Document(0),
+                layer: Some(LayerReason::Scrolled),
+                matrix,
+                ..
+            } if matrix.scale_and_translation() == Some((1.0, 1.0, 0.0, -20.0))
+        ));
         // The scrollbar is painted over the content, in the last pass.
         assert_eq!(
-            names(&layout, &steps)[2..],
+            names(&layout, &steps)[3..],
             [
-                "clip 2 0 -20 800 100",
+                "clip 2 0 0 800 100",
                 "box 3",
                 "pop",
-                "clip 2 0 -20 800 100",
+                "clip 2 0 0 800 100",
                 "scrollbar 30",
-                "pop"
+                "pop",
+                "endgroup"
             ]
             .map(String::from)
         );
+        assert_eq!(names(&layout, &steps)[0], "document 0 at 20");
     }
 
     #[test]
@@ -1127,7 +1468,7 @@ mod tests {
         );
         let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
         assert_eq!(
-            names(&layout, &steps),
+            content(&layout, &steps),
             ["box 1", "box 3", "text y", "box 2", "text x"].map(String::from)
         );
         // An absolute box the initial containing block positions is a
@@ -1142,7 +1483,7 @@ mod tests {
         assert_eq!(layout.roots.len(), 2);
         let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
         assert_eq!(
-            names(&layout, &steps),
+            content(&layout, &steps),
             ["box 1", "box 3", "text y", "box 2", "text x"].map(String::from)
         );
     }
@@ -1160,7 +1501,7 @@ mod tests {
         );
         let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
         assert_eq!(
-            names(&layout, &steps),
+            content(&layout, &steps),
             ["box 1", "box 3", "box 2", "text f", "text b"].map(String::from)
         );
     }
@@ -1189,7 +1530,7 @@ mod tests {
         );
         let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
         assert_eq!(
-            names(&layout, &steps),
+            content(&layout, &steps),
             [
                 "box 1", "box 2", "box 3", "box 6", "box 7", "box 5", "box 4"
             ]
@@ -1209,7 +1550,7 @@ mod tests {
         );
         let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
         assert_eq!(
-            names(&layout, &steps),
+            content(&layout, &steps),
             ["box 1", "box 2", "box 3", "box 4"].map(String::from)
         );
         // A positioned box with `z-index: auto` does not: its negative
@@ -1226,7 +1567,7 @@ mod tests {
         );
         let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
         assert_eq!(
-            names(&layout, &steps),
+            content(&layout, &steps),
             ["box 1", "box 3", "box 4", "box 2"].map(String::from)
         );
     }
@@ -1251,7 +1592,7 @@ mod tests {
         );
         let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
         assert_eq!(
-            names(&layout, &steps),
+            content(&layout, &steps),
             [
                 "box 1",
                 "box 2",
@@ -1386,8 +1727,10 @@ mod tests {
     fn the_walk_shifts_a_sticky_box_and_its_content_together() {
         // A 300px container holding a 20px sticky box with `top: 0` and
         // a text, the page scrolled by 100: the box and its text are
-        // held at the viewport's top; scrolled by 290, the container's
-        // bottom at 10 holds the box 10px up. Nodes: div 1, s 2.
+        // held at the viewport's top, document 100 (M19: the steps are
+        // in document coordinates); scrolled by 290, the container's
+        // bottom at 300 holds the box 10px up from the viewport's top,
+        // at 280. Nodes: div 1, s 2.
         let layout = layout_of(
             Element::new("div").push(Element::new("div").attr("class", "s").text("x")),
             "div { margin: 0; height: 300px; } .s { position: sticky; top: 0; height: 20px; }",
@@ -1418,10 +1761,14 @@ mod tests {
             (s, text)
         };
         assert_eq!(rects(0.0), (0.0, 0.0));
-        assert_eq!(rects(100.0), (0.0, 0.0), "held at the top, text with it");
+        assert_eq!(
+            rects(100.0),
+            (100.0, 100.0),
+            "held at the top, text with it"
+        );
         assert_eq!(
             rects(290.0),
-            (-10.0, -10.0),
+            (280.0, 280.0),
             "held by the container's bottom"
         );
     }
@@ -1439,7 +1786,7 @@ mod tests {
         );
         let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
         assert_eq!(
-            names(&layout, &steps),
+            content(&layout, &steps),
             ["box 1", "box 2", "text x", "text y"].map(String::from)
         );
     }
@@ -1509,7 +1856,7 @@ mod tests {
         ] {
             let layout = layout_of(page(), css);
             let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
-            assert_eq!(names(&layout, &steps), expected, "{css}");
+            assert_eq!(content(&layout, &steps), expected, "{css}");
         }
     }
 
@@ -1532,7 +1879,7 @@ mod tests {
             let layout = layout_of(page(), &format!("{base} .f {{ display: {display} }}"));
             let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
             assert_eq!(
-                names(&layout, &steps),
+                content(&layout, &steps),
                 [
                     "box 1", "box 4", "text c", "box 3", "text b", "box 2", "text a"
                 ],
@@ -1542,7 +1889,7 @@ mod tests {
         let layout = layout_of(page(), base);
         let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
         assert_eq!(
-            names(&layout, &steps),
+            content(&layout, &steps),
             [
                 "box 1", "box 2", "box 3", "box 4", "text a", "text b", "text c"
             ]
@@ -1639,7 +1986,7 @@ mod tests {
         );
         let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
         assert_eq!(
-            names(&layout, &steps),
+            content(&layout, &steps),
             [
                 "box 1",
                 "box 3",
@@ -1667,7 +2014,7 @@ mod tests {
         );
         let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
         assert_eq!(
-            names(&layout, &steps),
+            content(&layout, &steps),
             [
                 "box 1",
                 "group 2 1",
@@ -1686,7 +2033,7 @@ mod tests {
         );
         let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
         assert_eq!(
-            names(&layout, &steps),
+            content(&layout, &steps),
             [
                 "box 1",
                 "group 2 0.5",
@@ -1725,7 +2072,7 @@ mod tests {
             );
             let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
             assert_eq!(
-                names(&layout, &steps),
+                content(&layout, &steps),
                 [
                     "box 1",
                     "group 2 0.5",
@@ -1759,7 +2106,7 @@ mod tests {
         );
         let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
         assert_eq!(
-            names(&layout, &steps),
+            content(&layout, &steps),
             [
                 "box 1",
                 "box 2",
@@ -1782,10 +2129,11 @@ mod tests {
             "div, p { margin: 0; } .s { transform: scale(0); }",
         );
         let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
-        assert_eq!(names(&layout, &steps), ["box 1", "box 3", "text b"]);
+        assert_eq!(content(&layout, &steps), ["box 1", "box 3", "text b"]);
         // The group's matrix is about the box where the walk has it, in
-        // viewport coordinates: a box at (0, 20) 100 by 50, scaled by 2
-        // about its centre, with the viewport scrolled by 5.
+        // the document's coordinates whatever the scroll offset: a box
+        // at (0, 20) 100 by 50, scaled by 2 about its centre, with the
+        // viewport scrolled by 5.
         let layout = layout_of(
             Element::new("div")
                 .push(Element::new("p").text("a"))
@@ -1798,11 +2146,11 @@ mod tests {
             scroll_y: 5.0,
         };
         let steps = paint_order(&layout.roots, viewport, &());
-        // Origin at (50, 40) in viewport coordinates: translate(50, 40)
-        // scale(2) translate(-50, -40) is matrix(2, 0, 0, 2, -50, -40).
+        // Origin at (50, 45) in document coordinates: translate(50, 45)
+        // scale(2) translate(-50, -45) is matrix(2, 0, 0, 2, -50, -45).
         assert!(
             names(&layout, &steps)
-                .contains(&"group 3 1 [2.0, 0.0, 0.0, 2.0, -50.0, -40.0]".to_string()),
+                .contains(&"group 3 1 [2.0, 0.0, 0.0, 2.0, -50.0, -45.0]".to_string()),
             "{:?}",
             names(&layout, &steps)
         );
@@ -1812,7 +2160,10 @@ mod tests {
     fn a_fixed_box_inside_a_transformed_box_scrolls_with_it() {
         // css-transforms-1 §2 (M19): the transformed box is the fixed
         // box's containing block, so the fixed box scrolls with the
-        // page, while one outside any transformed box stays put.
+        // page, listed inside the document's group in document
+        // coordinates; one outside any transformed box stays put,
+        // listed outside the document's groups in viewport coordinates,
+        // between the group before it and the one after.
         // <div><div class=w><div class=f></div></div><div class=g></div>
         // </div>: nodes div 1, div.w 2, div.f 3, div.g 4.
         let layout = layout_of(
@@ -1832,7 +2183,7 @@ mod tests {
             scroll_y: 5.0,
         };
         let steps = paint_order(&layout.roots, viewport, &());
-        let rect = |node: usize| {
+        fn rect(layout: &Laid, steps: &[Step<'_>], node: usize) -> Rect {
             steps
                 .iter()
                 .find_map(|s| match s {
@@ -1842,10 +2193,85 @@ mod tests {
                     _ => None,
                 })
                 .expect("the box has a step")
-        };
-        assert_eq!(rect(3).y, 5.0, "scrolled with the page");
-        assert_eq!(rect(4).y, 10.0, "fixed to the viewport");
-        assert_eq!(rect(2).y, -5.0);
+        }
+        assert_eq!(
+            rect(&layout, &steps, 3).y,
+            10.0,
+            "scrolled with the page, in document coordinates"
+        );
+        assert_eq!(
+            rect(&layout, &steps, 4).y,
+            10.0,
+            "fixed to the viewport, in its coordinates"
+        );
+        assert_eq!(rect(&layout, &steps, 2).y, 0.0);
+        assert_eq!(
+            names(&layout, &steps),
+            [
+                "document 0 at 5",
+                "box 1",
+                "group 2 1",
+                "box 2",
+                "box 3",
+                "endgroup",
+                "endgroup",
+                "box 4"
+            ]
+        );
+        // The group after a fixed box is a second one, when anything
+        // follows: a positioned box after it in tree order. Nodes div
+        // 1, div.g 2, div.r 3.
+        let layout = layout_of(
+            Element::new("div")
+                .push(Element::new("div").attr("class", "g"))
+                .push(Element::new("div").attr("class", "r")),
+            "div { margin: 0; height: 20px; } .r { position: relative; }
+             .g { position: fixed; top: 10px; left: 0; width: 30px; height: 20px; }",
+        );
+        let steps = paint_order(&layout.roots, viewport, &());
+        assert_eq!(
+            names(&layout, &steps),
+            [
+                "document 0 at 5",
+                "box 1",
+                "endgroup",
+                "box 2",
+                "document 1 at 5",
+                "box 3",
+                "endgroup"
+            ]
+        );
+        // A fixed box inside a faded box, which is no containing block,
+        // cannot leave the faded box's group: it is listed in it, in
+        // document coordinates, where the scroll offset puts it. Nodes
+        // div 1, div.o 2, div.g 3.
+        let layout = layout_of(
+            Element::new("div").push(
+                Element::new("div")
+                    .attr("class", "o")
+                    .push(Element::new("div").attr("class", "g")),
+            ),
+            "div { margin: 0; height: 20px; } .o { opacity: 0.5; }
+             .g { position: fixed; top: 10px; left: 0; width: 30px; height: 20px; }",
+        );
+        let steps = paint_order(&layout.roots, viewport, &());
+        assert_eq!(
+            names(&layout, &steps),
+            [
+                "document 0 at 5",
+                "box 1",
+                "group 2 0.5",
+                "box 2",
+                "box 3",
+                "endgroup",
+                "endgroup"
+            ]
+        );
+        assert_eq!(
+            rect(&layout, &steps, 3).y,
+            15.0,
+            "viewport 10, scrolled by 5"
+        );
     }
 
     #[test]
@@ -1868,7 +2294,7 @@ mod tests {
         );
         let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
         assert_eq!(
-            names(&layout, &steps),
+            content(&layout, &steps),
             [
                 "group 2 1 [1.0, 0.0, 0.0, 1.0, 0.0, -2000.0]",
                 "box 2",

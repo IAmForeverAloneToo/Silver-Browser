@@ -372,19 +372,57 @@ impl Clipboard for SystemClipboard {
     }
 }
 
-/// What the command line asks to show: `None` for `about:silver`, or
-/// the URL to load. An argument naming an existing file is that file's
-/// `file:` URL; any other goes through the address field's rules
-/// (`engine::address`, M15.4), so `example.com` is
+/// What the command line asks for: the page to show, and the options.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CommandLine {
+    /// `None` for `about:silver`, or the URL to load.
+    start: Option<Url>,
+    /// `--layer-budget <MiB>`: how much the engine may hold in layers
+    /// (M19.6), in bytes, when given.
+    layer_budget: Option<usize>,
+}
+
+/// The command line parsed: at most one URL or path, and the options
+/// in any order around it. An argument naming an existing file is that
+/// file's `file:` URL; any other goes through the address field's
+/// rules (`engine::address`, M15.4), so `example.com` is
 /// `https://example.com/`. The file comes first: on Windows,
 /// `C:\page.html` parses as a URL too, of the scheme `c`.
-fn start_page(mut args: impl Iterator<Item = OsString>) -> Result<Option<Url>, String> {
-    let Some(arg) = args.next() else {
-        return Ok(None);
+fn command_line(args: impl Iterator<Item = OsString>) -> Result<CommandLine, String> {
+    let mut line = CommandLine {
+        start: None,
+        layer_budget: None,
     };
-    if args.next().is_some() {
-        return Err("one URL or path at most".to_owned());
+    let mut page: Option<OsString> = None;
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        if arg == "--layer-budget" {
+            let value = args
+                .next()
+                .ok_or_else(|| "--layer-budget takes a size in MiB".to_owned())?;
+            let mib: usize = value
+                .to_str()
+                .and_then(|v| v.parse().ok())
+                .ok_or_else(|| format!("{}: not a size in MiB", value.to_string_lossy()))?;
+            line.layer_budget = Some(
+                mib.checked_mul(1 << 20)
+                    .ok_or_else(|| format!("{mib} MiB: too large"))?,
+            );
+            continue;
+        }
+        if page.replace(arg).is_some() {
+            return Err("one URL or path at most".to_owned());
+        }
     }
+    line.start = match page {
+        Some(arg) => start_page(arg)?,
+        None => None,
+    };
+    Ok(line)
+}
+
+/// The page an argument names (see [`command_line`]).
+fn start_page(arg: OsString) -> Result<Option<Url>, String> {
     let path = Path::new(&arg);
     if path.exists() {
         let absolute =
@@ -404,14 +442,15 @@ fn start_page(mut args: impl Iterator<Item = OsString>) -> Result<Option<Url>, S
 }
 
 fn main() {
-    let start = match start_page(std::env::args_os().skip(1)) {
-        Ok(start) => start,
+    let line = match command_line(std::env::args_os().skip(1)) {
+        Ok(line) => line,
         Err(message) => {
             eprintln!("silver-browser: {message}");
-            eprintln!("usage: silver-browser [URL or path]");
+            eprintln!("usage: silver-browser [--layer-budget <MiB>] [URL or path]");
             std::process::exit(2);
         }
     };
+    let start = line.start;
 
     let mut engine = match Engine::new() {
         Ok(engine) => engine,
@@ -420,6 +459,9 @@ fn main() {
             return;
         }
     };
+    if let Some(bytes) = line.layer_budget {
+        engine.set_layer_budget(bytes);
+    }
 
     let event_loop = match EventLoop::<NetworkWake>::with_user_event().build() {
         Ok(event_loop) => event_loop,
@@ -451,7 +493,38 @@ mod tests {
     use super::*;
 
     fn start(args: &[&str]) -> Result<Option<Url>, String> {
-        start_page(args.iter().map(OsString::from))
+        command_line(args.iter().map(OsString::from)).map(|line| line.start)
+    }
+
+    #[test]
+    fn the_layer_budget_option_is_in_mebibytes_anywhere_on_the_line() {
+        let line = |args: &[&str]| command_line(args.iter().map(OsString::from));
+        assert_eq!(
+            line(&["--layer-budget", "16", "https://example.com/"]),
+            Ok(CommandLine {
+                start: Some(Url::parse("https://example.com/").unwrap()),
+                layer_budget: Some(16 << 20),
+            })
+        );
+        assert_eq!(
+            line(&["https://example.com/", "--layer-budget", "0"]),
+            Ok(CommandLine {
+                start: Some(Url::parse("https://example.com/").unwrap()),
+                layer_budget: Some(0),
+            })
+        );
+        assert_eq!(
+            line(&["--layer-budget"]),
+            Err("--layer-budget takes a size in MiB".to_owned())
+        );
+        assert_eq!(
+            line(&["--layer-budget", "lots"]),
+            Err("lots: not a size in MiB".to_owned())
+        );
+        assert_eq!(
+            line(&["a", "--layer-budget", "1", "b"]),
+            Err("one URL or path at most".to_owned())
+        );
     }
 
     #[test]
