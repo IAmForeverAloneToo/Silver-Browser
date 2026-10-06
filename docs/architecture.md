@@ -60,9 +60,12 @@ shell          (bin "silver-browser": windowing, event loop, input, clipboard)
    macOS, and Linux. No `#[cfg(windows)]` outside `shell` and `render`,
    but for one thing in `net`: turning a `file:` URL's path into a
    drive-letter path, and back in its tests (M14).
-7. **Rendering is pluggable.** `render` exposes a backend trait; the
-   software backend (tiny-skia → softbuffer) is the default, a wgpu
-   backend lands behind the same trait later.
+7. **Rendering is pluggable.** `render` exposes a backend trait. The
+   software backend (tiny-skia) is the permanent fallback; since M19 a
+   wgpu backend behind the `gpu` feature draws the same display lists
+   behind the same trait, and the shell draws on it where the machine
+   has an adapter (D3, D8). Both hand the shell a frame it presents
+   through softbuffer (D9).
 
 ## Why this shape scales toward "Chrome-scale"
 
@@ -992,3 +995,76 @@ layout unit's rounding against the reference browser's 64ths of a pixel,
 and absolutely positioned boxes inside floats placed before the float
 was, fixed here with tests. 1,272 tests workspace-wide. Next milestone:
 compositing, transforms and accelerated scroll (M19).
+
+Milestone 19 (compositing, transforms and accelerated scroll), designed
+in `docs/design/compositing.md` and built in its eleven steps. The
+cascade (step 1) takes `transform` with its 2D and 3D functions,
+`transform-origin`, `transform-box`, the individual `translate`,
+`rotate` and `scale`, `transform-style`, `perspective`,
+`perspective-origin`, `backface-visibility`, `opacity` and
+`will-change`, behind one pointer in the computed style, which grows by
+its eight bytes; `style::transform` owns the four-by-four matrix, exact
+at the right angles as the reference browser's rotation is, its numbers
+clamped so that every matrix stays finite. Layout (step 2) makes a
+transformed, perspective, `preserve-3d` or `will-change` box a
+containing block for its fixed descendants, measures the scroll extent
+by whatever content reaches, a transformed box by its projected bounds,
+and shares one stacking-context predicate with paint. The display list
+(step 3) gains groups, `PushGroup` with a matrix, an opacity, a key and
+a layer reason, and `PopGroup`: a group that only translates and scales
+is drawn through the raster, text rasterized at the size the scale
+makes, and any other from a scratch, resampled bilinearly by the
+backend's own inverse mapping, the partial redraw mapping damage through
+the groups and kept exact. Hit testing (step 4) maps the point through
+the inverse matrices. Layers (step 5): a group whose matrix turns, skews
+or is projective, or whose `will-change` asks, is kept as a pixmap under
+its key and composited by its matrix, drawn again only where its own
+items changed, under a budget of 64 MiB (`--layer-budget`) with the
+least recently composited let go; the document's content is groups of
+its own, translated by the scroll offset rounded to whole pixels, kept
+as tiles 256 pixels tall, a margin a viewport's height either side
+listed and drawn ahead, and the diff of two lists became a longest
+common subsequence so that content entering the margin damages its tiles
+alone. 3D (step 6): `preserve-3d` contexts whose members carry
+accumulated matrices, painted by depth, furthest first, perspective on a
+parent's children, hidden backfaces neither painted nor hit, projective
+composites resampled through the inverse. The web-platform-tests subset
+(step 7) took 325 tests of `css/css-transforms` and
+`css/css-will-change` by M17's rule; 866 of the subset's 896 pass. The
+GPU backend (step 8), `render::gpu` on wgpu behind the `gpu` feature,
+draws the same lists with four pipelines, the glyph masks and polygon
+coverage shared with the software backend, keeps the same layers as
+textures and reads the frame back for softbuffer; the shell draws on it
+unless `--software` is given or there is no adapter, and an equivalence
+suite holds it to the software backend within two levels inside shapes
+and sixty-four at edges over every reference page, every layout and
+twelve pages of its own, on Mesa's software Vulkan driver here and on
+CI. Ten reference pages, 70 to 79, and four acceptance layouts (step 9)
+found a border's corners covered twice under a scale, now one `Border`
+band, a perspective lost through an untransformed `preserve-3d` root, a
+plane past its horizon not drawn, and a scaled layer drawn soft, now
+rasterized at its scale. The compositing benchmark (step 10) measures a
+scroll of the mutation page at 2.0–2.6ms a frame on the software
+backend, where a frame moves the last one's pixels by the scroll and
+draws the strip it uncovers, the tiles of the margin drawn ahead after
+the frame is presented (`Engine::draw_ahead`), no tile rasterized in a
+frame; a turned card at 11–12ms, its layer composited, most of the frame
+the card's layout again; and on the GPU backend, on the software driver,
+11–13ms and 21ms. T4.3 found the frame drawing ahead to its deadline,
+the paint walk projecting every fragment's corners, layout walking every
+fragment twice, and tiles drawing every item of the margin, mended; what
+remains over its line, the first frame of a page drawing its rows of
+tiles, and an appended paragraph's frame, its layout passing the
+last-level cache with fragments 32 bytes larger and its paint visiting
+every fragment, is written down in `docs/perf-budgets.md` with M35.10,
+M35.9 and M35.4 to undo it. The three fuzz targets that lay pages out
+ran fifteen minutes each with the transform keywords in a dictionary and
+found no crash, hang or input over the memory limit in 3,780, 3,320 and
+229,750 runs. Not in this milestone, said rather than hidden: animations
+(M22), and a change of `transform` alone laying the box out again
+(M35.9); raster at the device transform and layers above the document's
+tiles (M35.10); presenting the GPU frame without the readback (M37);
+plane splitting; `filter` and the other grouping properties; the
+horizontal scroll extent; and sixty frames a second measured on an
+integrated GPU, there being none here (M19.8). 1,356 tests
+workspace-wide. Next milestone: media queries and printing (M20).

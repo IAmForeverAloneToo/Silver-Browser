@@ -44,8 +44,12 @@ nothing that changes what is shown.
   one step. The first frame after a scroll begins moves one sixtieth's
   step, however long the engine was idle.
 - The deadline is passed into every frame for the work to come that
-  can wait: M19's re-raster of layers and M22's animations. That work
-  is to stop at the deadline and finish in a later frame.
+  can wait. Since M19 that work is done after the frame is presented,
+  in the time before the deadline: the shell calls
+  `Engine::draw_ahead`, which draws the tiles of the margin around
+  the viewport, nearest first, and leaves what it has no time for to
+  a later call or to a frame that shows it. It is not part of the
+  frame or its stages. M22's animations will be timed the same way.
 
 ## How the numbers are taken
 
@@ -65,6 +69,8 @@ nothing that changes what is shown.
   - `cargo bench -p engine --bench load` (M14; going back, M15).
   - `cargo bench -p engine --bench pseudo` (M16.5).
   - `cargo bench -p engine --bench flex` (M17).
+  - `cargo bench -p engine --bench grid` (M18).
+  - `cargo bench -p engine --bench composite` (M19), on both backends.
   - `cargo bench -p style --bench match` (M4.12; recorded since M16).
   - Criterion-tracked benchmarks run in CI are T4.2, for M35.
 - **Counters** prove work that is not done: `Engine::style_runs`,
@@ -90,7 +96,8 @@ frame for 120 frames drawn sixty a second. Two runs of each build:
 | Frames over 16.7ms | 0 of 120 | 0–2 of 120 |
 
 A scroll redraws the whole frame (M13.3), so raster is most of it.
-Redrawing a shifted frame instead is M19's.
+Redrawing a shifted frame instead is M19's, which takes a scroll
+frame's raster from 3.0ms to 0.85ms ("Compositing", below).
 
 ### Changing the document
 
@@ -448,6 +455,155 @@ of one-pixel tracks in a container a million pixels wide stops at
 10,000 tracks, 11ms; a thousand items each spanning a thousand of two
 thousand `auto` tracks take 0.7s, growing with the items times their
 spans (two thousand over two thousand, 2.8s).
+
+### Compositing (M19)
+
+**The compositing benchmark.** `benches/composite.rs`, at 1280 by 800,
+in release, two runs, on the software backend and on the GPU backend.
+The one adapter here is Mesa's software Vulkan driver, llvmpipe (LLVM
+20.1.2, 256 bits), which runs the shaders on the CPU: its column says
+what the GPU backend costs on such a driver, not on a GPU. The rows
+are the mutation benchmark's page of 1,000 paragraphs scrolled 40px a
+frame for 120 frames drawn sixty a second, each frame followed by
+drawing ahead until its budget is spent, as the shell does; a card of
+twelve, inline blocks, turned two degrees or moved two pixels a frame
+through `Engine::mutate` on its `style` attribute, with and without
+`will-change: transform`; and 200 translated and faded cards, drawn
+through, scrolled.
+
+| | Software | GPU on llvmpipe |
+| --- | --- | --- |
+| Scrolling: a frame, median | 1.98–2.57ms | 11.0–12.6ms |
+| Its paint and raster, median | 1.18–1.52 and 0.79–0.99ms | 2.3–2.5 and 8.8–10.0ms |
+| The worst frame; frames over 16.7ms | 3.4–3.8ms; 0 of 120 | 16.1–16.2ms; 0 of 120 |
+| A card turned: a frame, median | 11.4–12.1ms | 20.6–20.7ms |
+| Its layout and raster, median | 8.5–9.0 and 2.7–2.8ms | 9.3–9.5 and 10.8–10.9ms |
+| Those frames over 16.7ms | 2–5 of 120 | 120 of 120 |
+| The same, `will-change: transform` | 11.7–12.0ms; 4–17 over | 20.8–21.4ms; 120 over |
+| A card moved: a frame, median | 9.3–9.4ms | 21.2–21.7ms |
+| Its raster, median | 0.43–0.44ms | 11.1–11.4ms |
+| The same, `will-change: transform` | 9.2–9.4ms, raster 0.38–0.39ms | 21.2–21.5ms |
+| 200 faded cards: the first frame | 109–147ms | 187–206ms |
+| A scroll frame of them, median; over 16.7ms | 1.8–1.9ms; 0 of 120 | 10.6–10.7ms; 18 of 120 |
+
+What the counters say, the same in both runs: on both backends every
+frame of the scroll is a composite of the document's tiles, and no
+frame rasterizes a tile, the 24 the scroll brings in having been drawn
+ahead after the frames before them; the layer holds 12.5 MiB. On the
+software backend a scroll frame moves the last frame's pixels by the
+scroll and draws again only what the move uncovers and what does not
+move with it. The turned card is a layer with or without
+`will-change`, as the policy says of a turned box: drawn once and
+composited at each of the 120 frames. It is inside the document's
+tiles, so a frame draws the tiles it reaches again, two a frame on the
+software backend, 56,000 pixels, before compositing them (M35.10).
+The moved card is drawn through without `will-change` and composited
+with it, both a partial redraw of 33,000 pixels a frame. Most of a
+card's frame is its layout: a change to the `style` attribute lays
+the card out again though only its transform changed, 8.5–9.0ms of
+inline layout (M35.9, which a transition will need, M22). The GPU
+backend draws every frame whole and reads it back (D9); on llvmpipe
+that is 9–11ms of raster a frame, which a scroll stays inside the
+budget with and a card's frame does not.
+
+M19.7's acceptance, sixty frames a second for the scroll and the
+turned card on both backends: on the software backend, met by the
+scroll in every frame, and by the turned card in 103–118 frames of
+120, the frames over the budget long by their layout, not by the
+composite; on the GPU backend, met by the scroll on llvmpipe, and to
+be measured on an integrated GPU, which this machine has not got.
+
+**T4.3.** The benchmarks above, run on the same kind of machine as
+M18's: the code before M19 (`d5cf89c`) and M19's built side by side
+in release, four rounds of each in turn. The ranges are over the
+rounds.
+
+| | Before M19 | M19 |
+| --- | --- | --- |
+| Scrolling: the layout, once | 363–415ms, median 390 | 371–415ms, median 374 |
+| Scrolling: a scroll frame, median | 3.5–4.1ms, median 3.6 | 1.3–1.8ms, median 1.6 |
+| Its raster, median | 3.0–3.5ms | 0.7–1.0ms |
+| Its paint, median | 0.48–0.60ms, median 0.53 | 0.50–0.84ms, median 0.65 |
+| Changing the document: the first frame | 746–833ms | 733–803ms |
+| An appended paragraph's frame, median | 16.6–20.4ms, median 19.4 | 20.1–23.4ms, median 21.5 |
+| Its layout, median | 14.5–17.6ms, median 16.8 | 16.9–19.5ms, median 18.0 |
+| Its paint, median | 1.7–2.2ms, median 2.0 | 2.6–3.1ms, median 2.8 |
+| Those frames over 16.7ms | 495–729 of 1,000 | 720–851 of 1,000 |
+| 1,000 appended in one frame | 754–868ms | 738–788ms |
+| Loading: `load` to the first frame drawn | 784–868ms | 776–837ms |
+| Going back to the page from the cache | 6.5–6.9ms, median 6.7 | 16.2–18.5ms, median 16.5 |
+| Going back to the page fetched again | 765–838ms | 778–821ms |
+| Matching: 1,000 selectors over 10,003 elements | 303–386ms, median 353 | 312–354ms, median 327 |
+| Flex: a grid of 1,000 cards, the first frame | 2.49–2.61s | 2.53–2.74s |
+| Flex: after a card's title changes, a frame, median | 2.51–2.54s | 2.64–2.67s |
+| Flex: a chain of 64 nested containers, its layout | 27.2–29.8ms, median 28.7 | 26.1–35.1ms, median 29.7 |
+| Grid: a gallery of 1,000 figures, the first frame | 939–1027ms | 939–1058ms |
+| Grid: after a caption changes, a frame, median | 911–974ms | 926–970ms |
+| Grid: a dashboard of 200 cards, the first frame | 327–351ms | 331–366ms |
+| Grid: a chain of 64 nested grids, its layout | 19.0–22.4ms | 19.5–21.7ms |
+
+The pseudo benchmark, the same four rounds:
+
+| Sheet | The first frame, before | M19 | An appended paragraph's frame, median, before | M19 |
+| --- | --- | --- | --- | --- |
+| None | 2.05–2.29s | 2.14–2.38s | 31.4–34.9ms, median 33.3 | 35.8–38.0ms, median 37.3 |
+| `::before` and `::after` | 2.22–2.44s | 2.19–2.32s | 41.5–48.5ms, median 42.7 | 44.9–51.0ms, median 48.0 |
+| `::first-letter` | 2.18–2.32s | 2.20–2.45s | 37.8–41.9ms, median 39.3 | 41.1–46.7ms, median 43.6 |
+| `::first-line`, colour and size | 2.58–2.86s | 2.56–2.99s | 42.5–50.4ms, median 47.5 | 47.8–50.4ms, median 49.0 |
+| `::first-line`, a background | 2.17–2.30s | 2.16–2.38s | 37.0–41.5ms, median 39.4 | 41.0–42.5ms, median 41.6 |
+| All of them | 2.74–2.98s | 2.58–2.88s | 76.4–82.6ms, median 77.2 | 79.5–84.8ms, median 84.1 |
+
+What T4.3 found on the way, and mended before these rounds: the
+frame drawing ahead until its deadline, which made going back to a
+page 20ms, now done after the frame; the paint walk projecting every
+fragment's corners through the document's group, now testing it
+against what is listed mapped into the group once; layout walking
+every fragment of the page a second time for its extent, now
+measured on the walk that makes them absolute; the box tree recording
+for every element whether it holds a 3D context; a layer copying its
+unchanged items, and the frame's list, every frame; and every tile
+drawing every item of the list. Under callgrind those took the
+appended paragraph's frames from 34% more instructions than before
+M19 to 8% more.
+
+Over T4.3's line, each written down with the item that will undo it:
+
+- **Going back to the page from the cache**, 2.5 times as long. The
+  page's first frame draws the four rows of tiles its viewport meets,
+  1,024 rows for 800, finding the extents of the margin's content to
+  draw each tile only what reaches it, and composites them, where
+  before M19 the frame was drawn once. Drawing the page through until
+  its tiles are drawn ahead would let what a frame shows depend on
+  how much time there was to draw ahead, since a group drawn into a
+  transparent tile and laid over the frame can differ at an
+  anti-aliased edge by a level from one drawn on it (the compositing
+  note, section 2). Tiles drawn opaque over the canvas colour,
+  composited as copies, draw the same pixels either way: M35.10.
+- **An appended paragraph's frame**, 11% longer by the medians, its
+  paint 38% and its layout 7%; and the pseudo benchmark's appended
+  paragraph's frame with no sheet, with `::before` and `::after` and
+  with `::first-letter`, 11–12% longer, the others within 10%. Under
+  callgrind, sixty such frames at 1,000 paragraphs run 8% more
+  instructions than before M19 and miss the last-level cache 2.8 times
+  as often, all but a few of the misses in the layout cache's copies
+  of the page's twenty thousand fragments and their computed styles:
+  a fragment is 32 bytes larger, 552, for the stacking context a
+  positioned box belongs to, its parent in the document and whether
+  it is in a 3D context, and its style 8, 440, and the copies now
+  pass the cache. Fragments that refer to their styles, a pass
+  copying only what it laid out, are M35.9. The paint walk, which
+  visits every fragment of the page at each frame, tests each through
+  the groups it is in and reads the stacking and containment rules of
+  the effects, and lists the margin's content, 2.2 times the
+  viewport's, which costs a tenth of a millisecond of it; a display
+  list kept from frame to frame, the walk visiting what changed, is
+  M35.4.
+- **The scroll frame's paint**, 23% longer by the medians, in a frame
+  57% shorter: the margin's content is listed, so that its tiles can
+  be drawn ahead and the raster be a composite.
+
+The flex chain's row moved more between rounds than between the two
+builds, as at M18; its medians are 3% apart.
 
 ### Over budget, and why
 

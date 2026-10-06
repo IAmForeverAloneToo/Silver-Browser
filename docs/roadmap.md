@@ -1155,22 +1155,62 @@ Per css-grid-1 (level 2 subgrid included):
 
 ## M19 — Compositing + transforms + accelerated scroll  ·  `render`  ·  Effort: XL  ·  Depends: M11, M13
 
-- [ ] M19.1 `transform` 2D: matrix, translate/rotate/scale/skew;
-       `transform-origin`; percentage resolution.
-- [ ] M19.2 `opacity` as a group; `transform`+`opacity` layers →
+- [x] M19.1 `transform` 2D: matrix, translate/rotate/scale/skew;
+       `transform-origin`; percentage resolution. Done 2026-10-06:
+       every 2D and 3D function, `transform-origin`, `transform-box`
+       and the individual `translate`, `rotate` and `scale`, behind one
+       pointer in the computed style; `style::transform`'s 4x4 matrix,
+       exact at the right angles; a translated or scaled box drawn
+       through the raster, its text rasterized at its scale.
+- [x] M19.2 `opacity` as a group; `transform`+`opacity` layers →
        composited subtrees (layer tree + layerization policy doc).
-- [ ] M19.3 GPU backend v1 via `wgpu` (decision D3): display list →
+       Done 2026-10-06: groups in the display list, drawn through or
+       from a scratch; a turned, skewed or projective group, or one
+       whose `will-change` asks, kept as a layer under its key and
+       composited by its matrix; the policy in
+       `docs/design/compositing.md`, `Engine::layers` reporting it.
+- [x] M19.3 GPU backend v1 via `wgpu` (decision D3): display list →
        render passes; tiny-skia retained as fallback (software path is
        first-class forever — lightweight machines are a stated goal).
-- [ ] M19.4 Composited scrolling: scrolling as a layer transform, no
-       repaint on scroll for composited content.
-- [ ] M19.5 3D transforms + perspective (matrix decomposition,
-       preserve-3d v1); `backface-visibility`.
-- [ ] M19.6 `will-change` hint; layer memory budget + eviction
-       (lightweight goal: hard cap configurable, default modest).
-- [ ] M19.7 Acceptance: 60fps scrolling + animated transform demos on
+       Done 2026-10-06: `render::gpu` behind the `gpu` feature, four
+       pipelines, the same layers as textures, the frame read back for
+       softbuffer; the shell draws on it where there is an adapter,
+       `--software` otherwise; an equivalence suite holds the two
+       backends together.
+- [x] M19.4 Composited scrolling: scrolling as a layer transform, no
+       repaint on scroll for composited content. Done 2026-10-06: the
+       document's content as layers of tiles translated by the
+       offset, rounded to whole pixels, a margin drawn ahead after the
+       frame; a scroll moves the last frame's pixels and draws the
+       strip it uncovers, no tile rasterized in a scroll's frames; an
+       element scroller with `will-change: scroll-position` the same.
+- [x] M19.5 3D transforms + perspective (matrix decomposition,
+       preserve-3d v1); `backface-visibility`. Done 2026-10-06:
+       perspective on a parent's children, `preserve-3d` contexts with
+       accumulated matrices painted by depth, hidden backfaces neither
+       painted nor hit, projective composites and hit testing through
+       the planar inverse; no plane splitting.
+- [x] M19.6 `will-change` hint; layer memory budget + eviction
+       (lightweight goal: hard cap configurable, default modest). Done
+       2026-10-06: 64 MiB by default, `--layer-budget <MiB>`, the
+       least recently composited let go, never one a frame shows, a
+       group the budget cannot hold drawn through.
+- [x] M19.7 Acceptance: 60fps scrolling + animated transform demos on
        integrated GPU; software path still passes all golden tests
-       (rendering equivalence test suite).
+       (rendering equivalence test suite). Done 2026-10-06 but for the
+       integrated GPU, which this machine has not got: on the software
+       backend a scroll of 1,000 paragraphs at 2.0–2.6ms a frame and a
+       turned card composited, its frames inside the budget but for
+       those its layout makes long; on the GPU backend, on Mesa's
+       software Vulkan driver, the scroll inside the budget
+       (`docs/perf-budgets.md`); every golden page passes on the
+       software path, and the equivalence suite holds the GPU backend
+       to it over every reference page and layout. The run on an
+       integrated GPU is M19.8.
+- [ ] M19.8 M19.7's GPU half measured on an integrated GPU: the
+       compositing benchmark's scroll and turned card inside 16.7ms a
+       frame on the GPU backend (found at M19: the machine the
+       milestone was built on has a software Vulkan driver alone).
 
 ---
 
@@ -1502,6 +1542,15 @@ process seams.
        tree updated in place, and fragments positioned relative to
        their parent that refer to their styles, so that a pass copies
        only what it laid out and a paint-only change only repaints.
+- [ ] M35.10 Compositing v2 (found at M19, `docs/design/compositing.md`
+       section 2): the document's tiles drawn opaque over the canvas
+       colour, so that a frame without them draws the page through at
+       a whole raster's cost and composites them as copies, to the
+       same pixels; a layer tree beside the tiles, so that a moving
+       layer inside the document composites over them rather than
+       drawing them again; raster at the device transform for a layer
+       that does not animate, and a layer's raster scale kept through
+       an animation.
 
 ---
 
@@ -1674,12 +1723,12 @@ Deferred from the milestones above, each with what it waits on:
 |----|----------|---------|------------------------|--------------|
 | D1 | JS engine | M24 | quickjs-ng / SpiderMonkey (mozjs) / V8 (rusty_v8) / Boa | quickjs-ng behind a `ScriptEngine` trait; trait designed for swap |
 | D2 | Renderer sandbox mechanism | M34 | Win job objects+tokens / AppContainer / others per-OS | Job objects + restricted token v1 |
-| D3 | GPU backend | M19 | wgpu / keep software only | wgpu, software path permanent fallback |
+| D3 | GPU backend | M19 | wgpu / keep software only | wgpu, software path permanent fallback; decided at M19: `render::gpu` on wgpu behind the `gpu` feature, on by default, the shell drawing on it where there is an adapter and the software backend otherwise or with `--software`, both behind `RenderBackend` (see `docs/design/compositing.md`) |
 | D4 | TLS | M14 | rustls / native-tls | rustls (pure Rust, no OpenSSL linkage); decided at M14: the `aws-lc-rs` provider for X25519MLKEM768, Mozilla's roots from `webpki-roots`, no bypass (see `docs/design/net.md`) |
 | D5 | HTTP client | M14 | hyper / custom over rustls | custom-lite first (control + learning), hyper if maintenance bites; decided at M14: our own HTTP/1.1 on threads, no async runtime, each connection waiting in a `mio` poll of its own that an abort wakes (see `docs/design/net.md`) |
 | D6 | Image codecs | M23 | image crate ensemble / per-format crates | per-format crates behind a trait (faster, auditable) |
 | D7 | Text/i18n | M8/M42 | rustybuzz+unicode crates / harfbuzz FFI / ICU4X | rustybuzz now, ICU4X at M42 |
-| D8 | 2D rasterizer | M19 | tiny-skia forever / vello (wgpu-native) / both | both behind the existing `RenderBackend` trait |
+| D8 | 2D rasterizer | M19 | tiny-skia forever / vello (wgpu-native) / both | both behind the existing `RenderBackend` trait; decided at M19: tiny-skia for the software backend and four wgpu pipelines of our own for the GPU backend, not vello: the two share their glyph masks and polygon coverage, so that text and mitres come out the same in both and the equivalence suite can hold them within two levels inside a shape (see `docs/design/compositing.md`) |
 | D9 | Chrome UI toolkit | M15/M37 | in-engine (softbuffer) / egui / native | in-engine (no extra toolkit; the engine is the toolkit); decided at M15: a `ui` crate beside `engine`, under `shell`, drawing with `paint`, `render` and `text`, and touching no OS (see `docs/design/navigation.md`) |
 | D10 | Profile storage engine | M28 | redb / sled / SQLite / custom files | redb (pure Rust, embedded, single-file) |
 | D11 | DevTools protocol | M36 | custom in-engine UI only / CDP-compatible | custom first; CDP-compat only if external tools wanted |
