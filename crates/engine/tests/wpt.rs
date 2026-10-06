@@ -431,15 +431,38 @@ struct Checker<'e> {
 
 impl Checker<'_> {
     /// CSSOM View's `offsetParent`: none for the root, the body, an
-    /// element with no box or a fixed one; else the nearest ancestor that
-    /// is positioned, or is a cell or a table when the element is not
+    /// element with no box, or a fixed one no ancestor is a containing
+    /// block for, as one whose transform properties or `will-change`
+    /// make it so is (M19); else the nearest ancestor that is a
+    /// containing block for absolutely positioned descendants, by its
+    /// position or, as the reference browser has it, by those
+    /// properties, or is a cell or a table when the element is not
     /// positioned, or is the body.
     fn offset_parent(&self, id: NodeId) -> Option<NodeId> {
         let tag = |n: NodeId| self.document.tag(n).unwrap_or("").to_ascii_lowercase();
         let position = |n: NodeId| self.styles.get(n).map(|s| s.position);
-        if !self.boxes.contains_key(&id)
-            || matches!(tag(id).as_str(), "html" | "body")
-            || position(id) == Some(Position::Fixed)
+        // Whether the element's effects make it a containing block for
+        // every descendant (`all`) or for the absolutely positioned
+        // ones; the transform properties apply to a box that is not an
+        // inline one alone.
+        let contains = |n: NodeId, all: bool| {
+            let transformable = self.boxes.get(&n).is_some_and(|b| !b.inline);
+            self.styles.get(n).is_some_and(|s| {
+                if all {
+                    s.effects().contains_all_of(transformable)
+                } else {
+                    s.effects().contains_absolutes_of(transformable)
+                }
+            })
+        };
+        if !self.boxes.contains_key(&id) || matches!(tag(id).as_str(), "html" | "body") {
+            return None;
+        }
+        if position(id) == Some(Position::Fixed)
+            && !self
+                .document
+                .ancestors(id)
+                .any(|a| self.document.is_element(a) && contains(a, true))
         {
             return None;
         }
@@ -450,6 +473,7 @@ impl Checker<'_> {
             }
             let t = tag(ancestor);
             if position(ancestor).is_some_and(|p| p != Position::Static)
+                || contains(ancestor, false)
                 || t == "body"
                 || (!positioned && matches!(t.as_str(), "td" | "th" | "table"))
             {
@@ -827,9 +851,10 @@ fn the_acceptance_layouts_lay_out_as_the_reference_browser_lays_them_out() {
     pages.sort();
     assert_eq!(
         pages.len(),
-        11,
-        "M17's navigation bar, card grid, holy grail, media objects and application shell, and \
-         M18's grid garden, dashboard, photo gallery, form grid, page of named areas and calendar"
+        15,
+        "M17's navigation bar, card grid, holy grail, media objects and application shell, \
+         M18's grid garden, dashboard, photo gallery, form grid, page of named areas and calendar, \
+         and M19's carousel, rotated panels, modal and fixed header in a transform"
     );
     let server = serve(dir.clone());
     let mut failures = Vec::new();

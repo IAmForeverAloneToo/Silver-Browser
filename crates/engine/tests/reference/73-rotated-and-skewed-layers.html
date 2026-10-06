@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-edge-tolerance" content="128">
+<title>Transforms: layers resampled from their own plane — boxes rotated by thirty, forty-five and minus fifteen degrees, skewed on either axis, and a rotated box with children and a border of two colours, each over a ghost of the untransformed box</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; font-size: 0; }
+  .cell { float: left; position: relative; width: 220px; height: 180px; margin: 10px 0 0 40px; }
+  .g { position: absolute; left: 50px; top: 50px; width: 120px; height: 80px; background-color: #e6dcc8; }
+  .b { position: absolute; left: 50px; top: 50px; width: 120px; height: 80px; background-color: #a07a3a; }
+  .k { position: absolute; left: 20px; top: 20px; width: 40px; height: 30px; background-color: #3a5a7a; }
+</style>
+</head>
+<body>
+  <div class="cell"><div class="g"></div><div class="b" style="transform: rotate(30deg)"></div></div>
+  <div class="cell"><div class="g"></div><div class="b" style="transform: rotate(45deg); width: 80px; left: 70px"></div></div>
+  <div class="cell"><div class="g"></div><div class="b" style="transform: rotate(-15deg)"></div></div>
+  <div class="cell"><div class="g"></div><div class="b" style="transform: skewX(20deg)"></div></div>
+  <div class="cell"><div class="g"></div><div class="b" style="transform: skewY(10deg)"></div></div>
+  <div class="cell"><div class="g"></div><div class="b" style="transform: skew(15deg, 15deg)"></div></div>
+  <div class="cell"><div class="g"></div><div class="b" style="transform: rotate(20deg); border: 6px solid #604a20; border-top-color: #c8a46a"><div class="k"></div><div class="k" style="left: 60px; top: 30px; background-color: #d98c8c"></div></div></div>
+  <div class="cell"><div class="g"></div><div class="b" style="transform: rotate(60deg) scale(0.8)"></div></div>
+  <div class="cell"><div class="g"></div><div class="b" style="transform: translate(20px, 10px) rotate(-30deg) translate(-20px, -10px)"></div></div>
+</body>
+</html>

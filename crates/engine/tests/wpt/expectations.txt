@@ -28,11 +28,8 @@ css/css-grid/layout-algorithm/grid-minimum-contribution-baseline-shim.html      
 css/css-transforms/css-transform-3d-transform-style.html                       the two planes of the context cross along the box's middle, and each shows in front of the other on its side of the line; painted whole by their depth, the child's plane covers the parent's
 css/css-transforms/transform3d-sorting-006.html                                the two planes cross, and each shows in front of the other on its side of the line; painted whole by their depth, one covers the other
 css/css-transforms/ttwf-css-3d-polygon-cycle.html                              the three planes form a cycle, each over the next; painted whole by their depth, no order of them is right
-css/css-transforms/transforms-rotate-translate-scale.html                      a turned box is resampled from a layer of its own plane, and its edges differ from the reference's, rasterized through the transform, by up to 78 levels in 1200 pixels
-css/css-transforms/transform-compound-001.html                                 a turned box is resampled from a layer of its own plane, and its edges differ from the reference's, rasterized through the transform, by up to 48 levels in 892 pixels, past the test's fuzziness of 30 in 500
 css/css-transforms/scale-transform-overlap.html                                a `will-change: transform` box inside a scaled group is a layer resampled under the scale, where the reference draws it through: 340 pixels differ by up to 33 levels
 css/css-transforms/transform3d-perspective-001.html                            a turned box is resampled from a layer of its own plane: 7 pixels differ from the reference by one level, where the test allows none
-css/css-transforms/transform3d-preserve3d-011.html                             two quarter turns about x flatten to a reflection, a negative scale, which is resampled rather than drawn through: the box's edges differ by up to 112 levels
 
 # Gaps outside M19, named at their milestones.
 css/css-transforms/huge-length-tiny-scale.html                                 the body's overflow is not carried to the viewport (css-overflow-3 3.3), so the viewport shows a scrollbar for the 44000px box, which the body's `overflow: hidden` hides in the reference browser

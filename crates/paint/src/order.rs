@@ -470,22 +470,30 @@ impl Space {
     /// inside one, a member with no transform of its own still has the
     /// context's.
     fn full(&self, f: &Fragment, rect: Rect, cb_width: f32) -> Option<Matrix> {
-        let own = f.matrix(cb_width).map(|m| {
-            Matrix::translate(rect.x, rect.y, 0.0)
-                .then(&m)
-                .then(&Matrix::translate(-rect.x, -rect.y, 0.0))
-        });
-        if own.is_none() && !self.in_3d {
+        if f.matrix(cb_width).is_none() && !self.in_3d {
             return None;
         }
+        Some(self.accumulated(f, rect, cb_width))
+    }
+
+    /// The accumulated matrix of the box `f` (css-transforms-2 §5), as
+    /// [`Space::full`] has it, the identity standing in for a box with
+    /// no transform: what a box that establishes a 3D rendering context
+    /// puts ahead of its children's matrices, its parent's perspective
+    /// among it when the box has no transform of its own, as the
+    /// reference browser has a `preserve-3d` box under a perspective.
+    fn accumulated(&self, f: &Fragment, rect: Rect, cb_width: f32) -> Matrix {
         let mut full = self.ahead;
         if let Some(perspective) = &self.perspective {
             full = full.then(perspective);
         }
-        if let Some(own) = &own {
-            full = full.then(own);
+        if let Some(m) = f.matrix(cb_width) {
+            full = full
+                .then(&Matrix::translate(rect.x, rect.y, 0.0))
+                .then(&m)
+                .then(&Matrix::translate(-rect.x, -rect.y, 0.0));
         }
-        Some(full)
+        full
     }
 }
 
@@ -947,7 +955,11 @@ impl<'a> Walk<'a, '_> {
             let inside = Space {
                 perspective: w.perspective_of(f, rect),
                 in_3d: preserve,
-                ahead: if preserve { full } else { Matrix::IDENTITY },
+                ahead: if preserve {
+                    space.accumulated(f, rect, containing.w)
+                } else {
+                    Matrix::IDENTITY
+                },
             };
             // A group when the box has a transform, an identity one
             // too, or an opacity below one; or is a layer by its
@@ -987,7 +999,10 @@ impl<'a> Walk<'a, '_> {
             // depth go after it. A hidden plane keeps nothing in it.
             let (before, after) = if root_3d {
                 let plane = full.depth(rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
-                let nested = full.is_2d() && !hidden;
+                // The accumulated matrix, not the group's: a root with
+                // no transform under its parent's perspective has no
+                // group, and its members are under the perspective.
+                let nested = inside.ahead.is_2d() && !hidden;
                 let mut before = Vec::new();
                 let mut after = Vec::new();
                 let mut rest = Vec::new();
@@ -2803,6 +2818,60 @@ mod tests {
                 "box 2",
                 "endgroup"
             ]
+        );
+    }
+
+    #[test]
+    fn a_parents_perspective_reaches_through_a_context_root_with_no_transform() {
+        // css-transforms-2 §5 and §10 (M19.5): a `preserve-3d` box with
+        // no transform under a parent with `perspective: 400px` is the
+        // root of a context whose children's matrices are under the
+        // perspective, as the reference browser draws them: the box
+        // moved 200px towards the viewer scales by two about the
+        // corner, as it would were it the parent's own child, and the
+        // box turned about its middle, at the root's depth, is under
+        // the perspective too, not nested in a group the root has none
+        // of. Nodes div.p 1, div.r 2, div.a 3, div.b 4.
+        let layout = layout_of(
+            Element::new("div").attr("class", "p").push(
+                Element::new("div")
+                    .attr("class", "r")
+                    .push(Element::new("div").attr("class", "a"))
+                    .push(Element::new("div").attr("class", "b")),
+            ),
+            "div { margin: 0; } .p { perspective: 400px; perspective-origin: 0 0;
+             width: 160px; height: 160px; padding: 20px; }
+             .r { transform-style: preserve-3d; }
+             .a { width: 100px; height: 100px; transform: translateZ(200px); }
+             .b { width: 100px; height: 50px; transform: rotateX(50deg); }",
+        );
+        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+        let names = content(&layout, &steps);
+        assert_eq!(names[..2].to_vec(), ["box 1", "box 2"], "{names:?}");
+        assert_eq!(
+            names[5..].to_vec(),
+            [
+                "group 3 1 [2.0, 0.0, 0.0, 2.0, 0.0, 0.0]",
+                "box 3",
+                "endgroup"
+            ],
+            "{names:?}"
+        );
+        let turned: Vec<Matrix> = steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::PushGroup {
+                    fragment: Some(f),
+                    matrix,
+                    ..
+                } if !matrix.is_2d() => Some(*matrix),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            turned.len(),
+            1,
+            "the turned box is under the perspective: {names:?}"
         );
     }
 

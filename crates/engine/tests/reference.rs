@@ -19,13 +19,28 @@
 //!
 //! A page may declare `<meta name="reference-tolerance" content="N">`:
 //! a channel may then differ by up to `N`, and the test says how many
-//! pixels did. One page uses it, for the last bit of the browser's
-//! blending at anti-aliased mitres (M11); every other page is exact.
+//! pixels did. M11's multi-colour page uses it for the last bit of the
+//! browser's blending at anti-aliased mitres, and M19's pages for the
+//! rounding of a blend over translucent boxes and of the anti-aliasing
+//! of edges a scale puts between pixels. A page may declare
+//! `<meta name="reference-edge-tolerance" content="M">` besides: a
+//! pixel on an edge in the capture, one whose neighbours are not all
+//! its own colour, may then differ by up to `M`, the rule M19's
+//! equivalence suite holds the two backends to; M19's pages with
+//! rotation or 3D use it for the resampling of a layer from its own
+//! plane against the browser's raster through the transform, which
+//! moves an edge's coverage, never the colour inside it. Every other
+//! page is exact. A page may declare
+//! `<meta name="reference-ignore-scrollbar">` when it scrolls (M19,
+//! a transformed box extending the scrollable overflow): the browser
+//! captures without scrollbars, so the engine's scrollbar track at the
+//! viewport's right edge is left out of the comparison, and the test
+//! holds the page to scrolling at all.
 
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
-use engine::Engine;
+use engine::{Engine, SCROLLBAR_WIDTH};
 
 const WIDTH: u32 = 800;
 const HEIGHT: u32 = 600;
@@ -90,10 +105,39 @@ fn write_png(path: &Path, rgb: &[u8]) {
         .expect("the image is written");
 }
 
-/// The tolerance a page declares, `<meta name="reference-tolerance"
-/// content="N">`, else zero.
-fn tolerance_of(source: &str) -> u8 {
-    let Some(at) = source.find("name=\"reference-tolerance\"") else {
+/// Whether a page declares `<meta name="reference-ignore-scrollbar">`:
+/// it scrolls, and the engine's scrollbar is left out of the
+/// comparison.
+fn ignores_scrollbar(source: &str) -> bool {
+    source.contains("name=\"reference-ignore-scrollbar\"")
+}
+
+/// `frame`'s pixels with the scrollbar track at the right edge
+/// overwritten by `other`'s, so that the two compare equal there.
+fn without_scrollbar(frame: &[u8], other: &[u8]) -> Vec<u8> {
+    let mut out = frame.to_vec();
+    let from = (WIDTH - SCROLLBAR_WIDTH as u32) as usize * 3;
+    for y in 0..HEIGHT as usize {
+        let row = y * WIDTH as usize * 3;
+        out[row + from..row + WIDTH as usize * 3]
+            .copy_from_slice(&other[row + from..row + WIDTH as usize * 3]);
+    }
+    out
+}
+
+/// How far a page's pixels may differ from its capture, a channel at a
+/// time: `inside` anywhere, `edge` at a pixel on an edge in the
+/// capture.
+#[derive(Debug, Clone, Copy)]
+struct Tolerance {
+    inside: u8,
+    edge: u8,
+}
+
+/// The number a page's `<meta name="{name}" content="N">` gives, else
+/// zero.
+fn meta_number(source: &str, name: &str) -> u8 {
+    let Some(at) = source.find(&format!("name=\"{name}\"")) else {
         return 0;
     };
     let rest = &source[at..];
@@ -103,6 +147,30 @@ fn tolerance_of(source: &str) -> u8 {
         .unwrap_or(0)
 }
 
+/// The tolerance a page declares: `reference-tolerance` anywhere,
+/// `reference-edge-tolerance` on an edge besides, zero for what it
+/// does not declare.
+fn tolerance_of(source: &str) -> Tolerance {
+    let inside = meta_number(source, "reference-tolerance");
+    Tolerance {
+        inside,
+        edge: inside.max(meta_number(source, "reference-edge-tolerance")),
+    }
+}
+
+/// Whether the pixel at `(x, y)` of an RGB capture is on an edge: one
+/// of its eight neighbours is not its own colour.
+fn on_edge(capture: &[u8], x: u32, y: u32) -> bool {
+    let at = |x: u32, y: u32| {
+        let i = (y * WIDTH + x) as usize * 3;
+        &capture[i..i + 3]
+    };
+    let own = at(x, y);
+    (y.saturating_sub(1)..(y + 2).min(HEIGHT))
+        .flat_map(|ny| (x.saturating_sub(1)..(x + 2).min(WIDTH)).map(move |nx| (nx, ny)))
+        .any(|(nx, ny)| at(nx, ny) != own)
+}
+
 /// Compares the engine's render with the capture: `None` when they
 /// match, a channel differing by no more than `tolerance` counting as
 /// a match, else a description of the difference.
@@ -110,25 +178,38 @@ fn compare(
     name: &str,
     expected: &[u8],
     actual: &[u8],
-    tolerance: u8,
+    tolerance: Tolerance,
     out_dir: &Path,
 ) -> Option<String> {
     if expected == actual {
         return None;
     }
-    let within = |e: &[u8], a: &[u8]| e.iter().zip(a).all(|(e, a)| e.abs_diff(*a) <= tolerance);
+    let within = |e: &[u8], a: &[u8], by: u8| e.iter().zip(a).all(|(e, a)| e.abs_diff(*a) <= by);
     let mut differing = 0usize;
     let mut tolerated = 0usize;
+    let mut largest = 0u8;
     let mut first = None;
     let (mut min_x, mut min_y, mut max_x, mut max_y) = (u32::MAX, u32::MAX, 0, 0);
     let mut diff = Vec::with_capacity(expected.len());
     for (i, (e, a)) in expected.chunks(3).zip(actual.chunks(3)).enumerate() {
         let (x, y) = (i as u32 % WIDTH, i as u32 / WIDTH);
-        if e != a && within(e, a) {
+        let by = if tolerance.edge > tolerance.inside && on_edge(expected, x, y) {
+            tolerance.edge
+        } else {
+            tolerance.inside
+        };
+        if e != a && within(e, a, by) {
             tolerated += 1;
             diff.extend(e.iter().map(|c| c / 2 + 0x40));
         } else if e != a {
             differing += 1;
+            largest = largest.max(
+                e.iter()
+                    .zip(a)
+                    .map(|(e, a)| e.abs_diff(*a))
+                    .max()
+                    .unwrap_or(0),
+            );
             first.get_or_insert((x, y, [e[0], e[1], e[2]], [a[0], a[1], a[2]]));
             min_x = min_x.min(x);
             min_y = min_y.min(y);
@@ -140,7 +221,7 @@ fn compare(
         }
     }
     if differing == 0 {
-        println!("{name}: {tolerated} pixels within the tolerance of {tolerance}");
+        println!("{name}: {tolerated} pixels within the tolerance of {tolerance:?}");
         return None;
     }
     fs::create_dir_all(out_dir).expect("the output directory is created");
@@ -149,7 +230,7 @@ fn compare(
     let (x, y, e, a) = first.expect("some pixel differs");
     Some(format!(
         "{name}: {differing} pixels differ within ({min_x}, {min_y})-({max_x}, {max_y}), \
-         {tolerated} more within the tolerance of {tolerance}; \
+         by {largest} at most, {tolerated} more within the tolerance of {tolerance:?}; \
          the first at ({x}, {y}) is {e:02x?} in the capture and {a:02x?} from the engine; \
          see {}",
         out_dir.display()
@@ -161,9 +242,9 @@ fn every_reference_page_renders_as_its_capture() {
     let pages = pages();
     assert_eq!(
         pages.len(),
-        69,
+        79,
         "the ten cases of M10's design note, the eleven of M11's, the five of M12's, the three of M16's, \
-         the twenty of M17's and the twenty of M18's"
+         the twenty of M17's, the twenty of M18's and the ten of M19's"
     );
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/reference");
     let mut failures = Vec::new();
@@ -178,7 +259,14 @@ fn every_reference_page_renders_as_its_capture() {
         let mut engine = engine();
         engine.load_document(&source);
         let frame = engine.frame(WIDTH, HEIGHT);
-        let actual: Vec<u8> = frame.chunks(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+        let mut actual: Vec<u8> = frame.chunks(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+        if ignores_scrollbar(&source) {
+            assert!(
+                engine.max_scroll() > 0.0,
+                "{name}: the page does not scroll"
+            );
+            actual = without_scrollbar(&actual, &expected);
+        }
         if let Some(failure) = compare(name, &expected, &actual, tolerance, &out_dir) {
             failures.push(failure);
         }
@@ -289,7 +377,10 @@ fn every_reference_page_changed_and_changed_back_renders_as_its_capture() {
         engine.load_document(&source);
         mutate_and_restore(&mut engine);
         let frame = engine.frame(WIDTH, HEIGHT);
-        let actual: Vec<u8> = frame.chunks(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+        let mut actual: Vec<u8> = frame.chunks(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+        if ignores_scrollbar(&source) {
+            actual = without_scrollbar(&actual, &expected);
+        }
         let name = format!("{name}.restored");
         if let Some(failure) = compare(&name, &expected, &actual, tolerance_of(&source), &out_dir) {
             failures.push(failure);

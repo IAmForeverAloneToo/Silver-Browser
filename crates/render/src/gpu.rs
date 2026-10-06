@@ -46,8 +46,8 @@ use text::{FontCollection, FontError, Script};
 use crate::{
     Backend, Clip, GlyphCache, Layer, LayerInfo, Layered, Layers, MAX_FRAME_PIXELS,
     MAX_PARTIAL_SIDE, PixelRect, Pixels, Redrawn, RenderBackend, State, Store, Tile, bounds,
-    clip_polygon, damaged, fits_a_frame, group_end, outward_clip, polygon_coverage, reach,
-    tile_rows, visible_in, whole_reach,
+    clip_polygon, damaged, fits_a_frame, group_end, landing_of, outward_clip, polygon_coverage,
+    raster_scale, reach, reach_at, tile_rows, unscaled, visible_in, whole_reach,
 };
 
 /// The side of an atlas page, in texels: four mebibytes of coverage,
@@ -60,8 +60,10 @@ const PAGE_SIDE: u32 = 2048;
 const ATLAS_BUDGET: usize = 64 << 20;
 
 /// The floats of one rectangle instance: its quad in clip coordinates,
-/// its edges in pixels, and its colour, premultiplied.
-const RECT_FLOATS: usize = 12;
+/// its edges in pixels, the edges of the rectangle inside it it leaves
+/// out, a border's padding box, empty for a plain rectangle, and its
+/// colour, premultiplied.
+const RECT_FLOATS: usize = 16;
 /// The floats of one vertex of a quad: its position in clip
 /// coordinates and its colour, premultiplied.
 const QUAD_FLOATS: usize = 6;
@@ -78,12 +80,14 @@ const SHADERS: &str = r#"
 struct RectIn {
     @location(0) quad: vec4<f32>,
     @location(1) edges: vec4<f32>,
-    @location(2) color: vec4<f32>,
+    @location(2) hole: vec4<f32>,
+    @location(3) color: vec4<f32>,
 };
 struct RectOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) @interpolate(flat) edges: vec4<f32>,
-    @location(1) @interpolate(flat) color: vec4<f32>,
+    @location(1) @interpolate(flat) hole: vec4<f32>,
+    @location(2) @interpolate(flat) color: vec4<f32>,
 };
 fn corner_x(i: u32) -> bool { return i == 1u || i == 3u || i == 4u; }
 fn corner_y(i: u32) -> bool { return i == 2u || i == 4u || i == 5u; }
@@ -92,15 +96,20 @@ fn rect_vs(@builtin(vertex_index) i: u32, r: RectIn) -> RectOut {
     var o: RectOut;
     o.pos = vec4<f32>(select(r.quad.x, r.quad.z, corner_x(i)), select(r.quad.y, r.quad.w, corner_y(i)), 0.0, 1.0);
     o.edges = r.edges;
+    o.hole = r.hole;
     o.color = r.color;
     return o;
+}
+// The share of the pixel centred at `p` the rectangle `r` covers.
+fn area(r: vec4<f32>, p: vec2<f32>) -> f32 {
+    let cx = max(0.0, min(r.z, p.x + 0.5) - max(r.x, p.x - 0.5));
+    let cy = max(0.0, min(r.w, p.y + 0.5) - max(r.y, p.y - 0.5));
+    return cx * cy;
 }
 @fragment
 fn rect_fs(i: RectOut) -> @location(0) vec4<f32> {
     let p = i.pos.xy;
-    let cx = max(0.0, min(i.edges.z, p.x + 0.5) - max(i.edges.x, p.x - 0.5));
-    let cy = max(0.0, min(i.edges.w, p.y + 0.5) - max(i.edges.y, p.y - 0.5));
-    return i.color * (cx * cy);
+    return i.color * max(0.0, area(i.edges, p) - area(i.hole, p));
 }
 
 struct QuadIn {
@@ -220,6 +229,10 @@ struct Texture {
 impl Pixels for Texture {
     fn bytes(&self) -> usize {
         self.width as usize * self.height as usize * self.depth
+    }
+
+    fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
     }
 }
 
@@ -779,7 +792,7 @@ impl GpuBackend {
             (within.x1 - within.x0) as f32,
             (within.y1 - within.y0) as f32,
         );
-        let Some((lx0, ly0, lx1, ly1)) = inverse.bounds(wx, wy, ww, wh) else {
+        let Some((lx0, ly0, lx1, ly1)) = landing_of(&inverse, wx, wy, ww, wh) else {
             return;
         };
         let landing = Clip {
@@ -884,7 +897,11 @@ impl GpuBackend {
         layer.used = frame;
         if matrix.inverse().is_some() {
             match &mut layer.store {
-                Store::Whole { pixels, origin } => {
+                Store::Whole {
+                    pixels,
+                    origin,
+                    scale,
+                } => {
                     let corners = (
                         origin.0,
                         origin.1,
@@ -896,7 +913,7 @@ impl GpuBackend {
                         draws,
                         pixels.bind.clone(),
                         corners,
-                        &matrix,
+                        &unscaled(&matrix, *scale),
                         opacity,
                         within,
                         size,
@@ -1039,6 +1056,47 @@ impl GpuBackend {
                 self.records
                     .rects
                     .extend([ax, ay, bx, by, r.x0, r.y0, r.x1, r.y1]);
+                self.records.rects.extend([0.0; 4]);
+                self.records.rects.extend(premultiplied(color));
+                Self::push_draw(draws, Kind::Rect, outer, index..index + 1);
+            }
+            DisplayItem::Border {
+                x,
+                y,
+                w,
+                h,
+                widths: [top, right, bottom, left],
+                color,
+            } => {
+                let band = Clip::new(x * sx + tx, y * sy + ty, w * sx, h * sy);
+                let hole = Clip {
+                    x0: band.x0 + left * sx,
+                    y0: band.y0 + top * sy,
+                    x1: band.x1 - right * sx,
+                    y1: band.y1 - bottom * sy,
+                }
+                .intersect(clip);
+                let r = band.intersect(clip);
+                let finite = |c: &Clip| [c.x0, c.y0, c.x1, c.y1].iter().all(|v| v.is_finite());
+                if r.is_empty() || !finite(&r) {
+                    return;
+                }
+                let Some(quad) = PixelRect::around(r.x0, r.y0, r.x1, r.y1, width, height) else {
+                    return;
+                };
+                let hole = if hole.is_empty() || !finite(&hole) {
+                    [0.0; 4]
+                } else {
+                    [hole.x0, hole.y0, hole.x1, hole.y1]
+                };
+                let n = ndc(size);
+                let (ax, ay) = n(quad.x0 as f32, quad.y0 as f32);
+                let (bx, by) = n(quad.x1 as f32, quad.y1 as f32);
+                let index = (self.records.rects.len() / RECT_FLOATS) as u32;
+                self.records
+                    .rects
+                    .extend([ax, ay, bx, by, r.x0, r.y0, r.x1, r.y1]);
+                self.records.rects.extend(hole);
                 self.records.rects.extend(premultiplied(color));
                 Self::push_draw(draws, Kind::Rect, outer, index..index + 1);
             }
@@ -1318,7 +1376,7 @@ impl GpuBackend {
         let kept = match reason {
             LayerReason::Scrolled => self.update_tiles(key, reason, old, items, visible, extra),
             LayerReason::Transformed | LayerReason::WillChange => {
-                self.update_whole(key, reason, old, items, extra)
+                self.update_whole(key, reason, old, items, composed, extra)
             }
         };
         match kept {
@@ -1341,9 +1399,11 @@ impl GpuBackend {
         reason: LayerReason,
         old: Option<Layer<Texture>>,
         items: &[DisplayItem],
+        composed: &Matrix,
         extra: &[Clip],
     ) -> Option<Layer<Texture>> {
-        let reach = reach(&mut self.text, items)?;
+        let scale = raster_scale(composed);
+        let reach = reach_at(&mut self.text, items, scale)?;
         let corners = whole_reach(reach);
         if !self.fits(corners) {
             return None;
@@ -1355,16 +1415,19 @@ impl GpuBackend {
         }
         let (gw, gh) = (gw as u32, gh as u32);
         let origin = (gx0, gy0);
-        let base = Matrix::translate(-gx0, -gy0, 0.0);
+        let base = Matrix::translate(-gx0, -gy0, 0.0).then(&Matrix::scale(scale.0, scale.1, 1.0));
         if let Some(Layer {
-            store: Store::Whole {
-                pixels,
-                origin: was,
-            },
+            store:
+                Store::Whole {
+                    pixels,
+                    origin: was,
+                    scale: was_at,
+                },
             items: were,
             ..
         }) = old
             && was == origin
+            && was_at == scale
             && pixels.width == gw
             && pixels.height == gh
         {
@@ -1375,7 +1438,11 @@ impl GpuBackend {
             return Some(Layer {
                 reason,
                 items: items.to_vec(),
-                store: Store::Whole { pixels, origin },
+                store: Store::Whole {
+                    pixels,
+                    origin,
+                    scale,
+                },
                 used: self.frame,
             });
         }
@@ -1391,7 +1458,11 @@ impl GpuBackend {
         Some(Layer {
             reason,
             items: items.to_vec(),
-            store: Store::Whole { pixels, origin },
+            store: Store::Whole {
+                pixels,
+                origin,
+                scale,
+            },
             used: self.frame,
         })
     }
@@ -1826,7 +1897,7 @@ impl Pipelines {
             "rect_fs",
             RECT_FLOATS as u64 * 4,
             wgpu::VertexStepMode::Instance,
-            &[float4(0, 0), float4(1, 16), float4(2, 32)],
+            &[float4(0, 0), float4(1, 16), float4(2, 32), float4(3, 48)],
         );
         let quad = pipeline(
             "quad",
@@ -2176,6 +2247,14 @@ mod tests {
             items: vec![
                 rect(0.0, 0.0, 200.0, 120.0, white),
                 rect(10.25, 10.75, 50.5, 30.3, Rgba8::rgb(200, 30, 30)),
+                DisplayItem::Border {
+                    x: 120.5,
+                    y: 80.25,
+                    w: 60.0,
+                    h: 30.5,
+                    widths: [2.5, 1.0, 3.25, 0.5],
+                    color: rgba(90, 40, 20, 200),
+                },
                 rect(40.0, 20.0, 80.0, 60.0, rgba(30, 30, 200, 128)),
                 rect(-20.0, 100.0, 300.0, 40.0, Rgba8::rgb(0, 128, 0)),
                 DisplayItem::PushClip {

@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<title>Positioning: a fixed box inside a translated wrapper, inside a wrapper turned a quarter, inside a will-change wrapper, inside a perspective wrapper and inside a preserve-3d wrapper, against each wrapper's padding box; and a fixed box at the viewport's corner</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; font-size: 0; }
+  .w { float: left; position: relative; width: 200px; height: 140px; margin: 30px 0 0 40px; padding: 10px; background-color: #e6dcc8; border: 2px solid #d4c4a4; }
+  .f { position: fixed; left: 10px; top: 10px; width: 60px; height: 40px; background-color: #a07a3a; border: 2px solid #604a20; }
+  .corner { position: fixed; right: 20px; bottom: 20px; width: 80px; height: 50px; background-color: #3a5a7a; }
+</style>
+</head>
+<body>
+  <div class="w" style="transform: translate(20px, 10px)"><div class="f"></div></div>
+  <div class="w" style="transform: rotate(90deg)"><div class="f"></div></div>
+  <div class="w" style="will-change: transform"><div class="f" style="right: 10px; bottom: 10px; left: auto; top: auto"></div></div>
+  <div class="w" style="perspective: 400px"><div class="f" style="transform: rotateY(0deg)"></div></div>
+  <div class="w" style="transform-style: preserve-3d"><div class="f" style="left: auto; right: 10px"></div></div>
+  <div class="w" style="transform: scale(0.5); transform-origin: left top"><div class="f" style="width: 120px; height: 80px"></div></div>
+  <div class="w" style="transform: translate(0)"><div class="f" style="left: 0; top: 0; right: 0; width: auto"></div></div>
+  <div class="w" style="transform: translateX(-30px)"><div style="position: absolute; left: 50px; top: 50px; width: 100px; height: 60px; background-color: #c8a46a"><div class="f"></div></div></div>
+  <div class="corner"></div>
+</body>
+</html>

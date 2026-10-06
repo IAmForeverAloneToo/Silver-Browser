@@ -525,12 +525,33 @@ pub trait RenderBackend {
 trait Pixels {
     /// The bytes it holds, what the budget counts.
     fn bytes(&self) -> usize;
+    /// Its width and height in texels.
+    fn size(&self) -> (u32, u32);
 }
 
 impl Pixels for tiny_skia::Pixmap {
     fn bytes(&self) -> usize {
         self.data().len()
     }
+
+    fn size(&self) -> (u32, u32) {
+        (self.width(), self.height())
+    }
+}
+
+/// What a raster did with a group's layer (M19).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kept {
+    /// None is held: the group is drawn as one that is no layer.
+    No,
+    /// The layer is held, drawn again where its items changed.
+    Updated,
+    /// A layer held before is made anew, at another place or of
+    /// another size: its texels are drawn through another translation,
+    /// and may differ from the last ones by a hair wherever they were
+    /// resampled or placed by rounding, so its reach is damage outside
+    /// it, as a layer that comes or goes is.
+    Remade,
 }
 
 /// A layer (M19): a group's pixels kept from frame to frame under its
@@ -545,9 +566,14 @@ struct Layer<P> {
 
 /// Where a layer keeps its pixels.
 enum Store<P> {
-    /// One pixmap of the group's whole reach, whose top-left texel is
-    /// at `origin` in the group's coordinates.
-    Whole { pixels: P, origin: (f32, f32) },
+    /// One pixmap of the group's whole reach, drawn at `scale`, whose
+    /// top-left texel is at `origin` in the group's coordinates so
+    /// scaled.
+    Whole {
+        pixels: P,
+        origin: (f32, f32),
+        scale: (f32, f32),
+    },
     /// Tiles (M19.4): strips `width` pixels across from `left`, each
     /// [`TILE_HEIGHT`] tall, by their row, row `r` holding the texels
     /// from `r * TILE_HEIGHT` down.
@@ -579,6 +605,23 @@ impl<P: Pixels> Layer<P> {
         match &self.store {
             Store::Whole { .. } => 0,
             Store::Tiles { rows, .. } => rows.len() as u32,
+        }
+    }
+
+    /// Where its pixels are, how large and at what scale: a whole
+    /// layer's origin, size and scale, a layer of tiles' left edge and
+    /// width; a layer whose shape changed was made anew.
+    fn shape(&self) -> (f32, f32, u32, u32, (f32, f32)) {
+        match &self.store {
+            Store::Whole {
+                pixels,
+                origin,
+                scale,
+            } => {
+                let (w, h) = pixels.size();
+                (origin.0, origin.1, w, h, *scale)
+            }
+            Store::Tiles { left, width, .. } => (*left as f32, 0.0, *width, 0, (1.0, 1.0)),
         }
     }
 }
@@ -789,6 +832,28 @@ fn tile_rows(y0: f32, y1: f32) -> RangeInclusive<i32> {
     row(y0.floor())..=row(y1.ceil() - 1.0)
 }
 
+/// What of the plane of a group lands in the rectangle at `(x, y)` of
+/// size `w` by `h` in the raster, in the group's own coordinates, as
+/// `(x0, y0, x1, y1)`, under `inverse`, from the raster's coordinates
+/// to the group's (M19): the bounds of the rectangle's corners mapped
+/// back. A corner past the horizon of a plane a perspective turns,
+/// whose point of the plane would be behind the eye, makes the region
+/// reach any distance, since the plane's points just short of the
+/// horizon come from infinitely far off; when every corner is past it,
+/// the rectangle is all beyond it and nothing of the plane lands.
+fn landing_of(inverse: &Matrix, x: f32, y: f32, w: f32, h: f32) -> Option<(f32, f32, f32, f32)> {
+    const FAR: f32 = 1e9;
+    let corners =
+        [(x, y), (x + w, y), (x, y + h), (x + w, y + h)].map(|(cx, cy)| inverse.project(cx, cy));
+    if corners.iter().all(Option::is_none) {
+        return None;
+    }
+    if corners.iter().any(Option::is_none) {
+        return Some((-FAR, -FAR, FAR, FAR));
+    }
+    inverse.bounds(x, y, w, h)
+}
+
 /// What of a group whose coordinates `composed` maps to the raster's
 /// can show under `clip`, in the group's own coordinates, as `(x0, y0,
 /// x1, y1)`: the clip's bounds back through the matrix. `None` when
@@ -798,8 +863,13 @@ fn visible_in(composed: &Matrix, clip: Clip) -> Option<(f32, f32, f32, f32)> {
         return None;
     }
     let inverse = composed.inverse()?;
-    let (x0, y0, x1, y1) =
-        inverse.bounds(clip.x0, clip.y0, clip.x1 - clip.x0, clip.y1 - clip.y0)?;
+    let (x0, y0, x1, y1) = landing_of(
+        &inverse,
+        clip.x0,
+        clip.y0,
+        clip.x1 - clip.x0,
+        clip.y1 - clip.y0,
+    )?;
     ([x0, y0, x1, y1].iter().all(|v| v.is_finite()) && x1 > x0 && y1 > y0)
         .then_some((x0, y0, x1, y1))
 }
@@ -1250,7 +1320,7 @@ impl SoftwareBackend {
             (within.x1 - within.x0) as f32,
             (within.y1 - within.y0) as f32,
         );
-        let Some((lx0, ly0, lx1, ly1)) = inverse.bounds(wx, wy, ww, wh) else {
+        let Some((lx0, ly0, lx1, ly1)) = landing_of(&inverse, wx, wy, ww, wh) else {
             return;
         };
         let landing = Clip {
@@ -1323,8 +1393,12 @@ impl SoftwareBackend {
                 Store::Whole {
                     pixels: src,
                     origin,
+                    scale,
                 } => {
-                    composite_pixmap(pixmap, src, *origin, &matrix, &inverse, opacity, within);
+                    let matrix = unscaled(&matrix, *scale);
+                    if let Some(inverse) = matrix.inverse() {
+                        composite_pixmap(pixmap, src, *origin, &matrix, &inverse, opacity, within);
+                    }
                 }
                 Store::Tiles { left, width, rows } => {
                     if whole_pixel_translation(&matrix).is_some() {
@@ -1426,18 +1500,20 @@ impl SoftwareBackend {
                     &mut inner_extra,
                 );
                 let was = self.layers.contains(key) && !self.doubled.contains(key);
-                let held = if seen.insert(*key) {
+                let kept = if seen.insert(*key) {
                     self.update_layer(*key, *reason, inner, &composed, clip, &inner_extra)
                 } else {
                     self.layers.drop(*key);
                     self.doubled.insert(*key);
-                    false
+                    Kept::No
                 };
+                let held = kept != Kept::No;
                 // The group's reach outside it, where it is drawn
-                // another way now, two pixels more for the resampling;
-                // and what changed inside it, which an outer layer's
-                // pixels of it hold too.
-                if was != held
+                // another way now, or from a layer made anew, two
+                // pixels more for the resampling; and what changed
+                // inside it, which an outer layer's pixels of it hold
+                // too.
+                if (was != held || kept == Kept::Remade)
                     && let Some(reach) = reach(&mut self.text, inner)
                     && let Some(mapped) = outward_clip(&outward, reach)
                 {
@@ -1462,7 +1538,7 @@ impl SoftwareBackend {
     /// raster's, where `clip` is in force, `extra` being rectangles of
     /// it whose pixels changed for reasons its lists cannot tell: a
     /// scrolled group's as tiles (M19.4), another's as one pixmap.
-    /// Whether the layer is held.
+    /// Whether the layer is held, and whether it was made anew.
     fn update_layer(
         &mut self,
         key: GroupKey,
@@ -1471,44 +1547,50 @@ impl SoftwareBackend {
         composed: &Matrix,
         clip: Clip,
         extra: &[Clip],
-    ) -> bool {
+    ) -> Kept {
         let Some(visible) = visible_in(composed, clip) else {
             self.layers.drop(key);
-            return false;
+            return Kept::No;
         };
         let mut old = self.layers.remove(&key);
         if old.as_ref().is_some_and(|layer| layer.reason != reason) {
             old = None;
         }
+        let shape = old.as_ref().map(Layer::shape);
         let kept = match reason {
             LayerReason::Scrolled => self.update_tiles(key, reason, old, items, visible, extra),
             LayerReason::Transformed | LayerReason::WillChange => {
-                self.update_whole(key, reason, old, items, extra)
+                self.update_whole(key, reason, old, items, composed, extra)
             }
         };
         match kept {
             Some(layer) => {
+                let remade = shape.is_some_and(|shape| shape != layer.shape());
                 self.layers.insert(key, layer);
-                true
+                if remade { Kept::Remade } else { Kept::Updated }
             }
-            None => false,
+            None => Kept::No,
         }
     }
 
     /// The layer of the group `key` kept whole: one pixmap of the
-    /// items' reach, a clear texel all round, drawn again where the
+    /// items' reach, a clear texel all round, drawn at the scale of
+    /// `composed`, its matrix to the raster, and drawn again where the
     /// items changed since `old`, whose pixmap is kept when the reach
-    /// is where it was. `None` when the items draw nothing, or the
-    /// budget has no room.
+    /// is where it was and the scale what it was. `None` when the
+    /// items draw nothing, or the budget has no room.
     fn update_whole(
         &mut self,
         key: GroupKey,
         reason: LayerReason,
         old: Option<Layer<tiny_skia::Pixmap>>,
         items: &[DisplayItem],
+        composed: &Matrix,
         extra: &[Clip],
     ) -> Option<Layer<tiny_skia::Pixmap>> {
-        let reach = reach(&mut self.text, items)?;
+        let scale = raster_scale(composed);
+        let (sx, sy) = scale;
+        let reach = reach_at(&mut self.text, items, scale)?;
         let corners = whole_reach(reach);
         if !fits_a_frame(corners) {
             return None;
@@ -1520,11 +1602,18 @@ impl SoftwareBackend {
         }
         let (gw, gh) = (gw as u32, gh as u32);
         let origin = (gx0, gy0);
-        let base = Matrix::translate(-gx0, -gy0, 0.0);
+        let base = Matrix::translate(-gx0, -gy0, 0.0).then(&Matrix::scale(sx, sy, 1.0));
         let extra: Vec<PixelRect> = extra
             .iter()
             .filter_map(|r| {
-                PixelRect::around(r.x0 - gx0, r.y0 - gy0, r.x1 - gx0, r.y1 - gy0, gw, gh)
+                PixelRect::around(
+                    r.x0 * sx - gx0,
+                    r.y0 * sy - gy0,
+                    r.x1 * sx - gx0,
+                    r.y1 * sy - gy0,
+                    gw,
+                    gh,
+                )
             })
             .collect();
         if let Some(Layer {
@@ -1532,11 +1621,13 @@ impl SoftwareBackend {
                 Store::Whole {
                     pixels: mut pixmap,
                     origin: was,
+                    scale: was_at,
                 },
             items: were,
             ..
         }) = old
             && was == origin
+            && was_at == scale
             && pixmap.width() == gw
             && pixmap.height() == gh
         {
@@ -1564,6 +1655,7 @@ impl SoftwareBackend {
                 store: Store::Whole {
                     pixels: pixmap,
                     origin,
+                    scale,
                 },
                 used: self.frame,
             });
@@ -1583,6 +1675,7 @@ impl SoftwareBackend {
             store: Store::Whole {
                 pixels: pixmap,
                 origin,
+                scale,
             },
             used: self.frame,
         })
@@ -1835,6 +1928,23 @@ impl SoftwareBackend {
                     None,
                 );
             }
+            DisplayItem::Border {
+                x,
+                y,
+                w,
+                h,
+                widths: [top, right, bottom, left],
+                color,
+            } => {
+                let outer = Clip::new(x * sx + tx, y * sy + ty, w * sx, h * sy);
+                let inner = Clip {
+                    x0: outer.x0 + left * sx,
+                    y0: outer.y0 + top * sy,
+                    x1: outer.x1 - right * sx,
+                    y1: outer.y1 - bottom * sy,
+                };
+                fill_band(pixmap, outer.intersect(clip), inner.intersect(clip), color);
+            }
             DisplayItem::Text {
                 text,
                 x,
@@ -1938,7 +2048,9 @@ impl SoftwareBackend {
                 continue;
             }
             match item {
-                DisplayItem::Rect { .. } | DisplayItem::Text { .. } => {
+                DisplayItem::Rect { .. }
+                | DisplayItem::Border { .. }
+                | DisplayItem::Text { .. } => {
                     self.draw(pixmap, item, clip.intersect(inside), through);
                 }
                 DisplayItem::Polygon { points, color } => {
@@ -2012,7 +2124,9 @@ fn extent(text: &mut GlyphCache, item: &DisplayItem, state: &State) -> Option<Cl
         | DisplayItem::PopClip
         | DisplayItem::PushGroup { .. }
         | DisplayItem::PopGroup => return None,
-        DisplayItem::Rect { x, y, w, h, .. } => (Clip::new(*x, *y, *w, *h), 0.0, 0.0),
+        DisplayItem::Rect { x, y, w, h, .. } | DisplayItem::Border { x, y, w, h, .. } => {
+            (Clip::new(*x, *y, *w, *h), 0.0, 0.0)
+        }
         DisplayItem::Text {
             text: run,
             x,
@@ -2066,8 +2180,22 @@ fn bounds(
 /// their extents, walked without bounds; `None` when they draw
 /// nothing.
 fn reach(text: &mut GlyphCache, items: &[DisplayItem]) -> Option<Clip> {
+    reach_at(text, items, (1.0, 1.0))
+}
+
+/// How far `items` reach drawn at `scale`, in their own coordinates so
+/// scaled (M19): [`reach`] through the scale, under which text is
+/// rasterized at the size the scale makes.
+fn reach_at(text: &mut GlyphCache, items: &[DisplayItem], (sx, sy): (f32, f32)) -> Option<Clip> {
     let mut reach: Option<Clip> = None;
     let mut state = State::unbounded();
+    if (sx, sy) != (1.0, 1.0) {
+        state.groups.push(GroupState {
+            matrix: Matrix::scale(sx, sy, 1.0),
+            resampled: false,
+            clips: 0,
+        });
+    }
     for item in items {
         if let Some(extent) = extent(text, item, &state) {
             reach = Some(match reach {
@@ -2233,6 +2361,50 @@ fn hull_of(points: &[(f32, f32)]) -> (f32, f32, f32, f32) {
         ),
         |(x0, y0, x1, y1), &(x, y)| (x0.min(x), y0.min(y), x1.max(x), y1.max(y)),
     )
+}
+
+/// The scale a whole layer whose matrix to the raster is `matrix` is
+/// drawn at (M19), so that a box scaled up in a layer is as sharp as
+/// one drawn through, its text rasterized at the size the scale makes:
+/// when the matrix scales the plane's axes and then turns or reflects
+/// the plane, keeping its axes square to each other, the lengths it
+/// gives the axes, after which the layer is turned or reflected
+/// texel for pixel; rounded to a sixty-fourth, so that a rotation,
+/// whose lengths are one but for the last bit, is drawn at one. One
+/// for any other matrix: a skew, whose axes lengthen without the plane
+/// being magnified, and a projective matrix, whose scale differs
+/// across the plane, are resampled from a raster at one. A matrix that
+/// moves or turns the layer is a composite; one that scales it anew
+/// draws it again at the new scale, so that the frame is a whole
+/// raster's whatever came before; keeping the scale through an
+/// animation, as the reference browser does for `will-change:
+/// transform`, is for M22 to weigh.
+fn raster_scale(matrix: &Matrix) -> (f32, f32) {
+    let Some([a, b, c, d, _, _]) = matrix.to_2d() else {
+        return (1.0, 1.0);
+    };
+    let (sx, sy) = (a.hypot(b), c.hypot(d));
+    let square = (a * c + b * d).abs() <= 1e-4 * sx * sy;
+    if !(square && sx.is_finite() && sy.is_finite() && sx > 0.0 && sy > 0.0) {
+        return (1.0, 1.0);
+    }
+    let rounded = |v: f32| ((v * 64.0).round() / 64.0).clamp(1.0 / 64.0, 64.0);
+    (rounded(sx), rounded(sy))
+}
+
+/// `matrix`, from a group's coordinates to the raster's, applied to a
+/// layer drawn at `scale`: the scale taken out first, exactly when the
+/// matrix is that scale and a translation, so that a layer drawn at its
+/// scale is laid over the raster pixel for pixel when the translation
+/// is whole.
+fn unscaled(matrix: &Matrix, (sx, sy): (f32, f32)) -> Matrix {
+    if (sx, sy) == (1.0, 1.0) {
+        return *matrix;
+    }
+    match matrix.scale_and_translation() {
+        Some((a, d, tx, ty)) if (a, d) == (sx, sy) => Matrix::translate(tx, ty, 0.0),
+        _ => matrix.then(&Matrix::scale(1.0 / sx, 1.0 / sy, 1.0)),
+    }
 }
 
 /// The corners of a pixmap that holds all of `reach` with a clear
@@ -2508,6 +2680,43 @@ impl RenderBackend for SoftwareBackend {
     fn redrawn(&self) -> &Redrawn {
         &self.redrawn
     }
+}
+
+/// Fills `outer` less `inner`, which lies inside it, with `color`,
+/// anti-aliased as one shape (M19): the two rectangles as one path
+/// filled even-odd, so that a pixel at a corner of the band takes the
+/// share of it the band covers, once. A rectangle whose edges lie on
+/// whole pixels is filled as [`DisplayItem::Rect`] fills it, pixel for
+/// pixel.
+fn fill_band(pixmap: &mut tiny_skia::Pixmap, outer: Clip, inner: Clip, color: &Rgba8) {
+    let Some(outer) = (!outer.is_empty())
+        .then(|| tiny_skia::Rect::from_ltrb(outer.x0, outer.y0, outer.x1, outer.y1))
+        .flatten()
+    else {
+        return;
+    };
+    let mut pb = tiny_skia::PathBuilder::new();
+    pb.push_rect(outer);
+    if !inner.is_empty()
+        && let Some(inner) = tiny_skia::Rect::from_ltrb(inner.x0, inner.y0, inner.x1, inner.y1)
+    {
+        pb.push_rect(inner);
+    }
+    let Some(path) = pb.finish() else {
+        return;
+    };
+    let mut paint = tiny_skia::Paint::default();
+    paint.set_color(tiny_skia::Color::from_rgba8(
+        color.r, color.g, color.b, color.a,
+    ));
+    paint.anti_alias = true;
+    pixmap.fill_path(
+        &path,
+        &paint,
+        tiny_skia::FillRule::EvenOdd,
+        tiny_skia::Transform::identity(),
+        None,
+    );
 }
 
 /// Fills the polygon `points`, clipped to `clip`, without
@@ -3591,11 +3800,24 @@ mod tests {
                 }
             }
             11..=12 => DisplayItem::PopGroup,
-            0..=2 => DisplayItem::Rect {
+            0..=1 => DisplayItem::Rect {
                 x,
                 y,
                 w: rng.coord(0.0, w / 3.0),
                 h: rng.coord(0.0, h / 3.0),
+                color: rng.color(),
+            },
+            2 => DisplayItem::Border {
+                x,
+                y,
+                w: rng.coord(0.0, w / 3.0),
+                h: rng.coord(0.0, h / 3.0),
+                widths: [
+                    rng.coord(0.0, 6.0),
+                    rng.coord(0.0, 6.0),
+                    rng.coord(0.0, 6.0),
+                    rng.coord(0.0, 6.0),
+                ],
                 color: rng.color(),
             },
             3..=4 => DisplayItem::Text {
@@ -4103,6 +4325,207 @@ mod tests {
     }
 
     #[test]
+    fn a_plane_turned_past_its_horizon_in_the_frame_is_drawn() {
+        // A box turned about the y axis under a short perspective: the
+        // plane's horizon falls inside the frame, so the frame's far
+        // corners map back to no point of the plane. What of it lands
+        // in the frame reaches any distance then, and the box is drawn,
+        // a layer or not, rather than nothing.
+        let (w, h) = (200u32, 100u32);
+        let turned = Matrix::perspective_at(100.0, 0.0, 50.0)
+            .then(&Matrix::translate(40.0, 50.0, 0.0))
+            .then(&Matrix::rotate(0.0, 1.0, 0.0, 60.0))
+            .then(&Matrix::translate(-40.0, -50.0, 0.0))
+            .flattened();
+        let inverse = turned.inverse().expect("invertible");
+        assert!(
+            inverse.bounds(0.0, 0.0, w as f32, h as f32).is_none(),
+            "the horizon is in the frame"
+        );
+        assert!(landing_of(&inverse, 0.0, 0.0, w as f32, h as f32).is_some());
+        let red = Rgba8::rgb(255, 0, 0);
+        for layer in [None, Some(LayerReason::Transformed)] {
+            let list = DisplayList {
+                items: vec![
+                    DisplayItem::PushGroup {
+                        matrix: turned,
+                        opacity: 1.0,
+                        key: fresh_key(),
+                        layer,
+                    },
+                    rect(20.0, 30.0, 40.0, 40.0, red),
+                    DisplayItem::PopGroup,
+                ],
+            };
+            let frame = raster(&list, w, h);
+            let (cx, cy) = turned.project(40.0, 50.0).expect("the centre projects");
+            assert_eq!(
+                px(&frame, w as usize, cx as usize, cy as usize),
+                [255, 0, 0, 255],
+                "{layer:?}"
+            );
+        }
+        // A rectangle all past the horizon lands nothing.
+        let past = (0..w)
+            .map(|x| x as f32)
+            .find(|&x| inverse.project(x, 0.0).is_none() && inverse.project(x, h as f32).is_none());
+        if let Some(x) = past {
+            let beyond = w as f32 - x;
+            assert!(landing_of(&inverse, x, 0.0, beyond, h as f32).is_none());
+        }
+    }
+
+    #[test]
+    fn a_scaled_layer_is_drawn_at_its_scale_and_looks_as_drawn_through() {
+        // A group scaled by one and a half (M19): as a layer it is
+        // rasterized at that scale, its text at the size the scale
+        // makes, and laid over the frame pixel for pixel, so that it
+        // looks as the group drawn through does, rather than resampled
+        // up from a raster at one; its pixmap is the scaled reach's.
+        let (w, h) = (160u32, 100u32);
+        let black = Rgba8::rgb(0, 0, 0);
+        let content = |layer| DisplayList {
+            items: vec![
+                rect(0.0, 0.0, 160.0, 100.0, Rgba8::rgb(255, 255, 255)),
+                DisplayItem::PushGroup {
+                    matrix: Matrix::translate(6.0, 4.0, 0.0).then(&Matrix::scale(1.5, 1.5, 1.0)),
+                    opacity: 1.0,
+                    key: group_key(),
+                    layer,
+                },
+                rect(0.0, 0.0, 80.0, 40.0, Rgba8::rgb(200, 220, 240)),
+                DisplayItem::Border {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 80.0,
+                    h: 40.0,
+                    widths: [2.0; 4],
+                    color: Rgba8::rgb(40, 60, 90),
+                },
+                DisplayItem::Text {
+                    text: "Ag scaled".to_string(),
+                    x: 6.0,
+                    y: 26.0,
+                    size: 14.0,
+                    color: black,
+                },
+                DisplayItem::PopGroup,
+            ],
+        };
+        let through = raster(&content(None), w, h);
+        let mut backend = test_backend();
+        let layered = backend
+            .rasterize(&content(Some(LayerReason::WillChange)), w, h)
+            .to_vec();
+        let layers = backend.layers();
+        assert_eq!(layers.len(), 1);
+        // The reach, 120 by 60 at the scale, a clear texel all round.
+        assert_eq!(layers[0].bytes, 122 * 62 * 4);
+        let off: Vec<_> = differing(&through, &layered, w as usize, h as usize)
+            .into_iter()
+            .filter(|(_, _, a, b)| a.iter().zip(b).any(|(a, b)| a.abs_diff(*b) > 1))
+            .collect();
+        assert!(off.is_empty(), "{off:?}");
+        // Moved by a whole pixel, it is composited, not drawn again.
+        let mut moved = content(Some(LayerReason::WillChange));
+        moved.items[1] = DisplayItem::PushGroup {
+            matrix: Matrix::translate(9.0, 4.0, 0.0).then(&Matrix::scale(1.5, 1.5, 1.0)),
+            opacity: 1.0,
+            key: group_key(),
+            layer: Some(LayerReason::WillChange),
+        };
+        backend.rasterize(&moved, w, h);
+        assert!(backend.layered().rasterized.is_empty());
+        assert_eq!(backend.layered().composited, vec![group_key()]);
+    }
+
+    #[test]
+    fn a_layer_is_drawn_at_the_scale_its_matrix_magnifies_the_plane_by() {
+        let scaled = Matrix::translate(3.0, 4.0, 0.0).then(&Matrix::scale(1.5, 0.75, 1.0));
+        assert_eq!(raster_scale(&scaled), (1.5, 0.75));
+        // A rotation is drawn at one, an even scale with it at the scale.
+        assert_eq!(raster_scale(&Matrix::rotate_z(30.0)), (1.0, 1.0));
+        let turned = Matrix::rotate_z(30.0).then(&Matrix::scale(2.0, 2.0, 1.0));
+        assert_eq!(raster_scale(&turned), (2.0, 2.0));
+        // An uneven scale turned is drawn at its scales, then turned;
+        // a skew lengthens an axis without magnifying the plane, and a
+        // projective matrix has no one scale.
+        let uneven = Matrix::rotate_z(30.0).then(&Matrix::scale(2.0, 1.0, 1.0));
+        assert_eq!(raster_scale(&uneven), (2.0, 1.0));
+        assert_eq!(raster_scale(&Matrix::skew(45.0, 0.0)), (1.0, 1.0));
+        let projective = Matrix::perspective(Some(200.0))
+            .then(&Matrix::rotate(0.0, 1.0, 0.0, 30.0))
+            .flattened();
+        assert_eq!(raster_scale(&projective), (1.0, 1.0));
+        // A mirror scaled is drawn at the scale, then reflected; the
+        // scale is rounded to a sixty-fourth.
+        assert_eq!(raster_scale(&Matrix::scale(-2.0, 2.0, 1.0)), (2.0, 2.0));
+        assert_eq!(
+            raster_scale(&Matrix::scale(4.0 / 3.0, 1.0, 1.0)),
+            (85.0 / 64.0, 1.0)
+        );
+        // Taken out again exactly, the layer at its scale is laid over
+        // the raster by the translation alone.
+        assert_eq!(
+            unscaled(&scaled, (1.5, 0.75)),
+            Matrix::translate(3.0, 4.0, 0.0)
+        );
+    }
+
+    #[test]
+    fn a_border_is_one_band_whose_corners_are_covered_once() {
+        // A border moved half a pixel each way: its edges fall between
+        // pixels, and the pixel at its corner is a quarter covered, as
+        // the band covers it, not the 7/16 two strips over each other
+        // would give; the pixels along its edge are half covered, those
+        // inside the band whole, and the padding box not at all.
+        let red = Rgba8::rgb(255, 0, 0);
+        let list = DisplayList {
+            items: vec![
+                group(Matrix::translate(0.5, 0.5, 0.0), 1.0),
+                DisplayItem::Border {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 12.0,
+                    h: 12.0,
+                    widths: [3.0; 4],
+                    color: red,
+                },
+                DisplayItem::PopGroup,
+            ],
+        };
+        let frame = raster(&list, 16, 16);
+        let alpha = |x: usize, y: usize| px(&frame, 16, x, y)[3] as i32;
+        assert!((alpha(0, 0) - 64).abs() <= 8, "corner {}", alpha(0, 0));
+        assert!((alpha(12, 12) - 64).abs() <= 8, "corner {}", alpha(12, 12));
+        assert!((alpha(6, 0) - 128).abs() <= 8, "edge {}", alpha(6, 0));
+        assert!((alpha(0, 6) - 128).abs() <= 8, "edge {}", alpha(0, 6));
+        assert_eq!((alpha(6, 1), alpha(1, 6), alpha(2, 2)), (255, 255, 255));
+        assert!((alpha(3, 6) - 128).abs() <= 8, "inner edge {}", alpha(3, 6));
+        assert_eq!(alpha(6, 6), 0);
+        // On whole pixels it is the four strips it was, pixel for pixel.
+        let band = DisplayList {
+            items: vec![DisplayItem::Border {
+                x: 2.0,
+                y: 1.0,
+                w: 10.0,
+                h: 9.0,
+                widths: [1.0, 2.0, 3.0, 4.0],
+                color: red,
+            }],
+        };
+        let strips = DisplayList {
+            items: vec![
+                rect(2.0, 1.0, 10.0, 1.0, red),
+                rect(2.0, 7.0, 10.0, 3.0, red),
+                rect(2.0, 1.0, 4.0, 9.0, red),
+                rect(10.0, 1.0, 2.0, 9.0, red),
+            ],
+        };
+        assert_eq!(raster(&band, 16, 16), raster(&strips, 16, 16));
+    }
+
+    #[test]
     fn a_group_drawn_through_gives_the_pixels_of_a_raster_of_its_items_there() {
         // M19: a group that only translates and scales is drawn into the
         // frame, its items mapped, so that a box moved or scaled matches
@@ -4417,11 +4840,17 @@ mod tests {
                 0.8,
             ),
             (Matrix::scale(1.5, 1.5, 1.0), 1.0),
+            (
+                Matrix::translate(3.0, 1.0, 0.0).then(&Matrix::scale(1.5, 1.5, 1.0)),
+                1.0,
+            ),
         ] {
             let moved = list(matrix, opacity);
             let pixels = backend.rasterize(&moved, w, h).to_vec();
             let layered = backend.layered();
-            assert!(layered.rasterized.is_empty(), "{layered:?}");
+            // A new scale draws the layer again at it, once.
+            let scaled = matrix.at(0, 0) == 1.5 && matrix.at(0, 3) == 0.0;
+            assert_eq!(layered.rasterized.is_empty(), !scaled, "{layered:?}");
             assert_eq!(layered.composited, vec![key]);
             let mut fresh = test_backend();
             assert_eq!(

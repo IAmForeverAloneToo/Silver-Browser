@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-edge-tolerance" content="128">
+<title>Clips in transforms: overflow hidden inside a translated, a scaled and a quarter-turned box, on the transformed box itself, nested clips in nested transforms, a scaled child overflowing a clipped box, and a clip inside a layer rotated by thirty degrees</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; font-size: 0; }
+  .cell { float: left; position: relative; width: 200px; height: 160px; margin: 20px 0 0 40px; background-color: #e6dcc8; }
+  .t { position: absolute; left: 30px; top: 30px; width: 120px; height: 80px; }
+  .h { overflow: hidden; width: 100px; height: 60px; background-color: #c8a46a; border: 2px solid #604a20; }
+  .k { width: 160px; height: 40px; margin: 10px -20px; background-color: #3a5a7a; }
+</style>
+</head>
+<body>
+  <div class="cell"><div class="t" style="transform: translate(20px, 10px)"><div class="h"><div class="k"></div></div></div></div>
+  <div class="cell"><div class="t" style="transform: scale(1.5); transform-origin: left top"><div class="h"><div class="k"></div></div></div></div>
+  <div class="cell"><div class="t" style="transform: rotate(90deg)"><div class="h"><div class="k"></div></div></div></div>
+  <div class="cell"><div class="t h" style="transform: rotate(90deg); width: 100px; height: 60px"><div class="k"></div></div></div>
+  <div class="cell"><div class="t" style="transform: translate(10px, 0)"><div class="h" style="width: 110px"><div style="transform: translate(20px, 10px); overflow: hidden; width: 80px; height: 40px; background-color: #a07a3a"><div class="k" style="margin: 5px -30px"></div></div></div></div></div>
+  <div class="cell"><div class="t"><div class="h"><div class="k" style="transform: scale(0.5, 2); margin: 10px 0"></div></div></div></div>
+  <div class="cell"><div class="t" style="transform: rotate(30deg)"><div class="h"><div class="k"></div></div></div></div>
+  <div class="cell"><div class="t" style="transform: scale(0.75); transform-origin: left top"><div class="h" style="width: 140px; height: 90px"><div style="transform: rotate(90deg); width: 60px; height: 100px; margin: -20px 10px; background-color: #d98c8c"></div></div></div></div>
+  <div class="cell"><div class="t h" style="transform: translate(10px, 5px); width: 100px; height: 60px"><div class="k" style="will-change: transform"></div></div></div>
+</body>
+</html>

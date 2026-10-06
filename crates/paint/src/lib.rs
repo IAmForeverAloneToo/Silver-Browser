@@ -197,6 +197,28 @@ pub enum DisplayItem {
         points: Vec<(f32, f32)>,
         color: Rgba8,
     },
+    /// Fill the band between the rectangle at `(x, y)` of size `w` by
+    /// `h` and the rectangle inset from it by `widths`, top, right,
+    /// bottom and left, as one shape, anti-aliased (M19): a border
+    /// solid in one colour all round. Its edges lie on whole pixels,
+    /// where it is the four strips it was (M6.8); under a scale they
+    /// may not, and a pixel at a corner is then covered once, by the
+    /// share of it the band covers, where two strips over each other
+    /// would cover it twice.
+    Border {
+        /// Left edge, px from viewport left.
+        x: f32,
+        /// Top edge, px from viewport top.
+        y: f32,
+        /// Width in px.
+        w: f32,
+        /// Height in px.
+        h: f32,
+        /// The band's widths, top, right, bottom and left, in px.
+        widths: [f32; 4],
+        /// Fill color.
+        color: Rgba8,
+    },
     /// Clip everything up to the matching [`DisplayItem::PopClip`] to
     /// this rectangle (M9.3), intersected with any clip already in
     /// force. Clips nest; an unmatched pop is ignored.
@@ -730,7 +752,8 @@ fn darker(c: Rgba8) -> Rgba8 {
 /// sides meet at mitred corners, as in CSS2 §8.5: each side's band is
 /// the trapezoid between the border box's edge and the padding box's.
 /// When all four sides are solid in one colour the mitres are
-/// invisible and the sides are plain strips, which paint without seams.
+/// invisible and the border is one band, which paints without seams
+/// and covers each corner once (M19).
 /// Otherwise a run of neighbouring sides whose band is one colour is
 /// one polygon, drawn anti-aliased, so that only the mitres between
 /// sides of different colours blend, as a browser draws them (M11):
@@ -756,7 +779,7 @@ fn push_border(items: &mut Vec<DisplayItem>, f: &Fragment, rect: Rect, widths: [
             .iter()
             .all(|c| *c == f.style.border_color[TOP]);
     if uniform {
-        push_solid_strips(items, f, rect, widths);
+        push_solid_border(items, f, rect, widths);
         return;
     }
     let geometry = (rect.x, rect.y, rect.w, rect.h, widths);
@@ -870,49 +893,22 @@ struct Band {
     color: Rgba8,
 }
 
-/// The four strips of a solid border in one colour (M6.8's shape:
-/// adjacent strips overlap at the corners, which a single colour makes
-/// invisible).
-fn push_solid_strips(items: &mut Vec<DisplayItem>, f: &Fragment, rect: Rect, widths: [f32; 4]) {
-    let [top, right, bottom, left] = widths;
+/// A solid border in one colour all round: one band, the border box
+/// less the padding box (M19; M6.8 drew it as four strips, which
+/// overlap at the corners).
+fn push_solid_border(items: &mut Vec<DisplayItem>, f: &Fragment, rect: Rect, widths: [f32; 4]) {
+    if widths.iter().all(|w| *w <= 0.0) {
+        return;
+    }
     let Rect { x, y, w, h } = rect;
-    let color = to_rgba8(f.style.border_color[TOP]);
-    if top > 0.0 {
-        items.push(DisplayItem::Rect {
-            x,
-            y,
-            w,
-            h: top,
-            color,
-        });
-    }
-    if bottom > 0.0 {
-        items.push(DisplayItem::Rect {
-            x,
-            y: y + h - bottom,
-            w,
-            h: bottom,
-            color,
-        });
-    }
-    if left > 0.0 {
-        items.push(DisplayItem::Rect {
-            x,
-            y,
-            w: left,
-            h,
-            color,
-        });
-    }
-    if right > 0.0 {
-        items.push(DisplayItem::Rect {
-            x: x + w - right,
-            y,
-            w: right,
-            h,
-            color,
-        });
-    }
+    items.push(DisplayItem::Border {
+        x,
+        y,
+        w,
+        h,
+        widths: widths.map(|v| v.max(0.0)),
+        color: to_rgba8(f.style.border_color[TOP]),
+    });
 }
 
 /// The border geometry a side's bands are computed from: the border
@@ -1226,30 +1222,46 @@ mod fragment_tests {
         assert_eq!(rects(&list).len(), 1);
     }
 
+    /// The border items of a list, as `(x, y, w, h, widths, color)`.
+    #[allow(clippy::type_complexity)]
+    fn borders(list: &DisplayList) -> Vec<(f32, f32, f32, f32, [f32; 4], Rgba8)> {
+        list.items
+            .iter()
+            .filter_map(|i| match i {
+                DisplayItem::Border {
+                    x,
+                    y,
+                    w,
+                    h,
+                    widths,
+                    color,
+                } => Some((*x, *y, *w, *h, *widths, *color)),
+                _ => None,
+            })
+            .collect()
+    }
+
     #[test]
-    fn border_paints_four_strips_at_the_box_edges() {
+    fn a_border_in_one_colour_is_one_band_at_the_box_edges() {
         let list = display_list_of(
             Element::new("div"),
             "div { display: block; width: 100px; height: 50px; margin: 0;
-                   border-width: 4px; border-style: solid; border-color: #00ff00; }",
+                   border-width: 4px 3px 2px 1px; border-style: solid; border-color: #00ff00; }",
         );
-        let green: Vec<&DisplayItem> = rects(&list)
-            .into_iter()
-            .filter(
-                |i| matches!(i, DisplayItem::Rect { color, .. } if *color == Rgba8::rgb(0, 255, 0)),
-            )
-            .collect();
-        assert_eq!(green.len(), 4); // top, bottom, left, right
-        // Border-box is 100+8=108 wide, 50+8=58 tall (border adds to content).
-        let has = |want: (f32, f32, f32, f32)| {
-            green.iter().any(
-                |i| matches!(i, DisplayItem::Rect { x, y, w, h, .. } if (*x, *y, *w, *h) == want),
-            )
-        };
-        assert!(has((0.0, 0.0, 108.0, 4.0)), "top strip");
-        assert!(has((0.0, 54.0, 108.0, 4.0)), "bottom strip");
-        assert!(has((0.0, 0.0, 4.0, 58.0)), "left strip");
-        assert!(has((104.0, 0.0, 4.0, 58.0)), "right strip");
+        // Border-box is 100+4=104 wide, 50+6=56 tall (border adds to
+        // content), the band the widths given.
+        assert_eq!(
+            borders(&list),
+            vec![(
+                0.0,
+                0.0,
+                104.0,
+                56.0,
+                [4.0, 3.0, 2.0, 1.0],
+                Rgba8::rgb(0, 255, 0)
+            )]
+        );
+        assert_eq!(rects(&list).len(), 1); // just the viewport background
     }
 
     #[test]
@@ -1259,11 +1271,13 @@ mod fragment_tests {
             "div { display: block; width: 100px; height: 50px; border-width: 4px; }", // no border-style
         );
         assert_eq!(rects(&list).len(), 1); // just the viewport background
+        assert!(borders(&list).is_empty());
         let list = display_list_of(
             Element::new("div"),
             "div { display: block; width: 100px; height: 50px; border: 4px hidden red; }",
         );
         assert_eq!(rects(&list).len(), 1);
+        assert!(borders(&list).is_empty());
     }
 
     /// The quad items of a list.
@@ -1317,13 +1331,13 @@ mod fragment_tests {
             vec![(0.0, 50.0), (0.0, 0.0), (20.0, 10.0), (20.0, 50.0)]
         );
         assert!(quads(&list).is_empty());
-        // Four solid sides in one colour are the plain strips of before.
+        // Four solid sides in one colour are one band.
         let list = display_list_of(
             Element::new("div"),
             "div { width: 100px; height: 50px; margin: 0; border: 4px solid #ff0000; }",
         );
         assert!(quads(&list).is_empty() && polygons(&list).is_empty());
-        assert_eq!(rects(&list).len(), 5);
+        assert_eq!((rects(&list).len(), borders(&list).len()), (1, 1));
     }
 
     #[test]
@@ -1446,23 +1460,14 @@ mod fragment_tests {
             })
             .collect();
         let (red, blue) = (Rgba8::rgb(255, 0, 0), Rgba8::rgb(0, 0, 255));
-        assert_eq!(
-            boxes,
-            vec![
-                (10.0, 0.0, 23.0, 13.0, blue),
-                (10.0, 0.0, 23.0, 1.0, red),
-                (10.0, 12.0, 23.0, 1.0, red),
-                (10.0, 0.0, 1.0, 13.0, red),
-                (32.0, 0.0, 1.0, 13.0, red),
-            ]
-        );
+        assert_eq!(boxes, vec![(10.0, 0.0, 23.0, 13.0, blue)]);
+        assert_eq!(borders(&list), vec![(10.0, 0.0, 23.0, 13.0, [1.0; 4], red)]);
         // A border thinner than a pixel is a pixel wide.
         let list = display_list_of(
             Element::new("div"),
             "div { margin: 0; width: 20px; height: 10px; border: 0.2px solid #ff0000; }",
         );
-        assert_eq!(rects(&list).len(), 5);
-        assert!(matches!(rects(&list)[1], DisplayItem::Rect { h: 1.0, .. }));
+        assert_eq!(borders(&list)[0].4, [1.0; 4]);
         // A clip is snapped the same way: 0.4 to 50.6 is 0 to 51.
         let list = display_list_of(
             Element::new("div").push(Element::new("p")),
@@ -1824,12 +1829,18 @@ mod fragment_tests {
             ));
         }
         // The box's own border paints outside the clip, before it.
-        assert!(
+        assert_eq!(
             items[1..first_push]
                 .iter()
-                .filter(|i| matches!(i, DisplayItem::Rect { .. }))
-                .count()
-                >= 4
+                .filter(|i| matches!(
+                    i,
+                    DisplayItem::Border {
+                        widths: [3.0, 3.0, 3.0, 3.0],
+                        ..
+                    }
+                ))
+                .count(),
+            1
         );
         // `scroll` and `auto` clip the same way; `visible` pushes nothing.
         for (value, clips) in [("scroll", true), ("auto", true), ("visible", false)] {

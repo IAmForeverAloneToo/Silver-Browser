@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Layout: a faded modal over a page</title>
+<style>
+  @font-face { font-family: "Layout Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f4f5f7; color: #1f2328; }
+  body { margin: 0; font-family: "Layout Test Sans"; font-size: 16px; }
+  h1, h2, p { margin: 0; font-weight: normal; }
+  .page { padding: 24px; }
+  .page p { margin: 8px 0; font-size: 14px; color: #57606a; }
+  .backdrop { position: fixed; left: 0; top: 0; right: 0; bottom: 0; background-color: #1f2328; opacity: 0.5; }
+  .dialog { position: fixed; left: 50%; top: 50%; width: 320px; padding: 20px; background-color: #ffffff; border: 1px solid #d0d7de; transform: translate(-50%, -50%); }
+  .dialog h2 { font-size: 18px; margin-bottom: 8px; }
+  .dialog p { font-size: 14px; color: #57606a; margin-bottom: 16px; }
+  .actions { display: flex; justify-content: flex-end; gap: 8px; }
+  .button { padding: 6px 12px; font-size: 14px; background-color: #f6f8fa; border: 1px solid #d0d7de; }
+  .button.primary { background-color: #1f883d; color: #ffffff; border-color: #1f883d; }
+</style>
+</head>
+<body data-expected-width="800" data-expected-height="172">
+  <div class="page" data-expected-width="800" data-expected-height="172" data-offset-x="0" data-offset-y="0">
+    <h1 style="font-size: 24px" data-expected-width="752" data-expected-height="28" data-offset-x="24" data-offset-y="24">A page under a modal</h1>
+    <p data-expected-width="752" data-expected-height="32" data-offset-x="24" data-offset-y="60">The page lays out as it would without the modal: the backdrop and the dialog are fixed, out of the flow, and the backdrop's opacity fades the page without moving it.</p>
+    <p data-expected-width="752" data-expected-height="16" data-offset-x="24" data-offset-y="100">A second paragraph, and a third below it, so that the page has some height to fade.</p>
+    <p data-expected-width="752" data-expected-height="16" data-offset-x="24" data-offset-y="124">The dialog is centred by its own transform, which takes half its own size, laid out first.</p>
+  </div>
+  <div class="backdrop" data-expected-width="800" data-expected-height="600" data-offset-x="0" data-offset-y="0"></div>
+  <div class="dialog" data-expected-width="362" data-expected-height="149" data-offset-x="400" data-offset-y="300">
+    <h2 data-expected-width="320" data-expected-height="21" data-offset-x="20" data-offset-y="20">Discard changes?</h2>
+    <p data-expected-width="320" data-expected-height="32" data-offset-x="20" data-offset-y="49">The draft has changes that have not been saved. Discarding them cannot be undone.</p>
+    <div class="actions" data-expected-width="320" data-expected-height="30" data-offset-x="20" data-offset-y="97"><span class="button" data-expected-width="114" data-expected-height="30" data-offset-x="138" data-offset-y="97">Keep editing</span><span class="button primary" data-expected-width="80" data-expected-height="30" data-offset-x="260" data-offset-y="97">Discard</span></div>
+  </div>
+</body>
+</html>
