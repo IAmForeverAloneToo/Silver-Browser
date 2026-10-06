@@ -4,7 +4,9 @@
 //! frame is paint plus raster. The frames are drawn sixty a second on a
 //! clock of the benchmark's own (M13.4), and each one's stages are
 //! reported from `Engine::frame_stats`, with the frames that overran
-//! the budget.
+//! the budget. After each frame the engine draws ahead (M19.4) until
+//! the frame's budget is spent, as the shell does once it presents
+//! one; that is timed apart from the frame.
 //!
 //! `harness = false` (see `Cargo.toml`): a plain binary, not a
 //! `#[bench]`-harness target, so it needs no bench-runner dependency.
@@ -84,14 +86,18 @@ fn main() {
     // Then scroll-only frames (M9.5): the layout is cached.
     let runs_before = engine.layout_runs();
     let mut stats = Vec::new();
-    let start = Instant::now();
+    let (mut elapsed, mut ahead, mut tiles) = (Duration::ZERO, Vec::new(), 0);
     for i in 1..=FRAMES {
         engine.set_scroll(i as f32 * STEP_PX);
         let time = FrameTime::at(FRAME_BUDGET * i);
+        let start = Instant::now();
         black_box(engine.frame_at(WIDTH, HEIGHT, time));
+        elapsed += start.elapsed();
         stats.push(engine.frame_stats());
+        let presented = Instant::now();
+        tiles += engine.draw_ahead(start + FRAME_BUDGET);
+        ahead.push(presented.elapsed().as_secs_f64() * 1000.0);
     }
-    let elapsed = start.elapsed();
     let per_frame_ms = elapsed.as_secs_f64() * 1000.0 / FRAMES as f64;
 
     println!(
@@ -127,5 +133,11 @@ fn main() {
         "  over the {:.1} ms budget: {} of {FRAMES}",
         FRAME_BUDGET.as_secs_f64() * 1000.0,
         stats.iter().filter(|s| s.overran).count()
+    );
+    ahead.sort_by(f64::total_cmp);
+    println!(
+        "  drawing ahead after the frame: median {:.2} ms, worst {:.2} ms, {tiles} tiles",
+        ahead[ahead.len() / 2],
+        ahead[ahead.len() - 1]
     );
 }

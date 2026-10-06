@@ -315,14 +315,27 @@ impl Fragment {
 /// at all (css-transforms-1 §2); the box is as wide as its border box
 /// for the projection, horizontal overflow not being tracked.
 pub(crate) fn extent_bottom(f: &Fragment, cb_width: f32) -> f32 {
+    // A text, or an inline box with nothing in it, has no transform and
+    // nothing inside: most of a document's fragments, at every layout,
+    // which are measured without a call.
+    let plain = |f: &Fragment| f.children.is_empty() && !matches!(f.kind, FragmentKind::Box);
     let own = f.top() + f.h;
+    if plain(f) {
+        return own;
+    }
     let untransformed = if f.clips() {
         own
     } else {
         let content_width = f.content_width(cb_width);
         f.children
             .iter()
-            .map(|c| f.y + extent_bottom(c, content_width))
+            .map(|c| {
+                f.y + if plain(c) {
+                    c.top() + c.h
+                } else {
+                    extent_bottom(c, content_width)
+                }
+            })
             .fold(own, f32::max)
     };
     match f.matrix(cb_width) {
@@ -404,6 +417,56 @@ fn make_absolute(fragments: &mut [Fragment], dx: f32, dy: f32) {
         f.y += dy;
         make_absolute(&mut f.children, f.x, f.y);
     }
+}
+
+/// [`extent_bottom`] of `f`, measured as [`make_absolute`] moves `f`
+/// and its subtree by `dx` and `dy`: each fragment's extent is taken
+/// from the place it has relative to its parent, before it moves, by
+/// the same arithmetic, so that one walk over a page's fragments does
+/// what two did, at every layout.
+fn absolute_reaching(f: &mut Fragment, dx: f32, dy: f32, cb_width: f32) -> f32 {
+    let plain = |f: &Fragment| f.children.is_empty() && !matches!(f.kind, FragmentKind::Box);
+    let own = f.top() + f.h;
+    let y = f.y;
+    f.x += dx;
+    f.y += dy;
+    if plain(f) {
+        return own;
+    }
+    let (ax, ay) = (f.x, f.y);
+    let untransformed = if f.clips() {
+        make_absolute(&mut f.children, ax, ay);
+        own
+    } else {
+        let content_width = f.content_width(cb_width);
+        f.children.iter_mut().fold(own, |reach, c| {
+            let below = if plain(c) {
+                let below = c.top() + c.h;
+                c.x += ax;
+                c.y += ay;
+                below
+            } else {
+                absolute_reaching(c, ax, ay, content_width)
+            };
+            reach.max(y + below)
+        })
+    };
+    match f.matrix(cb_width) {
+        None => untransformed,
+        Some(matrix) => match matrix.bounds(0.0, 0.0, f.w, untransformed - y) {
+            Some((_, _, _, bottom)) if matrix.inverse().is_some() => y + bottom,
+            _ => y,
+        },
+    }
+}
+
+/// Where every fragment of `roots` is, in tree order, to the bit: what
+/// the tests hold one walk to another by.
+#[cfg(test)]
+fn places(roots: &[Fragment]) -> Vec<(u32, u32)> {
+    preorder(roots)
+        .map(|f| (f.x.to_bits(), f.y.to_bits()))
+        .collect()
 }
 
 /// A set of adjoining vertical margins (CSS2 §8.3.1), not yet resolved:
@@ -574,15 +637,30 @@ fn layout_document_with(
     // reaches down to whatever its content reaches, a box overflowing
     // its parent, an absolutely positioned box, a transformed box by its
     // transformed bounds (M19); a fixed box, which does not scroll, adds
-    // nothing. Every fragment is still relative to its parent here, as
-    // the extents assume.
-    for (i, root) in roots.iter().enumerate() {
+    // nothing. The fragments are made absolute on the same walk.
+    #[cfg(test)]
+    let two_walks = {
+        let mut roots = roots.clone();
+        let mut height = height;
+        for (i, root) in roots.iter().enumerate() {
+            if i < flow_roots || root.style.position != Position::Fixed {
+                height = height.max(extent_bottom(root, viewport_width));
+            }
+        }
+        make_absolute(&mut roots, 0.0, 0.0);
+        (height.to_bits(), places(&roots))
+    };
+    for (i, root) in roots.iter_mut().enumerate() {
         if i >= flow_roots && root.style.position == Position::Fixed {
+            make_absolute(std::slice::from_mut(root), 0.0, 0.0);
             continue;
         }
-        height = height.max(extent_bottom(root, viewport_width));
+        height = height.max(absolute_reaching(root, 0.0, 0.0, viewport_width));
     }
-    make_absolute(&mut roots, 0.0, 0.0);
+    // Every layout of this crate's tests holds the one walk to the two
+    // it stands for, to the bit.
+    #[cfg(test)]
+    assert_eq!((height.to_bits(), places(&roots)), two_walks);
     DocumentLayout {
         roots,
         height: height.max(0.0),

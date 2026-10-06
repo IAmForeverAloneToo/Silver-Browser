@@ -4,8 +4,12 @@
 //! time goes into the engine rather than into filling pixels.
 //!
 //! The rasterizer draws each frame from the last one, this input's or
-//! the one before's, redrawing only what changed (M13.3): every frame
-//! must be byte for byte what a raster of the whole list gives.
+//! the one before's, redrawing only what changed (M13.3), and keeps the
+//! groups that are layers, the document's as tiles, which it draws
+//! ahead of a scroll after each frame (M19): every frame must be byte
+//! for byte what a raster of the whole list gives. Drawing ahead is
+//! given all the time it wants, so that a run does the same work
+//! however fast the machine is.
 
 #![no_main]
 
@@ -13,6 +17,7 @@ use libfuzzer_sys::fuzz_target;
 use render::RenderBackend as _;
 use std::cell::RefCell;
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 static FONTS: OnceLock<text::FontCollection> = OnceLock::new();
 
@@ -77,6 +82,7 @@ fuzz_target!(|data: &[u8]| {
                     "{:?} redrawn from the last frame differs from a whole raster",
                     backend.redrawn()
                 );
+                backend.draw_ahead(Instant::now() + Duration::from_secs(3600));
             });
         }
     }

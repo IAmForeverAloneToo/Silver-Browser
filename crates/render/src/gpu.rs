@@ -37,7 +37,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::ops::Range;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use paint::{DisplayItem, DisplayList, GroupKey, LayerReason, Rgba8, TILE_HEIGHT};
 use style::transform::Matrix;
@@ -400,6 +400,8 @@ pub struct GpuBackend {
     /// The tiles of the margin not yet drawn, as the layer's key and
     /// the row, with how far the row is from the viewport's middle.
     deferred: Vec<(GroupKey, i32, i32)>,
+    /// How long the last tile drawn ahead took, submitted and done.
+    tile_time: Duration,
     /// The passes recorded and not yet drawn, in the order they draw.
     passes: Vec<Pass>,
     records: Records,
@@ -471,6 +473,7 @@ impl GpuBackend {
             layered: Layered::default(),
             doubled: HashSet::new(),
             deferred: Vec::new(),
+            tile_time: Duration::ZERO,
             passes: Vec::new(),
             records: Records::default(),
             buffers: [None, None, None, None],
@@ -1431,13 +1434,15 @@ impl GpuBackend {
             && pixels.width == gw
             && pixels.height == gh
         {
-            if were != items || !extra.is_empty() {
+            let same = were == items;
+            if !same || !extra.is_empty() {
                 self.render_pass(pixels.view.clone(), gw, gh, items, base);
                 self.layered.rasterized.push((key, 1));
             }
             return Some(Layer {
                 reason,
-                items: items.to_vec(),
+                // The items unchanged are kept rather than copied.
+                items: if same { were } else { items.to_vec() },
                 store: Store::Whole {
                     pixels,
                     origin,
@@ -1502,6 +1507,8 @@ impl GpuBackend {
         let base = |row: i32| Matrix::translate(-(left as f32), -(row as f32 * tall as f32), 0.0);
         let mut rows: BTreeMap<i32, Tile<Texture>> = BTreeMap::new();
         let mut drawn = 0u32;
+        // The items, kept rather than copied when they are unchanged.
+        let mut kept_items = None;
         if let Some(Layer {
             store:
                 Store::Tiles {
@@ -1519,7 +1526,8 @@ impl GpuBackend {
                 .into_iter()
                 .filter(|(row, _)| margin.contains(row))
                 .collect();
-            if (were != items || !extra.is_empty()) && !rows.is_empty() {
+            let same = were == items;
+            if (!same || !extra.is_empty()) && !rows.is_empty() {
                 let first = *rows.keys().next().expect("a row");
                 let last = *rows.keys().next_back().expect("a row");
                 let height = ((last - first + 1) as u32).saturating_mul(tall);
@@ -1556,6 +1564,9 @@ impl GpuBackend {
                     self.render_pass(view, width, tall, items, base(row));
                     drawn += 1;
                 }
+            }
+            if same {
+                kept_items = Some(were);
             }
         }
         let mut held: usize = rows.values().map(|t| t.pixels.bytes()).sum();
@@ -1594,7 +1605,7 @@ impl GpuBackend {
         }
         Some(Layer {
             reason,
-            items: items.to_vec(),
+            items: kept_items.unwrap_or_else(|| items.to_vec()),
             store: Store::Tiles { left, width, rows },
             used: self.frame,
         })
@@ -1602,17 +1613,18 @@ impl GpuBackend {
 
     /// Draws the tiles of the margin not yet drawn, nearest the
     /// viewport first, each submitted as it is recorded, while there
-    /// is time before `deadline` and room under the budget without
-    /// letting anything go; the rest wait for a frame that shows them.
-    fn prepaint(&mut self, deadline: Option<Instant>) {
-        let Some(deadline) = deadline else {
-            self.deferred.clear();
-            return;
-        };
+    /// is time before `until` and room under the budget without letting
+    /// anything go; the rest are kept for a later call. How many it
+    /// drew.
+    fn prepaint(&mut self, until: Instant) -> u32 {
         let mut deferred = std::mem::take(&mut self.deferred);
         deferred.sort_by_key(|(_, _, distance)| *distance);
-        for (key, row, _) in deferred {
-            if Instant::now() >= deadline {
+        let mut drawn = 0;
+        let mut rest = deferred.into_iter();
+        for (key, row, distance) in rest.by_ref() {
+            let now = Instant::now();
+            if now + self.tile_time >= until {
+                self.deferred.push((key, row, distance));
                 break;
             }
             let Some(mut layer) = self.layers.remove(&key) else {
@@ -1625,6 +1637,7 @@ impl GpuBackend {
                 let tile_bytes = width as usize * TILE_HEIGHT as usize * 4;
                 if self.layers.bytes() + layer.bytes() + tile_bytes > self.layers.budget() {
                     self.layers.insert(key, layer);
+                    self.deferred.push((key, row, distance));
                     break;
                 }
                 if let Some(pixels) = self.colour(width, TILE_HEIGHT) {
@@ -1643,11 +1656,15 @@ impl GpuBackend {
                             },
                         );
                     }
-                    self.layered.prepainted += 1;
+                    drawn += 1;
+                    self.tile_time = now.elapsed();
                 }
             }
             self.layers.insert(key, layer);
         }
+        self.deferred.extend(rest);
+        self.layered.prepainted += drawn;
+        drawn
     }
 
     /// The frame's target of `width` by `height`, made anew at a new
@@ -2005,16 +2022,6 @@ impl RenderBackend for GpuBackend {
     }
 
     fn rasterize(&mut self, list: &DisplayList, width: u32, height: u32) -> &[u8] {
-        self.rasterize_by(list, width, height, None)
-    }
-
-    fn rasterize_by(
-        &mut self,
-        list: &DisplayList,
-        width: u32,
-        height: u32,
-        deadline: Option<Instant>,
-    ) -> &[u8] {
         self.frame += 1;
         self.layered = Layered::default();
         self.deferred.clear();
@@ -2054,7 +2061,6 @@ impl RenderBackend for GpuBackend {
             draws,
         });
         self.flush(true);
-        self.prepaint(deadline);
         self.layers.trim();
         self.report();
         &self.pixels
@@ -2076,6 +2082,12 @@ impl RenderBackend for GpuBackend {
         self.layered.clone()
     }
 
+    fn draw_ahead(&mut self, until: Instant) -> u32 {
+        let drawn = self.prepaint(until);
+        self.report();
+        drawn
+    }
+
     fn clear_glyph_cache(&mut self) {
         self.text.clear();
     }
@@ -2088,6 +2100,10 @@ impl RenderBackend for GpuBackend {
     fn redrawn(&self) -> &Redrawn {
         static WHOLE: Redrawn = Redrawn::Whole;
         &WHOLE
+    }
+
+    fn last_frame(&self) -> &[u8] {
+        &self.pixels
     }
 }
 

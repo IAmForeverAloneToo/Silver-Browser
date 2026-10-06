@@ -7,7 +7,7 @@
 //! winit's, so that tests drive it with an engine and the test server;
 //! the window, the surface and the OS's clipboard stay in `main`.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use engine::address::{self, Address};
 use engine::{Engine, FrameTime, Link, LoadState, Url};
@@ -386,6 +386,12 @@ impl Session {
                 put(line, &mut out[at..at + bubble_w]);
             }
         }
+    }
+
+    /// Draws ahead until `until`, once a frame is presented: the tiles
+    /// the next frames of a scroll will show (M19.4).
+    pub(crate) fn draw_ahead(&mut self, until: Instant) {
+        self.engine.draw_ahead(until);
     }
 
     /// Carries out what a key asks for.

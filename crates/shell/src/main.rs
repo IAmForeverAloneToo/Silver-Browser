@@ -33,7 +33,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use engine::address::Address;
-use engine::{Backend, Engine, FrameTime, Url};
+use engine::{Backend, Engine, FRAME_BUDGET, FrameTime, Url};
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
@@ -91,9 +91,11 @@ impl Browser {
         }
     }
 
-    /// Renders one frame and presents it. Failures skip the frame (logged)
-    /// rather than taking the process down.
+    /// Renders one frame and presents it, then draws ahead in the time
+    /// the frame's budget leaves (M19.4). Failures skip the frame
+    /// (logged) rather than taking the process down.
     fn draw(&mut self) {
+        let began = Instant::now();
         let Some(window) = self.window.as_ref() else {
             return;
         };
@@ -117,6 +119,7 @@ impl Browser {
                 if let Err(e) = buffer.present() {
                     eprintln!("present failed: {e}");
                 }
+                self.session.draw_ahead(began + FRAME_BUDGET);
             }
             Err(e) => eprintln!("buffer acquisition failed: {e}"),
         }

@@ -32,7 +32,7 @@
 
 use std::borrow::Cow;
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::HashSet;
 
 use dom::{Document, NodeId};
 use style::computed::{
@@ -418,7 +418,7 @@ pub fn build_box_tree(
         false,
         None,
         document,
-        &mut HashMap::new(),
+        &mut HashSet::new(),
     );
     boxes
 }
@@ -434,18 +434,19 @@ pub fn build_box_tree(
 /// parent element in the document, which a block hoisted out of an
 /// inline element (CSS2 §9.2.1.1) keeps; a generated box its
 /// originating element; an anonymous box the box above it, `parent`.
-/// `holds` records, by element, whether its box holds a 3D rendering
-/// context, which a parent's box is always numbered before its
-/// children's.
+/// `holds` records the elements whose box holds a 3D rendering context,
+/// which a parent's box is always numbered before its children's; few
+/// do, and in most documents none, which a lookup then costs nothing.
 fn number(
     boxes: &mut [LayoutBox],
     next: &mut u32,
     items: bool,
     parent: Option<(NodeId, bool)>,
     document: &Document,
-    holds: &mut HashMap<NodeId, bool>,
+    holds: &mut HashSet<NodeId>,
 ) {
-    let number_one = |b: &mut LayoutBox, next: &mut u32, holds: &mut HashMap<NodeId, bool>| {
+    let held = |holds: &HashSet<NodeId>, node: NodeId| !holds.is_empty() && holds.contains(&node);
+    let number_one = |b: &mut LayoutBox, next: &mut u32, holds: &mut HashSet<NodeId>| {
         b.tree_order = *next;
         b.item = items;
         let anonymous = b.anonymous && b.generated.is_none();
@@ -455,16 +456,10 @@ fn number(
                 parent.is_some_and(|(_, in_3d)| in_3d),
             )
         } else if b.generated.is_some() {
-            (Some(b.node), holds.get(&b.node).copied().unwrap_or(false))
+            (Some(b.node), held(holds, b.node))
         } else {
             let element = document.parent_element(b.node);
-            (
-                element,
-                element
-                    .and_then(|p| holds.get(&p))
-                    .copied()
-                    .unwrap_or(false),
-            )
+            (element, element.is_some_and(|p| held(holds, p)))
         };
         b.parent = above;
         b.in_3d = in_3d;
@@ -481,7 +476,13 @@ fn number(
             let holds_3d = b.is_transformable()
                 && b.style.effects().used_transform_style(b.style.overflow)
                     == TransformStyle::Preserve3d;
-            holds.insert(b.node, holds_3d);
+            // An element's later box, a table's beside its wrapper's,
+            // says for the boxes after it.
+            if holds_3d {
+                holds.insert(b.node);
+            } else if !holds.is_empty() {
+                holds.remove(&b.node);
+            }
             holds_3d
         };
         number(

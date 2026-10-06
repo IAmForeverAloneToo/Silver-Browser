@@ -153,7 +153,7 @@ pub struct FrameStats {
     pub layout: Duration,
     /// Building the display list.
     pub paint: Duration,
-    /// Rasterizing it.
+    /// Rasterizing it, until its pixels are done.
     pub raster: Duration,
     /// The whole frame: the stages and what holds them together.
     pub total: Duration,
@@ -1587,12 +1587,7 @@ impl Engine {
         }
         let paint = stage.elapsed();
         let stage = Instant::now();
-        // The backend may draw ahead of a scroll until the deadline
-        // (M19.4), which M13.4 reserved for work the frame can do
-        // without.
-        let pixels = self
-            .backend
-            .rasterize_by(&list, width, height, Some(start + budget));
+        self.backend.rasterize_owned(list, width, height);
         let raster = stage.elapsed();
         let total = start.elapsed();
         self.stats = FrameStats {
@@ -1603,7 +1598,19 @@ impl Engine {
             total,
             overran: total > budget,
         };
-        pixels
+        self.backend.last_frame()
+    }
+
+    /// Does the work the last frame could do without, until `until`
+    /// (M19.4): the tiles of the document's layer, and of any other
+    /// scrolled layer, that the rows next to the viewport need, so that
+    /// a scroll's next frames composite them rather than draw them. For
+    /// the caller to call once the frame is presented, with the time
+    /// before the next one (M13.4 reserved it for such work); what it
+    /// leaves waits for a later call or for a frame that shows it. How
+    /// many tiles it drew.
+    pub fn draw_ahead(&mut self, until: Instant) -> u32 {
+        self.backend.draw_ahead(until)
     }
 
     // ---- Scrolling (M9.2) ---------------------------------------------------
@@ -4182,22 +4189,38 @@ mod tests {
         // A new size: drawn whole.
         engine.frame(200, 30);
         assert_eq!(engine.redrawn(), &render::Redrawn::Whole);
-        // A scroll moves the document's group (M19): drawn again where
-        // its content is, composited from the document's tiles, with
-        // nothing drawn into them.
+        // A scroll moves the document's group (M19.4): the last frame's
+        // pixels move up with it, and what remains, the strip the move
+        // uncovers and the scrollbar's thumb, is drawn again, composited
+        // from the document's tiles, with nothing drawn into them.
+        engine.load_document(
+            "<style>body { margin: 0 } p { margin: 0 }</style>\
+             <p>one</p><p>two</p><p>three</p><p>four</p><p>five</p><p>six</p><p>seven</p>",
+        );
+        engine.frame(200, 60);
         engine.set_scroll(10.0);
-        engine.frame(200, 30);
+        engine.frame(200, 60);
         let render::Redrawn::Rects(rects) = engine.redrawn().clone() else {
             panic!("drawn whole: {:?}", engine.redrawn());
         };
         assert!(!rects.is_empty());
         let layered = engine.layered();
+        assert_eq!(layered.moved, Some((0, -10)), "{layered:?}");
         assert!(layered.rasterized.is_empty(), "{layered:?}");
         assert!(
             layered.composited.contains(&paint::GroupKey::Document(0)),
             "{layered:?}"
         );
-        engine.frame(200, 30);
+        let area: u64 = rects.iter().map(|r| r.area()).sum();
+        assert!(area < 200 * 60 / 2, "{rects:?}");
+        let mut fresh = test_engine();
+        fresh.load_document(
+            "<style>body { margin: 0 } p { margin: 0 }</style>\
+             <p>one</p><p>two</p><p>three</p><p>four</p><p>five</p><p>six</p><p>seven</p>",
+        );
+        fresh.frame(200, 60);
+        fresh.set_scroll(10.0);
+        assert_eq!(engine.frame(200, 60), fresh.frame(200, 60));
         assert_eq!(engine.redrawn(), &render::Redrawn::Rects(Vec::new()));
     }
 
@@ -4592,4 +4615,69 @@ mod tests {
         }
         let _ = white;
     }
+
+    #[test]
+    fn matrices_past_any_size_draw_and_hit_without_harm() {
+        // M19: transforms whose matrices overflow, a scale of 1e30 in
+        // another, a `matrix3d` of values past f32's range, a move and a
+        // turn of 1e30, a perspective of 1e-30px, a scale to nothing: a
+        // frame is drawn of the viewport's size, the same each time, a
+        // point is hit or not, and the layers stay in their budget.
+        let page = "<style>body { margin: 0 } div { width: 20px; height: 20px; \
+                    background-color: #36c; margin: 4px; }</style>\
+                    <div style=\"transform: scale(1e30)\">\
+                      <div style=\"transform: scale(1e30); will-change: transform\"></div></div>\
+                    <div style=\"transform: matrix3d(1e39, 0, 0, 0, 0, 1e39, 0, 0, 0, 0, 1, 0, \
+                      1e39, 1e39, 0, 1)\"></div>\
+                    <div style=\"transform: translate(1e30px, -1e30px) rotate(1e30deg)\"></div>\
+                    <div style=\"perspective: 1e-30px\"><div style=\"transform: rotateY(89.9deg) \
+                      translateZ(1e30px)\"></div></div>\
+                    <div style=\"transform: scale(0); opacity: 0.5\"></div>\
+                    <div style=\"transform: scale(-1e30, 1e-30) skew(89.99deg)\"></div>\
+                    <p style=\"transform: rotate(3deg)\">text after them all</p>";
+        let mut engine = test_engine();
+        engine.load_document(page);
+        let frame = engine.frame(200, 120);
+        assert_eq!(frame.len(), 200 * 120 * 4);
+        let mut fresh = test_engine();
+        fresh.load_document(page);
+        assert_eq!(frame, fresh.frame(200, 120));
+        for (x, y) in [(0.0, 0.0), (10.0, 10.0), (100.0, 60.0), (199.0, 119.0)] {
+            let _ = engine.hit_test(x, y);
+        }
+        engine.set_scroll(40.0);
+        assert_eq!(engine.frame(200, 120).len(), 200 * 120 * 4);
+        assert!(engine.layer_bytes() <= render::DEFAULT_LAYER_BUDGET);
+    }
+
+    #[test]
+    fn ten_thousand_transformed_boxes_are_drawn_in_bounded_time() {
+        // M19: a page of ten thousand small boxes, each turned, moved or
+        // scaled, some faded: thousands of layers, scratches and groups
+        // drawn through in one frame and one scroll, held to a time in
+        // the unoptimised build and to the layer budget.
+        let mut page = String::from(
+            "<style>body { margin: 0 } i { display: inline-block; width: 10px; \
+             height: 10px; background-color: #36c }</style><body>",
+        );
+        for k in 0..10_000 {
+            let transform = ["rotate(10deg)", "translate(1px, 1px)", "scale(0.8)"][k % 3];
+            let faded = if k % 5 == 0 { "; opacity: 0.5" } else { "" };
+            page.push_str(&format!("<i style=\"transform: {transform}{faded}\"></i>"));
+        }
+        let started = Instant::now();
+        let mut engine = test_engine();
+        engine.load_document(&page);
+        engine.frame(1280, 800);
+        engine.set_scroll(400.0);
+        engine.frame(1280, 800);
+        let took = started.elapsed();
+        println!("ten thousand transformed boxes: {took:?}");
+        assert!(took.as_secs() < TEN_THOUSAND_SECONDS, "{took:?}");
+        assert!(engine.layer_bytes() <= render::DEFAULT_LAYER_BUDGET);
+    }
+
+    /// The time the page of ten thousand transformed boxes may take, in
+    /// the unoptimised build, which is what the tests run in.
+    const TEN_THOUSAND_SECONDS: u64 = 20;
 }

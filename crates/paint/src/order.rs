@@ -205,9 +205,11 @@ pub fn paint_order<'a>(
 /// [`paint_order`] with the content `margin` pixels above and below the
 /// viewport listed as well (M19): what a scroll brings into view next,
 /// drawn ahead of it into the tiles of the document's layer. The
-/// margin is in viewport coordinates, around the viewport itself; a
-/// `position: fixed` box, which does not scroll, is listed only when
-/// the viewport meets it.
+/// margin is in viewport coordinates, around the viewport itself,
+/// rounded out to the document's rows of tiles ([`crate::TILE_HEIGHT`]),
+/// so that a scroll within a row lists the same content, which the
+/// layer's tiles then hold already; a `position: fixed` box, which does
+/// not scroll, is listed only when the viewport meets it.
 ///
 /// The document's content is in groups keyed [`GroupKey::Document`],
 /// numbered from zero in order, whose matrix is the scroll offset
@@ -220,13 +222,24 @@ pub fn paint_order_in<'a>(
     offsets: &dyn ScrollOffsets,
     margin: f32,
 ) -> Vec<Step<'a>> {
+    // What is listed, in document coordinates, rounded out to the rows
+    // of tiles when there is a margin.
+    let (mut top, mut bottom) = (
+        viewport.scroll_y - margin,
+        viewport.scroll_y + viewport.height + margin,
+    );
+    if margin > 0.0 && top.is_finite() && bottom.is_finite() {
+        let tall = crate::TILE_HEIGHT as f32;
+        top = (top / tall).floor() * tall;
+        bottom = (bottom / tall).ceil() * tall;
+    }
     let mut walk = Walk {
         steps: Vec::new(),
         viewport: Rect {
             x: 0.0,
-            y: -margin,
+            y: top - viewport.scroll_y,
             w: viewport.width,
-            h: viewport.height + 2.0 * margin,
+            h: bottom - top,
         },
         window: Rect {
             x: 0.0,
@@ -349,6 +362,88 @@ fn tidy_segments(steps: Vec<Step<'_>>) -> Vec<Step<'_>> {
     out
 }
 
+/// A group being walked into (M19): its matrix composed with those
+/// around it, from its coordinates to the viewport's; and, when that
+/// only translates and scales, as the document's groups do, its scales
+/// and translation, and what is listed and the viewport mapped into its
+/// coordinates, which a fragment's rectangle is tested against there
+/// rather than mapped out to the viewport's, as every fragment is.
+#[derive(Debug, Clone, Copy)]
+struct Entered {
+    matrix: Matrix,
+    scaled: Option<(f32, f32, f32, f32)>,
+    within: Option<[Rect; 2]>,
+}
+
+impl Entered {
+    /// The group of `matrix`, where `listed` and `window` are what is
+    /// listed and the viewport.
+    fn new(matrix: Matrix, listed: Rect, window: Rect) -> Self {
+        let scaled = matrix.scale_and_translation();
+        Entered {
+            matrix,
+            scaled,
+            within: scaled.and_then(|(sx, sy, tx, ty)| {
+                Some([
+                    mapped_in(listed, sx, sy, tx, ty)?,
+                    mapped_in(window, sx, sy, tx, ty)?,
+                ])
+            }),
+        }
+    }
+}
+
+/// Whether `rect`, in the coordinates of `group`, or the viewport's
+/// outside every group, meets `listed`, in the viewport's: through the
+/// group's matrix, or against `listed` mapped into the group, which
+/// `which` picks among [`Entered::within`], where, as outside every
+/// group, a rectangle not finite meets nothing. Through a matrix, a
+/// rectangle whose image cannot be told is taken to be met: a corner
+/// behind the eye of a perspective may leave the rest in view.
+fn meets_through(group: Option<&Entered>, rect: Rect, listed: Rect, which: usize) -> bool {
+    let Some(group) = group else {
+        return rect.meets(&listed);
+    };
+    if let Some(within) = &group.within {
+        return rect.meets(&within[which]);
+    }
+    match group.matrix.bounds(rect.x, rect.y, rect.w, rect.h) {
+        Some((x0, y0, x1, y1)) => Rect {
+            x: x0,
+            y: y0,
+            w: x1 - x0,
+            h: y1 - y0,
+        }
+        .meets(&listed),
+        None => true,
+    }
+}
+
+/// `rect`, in coordinates that `(sx, sy, tx, ty)` scale by positive
+/// factors and translate to its own, mapped into them: worked in `f64`
+/// and widened by a millionth of the coordinates' size or so, more than
+/// the rounding of a corner mapped the other way in `f32` can move it,
+/// so that whatever would meet `rect` mapped out meets it mapped in.
+/// `None` when it is not finite there.
+fn mapped_in(rect: Rect, sx: f32, sy: f32, tx: f32, ty: f32) -> Option<Rect> {
+    let axis = |at: f32, length: f32, s: f32, t: f32| {
+        let (s, t) = (s as f64, t as f64);
+        let (from, to) = (at as f64, at as f64 + length as f64);
+        let hair = (from.abs() + to.abs() + t.abs()) / s * 1e-6;
+        ((from - t) / s - hair, (to - t) / s + hair)
+    };
+    let (x0, x1) = axis(rect.x, rect.w, sx, tx);
+    let (y0, y1) = axis(rect.y, rect.h, sy, ty);
+    let out = Rect {
+        x: x0 as f32,
+        y: y0 as f32,
+        w: (x1 - x0) as f32,
+        h: (y1 - y0) as f32,
+    };
+    (out.x.is_finite() && out.y.is_finite() && out.w.is_finite() && out.h.is_finite())
+        .then_some(out)
+}
+
 /// The walk's state: where the document is relative to the viewport,
 /// and the clips in force.
 struct Walk<'a, 'o> {
@@ -377,7 +472,7 @@ struct Walk<'a, 'o> {
     /// The groups being walked into (M19), outermost first: each one's
     /// matrix composed with those around it, from its coordinates to the
     /// viewport's, for what the viewport meets.
-    groups: Vec<Matrix>,
+    groups: Vec<Entered>,
     /// How many boxes that are containing blocks for all their
     /// descendants (M19) are being walked into: a `position: fixed` box
     /// inside one scrolls with it.
@@ -619,7 +714,8 @@ impl<'a> Walk<'a, '_> {
             layer: Some(LayerReason::Scrolled),
         });
         self.segments += 1;
-        self.groups.push(matrix);
+        self.groups
+            .push(Entered::new(matrix, self.viewport, self.window));
     }
 
     /// Closes the open group of the document's content, if any.
@@ -637,7 +733,7 @@ impl<'a> Walk<'a, '_> {
         let window = self.window;
         self.groups
             .last()
-            .and_then(|m| m.inverse())
+            .and_then(|g| g.matrix.inverse())
             .and_then(|inverse| inverse.bounds(window.x, window.y, window.w, window.h))
             .map_or(window, |(x0, y0, x1, y1)| Rect {
                 x: x0,
@@ -660,35 +756,27 @@ impl<'a> Walk<'a, '_> {
 
     /// Whether what is listed meets `rect`, a rectangle in the
     /// coordinates of the group being walked into: through the group's
-    /// matrix (M19). A rectangle whose image cannot be told is taken to
-    /// be met. Inside a fixed box, the viewport alone is listed.
+    /// matrix (M19), or, in a group that only translates and scales,
+    /// against what is listed mapped into the group, a hair wider. A
+    /// rectangle whose image cannot be told is taken to be met. Inside
+    /// a fixed box, the viewport alone is listed. Asked of every
+    /// fragment, every frame.
+    #[inline(always)]
     fn visible(&self, rect: Rect) -> bool {
-        let listed = if self.fixed > 0 {
-            self.window
-        } else {
-            self.viewport
-        };
-        match self.to_viewport(rect) {
-            Some(rect) => rect.meets(&listed),
-            None => true,
-        }
-    }
-
-    /// `rect`, in the coordinates of the group being walked into, in
-    /// viewport coordinates: the bounds of its image through the
-    /// group's matrix, or `None` when it has none. Outside every group,
-    /// inside a fixed box, they are the same.
-    fn to_viewport(&self, rect: Rect) -> Option<Rect> {
+        let which = usize::from(self.fixed > 0);
         match self.groups.last() {
-            None => Some(rect),
-            Some(m) => m
-                .bounds(rect.x, rect.y, rect.w, rect.h)
-                .map(|(x0, y0, x1, y1)| Rect {
-                    x: x0,
-                    y: y0,
-                    w: x1 - x0,
-                    h: y1 - y0,
-                }),
+            Some(Entered {
+                within: Some(within),
+                ..
+            }) => rect.meets(&within[which]),
+            group => {
+                let listed = if which == 1 {
+                    self.window
+                } else {
+                    self.viewport
+                };
+                meets_through(group, rect, listed, which)
+            }
         }
     }
 
@@ -705,6 +793,7 @@ impl<'a> Walk<'a, '_> {
 
     /// A fragment's own step — a box's background and border, a text
     /// run — when the viewport meets it.
+    #[inline(always)]
     fn own(&mut self, f: &'a Fragment) {
         let rect = self.rect_of(f);
         if !self.visible(rect) {
@@ -756,7 +845,7 @@ impl<'a> Walk<'a, '_> {
                     let (tx, ty) = self
                         .groups
                         .last()
-                        .and_then(|m| m.scale_and_translation())
+                        .and_then(|g| g.scaled)
                         .map_or((0.0, 0.0), |(_, _, tx, ty)| (tx, ty));
                     self.dx = -tx;
                     self.dy = -ty;
@@ -852,8 +941,9 @@ impl<'a> Walk<'a, '_> {
                 let composed = self
                     .groups
                     .last()
-                    .map_or(matrix, |outer| outer.then(&matrix));
-                self.groups.push(composed);
+                    .map_or(matrix, |outer| outer.matrix.then(&matrix));
+                self.groups
+                    .push(Entered::new(composed, self.viewport, self.window));
                 2
             }
             None => {
@@ -968,7 +1058,13 @@ impl<'a> Walk<'a, '_> {
             // while the box's descendants are gathered, so that the
             // clips met then are at the depth they are painted at.
             let grouped = transformed || opacity < 1.0 || layer.is_some();
-            let composed = w.groups.last().map_or(matrix, |outer| outer.then(&matrix));
+            let composed = Entered::new(
+                w.groups
+                    .last()
+                    .map_or(matrix, |outer| outer.matrix.then(&matrix)),
+                w.viewport,
+                w.window,
+            );
             if grouped {
                 w.groups.push(composed);
             }
@@ -2793,6 +2889,90 @@ mod tests {
     }
 
     #[test]
+    fn every_group_has_a_finite_matrix_or_is_not_drawn() {
+        // M19: transforms whose matrices overflow — a `matrix3d` of
+        // values past f32's range, a move and a turn of 1e30, a
+        // perspective of 1e-30px — give either a group with a finite
+        // matrix or none, the box not displayed; a scale of 1e30 in
+        // another is two finite groups, which the backend composes.
+        let page = Element::new("div")
+            .push(
+                Element::new("div")
+                    .attr("style", "transform: scale(1e30)")
+                    .push(Element::new("div").attr("style", "transform: scale(1e30)")),
+            )
+            .push(Element::new("div").attr(
+                "style",
+                "transform: matrix3d(1e39, 0, 0, 0, 0, 1e39, 0, 0, 0, 0, 1, 0, 1e39, 1e39, 0, 1)",
+            ))
+            .push(Element::new("div").attr(
+                "style",
+                "transform: translate(1e30px, -1e30px) rotate(1e30deg)",
+            ))
+            .push(
+                Element::new("div")
+                    .attr("style", "perspective: 1e-30px")
+                    .push(
+                        Element::new("div")
+                            .attr("style", "transform: rotateY(89.9deg) translateZ(1e30px)"),
+                    ),
+            );
+        let layout = layout_of(
+            page,
+            "div { margin: 0; } div div { width: 20px; height: 20px; }",
+        );
+        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+        let mut groups = 0;
+        for step in &steps {
+            if let Step::PushGroup { matrix, .. } = step {
+                groups += 1;
+                assert!(matrix.is_finite(), "{matrix:?}");
+            }
+        }
+        // The document's, the two scales'; the others are not drawn, or
+        // drawn by matrices that stay finite.
+        assert!(groups >= 3, "{groups}");
+    }
+
+    #[test]
+    fn the_margin_is_rounded_out_to_rows_of_tiles() {
+        // M19.4: a page of 40 blocks 100px tall, the viewport 300px with
+        // a margin of its height: scrolled to 300 and to 340, what is
+        // listed is the content of the same rows of tiles, 0 to 1024,
+        // so the document's group holds the same steps; at 600 the rows
+        // from 256 to 1280.
+        let blocks: Vec<Element> = (0..40).map(|_| Element::new("div")).collect();
+        let mut root = Element::new("div");
+        for block in blocks {
+            root = root.push(block);
+        }
+        let layout = layout_of(root, "div { margin: 0; } div div { height: 100px; }");
+        let listed = |scroll_y: f32| {
+            let viewport = Viewport {
+                width: 200.0,
+                height: 300.0,
+                scroll_y,
+            };
+            let steps = paint_order_in(&layout.roots, viewport, &(), 300.0);
+            // The steps inside the document's group.
+            let names = names(&layout, &steps);
+            names[1..names.len() - 1].to_vec()
+        };
+        let at_300 = listed(300.0);
+        assert_eq!(at_300, listed(340.0));
+        // The root, then blocks 0 to 10, whose last starts at 1000.
+        assert_eq!(at_300.len(), 1 + 11, "{at_300:?}");
+        let at_600 = listed(600.0);
+        // From block 2, which ends at 300, past 256, to block 12, which
+        // starts at 1200, short of 1280.
+        assert_eq!(at_600.len(), 1 + 11, "{at_600:?}");
+        assert_eq!(
+            (at_600[1].as_str(), at_600[11].as_str()),
+            ("box 4", "box 14")
+        );
+    }
+
+    #[test]
     fn a_parents_perspective_applies_to_its_childrens_matrices() {
         // css-transforms-2 §10 (M19.5): a 200px box with `perspective:
         // 400px` about its top-left corner, holding a 100px box at (20,
@@ -3198,5 +3378,115 @@ mod tests {
         assert_eq!(names[names.len() - 1], "endgroup", "{names:?}");
         assert!(names.contains(&"group 3 1".to_string()), "{names:?}");
         assert_eq!(names.iter().filter(|n| n.starts_with("group")).count(), 2);
+    }
+
+    #[test]
+    fn a_group_that_translates_and_scales_lists_what_its_corners_would() {
+        // In a group that only translates and scales, a fragment is
+        // tested against what is listed mapped into the group, a hair
+        // wider, rather than mapped out: whatever its corners projected
+        // would meet is listed, and nothing further away than two
+        // millionths of the coordinates' size. Random rectangles about what is listed, under random
+        // translations and scales.
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let listed = Rect {
+            x: 0.0,
+            y: -800.0,
+            w: 1280.0,
+            h: 2400.0,
+        };
+        let (mut met, mut missed) = (0, 0);
+        for _ in 0..50_000 {
+            let unit = |next: &mut dyn FnMut() -> u64| (next() % 1_000_001) as f32 / 1_000_000.0;
+            let (sx, sy) = (0.25 + unit(&mut next) * 4.0, 0.25 + unit(&mut next) * 4.0);
+            let (tx, ty) = (
+                (unit(&mut next) - 0.5) * 200_000.0,
+                (unit(&mut next) - 0.5) * 200_000.0,
+            );
+            let matrix = Matrix::from_2d([sx, 0.0, 0.0, sy, tx, ty]);
+            let group = Entered::new(matrix, listed, listed);
+            let [within, _] = group.within.expect("finite");
+            // A rectangle near an edge of what is listed, in the group.
+            let near = |next: &mut dyn FnMut() -> u64, edge: f32, s: f32, t: f32| {
+                (edge - t) / s + (unit(next) - 0.5) * 4.0
+            };
+            let (left, top) = (next() % 2 == 0, next() % 2 == 0);
+            let x = near(
+                &mut next,
+                if left { listed.x } else { listed.x + listed.w },
+                sx,
+                tx,
+            );
+            let y = near(
+                &mut next,
+                if top { listed.y } else { listed.y + listed.h },
+                sy,
+                ty,
+            );
+            let rect = Rect {
+                x,
+                y,
+                w: unit(&mut next) * 8.0,
+                h: unit(&mut next) * 8.0,
+            };
+            let corners = matrix
+                .bounds(rect.x, rect.y, rect.w, rect.h)
+                .expect("finite");
+            let out = Rect {
+                x: corners.0,
+                y: corners.1,
+                w: corners.2 - corners.0,
+                h: corners.3 - corners.1,
+            };
+            let (hx, hy) = (
+                (listed.x.abs() + (listed.x + listed.w).abs() + tx.abs()) * 2e-6,
+                (listed.y.abs() + (listed.y + listed.h).abs() + ty.abs()) * 2e-6,
+            );
+            let wider = Rect {
+                x: listed.x - hx,
+                y: listed.y - hy,
+                w: listed.w + 2.0 * hx,
+                h: listed.h + 2.0 * hy,
+            };
+            let fast = rect.meets(&within);
+            if out.meets(&listed) {
+                met += 1;
+                assert!(fast, "{matrix:?} {rect:?} {out:?}");
+            } else {
+                missed += 1;
+                assert!(!fast || out.meets(&wider), "{matrix:?} {rect:?} {out:?}");
+            }
+        }
+        assert!(met > 10_000 && missed > 10_000, "{met} {missed}");
+        // Not finite: not listed, as outside every group; through a
+        // matrix that does more, a turn, through its corners, and
+        // listed when they cannot be told.
+        let group = Entered::new(Matrix::translate(0.0, -500.0, 0.0), listed, listed);
+        let at = |x: f32, y: f32| Rect {
+            x,
+            y,
+            w: 1.0,
+            h: 1.0,
+        };
+        assert!(!meets_through(Some(&group), at(f32::NAN, 0.0), listed, 0));
+        assert!(!meets_through(
+            Some(&group),
+            at(0.0, f32::INFINITY),
+            listed,
+            0
+        ));
+        assert!(meets_through(Some(&group), at(10.0, 600.0), listed, 0));
+        assert!(!meets_through(Some(&group), at(10.0, 5000.0), listed, 0));
+        let turned = Entered::new(Matrix::rotate_z(90.0), listed, listed);
+        assert!(turned.within.is_none());
+        assert!(meets_through(Some(&turned), at(10.0, -20.0), listed, 0));
+        assert!(!meets_through(Some(&turned), at(10.0, 20.0), listed, 0));
+        assert!(meets_through(Some(&turned), at(f32::NAN, 0.0), listed, 0));
     }
 }
