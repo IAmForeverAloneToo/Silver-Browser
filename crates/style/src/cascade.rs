@@ -62,11 +62,12 @@
 //!   `vertical-align`, the last parsed in full though read on table
 //!   cells alone.
 //!
-//! * Custom properties (M21.1) and the substitution functions `var()`
-//!   and `env()` (M21.3), by [`crate::custom`]: an element's custom
-//!   properties are computed before its other values, which substitute
-//!   them; a value that its property does not take once substituted is
-//!   invalid at computed-value time, and the property `unset`.
+//! * Custom properties (M21.1) and the substitution functions `var()`,
+//!   `env()` (M21.3) and `attr()` (M21.5), by [`crate::custom`]: an
+//!   element's custom properties are computed before its other values,
+//!   which substitute them; a value that its property does not take once
+//!   substituted is invalid at computed-value time, and the property
+//!   `unset`.
 //!
 //! What every property accepts: the CSS-wide keywords `inherit`,
 //! `initial` and `unset` (css-cascade-5 §7.3), resolved against the
@@ -102,7 +103,7 @@ use crate::computed::{
     WhiteSpace,
 };
 use crate::computed::{Calc, Effects, Fragmentation, GridStyle, JustifyItems};
-use crate::custom::{self, CustomProperties, Substituted, Substitutions};
+use crate::custom::{self, CustomProperties, DataType, Substituted, Substitutions};
 use crate::invalidation::{Reach, SelectorFeatures, invalidate};
 use crate::media::Media;
 use crate::page::{PagePosition, PageStyle};
@@ -1227,9 +1228,11 @@ fn compute_style(
         })
         .collect();
     if !declared.is_empty() {
-        style.custom = resolution
-            .substitutions
-            .compute(&declared, parent.custom.as_ref());
+        style.custom = resolution.substitutions.compute(
+            &declared,
+            parent.custom.as_ref(),
+            resolution.attributes,
+        );
     }
 
     // `font-size` next: every other length's `em` resolves against
@@ -1398,7 +1401,7 @@ fn specified<'v>(
     }
     match resolution
         .substitutions
-        .substitute(value, a.identity(), custom)
+        .substitute(value, a.identity(), custom, resolution.attributes)
     {
         Substituted::Value(value) => Specified::Substituted(value),
         Substituted::Invalid => Specified::Invalid,
@@ -1436,6 +1439,22 @@ pub fn supports(name: &str, value: &[Token]) -> bool {
                 &mut [false; 4],
             );
     }
+    with_default_bases(|bases| {
+        apply_declaration(
+            &mut ComputedStyle::default(),
+            canonical_name(name),
+            value,
+            bases,
+            &parent,
+            &mut [false; 4],
+        )
+    })
+}
+
+/// Runs `f` with the bases a value is read against when no element's
+/// are at hand: a 16px font in a viewport of no size,
+/// `CascadeContext::default()`'s.
+fn with_default_bases<R>(f: impl FnOnce(&LengthBases<'_>) -> R) -> R {
     let context = CascadeContext::default();
     let viewport_used = Cell::new(false);
     let substitutions = Substitutions::new(0);
@@ -1446,18 +1465,60 @@ pub fn supports(name: &str, value: &[Token]) -> bool {
         attributes: &[],
         substitutions: &substitutions,
     };
-    let bases = LengthBases {
+    f(&LengthBases {
         em: 16.0,
         resolution: &resolution,
+    })
+}
+
+/// Whether `tokens`, one component value, or a `<transform-list>`'s
+/// values, are of the data type `data` as this engine reads it (M21.5:
+/// what `attr()`'s `type()` asks of an attribute's value). A math
+/// function is of a numeric type when it is typed so; a length is one of
+/// the units this engine knows, or `0`; a color is one `color` takes. No
+/// answer depends on what a relative length resolves to.
+pub(crate) fn matches_type(data: DataType, tokens: &[Token]) -> bool {
+    let math = |want| calc::is_math_function(tokens) && calc::parse(tokens, want).is_some();
+    let measure = |measure| {
+        matches!(single_token(tokens), Some(Token::Dimension { unit, .. })
+            if calc::measure(unit) == Some(measure))
     };
-    apply_declaration(
-        &mut ComputedStyle::default(),
-        canonical_name(name),
-        value,
-        &bases,
-        &parent,
-        &mut [false; 4],
-    )
+    with_default_bases(|bases| match data {
+        DataType::Length => length(tokens, bases, Range::All).is_some(),
+        DataType::LengthPercentage => length_percentage(tokens, bases, Range::All).is_some(),
+        DataType::Number => {
+            matches!(single_token(tokens), Some(Token::Number { .. })) || math(Want::Number)
+        }
+        DataType::Integer => {
+            matches!(
+                single_token(tokens),
+                Some(Token::Number {
+                    is_integer: true,
+                    ..
+                })
+            ) || math(Want::Number)
+        }
+        DataType::Percentage => {
+            matches!(single_token(tokens), Some(Token::Percentage { .. })) || math(Want::Percentage)
+        }
+        DataType::Angle => measure(calc::Measure::Angle) || math(Want::Angle),
+        DataType::Time => measure(calc::Measure::Time) || math(Want::Time),
+        DataType::Resolution => measure(calc::Measure::Resolution) || math(Want::Resolution),
+        DataType::Color => parse_color(tokens).is_some(),
+        DataType::CustomIdent => {
+            matches!(single_token(tokens), Some(Token::Ident(word)) if custom::is_custom_ident(word))
+        }
+        DataType::String => matches!(single_token(tokens), Some(Token::String { bad: false, .. })),
+        DataType::TransformFunction => {
+            effects::parse_transform(tokens, bases).is_some_and(|functions| functions.len() == 1)
+        }
+        DataType::TransformList => {
+            single_ident(tokens).is_none()
+                && effects::parse_transform(tokens, bases).is_some_and(|f| !f.is_empty())
+        }
+        // Until images (M23).
+        DataType::Image => false,
+    })
 }
 
 /// Applies one already-cascade-ordered declaration to `style`, ignoring
@@ -1573,10 +1634,7 @@ fn apply_declaration(
             &mut style.vertical_align,
             parse_vertical_align(value, bases),
         ),
-        "content" => set(
-            &mut style.content,
-            parse_content(value, bases.resolution.attributes),
-        ),
+        "content" => set(&mut style.content, parse_content(value)),
         "quotes" => set(&mut style.quotes, parse_quotes(value)),
         "flex-direction" => set(&mut style.flex_direction, parse_flex_direction(value)),
         "flex-wrap" => set(&mut style.flex_wrap, parse_flex_wrap(value)),
@@ -3449,15 +3507,15 @@ fn parse_color(tokens: &[Token]) -> Option<Color> {
 }
 
 /// `content` (CSS 2.2 §12.2, M16): `normal`, `none`, or one or more
-/// of a string, `attr(<name>)`, `url()` and the four quote keywords;
-/// and after them, css-content-3's `/` and alternative text of strings
-/// and `attr()`, accepted and set aside, as nothing reads it. An
-/// `attr()` takes the value of the attribute of that name in
-/// `attributes`, the name ASCII lowercased as HTML says (§4.16.1), or
-/// the empty string when there is none. A `url()` is left out until
-/// images (M23). `counter()` and `counters()` make the declaration
-/// invalid until counters exist (M21.4), as anything else does.
-fn parse_content(tokens: &[Token], attributes: &[(String, String)]) -> Option<Content> {
+/// of a string, `url()` and the four quote keywords; and after them,
+/// css-content-3's `/` and alternative text of strings, accepted and set
+/// aside, as nothing reads it. An `attr()` is a substitution function
+/// since M21.5, replaced before this reads the value: by a string of the
+/// attribute's value, an empty one when there is none, without a type.
+/// A `url()` is left out until images (M23). `counter()` and
+/// `counters()` make the declaration invalid until counters exist
+/// (M21.4), as anything else does.
+fn parse_content(tokens: &[Token]) -> Option<Content> {
     if let Some(keyword) = single_ident(tokens) {
         if keyword.eq_ignore_ascii_case("normal") {
             return Some(Content::Normal);
@@ -3479,15 +3537,6 @@ fn parse_content(tokens: &[Token], attributes: &[(String, String)]) -> Option<Co
                 continue;
             }
             Token::String { value, bad: false } => Some(ContentItem::Text(value.clone())),
-            Token::Function(name) if name.eq_ignore_ascii_case("attr") => {
-                let (name, next) = attr_argument(tokens, i)?;
-                i = next;
-                let value = attributes
-                    .iter()
-                    .find(|(attribute, _)| *attribute == name)
-                    .map_or("", |(_, value)| value);
-                Some(ContentItem::Text(value.to_owned()))
-            }
             _ if alternative.is_some() => return None,
             // The tokenizer makes the whole of a `url(…)`, quoted or not,
             // one token.
@@ -3513,24 +3562,6 @@ fn parse_content(tokens: &[Token], attributes: &[(String, String)]) -> Option<Co
         return None;
     }
     Some(Content::Items(Arc::from(items)))
-}
-
-/// The attribute name of an `attr()` whose arguments start at
-/// `tokens[i]`, ASCII lowercased, and the index after its `)`: one
-/// identifier, with white space around it, and nothing else, the
-/// typed and fallback forms of css-values-5 being M21.5's.
-fn attr_argument(tokens: &[Token], mut i: usize) -> Option<(String, usize)> {
-    let mut name = None;
-    while let Some(token) = tokens.get(i) {
-        i += 1;
-        match token {
-            Token::Whitespace => {}
-            Token::Ident(ident) if name.is_none() => name = Some(ident.to_ascii_lowercase()),
-            Token::CloseParen => return name.map(|name| (name, i)),
-            _ => return None,
-        }
-    }
-    None
 }
 
 /// `quotes` (CSS 2.2 §12.3.1, css-content-3 for `auto`): `auto`,
@@ -5053,6 +5084,20 @@ mod tests {
             content(p, "attr( DATA-X ) attr(nope)"),
             items(&[text("a b"), text("")])
         );
+        // `attr()` substitutes (M21.5): a fallback when there is no
+        // attribute; a value no `content` takes is invalid at computed-value
+        // time, `content` its initial `normal`, which is `none` here.
+        assert_eq!(
+            content(p, "attr(x, 'fallback') attr(title, 'no')"),
+            items(&[text("fallback"), text("T")])
+        );
+        for invalid in [
+            "attr(x string)",
+            "attr(title number)",
+            "attr(x type(<string>))",
+        ] {
+            assert_eq!(content(p, invalid), Content::None, "{invalid}");
+        }
         // An image is left out: a box with nothing in it.
         assert_eq!(content(p, "url(x.png)"), items(&[]));
         // Alternative text is accepted and set aside.
@@ -5063,8 +5108,6 @@ mod tests {
             "'a' counters(x, '.')",
             "normal 'a'",
             "none none",
-            "attr(x, 'fallback')",
-            "attr(x string)",
             "attr()",
             "attr('x')",
             "'a' /",
@@ -7962,6 +8005,55 @@ mod tests {
         };
         assert!(Arc::ptr_eq(&custom("div"), &custom("p")));
         assert_eq!(styles.get(first(&document, "html")).unwrap().custom, None);
+    }
+
+    #[test]
+    fn attr_substitutes_into_any_property() {
+        // M21.5: by its type, ASCII case-insensitively by name.
+        let p = p_with(
+            "<p data-w=10 data-c=#00f data-len='calc(1px + 3px)' TITLE=x>x</p>",
+            "p { width: attr(DATA-W px); color: attr(data-c type(<color>), red); \
+             height: attr(data-len type(<length>)); margin-left: attr(nope px, 3px); \
+             --t: attr(title) }",
+        );
+        assert_eq!((&p.width, &p.height), (&Size::Px(10.0), &Size::Px(4.0)));
+        assert_eq!(p.color, Color::rgb8(0, 0, 255));
+        assert_eq!(p.margin[LEFT], LengthPercentageAuto::Px(3.0));
+        assert_eq!(
+            p.custom_property("--t"),
+            Some(css::tokenize("'x'").as_slice())
+        );
+        // A value its property does not take: invalid at computed-value
+        // time. A first argument that is no name and type: invalid where
+        // it is parsed, the declaration before it standing.
+        let p = p_with(
+            "<p data-w=abc>x</p>",
+            "p { width: 5px; width: attr(data-w px); height: 6px; height: attr(data-w &, 3px) }",
+        );
+        assert_eq!((p.width, p.height), (Size::Auto, Size::Px(6.0)));
+        // A pseudo-element reads its originating element's attributes.
+        let sheets = [sheet(
+            "p::first-letter { margin-left: attr(data-m px) } \
+             p::before { content: attr(data-t) ' ' attr(data-m) }",
+        )];
+        let html = "<p data-m=7 data-t=hi>x</p>";
+        let letter = pseudo_of(html, &sheets, "p", PseudoElement::FirstLetter).expect("styled");
+        assert_eq!(letter.margin[LEFT], LengthPercentageAuto::Px(7.0));
+        let before = pseudo_of(html, &sheets, "p", PseudoElement::Before).expect("styled");
+        assert_eq!(
+            before.content,
+            Content::Items(Arc::from([
+                ContentItem::Text("hi".into()),
+                ContentItem::Text(" ".into()),
+                ContentItem::Text("7".into()),
+            ]))
+        );
+        // Through a custom property, each element its own.
+        let p = p_with(
+            "<div data-a=1><p data-a=2>x</p></div>",
+            "* { --a: attr(data-a type(<number>), 0) } p { width: calc(var(--a) * 1px) }",
+        );
+        assert_eq!(p.width, Size::Px(2.0));
     }
 
     #[test]

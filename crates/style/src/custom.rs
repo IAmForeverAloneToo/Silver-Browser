@@ -1,5 +1,5 @@
-//! Custom properties and the arbitrary substitution functions `var()`
-//! and `env()` (M21.1, M21.3; `docs/design/values.md`).
+//! Custom properties and the arbitrary substitution functions `var()`,
+//! `env()` and `attr()` (M21.1, M21.3, M21.5; `docs/design/values.md`).
 //!
 //! A declaration whose name begins with two hyphens, `--` alone aside, is
 //! a custom property (Variables 1 §2). Its value is any list of tokens
@@ -24,25 +24,40 @@
 //! <integer [0,∞]>*, <declaration-value>?)` takes an environment variable
 //! (Environment Variables 1 §2) or its fallback; its first argument is
 //! read as written, never substituted, and checked where it is parsed.
+//! `attr(<attr-name> <attr-type>?, <declaration-value>?)` (Values 5 §8.7)
+//! reads an attribute of the element, or of a pseudo-element's
+//! originating element, named as an attribute selector names one: as a
+//! string, untyped or `raw-string`; as one number, `number`, made a
+//! dimension by a unit or a percentage by `%`; or parsed as CSS against
+//! the `<syntax>` of a `type()`, its own substitution functions replaced
+//! under the guard «attribute, name». One that fails takes its fallback;
+//! without one, an untyped `attr()` is an empty string and a typed one the
+//! guaranteed-invalid value. Its first argument is substituted before it
+//! is read, and, when nothing is substituted into it, checked where it is
+//! parsed, as the web-platform-tests and the reference browser have it
+//! (`attr(x type(a |), 1px)` is invalid there, not a fallback); the
+//! draft's `number` and units this engine does not know are valid there
+//! and fail where the attribute is read (`attr`, `check`).
 //!
 //! An element's own custom properties are computed name by name, each
-//! one another needs before it, with the names being computed as the
-//! guard of Appendix A: a name met again while it is being computed makes
-//! every name from it to the newest cyclic, and a cyclic name's value is
-//! the guaranteed-invalid value, a fallback in the cycle notwithstanding.
-//! The walk keeps its own stack ([`Resolver::run`]), so a chain of ten
-//! thousand properties each naming the next, or fallbacks nested ten
-//! thousand deep, cost memory on the heap and no recursion.
+//! one another needs before it, with the names being computed, and the
+//! attributes being read as types, as the guard of Appendix A: a context
+//! met again while it is guarded makes every context from it to the
+//! newest cyclic. A cyclic name's value is the guaranteed-invalid value, a
+//! fallback in the cycle notwithstanding; a cyclic attribute's `attr()`
+//! takes its fallback. The walk keeps its own stack (`resolve`), so a
+//! chain of ten thousand properties each naming the next, or fallbacks
+//! nested ten thousand deep, cost memory on the heap and no recursion.
 //!
 //! Substitution is bounded, as Values 5 §"Safely Handling Overly-Long
 //! Substitution" asks, by what the tokens it makes weigh: each token its
 //! size in memory and the bytes of the name, string or unit it carries.
 //! No substitution — a function's result, or a value with its functions
-//! replaced — may weigh more than [`MAX_SUBSTITUTION`]; one that would is
+//! replaced — may weigh more than [`MAX_SUBSTITUTION`](crate::custom::MAX_SUBSTITUTION); one that would is
 //! the guaranteed-invalid value, so thirty custom properties each
 //! doubling the last end there and not at a billion tokens. And the
 //! substitutions of one cascade together may weigh at most
-//! [`MAX_CASCADE_SUBSTITUTION`]; past that every one is the
+//! [`MAX_CASCADE_SUBSTITUTION`](crate::custom::MAX_CASCADE_SUBSTITUTION); past that every one is the
 //! guaranteed-invalid value, a limit no page meets but one built to
 //! exhaust the engine, which bounds the time and the memory a page can
 //! spend on substitution however many elements it has.
@@ -57,6 +72,14 @@ use std::sync::{Arc, LazyLock};
 use css::Token;
 
 use crate::cascade::{CssWide, css_wide_keyword};
+
+mod attr;
+mod check;
+mod resolve;
+
+pub(crate) use attr::DataType;
+pub(crate) use check::check;
+use resolve::{Resolver, State};
 
 /// The most one substitution may weigh: a function's result, or a value
 /// with its functions replaced, a megabyte of tokens — some thirty
@@ -271,6 +294,7 @@ impl fmt::Debug for CustomProperties {
 enum Function {
     Var,
     Env,
+    Attr,
 }
 
 /// The substitution function `token` opens, if it opens one: function
@@ -279,6 +303,7 @@ fn substitution_function(token: &Token) -> Option<Function> {
     match token {
         Token::Function(name) if name.eq_ignore_ascii_case("var") => Some(Function::Var),
         Token::Function(name) if name.eq_ignore_ascii_case("env") => Some(Function::Env),
+        Token::Function(name) if name.eq_ignore_ascii_case("attr") => Some(Function::Attr),
         _ => None,
     }
 }
@@ -286,6 +311,14 @@ fn substitution_function(token: &Token) -> Option<Function> {
 /// Whether `tokens` hold a substitution function, at any depth.
 pub(crate) fn has_substitution(tokens: &[Token]) -> bool {
     tokens.iter().any(|t| substitution_function(t).is_some())
+}
+
+/// Whether `tokens` hold an `attr()`, at any depth: what they give
+/// depends on the element's attributes.
+fn reads_attributes(tokens: &[Token]) -> bool {
+    tokens
+        .iter()
+        .any(|t| substitution_function(t) == Some(Function::Attr))
 }
 
 /// The closer of the block `token` opens, a function or a `(`, `[` or
@@ -311,7 +344,7 @@ fn closer(token: &Token) -> Option<u8> {
 
 /// Whether `name` may be a `<custom-ident>`: not a CSS-wide keyword nor
 /// `default` (Values 4 §4.2), ASCII case-insensitively.
-fn is_custom_ident(name: &str) -> bool {
+pub(crate) fn is_custom_ident(name: &str) -> bool {
     ![
         "initial",
         "inherit",
@@ -322,255 +355,6 @@ fn is_custom_ident(name: &str) -> bool {
     ]
     .iter()
     .any(|keyword| name.eq_ignore_ascii_case(keyword))
-}
-
-/// Where a substitution function's argument is, as [`check`] reads it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Argument {
-    /// Nothing but white space yet.
-    Empty,
-    /// Begun with something other than a `{`.
-    Plain,
-    /// Begun with a `{}` block, which is open.
-    Wrapped,
-    /// Its `{}` block closed: only white space may follow.
-    Unwrapped,
-}
-
-/// A substitution function open, as [`check`] reads it.
-#[derive(Debug, Clone, Copy)]
-struct Open {
-    function: Function,
-    /// In the first argument, not the fallback.
-    first: bool,
-    argument: Argument,
-    /// Whether the first argument's `{}` block holds anything but white
-    /// space, or `env()`'s first argument has its name.
-    named: bool,
-}
-
-impl Open {
-    fn new(function: Function) -> Self {
-        Open {
-            function,
-            first: true,
-            argument: Argument::Empty,
-            named: false,
-        }
-    }
-
-    /// Takes `token`, which is neither white space, a comma, a `;` nor a
-    /// `!`, at the top level of the argument; says whether that is
-    /// allowed.
-    fn content(&mut self, token: &Token) -> bool {
-        if self.function == Function::Env && self.first {
-            // `<custom-ident> <integer [0,∞]>*`, read as written.
-            return match token {
-                Token::Ident(name) if !self.named && is_custom_ident(name) => {
-                    self.named = true;
-                    true
-                }
-                Token::Number {
-                    value,
-                    is_integer: true,
-                } => self.named && *value >= 0.0,
-                _ => false,
-            };
-        }
-        match (self.argument, token) {
-            (Argument::Empty, Token::OpenCurly) => {
-                self.argument = Argument::Wrapped;
-                true
-            }
-            (Argument::Empty, _) => {
-                self.argument = Argument::Plain;
-                true
-            }
-            // A `{}` block after other values, or anything after one.
-            (Argument::Plain, Token::OpenCurly) | (Argument::Unwrapped, _) => false,
-            (Argument::Plain, _) => true,
-            (Argument::Wrapped, _) => unreachable!("the block takes its tokens"),
-        }
-    }
-
-    /// Takes a comma at the top level of the argument.
-    fn comma(&mut self) -> bool {
-        if self.first {
-            if !self.first_is_whole() {
-                return false;
-            }
-            self.first = false;
-            self.argument = Argument::Empty;
-            return true;
-        }
-        // The fallback takes commas, Variables 1 §3 says, unless it is
-        // wrapped.
-        match self.argument {
-            Argument::Empty | Argument::Plain => {
-                self.argument = Argument::Plain;
-                true
-            }
-            Argument::Wrapped | Argument::Unwrapped => false,
-        }
-    }
-
-    /// Whether the first argument is not empty: `var()`'s, wrapped or
-    /// not, and `env()`'s has its name.
-    fn first_is_whole(&self) -> bool {
-        match self.function {
-            Function::Env => self.named,
-            Function::Var => match self.argument {
-                Argument::Plain => true,
-                Argument::Unwrapped => self.named,
-                Argument::Empty | Argument::Wrapped => false,
-            },
-        }
-    }
-
-    /// Whether the function may end here.
-    fn close(&self) -> bool {
-        !self.first || self.first_is_whole()
-    }
-}
-
-/// What opened a block, as [`check`] reads it.
-#[derive(Debug, Clone, Copy)]
-enum Block {
-    /// A function or `(`, `[` or `{` of no meaning here.
-    Plain(u8),
-    /// A substitution function.
-    Function(Open),
-    /// The `{}` block an argument of the substitution function around it
-    /// is wrapped in.
-    Wrapper,
-}
-
-impl Block {
-    fn closer(&self) -> u8 {
-        match self {
-            Block::Plain(closer) => *closer,
-            Block::Function(_) => b')',
-            Block::Wrapper => b'}',
-        }
-    }
-}
-
-/// Whether `tokens` are valid where they are parsed: every substitution
-/// function in them valid by its grammar — `var()` by its argument
-/// grammar, its arguments `<declaration-value>`s, wrapped in `{}` or not,
-/// the first not empty; `env()` with its first argument a
-/// `<custom-ident>` and integers no less than 0 — and, when `custom`,
-/// the whole a custom property's value (Variables 1 §2.1). One pass over
-/// the tokens, however deep the functions nest. A block a value leaves
-/// open at its end is closed there, as CSS Syntax 3 closes it.
-pub(crate) fn check(tokens: &[Token], custom: bool) -> bool {
-    let mut open: Vec<Block> = Vec::new();
-    // How many substitution functions are open: inside one, the rules
-    // of a `<declaration-value>` hold.
-    let mut functions = 0usize;
-    for token in tokens {
-        match token {
-            Token::String { bad: true, .. } | Token::Url { bad: true, .. }
-                if custom || functions > 0 =>
-            {
-                return false;
-            }
-            _ => {}
-        }
-        if let Some(closer) = closer(token) {
-            if open.last().map(Block::closer) != Some(closer) {
-                // A closer with no block of its kind open.
-                if custom || functions > 0 {
-                    return false;
-                }
-                continue;
-            }
-            match open.pop().expect("a block is open") {
-                Block::Function(function) => {
-                    functions -= 1;
-                    if !function.close() {
-                        return false;
-                    }
-                }
-                Block::Wrapper => {
-                    if let Some(Block::Function(function)) = open.last_mut() {
-                        function.argument = Argument::Unwrapped;
-                    }
-                }
-                Block::Plain(_) => {}
-            }
-            continue;
-        }
-        let depth = open.len();
-        match open.last_mut() {
-            // At the top level of a substitution function's argument.
-            Some(Block::Function(function)) => match token {
-                Token::Whitespace => {}
-                Token::Comma => {
-                    if !function.comma() {
-                        return false;
-                    }
-                }
-                Token::Semicolon | Token::Delim('!') => return false,
-                _ => {
-                    if !function.content(token) {
-                        return false;
-                    }
-                }
-            },
-            // Inside an argument's `{}` wrapper, whose rules are the
-            // argument's.
-            Some(Block::Wrapper) => match token {
-                Token::Semicolon | Token::Delim('!') => return false,
-                Token::Whitespace => {}
-                _ => {
-                    if let Some(Block::Function(function)) = open.get_mut(depth - 2) {
-                        function.named = true;
-                    }
-                }
-            },
-            Some(Block::Plain(_)) => {}
-            None => {
-                if custom && matches!(token, Token::Semicolon | Token::Delim('!')) {
-                    return false;
-                }
-            }
-        }
-        if let Some(closer) = opens(token) {
-            let wrapper = matches!(
-                open.last(),
-                Some(Block::Function(Open {
-                    argument: Argument::Wrapped,
-                    ..
-                }))
-            ) && closer == b'}';
-            open.push(match substitution_function(token) {
-                Some(function) => {
-                    functions += 1;
-                    Block::Function(Open::new(function))
-                }
-                None if wrapper => Block::Wrapper,
-                None => Block::Plain(closer),
-            });
-        }
-    }
-    // The blocks still open close at the end.
-    while let Some(block) = open.pop() {
-        match block {
-            Block::Function(function) => {
-                if !function.close() {
-                    return false;
-                }
-            }
-            Block::Wrapper => {
-                if let Some(Block::Function(function)) = open.last_mut() {
-                    function.argument = Argument::Unwrapped;
-                }
-            }
-            Block::Plain(_) => {}
-        }
-    }
-    true
 }
 
 /// How one element's custom property declaration stands in the cascade.
@@ -667,7 +451,8 @@ impl Substitutions {
 
     /// The custom properties of an element whose own custom property
     /// declarations are `declared`, in cascade order, the least
-    /// precedent first, and whose parent's are `parent`.
+    /// precedent first, whose parent's are `parent`, and whose
+    /// attributes, or its originating element's, are `attributes`.
     ///
     /// The winning declaration of each name is the last valid one: a
     /// CSS-wide keyword, or a value [`check`] takes; `revert` and
@@ -680,12 +465,14 @@ impl Substitutions {
     /// it: computing the same declarations again over a map they made
     /// gives that map, the names they do not declare being the same. So a
     /// set of custom properties declared on `*` is computed once, not for
-    /// every element. A map is `None` when no custom property has a
-    /// value.
+    /// every element. Declarations that read the element's attributes,
+    /// by `attr()`, are never so shared. A map is `None` when no custom
+    /// property has a value.
     pub(crate) fn compute(
         &self,
         declared: &[Declaration<'_>],
         parent: Option<&Arc<CustomProperties>>,
+        attributes: &[(String, String)],
     ) -> Option<Arc<CustomProperties>> {
         enum Kind {
             Keyword(CssWide),
@@ -717,7 +504,11 @@ impl Substitutions {
         }
         let fingerprint = winners
             .iter()
-            .map(|(declaration, _)| declaration.identity)
+            .map(|(declaration, _)| {
+                declaration
+                    .identity
+                    .filter(|_| !reads_attributes(declaration.value))
+            })
             .collect::<Option<Vec<usize>>>()
             .map(|mut declarations| {
                 declarations.sort_unstable();
@@ -743,17 +534,11 @@ impl Substitutions {
                 Kind::Substituted => State::Pending(declaration.value),
             })
             .collect();
-        let mut resolver = Resolver {
-            own: places,
-            names: winners.iter().map(|(d, _)| d.name).collect(),
-            states,
-            active: Vec::new(),
-            inherited,
-            substitutions: self,
-        };
+        let names = winners.iter().map(|(d, _)| d.name).collect();
+        let mut resolver = Resolver::new(names, states, inherited, attributes, self);
         for index in 0..winners.len() {
             if matches!(resolver.states[index], State::Pending(_)) {
-                resolver.run(Vec::new(), Frame::Property(index));
+                resolver.compute(index);
             }
         }
         let mut map = match parent {
@@ -780,16 +565,21 @@ impl Substitutions {
 
     /// `value`, a property's other than a custom one, with its
     /// substitution functions replaced against the element's custom
-    /// properties `custom`; `identity` is the declaration's, when it is a
-    /// stylesheet's.
+    /// properties `custom` and its attributes, or its originating
+    /// element's, `attributes`; `identity` is the declaration's, when it
+    /// is a stylesheet's. A value that reads no attribute is kept by its
+    /// declaration and custom properties, for the next element that has
+    /// the same.
     pub(crate) fn substitute(
         &self,
         value: &[Token],
         identity: Option<usize>,
         custom: Option<&Arc<CustomProperties>>,
+        attributes: &[(String, String)],
     ) -> Substituted {
-        let key =
-            identity.map(|identity| (identity, custom.map_or(0, |m| Arc::as_ptr(m) as usize)));
+        let key = identity
+            .filter(|_| !reads_attributes(value))
+            .map(|identity| (identity, custom.map_or(0, |m| Arc::as_ptr(m) as usize)));
         if let Some(key) = key
             && let Some(kept) = self.values.borrow().get(&key)
         {
@@ -798,16 +588,9 @@ impl Substitutions {
         let substituted = if !check(value, false) {
             Substituted::Ignored
         } else {
-            let mut resolver = Resolver {
-                own: HashMap::new(),
-                names: Vec::new(),
-                states: Vec::new(),
-                active: Vec::new(),
-                inherited: custom.map(|m| &**m),
-                substitutions: self,
-            };
-            let root = Frame::Value(Run::new(0, 0, value.len()));
-            match resolver.run(vec![Source::new(value)], root) {
+            let inherited = custom.map(|m| &**m);
+            let mut resolver = Resolver::new(Vec::new(), Vec::new(), inherited, attributes, self);
+            match resolver.substitute(value) {
                 Some(tokens) => Substituted::Value(tokens.into()),
                 None => Substituted::Invalid,
             }
@@ -888,533 +671,6 @@ fn custom_property_name(tokens: &[Token]) -> Option<&str> {
     }
 }
 
-/// Tokens being substituted, and where each block in them closes.
-struct Source<'t> {
-    tokens: &'t [Token],
-    /// For each token that opens a block, a function or a `(`, `[` or
-    /// `{`, the place of its closer, or the length of the tokens when it
-    /// has none; nothing that means anything for the other tokens.
-    closes: Vec<usize>,
-}
-
-impl<'t> Source<'t> {
-    fn new(tokens: &'t [Token]) -> Self {
-        let mut closes = vec![tokens.len(); tokens.len()];
-        let mut open: Vec<(usize, u8)> = Vec::new();
-        for (at, token) in tokens.iter().enumerate() {
-            if let Some(closer) = opens(token) {
-                open.push((at, closer));
-            } else if let Some(closer) = closer(token)
-                && open.last().is_some_and(|&(_, c)| c == closer)
-            {
-                let (opener, _) = open.pop().expect("a block is open");
-                closes[opener] = at;
-            }
-        }
-        Source { tokens, closes }
-    }
-
-    /// Where the block opened at `at` closes.
-    fn close(&self, at: usize) -> usize {
-        self.closes[at]
-    }
-
-    /// The first comma between `start` and `end` outside every block.
-    fn top_level_comma(&self, start: usize, end: usize) -> Option<usize> {
-        let mut at = start;
-        while at < end {
-            match &self.tokens[at] {
-                Token::Comma => return Some(at),
-                token if opens(token).is_some() => at = self.close(at) + 1,
-                _ => at += 1,
-            }
-        }
-        None
-    }
-
-    /// `start..end` without the white space at its ends.
-    fn trim(&self, mut start: usize, mut end: usize) -> Span {
-        while start < end && matches!(self.tokens[start], Token::Whitespace) {
-            start += 1;
-        }
-        while end > start && matches!(self.tokens[end - 1], Token::Whitespace) {
-            end -= 1;
-        }
-        (start, end)
-    }
-
-    /// The argument between `start` and `end`: trimmed, and, when it is
-    /// wrapped in `{}`, what is inside them (Values 5 §2.4.1); `None`
-    /// when anything follows its wrapper.
-    fn argument(&self, start: usize, end: usize) -> Option<Span> {
-        let (start, end) = self.trim(start, end);
-        if start < end && matches!(self.tokens[start], Token::OpenCurly) {
-            let close = self.close(start);
-            if close + 1 < end {
-                return None;
-            }
-            return Some(self.trim(start + 1, close.min(end)));
-        }
-        Some((start, end))
-    }
-
-    /// The arguments of the `var()` whose tokens run from `start` to
-    /// `end`: the first, not empty, and the fallback, when a comma is
-    /// there.
-    fn var_arguments(&self, start: usize, end: usize) -> Option<Arguments> {
-        let comma = self.top_level_comma(start, end);
-        let first = self.argument(start, comma.unwrap_or(end))?;
-        if first.0 == first.1 {
-            return None;
-        }
-        let fallback = match comma {
-            Some(comma) => Some(self.argument(comma + 1, end)?),
-            None => None,
-        };
-        Some((first, fallback))
-    }
-
-    /// The arguments of the `env()` whose tokens run from `start` to
-    /// `end`: the variable's name, how many indices follow it, and the
-    /// fallback, when a comma is there.
-    fn env_arguments(&self, start: usize, end: usize) -> Option<Environment<'t>> {
-        let comma = self.top_level_comma(start, end);
-        let mut name = None;
-        let mut indices = 0;
-        for token in &self.tokens[start..comma.unwrap_or(end)] {
-            match token {
-                Token::Whitespace => {}
-                Token::Ident(n) if name.is_none() && is_custom_ident(n) => name = Some(n.as_str()),
-                Token::Number {
-                    value,
-                    is_integer: true,
-                } if name.is_some() && *value >= 0.0 => indices += 1,
-                _ => return None,
-            }
-        }
-        let fallback = match comma {
-            Some(comma) => Some(self.argument(comma + 1, end)?),
-            None => None,
-        };
-        Some(Environment {
-            name: name?,
-            indices,
-            fallback,
-        })
-    }
-}
-
-/// A run of a source's tokens: where it begins and where it ends.
-type Span = (usize, usize);
-
-/// A function's first argument and its fallback.
-type Arguments = (Span, Option<Span>);
-
-/// What an `env()`'s arguments say: the variable's name, how many
-/// indices follow it, and the fallback.
-struct Environment<'t> {
-    name: &'t str,
-    indices: usize,
-    fallback: Option<Span>,
-}
-
-/// Where an element's custom property stands while its custom properties
-/// are computed.
-enum State<'t> {
-    /// Declared with substitution functions; not computed yet.
-    Pending(&'t [Token]),
-    /// Being computed by the frame at `frame` on the stack. `cycle` is
-    /// where the lowest cycle found through it begins on the stack, when
-    /// one is: see [`Resolver::var`].
-    Active { frame: usize, cycle: Option<usize> },
-    /// Computed: its value, or `None` for the guaranteed-invalid value.
-    Done(Option<Arc<[Token]>>),
-}
-
-/// A step of the substitution.
-enum Frame {
-    /// Computing the element's own custom property at this place among
-    /// the resolver's.
-    Property(usize),
-    /// Substituting tokens.
-    Value(Run),
-}
-
-/// What a frame waits for, the function it is replacing ending at `end`.
-#[derive(Clone, Copy)]
-enum Waiting {
-    /// `var()`'s first argument substituted, the name it gives.
-    Name { end: usize, fallback: Option<Span> },
-    /// The element's custom property at `index`, which `var()` names,
-    /// computed.
-    Property {
-        end: usize,
-        index: usize,
-        fallback: Option<Span>,
-    },
-    /// The fallback substituted.
-    Fallback { end: usize },
-}
-
-/// What a frame gave the one under it.
-enum Returned {
-    /// A run's tokens and their weight, or `None` for the
-    /// guaranteed-invalid value.
-    Value(Option<(Vec<Token>, usize)>),
-    /// A custom property computed, which the frame under reads.
-    Property,
-}
-
-/// Tokens being substituted: a run of a source's from `pos` to `end`, and
-/// what they have given so far.
-struct Run {
-    source: usize,
-    pos: usize,
-    end: usize,
-    out: Vec<Token>,
-    weight: usize,
-    /// Set once the run has met the guaranteed-invalid value; the rest of
-    /// it is still read, for the cycles in it, but not kept.
-    invalid: bool,
-    waiting: Option<Waiting>,
-}
-
-impl Run {
-    fn new(source: usize, start: usize, end: usize) -> Self {
-        Run {
-            source,
-            pos: start,
-            end,
-            out: Vec::new(),
-            weight: 0,
-            invalid: false,
-            waiting: None,
-        }
-    }
-
-    /// Adds `weight` to the run's, within the bounds; the run becomes the
-    /// guaranteed-invalid value when it would go past one.
-    fn grow(&mut self, weight: usize, substitutions: &Substitutions) -> bool {
-        self.weight += weight;
-        if self.weight > MAX_SUBSTITUTION || !substitutions.charge(weight) {
-            self.fail();
-            return false;
-        }
-        true
-    }
-
-    fn fail(&mut self) {
-        self.invalid = true;
-        self.out = Vec::new();
-    }
-
-    /// Copies `token`, one of the run's own.
-    fn push(&mut self, token: &Token, substitutions: &Substitutions) {
-        if !self.invalid && self.grow(weight(token), substitutions) {
-            self.out.push(token.clone());
-        }
-    }
-
-    /// Copies a function's result, `tokens`.
-    fn splice(&mut self, tokens: &[Token], substitutions: &Substitutions) {
-        if self.invalid {
-            return;
-        }
-        let weight = tokens.iter().map(weight).sum();
-        if weight > MAX_SUBSTITUTION {
-            self.fail();
-        } else if self.grow(weight, substitutions) {
-            self.out.extend_from_slice(tokens);
-        }
-    }
-
-    /// Takes a function's result, `tokens`, which weigh `weight` and were
-    /// charged when they were copied.
-    fn append(&mut self, tokens: Vec<Token>, weight: usize) {
-        if self.invalid {
-            return;
-        }
-        self.weight += weight;
-        if self.weight > MAX_SUBSTITUTION {
-            self.fail();
-        } else {
-            self.out.extend(tokens);
-        }
-    }
-
-    /// What the run gave, the white space at its ends left out, and its
-    /// weight; `None` for the guaranteed-invalid value.
-    fn finish(self) -> Option<(Vec<Token>, usize)> {
-        if self.invalid {
-            return None;
-        }
-        let mut out = self.out;
-        while matches!(out.last(), Some(Token::Whitespace)) {
-            out.pop();
-        }
-        let leading = out
-            .iter()
-            .take_while(|t| matches!(t, Token::Whitespace))
-            .count();
-        out.drain(..leading);
-        Some((out, self.weight))
-    }
-}
-
-/// The substitution of one element's values: its own custom properties,
-/// declared, being computed or computed, and the custom properties it
-/// has otherwise, its parent's or, once its own are computed, its own.
-struct Resolver<'t, 's> {
-    /// The places of the element's own custom properties among `states`,
-    /// by name.
-    own: HashMap<&'t str, usize>,
-    /// Their names, by their places.
-    names: Vec<&'t str>,
-    states: Vec<State<'t>>,
-    /// The places among `states` of the properties being computed, the
-    /// newest last.
-    active: Vec<usize>,
-    inherited: Option<&'s CustomProperties>,
-    substitutions: &'s Substitutions,
-}
-
-impl<'t> Resolver<'t, '_> {
-    /// Runs the substitution from `root` over `sources` to its end: the
-    /// root run's tokens, or `None` for the guaranteed-invalid value; a
-    /// root custom property leaves its value in its state.
-    ///
-    /// The frames are kept on a stack of their own: a run that meets a
-    /// function whose result needs another run or a custom property
-    /// computed pushes itself and that, and is resumed with what it gave.
-    fn run(&mut self, mut sources: Vec<Source<'t>>, root: Frame) -> Option<Vec<Token>> {
-        let mut stack = vec![root];
-        let mut returned: Option<Returned> = None;
-        while let Some(frame) = stack.pop() {
-            match frame {
-                Frame::Property(index) => match returned.take() {
-                    None => {
-                        let State::Pending(tokens) = self.states[index] else {
-                            unreachable!("a custom property is computed once")
-                        };
-                        self.states[index] = State::Active {
-                            frame: stack.len(),
-                            cycle: None,
-                        };
-                        self.active.push(index);
-                        sources.push(Source::new(tokens));
-                        stack.push(Frame::Property(index));
-                        stack.push(Frame::Value(Run::new(sources.len() - 1, 0, tokens.len())));
-                    }
-                    Some(Returned::Value(value)) => {
-                        let State::Active { cycle, .. } = self.states[index] else {
-                            unreachable!("a custom property computed was active")
-                        };
-                        self.active.pop();
-                        // The cycle reaches the property under this one
-                        // when it begins at or below it.
-                        if let (Some(begin), Some(&under)) = (cycle, self.active.last())
-                            && let State::Active { frame, cycle } = &mut self.states[under]
-                            && begin <= *frame
-                        {
-                            *cycle = Some(cycle.map_or(begin, |c| c.min(begin)));
-                        }
-                        let value = value.filter(|_| cycle.is_none());
-                        let value = value.and_then(|(tokens, _)| self.settle(index, tokens));
-                        self.states[index] = State::Done(value);
-                        returned = Some(Returned::Property);
-                    }
-                    Some(Returned::Property) => unreachable!("a property waits for its value"),
-                },
-                Frame::Value(mut run) => match self.step(&mut run, returned.take(), &sources) {
-                    Some(child) => {
-                        stack.push(Frame::Value(run));
-                        stack.push(child);
-                    }
-                    None => returned = Some(Returned::Value(run.finish())),
-                },
-            }
-        }
-        match returned {
-            Some(Returned::Value(value)) => value.map(|(tokens, _)| tokens),
-            _ => None,
-        }
-    }
-
-    /// The computed value of the element's custom property at `index`,
-    /// whose declared value substituted to `tokens`. A lone CSS-wide
-    /// keyword is that keyword, as if it were declared (Values 5 Appendix
-    /// A): `initial` the guaranteed-invalid value, `inherit` and `unset`
-    /// the inherited value. `revert` and `revert-layer`, which the
-    /// cascade does not know (G7), are `unset`, which is what they give a
-    /// custom property no stylesheet of an earlier origin declares.
-    fn settle(&self, index: usize, tokens: Vec<Token>) -> Option<Arc<[Token]>> {
-        let inherited = || {
-            self.inherited
-                .and_then(|m| m.get(self.names[index]))
-                .cloned()
-        };
-        match css_wide_keyword(&tokens) {
-            Some(CssWide::Initial) => None,
-            Some(CssWide::Inherit | CssWide::Unset) => inherited(),
-            None if is_revert(&tokens) => inherited(),
-            None => Some(tokens.into()),
-        }
-    }
-
-    /// Takes the run on, with what the frame it waited for `returned`:
-    /// to its end, or to a function whose result needs another frame,
-    /// which it returns.
-    fn step(
-        &mut self,
-        run: &mut Run,
-        returned: Option<Returned>,
-        sources: &[Source<'t>],
-    ) -> Option<Frame> {
-        let source = &sources[run.source];
-        if let Some(returned) = returned
-            && let Some(child) = self.resume(run, returned)
-        {
-            return Some(child);
-        }
-        while run.pos < run.end {
-            let at = run.pos;
-            let token = &source.tokens[at];
-            let Some(function) = substitution_function(token) else {
-                run.push(token, self.substitutions);
-                run.pos += 1;
-                continue;
-            };
-            let end = source.close(at).min(run.end);
-            let child = match function {
-                Function::Var => match source.var_arguments(at + 1, end) {
-                    None => self.replace(run, None, end, None),
-                    Some(((start, stop), fallback)) => {
-                        let first = &source.tokens[start..stop];
-                        if let Some(name) = custom_property_name(first) {
-                            self.var(run, name, end, fallback)
-                        } else if has_substitution(first) {
-                            run.waiting = Some(Waiting::Name { end, fallback });
-                            Some(Frame::Value(Run::new(run.source, start, stop)))
-                        } else {
-                            // No substitution can make it a name.
-                            self.replace(run, None, end, fallback)
-                        }
-                    }
-                },
-                Function::Env => match source.env_arguments(at + 1, end) {
-                    None => self.replace(run, None, end, None),
-                    Some(env) => {
-                        self.replace(run, environment(env.name, env.indices), end, env.fallback)
-                    }
-                },
-            };
-            if child.is_some() {
-                return child;
-            }
-        }
-        None
-    }
-
-    /// Resumes the run with what the frame it waited for `returned`.
-    fn resume(&mut self, run: &mut Run, returned: Returned) -> Option<Frame> {
-        match (run.waiting.take(), returned) {
-            (Some(Waiting::Name { end, fallback }), Returned::Value(value)) => {
-                match value
-                    .as_ref()
-                    .and_then(|(tokens, _)| custom_property_name(tokens))
-                {
-                    Some(name) => self.var(run, name, end, fallback),
-                    None => self.replace(run, None, end, fallback),
-                }
-            }
-            (
-                Some(Waiting::Property {
-                    end,
-                    index,
-                    fallback,
-                }),
-                Returned::Property,
-            ) => {
-                let State::Done(value) = &self.states[index] else {
-                    unreachable!("the property waited for is computed")
-                };
-                let value = value.clone();
-                self.replace(run, value, end, fallback)
-            }
-            (Some(Waiting::Fallback { end }), Returned::Value(value)) => {
-                match value {
-                    Some((tokens, weight)) => run.append(tokens, weight),
-                    None => run.fail(),
-                }
-                run.pos = end + 1;
-                None
-            }
-            _ => unreachable!("a run resumes with what it waits for"),
-        }
-    }
-
-    /// Replaces the `var()` ending at `end` that names `name`: by the
-    /// custom property's value, once it is computed.
-    fn var(
-        &mut self,
-        run: &mut Run,
-        name: &str,
-        end: usize,
-        fallback: Option<Span>,
-    ) -> Option<Frame> {
-        let value = match self.own.get(name).copied() {
-            Some(index) => match &self.states[index] {
-                State::Pending(_) => {
-                    run.waiting = Some(Waiting::Property {
-                        end,
-                        index,
-                        fallback,
-                    });
-                    return Some(Frame::Property(index));
-                }
-                State::Active { frame, .. } => {
-                    // A cycle: every property from this one to the
-                    // newest is in it. It is marked on the newest, which
-                    // hands it to the one under it as it finishes, and
-                    // that on, down to this one: a mark costs the same
-                    // however deep the stack.
-                    let begin = *frame;
-                    let newest = *self.active.last().expect("this one is active");
-                    if let State::Active { cycle, .. } = &mut self.states[newest] {
-                        *cycle = Some(cycle.map_or(begin, |c| c.min(begin)));
-                    }
-                    None
-                }
-                State::Done(value) => value.clone(),
-            },
-            None => self.inherited.and_then(|m| m.get(name)).cloned(),
-        };
-        self.replace(run, value, end, fallback)
-    }
-
-    /// Replaces the function ending at `end` by `value`, or, when that is
-    /// the guaranteed-invalid value, by its fallback substituted, or by
-    /// the guaranteed-invalid value when it has none.
-    fn replace(
-        &mut self,
-        run: &mut Run,
-        value: Option<Arc<[Token]>>,
-        end: usize,
-        fallback: Option<Span>,
-    ) -> Option<Frame> {
-        match (value, fallback) {
-            (Some(value), _) => run.splice(&value, self.substitutions),
-            (None, Some((start, stop))) => {
-                run.waiting = Some(Waiting::Fallback { end });
-                return Some(Frame::Value(Run::new(run.source, start, stop)));
-            }
-            (None, None) => run.fail(),
-        }
-        run.pos = end + 1;
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1458,7 +714,7 @@ mod tests {
                 identity: Some(std::ptr::from_ref(d) as usize),
             })
             .collect();
-        substitutions.compute(&declarations, parent)
+        substitutions.compute(&declarations, parent, &[])
     }
 
     fn compute(source: &str) -> Option<Arc<CustomProperties>> {
@@ -1497,7 +753,7 @@ mod tests {
     }
 
     fn substitute(value: &str, custom: &Option<Arc<CustomProperties>>) -> Substituted {
-        Substitutions::new(1).substitute(&css::tokenize(value), None, custom.as_ref())
+        Substitutions::new(1).substitute(&css::tokenize(value), None, custom.as_ref(), &[])
     }
 
     #[test]
@@ -1821,7 +1077,7 @@ mod tests {
                 identity: None,
             })
             .collect();
-        let child = substitutions.compute(&declarations, parent.as_ref());
+        let child = substitutions.compute(&declarations, parent.as_ref(), &[]);
         assert!(!Arc::ptr_eq(
             parent.as_ref().unwrap(),
             child.as_ref().unwrap()
@@ -1874,6 +1130,217 @@ mod tests {
         assert_eq!(value("env(unknown)"), Err(Substituted::Invalid));
         assert_eq!(value("env(unknown, {})"), Ok("".into()));
         assert_eq!(value("env(env(x))"), Err(Substituted::Ignored));
+    }
+
+    /// Attributes from `pairs`, as the cascade lends them.
+    fn attributes(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn attributes_substitute_by_their_types() {
+        // The web-platform-tests' attr-all-types, for what this engine
+        // reads.
+        let attrs = attributes(&[
+            ("title", "a b"),
+            ("data-foo", "10"),
+            ("data-bar", "3"),
+            ("data-baz", "3px"),
+            ("data-s", "\"hi\""),
+            ("data-calc", "calc(1px + 3px)"),
+            ("data-v", "var(--x, 3)"),
+            ("data-n", "attr(data-bar, 11)"),
+            (
+                "data-m",
+                "attr(data-bar type(<number>), 11) var(--length, 3px)",
+            ),
+            ("data-open", "attr("),
+        ]);
+        let map = compute("--color: red");
+        let value = |source: &str| match Substitutions::new(1).substitute(
+            &css::tokenize(source),
+            None,
+            map.as_ref(),
+            &attrs,
+        ) {
+            Substituted::Value(tokens) => Ok(text(&tokens)),
+            other => Err(other),
+        };
+        let string = |s: &str| Ok(format!("{s:?}"));
+        assert_eq!(value("attr(title)"), string("a b"));
+        assert_eq!(value("attr(TITLE raw-string)"), string("a b"));
+        assert_eq!(value("attr(data-open)"), string("attr("));
+        assert_eq!(value("attr(nope)"), string(""));
+        assert_eq!(value("attr(nope,)"), Ok("".into()));
+        assert_eq!(value("attr(nope, serif)"), Ok("serif".into()));
+        assert_eq!(value("attr(nope raw-string)"), string(""));
+        assert_eq!(
+            value("attr(nope type(<string>))"),
+            Err(Substituted::Invalid)
+        );
+        assert_eq!(value("attr(svg|title)"), string(""));
+        assert_eq!(value("attr(|title)"), string("a b"));
+        assert_eq!(value("attr(data-foo px)"), Ok("10px".into()));
+        assert_eq!(value("attr(data-foo %)"), Ok("10%".into()));
+        assert_eq!(value("attr(data-foo number)"), Ok("10".into()));
+        assert_eq!(
+            value("calc(attr(data-foo px) + 1px)"),
+            Ok("calc( 10px + 1px )".into())
+        );
+        assert_eq!(value("attr(data-baz px)"), Err(Substituted::Invalid));
+        assert_eq!(value("attr(data-foo xx, 3px)"), Ok("3px".into()));
+        assert_eq!(value("attr(nope px, 3px)"), Ok("3px".into()));
+        assert_eq!(value("attr(data-baz type(<length>))"), Ok("3px".into()));
+        assert_eq!(
+            value("attr(data-calc type(<length>), 42px)"),
+            Ok("calc( 1px + 3px )".into())
+        );
+        assert_eq!(
+            value("attr(data-foo type(<length>), red)"),
+            Ok("red".into())
+        );
+        assert_eq!(
+            value("attr(data-foo type(<length> | <number>))"),
+            Ok("10".into())
+        );
+        assert_eq!(value("attr(data-s type(<string>))"), string("hi"));
+        assert_eq!(value("attr(data-open type(*), anim)"), Ok("anim".into()));
+        assert_eq!(value("attr(data-open type(*))"), Err(Substituted::Invalid));
+        // An attribute's value, typed, has its own functions substituted.
+        assert_eq!(value("attr(data-v type(*))"), Ok("3".into()));
+        assert_eq!(value("attr(data-n type(*))"), string("3"));
+        assert_eq!(value("attr(data-m type(*))"), Ok("3 3px".into()));
+        // The first argument substituted first.
+        let map = compute("--name: data-foo px; --type: type(<number>)");
+        let value = |source: &str| {
+            Substitutions::new(1).substitute(&css::tokenize(source), None, map.as_ref(), &attrs)
+        };
+        assert_eq!(
+            value("attr(var(--name))"),
+            Substituted::Value(Arc::from(tokens("10px")))
+        );
+        assert_eq!(
+            value("attr(data-foo var(--type))"),
+            Substituted::Value(Arc::from(tokens("10")))
+        );
+        assert_eq!(value("attr(var(--nope))"), Substituted::Invalid);
+        // Where it is parsed, its first argument is checked when nothing is
+        // substituted into it: these are ignored, not their fallbacks.
+        assert_eq!(
+            value("attr(data-foo type(invalid |), 10px)"),
+            Substituted::Ignored
+        );
+        assert_eq!(value("attr(data-foo &, 3px)"), Substituted::Ignored);
+        assert_eq!(value("attr(\"x\")"), Substituted::Ignored);
+    }
+
+    #[test]
+    fn attribute_cycles_fall_back_and_property_cycles_do_not() {
+        // The web-platform-tests' attr-cycle.
+        let compute_with_attributes = |source: &str, pairs: &[(&str, &str)]| {
+            let list = declared(source);
+            let attrs = attributes(pairs);
+            let declarations: Vec<Declaration<'_>> = list
+                .iter()
+                .map(|d| Declaration {
+                    name: &d.name,
+                    value: &d.value,
+                    identity: None,
+                })
+                .collect();
+            Substitutions::new(1).compute(&declarations, None, &attrs)
+        };
+        // A custom property, the element's attributes, and its value.
+        type Case<'a> = (&'a str, &'a [(&'a str, &'a str)], Option<&'a str>);
+        let cases: &[Case<'_>] = &[
+            (
+                "--x: attr(data-foo type(<length>))",
+                &[("data-foo", "attr(data-foo type(<length>))")],
+                None,
+            ),
+            (
+                "--y: attr(data-foo type(*))",
+                &[("data-foo", "attr(data-foo type(*))")],
+                None,
+            ),
+            (
+                "--x: attr(data-foo type(<length>), 3px)",
+                &[("data-foo", "var(--x)")],
+                None,
+            ),
+            (
+                "--x: attr(data-foo type(<length>), 3px)",
+                &[("data-foo", "var(--x, 11px)")],
+                None,
+            ),
+            (
+                "--x: attr(data-foo type(<length>), 11px)",
+                &[("data-foo", "attr(data-foo type(<length>), 3px)")],
+                Some("11px"),
+            ),
+            (
+                "--y: attr(data-foo type(*), 11px)",
+                &[("data-foo", "attr(data-foo type(*))")],
+                Some("11px"),
+            ),
+            (
+                "--y: attr(data-foo type(*), 1px)",
+                &[
+                    ("data-foo", "attr(data-bar type(*), 2px)"),
+                    ("data-bar", "attr(data-baz type(*), 3px)"),
+                    ("data-baz", "attr(data-foo type(*), 4px)"),
+                ],
+                Some("1px"),
+            ),
+            (
+                "--y: var(--x, 100); --x: attr(data-foo type(*))",
+                &[("data-foo", "var(--y)")],
+                None,
+            ),
+        ];
+        for (source, pairs, expected) in cases {
+            let map = compute_with_attributes(source, pairs);
+            let name = if source.starts_with("--y") {
+                "--y"
+            } else {
+                "--x"
+            };
+            assert_eq!(
+                value(&map, name).as_deref(),
+                *expected,
+                "{source} {pairs:?}"
+            );
+        }
+        // Not a cycle: another attribute's value, or a fallback.
+        let map = compute_with_attributes(
+            "--y: attr(data-foo type(*), attr(data-bar))",
+            &[("data-foo", "attr(data-foo type(*))"), ("data-bar", "abc")],
+        );
+        assert_eq!(value(&map, "--y").as_deref(), Some("\"abc\""));
+    }
+
+    #[test]
+    fn declarations_reading_attributes_are_never_shared() {
+        let substitutions = Substitutions::new(1);
+        let list = declared("--a: attr(data-a)");
+        let compute = |pairs: &[(&str, &str)], parent: Option<&Arc<CustomProperties>>| {
+            let declarations: Vec<Declaration<'_>> = list
+                .iter()
+                .map(|d| Declaration {
+                    name: &d.name,
+                    value: &d.value,
+                    identity: Some(std::ptr::from_ref(d) as usize),
+                })
+                .collect();
+            substitutions.compute(&declarations, parent, &attributes(pairs))
+        };
+        let parent = compute(&[("data-a", "1")], None);
+        let child = compute(&[("data-a", "2")], parent.as_ref());
+        assert_eq!(value(&child, "--a").as_deref(), Some("\"2\""));
+        assert_eq!(value(&parent, "--a").as_deref(), Some("\"1\""));
     }
 
     #[test]
@@ -1956,7 +1423,8 @@ mod tests {
         let substitutions = Substitutions::new(1);
         let value = css::tokenize("var(--big)");
         let mut substituted = 0;
-        while let Substituted::Value(_) = substitutions.substitute(&value, None, map.as_ref()) {
+        while let Substituted::Value(_) = substitutions.substitute(&value, None, map.as_ref(), &[])
+        {
             substituted += 1;
             assert!(
                 substituted <= MAX_CASCADE_SUBSTITUTION / one,
@@ -1966,7 +1434,7 @@ mod tests {
         assert_eq!(substituted, MAX_CASCADE_SUBSTITUTION / one);
         let small = compute("--s: 1");
         assert_eq!(
-            substitutions.substitute(&css::tokenize("var(--s)"), None, small.as_ref()),
+            substitutions.substitute(&css::tokenize("var(--s)"), None, small.as_ref(), &[]),
             Substituted::Invalid
         );
     }
@@ -1977,11 +1445,12 @@ mod tests {
         let map = compute("--a: 1px");
         let value = css::tokenize("var(--a)");
         let identity = Some(std::ptr::from_ref(&value) as usize);
-        let first = substitutions.substitute(&value, identity, map.as_ref());
+        let first = substitutions.substitute(&value, identity, map.as_ref(), &[]);
         let Substituted::Value(first) = first else {
             panic!("substitutes")
         };
-        let Substituted::Value(again) = substitutions.substitute(&value, identity, map.as_ref())
+        let Substituted::Value(again) =
+            substitutions.substitute(&value, identity, map.as_ref(), &[])
         else {
             panic!("substitutes")
         };
@@ -1989,7 +1458,7 @@ mod tests {
         // Another map, another substitution.
         let other = compute("--a: 2px");
         assert_eq!(
-            substitutions.substitute(&value, identity, other.as_ref()),
+            substitutions.substitute(&value, identity, other.as_ref(), &[]),
             Substituted::Value(Arc::from(tokens("2px")))
         );
     }

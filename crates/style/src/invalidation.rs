@@ -41,7 +41,10 @@
 //! The attributes they read on the element and its ancestors (`lang`,
 //! `href`, `disabled`, `checked`, `selected`, `type`, `multiple`,
 //! `size`, `required`) count as named by a selector, and so do the ones
-//! a `content` declaration's `attr()` reads.
+//! an `attr()` reads in any declaration (M21.5). An `attr()` whose name
+//! is substituted can read any attribute: a sheet with one makes every
+//! attribute count. An inline style with an `attr()` in it makes any
+//! change to its element's attributes restyle the element.
 //!
 //! The changes are read after they were all made, so each rule looks
 //! at the document as it now stands: an element no longer in the tree
@@ -86,6 +89,9 @@ pub struct SelectorFeatures {
     fieldsets: bool,
     /// `:checked`: a select's options and radio button groups count.
     checked: bool,
+    /// An `attr()` whose name is substituted (M21.5): every attribute
+    /// counts.
+    any_attribute: bool,
 }
 
 impl SelectorFeatures {
@@ -175,20 +181,13 @@ impl SelectorFeatures {
     }
 
     /// Adds what `declarations`, a style rule's, read: the attributes
-    /// `content`'s `attr()` names, on the element a `::before` or
-    /// `::after` comes from.
+    /// the `attr()`s in them name, of any property (M21.5), on the
+    /// element, or the one a pseudo-element comes from.
     pub(crate) fn add_declarations(&mut self, declarations: &[css::Declaration]) {
-        for declaration in declarations.iter().filter(|d| d.name == "content") {
-            let mut tokens = declaration.value.iter();
-            while let Some(token) = tokens.next() {
-                if let css::Token::Function(name) = token
-                    && name.eq_ignore_ascii_case("attr")
-                    && let Some(css::Token::Ident(attribute)) = tokens
-                        .by_ref()
-                        .find(|token| !matches!(token, css::Token::Whitespace))
-                {
-                    self.attributes.insert(attribute.to_ascii_lowercase());
-                }
+        for declaration in declarations {
+            match attributes_read(&declaration.value) {
+                Some(names) => self.attributes.extend(names),
+                None => self.any_attribute = true,
             }
         }
     }
@@ -203,7 +202,7 @@ impl SelectorFeatures {
     /// Whether changing attribute `name` from `old` to `new` can change
     /// which selectors match its element.
     fn mentions(&self, name: &str, old: Option<&str>, new: Option<&str>) -> bool {
-        if self.attributes.contains(name) {
+        if self.any_attribute || self.attributes.contains(name) {
             return true;
         }
         match name {
@@ -220,6 +219,46 @@ impl SelectorFeatures {
             _ => false,
         }
     }
+}
+
+/// The names of the attributes the `attr()`s in `tokens` read, ASCII
+/// lowercased, `ns|name` and `|name` counted as `name`; `None` when one
+/// reads a name substituted into it, which may be any.
+fn attributes_read(tokens: &[css::Token]) -> Option<Vec<String>> {
+    use css::Token;
+    let mut names = Vec::new();
+    for (at, token) in tokens.iter().enumerate() {
+        let Token::Function(function) = token else {
+            continue;
+        };
+        if !function.eq_ignore_ascii_case("attr") {
+            continue;
+        }
+        let mut rest = tokens[at + 1..]
+            .iter()
+            .filter(|t| !matches!(t, Token::Whitespace | Token::OpenCurly));
+        let name = match (rest.next(), rest.next(), rest.next()) {
+            (Some(Token::Delim('|')), Some(Token::Ident(name)), _) => name,
+            (Some(Token::Ident(_)), Some(Token::Delim('|')), Some(Token::Ident(name))) => name,
+            (Some(Token::Ident(name)), _, _) => name,
+            // A name substituted, or none, which no attribute's change
+            // can make valid.
+            (Some(Token::Function(_)), _, _) => return None,
+            _ => continue,
+        };
+        names.push(name.to_ascii_lowercase());
+    }
+    Some(names)
+}
+
+/// Whether `element`'s inline style has an `attr()` in it (M21.5): then
+/// a change to any of its attributes can change its style.
+fn inline_reads_attributes(document: &Document, element: NodeId) -> bool {
+    document.attr(element, "style").is_some_and(|style| {
+        css::tokenize(style)
+            .iter()
+            .any(|t| matches!(t, css::Token::Function(name) if name.eq_ignore_ascii_case("attr")))
+    })
 }
 
 /// How much of the tree under an element a restyle must reach.
@@ -400,7 +439,7 @@ pub(crate) fn invalidate(
                     at = document.next_element_sibling(sibling);
                 }
             }
-        } else if name == "style" || name == "dir" {
+        } else if name == "style" || name == "dir" || inline_reads_attributes(document, element) {
             out.mark(document, element, Reach::Element);
         }
     }
@@ -960,19 +999,26 @@ mod tests {
     // ---- M16: pseudo-element styles ------------------------------------------
 
     #[test]
-    fn content_attr_names_count_as_read() {
+    fn attr_names_count_as_read() {
+        // Of any property since M21.5, in any form of the name.
         let sheets = Stylesheets::new(vec![
             css::parse_stylesheet(
                 "p::before { content: 'a' attr( Data-X ) attr(title) } \
-                 p { color: attr(nope) } .a { content: attr(other) }",
+                 p { color: attr(colour type(<color>)); width: attr({w} px, 0) } \
+                 .a { content: attr(other); --c: attr(|plain) attr(svg|ns) }",
             )
             .unwrap(),
         ]);
         let f = sheets.features();
-        for name in ["data-x", "title", "other"] {
+        for name in ["data-x", "title", "colour", "w", "other", "plain", "ns"] {
             assert!(f.attributes.contains(name), "{name}");
         }
-        assert!(!f.attributes.contains("nope"), "only `content` reads one");
+        assert!(!f.any_attribute);
+        // A substituted name may be any.
+        let sheets = Stylesheets::new(vec![
+            css::parse_stylesheet("p { --n: data-x; width: attr(var(--n) px) }").unwrap(),
+        ]);
+        assert!(sheets.features().any_attribute);
     }
 
     #[test]
@@ -1065,5 +1111,43 @@ mod tests {
             d.remove_attribute(x, "class").unwrap();
         });
         assert_eq!(r.changed.len(), 4);
+    }
+
+    #[test]
+    fn an_attribute_an_attr_reads_restyles_its_element() {
+        // M21.5: in any property, a custom one's included, whose users
+        // are restyled through it.
+        let (mut d, sheets, mut styles) = setup(
+            "<div id=x data-w=10><p>one</p></div>",
+            "div { width: attr(data-w px); --c: attr(data-c type(<color>), red) } \
+             p { color: var(--c) }",
+        );
+        let x = by_id(&d, "x");
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(x, "data-w", "20").unwrap();
+        });
+        assert_eq!(r.changed, [x]);
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(x, "data-c", "blue").unwrap();
+        });
+        assert_eq!(r.changed.len(), 2, "the div and its paragraph");
+        // An inline style's `attr()`.
+        let (mut d, sheets, mut styles) =
+            setup("<p id=y style='width: attr(data-w px)' data-w=5>x</p>", "");
+        let y = by_id(&d, "y");
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(y, "data-w", "6").unwrap();
+        });
+        assert_eq!(r.changed, [y]);
+        // A name substituted: any attribute.
+        let (mut d, sheets, mut styles) = setup(
+            "<p id=z data-n=data-w data-w=5>x</p>",
+            "p { --n: attr(data-n type(<custom-ident>)); width: attr(var(--n) px) }",
+        );
+        let z = by_id(&d, "z");
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(z, "data-w", "7").unwrap();
+        });
+        assert_eq!(r.changed, [z]);
     }
 }

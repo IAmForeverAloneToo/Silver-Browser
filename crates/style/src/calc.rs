@@ -2,28 +2,28 @@
 //! and `clamp()`, parsed from a declaration's tokens, typed, and
 //! simplified where the value is computed.
 //!
-//! [`parse`] reads one math function by §10.8's grammar: sums whose `+`
+//! [`parse`](crate::calc::parse) reads one math function by §10.8's grammar: sums whose `+`
 //! and `-` have white space on both sides, products with `*` and `/`,
 //! parenthesized sums, nested math functions, numbers, dimensions,
 //! percentages and the constants `e`, `pi`, `infinity`, `-infinity` and
 //! `NaN`, the names and constants ASCII case-insensitive. Nesting, by
-//! parentheses and functions together, is bounded at [`MAX_DEPTH`]; a
+//! parentheses and functions together, is bounded at [`MAX_DEPTH`](crate::calc::MAX_DEPTH); a
 //! deeper calculation is invalid, as §10.8 lets a user agent's limit
 //! make it. Every calculation is typed by §10.9's algebra, the types of
 //! CSS Typed OM §4.3.2 — a power of each base type and a percent hint —
 //! so that `calc(100px / 10px)` is a number and `calc(1px * 1px)` a
 //! length squared, which no property takes; and the type is checked
-//! against what the value's place takes, a [`Want`]. A calculation whose
+//! against what the value's place takes, a [`Want`](crate::calc::Want). A calculation whose
 //! type fails, or does not match, is invalid, as any bad value is.
 //!
-//! [`Parsed::compute`] simplifies by §10.10 with what computing a value
+//! [`Parsed::compute`](crate::calc::Parsed::compute) simplifies by §10.10 with what computing a value
 //! knows: every dimension is made canonical — a length in CSS pixels by
 //! the cascade's bases, an angle in degrees, a time in seconds, a
 //! frequency in hertz, a resolution in dots per pixel — and every
 //! subtree with no percentage in it folds to its value. What is left is
 //! a value, a percentage, or, where a percentage stands for a length
-//! not yet known, an [`Expression`] that layout resolves against the
-//! percentage's basis ([`Calc`]). §10.9.2 censors a top-level result:
+//! not yet known, an [`Expression`](crate::calc::Expression) that layout resolves against the
+//! percentage's basis ([`Calc`](crate::calc::Calc)). §10.9.2 censors a top-level result:
 //! `NaN` is 0, and an infinity is the largest value the place holds.
 
 use css::Token;
@@ -116,6 +116,29 @@ impl LengthUnit {
             _ => return None,
         })
     }
+}
+
+/// What a dimension's unit measures: what a `<syntax>`'s data types ask
+/// of a value without computing it (M21.5's `attr()`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Measure {
+    Length,
+    Angle,
+    Time,
+    Frequency,
+    Resolution,
+}
+
+/// What the unit `name` measures, ASCII case-insensitively; `None` for a
+/// unit this engine does not know.
+pub fn measure(name: &str) -> Option<Measure> {
+    Some(match Unit::of(name)? {
+        Unit::Length(_) => Measure::Length,
+        Unit::Angle(_) => Measure::Angle,
+        Unit::Time(_) => Measure::Time,
+        Unit::Frequency(_) => Measure::Frequency,
+        Unit::Resolution(_) => Measure::Resolution,
+    })
 }
 
 /// A dimension's unit.

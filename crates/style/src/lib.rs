@@ -48,9 +48,9 @@ pub mod computed;
 /// this engine supports, `selector()` included.
 pub mod conditions;
 
-/// Custom properties and the substitution functions `var()` and `env()`
-/// (M21.1, M21.3): their values checked, computed and substituted, within
-/// bounds.
+/// Custom properties and the substitution functions `var()`, `env()`
+/// and `attr()` (M21.1, M21.3, M21.5): their values checked, computed and
+/// substituted, within bounds.
 pub mod custom;
 
 /// Style invalidation (M13.1): which elements a change to a document
