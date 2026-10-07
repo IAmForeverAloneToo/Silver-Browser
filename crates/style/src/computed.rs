@@ -1482,6 +1482,44 @@ pub struct Fragmentation {
     pub print_color_adjust: PrintColorAdjust,
 }
 
+/// The counter properties (Lists 3 §4, M21.4): what
+/// [`ComputedStyle::lists`] points to when any of them is not its initial
+/// value, `none`. None is inherited.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Lists {
+    /// `counter-reset`: the counters the element instantiates, in order,
+    /// each name once, its last; empty for `none`.
+    pub counter_reset: Vec<CounterReset>,
+    /// `counter-increment`: the counters added to and by how much, in
+    /// order, a name as often as written; empty for `none`.
+    pub counter_increment: Vec<CounterChange>,
+    /// `counter-set`: the counters set and to what, in order; empty for
+    /// `none`.
+    pub counter_set: Vec<CounterChange>,
+}
+
+/// One counter `counter-reset` instantiates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CounterReset {
+    /// Its name, case-sensitive.
+    pub name: Arc<str>,
+    /// Whether it is `reversed()`.
+    pub reversed: bool,
+    /// Its starting value: the integer written, 0 when none is; `None`
+    /// for a reversed counter written without one, whose value the box
+    /// tree calculates from what increments it (§4.4.2).
+    pub value: Option<i32>,
+}
+
+/// One counter `counter-increment` or `counter-set` changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CounterChange {
+    /// Its name, case-sensitive.
+    pub name: Arc<str>,
+    /// What it is added to it, or set to.
+    pub value: i32,
+}
+
 impl Default for Fragmentation {
     /// Every property's initial value.
     fn default() -> Self {
@@ -1512,6 +1550,8 @@ impl Fragmentation {
 /// The fragmentation properties' initial values, which
 /// [`ComputedStyle::fragmentation`] gives a style that sets none of them.
 static INITIAL_FRAGMENTATION: LazyLock<Fragmentation> = LazyLock::new(Fragmentation::default);
+
+static INITIAL_LISTS: LazyLock<Lists> = LazyLock::new(Lists::default);
 
 /// The box-model edges, one value per side, in CSS's `top, right,
 /// bottom, left` order (matches `margin`/`padding`/`border-width`
@@ -1557,6 +1597,18 @@ pub enum Content {
 pub enum ContentItem {
     /// A string, or the value of an `attr()`.
     Text(String),
+    /// `counter(<name>, <style>)` (M21.4): the innermost counter of the
+    /// name the box sees, written in the counter style named, `decimal`
+    /// when none is given; the box tree's builder writes it.
+    Counter { name: Arc<str>, style: Arc<str> },
+    /// `counters(<name>, <separator>, <style>)` (M21.4): every counter of
+    /// the name the box sees, outermost first, each written in the style
+    /// and joined by the separator.
+    Counters {
+        name: Arc<str>,
+        separator: String,
+        style: Arc<str>,
+    },
     /// `open-quote`: the opening mark at the current depth, which it
     /// then deepens.
     OpenQuote,
@@ -1774,6 +1826,10 @@ pub struct ComputedStyle {
     /// unless the element declares one. Read through
     /// [`ComputedStyle::custom_property`].
     pub custom: Option<Arc<CustomProperties>>,
+    /// The counter properties (M21.4), behind one pointer as the grid's
+    /// are; `None` is every initial value. Read through
+    /// [`ComputedStyle::lists`].
+    pub lists: Option<Arc<Lists>>,
 }
 
 /// `font-family`'s initial value, one for every style that has it.
@@ -1839,6 +1895,7 @@ impl Default for ComputedStyle {
             effects: None,
             fragmentation: None,
             custom: None,
+            lists: None,
         }
     }
 }
@@ -1918,6 +1975,18 @@ impl ComputedStyle {
     /// first if it shares them or has none.
     pub fn fragmentation_mut(&mut self) -> &mut Fragmentation {
         Arc::make_mut(self.fragmentation.get_or_insert_with(Default::default))
+    }
+
+    /// The counter properties (M21.4): this style's, or their initial
+    /// values.
+    pub fn lists(&self) -> &Lists {
+        self.lists.as_deref().unwrap_or(&INITIAL_LISTS)
+    }
+
+    /// The counter properties to change, this style's own copy made first
+    /// if it shares them or has none.
+    pub fn lists_mut(&mut self) -> &mut Lists {
+        Arc::make_mut(self.lists.get_or_insert_with(Default::default))
     }
 
     /// The value of the custom property `name` (M21.1), its substitution
@@ -2066,10 +2135,11 @@ mod tests {
         // percentage, 22 of them, from 8 bytes to 16, to hold its
         // expression beside the length and the percentage: 448 before
         // it (`docs/design/values.md` says why not smaller). The custom
-        // properties (M21.1) cost a pointer, 624 before them. Growing
+        // properties (M21.1) cost a pointer, 624 before them, and the
+        // counter properties (M21.4) another, 632 before them. Growing
         // this is a decision, not an accident; say why where the number
         // changes.
-        assert_eq!(std::mem::size_of::<ComputedStyle>(), 632);
+        assert_eq!(std::mem::size_of::<ComputedStyle>(), 640);
         assert_eq!(ComputedStyle::default().grid, None);
         assert_eq!(*ComputedStyle::default().grid(), GridStyle::default());
         assert_eq!(ComputedStyle::default().effects, None);

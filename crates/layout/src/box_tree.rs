@@ -23,26 +23,28 @@
 //! makes, holding a text box with the content's text. The builder walks
 //! [`Item`]s, which are nodes or these boxes or their text, so a
 //! generated box is built by the code an element's is, anonymous boxes
-//! and all. The quote marks of `open-quote` and `close-quote` are
-//! chosen as the build reaches them, which is in document order. Once
-//! the tree is built, the boxes of the run holding a block container's
+//! and all. The text in one, its quote marks and counters (M21.4)
+//! among it, is found ahead of the build by a walk of the document in
+//! tree order ([`generated`]), the order both depend on. Once the tree
+//! is built, the boxes of the run holding a block container's
 //! first formatted line get their styles on it ([`first_line`]), and a
 //! block container's `::first-letter` takes its first letter out of the
 //! text box it is in ([`first_letter`]).
 
 use std::borrow::Cow;
-use std::cell::Cell;
 use std::collections::HashSet;
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 use dom::{Document, NodeId};
-use style::computed::{
-    BackfaceVisibility, CaptionSide, Content, ContentItem, Display, Float, TransformStyle,
-};
+use style::computed::{BackfaceVisibility, CaptionSide, Content, Display, Float, TransformStyle};
 use style::selector_matching::PseudoElement;
 use style::{ComputedStyle, Recascade, Styles};
 
 mod first_letter;
 mod first_line;
+mod generated;
+
+use generated::GeneratedText;
 
 /// One node in the box tree.
 #[derive(Debug, Clone)]
@@ -81,13 +83,15 @@ pub struct LayoutBox {
     /// boxes passes over them, and what tells two boxes of one element
     /// apart can.
     pub generated: Option<PseudoElement>,
-    /// The quote depth (CSS 2.2 §12.3.2) where the box's content starts
-    /// in document order: the `open-quote`s and `no-open-quote`s before
-    /// it less the `close-quote`s and `no-close-quote`s, never below
-    /// zero (M16). The quote marks in the box, and so its layout, depend
-    /// on it as on the box's own subtree, and the layout cache keeps an
-    /// element's results under it.
-    pub quote_depth: u32,
+    /// A fingerprint of the generated text in the box and the boxes in
+    /// it (M21.4): of every text box a pseudo-element's box holds, or a
+    /// `::first-letter` took from one, in order; 0 when there is none.
+    /// That text depends on the quote marks and counters before it in
+    /// the document, not only on the box's own subtree, and the layout
+    /// cache keeps an element's results under it — where M16 kept them
+    /// under the quote depth the box started at, which this covers. The
+    /// builder sets it when it numbers the tree.
+    pub generated_text: u64,
     /// Whether the box's layout reads the style of an ancestor's
     /// pseudo-element (M16): a block between a block container and the
     /// text its `::first-letter` takes, or the run its `::first-line`
@@ -403,12 +407,13 @@ pub fn build_box_tree(
     styles: &Styles,
     recascade: &dyn Recascade,
 ) -> Vec<LayoutBox> {
-    let styled = Styled {
+    let mut styled = Styled {
         document,
         styles,
         recascade,
-        quote_depth: Cell::new(0),
+        generated: GeneratedText::default(),
     };
+    styled.generated = GeneratedText::of(&styled);
     let mut boxes = build_block_container(&styled, Item::Node(document.root()));
     first_line::apply(&styled, &mut boxes);
     first_letter::apply(&styled, &mut boxes);
@@ -428,7 +433,9 @@ pub fn build_box_tree(
 /// children of a flex or a grid container, as `items` says `boxes` are,
 /// by `order` (css-flexbox-1 §5.4, css-grid-2 §6.3), a stable sort
 /// keeping document order among equals, an absolutely positioned child
-/// counting as `order: 0`. Each box is given its parent and whether it
+/// counting as `order: 0`. Each box is given the fingerprint of its
+/// generated text ([`LayoutBox::generated_text`]), its children's found
+/// first, its parent and whether it
 /// takes part in a 3D rendering context ([`LayoutBox::parent`],
 /// [`LayoutBox::in_3d`]): an element's own box names the element's
 /// parent element in the document, which a block hoisted out of an
@@ -493,6 +500,7 @@ fn number(
             document,
             holds,
         );
+        b.generated_text = generated_text(b);
     };
     if !items {
         for b in boxes {
@@ -510,6 +518,25 @@ fn number(
     }
 }
 
+/// The fingerprint of the generated text in `b`
+/// ([`LayoutBox::generated_text`]), its children's known: of its own
+/// text, if it is a text box of a pseudo-element, then theirs.
+fn generated_text(b: &LayoutBox) -> u64 {
+    let own = match &b.kind {
+        BoxKind::Text(text) if b.generated.is_some() => Some(text.as_str()),
+        _ => None,
+    };
+    if own.is_none() && b.children.iter().all(|c| c.generated_text == 0) {
+        return 0;
+    }
+    let mut hasher = DefaultHasher::new();
+    own.hash(&mut hasher);
+    for child in &b.children {
+        child.generated_text.hash(&mut hasher);
+    }
+    hasher.finish().max(1)
+}
+
 /// What the builder walks (M16): a node of the document; or the box an
 /// element's `::before` or `::after` generates, which stands where the
 /// element's first or last child would; or the text in one.
@@ -521,7 +548,7 @@ enum Item {
 }
 
 /// Which of an element's two generated boxes an [`Item`] is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Side {
     Before,
     After,
@@ -555,15 +582,12 @@ impl Item {
 }
 
 /// What the builder reads: the document, and its styles by node; and
-/// the quote depth the build has reached.
+/// the text of the boxes its pseudo-elements generate.
 struct Styled<'a> {
     document: &'a Document,
     styles: &'a Styles,
     recascade: &'a dyn Recascade,
-    /// The `open-quote`s and `no-open-quote`s in the generated text
-    /// built so far, in document order, less the `close-quote`s and
-    /// `no-close-quote`s, never below zero (CSS 2.2 §12.3.2).
-    quote_depth: Cell<u32>,
+    generated: GeneratedText,
 }
 
 impl<'a> Styled<'a> {
@@ -639,49 +663,15 @@ impl<'a> Styled<'a> {
     }
 
     /// The text of `item` when it is a text node or a generated box's
-    /// text, and `None` otherwise. A generated text's quote marks are
-    /// chosen at the depth the build has reached, and the depth then
-    /// moves past them when `advance` says so: once per text, when the
-    /// build reaches it, whether a box is made for it or not.
-    fn text(&self, item: Item, advance: bool) -> Option<Cow<'a, str>> {
+    /// text, and `None` otherwise. Every generated text the build
+    /// reaches the walk ahead of it has written ([`GeneratedText`]).
+    fn text(&self, item: Item) -> Option<Cow<'_, str>> {
         match item {
             Item::Node(node) => self.document.text(node).map(Cow::Borrowed),
             Item::Generated(..) => None,
-            Item::GeneratedText(element, side) => {
-                let style = self.styles.pseudo(element, side.pseudo_element())?;
-                let Content::Items(items) = &style.content else {
-                    return None;
-                };
-                let mut depth = self.quote_depth.get();
-                let mut text = String::new();
-                for part in items.iter() {
-                    match part {
-                        ContentItem::Text(s) => text.push_str(s),
-                        ContentItem::OpenQuote => {
-                            if let Some((open, _)) = style.quotes.marks(depth as usize) {
-                                text.push_str(open);
-                            }
-                            depth = depth.saturating_add(1);
-                        }
-                        // One that would take the depth below zero gives
-                        // no mark, and the depth stays (§12.3.2).
-                        ContentItem::CloseQuote => {
-                            if depth > 0 {
-                                depth -= 1;
-                                if let Some((_, close)) = style.quotes.marks(depth as usize) {
-                                    text.push_str(close);
-                                }
-                            }
-                        }
-                        ContentItem::NoOpenQuote => depth = depth.saturating_add(1),
-                        ContentItem::NoCloseQuote => depth = depth.saturating_sub(1),
-                    }
-                }
-                if advance {
-                    self.quote_depth.set(depth);
-                }
-                Some(Cow::Owned(text))
-            }
+            Item::GeneratedText(element, side) => Some(Cow::Borrowed(
+                self.generated.get(element, side).unwrap_or_default(),
+            )),
         }
     }
 
@@ -695,7 +685,6 @@ impl<'a> Styled<'a> {
         kind: BoxKind,
         build: impl FnOnce() -> Vec<LayoutBox>,
     ) -> LayoutBox {
-        let quote_depth = self.quote_depth.get();
         LayoutBox {
             style: style.clone(),
             kind,
@@ -703,7 +692,7 @@ impl<'a> Styled<'a> {
             node: item.node(),
             anonymous: item.generated().is_some(),
             generated: item.generated(),
-            quote_depth,
+            generated_text: 0,
             styled_by_ancestor: false,
             first_line: None,
             tree_order: 0,
@@ -714,15 +703,13 @@ impl<'a> Styled<'a> {
     }
 
     /// An anonymous box of `kind` in `item`, with the style
-    /// [`anonymous_style`] gives it, holding `children`, whose content
-    /// starts at `quote_depth`.
+    /// [`anonymous_style`] gives it, holding `children`.
     fn anonymous_box(
         &self,
         item: Item,
         display: Display,
         kind: BoxKind,
         children: Vec<LayoutBox>,
-        quote_depth: u32,
     ) -> LayoutBox {
         LayoutBox {
             style: anonymous_style(self, item, display),
@@ -731,7 +718,7 @@ impl<'a> Styled<'a> {
             node: item.node(),
             anonymous: true,
             generated: item.generated(),
-            quote_depth,
+            generated_text: 0,
             styled_by_ancestor: false,
             first_line: None,
             tree_order: 0,
@@ -842,11 +829,10 @@ fn flush_text_run(styled: &Styled<'_>, item: Item, run: &mut Vec<Item>, out: &mu
     if run.is_empty() {
         return;
     }
-    let quote_depth = styled.quote_depth.get();
     let children = build_block_container_of(styled, item, run);
     run.clear();
     if !children.is_empty() {
-        out.push(styled.anonymous_box(item, Display::Block, BoxKind::Block, children, quote_depth));
+        out.push(styled.anonymous_box(item, Display::Block, BoxKind::Block, children));
     }
 }
 
@@ -918,10 +904,9 @@ impl BlockContainer<'_> {
                 self.add_element(parent, child, &mut misplaced);
                 continue;
             }
-            let quote_depth = styled.quote_depth.get();
             // The document node is no one's child; a stale id is no node
             // at all.
-            let Some(text) = styled.text(child, true) else {
+            let Some(text) = styled.text(child) else {
                 continue;
             };
             let white_space = text.chars().all(crate::inline::is_css_space);
@@ -944,7 +929,7 @@ impl BlockContainer<'_> {
                 node: parent.node(),
                 anonymous: true,
                 generated: parent.generated(),
-                quote_depth,
+                generated_text: 0,
                 styled_by_ancestor: false,
                 first_line: None,
                 tree_order: 0,
@@ -1108,14 +1093,8 @@ impl BlockContainer<'_> {
         } else {
             Display::Table
         };
-        let quote_depth = parts[0].quote_depth;
-        let table = styled.anonymous_box(
-            parent,
-            display,
-            BoxKind::Table,
-            order_table_children(parts),
-            quote_depth,
-        );
+        let table =
+            styled.anonymous_box(parent, display, BoxKind::Table, order_table_children(parts));
         if inline_level {
             self.add_inline_level(table);
         } else {
@@ -1139,7 +1118,6 @@ impl BlockContainer<'_> {
     /// keep the inline elements' style, node and marks, and either may
     /// end up empty.
     fn add_block(&mut self, block: LayoutBox) {
-        let quote_depth = self.styled.quote_depth.get();
         let chain: Vec<LayoutBox> = self
             .open
             .iter()
@@ -1150,7 +1128,7 @@ impl BlockContainer<'_> {
                 node: b.node,
                 anonymous: b.anonymous,
                 generated: b.generated,
-                quote_depth,
+                generated_text: 0,
                 styled_by_ancestor: false,
                 first_line: None,
                 tree_order: 0,
@@ -1176,10 +1154,9 @@ impl BlockContainer<'_> {
         ) {
             self.run.pop();
         }
-        let Some(first) = self.run.first() else {
+        if self.run.is_empty() {
             return;
-        };
-        let quote_depth = first.quote_depth;
+        }
         let children = std::mem::take(&mut self.run);
         self.out.push(LayoutBox {
             style: self.styled.inherited_from(self.item),
@@ -1188,7 +1165,7 @@ impl BlockContainer<'_> {
             node: self.item.node(),
             anonymous: true,
             generated: self.item.generated(),
-            quote_depth,
+            generated_text: 0,
             styled_by_ancestor: false,
             first_line: None,
             tree_order: 0,
@@ -1266,8 +1243,7 @@ fn build_cell(styled: &Styled<'_>, item: Item, style: &ComputedStyle) -> LayoutB
 
 /// An anonymous row holding `cells`, at least one, in `item`.
 fn anonymous_row(styled: &Styled<'_>, item: Item, cells: Vec<LayoutBox>) -> LayoutBox {
-    let quote_depth = cells[0].quote_depth;
-    styled.anonymous_box(item, Display::TableRow, BoxKind::Row, cells, quote_depth)
+    styled.anonymous_box(item, Display::TableRow, BoxKind::Row, cells)
 }
 
 /// The children of a table box (CSS2 §17.2.1), ordered for layout and
@@ -1300,8 +1276,7 @@ fn build_row_group(styled: &Styled<'_>, item: Item) -> Vec<LayoutBox> {
 /// whose `display` passes `proper` is built as the part it is; every
 /// other child — a cell, an element of any other display, text — goes
 /// into an anonymous row, consecutive ones into the same row, white
-/// space between parts dropped (§17.2.1's steps 1 and 2). Each is built
-/// in document order, where the quote depth is the one it starts at.
+/// space between parts dropped (§17.2.1's steps 1 and 2).
 fn rows_and_parts(
     styled: &Styled<'_>,
     item: Item,
@@ -1370,17 +1345,12 @@ fn cells_of(styled: &Styled<'_>, item: Item, items: Vec<RowItem<'_>>) -> Vec<Lay
         let content = std::mem::take(content);
         let only_white_space = content.iter().all(|&child| {
             styled
-                .text(child, false)
+                .text(child)
                 .is_some_and(|text| text.chars().all(crate::inline::is_css_space))
         });
         if only_white_space {
-            // No cell; a generated text's quotes still count.
-            for &child in &content {
-                let _ = styled.text(child, true);
-            }
             return;
         }
-        let quote_depth = styled.quote_depth.get();
         let children = build_block_container_of(styled, item, &content);
         cells.push(styled.anonymous_box(
             item,
@@ -1390,7 +1360,6 @@ fn cells_of(styled: &Styled<'_>, item: Item, items: Vec<RowItem<'_>>) -> Vec<Lay
                 rowspan: 1,
             },
             children,
-            quote_depth,
         ));
     };
     for row_item in items {
@@ -2900,23 +2869,300 @@ mod tests {
     }
 
     #[test]
-    fn a_box_records_the_quote_depth_it_starts_at() {
+    fn a_box_carries_a_fingerprint_of_the_generated_text_in_it() {
         // Nodes: div 4, span 5, p 6, b 7.
         let tree = tree_of(
             "<div><span class=o></span><p><b>x</b></p></div>",
             ".o::before { content: open-quote }",
         );
         let div = &tree.body().children[0];
-        assert_eq!(div.quote_depth, 0);
+        let span = &div.children[0].children[0];
         let p = &div.children[1];
+        assert_eq!(tree.number(span.node), 5);
+        assert_ne!(span.generated_text, 0);
+        assert_ne!(div.generated_text, 0);
+        assert_ne!(tree.body().generated_text, 0);
+        assert_eq!((tree.number(p.node), p.generated_text), (6, 0));
+        assert_eq!(p.children[0].generated_text, 0);
+        // The same box with another counter value in it.
+        let counted = |reset: &str| {
+            let tree = tree_of(
+                "<p class=c></p>",
+                &format!(
+                    "body {{ counter-reset: c {reset} }} .c::before {{ content: counter(c) }}"
+                ),
+            );
+            tree.body().children[0].generated_text
+        };
+        assert_ne!(counted("1"), counted("2"));
+        assert_eq!(counted("1"), counted("1"));
+    }
+
+    /// The texts in the body of the document `html` parses to, under
+    /// `css_src`.
+    fn texts_of(html: &str, css_src: &str) -> Vec<String> {
+        let tree = tree_of(html, css_src);
+        tree.texts(&tree.body().children)
+    }
+
+    #[test]
+    fn counters_are_scoped_as_the_reference_browser_and_the_tests_have_it() {
+        // css/css-lists/counters-scope-001: a counter a sibling
+        // instantiates inside an ancestor's ends with the sibling.
         assert_eq!(
-            (
-                tree.number(p.node),
-                p.quote_depth,
-                p.children[0].quote_depth
+            texts_of(
+                "<span class=scope><span class='one c'><span class=c></span></span>\
+                 <span class=c></span></span><span class=c></span>\
+                 <span class=scope><span class='two c'><span class=c></span></span>\
+                 <span class=c></span></span><span class=c></span>",
+                ".scope { counter-reset: c 1 }
+                 .scope::before, .scope::after, .c::before { content: counter(c) }
+                 .one::before { counter-reset: c 2 } .two { counter-reset: c 3 }",
             ),
-            (6, 1, 1)
+            ["1", "2", "1", "1", "1", "1", "1", "3", "3", "1", "1", "1"]
         );
+        // counters-scope-002.
+        assert_eq!(
+            texts_of(
+                "<div id=scope><span><span><span id=reset><span></span><span></span></span>\
+                 <span><span></span></span></span></span></div>",
+                "#scope, span#reset { counter-reset: c 0 }
+                 span::before { counter-increment: c 1; content: 'B' counters(c, '.') '-' }
+                 span::after { counter-increment: c 1; content: 'A' counters(c, '.') '-' }",
+            )
+            .concat(),
+            "B1-B2-B2.1-B2.2-A2.3-B2.4-A2.5-A2.6-B3-B4-A5-A6-A7-A8-"
+        );
+        // counters-scope-003.
+        assert_eq!(
+            texts_of(
+                "<div><span><span id=reset><span></span></span></span></div>",
+                "body, span#reset::before { counter-reset: c 0 }
+                 span::before { counter-increment: c 1; content: 'B' counters(c, '.') '-' }
+                 span::after { counter-increment: c 1; content: 'A' counters(c, '.') '-' }",
+            )
+            .concat(),
+            "B1-B1.1-B2-A3-A4-A5-"
+        );
+        // counters-scope-004, which asks for "1 1 R 2 3": the counter
+        // the `::before` instantiates is inside one a sibling of the
+        // span did, not an ancestor, and passes on, as in the reference
+        // browser and the draft.
+        assert_eq!(
+            texts_of(
+                "<div><span class=reset></span><span class=use></span>\
+                 <span class=reset></span><span class=use></span><span class=rb>\
+                 <span class=use></span><span class=reset></span><span class=use></span>\
+                 </span></div>",
+                ".reset { counter-reset: c } .rb::before { counter-reset: c; content: 'R' }
+                 .use { counter-increment: c } .use::before { content: counters(c, '.') }",
+            ),
+            ["1", "1", "R", "1.1", "1.1"]
+        );
+    }
+
+    #[test]
+    fn a_counter_a_sibling_nests_passes_on_unless_an_ancestor_has_the_name() {
+        let use_ = ".s::before { content: counters(c, '.') }";
+        // The outer counter is a preceding sibling's of the parent: the
+        // nested one passes on.
+        assert_eq!(
+            texts_of(
+                "<div><div style='counter-reset: c 10'></div><div>\
+                 <div style='counter-reset: c 1'></div><div class=s></div></div></div>",
+                use_,
+            ),
+            ["10.1"]
+        );
+        // The grandparent's: it does not.
+        assert_eq!(
+            texts_of(
+                "<div style='counter-reset: c 10'><div>\
+                 <div style='counter-reset: c 1'></div><div class=s></div></div></div>",
+                use_,
+            ),
+            ["10"]
+        );
+        // An increment that instantiates the counter instantiates it
+        // where it is, which a reset inside then nests in.
+        assert_eq!(
+            texts_of(
+                "<div style='counter-increment: c 5'><div style='counter-reset: c 3'></div>\
+                 <div class=s></div></div><div class=s></div>",
+                use_,
+            ),
+            ["5", "5"]
+        );
+        // A `counter()` that finds none instantiates one at 0 on its
+        // pseudo-element, as the drafts say; the reference browser
+        // writes "7" here.
+        assert_eq!(
+            texts_of(
+                "<div class=s><div><div style='counter-reset: c 7'></div>\
+                 <div class=s></div></div></div>",
+                use_,
+            ),
+            ["0", "0.7"]
+        );
+    }
+
+    #[test]
+    fn counters_reset_increment_and_set_in_that_order() {
+        assert_eq!(
+            texts_of(
+                "<p id=a></p><p id=b></p><p id=c></p>",
+                "body { counter-reset: n 5 m }
+                 #a { counter-increment: n 2 n } #a::before { content: counter(n) }
+                 #b { counter-reset: n 1; counter-increment: n; counter-set: n 9 }
+                 #b::before { content: counter(n) }
+                 #c { counter-set: n 1 n 4; counter-increment: m -3 }
+                 #c::before { content: counter(n) ',' counter(m) ',' counter(new) }",
+            ),
+            ["8", "9", "4,-3,0"]
+        );
+    }
+
+    #[test]
+    fn what_generates_no_box_touches_no_counter() {
+        // css/css-lists/counter-reset-increment-set-display-none, and a
+        // pseudo-element whose content is `none`.
+        assert_eq!(
+            texts_of(
+                "<p class='i none'></p><p class=i></p><p class=u></p><p class=k></p><p class=u></p>",
+                "body { counter-reset: n } .i { counter-increment: n 10 } .none { display: none }
+                 .k::before { counter-increment: n 100; content: none }
+                 .u::before { content: counter(n) }",
+            ),
+            ["10", "10"]
+        );
+    }
+
+    #[test]
+    fn a_counter_clamps_to_32_bits() {
+        // css/css-lists/counter-reset-increment-overflow-underflow.
+        assert_eq!(
+            texts_of(
+                "<div class=o><h3></h3><h3></h3><h3></h3></div>\
+                 <div class=u><h3></h3><h3></h3><h3></h3></div>",
+                ".o { counter-reset: n 2000000000 } .u { counter-reset: n -2000000000 }
+                 .o h3::before { counter-increment: n 50000000; content: counter(n) }
+                 .u h3::before { counter-increment: n -50000000; content: counter(n) }",
+            ),
+            [
+                "2050000000",
+                "2100000000",
+                "2147483647",
+                "-2050000000",
+                "-2100000000",
+                "-2147483648"
+            ]
+        );
+    }
+
+    #[test]
+    fn counters_are_written_in_their_counter_styles() {
+        assert_eq!(
+            texts_of(
+                "<p></p>",
+                "p { counter-reset: n 4 }
+                 p::before { content: counter(n, upper-roman) '|' counter(n, LOWER-ALPHA) '|'
+                     counter(n, none) '|' counters(n, '.', disc) '|' counter(n, my-own) }",
+            ),
+            ["IV|d||\u{2022}|4"]
+        );
+    }
+
+    #[test]
+    fn a_reversed_counter_starts_where_its_increments_count_down_from() {
+        // The web-platform-tests' counter-reset-reversed-*: siblings-001a,
+        // nested, pseudo-001, pseudo-003, multiple, with-regular and
+        // display-none.
+        let cases: [(&str, &str, &[&str]); 7] = [
+            (
+                "<div style='counter-reset: reversed(foo)'>\
+                 <div class=u style='counter-increment: foo -1'></div></div>\
+                 <div class=u style='counter-increment: foo -2'></div>",
+                ".u::before { content: counter(foo) }",
+                &["4", "2"],
+            ),
+            (
+                "<ol><li>Three</li><li>Two<ol><li>Eleven</li><li class=set>Nine</li>\
+                 <li>Eight</li></ol></li><li>One</li></ol>",
+                "ol { counter-reset: reversed(foo) } li { display: block }
+                 li::before { counter-increment: foo -1; content: counter(foo) '. ' }
+                 .set { counter-set: foo 10 }",
+                &[
+                    "3. ", "Three", "2. ", "Two", "11. ", "Eleven", "9. ", "Nine", "8. ", "Eight",
+                    "1. ", "One",
+                ],
+            ),
+            (
+                "<div class=list><div class=item></div><div class=item></div></div>",
+                ".list { counter-reset: reversed(foo) }
+                 .item::before { counter-increment: foo -1; content: 'B' counter(foo) }
+                 .item::after { counter-increment: foo -2; content: 'A' counter(foo) }",
+                &["B7", "A5", "B4", "A2"],
+            ),
+            (
+                "<div class=item></div>",
+                ".item { counter-reset: reversed(foo); counter-increment: foo -1 }
+                 .item::before { counter-increment: foo -2; content: 'B' counter(foo) }
+                 .item::after { counter-increment: foo -3; content: 'A' counter(foo) }",
+                &["B6", "A3"],
+            ),
+            (
+                "<div class=multi><div class=item></div><div class=item></div></div>",
+                ".multi { counter-reset: reversed(c1) reversed(c2) }
+                 .item { counter-increment: c1 -1 c2 -2 }
+                 .item::before { content: counter(c1) ',' counter(c2) }",
+                &["2,4", "1,2"],
+            ),
+            (
+                "<div class=r><div class=item><div class=g><div class=out></div></div></div>\
+                 <div class=item></div></div>",
+                ".r { counter-reset: reversed(foo) } .item { counter-increment: foo -1 }
+                 .g { counter-reset: foo 2 } .out::before { content: counters(foo, '.') }",
+                &["2.2"],
+            ),
+            (
+                "<div style='counter-reset: reversed(foo)'><div class=u></div>\
+                 <div class='u hidden'></div><div class='u none'></div><div class=u></div></div>",
+                ".u { counter-increment: foo -1 } .u::before { content: counter(foo) }
+                 .none { display: none } .hidden { visibility: hidden }",
+                &["3", "2", "1"],
+            ),
+        ];
+        for (html, css_src, expected) in cases {
+            assert_eq!(texts_of(html, css_src), expected, "{html}");
+        }
+        // counter-reset-reversed-siblings-003 asks for "4" and "2", the
+        // second element seeing the reversed counter its sibling nests
+        // in its parent's, which the scoping here ends with the sibling.
+        assert_eq!(
+            texts_of(
+                "<div style='counter-reset: foo 10'><div style='counter-reset: reversed(foo)'>\
+                 <div class=u style='counter-increment: foo -1'></div></div>\
+                 <div class=u style='counter-increment: foo -2'></div></div>",
+                ".u::before { content: counter(foo) }",
+            ),
+            ["1", "8"]
+        );
+    }
+
+    #[test]
+    fn a_set_and_a_walk_hold_only_so_many_counters() {
+        // The 1025th name of a reset is not instantiated, and `counter()`
+        // cannot instantiate it either.
+        let names: Vec<String> = (0..1100).map(|i| format!("c{i}")).collect();
+        let css_src = format!(
+            "p {{ counter-reset: {} }} p::before {{ content: counter(c1023, decimal) ',' counter(c1024) }}",
+            names
+                .iter()
+                .map(|n| format!("{n} 7"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        assert_eq!(texts_of("<p></p>", &css_src), ["7,0"]);
     }
 
     #[test]
@@ -3384,6 +3630,8 @@ mod tests {
 
     #[test]
     fn what_a_first_line_inherits_nothing_from_costs_no_cascade() {
+        use std::cell::Cell;
+
         /// A [`Recascade`] counting the elements it is asked for.
         struct Counting<'a>(&'a dyn Recascade, Cell<usize>);
         impl Recascade for Counting<'_> {

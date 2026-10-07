@@ -172,7 +172,7 @@ fn add(recascade: &dyn Recascade, container: &mut LayoutBox, path: &[usize]) {
         node: element,
         anonymous: true,
         generated: Some(PseudoElement::FirstLine),
-        quote_depth: run.quote_depth,
+        generated_text: 0,
         styled_by_ancestor: false,
         first_line: None,
         tree_order: 0,

@@ -48,6 +48,10 @@ pub mod computed;
 /// this engine supports, `selector()` included.
 pub mod conditions;
 
+/// Counter styles (M21.4): a counter's value written in a style, with
+/// Counter Styles 3 §6's predefined styles.
+pub mod counter_style;
+
 /// Custom properties and the substitution functions `var()`, `env()`
 /// and `attr()` (M21.1, M21.3, M21.5): their values checked, computed and
 /// substituted, within bounds.

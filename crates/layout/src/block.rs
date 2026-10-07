@@ -2251,7 +2251,7 @@ fn place_block<'a>(
         cb_width,
         available_width: cb_width,
         cb_height,
-        quote_depth: child.quote_depth,
+        generated_text: child.generated_text,
     };
     if let Some((layout, serial)) =
         held.and_then(|cache| cache.take(child.node, inputs, child.tree_order))
@@ -3826,7 +3826,7 @@ mod tests {
             node: no_node(),
             anonymous: true,
             generated: None,
-            quote_depth: 0,
+            generated_text: 0,
             styled_by_ancestor: false,
             first_line: None,
             tree_order: 0,
@@ -3844,7 +3844,7 @@ mod tests {
             node: no_node(),
             anonymous: false,
             generated: None,
-            quote_depth: 0,
+            generated_text: 0,
             styled_by_ancestor: false,
             first_line: None,
             tree_order: 0,

@@ -14,8 +14,9 @@
 //!   ancestors ([`LayoutCache::invalidate`]);
 //! - the inputs are the same: the containing block's width and height
 //!   (the latter for percentage heights), the width available to the
-//!   box, and the quote depth it starts at (M16), which the quote marks
-//!   in it are chosen by;
+//!   box, and the fingerprint of the generated text in it (M21.4), whose
+//!   quote marks and counters depend on what comes before the box — a
+//!   fingerprint that took the place of M16's quote depth;
 //! - no float was in the box's formatting context, placed or waiting,
 //!   when it was laid out or when it is reused, and the box placed
 //!   none: its layout then neither met a float nor moved one, and its
@@ -69,7 +70,7 @@ pub(crate) struct Inputs {
     pub(crate) cb_width: f32,
     pub(crate) available_width: f32,
     pub(crate) cb_height: Option<f32>,
-    pub(crate) quote_depth: u32,
+    pub(crate) generated_text: u64,
 }
 
 /// A child of a box whose fragment the cache holds under the child's
@@ -706,7 +707,7 @@ mod tests {
     }
 
     #[test]
-    fn a_box_is_taken_only_at_the_quote_depth_it_was_kept_at() {
+    fn a_box_is_taken_only_with_the_generated_text_it_was_kept_with() {
         // #b's quote marks depend on the quote #a's class opens: with
         // it, #b's `q` is a quote inside a quote, and its last span
         // closes #a's quote, where without it the close-quote has none
@@ -727,6 +728,22 @@ mod tests {
             d.set_text(text, "uno").unwrap();
         });
         assert_eq!(s.pass(), (3, 1));
+    }
+
+    #[test]
+    fn a_box_is_laid_out_again_when_a_counter_before_it_moves() {
+        // #c counts the paragraphs before it, which it does not hold:
+        // taking #a's class away moves its counter; #d holds no
+        // counter, and is taken.
+        let mut s = Session::new(
+            "<p id=a class=n>one</p><p id=b>two</p><p id=c class=n>three</p><p id=d>four</p>",
+            ".n { counter-increment: n } #c::before { content: counter(n) }",
+        );
+        assert_eq!(s.pass(), (6, 0));
+        let a = s.id("a");
+        s.change(|d| d.remove_attribute(a, "class").unwrap());
+        // html, body, #a and #c; #b and #d taken.
+        assert_eq!(s.pass(), (4, 2));
     }
 
     #[test]

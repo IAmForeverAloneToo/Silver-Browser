@@ -102,7 +102,7 @@ use crate::computed::{
     Quotes, RIGHT, SelfAlignment, Size, TOP, TableLayout, TextAlign, TextTransform, VerticalAlign,
     WhiteSpace,
 };
-use crate::computed::{Calc, Effects, Fragmentation, GridStyle, JustifyItems};
+use crate::computed::{Calc, Effects, Fragmentation, GridStyle, JustifyItems, Lists};
 use crate::custom::{self, CustomProperties, DataType, Substituted, Substitutions};
 use crate::invalidation::{Reach, SelectorFeatures, invalidate};
 use crate::media::Media;
@@ -113,6 +113,7 @@ use crate::selector_matching::{Matcher, PseudoElement, SelectorList, Specificity
 mod effects;
 mod fragmentation;
 mod grid;
+mod lists;
 mod page;
 
 /// The built-in default stylesheet (M5.6), compiled in — loading it is
@@ -1370,6 +1371,9 @@ fn compute_style(
     if style.fragmentation.as_deref() == Some(&Fragmentation::default()) {
         style.fragmentation = None;
     }
+    if style.lists.as_deref() == Some(&Lists::default()) {
+        style.lists = None;
+    }
     style
 }
 
@@ -1876,6 +1880,19 @@ fn apply_declaration(
             fragmentation::parse_print_color_adjust(value),
             |f, v| f.print_color_adjust = v,
         ),
+        "counter-reset" => set_lists(style, lists::parse_counter_reset(value, bases), |l, v| {
+            l.counter_reset = v
+        }),
+        "counter-increment" => set_lists(
+            style,
+            lists::parse_counter_changes(value, bases, 1),
+            |l, v| l.counter_increment = v,
+        ),
+        "counter-set" => set_lists(
+            style,
+            lists::parse_counter_changes(value, bases, 0),
+            |l, v| l.counter_set = v,
+        ),
         // Not in the v1 property set, or not a real property: ignored,
         // never an error.
         _ => false,
@@ -1964,6 +1981,28 @@ fn copy_fragmentation(
     }
     let src = src.fragmentation().clone();
     copy(style.fragmentation_mut(), &src);
+}
+
+/// [`set_grid`] for the counter properties.
+fn set_lists<T>(
+    style: &mut ComputedStyle,
+    v: Option<T>,
+    update: impl FnOnce(&mut Lists, T),
+) -> bool {
+    v.map(|v| update(style.lists_mut(), v)).is_some()
+}
+
+/// [`copy_grid`] for the counter properties.
+fn copy_lists(
+    style: &mut ComputedStyle,
+    src: &ComputedStyle,
+    copy: impl FnOnce(&mut Lists, &Lists),
+) {
+    if style.lists.is_none() && src.lists.is_none() {
+        return;
+    }
+    let src = src.lists().clone();
+    copy(style.lists_mut(), &src);
 }
 
 /// [`copy_grid`] for the effects properties.
@@ -2316,6 +2355,11 @@ fn apply_css_wide(
             copy_fragmentation(style, src, |f, s| f.break_inside = s.break_inside)
         }
         "orphans" => copy_fragmentation(style, src, |f, s| f.orphans = s.orphans),
+        "counter-reset" => copy_lists(style, src, |l, s| l.counter_reset = s.counter_reset.clone()),
+        "counter-increment" => copy_lists(style, src, |l, s| {
+            l.counter_increment = s.counter_increment.clone()
+        }),
+        "counter-set" => copy_lists(style, src, |l, s| l.counter_set = s.counter_set.clone()),
         "widows" => copy_fragmentation(style, src, |f, s| f.widows = s.widows),
         "print-color-adjust" => copy_fragmentation(style, src, |f, s| {
             f.print_color_adjust = s.print_color_adjust
@@ -3513,8 +3557,9 @@ fn parse_color(tokens: &[Token]) -> Option<Color> {
 /// since M21.5, replaced before this reads the value: by a string of the
 /// attribute's value, an empty one when there is none, without a type.
 /// A `url()` is left out until images (M23). `counter()` and
-/// `counters()` make the declaration invalid until counters exist
-/// (M21.4), as anything else does.
+/// `counters()` (M21.4) are kept as such, for the box tree to write
+/// with the counters the box sees; the alternative text takes them too,
+/// as css-content-3 says.
 fn parse_content(tokens: &[Token]) -> Option<Content> {
     if let Some(keyword) = single_ident(tokens) {
         if keyword.eq_ignore_ascii_case("normal") {
@@ -3527,21 +3572,21 @@ fn parse_content(tokens: &[Token]) -> Option<Content> {
     let mut items = Vec::new();
     // Whether anything came before the `/`, and after it.
     let (mut parts, mut alternative) = (0, None);
-    let mut i = 0;
-    while let Some(token) = tokens.get(i) {
-        i += 1;
-        let item = match token {
-            Token::Whitespace => continue,
-            Token::Delim('/') if parts > 0 && alternative.is_none() => {
+    for part in components(tokens) {
+        let item = match part {
+            [Token::Delim('/')] if parts > 0 && alternative.is_none() => {
                 alternative = Some(0);
                 continue;
             }
-            Token::String { value, bad: false } => Some(ContentItem::Text(value.clone())),
+            [Token::String { value, bad: false }] => Some(ContentItem::Text(value.clone())),
+            [Token::Function(_), ..] if lists::counter_item(part).is_some() => {
+                lists::counter_item(part)
+            }
             _ if alternative.is_some() => return None,
             // The tokenizer makes the whole of a `url(…)`, quoted or not,
             // one token.
-            Token::Url { bad: false, .. } => None,
-            Token::Ident(keyword) => Some(match keyword.to_ascii_lowercase().as_str() {
+            [Token::Url { bad: false, .. }] => None,
+            [Token::Ident(keyword)] => Some(match keyword.to_ascii_lowercase().as_str() {
                 "open-quote" => ContentItem::OpenQuote,
                 "close-quote" => ContentItem::CloseQuote,
                 "no-open-quote" => ContentItem::NoOpenQuote,
@@ -3562,6 +3607,17 @@ fn parse_content(tokens: &[Token]) -> Option<Content> {
         return None;
     }
     Some(Content::Items(Arc::from(items)))
+}
+
+/// `tokens` without the white space at their ends.
+fn trim(mut tokens: &[Token]) -> &[Token] {
+    while let [Token::Whitespace, rest @ ..] = tokens {
+        tokens = rest;
+    }
+    while let [rest @ .., Token::Whitespace] = tokens {
+        tokens = rest;
+    }
+    tokens
 }
 
 /// `quotes` (CSS 2.2 §12.3.1, css-content-3 for `auto`): `auto`,
@@ -5098,14 +5154,58 @@ mod tests {
         ] {
             assert_eq!(content(p, invalid), Content::None, "{invalid}");
         }
+        // The counter functions (M21.4), kept for the box tree to write:
+        // a predefined style's name lowercased, any other kept as written.
+        let counter = |name: &str, style: &str| ContentItem::Counter {
+            name: Arc::from(name),
+            style: Arc::from(style),
+        };
+        assert_eq!(
+            content(
+                p,
+                "counter(Item) counter(x, UPPER-ROMAN) counter(x, My-Style) counter(x, none)"
+            ),
+            items(&[
+                counter("Item", "decimal"),
+                counter("x", "upper-roman"),
+                counter("x", "My-Style"),
+                counter("x", "none"),
+            ])
+        );
+        assert_eq!(
+            content(p, "counters( x , '.' ) counters(x, '-', lower-alpha)"),
+            items(&[
+                ContentItem::Counters {
+                    name: Arc::from("x"),
+                    separator: ".".into(),
+                    style: Arc::from("decimal"),
+                },
+                ContentItem::Counters {
+                    name: Arc::from("x"),
+                    separator: "-".into(),
+                    style: Arc::from("lower-alpha"),
+                },
+            ])
+        );
+        assert_eq!(content(p, "'a' / counter(x)"), items(&[text("a")]));
         // An image is left out: a box with nothing in it.
         assert_eq!(content(p, "url(x.png)"), items(&[]));
         // Alternative text is accepted and set aside.
         assert_eq!(content(p, "'a' / 'alt' attr(title)"), items(&[text("a")]));
         // Anything else drops the declaration: the earlier one stands.
         for bad in [
-            "counter(x)",
-            "'a' counters(x, '.')",
+            "counter()",
+            "counter(none)",
+            "counter(inherit)",
+            "counter('x')",
+            "counter(x, 'y')",
+            "counter(x,)",
+            "counter(x, decimal, decimal)",
+            "counter(x, symbols('*'))",
+            "counters(x)",
+            "counters(x, y)",
+            "counters(x, '.', '-')",
+            "counters(x, '.', a b)",
             "normal 'a'",
             "none none",
             "attr()",
@@ -8054,6 +8154,96 @@ mod tests {
             "* { --a: attr(data-a type(<number>), 0) } p { width: calc(var(--a) * 1px) }",
         );
         assert_eq!(p.width, Size::Px(2.0));
+    }
+
+    #[test]
+    fn the_counter_properties_parse() {
+        // Lists 3 §4 (M21.4).
+        use crate::computed::{CounterChange, CounterReset};
+        let reset = |name: &str, reversed: bool, value: Option<i32>| CounterReset {
+            name: Arc::from(name),
+            reversed,
+            value,
+        };
+        let change = |name: &str, value: i32| CounterChange {
+            name: Arc::from(name),
+            value,
+        };
+        let p = p_with(
+            "<p>x</p>",
+            "p { counter-reset: a b 3 reversed(c) reversed( d ) -2 a 7 E calc(2.5); \
+             counter-increment: a b -1 a; counter-set: x y 99999999999 }",
+        );
+        let lists = p.lists();
+        assert_eq!(
+            lists.counter_reset,
+            [
+                reset("b", false, Some(3)),
+                reset("c", true, None),
+                reset("d", true, Some(-2)),
+                reset("a", false, Some(7)),
+                reset("E", false, Some(3)),
+            ]
+        );
+        assert_eq!(
+            lists.counter_increment,
+            [change("a", 1), change("b", -1), change("a", 1)]
+        );
+        assert_eq!(lists.counter_set, [change("x", 0), change("y", i32::MAX)]);
+        // `none`, and the initial values, keep no copy.
+        let p = p_with(
+            "<p>x</p>",
+            "p { counter-reset: a } p { counter-reset: NONE; counter-increment: none }",
+        );
+        assert_eq!(p.lists, None);
+        // Not inherited; `inherit` takes the parent's.
+        let p = p_with(
+            "<div><p>x</p></div>",
+            "div { counter-increment: a 2 } p { counter-set: inherit }",
+        );
+        assert_eq!(p.lists().counter_increment, []);
+        assert_eq!(p.lists().counter_set, []);
+        let p = p_with(
+            "<div><p>x</p></div>",
+            "div { counter-increment: a 2 } p { counter-increment: inherit }",
+        );
+        assert_eq!(p.lists().counter_increment, [change("a", 2)]);
+        // What is not a list of names and integers drops the declaration.
+        for bad in [
+            "none a",
+            "a none",
+            "1",
+            "a 1 2",
+            "'a'",
+            "inherit a",
+            "reversed(a)",
+            "a 1.5",
+            "a 1px",
+            "default",
+        ] {
+            let p = p_with(
+                "<p>x</p>",
+                &format!("p {{ counter-increment: z 5 }} p {{ counter-increment: {bad} }}"),
+            );
+            assert_eq!(p.lists().counter_increment, [change("z", 5)], "{bad}");
+        }
+        for bad in [
+            "reversed()",
+            "reversed(none)",
+            "reversed(a b)",
+            "reversed(1)",
+            "none none",
+        ] {
+            let p = p_with(
+                "<p>x</p>",
+                &format!("p {{ counter-reset: z }} p {{ counter-reset: {bad} }}"),
+            );
+            assert_eq!(
+                p.lists().counter_reset,
+                [reset("z", false, Some(0))],
+                "{bad}"
+            );
+        }
     }
 
     #[test]
