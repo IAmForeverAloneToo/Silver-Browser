@@ -2625,7 +2625,7 @@ mod tests {
         };
         for (width, columns) in [(800.0, 5), (400.0, 2)] {
             let tiles = tiles(width);
-            assert_eq!(tiles.len(), 13, "{tiles:?}");
+            assert_eq!(tiles.len(), 14, "{tiles:?}");
             let (all, rest) = tiles.split_first().expect("a tile");
             let mut lefts: Vec<f32> = rest.iter().map(|t| t.0).collect();
             lefts.sort_by(f32::total_cmp);
@@ -2691,6 +2691,94 @@ mod tests {
         assert!(
             styles.iter().zip(expected).all(|(s, e)| near(*s, e)),
             "{styles:?}"
+        );
+    }
+
+    // ---- M21 acceptance (roadmap M21.8) ------------------------------------
+
+    #[test]
+    fn the_builtin_page_takes_its_themes_colours_under_each_scheme() {
+        // Its colours are custom properties declared once on :root, for a
+        // light scheme and again for a dark one, which every rule reads.
+        use style::computed::Color;
+        let hex = |rgb: u32| Color::rgb8((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8);
+        for (scheme, page, heading, text, surface, link) in [
+            (
+                ColorScheme::Light,
+                0xeff1f5,
+                0x4c4f69,
+                0x5c5f77,
+                0xccd0da,
+                0x1e66f5,
+            ),
+            (
+                ColorScheme::Dark,
+                0x1e1e2e,
+                0xcdd6f4,
+                0xa6adc8,
+                0x313244,
+                0x89b4fa,
+            ),
+        ] {
+            let mut engine = test_engine();
+            engine.set_preferences(Preferences {
+                color_scheme: scheme,
+                ..Preferences::default()
+            });
+            engine.load_document(pages::ABOUT_SILVER);
+            let pixels = engine.frame(800, 600);
+            let document = engine.document().clone();
+            let styles = engine.styles();
+            let first = |tag: &str, class: Option<&str>| {
+                let node = document
+                    .subtree(document.root())
+                    .find(|&n| {
+                        document.tag(n) == Some(tag)
+                            && class.is_none_or(|c| {
+                                document
+                                    .attr(n, "class")
+                                    .is_some_and(|v| v.split(' ').any(|v| v == c))
+                            })
+                    })
+                    .unwrap_or_else(|| panic!("no {tag}"));
+                styles.get(node).expect("styled").clone()
+            };
+            let html = first("html", None);
+            assert_eq!(html.background_color, hex(page), "{scheme:?}");
+            // The canvas is painted in it.
+            let canvas = Color::rgb8(pixels[0], pixels[1], pixels[2]);
+            assert_eq!(canvas, hex(page), "{scheme:?}");
+            assert_eq!(first("h1", None).color, hex(heading), "{scheme:?}");
+            assert_eq!(first("h2", None).color, hex(heading), "{scheme:?}");
+            assert_eq!(first("p", None).color, hex(text), "{scheme:?}");
+            let card = first("div", Some("card"));
+            assert_eq!(card.background_color, hex(surface), "{scheme:?}");
+            assert_eq!(card.border_color[0], hex(link), "{scheme:?}");
+            assert_eq!(first("a", None).color, hex(link), "{scheme:?}");
+        }
+    }
+
+    #[test]
+    fn the_builtin_pages_sections_are_numbered_by_counters() {
+        use style::selector_matching::PseudoElement::Before;
+        let engine = builtin_engine();
+        let document = engine.document().clone();
+        let numbers: Vec<String> = engine
+            .fragments(800.0)
+            .iter()
+            .filter(|f| {
+                f.generated == Some(Before) && matches!(document.tag(f.node), Some("h2" | "h3"))
+            })
+            .filter_map(|f| match &f.kind {
+                layout::FragmentKind::Text(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            numbers,
+            [
+                "1.", "1.1", "1.2", "1.3", "2.", "3.", "3.1", "3.2", "4.", "5."
+            ]
         );
     }
 

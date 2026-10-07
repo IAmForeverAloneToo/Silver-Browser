@@ -3,57 +3,92 @@
 <head>
 <title>Silver Browser</title>
 <style>
-  html { background-color: #1e1e2e; }
-  h1 { color: #cdd6f4; }
-  p { color: #a6adc8; }
-  .highlight { color: #f9e2af; font-size: 20px; }
+  /* The theme (M21): every colour, and the spacing, declared once on
+     :root, for a light scheme, again for a dark one, and for paper; each
+     rule below reads them with var(). */
+  :root {
+    --page: #eff1f5;
+    --heading: #4c4f69;
+    --text: #5c5f77;
+    --accent: #df8e1d;
+    --link: #1e66f5;
+    --surface: #ccd0da;
+    --border: #1e66f5;
+    --quiet: #8c8fa1;
+    --space: 8px;
+    --gap: calc(var(--space) * 2);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page: #1e1e2e;
+      --heading: #cdd6f4;
+      --text: #a6adc8;
+      --accent: #f9e2af;
+      --link: #89b4fa;
+      --surface: #313244;
+      --border: #89b4fa;
+      --quiet: #6c7086;
+    }
+  }
+  html { background-color: var(--page); }
+  h1, h2, h3 { color: var(--heading); }
+  p { color: var(--text); }
+  .highlight { color: var(--accent); font-size: calc(var(--gap) + 4px); }
+
+  /* The sections are numbered by counters: 1., 1.1 and so on. */
+  body { counter-reset: section; }
+  h2 { counter-increment: section; counter-reset: subsection; }
+  h3 { counter-increment: subsection; }
+  h2::before { content: counter(section) ". "; }
+  h3::before { content: counter(section) "." counter(subsection) " "; }
+
   .cards {
     display: flex;
     flex-wrap: wrap;
     align-items: flex-start;
-    gap: 16px;
-    margin: 16px 0;
+    gap: var(--gap);
+    margin: var(--gap) 0;
   }
   .card {
     display: block;
     flex: 1 1 220px;
-    padding: 12px;
+    padding: calc(var(--space) * 1.5);
     border-width: 2px;
     border-style: solid;
-    border-color: #89b4fa;
-    background-color: #313244;
+    border-color: var(--border);
+    background-color: var(--surface);
   }
   .card::before {
     content: attr(data-label);
     display: block;
-    margin-bottom: 4px;
-    color: #89b4fa;
+    margin-bottom: calc(var(--space) / 2);
+    color: var(--link);
     font-size: 12px;
     text-transform: uppercase;
   }
-  .card::after { content: "§"; display: block; text-align: right; color: #6c7086; }
+  .card::after { content: "§"; display: block; text-align: right; color: var(--quiet); }
   .tiles {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
     grid-auto-flow: dense;
-    gap: 8px;
-    margin: 16px 0;
+    gap: var(--space);
+    margin: var(--gap) 0;
   }
-  .tile { padding: 8px; background-color: #313244; color: #cdd6f4; }
+  .tile { padding: var(--space); background-color: var(--surface); color: var(--heading); }
   .tile.wide { grid-column: span 2; }
-  .tile.all { grid-column: 1 / -1; color: #a6adc8; }
+  .tile.all { grid-column: 1 / -1; color: var(--text); }
   .lead::first-letter {
     float: left;
     font-size: 52px;
     padding-right: 6px;
-    color: #f9e2af;
+    color: var(--accent);
   }
-  .lead::first-line { text-transform: uppercase; color: #cdd6f4; }
+  .lead::first-line { text-transform: uppercase; color: var(--heading); }
   /* The French marks hold no-break spaces. */
   q:lang(fr) { quotes: "« " " »" "‹ " " ›"; }
   .clipped { height: 40px; overflow: hidden; }
   .scrolls { height: 60px; overflow: auto; }
-  a { color: #89b4fa; }
+  a { color: var(--link); }
 
   /* Breakpoints (M20): the cards stack in a narrow window, and the
      tiles widen in a wide one. */
@@ -68,12 +103,19 @@
      rather than filled, shown whole and kept together, and the last
      paragraphs on a page of their own. */
   @media print {
-    html { background-color: #ffffff; }
-    h1, p, a, .highlight, .tile, .tile.all { color: #1e1e2e; }
-    .lead::first-letter, .lead::first-line { color: #1e1e2e; }
-    .card { background-color: transparent; border-color: #45475a; break-inside: avoid; }
-    .card::before, .card::after { color: #45475a; }
-    .tile { background-color: transparent; border: 1px solid #45475a; }
+    :root {
+      --page: #ffffff;
+      --heading: #1e1e2e;
+      --text: #1e1e2e;
+      --accent: #1e1e2e;
+      --link: #1e1e2e;
+      --surface: transparent;
+      --border: #45475a;
+      --quiet: #45475a;
+    }
+    .card { break-inside: avoid; }
+    .card::before { color: var(--quiet); }
+    .tile { border: 1px solid var(--border); }
     .clipped, .scrolls { height: auto; overflow: visible; }
     .cards, .tiles { break-inside: avoid; }
     .more { break-before: page; }
@@ -83,9 +125,17 @@
 <body>
 <h1 id=top>Hello from Silver Browser</h1>
 <p>A hobby browser engine in Rust. This is about:silver, the browser's own page.</p>
+<h2>Layout</h2>
+<h3>Blocks</h3>
 <p class="highlight">This page is laid out by our own block formatting context — real width/margin resolution and margin collapsing, not a flat vertical list.</p>
+<h3>Pseudo-elements</h3>
 <p class="lead">Pseudo-elements (M16): this paragraph opens with a drop cap, its first letter floated left and set large by ::first‑letter, and its first line is in capitals by ::first‑line, however wide the window makes it. The cards below are labelled by ::before, from their data‑label attributes, and closed by ::after. Quotation marks come from the quotes property: <q>a quotation, with <q>one inside it</q></q>, and in French, chosen by :lang(fr), <q lang="fr">une citation</q>.</p>
+<h3>Values</h3>
+<p>Custom properties, math functions and counters (M21): this page's colours are declared once on :root, for a light scheme and a dark one, and every rule reads them with var(); its spacing is calc() of one of them; and its sections are numbered by counters, by counter‑reset, counter‑increment and ::before.</p>
+<h2>Media</h2>
 <p>Media queries (M20): in a window narrower than 600 pixels the cards below stack in a column, and in one 1000 pixels wide or more the tiles widen. Printed, the page is dark text on white, its cards and tiles bordered rather than filled, and its last paragraphs begin a page of their own.</p>
+<h2>Boxes</h2>
+<h3>Cards</h3>
 <div class="cards">
 <div class="card" data-label="Flexible boxes">
 <p>These cards are flex items (M17): they share a row, grow into the room it leaves, and wrap onto another when the window is too narrow for them, with a gap between them either way.</p>
@@ -101,6 +151,7 @@
 <p>A second paragraph, to give the card something more to scroll through.</p>
 </div>
 </div>
+<h3>Tiles</h3>
 <div class="tiles">
 <div class="tile all">These tiles are grid items (M18): as many columns as the window has room for, by repeat(auto‑fill, minmax(150px, 1fr)), each at least 150px wide and all sharing what is left. A wide tile spans two of them, and dense packing fills the holes the wide ones leave behind.</div>
 <div class="tile">M9 Scrolling</div>
@@ -115,9 +166,12 @@
 <div class="tile">M18 Grid</div>
 <div class="tile">M19 Transforms</div>
 <div class="tile wide">M20 Media queries and printing</div>
+<div class="tile">M21 Values</div>
 </div>
+<h2>Scrolling</h2>
 <p>Scroll with the wheel, the arrow keys, Page Up and Page Down, Home and End, the space bar, or by dragging the scrollbar at the right (M9.2). <a href="#end">This link</a> goes to the end of the page without leaving it, a navigation to a fragment (M15); Back comes back here.</p>
-<p class="more">The paragraphs below only exist to make the page taller than the window.</p>
+<h2 class="more">More</h2>
+<p>The paragraphs below only exist to make the page taller than the window.</p>
 <p>One. The quick brown fox jumps over the lazy dog, and the layout is cached across scrolls (M9.5): only paint and raster run again.</p>
 <p>Two. The quick brown fox jumps over the lazy dog.</p>
 <p>Three. The quick brown fox jumps over the lazy dog.</p>

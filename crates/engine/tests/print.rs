@@ -112,10 +112,14 @@ fn capture(pages: &[PrintedPage]) -> Capture {
 /// The words `list` shows, each at the left end of its baseline, mapped
 /// by the groups around it into the list's own coordinates: a text item
 /// is a word, or several between spaces, each then that far from the
-/// item's start as `fonts` measure the text before it.
+/// item's start as `fonts` measure the text before it; and a word that
+/// starts where the item before ends, with no space between, goes on in
+/// it, as the reader reads the reference browser's runs.
 fn words(list: &DisplayList, fonts: &text::FontCollection) -> Vec<Word> {
     let mut groups = Vec::new();
-    let mut out = Vec::new();
+    let mut out: Vec<Word> = Vec::new();
+    // Where the last item's last word ends, when no space follows it.
+    let mut open: Option<(f32, f32)> = None;
     for item in &list.items {
         match item {
             DisplayItem::PushGroup { matrix, .. } => groups.push(*matrix),
@@ -125,21 +129,38 @@ fn words(list: &DisplayList, fonts: &text::FontCollection) -> Vec<Word> {
             DisplayItem::Text {
                 text, x, y, size, ..
             } => {
-                let mut start = 0;
-                for piece in text.split(' ') {
-                    if !piece.is_empty() {
-                        let (mut x, mut y) = (*x + fonts.measure(&text[..start], *size), *y);
-                        for matrix in groups.iter().rev() {
-                            let [px, py, _, w] = matrix.apply(x, y, 0.0);
-                            (x, y) = (px / w, py / w);
-                        }
-                        out.push(Word {
-                            text: piece.to_string(),
-                            x,
-                            y,
-                        });
+                // The point `at` bytes into the item, on its baseline.
+                let place = |at: usize| {
+                    let (mut px, mut py) = (*x + fonts.measure(&text[..at], *size), *y);
+                    for matrix in groups.iter().rev() {
+                        let [mx, my, _, w] = matrix.apply(px, py, 0.0);
+                        (px, py) = (mx / w, my / w);
                     }
-                    start += piece.len() + 1;
+                    (px, py)
+                };
+                let mut start = 0;
+                let last = text.split(' ').count() - 1;
+                for (index, piece) in text.split(' ').enumerate() {
+                    let end = start + piece.len();
+                    if !piece.is_empty() {
+                        let (wx, wy) = place(start);
+                        let joins = index == 0
+                            && open.is_some_and(|(ex, ey)| {
+                                (ex - wx).abs() <= 0.5 && (ey - wy).abs() <= 0.5
+                            });
+                        match out.last_mut() {
+                            Some(word) if joins => word.text.push_str(piece),
+                            _ => out.push(Word {
+                                text: piece.to_string(),
+                                x: wx,
+                                y: wy,
+                            }),
+                        }
+                    }
+                    if index == last {
+                        open = (!piece.is_empty()).then(|| place(end));
+                    }
+                    start = end + 1;
                 }
             }
             _ => {}

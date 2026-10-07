@@ -7,15 +7,13 @@
   /* Ordered lists from start, reversed and with values set, nested
      lists and their markers, markers inside and outside, of strings and
      of ::marker's own content, a list item that is not an li, and markers
-     of another size than their items. A reversed list with a value set
-     is left out: the reference browser counts it down from its number of
-     items, where the draft and the web-platform-tests count from the
-     first value set (li-value-reversed-001), as this engine does; and a
-     marker's content is one piece, which the reference browser's PDF
-     reads as one word. Right-to-left lists are left out: the user agent
-     sheet pads a list on the left, the engine having no logical
-     properties, and the reference browser shows a marker's bidi runs as
-     runs of their own. */
+     of another size than their items, and right-to-left lists, padded on
+     the right here since the user agent sheet pads every list on the left
+     (HTML's padding-inline-start, the engine having no logical
+     properties). A reversed list with a value set is left out: the
+     reference browser counts it down from its number of items, where the
+     draft and the web-platform-tests count from the first value set
+     (li-value-reversed-001), as this engine does. */
   @font-face { font-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
   body { font-family: "Print Test Sans"; font-size: 16px; margin: 0 8px; }
   h1 { font-size: 24px; font-weight: normal; margin: 16px 0; }
@@ -27,7 +25,7 @@
   .greek { list-style-type: lower-greek; }
   .string { list-style-type: "Step "; }
   .arrow li::marker { content: "→ "; }
-  .numbered li::marker { content: counter(list-item, upper-roman) " "; }
+  .numbered li::marker { content: "(" counter(list-item, upper-roman) ") "; }
   .small li::marker { font-size: 12px; }
   .large li::marker { font-size: 24px; }
   /* The items reset `list-item` themselves: the ol before them leaves
@@ -36,6 +34,7 @@
   .items { counter-reset: list-item; }
   .item { display: list-item; list-style-type: decimal; margin-left: 40px; }
   .wide { padding-left: 80px; }
+  [dir=rtl] { padding-left: 0; padding-right: 40px; }
 </style>
 </head>
 <body>
@@ -72,6 +71,10 @@
 <ol class="inside numbered"><li>Roman numerals inside</li></ol>
 <div class="items"><div class="item">A div made a list item</div>
 <div class="item">Counted as an item</div></div>
+
+<h2>Right to left</h2>
+<ol dir="rtl"><li>First</li><li>Second</li></ol>
+<ul dir="rtl"><li>A bullet on the right</li></ul>
 
 <h2>Markers of another size</h2>
 <ol class="small"><li>A small marker</li><li>Another small one</li></ol>

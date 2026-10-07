@@ -7,19 +7,16 @@
   /* Chapters and sections numbered by counters in generated content, an
      outline numbered by counters() across nested lists, and a counter
      written in every predefined style the font draws, in range and out
-     of it. The reference browser shows each piece of `content` as a run
-     of its own, which its PDF reads as a word of its own: the pieces are
-     kept apart by spaces so that a word is the same on both sides. Each
-     value is an inline-block, so that the Hebrew letters are each their
-     own paragraph, not one right-to-left run reordered across the
-     values, which this engine's bidi (within a text) does not do. */
+     of it. Each value is an inline-block, so that the Hebrew letters are
+     each their own paragraph, not one right-to-left run reordered across
+     the values, which this engine's bidi (within a text) does not do. */
   @font-face { font-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
   body { font-family: "Print Test Sans"; font-size: 16px; margin: 0 8px; counter-reset: chapter; }
   h1 { font-size: 24px; font-weight: normal; margin: 16px 0; }
   h2 { font-size: 20px; font-weight: normal; margin: 20px 0 12px; counter-increment: chapter; counter-reset: section; }
-  h2::before { content: counter(chapter) " "; }
+  h2::before { content: counter(chapter) ". "; }
   h3 { font-size: 16px; font-weight: normal; margin: 12px 0; counter-increment: section; }
-  h3::before { content: counter(chapter) " " counter(section, lower-alpha) " "; }
+  h3::before { content: counter(chapter) "." counter(section, lower-alpha) " "; }
   p { margin: 12px 0; }
 
   ol.outline, ol.outline ol { counter-reset: item; list-style-type: none; padding-left: 24px; margin: 4px 0; }
@@ -94,7 +91,7 @@
 <p class="styles lower-armenian"><b>lower-armenian</b><i class="v1"></i><i class="v49"></i><i class="v400"></i><i class="v1999"></i></p>
 <p class="styles georgian"><b>georgian</b><i class="v0"></i><i class="v1"></i><i class="v14"></i><i class="v1999"></i><i class="v3999"></i></p>
 <p class="styles hebrew"><b>hebrew</b><i class="v-3"></i><i class="v1"></i><i class="v5"></i><i class="v9"></i><i class="v10"></i><i class="v100"></i><i class="v400"></i></p>
-<p class="styles arabic-indic"><b>arabic-indic</b><i class="v0"></i><i class="v14"></i><i class="v1999"></i></p>
+<p class="styles arabic-indic"><b>arabic-indic</b><i class="v-3"></i><i class="v0"></i><i class="v14"></i><i class="v1999"></i></p>
 <p class="styles persian"><b>persian</b><i class="v-3"></i><i class="v1"></i><i class="v49"></i><i class="v1999"></i></p>
 <p class="styles lao"><b>lao</b><i class="v0"></i><i class="v1"></i><i class="v27"></i><i class="v1999"></i></p>
 <p class="styles symbols"><b>symbols</b><i class="v1"></i><i class="v1"></i></p>

@@ -16,11 +16,15 @@
 //! It is read as words: the text between white space, at the origin of
 //! its first glyph, the left end of its baseline; white space is what
 //! CSS collapses (css-text-3 §4.1), a no-break space being part of the
-//! word it is in, as in the engine's words. A text object, and a move
-//! to another baseline within one, ends a word. The reference browser
-//! places each glyph with an operator of its own, so that each word's
-//! place is its own; where a string shows several glyphs, a word that
-//! starts inside it is placed at the string's start.
+//! word it is in, as in the engine's words. A move to another baseline
+//! ends a word, and so does a text object, unless the next starts where
+//! its last glyph ends, by the font's widths, on the same baseline: the
+//! reference browser shows the text of each element, and each piece of
+//! generated content, as a text object of its own, so that `1.` from
+//! `counter(n) "."` is two objects and one word. It places each glyph
+//! with an operator of its own, so that each word's place is its own;
+//! where a string shows several glyphs, a word that starts inside it is
+//! placed at the string's start.
 //!
 //! Positions are in CSS pixels from the page box's top left corner.
 //! What a capture keeps of a print, and how two are compared, is
@@ -921,6 +925,42 @@ struct Font {
     text: HashMap<u32, String>,
     /// The font's name less its subset's tag.
     name: String,
+    /// Each code's glyph's width, and the width of those not given, in
+    /// the font's units: thousandths of its size, or a Type 3 font's
+    /// glyph space.
+    widths: HashMap<u32, f64>,
+    default_width: f64,
+    /// The font's size a unit is: a thousandth, or what a Type 3 font's
+    /// matrix makes one of its glyph space.
+    unit: f64,
+}
+
+impl Font {
+    /// The codes of the string `s`: two bytes each in a composite font,
+    /// one in a simple one.
+    fn codes(&self, s: &[u8]) -> Vec<u32> {
+        codes(self.wide, s)
+    }
+
+    /// How far the glyphs of `s` advance, in the font's size.
+    fn advance(&self, s: &[u8]) -> f64 {
+        self.codes(s)
+            .iter()
+            .map(|code| self.widths.get(code).copied().unwrap_or(self.default_width))
+            .sum::<f64>()
+            * self.unit
+    }
+}
+
+/// The codes of the string `s`, two bytes each when `wide`.
+fn codes(wide: bool, s: &[u8]) -> Vec<u32> {
+    if wide {
+        s.chunks(2)
+            .map(|c| c.iter().fold(0, |code, b| (code << 8) | u32::from(*b)))
+            .collect()
+    } else {
+        s.iter().map(|b| u32::from(*b)).collect()
+    }
 }
 
 /// What the text state holds while a text object is open.
@@ -930,11 +970,19 @@ struct Text {
     line: Matrix,
     leading: f64,
     font: Option<String>,
+    /// The font's size, from `Tf`.
+    size: f64,
     /// The baseline of the text being read, while a text object shows
     /// it.
     baseline: Option<f32>,
     /// The word being read.
     word: Option<Word>,
+    /// Where the last glyph shown ends, when a text object has ended
+    /// with the word being read open: the word goes on in the next text
+    /// object only if that starts there.
+    ended_at: Option<(f32, f32)>,
+    /// Where the last glyph shown ends.
+    pen: (f32, f32),
 }
 
 /// The reader of a page's content.
@@ -1034,10 +1082,87 @@ impl Painter<'_> {
             Some(map) => to_unicode(&file.decoded(map)?)?,
             None => HashMap::new(),
         };
+        let (widths, default_width) = if wide {
+            // A composite font's widths are its descendant's: `W`, runs
+            // of `c [w ...]` and `first last w`, and `DW` for the rest.
+            let descendant = dict
+                .get("DescendantFonts")
+                .and_then(|d| file.resolve(d).array())
+                .and_then(|d| d.first())
+                .and_then(|d| file.resolve(d).dict());
+            let default = descendant
+                .and_then(|d| d.get("DW"))
+                .and_then(|w| file.resolve(w).number())
+                .unwrap_or(1000.0);
+            let mut widths = HashMap::new();
+            if let Some(w) = descendant
+                .and_then(|d| d.get("W"))
+                .and_then(|w| file.resolve(w).array())
+            {
+                let number = |o: &Object| file.resolve(o).number();
+                let mut at = 0;
+                while at + 1 < w.len() {
+                    let Some(first) = number(&w[at]) else { break };
+                    match file.resolve(&w[at + 1]).array() {
+                        Some(run) => {
+                            for (i, width) in run.iter().filter_map(number).enumerate() {
+                                widths.insert(first as u32 + i as u32, width);
+                            }
+                            at += 2;
+                        }
+                        None => {
+                            let (Some(last), Some(width)) =
+                                (number(&w[at + 1]), w.get(at + 2).and_then(number))
+                            else {
+                                break;
+                            };
+                            for code in first as u32..=last as u32 {
+                                widths.insert(code, width);
+                            }
+                            at += 3;
+                        }
+                    }
+                }
+            }
+            (widths, default)
+        } else {
+            // A simple font's are `Widths` from `FirstChar`.
+            let first = dict
+                .get("FirstChar")
+                .and_then(|f| file.resolve(f).number())
+                .unwrap_or(0.0) as u32;
+            let widths = dict
+                .get("Widths")
+                .and_then(|w| file.resolve(w).array())
+                .map(|w| {
+                    w.iter()
+                        .enumerate()
+                        .filter_map(|(i, o)| {
+                            file.resolve(o).number().map(|n| (first + i as u32, n))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            (widths, 0.0)
+        };
+        // A Type 3 font's widths are in its glyph space, which its matrix
+        // maps to the text space; every other font's in thousandths.
+        let unit = match dict.get("Subtype").and_then(Object::name) {
+            Some("Type3") => dict
+                .get("FontMatrix")
+                .and_then(|m| file.resolve(m).array())
+                .and_then(|m| m.first())
+                .and_then(|a| file.resolve(a).number())
+                .unwrap_or(0.001),
+            _ => 0.001,
+        };
         Ok(Font {
             wide,
             text,
             name: name.to_string(),
+            widths,
+            default_width,
+            unit,
         })
     }
 
@@ -1097,11 +1222,17 @@ impl Painter<'_> {
                     text.matrix = IDENTITY;
                     text.line = IDENTITY;
                 }
-                "ET" => self.end_word(&mut text, true),
+                // A word open at the end of a text object may go on in
+                // the next.
+                "ET" => {
+                    text.baseline = None;
+                    text.ended_at = text.word.as_ref().map(|_| text.pen);
+                }
                 "Tf" => {
                     if let Some(name) = operands.first().and_then(Object::name) {
                         text.font = Some(self.font(resources, name)?);
                     }
+                    text.size = n(1);
                 }
                 "TL" => text.leading = n(0),
                 "Tm" => {
@@ -1201,7 +1332,15 @@ impl Painter<'_> {
                 decode(font, s)
             }
         };
-        let (x, y) = self.place(&concat(&text.matrix, ctm), 0.0, 0.0);
+        let placed = concat(&text.matrix, ctm);
+        let (x, y) = self.place(&placed, 0.0, 0.0);
+        // A word open from the text object before goes on only if this
+        // one starts where its last glyph ended.
+        if let Some((end_x, end_y)) = text.ended_at.take()
+            && ((end_x - x).abs() > 0.5 || (end_y - y).abs() > 0.5)
+        {
+            self.end_word(text, true);
+        }
         if text
             .baseline
             .is_some_and(|baseline| (baseline - y).abs() > 0.5)
@@ -1209,6 +1348,12 @@ impl Painter<'_> {
             self.end_word(text, true);
         }
         text.baseline = Some(y);
+        let advance = text
+            .font
+            .as_ref()
+            .and_then(|key| self.fonts.get(key))
+            .map_or(0.0, |font| font.advance(s) * text.size);
+        text.pen = self.place(&placed, advance, 0.0);
         for c in shown.chars() {
             if is_white_space(c) {
                 self.end_word(text, false);
@@ -1286,14 +1431,7 @@ impl Painter<'_> {
 /// U+FFFD when a composite one has none.
 fn decode(font: Option<&Font>, s: &[u8]) -> String {
     let wide = font.is_some_and(|f| f.wide);
-    let codes: Vec<u32> = if wide {
-        s.chunks(2)
-            .map(|c| c.iter().fold(0, |code, b| (code << 8) | u32::from(*b)))
-            .collect()
-    } else {
-        s.iter().map(|b| u32::from(*b)).collect()
-    };
-    codes
+    codes(wide, s)
         .into_iter()
         .map(|code| match font.and_then(|f| f.text.get(&code)) {
             Some(text) => text.clone(),
@@ -1494,6 +1632,42 @@ mod tests {
         };
         let capture = Capture::of(&[blank]).expect("a blank page captures");
         assert_eq!(capture.pages[0].area, None);
+    }
+
+    #[test]
+    fn a_word_goes_on_in_a_text_object_that_starts_where_it_ends() {
+        // `a` is 562.5 thousandths wide at 16 points, 9 points: `b`'s
+        // object starts where it ends and goes on with its word; `c`'s
+        // starts past `b`'s 8, a word of its own, and `d` on another
+        // baseline is too. A Type 3 font's widths are in its glyph space:
+        // `x` is 1000 of 2000 an em, 8 points at 16, and `y` starts there.
+        let content = b"BT /F4 16 Tf 1 0 0 1 8 700 Tm <0044> Tj ET\n\
+            BT /F4 16 Tf 1 0 0 1 17 700 Tm <0045> Tj ET\n\
+            BT /F4 16 Tf 1 0 0 1 30 700 Tm <0046> Tj ET\n\
+            BT /F4 16 Tf 1 0 0 1 38 680 Tm <0046> Tj ET\n\
+            BT /F5 16 Tf 1 0 0 1 8 600 Tm (x) Tj ET\n\
+            BT /F5 16 Tf 1 0 0 1 16 600 Tm (y) Tj ET";
+        let objects = [
+            b"<</Type /Catalog /Pages 2 0 R>>".to_vec(),
+            b"<</Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 612 792]>>".to_vec(),
+            b"<</Type /Page /Parent 2 0 R /Resources <</Font <</F4 5 0 R /F5 8 0 R>>>> \
+              /Contents 4 0 R>>"
+                .to_vec(),
+            stream("", content),
+            b"<</Type /Font /Subtype /Type0 /BaseFont /DejaVuSans /Encoding /Identity-H \
+             /ToUnicode 6 0 R /DescendantFonts [7 0 R]>>"
+                .to_vec(),
+            stream("", CMAP.as_bytes()),
+            b"<</Type /Font /Subtype /CIDFontType2 /DW 1000 /W [68 [562.5 500] 70 70 600]>>"
+                .to_vec(),
+            b"<</Type /Font /Subtype /Type3 /FontMatrix [.0005 0 0 -.0005 0 0] /FirstChar 120 \
+              /Widths [1000 900]>>"
+                .to_vec(),
+        ];
+        let pages = read(&pdf(&objects)).expect("the file reads");
+        let words: Vec<&str> = pages[0].words.iter().map(|w| w.text.as_str()).collect();
+        assert_eq!(words, ["ab", "c", "c", "xy"]);
+        assert!((pages[0].words[0].x - 8.0 * PX_PER_POINT as f32).abs() < 0.01);
     }
 
     #[test]

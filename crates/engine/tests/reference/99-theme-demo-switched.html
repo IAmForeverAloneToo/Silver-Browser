@@ -1,0 +1,69 @@
+<!doctype html>
+<html class="alt">
+<head>
+<title>A theme of custom properties, switched: page 98's components with the class on the root that redeclares their colours and sizes, one property left to its fallback</title>
+<style>
+  :root {
+    --page: #f6f2ea;
+    --surface: #e0d8c8;
+    --ink: #2f3542;
+    --accent: #3a7a4a;
+    --accent-soft: #a8c8b0;
+    --warn: #a0522d;
+    --space: 8px;
+    --bar: 40px;
+    --edge: 2px;
+    --progress: 60;
+  }
+  /* The other theme, redeclaring every property but one, whose fallback
+     is then used; and its spacing larger. */
+  .alt {
+    --page: #1e1e2e;
+    --surface: #313244;
+    --ink: #cdd6f4;
+    --accent: #89b4fa;
+    --accent-soft: #45475a;
+    --warn: unset;
+    --space: 12px;
+    --bar: 48px;
+    --edge: 4px;
+    --progress: 35;
+  }
+  html { background-color: var(--page); }
+  body { margin: 0; }
+
+  .toolbar { display: flex; gap: var(--space); height: var(--bar); padding: 0 var(--space); align-items: center; background-color: var(--surface); }
+  .toolbar .logo { width: var(--bar); height: calc(var(--bar) - var(--space)); background-color: var(--accent); }
+  .toolbar .spacer { flex: 1; }
+  .button { width: calc(var(--bar) * 2); height: calc(var(--bar) / 2); background-color: var(--ink); }
+  .button.primary { background-color: var(--accent); }
+
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: calc(var(--space) * 2); padding: calc(var(--space) * 2); }
+  .card { height: 110px; padding: var(--space); background-color: var(--surface); border-top: var(--edge) solid var(--accent); }
+  .card .title { height: calc(var(--space) * 2); width: 70%; background-color: var(--ink); }
+  .card .line { height: var(--space); margin-top: var(--space); background-color: var(--accent-soft); }
+  .card .line.short { width: 50%; }
+
+  .progress { margin: 0 calc(var(--space) * 2); height: var(--space); background-color: var(--accent-soft); }
+  .progress .done { width: calc(var(--progress) * 1%); height: 100%; background-color: var(--accent); }
+
+  /* A warning in a colour the alternative theme does not set: the
+     fallback; a badge in a property neither theme sets. */
+  .alert { margin: calc(var(--space) * 2); padding: var(--space); height: 30px; border-left: calc(var(--edge) * 2) solid var(--warn, #c0392b); background-color: var(--surface); }
+  .badges { display: flex; gap: var(--space); margin: 0 calc(var(--space) * 2); }
+  .badge { width: calc(var(--bar) - 10px); height: 20px; background-color: var(--badge, var(--accent)); }
+  .badge.custom { --badge: #d4a017; }
+</style>
+</head>
+<body>
+  <div class="toolbar"><div class="logo"></div><div class="spacer"></div><div class="button"></div><div class="button primary"></div></div>
+  <div class="cards">
+    <div class="card"><div class="title"></div><div class="line"></div><div class="line short"></div></div>
+    <div class="card"><div class="title"></div><div class="line"></div><div class="line"></div></div>
+    <div class="card"><div class="title"></div><div class="line short"></div></div>
+  </div>
+  <div class="progress"><div class="done"></div></div>
+  <div class="alert"></div>
+  <div class="badges"><div class="badge"></div><div class="badge custom"></div><div class="badge"></div></div>
+</body>
+</html>
