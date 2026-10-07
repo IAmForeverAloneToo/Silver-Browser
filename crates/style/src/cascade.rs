@@ -92,14 +92,17 @@ use crate::computed::{
     Quotes, RIGHT, SelfAlignment, Size, TOP, TableLayout, TextAlign, TextTransform, VerticalAlign,
     WhiteSpace,
 };
-use crate::computed::{Effects, GridStyle, JustifyItems};
+use crate::computed::{Effects, Fragmentation, GridStyle, JustifyItems};
 use crate::invalidation::{Reach, SelectorFeatures, invalidate};
 use crate::media::Media;
+use crate::page::{PagePosition, PageStyle};
 use crate::rule_set::RuleSet;
 use crate::selector_matching::{Matcher, PseudoElement, SelectorList, Specificity};
 
 mod effects;
+mod fragmentation;
 mod grid;
+mod page;
 
 /// The built-in default stylesheet (M5.6), compiled in — loading it is
 /// not resource fetching (no I/O at runtime), so it doesn't bend the
@@ -397,6 +400,105 @@ impl Stylesheets {
     /// change of the user's preferences; a few comparisons a list.
     pub fn media_changed(&self, styles: &Styles, media: &Media) -> bool {
         self.answers(media) != styles.media
+    }
+
+    /// What the `@page` rules in force under `media` say of a page at
+    /// `position` (M20): their `size` and margins, cascaded as a style
+    /// rule's declarations are, by origin and importance, then layer,
+    /// then the specificity of the most specific of a rule's page
+    /// selectors that matches, then order. `em` and `rem` in them are of
+    /// `rem`, the root element's font size, from which the page context
+    /// inherits (Paged Media 3 §6). A CSS-wide keyword leaves the
+    /// descriptor to the print's own.
+    pub fn page_style(&self, media: &Media, rem: f32, position: PagePosition) -> PageStyle {
+        let ua = ua();
+        let ua_pages = ua
+            .rules
+            .pages_in_force(std::slice::from_ref(&ua.sheet), &ua.rules.answers(media));
+        let author_pages = self
+            .rules
+            .pages_in_force(&self.sheets, &self.rules.answers(media));
+        let mut applied = Vec::new();
+        let mut order = 0u32;
+        for (base, pages) in [
+            (TierBase::UserAgent, &ua_pages),
+            (TierBase::AuthorSheet, &author_pages),
+        ] {
+            for page in pages {
+                let specificity = page
+                    .selectors
+                    .iter()
+                    .filter(|selector| selector.matches(position))
+                    .map(|selector| selector.specificity())
+                    .max();
+                let Some(specificity) = specificity else {
+                    continue;
+                };
+                for declaration in page.declarations {
+                    let layer = if declaration.important {
+                        page.important_layer
+                    } else {
+                        page.layer
+                    };
+                    applied.push((
+                        tier(base, declaration.important),
+                        layer,
+                        specificity,
+                        order,
+                        declaration,
+                    ));
+                    order += 1;
+                }
+            }
+        }
+        applied
+            .sort_by_key(|&(tier, layer, specificity, order, _)| (tier, layer, specificity, order));
+        let context = CascadeContext {
+            viewport_width: media.width,
+            viewport_height: media.height,
+            media: *media,
+            ..CascadeContext::default()
+        };
+        let viewport_used = Cell::new(false);
+        let resolution = Resolution {
+            rem,
+            context: &context,
+            viewport_used: &viewport_used,
+            attributes: &[],
+        };
+        let bases = LengthBases {
+            em: rem,
+            resolution: &resolution,
+        };
+        let mut style = PageStyle::default();
+        for (.., declaration) in applied {
+            let value = declaration.value.as_slice();
+            let wide = css_wide_keyword(value).is_some();
+            match declaration.name.as_str() {
+                "size" if wide => style.size = PageStyle::default().size,
+                "size" => {
+                    if let Some(size) = page::parse_size(value, &bases) {
+                        style.size = size;
+                    }
+                }
+                "margin" if wide => style.margin = [None; 4],
+                "margin" => {
+                    if let Some(margins) = page::parse_page_margin(value, &bases) {
+                        style.margin = margins.map(Some);
+                    }
+                }
+                side @ ("margin-top" | "margin-right" | "margin-bottom" | "margin-left") => {
+                    let index = edge_index(side.trim_start_matches("margin-"));
+                    if wide {
+                        style.margin[index] = None;
+                    } else if let Some(margin) = page::parse_page_margin_side(value, &bases) {
+                        style.margin[index] = Some(margin);
+                    }
+                }
+                _ => {}
+            }
+        }
+        style
     }
 
     /// The answers of the UA sheet's `@media` lists, then these sheets'.
@@ -1135,6 +1237,9 @@ fn compute_style(
     if style.effects.as_deref() == Some(&Effects::default()) {
         style.effects = None;
     }
+    if style.fragmentation.as_deref() == Some(&Fragmentation::default()) {
+        style.fragmentation = None;
+    }
     style
 }
 
@@ -1464,6 +1569,47 @@ fn apply_declaration(
         "will-change" => set_effects(style, effects::parse_will_change(value), |e, v| {
             e.will_change = v
         }),
+        "break-before" => {
+            set_fragmentation(style, fragmentation::parse_break_between(value), |f, v| {
+                f.break_before = v
+            })
+        }
+        "break-after" => {
+            set_fragmentation(style, fragmentation::parse_break_between(value), |f, v| {
+                f.break_after = v
+            })
+        }
+        "break-inside" => {
+            set_fragmentation(style, fragmentation::parse_break_inside(value), |f, v| {
+                f.break_inside = v
+            })
+        }
+        "page-break-before" => set_fragmentation(
+            style,
+            fragmentation::parse_page_break_between(value),
+            |f, v| f.break_before = v,
+        ),
+        "page-break-after" => set_fragmentation(
+            style,
+            fragmentation::parse_page_break_between(value),
+            |f, v| f.break_after = v,
+        ),
+        "page-break-inside" => set_fragmentation(
+            style,
+            fragmentation::parse_page_break_inside(value),
+            |f, v| f.break_inside = v,
+        ),
+        "orphans" => set_fragmentation(style, fragmentation::parse_line_count(value), |f, v| {
+            f.orphans = v
+        }),
+        "widows" => set_fragmentation(style, fragmentation::parse_line_count(value), |f, v| {
+            f.widows = v
+        }),
+        "print-color-adjust" => set_fragmentation(
+            style,
+            fragmentation::parse_print_color_adjust(value),
+            |f, v| f.print_color_adjust = v,
+        ),
         // Not in the v1 property set, or not a real property: ignored,
         // never an error.
         _ => false,
@@ -1520,6 +1666,30 @@ fn set_effects<T>(
     update: impl FnOnce(&mut Effects, T),
 ) -> bool {
     v.map(|v| update(style.effects_mut(), v)).is_some()
+}
+
+/// [`set`] for the break properties, `orphans`, `widows` and
+/// `print-color-adjust` (M20), which live behind
+/// [`ComputedStyle::fragmentation`].
+fn set_fragmentation<T>(
+    style: &mut ComputedStyle,
+    v: Option<T>,
+    update: impl FnOnce(&mut Fragmentation, T),
+) -> bool {
+    v.map(|v| update(style.fragmentation_mut(), v)).is_some()
+}
+
+/// [`copy_grid`] for the fragmentation properties.
+fn copy_fragmentation(
+    style: &mut ComputedStyle,
+    src: &ComputedStyle,
+    copy: impl FnOnce(&mut Fragmentation, &Fragmentation),
+) {
+    if style.fragmentation.is_none() && src.fragmentation.is_none() {
+        return;
+    }
+    let src = src.fragmentation().clone();
+    copy(style.fragmentation_mut(), &src);
 }
 
 /// [`copy_grid`] for the effects properties.
@@ -1646,6 +1816,9 @@ fn is_inherited(name: &str) -> bool {
             | "caption-side"
             | "empty-cells"
             | "quotes"
+            | "orphans"
+            | "widows"
+            | "print-color-adjust"
     )
 }
 
@@ -1858,6 +2031,20 @@ fn apply_css_wide(
         }),
         "opacity" => copy_effects(style, src, |e, s| e.opacity = s.opacity),
         "will-change" => copy_effects(style, src, |e, s| e.will_change = s.will_change),
+        "break-before" | "page-break-before" => {
+            copy_fragmentation(style, src, |f, s| f.break_before = s.break_before)
+        }
+        "break-after" | "page-break-after" => {
+            copy_fragmentation(style, src, |f, s| f.break_after = s.break_after)
+        }
+        "break-inside" | "page-break-inside" => {
+            copy_fragmentation(style, src, |f, s| f.break_inside = s.break_inside)
+        }
+        "orphans" => copy_fragmentation(style, src, |f, s| f.orphans = s.orphans),
+        "widows" => copy_fragmentation(style, src, |f, s| f.widows = s.widows),
+        "print-color-adjust" => copy_fragmentation(style, src, |f, s| {
+            f.print_color_adjust = s.print_color_adjust
+        }),
         "row-gap" => style.row_gap = src.row_gap,
         "column-gap" => style.column_gap = src.column_gap,
         "gap" => {
@@ -2691,6 +2878,8 @@ fn canonical_name(name: &str) -> &str {
         "-webkit-perspective" => "perspective",
         "-webkit-perspective-origin" => "perspective-origin",
         "-webkit-backface-visibility" => "backface-visibility",
+        // Color Adjust 1's legacy name.
+        "-webkit-print-color-adjust" => "print-color-adjust",
         other => other,
     }
 }
@@ -6774,5 +6963,235 @@ mod tests {
         assert_eq!(styles.get(p).expect("styled").color, Color::rgb8(0, 0, 0));
         let restyle = sheets.restyle(&document, &narrow, &mut styles, &[]);
         assert!(!restyle.full, "the same answers: nothing to do");
+    }
+    #[test]
+    fn the_break_properties_and_their_legacy_names_cascade() {
+        use crate::computed::{BreakBetween, BreakInside, PrintColorAdjust};
+        let sheets = [sheet(
+            "div { break-before: page; break-after: avoid-page; break-inside: avoid;
+                   orphans: 3; widows: 4; -webkit-print-color-adjust: exact }
+             p { page-break-before: always; page-break-after: left; page-break-inside: avoid }
+             span { orphans: inherit; widows: initial; print-color-adjust: unset;
+                    break-before: inherit }
+             b { page-break-before: recto; break-after: always; orphans: 0 }
+             i { break-before: page; break-before: initial }",
+        )];
+        let html = "<div><p>x</p><span>s</span><b>b</b><i>i</i></div>";
+        let div = style_of(html, &sheets, "div");
+        let f = div.fragmentation();
+        assert_eq!(f.break_before, BreakBetween::Page);
+        assert_eq!(f.break_after, BreakBetween::AvoidPage);
+        assert_eq!(f.break_inside, BreakInside::Avoid);
+        assert_eq!((f.orphans, f.widows), (3, 4));
+        assert_eq!(f.print_color_adjust, PrintColorAdjust::Exact);
+        // The legacy names, `always` being `page`; the inherited ones
+        // from the div.
+        let p = style_of(html, &sheets, "p");
+        let f = p.fragmentation();
+        assert_eq!(f.break_before, BreakBetween::Page);
+        assert_eq!(f.break_after, BreakBetween::Left);
+        assert_eq!(f.break_inside, BreakInside::Avoid);
+        assert_eq!((f.orphans, f.widows), (3, 4));
+        assert_eq!(f.print_color_adjust, PrintColorAdjust::Exact);
+        // `inherit` takes even a property that is not inherited; `unset`
+        // of an inherited one is `inherit`.
+        let span = style_of(html, &sheets, "span");
+        let f = span.fragmentation();
+        assert_eq!(f.break_before, BreakBetween::Page);
+        assert_eq!((f.orphans, f.widows), (3, 2));
+        assert_eq!(f.print_color_adjust, PrintColorAdjust::Exact);
+        // Values the properties do not take are dropped.
+        let b = style_of(html, &sheets, "b");
+        assert_eq!(b.fragmentation().break_before, BreakBetween::Auto);
+        assert_eq!(b.fragmentation().break_after, BreakBetween::Auto);
+        assert_eq!(b.fragmentation().orphans, 3);
+        // Set back to the initial values, the style keeps no copy of
+        // them but what it inherits.
+        let html = "<i>i</i>";
+        assert_eq!(style_of(html, &sheets, "i").fragmentation, None);
+        for (name, value) in [
+            ("break-before", "region"),
+            ("break-inside", "avoid-column"),
+            ("page-break-after", "always"),
+            ("orphans", "1"),
+            ("widows", "10"),
+            ("print-color-adjust", "economy"),
+            ("-webkit-print-color-adjust", "exact"),
+        ] {
+            assert!(supports(name, &css::tokenize(value)), "{name}: {value}");
+        }
+        assert!(!supports("break-before", &css::tokenize("always")));
+        assert!(!supports("orphans", &css::tokenize("0")));
+    }
+    #[test]
+    fn page_rules_cascade_for_each_page() {
+        use crate::page::{Orientation, PagePosition, PageSize};
+        let print = |width, height| Media {
+            media_type: crate::MediaType::Print,
+            ..Media::screen(width, height)
+        };
+        let px = LengthPercentageAuto::Px;
+        let first = PagePosition {
+            first: true,
+            ..PagePosition::default()
+        };
+        let left = PagePosition {
+            left: true,
+            ..PagePosition::default()
+        };
+        let right = PagePosition::default();
+        let style = |source: &str, media: Media, at: PagePosition| {
+            Stylesheets::new(vec![sheet(source)]).page_style(&media, 16.0, at)
+        };
+        let paper = print(816.0, 1056.0);
+
+        // Nothing said: the print's own.
+        let none = style("p { color: red }", paper, first);
+        assert_eq!(none.size, PageSize::Auto);
+        assert_eq!(none.margin, [None; 4]);
+
+        let source = "@page { size: A4; margin: 1in }
+            @page :left { margin-left: 2in; margin-right: 10% }
+            @page :first { margin-top: 3em; size: letter landscape }
+            @page :right:first { margin-bottom: auto }
+            @page cover { margin: 0 }";
+        let s = style(source, paper, first);
+        assert_eq!(
+            s.size,
+            PageSize::Exact {
+                width: 1056.0,
+                height: 816.0
+            }
+        );
+        assert_eq!(
+            s.margin,
+            [
+                Some(px(48.0)),
+                Some(px(96.0)),
+                Some(LengthPercentageAuto::Auto),
+                Some(px(96.0))
+            ]
+        );
+        let s = style(source, paper, left);
+        let (width, height) = s.size.resolve((0.0, 0.0));
+        assert!(
+            (width - 793.7).abs() < 0.1 && (height - 1122.5).abs() < 0.1,
+            "A4"
+        );
+        assert_eq!(
+            s.margin,
+            [
+                Some(px(96.0)),
+                Some(LengthPercentageAuto::Percent(10.0)),
+                Some(px(96.0)),
+                Some(px(192.0))
+            ]
+        );
+        assert_eq!(style(source, paper, right).margin, [Some(px(96.0)); 4]);
+
+        // Specificity over order; importance over specificity; layers.
+        let s = style(
+            "@page :first { margin-top: 1px } @page { margin-top: 2px }",
+            paper,
+            first,
+        );
+        assert_eq!(s.margin[TOP], Some(px(1.0)));
+        let s = style(
+            "@page { margin-top: 2px !important } @page :first { margin-top: 1px }",
+            paper,
+            first,
+        );
+        assert_eq!(s.margin[TOP], Some(px(2.0)));
+        let s = style(
+            "@layer a, b; @layer b { @page { margin-top: 2px } } @layer a { @page :first { margin-top: 1px } }",
+            paper,
+            first,
+        );
+        assert_eq!(
+            s.margin[TOP],
+            Some(px(2.0)),
+            "a later layer wins whatever the specificity"
+        );
+        let s = style(
+            "@layer a { @page { margin-top: 1px } } @page { margin-top: 2px }",
+            paper,
+            first,
+        );
+        assert_eq!(s.margin[TOP], Some(px(2.0)));
+
+        // Inside `@media`, by the medium.
+        let source = "@page { size: portrait } @media print and (min-width: 800px) { @page { size: landscape } }";
+        assert_eq!(
+            style(source, paper, right).size,
+            PageSize::Oriented(Orientation::Landscape)
+        );
+        assert_eq!(
+            style(source, print(500.0, 800.0), right).size,
+            PageSize::Oriented(Orientation::Portrait)
+        );
+        assert_eq!(
+            style(source, Media::screen(1000.0, 800.0), right).size,
+            PageSize::Oriented(Orientation::Portrait)
+        );
+
+        // Values the descriptors do not take are dropped; a CSS-wide
+        // keyword leaves them to the print.
+        for bad in [
+            "10%",
+            "a0",
+            "a4 a4",
+            "landscape portrait",
+            "auto landscape",
+            "-1cm",
+            "1px 2px 3px",
+            "10cm portrait",
+        ] {
+            let s = style(
+                &format!("@page {{ size: 5in }} @page {{ size: {bad} }}"),
+                paper,
+                right,
+            );
+            assert_eq!(
+                s.size,
+                PageSize::Exact {
+                    width: 480.0,
+                    height: 480.0
+                },
+                "{bad}"
+            );
+        }
+        let s = style(
+            "@page { size: 4in 6in; margin: 1in } @page { size: initial; margin-left: inherit }",
+            paper,
+            right,
+        );
+        assert_eq!(s.size, PageSize::Auto);
+        assert_eq!(
+            s.margin,
+            [Some(px(96.0)), Some(px(96.0)), Some(px(96.0)), None]
+        );
+        assert_eq!(
+            style("@page { size: 2em 1rem }", paper, right).size,
+            PageSize::Exact {
+                width: 32.0,
+                height: 16.0
+            }
+        );
+        assert_eq!(
+            style("@page { size: landscape JIS-B5 }", paper, right)
+                .size
+                .resolve((0.0, 0.0))
+                .1
+                .round(),
+            688.0
+        );
+        // A rule whose selectors do not parse is dropped; the page-margin
+        // boxes inside a rule are passed over.
+        let s = style(
+            "@page :nth(1) { margin: 0 } @page { margin: 1px; @top-left { content: 'x'; margin: 9px } }",
+            paper,
+            first,
+        );
+        assert_eq!(s.margin, [Some(px(1.0)); 4]);
     }
 }

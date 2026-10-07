@@ -1341,6 +1341,133 @@ impl Effects {
 /// [`ComputedStyle::effects`] gives a style that sets none of them.
 static INITIAL_EFFECTS: LazyLock<Effects> = LazyLock::new(Effects::default);
 
+/// `break-before` and `break-after` (css-break-3 §3.1; M20): whether a
+/// break may, must or should not come between two boxes. The column and
+/// region values are taken and mean nothing on a page, which has no
+/// columns or regions to break.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BreakBetween {
+    #[default]
+    Auto,
+    Avoid,
+    AvoidPage,
+    /// A forced page break.
+    Page,
+    /// A forced break, then another if need be, so that the next page
+    /// is a left page.
+    Left,
+    /// The same, to a right page.
+    Right,
+    /// `recto`: a right page, the document being left to right.
+    Recto,
+    /// `verso`: a left page.
+    Verso,
+    AvoidColumn,
+    Column,
+    AvoidRegion,
+    Region,
+}
+
+impl BreakBetween {
+    /// Whether the value forces a page break.
+    pub fn forces_page(self) -> bool {
+        matches!(
+            self,
+            BreakBetween::Page
+                | BreakBetween::Left
+                | BreakBetween::Right
+                | BreakBetween::Recto
+                | BreakBetween::Verso
+        )
+    }
+
+    /// Whether the value asks for no page break.
+    pub fn avoids_page(self) -> bool {
+        matches!(self, BreakBetween::Avoid | BreakBetween::AvoidPage)
+    }
+}
+
+/// `break-inside` (css-break-3 §3.2; M20).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BreakInside {
+    #[default]
+    Auto,
+    Avoid,
+    AvoidPage,
+    AvoidColumn,
+    AvoidRegion,
+}
+
+impl BreakInside {
+    /// Whether the value asks for no page break inside the box.
+    pub fn avoids_page(self) -> bool {
+        matches!(self, BreakInside::Avoid | BreakInside::AvoidPage)
+    }
+}
+
+/// `print-color-adjust` (css-color-adjust-1 §3.3; M20).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PrintColorAdjust {
+    /// The user agent may economise on ink; this engine does not.
+    #[default]
+    Economy,
+    Exact,
+}
+
+/// The break properties, `orphans`, `widows` and `print-color-adjust`
+/// (css-break-3 §3, css-color-adjust-1 §3.3; M20): what
+/// [`ComputedStyle::fragmentation`] points to when any of them is not
+/// its initial value. `orphans`, `widows` and `print-color-adjust` are
+/// inherited; the break properties are not.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Fragmentation {
+    /// `break-before`.
+    pub break_before: BreakBetween,
+    /// `break-after`.
+    pub break_after: BreakBetween,
+    /// `break-inside`.
+    pub break_inside: BreakInside,
+    /// `orphans`: the fewest lines of a block left at the bottom of a
+    /// page, at least one.
+    pub orphans: u32,
+    /// `widows`: the fewest lines of a block carried to the top of a
+    /// page, at least one.
+    pub widows: u32,
+    /// `print-color-adjust`.
+    pub print_color_adjust: PrintColorAdjust,
+}
+
+impl Default for Fragmentation {
+    /// Every property's initial value.
+    fn default() -> Self {
+        Fragmentation {
+            break_before: BreakBetween::Auto,
+            break_after: BreakBetween::Auto,
+            break_inside: BreakInside::Auto,
+            orphans: 2,
+            widows: 2,
+            print_color_adjust: PrintColorAdjust::Economy,
+        }
+    }
+}
+
+impl Fragmentation {
+    /// These properties as a child inherits them: the inherited ones
+    /// kept, the others initial.
+    fn inherited(&self) -> Fragmentation {
+        Fragmentation {
+            orphans: self.orphans,
+            widows: self.widows,
+            print_color_adjust: self.print_color_adjust,
+            ..Fragmentation::default()
+        }
+    }
+}
+
+/// The fragmentation properties' initial values, which
+/// [`ComputedStyle::fragmentation`] gives a style that sets none of them.
+static INITIAL_FRAGMENTATION: LazyLock<Fragmentation> = LazyLock::new(Fragmentation::default);
+
 /// The box-model edges, one value per side, in CSS's `top, right,
 /// bottom, left` order (matches `margin`/`padding`/`border-width`
 /// shorthand order, so parsing and storage share one shape).
@@ -1593,6 +1720,10 @@ pub struct ComputedStyle {
     /// one pointer likewise; `None` is every initial value. Read through
     /// [`ComputedStyle::effects`].
     pub effects: Option<Arc<Effects>>,
+    /// The break properties, `orphans`, `widows` and
+    /// `print-color-adjust` (M20), behind one pointer likewise; `None` is
+    /// every initial value. Read through [`ComputedStyle::fragmentation`].
+    pub fragmentation: Option<Arc<Fragmentation>>,
 }
 
 /// `font-family`'s initial value, one for every style that has it.
@@ -1656,6 +1787,7 @@ impl Default for ComputedStyle {
             column_gap: None,
             grid: None,
             effects: None,
+            fragmentation: None,
         }
     }
 }
@@ -1723,6 +1855,20 @@ impl ComputedStyle {
         Arc::make_mut(self.effects.get_or_insert_with(Default::default))
     }
 
+    /// The break properties, `orphans`, `widows` and
+    /// `print-color-adjust` (M20): this style's, or their initial values.
+    pub fn fragmentation(&self) -> &Fragmentation {
+        self.fragmentation
+            .as_deref()
+            .unwrap_or(&INITIAL_FRAGMENTATION)
+    }
+
+    /// The fragmentation properties to change, this style's own copy made
+    /// first if it shares them or has none.
+    pub fn fragmentation_mut(&mut self) -> &mut Fragmentation {
+        Arc::make_mut(self.fragmentation.get_or_insert_with(Default::default))
+    }
+
     /// Whether a box with this style is a stacking context (CSS2
     /// Appendix E, M11; M19): a positioned box, or a flex or grid
     /// `item` (css-flexbox-1 §4.3, css-grid-2 §6.5), whose `z-index` is
@@ -1770,8 +1916,24 @@ impl ComputedStyle {
             caption_side: from.caption_side,
             empty_cells: from.empty_cells,
             quotes: from.quotes.clone(),
+            fragmentation: inherited_fragmentation(from),
             ..self
         }
+    }
+}
+
+/// The fragmentation properties a child of `from` inherits: none when
+/// they are the initial values, `from`'s own when it sets nothing but
+/// the inherited ones, which shares them, and a copy of those otherwise.
+fn inherited_fragmentation(from: &ComputedStyle) -> Option<Arc<Fragmentation>> {
+    let own = from.fragmentation.as_ref()?;
+    let inherited = own.inherited();
+    if inherited == Fragmentation::default() {
+        None
+    } else if **own == inherited {
+        Some(Arc::clone(own))
+    } else {
+        Some(Arc::new(inherited))
     }
 }
 
@@ -1839,13 +2001,58 @@ mod tests {
         // Every byte here is copied with every box and fragment (M17's
         // T4.3). The grid properties (M18) cost a pointer and no more:
         // 424 bytes before them; the transform, opacity and will-change
-        // properties (M19) another, 432 before them. Growing this is a
-        // decision, not an accident; say why where the number changes.
-        assert_eq!(std::mem::size_of::<ComputedStyle>(), 440);
+        // properties (M19) another, 432 before them; the break properties,
+        // `orphans`, `widows` and `print-color-adjust` (M20) another, 440
+        // before them. Growing this is a decision, not an accident; say
+        // why where the number changes.
+        assert_eq!(std::mem::size_of::<ComputedStyle>(), 448);
         assert_eq!(ComputedStyle::default().grid, None);
         assert_eq!(*ComputedStyle::default().grid(), GridStyle::default());
         assert_eq!(ComputedStyle::default().effects, None);
         assert_eq!(*ComputedStyle::default().effects(), Effects::default());
+        assert_eq!(ComputedStyle::default().fragmentation, None);
+        assert_eq!(
+            *ComputedStyle::default().fragmentation(),
+            Fragmentation::default()
+        );
+    }
+
+    #[test]
+    fn the_fragmentation_properties_inherit_orphans_widows_and_the_colour_adjustment() {
+        let mut parent = ComputedStyle::default();
+        assert_eq!(ComputedStyle::inherited_from(&parent).fragmentation, None);
+        // The break properties alone: nothing to inherit.
+        parent.fragmentation_mut().break_before = BreakBetween::Page;
+        parent.fragmentation_mut().break_inside = BreakInside::Avoid;
+        assert_eq!(ComputedStyle::inherited_from(&parent).fragmentation, None);
+        // An inherited one: a copy of those alone.
+        parent.fragmentation_mut().orphans = 4;
+        let child = ComputedStyle::inherited_from(&parent);
+        assert_eq!(
+            *child.fragmentation(),
+            Fragmentation {
+                orphans: 4,
+                ..Fragmentation::default()
+            }
+        );
+        // Inherited ones alone: shared, not copied.
+        let grandchild = ComputedStyle::inherited_from(&child);
+        assert!(Arc::ptr_eq(
+            grandchild.fragmentation.as_ref().unwrap(),
+            child.fragmentation.as_ref().unwrap()
+        ));
+        let mut exact = ComputedStyle::default();
+        exact.fragmentation_mut().print_color_adjust = PrintColorAdjust::Exact;
+        exact.fragmentation_mut().widows = 7;
+        let child = ComputedStyle::inherited_from(&exact);
+        assert_eq!(
+            child.fragmentation().print_color_adjust,
+            PrintColorAdjust::Exact
+        );
+        assert_eq!(child.fragmentation().widows, 7);
+        assert!(BreakBetween::Left.forces_page() && !BreakBetween::Column.forces_page());
+        assert!(BreakBetween::AvoidPage.avoids_page() && !BreakBetween::AvoidColumn.avoids_page());
+        assert!(BreakInside::Avoid.avoids_page() && !BreakInside::AvoidRegion.avoids_page());
     }
 
     #[test]

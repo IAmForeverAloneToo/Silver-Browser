@@ -26,8 +26,8 @@ them; `expectations.txt` names those expected to fail, and why.
 | --- | ---: |
 | checklayout | 40 |
 | crashtest | 23 |
-| reftest | 903 |
-| all | 966 |
+| reftest | 911 |
+| all | 974 |
 
 ## Left out
 
@@ -64,8 +64,7 @@ The first reason the rule found for each test it left out:
 | declaration of background-color | 16 |
 | declaration of visibility | 14 |
 | declaration of white-space | 14 |
-| declaration of widows | 13 |
-| not a reftest, a check-layout test or a crashtest | 13 |
+| not a reftest, a check-layout test or a crashtest | 14 |
 | declaration of block-size | 12 |
 | element <iframe> | 12 |
 | declaration of align-self | 11 |
@@ -79,11 +78,13 @@ The first reason the rule found for each test it left out:
 | declaration of column-count | 8 |
 | @keyframes | 7 |
 | @namespace | 7 |
+| declaration of break-after | 7 |
 | declaration of flex | 7 |
 | declaration of grid-template | 7 |
 | declaration of width | 6 |
 | element <button> | 6 |
 | declaration of background-image | 5 |
+| declaration of break-before | 5 |
 | declaration of contain | 5 |
 | declaration of filter | 5 |
 | declaration of overflow | 5 |
@@ -93,8 +94,6 @@ The first reason the rule found for each test it left out:
 | declaration of color | 4 |
 | declaration of height | 4 |
 | declaration of list-style | 4 |
-| declaration of page-break-after | 4 |
-| declaration of page-break-before | 4 |
 | self-closing <canvas/> in XHTML | 4 |
 | declaration of animation | 3 |
 | declaration of clip-path | 3 |

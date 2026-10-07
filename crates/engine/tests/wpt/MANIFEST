@@ -87,6 +87,14 @@ reftest	css/css-flexbox/flexbox-align-items-center-nested-001.html	==css/css-fle
 reftest	css/css-flexbox/flexbox-align-self-stretch-vert-001.html	==css/css-flexbox/flexbox-align-self-stretch-vert-001-ref.html
 reftest	css/css-flexbox/flexbox-align-self-stretch-vert-002.html	==css/css-flexbox/flexbox-align-self-stretch-vert-002-ref.html
 reftest	css/css-flexbox/flexbox-anonymous-items-001.html	==css/css-flexbox/flexbox-anonymous-items-001-ref.html
+reftest	css/css-flexbox/flexbox-break-request-horiz-001a.html	==css/css-flexbox/flexbox-break-request-horiz-001-ref.html
+reftest	css/css-flexbox/flexbox-break-request-horiz-001b.html	==css/css-flexbox/flexbox-break-request-horiz-001-ref.html
+reftest	css/css-flexbox/flexbox-break-request-horiz-002a.html	==css/css-flexbox/flexbox-break-request-horiz-002-ref.html
+reftest	css/css-flexbox/flexbox-break-request-horiz-002b.html	==css/css-flexbox/flexbox-break-request-horiz-002-ref.html
+reftest	css/css-flexbox/flexbox-break-request-vert-001a.html	==css/css-flexbox/flexbox-break-request-vert-001-ref.html
+reftest	css/css-flexbox/flexbox-break-request-vert-001b.html	==css/css-flexbox/flexbox-break-request-vert-001-ref.html
+reftest	css/css-flexbox/flexbox-break-request-vert-002a.html	==css/css-flexbox/flexbox-break-request-vert-002-ref.html
+reftest	css/css-flexbox/flexbox-break-request-vert-002b.html	==css/css-flexbox/flexbox-break-request-vert-002-ref.html
 reftest	css/css-flexbox/flexbox-column-row-gap-001.html	==css/css-flexbox/flexbox-column-row-gap-001-ref.html
 reftest	css/css-flexbox/flexbox-column-row-gap-003.html	==css/css-flexbox/flexbox-column-row-gap-003-ref.html
 reftest	css/css-flexbox/flexbox-definite-sizes-001.html	==css/css-flexbox/flexbox-definite-sizes-001-ref.html

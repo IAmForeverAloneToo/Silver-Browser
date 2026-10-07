@@ -52,6 +52,9 @@ pub mod invalidation;
 /// query lists parsed from tokens and evaluated against it.
 pub mod media;
 
+/// The page box (M20): `@page` rules and what they say of a page.
+pub mod page;
+
 /// The style rules of a set of sheets with the `@media` blocks and the
 /// cascade layers they are in (M20).
 mod rule_set;
@@ -81,4 +84,5 @@ pub use invalidation::SelectorFeatures;
 pub use media::{
     ColorScheme, Media, MediaQueryList, MediaType, Preferences, parse_media_query_list,
 };
+pub use page::{Orientation, PagePosition, PageSize, PageStyle};
 pub use rule_set::is_layer_name;

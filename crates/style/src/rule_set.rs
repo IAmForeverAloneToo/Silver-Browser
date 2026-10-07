@@ -8,8 +8,10 @@
 //! `@supports` block whose condition holds is walked into, and one
 //! whose condition is false or invalid is passed over with all its
 //! rules, the answer being the engine's and fixed; `@layer` statements
-//! and blocks name the layers, a dotted name a layer inside a layer.
-//! Every other at-rule is passed over. [`RuleSet::in_force`] then gives
+//! and blocks name the layers, a dotted name a layer inside a layer;
+//! an `@page` rule whose selectors parse is kept as a style rule is,
+//! for the pages (`crate::page`). Every other at-rule is passed over.
+//! [`RuleSet::in_force`] then gives
 //! the rules a medium applies: those every `@media` list around which
 //! holds, each with its layer's place in the order, which depends on
 //! the medium too, a layer named only inside a block whose list is
@@ -23,12 +25,15 @@ use crate::cascade::ParsedRule;
 use crate::conditions::supports_condition;
 use crate::invalidation::SelectorFeatures;
 use crate::media::{Media, MediaQueryList, parse_media_query_list, split_commas, trim};
+use crate::page::{PageSelector, parse_page_selectors};
 use crate::selector_matching::{SelectorList, parse_selector_list};
 
 /// The style rules of a set of sheets, in the order they appear.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RuleSet {
     rules: Vec<StyleRule>,
+    /// The `@page` rules kept, in the order they appear.
+    pages: Vec<PageRule>,
     /// The ways down to the rules, each a run of indices: the rule's
     /// among its sheet's, then among the block's it is in, and so on.
     paths: Vec<u32>,
@@ -51,6 +56,25 @@ struct StyleRule {
     /// The innermost `@media` block around it.
     block: Option<u32>,
     layer: u32,
+}
+
+/// An `@page` rule kept: as a [`StyleRule`], with page selectors.
+#[derive(Debug, Clone)]
+struct PageRule {
+    sheet: u32,
+    path: (u32, u32),
+    selectors: Vec<PageSelector>,
+    block: Option<u32>,
+    layer: u32,
+}
+
+/// An `@page` rule in force: its selectors and declarations, and its
+/// layer's places as [`ParsedRule`]'s.
+pub(crate) struct ParsedPage<'s> {
+    pub(crate) selectors: &'s [PageSelector],
+    pub(crate) declarations: &'s [css::Declaration],
+    pub(crate) layer: u32,
+    pub(crate) important_layer: u32,
 }
 
 /// An `@media` block: its list, and the block around it. A block comes
@@ -129,26 +153,19 @@ impl RuleSet {
         sheets: &'s [css::Stylesheet],
         answers: &[bool],
     ) -> Vec<ParsedRule<'s>> {
-        // A block holds when its list and every list around it do; the
-        // block around one comes before it.
-        let mut holds: Vec<bool> = Vec::with_capacity(self.blocks.len());
-        for (block, answer) in self.blocks.iter().zip(answers) {
-            let around = block.parent.is_none_or(|p| holds[p as usize]);
-            holds.push(*answer && around);
-        }
-        let holds_at = |block: Option<u32>| block.is_none_or(|b| holds[b as usize]);
-        let places = self.layer_places(&holds);
+        let (holds, places) = self.ordered(answers);
         let last = places[UNLAYERED as usize];
         self.rules
             .iter()
-            .filter(|rule| holds_at(rule.block))
+            .filter(|rule| rule.block.is_none_or(|b| holds[b as usize]))
             .map(|rule| {
-                let (start, len) = rule.path;
-                let path = &self.paths[start as usize..(start + len) as usize];
                 let place = places[rule.layer as usize];
                 ParsedRule {
                     list: &rule.list,
-                    declarations: declarations_at(&sheets[rule.sheet as usize], path),
+                    declarations: declarations_at(
+                        &sheets[rule.sheet as usize],
+                        self.path(rule.path),
+                    ),
                     layer: place,
                     // Among important declarations the order of the
                     // layers is reversed.
@@ -156,6 +173,57 @@ impl RuleSet {
                 }
             })
             .collect()
+    }
+
+    /// The `@page` rules of `sheets` that `answers` leave in force, in
+    /// order, each with its layer's place, as [`RuleSet::in_force`] gives
+    /// the style rules.
+    pub(crate) fn pages_in_force<'s>(
+        &'s self,
+        sheets: &'s [css::Stylesheet],
+        answers: &[bool],
+    ) -> Vec<ParsedPage<'s>> {
+        let (holds, places) = self.ordered(answers);
+        let last = places[UNLAYERED as usize];
+        self.pages
+            .iter()
+            .filter(|page| page.block.is_none_or(|b| holds[b as usize]))
+            .map(|page| {
+                let place = places[page.layer as usize];
+                let rule = rule_at(&sheets[page.sheet as usize], self.path(page.path));
+                let declarations = match rule {
+                    Rule::At(at) => match &at.block {
+                        Some(Block::Declarations(declarations)) => declarations.as_slice(),
+                        _ => unreachable!("a page rule has declarations"),
+                    },
+                    Rule::Qualified(_) => unreachable!("a page rule is an at-rule"),
+                };
+                ParsedPage {
+                    selectors: &page.selectors,
+                    declarations,
+                    layer: place,
+                    important_layer: last - place,
+                }
+            })
+            .collect()
+    }
+
+    /// Which `@media` blocks hold under `answers`, a block holding when
+    /// its list and every list around it do, and each layer's place.
+    fn ordered(&self, answers: &[bool]) -> (Vec<bool>, Vec<u32>) {
+        // The block around one comes before it.
+        let mut holds: Vec<bool> = Vec::with_capacity(self.blocks.len());
+        for (block, answer) in self.blocks.iter().zip(answers) {
+            let around = block.parent.is_none_or(|p| holds[p as usize]);
+            holds.push(*answer && around);
+        }
+        let places = self.layer_places(&holds);
+        (holds, places)
+    }
+
+    /// The path a rule's `(start, len)` names.
+    fn path(&self, (start, len): (u32, u32)) -> &[u32] {
+        &self.paths[start as usize..(start + len) as usize]
     }
 
     /// Each layer's place in the order, given which `@media` blocks
@@ -201,6 +269,14 @@ impl RuleSet {
 
 /// The declarations of the style rule at `path` in `sheet`.
 fn declarations_at<'s>(sheet: &'s css::Stylesheet, path: &[u32]) -> &'s [css::Declaration] {
+    match rule_at(sheet, path) {
+        Rule::Qualified(rule) => &rule.declarations,
+        Rule::At(_) => unreachable!("a style rule's path ends at a style rule"),
+    }
+}
+
+/// The rule at `path` in `sheet`.
+fn rule_at<'s>(sheet: &'s css::Stylesheet, path: &[u32]) -> &'s Rule {
     let mut rules = sheet.rules.as_slice();
     let (&last, blocks) = path.split_last().expect("a rule's path is never empty");
     for &index in blocks {
@@ -212,10 +288,7 @@ fn declarations_at<'s>(sheet: &'s css::Stylesheet, path: &[u32]) -> &'s [css::De
             Rule::Qualified(_) => unreachable!("a path goes through at-rules"),
         }
     }
-    match &rules[last as usize] {
-        Rule::Qualified(rule) => &rule.declarations,
-        Rule::At(_) => unreachable!("a path ends at a style rule"),
-    }
+    &rules[last as usize]
 }
 
 impl Builder<'_> {
@@ -253,6 +326,21 @@ impl Builder<'_> {
             _ => None,
         };
         match (name.as_str(), rules) {
+            ("page", None) => {
+                if let (Some(Block::Declarations(_)), Some(selectors)) =
+                    (&at.block, parse_page_selectors(&at.prelude))
+                {
+                    let start = self.set.paths.len() as u32;
+                    self.set.paths.extend_from_slice(&self.path);
+                    self.set.pages.push(PageRule {
+                        sheet: place.sheet,
+                        path: (start, self.path.len() as u32),
+                        selectors,
+                        block: place.block,
+                        layer: place.layer,
+                    });
+                }
+            }
             ("media", Some(rules)) => {
                 let block = self.set.blocks.len() as u32;
                 self.set.blocks.push(MediaBlock {
