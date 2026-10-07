@@ -81,16 +81,17 @@ use dom::NodeId;
 
 use style::computed::{
     BOTTOM, BoxSizing, Clear, ComputedStyle, Display, Float, LEFT, LengthPercentage,
-    LengthPercentageAuto, MaxSize, Position, RIGHT, Size, TOP,
+    LengthPercentageAuto, ListStylePosition, MaxSize, Position, RIGHT, Size, TOP,
 };
 use style::selector_matching::PseudoElement;
 use style::transform::{Matrix, ReferenceBox};
 use text::FontCollection;
 
-use crate::box_tree::{BoxKind, LayoutBox};
+use crate::box_tree::{BoxKind, LayoutBox, MarkerShape};
 use crate::cache::{Held, Inputs, LayoutCache};
 use crate::float::{At, FloatContext, FloatKey, PendingFloat, attach_floats};
 use crate::inline::layout_inline;
+use crate::marker::Marker;
 use crate::pass::Pass;
 
 /// A positioned, sized box ready for painting (roadmap M6.7), one node
@@ -118,7 +119,8 @@ pub struct Fragment {
     /// originating element (M16).
     pub node: NodeId,
     /// Whether the fragment is made from a box an element's `::before`
-    /// or `::after` generated, or from one inside it (M16,
+    /// or `::after` generated, or a list item's marker (M21.6), or from
+    /// one inside it (M16,
     /// [`crate::LayoutBox::generated`]): it names its element without
     /// being one of the element's own, so what looks for those — the
     /// canvas background, an element's scroll offset and scrolling box,
@@ -195,6 +197,9 @@ pub enum FragmentKind {
     /// `style`. Its background and border paint from `style` within
     /// its border box, like a block's; `overflow` does not apply to it.
     InlineBox,
+    /// A list item's marker drawn as a shape (M21.6): the shape, in
+    /// `style`'s colour, in the square `(x, y, w, h)`.
+    Marker(MarkerShape),
 }
 
 impl Fragment {
@@ -1578,6 +1583,13 @@ pub(crate) fn layout_block_contents<'a>(
     let non_content_width = edges.horizontal();
     let can_collapse_through = !stops_top && !stops_bottom && height_is_auto;
     let content_x = border[LEFT] + padding[LEFT];
+    // A list item's outside marker beside its content rather than on a
+    // line of it (M21.6): placed once the content is laid out.
+    let beside = b
+        .children
+        .first()
+        .filter(|c| matches!(c.kind, BoxKind::Marker { outside: true, .. }))
+        .map(|c| Marker::of(c, &c.style, pass.fonts));
 
     // An empty block (no children, no border/padding, auto height, not
     // a formatting context root): its own margin-top and margin-bottom
@@ -1666,8 +1678,9 @@ pub(crate) fn layout_block_contents<'a>(
 
     // Every child collapsed through (empty blocks all the way down):
     // their one set and this box's own margins adjoin, and so does the
-    // box's top with its bottom.
-    if children.nothing_materialised && can_collapse_through {
+    // box's top with its bottom — unless a list item's marker makes a
+    // line of it.
+    if children.nothing_materialised && can_collapse_through && beside.is_none() {
         let top_edge = own_top.join(children.leading);
         let set = top_edge.join(own_bottom);
         let mut root = box_fragment(content_width + non_content_width, 0.0, b);
@@ -1752,6 +1765,24 @@ pub(crate) fn layout_block_contents<'a>(
         Some(bottom) if bfc_root => auto_content_height.max(bottom),
         _ => auto_content_height,
     };
+    // A list item's marker beside content with no first baseline is on
+    // a line of its own at the content's top, which the list item is at
+    // least as tall as (M21.6): the line the marker and the list item's
+    // strut make.
+    let marker_line = beside
+        .as_ref()
+        .filter(|_| children.first_baseline.is_none())
+        .map(|marker| {
+            let strut = pass.fonts.metrics_for_text(" ", b.style.font_size_px);
+            let ascent = strut.ascent.max(marker.metrics.ascent);
+            let below = (strut.descent + strut.line_gap)
+                .max(marker.metrics.descent + marker.metrics.line_gap);
+            (ascent, ascent + below)
+        });
+    let auto_content_height = match marker_line {
+        Some((_, height)) => auto_content_height.max(height),
+        None => auto_content_height,
+    };
     // CSS2 §10.7: the tentative height clamped to `max-height`, then
     // `min-height`.
     let content_height = clamp_height(
@@ -1759,7 +1790,10 @@ pub(crate) fn layout_block_contents<'a>(
         bounds(Some(auto_content_height)),
     );
 
-    let margin_bottom = if stops_bottom || !height_is_auto {
+    // A marker's line ends the margins collapsing through the content,
+    // whose set escaped through the top.
+    let line_below = beside.is_some() && children.nothing_materialised;
+    let margin_bottom = if stops_bottom || !height_is_auto || line_below {
         own_bottom
     } else {
         own_bottom.join(children.trailing)
@@ -1779,6 +1813,42 @@ pub(crate) fn layout_block_contents<'a>(
         .into_iter()
         .map(|f| f.translated(content_x, content_y))
         .collect();
+    // A list item's outside marker (M21.6): beside the first baseline of
+    // its content or on its line at the top, or moved to its place on
+    // the first line, which laid it out at the line's start.
+    let mut first_baseline = children.first_baseline.map(|y| content_y + y);
+    let mut last_baseline = children.last_baseline.map(|y| content_y + y);
+    if let Some(marker) = &beside {
+        let baseline = match (first_baseline, marker_line) {
+            (Some(baseline), _) => baseline,
+            (None, Some((ascent, _))) => content_y + ascent,
+            (None, None) => content_y,
+        };
+        first_baseline.get_or_insert(baseline);
+        last_baseline.get_or_insert(baseline);
+        let shape = matches!(marker.b.kind, BoxKind::Marker { shape: Some(_), .. })
+            .then(|| crate::marker::Shape::of(&marker.metrics));
+        let x =
+            crate::marker::outside_left(&b.style, border_box_width, marker.width, shape.as_ref());
+        let fragments = marker.fragments(
+            x,
+            baseline,
+            marker.metrics.ascent,
+            marker.metrics.descent,
+            pass.fonts,
+        );
+        root.children.splice(0..0, fragments);
+    } else if b.style.display == Display::ListItem
+        && b.style.lists().list_style_position == ListStylePosition::Outside
+    {
+        crate::marker::place_on_line(
+            &mut root.children,
+            b.node,
+            &b.style,
+            border_box_width,
+            pass.fonts,
+        );
+    }
     if bfc_root {
         // The floats of this context get their positions, under
         // whichever box of the context holds their fragment.
@@ -1830,8 +1900,8 @@ pub(crate) fn layout_block_contents<'a>(
         top_edge: margin_top,
         bottom_edge: margin_bottom,
         self_collapsing: false,
-        last_baseline: children.last_baseline.map(|y| content_y + y),
-        first_baseline: children.first_baseline.map(|y| content_y + y),
+        last_baseline,
+        first_baseline,
         inline_block_baseline: children.inline_block_baseline.map(|y| content_y + y),
         absolutes,
         auto_content_height,
@@ -2686,6 +2756,10 @@ fn layout_children<'a>(
                 at.anchor = root_top + layout.height;
                 at.strut = pending;
             }
+            // A list item's marker that is beside its content, not on a
+            // line (M21.6): the list item places it, once its content is
+            // laid out.
+            BoxKind::Marker { .. } => {}
             BoxKind::Float => {
                 // Out of flow: sized as an inline-block, placed at the
                 // flow position after the margins resolved so far — or

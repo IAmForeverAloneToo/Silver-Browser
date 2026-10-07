@@ -2380,6 +2380,31 @@ mod tests {
     }
 
     #[test]
+    fn a_lists_markers_are_drawn_as_the_reference_browser_draws_them() {
+        // M21.6: a disc, a circle stroked a pixel wide along the square's
+        // inscribed circle and a square, 5 pixels at 16, their left edge
+        // 17 before the list item's, 7 below the line's top — rows of 30.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body, ul { margin: 0 } li { height: 30px }</style>\
+             <ul><li>&nbsp;</li></ul><ul style='list-style-type: circle'><li>&nbsp;</li></ul>\
+             <ul style='list-style-type: square'><li>&nbsp;</li></ul>",
+        );
+        let pixels = engine.frame(200, 100);
+        let red = |x: usize, y: usize| pixels[(y * 200 + x) * 4];
+        let (dark, white) = (100, 250);
+        // The disc's middle, and nothing past its square.
+        assert!(red(25, 9) < dark);
+        assert!(red(22, 9) > white && red(28, 9) > white);
+        // The circle's ring, open in the middle.
+        assert!(red(22, 39) < 200 && red(28, 39) < 200);
+        assert!(red(25, 39) > white);
+        // The square, corner to corner.
+        assert!(red(23, 67) < dark && red(27, 71) < dark);
+        assert!(red(22, 67) > white && red(28, 71) > white);
+    }
+
+    #[test]
     fn display_none_removes_the_element_from_the_frame() {
         let mut engine = test_engine();
         engine.load_document("<p>Visible</p>");
@@ -2697,7 +2722,9 @@ mod tests {
                 .iter()
                 .filter_map(|f| match f.kind {
                     layout::FragmentKind::Text(_) => Some(f.y.round() as i32),
-                    layout::FragmentKind::Box | layout::FragmentKind::InlineBox => None,
+                    layout::FragmentKind::Box
+                    | layout::FragmentKind::InlineBox
+                    | layout::FragmentKind::Marker(_) => None,
                 })
                 .collect();
             ys.sort_unstable();

@@ -109,6 +109,10 @@ pub enum Display {
     /// An inline-level grid container: atomic on its line like an
     /// inline-block, a grid container inside.
     InlineGrid,
+    /// A block-level list item (Lists 3 §2, M21.6): a block container
+    /// that generates a `::marker` box and increments the `list-item`
+    /// counter. Blockified, it stays one.
+    ListItem,
 }
 
 impl Display {
@@ -146,11 +150,17 @@ impl Display {
     /// blockification): an inline table becomes a table, an inline flex
     /// container a flex container and an inline grid container a grid
     /// container; an inline box, an inline-block and every
-    /// table-internal box become a block; a block, a table, a flex
-    /// container, a grid container and `none` stay what they are.
+    /// table-internal box become a block; a block, a list item, a table,
+    /// a flex container, a grid container and `none` stay what they
+    /// are.
     pub fn blockified(self) -> Display {
         match self {
-            Display::Block | Display::Table | Display::Flex | Display::Grid | Display::None => self,
+            Display::Block
+            | Display::ListItem
+            | Display::Table
+            | Display::Flex
+            | Display::Grid
+            | Display::None => self,
             Display::InlineTable => Display::Table,
             Display::InlineFlex => Display::Flex,
             Display::InlineGrid => Display::Grid,
@@ -1482,9 +1492,10 @@ pub struct Fragmentation {
     pub print_color_adjust: PrintColorAdjust,
 }
 
-/// The counter properties (Lists 3 §4, M21.4): what
-/// [`ComputedStyle::lists`] points to when any of them is not its initial
-/// value, `none`. None is inherited.
+/// The counter properties (Lists 3 §4, M21.4) and the list properties
+/// (§3, M21.6): what [`ComputedStyle::lists`] points to when any of them
+/// is not its initial value. The counter properties are not inherited;
+/// the list properties are.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Lists {
     /// `counter-reset`: the counters the element instantiates, in order,
@@ -1496,6 +1507,59 @@ pub struct Lists {
     /// `counter-set`: the counters set and to what, in order; empty for
     /// `none`.
     pub counter_set: Vec<CounterChange>,
+    /// `list-style-type`: what a list item's marker says when its
+    /// `content` is `normal` (§3.4).
+    pub list_style_type: ListStyleType,
+    /// `list-style-position`: where a list item's marker goes (§3.5).
+    pub list_style_position: ListStylePosition,
+    /// `list-style-image`: the URL of the image a marker would be, or
+    /// `None` for `none`; taken and never loaded until images (M23), so
+    /// that a marker falls through to `list-style-type` (§3.3).
+    pub list_style_image: Option<Arc<str>>,
+}
+
+impl Lists {
+    /// The values a child inherits: the list properties, the counter
+    /// properties initial.
+    fn inherited(&self) -> Lists {
+        Lists {
+            list_style_type: self.list_style_type.clone(),
+            list_style_position: self.list_style_position,
+            list_style_image: self.list_style_image.clone(),
+            ..Lists::default()
+        }
+    }
+}
+
+/// `list-style-type`'s computed value (Lists 3 §3.4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ListStyleType {
+    /// A counter style, by name: a predefined style's ASCII-lowercased,
+    /// any other kept as written (Counter Styles 3 §3); `disc` is the
+    /// initial value.
+    Style(Arc<str>),
+    /// A string, the marker's text as it is.
+    String(Arc<str>),
+    /// `none`: no marker, unless `::marker`'s `content` makes one.
+    None,
+}
+
+impl Default for ListStyleType {
+    fn default() -> Self {
+        ListStyleType::Style(Arc::from("disc"))
+    }
+}
+
+/// `list-style-position`'s computed value (Lists 3 §3.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ListStylePosition {
+    /// The marker is outside the list item's box, before its first line:
+    /// the initial value.
+    #[default]
+    Outside,
+    /// The marker is an inline box at the start of the list item's
+    /// content.
+    Inside,
 }
 
 /// One counter `counter-reset` instantiates.
@@ -1576,11 +1640,12 @@ pub const BOTTOM: usize = 2;
 pub const LEFT: usize = 3;
 
 /// `content`'s computed value (CSS 2.2 §12.2, M16), which only
-/// `::before` and `::after` read.
+/// `::before`, `::after` and `::marker` (M21.6) read.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum Content {
     /// `normal`, the initial value; on `::before` and `::after` it
-    /// computes to `none`.
+    /// computes to `none`, and on `::marker` it is a marker made from
+    /// the list item's `list-style-type` (Lists 3 §3.2).
     #[default]
     Normal,
     /// `none`: no box.
@@ -1826,9 +1891,10 @@ pub struct ComputedStyle {
     /// unless the element declares one. Read through
     /// [`ComputedStyle::custom_property`].
     pub custom: Option<Arc<CustomProperties>>,
-    /// The counter properties (M21.4), behind one pointer as the grid's
-    /// are; `None` is every initial value. Read through
-    /// [`ComputedStyle::lists`].
+    /// The counter properties (M21.4) and the list properties (M21.6),
+    /// behind one pointer as the grid's are, the inherited half copied to
+    /// a child as `fragmentation`'s is; `None` is every initial value.
+    /// Read through [`ComputedStyle::lists`].
     pub lists: Option<Arc<Lists>>,
 }
 
@@ -2044,6 +2110,7 @@ impl ComputedStyle {
             empty_cells: from.empty_cells,
             quotes: from.quotes.clone(),
             fragmentation: inherited_fragmentation(from),
+            lists: inherited_lists(from),
             custom: from.custom.clone(),
             ..self
         }
@@ -2057,6 +2124,20 @@ fn inherited_fragmentation(from: &ComputedStyle) -> Option<Arc<Fragmentation>> {
     let own = from.fragmentation.as_ref()?;
     let inherited = own.inherited();
     if inherited == Fragmentation::default() {
+        None
+    } else if **own == inherited {
+        Some(Arc::clone(own))
+    } else {
+        Some(Arc::new(inherited))
+    }
+}
+
+/// The list properties a child of `from` inherits, as
+/// [`inherited_fragmentation`] gives the fragmentation properties.
+fn inherited_lists(from: &ComputedStyle) -> Option<Arc<Lists>> {
+    let own = from.lists.as_ref()?;
+    let inherited = own.inherited();
+    if inherited == Lists::default() {
         None
     } else if **own == inherited {
         Some(Arc::clone(own))
@@ -2187,6 +2268,38 @@ mod tests {
         assert!(BreakBetween::Left.forces_page() && !BreakBetween::Column.forces_page());
         assert!(BreakBetween::AvoidPage.avoids_page() && !BreakBetween::AvoidColumn.avoids_page());
         assert!(BreakInside::Avoid.avoids_page() && !BreakInside::AvoidRegion.avoids_page());
+    }
+
+    #[test]
+    fn the_list_properties_inherit_and_the_counter_properties_do_not() {
+        let mut parent = ComputedStyle::default();
+        assert_eq!(
+            parent.lists().list_style_type,
+            ListStyleType::Style(Arc::from("disc"))
+        );
+        // The counter properties alone: nothing to inherit.
+        parent.lists_mut().counter_increment.push(CounterChange {
+            name: Arc::from("c"),
+            value: 1,
+        });
+        assert_eq!(ComputedStyle::inherited_from(&parent).lists, None);
+        // A list property: a copy of those alone.
+        parent.lists_mut().list_style_position = ListStylePosition::Inside;
+        let child = ComputedStyle::inherited_from(&parent);
+        assert_eq!(
+            *child.lists(),
+            Lists {
+                list_style_position: ListStylePosition::Inside,
+                ..Lists::default()
+            }
+        );
+        // List properties alone: shared, not copied.
+        let grandchild = ComputedStyle::inherited_from(&child);
+        assert!(Arc::ptr_eq(
+            grandchild.lists.as_ref().unwrap(),
+            child.lists.as_ref().unwrap()
+        ));
+        assert_eq!(Display::ListItem.blockified(), Display::ListItem);
     }
 
     #[test]

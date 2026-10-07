@@ -54,12 +54,26 @@ h6 { display: block; font-size: 0.67em; margin: 2.33em 0; }
 
 p { display: block; margin: 1em 0; }
 
-ul, ol {
+ul, ol, menu, dir {
   display: block;
   margin: 1em 0;
   padding: 0 0 0 40px;
 }
-li { display: block; }
+
+/* Lists (HTML §15.3.8, M21.6): `li` is a list item, numbered by the
+ * `list-item` counter the lists reset, with a disc, circle or square
+ * by how deep its list is, or a number in an `ol`; nested lists have no
+ * margins above and below. `start`, `reversed`, `value` and `type` are
+ * presentational hints, which the cascade applies. The `::marker` rule
+ * is Lists 3 §3.1.1's, as far as the engine has its properties. */
+li { display: list-item; }
+ol, ul, menu { counter-reset: list-item; }
+ol { list-style-type: decimal; }
+dir, menu, ul { list-style-type: disc; }
+:is(dir, menu, ol, ul) :is(dir, menu, ul) { list-style-type: circle; }
+:is(dir, menu, ol, ul) :is(dir, menu, ol, ul) :is(dir, menu, ul) { list-style-type: square; }
+:is(dir, dl, menu, ol, ul) :is(dir, dl, menu, ol, ul) { margin-top: 0; margin-bottom: 0; }
+::marker { white-space: pre; text-transform: none; }
 
 blockquote { display: block; margin: 1em 40px; }
 
@@ -89,8 +103,7 @@ q::after { content: close-quote; }
 /* The rest of the HTML standard's block-level elements (HTML §15.3.3,
  * "Flow content"), which were missing: without this rule a <div> is an
  * inline box, so its width, height, margins and backgrounds do not
- * apply and every <div><p> pair takes the block-in-inline path. `li`
- * is a block rather than `list-item` until markers do (M21). */
+ * apply and every <div><p> pair takes the block-in-inline path. */
 address, article, aside, center, dd, details, dialog, dir, div, dl, dt,
 fieldset, figcaption, figure, footer, form, header, hgroup, hr, legend,
 listing, main, menu, nav, plaintext, search, section, summary, xmp {

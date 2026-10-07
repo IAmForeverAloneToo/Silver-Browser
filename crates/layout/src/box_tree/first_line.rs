@@ -70,7 +70,7 @@ fn visit(styled: &Styled<'_>, b: &mut LayoutBox) {
 
 /// What a walk of a block container's children for its first line
 /// found.
-enum Found {
+pub(super) enum Found {
     /// The run of the first line: the path leads to it.
     Line,
     /// A box with no first formatted line of its own came first: none.
@@ -83,15 +83,16 @@ enum Found {
 /// block container: the first with a line, recursively. Any other
 /// box's children are found to be no such line. `path` is the way down
 /// so far, by index, and on [`Found::Line`] the way to the run.
-fn in_blocks(children: &[LayoutBox], path: &mut Vec<usize>) -> Found {
+pub(super) fn in_blocks(children: &[LayoutBox], path: &mut Vec<usize>) -> Found {
     for (i, child) in children.iter().enumerate() {
         path.push(i);
         let found = match child.kind {
             BoxKind::AnonymousBlock if has_line(&child.children) => Found::Line,
             BoxKind::AnonymousBlock => Found::Empty,
             BoxKind::Block => in_blocks(&child.children, path),
-            // Out of flow.
-            BoxKind::Float | BoxKind::Absolute => Found::Empty,
+            // Out of flow, and a list item's marker beside its content
+            // (M21.6).
+            BoxKind::Float | BoxKind::Absolute | BoxKind::Marker { .. } => Found::Empty,
             // A table's lines are its cells', a flex container's its
             // items' (M17).
             _ => Found::Blocked,
@@ -122,7 +123,13 @@ fn has_line(items: &[LayoutBox]) -> bool {
                 .any(|c| !crate::inline::is_css_space(c) || (c == '\n' && breaks_kept))
         }
         BoxKind::Inline => has_edges(&b.style) || has_line(&b.children),
-        BoxKind::InlineBlock | BoxKind::Table | BoxKind::Flex | BoxKind::Grid => true,
+        // An inside marker drawn as a shape is an item on the line; an
+        // outside one is as wide as nothing there (M21.6).
+        BoxKind::InlineBlock
+        | BoxKind::Table
+        | BoxKind::Flex
+        | BoxKind::Grid
+        | BoxKind::Marker { outside: false, .. } => true,
         _ => false,
     })
 }

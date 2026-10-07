@@ -1,14 +1,15 @@
 //! The counter properties and the counter functions of `content`
-//! (Lists 3 §4, CSS 2.2 §12.2; M21.4). Each parser takes a declaration's
-//! value as the cascade has it and says `None` when the value is not one
-//! the property takes, so that the declaration is dropped.
+//! (Lists 3 §4, CSS 2.2 §12.2; M21.4), and the list properties (§3,
+//! M21.6). Each parser takes a declaration's value as the cascade has it
+//! and says `None` when the value is not one the property takes, so that
+//! the declaration is dropped.
 
 use std::sync::Arc;
 
 use css::Token;
 
 use super::{LengthBases, components, function_arguments, integer, single_ident};
-use crate::computed::{ContentItem, CounterChange, CounterReset};
+use crate::computed::{ContentItem, CounterChange, CounterReset, ListStylePosition, ListStyleType};
 use crate::counter_style;
 use crate::custom::is_custom_ident;
 
@@ -149,4 +150,154 @@ pub(super) fn counter_item(component: &[Token]) -> Option<ContentItem> {
         });
     }
     None
+}
+
+/// `list-style-type`: a `<counter-style>`, a string, or `none`.
+pub(super) fn parse_list_style_type(tokens: &[Token]) -> Option<ListStyleType> {
+    match super::trim(tokens) {
+        [Token::Ident(word)] if word.eq_ignore_ascii_case("none") => Some(ListStyleType::None),
+        [Token::String { value, bad: false }] => {
+            Some(ListStyleType::String(Arc::from(value.as_str())))
+        }
+        part => counter_style_name(part).map(ListStyleType::Style),
+    }
+}
+
+/// `list-style-position`: `inside` or `outside`.
+pub(super) fn parse_list_style_position(tokens: &[Token]) -> Option<ListStylePosition> {
+    match single_ident(tokens)?.to_ascii_lowercase().as_str() {
+        "inside" => Some(ListStylePosition::Inside),
+        "outside" => Some(ListStylePosition::Outside),
+        _ => None,
+    }
+}
+
+/// `list-style-image`: `none`, or a `url()`, whose URL is kept; no other
+/// `<image>` until images (M23). `Some(None)` is `none`.
+pub(super) fn parse_list_style_image(tokens: &[Token]) -> Option<Option<Arc<str>>> {
+    match super::trim(tokens) {
+        [Token::Ident(word)] if word.eq_ignore_ascii_case("none") => Some(None),
+        // The tokenizer makes the whole of a `url(…)`, quoted or not,
+        // one token.
+        [Token::Url { value, bad: false }] => Some(Some(Arc::from(value.as_str()))),
+        _ => None,
+    }
+}
+
+/// What the `list-style` shorthand sets: a position, an image and a
+/// type, each the initial value where the shorthand leaves it out.
+pub(super) type ListStyle = (ListStylePosition, Option<Arc<str>>, ListStyleType);
+
+/// The `list-style` shorthand (Lists 3 §3.6): a position, an image and a
+/// type in any order, each at most once. A `none` sets whichever of the
+/// image and the type the rest leaves unset, both when the rest sets
+/// neither.
+pub(super) fn parse_list_style(tokens: &[Token]) -> Option<ListStyle> {
+    let mut position = None;
+    let mut image = None;
+    let mut kind = None;
+    let mut nones = 0;
+    for part in components(tokens) {
+        if matches!(part, [Token::Ident(word)] if word.eq_ignore_ascii_case("none")) {
+            nones += 1;
+            continue;
+        }
+        // Each a first time, or the value is not the shorthand's.
+        let first = if let Some(value) = parse_list_style_position(part) {
+            position.replace(value).is_none()
+        } else if let Some(value) = parse_list_style_image(part) {
+            image.replace(value).is_none()
+        } else if let Some(value) = parse_list_style_type(part) {
+            kind.replace(value).is_none()
+        } else {
+            false
+        };
+        if !first {
+            return None;
+        }
+    }
+    let unset = usize::from(image.is_none()) + usize::from(kind.is_none());
+    match nones {
+        0 => {}
+        // One `none` and both unset: it is both.
+        _ if nones <= unset => {
+            image.get_or_insert(None);
+            kind.get_or_insert(ListStyleType::None);
+        }
+        _ => return None,
+    }
+    if position.is_none() && image.is_none() && kind.is_none() && nones == 0 {
+        return None;
+    }
+    Some((
+        position.unwrap_or_default(),
+        image.unwrap_or_default(),
+        kind.unwrap_or_default(),
+    ))
+}
+
+/// Whether the attribute `name` of an element named `tag` is one of the
+/// list hints [`list_hints`] reads, whose change restyles the element.
+pub(crate) fn is_list_hint(tag: &str, name: &str) -> bool {
+    match tag {
+        "ol" => matches!(name, "start" | "reversed" | "type"),
+        "ul" => name == "type",
+        "li" => matches!(name, "value" | "type"),
+        _ => false,
+    }
+}
+
+/// The declarations HTML's list attributes are presentational hints for
+/// (HTML §15.3.8, M21.6), as the text of a declaration block: an `ol`'s
+/// `start` resets `list-item` to one less, its `reversed` makes the
+/// counter `reversed(list-item)`, starting at one more than `start`
+/// when there is one; an `li`'s `value` sets `list-item`; and `type` on
+/// an `ol`, a `ul` or an `li` gives `list-style-type`, `1`, `a`, `A`,
+/// `i` and `I` matched as written and `none`, `disc`, `circle` and
+/// `square` in any case. Empty when the element has none.
+pub(super) fn list_hints(tag: &str, attr: impl Fn(&str) -> Option<String>) -> String {
+    if !matches!(tag, "ol" | "ul" | "li") {
+        return String::new();
+    }
+    let integer = |name: &str| attr(name).and_then(|value| dom::parse_integer(&value));
+    let clamp = |n: i64| n.clamp(i64::from(i32::MIN), i64::from(i32::MAX));
+    let mut out = String::new();
+    match tag {
+        "ol" => match (attr("reversed").is_some(), integer("start")) {
+            (true, Some(start)) => {
+                let start = clamp(start.saturating_add(1));
+                out.push_str(&format!("counter-reset: reversed(list-item) {start};"));
+            }
+            (true, None) => out.push_str("counter-reset: reversed(list-item);"),
+            (false, Some(start)) => {
+                let start = clamp(start.saturating_sub(1));
+                out.push_str(&format!("counter-reset: list-item {start};"));
+            }
+            (false, None) => {}
+        },
+        "li" => {
+            if let Some(value) = integer("value") {
+                let value = clamp(value);
+                out.push_str(&format!("counter-set: list-item {value};"));
+            }
+        }
+        _ => {}
+    }
+    let numbered = matches!(tag, "ol" | "li");
+    let bulleted = matches!(tag, "ul" | "li");
+    let style = attr("type").and_then(|kind| match kind.as_str() {
+        "1" if numbered => Some("decimal"),
+        "a" if numbered => Some("lower-alpha"),
+        "A" if numbered => Some("upper-alpha"),
+        "i" if numbered => Some("lower-roman"),
+        "I" if numbered => Some("upper-roman"),
+        _ if bulleted => ["none", "disc", "circle", "square"]
+            .into_iter()
+            .find(|name| kind.eq_ignore_ascii_case(name)),
+        _ => None,
+    });
+    if let Some(style) = style {
+        out.push_str(&format!("list-style-type: {style};"));
+    }
+    out
 }

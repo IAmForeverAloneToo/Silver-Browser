@@ -106,8 +106,9 @@ const P_SCOPE_STOPS: [&str; 5] = ["button", "table", "td", "th", "caption"];
 
 /// Where a search for an open `li` stops (the spec's "list item scope"
 /// plus the special elements its loop stops at): an `li` outside a
-/// nested list or a table cell is not closed by an `li` inside it.
-const LI_SCOPE_STOPS: [&str; 6] = ["ul", "ol", "table", "td", "th", "caption"];
+/// nested list — `ul`, `ol`, and `menu` and `dir` (M21.6) — or a table
+/// cell is not closed by an `li` inside it.
+const LI_SCOPE_STOPS: [&str; 8] = ["ul", "ol", "menu", "dir", "table", "td", "th", "caption"];
 
 /// Where a search for an open `dd`/`dt` stops.
 const DD_SCOPE_STOPS: [&str; 5] = ["dl", "table", "td", "th", "caption"];
@@ -750,6 +751,15 @@ mod tests {
         assert_eq!(tags(&a.children), vec!["#text", "ul"]);
         let inner = expect_element(&a.children, 1);
         assert_eq!(tags(&inner.children), vec!["li", "li"]);
+        // A `menu` and a `dir` are lists too.
+        for list in ["menu", "dir"] {
+            let root = build(&format!("<ol><li>a<{list}><li>b<li>c</{list}><li>d</ol>"));
+            let outer = expect_element(body_children(&root), 0);
+            assert_eq!(tags(&outer.children), vec!["li", "li"], "{list}");
+            let a = expect_element(&outer.children, 0);
+            let inner = expect_element(&a.children, 1);
+            assert_eq!(tags(&inner.children), vec!["li", "li"], "{list}");
+        }
     }
 
     #[test]

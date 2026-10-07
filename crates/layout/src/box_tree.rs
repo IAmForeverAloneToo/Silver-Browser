@@ -23,7 +23,12 @@
 //! makes, holding a text box with the content's text. The builder walks
 //! [`Item`]s, which are nodes or these boxes or their text, so a
 //! generated box is built by the code an element's is, anonymous boxes
-//! and all. The text in one, its quote marks and counters (M21.4)
+//! and all. A list item's marker (M21.6) comes before its `::before`:
+//! an inside one is built as a `::before` is, or as the shape a `disc`,
+//! `circle` or `square` is drawn as; an outside one is a
+//! [`BoxKind::Marker`], which goes into the run of the list item's first
+//! line once the tree is built, or stays the list item's first child
+//! where it has none. The text in one, its quote marks and counters (M21.4)
 //! among it, is found ahead of the build by a walk of the document in
 //! tree order ([`generated`]), the order both depend on. Once the tree
 //! is built, the boxes of the run holding a block container's
@@ -36,7 +41,10 @@ use std::collections::HashSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use dom::{Document, NodeId};
-use style::computed::{BackfaceVisibility, CaptionSide, Content, Display, Float, TransformStyle};
+use style::computed::{
+    BackfaceVisibility, CaptionSide, Content, Display, Float, ListStylePosition, ListStyleType,
+    TransformStyle,
+};
 use style::selector_matching::PseudoElement;
 use style::{ComputedStyle, Recascade, Styles};
 
@@ -75,9 +83,10 @@ pub struct LayoutBox {
     /// latter stand for the element: the layout cache keeps an
     /// element's results by its node (M13.2).
     pub anonymous: bool,
-    /// The pseudo-element that generated the box (M16): `::before` or
-    /// `::after` for the box one generates and for those inside it, its
-    /// anonymous boxes and its text; `None` for the element's own boxes
+    /// The pseudo-element that generated the box (M16): `::before`,
+    /// `::after` or a list item's `::marker` (M21.6) for the box one
+    /// generates and for those inside it, its anonymous boxes and its
+    /// text; `None` for the element's own boxes
     /// and the anonymous boxes in them. The fragments made from the box
     /// are marked as it is, so that what looks for an element's own
     /// boxes passes over them, and what tells two boxes of one element
@@ -95,8 +104,9 @@ pub struct LayoutBox {
     /// Whether the box's layout reads the style of an ancestor's
     /// pseudo-element (M16): a block between a block container and the
     /// text its `::first-letter` takes, or the run its `::first-line`
-    /// styles. A restyle of the ancestor does not reach the box, so the
-    /// layout cache neither keeps nor takes it.
+    /// styles; or holds an ancestor list item's outside marker, which
+    /// the list item places (M21.6). A restyle of the ancestor does not
+    /// reach the box, so the layout cache neither keeps nor takes it.
     pub styled_by_ancestor: bool,
     /// The box's style on the first formatted line, where it differs
     /// from its own (M16, [`first_line`]): set on the boxes in the run
@@ -275,6 +285,31 @@ pub enum BoxKind {
     /// absolutely positioned grid container is the `Float` or `Absolute`
     /// kind with a grid container's children.
     Grid,
+    /// A list item's marker where it is not an inline box (Lists 3 §3,
+    /// M21.6): one `outside` the list item, or one drawn as a `shape`.
+    /// An outside marker is in the run of the list item's first line,
+    /// as wide as nothing there, ending at the list item's border-box
+    /// start edge when laid out; where the list item has no first line,
+    /// it is the list item's first child, beside its content's first
+    /// baseline or at its top. A marker drawn as a shape is the shape;
+    /// any other holds its text, as a text box.
+    Marker {
+        outside: bool,
+        shape: Option<MarkerShape>,
+    },
+}
+
+/// The shapes `disc`, `circle` and `square` draw a marker as (Counter
+/// Styles 3 §6.3, M21.6), where the reference browser draws them rather
+/// than their characters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkerShape {
+    /// A filled circle.
+    Disc,
+    /// A circle stroked one pixel wide.
+    Circle,
+    /// A filled square.
+    Square,
 }
 
 /// Which of CSS2 §17.2's three row-group values a [`BoxKind::RowGroup`]
@@ -415,6 +450,7 @@ pub fn build_box_tree(
     };
     styled.generated = GeneratedText::of(&styled);
     let mut boxes = build_block_container(&styled, Item::Node(document.root()));
+    place_markers(&mut boxes);
     first_line::apply(&styled, &mut boxes);
     first_letter::apply(&styled, &mut boxes);
     number(
@@ -547,9 +583,11 @@ enum Item {
     GeneratedText(NodeId, Side),
 }
 
-/// Which of an element's two generated boxes an [`Item`] is.
+/// Which of an element's generated boxes an [`Item`] is: a list item's
+/// marker (M21.6), or its `::before` or `::after`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Side {
+    Marker,
     Before,
     After,
 }
@@ -557,6 +595,7 @@ enum Side {
 impl Side {
     fn pseudo_element(self) -> PseudoElement {
         match self {
+            Side::Marker => PseudoElement::Marker,
             Side::Before => PseudoElement::Before,
             Side::After => PseudoElement::After,
         }
@@ -627,9 +666,9 @@ impl<'a> Styled<'a> {
     }
 
     /// The items in `item`, in document order: a node's children, an
-    /// element's between the boxes its `::before` and `::after`
-    /// generate, when they do; a generated box's text; nothing in a
-    /// text.
+    /// element's after its marker and the box its `::before` generates
+    /// and before the one its `::after` does, when they do; a generated
+    /// box's text; nothing in a text.
     fn children(&self, item: Item) -> Vec<Item> {
         match item {
             Item::Node(node) => {
@@ -637,8 +676,9 @@ impl<'a> Styled<'a> {
                     self.generates(node, side)
                         .then_some(Item::Generated(node, side))
                 };
-                generated(Side::Before)
+                generated(Side::Marker)
                     .into_iter()
+                    .chain(generated(Side::Before))
                     .chain(self.document.children(node).map(Item::Node))
                     .chain(generated(Side::After))
                     .collect()
@@ -652,14 +692,25 @@ impl<'a> Styled<'a> {
     /// §4): the pseudo-element is styled, its `content` is a list (the
     /// cascade computes `normal` to `none` there), and the element is
     /// not replaced. One whose `display` is `none` makes no box, as an
-    /// element's does not.
+    /// element's does not. A list item's marker (Lists 3 §3.2, M21.6),
+    /// which the cascade styles for list items alone, is made from its
+    /// `content` when that is a list, and from its `list-style-type`
+    /// when that is `normal` and the type not `none`;
+    /// `list-style-image` never gives one until images (M23).
     fn generates(&self, node: NodeId, side: Side) -> bool {
         if self.document.tag(node).is_none_or(is_replaced) {
             return false;
         }
-        self.styles
-            .pseudo(node, side.pseudo_element())
-            .is_some_and(|style| matches!(style.content, Content::Items(_)))
+        let Some(style) = self.styles.pseudo(node, side.pseudo_element()) else {
+            return false;
+        };
+        match &style.content {
+            Content::Items(_) => true,
+            Content::Normal if side == Side::Marker => {
+                style.lists().list_style_type != ListStyleType::None
+            }
+            Content::Normal | Content::None => false,
+        }
     }
 
     /// The text of `item` when it is a text node or a generated box's
@@ -726,6 +777,61 @@ impl<'a> Styled<'a> {
             parent: None,
             in_3d: false,
         }
+    }
+}
+
+/// The shape a marker with the computed `style` is drawn as (M21.6): a
+/// `disc`, `circle` or `square` from `list-style-type`, its `content`
+/// being `normal`, as the reference browser draws them; `None` for any
+/// other, which is text.
+fn marker_shape(style: &ComputedStyle) -> Option<MarkerShape> {
+    if style.content != Content::Normal {
+        return None;
+    }
+    match &style.lists().list_style_type {
+        ListStyleType::Style(name) => match name.as_ref() {
+            "disc" => Some(MarkerShape::Disc),
+            "circle" => Some(MarkerShape::Circle),
+            "square" => Some(MarkerShape::Square),
+            _ => None,
+        },
+        ListStyleType::String(_) | ListStyleType::None => None,
+    }
+}
+
+/// Moves each outside marker in `boxes` and their descendants that its
+/// list item holds first into the run of the list item's first line,
+/// where it has one, as its first box (M21.6): found as `::first-line`
+/// finds its line ([`first_line`]). The blocks on the way down are
+/// marked as styled by an ancestor: the marker's place on the line is
+/// the list item's to give, which the layout cache does not see from
+/// theirs. Where there is no such line, the marker stays the list
+/// item's first child.
+fn place_markers(boxes: &mut [LayoutBox]) {
+    for b in boxes {
+        let outside = matches!(
+            b.children.first(),
+            Some(LayoutBox {
+                kind: BoxKind::Marker { outside: true, .. },
+                ..
+            })
+        );
+        let mut path = Vec::new();
+        if outside
+            && let first_line::Found::Line = first_line::in_blocks(&b.children[1..], &mut path)
+        {
+            let marker = b.children.remove(0);
+            let (&last, way) = path.split_last().expect("a path to a run");
+            let mut holder = &mut *b;
+            for &i in way {
+                holder = &mut holder.children[i];
+                if holder.kind == BoxKind::Block {
+                    holder.styled_by_ancestor = true;
+                }
+            }
+            holder.children[last].children.insert(0, marker);
+        }
+        place_markers(&mut b.children);
     }
 }
 
@@ -960,6 +1066,10 @@ impl BlockContainer<'_> {
             return;
         }
         self.flush_misplaced(parent, misplaced);
+        if let Item::Generated(element, Side::Marker) = child {
+            self.add_marker(child, element, style);
+            return;
+        }
         match style.display {
             // A float or an absolutely positioned box computes to a
             // block-level `display` (CSS2 §9.7, the cascade's rule) and
@@ -967,7 +1077,7 @@ impl BlockContainer<'_> {
             // is `table`; outside it is out of flow, and goes where it
             // is met: into the run or inline open around it, else among
             // the container's blocks.
-            Display::Block | Display::Table | Display::Flex | Display::Grid
+            Display::Block | Display::ListItem | Display::Table | Display::Flex | Display::Grid
                 if style.float != Float::None || style.position.is_out_of_flow() =>
             {
                 let kind = if style.position.is_out_of_flow() {
@@ -983,7 +1093,7 @@ impl BlockContainer<'_> {
                     self.add_inline_level(out_of_flow);
                 }
             }
-            Display::Block => {
+            Display::Block | Display::ListItem => {
                 let block = styled.own_box(child, style, BoxKind::Block, || {
                     build_block_container(styled, child)
                 });
@@ -1004,13 +1114,7 @@ impl BlockContainer<'_> {
                     styled.own_box(child, style, BoxKind::Table, || build_table(styled, child));
                 self.add_block(table);
             }
-            Display::Inline => {
-                let inline = styled.own_box(child, style, BoxKind::Inline, Vec::new);
-                self.open.push(inline);
-                self.add_children(child, &styled.children(child));
-                let inline = self.open.pop().expect("the inline just opened");
-                self.add_inline_level(inline);
-            }
+            Display::Inline => self.add_inline(child, style),
             Display::InlineBlock => {
                 let block = styled.own_box(child, style, BoxKind::InlineBlock, || {
                     build_block_container(styled, child)
@@ -1041,6 +1145,66 @@ impl BlockContainer<'_> {
             | Display::TableColumn
             | Display::TableCell
             | Display::TableCaption => unreachable!("handled above"),
+        }
+    }
+
+    /// Adds the inline element or generated box `item`, with the computed
+    /// `style`, and its content inside it.
+    fn add_inline(&mut self, item: Item, style: &ComputedStyle) {
+        let styled = self.styled;
+        let inline = styled.own_box(item, style, BoxKind::Inline, Vec::new);
+        self.open.push(inline);
+        self.add_children(item, &styled.children(item));
+        let inline = self.open.pop().expect("the inline just opened");
+        self.add_inline_level(inline);
+    }
+
+    /// Adds the marker `item` of the list item `element`, with the
+    /// computed `style` (Lists 3 §3, M21.6), which is the first of the
+    /// list item's children. Inside, it is an inline box as a `::before`
+    /// is, or the shape it is drawn as, at the start of the content.
+    /// Outside, it is a [`BoxKind::Marker`] the container holds first,
+    /// whatever comes after it, which [`place_markers`] then moves into
+    /// the run of the list item's first line, where there is one.
+    fn add_marker(&mut self, item: Item, element: NodeId, style: &ComputedStyle) {
+        let styled = self.styled;
+        let outside = styled.styles.get(element).is_none_or(|list_item| {
+            list_item.lists().list_style_position == ListStylePosition::Outside
+        });
+        let shape = marker_shape(style);
+        if !outside && shape.is_none() {
+            self.add_inline(item, style);
+            return;
+        }
+        let text = match (shape, item) {
+            (None, Item::Generated(element, side)) => styled
+                .text(Item::GeneratedText(element, side))
+                .filter(|text| !text.is_empty())
+                .map(|text| LayoutBox {
+                    style: style.clone(),
+                    kind: BoxKind::Text(text.into_owned()),
+                    children: Vec::new(),
+                    node: element,
+                    anonymous: true,
+                    generated: Some(PseudoElement::Marker),
+                    generated_text: 0,
+                    styled_by_ancestor: false,
+                    first_line: None,
+                    tree_order: 0,
+                    item: false,
+                    parent: None,
+                    in_3d: false,
+                }),
+            _ => None,
+        };
+        let marker = styled.own_box(item, style, BoxKind::Marker { outside, shape }, || {
+            text.into_iter().collect()
+        });
+        if outside {
+            debug_assert!(self.out.is_empty() && self.run.is_empty() && self.open.is_empty());
+            self.out.push(marker);
+        } else {
+            self.add_inline_level(marker);
         }
     }
 
@@ -1528,12 +1692,21 @@ mod tests {
                     "inline-grid".to_string()
                 }
                 BoxKind::Grid => "grid".to_string(),
+                BoxKind::Marker { outside, shape } => {
+                    let place = if *outside { "outside" } else { "inside" };
+                    match shape {
+                        Some(shape) => format!("marker {place} {shape:?}"),
+                        None => format!("marker {place}"),
+                    }
+                }
             };
             // A `::before` or `::after` box, or one in it, is marked
-            // with a `+`, a `::first-letter` one with a `^`.
+            // with a `+`, a `::first-letter` one with a `^`, a marker or
+            // one in it with a `*`.
             let mark = match b.generated {
                 None => "",
                 Some(PseudoElement::FirstLetter) => "^",
+                Some(PseudoElement::Marker) => "*",
                 Some(_) => "+",
             };
             out.push((format!("{mark}{kind}"), self.number(b.node)));
@@ -1547,7 +1720,7 @@ mod tests {
             self.shape_of(boxes)
                 .into_iter()
                 .filter_map(|(k, _)| {
-                    k.trim_start_matches(['+', '^'])
+                    k.trim_start_matches(['+', '^', '*'])
                         .strip_prefix("text ")
                         .map(str::to_string)
                 })
@@ -1558,7 +1731,7 @@ mod tests {
         fn boxes_of(&self, boxes: &[LayoutBox]) -> Vec<(String, usize)> {
             self.shape_of(boxes)
                 .into_iter()
-                .filter(|(k, _)| !k.trim_start_matches(['+', '^']).starts_with("text"))
+                .filter(|(k, _)| !k.trim_start_matches(['+', '^', '*']).starts_with("text"))
                 .collect()
         }
 
@@ -3147,6 +3320,154 @@ mod tests {
             ),
             ["1", "8"]
         );
+    }
+
+    #[test]
+    fn a_list_items_marker_goes_where_its_position_puts_it() {
+        // Nodes: ol 4, li 5, p 6. Outside, in the run of the first line,
+        // as its first box, whichever block that run is in, the blocks
+        // on the way marked; inside, an inline box at the start.
+        let tree = tree_of("<ol><li>a</li></ol>", "");
+        assert_eq!(
+            tree.shape_of(&tree.body().children),
+            pairs(&[
+                ("block", 4),
+                ("block", 5),
+                ("anon", 5),
+                ("*marker outside", 5),
+                ("*text 1. ", 5),
+                ("text a", 5),
+            ])
+        );
+        let tree = tree_of("<ol><li><p>a</p></li></ol>", "");
+        let li = &tree.body().children[0].children[0];
+        let p = &li.children[0];
+        assert_eq!(tree.number(p.node), 6);
+        assert!(p.styled_by_ancestor && !li.styled_by_ancestor);
+        assert_eq!(
+            tree.shape_of(&p.children),
+            pairs(&[
+                ("anon", 6),
+                ("*marker outside", 5),
+                ("*text 1. ", 5),
+                ("text a", 6)
+            ])
+        );
+        let tree = tree_of("<ol><li>a</li></ol>", "li { list-style-position: inside }");
+        assert_eq!(
+            tree.shape_of(&tree.body().children[0].children[0].children),
+            pairs(&[("anon", 5), ("*inline", 5), ("*text 1. ", 5), ("text a", 5)])
+        );
+        // With no first line, the list item's first child.
+        let tree = tree_of("<ul><li><table><tr><td>a</table></li></ul>", "");
+        let li = &tree.body().children[0].children[0];
+        assert_eq!(
+            tree.boxes_of(&li.children)[..2],
+            pairs(&[("*marker outside Disc", 5), ("table", 6)])
+        );
+        // Nested lists' markers share the first line, the outer one's
+        // first.
+        let tree = tree_of("<ul><li><ol><li>a</li></ol></li></ul>", "");
+        assert_eq!(
+            tree.texts(&tree.body().children),
+            ["1. ", "a"],
+            "the disc is drawn, not text"
+        );
+        let markers: Vec<_> = tree
+            .boxes_of(&tree.body().children)
+            .into_iter()
+            .filter(|(kind, _)| kind.starts_with("*marker"))
+            .collect();
+        assert_eq!(
+            markers,
+            pairs(&[("*marker outside", 7), ("*marker outside Disc", 5)])
+        );
+    }
+
+    #[test]
+    fn a_marker_says_the_list_item_counter_in_the_list_style_type() {
+        let markers = |html: &str, css_src: &str| -> Vec<String> {
+            let tree = tree_of(html, css_src);
+            let mut out = Vec::new();
+            let mut stack: Vec<&LayoutBox> = tree.boxes.iter().collect();
+            while let Some(b) = stack.pop() {
+                if let (BoxKind::Text(text), Some(PseudoElement::Marker)) = (&b.kind, b.generated) {
+                    out.push(text.clone());
+                }
+                stack.extend(b.children.iter().rev());
+            }
+            out
+        };
+        assert_eq!(
+            markers("<ol><li>a<li>b<li>c</ol>", ""),
+            ["1. ", "2. ", "3. "]
+        );
+        // `start`, `reversed`, `value` and `type`.
+        assert_eq!(markers("<ol start=9><li>a<li>b</ol>", ""), ["9. ", "10. "]);
+        assert_eq!(
+            markers("<ol reversed><li>a<li>b<li>c</ol>", ""),
+            ["3. ", "2. ", "1. "]
+        );
+        assert_eq!(
+            markers("<ol reversed start=10><li>a<li>b</ol>", ""),
+            ["10. ", "9. "]
+        );
+        assert_eq!(
+            markers("<ol><li>a<li value=7>b<li>c</ol>", ""),
+            ["1. ", "7. ", "8. "]
+        );
+        assert_eq!(
+            markers("<ol type=I><li>a<li type=a>b</ol>", ""),
+            ["I. ", "b. "]
+        );
+        // A string, `content`, none; an explicit increment of the
+        // counter replaces a list item's own.
+        assert_eq!(
+            markers(
+                "<ol><li class=s>a<li class=c>b<li class=n>c<li class=x>d<li>e</ol>",
+                ".s { list-style-type: '-> ' } .c::marker { content: '(' counter(list-item) ')' }
+                 .n { list-style-type: none } .x { counter-increment: list-item 5 }",
+            ),
+            // The third, with no marker, counts all the same: 3, then 8.
+            ["-> ", "(2)", "8. ", "9. "]
+        );
+        assert_eq!(
+            markers(
+                "<ol><li>a<li>b</ol>",
+                "li::marker { content: none } li:first-child::marker { content: normal }"
+            ),
+            ["1. "]
+        );
+        // Nested, each list its own counter.
+        assert_eq!(
+            markers(
+                "<ol><li>a<ol><li>b<li>c</ol><li>d</ol>",
+                "ol ol li::marker { content: counters(list-item, '.') ' ' }"
+            ),
+            ["1. ", "1.1 ", "1.2 ", "2. "]
+        );
+    }
+
+    #[test]
+    fn a_list_items_first_letter_is_after_its_marker() {
+        for position in ["outside", "inside"] {
+            let tree = tree_of(
+                "<ol><li>ab</li></ol>",
+                &format!(
+                    "li {{ list-style-position: {position} }} li::first-letter {{ color: #f00 }}"
+                ),
+            );
+            let shape = tree.shape_of(&tree.body().children);
+            let letter = shape
+                .iter()
+                .position(|(kind, _)| kind == "^text a")
+                .expect("the first letter is the content's");
+            let marker = shape
+                .iter()
+                .position(|(kind, _)| kind == "*text 1. ")
+                .expect("the marker keeps its text");
+            assert!(marker < letter, "{position}");
+        }
     }
 
     #[test]

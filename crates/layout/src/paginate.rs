@@ -687,7 +687,7 @@ fn translate(f: &mut Fragment, dy: f32) {
 /// or an atomic inline.
 fn is_inline_level(f: &Fragment) -> bool {
     match f.kind {
-        FragmentKind::Text(_) | FragmentKind::InlineBox => true,
+        FragmentKind::Text(_) | FragmentKind::InlineBox | FragmentKind::Marker(_) => true,
         FragmentKind::Box => f.style.display.is_atomic_inline(),
     }
 }
@@ -709,7 +709,7 @@ fn is_monolithic(f: &Fragment) -> bool {
 fn inline_extent(item: &Fragment) -> (f32, f32) {
     let own = |f: &Fragment| match f.kind {
         FragmentKind::Text(_) => Some((f.top(), f.top() + f.h)),
-        FragmentKind::Box => Some((f.y, f.y + f.h)),
+        FragmentKind::Box | FragmentKind::Marker(_) => Some((f.y, f.y + f.h)),
         FragmentKind::InlineBox => None,
     };
     if let Some(extent) = own(item) {

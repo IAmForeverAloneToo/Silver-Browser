@@ -384,7 +384,7 @@ fn boxes(layout: &layout::DocumentLayout) -> HashMap<NodeId, Boxes> {
         let inline = match f.kind {
             FragmentKind::Box => false,
             FragmentKind::InlineBox => true,
-            FragmentKind::Text(_) => continue,
+            FragmentKind::Text(_) | FragmentKind::Marker(_) => continue,
         };
         match out.get_mut(&f.node) {
             None => {
@@ -614,6 +614,7 @@ fn display_name(display: Display) -> &'static str {
         Display::InlineFlex => "inline-flex",
         Display::Grid => "grid",
         Display::InlineGrid => "inline-grid",
+        Display::ListItem => "list-item",
     }
 }
 

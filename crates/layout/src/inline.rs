@@ -108,6 +108,7 @@ use crate::block::{
 };
 use crate::box_tree::{BoxKind, FirstLine, LayoutBox};
 use crate::float::{At, FloatContext, PendingFloat};
+use crate::marker::Marker;
 use crate::pass::Pass;
 
 /// One flattened piece of inline content, in document order.
@@ -170,6 +171,14 @@ pub(crate) enum InlineItem<'a> {
     /// margin, on the line it ends on, glued to what precedes it; with
     /// the element's style where the items go.
     Close(&'a ComputedStyle),
+    /// A list item's marker (M21.6, [`BoxKind::Marker`]): outside, as
+    /// wide as nothing and glued to what follows it, the list item
+    /// placing it once laid out; inside, a shape as wide as itself and
+    /// the room after it. Either way its font is on the line.
+    Marker {
+        b: &'a LayoutBox,
+        style: &'a ComputedStyle,
+    },
 }
 
 /// One word placed on the line being built, before [`flush_line`]
@@ -200,6 +209,8 @@ enum LineItem<'a, 'i> {
     /// An absolutely positioned box met here (M11): no width, its
     /// static position taken where the line puts it.
     Absolute(&'a LayoutBox),
+    /// A list item's marker (M21.6): as wide as it moves the line on.
+    Marker(Marker<'a>),
 }
 
 impl LineItem<'_, '_> {
@@ -209,6 +220,7 @@ impl LineItem<'_, '_> {
             LineItem::Atomic(a) => a.width,
             LineItem::Open(_, _, edge) | LineItem::Close(_, edge) => *edge,
             LineItem::Absolute(_) => 0.0,
+            LineItem::Marker(m) => m.advance,
         }
     }
 
@@ -219,15 +231,21 @@ impl LineItem<'_, '_> {
             LineItem::Atomic(a) => &a.root.style,
             LineItem::Open(_, style, _) | LineItem::Close(style, _) => style,
             LineItem::Absolute(b) => &b.style,
+            LineItem::Marker(m) => m.style,
         }
     }
 
     /// Whether the item is content: a word or an atomic inline, which
     /// a gap can stand before and which makes a line box a line (CSS2
-    /// §9.4.2). An inline box's edge is not, nor is an absolutely
-    /// positioned box.
+    /// §9.4.2), or an inside marker drawn as a shape. An inline box's
+    /// edge is not, nor is an absolutely positioned box, nor an outside
+    /// marker, which is as wide as nothing.
     fn is_content(&self) -> bool {
-        matches!(self, LineItem::Word(_) | LineItem::Atomic(_))
+        match self {
+            LineItem::Word(_) | LineItem::Atomic(_) => true,
+            LineItem::Marker(m) => !m.is_outside(),
+            LineItem::Open(..) | LineItem::Close(..) | LineItem::Absolute(_) => false,
+        }
     }
 }
 
@@ -334,6 +352,9 @@ pub(crate) fn layout_inline<'a>(
     // The item before was an atomic inline: a wrap opportunity follows
     // it whether or not white space does.
     let mut after_atomic = false;
+    // An outside marker is on the line and no content yet: nothing may
+    // break the line before the content it is glued to (M21.6).
+    let mut after_marker = false;
 
     for index in 0..flat.len() {
         match lines.item(index) {
@@ -353,14 +374,29 @@ pub(crate) fn layout_inline<'a>(
                     node: *node,
                     generated: *generated,
                 };
-                let can_break = !no_wrap && (*gap_before || after_atomic);
+                let can_break = !no_wrap && (*gap_before || after_atomic) && !after_marker;
                 lines.place(LineItem::Word(word), index, *gap_before, can_break);
                 after_atomic = false;
+                after_marker = false;
             }
             InlineItem::Atomic { b, gap_before } => {
                 let atomic = layout_inline_block(b, cb_width, cb_height, pass);
-                lines.place(LineItem::Atomic(Box::new(atomic)), index, *gap_before, true);
+                let can_break = !after_marker;
+                lines.place(
+                    LineItem::Atomic(Box::new(atomic)),
+                    index,
+                    *gap_before,
+                    can_break,
+                );
                 after_atomic = true;
+                after_marker = false;
+            }
+            InlineItem::Marker { b, style } => {
+                let marker = Marker::of(b, style, pass.fonts);
+                let outside = marker.is_outside();
+                lines.place(LineItem::Marker(marker), index, false, false);
+                after_marker |= outside;
+                after_atomic = !outside;
             }
             InlineItem::Float(b) => lines.float(b),
             InlineItem::Absolute(b) => lines.place(LineItem::Absolute(b), index, false, false),
@@ -370,8 +406,9 @@ pub(crate) fn layout_inline<'a>(
                 gap_before,
             } => {
                 let (start, _) = edge_widths(style, cb_width);
-                let can_break =
-                    style.white_space != WhiteSpace::Pre && (*gap_before || after_atomic);
+                let can_break = style.white_space != WhiteSpace::Pre
+                    && (*gap_before || after_atomic)
+                    && !after_marker;
                 lines.place(
                     LineItem::Open(b, style, start),
                     index,
@@ -944,6 +981,12 @@ impl<'a> Collector<'a, '_> {
                 }
                 InlineItem::ForcedBreak(_) => true,
                 InlineItem::Float(_) | InlineItem::Absolute(_) => false,
+                // Its width only its font finds, as an atomic's only its
+                // layout does.
+                InlineItem::Marker { .. } => {
+                    reach.room = None;
+                    false
+                }
             };
         }
         self.out.push(item);
@@ -988,6 +1031,13 @@ impl<'a> Collector<'a, '_> {
                 // is still pending after it.
                 BoxKind::Float => self.push(InlineItem::Float(b)),
                 BoxKind::Absolute => self.push(InlineItem::Absolute(b)),
+                // A list item's marker (M21.6): white space on either side
+                // of it is as it would be without it, the marker being at
+                // the start of the run.
+                BoxKind::Marker { .. } => {
+                    let style = self.style_of(b);
+                    self.push(InlineItem::Marker { b, style });
+                }
                 // The box tree builder hoists a block out of inline
                 // content (CSS2 §9.2.1.1) and keeps a table's parts in
                 // tables, so none reaches here from a parsed document;
@@ -1157,6 +1207,9 @@ pub(crate) fn run_intrinsic_widths<'a>(
                 style.white_space != WhiteSpace::Pre && !line_empty && (*gap_before || after_atomic)
             }
             InlineItem::Atomic { .. } => !line_empty,
+            InlineItem::Marker { b, .. } => {
+                !line_empty && matches!(b.kind, BoxKind::Marker { outside: false, .. })
+            }
             _ => false,
         };
         if starts_piece {
@@ -1210,6 +1263,17 @@ pub(crate) fn run_intrinsic_widths<'a>(
                 let (float_min, float_max) = crate::intrinsic::contribution(b, pass);
                 min = min.max(float_min);
                 line += float_max;
+            }
+            // A list item's marker (M21.6): an outside one takes no room,
+            // an inside shape its own and that after it, as an atomic.
+            (InlineItem::Marker { b, style }, _) => {
+                let marker = Marker::of(b, style, fonts);
+                if !marker.is_outside() {
+                    piece = marker.advance;
+                    line += marker.advance;
+                    line_empty = false;
+                    after_atomic = true;
+                }
             }
             // An inline element's edges (M11.6) are measured against a
             // zero containing block, as a percentage padding or margin
@@ -1417,6 +1481,12 @@ fn flush_line<'a>(
                 max_ascent = max_ascent.max(a.ascent);
                 max_below = max_below.max(a.height - a.ascent);
             }
+            // A marker is on the line as an inline box of its font is.
+            LineItem::Marker(m) => {
+                max_ascent = max_ascent.max(m.metrics.ascent);
+                max_descent = max_descent.max(m.metrics.descent);
+                max_below = max_below.max(m.metrics.descent + m.metrics.line_gap);
+            }
             LineItem::Open(..) | LineItem::Close(..) | LineItem::Absolute(_) => {}
         }
     }
@@ -1444,7 +1514,7 @@ fn flush_line<'a>(
                 LineItem::Absolute(b) => {
                     absolutes.push(through_inlines(Deferred::at(b, x, *y), open));
                 }
-                LineItem::Word(_) | LineItem::Atomic(_) => {}
+                LineItem::Word(_) | LineItem::Atomic(_) | LineItem::Marker(_) => {}
             }
         }
         return None;
@@ -1554,6 +1624,11 @@ fn flush_line<'a>(
             }
             LineItem::Absolute(b) => {
                 absolutes.push(through_inlines(Deferred::at(b, x, *y), &next_open));
+            }
+            LineItem::Marker(m) => {
+                let into = innermost(&mut stack, fragments);
+                into.extend(m.fragments(x, baseline_y, max_ascent, max_descent, fonts));
+                x += m.advance;
             }
         }
     }
@@ -1824,7 +1899,7 @@ mod tests {
             .iter()
             .filter_map(|f| match &f.kind {
                 FragmentKind::Text(t) => Some(t.as_str()),
-                FragmentKind::Box | FragmentKind::InlineBox => None,
+                FragmentKind::Box | FragmentKind::InlineBox | FragmentKind::Marker(_) => None,
             })
             .collect()
     }
@@ -1838,7 +1913,7 @@ mod tests {
                 match f.kind {
                     FragmentKind::Text(_) => out.push(f.clone().translated(dx, dy)),
                     FragmentKind::InlineBox => walk(&f.children, dx + f.x, dy + f.y, out),
-                    FragmentKind::Box => {}
+                    FragmentKind::Box | FragmentKind::Marker(_) => {}
                 }
             }
         }
@@ -2469,6 +2544,7 @@ mod tests {
                 InlineItem::Atomic { .. } => "[]".to_string(),
                 InlineItem::Float(_) => "float".to_string(),
                 InlineItem::Absolute(_) => "absolute".to_string(),
+                InlineItem::Marker { .. } => "marker".to_string(),
             })
             .collect()
     }

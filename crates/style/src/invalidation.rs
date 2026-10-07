@@ -439,7 +439,11 @@ pub(crate) fn invalidate(
                     at = document.next_element_sibling(sibling);
                 }
             }
-        } else if name == "style" || name == "dir" || inline_reads_attributes(document, element) {
+        } else if name == "style"
+            || name == "dir"
+            || tag.is_some_and(|tag| crate::cascade::is_list_hint(tag, name))
+            || inline_reads_attributes(document, element)
+        {
             out.mark(document, element, Reach::Element);
         }
     }
@@ -696,6 +700,28 @@ mod tests {
             d.set_attribute(x, "style", "color: #00f").unwrap();
             d.set_attribute(x, "style", "color: #00f; padding: 4px")
                 .unwrap();
+        });
+        assert_eq!(r.computed, 0);
+    }
+
+    #[test]
+    fn a_list_attribute_restyles_its_element() {
+        // HTML's list hints (M21.6): `start` on an `ol` resets
+        // `list-item`, and `type` on an `li` gives its style, which its
+        // marker inherits.
+        let (mut d, sheets, mut styles) = setup("<ol id=x><li id=y>a</li></ol><p id=z>b</p>", "");
+        let (x, y, z) = (by_id(&d, "x"), by_id(&d, "y"), by_id(&d, "z"));
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(x, "start", "4").unwrap();
+        });
+        assert_eq!((r.computed, r.changed.len()), (2, 1));
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(y, "type", "I").unwrap();
+        });
+        assert_eq!((r.computed, r.changed.len()), (1, 1));
+        // On another element it is no hint.
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(z, "start", "4").unwrap();
         });
         assert_eq!(r.computed, 0);
     }

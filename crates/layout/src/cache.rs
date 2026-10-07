@@ -747,6 +747,23 @@ mod tests {
     }
 
     #[test]
+    fn a_list_item_is_laid_out_again_when_its_number_moves() {
+        // #a's `value` numbers the items after it, which it does not
+        // hold; the paragraph after the list numbers nothing, and is
+        // taken. `pass` holds each result to a fresh one.
+        let mut s = Session::new(
+            "<ol><li id=a value=5>one</li><li id=b>two</li><li id=c>three</li></ol><p id=d>x</p>",
+            "",
+        );
+        assert_eq!(s.pass(), (7, 0));
+        let a = s.id("a");
+        s.change(|d| d.remove_attribute(a, "value").unwrap());
+        // html, body, the list and its three items; #d taken.
+        assert_eq!(s.pass(), (6, 1));
+        assert!(s.kept("b") && s.kept("c"));
+    }
+
+    #[test]
     fn a_block_holding_an_ancestors_first_letter_is_neither_kept_nor_taken() {
         // #p's line holds #d's first letter: #d's restyle does not reach
         // #p, whose layout reads it, so #p is laid out each time.

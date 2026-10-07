@@ -28,7 +28,7 @@ pub mod order;
 use std::collections::HashMap;
 
 use dom::{Document, Node, NodeData, NodeId};
-use layout::{Fragment, FragmentKind};
+use layout::{Fragment, FragmentKind, MarkerShape};
 use style::Styles;
 use style::computed::{BOTTOM, BorderStyle, Color, Display, LEFT, RIGHT, TOP};
 use style::transform::Matrix;
@@ -569,10 +569,8 @@ pub fn paint_fragments_in(
                 fragment,
                 rect,
                 baseline,
-            } => {
-                if let FragmentKind::Text(text) = &fragment.kind
-                    && !text.trim().is_empty()
-                {
+            } => match &fragment.kind {
+                FragmentKind::Text(text) if !text.trim().is_empty() => {
                     // The baseline on the pixel grid, as a browser puts it
                     // and as a box's edges are (M11): a glyph's edge then
                     // falls in the same pixel rows whatever fraction the
@@ -586,7 +584,11 @@ pub fn paint_fragments_in(
                         color: to_rgba8(fragment.style.color),
                     });
                 }
-            }
+                FragmentKind::Marker(shape) => {
+                    push_marker(&mut items, *shape, rect, to_rgba8(fragment.style.color));
+                }
+                _ => {}
+            },
             Step::PushClip { rect, .. } => {
                 let rect = snapped(rect);
                 items.push(DisplayItem::PushClip {
@@ -689,6 +691,50 @@ fn push_scrollbar(items: &mut Vec<DisplayItem>, f: &Fragment, rect: Rect, offset
 /// device pixel, half up.
 fn snap(v: f32) -> f32 {
     (v + 0.5).floor()
+}
+
+/// A list item's marker drawn as `shape` in `color` (M21.6), in the
+/// square `rect` snapped to whole pixels, as the reference browser draws
+/// it: a filled circle in the square, a circle stroked a pixel wide
+/// along the square's inscribed circle, half a pixel either side of it,
+/// or the square filled. A circle is a polygon of 32 sides,
+/// anti-aliased; the stroked one goes round the outer circle and back
+/// round the inner, which the fill's signed area leaves open.
+fn push_marker(items: &mut Vec<DisplayItem>, shape: MarkerShape, rect: Rect, color: Rgba8) {
+    let rect = snapped(rect);
+    let (cx, cy) = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
+    let radius = rect.w.min(rect.h) / 2.0;
+    let circle = |r: f32| -> Vec<(f32, f32)> {
+        (0..32)
+            .map(|i| {
+                let angle = i as f32 * std::f32::consts::TAU / 32.0;
+                (cx + r * angle.cos(), cy + r * angle.sin())
+            })
+            .collect()
+    };
+    match shape {
+        MarkerShape::Square => items.push(DisplayItem::Rect {
+            x: rect.x,
+            y: rect.y,
+            w: rect.w,
+            h: rect.h,
+            color,
+        }),
+        MarkerShape::Disc => items.push(DisplayItem::Polygon {
+            points: circle(radius),
+            color,
+        }),
+        MarkerShape::Circle => {
+            let outer = circle(radius + 0.5);
+            let inner = circle((radius - 0.5).max(0.0));
+            let mut points = outer.clone();
+            points.push(outer[0]);
+            points.push(inner[0]);
+            points.extend(inner.iter().skip(1).rev());
+            points.push(inner[0]);
+            items.push(DisplayItem::Polygon { points, color });
+        }
+    }
 }
 
 /// Snaps a box's edges to whole device pixels (M11): each edge rounded

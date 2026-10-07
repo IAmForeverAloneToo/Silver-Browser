@@ -116,6 +116,8 @@ mod grid;
 mod lists;
 mod page;
 
+pub(crate) use lists::is_list_hint;
+
 /// The built-in default stylesheet (M5.6), compiled in — loading it is
 /// not resource fetching (no I/O at runtime), so it doesn't bend the
 /// "parsers never fetch" rule.
@@ -214,6 +216,9 @@ pub struct PseudoStyles {
     pub first_letter: Option<ComputedStyle>,
     /// `::first-line`.
     pub first_line: Option<ComputedStyle>,
+    /// `::marker` (M21.6): a list item's alone, whether or not a rule
+    /// styles it, none the user agent's.
+    pub marker: Option<ComputedStyle>,
 }
 
 impl PseudoStyles {
@@ -224,8 +229,8 @@ impl PseudoStyles {
             PseudoElement::After => self.after.as_ref(),
             PseudoElement::FirstLetter => self.first_letter.as_ref(),
             PseudoElement::FirstLine => self.first_line.as_ref(),
-            PseudoElement::Marker
-            | PseudoElement::Placeholder
+            PseudoElement::Marker => self.marker.as_ref(),
+            PseudoElement::Placeholder
             | PseudoElement::Selection
             | PseudoElement::WebkitPrefixed => None,
         }
@@ -241,20 +246,22 @@ enum Target {
     After,
     FirstLetter,
     FirstLine,
+    Marker,
 }
 
 impl Target {
     /// The targets in the order [`Matched`] keeps them.
-    const ALL: [Target; 5] = [
+    const ALL: [Target; 6] = [
         Target::Element,
         Target::Before,
         Target::After,
         Target::FirstLetter,
         Target::FirstLine,
+        Target::Marker,
     ];
 
-    /// Whether `content` applies: on `::before` and `::after` only
-    /// (CSS 2.2 §12.2).
+    /// Whether `content`'s `normal` computes to `none`: on `::before`
+    /// and `::after` (CSS 2.2 §12.2); on `::marker` it stays.
     fn takes_content(self) -> bool {
         matches!(self, Target::Before | Target::After)
     }
@@ -267,8 +274,8 @@ impl Target {
             PseudoElement::After => Some(Target::After),
             PseudoElement::FirstLetter => Some(Target::FirstLetter),
             PseudoElement::FirstLine => Some(Target::FirstLine),
-            PseudoElement::Marker
-            | PseudoElement::Placeholder
+            PseudoElement::Marker => Some(Target::Marker),
+            PseudoElement::Placeholder
             | PseudoElement::Selection
             | PseudoElement::WebkitPrefixed => None,
         }
@@ -281,7 +288,13 @@ impl Target {
     /// `text-transform`, letter and word spacing and `vertical-align` —
     /// and `::first-letter` those of §2.2.4: these, margins, padding and
     /// borders, and `float`, which every browser honours for a drop cap.
-    /// The element, `::before` and `::after` take every other property.
+    /// `::marker` takes those Lists 3 §3.1.1 lets apply that this engine
+    /// has (M21.6): the inherited properties of text — the font's,
+    /// colour, `text-transform`, `white-space`, letter and word spacing
+    /// and `quotes`, which its quote marks read — and `direction` and
+    /// `content`. The element, `::before` and `::after` take every other
+    /// property. Each takes the custom properties, which the cascade
+    /// computes before these.
     fn applies(self, name: &str) -> bool {
         let line = matches!(
             name,
@@ -304,6 +317,19 @@ impl Target {
                         // A table's, not the box's border.
                         && !matches!(name, "border-collapse" | "border-spacing"))
             }
+            Target::Marker => matches!(
+                name,
+                "font-size"
+                    | "font-family"
+                    | "color"
+                    | "text-transform"
+                    | "white-space"
+                    | "letter-spacing"
+                    | "word-spacing"
+                    | "quotes"
+                    | "direction"
+                    | "content"
+            ),
             Target::Element => name != "content",
             Target::Before | Target::After => true,
         }
@@ -771,9 +797,16 @@ impl Recascade for Recascader<'_> {
         if self.styles.get(element) == Some(parent) {
             return self.styles.pseudo(element, pseudo).cloned();
         }
+        // A list item's marker has a style whether a rule styles it or
+        // not, and nothing else has one.
+        let marker = target == Target::Marker;
+        if marker && self.styles.get(element).map(|s| s.display) != Some(Display::ListItem) {
+            return None;
+        }
         self.with_matched(element, |matched, resolution| {
             let applied = matched.of(target);
-            (!applied.is_empty()).then(|| compute_style(applied, parent, target, None, resolution))
+            (marker || !applied.is_empty())
+                .then(|| compute_style(applied, parent, target, None, resolution))
         })
     }
 }
@@ -914,11 +947,22 @@ impl<'a> Cascader<'a> {
             let applied = matched.of(target);
             (!applied.is_empty()).then(|| compute_style(applied, &style, target, None, &resolution))
         };
+        // A list item's marker, styled or not: it is drawn either way.
+        let marker = (style.display == Display::ListItem).then(|| {
+            compute_style(
+                matched.of(Target::Marker),
+                &style,
+                Target::Marker,
+                None,
+                &resolution,
+            )
+        });
         let pseudo = PseudoStyles {
             before: pseudo(Target::Before),
             after: pseudo(Target::After),
             first_letter: pseudo(Target::FirstLetter),
             first_line: pseudo(Target::FirstLine),
+            marker,
         };
         let pseudo = (pseudo != PseudoStyles::default()).then(|| Box::new(pseudo));
         Computed { style, pseudo }
@@ -1001,7 +1045,7 @@ pub(crate) struct ParsedRule<'s> {
 /// pseudo-elements, unsorted, by [`Target`].
 #[derive(Default)]
 struct Matched<'a> {
-    targets: [Vec<Applied<'a>>; 5],
+    targets: [Vec<Applied<'a>>; 6],
 }
 
 impl<'a> Matched<'a> {
@@ -1092,6 +1136,26 @@ fn declarations_for<'a>(
         &mut order,
         &mut out,
     );
+    // HTML's presentational hints (M21.6): author declarations with no
+    // specificity, before every author sheet's, so that any author rule
+    // overrides them.
+    let hints = document.tag(element).map_or_else(String::new, |tag| {
+        lists::list_hints(tag, |name| document.attr(element, name).map(str::to_string))
+    });
+    if !hints.is_empty()
+        && let Ok(decls) = css::parse_style_attribute(&hints)
+    {
+        for decl in decls {
+            out.element().push(Applied {
+                tier: tier(TierBase::AuthorSheet, false),
+                layer: 0,
+                specificity: Specificity::default(),
+                order,
+                decl: Cow::Owned(decl),
+            });
+            order += 1;
+        }
+    }
     collect_from_sheet(
         matcher,
         element,
@@ -1140,7 +1204,7 @@ fn collect_from_sheet<'a>(
         // the highest among the branches that actually matched here,
         // for the element and for each of its pseudo-elements.
         let list: &'a SelectorList = rule.list;
-        let mut best: [Option<Specificity>; 5] = [None; 5];
+        let mut best: [Option<Specificity>; 6] = [None; 6];
         for selector in &list.0 {
             let target = match &selector.pseudo_element {
                 None => Target::Element,
@@ -1893,6 +1957,26 @@ fn apply_declaration(
             lists::parse_counter_changes(value, bases, 0),
             |l, v| l.counter_set = v,
         ),
+        "list-style-type" => set_lists(style, lists::parse_list_style_type(value), |l, v| {
+            l.list_style_type = v
+        }),
+        "list-style-position" => {
+            set_lists(style, lists::parse_list_style_position(value), |l, v| {
+                l.list_style_position = v
+            })
+        }
+        "list-style-image" => set_lists(style, lists::parse_list_style_image(value), |l, v| {
+            l.list_style_image = v
+        }),
+        "list-style" => set_lists(
+            style,
+            lists::parse_list_style(value),
+            |l, (position, image, kind)| {
+                l.list_style_position = position;
+                l.list_style_image = image;
+                l.list_style_type = kind;
+            },
+        ),
         // Not in the v1 property set, or not a real property: ignored,
         // never an error.
         _ => false,
@@ -1983,7 +2067,7 @@ fn copy_fragmentation(
     copy(style.fragmentation_mut(), &src);
 }
 
-/// [`set_grid`] for the counter properties.
+/// [`set_grid`] for the counter and list properties.
 fn set_lists<T>(
     style: &mut ComputedStyle,
     v: Option<T>,
@@ -1992,7 +2076,7 @@ fn set_lists<T>(
     v.map(|v| update(style.lists_mut(), v)).is_some()
 }
 
-/// [`copy_grid`] for the counter properties.
+/// [`copy_grid`] for the counter and list properties.
 fn copy_lists(
     style: &mut ComputedStyle,
     src: &ComputedStyle,
@@ -2133,6 +2217,10 @@ fn is_inherited(name: &str) -> bool {
             | "orphans"
             | "widows"
             | "print-color-adjust"
+            | "list-style"
+            | "list-style-type"
+            | "list-style-position"
+            | "list-style-image"
     )
 }
 
@@ -2360,6 +2448,20 @@ fn apply_css_wide(
             l.counter_increment = s.counter_increment.clone()
         }),
         "counter-set" => copy_lists(style, src, |l, s| l.counter_set = s.counter_set.clone()),
+        "list-style-type" => copy_lists(style, src, |l, s| {
+            l.list_style_type = s.list_style_type.clone()
+        }),
+        "list-style-position" => copy_lists(style, src, |l, s| {
+            l.list_style_position = s.list_style_position
+        }),
+        "list-style-image" => copy_lists(style, src, |l, s| {
+            l.list_style_image = s.list_style_image.clone()
+        }),
+        "list-style" => copy_lists(style, src, |l, s| {
+            l.list_style_type = s.list_style_type.clone();
+            l.list_style_position = s.list_style_position;
+            l.list_style_image = s.list_style_image.clone();
+        }),
         "widows" => copy_fragmentation(style, src, |f, s| f.widows = s.widows),
         "print-color-adjust" => copy_fragmentation(style, src, |f, s| {
             f.print_color_adjust = s.print_color_adjust
@@ -2788,6 +2890,9 @@ fn is_auto(tokens: &[Token]) -> bool {
 }
 
 fn parse_display(tokens: &[Token]) -> Option<Display> {
+    if let Some(list_item) = parse_list_item_display(tokens) {
+        return Some(list_item);
+    }
     match single_ident(tokens)?.to_ascii_lowercase().as_str() {
         "block" => Some(Display::Block),
         "inline" => Some(Display::Inline),
@@ -2808,8 +2913,30 @@ fn parse_display(tokens: &[Token]) -> Option<Display> {
         "inline-flex" | "-webkit-inline-flex" => Some(Display::InlineFlex),
         "grid" => Some(Display::Grid),
         "inline-grid" => Some(Display::InlineGrid),
-        _ => None, // grid/list-item/... land with their milestones
+        _ => None, // contents, flow-root, ruby and the like are not values here
     }
+}
+
+/// `display: list-item` (css-display-3 §2.4, M21.6) in the block forms
+/// this engine takes: `list-item`, with `block` or `flow` or both, in any
+/// order, each once. The inline and `flow-root` forms are not taken.
+fn parse_list_item_display(tokens: &[Token]) -> Option<Display> {
+    let mut seen = [false; 3];
+    let mut any = false;
+    for token in tokens {
+        let at = match token {
+            Token::Whitespace => continue,
+            Token::Ident(word) if word.eq_ignore_ascii_case("list-item") => 0,
+            Token::Ident(word) if word.eq_ignore_ascii_case("block") => 1,
+            Token::Ident(word) if word.eq_ignore_ascii_case("flow") => 2,
+            _ => return None,
+        };
+        if std::mem::replace(&mut seen[at], true) {
+            return None;
+        }
+        any = true;
+    }
+    (any && seen[0]).then_some(Display::ListItem)
 }
 
 /// `table-layout` (M12).
@@ -5366,7 +5493,8 @@ mod tests {
             .pseudo_element(p, PseudoElement::FirstLetter, &parent)
             .unwrap();
         assert_eq!((s.font_size_px, s.color), (20.0, Color::rgb8(1, 2, 3)));
-        // Nothing styles the div's, nor the p's `::first-line`.
+        // Nothing styles the div's, nor the p's `::first-line`, and the
+        // p is no list item to have a marker.
         let div = first(&document, "div");
         assert!(
             recascade
@@ -8271,5 +8399,236 @@ mod tests {
         ] {
             assert!(!supports(name, &css::tokenize(value)), "{name}: {value}");
         }
+    }
+
+    #[test]
+    fn list_item_takes_its_block_forms() {
+        // css-display-3 §2.4, M21.6.
+        for value in [
+            "list-item",
+            "LIST-ITEM",
+            "block list-item",
+            "list-item block",
+            "flow list-item",
+            "list-item flow block",
+        ] {
+            let p = p_with("<p>x</p>", &format!("p {{ display: {value} }}"));
+            assert_eq!(p.display, Display::ListItem, "{value}");
+        }
+        for value in [
+            "inline list-item",
+            "list-item list-item",
+            "flow-root list-item",
+            "block flow",
+            "list-item 2",
+        ] {
+            let p = p_with("<p>x</p>", &format!("p {{ display: {value} }}"));
+            assert_eq!(p.display, Display::Block, "{value}");
+        }
+        // A floated list item stays one.
+        let p = p_with("<p>x</p>", "p { display: list-item; float: left }");
+        assert_eq!(p.display, Display::ListItem);
+    }
+
+    #[test]
+    fn the_list_properties_parse_and_inherit() {
+        use crate::computed::{ListStylePosition, ListStyleType};
+        let style = |name: &str| ListStyleType::Style(Arc::from(name));
+        let of = |declarations: &str| {
+            let p = p_with("<div><p>x</p></div>", &format!("div {{ {declarations} }}"));
+            let lists = p.lists();
+            (
+                lists.list_style_type.clone(),
+                lists.list_style_position,
+                lists.list_style_image.clone(),
+            )
+        };
+        let url = |u: &str| Some(Arc::from(u));
+        let outside = ListStylePosition::Outside;
+        let inside = ListStylePosition::Inside;
+        assert_eq!(of(""), (style("disc"), outside, None));
+        assert_eq!(
+            of("list-style-type: Upper-Roman"),
+            (style("upper-roman"), outside, None)
+        );
+        assert_eq!(
+            of("list-style-type: My-Own"),
+            (style("My-Own"), outside, None)
+        );
+        assert_eq!(
+            of("list-style-type: '-> '"),
+            (ListStyleType::String(Arc::from("-> ")), outside, None)
+        );
+        assert_eq!(
+            of("list-style-type: none; list-style-position: inside"),
+            (ListStyleType::None, inside, None)
+        );
+        assert_eq!(
+            of("list-style-image: url(a.png)"),
+            (style("disc"), outside, url("a.png"))
+        );
+        // The shorthand, and its `none` (§3.6).
+        assert_eq!(
+            of("list-style: square inside"),
+            (style("square"), inside, None)
+        );
+        assert_eq!(of("list-style: none"), (ListStyleType::None, outside, None));
+        assert_eq!(
+            of("list-style: none url(b)"),
+            (ListStyleType::None, outside, url("b"))
+        );
+        assert_eq!(
+            of("list-style: none decimal"),
+            (style("decimal"), outside, None)
+        );
+        assert_eq!(
+            of("list-style: none none inside"),
+            (ListStyleType::None, inside, None)
+        );
+        assert_eq!(
+            of("list-style-type: square; list-style: inside"),
+            (style("disc"), inside, None)
+        );
+        for bad in [
+            "none none none",
+            "none decimal url(c)",
+            "inside outside",
+            "decimal square",
+            "url(a) url(b)",
+            "symbols(cyclic '*')",
+            "1",
+        ] {
+            assert_eq!(
+                of(&format!("list-style: circle; list-style: {bad}")),
+                (style("circle"), outside, None),
+                "{bad}"
+            );
+        }
+        // Inherited, all three, and not the counter properties.
+        let p = p_with(
+            "<div><p>x</p></div>",
+            "div { list-style: circle inside url(x); counter-reset: c }",
+        );
+        assert_eq!(p.lists().list_style_type, style("circle"));
+        assert_eq!(p.lists().list_style_position, inside);
+        assert!(p.lists().counter_reset.is_empty());
+    }
+
+    #[test]
+    fn a_list_items_marker_takes_the_properties_that_apply_to_it() {
+        let sheets = [sheet(
+            "li::marker { color: #f00; font-size: 20px; margin-left: 9px; content: 'x';
+                 text-transform: uppercase; display: block; --m: 1 }
+             p::marker { color: #f00 }",
+        )];
+        let marker = pseudo_of("<ol><li>a</li></ol>", &sheets, "li", PseudoElement::Marker)
+            .expect("a list item has a marker");
+        assert_eq!(marker.color, Color::rgb8(255, 0, 0));
+        assert_eq!(marker.font_size_px, 20.0);
+        assert_eq!(marker.content, items(&[text("x")]));
+        assert_eq!(marker.text_transform, TextTransform::Uppercase);
+        assert!(marker.custom_property("--m").is_some());
+        // Not the box's properties.
+        assert_eq!(marker.margin[LEFT], LengthPercentageAuto::Px(0.0));
+        assert_eq!(marker.display, Display::Inline);
+        // Unstyled, it inherits the list item's, with the user agent's
+        // rule; its `content` stays `normal`.
+        let marker = pseudo_of(
+            "<ul><li style='color: #00f; text-transform: uppercase'>a</li></ul>",
+            &[],
+            "li",
+            PseudoElement::Marker,
+        )
+        .expect("a list item has a marker");
+        assert_eq!(marker.color, Color::rgb8(0, 0, 255));
+        assert_eq!(marker.content, Content::Normal);
+        assert_eq!(marker.text_transform, TextTransform::None);
+        assert_eq!(marker.white_space, WhiteSpace::Pre);
+        // What is no list item has none.
+        assert_eq!(
+            pseudo_of("<p>a</p>", &sheets, "p", PseudoElement::Marker),
+            None
+        );
+    }
+
+    #[test]
+    fn the_ua_sheet_numbers_and_bullets_lists_as_the_html_standard_does() {
+        use crate::computed::ListStyleType;
+        let html = "<ol id=o><li id=a>a<ul id=u><li id=b>b<ol><li>c<menu><li id=d>d\
+                    <ul><li id=e>e</ul></menu></ol></ul></ol><dl><dd><dl id=dl></dl></dl>";
+        let of = |selector: &str| style_of(html, &[], selector);
+        let kind = |selector: &str| of(selector).lists().list_style_type.clone();
+        let style = |name: &str| ListStyleType::Style(Arc::from(name));
+        assert_eq!(of("#a").display, Display::ListItem);
+        assert_eq!(kind("#a"), style("decimal"));
+        assert_eq!(kind("#b"), style("circle"));
+        assert_eq!(kind("#d"), style("square"));
+        assert_eq!(kind("#e"), style("square"));
+        let reset = |selector: &str| {
+            of(selector)
+                .lists()
+                .counter_reset
+                .iter()
+                .map(|r| (r.name.to_string(), r.reversed, r.value))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(reset("#o"), [("list-item".to_string(), false, Some(0))]);
+        assert_eq!(reset("#u"), [("list-item".to_string(), false, Some(0))]);
+        // A nested list has no margins above and below.
+        assert_eq!(of("#o").margin[TOP], LengthPercentageAuto::Px(16.0));
+        assert_eq!(of("#u").margin[TOP], LengthPercentageAuto::Px(0.0));
+        assert_eq!(of("#dl").margin[BOTTOM], LengthPercentageAuto::Px(0.0));
+    }
+
+    #[test]
+    fn the_list_attributes_are_presentational_hints() {
+        use crate::computed::ListStyleType;
+        let reset = |html: &str, css: &str| {
+            style_of(html, &[sheet(css)], "ol")
+                .lists()
+                .counter_reset
+                .iter()
+                .map(|r| (r.name.to_string(), r.reversed, r.value))
+                .collect::<Vec<_>>()
+        };
+        let item = |reversed, value| vec![("list-item".to_string(), reversed, value)];
+        assert_eq!(reset("<ol start=5></ol>", ""), item(false, Some(4)));
+        assert_eq!(reset("<ol start=' -2x'></ol>", ""), item(false, Some(-3)));
+        assert_eq!(reset("<ol start=x></ol>", ""), item(false, Some(0)));
+        assert_eq!(reset("<ol reversed></ol>", ""), item(true, None));
+        assert_eq!(reset("<ol reversed start=3></ol>", ""), item(true, Some(4)));
+        assert_eq!(
+            reset("<ol start=99999999999></ol>", ""),
+            item(false, Some(i32::MAX))
+        );
+        // An author rule overrides a hint, however unspecific.
+        assert_eq!(reset("<ol start=5></ol>", "* { counter-reset: none }"), []);
+        let li = style_of("<ol><li value=7 type=a>x</ol>", &[], "li");
+        assert_eq!(
+            li.lists()
+                .counter_set
+                .iter()
+                .map(|c| (c.name.to_string(), c.value))
+                .collect::<Vec<_>>(),
+            [("list-item".to_string(), 7)]
+        );
+        let kind = |html: &str, selector: &str| {
+            style_of(html, &[], selector)
+                .lists()
+                .list_style_type
+                .clone()
+        };
+        let style = |name: &str| ListStyleType::Style(Arc::from(name));
+        assert_eq!(
+            kind("<ol><li value=7 type=a>x</ol>", "li"),
+            style("lower-alpha")
+        );
+        assert_eq!(kind("<ol type=I></ol>", "ol"), style("upper-roman"));
+        assert_eq!(kind("<ol type=i></ol>", "ol"), style("lower-roman"));
+        assert_eq!(kind("<ol type=SQUARE></ol>", "ol"), style("decimal"));
+        assert_eq!(kind("<ul type=SQUARE></ul>", "ul"), style("square"));
+        assert_eq!(kind("<ul type=none></ul>", "ul"), ListStyleType::None);
+        assert_eq!(kind("<ul type=a></ul>", "ul"), style("disc"));
+        assert_eq!(kind("<p type=a></p>", "p"), style("disc"));
     }
 }

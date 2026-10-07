@@ -162,7 +162,9 @@ fn measure_content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32) {
             | BoxKind::Column { .. }
             | BoxKind::Cell { .. }
             | BoxKind::Caption => contribution(child, pass),
-            BoxKind::Absolute => (0.0, 0.0),
+            // An outside marker beside the content is outside the box
+            // (M21.6).
+            BoxKind::Absolute | BoxKind::Marker { .. } => (0.0, 0.0),
             // A run holding a first formatted line counts it in its
             // styles there (M16), where any differ from its own.
             BoxKind::AnonymousBlock => {

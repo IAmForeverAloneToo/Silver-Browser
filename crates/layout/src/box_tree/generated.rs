@@ -1,15 +1,15 @@
-//! The text of the boxes `::before` and `::after` generate (M16,
-//! M21.4): their `content`, its quote marks chosen and its counters
-//! written, found by a walk of the document in tree order ahead of the
-//! build, which is the order both depend on.
+//! The text of the boxes `::before`, `::after` and a list item's marker
+//! generate (M16, M21.4, M21.6): their `content`, its quote marks chosen
+//! and its counters written, found by a walk of the document in tree
+//! order ahead of the build, which is the order both depend on.
 //!
 //! The walk visits what the builder makes a box for: an element with a
 //! style whose `display` is not `none`, and the pseudo-elements
-//! [`Styled::children`] gives it, `::before` as its first child and
-//! `::after` as its last; not what is inside a column, nor the children
-//! of a column group other than its columns (CSS2 §17.2.1). What it
-//! does not visit generates no box and touches no counter (Lists 3
-//! §4.5).
+//! [`Styled::children`] gives it, a list item's marker as its first
+//! child, then `::before`, and `::after` as its last; not what is inside
+//! a column, nor the children of a column group other than its columns
+//! (CSS2 §17.2.1). What it does not visit generates no box and touches
+//! no counter (Lists 3 §4.5).
 //!
 //! **Counters.** Each element and pseudo-element visited has a set of
 //! counters, each a name, what instantiated it and a value, the last of
@@ -30,6 +30,14 @@
 //! where the set has none of the name, as `counter()` and `counters()`
 //! do. A value is clamped to 32 bits.
 //!
+//! A list item increments `list-item` as though `list-item 1`, or `-1`
+//! when the counter it increments is reversed, ended its
+//! `counter-increment`, unless that names `list-item` (§4.6, M21.6), and
+//! its marker, which comes before its `::before` in tree order, is the
+//! `content` it has or, for `normal`, `list-item` written in its
+//! `list-style-type` with the counter style's prefix and suffix, or the
+//! type's string (§3.2).
+//!
 //! A reversed counter written without a value starts at what §4.4.2
 //! calculates from the increments and sets of it that come after it in
 //! its scope, which the walk knows only once it has passed them: when a
@@ -49,10 +57,13 @@ use std::sync::Arc;
 
 use dom::NodeId;
 use style::ComputedStyle;
-use style::computed::{Content, ContentItem, Display, Lists};
+use style::computed::{Content, ContentItem, Display, ListStyleType, Lists};
 use style::counter_style;
 
 use super::{Item, Side, Styled};
+
+/// The counter list items increment (Lists 3 §4.6).
+const LIST_ITEM: &str = "list-item";
 
 /// The most counters one element's set holds.
 const MAX_SET: usize = 1024;
@@ -66,7 +77,7 @@ const MAX_TEXT: usize = 1 << 20;
 /// The most text, in bytes, a walk writes in all.
 const MAX_TEXTS: usize = 1 << 28;
 
-/// The text of each `::before` and `::after` of a document that
+/// The text of each `::before`, `::after` and marker of a document that
 /// generates a box, by originating element and side.
 #[derive(Debug, Default)]
 pub(super) struct GeneratedText {
@@ -107,6 +118,8 @@ struct Counter {
     creator: u32,
     parent: u32,
     value: i32,
+    /// Whether it is `reversed()`, which a list item counts down.
+    reversed: bool,
 }
 
 /// One element's or pseudo-element's set of counters: their numbers in
@@ -225,14 +238,15 @@ impl<'w, 'a> Walk<'w, 'a> {
                 None => Set::of(number, Rc::clone(&top.set.counters)),
             };
             let mut working = None;
-            if let Some(lists) = style.lists.as_deref() {
+            let list_item = matches!(child, Item::Node(_)) && style.display == Display::ListItem;
+            if style.lists.is_some() || list_item {
                 let working = working.get_or_insert_with(|| Working::of(self, &set));
-                self.change(working, lists, number, parent);
+                self.change(working, style.lists(), list_item, number, parent);
             }
             if let Item::Generated(node, side) = child
                 && holds_content(style.display)
             {
-                let text = self.text(style, &mut working, &set, number, parent);
+                let text = self.text(style, side, &mut working, &set, number, parent);
                 self.texts.insert((node, side), text);
             }
             if let Some(working) = working {
@@ -309,8 +323,15 @@ impl<'w, 'a> Walk<'w, 'a> {
 
     /// Applies `lists`, the counter properties of the element numbered
     /// `number`, whose parent is numbered `parent`, to its set: resets,
-    /// then increments, then sets (§4.4).
-    fn change(&mut self, working: &mut Working, lists: &Lists, number: u32, parent: u32) {
+    /// then increments, a `list_item`'s own last, then sets (§4.4).
+    fn change(
+        &mut self,
+        working: &mut Working,
+        lists: &Lists,
+        list_item: bool,
+        number: u32,
+        parent: u32,
+    ) {
         for reset in &lists.counter_reset {
             let name = self.intern(&reset.name);
             let replaced = working.innermost(name).filter(|&at| {
@@ -329,7 +350,7 @@ impl<'w, 'a> Walk<'w, 'a> {
                     .and_then(|starts| starts.get(&id).copied())
                     .unwrap_or(0)
             });
-            let Some(id) = self.new_counter(name, value, number, parent) else {
+            let Some(id) = self.new_counter(name, value, reset.reversed, number, parent) else {
                 continue;
             };
             if reset.value.is_none() && self.starts.is_none() {
@@ -341,17 +362,30 @@ impl<'w, 'a> Walk<'w, 'a> {
             }
         }
         let mut seen: HashMap<u32, (i64, Option<i32>)> = HashMap::new();
-        for increment in &lists.counter_increment {
-            let name = self.intern(&increment.name);
-            let Some(id) = self.counter_named(working, name, number, parent) else {
-                continue;
-            };
-            let counter = &mut self.counters[id as usize];
-            counter.value = counter.value.saturating_add(increment.value);
-            if self.pending.contains_key(&id) {
+        let mut increment = |walk: &mut Self, working: &mut Working, name: u32, by: Option<i32>| {
+            let id = walk.counter_named(working, name, number, parent)?;
+            let counter = &mut walk.counters[id as usize];
+            // A list item's own increment counts down a reversed counter.
+            let by = by.unwrap_or(if counter.reversed { -1 } else { 1 });
+            counter.value = counter.value.saturating_add(by);
+            if walk.pending.contains_key(&id) {
                 let (sum, _) = seen.entry(id).or_default();
-                *sum = sum.saturating_add(i64::from(increment.value));
+                *sum = sum.saturating_add(i64::from(by));
             }
+            Some(())
+        };
+        for change in &lists.counter_increment {
+            let name = self.intern(&change.name);
+            increment(self, working, name, Some(change.value));
+        }
+        if list_item
+            && !lists
+                .counter_increment
+                .iter()
+                .any(|change| &*change.name == LIST_ITEM)
+        {
+            let name = self.intern(LIST_ITEM);
+            increment(self, working, name, None);
         }
         for set in &lists.counter_set {
             let name = self.intern(&set.name);
@@ -400,14 +434,21 @@ impl<'w, 'a> Walk<'w, 'a> {
         if working.is_full() {
             return None;
         }
-        let id = self.new_counter(name, 0, number, parent)?;
+        let id = self.new_counter(name, 0, false, number, parent)?;
         working.push(name, id);
         Some(id)
     }
 
     /// A new counter, unless the walk has instantiated as many as it
     /// may.
-    fn new_counter(&mut self, name: u32, value: i32, creator: u32, parent: u32) -> Option<u32> {
+    fn new_counter(
+        &mut self,
+        name: u32,
+        value: i32,
+        reversed: bool,
+        creator: u32,
+        parent: u32,
+    ) -> Option<u32> {
         if self.counters.len() >= MAX_COUNTERS {
             return None;
         }
@@ -416,37 +457,58 @@ impl<'w, 'a> Walk<'w, 'a> {
             creator,
             parent,
             value,
+            reversed,
         });
         Some((self.counters.len() - 1) as u32)
     }
 
-    fn intern(&mut self, name: &Arc<str>) -> u32 {
-        if let Some(&id) = self.names.get(&**name) {
+    fn intern(&mut self, name: &str) -> u32 {
+        if let Some(&id) = self.names.get(name) {
             return id;
         }
         let id = self.names.len() as u32;
-        self.names.insert(Arc::clone(name), id);
+        self.names.insert(Arc::from(name), id);
         id
     }
 
-    /// The text of a pseudo-element with the computed `style`, numbered
-    /// `number`, whose set is `working` if its counter properties have
-    /// changed it and `set` otherwise: its `content` with the quote marks
-    /// at the depth the walk has reached, which they then move, and its
-    /// counters written in their styles.
+    /// The text of the `side` pseudo-element with the computed `style`,
+    /// numbered `number`, whose set is `working` if its counter
+    /// properties have changed it and `set` otherwise: its `content` with
+    /// the quote marks at the depth the walk has reached, which they then
+    /// move, and its counters written in their styles; or a marker's
+    /// from its `list-style-type`.
     fn text(
         &mut self,
         style: &ComputedStyle,
+        side: Side,
         working: &mut Option<Working>,
         set: &Set,
         number: u32,
         parent: u32,
     ) -> String {
-        let Content::Items(items) = &style.content else {
-            return String::new();
-        };
         let room = MAX_TEXT.min(MAX_TEXTS - self.written);
         let mut text = Bounded::new(room);
+        let items = match &style.content {
+            Content::Items(items) => items,
+            Content::Normal if side == Side::Marker => {
+                match &style.lists().list_style_type {
+                    ListStyleType::Style(counter_style) => {
+                        let name = self.intern(LIST_ITEM);
+                        let working = working.get_or_insert_with(|| Working::of(self, set));
+                        let value = self
+                            .counter_named(working, name, number, parent)
+                            .map_or(0, |id| self.counters[id as usize].value);
+                        let marker = counter_style::marker(counter_style, value);
+                        text.push(&marker.unwrap_or_default());
+                    }
+                    ListStyleType::String(string) => text.push(string),
+                    ListStyleType::None => {}
+                }
+                self.written += text.text.len();
+                return text.text;
+            }
+            Content::Normal | Content::None => return String::new(),
+        };
         for part in items.iter() {
             match part {
                 ContentItem::Text(s) => text.push(s),

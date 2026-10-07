@@ -88,9 +88,10 @@ fn in_blocks(children: &[LayoutBox], path: &mut Vec<usize>) -> Found {
         let found = match child.kind {
             BoxKind::AnonymousBlock => in_line(&child.children, path),
             BoxKind::Block => in_blocks(&child.children, path),
-            // Out of flow. (An ancestor's floated first letter is in a
-            // line, where it was a text's.)
-            BoxKind::Float | BoxKind::Absolute => Found::Empty,
+            // Out of flow, or a list item's marker beside its content.
+            // (An ancestor's floated first letter is in a line, where it
+            // was a text's.)
+            BoxKind::Float | BoxKind::Absolute | BoxKind::Marker { .. } => Found::Empty,
             // A table's lines are its cells', a flex container's its
             // items' (M17).
             _ => Found::Blocked,
@@ -111,6 +112,10 @@ fn in_line(items: &[LayoutBox], path: &mut Vec<usize>) -> Found {
         path.push(i);
         let found = match &item.kind {
             BoxKind::Text(text) => in_text(text, item.style.white_space),
+            // A list item's first letter is after its marker
+            // (Pseudo-Elements 4 §2.2.3, M21.6).
+            BoxKind::Inline if item.generated == Some(PseudoElement::Marker) => Found::Empty,
+            BoxKind::Marker { .. } => Found::Empty,
             BoxKind::Inline => in_line(&item.children, path),
             // An ancestor's first letter, floated: the letter is in it.
             BoxKind::Float if item.generated == Some(PseudoElement::FirstLetter) => {
