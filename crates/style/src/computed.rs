@@ -13,6 +13,7 @@ use std::sync::{Arc, LazyLock};
 
 pub use crate::calc::Calc;
 use crate::calc::Expression;
+use crate::custom::CustomProperties;
 
 /// An RGBA color, 0.0–1.0 channels (see `paint::Rgba8` for the 8-bit
 /// form `render` actually blits — `style` owns its own color type per
@@ -1768,6 +1769,11 @@ pub struct ComputedStyle {
     /// `print-color-adjust` (M20), behind one pointer likewise; `None` is
     /// every initial value. Read through [`ComputedStyle::fragmentation`].
     pub fragmentation: Option<Arc<Fragmentation>>,
+    /// The custom properties (M21.1) — inherited, as every custom
+    /// property is; `None` when none has a value. Shared with the parent
+    /// unless the element declares one. Read through
+    /// [`ComputedStyle::custom_property`].
+    pub custom: Option<Arc<CustomProperties>>,
 }
 
 /// `font-family`'s initial value, one for every style that has it.
@@ -1832,6 +1838,7 @@ impl Default for ComputedStyle {
             grid: None,
             effects: None,
             fragmentation: None,
+            custom: None,
         }
     }
 }
@@ -1913,6 +1920,13 @@ impl ComputedStyle {
         Arc::make_mut(self.fragmentation.get_or_insert_with(Default::default))
     }
 
+    /// The value of the custom property `name` (M21.1), its substitution
+    /// functions replaced; `None` when it has the guaranteed-invalid
+    /// value, as one never declared has.
+    pub fn custom_property(&self, name: &str) -> Option<&[css::Token]> {
+        self.custom.as_ref()?.get(name).map(|value| &**value)
+    }
+
     /// Whether a box with this style is a stacking context (CSS2
     /// Appendix E, M11; M19): a positioned box, or a flex or grid
     /// `item` (css-flexbox-1 §4.3, css-grid-2 §6.5), whose `z-index` is
@@ -1961,6 +1975,7 @@ impl ComputedStyle {
             empty_cells: from.empty_cells,
             quotes: from.quotes.clone(),
             fragmentation: inherited_fragmentation(from),
+            custom: from.custom.clone(),
             ..self
         }
     }
@@ -2050,10 +2065,11 @@ mod tests {
         // before them. `calc()` (M21.2) grew each value that may hold a
         // percentage, 22 of them, from 8 bytes to 16, to hold its
         // expression beside the length and the percentage: 448 before
-        // it (`docs/design/values.md` says why not smaller). Growing
+        // it (`docs/design/values.md` says why not smaller). The custom
+        // properties (M21.1) cost a pointer, 624 before them. Growing
         // this is a decision, not an accident; say why where the number
         // changes.
-        assert_eq!(std::mem::size_of::<ComputedStyle>(), 624);
+        assert_eq!(std::mem::size_of::<ComputedStyle>(), 632);
         assert_eq!(ComputedStyle::default().grid, None);
         assert_eq!(*ComputedStyle::default().grid(), GridStyle::default());
         assert_eq!(ComputedStyle::default().effects, None);

@@ -1027,4 +1027,43 @@ mod tests {
         });
         assert_eq!(r.changed, [p], "its ::before's content");
     }
+
+    #[test]
+    fn a_custom_property_changed_restyles_what_inherits_it() {
+        // M21.1: a custom property is inherited; a change to one reaches
+        // the descendants whose styles it reaches, and restyles them as a
+        // full cascade would style them.
+        let (mut d, sheets, mut styles) = setup(
+            "<div id=x><section><p>one</p></section><p>two</p></div>",
+            ".dark { --fg: #fff } p { color: var(--fg, #000) } \
+             section { --pad: 1px } p { padding: var(--pad, 0) }",
+        );
+        let x = by_id(&d, "x");
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(x, "class", "dark").unwrap();
+        });
+        assert_eq!(
+            r.changed.len(),
+            4,
+            "the div, the section and the paragraphs"
+        );
+        let p = d
+            .subtree(x)
+            .find(|&n| d.tag(n) == Some("p"))
+            .expect("a paragraph");
+        assert_eq!(
+            styles.get(p).unwrap().color,
+            crate::computed::Color::rgb8(255, 255, 255)
+        );
+        // Through an inline style, and back.
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(x, "style", "--fg: #0f0").unwrap();
+        });
+        assert_eq!(r.changed.len(), 4);
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.remove_attribute(x, "style").unwrap();
+            d.remove_attribute(x, "class").unwrap();
+        });
+        assert_eq!(r.changed.len(), 4);
+    }
 }

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use css::Token;
 
 use super::{
-    LengthBases, Nesting, baseline_position, function_arguments, math,
+    LengthBases, Nesting, baseline_position, components, function_arguments, integer, math,
     parse_non_negative_length_percentage, positional, single_ident, single_token,
 };
 use crate::calc::{Computed, Want};
@@ -639,14 +639,11 @@ pub(super) fn parse_grid(tokens: &[Token], bases: &LengthBases<'_>) -> Option<Gr
 /// integer other than zero with a name or not, in either order; or
 /// `span` first or last with a positive integer, a name or both. An
 /// integer beyond what an `i32` holds is kept as the largest one; layout
-/// limits it to the grid's lines anyway.
-pub(super) fn parse_grid_line(tokens: &[Token]) -> Option<GridLine> {
-    let mut c = Cursor::new(tokens);
-    let mut parts = Vec::new();
-    while let Some(token) = c.next() {
-        parts.push(token);
-    }
-    if let [Token::Ident(word)] = parts.as_slice()
+/// limits it to the grid's lines anyway. The integer may be a math
+/// function's, rounded (M21.2).
+pub(super) fn parse_grid_line(tokens: &[Token], bases: &LengthBases<'_>) -> Option<GridLine> {
+    let parts = components(tokens);
+    if let [[Token::Ident(word)]] = parts.as_slice()
         && word.eq_ignore_ascii_case("auto")
     {
         return Some(GridLine::Auto);
@@ -654,29 +651,25 @@ pub(super) fn parse_grid_line(tokens: &[Token]) -> Option<GridLine> {
     if parts.is_empty() || parts.len() > 3 {
         return None;
     }
-    let is_span = |t: &Token| matches!(t, Token::Ident(w) if w.eq_ignore_ascii_case("span"));
-    let span_at = parts.iter().position(|t| is_span(t));
+    let is_span =
+        |part: &[Token]| matches!(part, [Token::Ident(w)] if w.eq_ignore_ascii_case("span"));
+    let span_at = parts.iter().position(|part| is_span(part));
     if let Some(at) = span_at
         && at != 0
         && at != parts.len() - 1
     {
         return None;
     }
-    let (mut integer, mut name) = (None, None);
-    for (i, token) in parts.iter().enumerate() {
-        match token {
+    let (mut number, mut name) = (None, None);
+    for (i, part) in parts.iter().enumerate() {
+        match part {
             _ if Some(i) == span_at => {}
-            Token::Number {
-                value,
-                is_integer: true,
-            } if integer.is_none() => {
-                integer = Some(value.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32);
-            }
-            Token::Ident(word) if name.is_none() => name = Some(custom_ident(word)?),
+            [Token::Ident(word)] if name.is_none() => name = Some(custom_ident(word)?),
+            _ if number.is_none() => number = Some(integer(part, bases)?),
             _ => return None,
         }
     }
-    match (span_at.is_some(), integer, name) {
+    match (span_at.is_some(), number, name) {
         (true, Some(n), _) if n < 1 => None,
         (true, None, None) => None,
         (true, n, name) => Some(GridLine::Span(n.map_or(1, |n| n as u32), name)),
@@ -699,12 +692,15 @@ fn end_from(start: &GridLine) -> GridLine {
 
 /// `grid-row` and `grid-column`: a start, then `/` and an end, which
 /// when omitted is [`end_from`] the start.
-pub(super) fn parse_grid_lines(tokens: &[Token]) -> Option<(GridLine, GridLine)> {
+pub(super) fn parse_grid_lines(
+    tokens: &[Token],
+    bases: &LengthBases<'_>,
+) -> Option<(GridLine, GridLine)> {
     let parts = slash_parts(tokens);
-    let start = parse_grid_line(parts[0])?;
+    let start = parse_grid_line(parts[0], bases)?;
     let end = match parts.as_slice() {
         [_] => end_from(&start),
-        [_, end] => parse_grid_line(end)?,
+        [_, end] => parse_grid_line(end, bases)?,
         _ => return None,
     };
     Some((start, end))
@@ -713,14 +709,14 @@ pub(super) fn parse_grid_lines(tokens: &[Token]) -> Option<(GridLine, GridLine)>
 /// `grid-area`: up to four lines, row start, column start, row end and
 /// column end, the missing ones from those before them (§8.4). Returned
 /// in that order.
-pub(super) fn parse_grid_area(tokens: &[Token]) -> Option<[GridLine; 4]> {
+pub(super) fn parse_grid_area(tokens: &[Token], bases: &LengthBases<'_>) -> Option<[GridLine; 4]> {
     let parts = slash_parts(tokens);
     if parts.len() > 4 {
         return None;
     }
     let lines: Vec<GridLine> = parts
         .iter()
-        .map(|part| parse_grid_line(part))
+        .map(|part| parse_grid_line(part, bases))
         .collect::<Option<_>>()?;
     let row_start = lines[0].clone();
     let column_start = lines

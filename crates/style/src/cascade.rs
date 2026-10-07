@@ -62,6 +62,12 @@
 //!   `vertical-align`, the last parsed in full though read on table
 //!   cells alone.
 //!
+//! * Custom properties (M21.1) and the substitution functions `var()`
+//!   and `env()` (M21.3), by [`crate::custom`]: an element's custom
+//!   properties are computed before its other values, which substitute
+//!   them; a value that its property does not take once substituted is
+//!   invalid at computed-value time, and the property `unset`.
+//!
 //! What every property accepts: the CSS-wide keywords `inherit`,
 //! `initial` and `unset` (css-cascade-5 §7.3), resolved against the
 //! parent's computed value or the property's initial value. What no
@@ -77,8 +83,10 @@
 //! built-in user-agent sheet and its selectors are parsed once per
 //! process.
 
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use css::Token;
@@ -94,6 +102,7 @@ use crate::computed::{
     WhiteSpace,
 };
 use crate::computed::{Calc, Effects, Fragmentation, GridStyle, JustifyItems};
+use crate::custom::{self, CustomProperties, Substituted, Substitutions};
 use crate::invalidation::{Reach, SelectorFeatures, invalidate};
 use crate::media::Media;
 use crate::page::{PagePosition, PageStyle};
@@ -354,11 +363,34 @@ pub fn cascade_document(
 /// UA sheet's included, which says what a change to the document can
 /// restyle. Made when the stylesheets change and kept for every cascade
 /// and restyle until they do again.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Stylesheets {
     sheets: Vec<css::Stylesheet>,
     rules: RuleSet,
     features: SelectorFeatures,
+    /// This set's own number, never another's in the process, a copy's
+    /// included: what says the declarations a custom property map was
+    /// computed from were these sheets' (M21.1, `crate::custom`).
+    id: u64,
+}
+
+impl Clone for Stylesheets {
+    /// A copy, with a number of its own: its declarations are elsewhere
+    /// in memory.
+    fn clone(&self) -> Self {
+        Stylesheets {
+            sheets: self.sheets.clone(),
+            rules: self.rules.clone(),
+            features: self.features.clone(),
+            id: next_sheets_id(),
+        }
+    }
+}
+
+/// A number for a set of stylesheets, never given before in the process.
+fn next_sheets_id() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 impl Default for Stylesheets {
@@ -376,6 +408,7 @@ impl Stylesheets {
             sheets,
             rules,
             features,
+            id: next_sheets_id(),
         }
     }
 
@@ -461,11 +494,13 @@ impl Stylesheets {
             ..CascadeContext::default()
         };
         let viewport_used = Cell::new(false);
+        let substitutions = Substitutions::new(self.id);
         let resolution = Resolution {
             rem,
             context: &context,
             viewport_used: &viewport_used,
             attributes: &[],
+            substitutions: &substitutions,
         };
         let bases = LengthBases {
             em: rem,
@@ -525,7 +560,7 @@ impl Stylesheets {
         let author = self.rules.in_force(&self.sheets, &answers);
         let mut media = ua_answers;
         media.extend(answers);
-        Cascader::new(document, ua_rules, author, context, media)
+        Cascader::new(document, ua_rules, author, context, media, self.id)
     }
 
     /// Brings `styles`, computed for `document` with these sheets and
@@ -688,7 +723,7 @@ impl Recascader<'_> {
     fn with_matched<R>(
         &self,
         element: NodeId,
-        cascade: impl FnOnce(&Matched, &Resolution<'_>) -> R,
+        cascade: impl FnOnce(&Matched<'_>, &Resolution<'_>) -> R,
     ) -> R {
         let mut cascader = self.cascader.borrow_mut();
         let cascader = &mut *cascader;
@@ -709,6 +744,7 @@ impl Recascader<'_> {
             context: cascader.context,
             viewport_used: &cascader.viewport_used,
             attributes: self.document.attrs(element).unwrap_or_default(),
+            substitutions: &cascader.substitutions,
         };
         cascade(&matched, &resolution)
     }
@@ -746,7 +782,7 @@ impl Recascade for Recascader<'_> {
 fn element_style(
     document: &Document,
     element: NodeId,
-    matched: &Matched,
+    matched: &Matched<'_>,
     parent: &ComputedStyle,
     resolution: &Resolution<'_>,
 ) -> ComputedStyle {
@@ -825,15 +861,20 @@ struct Cascader<'a> {
     media: Vec<bool>,
     /// Set when a viewport unit is met.
     viewport_used: Cell<bool>,
+    /// What the substitutions of this cascade share (M21.1).
+    substitutions: Substitutions,
 }
 
 impl<'a> Cascader<'a> {
+    /// A cascader with `ua` and `author`, rules of the stylesheets
+    /// numbered `sheets`.
     fn new(
         document: &'a Document,
         ua: Vec<ParsedRule<'a>>,
         author: Vec<ParsedRule<'a>>,
         context: &'a CascadeContext<'a>,
         media: Vec<bool>,
+        sheets: u64,
     ) -> Self {
         Cascader {
             document,
@@ -843,6 +884,7 @@ impl<'a> Cascader<'a> {
             context,
             media,
             viewport_used: Cell::new(false),
+            substitutions: Substitutions::new(sheets),
         }
     }
 
@@ -862,6 +904,7 @@ impl<'a> Cascader<'a> {
             context: self.context,
             viewport_used: &self.viewport_used,
             attributes: self.document.attrs(element).unwrap_or_default(),
+            substitutions: &self.substitutions,
         };
         let style = element_style(self.document, element, &matched, parent_style, &resolution);
         // Each pseudo-element some rule styles, from the element's style.
@@ -928,6 +971,8 @@ struct Resolution<'a> {
     /// The attributes of the element, or the originating element of the
     /// pseudo-element, the style is for: what `attr()` reads.
     attributes: &'a [(String, String)],
+    /// What the substitutions of the cascade share (M21.1).
+    substitutions: &'a Substitutions,
 }
 
 /// The bases a length in one element's declarations resolves against:
@@ -953,23 +998,23 @@ pub(crate) struct ParsedRule<'s> {
 /// The declarations that apply to an element and to each of its
 /// pseudo-elements, unsorted, by [`Target`].
 #[derive(Default)]
-struct Matched {
-    targets: [Vec<Applied>; 5],
+struct Matched<'a> {
+    targets: [Vec<Applied<'a>>; 5],
 }
 
-impl Matched {
-    fn of(&self, target: Target) -> &[Applied] {
+impl<'a> Matched<'a> {
+    fn of(&self, target: Target) -> &[Applied<'a>] {
         &self.targets[target as usize]
     }
 
     /// The element's own declarations.
-    fn element(&mut self) -> &mut Vec<Applied> {
+    fn element(&mut self) -> &mut Vec<Applied<'a>> {
         &mut self.targets[Target::Element as usize]
     }
 }
 
 /// A declaration plus everything needed to sort it into cascade order.
-struct Applied {
+struct Applied<'a> {
     /// See [`tier`] — encodes origin *and* importance in one order.
     tier: u8,
     /// The place of the rule's cascade layer among those of its origin
@@ -981,7 +1026,21 @@ struct Applied {
     /// (UA sheet, then each author sheet, in document order) — the
     /// final tiebreak once tier and specificity are equal.
     order: u32,
-    decl: css::Declaration,
+    /// A stylesheet's declaration, borrowed, or an inline style's, parsed
+    /// for the element.
+    decl: Cow<'a, css::Declaration>,
+}
+
+impl Applied<'_> {
+    /// The declaration's place in memory, when it is a stylesheet's,
+    /// which every element it applies to shares and which stays put
+    /// while the stylesheets live (M21.1); `None` for an inline style's.
+    fn identity(&self) -> Option<usize> {
+        match &self.decl {
+            Cow::Borrowed(declaration) => Some(std::ptr::from_ref(*declaration) as usize),
+            Cow::Owned(_) => None,
+        }
+    }
 }
 
 /// Where a declaration came from, before importance is folded in.
@@ -1020,7 +1079,7 @@ fn declarations_for<'a>(
     element: NodeId,
     ua: &[ParsedRule<'a>],
     author: &[ParsedRule<'a>],
-) -> Matched {
+) -> Matched<'a> {
     let mut order = 0u32;
     let mut out = Matched::default();
     collect_from_sheet(
@@ -1053,7 +1112,7 @@ fn declarations_for<'a>(
                 // breaks ties, matching real engines.
                 specificity: Specificity::default(),
                 order,
-                decl,
+                decl: Cow::Owned(decl),
             });
             order += 1;
         }
@@ -1070,7 +1129,7 @@ fn collect_from_sheet<'a>(
     sheet: &[ParsedRule<'a>],
     base: TierBase,
     order: &mut u32,
-    out: &mut Matched,
+    out: &mut Matched<'a>,
 ) {
     for rule in sheet {
         // A comma-separated list is cascade-equivalent to separate rules
@@ -1117,7 +1176,7 @@ fn collect_from_sheet<'a>(
                     },
                     specificity,
                     order: *order + offset as u32,
-                    decl: decl.clone(),
+                    decl: Cow::Borrowed(decl),
                 });
             }
         }
@@ -1126,15 +1185,17 @@ fn collect_from_sheet<'a>(
 }
 
 /// Sorts `applied` into cascade order and folds it into a fresh
-/// `ComputedStyle` inherited from `parent`, for `target`.
+/// `ComputedStyle` inherited from `parent`, for `target`, in three passes
+/// (M21): the custom properties, which the other values substitute; then
+/// `font-size`, which the other lengths' `em` is of; then the rest.
 fn compute_style(
-    applied: &[Applied],
+    applied: &[Applied<'_>],
     parent: &ComputedStyle,
     target: Target,
     dir_attr: Option<&str>,
     resolution: &Resolution<'_>,
 ) -> ComputedStyle {
-    let mut sorted: Vec<&Applied> = applied.iter().collect();
+    let mut sorted: Vec<&Applied<'_>> = applied.iter().collect();
     sorted.sort_by_key(|a| (a.tier, a.layer, a.specificity, a.order));
 
     let mut style = ComputedStyle::inherited_from(parent);
@@ -1153,7 +1214,25 @@ fn compute_style(
         _ => {}
     }
 
-    // `font-size` first: every other length's `em` resolves against
+    // The custom properties first (M21.1), on every target: the other
+    // values substitute them. An element that declares none keeps its
+    // parent's, which it inherited.
+    let declared: Vec<custom::Declaration<'_>> = sorted
+        .iter()
+        .filter(|a| custom::is_custom_property_name(&a.decl.name))
+        .map(|a| custom::Declaration {
+            name: &a.decl.name,
+            value: &a.decl.value,
+            identity: a.identity(),
+        })
+        .collect();
+    if !declared.is_empty() {
+        style.custom = resolution
+            .substitutions
+            .compute(&declared, parent.custom.as_ref());
+    }
+
+    // `font-size` next: every other length's `em` resolves against
     // *this* element's own font-size, which itself must already be
     // final before those are processed. Its own `em` (and `%`) is the
     // parent's font size.
@@ -1161,18 +1240,28 @@ fn compute_style(
         em: parent.font_size_px,
         resolution,
     };
+    let font_size = |value: &[Token]| match css_wide_keyword(value) {
+        Some(CssWide::Initial) => Some(ComputedStyle::default().font_size_px),
+        // `font-size` is inherited, so `unset` means `inherit`.
+        Some(CssWide::Inherit | CssWide::Unset) => Some(parent.font_size_px),
+        None => parse_font_size(value, &parent_bases),
+    };
     for a in &sorted {
         if a.decl.name != "font-size" {
             continue;
         }
-        if let Some(keyword) = css_wide_keyword(&a.decl.value) {
-            // `font-size` is inherited, so `unset` means `inherit`.
-            style.font_size_px = match keyword {
-                CssWide::Initial => ComputedStyle::default().font_size_px,
-                CssWide::Inherit | CssWide::Unset => parent.font_size_px,
-            };
-        } else if let Some(px) = parse_font_size(&a.decl.value, &parent_bases) {
-            style.font_size_px = px;
+        match specified(a, style.custom.as_ref(), resolution) {
+            Specified::Written(value) => {
+                if let Some(px) = font_size(value) {
+                    style.font_size_px = px;
+                }
+            }
+            // Invalid at computed-value time: `unset`, which is `inherit`.
+            Specified::Substituted(value) => {
+                style.font_size_px = font_size(&value).unwrap_or(parent.font_size_px);
+            }
+            Specified::Invalid => style.font_size_px = parent.font_size_px,
+            Specified::Ignored => {}
         }
     }
 
@@ -1183,17 +1272,54 @@ fn compute_style(
     let mut border_color_set = [false; 4];
     for a in &sorted {
         let name = canonical_name(&a.decl.name);
-        if !target.applies(name) {
+        if custom::is_custom_property_name(name) || !target.applies(name) {
             continue;
         }
-        apply_declaration(
-            &mut style,
-            name,
-            &a.decl.value,
-            &bases,
-            parent,
-            &mut border_color_set,
-        );
+        match specified(a, style.custom.as_ref(), resolution) {
+            Specified::Written(value) => {
+                apply_declaration(
+                    &mut style,
+                    name,
+                    value,
+                    &bases,
+                    parent,
+                    &mut border_color_set,
+                );
+            }
+            // A value substituted that its property does not take is
+            // invalid at computed-value time, the property `unset` — its
+            // inherited or initial value, not a value it beat in the
+            // cascade (Values 5 Appendix A). A shorthand leaves each of
+            // its longhands so.
+            Specified::Substituted(value) => {
+                if !apply_declaration(
+                    &mut style,
+                    name,
+                    &value,
+                    &bases,
+                    parent,
+                    &mut border_color_set,
+                ) {
+                    apply_css_wide(
+                        &mut style,
+                        name,
+                        CssWide::Unset,
+                        parent,
+                        &mut border_color_set,
+                    );
+                }
+            }
+            Specified::Invalid => {
+                apply_css_wide(
+                    &mut style,
+                    name,
+                    CssWide::Unset,
+                    parent,
+                    &mut border_color_set,
+                );
+            }
+            Specified::Ignored => {}
+        }
     }
     // `normal` computes to `none` on `::before` and `::after`.
     if target.takes_content() && style.content == Content::Normal {
@@ -1244,29 +1370,86 @@ fn compute_style(
     style
 }
 
+/// A declaration's value as the cascade applies it (M21.1).
+enum Specified<'v> {
+    /// The value as written, with no substitution function in it.
+    Written(&'v [Token]),
+    /// The value with its substitution functions replaced: one its
+    /// property does not take is invalid at computed-value time.
+    Substituted(Arc<[Token]>),
+    /// The substitution gave the guaranteed-invalid value: invalid at
+    /// computed-value time.
+    Invalid,
+    /// A substitution function in it is invalid by its grammar: the
+    /// declaration is invalid at parse time, ignored.
+    Ignored,
+}
+
+/// The value of `a` as the cascade applies it, its substitution functions
+/// replaced against the custom properties `custom`.
+fn specified<'v>(
+    a: &'v Applied<'_>,
+    custom: Option<&Arc<CustomProperties>>,
+    resolution: &Resolution<'_>,
+) -> Specified<'v> {
+    let value = a.decl.value.as_slice();
+    if !custom::has_substitution(value) {
+        return Specified::Written(value);
+    }
+    match resolution
+        .substitutions
+        .substitute(value, a.identity(), custom)
+    {
+        Substituted::Value(value) => Specified::Substituted(value),
+        Substituted::Invalid => Specified::Invalid,
+        Substituted::Ignored => Specified::Ignored,
+    }
+}
+
 /// Whether the cascade accepts the declaration `name: value` (M17): a
 /// property this engine knows, by its name or a `-webkit-` alias, and a
 /// value that property's parser takes, a CSS-wide keyword included.
 /// `name` and `value` are a declaration's as `css` parses one: the name
-/// lowercased, the value's tokens trimmed and without `!important`. The
-/// cascade's own parsers answer, so the answer is what the cascade does
-/// with the declaration. A relative length resolves against a 16px font
-/// in a viewport of no size, `CascadeContext::default()`'s, which no
-/// answer depends on.
+/// lowercased, a custom property's aside, the value's tokens trimmed and
+/// without `!important`. The cascade's own parsers answer, so the answer
+/// is what the cascade does with the declaration. A relative length
+/// resolves against a 16px font in a viewport of no size,
+/// `CascadeContext::default()`'s, which no answer depends on.
+///
+/// A custom property (M21.1) takes what [`crate::custom`] says its value
+/// may be. A value with a substitution function in it is taken, where the
+/// function is valid by its grammar, for any property this engine knows:
+/// whether its property takes what it substitutes to is known only then
+/// (Values 5 Appendix A).
 pub fn supports(name: &str, value: &[Token]) -> bool {
+    if custom::is_custom_property_name(name) {
+        return custom::is_valid_custom_declaration(value);
+    }
+    let parent = ComputedStyle::default();
+    if custom::has_substitution(value) {
+        return custom::check(value, false)
+            && apply_css_wide(
+                &mut ComputedStyle::default(),
+                canonical_name(name),
+                CssWide::Initial,
+                &parent,
+                &mut [false; 4],
+            );
+    }
     let context = CascadeContext::default();
     let viewport_used = Cell::new(false);
+    let substitutions = Substitutions::new(0);
     let resolution = Resolution {
         rem: 16.0,
         context: &context,
         viewport_used: &viewport_used,
         attributes: &[],
+        substitutions: &substitutions,
     };
     let bases = LengthBases {
         em: 16.0,
         resolution: &resolution,
     };
-    let parent = ComputedStyle::default();
     apply_declaration(
         &mut ComputedStyle::default(),
         canonical_name(name),
@@ -1416,7 +1599,7 @@ fn apply_declaration(
             .is_some(),
         "justify-content" | "align-content" => {
             let justify = name == "justify-content";
-            let words = idents(&split_whitespace_groups(value));
+            let words = idents(&split_components(value));
             let slot = if justify {
                 &mut style.justify_content
             } else {
@@ -1426,7 +1609,7 @@ fn apply_declaration(
         }
         "align-items" | "align-self" => {
             let items = name == "align-items";
-            let words = idents(&split_whitespace_groups(value));
+            let words = idents(&split_components(value));
             let slot = if items {
                 &mut style.align_items
             } else {
@@ -1442,7 +1625,7 @@ fn apply_declaration(
             .is_some(),
         "justify-items" => {
             let parent_items = parent.grid().justify_items;
-            let words = idents(&split_whitespace_groups(value));
+            let words = idents(&split_components(value));
             set_grid(
                 style,
                 words.and_then(|w| grid::justify_items(&w, parent_items)),
@@ -1450,7 +1633,7 @@ fn apply_declaration(
             )
         }
         "justify-self" => {
-            let words = idents(&split_whitespace_groups(value));
+            let words = idents(&split_components(value));
             set_grid(
                 style,
                 words.and_then(|w| grid::justify_self(&w, true)),
@@ -1502,23 +1685,37 @@ fn apply_declaration(
             g.auto_rows = v.auto_rows;
             g.auto_columns = v.auto_columns;
         }),
-        "grid-row-start" => set_grid(style, grid::parse_grid_line(value), |g, v| g.row_start = v),
-        "grid-row-end" => set_grid(style, grid::parse_grid_line(value), |g, v| g.row_end = v),
-        "grid-column-start" => set_grid(style, grid::parse_grid_line(value), |g, v| {
+        "grid-row-start" => set_grid(style, grid::parse_grid_line(value, bases), |g, v| {
+            g.row_start = v
+        }),
+        "grid-row-end" => set_grid(style, grid::parse_grid_line(value, bases), |g, v| {
+            g.row_end = v
+        }),
+        "grid-column-start" => set_grid(style, grid::parse_grid_line(value, bases), |g, v| {
             g.column_start = v
         }),
-        "grid-column-end" => set_grid(style, grid::parse_grid_line(value), |g, v| g.column_end = v),
-        "grid-row" => set_grid(style, grid::parse_grid_lines(value), |g, (start, end)| {
-            g.row_start = start;
-            g.row_end = end;
+        "grid-column-end" => set_grid(style, grid::parse_grid_line(value, bases), |g, v| {
+            g.column_end = v
         }),
-        "grid-column" => set_grid(style, grid::parse_grid_lines(value), |g, (start, end)| {
-            g.column_start = start;
-            g.column_end = end;
-        }),
+        "grid-row" => set_grid(
+            style,
+            grid::parse_grid_lines(value, bases),
+            |g, (start, end)| {
+                g.row_start = start;
+                g.row_end = end;
+            },
+        ),
+        "grid-column" => set_grid(
+            style,
+            grid::parse_grid_lines(value, bases),
+            |g, (start, end)| {
+                g.column_start = start;
+                g.column_end = end;
+            },
+        ),
         "grid-area" => set_grid(
             style,
-            grid::parse_grid_area(value),
+            grid::parse_grid_area(value, bases),
             |g, [rs, cs, re, ce]| {
                 g.row_start = rs;
                 g.column_start = cs;
@@ -1780,7 +1977,7 @@ fn parse_border_width_shorthand(tokens: &[Token], bases: &LengthBases<'_>) -> Op
 /// four sides per CSS2 §8.3's rule; one bad value drops the whole
 /// shorthand.
 fn parse_1_to_4<T: Copy>(tokens: &[Token], one: impl Fn(&[Token]) -> Option<T>) -> Option<[T; 4]> {
-    let groups = split_whitespace_groups(tokens);
+    let groups = split_components(tokens);
     let values: Option<Vec<T>> = groups.iter().map(|g| one(g)).collect();
     expand_1_to_4(&values?)
 }
@@ -1801,14 +1998,15 @@ fn set_padding_edge(
 
 /// The CSS-wide keywords (css-cascade-5 §7.3), which every property
 /// accepts in place of its own value.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum CssWide {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CssWide {
     Inherit,
     Initial,
     Unset,
 }
 
-fn css_wide_keyword(tokens: &[Token]) -> Option<CssWide> {
+/// The CSS-wide keyword `tokens` are, alone but for white space.
+pub(crate) fn css_wide_keyword(tokens: &[Token]) -> Option<CssWide> {
     match single_ident(tokens)?.to_ascii_lowercase().as_str() {
         "inherit" => Some(CssWide::Inherit),
         "initial" => Some(CssWide::Initial),
@@ -2122,7 +2320,7 @@ fn expand_1_to_4<T: Clone>(values: &[T]) -> Option<[T; 4]> {
 /// Expands the `padding` box shorthand — like [`parse_box_shorthand`],
 /// but each value may also be a percentage.
 fn parse_padding_shorthand(tokens: &[Token], bases: &LengthBases<'_>) -> Option<PaddingEdges> {
-    let groups = split_whitespace_groups(tokens);
+    let groups = split_components(tokens);
     let values: Option<Vec<LengthPercentage>> = groups
         .iter()
         .map(|g| parse_non_negative_length_percentage(g, bases))
@@ -2133,7 +2331,7 @@ fn parse_padding_shorthand(tokens: &[Token], bases: &LengthBases<'_>) -> Option<
 /// Expands the `margin` box shorthand — like [`parse_box_shorthand`],
 /// but each value may also be a percentage or `auto`.
 fn parse_margin_shorthand(tokens: &[Token], bases: &LengthBases<'_>) -> Option<MarginEdges> {
-    let groups = split_whitespace_groups(tokens);
+    let groups = split_components(tokens);
     let values: Option<Vec<LengthPercentageAuto>> = groups
         .iter()
         .map(|g| parse_length_percentage_or_auto(g, bases))
@@ -2158,7 +2356,7 @@ fn apply_border_shorthand(
     let mut width = None;
     let mut border_style = None;
     let mut color = None;
-    let groups = split_whitespace_groups(tokens);
+    let groups = split_components(tokens);
     if groups.is_empty() {
         return false; // `border: ;` has no component: an invalid declaration, ignored
     }
@@ -2193,30 +2391,17 @@ fn apply_border_shorthand(
     true
 }
 
-/// Splits `tokens` on whitespace into non-empty groups, preserving each
-/// group's internal token order — shared by `border`'s and the box
-/// shorthands' "one value per space-separated word" parsing. White
-/// space inside a function or a block splits nothing, so that
-/// `calc(1px + 2px) 3px` is two groups (CSS Syntax 3's component
-/// values, M21).
-fn split_whitespace_groups(tokens: &[Token]) -> Vec<Vec<Token>> {
-    let mut groups = Vec::new();
-    let mut current = Vec::new();
-    let mut depth = Nesting::default();
-    for t in tokens {
-        if matches!(t, Token::Whitespace) && depth.is_top() {
-            if !current.is_empty() {
-                groups.push(std::mem::take(&mut current));
-            }
-        } else {
-            depth.step(t);
-            current.push(t.clone());
-        }
-    }
-    if !current.is_empty() {
-        groups.push(current);
-    }
-    groups
+/// The component values of `tokens`, each copied: what the shorthands
+/// and the lists of keywords take one value from each of. White space
+/// between two is optional, as CSS Syntax 3 has it, and white space
+/// inside a function or a block splits nothing: `calc(1px + 2px) 3px` is
+/// two values (M21), and so are `1px/**/2px` and `var(--a)var(--b)` once
+/// substituted, which the reference browser takes as two.
+fn split_components(tokens: &[Token]) -> Vec<Vec<Token>> {
+    components(tokens)
+        .into_iter()
+        .map(<[Token]>::to_vec)
+        .collect()
 }
 
 /// The component values of `tokens` (CSS Syntax 3 §5.4.7), the white
@@ -2547,7 +2732,7 @@ fn parse_border_collapse(tokens: &[Token]) -> Option<BorderCollapse> {
 /// then vertical, one value standing for both (CSS2 §17.6.1). No
 /// percentage.
 fn parse_border_spacing(tokens: &[Token], bases: &LengthBases<'_>) -> Option<BorderSpacing> {
-    let groups = split_whitespace_groups(tokens);
+    let groups = split_components(tokens);
     let (horizontal, vertical) = match groups.as_slice() {
         [one] => {
             let v = parse_non_negative_length_px(one, bases)?;
@@ -2760,7 +2945,7 @@ fn parse_flex_wrap(tokens: &[Token]) -> Option<FlexWrap> {
 /// in either order, each at most once; the one left out takes its
 /// initial value.
 fn parse_flex_flow(tokens: &[Token]) -> Option<(FlexDirection, FlexWrap)> {
-    let groups = split_whitespace_groups(tokens);
+    let groups = split_components(tokens);
     if groups.is_empty() {
         return None;
     }
@@ -2837,7 +3022,7 @@ fn parse_flex(tokens: &[Token], bases: &LengthBases<'_>) -> Option<(f32, f32, Fl
             _ => {}
         }
     }
-    let groups = split_whitespace_groups(tokens);
+    let groups = split_components(tokens);
     if groups.is_empty() || groups.len() > 3 {
         return None;
     }
@@ -2994,7 +3179,7 @@ fn split_pair<A, B>(
 /// `justify-content`, which when left out is the first value, or
 /// `start` when that is a baseline.
 fn parse_place_content(tokens: &[Token]) -> Option<(ContentAlignment, ContentAlignment)> {
-    let words = idents(&split_whitespace_groups(tokens))?;
+    let words = idents(&split_components(tokens))?;
     let (align, justify) = split_pair(
         &words,
         |w| content_alignment(w, false),
@@ -3017,7 +3202,7 @@ fn parse_place_items(
     tokens: &[Token],
     parent: JustifyItems,
 ) -> Option<(SelfAlignment, JustifyItems)> {
-    let words = idents(&split_whitespace_groups(tokens))?;
+    let words = idents(&split_components(tokens))?;
     let (align, justify) = split_pair(
         &words,
         |w| self_alignment(w, false),
@@ -3034,7 +3219,7 @@ fn parse_place_items(
 /// the `align-self` value, then the `justify-self` value, the first
 /// value again when it is left out.
 fn parse_place_self(tokens: &[Token]) -> Option<(SelfAlignment, SelfAlignment)> {
-    let words = idents(&split_whitespace_groups(tokens))?;
+    let words = idents(&split_components(tokens))?;
     let (align, justify) = split_pair(
         &words,
         |w| self_alignment(w, true),
@@ -3063,7 +3248,7 @@ fn parse_gap_shorthand(
     tokens: &[Token],
     bases: &LengthBases<'_>,
 ) -> Option<(Option<LengthPercentage>, Option<LengthPercentage>)> {
-    match split_whitespace_groups(tokens).as_slice() {
+    match split_components(tokens).as_slice() {
         [row] => {
             let row = parse_gap(row, bases)?;
             Some((row.clone(), row))
@@ -3235,7 +3420,7 @@ fn parse_font_family(tokens: &[Token]) -> Option<String> {
 /// image, a position, a size, a second layer — is one this engine cannot
 /// honour, so the declaration is dropped rather than half applied.
 fn parse_background(tokens: &[Token]) -> Option<Color> {
-    let groups = split_whitespace_groups(tokens);
+    let groups = split_components(tokens);
     if groups.is_empty() {
         return None;
     }
@@ -3782,11 +3967,13 @@ mod tests {
             media: Media::screen(800.0, 600.0),
         };
         let viewport_used = Cell::new(false);
+        let substitutions = Substitutions::new(0);
         let resolution = Resolution {
             rem: 16.0,
             context: &context,
             viewport_used: &viewport_used,
             attributes: &[],
+            substitutions: &substitutions,
         };
         f(&LengthBases {
             em: 16.0,
@@ -3966,6 +4153,7 @@ mod tests {
             author_set.in_force(&author, &[]),
             &context,
             Vec::new(),
+            0,
         )
         .cascade();
         let p = styles.get(first(&document, "p")).expect("styled");
@@ -6643,6 +6831,11 @@ mod tests {
             ("span foo 3", L::Span(3, name("foo"))),
             ("foo 3 span", L::Span(3, name("foo"))),
             ("99999999999", L::Line(i32::MAX, None)),
+            // M21.2: math functions' integers, rounded.
+            ("calc(1 + 1)", L::Line(2, None)),
+            ("foo calc(-2.6)", L::Line(-3, name("foo"))),
+            ("span calc(2.5)", L::Span(3, None)),
+            ("min(4, 5) span", L::Span(4, None)),
         ] {
             assert_eq!(line(value), expected, "{value}");
         }
@@ -6663,6 +6856,10 @@ mod tests {
             "inherit 2",
             "a b c d",
             "'a'",
+            "calc(0.4)",
+            "span calc(0)",
+            "calc(1px)",
+            "calc(1) calc(2)",
         ] {
             assert_eq!(line(value), L::Auto, "{value}");
         }
@@ -7532,5 +7729,265 @@ mod tests {
             first,
         );
         assert_eq!(s.margin, std::array::from_fn(|_| Some(px(1.0))));
+    }
+
+    /// The style of the first `p` in `html` with `css` as its one sheet.
+    fn p_with(html: &str, css: &str) -> ComputedStyle {
+        style_of(html, &[sheet(css)], "p")
+    }
+
+    #[test]
+    fn custom_properties_are_substituted_into_properties() {
+        // M21.1: declared, inherited, substituted.
+        let p = p_with(
+            "<div><p>x</p></div>",
+            ":root { --main: #008000; --gap: 4px } div { --pad: var(--gap) 2px } \
+             p { color: var(--main); padding: var(--pad); margin-left: calc(var(--gap) * 2) }",
+        );
+        assert_eq!(p.color, Color::rgb8(0, 128, 0));
+        assert_eq!(p.padding, [4.0, 2.0, 4.0, 2.0].map(LengthPercentage::Px));
+        assert_eq!(p.margin[LEFT], LengthPercentageAuto::Px(8.0));
+        assert_eq!(
+            p.custom_property("--pad"),
+            Some(css::tokenize("4px 2px").as_slice())
+        );
+        assert_eq!(p.custom_property("--nope"), None);
+        // Names are case-sensitive, values kept as written.
+        let p = p_with(
+            "<p>x</p>",
+            "p { --Color: red; --color: #00f; color: var(--color) }",
+        );
+        assert_eq!(p.color, Color::rgb8(0, 0, 255));
+        // An inline style's custom properties, and its var().
+        let p = p_with(
+            "<div style='--w: 30px'><p style='width: var(--w)'>x</p></div>",
+            "",
+        );
+        assert_eq!(p.width, Size::Px(30.0));
+        // `font-size` substitutes before the lengths that read it.
+        let p = p_with(
+            "<div style='font-size: 10px'><p>x</p></div>",
+            "p { --size: 2em; font-size: var(--size); --w: 3em; width: var(--w) }",
+        );
+        assert_eq!(p.font_size_px, 20.0);
+        assert_eq!(p.width, Size::Px(60.0));
+        // Environment variables.
+        let p = p_with(
+            "<p>x</p>",
+            "p { width: env(safe-area-inset-left, 5px); height: env(nope, 7px) }",
+        );
+        assert_eq!((p.width, p.height), (Size::Px(0.0), Size::Px(7.0)));
+    }
+
+    #[test]
+    fn a_value_invalid_once_substituted_is_unset() {
+        // Values 5's example: not the red the declaration beat, but the
+        // initial transparent.
+        let p = p_with(
+            "<p>x</p>",
+            ":root { --not-a-color: 20px } p { background-color: red } \
+             p { background-color: var(--not-a-color) }",
+        );
+        assert_eq!(p.background_color, Color::TRANSPARENT);
+        // An inherited property takes the parent's value.
+        let p = p_with(
+            "<div><p>x</p></div>",
+            "div { color: #008000; font-size: 12px } \
+             p { color: red; color: var(--missing); font-size: 30px; font-size: var(--missing) }",
+        );
+        assert_eq!(p.color, Color::rgb8(0, 128, 0));
+        assert_eq!(p.font_size_px, 12.0);
+        // Substitution is of tokens: `20` and `px` are two.
+        let p = p_with(
+            "<p>x</p>",
+            "p { --gap: 20; width: 5px; width: var(--gap)px; height: calc(var(--gap) * 1px) }",
+        );
+        assert_eq!((p.width, p.height), (Size::Auto, Size::Px(20.0)));
+        // A substitution function invalid by its grammar makes the
+        // declaration invalid when it is parsed: the one before stands.
+        let p = p_with(
+            "<p>x</p>",
+            "p { width: 5px; width: var(--a, !); height: 6px; height: var() }",
+        );
+        assert_eq!((p.width, p.height), (Size::Px(5.0), Size::Px(6.0)));
+        // A CSS-wide keyword substituted is that keyword.
+        let p = p_with(
+            "<div style='color: #00f'><p>x</p></div>",
+            "p { color: red; color: var(--nope, initial) }",
+        );
+        assert_eq!(p.color, Color::BLACK);
+        let p = p_with(
+            "<div style='width: 50px'><p>x</p></div>",
+            "p { width: var(--nope, inherit) }",
+        );
+        assert_eq!(p.width, Size::Px(50.0));
+        // A property the engine does not know is passed over.
+        let p = p_with("<p>x</p>", "p { --c: red; bogus: var(--c) }");
+        assert_eq!(p.color, Color::BLACK);
+    }
+
+    #[test]
+    fn a_shorthand_substitutes_whole_and_its_longhands_after_it_win() {
+        let p = p_with(
+            "<p>x</p>",
+            "p { --m: 1px 2px; margin: var(--m); --b: 3px solid; border: var(--b) #00f }",
+        );
+        assert_eq!(p.margin, [1.0, 2.0, 1.0, 2.0].map(LengthPercentageAuto::Px));
+        assert_eq!(p.border_width, [3.0; 4]);
+        assert_eq!(p.border_style, [BorderStyle::Solid; 4]);
+        assert_eq!(p.border_color, [Color::rgb8(0, 0, 255); 4]);
+        // Invalid, it leaves every longhand unset; a longhand written
+        // after it still wins.
+        let p = p_with(
+            "<p>x</p>",
+            "p { margin: 9px; margin: var(--bad); margin-left: 5px }",
+        );
+        assert_eq!(p.margin, [0.0, 0.0, 0.0, 5.0].map(LengthPercentageAuto::Px));
+        // Two values substituted with no white space between them are
+        // two, as the reference browser has them.
+        let p = p_with(
+            "<p>x</p>",
+            "p { --a: 1px; --b: 2px; margin: var(--a)var(--b) }",
+        );
+        assert_eq!(p.margin, [1.0, 2.0, 1.0, 2.0].map(LengthPercentageAuto::Px));
+        // As are two values a comment parts, and a hash after a keyword.
+        let p = p_with(
+            "<p>x</p>",
+            "p { margin: 1px/**/2px; border: 1px solid#00f }",
+        );
+        assert_eq!(p.margin, [1.0, 2.0, 1.0, 2.0].map(LengthPercentageAuto::Px));
+        assert_eq!(p.border_color, [Color::rgb8(0, 0, 255); 4]);
+        // An alias substitutes as its property.
+        let p = p_with(
+            "<p>x</p>",
+            "p { --o: 2; -webkit-order: var(--o); --g: 1fr 2fr; display: grid; \
+             grid-template-columns: var(--g) }",
+        );
+        assert_eq!(p.order, 2);
+        assert_eq!(
+            p.grid().template_columns.as_ref().map(|t| t.sections.len()),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn custom_properties_apply_to_every_pseudo_element() {
+        // Variables 1's tests of ::first-line and ::first-letter: the
+        // custom properties apply, and the properties they substitute
+        // into as the pseudo-element takes them.
+        let sheets = [sheet(
+            "p::first-line { --c: #00f; color: var(--c); --pos: absolute; position: var(--pos) } \
+             p::first-letter { --m: 7px; margin-left: var(--m) } \
+             p { --t: 'hi' } p::before { content: var(--t) ' there' }",
+        )];
+        let html = "<p>x</p>";
+        let line = pseudo_of(html, &sheets, "p", PseudoElement::FirstLine).expect("styled");
+        assert_eq!(line.color, Color::rgb8(0, 0, 255));
+        assert_eq!(line.position, Position::Static);
+        assert_eq!(
+            line.custom_property("--c"),
+            Some(css::tokenize("#00f").as_slice())
+        );
+        let letter = pseudo_of(html, &sheets, "p", PseudoElement::FirstLetter).expect("styled");
+        assert_eq!(letter.margin[LEFT], LengthPercentageAuto::Px(7.0));
+        let before = pseudo_of(html, &sheets, "p", PseudoElement::Before).expect("styled");
+        assert_eq!(
+            before.content,
+            Content::Items(Arc::from([
+                ContentItem::Text("hi".into()),
+                ContentItem::Text(" there".into())
+            ]))
+        );
+    }
+
+    #[test]
+    fn custom_properties_cascade_as_declarations_do() {
+        // Importance, layers, and the last valid declaration of a name.
+        let p = p_with(
+            "<p id=p>x</p>",
+            "@layer base { p { --c: #f00 !important } } \
+             #p { --c: #0f0 } p { --c: #00f !important; --d: 1px; --d: !; color: var(--c); \
+             width: var(--d) }",
+        );
+        assert_eq!(p.color, Color::rgb8(255, 0, 0));
+        assert_eq!(p.width, Size::Px(1.0));
+        // A cycle makes its properties guaranteed-invalid, a fallback in
+        // it notwithstanding, and their users take their own fallbacks.
+        let p = p_with(
+            "<p>x</p>",
+            "p { --a: var(--b, 1px); --b: var(--a, 2px); width: var(--a, 3px); \
+             height: var(--b) }",
+        );
+        assert_eq!((p.width, p.height), (Size::Px(3.0), Size::Auto));
+        // `@supports` takes custom properties.
+        let p = p_with(
+            "<p>x</p>",
+            "@supports (--a: b) and (color: var(--x)) { p { color: #0f0 } }",
+        );
+        assert_eq!(p.color, Color::rgb8(0, 255, 0));
+    }
+
+    #[test]
+    fn a_set_on_every_element_is_computed_once() {
+        // Declared on `*`, the same declarations are the parent's, and
+        // the parent's map is shared, not computed again.
+        let html = "<div><section><p>x</p></section></div>";
+        let document = Document::from_node(&html::parse_document(html).expect("never fails"));
+        let sheets = [sheet("* { --a: 1; --b: var(--a) var(--a) } p { --c: 2 }")];
+        let styles = cascade_document(&document, &sheets, &CascadeContext::default());
+        let custom = |tag| {
+            styles
+                .get(first(&document, tag))
+                .unwrap()
+                .custom
+                .clone()
+                .unwrap()
+        };
+        assert!(Arc::ptr_eq(&custom("div"), &custom("section")));
+        assert!(Arc::ptr_eq(&custom("html"), &custom("div")));
+        assert!(!Arc::ptr_eq(&custom("section"), &custom("p")));
+        assert_eq!(custom("p").len(), 3);
+        // An element that declares none shares its parent's too.
+        let document =
+            Document::from_node(&html::parse_document("<div><p>x</p></div>").expect("never fails"));
+        let sheets = [sheet("div { --a: 1 }")];
+        let styles = cascade_document(&document, &sheets, &CascadeContext::default());
+        let custom = |tag| {
+            styles
+                .get(first(&document, tag))
+                .unwrap()
+                .custom
+                .clone()
+                .unwrap()
+        };
+        assert!(Arc::ptr_eq(&custom("div"), &custom("p")));
+        assert_eq!(styles.get(first(&document, "html")).unwrap().custom, None);
+    }
+
+    #[test]
+    fn custom_properties_are_supported() {
+        for (name, value) in [
+            ("--a", ""),
+            ("--a", "anything { at all }"),
+            ("--a", "initial"),
+            ("--A", "var(--b, var(--c))"),
+            ("color", "var(--a)"),
+            ("margin", "var(--a) 1px"),
+            ("-webkit-order", "var(--a)"),
+            ("color", "env(safe-area-inset-top, red)"),
+        ] {
+            assert!(supports(name, &css::tokenize(value)), "{name}: {value}");
+        }
+        for (name, value) in [
+            ("--", "a"),
+            ("--a", "!"),
+            ("--a", ")"),
+            ("--a", "revert"),
+            ("color", "var(--a, !)"),
+            ("color", "var()"),
+            ("bogus", "var(--a)"),
+        ] {
+            assert!(!supports(name, &css::tokenize(value)), "{name}: {value}");
+        }
     }
 }

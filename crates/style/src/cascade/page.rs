@@ -6,14 +6,14 @@
 use css::Token;
 
 use super::{LengthBases, parse_length_percentage_or_auto, parse_margin_shorthand};
-use super::{parse_non_negative_length_px, split_whitespace_groups};
+use super::{parse_non_negative_length_px, split_components};
 use crate::computed::LengthPercentageAuto;
 use crate::page::{Orientation, PageSize, named_page_size};
 
 /// `size`: `auto`, one or two non-negative lengths, or a named size and
 /// an orientation, either or both, in either order.
 pub(super) fn parse_size(value: &[Token], bases: &LengthBases<'_>) -> Option<PageSize> {
-    let groups = split_whitespace_groups(value);
+    let groups = split_components(value);
     let ident = |group: &[Token]| match group {
         [Token::Ident(word)] => Some(word.to_ascii_lowercase()),
         _ => None,

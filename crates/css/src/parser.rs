@@ -79,7 +79,8 @@ pub enum Block {
 /// One `name: value` pair.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Declaration {
-    /// Lowercased property name.
+    /// The property's name, ASCII-lowercased; a custom property's (two
+    /// hyphens and more) as written, its case meaning something.
     pub name: String,
     /// The value as tokens (whitespace trimmed).
     pub value: Vec<Token>,

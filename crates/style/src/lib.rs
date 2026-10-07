@@ -48,6 +48,11 @@ pub mod computed;
 /// this engine supports, `selector()` included.
 pub mod conditions;
 
+/// Custom properties and the substitution functions `var()` and `env()`
+/// (M21.1, M21.3): their values checked, computed and substituted, within
+/// bounds.
+pub mod custom;
+
 /// Style invalidation (M13.1): which elements a change to a document
 /// can restyle.
 pub mod invalidation;
@@ -84,6 +89,7 @@ pub use cascade::{
 };
 pub use computed::ComputedStyle;
 pub use conditions::supports_condition;
+pub use custom::CustomProperties;
 pub use invalidation::SelectorFeatures;
 pub use media::{
     ColorScheme, Media, MediaQueryList, MediaType, Preferences, parse_media_query_list,

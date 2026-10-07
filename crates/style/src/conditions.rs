@@ -96,7 +96,7 @@ fn in_parens(c: &mut Cursor<'_>, depth: usize) -> Option<bool> {
 
 /// Whether the cascade accepts `name: value`, the tokens between a
 /// declaration's parentheses, with `!important` or without it. A custom
-/// property is not supported until the cascade takes them (M21).
+/// property's name keeps its case and its value may be empty (M21).
 fn declaration(tokens: &[Token]) -> bool {
     let [Token::Ident(name), rest @ ..] = tokens else {
         return false;
@@ -105,6 +105,9 @@ fn declaration(tokens: &[Token]) -> bool {
         return false;
     };
     let value = without_important(trim(value));
+    if crate::custom::is_custom_property_name(name) {
+        return crate::supports(name, value);
+    }
     !value.is_empty() && crate::supports(&name.to_ascii_lowercase(), value)
 }
 
@@ -166,8 +169,40 @@ mod tests {
             ("(width: 1px 2px)", Some(false)),
             ("(color: [x])", Some(false)),
             ("(nonsense: 1)", Some(false)),
-            // Not until the cascade takes custom properties (M21).
-            ("(--x: 1)", Some(false)),
+            // Custom properties and substitution functions (M21), as the
+            // web-platform-tests' variable-supports cases have them.
+            ("(--x: 1)", Some(true)),
+            ("(--a: )", Some(true)),
+            ("(--a:)", Some(true)),
+            ("(--A: a)", Some(true)),
+            ("(--0: a)", Some(true)),
+            ("(--a:var(--a))", Some(true)),
+            ("(--a: x !important)", Some(true)),
+            ("(--a: inherit)", Some(true)),
+            ("(--: a)", Some(false)),
+            ("(--a: !)", Some(false)),
+            ("(--a: var(--b,!))", Some(false)),
+            ("(--a: revert)", Some(false)),
+            ("(VAR-a: a)", Some(false)),
+            ("(color: var(--a))", Some(true)),
+            ("(color:var(--a))", Some(true)),
+            ("(color: VAR(--a))", Some(true)),
+            ("(color: var(--a, ))", Some(true)),
+            ("(color: var(--a,/**/))", Some(true)),
+            ("(color: var(1px))", Some(true)),
+            ("(color: var(--a) <!--)", Some(true)),
+            ("(color: --> var(--a))", Some(true)),
+            ("(color: { [ var(--a) ] })", Some(true)),
+            ("(color: [;] var(--a))", Some(true)),
+            ("(color: var(--a)var(--b))", Some(true)),
+            ("(color: 1px var(--a))", Some(true)),
+            ("(color: env(safe-area-inset-top))", Some(true)),
+            ("(color: var(--a,!))", Some(false)),
+            ("(color: var(--a,!important))", Some(false)),
+            ("(color: var(--a, ;))", Some(false)),
+            ("(color: var())", Some(false)),
+            ("(color: env(10px))", Some(false)),
+            ("(nonsense: var(--a))", Some(false)),
         ]);
     }
 
