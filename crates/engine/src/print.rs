@@ -1,0 +1,377 @@
+//! Printing (M20.4): the document shown, as a PDF. See
+//! `docs/design/media.md`, "Print: what prints" and "Print: the raster
+//! and the PDF".
+//!
+//! [`Engine::print`] makes the PDF without touching what the window
+//! shows: a cascade of its own under the print medium, a layout of its
+//! own at the first page's area width, the pages `layout::paginate`
+//! cuts, and a software backend of its own drawing each page's area at
+//! the print's resolution through a group that scales the page's list,
+//! so that text is drawn at the size the scale makes. The document's
+//! styles, layout, scroll offsets and the window's backend are left as
+//! they were. A page lists the document as the viewport onto its slice
+//! of the paginated document would show it, its fixed boxes included,
+//! clipped to its area; the root's background covers the area alone and
+//! the margins are white, as the reference browser prints them.
+
+use dom::Document;
+use paint::{DisplayItem, DisplayList, GroupKey, Viewport, paint_fragments_in};
+use render::RenderBackend;
+use render::SoftwareBackend;
+use render::pdf::{PdfPage, write_pdf};
+use style::page::{DEFAULT_MARGIN, LETTER};
+use style::transform::Matrix;
+use style::{CascadeContext, Media, MediaType, PageBox, PagePosition};
+
+use crate::{Engine, FontMeasurer};
+
+/// What a print is asked for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PrintOptions {
+    /// The page box of a page no `@page` rule sizes, in CSS pixels: US
+    /// Letter unless given, as the reference browser prints.
+    pub page_size: (f32, f32),
+    /// The margin of a side of a page no `@page` rule sets, in CSS
+    /// pixels: 28 points unless given, the reference browser's.
+    pub margin: f32,
+    /// The raster's resolution, in dots per inch: 300 unless given. A
+    /// page past the backend's largest raster is drawn at the resolution
+    /// that fits it.
+    pub dpi: f32,
+}
+
+impl Default for PrintOptions {
+    fn default() -> Self {
+        PrintOptions {
+            page_size: LETTER,
+            margin: DEFAULT_MARGIN,
+            dpi: 300.0,
+        }
+    }
+}
+
+/// Why a print was not made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrintError {
+    /// The page size, margin or resolution is not a finite length, or
+    /// the size or resolution not above zero.
+    Options,
+}
+
+impl std::fmt::Display for PrintError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PrintError::Options => {
+                write!(f, "the print's page size, margin or resolution is not one")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PrintError {}
+
+impl Engine {
+    /// The document shown, printed to a PDF by `options`: its cascade
+    /// under the print medium, its own layout and pagination, each page
+    /// rasterized; nothing the window shows changes.
+    pub fn print(&self, options: &PrintOptions) -> Result<Vec<u8>, PrintError> {
+        let pages = self.print_pages(options)?;
+        Ok(write_pdf(&pages, &self.title()))
+    }
+
+    /// The pages of [`Engine::print`], before they are written.
+    pub(crate) fn print_pages(&self, options: &PrintOptions) -> Result<Vec<PdfPage>, PrintError> {
+        let (width, height) = options.page_size;
+        let valid = |v: f32| v.is_finite() && v > 0.0;
+        if !valid(width) || !valid(height) || !valid(options.dpi) || !options.margin.is_finite() {
+            return Err(PrintError::Options);
+        }
+        let media = Media {
+            media_type: MediaType::Print,
+            width,
+            height,
+            device_width: width,
+            device_height: height,
+            resolution: options.dpi / 96.0,
+            preferences: self.preferences,
+        };
+        let sheets = &self.shown.stylesheets;
+        let document = &self.shown.document;
+        let fonts = FontMeasurer(&self.layout_fonts);
+        let first = PagePosition {
+            first: true,
+            ..PagePosition::default()
+        };
+        let page_box = |rem: f32, position: PagePosition| {
+            sheets
+                .page_style(&media, rem, position)
+                .page_box(options.page_size, options.margin)
+        };
+        // The viewport is the first page's area, which `@page` rules may
+        // size in the root's `em`: cascaded once against the area with
+        // the initial font size, and again if the root's makes another
+        // area and a viewport unit was used.
+        let initial = style::ComputedStyle::default().font_size_px;
+        let mut area = page_box(initial, first).area();
+        let context = |area: (f32, f32)| CascadeContext {
+            viewport_width: area.0,
+            viewport_height: area.1,
+            fonts: Some(&fonts),
+            language: self.shown.page.language(),
+            media,
+        };
+        let mut styles = sheets.cascade(document, &context(area));
+        let rem = root_font_size(document, &styles).unwrap_or(initial);
+        let measured = page_box(rem, first).area();
+        if measured != area {
+            area = measured;
+            if styles.uses_viewport_units {
+                styles = sheets.cascade(document, &context(area));
+            }
+        }
+        let context = context(area);
+        let recascade = sheets.recascader(document, &styles, &context);
+        let boxes = layout::build_box_tree(document, &styles, &recascade);
+        let laid = layout::layout_document_in(&boxes, area.0, Some(area.1), &self.layout_fonts);
+        let paginated = layout::paginate(laid, &|position| page_box(rem, position).area().1);
+
+        let mut backend = SoftwareBackend::with_fonts(self.layout_fonts.clone());
+        let pages = paginated
+            .pages
+            .iter()
+            .map(|page| {
+                let page_box: PageBox = page_box(rem, page.position);
+                let (area_width, _) = page_box.area();
+                let viewport = Viewport {
+                    width: area_width,
+                    height: page.height,
+                    scroll_y: page.top,
+                };
+                let list = paint_fragments_in(&paginated.roots, viewport, &());
+                rasterize_page(&mut backend, list, viewport, &page_box, options.dpi)
+            })
+            .collect();
+        Ok(pages)
+    }
+}
+
+/// The root element's font size, which `em` in `@page` rules is of.
+fn root_font_size(document: &Document, styles: &style::Styles) -> Option<f32> {
+    let root = document.document_element()?;
+    styles.get(root).map(|style| style.font_size_px)
+}
+
+/// The scale an area `width` by `height` CSS pixels is drawn at, `scale`
+/// or what brings it under the backend's largest raster, and the
+/// raster's size in pixels, a pixel at least each way.
+fn fitting(width: f32, height: f32, scale: f32) -> (f32, u32, u32) {
+    let largest = render::MAX_FRAME_PIXELS as f32;
+    let pixels = |scale: f32| {
+        (
+            (width * scale).ceil().max(1.0),
+            (height * scale).ceil().max(1.0),
+        )
+    };
+    let (w, h) = pixels(scale);
+    let scale = if w * h > largest {
+        // Down to the largest the backend draws, a little under for the
+        // rounding up.
+        scale * (largest / (w * h)).sqrt() * 0.999
+    } else {
+        scale
+    };
+    let (w, h) = pixels(scale);
+    (scale, w as u32, h as u32)
+}
+
+/// The page whose area `viewport` is, its list drawn at `dpi`, or at
+/// the resolution that fits the backend's largest raster.
+fn rasterize_page(
+    backend: &mut SoftwareBackend,
+    list: DisplayList,
+    viewport: Viewport,
+    page_box: &PageBox,
+    dpi: f32,
+) -> PdfPage {
+    let (scale, width, height) = fitting(viewport.width, viewport.height, dpi / 96.0);
+    // The page's list, scaled to the raster and clipped to the area.
+    let mut items = Vec::with_capacity(list.items.len() + 4);
+    items.push(DisplayItem::PushGroup {
+        matrix: Matrix::scale(scale, scale, 1.0),
+        opacity: 1.0,
+        key: GroupKey::Document(u32::MAX),
+        layer: None,
+    });
+    items.push(DisplayItem::PushClip {
+        x: 0.0,
+        y: 0.0,
+        w: viewport.width,
+        h: viewport.height,
+    });
+    items.extend(list.items);
+    items.push(DisplayItem::PopClip);
+    items.push(DisplayItem::PopGroup);
+    let rgba = backend.rasterize(&DisplayList { items }, width, height);
+    // Premultiplied RGBA over white, which an opaque canvas leaves as it
+    // is.
+    let rgb = rgba
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|p| {
+            let under = 255 - p[3];
+            [
+                p[0].saturating_add(under),
+                p[1].saturating_add(under),
+                p[2].saturating_add(under),
+            ]
+        })
+        .collect();
+    PdfPage {
+        size: (page_box.width, page_box.height),
+        origin: page_box.origin(),
+        dpi: scale * 96.0,
+        width,
+        height,
+        rgb,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn engine(html: &str) -> Engine {
+        let mut engine = Engine::with_fonts(
+            text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
+                .expect("the bundled font parses"),
+        );
+        engine.load_document(html);
+        engine
+    }
+
+    /// A small print, at 24 dots per inch, a quarter of a CSS pixel a
+    /// dot: fast, and enough to tell boxes apart.
+    fn small() -> PrintOptions {
+        PrintOptions {
+            dpi: 24.0,
+            ..PrintOptions::default()
+        }
+    }
+
+    /// The colour of the raster of `page` at the page area's CSS pixel
+    /// `(x, y)`.
+    fn at(page: &PdfPage, x: f32, y: f32) -> [u8; 3] {
+        let scale = page.dpi / 96.0;
+        let (px, py) = ((x * scale) as usize, (y * scale) as usize);
+        let i = (py * page.width as usize + px) * 3;
+        [page.rgb[i], page.rgb[i + 1], page.rgb[i + 2]]
+    }
+
+    const RED: [u8; 3] = [255, 0, 0];
+    const GREEN: [u8; 3] = [0, 255, 0];
+    const BLUE: [u8; 3] = [0, 0, 255];
+    const WHITE: [u8; 3] = [255, 255, 255];
+
+    #[test]
+    fn a_short_page_prints_on_one_letter_page_with_the_default_margins() {
+        let e = engine("<style>html { background: #0f0 }</style><p>x</p>");
+        let pages = e.print_pages(&PrintOptions::default()).expect("printed");
+        assert_eq!(pages.len(), 1);
+        let page = &pages[0];
+        assert_eq!(page.size, (816.0, 1056.0));
+        assert_eq!(page.origin, (37.0, 37.0));
+        // The page area, 741.33 by 981.33 pixels, at 300 dpi.
+        assert_eq!((page.width, page.height), (2317, 3067));
+        assert_eq!(page.dpi, 300.0);
+        // The root's background covers the area; the margins are the
+        // page's own white, outside the raster.
+        assert_eq!(at(page, 700.0, 900.0), GREEN);
+        let pdf = e.print(&small()).expect("printed");
+        assert!(pdf.starts_with(b"%PDF-"));
+        assert_eq!(pdf, e.print(&small()).expect("printed"), "the same bytes");
+    }
+
+    #[test]
+    fn print_styles_and_page_rules_apply_and_the_screen_does_not_change() {
+        let mut e = engine(
+            "<style>.x { height: 50px; background: #00f }
+             @media print { .x { background: #f00 } @page { size: landscape; margin: 0 } }
+             </style><div class=x></div>",
+        );
+        let before = e.frame(200, 100);
+        let runs = (e.style_runs(), e.layout_runs());
+        let pages = e.print_pages(&small()).expect("printed");
+        assert_eq!(pages.len(), 1);
+        assert_eq!(pages[0].size, (1056.0, 816.0));
+        assert_eq!(pages[0].origin, (0.0, 0.0));
+        assert_eq!(at(&pages[0], 20.0, 20.0), RED);
+        assert_eq!(at(&pages[0], 20.0, 80.0), WHITE);
+        // The window's styles, layout and frame are as they were.
+        assert_eq!((e.style_runs(), e.layout_runs()), runs);
+        assert!(!e.needs_frame());
+        assert_eq!(e.frame(200, 100), before);
+        let div = crate::testing::element(&e, "div");
+        let style = e.styles().get(div).cloned();
+        assert_eq!(
+            style.expect("styled").background_color,
+            style::computed::Color::rgb8(0, 0, 255)
+        );
+    }
+
+    #[test]
+    fn a_long_page_prints_across_pages_with_its_fixed_box_on_each() {
+        let e = engine(
+            "<style>body { margin: 0 } @page { margin: 0 }
+             .f { position: fixed; top: 0; left: 0; width: 40px; height: 40px; background: #00f }
+             .b { height: 600px; margin: 0; background: #0f0 }</style>
+             <div class=f></div><div class=b></div><div class=b></div><div class=b></div>",
+        );
+        let pages = e.print_pages(&small()).expect("printed");
+        // 1800px of green on pages 1056px tall, cut where they end.
+        assert_eq!(pages.len(), 2);
+        for page in &pages {
+            assert_eq!(at(page, 20.0, 20.0), BLUE, "the fixed box");
+            assert_eq!(at(page, 400.0, 400.0), GREEN);
+        }
+        assert_eq!(at(&pages[1], 400.0, 900.0), WHITE, "below the content");
+    }
+
+    #[test]
+    fn forced_breaks_begin_pages_and_a_side_adds_a_blank_one() {
+        let e = engine(
+            "<style>@page { margin: 0 } div { height: 50px; background: #f00 }
+             .r { break-before: right }</style><div></div><div class=r></div>",
+        );
+        let pages = e.print_pages(&small()).expect("printed");
+        assert_eq!(pages.len(), 3);
+        assert_eq!(at(&pages[1], 20.0, 20.0), WHITE, "the blank left page");
+        assert_eq!(at(&pages[2], 20.0, 20.0), RED);
+    }
+
+    #[test]
+    fn a_page_too_large_is_printed_at_a_resolution_that_fits_and_bad_options_are_refused() {
+        assert_eq!(fitting(741.5, 981.25, 3.125), (3.125, 2318, 3067));
+        let (scale, w, h) = fitting(20_000.0, 20_000.0, 3.125);
+        assert!(w as u64 * h as u64 <= render::MAX_FRAME_PIXELS);
+        assert!(scale < 3.125 && w > 8000);
+        assert_eq!(fitting(0.1, 0.1, 1.0), (1.0, 1, 1));
+        let e = engine("<p>x</p>");
+        for bad in [
+            PrintOptions {
+                dpi: 0.0,
+                ..PrintOptions::default()
+            },
+            PrintOptions {
+                page_size: (f32::NAN, 10.0),
+                ..PrintOptions::default()
+            },
+            PrintOptions {
+                margin: f32::INFINITY,
+                ..PrintOptions::default()
+            },
+        ] {
+            assert_eq!(e.print(&bad), Err(PrintError::Options));
+        }
+    }
+}

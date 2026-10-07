@@ -22,7 +22,10 @@
 //! command line where it gives them, and otherwise from the system:
 //! the colour scheme from the window's theme, as it changes, and
 //! reduced motion from `platform`, read again when the window regains
-//! the focus, since no event says it changed. Each
+//! the focus, since no event says it changed. With
+//! `--print-to-pdf <path>` it opens no window: it loads the page,
+//! waits for it, prints it to the file and exits (M20.4), as the
+//! reference browser's headless mode does. Each
 //! finished fetch wakes the event loop with a user event, on which the
 //! engine takes what arrived; a load the command line asked for that
 //! fails shows the engine's error page, and is reported on standard
@@ -34,12 +37,15 @@ mod session;
 
 use std::ffi::OsString;
 use std::num::NonZeroU32;
-use std::path::Path;
-use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Instant;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
+use std::time::{Duration, Instant};
 
 use engine::address::Address;
-use engine::{Backend, ColorScheme, Engine, FRAME_BUDGET, FrameTime, Preferences, Url};
+use engine::{
+    Backend, ColorScheme, Engine, FRAME_BUDGET, FrameTime, LoadState, Preferences, PrintOptions,
+    Url,
+};
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
@@ -353,6 +359,63 @@ fn preferences(asked: Asked, theme: Option<Theme>, reduced_motion: Option<bool>)
     }
 }
 
+/// How long `--print-to-pdf` waits for the page to load before it
+/// prints what there is.
+const PRINT_LOAD_LIMIT: Duration = Duration::from_secs(60);
+
+/// `--print-to-pdf`: loads `start`, or `about:silver`, with no window,
+/// waits until it has loaded or failed, or for [`PRINT_LOAD_LIMIT`], and
+/// prints it to `path` by the default print options; gives the exit
+/// status, zero when the file is written. A page that failed to load
+/// prints as the error page the window would show.
+fn print_to_pdf(start: Option<Url>, asked: Asked, path: &Path) -> i32 {
+    let mut engine = match Engine::new() {
+        Ok(engine) => engine,
+        Err(e) => {
+            eprintln!("silver-browser: engine initialization failed: {e}");
+            return 1;
+        }
+    };
+    engine.set_preferences(preferences(asked, None, platform::reduced_motion()));
+    let (wake, woken) = mpsc::channel();
+    engine.set_waker(move || {
+        // A receiver gone has nothing to wake.
+        let _ = wake.send(());
+    });
+    let url = start.unwrap_or_else(|| Url::parse("about:silver").expect("about:silver parses"));
+    engine.navigate(url);
+    let deadline = Instant::now() + PRINT_LOAD_LIMIT;
+    while *engine.load_state() == LoadState::Loading {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            eprintln!(
+                "silver-browser: the page has not loaded in {} s; printing what there is",
+                PRINT_LOAD_LIMIT.as_secs()
+            );
+            break;
+        }
+        let _ = woken.recv_timeout(left.min(Duration::from_millis(100)));
+        engine.poll_network();
+    }
+    if let LoadState::Failed(error) = engine.load_state() {
+        eprintln!("silver-browser: {error}");
+    }
+    let pdf = match engine.print(&PrintOptions::default()) {
+        Ok(pdf) => pdf,
+        Err(e) => {
+            eprintln!("silver-browser: {e}");
+            return 1;
+        }
+    };
+    match std::fs::write(path, pdf) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("silver-browser: {}: {e}", path.display());
+            1
+        }
+    }
+}
+
 /// The session's key for winit's, or nothing for a modifier key, whose
 /// state comes on its own.
 fn key_of(key: &winit::keyboard::Key) -> Option<Key> {
@@ -436,6 +499,9 @@ struct CommandLine {
     software: bool,
     /// The user's preferences given (M20.3).
     asked: Asked,
+    /// `--print-to-pdf <path>`: the file to print the page to, with no
+    /// window (M20.4).
+    print_to: Option<PathBuf>,
 }
 
 /// The command line parsed: at most one URL or path, and the options
@@ -450,12 +516,20 @@ fn command_line(args: impl Iterator<Item = OsString>) -> Result<CommandLine, Str
         layer_budget: None,
         software: false,
         asked: Asked::default(),
+        print_to: None,
     };
     let mut page: Option<OsString> = None;
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
         if arg == "--software" {
             line.software = true;
+            continue;
+        }
+        if arg == "--print-to-pdf" {
+            let path = args
+                .next()
+                .ok_or_else(|| "--print-to-pdf takes the path of the file to write".to_owned())?;
+            line.print_to = Some(PathBuf::from(path));
             continue;
         }
         if arg == "--prefers-reduced-motion" {
@@ -527,13 +601,17 @@ fn main() {
             eprintln!("silver-browser: {message}");
             eprintln!(
                 "usage: silver-browser [--software] [--layer-budget <MiB>] \
-                 [--prefers-color-scheme light|dark] [--prefers-reduced-motion] [URL or path]"
+                 [--prefers-color-scheme light|dark] [--prefers-reduced-motion] \
+                 [--print-to-pdf <path>] [URL or path]"
             );
             std::process::exit(2);
         }
     };
     let start = line.start;
     let asked = line.asked;
+    if let Some(path) = &line.print_to {
+        std::process::exit(print_to_pdf(start, asked, path));
+    }
 
     let wanted = if line.software {
         Backend::Software
@@ -599,6 +677,7 @@ mod tests {
                 layer_budget: Some(16 << 20),
                 software: false,
                 asked: Asked::default(),
+                print_to: None,
             })
         );
         assert_eq!(
@@ -608,6 +687,7 @@ mod tests {
                 layer_budget: Some(0),
                 software: true,
                 asked: Asked::default(),
+                print_to: None,
             })
         );
         assert_eq!(
@@ -679,6 +759,37 @@ mod tests {
                 reduced_motion: true,
             }
         );
+    }
+
+    #[test]
+    fn print_to_pdf_writes_the_page_it_loads_and_says_what_failed() {
+        let line = |args: &[&str]| command_line(args.iter().map(OsString::from));
+        assert_eq!(
+            line(&["--print-to-pdf", "out.pdf", "example.com"]).map(|l| l.print_to),
+            Ok(Some(PathBuf::from("out.pdf")))
+        );
+        assert_eq!(
+            line(&["--print-to-pdf"]).map(|l| l.print_to),
+            Err("--print-to-pdf takes the path of the file to write".to_owned())
+        );
+        let dir = std::env::temp_dir().join(format!("silver-print-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let page = dir.join("page.html");
+        std::fs::write(&page, "<style>@page { margin: 0 }</style><p>Printed</p>").unwrap();
+        let url = Url::from_file_path(&std::fs::canonicalize(&page).unwrap()).unwrap();
+        let out = dir.join("page.pdf");
+        assert_eq!(print_to_pdf(Some(url), Asked::default(), &out), 0);
+        let pdf = std::fs::read(&out).unwrap();
+        assert!(pdf.starts_with(b"%PDF-"));
+        let letter = b"/MediaBox [0 0 612 792]";
+        assert!(pdf.windows(letter.len()).any(|w| w == letter));
+        // A file that cannot be written.
+        let url = Url::from_file_path(&std::fs::canonicalize(&page).unwrap()).unwrap();
+        assert_eq!(
+            print_to_pdf(Some(url), Asked::default(), &dir.join("no/such/dir/x.pdf")),
+            1
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

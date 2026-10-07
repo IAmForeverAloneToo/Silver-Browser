@@ -16,6 +16,8 @@ paint.workspace = true
 style.workspace = true
 text.workspace = true
 tiny-skia.workspace = true
+pdf-writer.workspace = true
+flate2.workspace = true
 ab_glyph.workspace = true
 wgpu = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }

@@ -84,6 +84,7 @@ pub mod differential;
 mod loader;
 mod navigation;
 mod pages;
+mod print;
 #[cfg(test)]
 mod testing;
 
@@ -92,6 +93,7 @@ use std::time::{Duration, Instant};
 
 pub use loader::{LoadError, LoadState};
 pub use net::{Client, NetworkError, Url};
+pub use print::{PrintError, PrintOptions};
 pub use style::{ColorScheme, Preferences};
 
 use dom::{Change, Document, NodeId};

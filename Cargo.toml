@@ -72,6 +72,9 @@ rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs"] }
 wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "dx12", "wgsl"] }
 # Blocking on wgpu's futures: the adapter, the device and a readback.
 pollster = "0.4"
+# The PDF a page prints to (M20.4, docs/design/media.md): written
+# step by step, its page rasters Flate-compressed by `flate2` above.
+pdf-writer = "0.15"
 # What the operating system says of the user's preferences (M20.3,
 # docs/design/media.md): Windows's system parameters and macOS's
 # accessibility settings, through the versions of the crates winit and

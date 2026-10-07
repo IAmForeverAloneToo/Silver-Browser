@@ -9,6 +9,9 @@
 #[cfg(feature = "gpu")]
 pub mod gpu;
 
+/// The PDF a document prints to (M20.4): its pages' rasters as images.
+pub mod pdf;
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::ops::RangeInclusive;
