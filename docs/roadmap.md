@@ -1216,18 +1216,48 @@ Per css-grid-1 (level 2 subgrid included):
 
 ## M20 — Media queries + printing  ·  `style`  ·  Effort: M  ·  Depends: M5, M9
 
-- [ ] M20.1 `@media` evaluation: width/height/aspect-ratio/orientation/
+- [x] M20.1 `@media` evaluation: width/height/aspect-ratio/orientation/
        resolution features (the M3 parser already nests these rules — now
-       evaluate them); dynamic re-evaluation on resize.
-- [ ] M20.2 `@supports` (declaration-level v1: parseable = supported);
-       `@layer` ordering semantics.
-- [ ] M20.3 `prefers-color-scheme`, `prefers-reduced-motion` (OS wiring;
-       `dark` theme for the built-in UI exists already).
-- [ ] M20.4 Print media: `@media print` stylesheets, print layout
+       evaluate them); dynamic re-evaluation on resize. Done 2026-10-07,
+       designed in `docs/design/media.md`: `style::media`, Media Queries
+       4's grammar and three-valued evaluation with Level 5's
+       preferences, against `style::Media`; conditional rules at any
+       depth in the cascade, `@import`'s conditions and the `media`
+       attribute in the loader, every sheet fetched and only those whose
+       media hold blocking; the answers kept with the styles and asked
+       again before a frame, a resize across a breakpoint one cascade.
+- [x] M20.2 `@supports` (declaration-level v1: parseable = supported);
+       `@layer` ordering semantics. Done 2026-10-07: supported when the
+       cascade takes the declaration, `selector()` when the selector
+       parser and matcher take it; cascade layers in their three forms,
+       through `@import`, ordered by their first appearance among the
+       rules in force, `!important` reversing them.
+- [x] M20.3 `prefers-color-scheme`, `prefers-reduced-motion` (OS wiring;
+       the built-in interface's dark theme does not exist, its toolbar
+       having one light theme until the settings, M37.3, corrected
+       2026-10-07). Done 2026-10-07: `Engine::set_preferences`; the
+       shell's `--prefers-color-scheme` and `--prefers-reduced-motion`,
+       the colour scheme from winit's window theme and its changes, and
+       reduced motion from Windows and macOS, read at start and when the
+       window regains the focus; on Linux the options (the desktop
+       portal is G9).
+- [x] M20.4 Print media: `@media print` stylesheets, print layout
        (paginated block fragmentation v1), print-to-PDF via tiny-skia
-       surface → pdf-writer crate.
-- [ ] M20.5 Acceptance: the built-in demo prints to a sane multi-page
-       PDF; a responsive page relayouts at breakpoint widths.
+       surface → pdf-writer crate. Done 2026-10-07: `@page` with its
+       selectors, `size` and margins; the break properties, `orphans` and
+       `widows`; `layout::paginate`, a pass over the laid-out fragments
+       that breaks them between blocks and lines by Fragmentation 3's
+       rules and moves what follows each break; `Engine::print`, each
+       page drawn at 300 dots per inch on the software backend and
+       written by `pdf-writer`; the shell's `--print-to-pdf`; the
+       pagination held word by word to the reference browser's PDF.
+- [x] M20.5 Acceptance: the built-in demo prints to a sane multi-page
+       PDF; a responsive page relayouts at breakpoint widths. Done
+       2026-10-07: `about:silver` prints to three pages, every word
+       where the reference browser's print puts it, and stacks its cards
+       and widens its tiles at its breakpoints; a responsive page of
+       layers and feature queries is laid out as the reference browser
+       lays it out at 560, 800 and 1100 pixels.
 
 ---
 
@@ -1642,6 +1672,46 @@ Deferred from the milestones above, each with what it waits on:
        whose insets leave it room, as the reference browsers do, in a
        grid area or a padding box alike. Positioning's (M11), found at
        M18, which uses the two properties only for a static position.
+- [ ] G4 A layout that knows its pages (CSS Fragmentation): content laid
+       out again in the room each page leaves, a float and the lines
+       beside it across a break, flex and grid containers, tables and
+       inline-blocks broken inside, pages of other widths, named pages
+       (`page`) and multi-column layout. Deferred from M20.4, whose
+       pagination moves laid-out content; `docs/design/media.md`,
+       section 2.
+- [ ] G5 Printing's next steps: a PDF of text and paths drawn from the
+       display list, its fonts embedded and its text selectable, which
+       would make a page a few kilobytes rather than 420 KiB; the
+       page-margin boxes, running headers and `counter(page)`; and
+       `print-color-adjust: economy`. Deferred from M20.4.
+- [ ] G6 The `color-scheme` property, the dark canvas and form controls
+       a page asking for the dark scheme gets, `light-dark()` and the
+       system colours (CSS Color Adjustment 1). Deferred from M20.3.
+- [ ] G7 `revert` and `revert-layer`, which roll a property back to an
+       origin or a layer. Deferred from M20.2.
+- [ ] G8 `@container`, `@scope`, CSS nesting (with `@media` inside a
+       style rule) and custom media queries (`@custom-media`), which the
+       cascade passes over. Deferred from M20.1.
+- [ ] G9 The user's colour scheme and reduced motion on Linux from the
+       XDG desktop portal, over D-Bus; and the resolution media feature
+       at the display's scale factor, once the engine draws at it.
+       Deferred from M20.3.
+- [ ] G10 Line breaking by UAX #14 (css-text-3 §5): soft wrap
+       opportunities after hyphens and the rest of the line-breaking
+       classes, where M7.3 wraps at white space only; and `white-space:
+       nowrap`, which M8.4 did not take. Found at M20.5.
+- [ ] G11 The root element's margins (CSS2 §8.3.1): a child's top margin
+       collapses through the root's box here, which the root's box should
+       not let it, so that the root's box starts below the margin. Found
+       at M20.
+- [ ] G12 What M20's web-platform-tests ask of the rest of the engine:
+       the `visibility` property; `@font-face` and the page's fonts,
+       which `font-format()` and `font-tech()` would answer; `:has()`;
+       `::details-content` and the pseudo-elements of form controls; and
+       the HTML parser's "in head noscript" insertion mode. Found at M20.
+- [ ] G13 The print reftests of the web-platform-tests, which compare
+       paginated renderings: the harness renders the screen alone.
+       Deferred from M20.
 
 ---
 
@@ -1670,9 +1740,10 @@ Deferred from the milestones above, each with what it waits on:
        `html_tokenizer` + `html_parse` (M2), `font_data` (M1).
        Started 2026-10-01: `fuzz/` has `html_parse`, `css_stylesheet`
        (tokenizer, stylesheet and style attribute), `selector_parse`,
-       `style_document` and `pipeline`; `mutation` since M13, and
+       `style_document` and `pipeline`; `mutation` since M13,
        `url_parse`, `encoding_decode`, `mime_sniff` and `http_response`
-       since M14; `font_data` waits for its milestone.
+       since M14, and `media_query` since M20, when `pipeline` began to
+       paginate and print; `font_data` waits for its milestone.
 - [ ] T2.2 Seed corpora from WPT + real-site captures; corpus committed.
 - [ ] T2.3 Coverage-guided runs in CI nightly; crash → reproducer test
        before anything else. Since 2026-10-01 CI runs every target for a

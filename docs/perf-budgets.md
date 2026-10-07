@@ -605,6 +605,108 @@ Over T4.3's line, each written down with the item that will undo it:
 The flex chain's row moved more between rounds than between the two
 builds, as at M18; its medians are 3% apart.
 
+### Media queries and printing (M20)
+
+**The media benchmark.** `benches/media.rs`, at 1280 by 800, in release,
+two runs. The rows are a sheet of 1,000 `@media` rules, their lists in
+every form the milestone takes, over the mutation benchmark's page of
+1,000 paragraphs: the sheets prepared, the page's cascade with them and
+without, and every list answered again and compared with the answers
+the styles keep, which is what a resize or a change of the user's
+preferences asks before it reuses the page's styles; that page with a
+breakpoint at 1,200 pixels resized across it and back, which cascades
+it again, and within it, which does not; and that page printed to PDF
+on US Letter at 300 dots per inch.
+
+| | Two runs |
+| --- | --- |
+| 1,000 lists answered again and compared, median of 1,000 | 14.4–19.7µs |
+| The sheets prepared | 1.2–1.9ms |
+| The page's cascade with the 1,000 rules, and without | 6.5–11.2ms, and 1.9–3.2ms |
+| A resize across the breakpoint: a frame, median of 20 | 520–526ms |
+| Its cascade and its layout | 5.8–6.0ms and 506ms |
+| A resize within it: a frame, median of 20 | 513–516ms, its layout 505–509ms, no cascade |
+| A print of the page: its 53 pages laid out, paginated and painted | 523–561ms |
+| Its pagination alone | 2.4–2.7ms |
+| Its rasters, each compressed as it is drawn | 5.39–5.40s, 102ms a page |
+| The PDF written from them | 4.2ms |
+| The whole print | 5.88–5.92s |
+| The file | 21.8 MiB, 421 KiB a page |
+| The process's peak memory | 130 MB |
+
+A breakpoint costs a resize the cascade, 6ms of a frame whose layout at
+the new width, 506ms, is the resize's own and M35.8's (the first layout
+of a large page, below): evaluating the page's lists is a few hundredths
+of a millisecond. Of a page of the print, three quarters of the
+instructions are the compression of its raster, 21 MiB of RGB at the
+default level, its raster 6% and its layout 6%; a PDF of text and paths
+rather than rasters (the media note, section 2) would make a page a few
+kilobytes and the compression go.
+
+What the benchmark found, and mended before these runs: the print drew
+each page through the document's scroll group, a layer on the screen
+(M19), into the layer's tiles at a dot a pixel, resampling them to 300
+dots per inch — its text blurred, and 80% of its time a tile lookup a
+dot — so that the 53 pages took 33.5s and made a file of 77.3 MiB; a
+page's groups are now drawn through. And the print held every page's raw
+raster, 21 MiB, until the file was written, 1.28 GB at its peak for the
+53; a page's raster is now compressed when it is drawn.
+
+**T4.3.** The benchmarks above, the code before M20 (`839212c`) and
+M20's built side by side in release, four rounds of each in turn. The
+ranges are over the rounds. The machine is faster than M19's: the same
+rows are shorter in both columns than in M19's table, which is why the
+two tables are not to be read against each other.
+
+| | Before M20 | M20 |
+| --- | --- | --- |
+| Scrolling: the layout, once | 259–276ms, median 263 | 256–266ms, median 264 |
+| Scrolling: a scroll frame, median | 0.83–0.93ms, median 0.86 | 0.83–0.91ms, median 0.84 |
+| Its raster, median | 0.46–0.50ms, median 0.48 | 0.47–0.49ms, median 0.48 |
+| Its paint, median | 0.34–0.39ms, median 0.38 | 0.35–0.37ms, median 0.36 |
+| Changing the document: the first frame | 518–575ms | 506–545ms |
+| An appended paragraph's frame, median | 9.0–10.1ms, median 9.8 | 9.8–9.9ms, median 9.8 |
+| Its layout, median | 7.2–8.2ms, median 7.8 | 7.8–8.0ms, median 7.9 |
+| Its paint, median | 1.51–1.61ms, median 1.57 | 1.55–1.59ms, median 1.55 |
+| Those frames over 16.7ms | 6–13 of 1,000 | 1–13 of 1,000 |
+| 1,000 appended in one frame | 520–588ms, median 536 | 546–571ms, median 567 |
+| Loading: `load` to the first frame drawn | 558–595ms | 542–577ms |
+| Going back to the page from the cache | 12.2–13.7ms, median 13.0 | 12.3–12.5ms, median 12.4 |
+| Going back to the page fetched again | 550–585ms | 549–584ms |
+| Matching: 1,000 selectors over 10,003 elements | 245–274ms, median 251 | 240–281ms, median 252 |
+| Flex: a grid of 1,000 cards, the first frame | 1.76–1.93s | 1.79–1.90s |
+| Flex: after a card's title changes, a frame, median | 1.81–1.83s | 1.78–1.84s |
+| Flex: a chain of 64 nested containers, its layout | 14.4–15.5ms, median 15.0 | 15.2–16.2ms, median 15.8 |
+| Grid: a gallery of 1,000 figures, the first frame | 646–713ms, median 669 | 664–735ms, median 710 |
+| Grid: after a caption changes, a frame, median | 636–669ms | 646–665ms |
+| Grid: a dashboard of 200 cards, the first frame | 233–247ms | 220–244ms |
+| Grid: a chain of 64 nested grids, its layout | 11.3–11.9ms | 10.6–13.8ms |
+| Compositing: a scroll frame, median | 1.19–1.46ms | 1.21–1.29ms |
+| Compositing: a card turned, a frame, median | 7.92–8.29ms | 7.85–8.37ms |
+| Compositing: a card moved, a frame, median | 6.25–6.94ms | 6.34–6.96ms |
+| Compositing: 200 faded cards, the first frame | 77.6–82.6ms | 74.8–82.5ms |
+| Compositing: a scroll frame of them, median | 1.04–1.07ms | 1.01–1.06ms |
+
+The pseudo benchmark, the same four rounds:
+
+| Sheet | The first frame, before | M20 | An appended paragraph's frame, median, before | M20 |
+| --- | --- | --- | --- | --- |
+| None | 1.55–1.63s | 1.53–1.67s | 17.4–18.7ms, median 17.7 | 16.5–18.6ms, median 17.7 |
+| `::before` and `::after` | 1.54–1.72s | 1.56–1.62s | 21.8–25.5ms, median 22.9 | 19.9–24.8ms, median 23.0 |
+| `::first-letter` | 1.55–1.67s | 1.51–1.65s | 19.6–22.2ms, median 21.7 | 18.6–23.3ms, median 21.1 |
+| `::first-line`, colour and size | 1.79–1.95s | 1.86–1.89s | 23.5–25.9ms, median 25.2 | 22.7–26.8ms, median 25.1 |
+| `::first-line`, a background | 1.50–1.58s | 1.50–1.58s | 19.3–21.5ms, median 20.5 | 18.8–22.0ms, median 21.7 |
+| All of them | 1.89–2.05s | 1.92–2.02s | 41.5–46.8ms, median 44.8 | 40.0–46.7ms, median 44.4 |
+
+All are inside T4.3's 10% by their medians. The rows nearest the line
+are 1,000 paragraphs appended in one frame and the gallery's first
+frame, each 6% longer by the medians, the ranges of the two columns
+overlapping; of the stages, the gallery's first paint is 13% longer,
+1.40ms against 1.24, a sixth of a millisecond, and a card's paint in
+the compositing benchmark a hundredth. The compositing benchmark's GPU
+rows on llvmpipe, recorded in M19's table, moved as much between rounds
+as between the two builds.
+
 ### Over budget, and why
 
 These are known and recorded rather than hidden. Each has the item that

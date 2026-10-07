@@ -1068,3 +1068,75 @@ plane splitting; `filter` and the other grouping properties; the
 horizontal scroll extent; and sixty frames a second measured on an
 integrated GPU, there being none here (M19.8). 1,356 tests
 workspace-wide. Next milestone: media queries and printing (M20).
+
+Milestone 20 (media queries and printing), designed in
+`docs/design/media.md` and built in its twelve steps. `style::media`
+(step 1) parses Media Queries 4's lists, with Level 5's preferences and
+the Compatibility Standard's `-webkit-device-pixel-ratio`, and evaluates
+them three-valued against `style::Media`, the medium, the viewport's or
+page's size, the resolution and the user's preferences;
+`style::supports_condition` decides `@supports`, declarations by what
+the cascade takes and `selector()` by what the selector parser and
+matcher take; parentheses nest 32 deep in both. The cascade (step 2)
+reads its sheets into a rule set, `@supports` decided once and every
+`@media` list answered at each cascade, the rules in force those inside
+no false list; cascade layers in their three forms order the author's
+rules by their first appearance among the rules in force, before
+specificity, `!important` reversing them. The loader gives an
+`@import`'s rules and a `media` attribute's sheet to the cascade wrapped
+in their conditions and layer, fetches every sheet and lets only those
+whose media hold block rendering; the answers are kept with the styles,
+and a frame whose environment answers otherwise cascades again
+(`Stylesheets::media_changed`). The user's preferences (step 3) come
+from the shell: `--prefers-color-scheme` and
+`--prefers-reduced-motion`, winit's window theme and its changes, and
+reduced motion from Windows and macOS through `windows-sys` and
+`objc2-app-kit`, to `Engine::set_preferences`. The web-platform-tests
+subset (step 4) took 68 tests of `css/mediaqueries`,
+`css/css-conditional` and `css/css-cascade`; 927 of its 974 pass, the
+milestone's seventeen failures each for a part of the engine the
+milestone leaves alone. Printing: `@page` with its selectors, `size`
+and margins, the break properties, `orphans` and `widows` behind one
+pointer in the computed style (step 5); `layout::paginate` (step 6), a
+pass over the laid-out fragments, iterative, that reads them as lines,
+monolithic boxes and empty space and the places between, takes the
+latest break that breaks none of Fragmentation 3's rules, letting them
+go in its order, and moves what follows each break by its strut, a
+forced break keeping its margin and a side adding a blank page, at most
+`layout::MAX_PAGES` pages; and `Engine::print` (step 7), a cascade,
+layout and pagination of its own under the print medium, each page
+painted with its fixed boxes, drawn at 300 dots per inch through a
+scaling group on a software backend of its own and compressed at once,
+and the PDF written by `pdf-writer`, the same bytes each time; the
+shell prints with `--print-to-pdf`. A reader of the reference browser's
+PDFs (step 8), shared by `examples/print.rs capture` and
+`tests/print.rs`, holds the engine's pagination of seven print pages,
+word by word, to the reference browser's, and found its page area
+rounded, up for layout and pagination and down for the viewport units,
+and a box avoiding breaks broken after its padding, mended. Eleven
+reference pages, 80 to 90 (step 9), cover the breakpoints a pixel
+either side, orientation and aspect ratio, combined and unknown
+queries, `@supports`, layers with and without `!important`, the print
+medium on the screen (`Engine::set_media_type`) and the preferences,
+which a page now asks for in its head. `about:silver` (step 10), now a
+file of its own, stacks its cards and widens its tiles at its
+breakpoints and prints to three pages, every word where the reference
+browser's print puts it; it found the user agent sheet's pixel
+approximations of the HTML standard's `em` margins and heading sizes,
+now the standard's; and a responsive page of layers and feature
+queries is laid out as the reference browser lays it out at 560, 800
+and 1100 pixels. The media benchmark (step 11) answers 1,000 lists
+again in 15–20µs, prints 1,000 paragraphs to 53 pages in 5.9s and 21.8
+MiB, and found the print resampling the document's layer, its text
+blurred and 33.5s spent, and holding every page's raster, 1.28 GB, both
+mended; T4.3 found every other benchmark within 10%; the `media_query`
+target and the three that lay pages out, `pipeline` now printing, ran
+fifteen minutes each and found no failure. Not in this milestone, said
+rather than hidden and registered (G4 to G13): a layout that knows its
+pages, flex, grid and tables broken inside; a PDF of text and paths and
+the page-margin boxes; `color-scheme`; `revert-layer`; `@container`,
+`@scope` and nesting; the preferences on Linux; line breaking by UAX
+#14 and `white-space: nowrap`; the root's margins collapsing through
+it; and what the subset asks of the rest of the engine. 1,429 tests
+pass workspace-wide, two ignored. Next milestone: custom properties,
+`calc()`, counters and generated content (M21).
