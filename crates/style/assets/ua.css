@@ -66,7 +66,7 @@ ul, ol, menu, dir {
  * margins above and below. `start`, `reversed`, `value` and `type` are
  * presentational hints, which the cascade applies. The `::marker` rule
  * is Lists 3 §3.1.1's, as far as the engine has its properties. */
-li { display: list-item; }
+li { display: list-item; text-align: match-parent; }
 ol, ul, menu { counter-reset: list-item; }
 ol { list-style-type: decimal; }
 dir, menu, ul { list-style-type: disc; }

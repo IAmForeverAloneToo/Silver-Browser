@@ -99,8 +99,8 @@ use crate::computed::{
     CaptionSide, Clear, Color, ComputedStyle, Content, ContentAlignment, ContentItem, Direction,
     Display, Edges, EmptyCells, FlexBasis, FlexDirection, FlexWrap, Float, LEFT, LengthPercentage,
     LengthPercentageAuto, MarginEdges, MaxSize, Overflow, OverflowAlign, PaddingEdges, Position,
-    Quotes, RIGHT, SelfAlignment, Size, TOP, TableLayout, TextAlign, TextTransform, VerticalAlign,
-    WhiteSpace,
+    Quotes, RIGHT, SelfAlignment, Size, TOP, TableLayout, TextAlign, TextAlignLast, TextJustify,
+    TextTransform, VerticalAlign, WhiteSpace,
 };
 use crate::computed::{Calc, Decoration, Effects, Fragmentation, GridStyle, JustifyItems, Lists};
 use crate::custom::{self, CustomProperties, DataType, Substituted, Substitutions};
@@ -1620,7 +1620,46 @@ fn apply_declaration(
             parse_font_family(value).map(Into::into),
         ),
         "display" => set(&mut style.display, parse_display(value)),
-        "text-align" => set(&mut style.text_align, parse_text_align(value)),
+        "text-align" => match parse_text_align(value) {
+            Some(TextAlignValue::JustifyAll) => {
+                style.text_align = TextAlign::Justify;
+                style.text_align_last = TextAlignLast::Align(TextAlign::Justify);
+                true
+            }
+            Some(TextAlignValue::MatchParent) => {
+                style.text_align = parent.text_align.matched(parent.direction);
+                style.text_align_last = matched_last(parent);
+                true
+            }
+            Some(TextAlignValue::Align(align)) => {
+                style.text_align = align;
+                style.text_align_last = TextAlignLast::Auto;
+                true
+            }
+            None => false,
+        },
+        "text-align-all" => match parse_text_align(value) {
+            Some(TextAlignValue::Align(align)) => set(&mut style.text_align, Some(align)),
+            Some(TextAlignValue::MatchParent) => set(
+                &mut style.text_align,
+                Some(parent.text_align.matched(parent.direction)),
+            ),
+            Some(TextAlignValue::JustifyAll) | None => false,
+        },
+        "text-align-last" => match single_ident(value).map(str::to_ascii_lowercase).as_deref() {
+            Some("auto") => set(&mut style.text_align_last, Some(TextAlignLast::Auto)),
+            _ => match parse_text_align(value) {
+                Some(TextAlignValue::Align(align)) => set(
+                    &mut style.text_align_last,
+                    Some(TextAlignLast::Align(align)),
+                ),
+                Some(TextAlignValue::MatchParent) => {
+                    set(&mut style.text_align_last, Some(matched_last(parent)))
+                }
+                Some(TextAlignValue::JustifyAll) | None => false,
+            },
+        },
+        "text-justify" => set(&mut style.text_justify, parse_text_justify(value)),
         "text-transform" => set(&mut style.text_transform, parse_text_transform(value)),
         "white-space" => set(&mut style.white_space, parse_white_space(value)),
         "letter-spacing" => set(&mut style.letter_spacing, parse_spacing(value, bases)),
@@ -2285,6 +2324,9 @@ fn is_inherited(name: &str) -> bool {
             | "list-style-image"
             | "text-underline-offset"
             | "text-underline-position"
+            | "text-align-all"
+            | "text-align-last"
+            | "text-justify"
     )
 }
 
@@ -2313,7 +2355,13 @@ fn apply_css_wide(
         "font-size" => {} // the first pass, see `compute_style`
         "font-family" => style.font_family = src.font_family.clone(),
         "display" => style.display = src.display,
-        "text-align" => style.text_align = src.text_align,
+        "text-align" => {
+            style.text_align = src.text_align;
+            style.text_align_last = src.text_align_last;
+        }
+        "text-align-all" => style.text_align = src.text_align,
+        "text-align-last" => style.text_align_last = src.text_align_last,
+        "text-justify" => style.text_justify = src.text_justify,
         "text-transform" => style.text_transform = src.text_transform,
         "white-space" => style.white_space = src.white_space,
         "letter-spacing" => style.letter_spacing = src.letter_spacing,
@@ -3616,12 +3664,47 @@ fn parse_overflow(tokens: &[Token]) -> Option<Overflow> {
     }
 }
 
-fn parse_text_align(tokens: &[Token]) -> Option<TextAlign> {
+/// A `text-align` value (css-text-3 §7.1, M21.7): one of
+/// `text-align-all`'s, `match-parent`, or `justify-all`, which only the
+/// shorthand takes.
+enum TextAlignValue {
+    Align(TextAlign),
+    MatchParent,
+    JustifyAll,
+}
+
+fn parse_text_align(tokens: &[Token]) -> Option<TextAlignValue> {
+    Some(match single_ident(tokens)?.to_ascii_lowercase().as_str() {
+        "start" => TextAlignValue::Align(TextAlign::Start),
+        "end" => TextAlignValue::Align(TextAlign::End),
+        "left" => TextAlignValue::Align(TextAlign::Left),
+        "right" => TextAlignValue::Align(TextAlign::Right),
+        "center" => TextAlignValue::Align(TextAlign::Center),
+        "justify" => TextAlignValue::Align(TextAlign::Justify),
+        "match-parent" => TextAlignValue::MatchParent,
+        "justify-all" => TextAlignValue::JustifyAll,
+        _ => return None,
+    })
+}
+
+/// `text-align-last: match-parent`: the parent's value, `start` and
+/// `end` made `left` or `right` by its direction; `auto` stays.
+fn matched_last(parent: &ComputedStyle) -> TextAlignLast {
+    match parent.text_align_last {
+        TextAlignLast::Auto => TextAlignLast::Auto,
+        TextAlignLast::Align(align) => TextAlignLast::Align(align.matched(parent.direction)),
+    }
+}
+
+/// `text-justify` (css-text-3 §7.4, M21.7); `distribute` is
+/// `inter-character`.
+fn parse_text_justify(tokens: &[Token]) -> Option<TextJustify> {
     match single_ident(tokens)?.to_ascii_lowercase().as_str() {
-        "left" => Some(TextAlign::Left),
-        "right" => Some(TextAlign::Right),
-        "center" => Some(TextAlign::Center),
-        _ => None, // `justify`/`start`/`end` land with M21
+        "auto" => Some(TextJustify::Auto),
+        "none" => Some(TextJustify::None),
+        "inter-word" => Some(TextJustify::InterWord),
+        "inter-character" | "distribute" => Some(TextJustify::InterCharacter),
+        _ => None,
     }
 }
 
@@ -4633,9 +4716,83 @@ mod tests {
 
     #[test]
     fn text_align_unknown_value_is_ignored() {
-        let sheets = [sheet("p { text-align: justify; }")]; // not v1 yet
+        let sheets = [sheet("p { text-align: middle; }")];
         let s = style_of("<p>x</p>", &sheets, "p");
-        assert_eq!(s.text_align, TextAlign::Left); // initial value, untouched
+        assert_eq!(s.text_align, TextAlign::Start); // initial value, untouched
+    }
+
+    #[test]
+    fn text_align_sets_its_longhands_and_matches_the_parent() {
+        // css-text-3 §7 (M21.7).
+        let of = |css_src: &str, selector: &str| {
+            let s = style_of(
+                "<div dir=rtl><p>x</p></div><ol><li>y</li></ol>",
+                &[sheet(css_src)],
+                selector,
+            );
+            (s.text_align, s.text_align_last, s.text_justify)
+        };
+        let auto = TextAlignLast::Auto;
+        let justify = TextAlignLast::Align(TextAlign::Justify);
+        for (value, expected) in [
+            ("start", TextAlign::Start),
+            ("END", TextAlign::End),
+            ("left", TextAlign::Left),
+            ("right", TextAlign::Right),
+            ("center", TextAlign::Center),
+            ("justify", TextAlign::Justify),
+        ] {
+            assert_eq!(
+                of(
+                    &format!("p {{ text-align-last: right; text-align: {value} }}"),
+                    "p"
+                ),
+                (expected, auto, TextJustify::Auto),
+                "{value}"
+            );
+        }
+        assert_eq!(
+            of("p { text-align: justify-all }", "p"),
+            (TextAlign::Justify, justify, TextJustify::Auto)
+        );
+        // `match-parent`: the parent's, its start the right in a
+        // right-to-left parent; the list item's is the user agent's.
+        assert_eq!(
+            of("p { text-align: match-parent }", "p").0,
+            TextAlign::Right
+        );
+        assert_eq!(
+            of(
+                "div { text-align: end; text-align-last: start } p { text-align: match-parent }",
+                "p"
+            ),
+            (
+                TextAlign::Left,
+                TextAlignLast::Align(TextAlign::Right),
+                TextJustify::Auto
+            )
+        );
+        assert_eq!(of("", "li").0, TextAlign::Left);
+        // The longhands alone, and `text-justify`.
+        assert_eq!(
+            of(
+                "p { text-align-all: center; text-align-last: justify; text-justify: distribute }",
+                "p"
+            ),
+            (TextAlign::Center, justify, TextJustify::InterCharacter)
+        );
+        assert_eq!(
+            of("p { text-align-all: justify-all; text-justify: none }", "p"),
+            (TextAlign::Start, auto, TextJustify::None)
+        );
+        // Inherited, all three.
+        assert_eq!(
+            of(
+                "div { text-align: justify-all; text-justify: inter-word }",
+                "p"
+            ),
+            (TextAlign::Justify, justify, TextJustify::InterWord)
+        );
     }
 
     #[test]
@@ -6492,7 +6649,7 @@ mod tests {
         assert_eq!(table.table_layout, TableLayout::Auto);
         let td = of("tbody td");
         assert_eq!(td.padding, [const { LengthPercentage::Px(1.0) }; 4]);
-        assert_eq!(td.text_align, TextAlign::Left);
+        assert_eq!(td.text_align, TextAlign::Start);
         assert_eq!(of("th").text_align, TextAlign::Center);
         assert_eq!(of("th").padding, td.padding);
         assert_eq!(of("caption").text_align, TextAlign::Center);

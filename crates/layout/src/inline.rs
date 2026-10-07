@@ -68,8 +68,10 @@
 //!   on its own line, unbroken. Mid-word breaking is a secondary
 //!   feature next to greedy breaking itself; real text rarely needs it
 //!   outside unbroken URLs/tokens at narrow viewports.
-//! * `text-align: justify` isn't a value this engine parses yet
-//!   (`style`'s M21 note) — only `left`/`right`/`center` reach here.
+//! * Justification (M21.7) only widens a line's gaps, and with
+//!   `text-justify: inter-character` the places between a word's
+//!   characters: it never compresses a line, and knows nothing of the
+//!   scripts whose text the engine cannot yet break into lines (G10).
 //! * Block-in-inline (M7.6, `<span>a<div>b</div>c</span>`) is the box
 //!   tree builder's business since M10.4: the block is hoisted out and
 //!   the span split around it (CSS2 §9.2.1.1) before layout, so the
@@ -98,8 +100,8 @@ use std::sync::Arc;
 
 use dom::NodeId;
 use style::computed::{
-    BOTTOM, BorderStyle, ComputedStyle, Direction, LEFT, RIGHT, TOP, TextAlign, TextTransform,
-    WhiteSpace,
+    BOTTOM, BorderStyle, ComputedStyle, Direction, LEFT, RIGHT, TOP, TextAlign, TextAlignLast,
+    TextJustify, TextTransform, WhiteSpace,
 };
 use style::selector_matching::PseudoElement;
 use text::{FontCollection, FontMetrics};
@@ -343,7 +345,7 @@ pub(crate) fn layout_inline<'a>(
         floats,
         line_left: 0.0,
         available_width: cb_width,
-        text_align: container.text_align,
+        alignment: Alignment::of(container),
         strut: match (&first, first_line) {
             (Some(_), Some(line)) => pass.fonts.metrics_for_text(" ", line.style.font_size_px),
             _ => strut,
@@ -445,7 +447,7 @@ pub(crate) fn layout_inline<'a>(
                 // as tall as the strut and the text it is in
                 // (css-text-3 §4.1.3) — a code block's blank lines are
                 // not nothing.
-                if !lines.flush() {
+                if !lines.flush(true) {
                     lines.start_line();
                     let m = join(
                         lines.strut,
@@ -460,7 +462,7 @@ pub(crate) fn layout_inline<'a>(
             }
         }
     }
-    lines.flush();
+    lines.flush(true);
 
     InlineLayout {
         fragments: lines.fragments,
@@ -513,7 +515,8 @@ struct Lines<'a, 'i, 'f, 'c> {
     /// edge, and how wide it may be: the room beside the floats.
     line_left: f32,
     available_width: f32,
-    text_align: TextAlign,
+    /// How the lines are aligned (M7.5, M21.7).
+    alignment: Alignment,
     /// The containing block's own font metrics, the least any line is:
     /// on the first line, the innermost `::first-line`'s (M16).
     strut: FontMetrics,
@@ -671,7 +674,7 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
         if !self.line.is_empty() && self.line_width + gap + item.width() > self.available_width {
             let was_first = self.first.is_some();
             if can_break {
-                self.flush();
+                self.flush(false);
                 let item = self.settled(item, index, was_first);
                 self.place(item, index, gap_before, can_break);
                 return;
@@ -691,7 +694,7 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
             {
                 let tail: Vec<Placed<'a, 'i>> = self.line.drain(at..).collect();
                 (self.line_width, self.has_content) = measure_line(&self.line, self.pass.fonts);
-                self.flush();
+                self.flush(false);
                 for p in tail {
                     let tail_item = self.settled(p.item, p.index, was_first);
                     self.place(tail_item, p.index, p.gap_before, p.can_break);
@@ -780,9 +783,15 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
     }
 
     /// Ends the line in progress, if there is one: whether a line was
-    /// made of it.
-    fn flush(&mut self) -> bool {
+    /// made of it. `ends` says the line is the run's last or ends at a
+    /// forced break, which `text-align-last` aligns.
+    fn flush(&mut self, ends: bool) -> bool {
         let first_line = self.first.as_ref().map(|first| first.chain);
+        let placement = self.alignment.place(
+            &self.line,
+            (self.available_width - self.line_width).max(0.0),
+            ends,
+        );
         let reach = decoration_reach(
             &self.line,
             |index| match self.item(index) {
@@ -797,14 +806,14 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
                 } => *gap_decorations,
                 _ => None,
             },
+            placement.gap,
             self.pass.fonts,
         );
         let baseline = flush_line(
             &mut self.line,
             self.line_width,
             self.line_left,
-            self.available_width,
-            self.text_align,
+            placement,
             &self.strut,
             self.pass.fonts,
             (self.cb_width, self.cb_height),
@@ -1491,8 +1500,7 @@ fn flush_line<'a>(
     line: &mut Vec<Placed<'a, '_>>,
     line_width: f32,
     line_left: f32,
-    available_width: f32,
-    text_align: TextAlign,
+    placement: Placement,
     strut: &FontMetrics,
     fonts: &FontCollection,
     cb: (f32, Option<f32>),
@@ -1550,15 +1558,7 @@ fn flush_line<'a>(
     }
     let baseline_y = *y + max_ascent;
 
-    // css-text-3 §7.1: contents too long for the line box are
-    // start-aligned, never pushed left past its edge.
-    let slack = (available_width - line_width).max(0.0);
-    let mut x = line_left
-        + match text_align {
-            TextAlign::Left => 0.0,
-            TextAlign::Right => slack,
-            TextAlign::Center => slack / 2.0,
-        };
+    let mut x = line_left + placement.offset;
     if !makes_line {
         // No line: the inline elements' edges are kept track of, an
         // absolutely positioned box gets its static position at the
@@ -1613,22 +1613,26 @@ fn flush_line<'a>(
     let mut drawn = DrawnLines::default();
     for (i, placed) in line.drain(..).enumerate() {
         if i > 0 && placed.gap_before {
-            x += space_width(placed.item.style(), fonts);
+            x += space_width(placed.item.style(), fonts) + placement.gap;
         }
         match placed.item {
             LineItem::Word(word) => {
                 let lines = word.decorations.map(|d| drawn.of(d, fonts));
                 let into = innermost(&mut stack, fragments);
-                if word.style.letter_spacing != 0.0 {
+                if word.style.letter_spacing != 0.0
+                    || (placement.between > 0.0 && word.text.chars().nth(1).is_some())
+                {
                     // Per-character fragments (M8.4) — see
                     // `measure_word`'s doc for why this has to shape
                     // character-by-character, same as the width this
-                    // word was measured with.
+                    // word was measured with; or a word justified
+                    // between its characters (M21.7).
                     emit_letter_spaced(
                         into,
                         &word,
                         &mut x,
                         (baseline_y, max_ascent, max_descent),
+                        placement.between,
                         lines.map(|lines| (lines, reach[i])),
                         fonts,
                     );
@@ -1835,6 +1839,98 @@ fn close_inline<'a>(
     }
 }
 
+/// How a run's lines are aligned (css-text-3 §7, M7.5, M21.7): its
+/// container's `text-align-all`, `text-align-last` and `text-justify`,
+/// and its direction, which `start` and `end` are by.
+#[derive(Debug, Clone, Copy)]
+struct Alignment {
+    all: TextAlign,
+    last: TextAlignLast,
+    justify: TextJustify,
+    direction: Direction,
+}
+
+/// Where a line's content goes along it: how far after the line's
+/// start, and how much a justified line widens each gap, and each place
+/// between two characters of a word.
+#[derive(Debug, Clone, Copy, Default)]
+struct Placement {
+    offset: f32,
+    gap: f32,
+    between: f32,
+}
+
+impl Alignment {
+    fn of(style: &ComputedStyle) -> Self {
+        Alignment {
+            all: style.text_align,
+            last: style.text_align_last,
+            justify: style.text_justify,
+            direction: style.direction,
+        }
+    }
+
+    /// How `line`, `slack` short of its room, is placed: the last line,
+    /// or one ending at a forced break, when `ends`, by `text-align-last`
+    /// — `auto` being `text-align-all`'s value, or `start` where that is
+    /// `justify` — and any other by `text-align-all`; `start` and `end`
+    /// by the direction. A justified line's slack is shared equally among
+    /// its justification opportunities: the gaps between its items, and
+    /// with `inter-character` the places between two characters of a
+    /// word as well. A line with none, with `text-justify: none`, or with
+    /// no slack is aligned to its start; one too long for its room is
+    /// too, whatever the alignment, never pushed back past its start
+    /// (css-text-3 §7.1).
+    fn place(&self, line: &[Placed<'_, '_>], slack: f32, ends: bool) -> Placement {
+        let align = match (ends, self.last) {
+            (true, TextAlignLast::Align(align)) => align,
+            (true, TextAlignLast::Auto) if self.all == TextAlign::Justify => TextAlign::Start,
+            _ => self.all,
+        };
+        let at = |align: TextAlign| Placement {
+            offset: match align.matched(self.direction) {
+                TextAlign::Right => slack,
+                TextAlign::Center => slack / 2.0,
+                _ => 0.0,
+            },
+            ..Placement::default()
+        };
+        if align != TextAlign::Justify {
+            return at(align);
+        }
+        let gaps = line
+            .iter()
+            .enumerate()
+            .filter(|(i, p)| *i > 0 && p.gap_before)
+            .count();
+        let between: usize = line
+            .iter()
+            .map(|p| match &p.item {
+                LineItem::Word(word) => word.text.chars().count().saturating_sub(1),
+                _ => 0,
+            })
+            .sum();
+        let opportunities = match self.justify {
+            TextJustify::None => 0,
+            TextJustify::InterCharacter => gaps + between,
+            TextJustify::Auto | TextJustify::InterWord => gaps,
+        };
+        if slack <= 0.0 || opportunities == 0 {
+            return at(TextAlign::Start);
+        }
+        let share = slack / opportunities as f32;
+        Placement {
+            offset: 0.0,
+            gap: share,
+            between: if self.justify == TextJustify::InterCharacter {
+                share
+            } else {
+                0.0
+            },
+        }
+    }
+}
+
 /// How far past each word on `line` its text decorations reach (M21.7):
 /// over the gap before an item, which `owner` says the decorations of by
 /// the item's place in the run, back from the next word, across the
@@ -1844,6 +1940,7 @@ fn close_inline<'a>(
 fn decoration_reach<'a>(
     line: &[Placed<'_, '_>],
     owner: impl Fn(usize) -> Option<&'a Arc<[Decorating]>>,
+    justified: f32,
     fonts: &FontCollection,
 ) -> Vec<Spread> {
     let mut reach = vec![(0.0, 0.0); line.len()];
@@ -1853,7 +1950,7 @@ fn decoration_reach<'a>(
         let Some(owner) = owner(line[i].index).filter(|_| line[i].gap_before) else {
             continue;
         };
-        let gap = space_width(line[i].item.style(), fonts);
+        let gap = space_width(line[i].item.style(), fonts) + justified;
         // The word after, past the edges of the inline boxes the space
         // ended or began, its own start edge among them.
         let mut edges = 0.0;
@@ -1944,14 +2041,17 @@ fn text_fragment(
 /// `letter-spacing` past the previous one (M8.4) — the common
 /// `letter_spacing == 0.0` case never calls this, so it costs nothing
 /// when the property isn't used. On a line whose baseline is at `y` and
-/// whose text rises and falls `ascent` and `descent`. The word's text
-/// decorations (M21.7) reach over the letter spacing after each
-/// character, and the first's and the last's over the gaps `reach` says.
+/// whose text rises and falls `ascent` and `descent`; `between` more
+/// between two characters, which justification gives (M21.7). The
+/// word's text decorations (M21.7) reach over the space after each
+/// character, and the first's and the last's over the gaps `reach`
+/// says.
 fn emit_letter_spaced(
     fragments: &mut Vec<Fragment>,
     word: &LineWord<'_>,
     x: &mut f32,
     (baseline_y, ascent, descent): (f32, f32, f32),
+    between: f32,
     decorations: Option<(Arc<[DrawnLine]>, Spread)>,
     fonts: &FontCollection,
 ) {
@@ -1968,7 +2068,7 @@ fn emit_letter_spaced(
             generated: word.generated,
             decorations: word.decorations,
         };
-        let spacing = word.style.letter_spacing;
+        let spacing = word.style.letter_spacing + if i == last { 0.0 } else { between };
         let decorated = decorations.as_ref().map(|(lines, (left, right))| {
             Box::new(Decorated {
                 lines: Arc::clone(lines),
@@ -2178,6 +2278,157 @@ mod tests {
             &fonts,
         );
         assert_eq!(center[0].x, (available - width) / 2.0);
+    }
+
+    /// [`layout_inline`] of one text box saying `text`, 16 pixels, in
+    /// `width` under a container styled as `container` says.
+    fn lay_styled(text: &str, width: f32, container: ComputedStyle) -> Vec<Fragment> {
+        let fonts = test_fonts();
+        let mut floats = FloatContext::default();
+        let items = [text_box(text, 16.0)];
+        let l = layout_inline(
+            &items,
+            width,
+            None,
+            &container,
+            None,
+            &mut floats,
+            At::root(),
+            &Pass::new(&fonts),
+        );
+        texts(&l.fragments)
+    }
+
+    #[test]
+    fn start_and_end_follow_the_direction() {
+        // css-text-3 §7.1 (M21.7): `start`, the initial value, is the
+        // right in right-to-left text, and `end` the left.
+        let fonts = test_fonts();
+        let width = fonts.measure("hi", 16.0);
+        let at = |align, direction| {
+            lay_styled(
+                "hi",
+                100.0,
+                ComputedStyle {
+                    text_align: align,
+                    direction,
+                    ..ComputedStyle::default()
+                },
+            )[0]
+            .x
+        };
+        assert_eq!(at(TextAlign::Start, Direction::Ltr), 0.0);
+        assert_eq!(at(TextAlign::Start, Direction::Rtl), 100.0 - width);
+        assert_eq!(at(TextAlign::End, Direction::Ltr), 100.0 - width);
+        assert_eq!(at(TextAlign::End, Direction::Rtl), 0.0);
+    }
+
+    #[test]
+    fn a_justified_line_shares_its_slack_among_its_gaps() {
+        let fonts = test_fonts();
+        let space = fonts.measure(" ", 16.0);
+        let text = "aaa bb cccc dd eee ffff gg hhh iii";
+        let justified = |container: ComputedStyle| -> Vec<(String, f32, f32)> {
+            lay_styled(text, 200.0, container)
+                .iter()
+                .map(|f| match &f.kind {
+                    FragmentKind::Text(t) => (t.clone(), f.x, f.y),
+                    _ => unreachable!("texts"),
+                })
+                .collect()
+        };
+        let style = |all, last, justify| ComputedStyle {
+            text_align: all,
+            text_align_last: last,
+            text_justify: justify,
+            ..ComputedStyle::default()
+        };
+        let words = justified(style(
+            TextAlign::Justify,
+            TextAlignLast::Auto,
+            TextJustify::Auto,
+        ));
+        let first = words[0].2;
+        let line: Vec<&(String, f32, f32)> = words.iter().filter(|w| w.2 == first).collect();
+        // The first line runs from edge to edge, each gap as wide as the
+        // others: a space and an equal share of the slack.
+        assert_eq!(line[0].1, 0.0);
+        let last = line.last().expect("a word");
+        assert!((last.1 + fonts.measure(&last.0, 16.0) - 200.0).abs() < 0.01);
+        let gaps: Vec<f32> = line
+            .windows(2)
+            .map(|w| w[1].1 - (w[0].1 + fonts.measure(&w[0].0, 16.0)))
+            .collect();
+        assert!(
+            gaps.iter()
+                .all(|g| (g - gaps[0]).abs() < 0.01 && *g > space)
+        );
+        // The last line is aligned to its start, or as
+        // `text-align-last` says.
+        let rest: Vec<&(String, f32, f32)> = words.iter().filter(|w| w.2 != first).collect();
+        assert_eq!(rest[0].1, 0.0);
+        assert_eq!(
+            rest[1].1 - (rest[0].1 + fonts.measure(&rest[0].0, 16.0)),
+            space
+        );
+        let centred = justified(style(
+            TextAlign::Justify,
+            TextAlignLast::Align(TextAlign::Center),
+            TextJustify::Auto,
+        ));
+        assert!(centred.iter().find(|w| w.2 != first).unwrap().1 > 0.0);
+        let all = justified(style(
+            TextAlign::Justify,
+            TextAlignLast::Align(TextAlign::Justify),
+            TextJustify::Auto,
+        ));
+        let last = all.last().expect("a word");
+        assert!((last.1 + fonts.measure(&last.0, 16.0) - 200.0).abs() < 0.01);
+        // `none`: no justification, the line at its start.
+        let none = justified(style(
+            TextAlign::Justify,
+            TextAlignLast::Auto,
+            TextJustify::None,
+        ));
+        assert_eq!(none[1].1, fonts.measure("aaa", 16.0) + space);
+        // A line with no gap is at its start, as is one too long.
+        let one = lay_styled(
+            "word",
+            200.0,
+            style(
+                TextAlign::Justify,
+                TextAlignLast::Align(TextAlign::Justify),
+                TextJustify::Auto,
+            ),
+        );
+        assert_eq!(one[0].x, 0.0);
+    }
+
+    #[test]
+    fn inter_character_justification_spaces_the_characters_too() {
+        let fonts = test_fonts();
+        let fragments = lay_styled(
+            "ab cd",
+            100.0,
+            ComputedStyle {
+                text_align: TextAlign::Justify,
+                text_align_last: TextAlignLast::Align(TextAlign::Justify),
+                text_justify: TextJustify::InterCharacter,
+                ..ComputedStyle::default()
+            },
+        );
+        // One fragment a character, the slack shared among the gap and
+        // the two places between characters: three shares.
+        let xs: Vec<f32> = fragments.iter().map(|f| f.x).collect();
+        assert_eq!(xs.len(), 4);
+        let slack = 100.0
+            - fonts.measure("ab", 16.0)
+            - fonts.measure(" ", 16.0)
+            - fonts.measure("cd", 16.0);
+        let share = slack / 3.0;
+        assert!((xs[1] - (fonts.measure("a", 16.0) + share)).abs() < 0.01);
+        let end = xs[3] + fonts.measure("d", 16.0);
+        assert!((end - 100.0).abs() < 0.01);
     }
 
     #[test]

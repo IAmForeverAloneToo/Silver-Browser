@@ -285,14 +285,65 @@ impl BorderStyle {
     }
 }
 
-/// `text-align` (M7.5 v1: left/right/center only — `justify` is
-/// deferred to M21, per the roadmap's own note on that item).
+/// `text-align-all`'s computed value, which `text-align` sets (css-text-3
+/// §7.1, M7.5, M21.7): `match-parent` computes to the parent's value with
+/// `start` and `end` made `left` or `right` by the parent's direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextAlign {
-    /// The initial value.
+    /// The start of the line in the block's direction: the initial
+    /// value.
+    Start,
+    /// Its end.
+    End,
     Left,
     Right,
     Center,
+    /// Both edges, the space left shared among the justification
+    /// opportunities (`text-justify`).
+    Justify,
+}
+
+impl TextAlign {
+    /// `match-parent` (css-text-3 §7.1): this, the parent's value, with
+    /// `start` and `end` made `left` or `right` by `direction`, the
+    /// parent's.
+    pub fn matched(self, direction: Direction) -> TextAlign {
+        match (self, direction) {
+            (TextAlign::Start, Direction::Ltr) | (TextAlign::End, Direction::Rtl) => {
+                TextAlign::Left
+            }
+            (TextAlign::Start, Direction::Rtl) | (TextAlign::End, Direction::Ltr) => {
+                TextAlign::Right
+            }
+            (other, _) => other,
+        }
+    }
+}
+
+/// `text-align-last`'s computed value (css-text-3 §7.2, M21.7): how the
+/// last line of a block and a line before a forced break are aligned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextAlignLast {
+    /// As `text-align-all`, but `start` where that is `justify`: the
+    /// initial value.
+    Auto,
+    /// As the [`TextAlign`] value.
+    Align(TextAlign),
+}
+
+/// `text-justify`'s computed value (css-text-3 §7.4, M21.7): where a
+/// justified line's space goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextJustify {
+    /// The user agent's choice, `inter-word` here: the initial value.
+    Auto,
+    /// Nowhere: a justified line is aligned to its start.
+    None,
+    /// Between words.
+    InterWord,
+    /// Between words and between the characters of a word;
+    /// `distribute` too.
+    InterCharacter,
 }
 
 /// `text-transform` (M8.4 v1: the common case-mapping keywords —
@@ -1841,6 +1892,10 @@ pub struct ComputedStyle {
     /// inline content is aligned, but a block that itself has no direct
     /// inline content still passes the value down to descendants that do.
     pub text_align: TextAlign,
+    /// `text-align-last` (M21.7) — inherited.
+    pub text_align_last: TextAlignLast,
+    /// `text-justify` (M21.7) — inherited.
+    pub text_justify: TextJustify,
     /// `text-transform` (M8.4) — inherited.
     pub text_transform: TextTransform,
     /// `white-space` (M8.4) — inherited.
@@ -2010,7 +2065,9 @@ impl Default for ComputedStyle {
             font_size_px: 16.0, // 'medium', by UA convention
             font_family: Arc::clone(&SANS_SERIF),
             display: Display::Inline,
-            text_align: TextAlign::Left,
+            text_align: TextAlign::Start,
+            text_align_last: TextAlignLast::Auto,
+            text_justify: TextJustify::Auto,
             text_transform: TextTransform::None,
             white_space: WhiteSpace::Normal,
             letter_spacing: 0.0,
@@ -2212,6 +2269,8 @@ impl ComputedStyle {
             font_size_px: from.font_size_px,
             font_family: from.font_family.clone(),
             text_align: from.text_align,
+            text_align_last: from.text_align_last,
+            text_justify: from.text_justify,
             text_transform: from.text_transform,
             white_space: from.white_space,
             letter_spacing: from.letter_spacing,
@@ -2284,7 +2343,9 @@ mod tests {
         assert_eq!(s.color, Color::BLACK);
         assert_eq!(s.background_color, Color::TRANSPARENT);
         assert_eq!(s.display, Display::Inline);
-        assert_eq!(s.text_align, TextAlign::Left);
+        assert_eq!(s.text_align, TextAlign::Start);
+        assert_eq!(s.text_align_last, TextAlignLast::Auto);
+        assert_eq!(s.text_justify, TextJustify::Auto);
         assert_eq!(s.text_transform, TextTransform::None);
         assert_eq!(s.white_space, WhiteSpace::Normal);
         assert_eq!(s.letter_spacing, 0.0);

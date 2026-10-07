@@ -342,6 +342,20 @@ mod tests {
         assert_eq!(reach("<u>ab </u>cd"), [s("ab", 0.0, space)]);
         // A space outside it: not at all.
         assert_eq!(reach("<u>ab</u> cd"), [s("ab", 0.0, 0.0)]);
+        // Across a justified gap, all of it.
+        let doc = html::parse_document("<p><u>ab cd</u></p>").expect("never fails");
+        let (_, boxes) = boxes_of(
+            &doc,
+            &[sheet("p { width: 200px; text-align: justify-all }")],
+        );
+        let layout = layout_document(&boxes, 800.0, &fonts);
+        let cd = layout
+            .iter()
+            .find(|f| matches!(&f.kind, FragmentKind::Text(t) if t == "cd"))
+            .expect("cd");
+        let ab_end = fonts.measure("ab", 16.0);
+        let left = cd.decorated.as_ref().expect("underlined").left;
+        assert!((cd.x - left - ab_end).abs() < 0.01 && left > space);
         // Before an inline-block in it, from the word before it.
         assert_eq!(
             reach("<u>ab <b style='display: inline-block'>x</b></u>"),
