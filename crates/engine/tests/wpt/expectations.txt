@@ -3,7 +3,8 @@
 # named here fails the run, and so does one named here that passes.
 # The steps are those of the milestone a section names, in its design
 # note's section 3: docs/design/flexbox.md for M17, docs/design/grid.md
-# for M18, docs/design/compositing.md for M19.
+# for M18, docs/design/compositing.md for M19, docs/design/media.md for
+# M20.
 
 # Not in either milestone (docs/design/flexbox.md and docs/design/grid.md,
 # section 2).
@@ -45,3 +46,24 @@ css/css-transforms/preserve3d-and-flattening-z-order-005.html                  a
 css/css-will-change/will-change-fixedpos-cb-002.html                           an inline box is no containing block here (CSS2 10.1), so the span's `will-change: filter` does not position the fixed box in it
 css/css-will-change/will-change-fixedpos-cb-005.html                           an inline box is no containing block here (CSS2 10.1), so the span's `will-change: backdrop-filter` does not position the fixed box in it
 css/css-will-change/will-change-stacking-context-opacity-2.html                an inline element with no content makes no box here (CSS2 9.4.2's empty inline box), so the stacking context its `will-change: opacity` makes has no box to paint the absolutely positioned box in, which paints at the root's layer by its `z-index`
+
+# Not in M20 (docs/design/media.md, section 2): what the media queries
+# and conditional rules tests ask of parts of the engine other than
+# its media queries, cascade and loader.
+css/css-conditional/at-supports-010.html                                                  the condition holds only if `visibility: hidden` is supported, and the engine has no `visibility` property (docs/design/flexbox.md, section 2; no milestone yet)
+css/css-conditional/at-supports-017.html                                                  `background` with a `url()` image is not a value the cascade takes before images (roadmap M23.3), so the condition is false
+css/css-conditional/at-supports-at-rule-001.html                                          `at-rule()` is CSS Conditional 5's, which this engine does not take, nor the reference browser: the condition does not parse and the rule is dropped
+css/css-conditional/at-supports-at-rule-002.html                                          `at-rule()` is CSS Conditional 5's, which this engine does not take, nor the reference browser: the condition does not parse and the rule is dropped
+css/css-conditional/at-supports-at-rule-003.html                                          `at-rule()` is CSS Conditional 5's, which this engine does not take, nor the reference browser: the condition does not parse and the rule is dropped
+css/css-conditional/at-supports-at-rule-006.html                                          `at-rule()` is CSS Conditional 5's, which this engine does not take, nor the reference browser: the condition does not parse and the rule is dropped
+css/css-conditional/at-supports-font-format-001.html                                      `font-format()` is false for every format: the engine loads no font of a page's (`@font-face`, no milestone yet)
+css/css-conditional/at-supports-font-tech-001.html                                        `font-tech()` is false for every technology: the engine loads no font of a page's (`@font-face`, no milestone yet)
+css/css-conditional/at-supports-selector-details-content.html                             `::details-content` is not a pseudo-element this engine knows (docs/design/selectors-pseudo.md, section 2), so `selector()` of it is false
+css/css-conditional/at-supports-selector-details-content-before.html                      `::details-content` is not a pseudo-element this engine knows (docs/design/selectors-pseudo.md, section 2), so `selector()` of it is false
+css/css-conditional/at-supports-selector-detecting-invalid-in-logical-combinations.html   the selector parser has no `:has()` (docs/design/selectors-pseudo.md, section 2), so `selector(:has(.a))` is false; the forgiving lists are held strict as they should be
+css/css-conditional/at-supports-selector-file-selector-button.html                        `::file-selector-button` is not a pseudo-element this engine knows (docs/design/selectors-pseudo.md, section 2), so `selector()` of it is false
+css/css-conditional/at-supports-selector-picker.html                                      `::picker()` is not a pseudo-element this engine knows, with form controls, which have no milestone yet
+css/css-conditional/at-supports-selector-picker-icon.html                                 `::picker-icon` is not a pseudo-element this engine knows, with form controls, which have no milestone yet
+css/css-conditional/at-supports-selector-webkit-slider-thumb.tentative.html               `::-webkit-slider-thumb` is taken only to match nothing (selectors-4 Appendix B), and Conditional 4 makes `selector()` of such a pseudo-element false; the tentative test expects the reference browser's own
+css/mediaqueries/scripting-print-noscript.html                                            the engine runs no script (M24), so `(scripting)` is false and the test's text shows, as it should; but the parser keeps the reference's `noscript` with its text in the head, where HTML's in head noscript mode ends it at the text and puts the text in the body
+css/mediaqueries/scripting-print-script.html                                              the engine runs no script (M24), so `(scripting)` is false and the text stays hidden; the reference shows it, as a browser that runs scripts does

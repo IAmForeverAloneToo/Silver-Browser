@@ -1,5 +1,6 @@
 //! The web-platform-tests subset the engine runs (M17, T1.1; its grid
-//! tests M18's).
+//! tests M18's, its transforms tests M19's, and its media queries,
+//! conditional rules and cascade tests M20's).
 //!
 //! `cargo run -p engine --example wpt -- pull <checkout>` reads a
 //! checkout of web-platform-tests and copies into `tests/wpt/` the tests
@@ -18,8 +19,13 @@
 //!   media, form controls, lists and `br`;
 //! - every stylesheet only qualified rules whose selectors the matcher
 //!   parses, and every declaration one the cascade accepts, as
-//!   `style::supports` says: no at-rule but `@charset`, so no
-//!   `@font-face`, no rule inside a rule, and no custom property;
+//!   `style::supports` says, no custom property among them; and no
+//!   at-rule but `@charset`, `@import`, whose sheet is on the checkout
+//!   and held to the rule too, and `@media`, `@supports` and `@layer`
+//!   (M20), the rules inside them held to it as well but for those in an
+//!   `@supports` block whose condition is false here, which the cascade
+//!   drops whatever they hold: so no `@font-face`, no `@container`, and
+//!   no rule inside a style rule;
 //! - no Ahem font, no `dir=rtl`, and only the `data-*` expectations the
 //!   runner checks;
 //! - in an XHTML file, which this engine reads with its HTML parser (M15),
@@ -45,7 +51,13 @@ const DIRECTORIES: &[&str] = &[
     "css/css-grid",
     "css/css-transforms",
     "css/css-will-change",
+    "css/mediaqueries",
+    "css/css-conditional",
+    "css/css-cascade",
 ];
+
+/// How deep `@import`s may go; the engine fetches no deeper.
+const MAX_IMPORT_DEPTH: usize = 16;
 
 /// Elements that make no box here, or not the box the tests mean.
 const NO_BOX: &[&str] = &[
@@ -369,7 +381,13 @@ fn element(
         }
     }
     match tag.as_str() {
-        "style" => sheet_supported(&document.text_content(id)),
+        "style" => sheet_supported(
+            checkout,
+            rel,
+            &document.text_content(id),
+            0,
+            &mut page.stylesheets,
+        ),
         "script" => match document.attr(id, "src") {
             Some(src) => {
                 let name = src.rsplit('/').next().unwrap_or(src);
@@ -397,7 +415,7 @@ fn element(
                         let path = resolve(rel, href)?;
                         let text = fs::read_to_string(checkout.join(&path))
                             .map_err(|_| format!("missing file {path}"))?;
-                        sheet_supported(&text)?;
+                        sheet_supported(checkout, &path, &text, 0, &mut page.stylesheets)?;
                         page.stylesheets.push(path);
                     }
                     "match" => page.refs.push((true, resolve(rel, href)?)),
@@ -518,32 +536,109 @@ fn strip_comments(script: &str) -> String {
 }
 
 /// Fails unless every rule of the stylesheet `text` is one the cascade
-/// takes as written.
-fn sheet_supported(text: &str) -> Result<(), String> {
+/// takes as written; `at` is the file its URLs resolve against, the
+/// sheet's own or the page of a `<style>`, and `depth` how many imports
+/// deep it is. The sheets it imports go in `needs`.
+fn sheet_supported(
+    checkout: &Path,
+    at: &str,
+    text: &str,
+    depth: usize,
+    needs: &mut Vec<String>,
+) -> Result<(), String> {
     let sheet = css::parse_stylesheet(text).map_err(|e| format!("stylesheet: {e}"))?;
-    for rule in &sheet.rules {
-        if let css::Rule::At(at) = rule
-            && !at.name.eq_ignore_ascii_case("charset")
-        {
-            return Err(format!("@{}", at.name.to_ascii_lowercase()));
-        }
-    }
-    // With no at-rule but `@charset`, which has no block, a block inside
-    // a block is a rule inside a rule: CSS Nesting, which the parser does
-    // not have and drops with the declarations around it.
-    let mut depth = 0usize;
+    nesting_supported(text)?;
+    rules_supported(checkout, at, &sheet.rules, depth, needs)
+}
+
+/// Fails on a block inside a style rule's block: a rule inside a rule,
+/// CSS Nesting, which the parser does not have and drops with the
+/// declarations around it. A block is a style rule's when what opens it
+/// does not begin with an at-keyword.
+fn nesting_supported(text: &str) -> Result<(), String> {
+    // For each block open, whether it is a style rule's.
+    let mut open: Vec<bool> = Vec::new();
+    // Whether what is read since the last rule or declaration ended
+    // began with an at-keyword; `None` before anything is read.
+    let mut at_rule: Option<bool> = None;
     for token in css::tokenize(text) {
         match token {
-            css::Token::OpenCurly if depth > 0 => return Err("nested rule".to_string()),
-            css::Token::OpenCurly => depth += 1,
-            css::Token::CloseCurly => depth = depth.saturating_sub(1),
-            _ => {}
+            css::Token::Whitespace | css::Token::Cdo | css::Token::Cdc => {}
+            css::Token::OpenCurly => {
+                if open.last() == Some(&true) {
+                    return Err("nested rule".to_string());
+                }
+                open.push(at_rule != Some(true));
+                at_rule = None;
+            }
+            css::Token::CloseCurly => {
+                open.pop();
+                at_rule = None;
+            }
+            css::Token::Semicolon => at_rule = None,
+            css::Token::AtKeyword(_) if at_rule.is_none() => at_rule = Some(true),
+            _ => {
+                at_rule.get_or_insert(false);
+            }
         }
     }
-    for rule in &sheet.rules {
-        if let css::Rule::Qualified(rule) = rule {
-            style::parse_selector_list(&rule.prelude).map_err(|_| "selector".to_string())?;
-            declarations_supported(&rule.declarations)?;
+    Ok(())
+}
+
+/// Fails unless the cascade takes every one of `rules` as written; `at`,
+/// `depth` and `needs` as for [`sheet_supported`].
+fn rules_supported(
+    checkout: &Path,
+    at: &str,
+    rules: &[css::Rule],
+    depth: usize,
+    needs: &mut Vec<String>,
+) -> Result<(), String> {
+    for rule in rules {
+        let at_rule = match rule {
+            css::Rule::Qualified(rule) => {
+                style::parse_selector_list(&rule.prelude).map_err(|_| "selector".to_string())?;
+                declarations_supported(&rule.declarations)?;
+                continue;
+            }
+            css::Rule::At(at_rule) => at_rule,
+        };
+        let name = at_rule.name.to_ascii_lowercase();
+        let inner = match &at_rule.block {
+            Some(css::Block::Rules(inner)) => inner.as_slice(),
+            _ => &[],
+        };
+        match name.as_str() {
+            "charset" => {}
+            "import" => {
+                let href = at_rule
+                    .prelude
+                    .iter()
+                    .find_map(|token| match token {
+                        css::Token::Url { value, .. } | css::Token::String { value, .. } => {
+                            Some(value.as_str())
+                        }
+                        _ => None,
+                    })
+                    .ok_or_else(|| "@import without a URL".to_string())?;
+                let path = resolve(at, href)?;
+                if depth >= MAX_IMPORT_DEPTH || needs.contains(&path) {
+                    continue;
+                }
+                let text = fs::read_to_string(checkout.join(&path))
+                    .map_err(|_| format!("missing file {path}"))?;
+                needs.push(path.clone());
+                sheet_supported(checkout, &path, &text, depth + 1, needs)?;
+            }
+            "media" | "layer" => rules_supported(checkout, at, inner, depth, needs)?,
+            // A false or invalid condition drops the block, whatever it
+            // holds.
+            "supports" => {
+                if style::supports_condition(&at_rule.prelude) == Some(true) {
+                    rules_supported(checkout, at, inner, depth, needs)?;
+                }
+            }
+            _ => return Err(format!("@{name}")),
         }
     }
     Ok(())
@@ -819,11 +914,37 @@ mod tests {
                 "@font-face",
             ),
             (
-                reftest("<style>@media all { .a { color: red } }</style>"),
-                "@media",
+                reftest("<style>@container (width > 0) { .a { color: red } }</style>"),
+                "@container",
+            ),
+            (
+                reftest("<style>@media all { @keyframes k { } }</style>"),
+                "@keyframes",
+            ),
+            (
+                reftest("<style>@media all { .a { writing-mode: vertical-rl } }</style>"),
+                "declaration of writing-mode",
+            ),
+            (
+                reftest(
+                    "<style>@supports (color: red) { .a { writing-mode: vertical-rl } }</style>",
+                ),
+                "declaration of writing-mode",
+            ),
+            (
+                reftest("<style>@import 'missing.css';</style>"),
+                "missing file css/x/missing.css",
+            ),
+            (
+                reftest("<style>@import 'bad.css' screen;</style>"),
+                "declaration of writing-mode",
             ),
             (
                 reftest("<style>.a { color: red; & .b { color: blue } }</style>"),
+                "nested rule",
+            ),
+            (
+                reftest("<style>@media all { .a { color: red; .b { color: blue } } }</style>"),
                 "nested rule",
             ),
             (
@@ -854,6 +975,10 @@ mod tests {
             .collect();
         files.push(("css/x/r.html".to_string(), "<div></div>".to_string()));
         files.push((
+            "css/x/bad.css".to_string(),
+            ".a { writing-mode: vertical-rl }".to_string(),
+        ));
+        files.push((
             "css/x/x.xht".to_string(),
             "<html><link rel=match href=r.html/><div/></html>".to_string(),
         ));
@@ -880,6 +1005,42 @@ mod tests {
         assert_eq!(
             checkout.take("css/x/y.xht").err().as_deref(),
             Some("CDATA section in XHTML")
+        );
+    }
+
+    #[test]
+    fn the_rule_takes_media_supports_layers_and_imports() {
+        let checkout = Checkout::new(
+            "at-rules",
+            &[
+                (
+                    "css/x/t.html",
+                    "<link rel=match href=r.html><link rel=stylesheet href=s/a.css media=print>\
+                     <style>@import url(s/b.css) layer(x) supports(display: grid) screen;\
+                     @layer x, y; @media (min-width: 1px) { @layer y { .a { color: red } } }\
+                     @supports (writing-mode: vertical-rl) { .a { writing-mode: vertical-rl } }\
+                     @supports nonsense { .a { writing-mode: vertical-rl } }</style>",
+                ),
+                ("css/x/r.html", "<div></div>"),
+                ("css/x/s/a.css", "@import 'c.css'; .a { color: blue }"),
+                ("css/x/s/b.css", "@import '../s/c.css'; .b { color: blue }"),
+                // Importing each other, as far as the engine goes.
+                ("css/x/s/c.css", "@import 'a.css'; .c { color: blue }"),
+            ],
+        );
+        let (_, needs) = checkout.take("css/x/t.html").expect("taken");
+        let needs: BTreeSet<String> = needs.into_iter().collect();
+        assert_eq!(
+            needs,
+            BTreeSet::from(
+                [
+                    "css/x/r.html",
+                    "css/x/s/a.css",
+                    "css/x/s/b.css",
+                    "css/x/s/c.css"
+                ]
+                .map(String::from)
+            )
         );
     }
 
