@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<title>Tables and flex containers</title>
+<style>
+  /* A table and a flex container too tall for what is left of a
+     page move to the next whole, and one that fits stays. Each asks
+     for break-inside: avoid: the engine breaks inside neither, the
+     reference browser inside both unless asked not to (the design
+     note's section 2). */
+  @font-face { font-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  body { font-family: "Print Test Sans"; font-size: 16px; }
+  h1, h2 { font-weight: normal; }
+  h1 { font-size: 24px; margin: 16px 0; }
+  h2 { font-size: 20px; margin: 20px 0 12px; }
+  p { margin: 16px 0; }
+  body { margin: 0 8px; }
+  section { break-before: page; }
+  table { break-inside: avoid; border-spacing: 0; margin: 16px 0; }
+  td { padding: 4px 8px; border: 1px solid black; }
+  .flex { display: flex; break-inside: avoid; gap: 16px; margin: 16px 0; }
+  .item { flex: 1; border: 1px solid black; padding: 8px; }
+  .item p { margin: 0; }
+</style>
+</head>
+<body>
+<section>
+<!-- A table about 160px tall with 80px of room: it moves whole. -->
+<div style="height: 902px"></div>
+<table>
+<tr><td>Row 1</td><td>A page is cut where the content no longer fits the space the page area leaves</td></tr>
+<tr><td>Row 2</td><td>Lines are never split across pages</td></tr>
+<tr><td>Row 3</td><td>The margins that meet an unforced break are dropped</td></tr>
+<tr><td>Row 4</td><td>A printed page has a box</td></tr>
+<tr><td>Row 5</td><td>Paragraphs flow from one page to the next as they flow down a long screen</td></tr>
+<tr><td>Row 6</td><td>Each page shows a slice of the document</td></tr>
+</table>
+<p>Each page shows a slice of the document, and the slices together show all of it. The reference browser prints at three hundred dots to the inch, and so does this engine.</p>
+</section>
+<section>
+<!-- A flex container of three items with 100px of room: it moves whole. -->
+<div style="height: 882px"></div>
+<div class="flex">
+<div class="item"><p>A page is cut where the content no longer fits the space the page area leaves. Lines are never split across pages, so a break falls between two of them.</p></div>
+<div class="item"><p>Paragraphs flow from one page to the next as they flow down a long screen. Each page shows a slice of the document, and the slices together show all of it.</p></div>
+<div class="item"><p>Orphans are the lines a paragraph leaves at the bottom of a page, and widows the lines it carries to the top of the next. A box that must not be broken is moved whole to the next page when it does not fit on the one it starts on.</p></div>
+</div>
+<p>A heading that ends a page alone is a poor heading, which is why authors avoid breaks after one. Orphans are the lines a paragraph leaves at the bottom of a page, and widows the lines it carries to the top of the next.</p>
+</section>
+<section>
+<!-- A table that fits stays where it is. -->
+<div style="height: 300px"></div>
+<table>
+<tr><td>Row 1</td><td>A page is cut where the content no longer fits the space the page area leaves</td></tr>
+<tr><td>Row 2</td><td>Lines are never split across pages</td></tr>
+<tr><td>Row 3</td><td>The margins that meet an unforced break are dropped</td></tr>
+<tr><td>Row 4</td><td>A printed page has a box</td></tr>
+<tr><td>Row 5</td><td>Paragraphs flow from one page to the next as they flow down a long screen</td></tr>
+<tr><td>Row 6</td><td>Each page shows a slice of the document</td></tr>
+</table>
+<p>A box that must not be broken is moved whole to the next page when it does not fit on the one it starts on. Printing is the oldest way of showing a document, and the web came to it late. The text on each page is compared with where the reference browser puts it, a run at a time.</p>
+</section>
+</body>
+</html>

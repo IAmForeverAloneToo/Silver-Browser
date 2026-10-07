@@ -17,14 +17,15 @@
 //! the reference browser lets it. The places between two pieces are
 //! where a page may break: between two blocks, at the start of a block,
 //! between two lines (Fragmentation 3's classes A, B and C). The pieces
-//! are filled into pages; when one does not fit, the last place that
+//! are filled into pages; when one does not fit, the latest break that
 //! breaks none of Fragmentation 3's rules is taken — an `avoid` at the
 //! place, a `break-inside: avoid` around it, fewer lines before it than
-//! `orphans` or after it than `widows` — and if none, the rules are let
-//! go in the draft's order (§4.4), the line counts first and the
-//! `avoid`s after. A
-//! piece too tall for a page is put at the top of one and the pages cut
-//! it where they end. A forced break, `page`, `left`, `right`, `recto`
+//! `orphans` or after it than `widows` — a place's breaks inside the
+//! boxes starting there, innermost first, coming before the break
+//! before them; and if none, the rules are let go in the draft's order
+//! (§4.4), the line counts first and the `avoid`s after. A piece too
+//! tall for a page is put at the top of one and the pages cut it where
+//! they end. A forced break, `page`, `left`, `right`, `recto`
 //! or `verso`, begins a page, with a blank one before it when the side
 //! is wrong.
 //!
@@ -189,14 +190,15 @@ impl Place {
         }
     }
 
-    /// The latest level a break may take here: inside the innermost box
-    /// with a gap before what follows it, or else before the outermost
-    /// box when `content_before` says something on the page is before it.
-    fn latest(&self, content_before: bool) -> Option<usize> {
+    /// The levels a break may take here, the latest first: inside each
+    /// box with a gap before what follows it, innermost first, and
+    /// before the outermost box when `content_before` says something on
+    /// the page is before it.
+    fn levels(&self, content_before: bool) -> impl Iterator<Item = usize> + '_ {
         (1..=self.boxes.len())
             .rev()
-            .find(|&level| self.boxes[level - 1].gap)
-            .or(content_before.then_some(0))
+            .filter(|&level| self.boxes[level - 1].gap)
+            .chain(content_before.then_some(0))
     }
 
     /// The rules a break at `level` breaks.
@@ -545,8 +547,11 @@ impl Plan {
             // level, that breaks the fewest rules.
             let chosen = [0, LINES, AVOID | LINES].into_iter().find_map(|allowed| {
                 (first..=i).rev().find_map(|k| {
-                    let level = self.places[k].latest(k > first || carried)?;
-                    (self.places[k].flags_at(level) & !allowed == 0).then_some((k, level))
+                    let place = &self.places[k];
+                    place
+                        .levels(k > first || carried)
+                        .find(|&level| place.flags_at(level) & !allowed == 0)
+                        .map(|level| (k, level))
                 })
             });
             match chosen {
@@ -1022,6 +1027,17 @@ mod tests {
             350.0,
         );
         assert_eq!(by_class(&p, "c")[0].y, 200.0);
+        // A box with a top padding that avoids breaks inside it moves
+        // whole, not from after its padding, where a break would be
+        // inside it.
+        let p = paged(
+            html,
+            &css(".c { break-inside: avoid; padding-top: 10px }"),
+            350.0,
+            350.0,
+        );
+        assert_eq!(by_class(&p, "c")[0].y, 350.0);
+        assert_eq!(by_class(&p, "c")[0].h, 210.0);
     }
 
     #[test]

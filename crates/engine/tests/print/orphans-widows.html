@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<title>Orphans and widows</title>
+<style>
+  /* Paragraphs across breaks under orphans and widows, each case on
+     a page of its own after a spacer that leaves room for a few of its
+     lines. */
+  @font-face { font-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  body { font-family: "Print Test Sans"; font-size: 16px; }
+  h1, h2 { font-weight: normal; }
+  h1 { font-size: 24px; margin: 16px 0; }
+  h2 { font-size: 20px; margin: 20px 0 12px; }
+  p { margin: 16px 0; }
+  body { margin: 0 8px; }
+  p { margin: 0; }
+  section { break-before: page; }
+  .o4 { orphans: 4; widows: 1; }
+  .w4 { widows: 4; orphans: 1; }
+  .ow3 { orphans: 3; widows: 3; }
+</style>
+</head>
+<body>
+<section>
+<!-- orphans 4 with 3 lines of room: the paragraph moves whole -->
+<div style="height: 920px"></div>
+<p class="o4" data-lines="6">A page is cut where the content no longer fits the space the page area leaves. Lines are never split across pages, so a break falls between two of them. The margins that meet an unforced break are dropped, and the content after it starts at the top of the next page. A printed page has a box, its size on paper, and an area inside its margins where the document is drawn. Paragraphs flow from one page to the next as they flow down a long screen.</p>
+</section>
+<section>
+<!-- widows 4 with 4 lines of room: 2 lines stay -->
+<div style="height: 901px"></div>
+<p class="w4" data-lines="6">The margins that meet an unforced break are dropped, and the content after it starts at the top of the next page. A printed page has a box, its size on paper, and an area inside its margins where the document is drawn. Paragraphs flow from one page to the next as they flow down a long screen. Each page shows a slice of the document, and the slices together show all of it. The reference browser prints at three hundred dots to the inch, and so does this engine.</p>
+</section>
+<section>
+<!-- the defaults with 4 lines of room: 3 lines stay -->
+<div style="height: 901px"></div>
+<p class="d" data-lines="5">Paragraphs flow from one page to the next as they flow down a long screen. Each page shows a slice of the document, and the slices together show all of it. The reference browser prints at three hundred dots to the inch, and so does this engine. A heading that ends a page alone is a poor heading, which is why authors avoid breaks after one.</p>
+</section>
+<section>
+<!-- the defaults with 1 line of room: the paragraph moves whole -->
+<div style="height: 958px"></div>
+<p class="d" data-lines="4">The reference browser prints at three hundred dots to the inch, and so does this engine. A heading that ends a page alone is a poor heading, which is why authors avoid breaks after one. Orphans are the lines a paragraph leaves at the bottom of a page, and widows the lines it carries to the top of the next.</p>
+</section>
+<section>
+<!-- orphans and widows 3 with 5 lines of room: 4 lines stay -->
+<div style="height: 882px"></div>
+<p class="ow3" data-lines="7">Orphans are the lines a paragraph leaves at the bottom of a page, and widows the lines it carries to the top of the next. A box that must not be broken is moved whole to the next page when it does not fit on the one it starts on. Printing is the oldest way of showing a document, and the web came to it late. The text on each page is compared with where the reference browser puts it, a run at a time. Fixed boxes are drawn on every page at their place in the page area. When nothing else is possible, the content is broken where the page ends rather than lost.</p>
+</section>
+<section>
+<!-- the defaults with room for all 6 lines -->
+<div style="height: 863px"></div>
+<p class="d" data-lines="6">Printing is the oldest way of showing a document, and the web came to it late. The text on each page is compared with where the reference browser puts it, a run at a time. Fixed boxes are drawn on every page at their place in the page area. When nothing else is possible, the content is broken where the page ends rather than lost. A forced break begins a page, and a break to a side may leave a page blank before it.</p>
+</section>
+</body>
+</html>

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<title>Page rules</title>
+<style>
+  /* @page with a size, margins, and :first with a top margin of its
+     own: each page's area is placed and sized by its rules, and the
+     first holds less. */
+  @font-face { font-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  body { font-family: "Print Test Sans"; font-size: 16px; }
+  h1, h2 { font-weight: normal; }
+  h1 { font-size: 24px; margin: 16px 0; }
+  h2 { font-size: 20px; margin: 20px 0 12px; }
+  p { margin: 16px 0; }
+  @page { size: 6in 8in; margin: 0.75in 1in; }
+  @page :first { margin-top: 2in; }
+</style>
+</head>
+<body>
+<h1>Page rules</h1>
+<p>A page is cut where the content no longer fits the space the page area leaves. Lines are never split across pages, so a break falls between two of them. The margins that meet an unforced break are dropped, and the content after it starts at the top of the next page. A printed page has a box, its size on paper, and an area inside its margins where the document is drawn.</p>
+<p>A printed page has a box, its size on paper, and an area inside its margins where the document is drawn. Paragraphs flow from one page to the next as they flow down a long screen. Each page shows a slice of the document, and the slices together show all of it. The reference browser prints at three hundred dots to the inch, and so does this engine. A heading that ends a page alone is a poor heading, which is why authors avoid breaks after one. Orphans are the lines a paragraph leaves at the bottom of a page, and widows the lines it carries to the top of the next.</p>
+<p>The reference browser prints at three hundred dots to the inch, and so does this engine. A heading that ends a page alone is a poor heading, which is why authors avoid breaks after one. Orphans are the lines a paragraph leaves at the bottom of a page, and widows the lines it carries to the top of the next.</p>
+<p>A box that must not be broken is moved whole to the next page when it does not fit on the one it starts on. Printing is the oldest way of showing a document, and the web came to it late. The text on each page is compared with where the reference browser puts it, a run at a time. Fixed boxes are drawn on every page at their place in the page area. When nothing else is possible, the content is broken where the page ends rather than lost. A forced break begins a page, and a break to a side may leave a page blank before it. The size of a page may be set by a rule for the page, and so may its margins.</p>
+<p>Fixed boxes are drawn on every page at their place in the page area. When nothing else is possible, the content is broken where the page ends rather than lost. A forced break begins a page, and a break to a side may leave a page blank before it. The size of a page may be set by a rule for the page, and so may its margins. A page is cut where the content no longer fits the space the page area leaves.</p>
+<p>The size of a page may be set by a rule for the page, and so may its margins. A page is cut where the content no longer fits the space the page area leaves.</p>
+<p>The margins that meet an unforced break are dropped, and the content after it starts at the top of the next page. A printed page has a box, its size on paper, and an area inside its margins where the document is drawn. Paragraphs flow from one page to the next as they flow down a long screen. Each page shows a slice of the document, and the slices together show all of it. The reference browser prints at three hundred dots to the inch, and so does this engine. A heading that ends a page alone is a poor heading, which is why authors avoid breaks after one.</p>
+<p>Each page shows a slice of the document, and the slices together show all of it. The reference browser prints at three hundred dots to the inch, and so does this engine. A heading that ends a page alone is a poor heading, which is why authors avoid breaks after one. Orphans are the lines a paragraph leaves at the bottom of a page, and widows the lines it carries to the top of the next.</p>
+<p>Orphans are the lines a paragraph leaves at the bottom of a page, and widows the lines it carries to the top of the next. A box that must not be broken is moved whole to the next page when it does not fit on the one it starts on. Printing is the oldest way of showing a document, and the web came to it late. The text on each page is compared with where the reference browser puts it, a run at a time. Fixed boxes are drawn on every page at their place in the page area.</p>
+<p>The text on each page is compared with where the reference browser puts it, a run at a time. Fixed boxes are drawn on every page at their place in the page area. When nothing else is possible, the content is broken where the page ends rather than lost.</p>
+<p>A forced break begins a page, and a break to a side may leave a page blank before it. The size of a page may be set by a rule for the page, and so may its margins. A page is cut where the content no longer fits the space the page area leaves. Lines are never split across pages, so a break falls between two of them. The margins that meet an unforced break are dropped, and the content after it starts at the top of the next page. A printed page has a box, its size on paper, and an area inside its margins where the document is drawn.</p>
+</body>
+</html>

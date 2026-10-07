@@ -13,6 +13,12 @@
 //! of the paginated document would show it, its fixed boxes included,
 //! clipped to its area; the root's background covers the area alone and
 //! the margins are white, as the reference browser prints them.
+//!
+//! The page area is rounded as the reference browser rounds it: the
+//! document is laid out at the first page's area width rounded up to a
+//! whole pixel, and cut into pages each as tall as its area rounded up,
+//! the viewport units measuring the area rounded down, and each page is
+//! drawn clipped to its area as it is (see [`PageBox::layout_area`]).
 
 use dom::Document;
 use paint::{DisplayItem, DisplayList, GroupKey, Viewport, paint_fragments_in};
@@ -70,6 +76,18 @@ impl std::fmt::Display for PrintError {
 
 impl std::error::Error for PrintError {}
 
+/// A page of a print, laid out and painted but not drawn.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PrintedPage {
+    /// The page's box: its size and its margins, which place its area.
+    pub page_box: PageBox,
+    /// Which page it is: the first, a left or a right one, a blank one.
+    pub position: PagePosition,
+    /// What the page's area shows, in the area's coordinates, its top
+    /// left corner at the origin; drawn clipped to the area.
+    pub list: DisplayList,
+}
+
 impl Engine {
     /// The document shown, printed to a PDF by `options`: its cascade
     /// under the print medium, its own layout and pagination, each page
@@ -79,8 +97,20 @@ impl Engine {
         Ok(write_pdf(&pages, &self.title()))
     }
 
-    /// The pages of [`Engine::print`], before they are written.
+    /// The pages of [`Engine::print`], drawn, before they are written.
     pub(crate) fn print_pages(&self, options: &PrintOptions) -> Result<Vec<PdfPage>, PrintError> {
+        let pages = self.printed_pages(options)?;
+        let mut backend = SoftwareBackend::with_fonts(self.layout_fonts.clone());
+        Ok(pages
+            .into_iter()
+            .map(|page| rasterize_page(&mut backend, page, options.dpi))
+            .collect())
+    }
+
+    /// The pages [`Engine::print`] prints by `options`, before they are
+    /// drawn: each page's box and what its area shows. The print's tests
+    /// read the text on each page from these.
+    pub fn printed_pages(&self, options: &PrintOptions) -> Result<Vec<PrintedPage>, PrintError> {
         let (width, height) = options.page_size;
         let valid = |v: f32| v.is_finite() && v > 0.0;
         if !valid(width) || !valid(height) || !valid(options.dpi) || !options.margin.is_finite() {
@@ -112,43 +142,46 @@ impl Engine {
         // the initial font size, and again if the root's makes another
         // area and a viewport unit was used.
         let initial = style::ComputedStyle::default().font_size_px;
-        let mut area = page_box(initial, first).area();
-        let context = |area: (f32, f32)| CascadeContext {
-            viewport_width: area.0,
-            viewport_height: area.1,
-            fonts: Some(&fonts),
-            language: self.shown.page.language(),
-            media,
-        };
-        let mut styles = sheets.cascade(document, &context(area));
-        let rem = root_font_size(document, &styles).unwrap_or(initial);
-        let measured = page_box(rem, first).area();
-        if measured != area {
-            area = measured;
-            if styles.uses_viewport_units {
-                styles = sheets.cascade(document, &context(area));
+        let mut first_box = page_box(initial, first);
+        let context = |page_box: &PageBox| {
+            let (width, height) = page_box.viewport();
+            CascadeContext {
+                viewport_width: width,
+                viewport_height: height,
+                fonts: Some(&fonts),
+                language: self.shown.page.language(),
+                media,
             }
+        };
+        let mut styles = sheets.cascade(document, &context(&first_box));
+        let rem = root_font_size(document, &styles).unwrap_or(initial);
+        let measured = page_box(rem, first);
+        if measured != first_box {
+            if measured.viewport() != first_box.viewport() && styles.uses_viewport_units {
+                styles = sheets.cascade(document, &context(&measured));
+            }
+            first_box = measured;
         }
-        let context = context(area);
+        let context = context(&first_box);
         let recascade = sheets.recascader(document, &styles, &context);
         let boxes = layout::build_box_tree(document, &styles, &recascade);
-        let laid = layout::layout_document_in(&boxes, area.0, Some(area.1), &self.layout_fonts);
-        let paginated = layout::paginate(laid, &|position| page_box(rem, position).area().1);
-
-        let mut backend = SoftwareBackend::with_fonts(self.layout_fonts.clone());
+        let (width, height) = first_box.layout_area();
+        let laid = layout::layout_document_in(&boxes, width, Some(height), &self.layout_fonts);
+        let paginated = layout::paginate(laid, &|position| page_box(rem, position).layout_area().1);
         let pages = paginated
             .pages
             .iter()
             .map(|page| {
-                let page_box: PageBox = page_box(rem, page.position);
-                let (area_width, _) = page_box.area();
                 let viewport = Viewport {
-                    width: area_width,
+                    width,
                     height: page.height,
                     scroll_y: page.top,
                 };
-                let list = paint_fragments_in(&paginated.roots, viewport, &());
-                rasterize_page(&mut backend, list, viewport, &page_box, options.dpi)
+                PrintedPage {
+                    page_box: page_box(rem, page.position),
+                    position: page.position,
+                    list: paint_fragments_in(&paginated.roots, viewport, &()),
+                }
             })
             .collect();
         Ok(pages)
@@ -184,16 +217,12 @@ fn fitting(width: f32, height: f32, scale: f32) -> (f32, u32, u32) {
     (scale, w as u32, h as u32)
 }
 
-/// The page whose area `viewport` is, its list drawn at `dpi`, or at
-/// the resolution that fits the backend's largest raster.
-fn rasterize_page(
-    backend: &mut SoftwareBackend,
-    list: DisplayList,
-    viewport: Viewport,
-    page_box: &PageBox,
-    dpi: f32,
-) -> PdfPage {
-    let (scale, width, height) = fitting(viewport.width, viewport.height, dpi / 96.0);
+/// `page`'s area, its list drawn at `dpi`, or at the resolution that fits
+/// the backend's largest raster.
+fn rasterize_page(backend: &mut SoftwareBackend, page: PrintedPage, dpi: f32) -> PdfPage {
+    let PrintedPage { page_box, list, .. } = page;
+    let (area_width, area_height) = page_box.area();
+    let (scale, width, height) = fitting(area_width, area_height, dpi / 96.0);
     // The page's list, scaled to the raster and clipped to the area.
     let mut items = Vec::with_capacity(list.items.len() + 4);
     items.push(DisplayItem::PushGroup {
@@ -205,8 +234,8 @@ fn rasterize_page(
     items.push(DisplayItem::PushClip {
         x: 0.0,
         y: 0.0,
-        w: viewport.width,
-        h: viewport.height,
+        w: area_width,
+        h: area_height,
     });
     items.extend(list.items);
     items.push(DisplayItem::PopClip);
@@ -347,6 +376,43 @@ mod tests {
         assert_eq!(pages.len(), 3);
         assert_eq!(at(&pages[1], 20.0, 20.0), WHITE, "the blank left page");
         assert_eq!(at(&pages[2], 20.0, 20.0), RED);
+    }
+
+    #[test]
+    fn the_page_area_is_rounded_as_the_reference_browser_rounds_it() {
+        // Letter at the default margins: an area of 741.33 by 981.33,
+        // laid out 742 wide and cut every 982 pixels, the viewport units
+        // measuring 741 by 981.
+        let page = |spacer: &str| {
+            engine(&format!(
+                "<style>body {{ margin: 0 }} p {{ margin: 0 }} .s {{ height: {spacer} }}
+                 .w {{ margin-left: 50vw }} .h {{ margin-left: 50% }}</style>
+                 <p class=w>w</p><p class=h>h</p><div class=s></div><p>x</p>"
+            ))
+            .printed_pages(&PrintOptions::default())
+            .expect("printed")
+        };
+        let lefts = |page: &PrintedPage| -> Vec<(String, f32)> {
+            page.list
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    DisplayItem::Text { text, x, .. } => Some((text.clone(), *x)),
+                    _ => None,
+                })
+                .collect()
+        };
+        // The last line ends at 982: it fits.
+        let pages = page("925px");
+        assert_eq!(pages.len(), 1);
+        let (width, height) = pages[0].page_box.area();
+        assert!((width - 741.333).abs() < 0.01 && (height - 981.333).abs() < 0.01);
+        assert_eq!(
+            lefts(&pages[0])[..2],
+            [("w".to_string(), 370.5), ("h".to_string(), 371.0)]
+        );
+        // A little lower, it does not.
+        assert_eq!(page("925.4px").len(), 2);
     }
 
     #[test]

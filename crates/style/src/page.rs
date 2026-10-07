@@ -124,6 +124,26 @@ impl PageBox {
     pub fn origin(&self) -> (f32, f32) {
         (self.margin[3].round(), self.margin[0].round())
     }
+
+    /// The page area the document is laid out in and cut into pages by:
+    /// the area's width and height rounded up to whole CSS pixels, as
+    /// the reference browser lays a page out. On Letter at the default
+    /// margins it lays the document out 742 pixels wide and fits 982
+    /// pixels of it on each page, the area's edge cutting off the last
+    /// two thirds of a pixel.
+    pub fn layout_area(&self) -> (f32, f32) {
+        let (width, height) = self.area();
+        (width.ceil(), height.ceil())
+    }
+
+    /// The page area as the viewport units measure it: the area's width
+    /// and height rounded down to whole CSS pixels, the reference
+    /// browser's viewport, 741 by 981 pixels on Letter at the default
+    /// margins.
+    pub fn viewport(&self) -> (f32, f32) {
+        let (width, height) = self.area();
+        (width.floor(), height.floor())
+    }
 }
 
 impl PageStyle {
@@ -336,6 +356,17 @@ mod tests {
         // The reference browser's page area on Letter: 741.33 by 981.33.
         assert!((w - 741.333).abs() < 0.01 && (h - 981.333).abs() < 0.01);
         assert_eq!(none.origin(), (37.0, 37.0));
+        assert_eq!(none.layout_area(), (742.0, 982.0));
+        assert_eq!(none.viewport(), (741.0, 981.0));
+        // An area of 740.4 by 980.4, as the reference browser rounds it.
+        let fractional = PageStyle {
+            margin: [Some(LengthPercentageAuto::Px(37.8)); 4],
+            ..PageStyle::default()
+        }
+        .page_box(LETTER, DEFAULT_MARGIN);
+        assert_eq!(fractional.origin(), (38.0, 38.0));
+        assert_eq!(fractional.layout_area(), (741.0, 981.0));
+        assert_eq!(fractional.viewport(), (740.0, 980.0));
         let style = PageStyle {
             size: PageSize::Oriented(Orientation::Landscape),
             margin: [
@@ -358,6 +389,8 @@ mod tests {
             ..PageStyle::default()
         };
         assert_eq!(wide.page_box(LETTER, 0.0).area(), (1.0, 1.0));
+        assert_eq!(wide.page_box(LETTER, 0.0).layout_area(), (1.0, 1.0));
+        assert_eq!(wide.page_box(LETTER, 0.0).viewport(), (1.0, 1.0));
     }
 
     #[test]

@@ -93,7 +93,7 @@ use std::time::{Duration, Instant};
 
 pub use loader::{LoadError, LoadState};
 pub use net::{Client, NetworkError, Url};
-pub use print::{PrintError, PrintOptions};
+pub use print::{PrintError, PrintOptions, PrintedPage};
 pub use style::{ColorScheme, Preferences};
 
 use dom::{Change, Document, NodeId};

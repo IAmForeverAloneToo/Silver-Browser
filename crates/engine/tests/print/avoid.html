@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<title>Avoiding breaks</title>
+<style>
+  /* break-inside: avoid around a figure and a paragraph, break-after:
+     avoid after a heading and break-before: avoid before a paragraph,
+     each keeping what it says together across a page's end. */
+  @font-face { font-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  body { font-family: "Print Test Sans"; font-size: 16px; }
+  h1, h2 { font-weight: normal; }
+  h1 { font-size: 24px; margin: 16px 0; }
+  h2 { font-size: 20px; margin: 20px 0 12px; }
+  p { margin: 16px 0; }
+  body { margin: 0 8px; }
+  section { break-before: page; }
+  .figure { break-inside: avoid; border: 1px solid black; padding: 8px; margin: 16px 0; }
+  .art { height: 180px; background: #ccc; }
+  .caption { margin: 8px 0 0; }
+  .keep { break-after: avoid; }
+  .with-previous { break-before: avoid; }
+  .whole { break-inside: avoid; }
+</style>
+</head>
+<body>
+<section>
+<!-- A figure 225px tall with 100px of room: it moves whole. -->
+<div style="height: 882px"></div>
+<div class="figure"><div class="art"></div><p class="caption">Lines are never split across pages, so a break falls between two of them.</p></div>
+<p>The margins that meet an unforced break are dropped, and the content after it starts at the top of the next page. A printed page has a box, its size on paper, and an area inside its margins where the document is drawn.</p>
+</section>
+<section>
+<!-- A heading kept with the paragraph after it, 50px of room: the heading moves. -->
+<div style="height: 932px"></div>
+<h2 class="keep">A heading kept with what follows</h2>
+<p>Paragraphs flow from one page to the next as they flow down a long screen. Each page shows a slice of the document, and the slices together show all of it. The reference browser prints at three hundred dots to the inch, and so does this engine.</p>
+</section>
+<section>
+<!-- A paragraph kept with the one before, which ends 11px above the page's end: two lines of that one move with it. -->
+<div style="height: 860px"></div>
+<p class="lines5">The reference browser prints at three hundred dots to the inch, and so does this engine. A heading that ends a page alone is a poor heading, which is why authors avoid breaks after one. Orphans are the lines a paragraph leaves at the bottom of a page, and widows the lines it carries to the top of the next. A box that must not be broken is moved whole to the next page when it does not fit on the one it starts on.</p>
+<p class="with-previous">A box that must not be broken is moved whole to the next page when it does not fit on the one it starts on. Printing is the oldest way of showing a document, and the web came to it late.</p>
+</section>
+<section>
+<!-- A paragraph not broken inside, with room for 3 of its 4 lines: it moves whole. -->
+<div style="height: 904px"></div>
+<p class="whole">The text on each page is compared with where the reference browser puts it, a run at a time. Fixed boxes are drawn on every page at their place in the page area. When nothing else is possible, the content is broken where the page ends rather than lost. A forced break begins a page, and a break to a side may leave a page blank before it.</p>
+</section>
+</body>
+</html>
