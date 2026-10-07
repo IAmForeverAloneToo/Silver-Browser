@@ -174,25 +174,20 @@ impl SelectorFeatures {
         }
     }
 
-    /// Adds what the declarations of `sheet`'s rules read: the
-    /// attributes `content`'s `attr()` names, on the element a
-    /// `::before` or `::after` comes from.
-    pub(crate) fn add_declarations(&mut self, sheet: &css::Stylesheet) {
-        for rule in &sheet.rules {
-            let css::Rule::Qualified(rule) = rule else {
-                continue;
-            };
-            for declaration in rule.declarations.iter().filter(|d| d.name == "content") {
-                let mut tokens = declaration.value.iter();
-                while let Some(token) = tokens.next() {
-                    if let css::Token::Function(name) = token
-                        && name.eq_ignore_ascii_case("attr")
-                        && let Some(css::Token::Ident(attribute)) = tokens
-                            .by_ref()
-                            .find(|token| !matches!(token, css::Token::Whitespace))
-                    {
-                        self.attributes.insert(attribute.to_ascii_lowercase());
-                    }
+    /// Adds what `declarations`, a style rule's, read: the attributes
+    /// `content`'s `attr()` names, on the element a `::before` or
+    /// `::after` comes from.
+    pub(crate) fn add_declarations(&mut self, declarations: &[css::Declaration]) {
+        for declaration in declarations.iter().filter(|d| d.name == "content") {
+            let mut tokens = declaration.value.iter();
+            while let Some(token) = tokens.next() {
+                if let css::Token::Function(name) = token
+                    && name.eq_ignore_ascii_case("attr")
+                    && let Some(css::Token::Ident(attribute)) = tokens
+                        .by_ref()
+                        .find(|token| !matches!(token, css::Token::Whitespace))
+                {
+                    self.attributes.insert(attribute.to_ascii_lowercase());
                 }
             }
         }
@@ -1004,5 +999,32 @@ mod tests {
             d.set_attribute(x, "lang", "fr").unwrap();
         });
         assert!(r.changed.is_empty(), "nothing reads `lang`");
+    }
+    #[test]
+    fn selectors_inside_media_supports_and_layers_are_read_whatever_the_media() {
+        // `@media print` does not hold on the default screen, but its
+        // selectors count: a resize or a print can bring them in force.
+        let (mut d, sheets, mut styles) = setup(
+            "<div id=x><p>one</p></div>",
+            "@media all { @layer a { [data-on] p { color: #f00 } } }\
+             @supports (color: red) { .lit p { color: #0f0 } }\
+             @media print { [data-print] p { color: #00f } }\
+             @media all { p::before { content: attr(data-note) } }",
+        );
+        let x = by_id(&d, "x");
+        let p = d.subtree(x).nth(1).expect("the p");
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(x, "data-on", "").unwrap();
+        });
+        assert_eq!(r.changed, [p]);
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(x, "class", "lit").unwrap();
+        });
+        assert_eq!(r.changed, [p]);
+        assert!(sheets.features().attributes.contains("data-print"));
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(p, "data-note", "!").unwrap();
+        });
+        assert_eq!(r.changed, [p], "its ::before's content");
     }
 }

@@ -60,6 +60,7 @@ fuzz_target!(|data: &[u8]| {
             viewport_height: 64.0,
             fonts: None,
             language: None,
+            media: style::Media::screen(width, 64.0),
         };
         let styles = sheets.cascade(&doc, &context);
         let recascade = sheets.recascader(&doc, &styles, &context);

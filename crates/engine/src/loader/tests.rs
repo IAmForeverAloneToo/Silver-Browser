@@ -86,7 +86,7 @@ fn the_page_shown_stays_until_the_sheets_before_body_arrive() {
     // The first moment the new page is shown, its sheets are there.
     tab.wait_until(|engine| engine.navigation.is_none());
     assert!(text(&tab.engine).ends_with("New"));
-    assert_eq!(tab.names(), ["imported", "", "slow"]);
+    assert_eq!(tab.names(), ["imported", "slow"]);
     assert_eq!(tab.engine.load_state(), &LoadState::Loaded);
 }
 
@@ -238,7 +238,11 @@ fn a_style_elements_imports_resolve_against_the_base_url() {
     let mut tab = Tab::new();
     tab.load(server.url("/page.html"));
     assert_eq!(tab.names(), ["x", "s"]);
-    assert_eq!(paths(&server), ["/page.html", "/dir/x.css"]);
+    // The import for print is fetched too, for a print.
+    assert_eq!(
+        sorted_paths(&server),
+        ["/dir/x.css", "/dir/y.css", "/page.html"]
+    );
 }
 
 #[test]
@@ -319,7 +323,7 @@ fn only_a_stylesheet_of_the_right_type_applies() {
 }
 
 #[test]
-fn only_a_link_to_a_stylesheet_for_the_screen_is_fetched() {
+fn every_link_to_a_stylesheet_is_fetched_and_its_media_says_where_it_applies() {
     let server = serve(|path| match path {
         "/page.html" => Some(html(
             "<head><link rel=stylesheet type=text/plain href=a.css>\
@@ -343,10 +347,18 @@ fn only_a_link_to_a_stylesheet_for_the_screen_is_fetched() {
     });
     let mut tab = Tab::new();
     tab.load(server.url("/page.html"));
+    // The sheets for print, `d` and `k`, are made, and apply on paper.
     assert_eq!(tab.names(), ["b", "c", "e", "g", "l"]);
     assert_eq!(
         sorted_paths(&server),
-        ["/b.css", "/c.css", "/e.css", "/g.css", "/page.html"]
+        [
+            "/b.css",
+            "/c.css",
+            "/d.css",
+            "/e.css",
+            "/g.css",
+            "/page.html"
+        ]
     );
 }
 
@@ -400,11 +412,13 @@ fn a_sheet_follows_its_element_through_the_documents_changes() {
     assert_eq!(tab.engine.network.in_flight(), 0);
     assert_eq!(paths(&server).len(), requests);
 
-    // For another medium, and then removed: gone.
+    // For another medium: out of force, and not fetched again. Then
+    // removed: gone.
     tab.engine.mutate(|document| {
         document.set_attribute(b, "media", "print").unwrap();
     });
     assert_eq!(tab.names(), ["c"]);
+    assert_eq!(tab.engine.network.in_flight(), 0);
     tab.engine.mutate(|document| {
         document.remove_child(head, a).unwrap();
     });
@@ -438,13 +452,14 @@ fn a_sheet_follows_its_element_through_the_documents_changes() {
     assert_eq!(tab.engine.network.in_flight(), 0);
     assert_eq!(paths(&server).len(), requests);
     assert_eq!(tab.names(), ["t", "f"]);
+    // Its media changed back, `b` applies again as it was fetched.
     tab.engine.mutate(|document| {
         document.set_attribute(b, "media", "all").unwrap();
     });
     tab.settle();
     insert_link(&mut tab, "e.css");
     tab.settle();
-    assert_eq!(paths(&server)[requests..], ["/dir/b.css", "/dir/e.css"]);
+    assert_eq!(paths(&server)[requests..], ["/dir/e.css"]);
     assert_eq!(tab.names(), ["b", "t", "f", "e"]);
 
     // Titles given and taken away choose the preferred set afresh.
@@ -460,6 +475,83 @@ fn a_sheet_follows_its_element_through_the_documents_changes() {
     assert_eq!(tab.names(), ["b", "t", "f", "e"]);
     assert_eq!(tab.engine.network.in_flight(), 0);
     assert_eq!(tab.engine.load_state(), &LoadState::Loaded);
+}
+
+#[test]
+fn a_sheet_for_another_medium_does_not_hold_the_page_back() {
+    let gate = Gate::new();
+    let server = {
+        let gate = gate.clone();
+        serve(move |path| match path {
+            "/page.html" => Some(html(
+                "<head><link rel=stylesheet media=print href=paper.css>\
+                 <link rel=stylesheet media='(min-width: 100000px)' href=wide.css>\
+                 <link rel=stylesheet media='screen' href=screen.css></head>\
+                 <body><p id=p>New</p></body>",
+            )),
+            "/paper.css" | "/wide.css" => {
+                gate.wait();
+                Some(css(".late { } p { color: #f00 }"))
+            }
+            "/screen.css" => Some(css(".screen {}")),
+            _ => None,
+        })
+    };
+    let mut tab = Tab::new();
+    tab.engine.navigate(server.url("/page.html"));
+    // Shown as soon as the sheet for the screen is in.
+    tab.wait_until(|engine| engine.navigation.is_none());
+    assert!(text(&tab.engine).ends_with("New"));
+    assert_eq!(tab.names(), ["screen"]);
+    assert_eq!(tab.engine.load_state(), &LoadState::Loading);
+    gate.open();
+    tab.settle();
+    assert_eq!(tab.engine.load_state(), &LoadState::Loaded);
+    tab.engine.frame(100, 100);
+    assert_eq!(color(&mut tab.engine, "p"), BLACK, "neither applies here");
+}
+
+#[test]
+fn imports_carry_their_layers_and_conditions() {
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<head><link rel=stylesheet href=main.css></head><body><p id=p>Text</p></body>",
+        )),
+        // `top` is named first though its sheet is missing, so `base`,
+        // after it, wins over the block that fills it.
+        "/main.css" => Some(css(
+            "@layer first; @import 'missing.css' layer(top); @import url(base.css) layer(base);\
+             @import 'narrow.css' supports(display: grid) (max-width: 300px);\
+             @import 'never.css' supports(display: nonsense);\
+             @import 'bad.css' layer(initial); @import 'bad.css' supports(nonsense);\
+             @layer top { p { color: #00f } }",
+        )),
+        "/base.css" => Some(css(".base {} p { color: #f00 }")),
+        "/narrow.css" => Some(css(".narrow {} p { color: #0f0 !important }")),
+        "/never.css" => Some(css(".never {} p { color: #000 !important }")),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.load(server.url("/page.html"));
+    // The invalid imports are not fetched; the others are, whatever
+    // their conditions.
+    assert_eq!(
+        sorted_paths(&server),
+        [
+            "/base.css",
+            "/main.css",
+            "/missing.css",
+            "/narrow.css",
+            "/never.css",
+            "/page.html"
+        ]
+    );
+    tab.engine.frame(400, 100);
+    assert_eq!(color(&mut tab.engine, "p"), RED);
+    assert_eq!(tab.names(), ["base"]);
+    // Narrower than 300px, the import for it applies.
+    tab.engine.frame(200, 100);
+    assert_eq!(color(&mut tab.engine, "p"), (0.0, 1.0, 0.0));
 }
 
 /// The last `tag` element in tree order.

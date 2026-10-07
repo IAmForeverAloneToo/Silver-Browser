@@ -52,6 +52,10 @@ pub mod invalidation;
 /// query lists parsed from tokens and evaluated against it.
 pub mod media;
 
+/// The style rules of a set of sheets with the `@media` blocks and the
+/// cascade layers they are in (M20).
+mod rule_set;
+
 /// Selector matching: does a selector match an element?
 ///
 /// The selectors-4 subset this engine supports, a right-to-left matcher
@@ -77,3 +81,4 @@ pub use invalidation::SelectorFeatures;
 pub use media::{
     ColorScheme, Media, MediaQueryList, MediaType, Preferences, parse_media_query_list,
 };
+pub use rule_set::is_layer_name;

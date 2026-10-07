@@ -1,82 +1,193 @@
-//! What decides whether a stylesheet applies: a media query list, read
-//! as far as this engine evaluates media (docs/design/net.md, "The
-//! engine's loader"), and the `@import` rules at a sheet's start.
+//! What a stylesheet's `@import` rules and its element's `media` say
+//! (docs/design/media.md, "`@import` and the `media` attribute"): the
+//! imports at a sheet's start with their layers and conditions, and the
+//! blocks that wrap an imported sheet's rules, or an element's, in
+//! them, so that the cascade treats them as rules written inside those
+//! blocks.
 
-use css::{Rule, Stylesheet, Token};
+use css::{AtRule, Block, Rule, Stylesheet, Token};
+use style::{Media, is_layer_name, parse_media_query_list, supports_condition};
 
-/// Whether a media query list holds on a screen. An empty list holds,
-/// and so does one with a query that is `all` or `screen`, with or
-/// without `only` before it, in any case. A query with a condition, or
-/// for another media type, is not evaluated until M20 evaluates media
-/// queries, and does not hold: its sheet is left out, as the cascade
-/// leaves out `@media` rules.
-pub(crate) fn media_matches(tokens: &[Token]) -> bool {
-    let mut queries = tokens.split(|token| *token == Token::Comma).peekable();
-    // A list of nothing but whitespace is the empty list, which holds.
-    if tokens.iter().all(|token| *token == Token::Whitespace) {
-        return true;
-    }
-    queries.any(|query| {
-        let words: Vec<&Token> = query
-            .iter()
-            .filter(|token| **token != Token::Whitespace)
-            .collect();
-        let media_type = match words.as_slice() {
-            [Token::Ident(media_type)] => media_type,
-            [Token::Ident(only), Token::Ident(media_type)] if only.eq_ignore_ascii_case("only") => {
-                media_type
-            }
-            _ => return false,
-        };
-        media_type.eq_ignore_ascii_case("all") || media_type.eq_ignore_ascii_case("screen")
-    })
+/// An `@import` rule at the start of a sheet: its URL as written, and
+/// what wraps the rules of the sheet it imports.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Import {
+    /// The rule's index among the sheet's.
+    pub(crate) rule: usize,
+    pub(crate) url: String,
+    /// The layer: none, the anonymous one (no tokens), or a name.
+    layer: Option<Vec<Token>>,
+    /// The `supports()` condition, a declaration put in parentheses.
+    supports: Option<Vec<Token>>,
+    /// The media query list; empty when there is none.
+    media: Vec<Token>,
 }
 
-/// Whether the value of a `media` attribute holds on a screen; an
-/// absent attribute does.
-pub(crate) fn media_attribute_matches(value: Option<&str>) -> bool {
-    value.is_none_or(|value| media_matches(&css::tokenize(value)))
-}
-
-/// The URLs of the `@import` rules at the start of `sheet` that apply on
-/// a screen, as written, in order. css-cascade-5 §6.1 has `@import`
-/// rules first: after `@charset`, and after `@layer` statements before
-/// the first of them, and any other rule ends them. An `@import` with a
-/// block, or whose prelude does not begin with a URL, is invalid and
-/// passed over. One into a cascade layer, or under a `supports()`
-/// condition, is left out, as the cascade leaves out `@layer` and
-/// `@supports` blocks; so is one whose media list does not hold.
-pub(crate) fn imports(sheet: &Stylesheet) -> Vec<String> {
-    let mut urls = Vec::new();
-    let mut seen_import = false;
-    for rule in &sheet.rules {
+/// The `@import` rules at the start of `sheet`, in order. Cascade 5
+/// §6.1 has them first: after `@charset`, and after `@layer` statements
+/// before the first of them, and any other rule ends them. An `@import`
+/// with a block, one whose prelude does not begin with a URL, and one
+/// whose layer or `supports()` does not parse are invalid, and passed
+/// over.
+pub(crate) fn imports(sheet: &Stylesheet) -> Vec<Import> {
+    let mut found = Vec::new();
+    for (index, rule) in sheet.rules.iter().enumerate() {
         let Rule::At(at) = rule else { break };
         let name = at.name.to_ascii_lowercase();
         match name.as_str() {
             "charset" => continue,
-            "layer" if at.block.is_none() && !seen_import => continue,
+            "layer" if at.block.is_none() && found.is_empty() => continue,
             "import" => {}
             _ => break,
         }
         if at.block.is_some() {
             continue;
         }
-        let Some((url, rest)) = import_url(&at.prelude) else {
-            continue;
-        };
-        seen_import = true;
-        let conditional = rest.iter().any(|token| match token {
-            Token::Ident(name) => name.eq_ignore_ascii_case("layer"),
-            Token::Function(name) => {
-                name.eq_ignore_ascii_case("layer") || name.eq_ignore_ascii_case("supports")
-            }
-            _ => false,
-        });
-        if !conditional && media_matches(rest) {
-            urls.push(url);
+        if let Some(import) = import(index, &at.prelude) {
+            found.push(import);
         }
     }
-    urls
+    found
+}
+
+/// The `@import` whose prelude is `prelude`, at `index`: `[ <url> |
+/// <string> ] [ layer | layer(<layer-name>) ]? [ supports( [
+/// <supports-condition> | <declaration> ] ) ]? <media-query-list>?`.
+fn import(index: usize, prelude: &[Token]) -> Option<Import> {
+    let (url, rest) = import_url(prelude)?;
+    let mut rest = trim_start(rest);
+    let mut layer = None;
+    match rest.first() {
+        Some(Token::Ident(word)) if word.eq_ignore_ascii_case("layer") => {
+            layer = Some(Vec::new());
+            rest = trim_start(&rest[1..]);
+        }
+        Some(Token::Function(word)) if word.eq_ignore_ascii_case("layer") => {
+            let (name, after) = function_argument(rest);
+            let name = trim(name);
+            if !is_layer_name(name) {
+                return None;
+            }
+            layer = Some(name.to_vec());
+            rest = trim_start(after);
+        }
+        _ => {}
+    }
+    let mut supports = None;
+    if let Some(Token::Function(word)) = rest.first()
+        && word.eq_ignore_ascii_case("supports")
+    {
+        let (argument, after) = function_argument(rest);
+        let argument = trim(argument);
+        let condition = if supports_condition(argument).is_some() {
+            argument.to_vec()
+        } else if let [Token::Ident(_), more @ ..] = argument
+            && trim_start(more).first() == Some(&Token::Colon)
+        {
+            // A declaration, which a condition holds in parentheses.
+            let mut condition = vec![Token::OpenParen];
+            condition.extend_from_slice(argument);
+            condition.push(Token::CloseParen);
+            condition
+        } else {
+            return None;
+        };
+        supports = Some(condition);
+        rest = trim_start(after);
+    }
+    Some(Import {
+        rule: index,
+        url,
+        layer,
+        supports,
+        media: trim(rest).to_vec(),
+    })
+}
+
+impl Import {
+    /// `rules`, an imported sheet's, in the blocks this import puts
+    /// them in: its media list outermost, then its `supports()`
+    /// condition, then its layer, so that the layer is named only where
+    /// the conditions hold (Cascade 5 §6.4.3). An import whose sheet is
+    /// not there gives the blocks empty, its layer named all the same.
+    pub(crate) fn wrap(&self, rules: Vec<Rule>) -> Vec<Rule> {
+        let mut rules = rules;
+        if let Some(layer) = &self.layer {
+            rules = vec![block("layer", layer.clone(), rules)];
+        }
+        if let Some(condition) = &self.supports {
+            rules = vec![block("supports", condition.clone(), rules)];
+        }
+        if !self.media.is_empty() {
+            rules = vec![block("media", self.media.clone(), rules)];
+        }
+        rules
+    }
+}
+
+/// `rules`, an element's sheet's, inside an `@media` block of its
+/// `media` attribute; as they are for an absent or empty one, which
+/// holds whatever the medium (HTML).
+pub(crate) fn wrap_in_media(media: Option<&str>, rules: Vec<Rule>) -> Vec<Rule> {
+    let list = media.map(css::tokenize).unwrap_or_default();
+    if trim(&list).is_empty() {
+        return rules;
+    }
+    vec![block("media", trim(&list).to_vec(), rules)]
+}
+
+/// Whether an element's `media` attribute holds for `media`; an absent
+/// or empty one does.
+pub(crate) fn media_attribute_holds(value: Option<&str>, media: &Media) -> bool {
+    value.is_none_or(|value| parse_media_query_list(&css::tokenize(value)).evaluate(media))
+}
+
+/// An at-rule `@name prelude { rules }`.
+fn block(name: &str, prelude: Vec<Token>, rules: Vec<Rule>) -> Rule {
+    Rule::At(AtRule {
+        name: name.to_owned(),
+        prelude,
+        block: Some(Block::Rules(rules)),
+    })
+}
+
+/// The tokens between the function token at the start of `tokens` and
+/// the `)` that closes it, and the tokens after; a function the tokens
+/// end inside is closed by their end.
+fn function_argument(tokens: &[Token]) -> (&[Token], &[Token]) {
+    let mut depth = 0usize;
+    for (i, token) in tokens.iter().enumerate() {
+        match token {
+            Token::Function(_) | Token::OpenParen | Token::OpenSquare | Token::OpenCurly => {
+                depth += 1
+            }
+            Token::CloseParen | Token::CloseSquare | Token::CloseCurly => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return (&tokens[1..i], &tokens[i + 1..]);
+                }
+            }
+            _ => {}
+        }
+    }
+    (&tokens[1.min(tokens.len())..], &[])
+}
+
+fn trim_start(tokens: &[Token]) -> &[Token] {
+    let start = tokens
+        .iter()
+        .position(|t| *t != Token::Whitespace)
+        .unwrap_or(tokens.len());
+    &tokens[start..]
+}
+
+fn trim(tokens: &[Token]) -> &[Token] {
+    let tokens = trim_start(tokens);
+    let end = tokens
+        .iter()
+        .rposition(|t| *t != Token::Whitespace)
+        .map_or(0, |i| i + 1);
+    &tokens[..end]
 }
 
 /// The URL an `@import` prelude begins with, a `url()` or a string, and
@@ -113,80 +224,123 @@ fn import_url(prelude: &[Token]) -> Option<(String, &[Token])> {
 mod tests {
     use super::*;
 
-    fn holds(list: &str) -> bool {
-        media_matches(&css::tokenize(list))
-    }
-
-    #[test]
-    fn a_media_list_holds_for_all_and_screen_alone() {
-        for list in [
-            "",
-            "  ",
-            "all",
-            "screen",
-            "SCREEN",
-            "only screen",
-            "print, screen",
-            " all ",
-        ] {
-            assert!(holds(list), "{list:?}");
-        }
-        for list in [
-            "print",
-            "speech",
-            "not screen",
-            "screen and (min-width: 1px)",
-            "(min-width: 1px)",
-            "only",
-            "screen screen",
-            ",",
-            "print,",
-            "only print",
-        ] {
-            assert!(!holds(list), "{list:?}");
-        }
-        assert!(media_attribute_matches(None));
-        assert!(media_attribute_matches(Some("")));
-        assert!(!media_attribute_matches(Some("print")));
-    }
-
-    fn imports_of(source: &str) -> Vec<String> {
+    fn imports_of(source: &str) -> Vec<Import> {
         imports(&css::parse_stylesheet(source).expect("never fails"))
+    }
+
+    fn urls_of(source: &str) -> Vec<String> {
+        imports_of(source).into_iter().map(|i| i.url).collect()
+    }
+
+    /// The rule an import wraps an empty sheet in, written back.
+    fn wrapped(source: &str) -> String {
+        let import = imports_of(source).pop().expect("an import");
+        let mut out = String::new();
+        let mut rules = import.wrap(Vec::new());
+        while let Some(Rule::At(at)) = rules.pop() {
+            out.push_str(&format!("@{} {}; ", at.name, written(&at.prelude)));
+            rules = match at.block {
+                Some(Block::Rules(inner)) => inner,
+                _ => Vec::new(),
+            };
+        }
+        out.trim_end().to_owned()
+    }
+
+    fn written(tokens: &[Token]) -> String {
+        tokens
+            .iter()
+            .map(|token| match token {
+                Token::Ident(name) => name.clone(),
+                Token::Function(name) => format!("{name}("),
+                Token::OpenParen => "(".into(),
+                Token::CloseParen => ")".into(),
+                Token::Colon => ":".into(),
+                Token::Comma => ",".into(),
+                Token::Whitespace => " ".into(),
+                Token::Delim(c) => c.to_string(),
+                Token::Dimension { value, unit } => format!("{value}{unit}"),
+                other => format!("{other:?}"),
+            })
+            .collect()
     }
 
     #[test]
     fn imports_are_read_from_the_start_of_a_sheet() {
         assert_eq!(
-            imports_of(
+            urls_of(
                 "@charset \"utf-8\"; @layer base; @import url(a.css); @import 'b.css' screen;\
                  @import \"c.css\" print; @import url(d.css) all, print; p {} @import 'late.css';"
             ),
-            ["a.css", "b.css", "d.css"]
+            ["a.css", "b.css", "c.css", "d.css"]
         );
+        // The rule each import stands for.
+        let rules: Vec<usize> = imports_of("@layer a; @import 'a.css'; @import 'b.css';")
+            .iter()
+            .map(|i| i.rule)
+            .collect();
+        assert_eq!(rules, [1, 2]);
     }
 
     #[test]
     fn a_rule_that_is_not_an_import_ends_them() {
-        assert_eq!(imports_of("p {} @import 'a.css';"), Vec::<String>::new());
-        assert_eq!(
-            imports_of("@media screen {} @import 'a.css';"),
-            Vec::<String>::new()
-        );
+        assert!(urls_of("p {} @import 'a.css';").is_empty());
+        assert!(urls_of("@media screen {} @import 'a.css';").is_empty());
         // A layer statement may come before the imports, not between.
         assert_eq!(
-            imports_of("@import 'a.css'; @layer x; @import 'b.css';"),
+            urls_of("@import 'a.css'; @layer x; @import 'b.css';"),
             ["a.css"]
         );
     }
 
     #[test]
-    fn an_invalid_or_conditional_import_is_passed_over() {
+    fn layers_conditions_and_media_are_read_in_their_order() {
         assert_eq!(
-            imports_of(
-                "@import; @import 12px; @import url(a.css) {} @import 'layered.css' layer;\
-                 @import 'named.css' layer(x); @import 'supported.css' supports(display: grid);\
-                 @import 'layered2.css' layer, screen; @import 'named2.css' layer(x) all, screen;\
-                 @import 'supported2.css' supports(display: grid) all, screen;\
+            urls_of(
+                "@import 'layered.css' layer; @import 'named.css' layer(x.y);\
+                 @import 'supported.css' supports(display: grid);\
+                 @import 'both.css' layer(x) supports((display: grid) and (gap: 0)) screen;\
+                 @import 'selector.css' supports(selector(a > b)) print, (min-width: 5px);"
+            ),
+            [
+                "layered.css",
+                "named.css",
+                "supported.css",
+                "both.css",
+                "selector.css"
+            ]
+        );
+        assert_eq!(wrapped("@import 'a.css';"), "");
+        assert_eq!(wrapped("@import 'a.css' layer;"), "@layer ;");
+        assert_eq!(wrapped("@import 'a.css' LAYER(x.y);"), "@layer x.y;");
+        // A declaration is put in parentheses; a condition is kept.
+        assert_eq!(
+            wrapped("@import 'a.css' supports(display: grid);"),
+            "@supports (display: grid);"
+        );
+        assert_eq!(
+            wrapped("@import 'a.css' supports(not (display: grid));"),
+            "@supports not (display: grid);"
+        );
+        // The media outermost, then the condition, then the layer.
+        assert_eq!(
+            wrapped("@import 'a.css' layer(x) supports(color: red) print and (min-width: 5px);"),
+            "@media print and (min-width: 5px); @supports (color: red); @layer x;"
+        );
+        assert_eq!(
+            wrapped("@import 'a.css' layer screen;"),
+            "@media screen; @layer ;"
+        );
+    }
+
+    #[test]
+    fn an_invalid_import_is_passed_over() {
+        assert_eq!(
+            urls_of(
+                "@import; @import 12px; @import url(a.css) {} @import 'bad.css' layer(1);\
+                 @import 'bad.css' layer(initial); @import 'bad.css' layer(a b);\
+                 @import 'bad.css' layer();\
+                 @import 'bad.css' supports(nonsense); @import 'bad.css' supports();\
                  @import url(b.css);"
             ),
             ["b.css"]
@@ -211,5 +365,28 @@ mod tests {
         assert_eq!(url, "a.css");
         assert_eq!(rest, [Token::Whitespace, Token::Ident("print".into())]);
         assert_eq!(import_url(&prelude[..4]), None);
+    }
+
+    #[test]
+    fn an_elements_media_wraps_its_rules_unless_it_is_empty() {
+        let rules = css::parse_stylesheet("p {}").unwrap().rules;
+        assert_eq!(wrap_in_media(None, rules.clone()), rules);
+        assert_eq!(wrap_in_media(Some(" "), rules.clone()), rules);
+        let wrapped = wrap_in_media(Some(" print "), rules.clone());
+        let [Rule::At(at)] = wrapped.as_slice() else {
+            panic!("one block");
+        };
+        assert_eq!(at.name, "media");
+        assert_eq!(at.prelude, [Token::Ident("print".into())]);
+        assert_eq!(at.block, Some(Block::Rules(rules)));
+        let screen = Media::screen(800.0, 600.0);
+        assert!(media_attribute_holds(None, &screen));
+        assert!(media_attribute_holds(Some(""), &screen));
+        assert!(media_attribute_holds(
+            Some("screen and (min-width: 500px)"),
+            &screen
+        ));
+        assert!(!media_attribute_holds(Some("print"), &screen));
+        assert!(!media_attribute_holds(Some("(min-width: 1000px)"), &screen));
     }
 }

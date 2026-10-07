@@ -79,26 +79,45 @@ pub(crate) fn incoming(engine: &Engine) -> Option<&Incoming> {
         .map(|navigation| &navigation.incoming)
 }
 
+/// The class each style rule in force on an 800 by 600 screen begins
+/// with, in cascade order: the rules of the sheets that apply, those of
+/// the sheets they import among them, inside `@media` blocks that hold
+/// there, `@supports` blocks that hold and `@layer` blocks.
 pub(crate) fn names(engine: &Engine) -> Vec<String> {
-    engine
-        .stylesheets()
-        .iter()
-        .map(|sheet| {
-            sheet
-                .rules
-                .iter()
-                .find_map(|rule| match rule {
-                    css::Rule::Qualified(rule) => {
-                        rule.prelude.iter().find_map(|token| match token {
-                            css::Token::Ident(name) => Some(name.clone()),
-                            _ => None,
-                        })
-                    }
-                    css::Rule::At(_) => None,
-                })
-                .unwrap_or_default()
-        })
-        .collect()
+    let media = style::Media::screen(800.0, 600.0);
+    let mut names = Vec::new();
+    for sheet in engine.stylesheets() {
+        names_in(&sheet.rules, &media, &mut names);
+    }
+    names
+}
+
+fn names_in(rules: &[css::Rule], media: &style::Media, names: &mut Vec<String>) {
+    for rule in rules {
+        match rule {
+            css::Rule::Qualified(rule) => {
+                if let [css::Token::Delim('.'), css::Token::Ident(name), ..] =
+                    rule.prelude.as_slice()
+                {
+                    names.push(name.clone());
+                }
+            }
+            css::Rule::At(at) => {
+                let Some(css::Block::Rules(inner)) = &at.block else {
+                    continue;
+                };
+                let holds = match at.name.to_ascii_lowercase().as_str() {
+                    "media" => style::parse_media_query_list(&at.prelude).evaluate(media),
+                    "supports" => style::supports_condition(&at.prelude) == Some(true),
+                    "layer" => true,
+                    _ => false,
+                };
+                if holds {
+                    names_in(inner, media, names);
+                }
+            }
+        }
+    }
 }
 
 /// A server answering each path with what `route` gives, and 404 for

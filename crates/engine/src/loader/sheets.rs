@@ -1,13 +1,17 @@
 //! A document's stylesheets (docs/design/net.md, "The engine's
 //! loader"): the `<link>` and `<style>` elements that own them, in tree
 //! order, each with its sheet and the sheets that sheet imports, fetched
-//! or failed or on their way.
+//! or failed or on their way. Every sheet is fetched whatever its media
+//! or its imports' conditions, which wrap its rules for the cascade to
+//! evaluate (docs/design/media.md); only one whose media holds when the
+//! parser meets it holds the page back.
 
 use std::collections::HashMap;
 
 use dom::{Change, Document, NodeId};
 use encoding::Encoding;
 use net::{AddressSpace, Destination, Initiator, MimeType, Request, Response, Url};
+use style::Media;
 
 use super::{FetchId, LoadError, Network, PageId, Target, rules};
 
@@ -50,11 +54,15 @@ struct Owner {
     key: Key,
     /// The element's `title`, empty when it has none.
     title: String,
+    /// The element's `media`, which a change to does not fetch the
+    /// sheet again: it says where the sheet's rules apply.
+    media: Option<String>,
     /// The environment encoding of a fetched sheet: the `<link>`'s
     /// `charset`, or the document's encoding.
     environment: Encoding,
     /// Whether the document is not shown until the sheet has arrived or
-    /// failed: the parser made the element before `<body>`.
+    /// failed: the parser made the element before `<body>`, and its
+    /// media held then.
     blocking: bool,
     sheet: Slot,
 }
@@ -67,13 +75,11 @@ enum Key {
         href: Option<String>,
         rel: Option<String>,
         kind: Option<String>,
-        media: Option<String>,
         disabled: bool,
     },
     Style {
         text: String,
         kind: Option<String>,
-        media: Option<String>,
     },
 }
 
@@ -95,9 +101,16 @@ struct Sheet {
     location: Option<Url>,
     /// Its character encoding, its imports' environment encoding.
     encoding: Encoding,
-    /// The sheets its `@import` rules fetch, in order: each one's rules
-    /// come before the sheet's own.
-    imports: Vec<Slot>,
+    /// Its `@import` rules, in order, each with the sheet it fetches,
+    /// whose rules take the rule's place.
+    imports: Vec<Imported>,
+}
+
+/// An `@import` rule and the sheet it fetches: `Slot::None` when it
+/// fetches none, as for a cycle or an import too deep.
+struct Imported {
+    import: rules::Import,
+    sheet: Slot,
 }
 
 /// An element found by a walk over the document.
@@ -105,6 +118,7 @@ struct Found {
     node: NodeId,
     key: Key,
     title: String,
+    media: Option<String>,
     charset: Option<String>,
     /// The base URL as it was when the parser inserted the element: that
     /// of the first `<base href>` before it in tree order.
@@ -258,16 +272,18 @@ impl Page {
 
     /// Finds the sheets of `document`, freshly parsed, and starts their
     /// fetches: each element's URL resolved against the base URL as it
-    /// was where the parser inserted it, and those before `<body>`
-    /// blocking.
-    pub(crate) fn begin(&mut self, document: &Document, network: &mut Network) {
+    /// was where the parser inserted it, and those before `<body>` whose
+    /// media holds for `media` blocking (HTML: a sheet for another
+    /// medium is applied when it comes, the page not held for it).
+    pub(crate) fn begin(&mut self, document: &Document, network: &mut Network, media: &Media) {
         let (found, _) = scan(document, &self.context);
         let context = &self.context;
         self.owners = found
             .into_iter()
             .map(|found| {
                 let base = found.base_here.clone();
-                let blocking = found.before_body;
+                let blocking = found.before_body
+                    && rules::media_attribute_holds(found.media.as_deref(), media);
                 let mut owner = start(context, found, base.as_ref(), network);
                 owner.blocking = blocking;
                 owner
@@ -293,6 +309,7 @@ impl Page {
             match old.remove(&found.node) {
                 Some(mut owner) if owner.key == found.key => {
                     owner.title = found.title;
+                    owner.media = found.media;
                     owners.push(owner);
                 }
                 kept => {
@@ -344,7 +361,7 @@ impl Page {
             let Some(next) = sheet.imports.get_mut(index) else {
                 return false;
             };
-            slot = next;
+            slot = &mut next.sheet;
         }
         if !matches!(slot, Slot::Waiting(waiting) if *waiting == id) {
             return false;
@@ -389,9 +406,12 @@ impl Page {
     }
 
     /// The sheets that apply, in cascade order: each element's in tree
-    /// order, its imports before it. The first titled sheet's title
-    /// names the preferred set, and a sheet with another title is left
-    /// out (CSSOM §6.1's add steps).
+    /// order, the rules of the sheets it imports in place of its
+    /// `@import` rules, and each in the blocks of its conditions: an
+    /// import's layer, `supports()` and media, and the element's
+    /// `media`. The first titled sheet's title names the preferred set,
+    /// and a sheet with another title is left out (CSSOM §6.1's add
+    /// steps).
     pub(crate) fn sheets(&self) -> Vec<css::Stylesheet> {
         let preferred = self
             .owners
@@ -403,7 +423,9 @@ impl Page {
             if let Slot::Ready(sheet) = &owner.sheet
                 && (owner.title.is_empty() || Some(owner.title.as_str()) == preferred)
             {
-                sheet.push_to(&mut sheets);
+                sheets.push(css::Stylesheet {
+                    rules: rules::wrap_in_media(owner.media.as_deref(), sheet.rules()),
+                });
             }
         }
         sheets
@@ -416,7 +438,11 @@ impl Slot {
     fn fail_waiting(&mut self) {
         match self {
             Slot::Waiting(_) => *self = Slot::Failed,
-            Slot::Ready(sheet) => sheet.imports.iter_mut().for_each(Slot::fail_waiting),
+            Slot::Ready(sheet) => {
+                for imported in &mut sheet.imports {
+                    imported.sheet.fail_waiting();
+                }
+            }
             Slot::None | Slot::Failed => {}
         }
     }
@@ -424,21 +450,32 @@ impl Slot {
     fn settled(&self) -> bool {
         match self {
             Slot::Waiting(_) => false,
-            Slot::Ready(sheet) => sheet.imports.iter().all(Slot::settled),
+            Slot::Ready(sheet) => sheet.imports.iter().all(|i| i.sheet.settled()),
             Slot::None | Slot::Failed => true,
         }
     }
 }
 
 impl Sheet {
-    /// Pushes the sheet's imports that arrived, then the sheet.
-    fn push_to(&self, sheets: &mut Vec<css::Stylesheet>) {
-        for import in &self.imports {
-            if let Slot::Ready(sheet) = import {
-                sheet.push_to(sheets);
+    /// The sheet's rules, each `@import` rule's place taken by the
+    /// rules of the sheet it imports in the blocks of its conditions,
+    /// empty when that sheet has not come.
+    fn rules(&self) -> Vec<css::Rule> {
+        let mut imports = self.imports.iter().peekable();
+        let mut rules = Vec::with_capacity(self.rules.rules.len());
+        for (index, rule) in self.rules.rules.iter().enumerate() {
+            match imports.next_if(|imported| imported.import.rule == index) {
+                Some(imported) => {
+                    let inner = match &imported.sheet {
+                        Slot::Ready(sheet) => sheet.rules(),
+                        _ => Vec::new(),
+                    };
+                    rules.extend(imported.import.wrap(inner));
+                }
+                None => rules.push(rule.clone()),
             }
         }
-        sheets.push(self.rules.clone());
+        rules
     }
 }
 
@@ -506,6 +543,7 @@ fn start(context: &Context, found: Found, base: Option<&Url>, network: &mut Netw
         node: found.node,
         key: found.key,
         title: found.title,
+        media: found.media,
         environment,
         blocking: false,
         sheet,
@@ -515,8 +553,9 @@ fn start(context: &Context, found: Found, base: Option<&Url>, network: &mut Netw
 /// Fetches the imports of `sheet`, at `path` in `owner`'s sheets, each
 /// resolved against the sheet's location, or against `base` for a
 /// `<style>` element's sheet. An import of a sheet in `chain`, the
-/// locations from the owner's sheet down to this one, is skipped, and
-/// so are imports deeper than [`MAX_IMPORT_DEPTH`].
+/// locations from the owner's sheet down to this one, fetches nothing,
+/// nor do imports deeper than [`MAX_IMPORT_DEPTH`]; their rules stand
+/// in the sheet, their layers named all the same.
 fn fetch_imports(
     context: &Context,
     owner: NodeId,
@@ -526,45 +565,45 @@ fn fetch_imports(
     base: Option<&Url>,
     network: &mut Network,
 ) {
-    if path.len() >= MAX_IMPORT_DEPTH {
-        return;
-    }
-    let Some(against) = sheet.location.clone().or_else(|| base.cloned()) else {
-        return;
-    };
-    for written in rules::imports(&sheet.rules) {
+    let against = sheet.location.clone().or_else(|| base.cloned());
+    for import in rules::imports(&sheet.rules) {
+        let index = sheet.imports.len();
         // URLs in CSS are parsed as UTF-8 (css-values-4 §4.5.4).
-        let Ok(url) = against.join(&written) else {
-            continue;
+        let request = against
+            .as_ref()
+            .filter(|_| path.len() < MAX_IMPORT_DEPTH)
+            .and_then(|against| against.join(&import.url).ok())
+            .filter(|url| !chain.iter().any(|above| above == url.without_fragment()))
+            .and_then(|url| context.request(url));
+        let slot = match request {
+            Some(request) => {
+                let mut import_path = path.to_vec();
+                import_path.push(index);
+                let target = Target::Sheet {
+                    owner,
+                    path: import_path,
+                };
+                Slot::Waiting(network.fetch(context.id, target, request))
+            }
+            None => Slot::None,
         };
-        if chain.iter().any(|above| above == url.without_fragment()) {
-            continue;
-        }
-        let Some(request) = context.request(url) else {
-            continue;
-        };
-        let mut import_path = path.to_vec();
-        import_path.push(sheet.imports.len());
-        let target = Target::Sheet {
-            owner,
-            path: import_path,
-        };
-        sheet
-            .imports
-            .push(Slot::Waiting(network.fetch(context.id, target, request)));
+        sheet.imports.push(Imported {
+            import,
+            sheet: slot,
+        });
     }
 }
 
 /// Whether a `<link>` is fetched as a stylesheet: its `rel` has the
 /// token `stylesheet` and not `alternate`, it is not `disabled`, its
-/// `type`, if given, is `text/css`, its `media` holds, and its `href`
-/// is not empty.
+/// `type`, if given, is `text/css`, and its `href` is not empty. Its
+/// `media` does not decide it: a sheet for print, or for a width the
+/// window has not, is fetched for when it is wanted.
 fn link_wants_sheet(key: &Key) -> bool {
     let Key::Link {
         href,
         rel,
         kind,
-        media,
         disabled,
     } = key
     else {
@@ -584,20 +623,17 @@ fn link_wants_sheet(key: &Key) -> bool {
         && !has("alternate")
         && !disabled
         && type_ok
-        && rules::media_attribute_matches(media.as_deref())
         && href.as_deref().is_some_and(|href| !href.is_empty())
 }
 
 /// Whether a `<style>` makes a sheet: its `type`, if given and not
-/// empty, is `text/css` in any case, and its `media` holds (HTML's
-/// update a style block).
+/// empty, is `text/css` in any case (HTML's update a style block).
 fn style_makes_sheet(key: &Key) -> bool {
-    let Key::Style { kind, media, .. } = key else {
+    let Key::Style { kind, .. } = key else {
         return false;
     };
     kind.as_deref()
         .is_none_or(|kind| kind.is_empty() || kind.eq_ignore_ascii_case("text/css"))
-        && rules::media_attribute_matches(media.as_deref())
 }
 
 fn is_ascii_whitespace(c: char) -> bool {
@@ -633,10 +669,10 @@ fn scan(document: &Document, context: &Context) -> (Vec<Found>, Option<Url>) {
                     href: attr("href"),
                     rel: attr("rel"),
                     kind: attr("type"),
-                    media: attr("media"),
                     disabled: document.attr(node, "disabled").is_some(),
                 },
                 title: title(),
+                media: attr("media"),
                 charset: attr("charset"),
                 base_here: base.clone(),
                 before_body,
@@ -649,9 +685,9 @@ fn scan(document: &Document, context: &Context) -> (Vec<Found>, Option<Url>) {
                         .filter_map(|child| document.text(child))
                         .collect(),
                     kind: attr("type"),
-                    media: attr("media"),
                 },
                 title: title(),
+                media: attr("media"),
                 charset: None,
                 base_here: base.clone(),
                 before_body,

@@ -5,11 +5,11 @@
 //!
 //! Scope of this milestone, deliberately:
 //!
-//! * At-rules (`@media`, `@supports`, ...) are not evaluated — their
-//!   rules are skipped entirely for matching purposes (M20 adds real
-//!   `@media` evaluation; applying them unconditionally in the meantime
-//!   would risk *wrong* results, e.g. `@media print` rules bleeding into
-//!   screen rendering, which is worse than not applying them at all).
+//! * At-rules (M20): the style rules inside `@media`, `@supports` and
+//!   `@layer` blocks, to any depth, apply as `crate::rule_set` says:
+//!   `@media` lists evaluated against [`CascadeContext::media`] at each
+//!   cascade, `@supports` decided once, and the declarations sorted by
+//!   their cascade layers. Every other at-rule's rules are passed over.
 //! * Colors: hex (`#rgb`/`#rgba`/`#rrggbb`/`#rrggbbaa`) and CSS Color
 //!   4's 148 names (M17; eighteen before), not `rgb()`/`hsl()`
 //!   functions yet.
@@ -94,9 +94,9 @@ use crate::computed::{
 };
 use crate::computed::{Effects, GridStyle, JustifyItems};
 use crate::invalidation::{Reach, SelectorFeatures, invalidate};
-use crate::selector_matching::{
-    Matcher, PseudoElement, SelectorList, Specificity, parse_selector_list,
-};
+use crate::media::Media;
+use crate::rule_set::RuleSet;
+use crate::selector_matching::{Matcher, PseudoElement, SelectorList, Specificity};
 
 mod effects;
 mod grid;
@@ -124,6 +124,9 @@ pub struct Styles {
     /// restyle can set it and never clears it: a stale `true` costs a
     /// needless cascade on resize, a stale `false` would be wrong.
     pub uses_viewport_units: bool,
+    /// The answer each `@media` list gave, the UA sheet's then the
+    /// author sheets', which decided the rules in force (M20).
+    media: Vec<bool>,
 }
 
 impl Styles {
@@ -318,6 +321,10 @@ pub struct CascadeContext<'a> {
     /// `Content-Language`, when it names one), `:lang()`'s last resort
     /// for an element no `lang` attribute or `meta` pragma gives one.
     pub language: Option<&'a str>,
+    /// What `@media` lists are evaluated against (M20): a screen of no
+    /// size by default. Its size is the caller's to keep with the
+    /// viewport's above.
+    pub media: Media,
 }
 
 /// Resolves the computed style of every element under `document`'s
@@ -334,23 +341,19 @@ pub fn cascade_document(
     author_sheets: &[css::Stylesheet],
     context: &CascadeContext<'_>,
 ) -> Styles {
-    let selectors: Vec<Vec<(usize, SelectorList)>> =
-        author_sheets.iter().map(parse_selectors).collect();
-    let author = rules_of(author_sheets, &selectors);
-    Cascader::new(document, ua().rules.as_slice(), author, context).cascade()
+    Stylesheets::new(author_sheets.to_vec()).cascade(document, context)
 }
 
 /// A document's author stylesheets prepared for the cascade (M13.1):
-/// each qualified rule's selectors parsed once, and what the selectors
-/// depend on, the built-in UA sheet's included, which says what a
-/// change to the document can restyle. Made when the stylesheets
-/// change and kept for every cascade and restyle until they do again.
+/// each style rule's selectors parsed once, with the conditions and the
+/// layer it is in (M20), and what the selectors depend on, the built-in
+/// UA sheet's included, which says what a change to the document can
+/// restyle. Made when the stylesheets change and kept for every cascade
+/// and restyle until they do again.
 #[derive(Debug, Clone)]
 pub struct Stylesheets {
     sheets: Vec<css::Stylesheet>,
-    /// For each sheet, each qualified rule whose prelude parses: its
-    /// index among the sheet's rules, and its selectors.
-    selectors: Vec<Vec<(usize, SelectorList)>>,
+    rules: RuleSet,
     features: SelectorFeatures,
 }
 
@@ -363,18 +366,11 @@ impl Default for Stylesheets {
 impl Stylesheets {
     /// `sheets`, in document order, prepared.
     pub fn new(sheets: Vec<css::Stylesheet>) -> Self {
-        let selectors: Vec<Vec<(usize, SelectorList)>> =
-            sheets.iter().map(parse_selectors).collect();
         let mut features = ua().features.clone();
-        for (_, list) in selectors.iter().flatten() {
-            features.add(list);
-        }
-        for sheet in &sheets {
-            features.add_declarations(sheet);
-        }
+        let rules = RuleSet::new(&sheets, &mut features);
         Stylesheets {
             sheets,
-            selectors,
+            rules,
             features,
         }
     }
@@ -391,8 +387,42 @@ impl Stylesheets {
 
     /// [`cascade_document`] with these sheets.
     pub fn cascade(&self, document: &Document, context: &CascadeContext<'_>) -> Styles {
-        let author = rules_of(&self.sheets, &self.selectors);
-        Cascader::new(document, ua().rules.as_slice(), author, context).cascade()
+        self.cascader(document, context).cascade()
+    }
+
+    /// Whether the rules in force under `media` differ from those
+    /// `styles` were cascaded with: whether any `@media` list, the UA
+    /// sheet's or these sheets', answers otherwise (M20). What a caller
+    /// asks before reusing styles in a new environment, a resize or a
+    /// change of the user's preferences; a few comparisons a list.
+    pub fn media_changed(&self, styles: &Styles, media: &Media) -> bool {
+        self.answers(media) != styles.media
+    }
+
+    /// The answers of the UA sheet's `@media` lists, then these sheets'.
+    fn answers(&self, media: &Media) -> Vec<bool> {
+        let mut answers = ua().rules.answers(media);
+        answers.extend(self.rules.answers(media));
+        answers
+    }
+
+    /// A cascader over `document` with the rules in force under
+    /// `context`'s medium.
+    fn cascader<'a>(
+        &'a self,
+        document: &'a Document,
+        context: &'a CascadeContext<'a>,
+    ) -> Cascader<'a> {
+        let ua = ua();
+        let ua_answers = ua.rules.answers(&context.media);
+        let answers = self.rules.answers(&context.media);
+        let ua_rules = ua
+            .rules
+            .in_force(std::slice::from_ref(&ua.sheet), &ua_answers);
+        let author = self.rules.in_force(&self.sheets, &answers);
+        let mut media = ua_answers;
+        media.extend(answers);
+        Cascader::new(document, ua_rules, author, context, media)
     }
 
     /// Brings `styles`, computed for `document` with these sheets and
@@ -404,9 +434,10 @@ impl Stylesheets {
     /// children restyled too, since they inherit from it, and one
     /// marked with its subtree has all of it restyled. The styles of
     /// nodes taken out of the tree are forgotten. Where that cannot
-    /// give what a full cascade would — the journal overflowed, or the
-    /// root's font size, which `rem` reads, changed — the document is
-    /// cascaded whole. The result is what a full cascade would give.
+    /// give what a full cascade would — the journal overflowed, the
+    /// root's font size, which `rem` reads, changed, or an `@media`
+    /// list answers otherwise in `context` — the document is cascaded
+    /// whole. The result is what a full cascade would give.
     pub fn restyle(
         &self,
         document: &Document,
@@ -415,9 +446,8 @@ impl Stylesheets {
         changes: &[Change],
     ) -> Restyle {
         let invalidation = invalidate(document, &self.features, changes);
-        let author = rules_of(&self.sheets, &self.selectors);
-        let mut cascader = Cascader::new(document, ua().rules.as_slice(), author, context);
-        if invalidation.everything {
+        let mut cascader = self.cascader(document, context);
+        if invalidation.everything || cascader.media != styles.media {
             *styles = cascader.cascade();
             return Restyle::full(styles);
         }
@@ -540,16 +570,10 @@ impl Stylesheets {
         styles: &'a Styles,
         context: &'a CascadeContext<'a>,
     ) -> Recascader<'a> {
-        let author = rules_of(&self.sheets, &self.selectors);
         Recascader {
             document,
             styles,
-            cascader: RefCell::new(Cascader::new(
-                document,
-                ua().rules.as_slice(),
-                author,
-                context,
-            )),
+            cascader: RefCell::new(self.cascader(document, context)),
         }
     }
 }
@@ -569,7 +593,7 @@ impl Recascader<'_> {
             self.document,
             &mut cascader.matcher,
             element,
-            cascader.ua,
+            &cascader.ua,
             &cascader.author,
         );
         let rem = if self.document.document_element() == Some(element) {
@@ -663,33 +687,24 @@ impl Restyle {
     }
 }
 
-/// The built-in user-agent sheet, prepared once per process: its
-/// rules, and what their selectors depend on.
+/// The built-in user-agent sheet, prepared once per process: the
+/// sheet, its rules, and what their selectors depend on.
 struct UserAgent {
-    rules: Vec<ParsedRule<'static>>,
+    sheet: css::Stylesheet,
+    rules: RuleSet,
     features: SelectorFeatures,
 }
 
 fn ua() -> &'static UserAgent {
-    static SHEET: OnceLock<(css::Stylesheet, Vec<(usize, SelectorList)>)> = OnceLock::new();
     static UA: OnceLock<UserAgent> = OnceLock::new();
     UA.get_or_init(|| {
-        let (sheet, selectors) = SHEET.get_or_init(|| {
-            let sheet = css::parse_stylesheet(UA_STYLESHEET_SRC)
-                .expect("the built-in UA stylesheet (assets/ua.css) is valid CSS");
-            let selectors = parse_selectors(&sheet);
-            (sheet, selectors)
-        });
+        let sheet = css::parse_stylesheet(UA_STYLESHEET_SRC)
+            .expect("the built-in UA stylesheet (assets/ua.css) is valid CSS");
         let mut features = SelectorFeatures::default();
-        for (_, list) in selectors {
-            features.add(list);
-        }
-        features.add_declarations(sheet);
+        let rules = RuleSet::new(std::slice::from_ref(&sheet), &mut features);
         UserAgent {
-            rules: rules_of(std::slice::from_ref(sheet), std::slice::from_ref(selectors))
-                .into_iter()
-                .flatten()
-                .collect(),
+            sheet,
+            rules,
             features,
         }
     })
@@ -700,9 +715,11 @@ fn ua() -> &'static UserAgent {
 struct Cascader<'a> {
     document: &'a Document,
     matcher: Matcher<'a>,
-    ua: &'a [ParsedRule<'a>],
-    author: Vec<Vec<ParsedRule<'a>>>,
+    ua: Vec<ParsedRule<'a>>,
+    author: Vec<ParsedRule<'a>>,
     context: &'a CascadeContext<'a>,
+    /// The answers that left these rules in force, kept with the styles.
+    media: Vec<bool>,
     /// Set when a viewport unit is met.
     viewport_used: Cell<bool>,
 }
@@ -710,9 +727,10 @@ struct Cascader<'a> {
 impl<'a> Cascader<'a> {
     fn new(
         document: &'a Document,
-        ua: &'a [ParsedRule<'a>],
-        author: Vec<Vec<ParsedRule<'a>>>,
+        ua: Vec<ParsedRule<'a>>,
+        author: Vec<ParsedRule<'a>>,
         context: &'a CascadeContext<'a>,
+        media: Vec<bool>,
     ) -> Self {
         Cascader {
             document,
@@ -720,6 +738,7 @@ impl<'a> Cascader<'a> {
             ua,
             author,
             context,
+            media,
             viewport_used: Cell::new(false),
         }
     }
@@ -732,7 +751,7 @@ impl<'a> Cascader<'a> {
             self.document,
             &mut self.matcher,
             element,
-            self.ua,
+            &self.ua,
             &self.author,
         );
         let resolution = Resolution {
@@ -763,6 +782,7 @@ impl<'a> Cascader<'a> {
         self.viewport_used.set(false);
         let mut styles = Styles {
             rem: ComputedStyle::default().font_size_px,
+            media: self.media.clone(),
             ..Styles::default()
         };
         styles.set(document.root(), Computed::default());
@@ -816,50 +836,15 @@ struct LengthBases<'a> {
     resolution: &'a Resolution<'a>,
 }
 
-/// A qualified rule ready to match: its parsed selectors and its
-/// declarations. A rule whose prelude does not parse is dropped before
-/// this, per css-syntax-3 (M4.10).
-struct ParsedRule<'s> {
-    list: &'s SelectorList,
-    declarations: &'s [css::Declaration],
-}
-
-/// Each qualified rule of `sheet` whose prelude parses: its index and
-/// its selectors. At-rules are skipped (see the module doc).
-fn parse_selectors(sheet: &css::Stylesheet) -> Vec<(usize, SelectorList)> {
-    sheet
-        .rules
-        .iter()
-        .enumerate()
-        .filter_map(|(i, rule)| match rule {
-            css::Rule::Qualified(qr) => Some((i, parse_selector_list(&qr.prelude).ok()?)),
-            css::Rule::At(_) => None,
-        })
-        .collect()
-}
-
-/// The rules of `sheets` ready to match, from their `selectors` as
-/// [`parse_selectors`] gave them.
-fn rules_of<'s>(
-    sheets: &'s [css::Stylesheet],
-    selectors: &'s [Vec<(usize, SelectorList)>],
-) -> Vec<Vec<ParsedRule<'s>>> {
-    sheets
-        .iter()
-        .zip(selectors)
-        .map(|(sheet, lists)| {
-            lists
-                .iter()
-                .filter_map(|(i, list)| match &sheet.rules[*i] {
-                    css::Rule::Qualified(qr) => Some(ParsedRule {
-                        list,
-                        declarations: &qr.declarations,
-                    }),
-                    css::Rule::At(_) => None,
-                })
-                .collect()
-        })
-        .collect()
+/// A style rule in force, ready to match: its parsed selectors, its
+/// declarations, and its cascade layer's place in the order of normal
+/// declarations and of important ones (M20). A rule whose prelude does
+/// not parse is dropped before this, per css-syntax-3 (M4.10).
+pub(crate) struct ParsedRule<'s> {
+    pub(crate) list: &'s SelectorList,
+    pub(crate) declarations: &'s [css::Declaration],
+    pub(crate) layer: u32,
+    pub(crate) important_layer: u32,
 }
 
 /// The declarations that apply to an element and to each of its
@@ -884,6 +869,10 @@ impl Matched {
 struct Applied {
     /// See [`tier`] — encodes origin *and* importance in one order.
     tier: u8,
+    /// The place of the rule's cascade layer among those of its origin
+    /// and importance (Cascade 5 §6.4); zero for an inline style, which
+    /// its tier puts above every layer.
+    layer: u32,
     specificity: Specificity,
     /// Strictly increasing in the order this declaration was examined
     /// (UA sheet, then each author sheet, in document order) — the
@@ -901,7 +890,7 @@ enum TierBase {
 }
 
 /// The cascade order (css-cascade-5 §6), collapsed to a single `u8` so
-/// declarations can be sorted by `(tier, specificity, order)` and
+/// declarations can be sorted by `(tier, layer, specificity, order)` and
 /// applied ascending — later always overwrites earlier, no special
 /// cases at apply time. Lowest to highest precedence: UA normal, author
 /// normal (inline beats any selector-matched normal rule, regardless of
@@ -927,7 +916,7 @@ fn declarations_for<'a>(
     matcher: &mut Matcher<'a>,
     element: NodeId,
     ua: &[ParsedRule<'a>],
-    author_sheets: &[Vec<ParsedRule<'a>>],
+    author: &[ParsedRule<'a>],
 ) -> Matched {
     let mut order = 0u32;
     let mut out = Matched::default();
@@ -939,16 +928,14 @@ fn declarations_for<'a>(
         &mut order,
         &mut out,
     );
-    for sheet in author_sheets {
-        collect_from_sheet(
-            matcher,
-            element,
-            sheet,
-            TierBase::AuthorSheet,
-            &mut order,
-            &mut out,
-        );
-    }
+    collect_from_sheet(
+        matcher,
+        element,
+        author,
+        TierBase::AuthorSheet,
+        &mut order,
+        &mut out,
+    );
     // An inline `style` styles the element alone.
     if let Some(style_attr) = document.attr(element, "style")
         && let Ok(decls) = css::parse_style_attribute(style_attr)
@@ -956,6 +943,7 @@ fn declarations_for<'a>(
         for decl in decls {
             out.element().push(Applied {
                 tier: tier(TierBase::AuthorInline, decl.important),
+                layer: 0,
                 // Inline declarations aren't selector-matched, so there's
                 // nothing to compare within this tier by specificity —
                 // `order` alone (declaration order in the attribute)
@@ -1019,6 +1007,11 @@ fn collect_from_sheet<'a>(
             for (offset, decl) in rule.declarations.iter().enumerate() {
                 out.targets[target as usize].push(Applied {
                     tier: tier(base, decl.important),
+                    layer: if decl.important {
+                        rule.important_layer
+                    } else {
+                        rule.layer
+                    },
                     specificity,
                     order: *order + offset as u32,
                     decl: decl.clone(),
@@ -1039,7 +1032,7 @@ fn compute_style(
     resolution: &Resolution<'_>,
 ) -> ComputedStyle {
     let mut sorted: Vec<&Applied> = applied.iter().collect();
-    sorted.sort_by_key(|a| (a.tier, a.specificity, a.order));
+    sorted.sort_by_key(|a| (a.tier, a.layer, a.specificity, a.order));
 
     let mut style = ComputedStyle::inherited_from(parent);
 
@@ -3200,7 +3193,7 @@ fn named_color(name: &str) -> Option<Color> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::selector_matching::{matches_selector, matches_selector_list};
+    use crate::selector_matching::{matches_selector, matches_selector_list, parse_selector_list};
 
     fn sheet(src: &str) -> css::Stylesheet {
         css::parse_stylesheet(src).expect("test stylesheets are valid")
@@ -3358,6 +3351,7 @@ mod tests {
             viewport_height: 600.0,
             fonts: None,
             language: None,
+            media: Media::screen(800.0, 600.0),
         };
         let viewport_used = Cell::new(false);
         let resolution = Resolution {
@@ -3534,16 +3528,16 @@ mod tests {
         )];
         let document = Document::from_node(&html::parse_document("<p>x</p>").expect("never fails"));
         let ua = [ua];
-        let ua_selectors: Vec<_> = ua.iter().map(parse_selectors).collect();
-        let ua_rules: Vec<ParsedRule<'_>> =
-            rules_of(&ua, &ua_selectors).into_iter().flatten().collect();
-        let author_selectors: Vec<_> = author.iter().map(parse_selectors).collect();
+        let mut features = SelectorFeatures::default();
+        let ua_set = RuleSet::new(&ua, &mut features);
+        let author_set = RuleSet::new(&author, &mut features);
         let context = CascadeContext::default();
         let styles = Cascader::new(
             &document,
-            &ua_rules,
-            rules_of(&author, &author_selectors),
+            ua_set.in_force(&ua, &[]),
+            author_set.in_force(&author, &[]),
             &context,
+            Vec::new(),
         )
         .cascade();
         let p = styles.get(first(&document, "p")).expect("styled");
@@ -4074,6 +4068,7 @@ mod tests {
             viewport_height: 600.0,
             fonts: Some(&StubFont),
             language: None,
+            media: Media::screen(800.0, 600.0),
         };
         let sheets = [sheet(
             "html { font-size: 20px }
@@ -6505,5 +6500,279 @@ mod tests {
         }
         let s = child("p { opacity: 0.5; transform: initial }");
         assert_eq!(s.effects().opacity, 0.5);
+    }
+
+    /// The color of the first `p` of `html` under `media`, `sources` its
+    /// sheets in order.
+    fn color_in(html: &str, sources: &[&str], media: Media) -> Color {
+        let document = Document::from_node(&html::parse_document(html).expect("never fails"));
+        let sheets: Vec<css::Stylesheet> = sources.iter().map(|source| sheet(source)).collect();
+        let context = CascadeContext {
+            viewport_width: media.width,
+            viewport_height: media.height,
+            media,
+            ..CascadeContext::default()
+        };
+        cascade_document(&document, &sheets, &context)
+            .get(first(&document, "p"))
+            .expect("styled")
+            .color
+    }
+
+    fn print(width: f32, height: f32) -> Media {
+        Media {
+            media_type: crate::MediaType::Print,
+            ..Media::screen(width, height)
+        }
+    }
+
+    const RED: Color = Color::rgb8(255, 0, 0);
+    const GREEN: Color = Color::rgb8(0, 128, 0);
+    const BLUE: Color = Color::rgb8(0, 0, 255);
+
+    #[test]
+    fn media_blocks_apply_where_their_lists_hold() {
+        let source = "p { color: red }
+            @media (min-width: 600px) { p { color: blue } }
+            @media print { p { color: green } }
+            @media screen { @media (max-width: 300px) { p { color: green } } }
+            @media print { @media (max-width: 300px) { p { color: black } } }";
+        let at = |media| color_in("<p>x</p>", &[source], media);
+        assert_eq!(at(Media::screen(800.0, 600.0)), BLUE);
+        assert_eq!(at(Media::screen(500.0, 600.0)), RED);
+        assert_eq!(at(print(800.0, 600.0)), GREEN);
+        // Nested: every list around a rule must hold.
+        assert_eq!(at(Media::screen(200.0, 600.0)), GREEN);
+        assert_eq!(at(print(200.0, 600.0)), Color::rgb8(0, 0, 0));
+        // A list that does not parse is `not all`; an empty one holds.
+        let lists = "@media screen and { p { color: red } } @media { p { color: blue } }";
+        assert_eq!(
+            color_in("<p>x</p>", &[lists], Media::screen(1.0, 1.0)),
+            BLUE
+        );
+        // Inside a style rule's block, nothing nests (no CSS nesting).
+        let nested = "p { color: blue; @media all { color: red } }";
+        assert_eq!(color_in("<p>x</p>", &[nested], Media::default()), BLUE);
+    }
+
+    #[test]
+    fn supports_blocks_are_decided_by_what_the_cascade_takes() {
+        let at = |source: &str| color_in("<p>x</p>", &[source], Media::default());
+        assert_eq!(at("@supports (display: grid) { p { color: blue } }"), BLUE);
+        assert_eq!(
+            at("p { color: blue } @supports (display: nonsense) { p { color: red } }"),
+            BLUE
+        );
+        assert_eq!(
+            at("@supports not (display: nonsense) { p { color: blue } }"),
+            BLUE
+        );
+        assert_eq!(
+            at("@supports selector(p > a) and (color: red) { p { color: blue } }"),
+            BLUE
+        );
+        assert_eq!(
+            at("p { color: blue } @supports selector(:is(:foo)) { p { color: red } }"),
+            BLUE
+        );
+        // A condition that does not parse drops the rule and its block.
+        assert_eq!(
+            at("p { color: blue } @supports (a: b) or (c: d) and (e: f) { p { color: red } }"),
+            BLUE
+        );
+        assert_eq!(
+            at("p { color: blue } @supports display: grid { p { color: red } }"),
+            BLUE
+        );
+        // Inside `@media`, and `@media` inside it.
+        assert_eq!(
+            at("@media all { @supports (color: red) { @media all { p { color: blue } } } }"),
+            BLUE
+        );
+        // `@container` and `@scope` are passed over with their rules.
+        assert_eq!(
+            at(
+                "p { color: blue } @container (width > 0) { p { color: red } }\
+                @scope (p) { p { color: red } }"
+            ),
+            BLUE
+        );
+    }
+
+    #[test]
+    fn layers_order_normal_declarations_and_reverse_important_ones() {
+        let at = |source: &str| color_in("<p id=x class=c>x</p>", &[source], Media::default());
+        // Later layers win, whatever the specificity or the order.
+        assert_eq!(
+            at("@layer a, b; @layer b { p { color: blue } } @layer a { #x { color: red } }"),
+            BLUE
+        );
+        // Rules in no layer win over every layer.
+        assert_eq!(
+            at("p { color: blue } @layer a { #x.c { color: red } }"),
+            BLUE
+        );
+        // Among important declarations the order is reversed: the first
+        // layer wins, and rules in no layer lose.
+        assert_eq!(
+            at("@layer a { p { color: blue !important } }\
+                @layer b { #x { color: red !important } }\
+                #x.c { color: red !important }"),
+            BLUE
+        );
+        // A layer's own rules come after the layers inside it.
+        assert_eq!(
+            at("@layer a { p { color: blue } @layer x { #x { color: red } } }"),
+            BLUE
+        );
+        assert_eq!(
+            at(
+                "@layer a { p { color: red !important } @layer x { p { color: blue !important } } }"
+            ),
+            BLUE
+        );
+        // A dotted name is a layer inside a layer; the order is that of
+        // the first naming.
+        assert_eq!(
+            at("@layer a.x { #x { color: red } } @layer a { p { color: blue } }"),
+            BLUE
+        );
+        assert_eq!(
+            at(
+                "@layer a.y, a.x; @layer a.x { p { color: blue } } @layer a.y { #x { color: red } }"
+            ),
+            BLUE
+        );
+        assert_eq!(
+            at("@layer a { @layer x { p { color: red } } } @layer a.x { p { color: blue } }"),
+            BLUE,
+            "`a.x` names the layer `x` inside `a`"
+        );
+        // Anonymous layers are each their own, in order.
+        assert_eq!(
+            at("@layer { #x { color: red } } @layer { p { color: blue } }"),
+            BLUE
+        );
+        // Names are case-sensitive.
+        assert_eq!(
+            at("@layer A, a; @layer a { p { color: blue } } @layer A { #x { color: red } }"),
+            BLUE
+        );
+        // The inline style is above every layer, normal and important.
+        let inline = color_in(
+            "<p style='color: blue'>x</p>",
+            &["@layer a { p { color: red } }"],
+            Media::default(),
+        );
+        assert_eq!(inline, BLUE);
+        let inline = color_in(
+            "<p style='color: blue !important'>x</p>",
+            &["@layer a { p { color: red !important } }"],
+            Media::default(),
+        );
+        assert_eq!(inline, BLUE);
+        // A layered author rule still beats the UA sheet.
+        let link = color_in(
+            "<p><a href=x>x</a></p>",
+            &["@layer a { p { color: blue } }"],
+            Media::default(),
+        );
+        assert_eq!(link, BLUE);
+    }
+
+    #[test]
+    fn a_statement_in_one_sheet_orders_the_layers_of_the_next() {
+        let sheets = [
+            "@layer base, theme;",
+            "@layer theme { p { color: blue } } @layer base { #x { color: red } }",
+        ];
+        assert_eq!(color_in("<p id=x>x</p>", &sheets, Media::default()), BLUE);
+        let reversed = ["@layer theme, base;", sheets[1]];
+        assert_eq!(color_in("<p id=x>x</p>", &reversed, Media::default()), RED);
+    }
+
+    #[test]
+    fn a_layer_named_only_where_the_media_does_not_hold_takes_no_place() {
+        // Cascade 5 §6.4.3: the statement inside `@media print` orders
+        // `b` before `a` on paper alone.
+        let source = "@media print { @layer b; }
+            @layer a { p { color: red } } @layer b { p { color: blue } }";
+        assert_eq!(color_in("<p>x</p>", &[source], Media::default()), BLUE);
+        assert_eq!(color_in("<p>x</p>", &[source], print(800.0, 600.0)), RED);
+        // The web-platform-tests' (layer-media-query.html, C3).
+        let source = "@media (max-width: 300px) { @layer B, A; }
+            @media (min-width: 500px) { @layer A, B; }
+            @layer A { p { color: red } } @layer B { p { color: green } }";
+        assert_eq!(
+            color_in("<p>x</p>", &[source], Media::screen(300.0, 300.0)),
+            RED
+        );
+        assert_eq!(
+            color_in("<p>x</p>", &[source], Media::screen(500.0, 300.0)),
+            GREEN
+        );
+        // Inside a false `@supports`, never.
+        let source = "@supports (nonsense: 1) { @layer b; }
+            @layer a { p { color: red } } @layer b { p { color: blue } }";
+        assert_eq!(color_in("<p>x</p>", &[source], Media::default()), BLUE);
+    }
+
+    #[test]
+    fn an_invalid_layer_rule_is_dropped_with_its_block() {
+        let at = |source: &str| color_in("<p>x</p>", &[source], Media::default());
+        for bad in [
+            "@layer initial { p { color: red } }",
+            "@layer a.revert-layer { p { color: red } }",
+            "@layer a b { p { color: red } }",
+            "@layer a, b { p { color: red } }",
+            "@layer a. { p { color: red } }",
+            "@layer .a { p { color: red } }",
+            "@layer a .b { p { color: red } }",
+            "@layer 1 { p { color: red } }",
+            // The web-platform-tests' (layer-rule-invalid-name.html).
+            "@layer 123 { p { color: red } }",
+            "@layer foo.123 { p { color: red } }",
+            "@layer - { p { color: red } }",
+        ] {
+            assert_eq!(at(&format!("p {{ color: blue }} {bad}")), BLUE, "{bad}");
+        }
+        // A statement with one bad name names none of them. The draft
+        // reserves the CSS-wide keywords, which the reference browser
+        // takes as names.
+        assert_eq!(
+            at("@layer b, unset; @layer a { #x, p { color: blue } } @layer b { p { color: red } }"),
+            RED,
+            "`b` is not ordered first"
+        );
+    }
+
+    #[test]
+    fn styles_keep_the_answers_that_chose_their_rules() {
+        let document = Document::from_node(&html::parse_document("<p>x</p>").expect("never fails"));
+        let sheets = Stylesheets::new(vec![sheet(
+            "@media (min-width: 600px) { p { color: blue } } @media print { p { color: red } }",
+        )]);
+        let wide = Media::screen(800.0, 600.0);
+        let context = CascadeContext {
+            media: wide,
+            ..CascadeContext::default()
+        };
+        let mut styles = sheets.cascade(&document, &context);
+        assert!(!sheets.media_changed(&styles, &wide));
+        assert!(!sheets.media_changed(&styles, &Media::screen(1000.0, 10.0)));
+        assert!(sheets.media_changed(&styles, &Media::screen(500.0, 600.0)));
+        assert!(sheets.media_changed(&styles, &print(800.0, 600.0)));
+        // A restyle under other answers is a full cascade.
+        let narrow = CascadeContext {
+            media: Media::screen(500.0, 600.0),
+            ..CascadeContext::default()
+        };
+        let restyle = sheets.restyle(&document, &narrow, &mut styles, &[]);
+        assert!(restyle.full);
+        assert!(!sheets.media_changed(&styles, &Media::screen(500.0, 600.0)));
+        let p = first(&document, "p");
+        assert_eq!(styles.get(p).expect("styled").color, Color::rgb8(0, 0, 0));
+        let restyle = sheets.restyle(&document, &narrow, &mut styles, &[]);
+        assert!(!restyle.full, "the same answers: nothing to do");
     }
 }

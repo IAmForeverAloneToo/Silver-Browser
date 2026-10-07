@@ -104,7 +104,7 @@ use paint::{
 pub use render::Backend;
 use render::{RenderBackend, SoftwareBackend};
 use style::computed::Overflow;
-use style::{CascadeContext, FontMeasure, Styles, Stylesheets};
+use style::{CascadeContext, FontMeasure, Media, Preferences, Styles, Stylesheets};
 use text::FontError;
 
 /// How much of the remaining distance to the scroll target the scroll
@@ -209,6 +209,8 @@ pub struct Engine {
     boxes_reused: u64,
     /// The last frame's size: what scrolling is clamped to.
     viewport: (u32, u32),
+    /// The user's preferences that media queries ask about (M20).
+    preferences: Preferences,
     /// The time of the last frame drawn while a scroll offset was on its
     /// way to its target (M13.4): the next frame advances the animation
     /// by the time since. `None` when none was, so that an animation
@@ -398,18 +400,20 @@ struct CachedStyle {
 struct FontMeasurer<'a>(&'a text::FontCollection);
 
 /// What a cascade of a document knows from outside it: the `viewport`,
-/// the engine's fonts as `fonts` measures them, and the `language` its
-/// response gave.
+/// the engine's fonts as `fonts` measures them, the `language` its
+/// response gave, and the `media` it is shown on.
 fn cascade_context<'a>(
     viewport: (u32, u32),
     fonts: &'a FontMeasurer<'a>,
     language: Option<&'a str>,
+    media: Media,
 ) -> CascadeContext<'a> {
     CascadeContext {
         viewport_width: viewport.0 as f32,
         viewport_height: viewport.1 as f32,
         fonts: Some(fonts),
         language,
+        media,
     }
 }
 
@@ -503,7 +507,7 @@ impl Engine {
         let mut network = Network::new();
         let mut page = Page::given(0);
         let document = parsed_or_empty("");
-        page.begin(&document, &mut network);
+        page.begin(&document, &mut network, &Media::default());
         let mut shown = Shown::new(document, page);
         shown.initial = true;
         let blank = Url::parse("about:blank").expect("about:blank parses");
@@ -524,6 +528,7 @@ impl Engine {
             boxes_laid_out: 0,
             boxes_reused: 0,
             viewport: (0, 0),
+            preferences: Preferences::default(),
             animation_clock: None,
             stats: FrameStats::default(),
             changed: true,
@@ -559,7 +564,8 @@ impl Engine {
     pub fn set_document(&mut self, document: Document) {
         self.cancel_navigation();
         let mut page = Page::given(self.new_page_id());
-        page.begin(&document, &mut self.network);
+        let media = self.media(self.viewport);
+        page.begin(&document, &mut self.network, &media);
         let left = self.show(Shown::new(document, page));
         self.network.cancel(left.page.id(), None);
         self.history = History::new(None);
@@ -727,7 +733,8 @@ impl Engine {
                     net::AddressSpace::Public,
                 );
                 let document = parsed_or_empty(pages::ABOUT_SILVER);
-                page.begin(&document, &mut self.network);
+                let media = self.media(self.viewport);
+                page.begin(&document, &mut self.network, &media);
                 let mut shown = Shown::new(document, page);
                 shown.salvageable = false;
                 shown.made = true;
@@ -756,7 +763,8 @@ impl Engine {
     /// page.
     fn made(&mut self, document: Document, failure: Option<LoadError>) -> Shown {
         let mut page = Page::given(self.new_page_id());
-        page.begin(&document, &mut self.network);
+        let media = self.media(self.viewport);
+        page.begin(&document, &mut self.network, &media);
         let mut shown = Shown::new(document, page);
         shown.salvageable = false;
         shown.failure = failure;
@@ -988,7 +996,8 @@ impl Engine {
                 let mut incoming =
                     Page::fetched(page, at, parsed.encoding, parsed.undecodable, address_space)
                         .with_language(parsed.language);
-                incoming.begin(&parsed.document, &mut self.network);
+                let media = self.media(self.viewport);
+                incoming.begin(&parsed.document, &mut self.network, &media);
                 self.navigation = Some(Navigation {
                     url,
                     incoming: Incoming::Waiting {
@@ -1256,8 +1265,10 @@ impl Engine {
     }
 
     /// The document's stylesheets that apply, in cascade order: those
-    /// of its `<link>` and `<style>` elements in tree order, each one's
-    /// imports before it.
+    /// of its `<link>` and `<style>` elements in tree order, the rules of
+    /// the sheets each imports in place of its `@import` rules, and each
+    /// inside the `@media`, `@supports` and `@layer` blocks its element's
+    /// `media` and its imports' conditions make (M20).
     pub fn stylesheets(&self) -> &[css::Stylesheet] {
         self.shown.stylesheets.sheets()
     }
@@ -1271,9 +1282,24 @@ impl Engine {
         self.cached_styles()
     }
 
+    /// The medium the document is shown on (M20): a screen of the size
+    /// of `viewport`, a CSS pixel to a pixel, with the user's
+    /// preferences.
+    fn media(&self, viewport: (u32, u32)) -> Media {
+        Media {
+            preferences: self.preferences,
+            ..Media::screen(viewport.0 as f32, viewport.1 as f32)
+        }
+    }
+
     fn cascade(&self, viewport: (u32, u32)) -> Styles {
         let fonts = FontMeasurer(&self.layout_fonts);
-        let context = cascade_context(viewport, &fonts, self.shown.page.language());
+        let context = cascade_context(
+            viewport,
+            &fonts,
+            self.shown.page.language(),
+            self.media(viewport),
+        );
         self.shown
             .stylesheets
             .cascade(&self.shown.document, &context)
@@ -1298,7 +1324,12 @@ impl Engine {
         let viewport = (viewport_width as u32, self.viewport.1);
         let styles = self.cascade(viewport);
         let fonts = FontMeasurer(&self.layout_fonts);
-        let context = cascade_context(viewport, &fonts, self.shown.page.language());
+        let context = cascade_context(
+            viewport,
+            &fonts,
+            self.shown.page.language(),
+            self.media(viewport),
+        );
         let recascade = self
             .shown
             .stylesheets
@@ -1316,15 +1347,18 @@ impl Engine {
     }
 
     /// The cached cascade for the current viewport: computed whole when
-    /// none is cached, or when the viewport changed and the document's
-    /// styles depend on it (M10.1); restyled when the document changed
-    /// since (M13.1). Either drops the cached layout, and brings the
+    /// none is cached, when the viewport changed and the document's
+    /// styles depend on it (M10.1), or when an `@media` list answers
+    /// otherwise for the medium now, a resize across a breakpoint
+    /// (M20); restyled when the document changed since (M13.1). Either drops the cached layout, and brings the
     /// layout cache up to date: emptied by a whole cascade, its entries
     /// the changes and the restyled elements reach forgotten by a
     /// restyle (M13.2).
     fn cached_styles(&mut self) -> &Styles {
+        let media = self.media(self.viewport);
         let stale = self.shown.styled.as_ref().is_none_or(|cached| {
-            cached.styles.uses_viewport_units && cached.viewport != self.viewport
+            (cached.styles.uses_viewport_units && cached.viewport != self.viewport)
+                || self.shown.stylesheets.media_changed(&cached.styles, &media)
         });
         if stale {
             let styles = self.cascade(self.viewport);
@@ -1339,7 +1373,12 @@ impl Engine {
         } else if !self.shown.pending.is_empty() {
             let changes = std::mem::take(&mut self.shown.pending);
             let fonts = FontMeasurer(&self.layout_fonts);
-            let context = cascade_context(self.viewport, &fonts, self.shown.page.language());
+            let context = cascade_context(
+                self.viewport,
+                &fonts,
+                self.shown.page.language(),
+                self.media(self.viewport),
+            );
             let cached = self.shown.styled.as_mut().expect("not stale");
             let restyle = self.shown.stylesheets.restyle(
                 &self.shown.document,
@@ -1382,7 +1421,12 @@ impl Engine {
         if stale {
             let styles = &self.shown.styled.as_ref().expect("just computed").styles;
             let fonts = FontMeasurer(&self.layout_fonts);
-            let context = cascade_context(self.viewport, &fonts, self.shown.page.language());
+            let context = cascade_context(
+                self.viewport,
+                &fonts,
+                self.shown.page.language(),
+                self.media(self.viewport),
+            );
             let recascade =
                 self.shown
                     .stylesheets
@@ -3873,6 +3917,32 @@ mod tests {
         );
         assert_eq!(engine.link_at(plain.x + 1.0, plain.top() + 1.0), None);
         assert_eq!(engine.link_at(1.0, 90.0), None);
+    }
+
+    #[test]
+    fn a_resize_across_a_breakpoint_recascades_and_one_within_does_not() {
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>p { color: #000 } @media (min-width: 500px) { p { color: #f00 } }\
+             @media (orientation: portrait) { p { background-color: #00f } }</style><p>x</p>",
+        );
+        let color = |engine: &mut Engine| {
+            let p = first(engine, "p");
+            engine.styles().get(p).expect("styled").color
+        };
+        engine.frame(400, 300);
+        assert_eq!(color(&mut engine), style::computed::Color::rgb8(0, 0, 0));
+        assert_eq!(engine.style_runs(), 1);
+        engine.frame(450, 300);
+        assert_eq!(engine.style_runs(), 1, "no list answers otherwise");
+        engine.frame(600, 300);
+        assert_eq!(engine.style_runs(), 2, "past the breakpoint");
+        assert_eq!(color(&mut engine), style::computed::Color::rgb8(255, 0, 0));
+        engine.frame(600, 700);
+        assert_eq!(engine.style_runs(), 3, "turned to portrait");
+        engine.frame(700, 900);
+        assert_eq!(engine.style_runs(), 3);
+        assert!(!engine.needs_frame());
     }
 
     #[test]

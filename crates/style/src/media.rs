@@ -501,7 +501,7 @@ pub(crate) fn trim(tokens: &[Token]) -> &[Token] {
 }
 
 /// `tokens` split at the commas outside any block.
-fn split_commas(tokens: &[Token]) -> Vec<&[Token]> {
+pub(crate) fn split_commas(tokens: &[Token]) -> Vec<&[Token]> {
     let mut parts = Vec::new();
     let mut nesting = Nesting::default();
     let mut start = 0;
