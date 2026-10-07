@@ -38,7 +38,7 @@ pub use block::{
 };
 pub use box_tree::{BoxKind, FirstLine, LayoutBox, RowGroupKind, build_box_tree};
 pub use cache::LayoutCache;
-pub use paginate::{PageSlice, Paginated, paginate};
+pub use paginate::{MAX_PAGES, PageSlice, Paginated, paginate};
 
 #[cfg(test)]
 pub(crate) mod testing {

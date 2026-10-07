@@ -62,6 +62,10 @@ harness = false
 name = "composite"
 harness = false
 
+[[bench]]
+name = "media"
+harness = false
+
 [dev-dependencies]
 # The scripted server the loader's tests fetch from.
 net = { workspace = true, features = ["test-server"] }

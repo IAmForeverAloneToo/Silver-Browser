@@ -4,12 +4,14 @@
 //! Each page is a page of the PDF at its page box's size, in points,
 //! with its page area's raster on it as an image: RGB, eight bits a
 //! channel, Flate-compressed, placed at the page area's origin at the
-//! size its resolution says. The file names its title and the program
+//! size its resolution says. A page's raster is compressed when the page
+//! is made, so that a print of many pages holds each raw raster only
+//! while it is drawn. The file names its title and the program
 //! that made it, and carries no date, so that a page prints to the same
 //! bytes each time. Its text is pictures of text, which cannot be
 //! selected or searched.
 
-use std::io::Write;
+use std::io::{Read, Write};
 
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
@@ -31,9 +33,46 @@ pub struct PdfPage {
     /// The raster's width and height, in pixels.
     pub width: u32,
     pub height: u32,
-    /// The raster, RGB, a row at a time from the top, three bytes a
-    /// pixel.
-    pub rgb: Vec<u8>,
+    /// The raster, compressed as the PDF holds it.
+    image: Vec<u8>,
+}
+
+impl PdfPage {
+    /// The page of `size` whose area's top left corner is at `origin`,
+    /// its raster `rgb`, `width` by `height` pixels at `dpi`: RGB, a row
+    /// at a time from the top, three bytes a pixel. The raster is
+    /// compressed here; the page keeps only that.
+    pub fn new(
+        size: (f32, f32),
+        origin: (f32, f32),
+        dpi: f32,
+        (width, height): (u32, u32),
+        rgb: &[u8],
+    ) -> Self {
+        PdfPage {
+            size,
+            origin,
+            dpi,
+            width,
+            height,
+            image: deflate(rgb),
+        }
+    }
+
+    /// The raster, as it was given.
+    pub fn rgb(&self) -> Vec<u8> {
+        let mut rgb = Vec::with_capacity(self.width as usize * self.height as usize * 3);
+        // The page compressed it itself.
+        flate2::read::ZlibDecoder::new(&self.image[..])
+            .read_to_end(&mut rgb)
+            .expect("the page's own raster inflates");
+        rgb
+    }
+
+    /// How many bytes the raster takes in the PDF.
+    pub fn compressed_len(&self) -> usize {
+        self.image.len()
+    }
 }
 
 /// The PDF of `pages`, in order, titled `title`.
@@ -66,8 +105,7 @@ pub fn write_pdf(pages: &[PdfPage], title: &str) -> Vec<u8> {
         writer.resources().x_objects().pair(image_name, image_id);
         writer.finish();
 
-        let compressed = deflate(&page.rgb);
-        let mut image = pdf.image_xobject(image_id, &compressed);
+        let mut image = pdf.image_xobject(image_id, &page.image);
         image.filter(Filter::FlateDecode);
         image.width(page.width as i32);
         image.height(page.height as i32);
@@ -101,22 +139,16 @@ fn deflate(data: &[u8]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Read;
-
     use super::*;
 
     fn page(size: (f32, f32), width: u32, height: u32, seed: u8) -> PdfPage {
-        let rgb = (0..width * height * 3)
+        let rgb: Vec<u8> = (0..width * height * 3)
             .map(|i| (i as u8).wrapping_mul(seed))
             .collect();
-        PdfPage {
-            size,
-            origin: (37.0, 37.0),
-            dpi: 300.0,
-            width,
-            height,
-            rgb,
-        }
+        let page = PdfPage::new(size, (37.0, 37.0), 300.0, (width, height), &rgb);
+        assert_eq!(page.rgb(), rgb, "a page gives its raster back");
+        assert!(page.compressed_len() > 0);
+        page
     }
 
     /// The streams of `pdf` that inflate, in order.
@@ -169,8 +201,8 @@ mod tests {
         assert!(find(&pdf, b"/CreationDate").is_none());
         // The images inflate to the rasters given.
         let streams = streams(&pdf);
-        assert!(streams.contains(&pages[0].rgb));
-        assert!(streams.contains(&pages[1].rgb));
+        assert!(streams.contains(&pages[0].rgb()));
+        assert!(streams.contains(&pages[1].rgb()));
         // The first page's raster: 20 pixels at 300 dpi are 4.8 points
         // wide, its top 37px, 27.75pt, below the page's top.
         assert!(find(&pdf, b"/Width 20").is_some() && find(&pdf, b"/Height 10").is_some());

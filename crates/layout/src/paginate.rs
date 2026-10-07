@@ -75,11 +75,18 @@ pub struct PageSlice {
     pub position: PagePosition,
 }
 
+/// The most pages a document is cut into: what is below the last is on
+/// none. A bound against a document a hostile page makes taller than
+/// any print, whose pages would otherwise be made without end: the
+/// arithmetic of their tops in `f32` stops moving by a page's height far
+/// enough down.
+pub const MAX_PAGES: usize = 10_000;
+
 /// `layout`, laid out at the page area's width, cut into pages whose
 /// areas are `page_height` of each page's position tall. There is at
 /// least one page, and the pages reach the bottom of the document's
-/// flow. A height below one pixel is taken as one pixel. The layout's
-/// fragments are moved, not copied.
+/// flow, [`MAX_PAGES`] at most. A height below one pixel is taken as one
+/// pixel. The layout's fragments are moved, not copied.
 pub fn paginate(layout: DocumentLayout, page_height: &dyn Fn(PagePosition) -> f32) -> Paginated {
     let plan = Plan::of(&layout.roots);
     let mut pages = Pages {
@@ -88,7 +95,7 @@ pub fn paginate(layout: DocumentLayout, page_height: &dyn Fn(PagePosition) -> f3
     };
     let breaks = plan.fill(&mut pages);
     let bottom = layout.height + Plan::total(&breaks);
-    while pages.end() < bottom - EPSILON {
+    while pages.end() < bottom - EPSILON && !pages.full() {
         pages.next(false);
     }
     let mut roots = layout.roots;
@@ -106,8 +113,17 @@ struct Pages<'h> {
 }
 
 impl Pages<'_> {
-    /// Adds the next page, `blank` or not, and gives its top.
+    /// Whether there are [`MAX_PAGES`] pages.
+    fn full(&self) -> bool {
+        self.pages.len() >= MAX_PAGES
+    }
+
+    /// Adds the next page, `blank` or not, and gives its top; with the
+    /// pages full, adds none and gives the last's bottom.
     fn next(&mut self, blank: bool) -> f32 {
+        if self.full() {
+            return self.end();
+        }
         let index = self.pages.len();
         let position = PagePosition {
             first: index == 0,
@@ -508,7 +524,8 @@ impl Plan {
         let mut first = 0;
         let mut carried = false;
         let mut i = 0;
-        while i < self.pieces.len() {
+        // With the pages full, what is left is on none of them.
+        while i < self.pieces.len() && !pages.full() {
             let piece = self.pieces[i];
             let place = &self.places[i];
             let top = piece.top + shift;
@@ -535,7 +552,7 @@ impl Plan {
             }
             if piece.fluid && top < end - EPSILON {
                 // The page ends inside it.
-                while pages.end() < bottom - EPSILON {
+                while pages.end() < bottom - EPSILON && !pages.full() {
                     pages.next(false);
                 }
                 first = i + 1;
@@ -576,7 +593,7 @@ impl Plan {
                 None => {
                     // At the top of its page and too tall for it: the
                     // pages cut it.
-                    while pages.end() < bottom - EPSILON {
+                    while pages.end() < bottom - EPSILON && !pages.full() {
                         pages.next(false);
                     }
                     first = i + 1;
@@ -1038,6 +1055,23 @@ mod tests {
         );
         assert_eq!(by_class(&p, "c")[0].y, 350.0);
         assert_eq!(by_class(&p, "c")[0].h, 210.0);
+    }
+
+    #[test]
+    fn the_pages_stop_at_their_bound() {
+        // Two blocks of the tallest length the cascade gives, on pages a
+        // pixel tall: far more than the bound, and tops past 2^24, where
+        // `f32` no longer moves by a pixel. The pages stop at the bound.
+        let css = format!("{NAMED} body {{ margin: 0 }} div {{ height: 33554431px }}");
+        let p = paged("<div class=a></div><div class=b></div>", &css, 1.0, 1.0);
+        assert_eq!(p.pages.len(), MAX_PAGES);
+        let last = p.pages[MAX_PAGES - 1];
+        assert_eq!(last.top, (MAX_PAGES - 1) as f32);
+        // A forced break past them adds none either.
+        let css = format!("{NAMED} body {{ margin: 0 }} div {{ height: 30px; break-after: page }}");
+        let html = "<div></div>".repeat(MAX_PAGES + 10);
+        let p = paged(&html, &css, 100.0, 100.0);
+        assert_eq!(p.pages.len(), MAX_PAGES);
     }
 
     #[test]

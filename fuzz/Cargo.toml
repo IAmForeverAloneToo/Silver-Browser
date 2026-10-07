@@ -78,6 +78,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "media_query"
+path = "fuzz_targets/media_query.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "encoding_decode"
 path = "fuzz_targets/encoding_decode.rs"
 test = false

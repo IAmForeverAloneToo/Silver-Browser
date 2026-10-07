@@ -97,8 +97,9 @@ impl Engine {
         Ok(write_pdf(&pages, &self.title()))
     }
 
-    /// The pages of [`Engine::print`], drawn, before they are written.
-    pub(crate) fn print_pages(&self, options: &PrintOptions) -> Result<Vec<PdfPage>, PrintError> {
+    /// The pages of [`Engine::print`], drawn, before they are written:
+    /// each page's box and its area's raster.
+    pub fn print_pages(&self, options: &PrintOptions) -> Result<Vec<PdfPage>, PrintError> {
         let pages = self.printed_pages(options)?;
         let mut backend = SoftwareBackend::with_fonts(self.layout_fonts.clone());
         Ok(pages
@@ -237,13 +238,30 @@ fn rasterize_page(backend: &mut SoftwareBackend, page: PrintedPage, dpi: f32) ->
         w: area_width,
         h: area_height,
     });
-    items.extend(list.items);
+    // A page is drawn once: its groups are drawn through, none kept as
+    // a layer to composite, which is for frames to come (M19), so that
+    // text and edges are drawn at the print's resolution rather than
+    // resampled to it.
+    items.extend(list.items.into_iter().map(|item| match item {
+        DisplayItem::PushGroup {
+            matrix,
+            opacity,
+            key,
+            ..
+        } => DisplayItem::PushGroup {
+            matrix,
+            opacity,
+            key,
+            layer: None,
+        },
+        other => other,
+    }));
     items.push(DisplayItem::PopClip);
     items.push(DisplayItem::PopGroup);
     let rgba = backend.rasterize(&DisplayList { items }, width, height);
     // Premultiplied RGBA over white, which an opaque canvas leaves as it
     // is.
-    let rgb = rgba
+    let rgb: Vec<u8> = rgba
         .as_chunks::<4>()
         .0
         .iter()
@@ -256,14 +274,13 @@ fn rasterize_page(backend: &mut SoftwareBackend, page: PrintedPage, dpi: f32) ->
             ]
         })
         .collect();
-    PdfPage {
-        size: (page_box.width, page_box.height),
-        origin: page_box.origin(),
-        dpi: scale * 96.0,
-        width,
-        height,
-        rgb,
-    }
+    PdfPage::new(
+        (page_box.width, page_box.height),
+        page_box.origin(),
+        scale * 96.0,
+        (width, height),
+        &rgb,
+    )
 }
 
 #[cfg(test)]
@@ -294,7 +311,8 @@ mod tests {
         let scale = page.dpi / 96.0;
         let (px, py) = ((x * scale) as usize, (y * scale) as usize);
         let i = (py * page.width as usize + px) * 3;
-        [page.rgb[i], page.rgb[i + 1], page.rgb[i + 2]]
+        let rgb = page.rgb();
+        [rgb[i], rgb[i + 1], rgb[i + 2]]
     }
 
     const RED: [u8; 3] = [255, 0, 0];
@@ -376,6 +394,26 @@ mod tests {
         assert_eq!(pages.len(), 3);
         assert_eq!(at(&pages[1], 20.0, 20.0), WHITE, "the blank left page");
         assert_eq!(at(&pages[2], 20.0, 20.0), RED);
+    }
+
+    #[test]
+    fn a_page_is_drawn_at_the_prints_resolution_not_resampled_to_it() {
+        // The document's scroll group is a layer on the screen (M19); in
+        // a print it is drawn through at four dots to the CSS pixel, so
+        // that a box's edge falls between two dots, not across several.
+        let e = engine(
+            "<style>body { margin: 0 } @page { margin: 0 }
+             div { width: 10px; height: 10px; background: #000 }</style><div></div>",
+        );
+        let options = PrintOptions {
+            dpi: 384.0,
+            ..PrintOptions::default()
+        };
+        let pages = e.print_pages(&options).expect("printed");
+        assert_eq!(pages[0].dpi, 384.0);
+        assert_eq!(at(&pages[0], 9.9, 5.0), [0, 0, 0]);
+        assert_eq!(at(&pages[0], 10.1, 5.0), WHITE);
+        assert_eq!(at(&pages[0], 5.0, 10.1), WHITE);
     }
 
     #[test]
