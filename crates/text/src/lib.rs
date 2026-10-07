@@ -133,6 +133,10 @@ pub struct FontStore {
     line_gap_units: f32,
     /// The OS/2 table's x-height, in font units, when the font gives one.
     x_height_units: Option<f32>,
+    /// The `post` table's underline position, the top of the line above
+    /// the baseline (negative below it), and thickness, in font units,
+    /// when the font gives them.
+    underline_units: Option<(f32, f32)>,
     /// Whether the `head` table's flags ask for whole pixels per em in
     /// all of the scaler's arithmetic (bit 3), which FreeType honours
     /// when it hints an advance (see [`FontStore::advance`]).
@@ -224,6 +228,10 @@ impl FontStore {
         let descender_units = (-f32::from(ttf.descender())).max(0.0);
         let line_gap_units = f32::from(ttf.line_gap()).max(0.0);
         let x_height_units = ttf.x_height().map(f32::from).filter(|x| *x > 0.0);
+        let underline_units = ttf
+            .underline_metrics()
+            .map(|line| (f32::from(line.position), f32::from(line.thickness)))
+            .filter(|(_, thickness)| *thickness > 0.0);
         let integer_ppem = ttf
             .raw_face()
             .table(ttf_parser::Tag::from_bytes(b"head"))
@@ -241,6 +249,7 @@ impl FontStore {
             descender_units,
             line_gap_units,
             x_height_units,
+            underline_units,
             integer_ppem,
             glyph_font,
         })
@@ -284,6 +293,15 @@ impl FontStore {
     /// The ab_glyph handle, for glyph rasterization.
     pub fn glyph_font(&self) -> &ab_glyph::FontArc {
         &self.glyph_font
+    }
+
+    /// The font's underline at `font_size_px` (M21.7): where its top is
+    /// below the baseline, and how thick it is, unrounded; `None` when
+    /// the font says nothing of it.
+    pub fn underline(&self, font_size_px: f32) -> Option<(f32, f32)> {
+        let scale = font_size_px / self.units_per_em;
+        self.underline_units
+            .map(|(position, thickness)| (-position * scale, thickness * scale))
     }
 
     /// This font's vertical metrics at `font_size_px` (roadmap M7.1),
@@ -781,6 +799,12 @@ impl FontCollection {
         self.primary().x_height(font_size_px)
     }
 
+    /// The primary font's underline at `font_size_px` (see
+    /// [`FontStore::underline`]).
+    pub fn underline(&self, font_size_px: f32) -> Option<(f32, f32)> {
+        self.primary().underline(font_size_px)
+    }
+
     /// The primary font's advance for the digit zero at `font_size_px`
     /// (see [`FontStore::zero_advance`]).
     pub fn zero_advance(&self, font_size_px: f32) -> f32 {
@@ -1132,6 +1156,18 @@ mod tests {
                 "at {size}px"
             );
         }
+    }
+
+    #[test]
+    fn the_underline_is_the_post_tables_below_the_baseline() {
+        let face = ttf_parser::Face::parse(TEST_FONT, 0).expect("the bundled font parses");
+        let line = face.underline_metrics().expect("the bundled font has one");
+        let font = FontStore::from_bytes(TEST_FONT.to_vec(), 0).expect("parses");
+        let scale = 20.0 / f32::from(face.units_per_em());
+        let (top, thickness) = font.underline(20.0).expect("an underline");
+        assert_eq!(top, -f32::from(line.position) * scale);
+        assert_eq!(thickness, f32::from(line.thickness) * scale);
+        assert!(top > 0.0 && thickness > 0.0);
     }
 
     #[test]

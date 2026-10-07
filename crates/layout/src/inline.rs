@@ -93,6 +93,8 @@
 //!   M8/M42 territory.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use dom::NodeId;
 use style::computed::{
@@ -107,6 +109,7 @@ use crate::block::{
     layout_inline_block, pending_float, relative_offset,
 };
 use crate::box_tree::{BoxKind, FirstLine, LayoutBox};
+use crate::decoration::{self, Decorated, Decorating, DrawnLine};
 use crate::float::{At, FloatContext, PendingFloat};
 use crate::marker::Marker;
 use crate::pass::Pass;
@@ -133,6 +136,11 @@ pub(crate) enum InlineItem<'a> {
         /// Whether the text is a generated box's (M16), also carried
         /// into its fragment.
         generated: Option<PseudoElement>,
+        /// The text decorations in force over the word (M21.7).
+        decorations: Option<&'a Arc<[Decorating]>>,
+        /// Those over the white space whose gap is before it: the
+        /// element's the space was first met in.
+        gap_decorations: Option<&'a Arc<[Decorating]>>,
     },
     /// A literal newline under `white-space: pre`/`pre-wrap`/`pre-line`
     /// — ends the current line unconditionally, however much of
@@ -146,6 +154,8 @@ pub(crate) enum InlineItem<'a> {
         /// As for a word; a wrap opportunity exists before an atomic
         /// inline either way.
         gap_before: bool,
+        /// As for a word (M21.7).
+        gap_decorations: Option<&'a Arc<[Decorating]>>,
     },
     /// A float met in the run (M11): out of flow, placed by the float
     /// context beside the line it is met on, and invisible to the
@@ -166,6 +176,8 @@ pub(crate) enum InlineItem<'a> {
         b: &'a LayoutBox,
         style: &'a ComputedStyle,
         gap_before: bool,
+        /// As for a word (M21.7).
+        gap_decorations: Option<&'a Arc<[Decorating]>>,
     },
     /// The end of an inline element: its right padding, border and
     /// margin, on the line it ends on, glued to what precedes it; with
@@ -190,6 +202,7 @@ struct LineWord<'i> {
     style: &'i ComputedStyle,
     node: NodeId,
     generated: Option<PseudoElement>,
+    decorations: Option<&'i Arc<[Decorating]>>,
 }
 
 /// One item on the line being built. The atomic's layout is boxed: it
@@ -366,6 +379,8 @@ pub(crate) fn layout_inline<'a>(
                 gap_before,
                 node,
                 generated,
+                decorations,
+                ..
             } => {
                 let word = LineWord {
                     text: text.as_str(),
@@ -373,13 +388,14 @@ pub(crate) fn layout_inline<'a>(
                     style,
                     node: *node,
                     generated: *generated,
+                    decorations: *decorations,
                 };
                 let can_break = !no_wrap && (*gap_before || after_atomic) && !after_marker;
                 lines.place(LineItem::Word(word), index, *gap_before, can_break);
                 after_atomic = false;
                 after_marker = false;
             }
-            InlineItem::Atomic { b, gap_before } => {
+            InlineItem::Atomic { b, gap_before, .. } => {
                 let atomic = layout_inline_block(b, cb_width, cb_height, pass);
                 let can_break = !after_marker;
                 lines.place(
@@ -404,6 +420,7 @@ pub(crate) fn layout_inline<'a>(
                 b,
                 style,
                 gap_before,
+                ..
             } => {
                 let (start, _) = edge_widths(style, cb_width);
                 let can_break = style.white_space != WhiteSpace::Pre
@@ -563,6 +580,7 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
                     style,
                     node,
                     generated,
+                    decorations,
                     ..
                 },
                 LineItem::Word(_),
@@ -572,6 +590,7 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
                 style,
                 node: *node,
                 generated: *generated,
+                decorations: *decorations,
             }),
             (InlineItem::Open { b, style, .. }, LineItem::Open(..)) => {
                 LineItem::Open(b, style, edge_widths(style, self.cb_width).0)
@@ -764,6 +783,22 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
     /// made of it.
     fn flush(&mut self) -> bool {
         let first_line = self.first.as_ref().map(|first| first.chain);
+        let reach = decoration_reach(
+            &self.line,
+            |index| match self.item(index) {
+                InlineItem::Word {
+                    gap_decorations, ..
+                }
+                | InlineItem::Open {
+                    gap_decorations, ..
+                }
+                | InlineItem::Atomic {
+                    gap_decorations, ..
+                } => *gap_decorations,
+                _ => None,
+            },
+            self.pass.fonts,
+        );
         let baseline = flush_line(
             &mut self.line,
             self.line_width,
@@ -778,6 +813,7 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
             &mut self.absolutes,
             &mut self.open,
             first_line,
+            &reach,
         );
         self.last_baseline = baseline.or(self.last_baseline);
         self.first_baseline = self.first_baseline.or(baseline);
@@ -880,6 +916,7 @@ fn collect<'a>(
         done: false,
         out: Vec::new(),
         space_pending: false,
+        space_decorations: None,
         gap_placed: false,
         at_word_start: true,
     };
@@ -933,6 +970,8 @@ struct Collector<'a, 'f> {
     /// Collapsible white space has been seen since the last item: the
     /// next item gets a gap before it.
     space_pending: bool,
+    /// The text decorations over that white space (M21.7).
+    space_decorations: Option<&'a Arc<[Decorating]>>,
     /// An inline element's start edge took a gap and no content has
     /// followed it: white space seen now collapses into that gap
     /// (css-text-3 §4.1.1, across the boundary of the inline).
@@ -1007,6 +1046,7 @@ impl<'a> Collector<'a, '_> {
                         b,
                         style,
                         gap_before,
+                        gap_decorations: self.space_decorations.filter(|_| gap_before),
                     });
                     // Collects nothing when the line ended at the start
                     // edge, and the end edge is past the end as well.
@@ -1024,7 +1064,11 @@ impl<'a> Collector<'a, '_> {
                     let gap_before = std::mem::take(&mut self.space_pending);
                     self.gap_placed = false;
                     self.at_word_start = true;
-                    self.push(InlineItem::Atomic { b, gap_before });
+                    self.push(InlineItem::Atomic {
+                        b,
+                        gap_before,
+                        gap_decorations: self.space_decorations.filter(|_| gap_before),
+                    });
                 }
                 // A float or an absolutely positioned box is invisible
                 // to the white space around it: a gap pending before it
@@ -1087,7 +1131,7 @@ impl<'a> Collector<'a, '_> {
                         return;
                     }
                 } else {
-                    self.space_pending = !self.gap_placed;
+                    self.space(b);
                 }
             }
             if line.is_empty() {
@@ -1114,7 +1158,7 @@ impl<'a> Collector<'a, '_> {
                             return;
                         }
                     }
-                    self.space_pending = !self.gap_placed;
+                    self.space(b);
                 } else if word.is_none() {
                     word = Some((i, std::mem::take(&mut self.space_pending)));
                 }
@@ -1142,7 +1186,20 @@ impl<'a> Collector<'a, '_> {
             gap_before,
             node: b.node,
             generated: b.generated,
+            decorations: b.decorations.as_ref(),
+            gap_decorations: self.space_decorations.filter(|_| gap_before),
         });
+    }
+
+    /// White space met in the text box `b`: a gap pending unless one is
+    /// placed, the first of a collapsed run's spaces being the one kept
+    /// and so the one whose element's decorations it has (M21.7).
+    fn space(&mut self, b: &'a LayoutBox) {
+        let pending = !self.gap_placed;
+        if pending && !self.space_pending {
+            self.space_decorations = b.decorations.as_ref();
+        }
+        self.space_pending = pending;
     }
 }
 
@@ -1247,7 +1304,7 @@ pub(crate) fn run_intrinsic_widths<'a>(
                 after_atomic = false;
             }
             // An atomic inline keeps its style on the first line.
-            (InlineItem::Atomic { b, gap_before }, _) => {
+            (InlineItem::Atomic { b, gap_before, .. }, _) => {
                 let (piece_min, piece_max) = crate::intrinsic::contribution(b, pass);
                 let gap = if line_empty || !gap_before {
                     0.0
@@ -1444,6 +1501,7 @@ fn flush_line<'a>(
     absolutes: &mut Vec<Deferred<'a>>,
     open: &mut Vec<&'a LayoutBox>,
     first_line: Option<&'a [LayoutBox]>,
+    reach: &[Spread],
 ) -> Option<f32> {
     if line.is_empty() {
         return None;
@@ -1552,12 +1610,14 @@ fn flush_line<'a>(
     let floor = stack.len();
     stack.extend(continued);
     let mut next_open = open.clone();
+    let mut drawn = DrawnLines::default();
     for (i, placed) in line.drain(..).enumerate() {
         if i > 0 && placed.gap_before {
             x += space_width(placed.item.style(), fonts);
         }
         match placed.item {
             LineItem::Word(word) => {
+                let lines = word.decorations.map(|d| drawn.of(d, fonts));
                 let into = innermost(&mut stack, fragments);
                 if word.style.letter_spacing != 0.0 {
                     // Per-character fragments (M8.4) — see
@@ -1568,14 +1628,27 @@ fn flush_line<'a>(
                         into,
                         &word,
                         &mut x,
-                        baseline_y,
-                        max_ascent,
-                        max_descent,
+                        (baseline_y, max_ascent, max_descent),
+                        lines.map(|lines| (lines, reach[i])),
                         fonts,
                     );
                     continue;
                 }
-                into.push(text_fragment(x, baseline_y, &word, max_ascent, max_descent));
+                let decorated = lines.map(|lines| {
+                    Box::new(Decorated {
+                        lines,
+                        left: reach[i].0,
+                        right: reach[i].1,
+                    })
+                });
+                into.push(text_fragment(
+                    x,
+                    baseline_y,
+                    &word,
+                    max_ascent,
+                    max_descent,
+                    decorated,
+                ));
                 x += word.width;
             }
             LineItem::Atomic(a) => {
@@ -1758,8 +1831,83 @@ fn close_inline<'a>(
         stacking_parent: None,
         parent: b.parent,
         in_3d: b.in_3d,
+        decorated: None,
     }
 }
+
+/// How far past each word on `line` its text decorations reach (M21.7):
+/// over the gap before an item, which `owner` says the decorations of by
+/// the item's place in the run, back from the next word, across the
+/// inline boxes' edges between, when that word's are those, else on
+/// from the word before it the same way; over no gap otherwise, and over
+/// none at a line's ends, which has none.
+fn decoration_reach<'a>(
+    line: &[Placed<'_, '_>],
+    owner: impl Fn(usize) -> Option<&'a Arc<[Decorating]>>,
+    fonts: &FontCollection,
+) -> Vec<Spread> {
+    let mut reach = vec![(0.0, 0.0); line.len()];
+    let same =
+        |a: Option<&Arc<[Decorating]>>, b: &Arc<[Decorating]>| a.is_some_and(|a| Arc::ptr_eq(a, b));
+    for i in 1..line.len() {
+        let Some(owner) = owner(line[i].index).filter(|_| line[i].gap_before) else {
+            continue;
+        };
+        let gap = space_width(line[i].item.style(), fonts);
+        // The word after, past the edges of the inline boxes the space
+        // ended or began, its own start edge among them.
+        let mut edges = 0.0;
+        let mut found = false;
+        for j in i..line.len() {
+            match &line[j].item {
+                LineItem::Open(.., edge) | LineItem::Close(_, edge) => edges += edge,
+                LineItem::Word(after) => {
+                    if same(after.decorations, owner) {
+                        reach[j].0 = gap + edges;
+                        found = true;
+                    }
+                    break;
+                }
+                _ => break,
+            }
+        }
+        if found {
+            continue;
+        }
+        let mut edges = 0.0;
+        for j in (0..i).rev() {
+            match &line[j].item {
+                LineItem::Open(.., edge) | LineItem::Close(_, edge) => edges += edge,
+                LineItem::Word(before) => {
+                    if same(before.decorations, owner) {
+                        reach[j].1 = edges + gap;
+                    }
+                    break;
+                }
+                _ => break,
+            }
+        }
+    }
+    reach
+}
+
+/// How far a word's text decorations reach past its left edge and its
+/// right ([`decoration_reach`]).
+type Spread = (f32, f32);
+
+/// The lines each list of decorations on a line draws, found once.
+#[derive(Default)]
+struct DrawnLines(HashMap<*const Decorating, Arc<[DrawnLine]>>);
+
+impl DrawnLines {
+    fn of(&mut self, decorations: &Arc<[Decorating]>, fonts: &FontCollection) -> Arc<[DrawnLine]> {
+        self.0
+            .entry(decorations.as_ptr())
+            .or_insert_with(|| Arc::from(decoration::lines(decorations, fonts)))
+            .clone()
+    }
+}
+
 /// A text fragment for `word` at `x` on a line whose baseline is
 /// `baseline_y` and whose text rises `ascent` above it and `descent`
 /// below: the fragment's `y` is the baseline (`block`'s and `paint`'s
@@ -1770,6 +1918,7 @@ fn text_fragment(
     word: &LineWord<'_>,
     ascent: f32,
     descent: f32,
+    decorated: Option<Box<Decorated>>,
 ) -> Fragment {
     Fragment {
         x,
@@ -1787,24 +1936,28 @@ fn text_fragment(
         stacking_parent: None,
         parent: Some(word.node),
         in_3d: false,
+        decorated,
     }
 }
 
 /// Pushes one `Text` fragment per character of `word`, each advanced by
 /// `letter-spacing` past the previous one (M8.4) — the common
 /// `letter_spacing == 0.0` case never calls this, so it costs nothing
-/// when the property isn't used.
+/// when the property isn't used. On a line whose baseline is at `y` and
+/// whose text rises and falls `ascent` and `descent`. The word's text
+/// decorations (M21.7) reach over the letter spacing after each
+/// character, and the first's and the last's over the gaps `reach` says.
 fn emit_letter_spaced(
     fragments: &mut Vec<Fragment>,
     word: &LineWord<'_>,
     x: &mut f32,
-    baseline_y: f32,
-    ascent: f32,
-    descent: f32,
+    (baseline_y, ascent, descent): (f32, f32, f32),
+    decorations: Option<(Arc<[DrawnLine]>, Spread)>,
     fonts: &FontCollection,
 ) {
     let mut buf = [0u8; 4];
-    for ch in word.text.chars() {
+    let last = word.text.chars().count().saturating_sub(1);
+    for (i, ch) in word.text.chars().enumerate() {
         let ch_str = ch.encode_utf8(&mut buf);
         let w = fonts.measure(ch_str, word.style.font_size_px);
         let one = LineWord {
@@ -1813,9 +1966,20 @@ fn emit_letter_spaced(
             style: word.style,
             node: word.node,
             generated: word.generated,
+            decorations: word.decorations,
         };
-        fragments.push(text_fragment(*x, baseline_y, &one, ascent, descent));
-        *x += w + word.style.letter_spacing;
+        let spacing = word.style.letter_spacing;
+        let decorated = decorations.as_ref().map(|(lines, (left, right))| {
+            Box::new(Decorated {
+                lines: Arc::clone(lines),
+                left: if i == 0 { *left } else { 0.0 },
+                right: spacing + if i == last { *right } else { 0.0 },
+            })
+        });
+        fragments.push(text_fragment(
+            *x, baseline_y, &one, ascent, descent, decorated,
+        ));
+        *x += w + spacing;
     }
 }
 
@@ -1867,6 +2031,7 @@ mod tests {
             anonymous: true,
             generated: None,
             generated_text: 0,
+            decorations: None,
             styled_by_ancestor: false,
             first_line: None,
             tree_order: 0,
@@ -1885,6 +2050,7 @@ mod tests {
             anonymous: false,
             generated: None,
             generated_text: 0,
+            decorations: None,
             styled_by_ancestor: false,
             first_line: None,
             tree_order: 0,
@@ -2089,6 +2255,7 @@ mod tests {
             anonymous: true,
             generated: None,
             generated_text: 0,
+            decorations: None,
             styled_by_ancestor: false,
             first_line: None,
             tree_order: 0,

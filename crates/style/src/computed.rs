@@ -1531,6 +1531,98 @@ impl Lists {
     }
 }
 
+/// The text decoration properties (Text Decoration 3 and 4, M21.7):
+/// what [`ComputedStyle::decoration`] points to when any of them is not
+/// its initial value. The line, its style, colour and thickness are not
+/// inherited; the underline's offset and position are. An element's
+/// decoration is not inherited either way but propagated by the box
+/// tree to the text it decorates, which keeps the element's values.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Decoration {
+    /// `text-decoration-line`.
+    pub line: DecorationLine,
+    /// `text-decoration-style`.
+    pub style: DecorationStyle,
+    /// `text-decoration-color`: `None` for `currentcolor`, the initial
+    /// value, the element's `color`.
+    pub color: Option<Color>,
+    /// `text-decoration-thickness`.
+    pub thickness: DecorationThickness,
+    /// `text-underline-offset`: `None` for `auto`, a percentage of the
+    /// font size otherwise.
+    pub underline_offset: Option<LengthPercentage>,
+    /// `text-underline-position`.
+    pub underline_position: UnderlinePosition,
+}
+
+impl Decoration {
+    /// The values a child inherits: the underline's offset and
+    /// position, the rest initial.
+    fn inherited(&self) -> Decoration {
+        Decoration {
+            underline_offset: self.underline_offset.clone(),
+            underline_position: self.underline_position,
+            ..Decoration::default()
+        }
+    }
+}
+
+/// `text-decoration-line`'s computed value: the lines, none of them for
+/// `none`, the initial value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DecorationLine {
+    pub underline: bool,
+    pub overline: bool,
+    pub line_through: bool,
+    /// Taken, and never drawn: the user agent may not blink (Text
+    /// Decoration 3 §2.1).
+    pub blink: bool,
+}
+
+impl DecorationLine {
+    /// Whether it draws a line.
+    pub fn draws(&self) -> bool {
+        self.underline || self.overline || self.line_through
+    }
+}
+
+/// `text-decoration-style`'s computed value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DecorationStyle {
+    /// The initial value.
+    #[default]
+    Solid,
+    Double,
+    Dotted,
+    Dashed,
+    Wavy,
+}
+
+/// `text-decoration-thickness`'s computed value.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum DecorationThickness {
+    /// The user agent's choice, the initial value.
+    #[default]
+    Auto,
+    /// The font's own underline thickness.
+    FromFont,
+    /// A length, or a percentage of the font size.
+    Length(LengthPercentage),
+}
+
+/// `text-underline-position`'s computed value, `left` and `right`
+/// taken as `auto`, which they are in horizontal text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UnderlinePosition {
+    /// The initial value.
+    #[default]
+    Auto,
+    /// Below the text's descent.
+    Under,
+    /// Where the font puts it.
+    FromFont,
+}
+
 /// `list-style-type`'s computed value (Lists 3 §3.4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ListStyleType {
@@ -1616,6 +1708,10 @@ impl Fragmentation {
 static INITIAL_FRAGMENTATION: LazyLock<Fragmentation> = LazyLock::new(Fragmentation::default);
 
 static INITIAL_LISTS: LazyLock<Lists> = LazyLock::new(Lists::default);
+
+/// The text decoration properties' initial values, which
+/// [`ComputedStyle::decoration`] gives a style that sets none of them.
+static INITIAL_DECORATION: LazyLock<Decoration> = LazyLock::new(Decoration::default);
 
 /// The box-model edges, one value per side, in CSS's `top, right,
 /// bottom, left` order (matches `margin`/`padding`/`border-width`
@@ -1896,6 +1992,10 @@ pub struct ComputedStyle {
     /// a child as `fragmentation`'s is; `None` is every initial value.
     /// Read through [`ComputedStyle::lists`].
     pub lists: Option<Arc<Lists>>,
+    /// The text decoration properties (M21.7), behind one pointer as the
+    /// list properties are; `None` is every initial value. Read through
+    /// [`ComputedStyle::decoration`].
+    pub decoration: Option<Arc<Decoration>>,
 }
 
 /// `font-family`'s initial value, one for every style that has it.
@@ -1962,6 +2062,7 @@ impl Default for ComputedStyle {
             fragmentation: None,
             custom: None,
             lists: None,
+            decoration: None,
         }
     }
 }
@@ -2055,6 +2156,18 @@ impl ComputedStyle {
         Arc::make_mut(self.lists.get_or_insert_with(Default::default))
     }
 
+    /// The text decoration properties (M21.7), the initial values when
+    /// the style has none of its own.
+    pub fn decoration(&self) -> &Decoration {
+        self.decoration.as_deref().unwrap_or(&INITIAL_DECORATION)
+    }
+
+    /// The text decoration properties to change, this style's own copy
+    /// made first if it shares them or has none.
+    pub fn decoration_mut(&mut self) -> &mut Decoration {
+        Arc::make_mut(self.decoration.get_or_insert_with(Default::default))
+    }
+
     /// The value of the custom property `name` (M21.1), its substitution
     /// functions replaced; `None` when it has the guaranteed-invalid
     /// value, as one never declared has.
@@ -2111,6 +2224,7 @@ impl ComputedStyle {
             quotes: from.quotes.clone(),
             fragmentation: inherited_fragmentation(from),
             lists: inherited_lists(from),
+            decoration: inherited_decoration(from),
             custom: from.custom.clone(),
             ..self
         }
@@ -2124,6 +2238,20 @@ fn inherited_fragmentation(from: &ComputedStyle) -> Option<Arc<Fragmentation>> {
     let own = from.fragmentation.as_ref()?;
     let inherited = own.inherited();
     if inherited == Fragmentation::default() {
+        None
+    } else if **own == inherited {
+        Some(Arc::clone(own))
+    } else {
+        Some(Arc::new(inherited))
+    }
+}
+
+/// The text decoration properties a child of `from` inherits, as
+/// [`inherited_fragmentation`] gives the fragmentation properties.
+fn inherited_decoration(from: &ComputedStyle) -> Option<Arc<Decoration>> {
+    let own = from.decoration.as_ref()?;
+    let inherited = own.inherited();
+    if inherited == Decoration::default() {
         None
     } else if **own == inherited {
         Some(Arc::clone(own))
@@ -2216,11 +2344,12 @@ mod tests {
         // percentage, 22 of them, from 8 bytes to 16, to hold its
         // expression beside the length and the percentage: 448 before
         // it (`docs/design/values.md` says why not smaller). The custom
-        // properties (M21.1) cost a pointer, 624 before them, and the
-        // counter properties (M21.4) another, 632 before them. Growing
+        // properties (M21.1) cost a pointer, 624 before them, the counter
+        // properties (M21.4) another, 632 before them, and the text
+        // decoration properties (M21.7) another, 640 before them. Growing
         // this is a decision, not an accident; say why where the number
         // changes.
-        assert_eq!(std::mem::size_of::<ComputedStyle>(), 640);
+        assert_eq!(std::mem::size_of::<ComputedStyle>(), 648);
         assert_eq!(ComputedStyle::default().grid, None);
         assert_eq!(*ComputedStyle::default().grid(), GridStyle::default());
         assert_eq!(ComputedStyle::default().effects, None);

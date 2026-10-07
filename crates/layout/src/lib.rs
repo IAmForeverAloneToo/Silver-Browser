@@ -22,6 +22,7 @@ mod align;
 pub mod block;
 pub mod box_tree;
 mod cache;
+pub mod decoration;
 mod flex;
 mod float;
 mod grid;

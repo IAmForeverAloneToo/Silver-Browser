@@ -180,6 +180,7 @@ fn add(recascade: &dyn Recascade, container: &mut LayoutBox, path: &[usize]) {
         anonymous: true,
         generated: Some(PseudoElement::FirstLine),
         generated_text: 0,
+        decorations: None,
         styled_by_ancestor: false,
         first_line: None,
         tree_order: 0,

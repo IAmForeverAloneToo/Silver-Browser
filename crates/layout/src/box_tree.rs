@@ -37,8 +37,10 @@
 //! text box it is in ([`first_letter`]).
 
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::Arc;
 
 use dom::{Document, NodeId};
 use style::computed::{
@@ -51,6 +53,8 @@ use style::{ComputedStyle, Recascade, Styles};
 mod first_letter;
 mod first_line;
 mod generated;
+
+use crate::decoration::{self, Decorating};
 
 use generated::GeneratedText;
 
@@ -94,13 +98,22 @@ pub struct LayoutBox {
     pub generated: Option<PseudoElement>,
     /// A fingerprint of the generated text in the box and the boxes in
     /// it (M21.4): of every text box a pseudo-element's box holds, or a
-    /// `::first-letter` took from one, in order; 0 when there is none.
-    /// That text depends on the quote marks and counters before it in
-    /// the document, not only on the box's own subtree, and the layout
-    /// cache keeps an element's results under it — where M16 kept them
-    /// under the quote depth the box started at, which this covers. The
-    /// builder sets it when it numbers the tree.
+    /// `::first-letter` took from one, in order, and of the text
+    /// decorations every text box in it has (M21.7); 0 when there is
+    /// none. That text depends on the quote marks and counters before it
+    /// in the document, and those decorations on the elements around the
+    /// box, not only on the box's own subtree, and the layout cache keeps
+    /// an element's results under it — where M16 kept them under the
+    /// quote depth the box started at, which this covers. The builder
+    /// sets it when it numbers the tree.
     pub generated_text: u64,
+    /// For a text box, the text decorations in force over it (M21.7,
+    /// [`crate::decoration`]), outermost element's first: the ones its
+    /// element and the elements around it name, up to a float, an
+    /// absolutely positioned box, an atomic inline or a replaced
+    /// element. Text boxes the same decorations are over share the list.
+    /// `None` for none, and for any other box.
+    pub decorations: Option<Arc<[Decorating]>>,
     /// Whether the box's layout reads the style of an ancestor's
     /// pseudo-element (M16): a block between a block container and the
     /// text its `::first-letter` takes, or the run its `::first-line`
@@ -447,6 +460,7 @@ pub fn build_box_tree(
         styles,
         recascade,
         generated: GeneratedText::default(),
+        decorations: RefCell::default(),
     };
     styled.generated = GeneratedText::of(&styled);
     let mut boxes = build_block_container(&styled, Item::Node(document.root()));
@@ -556,17 +570,22 @@ fn number(
 
 /// The fingerprint of the generated text in `b`
 /// ([`LayoutBox::generated_text`]), its children's known: of its own
-/// text, if it is a text box of a pseudo-element, then theirs.
+/// text, if it is a text box of a pseudo-element, and its decorations,
+/// then theirs.
 fn generated_text(b: &LayoutBox) -> u64 {
     let own = match &b.kind {
         BoxKind::Text(text) if b.generated.is_some() => Some(text.as_str()),
         _ => None,
     };
-    if own.is_none() && b.children.iter().all(|c| c.generated_text == 0) {
+    if own.is_none() && b.decorations.is_none() && b.children.iter().all(|c| c.generated_text == 0)
+    {
         return 0;
     }
     let mut hasher = DefaultHasher::new();
     own.hash(&mut hasher);
+    if let Some(decorations) = &b.decorations {
+        format!("{decorations:?}").hash(&mut hasher);
+    }
     for child in &b.children {
         child.generated_text.hash(&mut hasher);
     }
@@ -627,6 +646,9 @@ struct Styled<'a> {
     styles: &'a Styles,
     recascade: &'a dyn Recascade,
     generated: GeneratedText,
+    /// The text decorations in force over each element's text, found as
+    /// the build asks.
+    decorations: RefCell<HashMap<NodeId, Option<Arc<[Decorating]>>>>,
 }
 
 impl<'a> Styled<'a> {
@@ -726,6 +748,42 @@ impl<'a> Styled<'a> {
         }
     }
 
+    /// The text decorations in force over the text in `item` (M21.7): an
+    /// element's, or a generated box's, which is a child of its element;
+    /// none in a marker.
+    fn decorations(&self, item: Item) -> Option<Arc<[Decorating]>> {
+        match item {
+            Item::Node(node) => self.element_decorations(node),
+            Item::Generated(_, Side::Marker) | Item::GeneratedText(_, Side::Marker) => None,
+            Item::Generated(node, side) | Item::GeneratedText(node, side) => {
+                let style = self.styles.pseudo(node, side.pseudo_element());
+                let parent = self
+                    .element_decorations(node)
+                    .filter(|_| !style.is_some_and(decoration::stops_propagation));
+                decoration::within(parent.as_ref(), style.and_then(Decorating::of))
+            }
+        }
+    }
+
+    /// The text decorations in force over the element `node`'s text: its
+    /// own inside its parent's, unless its box stops theirs.
+    fn element_decorations(&self, node: NodeId) -> Option<Arc<[Decorating]>> {
+        if let Some(found) = self.decorations.borrow().get(&node) {
+            return found.clone();
+        }
+        let found = self.styles.get(node).and_then(|style| {
+            let stops = decoration::stops_propagation(style)
+                || self.document.tag(node).is_some_and(is_replaced);
+            let parent = match self.document.parent_element(node) {
+                Some(parent) if !stops => self.element_decorations(parent),
+                _ => None,
+            };
+            decoration::within(parent.as_ref(), Decorating::of(style))
+        });
+        self.decorations.borrow_mut().insert(node, found.clone());
+        found
+    }
+
     /// The box `item` generates with the computed `style`, of `kind`,
     /// its children the ones `build` makes: an element's own box, or a
     /// generated one, which is anonymous to the layout cache.
@@ -744,6 +802,7 @@ impl<'a> Styled<'a> {
             anonymous: item.generated().is_some(),
             generated: item.generated(),
             generated_text: 0,
+            decorations: None,
             styled_by_ancestor: false,
             first_line: None,
             tree_order: 0,
@@ -770,6 +829,7 @@ impl<'a> Styled<'a> {
             anonymous: true,
             generated: item.generated(),
             generated_text: 0,
+            decorations: None,
             styled_by_ancestor: false,
             first_line: None,
             tree_order: 0,
@@ -1028,6 +1088,7 @@ impl BlockContainer<'_> {
             if text.is_empty() || (white_space && self.open.is_empty() && self.run.is_empty()) {
                 continue;
             }
+            let decorations = styled.decorations(parent);
             self.add_inline_level(LayoutBox {
                 style: styled.style_or_initial(parent),
                 kind: BoxKind::Text(text.into_owned()),
@@ -1036,6 +1097,7 @@ impl BlockContainer<'_> {
                 anonymous: true,
                 generated: parent.generated(),
                 generated_text: 0,
+                decorations,
                 styled_by_ancestor: false,
                 first_line: None,
                 tree_order: 0,
@@ -1188,6 +1250,7 @@ impl BlockContainer<'_> {
                     anonymous: true,
                     generated: Some(PseudoElement::Marker),
                     generated_text: 0,
+                    decorations: None,
                     styled_by_ancestor: false,
                     first_line: None,
                     tree_order: 0,
@@ -1293,6 +1356,7 @@ impl BlockContainer<'_> {
                 anonymous: b.anonymous,
                 generated: b.generated,
                 generated_text: 0,
+                decorations: None,
                 styled_by_ancestor: false,
                 first_line: None,
                 tree_order: 0,
@@ -1330,6 +1394,7 @@ impl BlockContainer<'_> {
             anonymous: true,
             generated: self.item.generated(),
             generated_text: 0,
+            decorations: None,
             styled_by_ancestor: false,
             first_line: None,
             tree_order: 0,

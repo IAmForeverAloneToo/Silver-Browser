@@ -89,6 +89,7 @@ use text::FontCollection;
 
 use crate::box_tree::{BoxKind, LayoutBox, MarkerShape};
 use crate::cache::{Held, Inputs, LayoutCache};
+use crate::decoration::Decorated;
 use crate::float::{At, FloatContext, FloatKey, PendingFloat, attach_floats};
 use crate::inline::layout_inline;
 use crate::marker::Marker;
@@ -165,6 +166,9 @@ pub struct Fragment {
     /// Whether the box takes part in a 3D rendering context (M19.5,
     /// [`crate::LayoutBox::in_3d`]).
     pub in_3d: bool,
+    /// For a text fragment, the text decorations drawn with it (M21.7):
+    /// the lines, and how far past it they reach; `None` for none.
+    pub decorated: Option<Box<Decorated>>,
 }
 
 /// What names a box's stacking context across the fragment tree: the
@@ -2524,6 +2528,7 @@ pub(crate) fn box_fragment(w: f32, h: f32, b: &LayoutBox) -> Fragment {
         stacking_parent: None,
         parent: b.parent,
         in_3d: b.in_3d,
+        decorated: None,
     }
 }
 
@@ -3901,6 +3906,7 @@ mod tests {
             anonymous: true,
             generated: None,
             generated_text: 0,
+            decorations: None,
             styled_by_ancestor: false,
             first_line: None,
             tree_order: 0,
@@ -3919,6 +3925,7 @@ mod tests {
             anonymous: false,
             generated: None,
             generated_text: 0,
+            decorations: None,
             styled_by_ancestor: false,
             first_line: None,
             tree_order: 0,

@@ -102,7 +102,7 @@ use crate::computed::{
     Quotes, RIGHT, SelfAlignment, Size, TOP, TableLayout, TextAlign, TextTransform, VerticalAlign,
     WhiteSpace,
 };
-use crate::computed::{Calc, Effects, Fragmentation, GridStyle, JustifyItems, Lists};
+use crate::computed::{Calc, Decoration, Effects, Fragmentation, GridStyle, JustifyItems, Lists};
 use crate::custom::{self, CustomProperties, DataType, Substituted, Substitutions};
 use crate::invalidation::{Reach, SelectorFeatures, invalidate};
 use crate::media::Media;
@@ -110,6 +110,7 @@ use crate::page::{PagePosition, PageStyle};
 use crate::rule_set::RuleSet;
 use crate::selector_matching::{Matcher, PseudoElement, SelectorList, Specificity};
 
+mod decoration;
 mod effects;
 mod fragmentation;
 mod grid;
@@ -1438,6 +1439,9 @@ fn compute_style(
     if style.lists.as_deref() == Some(&Lists::default()) {
         style.lists = None;
     }
+    if style.decoration.as_deref() == Some(&Decoration::default()) {
+        style.decoration = None;
+    }
     style
 }
 
@@ -1977,6 +1981,42 @@ fn apply_declaration(
                 l.list_style_type = kind;
             },
         ),
+        "text-decoration-line" => {
+            set_decoration(style, decoration::parse_line(value), |d, v| d.line = v)
+        }
+        "text-decoration-style" => {
+            set_decoration(style, decoration::parse_style(value), |d, v| d.style = v)
+        }
+        "text-decoration-color" => {
+            set_decoration(style, decoration::parse_color_or_current(value), |d, v| {
+                d.color = v
+            })
+        }
+        "text-decoration-thickness" => {
+            set_decoration(style, decoration::parse_thickness(value, bases), |d, v| {
+                d.thickness = v
+            })
+        }
+        "text-decoration" => set_decoration(
+            style,
+            decoration::parse_shorthand(value, bases),
+            |d, (line, style, color, thickness)| {
+                d.line = line;
+                d.style = style;
+                d.color = color;
+                d.thickness = thickness;
+            },
+        ),
+        "text-underline-offset" => set_decoration(
+            style,
+            decoration::parse_underline_offset(value, bases),
+            |d, v| d.underline_offset = v,
+        ),
+        "text-underline-position" => set_decoration(
+            style,
+            decoration::parse_underline_position(value),
+            |d, v| d.underline_position = v,
+        ),
         // Not in the v1 property set, or not a real property: ignored,
         // never an error.
         _ => false,
@@ -2074,6 +2114,28 @@ fn set_lists<T>(
     update: impl FnOnce(&mut Lists, T),
 ) -> bool {
     v.map(|v| update(style.lists_mut(), v)).is_some()
+}
+
+/// [`set_grid`] for the text decoration properties.
+fn set_decoration<T>(
+    style: &mut ComputedStyle,
+    v: Option<T>,
+    update: impl FnOnce(&mut Decoration, T),
+) -> bool {
+    v.map(|v| update(style.decoration_mut(), v)).is_some()
+}
+
+/// [`copy_grid`] for the text decoration properties.
+fn copy_decoration(
+    style: &mut ComputedStyle,
+    src: &ComputedStyle,
+    copy: impl FnOnce(&mut Decoration, &Decoration),
+) {
+    if style.decoration.is_none() && src.decoration.is_none() {
+        return;
+    }
+    let src = src.decoration().clone();
+    copy(style.decoration_mut(), &src);
 }
 
 /// [`copy_grid`] for the counter and list properties.
@@ -2221,6 +2283,8 @@ fn is_inherited(name: &str) -> bool {
             | "list-style-type"
             | "list-style-position"
             | "list-style-image"
+            | "text-underline-offset"
+            | "text-underline-position"
     )
 }
 
@@ -2461,6 +2525,24 @@ fn apply_css_wide(
             l.list_style_type = s.list_style_type.clone();
             l.list_style_position = s.list_style_position;
             l.list_style_image = s.list_style_image.clone();
+        }),
+        "text-decoration-line" => copy_decoration(style, src, |d, s| d.line = s.line),
+        "text-decoration-style" => copy_decoration(style, src, |d, s| d.style = s.style),
+        "text-decoration-color" => copy_decoration(style, src, |d, s| d.color = s.color),
+        "text-decoration-thickness" => {
+            copy_decoration(style, src, |d, s| d.thickness = s.thickness.clone())
+        }
+        "text-decoration" => copy_decoration(style, src, |d, s| {
+            d.line = s.line;
+            d.style = s.style;
+            d.color = s.color;
+            d.thickness = s.thickness.clone();
+        }),
+        "text-underline-offset" => copy_decoration(style, src, |d, s| {
+            d.underline_offset = s.underline_offset.clone()
+        }),
+        "text-underline-position" => copy_decoration(style, src, |d, s| {
+            d.underline_position = s.underline_position
         }),
         "widows" => copy_fragmentation(style, src, |f, s| f.widows = s.widows),
         "print-color-adjust" => copy_fragmentation(style, src, |f, s| {
@@ -8630,5 +8712,164 @@ mod tests {
         assert_eq!(kind("<ul type=none></ul>", "ul"), ListStyleType::None);
         assert_eq!(kind("<ul type=a></ul>", "ul"), style("disc"));
         assert_eq!(kind("<p type=a></p>", "p"), style("disc"));
+    }
+
+    #[test]
+    fn the_text_decoration_properties_parse() {
+        // Text Decoration 3 and 4 (M21.7), and the web-platform-tests'
+        // parsing cases.
+        use crate::computed::{
+            DecorationLine, DecorationStyle, DecorationThickness, UnderlinePosition,
+        };
+        let of = |declarations: &str| {
+            p_with("<p>x</p>", &format!("p {{ {declarations} }}"))
+                .decoration()
+                .clone()
+        };
+        let line = |u, o, t, b| DecorationLine {
+            underline: u,
+            overline: o,
+            line_through: t,
+            blink: b,
+        };
+        for (value, expected) in [
+            ("none", line(false, false, false, false)),
+            ("underline", line(true, false, false, false)),
+            ("line-through UNDERLINE", line(true, false, true, false)),
+            ("blink overline underline", line(true, true, false, true)),
+        ] {
+            assert_eq!(
+                of(&format!("text-decoration-line: {value}")).line,
+                expected,
+                "{value}"
+            );
+        }
+        for bad in [
+            "auto",
+            "none underline",
+            "underline underline",
+            "underline none overline",
+            "spelling-error overline",
+        ] {
+            assert_eq!(
+                of(&format!(
+                    "text-decoration-line: overline; text-decoration-line: {bad}"
+                ))
+                .line,
+                line(false, true, false, false),
+                "{bad}"
+            );
+        }
+        let d = of("text-decoration-style: wavy; text-decoration-color: #00f; \
+                    text-decoration-thickness: 2em; text-underline-offset: -10%; \
+                    text-underline-position: right under");
+        assert_eq!(d.style, DecorationStyle::Wavy);
+        assert_eq!(d.color, Some(Color::rgb8(0, 0, 255)));
+        assert_eq!(
+            d.thickness,
+            DecorationThickness::Length(LengthPercentage::Px(32.0))
+        );
+        assert_eq!(d.underline_offset, Some(LengthPercentage::Percent(-10.0)));
+        assert_eq!(d.underline_position, UnderlinePosition::Under);
+        let d = of(
+            "text-decoration-color: currentcolor; text-decoration-thickness: from-font; \
+                    text-underline-offset: auto; text-underline-position: left",
+        );
+        assert_eq!(d.color, None);
+        assert_eq!(d.thickness, DecorationThickness::FromFont);
+        assert_eq!(d.underline_offset, None);
+        assert_eq!(d.underline_position, UnderlinePosition::Auto);
+        for bad in [
+            "auto under",
+            "left right",
+            "under from-font",
+            "right under left",
+        ] {
+            assert_eq!(
+                of(&format!(
+                    "text-underline-position: under; text-underline-position: {bad}"
+                ))
+                .underline_position,
+                UnderlinePosition::Under,
+                "{bad}"
+            );
+        }
+        for bad in ["-10", "-1px", "from font", "otto"] {
+            assert_eq!(
+                of(&format!("text-decoration-thickness: {bad}")).thickness,
+                DecorationThickness::Auto,
+                "{bad}"
+            );
+        }
+        // The shorthand: any order, the line's keywords together, each
+        // part once; what it leaves out is reset.
+        let d = of("text-decoration-style: dotted; text-decoration: overline green from-font");
+        assert_eq!(d.line, line(false, true, false, false));
+        assert_eq!(d.style, DecorationStyle::Solid);
+        assert_eq!(d.color, Some(Color::rgb8(0, 128, 0)));
+        assert_eq!(d.thickness, DecorationThickness::FromFont);
+        let d = of("text-decoration: double overline underline");
+        assert_eq!(
+            (d.line, d.style),
+            (line(true, true, false, false), DecorationStyle::Double)
+        );
+        assert_eq!(of("text-decoration: solid").line, DecorationLine::default());
+        for bad in [
+            "double overline underline dotted",
+            "red line-through green",
+            "overline blue underline",
+            "none underline",
+        ] {
+            assert_eq!(
+                of(&format!(
+                    "text-decoration: underline; text-decoration: {bad}"
+                ))
+                .line,
+                line(true, false, false, false),
+                "{bad}"
+            );
+        }
+        // The offset and the position are inherited; the rest is not.
+        let p = p_with(
+            "<div><p>x</p></div>",
+            "div { text-decoration: underline red; text-underline-offset: 3px; \
+             text-underline-position: under }",
+        );
+        let d = p.decoration();
+        assert_eq!(d.line, DecorationLine::default());
+        assert_eq!(d.color, None);
+        assert_eq!(d.underline_offset, Some(LengthPercentage::Px(3.0)));
+        assert_eq!(d.underline_position, UnderlinePosition::Under);
+        assert_eq!(p_with("<p>x</p>", "").decoration, None);
+    }
+
+    #[test]
+    fn the_ua_sheet_decorates_links_and_edits() {
+        use crate::computed::DecorationStyle;
+        let html = "<a href=x>a</a><ins>i</ins><u>u</u><del>d</del><s>s</s>\
+                    <strike>t</strike><abbr title=x>b</abbr><abbr>c</abbr><a>n</a>";
+        let line = |selector: &str| {
+            let d = style_of(html, &[], selector).decoration().clone();
+            (d.line.underline, d.line.line_through, d.style)
+        };
+        let (under, through) = ((true, false), (false, true));
+        for (selector, expected) in [
+            ("a[href]", under),
+            ("ins", under),
+            ("u", under),
+            ("del", through),
+            ("s", through),
+            ("strike", through),
+        ] {
+            let (u, t, style) = line(selector);
+            assert_eq!(
+                ((u, t), style),
+                (expected, DecorationStyle::Solid),
+                "{selector}"
+            );
+        }
+        assert_eq!(line("abbr[title]"), (true, false, DecorationStyle::Dotted));
+        assert!(!line("abbr:not([title])").0);
+        assert!(!line("a:not([href])").0);
     }
 }

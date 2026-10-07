@@ -94,11 +94,17 @@ q::after { content: close-quote; }
 
 /* Links (HTML §15.3.4, M16): only an `a` or `area` with an `href` is
  * one. Every link is unvisited, there being no history, and none is
- * active until input events land (M26); `text-decoration` and `cursor`
- * are not properties here yet. */
+ * active until input events land (M26); `cursor` is not a property
+ * here yet. */
 :link { color: #0000EE; }
 :visited { color: #551A8B; }
 :link:active, :visited:active { color: #FF0000; }
+
+/* Text decoration (HTML §15.3.4, M21.7). */
+:link, :visited { text-decoration: underline; }
+ins, u { text-decoration: underline; }
+del, s, strike { text-decoration: line-through; }
+abbr[title], acronym[title] { text-decoration: dotted underline; }
 
 /* The rest of the HTML standard's block-level elements (HTML §15.3.3,
  * "Flow content"), which were missing: without this rule a <div> is an

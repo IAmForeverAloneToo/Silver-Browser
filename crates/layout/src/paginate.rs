@@ -1149,6 +1149,7 @@ mod tests {
             stacking_parent: None,
             parent: None,
             in_3d: false,
+            decorated: None,
         }
     }
 

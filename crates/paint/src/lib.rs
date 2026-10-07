@@ -570,19 +570,31 @@ pub fn paint_fragments_in(
                 rect,
                 baseline,
             } => match &fragment.kind {
-                FragmentKind::Text(text) if !text.trim().is_empty() => {
+                FragmentKind::Text(text) => {
                     // The baseline on the pixel grid, as a browser puts it
                     // and as a box's edges are (M11): a glyph's edge then
                     // falls in the same pixel rows whatever fraction the
                     // layout gave the line (M17). Across, the run keeps
-                    // its fraction.
-                    items.push(DisplayItem::Text {
-                        text: text.clone(),
-                        x: rect.x,
-                        y: snap(baseline),
-                        size: fragment.style.font_size_px,
-                        color: to_rgba8(fragment.style.color),
-                    });
+                    // its fraction. Its decorations (M21.7) are drawn from
+                    // it too: the underlines and overlines below the text,
+                    // the line-throughs over it.
+                    let baseline = snap(baseline);
+                    let decorated = fragment.decorated.as_deref();
+                    if let Some(decorated) = decorated {
+                        push_decorations(&mut items, decorated, rect, baseline, false);
+                    }
+                    if !text.trim().is_empty() {
+                        items.push(DisplayItem::Text {
+                            text: text.clone(),
+                            x: rect.x,
+                            y: baseline,
+                            size: fragment.style.font_size_px,
+                            color: to_rgba8(fragment.style.color),
+                        });
+                    }
+                    if let Some(decorated) = decorated {
+                        push_decorations(&mut items, decorated, rect, baseline, true);
+                    }
                 }
                 FragmentKind::Marker(shape) => {
                     push_marker(&mut items, *shape, rect, to_rgba8(fragment.style.color));
@@ -691,6 +703,88 @@ fn push_scrollbar(items: &mut Vec<DisplayItem>, f: &Fragment, rect: Rect, offset
 /// device pixel, half up.
 fn snap(v: f32) -> f32 {
     (v + 0.5).floor()
+}
+
+/// The text decoration lines of a text fragment whose line box is
+/// `rect` and whose baseline is `baseline`, on the pixel grid (M21.7):
+/// its line-throughs when `through`, else its underlines and overlines,
+/// outermost element's first, from `decorated.left` before the fragment
+/// to `decorated.right` after it. A solid line is a rectangle as thick as
+/// the line; a double one two of them; a dotted one squares of its
+/// thickness a thickness apart; a dashed one dashes three times as long
+/// as it is thick and as far apart; and a wavy one a wave of its
+/// thickness, its crests two thicknesses and a pixel apart.
+fn push_decorations(
+    items: &mut Vec<DisplayItem>,
+    decorated: &layout::decoration::Decorated,
+    rect: Rect,
+    baseline: f32,
+    through: bool,
+) {
+    use layout::decoration::LineKind;
+    use style::computed::DecorationStyle;
+    let (x0, x1) = (
+        snap(rect.x - decorated.left),
+        snap(rect.x + rect.w + decorated.right),
+    );
+    if x1 <= x0 {
+        return;
+    }
+    for line in decorated.lines.iter() {
+        if (line.kind == LineKind::LineThrough) != through {
+            continue;
+        }
+        let color = to_rgba8(line.color);
+        let t = line.thickness;
+        let top = baseline + line.top;
+        let bar = |items: &mut Vec<DisplayItem>, x: f32, w: f32, y: f32, h: f32| {
+            let w = w.min(x1 - x);
+            if w > 0.0 {
+                items.push(DisplayItem::Rect { x, y, w, h, color });
+            }
+        };
+        match line.style {
+            DecorationStyle::Solid => bar(items, x0, x1 - x0, top, t),
+            DecorationStyle::Double => {
+                bar(items, x0, x1 - x0, top, t);
+                bar(
+                    items,
+                    x0,
+                    x1 - x0,
+                    baseline + line.second.unwrap_or(line.top + t + 1.0),
+                    t,
+                );
+            }
+            DecorationStyle::Dotted | DecorationStyle::Dashed => {
+                let (on, off) = if line.style == DecorationStyle::Dotted {
+                    (t, t)
+                } else {
+                    (3.0 * t, 3.0 * t)
+                };
+                let mut x = x0;
+                while x < x1 {
+                    bar(items, x, on, top, t);
+                    x += on + off;
+                }
+            }
+            DecorationStyle::Wavy => {
+                // Half a wavelength between a crest and a trough, the
+                // wave's middle at the line's.
+                let half = 2.0 * t + 1.0;
+                let amplitude = t;
+                let middle = top + t / 2.0;
+                let wave =
+                    |x: f32| middle - amplitude * (std::f32::consts::PI * (x - x0) / half).sin();
+                let steps = ((x1 - x0) * 2.0).ceil().max(1.0) as usize;
+                let at = |i: usize| x0 + (x1 - x0) * i as f32 / steps as f32;
+                let mut points: Vec<(f32, f32)> = (0..=steps)
+                    .map(|i| (at(i), wave(at(i)) - t / 2.0))
+                    .collect();
+                points.extend((0..=steps).rev().map(|i| (at(i), wave(at(i)) + t / 2.0)));
+                items.push(DisplayItem::Polygon { points, color });
+            }
+        }
+    }
 }
 
 /// A list item's marker drawn as `shape` in `color` (M21.6), in the

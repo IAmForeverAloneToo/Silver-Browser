@@ -357,6 +357,7 @@ fn childless(fragment: &Fragment) -> Fragment {
         stacking_parent: fragment.stacking_parent,
         parent: fragment.parent,
         in_3d: fragment.in_3d,
+        decorated: fragment.decorated.clone(),
     }
 }
 
@@ -761,6 +762,22 @@ mod tests {
         // html, body, the list and its three items; #d taken.
         assert_eq!(s.pass(), (6, 1));
         assert!(s.kept("b") && s.kept("c"));
+    }
+
+    #[test]
+    fn a_box_is_laid_out_again_when_a_decoration_reaches_it() {
+        // #a's underline is propagated to #b's text, which #b's own style
+        // does not show; #c, after #a, is taken. `pass` holds each result
+        // to a fresh one.
+        let mut s = Session::new(
+            "<div id=a><p id=b>one</p></div><p id=c>two</p>",
+            ".u { text-decoration: underline }",
+        );
+        assert_eq!(s.pass(), (5, 0));
+        let a = s.id("a");
+        s.change(|d| d.set_attribute(a, "class", "u").unwrap());
+        // html, body, #a and #b; #c taken.
+        assert_eq!(s.pass(), (4, 1));
     }
 
     #[test]

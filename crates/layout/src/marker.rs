@@ -104,6 +104,7 @@ impl<'a> Marker<'a> {
             stacking_parent: None,
             parent: Some(self.b.node),
             in_3d: false,
+            decorated: None,
         };
         if let Some(shape) = shape {
             let geometry = Shape::of(&self.metrics);

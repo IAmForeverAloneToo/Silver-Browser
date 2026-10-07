@@ -2405,6 +2405,38 @@ mod tests {
     }
 
     #[test]
+    fn text_decorations_are_drawn_where_the_reference_browser_draws_them() {
+        // M21.7, the rows measured in the reference browser at 16 pixels,
+        // each line a pixel thick: an underline a pixel below the
+        // baseline, an overline its thickness above the ascent, a
+        // line-through a third of the ascent up, a double underline's
+        // second line three below the first. The text is transparent;
+        // the lines are black.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0 } div { height: 40px; padding-left: 10px; color: transparent }\
+             </style><div style='text-decoration: underline #000'>xxxxxx</div>\
+             <div style='text-decoration: overline #000'>xxxxxx</div>\
+             <div style='text-decoration: line-through #000'>xxxxxx</div>\
+             <div style='text-decoration: underline double #000'>xxxxxx</div>",
+        );
+        let pixels = engine.frame(200, 160);
+        let dark_rows: Vec<usize> = (0..160)
+            .filter(|&y| (0..200).any(|x| pixels[(y * 200 + x) * 4] < 100))
+            .collect();
+        assert_eq!(dark_rows, [16, 39, 89, 136, 139]);
+        // From the text's start to its end.
+        let dark = |y: usize| -> Vec<usize> {
+            (0..200)
+                .filter(|&x| pixels[(y * 200 + x) * 4] < 100)
+                .collect()
+        };
+        let row = dark(16);
+        assert_eq!(row.first(), Some(&10));
+        assert!(row.windows(2).all(|w| w[1] == w[0] + 1));
+    }
+
+    #[test]
     fn display_none_removes_the_element_from_the_frame() {
         let mut engine = test_engine();
         engine.load_document("<p>Visible</p>");

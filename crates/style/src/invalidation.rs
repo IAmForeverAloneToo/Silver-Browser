@@ -652,7 +652,9 @@ mod tests {
         let x = by_id(&d, "x");
         let r = change(&mut d, &sheets, &mut styles, |d| {
             d.set_attribute(x, "class", "c").unwrap();
-            d.set_attribute(x, "title", "t").unwrap();
+            // Not `title`, which the user agent sheet's `abbr[title]`
+            // names (M21.7).
+            d.set_attribute(x, "data-t", "t").unwrap();
         });
         assert_eq!((r.full, r.computed), (false, 0));
         // Changed and changed back: nothing either.
