@@ -7,7 +7,14 @@
 //! `tests/reference/capture.sh` captures each one at 800 by 600,
 //! device scale one, scrollbars hidden, from a headless browser into
 //! the `.png` beside it. This test renders each page with the engine
-//! at the same size and compares the pixels byte for byte. When they
+//! at the same size and compares the pixels byte for byte. A page may
+//! ask for another size and for what it is drawn under (M20), which the
+//! capture and the test both read from its head: `reference-size`, the
+//! viewport's width and height, `640x480` say; `reference-media`,
+//! `print` for the print medium on the screen, which the reference
+//! browser draws through its `mediaTypeOverride` and the engine through
+//! [`Engine::set_media_type`]; and `reference-color-scheme`, `dark`, and
+//! `reference-reduced-motion`, `reduce`, the user's preferences. When they
 //! differ, the engine's render and a difference image (the differing
 //! pixels in red over the capture, dimmed) are written under
 //! `target/reference/` for a look, and the failure names the pixels.
@@ -40,10 +47,74 @@
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
-use engine::{Engine, SCROLLBAR_WIDTH};
+use engine::{ColorScheme, Engine, MediaType, Preferences, SCROLLBAR_WIDTH};
 
+/// The size a page is drawn at unless it says another.
 const WIDTH: u32 = 800;
 const HEIGHT: u32 = 600;
+
+/// What a page is drawn under: the viewport's size, the medium and the
+/// user's preferences.
+#[derive(Debug, Clone, Copy)]
+struct Setting {
+    width: u32,
+    height: u32,
+    media_type: MediaType,
+    preferences: Preferences,
+}
+
+/// The content of a page's `<meta name="{name}" content="...">`.
+fn meta<'s>(source: &'s str, name: &str) -> Option<&'s str> {
+    let at = source.find(&format!("name=\"{name}\""))?;
+    let rest = &source[at..];
+    rest.find("content=\"")
+        .and_then(|c| rest[c + 9..].split('"').next())
+}
+
+/// What a page asks to be drawn under, 800 by 600 on a screen with no
+/// preferences unless it says otherwise.
+fn setting_of(source: &str) -> Setting {
+    let (width, height) = meta(source, "reference-size")
+        .map(|size| {
+            let (w, h) = size.split_once('x').expect("a size is WxH");
+            (
+                w.parse().expect("a width in pixels"),
+                h.parse().expect("a height in pixels"),
+            )
+        })
+        .unwrap_or((WIDTH, HEIGHT));
+    let media_type = match meta(source, "reference-media") {
+        Some("print") => MediaType::Print,
+        _ => MediaType::Screen,
+    };
+    let color_scheme = match meta(source, "reference-color-scheme") {
+        Some("dark") => ColorScheme::Dark,
+        _ => ColorScheme::default(),
+    };
+    let reduced_motion = meta(source, "reference-reduced-motion") == Some("reduce");
+    Setting {
+        width,
+        height,
+        media_type,
+        preferences: Preferences {
+            color_scheme,
+            reduced_motion,
+        },
+    }
+}
+
+/// An engine with the bundled font showing `source` as it asks, and its
+/// frame, RGB.
+fn render(source: &str, setting: Setting, change: impl FnOnce(&mut Engine)) -> (Engine, Vec<u8>) {
+    let mut engine = engine();
+    engine.set_media_type(setting.media_type);
+    engine.set_preferences(setting.preferences);
+    engine.load_document(source);
+    change(&mut engine);
+    let frame = engine.frame(setting.width, setting.height);
+    let rgb = frame.chunks(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+    (engine, rgb)
+}
 
 /// An engine with the bundled font: the pages have no text, but the
 /// engine needs a font to exist.
@@ -66,8 +137,9 @@ fn pages() -> Vec<PathBuf> {
     pages
 }
 
-/// The RGB pixels of a capture, row-major.
-fn read_capture(path: &Path) -> Vec<u8> {
+/// The RGB pixels of a capture, row-major, which must be `setting`'s
+/// size.
+fn read_capture(path: &Path, setting: Setting) -> Vec<u8> {
     let file = File::open(path).unwrap_or_else(|e| {
         panic!(
             "no capture at {}: run tests/reference/capture.sh ({e})",
@@ -81,7 +153,7 @@ fn read_capture(path: &Path) -> Vec<u8> {
     let info = reader.next_frame(&mut buf).expect("the capture decodes");
     assert_eq!(
         (info.width, info.height),
-        (WIDTH, HEIGHT),
+        (setting.width, setting.height),
         "{}: captured at the wrong size",
         path.display()
     );
@@ -94,9 +166,9 @@ fn read_capture(path: &Path) -> Vec<u8> {
     }
 }
 
-fn write_png(path: &Path, rgb: &[u8]) {
+fn write_png(path: &Path, rgb: &[u8], setting: Setting) {
     let file = File::create(path).expect("the output directory is writable");
-    let mut encoder = png::Encoder::new(file, WIDTH, HEIGHT);
+    let mut encoder = png::Encoder::new(file, setting.width, setting.height);
     encoder.set_color(png::ColorType::Rgb);
     encoder.set_depth(png::BitDepth::Eight);
     encoder
@@ -114,13 +186,13 @@ fn ignores_scrollbar(source: &str) -> bool {
 
 /// `frame`'s pixels with the scrollbar track at the right edge
 /// overwritten by `other`'s, so that the two compare equal there.
-fn without_scrollbar(frame: &[u8], other: &[u8]) -> Vec<u8> {
+fn without_scrollbar(frame: &[u8], other: &[u8], setting: Setting) -> Vec<u8> {
+    let (width, height) = (setting.width as usize, setting.height as usize);
     let mut out = frame.to_vec();
-    let from = (WIDTH - SCROLLBAR_WIDTH as u32) as usize * 3;
-    for y in 0..HEIGHT as usize {
-        let row = y * WIDTH as usize * 3;
-        out[row + from..row + WIDTH as usize * 3]
-            .copy_from_slice(&other[row + from..row + WIDTH as usize * 3]);
+    let from = (width - SCROLLBAR_WIDTH as usize) * 3;
+    for y in 0..height {
+        let row = y * width * 3;
+        out[row + from..row + width * 3].copy_from_slice(&other[row + from..row + width * 3]);
     }
     out
 }
@@ -137,14 +209,7 @@ struct Tolerance {
 /// The number a page's `<meta name="{name}" content="N">` gives, else
 /// zero.
 fn meta_number(source: &str, name: &str) -> u8 {
-    let Some(at) = source.find(&format!("name=\"{name}\"")) else {
-        return 0;
-    };
-    let rest = &source[at..];
-    rest.find("content=\"")
-        .and_then(|c| rest[c + 9..].split('"').next())
-        .and_then(|n| n.parse().ok())
-        .unwrap_or(0)
+    meta(source, name).and_then(|n| n.parse().ok()).unwrap_or(0)
 }
 
 /// The tolerance a page declares: `reference-tolerance` anywhere,
@@ -158,16 +223,16 @@ fn tolerance_of(source: &str) -> Tolerance {
     }
 }
 
-/// Whether the pixel at `(x, y)` of an RGB capture is on an edge: one
-/// of its eight neighbours is not its own colour.
-fn on_edge(capture: &[u8], x: u32, y: u32) -> bool {
+/// Whether the pixel at `(x, y)` of an RGB capture `width` by `height`
+/// is on an edge: one of its eight neighbours is not its own colour.
+fn on_edge(capture: &[u8], x: u32, y: u32, (width, height): (u32, u32)) -> bool {
     let at = |x: u32, y: u32| {
-        let i = (y * WIDTH + x) as usize * 3;
+        let i = (y * width + x) as usize * 3;
         &capture[i..i + 3]
     };
     let own = at(x, y);
-    (y.saturating_sub(1)..(y + 2).min(HEIGHT))
-        .flat_map(|ny| (x.saturating_sub(1)..(x + 2).min(WIDTH)).map(move |nx| (nx, ny)))
+    (y.saturating_sub(1)..(y + 2).min(height))
+        .flat_map(|ny| (x.saturating_sub(1)..(x + 2).min(width)).map(move |nx| (nx, ny)))
         .any(|(nx, ny)| at(nx, ny) != own)
 }
 
@@ -179,6 +244,7 @@ fn compare(
     expected: &[u8],
     actual: &[u8],
     tolerance: Tolerance,
+    setting: Setting,
     out_dir: &Path,
 ) -> Option<String> {
     if expected == actual {
@@ -192,8 +258,9 @@ fn compare(
     let (mut min_x, mut min_y, mut max_x, mut max_y) = (u32::MAX, u32::MAX, 0, 0);
     let mut diff = Vec::with_capacity(expected.len());
     for (i, (e, a)) in expected.chunks(3).zip(actual.chunks(3)).enumerate() {
-        let (x, y) = (i as u32 % WIDTH, i as u32 / WIDTH);
-        let by = if tolerance.edge > tolerance.inside && on_edge(expected, x, y) {
+        let (x, y) = (i as u32 % setting.width, i as u32 / setting.width);
+        let size = (setting.width, setting.height);
+        let by = if tolerance.edge > tolerance.inside && on_edge(expected, x, y, size) {
             tolerance.edge
         } else {
             tolerance.inside
@@ -225,8 +292,8 @@ fn compare(
         return None;
     }
     fs::create_dir_all(out_dir).expect("the output directory is created");
-    write_png(&out_dir.join(format!("{name}.engine.png")), actual);
-    write_png(&out_dir.join(format!("{name}.diff.png")), &diff);
+    write_png(&out_dir.join(format!("{name}.engine.png")), actual, setting);
+    write_png(&out_dir.join(format!("{name}.diff.png")), &diff, setting);
     let (x, y, e, a) = first.expect("some pixel differs");
     Some(format!(
         "{name}: {differing} pixels differ within ({min_x}, {min_y})-({max_x}, {max_y}), \
@@ -242,9 +309,9 @@ fn every_reference_page_renders_as_its_capture() {
     let pages = pages();
     assert_eq!(
         pages.len(),
-        79,
+        90,
         "the ten cases of M10's design note, the eleven of M11's, the five of M12's, the three of M16's, \
-         the twenty of M17's, the twenty of M18's and the ten of M19's"
+         the twenty of M17's, the twenty of M18's, the ten of M19's and the eleven of M20's"
     );
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/reference");
     let mut failures = Vec::new();
@@ -253,21 +320,19 @@ fn every_reference_page_renders_as_its_capture() {
             .file_stem()
             .and_then(|s| s.to_str())
             .expect("a page name");
-        let expected = read_capture(&page.with_extension("png"));
         let source = fs::read_to_string(page).expect("the page is read");
+        let setting = setting_of(&source);
+        let expected = read_capture(&page.with_extension("png"), setting);
         let tolerance = tolerance_of(&source);
-        let mut engine = engine();
-        engine.load_document(&source);
-        let frame = engine.frame(WIDTH, HEIGHT);
-        let mut actual: Vec<u8> = frame.chunks(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+        let (mut engine, mut actual) = render(&source, setting, |_| {});
         if ignores_scrollbar(&source) {
             assert!(
                 engine.max_scroll() > 0.0,
                 "{name}: the page does not scroll"
             );
-            actual = without_scrollbar(&actual, &expected);
+            actual = without_scrollbar(&actual, &expected, setting);
         }
-        if let Some(failure) = compare(name, &expected, &actual, tolerance, &out_dir) {
+        if let Some(failure) = compare(name, &expected, &actual, tolerance, setting, &out_dir) {
             failures.push(failure);
         }
     }
@@ -279,9 +344,9 @@ fn every_reference_page_renders_as_its_capture() {
 /// shown again, its last element in tree order taken out and put back
 /// where it was, a text node appended and removed, and a tall block
 /// inserted first and removed. What is left is the page as loaded.
-fn mutate_and_restore(engine: &mut Engine) {
+fn mutate_and_restore(engine: &mut Engine, setting: Setting) {
     let frame = |engine: &mut Engine| {
-        engine.frame(WIDTH, HEIGHT);
+        engine.frame(setting.width, setting.height);
     };
     let (body, first, last) = {
         let document = engine.document();
@@ -371,18 +436,18 @@ fn every_reference_page_changed_and_changed_back_renders_as_its_capture() {
             .file_stem()
             .and_then(|s| s.to_str())
             .expect("a page name");
-        let expected = read_capture(&page.with_extension("png"));
         let source = fs::read_to_string(page).expect("the page is read");
-        let mut engine = engine();
-        engine.load_document(&source);
-        mutate_and_restore(&mut engine);
-        let frame = engine.frame(WIDTH, HEIGHT);
-        let mut actual: Vec<u8> = frame.chunks(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+        let setting = setting_of(&source);
+        let expected = read_capture(&page.with_extension("png"), setting);
+        let (_, mut actual) = render(&source, setting, |engine| {
+            mutate_and_restore(engine, setting)
+        });
         if ignores_scrollbar(&source) {
-            actual = without_scrollbar(&actual, &expected);
+            actual = without_scrollbar(&actual, &expected, setting);
         }
         let name = format!("{name}.restored");
-        if let Some(failure) = compare(&name, &expected, &actual, tolerance_of(&source), &out_dir) {
+        let tolerance = tolerance_of(&source);
+        if let Some(failure) = compare(&name, &expected, &actual, tolerance, setting, &out_dir) {
             failures.push(failure);
         }
     }

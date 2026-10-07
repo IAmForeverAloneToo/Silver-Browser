@@ -1,0 +1,65 @@
+<!doctype html>
+<html>
+<head>
+<title>Media queries combined with and, or, not and only, nested in one another, with unknown types and features and malformed queries</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }
+  @media screen and (min-width: 100px) and (max-width: 2000px) { .c1 { background-color: #3a7a4a; } }
+  @media not print { .c2 { background-color: #3a5a7a; } }
+  @media not screen { .c3 { background-color: #a0522d; } }
+  @media only screen { .c4 { background-color: #6a4a8a; } }
+  @media only print { .c5 { background-color: #2a8a8a; } }
+  @media all { .c6 { background-color: #8a6a2a; } }
+  @media tv { .c7 { background-color: #4a6a2a; } }
+  @media foo { .c8 { background-color: #8a3a5a; } }
+  @media (not (max-width: 100px)) { .c9 { background-color: #3a7a4a; } }
+  @media ((min-width: 100px) or (foo: bar)) { .c10 { background-color: #3a5a7a; } }
+  @media ((min-width: 100px) and (foo: bar)) { .c11 { background-color: #a0522d; } }
+  @media not (foo: bar) { .c12 { background-color: #6a4a8a; } }
+  @media (foo: bar), screen { .c13 { background-color: #2a8a8a; } }
+  @media (min-width: 10px) and (max-width: 5px) { .c14 { background-color: #8a6a2a; } }
+  @media (min-width: 10px) and { .c15 { background-color: #4a6a2a; } }
+  @media screen { @media (min-width: 100px) { .c16 { background-color: #8a3a5a; } } }
+  @media print { @media (min-width: 100px) { .c17 { background-color: #3a7a4a; } } }
+  @media (min-width: 100px) { @media not all and (min-width: 100px) { .c18 { background-color: #3a5a7a; } } }
+  @media (width: 800px) or (height: 1px) { .c19 { background-color: #a0522d; } }
+  @media screen and (width: 800px) or (height: 1px) { .c20 { background-color: #6a4a8a; } }
+  @media (min-width: 100px) and (not (max-width: 10px)) { .c21 { background-color: #2a8a8a; } }
+  @media (unknown) { .c22 { background-color: #8a6a2a; } }
+  @media (min-width) { .c23 { background-color: #4a6a2a; } }
+  @media (color) { .c24 { background-color: #8a3a5a; } }
+  @media (monochrome) { .c25 { background-color: #3a7a4a; } }
+  @media (grid: 0) { .c26 { background-color: #3a5a7a; } }
+</style>
+</head>
+<body>
+  <div class="c c1"></div>
+  <div class="c c2"></div>
+  <div class="c c3"></div>
+  <div class="c c4"></div>
+  <div class="c c5"></div>
+  <div class="c c6"></div>
+  <div class="c c7"></div>
+  <div class="c c8"></div>
+  <div class="c c9"></div>
+  <div class="c c10"></div>
+  <div class="c c11"></div>
+  <div class="c c12"></div>
+  <div class="c c13"></div>
+  <div class="c c14"></div>
+  <div class="c c15"></div>
+  <div class="c c16"></div>
+  <div class="c c17"></div>
+  <div class="c c18"></div>
+  <div class="c c19"></div>
+  <div class="c c20"></div>
+  <div class="c c21"></div>
+  <div class="c c22"></div>
+  <div class="c c23"></div>
+  <div class="c c24"></div>
+  <div class="c c25"></div>
+  <div class="c c26"></div>
+</body>
+</html>

@@ -94,7 +94,7 @@ use std::time::{Duration, Instant};
 pub use loader::{LoadError, LoadState};
 pub use net::{Client, NetworkError, Url};
 pub use print::{PrintError, PrintOptions, PrintedPage};
-pub use style::{ColorScheme, Preferences};
+pub use style::{ColorScheme, MediaType, Preferences};
 
 use dom::{Change, Document, NodeId};
 use layout::{DocumentLayout, Fragment, FragmentKind, LayoutCache};
@@ -214,6 +214,9 @@ pub struct Engine {
     viewport: (u32, u32),
     /// The user's preferences that media queries ask about (M20).
     preferences: Preferences,
+    /// The medium the shown document is styled for: `screen` unless
+    /// emulated otherwise.
+    media_type: MediaType,
     /// The time of the last frame drawn while a scroll offset was on its
     /// way to its target (M13.4): the next frame advances the animation
     /// by the time since. `None` when none was, so that an animation
@@ -532,6 +535,7 @@ impl Engine {
             boxes_reused: 0,
             viewport: (0, 0),
             preferences: Preferences::default(),
+            media_type: MediaType::Screen,
             animation_clock: None,
             stats: FrameStats::default(),
             changed: true,
@@ -1290,6 +1294,7 @@ impl Engine {
     /// preferences.
     fn media(&self, viewport: (u32, u32)) -> Media {
         Media {
+            media_type: self.media_type,
             preferences: self.preferences,
             ..Media::screen(viewport.0 as f32, viewport.1 as f32)
         }
@@ -1518,6 +1523,31 @@ impl Engine {
     /// itself.
     pub fn set_preferences(&mut self, preferences: Preferences) {
         self.preferences = preferences;
+        let media = self.media(self.viewport);
+        if self
+            .shown
+            .styled
+            .as_ref()
+            .is_some_and(|cached| self.shown.stylesheets.media_changed(&cached.styles, &media))
+        {
+            self.changed = true;
+        }
+    }
+
+    /// The medium the document shown is styled for.
+    pub fn media_type(&self) -> MediaType {
+        self.media_type
+    }
+
+    /// Styles the document shown for another medium on the screen, as a
+    /// browser's developer tools emulate one: `print` draws the window
+    /// with what the page's print styles say, at the window's size and
+    /// unpaginated, as the reference browser draws a page told to with
+    /// its `mediaTypeOverride` (M20, the reference pages). A frame is
+    /// wanted when an `@media` list of the document answers otherwise;
+    /// [`Engine::print`] is unaffected.
+    pub fn set_media_type(&mut self, media_type: MediaType) {
+        self.media_type = media_type;
         let media = self.media(self.viewport);
         if self
             .shown
@@ -3998,6 +4028,33 @@ mod tests {
         assert!(!engine.needs_frame());
         engine.frame(200, 100);
         assert_eq!(engine.style_runs(), runs);
+    }
+
+    #[test]
+    fn an_emulated_medium_restyles_the_page_for_it() {
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>@media print { p { color: #f00 } } @media screen { p { color: #00f } }\
+             </style><p>x</p>",
+        );
+        let color = |engine: &mut Engine| {
+            let p = first(engine, "p");
+            engine.styles().get(p).expect("styled").color
+        };
+        engine.frame(200, 100);
+        assert_eq!(engine.media_type(), MediaType::Screen);
+        assert_eq!(color(&mut engine), style::computed::Color::rgb8(0, 0, 255));
+        engine.set_media_type(MediaType::Print);
+        assert!(engine.needs_frame());
+        engine.frame(200, 100);
+        assert_eq!(color(&mut engine), style::computed::Color::rgb8(255, 0, 0));
+        engine.set_media_type(MediaType::Print);
+        assert!(!engine.needs_frame(), "the same medium");
+        // Back to the screen.
+        engine.set_media_type(MediaType::Screen);
+        assert!(engine.needs_frame());
+        engine.frame(200, 100);
+        assert_eq!(color(&mut engine), style::computed::Color::rgb8(0, 0, 255));
     }
 
     #[test]
