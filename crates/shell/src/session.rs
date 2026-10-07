@@ -10,7 +10,7 @@
 use std::time::{Duration, Instant};
 
 use engine::address::{self, Address};
-use engine::{Engine, FrameTime, Link, LoadState, Url};
+use engine::{Engine, FrameTime, Link, LoadState, Preferences, Url};
 use ui::{Action, PageState, StatusBubble, TooLong, Toolbar};
 
 use crate::keys::{self, Key, Modifiers, Platform, Scroll, Shortcut};
@@ -220,6 +220,11 @@ impl Session {
     /// The window has a new size.
     pub(crate) fn resized(&mut self, width: u32, height: u32) {
         self.size = (width, height);
+    }
+
+    /// The user's preferences, as the shell now reads them (M20.3).
+    pub(crate) fn set_preferences(&mut self, preferences: Preferences) {
+        self.engine.set_preferences(preferences);
     }
 
     /// The modifier keys held changed.

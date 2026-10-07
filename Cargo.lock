@@ -2218,9 +2218,11 @@ dependencies = [
  "arboard",
  "engine",
  "net",
+ "objc2-app-kit 0.3.2",
  "softbuffer",
  "text",
  "ui",
+ "windows-sys 0.61.2",
  "winit",
 ]
 

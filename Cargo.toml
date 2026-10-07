@@ -72,6 +72,13 @@ rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs"] }
 wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "dx12", "wgsl"] }
 # Blocking on wgpu's futures: the adapter, the device and a readback.
 pollster = "0.4"
+# What the operating system says of the user's preferences (M20.3,
+# docs/design/media.md): Windows's system parameters and macOS's
+# accessibility settings, through the versions of the crates winit and
+# its neighbours already bring there, with the features those calls
+# need alone.
+windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSAccessibility", "NSWorkspace"] }
 
 # Dependencies are optimised even in the dev profile: the rasterizer,
 # the shaper and the font parser are not what a debug build is for

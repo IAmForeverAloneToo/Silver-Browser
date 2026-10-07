@@ -17,13 +17,19 @@
 //! It runs as `silver-browser [URL or path]` (M14, docs/design/net.md,
 //! "The shell"): an argument naming an existing file loads that file,
 //! and any other goes through the address field's rules; with none,
-//! `about:silver` shows with the address field focused (M15). Each
+//! `about:silver` shows with the address field focused (M15). The
+//! user's preferences that pages may ask about (M20.3) come from the
+//! command line where it gives them, and otherwise from the system:
+//! the colour scheme from the window's theme, as it changes, and
+//! reduced motion from `platform`, read again when the window regains
+//! the focus, since no event says it changed. Each
 //! finished fetch wakes the event loop with a user event, on which the
 //! engine takes what arrived; a load the command line asked for that
 //! fails shows the engine's error page, and is reported on standard
 //! error.
 
 mod keys;
+mod platform;
 mod session;
 
 use std::ffi::OsString;
@@ -33,13 +39,13 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use engine::address::Address;
-use engine::{Backend, Engine, FRAME_BUDGET, FrameTime, Url};
+use engine::{Backend, ColorScheme, Engine, FRAME_BUDGET, FrameTime, Preferences, Url};
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::NamedKey;
-use winit::window::{CursorIcon, Window, WindowId};
+use winit::window::{CursorIcon, Theme, Window, WindowId};
 
 use keys::{Key, Modifiers, Platform};
 use session::{Button, Clipboard, Session, Shape};
@@ -68,6 +74,10 @@ struct Browser {
     /// What the window was last given, so that it is given only what
     /// changed.
     shown: Shown,
+    /// The preferences the command line gave.
+    asked: Asked,
+    /// The window's theme, when the system says it.
+    theme: Option<Theme>,
 }
 
 /// The window's state the session decides.
@@ -80,7 +90,7 @@ struct Shown {
 }
 
 impl Browser {
-    fn new(session: Session) -> Self {
+    fn new(session: Session, asked: Asked) -> Self {
         Browser {
             window: None,
             context: None,
@@ -88,7 +98,15 @@ impl Browser {
             session,
             start: Instant::now(),
             shown: Shown::default(),
+            asked,
+            theme: None,
         }
+    }
+
+    /// Gives the session the user's preferences as they now stand.
+    fn read_preferences(&mut self) {
+        let preferences = preferences(self.asked, self.theme, platform::reduced_motion());
+        self.session.set_preferences(preferences);
     }
 
     /// Renders one frame and presents it, then draws ahead in the time
@@ -195,6 +213,8 @@ impl ApplicationHandler<NetworkWake> for Browser {
                         Ok(surface) => {
                             let size = window.inner_size();
                             self.session.resized(size.width, size.height);
+                            self.theme = window.theme();
+                            self.read_preferences();
                             self.context = Some(context);
                             self.surface = Some(surface);
                             self.window = Some(window.clone());
@@ -245,6 +265,11 @@ impl ApplicationHandler<NetworkWake> for Browser {
                 self.session.resized(size.width, size.height);
                 window.request_redraw();
             }
+            WindowEvent::ThemeChanged(theme) => {
+                self.theme = Some(theme);
+                self.read_preferences();
+            }
+            WindowEvent::Focused(true) => self.read_preferences(),
             WindowEvent::ModifiersChanged(modifiers) => {
                 let state = modifiers.state();
                 self.session.modifiers(Modifiers {
@@ -302,6 +327,29 @@ impl ApplicationHandler<NetworkWake> for Browser {
             _ => return,
         }
         self.update(&window);
+    }
+}
+
+/// What the command line says of the user's preferences.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Asked {
+    /// `--prefers-color-scheme light|dark`.
+    color_scheme: Option<ColorScheme>,
+    /// `--prefers-reduced-motion`: less motion, whatever the system says.
+    reduced_motion: bool,
+}
+
+/// The user's preferences: what the command line `asked`, and else what
+/// the system says, the window's `theme` and `reduced_motion`, and else
+/// no preference.
+fn preferences(asked: Asked, theme: Option<Theme>, reduced_motion: Option<bool>) -> Preferences {
+    let system = theme.map(|theme| match theme {
+        Theme::Light => ColorScheme::Light,
+        Theme::Dark => ColorScheme::Dark,
+    });
+    Preferences {
+        color_scheme: asked.color_scheme.or(system).unwrap_or_default(),
+        reduced_motion: asked.reduced_motion || reduced_motion.unwrap_or(false),
     }
 }
 
@@ -386,6 +434,8 @@ struct CommandLine {
     /// `--software`: draw in software even where there is a GPU
     /// (M19.3, roadmap D3).
     software: bool,
+    /// The user's preferences given (M20.3).
+    asked: Asked,
 }
 
 /// The command line parsed: at most one URL or path, and the options
@@ -399,12 +449,30 @@ fn command_line(args: impl Iterator<Item = OsString>) -> Result<CommandLine, Str
         start: None,
         layer_budget: None,
         software: false,
+        asked: Asked::default(),
     };
     let mut page: Option<OsString> = None;
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
         if arg == "--software" {
             line.software = true;
+            continue;
+        }
+        if arg == "--prefers-reduced-motion" {
+            line.asked.reduced_motion = true;
+            continue;
+        }
+        if arg == "--prefers-color-scheme" {
+            let value = args
+                .next()
+                .ok_or_else(|| "--prefers-color-scheme takes light or dark".to_owned())?;
+            line.asked.color_scheme = Some(match value.to_str() {
+                Some("light") => ColorScheme::Light,
+                Some("dark") => ColorScheme::Dark,
+                _ => {
+                    return Err(format!("{}: not light or dark", value.to_string_lossy()));
+                }
+            });
             continue;
         }
         if arg == "--layer-budget" {
@@ -457,11 +525,15 @@ fn main() {
         Ok(line) => line,
         Err(message) => {
             eprintln!("silver-browser: {message}");
-            eprintln!("usage: silver-browser [--software] [--layer-budget <MiB>] [URL or path]");
+            eprintln!(
+                "usage: silver-browser [--software] [--layer-budget <MiB>] \
+                 [--prefers-color-scheme light|dark] [--prefers-reduced-motion] [URL or path]"
+            );
             std::process::exit(2);
         }
     };
     let start = line.start;
+    let asked = line.asked;
 
     let wanted = if line.software {
         Backend::Software
@@ -481,6 +553,8 @@ fn main() {
     if let Some(bytes) = line.layer_budget {
         engine.set_layer_budget(bytes);
     }
+    // The window's theme is known once there is a window.
+    engine.set_preferences(preferences(asked, None, platform::reduced_motion()));
 
     let event_loop = match EventLoop::<NetworkWake>::with_user_event().build() {
         Ok(event_loop) => event_loop,
@@ -501,7 +575,7 @@ fn main() {
     let clipboard = Box::new(SystemClipboard::default());
     let session = Session::new(engine, clipboard, Platform::current(), start);
 
-    let mut browser = Browser::new(session);
+    let mut browser = Browser::new(session, asked);
     if event_loop.run_app(&mut browser).is_err() {
         std::process::exit(1);
     }
@@ -524,6 +598,7 @@ mod tests {
                 start: Some(Url::parse("https://example.com/").unwrap()),
                 layer_budget: Some(16 << 20),
                 software: false,
+                asked: Asked::default(),
             })
         );
         assert_eq!(
@@ -532,6 +607,7 @@ mod tests {
                 start: Some(Url::parse("https://example.com/").unwrap()),
                 layer_budget: Some(0),
                 software: true,
+                asked: Asked::default(),
             })
         );
         assert_eq!(
@@ -545,6 +621,63 @@ mod tests {
         assert_eq!(
             line(&["a", "--layer-budget", "1", "b"]),
             Err("one URL or path at most".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_preferences_given_override_the_systems() {
+        let asked = |args: &[&str]| command_line(args.iter().map(OsString::from)).map(|l| l.asked);
+        assert_eq!(asked(&[]), Ok(Asked::default()));
+        assert_eq!(
+            asked(&[
+                "--prefers-color-scheme",
+                "dark",
+                "example.com",
+                "--prefers-reduced-motion"
+            ]),
+            Ok(Asked {
+                color_scheme: Some(ColorScheme::Dark),
+                reduced_motion: true,
+            })
+        );
+        assert_eq!(
+            asked(&["--prefers-color-scheme", "light"]).map(|a| a.color_scheme),
+            Ok(Some(ColorScheme::Light))
+        );
+        assert_eq!(
+            asked(&["--prefers-color-scheme"]),
+            Err("--prefers-color-scheme takes light or dark".to_owned())
+        );
+        assert_eq!(
+            asked(&["--prefers-color-scheme", "Dark"]),
+            Err("Dark: not light or dark".to_owned())
+        );
+
+        // Given, they stand; not given, the system's; without either,
+        // no preference.
+        let none = Asked::default();
+        let dark = Asked {
+            color_scheme: Some(ColorScheme::Dark),
+            reduced_motion: true,
+        };
+        assert_eq!(preferences(none, None, None), Preferences::default());
+        assert_eq!(
+            preferences(none, Some(Theme::Dark), Some(true)),
+            Preferences {
+                color_scheme: ColorScheme::Dark,
+                reduced_motion: true,
+            }
+        );
+        assert_eq!(
+            preferences(none, Some(Theme::Light), Some(false)),
+            Preferences::default()
+        );
+        assert_eq!(
+            preferences(dark, Some(Theme::Light), Some(false)),
+            Preferences {
+                color_scheme: ColorScheme::Dark,
+                reduced_motion: true,
+            }
         );
     }
 

@@ -18,6 +18,13 @@ winit.workspace = true
 softbuffer.workspace = true
 arboard.workspace = true
 
+# The user's preferences where the operating system says them (M20.3).
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit.workspace = true
+
 [dev-dependencies]
 # The scripted server, and the bundled font, the session's tests run on.
 net = { workspace = true, features = ["test-server"] }

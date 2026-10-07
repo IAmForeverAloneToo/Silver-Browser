@@ -92,6 +92,7 @@ use std::time::{Duration, Instant};
 
 pub use loader::{LoadError, LoadState};
 pub use net::{Client, NetworkError, Url};
+pub use style::{ColorScheme, Preferences};
 
 use dom::{Change, Document, NodeId};
 use layout::{DocumentLayout, Fragment, FragmentKind, LayoutCache};
@@ -104,7 +105,7 @@ use paint::{
 pub use render::Backend;
 use render::{RenderBackend, SoftwareBackend};
 use style::computed::Overflow;
-use style::{CascadeContext, FontMeasure, Media, Preferences, Styles, Stylesheets};
+use style::{CascadeContext, FontMeasure, Media, Styles, Stylesheets};
 use text::FontError;
 
 /// How much of the remaining distance to the scroll target the scroll
@@ -1500,6 +1501,30 @@ impl Engine {
     /// How many bytes of layer pixmaps the backend holds (M19.6).
     pub fn layer_bytes(&self) -> usize {
         self.backend.layer_bytes()
+    }
+
+    /// The user's preferences that media queries ask about (M20.3).
+    pub fn preferences(&self) -> Preferences {
+        self.preferences
+    }
+
+    /// Sets the user's preferences, as the shell reads them from the
+    /// operating system or its own options (M20.3). A frame is wanted
+    /// when an `@media` list of the document shown answers otherwise
+    /// for them, and cascades the document again; a page that asks
+    /// nothing of them is left alone. The engine reads no preference
+    /// itself.
+    pub fn set_preferences(&mut self, preferences: Preferences) {
+        self.preferences = preferences;
+        let media = self.media(self.viewport);
+        if self
+            .shown
+            .styled
+            .as_ref()
+            .is_some_and(|cached| self.shown.stylesheets.media_changed(&cached.styles, &media))
+        {
+            self.changed = true;
+        }
     }
 
     /// Sets how many bytes of layer pixmaps the backend may hold
@@ -3917,6 +3942,60 @@ mod tests {
         );
         assert_eq!(engine.link_at(plain.x + 1.0, plain.top() + 1.0), None);
         assert_eq!(engine.link_at(1.0, 90.0), None);
+    }
+
+    #[test]
+    fn the_users_preferences_restyle_the_pages_that_ask_for_them() {
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>@media (prefers-color-scheme: dark) { p { color: #fff } }\
+             @media (prefers-reduced-motion) { p { background-color: #00f } }</style><p>x</p>",
+        );
+        let style = |engine: &mut Engine| {
+            let p = first(engine, "p");
+            let style = engine.styles().get(p).expect("styled");
+            (style.color, style.background_color)
+        };
+        engine.frame(200, 100);
+        let light = style(&mut engine);
+        assert_eq!(light.0, style::computed::Color::rgb8(0, 0, 0));
+        assert_eq!(engine.preferences(), Preferences::default());
+        assert!(!engine.needs_frame());
+
+        let dark = Preferences {
+            color_scheme: ColorScheme::Dark,
+            ..Preferences::default()
+        };
+        engine.set_preferences(dark);
+        assert_eq!(engine.preferences(), dark);
+        assert!(engine.needs_frame());
+        engine.frame(200, 100);
+        assert_eq!(engine.style_runs(), 2);
+        assert_eq!(
+            style(&mut engine).0,
+            style::computed::Color::rgb8(255, 255, 255)
+        );
+        engine.set_preferences(dark);
+        assert!(!engine.needs_frame(), "the same preferences");
+
+        engine.set_preferences(Preferences {
+            reduced_motion: true,
+            ..dark
+        });
+        engine.frame(200, 100);
+        assert_eq!(
+            style(&mut engine).1,
+            style::computed::Color::rgb8(0, 0, 255)
+        );
+
+        // A page that asks nothing of them is left alone.
+        engine.load_document("<p>x</p>");
+        engine.frame(200, 100);
+        let runs = engine.style_runs();
+        engine.set_preferences(Preferences::default());
+        assert!(!engine.needs_frame());
+        engine.frame(200, 100);
+        assert_eq!(engine.style_runs(), runs);
     }
 
     #[test]
