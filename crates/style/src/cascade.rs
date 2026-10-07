@@ -1152,7 +1152,8 @@ fn compute_style(
 /// lowercased, the value's tokens trimmed and without `!important`. The
 /// cascade's own parsers answer, so the answer is what the cascade does
 /// with the declaration. A relative length resolves against a 16px font
-/// in an 800 by 600 viewport, which no answer depends on.
+/// in a viewport of no size, `CascadeContext::default()`'s, which no
+/// answer depends on.
 pub fn supports(name: &str, value: &[Token]) -> bool {
     let context = CascadeContext::default();
     let viewport_used = Cell::new(false);

@@ -40,9 +40,17 @@ pub mod cascade;
 /// Computed values resolved for one element (the cascade's output).
 pub mod computed;
 
+/// `@supports` conditions (M20): parsed from tokens and decided by what
+/// this engine supports, `selector()` included.
+pub mod conditions;
+
 /// Style invalidation (M13.1): which elements a change to a document
 /// can restyle.
 pub mod invalidation;
+
+/// Media queries (M20): the environment a document is styled for, and
+/// query lists parsed from tokens and evaluated against it.
+pub mod media;
 
 /// Selector matching: does a selector match an element?
 ///
@@ -64,4 +72,8 @@ pub use cascade::{
     cascade_document, supports,
 };
 pub use computed::ComputedStyle;
+pub use conditions::supports_condition;
 pub use invalidation::SelectorFeatures;
+pub use media::{
+    ColorScheme, Media, MediaQueryList, MediaType, Preferences, parse_media_query_list,
+};

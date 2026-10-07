@@ -43,7 +43,7 @@ mod matcher;
 mod parse;
 
 pub use matcher::{Matcher, matches_selector, matches_selector_list};
-pub use parse::parse_selector_list;
+pub use parse::{parse_selector_list, supports_selector};
 
 /// A comma-separated selector list.
 #[derive(Debug, Clone, PartialEq)]

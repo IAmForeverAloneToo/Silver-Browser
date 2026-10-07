@@ -48,6 +48,22 @@ pub fn parse_selector_list(tokens: &[Token]) -> Result<SelectorList, ParseError>
     Ok(list)
 }
 
+/// Whether `@supports selector(...)` holds for its argument (CSS
+/// Conditional 4): one complex selector, which the parser takes without
+/// the forgiving rules of `:is()` and `:where()`, so that a part it
+/// does not know anywhere in the selector makes the answer false, nor
+/// the `::-webkit-` pseudo-elements it takes only to match nothing.
+/// What the parser takes otherwise, the matcher knows.
+pub fn supports_selector(tokens: &[Token]) -> bool {
+    let mut c = Cursor::new(tokens);
+    c.strict = true;
+    let Ok(list) = parse_list(&mut c, 0, Scope::Rule, false, false) else {
+        return false;
+    };
+    c.skip_ws();
+    c.at_end() && list.0.len() == 1
+}
+
 /// Where a selector list stands, which decides what its selectors may
 /// hold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,11 +83,17 @@ enum Scope {
 struct Cursor<'a> {
     tokens: &'a [Token],
     pos: usize,
+    /// No list is forgiving, as in `@supports selector()`.
+    strict: bool,
 }
 
 impl<'a> Cursor<'a> {
     fn new(tokens: &'a [Token]) -> Self {
-        Cursor { tokens, pos: 0 }
+        Cursor {
+            tokens,
+            pos: 0,
+            strict: false,
+        }
     }
 
     fn peek(&self) -> Option<&'a Token> {
@@ -504,6 +526,10 @@ fn parse_pseudo(
                 return None;
             };
             let element = pseudo_element(name)?;
+            // Conditional 4: valid, but not supported.
+            if c.strict && element == PseudoElement::WebkitPrefixed {
+                return None;
+            }
             c.advance();
             *spec += Specificity(0, 0, 1);
             Some(Pseudo::Element(element))
@@ -557,12 +583,12 @@ fn parse_pseudo(
                     PseudoClass::Not(list)
                 }
                 "is" => {
-                    let list = parse_list(c, depth + 1, inner, true, true).ok()?;
+                    let list = parse_list(c, depth + 1, inner, true, !c.strict).ok()?;
                     *spec += max_specificity(&list);
                     PseudoClass::Is(list)
                 }
                 "where" => {
-                    let list = parse_list(c, depth + 1, inner, true, true).ok()?;
+                    let list = parse_list(c, depth + 1, inner, true, !c.strict).ok()?;
                     PseudoClass::Where(list) // zero specificity by design
                 }
                 "nth-child" => {
