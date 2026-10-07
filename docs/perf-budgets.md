@@ -514,7 +514,7 @@ composite; on the GPU backend, met by the scroll on llvmpipe, and to
 be measured on an integrated GPU, which this machine has not got.
 
 **T4.3.** The benchmarks above, run on the same kind of machine as
-M18's: the code before M19 (`d5cf89c`) and M19's built side by side
+M18's: the code before M19 (`82b6c49`) and M19's built side by side
 in release, four rounds of each in turn. The ranges are over the
 rounds.
 
@@ -652,7 +652,7 @@ page's groups are now drawn through. And the print held every page's raw
 raster, 21 MiB, until the file was written, 1.28 GB at its peak for the
 53; a page's raster is now compressed when it is drawn.
 
-**T4.3.** The benchmarks above, the code before M20 (`839212c`) and
+**T4.3.** The benchmarks above, the code before M20 (`8edc19d`) and
 M20's built side by side in release, four rounds of each in turn. The
 ranges are over the rounds. The machine is faster than M19's: the same
 rows are shorter in both columns than in M19's table, which is why the
