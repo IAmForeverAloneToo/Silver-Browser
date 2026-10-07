@@ -3,7 +3,9 @@
 //! reference browser.
 //!
 //! Every page under `tests/reference/` is a case built of boxes alone —
-//! no text, since text rasterizers differ by design — and
+//! no text drawn, since text rasterizers differ by design; M21's pages
+//! of list markers and text decorations lay out text drawn transparent —
+//! and
 //! `tests/reference/capture.sh` captures each one at 800 by 600,
 //! device scale one, scrollbars hidden, from a headless browser into
 //! the `.png` beside it. This test renders each page with the engine
@@ -36,8 +38,12 @@
 //! equivalence suite holds the two backends to; M19's pages with
 //! rotation or 3D use it for the resampling of a layer from its own
 //! plane against the browser's raster through the transform, which
-//! moves an edge's coverage, never the colour inside it. Every other
-//! page is exact. A page may declare
+//! moves an edge's coverage, never the colour inside it, and M21's page
+//! of list markers for the anti-aliasing of a disc's and a circle's
+//! edge by another rasterizer. Every other page is exact; M21's pages of
+//! markers and decorations give the reference browser the engine's own
+//! font by `@font-face`, whose metrics place them, their text
+//! transparent. A page may declare
 //! `<meta name="reference-ignore-scrollbar">` when it scrolls (M19,
 //! a transformed box extending the scrollable overflow): the browser
 //! captures without scrollbars, so the engine's scrollbar track at the
@@ -309,9 +315,10 @@ fn every_reference_page_renders_as_its_capture() {
     let pages = pages();
     assert_eq!(
         pages.len(),
-        90,
+        97,
         "the ten cases of M10's design note, the eleven of M11's, the five of M12's, the three of M16's, \
-         the twenty of M17's, the twenty of M18's, the ten of M19's and the eleven of M20's"
+         the twenty of M17's, the twenty of M18's, the ten of M19's, the eleven of M20's and the seven \
+         of M21's"
     );
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/reference");
     let mut failures = Vec::new();

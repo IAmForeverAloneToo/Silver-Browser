@@ -1,0 +1,57 @@
+<!doctype html>
+<html>
+<head>
+<title>Math functions in grid tracks, gaps and repetitions, in flex bases and gaps, and in transforms and their origins, against definite and indefinite sizes</title>
+<style>
+  html { background-color: #f6f2ea; font-size: 16px; }
+  body { margin: 0; }
+  .g { float: left; display: grid; width: 180px; height: 120px; margin: 10px 0 0 10px; background-color: #e0d8c8; }
+  .g > div { background-color: #3a7a4a; }
+  .g > div:nth-child(2n) { background-color: #2f4f7f; }
+
+  /* Tracks: calc() with a percentage, min(), max(), clamp(), inside
+     minmax() and fit-content(), and gaps. */
+  .g1 { grid-template-columns: calc(50% - 20px) 1fr; grid-template-rows: min(40px, 50%) max(20%, 30px); gap: calc(5px + 1%); }
+  .g2 { grid-template-columns: minmax(calc(10% + 10px), 1fr) clamp(30px, 25%, 50px) 1fr; grid-template-rows: 1fr; column-gap: max(4px, 2%); }
+  .g3 { grid-template-columns: fit-content(calc(20% + 4px)) 1fr; grid-template-rows: 50px 40px; }
+  .g3 > div:first-child { width: 80px; }
+  .g4 { grid-template-columns: repeat(auto-fill, calc(15% + 3px)); grid-auto-rows: 40px; gap: 4px; }
+
+  /* An auto-sized grid: percentages of its own size are cyclic, the
+     gap's length counting while its size is found. */
+  .g5 { width: auto; height: auto; display: inline-grid; float: left; grid-template-columns: 40px 40px; grid-template-rows: 30px 30px; gap: calc(10px + 10%); }
+
+  /* Flex: a basis, a gap and a minimum from math functions. */
+  .f { float: left; display: flex; width: 180px; height: 60px; margin: 10px 0 0 10px; background-color: #e0d8c8; }
+  .f > div { background-color: #3a7a4a; }
+  .f > div:nth-child(2n) { background-color: #2f4f7f; }
+  .f1 { column-gap: calc(2% + 6px); }
+  .f1 > div { flex: 1 1 calc(25% - 10px); }
+  .f1 > div:first-child { flex: 0 0 min(30%, 40px); }
+  .f2 { flex-direction: column; height: auto; row-gap: calc(10px + 5%); }
+  .f2 > div { height: max(10px, 1em); width: clamp(20px, 50%, 120px); }
+
+  /* Transforms: translations with percentages of the box, a scale and
+     a quarter turn computed, and an origin from calc(). */
+  .t { float: left; width: 120px; height: 120px; margin: 10px 0 0 10px; background-color: #e0d8c8; }
+  .t > div { width: 40px; height: 40px; background-color: #3a7a4a; }
+  .t1 > div { transform: translate(calc(100% + 10px), calc(50% - 5px)); }
+  .t2 > div { transform: translateX(min(60px, 150%)) scale(calc(1 + 0.5)); transform-origin: calc(0% + 0px) calc(100% - 40px); }
+  .t3 > div { transform: rotate(calc(180deg / 2)); transform-origin: calc(50% + 20px) 0; }
+  .t4 > div { margin-left: calc(10% + 4px); transform: translateY(clamp(10px, 100%, 70px)); }
+</style>
+</head>
+<body>
+  <div class="g g1"><div></div><div></div><div></div><div></div></div>
+  <div class="g g2"><div></div><div></div><div></div></div>
+  <div class="g g3"><div></div><div></div><div></div><div></div></div>
+  <div class="g g4"><div></div><div></div><div></div><div></div><div></div><div></div><div></div></div>
+  <div class="g g5"><div></div><div></div><div></div><div></div></div>
+  <div class="f f1"><div></div><div></div><div></div></div>
+  <div class="f f2"><div></div><div></div><div></div></div>
+  <div class="t t1"><div></div></div>
+  <div class="t t2"><div></div></div>
+  <div class="t t3"><div></div></div>
+  <div class="t t4"><div></div></div>
+</body>
+</html>

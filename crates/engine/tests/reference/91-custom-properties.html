@@ -1,0 +1,91 @@
+<!doctype html>
+<html>
+<head>
+<title>Custom properties: colours and sizes from var(), fallbacks, a chain, cycles, invalid substitutions, inherit, initial and unset, in shorthands, inherited and redeclared</title>
+<style>
+  :root {
+    --page: #f6f2ea;
+    --cell: #b8b0a0;
+    --ok: #3a7a4a;
+    --other: #a0522d;
+    --size: 50px;
+    --gap: 10px;
+    --edge: 4px solid var(--other);
+    --chain-a: var(--chain-b);
+    --chain-b: var(--chain-c);
+    --chain-c: var(--ok);
+  }
+  html { background-color: var(--page); }
+  body { margin: 0; }
+  .c { float: left; width: var(--size); height: var(--size); margin: var(--gap) 0 0 var(--gap); background-color: var(--cell); }
+  .row { clear: left; }
+
+  /* A colour, a fallback when the property is missing, a fallback of a
+     fallback, and one through a chain of three. */
+  .c1 { background-color: var(--ok); }
+  .c2 { background-color: var(--missing, #3a7a4a); }
+  .c3 { background-color: var(--missing, var(--also-missing, var(--other))); }
+  .c4 { background-color: var(--chain-a); }
+
+  /* A cycle makes both properties invalid: the fallback of a var() of
+     either is used; a property with none of its own is unset. */
+  .c5 { --x: var(--y); --y: var(--x); background-color: var(--x, #3a7a4a); }
+  .c6 { --x: var(--x); background-color: #a0522d; background-color: var(--x); }
+
+  /* A substitution the property cannot take: invalid at computed-value
+     time, the property unset (background-color's initial value), not the
+     earlier declaration. */
+  .c7 { background-color: #3a7a4a; background-color: var(--size); }
+  .c8 { width: var(--ok); }
+
+  /* Sizes: calc() of a custom property, a shorthand with var() in it,
+     a shorthand from one custom property, and a border from one. */
+  .c9 { --w: 20px; width: calc(var(--w) * 2); }
+  .c10 { margin: var(--gap) var(--gap) 0 calc(var(--gap) * 3); }
+  .c11 { --m: 20px 0 0 20px; margin: var(--m); }
+  .c12 { border: var(--edge); width: 42px; height: 42px; }
+
+  /* Inherited from the parent, redeclared on it, inherit and initial
+     and unset. */
+  .p { float: left; margin: 10px 0 0 10px; padding: 5px; background-color: #e0d8c8; --ok: #2f4f7f; }
+  .p .c { margin: 0; }
+  .p .c13 { background-color: var(--ok); }
+  .c14 { --ok: inherit; background-color: var(--ok); }
+  .c15 { --cell: initial; background-color: var(--cell, #3a7a4a); }
+  .c16 { --page: unset; background-color: var(--page); }
+
+  /* The custom property's own value is its tokens: a size written with
+     spaces, a value that is two colours, and !important on it. */
+  .c17 { --pad:   15px  ; padding-top: var(--pad); height: 35px; }
+  .c18 { --two: #3a7a4a #a0522d; border-left: 10px solid; border-color: var(--two); width: 40px; }
+  .c19 { --imp: #3a7a4a !important; }
+  .c19 { --imp: #a0522d; background-color: var(--imp); }
+
+  /* A custom property name is case-sensitive. */
+  .c20 { --Case: #a0522d; --case: #3a7a4a; background-color: var(--case); }
+</style>
+</head>
+<body>
+  <div class="c c1"></div>
+  <div class="c c2"></div>
+  <div class="c c3"></div>
+  <div class="c c4"></div>
+  <div class="c c5"></div>
+  <div class="c c6"></div>
+  <div class="c c7"></div>
+  <div class="c c8"></div>
+  <div class="c c9"></div>
+  <div class="c c10"></div>
+  <div class="row"></div>
+  <div class="c c11"></div>
+  <div class="c c12"></div>
+  <div class="p"><div class="c c13"></div></div>
+  <div class="p"><div class="c c14"></div></div>
+  <div class="p"><div class="c c15"></div></div>
+  <div class="p"><div class="c c16"></div></div>
+  <div class="c c17"></div>
+  <div class="c c18"></div>
+  <div class="c c19"></div>
+  <div class="c c20"></div>
+</body>
+</html>

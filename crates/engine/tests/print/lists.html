@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<title>Lists</title>
+<style>
+  /* Ordered lists from start, reversed and with values set, nested
+     lists and their markers, markers inside and outside, of strings and
+     of ::marker's own content, a list item that is not an li, and markers
+     of another size than their items. A reversed list with a value set
+     is left out: the reference browser counts it down from its number of
+     items, where the draft and the web-platform-tests count from the
+     first value set (li-value-reversed-001), as this engine does; and a
+     marker's content is one piece, which the reference browser's PDF
+     reads as one word. Right-to-left lists are left out: the user agent
+     sheet pads a list on the left, the engine having no logical
+     properties, and the reference browser shows a marker's bidi runs as
+     runs of their own. */
+  @font-face { font-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  body { font-family: "Print Test Sans"; font-size: 16px; margin: 0 8px; }
+  h1 { font-size: 24px; font-weight: normal; margin: 16px 0; }
+  h2 { font-size: 20px; font-weight: normal; margin: 20px 0 8px; }
+  ol, ul { margin: 6px 0; }
+  .inside { list-style-position: inside; }
+  .roman { list-style-type: upper-roman; }
+  .alpha { list-style-type: lower-alpha; }
+  .greek { list-style-type: lower-greek; }
+  .string { list-style-type: "Step "; }
+  .arrow li::marker { content: "→ "; }
+  .numbered li::marker { content: counter(list-item, upper-roman) " "; }
+  .small li::marker { font-size: 12px; }
+  .large li::marker { font-size: 24px; }
+  /* The items reset `list-item` themselves: the ol before them leaves
+     its counter to them, by the draft's scoping and this engine's, where
+     the reference browser numbers an HTML list's items on their own. */
+  .items { counter-reset: list-item; }
+  .item { display: list-item; list-style-type: decimal; margin-left: 40px; }
+  .wide { padding-left: 80px; }
+</style>
+</head>
+<body>
+<h1>Lists</h1>
+
+<h2>Where an ordered list starts</h2>
+<ol><li>One</li><li>Two</li><li>Three</li></ol>
+<ol start="8"><li>Eight</li><li>Nine</li><li>Ten</li><li>Eleven</li></ol>
+<ol start="-2"><li>Minus two</li><li>Minus one</li><li>Zero</li></ol>
+
+<h2>Reversed, and values set</h2>
+<ol reversed><li>Three</li><li>Two</li><li>One</li></ol>
+<ol reversed start="10"><li>Ten</li><li>Nine</li></ol>
+<ol><li>One</li><li value="20">Twenty</li><li>Twenty-one</li><li value="5">Five</li><li>Six</li></ol>
+
+<h2>Styles and nesting</h2>
+<ol class="roman">
+  <li>The first part
+    <ol class="alpha"><li>Its first point</li><li>Its second point
+      <ol class="greek"><li>A detail</li><li>Another</li></ol></li></ol>
+  </li>
+  <li>The second part
+    <ul><li>An aside</li><li>Another aside
+      <ul><li>Deeper still</li></ul></li></ul>
+  </li>
+</ol>
+
+<h2>Inside and outside, and the marker's content</h2>
+<ol class="inside"><li>Inside the item</li><li>And again</li></ol>
+<ul class="inside roman"><li>Roman inside an unordered list</li></ul>
+<ol class="string"><li>A string for a marker</li><li>The same string</li></ol>
+<ul class="arrow"><li>An arrow of the marker's own</li><li>Another</li></ul>
+<ol class="numbered wide"><li>The counter in Roman numerals</li><li>And the next</li></ol>
+<ol class="inside numbered"><li>Roman numerals inside</li></ol>
+<div class="items"><div class="item">A div made a list item</div>
+<div class="item">Counted as an item</div></div>
+
+<h2>Markers of another size</h2>
+<ol class="small"><li>A small marker</li><li>Another small one</li></ol>
+<ol class="large wide"><li>A large marker</li><li>Another large one</li></ol>
+</body>
+</html>

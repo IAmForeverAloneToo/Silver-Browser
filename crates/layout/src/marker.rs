@@ -5,11 +5,14 @@
 //!
 //! An outside marker ends at the list item's border-box start edge, on
 //! the left for `ltr` and the right for `rtl`, whatever the list item's
-//! padding, its content's margins, `text-align` or a float on the line.
-//! On the list item's first line it is laid out as wide as nothing, and
-//! the list item moves it there once its content is laid out
+//! padding, its content's margins or `text-align`, moved along by the
+//! room floats take on its line from the content box's start edge. On
+//! the list item's first line it is laid out as wide as nothing, and the
+//! list item moves it there once its content is laid out
 //! ([`place_on_line`]); without one it is beside the first baseline of
-//! the content, or on a line of its own at the top.
+//! the content, or on a line of its own at the top. A marker's text is
+//! drawn in the order its direction's bidi gives it, `1. ` in a
+//! right-to-left list as ` .1`, as the reference browser draws it.
 //!
 //! The shapes, with `A` the marker's font's ascent rounded: a square of
 //! side `⌊(⌊2A/3⌋ + 1) / 2⌋`, its top `⌊3(A − ⌊2A/3⌋) / 2⌋` below the
@@ -122,6 +125,8 @@ impl<'a> Marker<'a> {
         let Some(text) = text_of(self.b) else {
             return Vec::new();
         };
+        let direction = crate::inline::to_text_direction(self.style.direction);
+        let text = &text::bidi_reorder(text, Some(direction));
         let text_fragment = |x: f32, text: &str, w: f32| {
             let kind = FragmentKind::Text(text.to_string());
             fragment(x, baseline, w, ascent + descent, kind, ascent)
@@ -357,7 +362,10 @@ mod tests {
             "ol { padding: 0 100px 0 0; margin: 0 }",
         );
         let li = by_id(&laid, "a");
-        assert_eq!(marker_of(&laid, "a")[0].x, li.x + li.w);
+        let marker = marker_of(&laid, "a");
+        assert_eq!(marker[0].x, li.x + li.w);
+        // Its text in the order the right-to-left bidi gives it.
+        assert!(matches!(&marker[0].kind, FragmentKind::Text(t) if t == " .1"));
     }
 
     #[test]

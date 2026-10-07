@@ -1,0 +1,45 @@
+<!doctype html>
+<html>
+<head>
+<title>env(): the safe area's insets as zero, a variable not defined and one given the wrong indices taking their fallbacks, env() in calc() and in custom properties, and in a shorthand</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .c { float: left; width: 50px; height: 50px; margin: 10px 0 0 10px; background-color: #b8b0a0; }
+
+  /* The insets are 0px: a margin of them, and a width added to one. */
+  .c1 { margin-left: calc(10px + env(safe-area-inset-left)); background-color: #3a7a4a; }
+  .c2 { width: calc(50px + env(safe-area-inset-right, 30px)); }
+  .c3 { margin-top: env(safe-area-max-inset-top, 40px); }
+
+  /* Not defined: the fallback, or the property unset without one. */
+  .c4 { background-color: env(no-such-variable, #3a7a4a); }
+  .c5 { background-color: #a0522d; background-color: env(no-such-variable); }
+  .c6 { width: env(viewport-segment-width 0 0, 20px); }
+  .c7 { width: env(safe-area-inset-top 0, 30px); }
+
+  /* In a custom property, substituted where it is used. */
+  .c8 { --inset: env(safe-area-inset-bottom); padding-left: calc(var(--inset) + 20px); width: 30px; background-color: #3a7a4a; }
+  .c9 { --fallback: env(nothing, #2f4f7f); background-color: var(--fallback); }
+
+  /* In a shorthand. */
+  .c10 { margin: env(safe-area-inset-top) 0 0 env(nothing, 30px); }
+
+  /* The text scale is 1. */
+  .c11 { width: calc(env(preferred-text-scale, 2) * 25px); }
+</style>
+</head>
+<body>
+  <div class="c c1"></div>
+  <div class="c c2"></div>
+  <div class="c c3"></div>
+  <div class="c c4"></div>
+  <div class="c c5"></div>
+  <div class="c c6"></div>
+  <div class="c c7"></div>
+  <div class="c c8"></div>
+  <div class="c c9"></div>
+  <div class="c c10"></div>
+  <div class="c c11"></div>
+</body>
+</html>

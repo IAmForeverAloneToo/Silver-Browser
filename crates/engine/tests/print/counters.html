@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<title>Counters</title>
+<style>
+  /* Chapters and sections numbered by counters in generated content, an
+     outline numbered by counters() across nested lists, and a counter
+     written in every predefined style the font draws, in range and out
+     of it. The reference browser shows each piece of `content` as a run
+     of its own, which its PDF reads as a word of its own: the pieces are
+     kept apart by spaces so that a word is the same on both sides. Each
+     value is an inline-block, so that the Hebrew letters are each their
+     own paragraph, not one right-to-left run reordered across the
+     values, which this engine's bidi (within a text) does not do. */
+  @font-face { font-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  body { font-family: "Print Test Sans"; font-size: 16px; margin: 0 8px; counter-reset: chapter; }
+  h1 { font-size: 24px; font-weight: normal; margin: 16px 0; }
+  h2 { font-size: 20px; font-weight: normal; margin: 20px 0 12px; counter-increment: chapter; counter-reset: section; }
+  h2::before { content: counter(chapter) " "; }
+  h3 { font-size: 16px; font-weight: normal; margin: 12px 0; counter-increment: section; }
+  h3::before { content: counter(chapter) " " counter(section, lower-alpha) " "; }
+  p { margin: 12px 0; }
+
+  ol.outline, ol.outline ol { counter-reset: item; list-style-type: none; padding-left: 24px; margin: 4px 0; }
+  ol.outline li { counter-increment: item; }
+  ol.outline li::before { content: counters(item, ".") " "; }
+  ol.outline .skip { counter-increment: item 5; }
+  ol.outline .back { counter-set: item 2; }
+
+  .styles { counter-reset: n; margin: 6px 0; }
+  .styles b { font-weight: normal; display: inline-block; width: 200px; }
+  .styles i { font-style: normal; margin-right: 12px; display: inline-block; }
+  .v-3 { counter-set: n -3; } .v0 { counter-set: n 0; } .v1 { counter-set: n 1; }
+  .v5 { counter-set: n 5; } .v9 { counter-set: n 9; } .v10 { counter-set: n 10; }
+  .v14 { counter-set: n 14; } .v27 { counter-set: n 27; } .v49 { counter-set: n 49; }
+  .v100 { counter-set: n 100; } .v400 { counter-set: n 400; } .v1999 { counter-set: n 1999; }
+  .v3999 { counter-set: n 3999; } .v4000 { counter-set: n 4000; }
+  .decimal i::after { content: counter(n); }
+  .decimal-leading-zero i::after { content: counter(n, decimal-leading-zero); }
+  .lower-roman i::after { content: counter(n, lower-roman); }
+  .upper-roman i::after { content: counter(n, upper-roman); }
+  .lower-alpha i::after { content: counter(n, lower-alpha); }
+  .upper-latin i::after { content: counter(n, upper-latin); }
+  .lower-greek i::after { content: counter(n, lower-greek); }
+  .armenian i::after { content: counter(n, armenian); }
+  .lower-armenian i::after { content: counter(n, lower-armenian); }
+  .georgian i::after { content: counter(n, georgian); }
+  .hebrew i::after { content: counter(n, hebrew); }
+  .arabic-indic i::after { content: counter(n, arabic-indic); }
+  .persian i::after { content: counter(n, persian); }
+  .lao i::after { content: counter(n, lao); }
+  /* The reference browser writes `square` as U+25A0, where the draft
+     has U+25AA, and draws `disclosure-open` and `disclosure-closed` as
+     triangles, where the draft has text: those are left out. */
+  .symbols i:nth-child(2)::after { content: counter(n, disc); }
+  .symbols i:nth-child(3)::after { content: counter(n, circle); }
+</style>
+</head>
+<body>
+<h1>Counters</h1>
+
+<h2>Chapters and sections</h2>
+<p>Each heading is numbered by a counter its own rules reset and increment, and each section heading by its chapter's and its own.</p>
+<h3>The first section</h3>
+<p>Printing is the oldest way of showing a document, and the web came to it late.</p>
+<h3>The second section</h3>
+<p>A page is cut where the content no longer fits the space the page area leaves.</p>
+
+<h2>An outline</h2>
+<ol class="outline">
+  <li>The first item
+    <ol>
+      <li>Its first part</li>
+      <li>Its second part
+        <ol><li>A detail</li><li>Another detail</li></ol>
+      </li>
+    </ol>
+  </li>
+  <li>The second item</li>
+  <li class="skip">An item counted five</li>
+  <li class="back">An item set back to two</li>
+</ol>
+
+<h2>Every style the font draws</h2>
+<p class="styles decimal"><b>decimal</b><i class="v-3"></i><i class="v0"></i><i class="v1"></i><i class="v14"></i><i class="v1999"></i></p>
+<p class="styles decimal-leading-zero"><b>decimal-leading-zero</b><i class="v-3"></i><i class="v1"></i><i class="v9"></i><i class="v10"></i><i class="v1999"></i></p>
+<p class="styles lower-roman"><b>lower-roman</b><i class="v-3"></i><i class="v1"></i><i class="v14"></i><i class="v49"></i><i class="v1999"></i><i class="v3999"></i><i class="v4000"></i></p>
+<p class="styles upper-roman"><b>upper-roman</b><i class="v0"></i><i class="v9"></i><i class="v27"></i><i class="v400"></i><i class="v3999"></i></p>
+<p class="styles lower-alpha"><b>lower-alpha</b><i class="v0"></i><i class="v1"></i><i class="v14"></i><i class="v27"></i><i class="v1999"></i></p>
+<p class="styles upper-latin"><b>upper-latin</b><i class="v-3"></i><i class="v1"></i><i class="v27"></i><i class="v400"></i></p>
+<p class="styles lower-greek"><b>lower-greek</b><i class="v0"></i><i class="v1"></i><i class="v14"></i><i class="v27"></i><i class="v49"></i></p>
+<p class="styles armenian"><b>armenian</b><i class="v0"></i><i class="v1"></i><i class="v14"></i><i class="v1999"></i><i class="v3999"></i></p>
+<p class="styles lower-armenian"><b>lower-armenian</b><i class="v1"></i><i class="v49"></i><i class="v400"></i><i class="v1999"></i></p>
+<p class="styles georgian"><b>georgian</b><i class="v0"></i><i class="v1"></i><i class="v14"></i><i class="v1999"></i><i class="v3999"></i></p>
+<p class="styles hebrew"><b>hebrew</b><i class="v-3"></i><i class="v1"></i><i class="v5"></i><i class="v9"></i><i class="v10"></i><i class="v100"></i><i class="v400"></i></p>
+<p class="styles arabic-indic"><b>arabic-indic</b><i class="v0"></i><i class="v14"></i><i class="v1999"></i></p>
+<p class="styles persian"><b>persian</b><i class="v-3"></i><i class="v1"></i><i class="v49"></i><i class="v1999"></i></p>
+<p class="styles lao"><b>lao</b><i class="v0"></i><i class="v1"></i><i class="v27"></i><i class="v1999"></i></p>
+<p class="styles symbols"><b>symbols</b><i class="v1"></i><i class="v1"></i></p>
+</body>
+</html>

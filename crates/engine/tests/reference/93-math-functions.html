@@ -1,0 +1,68 @@
+<!doctype html>
+<html>
+<head>
+<title>calc(), min(), max() and clamp() in widths, heights, margins, padding, borders and insets, against definite and indefinite bases, nested, with mixed units, and clamped to each property's range</title>
+<style>
+  html { background-color: #f6f2ea; font-size: 16px; }
+  body { margin: 0; }
+  .box { position: relative; float: left; width: 120px; height: 120px; margin: 10px 0 0 10px; background-color: #e0d8c8; }
+  .c { background-color: #3a7a4a; }
+
+  /* Widths and heights against the box's definite 120px. */
+  .b1 .c { width: calc(50% + 10px); height: calc(100% - 2em); }
+  .b2 .c { width: min(100px, 50%); height: max(30px, 25%); }
+  .b3 .c { width: clamp(20px, 80%, 70px); height: clamp(40px, 10%, 100px); }
+  .b4 .c { width: calc(min(50%, 100px) + max(1em, 10px) * 2); height: calc((100% - 20px) / 2); }
+
+  /* Against an indefinite height: a percentage in height makes it auto,
+     in min-height is of zero (its length counting), in max-height none. */
+  .b5 { height: auto; }
+  .b5 .c { width: 60px; height: calc(30px + 50%); min-height: calc(40px + 10%); }
+  .b15 { height: auto; }
+  .b15 .c { width: 60px; height: 30px; max-height: calc(10px + 1%); }
+  .b6 { height: auto; }
+  .b6 .c { width: 60px; height: 20px; min-height: calc(60px - 50%); }
+
+  /* Margins and padding: percentages of the width, negative padding
+     clamped to zero, a negative margin taken. */
+  .b7 .c { width: 40px; height: 40px; margin: calc(10% + 2px) 0 0 calc(25% - 10px); padding: calc(5px - 10px) calc(2px * 5); }
+  .b8 .c { width: 40px; height: 40px; margin-left: calc(-10px + 5%); padding-top: max(10px, 10%); }
+
+  /* Borders: a length only, its percentage-free calc() rounded down as a
+     border width is. */
+  .b9 .c { width: 40px; height: 40px; border: calc(3px + 0.5em) solid #2f4f7f; }
+
+  /* Insets of an absolutely positioned box against its containing
+     block, and a negative inset. */
+  .b10 .c { position: absolute; left: calc(50% - 25px); top: max(10px, 20%); width: 50px; height: 50px; }
+  .b11 .c { position: absolute; right: min(10px, 5%); bottom: calc(-10px + 25%); width: calc(100% - 3em); height: 30px; }
+  .b12 .c { position: relative; left: calc(10% - 5px); top: clamp(-20px, -10%, 0px); width: 60px; height: 60px; }
+
+  /* Width percentages of an auto-width float: cyclic, so `auto` while
+     its width is found, then resolved against it. */
+  .b13 { width: auto; height: 60px; }
+  .b13 .s { width: 80px; height: 20px; background-color: #a0522d; }
+  .b13 .c { width: calc(50% + 10px); height: 20px; }
+
+  /* Viewport units. */
+  .b14 .c { width: calc(10vw - 20px); height: max(5vh, 40px); }
+</style>
+</head>
+<body>
+  <div class="box b1"><div class="c"></div></div>
+  <div class="box b2"><div class="c"></div></div>
+  <div class="box b3"><div class="c"></div></div>
+  <div class="box b4"><div class="c"></div></div>
+  <div class="box b5"><div class="c"></div></div>
+  <div class="box b6"><div class="c"></div></div>
+  <div class="box b7"><div class="c"></div></div>
+  <div class="box b8"><div class="c"></div></div>
+  <div class="box b9"><div class="c"></div></div>
+  <div class="box b10"><div class="c"></div></div>
+  <div class="box b11"><div class="c"></div></div>
+  <div class="box b12"><div class="c"></div></div>
+  <div class="box b13"><div class="s"></div><div class="c"></div></div>
+  <div class="box b14"><div class="c"></div></div>
+  <div class="box b15"><div class="c"></div></div>
+</body>
+</html>

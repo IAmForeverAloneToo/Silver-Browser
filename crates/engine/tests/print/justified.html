@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<title>Justified text</title>
+<style>
+  /* Justified paragraphs, their last lines and the lines before forced
+     breaks as text-align-last says, inline-blocks and spans of another
+     size among the words, and the other alignments by start, end and
+     the sides. The reference browser takes neither text-justify nor
+     justify-all, which unit tests hold to the draft instead. */
+  @font-face { font-family: "Print Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  body { font-family: "Print Test Sans"; font-size: 16px; margin: 0 8px; }
+  h1 { font-size: 24px; font-weight: normal; margin: 16px 0; }
+  h2 { font-size: 20px; font-weight: normal; margin: 20px 0 8px; }
+  p { margin: 8px 0; width: 420px; }
+  .justify { text-align: justify; }
+  .last-right { text-align-last: right; }
+  .last-center { text-align-last: center; }
+  .last-justify { text-align-last: justify; }
+  .words { text-justify: inter-word; }
+  .breaks { white-space: pre-line; }
+  .box { display: inline-block; width: 30px; height: 10px; background: #ccc; }
+  .big { font-size: 24px; }
+  .start { text-align: start; } .end { text-align: end; }
+  .left { text-align: left; } .right { text-align: right; } .center { text-align: center; }
+  ul { width: 420px; text-align: right; }
+  li { list-style-type: none; }
+</style>
+</head>
+<body>
+<h1>Justified text</h1>
+
+<h2>Justified paragraphs</h2>
+<p class="justify">A page is cut where the content no longer fits the space the page area leaves. Lines are never split across pages, so a break falls between two of them. The margins that meet an unforced break are dropped, and the content after it starts at the top of the next page.</p>
+<p class="justify words">A printed page has a box, its size on paper, and an area inside its margins where the document is drawn. Paragraphs flow from one page to the next as they flow down a long screen.</p>
+<p class="justify">Each page shows <span class="big">a slice</span> of the document, and the slices <span class="box"></span> together show all of it. The reference browser prints <span class="box"></span> at three hundred dots to the inch, and so does this engine.</p>
+
+<h2>The last line, and lines before forced breaks</h2>
+<p class="justify last-right">A heading that ends a page alone is a poor heading, which is why authors avoid breaks after one. The last line goes to the right.</p>
+<p class="justify last-center">Orphans are the lines a paragraph leaves at the bottom of a page, and widows the lines it carries to the top of the next. The last line is centred.</p>
+<p class="justify last-justify">A box that must not be broken is moved whole to the next page when it does not fit on the one it starts on. The last line is justified too.</p>
+<p class="justify breaks">Printing is the oldest way of showing a document, and the web came to it late; a forced break ends this line
+and the next line starts after it, justified only where it wraps before the paragraph ends
+alone.</p>
+
+<h2>Start, end and the sides</h2>
+<p class="start">Start of the line.</p>
+<p class="end">End of the line.</p>
+<p class="left">Left of the line.</p>
+<p class="right">Right of the line.</p>
+<p class="center">Centre of the line.</p>
+<ul><li>A list item matches its parent's alignment.</li></ul>
+</body>
+</html>

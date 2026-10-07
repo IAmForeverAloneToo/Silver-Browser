@@ -10,12 +10,13 @@
 //! browser's within [`SLACK`] pixels of the same place.
 //!
 //! A word is the text between spaces. The engine's are read from the
-//! display list of each page, where a text item is a word, at the left
-//! end of its baseline through the groups around it; the reference
-//! browser's from its PDF, which places each glyph, at the place of the
-//! word's first glyph. Text a clip hides is read as if it showed, on
-//! both sides, and text under `white-space: pre`, an item of several
-//! words, is not read as words: the pages have none.
+//! display list of each page, where a text item is a word, or for a
+//! marker or other text under `white-space: pre` (M21) several, each
+//! then placed by the bundled font's advance of the item's text before
+//! it, at the left end of its baseline through the groups around it;
+//! the reference browser's from its PDF, which places each glyph, at the
+//! place of the word's first glyph. Text a clip hides is read as if it
+//! showed, on both sides.
 //!
 //! The engine's own PDF of each page is read back by the same reader:
 //! a page for each page printed, at its box's size, with its area's
@@ -53,9 +54,10 @@ fn pages() -> Vec<PathBuf> {
     pages.sort();
     assert_eq!(
         pages.len(),
-        7,
+        10,
         "paragraphs, forced breaks, avoid, orphans and widows, a table and a flex \
-         container, page rules and fixed boxes"
+         container, page rules and fixed boxes (M20); counters, lists and justified \
+         text (M21)"
     );
     pages.push(root.join("src/about-silver.html"));
     pages
@@ -83,6 +85,8 @@ fn engine(page: &Path) -> Engine {
 
 /// What a capture keeps of the engine's print of its document.
 fn capture(pages: &[PrintedPage]) -> Capture {
+    let fonts = text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
+        .expect("the bundled font parses");
     let pages = pages
         .iter()
         .map(|page| {
@@ -98,17 +102,18 @@ fn capture(pages: &[PrintedPage]) -> Capture {
             CapturedPage::new(
                 (page_box.width, page_box.height),
                 Some(area),
-                words(&page.list),
+                words(&page.list, &fonts),
             )
         })
         .collect();
     Capture { pages }
 }
 
-/// The words `list` shows, each text item one at the left end of its
-/// baseline, mapped by the groups around it into the list's own
-/// coordinates.
-fn words(list: &DisplayList) -> Vec<Word> {
+/// The words `list` shows, each at the left end of its baseline, mapped
+/// by the groups around it into the list's own coordinates: a text item
+/// is a word, or several between spaces, each then that far from the
+/// item's start as `fonts` measure the text before it.
+fn words(list: &DisplayList, fonts: &text::FontCollection) -> Vec<Word> {
     let mut groups = Vec::new();
     let mut out = Vec::new();
     for item in &list.items {
@@ -117,17 +122,25 @@ fn words(list: &DisplayList) -> Vec<Word> {
             DisplayItem::PopGroup => {
                 groups.pop();
             }
-            DisplayItem::Text { text, x, y, .. } => {
-                let (mut x, mut y) = (*x, *y);
-                for matrix in groups.iter().rev() {
-                    let [px, py, _, w] = matrix.apply(x, y, 0.0);
-                    (x, y) = (px / w, py / w);
+            DisplayItem::Text {
+                text, x, y, size, ..
+            } => {
+                let mut start = 0;
+                for piece in text.split(' ') {
+                    if !piece.is_empty() {
+                        let (mut x, mut y) = (*x + fonts.measure(&text[..start], *size), *y);
+                        for matrix in groups.iter().rev() {
+                            let [px, py, _, w] = matrix.apply(x, y, 0.0);
+                            (x, y) = (px / w, py / w);
+                        }
+                        out.push(Word {
+                            text: piece.to_string(),
+                            x,
+                            y,
+                        });
+                    }
+                    start += piece.len() + 1;
                 }
-                out.push(Word {
-                    text: text.clone(),
-                    x,
-                    y,
-                });
             }
             _ => {}
         }

@@ -143,6 +143,9 @@ pub(crate) enum InlineItem<'a> {
         /// Those over the white space whose gap is before it: the
         /// element's the space was first met in.
         gap_decorations: Option<&'a Arc<[Decorating]>>,
+        /// That white space's style, whose space the gap is as wide as:
+        /// the text's the space was first met in, not the word's.
+        gap_style: Option<&'a ComputedStyle>,
     },
     /// A literal newline under `white-space: pre`/`pre-wrap`/`pre-line`
     /// — ends the current line unconditionally, however much of
@@ -158,6 +161,8 @@ pub(crate) enum InlineItem<'a> {
         gap_before: bool,
         /// As for a word (M21.7).
         gap_decorations: Option<&'a Arc<[Decorating]>>,
+        /// As for a word.
+        gap_style: Option<&'a ComputedStyle>,
     },
     /// A float met in the run (M11): out of flow, placed by the float
     /// context beside the line it is met on, and invisible to the
@@ -180,6 +185,8 @@ pub(crate) enum InlineItem<'a> {
         gap_before: bool,
         /// As for a word (M21.7).
         gap_decorations: Option<&'a Arc<[Decorating]>>,
+        /// As for a word.
+        gap_style: Option<&'a ComputedStyle>,
     },
     /// The end of an inline element: its right padding, border and
     /// margin, on the line it ends on, glued to what precedes it; with
@@ -271,7 +278,29 @@ struct Placed<'a, 'i> {
     item: LineItem<'a, 'i>,
     index: usize,
     gap_before: bool,
+    /// The style of the white space a gap before it is, which its width
+    /// is a space of; the item's own when it has none.
+    gap_style: Option<&'a ComputedStyle>,
     can_break: bool,
+}
+
+impl Placed<'_, '_> {
+    /// The width of the gap before it, when there is one.
+    fn gap(&self, fonts: &FontCollection) -> f32 {
+        space_width(self.gap_style.unwrap_or(self.item.style()), fonts)
+    }
+}
+
+impl<'a> InlineItem<'a> {
+    /// The style of the white space whose gap is before it, if one is.
+    fn gap_style(&self) -> Option<&'a ComputedStyle> {
+        match self {
+            InlineItem::Word { gap_style, .. }
+            | InlineItem::Atomic { gap_style, .. }
+            | InlineItem::Open { gap_style, .. } => *gap_style,
+            _ => None,
+        }
+    }
 }
 
 /// The lines of one inline formatting context.
@@ -674,9 +703,12 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
         // that a space after an empty inline at the line's start goes as
         // one at its start does (css-text-3 §4.1.2). What is placed keeps
         // only a gap taken, for the line's placement to agree.
+        // Its width is a space's of the white space's own style, the
+        // text's the space was in, not the item's after it.
         let gap_before = gap_before && self.has_content;
+        let gap_style = self.item(index).gap_style();
         let gap = if gap_before {
-            space_width(item.style(), self.pass.fonts)
+            space_width(gap_style.unwrap_or(item.style()), self.pass.fonts)
         } else {
             0.0
         };
@@ -723,6 +755,7 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
             item,
             index,
             gap_before,
+            gap_style,
             can_break,
         });
     }
@@ -861,7 +894,7 @@ fn measure_line(line: &[Placed<'_, '_>], fonts: &FontCollection) -> (f32, bool) 
     let mut has_content = false;
     for p in line {
         if has_content && p.gap_before {
-            width += space_width(p.item.style(), fonts);
+            width += p.gap(fonts);
         }
         width += p.item.width();
         has_content |= p.item.is_content();
@@ -943,6 +976,7 @@ fn collect<'a>(
         out: Vec::new(),
         space_pending: false,
         space_decorations: None,
+        space_style: None,
         gap_placed: false,
         at_word_start: true,
     };
@@ -998,6 +1032,8 @@ struct Collector<'a, 'f> {
     space_pending: bool,
     /// The text decorations over that white space (M21.7).
     space_decorations: Option<&'a Arc<[Decorating]>>,
+    /// And its style, which the gap is a space of.
+    space_style: Option<&'a ComputedStyle>,
     /// An inline element's start edge took a gap and no content has
     /// followed it: white space seen now collapses into that gap
     /// (css-text-3 §4.1.1, across the boundary of the inline).
@@ -1073,6 +1109,7 @@ impl<'a> Collector<'a, '_> {
                         style,
                         gap_before,
                         gap_decorations: self.space_decorations.filter(|_| gap_before),
+                        gap_style: self.space_style.filter(|_| gap_before),
                     });
                     // Collects nothing when the line ended at the start
                     // edge, and the end edge is past the end as well.
@@ -1094,6 +1131,7 @@ impl<'a> Collector<'a, '_> {
                         b,
                         gap_before,
                         gap_decorations: self.space_decorations.filter(|_| gap_before),
+                        gap_style: self.space_style.filter(|_| gap_before),
                     });
                 }
                 // A float or an absolutely positioned box is invisible
@@ -1214,16 +1252,19 @@ impl<'a> Collector<'a, '_> {
             generated: b.generated,
             decorations: b.decorations.as_ref(),
             gap_decorations: self.space_decorations.filter(|_| gap_before),
+            gap_style: self.space_style.filter(|_| gap_before),
         });
     }
 
     /// White space met in the text box `b`: a gap pending unless one is
     /// placed, the first of a collapsed run's spaces being the one kept
-    /// and so the one whose element's decorations it has (M21.7).
+    /// and so the one whose element's decorations (M21.7) and style it
+    /// has.
     fn space(&mut self, b: &'a LayoutBox) {
         let pending = !self.gap_placed;
         if pending && !self.space_pending {
             self.space_decorations = b.decorations.as_ref();
+            self.space_style = Some(self.style_of(b));
         }
         self.space_pending = pending;
     }
@@ -1313,19 +1354,20 @@ pub(crate) fn run_intrinsic_widths<'a>(
                     ..
                 },
             ) => {
-                let gap = |style| {
+                // A space of the white space's own style.
+                let gap = |item: &InlineItem<'_>, style| {
                     if line_empty || !gap_before {
                         0.0
                     } else {
-                        space_width(style, fonts)
+                        space_width(item.gap_style().unwrap_or(style), fonts)
                     }
                 };
                 piece = if starts_piece {
                     *piece_width
                 } else {
-                    piece + gap(piece_style) + piece_width
+                    piece + gap(in_piece, piece_style) + piece_width
                 };
-                line += gap(style) + width;
+                line += gap(in_line, style) + width;
                 line_empty = false;
                 after_atomic = false;
             }
@@ -1335,7 +1377,7 @@ pub(crate) fn run_intrinsic_widths<'a>(
                 let gap = if line_empty || !gap_before {
                     0.0
                 } else {
-                    space_width(&b.style, fonts)
+                    space_width(in_line.gap_style().unwrap_or(&b.style), fonts)
                 };
                 piece = piece_min;
                 line += gap + piece_max;
@@ -1371,21 +1413,21 @@ pub(crate) fn run_intrinsic_widths<'a>(
                     style: piece_style, ..
                 },
             ) => {
-                let gap = |style| {
+                let gap = |item: &InlineItem<'_>, style| {
                     if line_empty || !gap_before {
                         0.0
                     } else {
-                        space_width(style, fonts)
+                        space_width(item.gap_style().unwrap_or(style), fonts)
                     }
                 };
                 let (edge, _) = edge_widths(piece_style, 0.0);
                 piece = if starts_piece {
                     edge
                 } else {
-                    piece + gap(piece_style) + edge
+                    piece + gap(in_piece, piece_style) + edge
                 };
                 let (edge, _) = edge_widths(style, 0.0);
-                line += gap(style) + edge;
+                line += gap(in_line, style) + edge;
                 after_atomic = false;
             }
             (InlineItem::Close(style), InlineItem::Close(piece_style)) => {
@@ -1420,7 +1462,7 @@ pub(crate) fn is_css_space(c: char) -> bool {
 /// can't name `style`'s type itself — see that enum's own doc in
 /// `text::lib` for the other half of this note. This is the boundary
 /// conversion.
-fn to_text_direction(direction: Direction) -> text::Direction {
+pub(crate) fn to_text_direction(direction: Direction) -> text::Direction {
     match direction {
         Direction::Ltr => text::Direction::Ltr,
         Direction::Rtl => text::Direction::Rtl,
@@ -1630,7 +1672,7 @@ fn flush_line<'a>(
     let mut drawn = DrawnLines::default();
     for (i, placed) in line.drain(..).enumerate() {
         if i > 0 && placed.gap_before {
-            x += space_width(placed.item.style(), fonts) + placement.gap;
+            x += placed.gap(fonts) + placement.gap;
         }
         match placed.item {
             LineItem::Word(word) => {
@@ -1967,7 +2009,7 @@ fn decoration_reach<'a>(
         let Some(owner) = owner(line[i].index).filter(|_| line[i].gap_before) else {
             continue;
         };
-        let gap = space_width(line[i].item.style(), fonts) + justified;
+        let gap = line[i].gap(fonts) + justified;
         // The word after, past the edges of the inline boxes the space
         // ended or began, its own start edge among them.
         let mut edges = 0.0;
@@ -2643,6 +2685,29 @@ mod tests {
         let (fragments, _) = lay(&items, 800.0, TextAlign::Left, &fonts);
         let gap = space_width(&ComputedStyle::default(), &fonts);
         assert_eq!(texts(&fragments)[1].x, fonts.measure("a", 16.0) + gap);
+    }
+
+    #[test]
+    fn a_gap_is_a_space_of_the_white_spaces_own_font() {
+        // `a <span>b</span>`: the space is the 16px text's, whatever the
+        // span's font; `<span>a </span>b`: the span's (the reference
+        // browser's).
+        let fonts = test_fonts();
+        let big = |children: Vec<LayoutBox>| {
+            let mut span = inline_box(children);
+            span.style.font_size_px = 32.0;
+            span
+        };
+        let items = [text_box("a ", 16.0), big(vec![text_box("b", 32.0)])];
+        let (fragments, _) = lay(&items, 800.0, TextAlign::Left, &fonts);
+        let small_gap = fonts.measure(" ", 16.0);
+        assert_eq!(texts(&fragments)[1].x, fonts.measure("a", 16.0) + small_gap);
+        let items = [big(vec![text_box("a ", 32.0)]), text_box("b", 16.0)];
+        let (fragments, _) = lay(&items, 800.0, TextAlign::Left, &fonts);
+        assert_eq!(
+            texts(&fragments)[1].x,
+            fonts.measure("a", 32.0) + fonts.measure(" ", 32.0)
+        );
     }
 
     #[test]

@@ -28,8 +28,10 @@
 //! `B + max(1, ⌈T/2⌉)`, or `B` plus the rounded `text-underline-offset`
 //! when one is given; `B + D` plus the offset for `under`, and `B` plus
 //! the font's underline position for `from-font`. An overline's top is
-//! `B − A − t`, a line-through's `B − A/3 − T/2` rounded; a `double`
-//! line's second line is the first's top plus `T + 1`, rounded.
+//! `B − A − t`, a line-through's `B − A/3 − T/2` rounded, a half
+//! downwards. A `double` line's second line is `T + 1` from the first,
+//! below an underline and above an overline, rounded so, and `T + 1`
+//! rounded down below a line-through.
 
 use std::sync::Arc;
 
@@ -166,14 +168,22 @@ pub(crate) fn lines(decorations: &[Decorating], fonts: &FontCollection) -> Vec<D
         let offset = d
             .underline_offset
             .as_ref()
-            .map(|offset| offset.resolve(d.font_size).round());
+            .map(|offset| round_half_up(offset.resolve(d.font_size)));
+        // A `double` line's second line is `T + 1` from the first, below
+        // an underline and above an overline, outward, its place rounded
+        // as the first's is; and `T + 1` rounded down below a
+        // line-through. The reference browser places them so.
         let line = |kind: LineKind, top: f32| DrawnLine {
             kind,
             style: d.style,
             color: d.color,
             top,
             thickness: drawn,
-            second: (d.style == DecorationStyle::Double).then(|| top + (thickness + 1.0).round()),
+            second: (d.style == DecorationStyle::Double).then(|| match kind {
+                LineKind::Underline => top + round_half_up(thickness + 1.0),
+                LineKind::Overline => top + round_half_up(-(thickness + 1.0)),
+                LineKind::LineThrough => top + (thickness + 1.0).floor(),
+            }),
         };
         if d.line.underline {
             let top = match (d.underline_position, offset) {
@@ -194,11 +204,18 @@ pub(crate) fn lines(decorations: &[Decorating], fonts: &FontCollection) -> Vec<D
         if d.line.line_through {
             out.push(line(
                 LineKind::LineThrough,
-                (-ascent / 3.0 - thickness / 2.0).round(),
+                round_half_up(-ascent / 3.0 - thickness / 2.0),
             ));
         }
     }
     out
+}
+
+/// `v` rounded to the nearest whole pixel, a half up, towards the bottom
+/// of the page, as the reference browser rounds a line's place: the
+/// same whatever side of the baseline it is measured from.
+fn round_half_up(v: f32) -> f32 {
+    (v + 0.5).floor()
 }
 
 /// The text decoration lines a text fragment is drawn with
@@ -346,6 +363,35 @@ mod tests {
         assert_eq!(
             one("text-decoration: underline double"),
             (1.0, 1.0, Some(4.0))
+        );
+        // A double overline's second line is above it, a line-through's
+        // `T + 1` rounded down below it: 2.6 is 3 up and 2 down at 16
+        // pixels; 2.5 at 15 is 3 down from an underline and 2 up from an
+        // overline, a half rounded downwards.
+        assert_eq!(
+            one("text-decoration: overline double"),
+            (-a - 1.0, 1.0, Some(-a - 4.0))
+        );
+        let through = (-a / 3.0 - 0.8 + 0.5).floor();
+        assert_eq!(
+            one("text-decoration: line-through double"),
+            (through, 1.0, Some(through + 2.0))
+        );
+        let a15 = fonts.primary().metrics(15.0).ascent;
+        assert_eq!(
+            one("text-decoration: underline double; font-size: 15px"),
+            (1.0, 1.0, Some(4.0))
+        );
+        assert_eq!(
+            one("text-decoration: overline double; font-size: 15px"),
+            (-a15 - 1.0, 1.0, Some(-a15 - 3.0))
+        );
+        // A line-through's place is rounded a half down the page: at 16
+        // pixels, 3 thick, a third of the ascent and 1.5 above the
+        // baseline, -6.5, is -6, as the reference browser has it.
+        assert_eq!(
+            one("text-decoration: line-through 3px"),
+            ((-a / 3.0 - 1.5 + 0.5).floor(), 3.0, None)
         );
         // 32 pixels: three thick, two down.
         assert_eq!(
