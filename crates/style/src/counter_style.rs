@@ -29,7 +29,7 @@ const PREDEFINED: &str = include_str!("../assets/counter-styles.css");
 /// The longest representation a style writes, in code points; a longer
 /// one is its fallback's (Counter Styles 3 §2: at least 60 must be
 /// supported).
-const MAX_REPRESENTATION: usize = 60;
+pub const MAX_REPRESENTATION: usize = 60;
 
 /// How many fallbacks are followed before `decimal` is used: more than
 /// any chain of the predefined styles, which is two long.

@@ -47,9 +47,10 @@
 //! **Bounds.** A set holds at most [`MAX_SET`] counters and a walk
 //! instantiates at most [`MAX_COUNTERS`]: an instantiation past either
 //! does not happen, as though it were not written, and a `counter()` of
-//! a name the set then lacks writes 0. A text is at most [`MAX_TEXT`]
-//! bytes, and a walk's texts together at most [`MAX_TEXTS`]; past
-//! either, a text is cut after the last character that fits.
+//! a name the set then lacks writes 0. A text is at most
+//! [`MAX_GENERATED_TEXT`] bytes, and a walk's texts together at most
+//! [`MAX_TEXTS`]; past either, a text is cut after the last character
+//! that fits.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -71,17 +72,18 @@ const MAX_SET: usize = 1024;
 /// The most counters one walk instantiates.
 const MAX_COUNTERS: usize = 1 << 20;
 
-/// The longest one pseudo-element's text, in bytes.
-const MAX_TEXT: usize = 1 << 20;
+/// The longest one pseudo-element's text, in bytes: a `::before`'s, an
+/// `::after`'s or a marker's.
+pub const MAX_GENERATED_TEXT: usize = 1 << 20;
 
 /// The most text, in bytes, a walk writes in all.
 const MAX_TEXTS: usize = 1 << 28;
 
 /// The text of each `::before`, `::after` and marker of a document that
 /// generates a box, by originating element and side.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct GeneratedText {
-    texts: HashMap<(NodeId, Side), String>,
+    texts: Texts,
 }
 
 impl GeneratedText {
@@ -104,9 +106,13 @@ impl GeneratedText {
     /// The text of `node`'s `side` pseudo-element; `None` for one the
     /// walk did not visit.
     pub(super) fn get(&self, node: NodeId, side: Side) -> Option<&str> {
-        self.texts.get(&(node, side)).map(String::as_str)
+        self.texts.get(node.index())?.as_ref()?[side as usize].as_deref()
     }
 }
+
+/// The texts of each element's pseudo-elements, by side, by the
+/// element's slot in the document: none for one that generates none.
+type Texts = Vec<Option<Box<[Option<String>; 3]>>>;
 
 /// One counter (Lists 3 §4.4).
 #[derive(Debug, Clone, Copy)]
@@ -184,7 +190,7 @@ struct Walk<'w, 'a> {
     /// `no-open-quote`s so far less the `close-quote`s and
     /// `no-close-quote`s, never below zero.
     quote_depth: u32,
-    texts: HashMap<(NodeId, Side), String>,
+    texts: Texts,
     /// The bytes of text written so far.
     written: usize,
     /// The number the next element or pseudo-element visited gets.
@@ -200,7 +206,7 @@ impl<'w, 'a> Walk<'w, 'a> {
             starts,
             pending: HashMap::new(),
             quote_depth: 0,
-            texts: HashMap::new(),
+            texts: vec![None; styled.document.slot_count()],
             written: 0,
             next_number: 1,
         }
@@ -247,7 +253,9 @@ impl<'w, 'a> Walk<'w, 'a> {
                 && holds_content(style.display)
             {
                 let text = self.text(style, side, &mut working, &set, number, parent);
-                self.texts.insert((node, side), text);
+                if let Some(slot) = self.texts.get_mut(node.index()) {
+                    slot.get_or_insert_default()[side as usize] = Some(text);
+                }
             }
             if let Some(working) = working {
                 set = Set {
@@ -491,7 +499,7 @@ impl<'w, 'a> Walk<'w, 'a> {
         number: u32,
         parent: u32,
     ) -> String {
-        let room = MAX_TEXT.min(MAX_TEXTS - self.written);
+        let room = MAX_GENERATED_TEXT.min(MAX_TEXTS - self.written);
         let mut text = Bounded::new(room);
         let items = match &style.content {
             Content::Items(items) => items,

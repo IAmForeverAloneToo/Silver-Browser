@@ -4609,6 +4609,22 @@ mod tests {
         assert_eq!(s.letter_spacing, MAX_LENGTH_PX);
         let sheets = [sheet("p { font-size: -16px; }")];
         assert_eq!(style_of("<p>x</p>", &sheets, "p").font_size_px, 16.0);
+        // A percentage is kept as written, or as a math function makes
+        // it, and is a length in range once it is resolved; a math
+        // function's `NaN` is 0 (M21).
+        let sheets = [sheet(
+            "p { width: 1e38%; padding-left: calc(1% * infinity); margin-left: calc(1% * NaN); }",
+        )];
+        let s = style_of("<p>x</p>", &sheets, "p");
+        assert_eq!(s.width, Size::Percent(1e38));
+        assert_eq!(
+            s.width.length_percentage().map(|w| w.resolve(800.0)),
+            Some(MAX_LENGTH_PX)
+        );
+        assert_eq!(s.padding[LEFT], LengthPercentage::Percent(f32::INFINITY));
+        assert_eq!(s.padding[LEFT].resolve(800.0), MAX_LENGTH_PX);
+        assert_eq!(s.padding[LEFT].resolve(0.0), 0.0);
+        assert_eq!(s.margin[LEFT], LengthPercentageAuto::Percent(0.0));
     }
 
     #[test]

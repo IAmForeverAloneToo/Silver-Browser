@@ -38,7 +38,9 @@ pub use block::{
     DocumentLayout, Fragment, FragmentKind, Preorder, StackingKey, flatten, layout,
     layout_document, layout_document_cached, layout_document_in, preorder,
 };
-pub use box_tree::{BoxKind, FirstLine, LayoutBox, MarkerShape, RowGroupKind, build_box_tree};
+pub use box_tree::{
+    BoxKind, FirstLine, LayoutBox, MAX_GENERATED_TEXT, MarkerShape, RowGroupKind, build_box_tree,
+};
 pub use cache::LayoutCache;
 pub use paginate::{MAX_PAGES, PageSlice, Paginated, paginate};
 

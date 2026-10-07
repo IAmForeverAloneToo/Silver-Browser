@@ -654,7 +654,8 @@ pub enum Computed {
     Value(f64),
     /// A percentage, where the place takes one: in a number's place
     /// (`opacity`), or a length's whose calculation was a percentage
-    /// alone.
+    /// alone. An infinity is left for the place to clamp to its range,
+    /// a length's once the percentage is resolved; `NaN` is already 0.
     Percent(f64),
     /// A length with a percentage in it, for layout to resolve against
     /// the percentage's basis.
@@ -783,7 +784,9 @@ impl Parsed {
                     Computed::Value(v)
                 }
             }
-            Folded::Tree(Expression::Percent(p)) => Computed::Percent(f64::from(p)),
+            Folded::Tree(Expression::Percent(p)) => {
+                Computed::Percent(if p.is_nan() { 0.0 } else { f64::from(p) })
+            }
             Folded::Tree(tree) => Computed::Expression(tree),
         }
     }
@@ -1207,6 +1210,20 @@ mod tests {
             panic!("an expression");
         };
         assert_eq!(Calc::new(e, false).resolve(100.0), MAX_LENGTH_PX);
+        // A percentage alone is censored the same way: `NaN` is 0, and an
+        // infinity is left for its place, where it is resolved.
+        for (source, expected) in [
+            ("calc(1% * NaN)", 0.0),
+            ("calc(10% / 0 * 0)", 0.0),
+            ("calc(1% * infinity)", f64::INFINITY),
+            ("calc(-1% / 0)", f64::NEG_INFINITY),
+        ] {
+            assert_eq!(
+                compute(source, Want::LengthPercentage),
+                Some(Computed::Percent(expected)),
+                "{source}"
+            );
+        }
     }
 
     #[test]

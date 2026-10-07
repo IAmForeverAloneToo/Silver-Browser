@@ -85,6 +85,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "values"
+path = "fuzz_targets/values.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "encoding_decode"
 path = "fuzz_targets/encoding_decode.rs"
 test = false

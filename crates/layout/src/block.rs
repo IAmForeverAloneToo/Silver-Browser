@@ -1884,6 +1884,12 @@ pub(crate) fn layout_block_contents<'a>(
             marker.metrics.descent,
             pass.fonts,
         );
+        // The children the layout cache holds are named by their places
+        // among the fragment's children, which the marker's, put before
+        // them all, move along.
+        for held in &mut children.held {
+            held.index += fragments.len();
+        }
         root.children.splice(0..0, fragments);
     } else if b.style.display == Display::ListItem
         && b.style.lists().list_style_position == ListStylePosition::Outside

@@ -37,8 +37,8 @@
 //! text box it is in ([`first_letter`]).
 
 use std::borrow::Cow;
-use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::cell::{OnceCell, RefCell};
+use std::collections::HashSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
@@ -57,6 +57,7 @@ mod generated;
 use crate::decoration::{self, Decorating};
 
 use generated::GeneratedText;
+pub use generated::MAX_GENERATED_TEXT;
 
 /// One node in the box tree.
 #[derive(Debug, Clone)]
@@ -455,14 +456,13 @@ pub fn build_box_tree(
     styles: &Styles,
     recascade: &dyn Recascade,
 ) -> Vec<LayoutBox> {
-    let mut styled = Styled {
+    let styled = Styled {
         document,
         styles,
         recascade,
-        generated: GeneratedText::default(),
-        decorations: RefCell::default(),
+        generated: OnceCell::new(),
+        decorations: RefCell::new(vec![None; document.slot_count()]),
     };
-    styled.generated = GeneratedText::of(&styled);
     let mut boxes = build_block_container(&styled, Item::Node(document.root()));
     place_markers(&mut boxes);
     first_line::apply(&styled, &mut boxes);
@@ -584,7 +584,9 @@ fn generated_text(b: &LayoutBox) -> u64 {
     let mut hasher = DefaultHasher::new();
     own.hash(&mut hasher);
     if let Some(decorations) = &b.decorations {
-        format!("{decorations:?}").hash(&mut hasher);
+        for decoration in decorations.iter() {
+            decoration.hash_into(&mut hasher);
+        }
     }
     for child in &b.children {
         child.generated_text.hash(&mut hasher);
@@ -645,11 +647,17 @@ struct Styled<'a> {
     document: &'a Document,
     styles: &'a Styles,
     recascade: &'a dyn Recascade,
-    generated: GeneratedText,
+    /// The generated texts, found by a walk of the document the first
+    /// time the build asks for one: a document that generates none is
+    /// not walked.
+    generated: OnceCell<GeneratedText>,
     /// The text decorations in force over each element's text, found as
-    /// the build asks.
-    decorations: RefCell<HashMap<NodeId, Option<Arc<[Decorating]>>>>,
+    /// the build asks, by the element's slot in the document.
+    decorations: RefCell<Vec<Option<Decorations>>>,
 }
+
+/// The text decorations in force over some text, if any.
+type Decorations = Option<Arc<[Decorating]>>;
 
 impl<'a> Styled<'a> {
     /// The computed style of `item`: an element's, the document node's,
@@ -693,6 +701,11 @@ impl<'a> Styled<'a> {
     /// box's text; nothing in a text.
     fn children(&self, item: Item) -> Vec<Item> {
         match item {
+            // A node none of whose pseudo-elements is styled, as most
+            // are not, generates none.
+            Item::Node(node) if self.styles.pseudo_styles(node).is_none() => {
+                self.document.children(node).map(Item::Node).collect()
+            }
             Item::Node(node) => {
                 let generated = |side| {
                     self.generates(node, side)
@@ -743,7 +756,10 @@ impl<'a> Styled<'a> {
             Item::Node(node) => self.document.text(node).map(Cow::Borrowed),
             Item::Generated(..) => None,
             Item::GeneratedText(element, side) => Some(Cow::Borrowed(
-                self.generated.get(element, side).unwrap_or_default(),
+                self.generated
+                    .get_or_init(|| GeneratedText::of(self))
+                    .get(element, side)
+                    .unwrap_or_default(),
             )),
         }
     }
@@ -772,7 +788,7 @@ impl<'a> Styled<'a> {
     /// The text decorations in force over the element `node`'s text: its
     /// own inside its parent's, unless its box stops theirs.
     fn element_decorations(&self, node: NodeId) -> Option<Arc<[Decorating]>> {
-        if let Some(found) = self.decorations.borrow().get(&node) {
+        if let Some(Some(found)) = self.decorations.borrow().get(node.index()) {
             return found.clone();
         }
         let found = self.styles.get(node).and_then(|style| {
@@ -785,7 +801,9 @@ impl<'a> Styled<'a> {
             let parent = decoration::through(parent.as_ref(), style);
             decoration::within(parent.as_ref(), Decorating::of(style))
         });
-        self.decorations.borrow_mut().insert(node, found.clone());
+        if let Some(slot) = self.decorations.borrow_mut().get_mut(node.index()) {
+            *slot = Some(found.clone());
+        }
         found
     }
 

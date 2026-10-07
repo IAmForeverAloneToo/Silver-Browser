@@ -13,6 +13,7 @@ use std::sync::{Arc, LazyLock};
 
 pub use crate::calc::Calc;
 use crate::calc::Expression;
+use crate::cascade::MAX_LENGTH_PX;
 use crate::custom::CustomProperties;
 
 /// An RGBA color, 0.0–1.0 channels (see `paint::Rgba8` for the 8-bit
@@ -497,7 +498,7 @@ impl LengthPercentageAuto {
         match self {
             LengthPercentageAuto::Auto => if_auto,
             LengthPercentageAuto::Px(v) => *v,
-            LengthPercentageAuto::Percent(p) => basis * p / 100.0,
+            LengthPercentageAuto::Percent(p) => percent_of(basis, *p),
             LengthPercentageAuto::Calc(c) => c.resolve(basis),
         }
     }
@@ -514,6 +515,21 @@ impl LengthPercentageAuto {
             self,
             LengthPercentageAuto::Percent(_) | LengthPercentageAuto::Calc(_)
         )
+    }
+}
+
+/// `p` percent of `basis`, in CSS pixels: `NaN` is 0, and the length is
+/// clamped to [`MAX_LENGTH_PX`] either way, as a math function's is
+/// ([`Calc::resolve`]). A percentage is kept as written, as large as an
+/// `f32` holds, or infinite where a math function made it so (M21), and
+/// of a basis of any size would be an infinite length, or of a basis of
+/// zero `NaN`.
+fn percent_of(basis: f32, p: f32) -> f32 {
+    let v = basis * p / 100.0;
+    if v.is_nan() {
+        0.0
+    } else {
+        v.clamp(-MAX_LENGTH_PX, MAX_LENGTH_PX)
     }
 }
 
@@ -537,7 +553,7 @@ impl LengthPercentage {
     pub fn resolve(&self, basis: f32) -> f32 {
         match self {
             LengthPercentage::Px(v) => *v,
-            LengthPercentage::Percent(p) => basis * p / 100.0,
+            LengthPercentage::Percent(p) => percent_of(basis, *p),
             LengthPercentage::Calc(c) => c.resolve(basis),
         }
     }
@@ -2741,6 +2757,34 @@ mod tests {
     fn length_percentage_resolves_each_variant() {
         assert_eq!(LengthPercentage::Px(10.0).resolve(200.0), 10.0);
         assert_eq!(LengthPercentage::Percent(25.0).resolve(200.0), 50.0);
+    }
+
+    #[test]
+    fn a_percentage_resolves_to_a_length_in_range_whatever_its_size() {
+        // A percentage written as large as an `f32` holds, or one a math
+        // function made infinite or NaN (M21), is a length no larger
+        // than the largest a declaration sets, and never NaN.
+        for (p, basis, expected) in [
+            (f32::MAX, 1280.0, MAX_LENGTH_PX),
+            (-f32::MAX, 1280.0, -MAX_LENGTH_PX),
+            (f32::INFINITY, 1.0, MAX_LENGTH_PX),
+            (f32::NEG_INFINITY, 1.0, -MAX_LENGTH_PX),
+            (f32::INFINITY, 0.0, 0.0),
+            (f32::NAN, 1280.0, 0.0),
+            (1e9, 1e9, MAX_LENGTH_PX),
+            (50.0, 3.0, 1.5),
+        ] {
+            assert_eq!(
+                LengthPercentage::Percent(p).resolve(basis),
+                expected,
+                "{p}% of {basis}"
+            );
+            assert_eq!(
+                LengthPercentageAuto::Percent(p).resolve(basis, 7.0),
+                expected,
+                "{p}% of {basis}"
+            );
+        }
     }
 
     #[test]

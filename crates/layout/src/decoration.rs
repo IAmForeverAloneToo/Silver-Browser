@@ -33,6 +33,8 @@
 //! below an underline and above an overline, rounded so, and `T + 1`
 //! rounded down below a line-through.
 
+use std::hash::{Hash, Hasher};
+use std::mem::discriminant;
 use std::sync::Arc;
 
 use style::ComputedStyle;
@@ -71,6 +73,37 @@ impl Decorating {
             underline_position: decoration.underline_position,
             font_size: style.font_size_px,
         })
+    }
+
+    /// Feeds what the decoration is to `hasher`, alike for equal
+    /// decorations in every build: for the fingerprint of the generated
+    /// text in a box ([`crate::LayoutBox::generated_text`]).
+    pub(crate) fn hash_into(&self, hasher: &mut impl Hasher) {
+        let line = self.line;
+        (line.underline, line.overline, line.line_through, line.blink).hash(hasher);
+        discriminant(&self.style).hash(hasher);
+        let Color { r, g, b, a } = self.color;
+        [r, g, b, a].map(f32::to_bits).hash(hasher);
+        discriminant(&self.thickness).hash(hasher);
+        if let DecorationThickness::Length(length) = &self.thickness {
+            hash_length(length, hasher);
+        }
+        self.underline_offset.is_some().hash(hasher);
+        if let Some(length) = &self.underline_offset {
+            hash_length(length, hasher);
+        }
+        discriminant(&self.underline_position).hash(hasher);
+        self.font_size.to_bits().hash(hasher);
+    }
+}
+
+/// Feeds `length` to `hasher` for [`Decorating::hash_into`].
+fn hash_length(length: &LengthPercentage, hasher: &mut impl Hasher) {
+    discriminant(length).hash(hasher);
+    match length {
+        LengthPercentage::Px(v) | LengthPercentage::Percent(v) => v.to_bits().hash(hasher),
+        // An expression is rare here: its printed form says what it is.
+        LengthPercentage::Calc(calc) => format!("{calc:?}").hash(hasher),
     }
 }
 

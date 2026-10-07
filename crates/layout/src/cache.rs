@@ -768,6 +768,25 @@ mod tests {
     }
 
     #[test]
+    fn a_list_item_is_taken_with_its_marker_beside_its_content() {
+        // #b has no line for #a's marker to go on, so the marker is
+        // beside it, put before #b's fragment, which the cache holds
+        // under #b: taking #a puts #b back in its own place and the
+        // marker in the marker's. `pass` holds each result to a fresh
+        // one.
+        let mut s = Session::new("<ul><li id=a><p id=b></p></li></ul>", "");
+        // html, body, the list, #a and #b.
+        assert_eq!(s.pass(), (5, 0));
+        let body = s.body();
+        s.change(|d| {
+            append_paragraph(d, body, "after");
+        });
+        // html, body and the new paragraph; the list taken, #a with it.
+        assert_eq!(s.pass(), (3, 1));
+        assert!(s.kept("a") && s.kept("b"));
+    }
+
+    #[test]
     fn a_box_is_laid_out_again_when_a_decoration_reaches_it() {
         // #a's underline is propagated to #b's text, which #b's own style
         // does not show; #c, after #a, is taken. `pass` holds each result
