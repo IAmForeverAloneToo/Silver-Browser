@@ -69,9 +69,10 @@ A value's parts are its component values: a token, or a function or
 bracket with everything up to its match. The cascade's parsers take
 parts where they took tokens: the splitting of a shorthand at white
 space or at commas respects nesting, so `margin: calc(1px + 2px) 3px`
-has two parts and not four, and every parser of a number, a length, a
-percentage, an angle or an integer takes a math function where it took
-one token.
+has two parts and not four, as `margin: var(--a)var(--b)` and
+`1px/**/2px` have two, as the reference browser has them; and every
+parser of a number, a length, a percentage, an angle or an integer
+takes a math function where it took one token.
 
 **Math functions (M21.2).** `style::calc` parses `calc()`, `min()`,
 `max()` and `clamp()`, their names case-insensitive, by Values 4 §10:
@@ -80,22 +81,31 @@ products with `*` and `/`, parenthesized sub-expressions and nested
 math functions, numbers, dimensions and percentages, and the constants
 `e`, `pi`, `infinity`, `-infinity` and `NaN`. Nesting is bounded at 32
 levels, as selectors' and media queries' parentheses are; a deeper
-expression is invalid. Every expression is typed as §10.9 types it — a
-length, angle, time, frequency, resolution, number or percentage, with
-the percent hint — and checked where it is parsed against what the
-property takes: `<length-percentage>` takes a sum of a length and a
-percentage, `<length>` a length alone, `<number>` a number, a
-percentage where the property says what it is a percentage of. A
-product needs a number on one side and a quotient a number on the
-right; dividing by zero makes an infinity of the numerator's sign, as
-§10.9.1 says. An expression that fails its types is invalid at parse
-time, like any other bad value. Its range is not checked there: a
-`calc()` is clamped to the property's range where it is computed or
-used, so `width: calc(10px - 20px)` is a width of 0, where `width:
--10px` is dropped. Infinities clamp to the largest length the engine
-holds, `MAX_LENGTH_PX`, 33,554,431 pixels, which is where the reference
-browser clamps `calc(1px / 0)` too; a `NaN` that reaches the top of an
-expression is 0. An integer property — `z-index`, `order`, `orphans`,
+expression is invalid. Every expression is typed as §10.9 types it, by
+the algebra of CSS Typed OM §4.3.2 — a power of each base type, length,
+angle, time, frequency, resolution and percent, and a percent hint — so
+that products and quotients of any types are typed, `calc(100px /
+10px)` a number and `calc(1px * 1px)` a length squared, which no
+property takes, as Values 4's current draft has it; only then is the
+type matched against what the property takes: `<length-percentage>` a
+length, a percentage or a sum of them, `<length>` a length alone,
+`<number>` a number, a percentage where the property says what it is a
+percentage of. Dividing by zero makes an infinity of the numerator's
+sign, as §10.9.1 says. An expression that fails its types is invalid
+at parse time, like any other bad value. Its range is not checked
+there: a `calc()` is clamped to the property's range where it is
+computed or used, so `width: calc(10px - 20px)` is a width of 0, where
+`width: -10px` is dropped; a length written past what an `f32` holds is
+still invalid where a math function's infinity is clamped. Infinities
+clamp to the largest length the engine holds, `MAX_LENGTH_PX`,
+33,554,431 pixels, which is where the reference browser clamps
+`calc(1px / 0)` too; a `NaN` that reaches the top of an expression is
+0, a percentage's as well. An infinite percentage is kept, and layout
+clamps the length it resolves to, so that `calc(1% * infinity)` is the
+largest width of any basis but zero, whose is 0; every percentage
+resolves so, one written as large as an `f32` holds included, which
+before this milestone made an infinite length (found at step 11). An
+integer property — `z-index`, `order`, `orphans`,
 `widows`, a counter's value — rounds to the nearest integer, a half
 towards positive infinity, as the reference browser rounds
 `z-index: calc(2.5)` to 3.
@@ -103,7 +113,10 @@ towards positive infinity, as the reference browser rounds
 An expression is simplified where the value is computed, by §10.10:
 font-relative and viewport lengths become pixels against the same
 bases a plain length uses, angles become degrees, numbers fold, and
-`min()`, `max()` and `clamp()` of comparable terms are evaluated. What
+`min()`, `max()` and `clamp()` of comparable terms are evaluated; a
+percentage among their terms keeps them whole, `min(10%, 20%)` too,
+since a percentage is not comparable before its basis is known
+(§10.10.1). What
 is left with no percentage in it is a plain value, and the computed
 style holds it as it holds any. What is left with a percentage keeps
 the simplified expression — a sum of a length and a percentage, or a
@@ -114,11 +127,14 @@ percentage's basis is known, as the reference browser keeps
 
 They are taken everywhere a number, length, percentage, angle or
 integer is: every property the engine has and every shorthand, the
-grid's track sizes and `repeat()` counts, the transform functions,
-`@page`'s `size` and margins, the counters' integers, and the values of
-media features, where `em` and `rem` are the initial font size as the
-query's other lengths are, so `(min-width: calc(400px + 10em))` is
-answered where M20 left `calc()` in a query to the reference browser.
+grid's track sizes, `repeat()` counts and line numbers, rounded as
+integers are, the transform functions, `@page`'s `size` and margins,
+the counters' integers, and the values of media features — lengths,
+numbers, the numbers of a ratio and resolutions — where `em` and `rem`
+are the initial font size as the query's other lengths are and `vw`
+follows the medium, answered each time the query is, so `(min-width:
+calc(400px + 10em))` is answered where M20 left `calc()` in a query to
+the reference browser.
 `round()`, `mod()`, `rem()`, `abs()`, `sign()`, the trigonometric and
 exponential functions and the rest are section 2's.
 
@@ -134,11 +150,23 @@ height, which is `auto`, `0` or `none` by the property; in an intrinsic
 contribution, where a percentage size is `auto` and a percentage margin
 or padding is a percentage of zero (Sizing 3 §5.2.1); in a grid track
 before its basis is known — an expression with a percentage is treated
-as a percentage, which by construction every such expression is.
+as a percentage, which by construction every such expression is. A
+percentage of zero is a length all the same: what is left of a
+`calc()` once its percentage is of zero counts, in an intrinsic
+contribution's padding, margin and minimum width, in a flex or grid
+gap whose basis is not known, and in a minimum height of an indefinite
+height, as the reference browser counts the `20px` of `calc(20px +
+5%)` (grid-gutters-009, calc-min-height-block-1,
+calc-min-width-block-intrinsic-1); a maximum height's is `none`. Where
+the reference browser sizes a grid's rows a second time with an item's
+minimum height of the first sizing's, this engine keeps it of zero, a
+deviation no test holds. A table cell's or column's width with a
+percentage in a `calc()` is `auto`, in the fixed algorithm as in the
+automatic one, as in the reference browser.
 
 This costs the types `Copy` and makes each 16 bytes where it was 8,
-`ComputedStyle` about 180 bytes more for the 22 fields that hold one;
-the size test says the new number and why. The alternatives were
+`ComputedStyle` 176 bytes more for the 22 fields that hold one; the
+size test says the new number and why. The alternatives were
 weighed and refused: an index into a table of expressions kept on each
 style keeps the types small and `Copy`, but a value copied out of its
 style — into a grid's track list, a table's column measures, a
@@ -147,8 +175,13 @@ along everywhere it goes, and a wrong table is a silent wrong answer;
 a tagged pointer packed into 8 bytes needs `unsafe`, which the workspace
 keeps to FFI; an interner shared by the process would grow with every
 viewport width a `vw` in a `calc()` has met, and never shrink. A
-fragment copies its style, so the cost is paid per fragment; T4.3 says
-what it is.
+fragment copies its style, so the cost is paid per fragment; T4.3 said
+what it is (step 11): the style, 648 bytes where it was 448 with the
+pointers below, is no longer copied as bytes but a field at a time, and
+the layout cache copies every fragment it gives back, so a frame that
+appends a paragraph to a page of 1,000 is 25% longer and the pseudo
+benchmark's 40–53%. Fragments that refer to their styles, M35.9, undo
+it; `docs/perf-budgets.md` writes the exception down.
 
 **Custom properties (M21.1).** A declaration whose name begins with two
 hyphens, other than `--` alone, is a custom property. Its value is any
@@ -160,11 +193,16 @@ pseudo-element, those with restricted lists of properties included,
 and is inherited. Its computed value is its value with the arbitrary
 substitution functions in it replaced, or the guaranteed-invalid
 value, which `initial` gives too; the CSS-wide keywords are taken as
-keywords, not kept as the value. `ComputedStyle` gains one pointer,
-`custom: Option<Arc<CustomProperties>>`, a map from name to computed
-token list in which an absent name is the guaranteed-invalid value; an
-element shares its parent's map unless it declares a custom property,
-and then copies it on write.
+keywords, not kept as the value, but for `revert` and `revert-layer`,
+which are passed over here as on every property (G7). `ComputedStyle`
+gains one pointer, `custom: Option<Arc<CustomProperties>>`, a map from
+name to computed token list in which an absent name is the
+guaranteed-invalid value; an element shares its parent's map unless it
+declares a custom property, and then copies it on write. The map is a
+trie of two levels of 64 branches, by a hash of the name keyed afresh
+in each process, so that an element changing one property of a theme
+of thousands copies two arrays of 64 pointers and a leaf, and no page
+can crowd one leaf, not knowing the key.
 
 **Substitution: `var()`, `env()` and `attr()`.** The three are
 arbitrary substitution functions, replaced while a style is computed
@@ -179,45 +217,77 @@ again while it is on the stack makes every name from it to the top
 cyclic, and a cyclic name's value is the guaranteed-invalid value, a
 fallback in the cycle notwithstanding. The walk keeps its own stack, so
 a chain of ten thousand custom properties each naming the next is
-resolved without recursion. `var()`'s first argument is substituted
-before it is read as a name, so `var(var(--name))` works as Values 5
-says and the web-platform-tests ask, although the reference browser
-refuses it; its fallback is substituted only when it is used.
+resolved without recursion, and a cycle is marked on the newest name
+being resolved and handed down as the names finish, so finding one
+costs the same however long it is. `var()`'s first argument is
+substituted before it is read as a name, so `var(var(--name))` works as
+Values 5 says and the web-platform-tests ask, although the reference
+browser refuses it, and `var({--name})` too; its fallback, everything
+after the first comma, commas included, is substituted only when it is
+used. Either argument may be wrapped in `{}`, which is not part of it
+(Values 5 §2.4.1); one not wrapped may hold no `{}` block of its own,
+as the draft says, where the reference browser takes `var(--x, a
+{b})`, and a wrapped one nothing after its block. A substituted value's
+white space at its ends is trimmed, a fallback's too (env-fallback-
+substitution).
 
-Any other declaration whose value holds a substitution function is
-valid at parse time when its property is known and the functions are
-valid by their argument grammars. Where it wins the cascade, its value
-is substituted and then parsed by the property's own parser; if the
-substitution is the guaranteed-invalid value or the parse fails, the
-declaration is invalid at computed-value time and the property is
-`unset` — its inherited or initial value, not the value of a
-declaration it beat, as Values 5's example of a `background-color`
-given a length by `var()` shows. A value that substitutes to a
-lone CSS-wide keyword is that keyword. A shorthand is substituted and
-parsed whole and gives its longhands their values then, or, invalid,
-leaves every one of them `unset`; its longhands written after it in the
-cascade still win, the cascade applying declarations in order as it
-does today. `@supports (--x: y)` becomes true, and a declaration with
-`var()` in it is supported where its property is.
+Any other declaration whose value holds a substitution function is valid
+at parse time when its property is known, the functions are valid by
+their argument grammars, and the value is a `<declaration-value>` as a
+custom property's is — no bad string or URL, no closer without its
+block, no `;` or `!` outside every block — so `var(--a) !important
+!important` and `var(--a) )` are dropped where they are parsed, as in
+the reference browser (variable-reference-30, variable-supports-17).
+Where it wins the cascade, its value is substituted and then parsed by
+the property's own parser; if the substitution is the guaranteed-invalid
+value or the parse fails, the declaration is invalid at computed-value
+time and the property is `unset` — its inherited or initial value, not
+the value of a declaration it beat, as Values 5's example of a
+`background-color` given a length by `var()` shows. A value that
+substitutes to a lone CSS-wide keyword is that keyword, a custom
+property's too (variable-css-wide-keywords-after-substitution):
+`initial` its guaranteed-invalid value, `inherit` and `unset` its
+parent's; a substituted `revert` or `revert-layer` is `unset`. A
+shorthand is substituted and parsed whole and gives its longhands their
+values then, or, invalid, leaves every one of them `unset`; its
+longhands written after it in the cascade still win, the cascade
+applying declarations in order as it does today. `@supports (--x: y)`
+becomes true, `(--x:)` with an empty value too, as the
+web-platform-tests have it, and a declaration with `var()` in it is
+supported where its property is. In `@page`'s descriptors `var()` is not
+substituted (section 2): such a declaration is ignored.
 
 Substitution works on tokens, as Values 5 says it must: `var(--gap)px`
 is a number followed by an identifier, never one dimension.
 
 A substitution is bounded, as Values 5 §"Safely Handling Overly-Long
-Substitution" requires: a function whose result would be longer than
-64 KiB of text, counting each token's text, is replaced by the
-guaranteed-invalid value instead, so thirty custom properties each
-doubling the last end at the bound and not at a billion tokens. A
-kilobyte of text in a custom property is a case the draft defends, and
-64 KiB is ample room for it. Two more bounds keep a page from
-multiplying the work by its elements. An element whose winning custom property
-declarations are the very declarations its parent's were, none a
-CSS-wide keyword and none reading an attribute, shares its parent's
-computed map without computing it, so a chain declared on `*` is
-computed once and not once per element. And the substitutions of one
-cascade together produce at most 64 MiB of text; past that every
-further substitution is the guaranteed-invalid value, a limit no page
-meets but one built to exhaust the engine.
+Substitution" requires, by what the tokens it makes weigh in memory:
+each token its size and the bytes of the name, string or unit it
+carries. A function's result, or a value with its functions replaced,
+that would weigh more than `MAX_SUBSTITUTION`, a mebibyte — some thirty
+thousand tokens, or a string as long — is the guaranteed-invalid value
+instead, so thirty custom properties each doubling the last end at the
+fourteenth, of 16,383 tokens, and not at a billion. The 64 KiB of text
+this note first gave would let 64 MiB of one-byte tokens cost 2 GiB of
+memory; the draft asks for a limit "relatively high", a kilobyte of
+text in a custom property being a case it defends. Three more measures
+keep a page from multiplying the work by its elements. An element
+whose winning custom property declarations are the very declarations
+its parent's were, none from its `style` attribute and none reading an
+attribute, shares its parent's computed map without computing it, so
+a chain declared on `*` is computed once and not once per element; a
+CSS-wide keyword among them does not prevent it, the same declarations
+computed over the map they made giving that map, and the declarations
+are known by the stylesheets' own number as well as by their places,
+against an address used again. A cascade keeps what it has substituted
+by declaration and map, so `a { color: var(--link) }` is substituted
+once for the map every link shares, not once per link. And the
+substitutions of one cascade together may weigh at most
+`MAX_CASCADE_SUBSTITUTION`, 256 MiB; past that every further
+substitution is the guaranteed-invalid value, a limit no page meets but
+one built to exhaust the engine: 1,000 elements each declaring the
+doubling chain meet it after 135 of them, the cascade taking 225 MiB at
+its peak (step 11).
 
 **`env()` (M21.3).** The variables of Environment Variables 1 §2, as a
 desktop browser's window has them: `safe-area-inset-top`, `-right`,
@@ -228,40 +298,59 @@ the viewport never being split. The names are case-sensitive, and a
 variable given more or fewer indices than it has dimensions is not
 defined; an undefined variable takes the fallback, or makes the
 declaration invalid at computed-value time. These are the reference
-browser's answers. `env()` is substituted in properties; in media
+browser's answers. `env()` is checked by its whole grammar where it is
+parsed, so `env(x ())` is invalid (env-parsing): its first argument is
+read as written, never substituted, so `env(env(x))` is invalid too; a
+`<custom-ident>` there is no CSS-wide keyword and not `default`, and an
+index is an integer number token of zero or more, a math function making
+the function invalid. `env()` is substituted in properties; in media
 queries and descriptors it is section 2's.
 
 **`attr()` (M21.5).** `attr()` becomes an arbitrary substitution
 function in any property, by Values 5 §8.7: `attr(<attr-name>
 <attr-type>?, <declaration-value>?)`, the name matched against the
-element's attributes, or for a pseudo-element its originating
-element's, as attribute selectors match it — ASCII case-insensitively
-on an HTML element, as the reference browser matches `attr(DATA-W
-px)`; a name with a namespace prefix names no attribute, HTML having
-none. Without a type, or with `raw-string`, the value is a string of
-the attribute's value, an empty one when there is no attribute and no
-fallback, which is what `content: attr(x)` gave since M16 and still
-gives, M16's parse-time `attr()` now being this. `number` reads the
-value, its white space trimmed, as one number token; a unit name, or
-`%`, makes that number a dimension, and a name that is no unit takes
-the fallback. The reference browser refuses `number` and an unknown
-unit in the declaration, and fails a value with white space around it;
-the draft is followed. `type(<syntax>)` parses the value as CSS, with
-its own substitution functions replaced under the guard
-«attribute, name», against a syntax of `*` or of components joined by
-`|`, each a data type with an optional `+` or `#` or an identifier:
+element's attributes, or for a pseudo-element its originating element's,
+as attribute selectors match it — ASCII case-insensitively on an HTML
+element, as the reference browser matches `attr(DATA-W px)`; `|name` is
+`name`, a name with a namespace prefix names no attribute, HTML having
+none, and white space inside a name makes it none. Without a type, or
+with `raw-string`, the value is a string of the attribute's value, an
+empty one when there is no attribute and no fallback, which is what
+`content: attr(x)` gave since M16 and still gives, M16's parse-time
+`attr()` now being this. `number` reads the value, its white space
+trimmed, as one number token; a unit name, or `%`, makes that number a
+dimension, and a name that is no unit takes the fallback; the units are
+those the engine takes, and `fr`. The reference browser refuses `number`
+and an unknown unit in the declaration, and fails a value with white
+space around it; the draft is followed. `type(<syntax>)` parses the
+value as CSS, with its own substitution functions replaced under the
+guard «attribute, name», against a syntax of `*` or of components joined
+by `|`, each a data type with an optional `+` or `#` or an identifier:
 `<length>`, `<number>`, `<percentage>`, `<length-percentage>`,
 `<integer>`, `<angle>`, `<time>`, `<resolution>`, `<color>`,
 `<custom-ident>`, `<string>`, `<transform-function>` and
-`<transform-list>` are checked; `<image>` matches nothing until images
-(M23) and `<url>` is not allowed. A value that fails takes the
-fallback, or makes the declaration invalid at computed-value time. The
-selector features record every attribute name an `attr()` reads, in
-any declaration, so changing the attribute restyles the element, as
-`content`'s names have since M16. Values 5's taint — an attribute's
-value may never become a URL — has nothing to guard yet: a `url(` is
-one token that no substitution reaches, and `src()` and `image()` are
-not parsed. M23 carries the taint when it adds them.
+`<transform-list>` are checked, the names case-sensitively;
+`<transform-list>` takes no multiplier, `<image>` matches nothing until
+images (M23) and `<url>` makes the syntax invalid. An attribute's value
+is substituted only when it is a `<declaration-value>` with its own
+functions valid. A value that fails takes the fallback, or makes the
+declaration invalid at computed-value time, an untyped `attr()` with no
+fallback being an empty string. `attr()`'s first argument, when no
+substitution function is in it, is checked by `<attr-name> <attr-type>?`
+where it is parsed, so `attr(x type(invalid |), 10px)` and `attr(&,
+3px)` make their declarations invalid rather than take their fallbacks,
+as the web-platform-tests (attr-all-types) and the reference browser
+have it, where the draft's grammar of the argument alone would take
+them; a first argument that does not parse once substituted fails with
+no fallback taken. The selector features record every attribute name an
+`attr()` reads, in any declaration, so changing the attribute restyles
+the element, as `content`'s names have since M16; a name a substitution
+makes is not known ahead, and every attribute's change then restyles the
+element and its subtree, as it does for an `attr()` in a `style`
+attribute. Values 5's taint — an attribute's value may never become a
+URL — has nothing to guard yet: a `url(` is one token that no
+substitution reaches, and `src()` and `image()` are not parsed. M23
+carries the taint when it adds them.
 
 **Counters (M21.4).** `counter-reset`, `counter-increment` and
 `counter-set` (Lists 3 §4), each a list of names with integers or
@@ -270,43 +359,68 @@ to 0; `reversed(<name>)` in a reset makes a reversed counter, its
 integer optional. They are not inherited, and with the list properties
 they share a new pointer, `lists: Option<Arc<Lists>>`, whose inherited
 half is copied to a child as `fragmentation`'s is. A counter's value is
-a 32-bit integer, a reset, set or increment past either end clamped to
-it, as the web-platform-tests ask and the reference browser does.
+a 32-bit integer: a reset or set past either end is clamped to it where
+it is parsed, and an increment that would take the value past either
+is not made, the value staying, as the reference browser and the
+web-platform-tests have it (counter-reset-increment-overflow-
+underflow), where the draft clamps.
 
-The counters are the box tree's, as the quote depth is: the builder
-walks the document in order once, and the counters an element or
-pseudo-element sees are found as it is reached. An element that
-generates no box — `display: none`, a pseudo-element whose `content` is
-`none` — touches none (§4.5). Each element's set of counters is
-inherited from its parent and preceding sibling by the scoping the
-reference browser and the web-platform-tests' `counters-scope` tests
-agree on: the parent's counters, then those of the preceding sibling
-whose names the parent has none of, each with the value of the counter
-of the same name and creator on the element just before it in tree
-order. The draft of 28 April 2026 takes the preceding sibling's
-counters whatever the parent has, which those tests contradict; this
-engine follows the tests and the reference browser. A reset
+The counters are the box tree's, as the quote depth is: a walk of the
+document in tree order ahead of the build (`box_tree::generated`)
+writes every text the pseudo-elements generate — quote marks, counters,
+markers — and the builder looks each up as it makes the box. The walk
+visits what the builder makes a box for: an element with no style or
+with `display: none`, and its subtree, is passed over, as is a
+pseudo-element whose `content` is `none` (§4.5). It runs the first time
+the build asks for a generated text, so a document that generates none
+is not walked (step 11), and twice when a reversed counter needs its
+starting value. Each element's set of counters starts from its
+preceding sibling's, or its parent's when it has no sibling, as §4.4.1
+has it, each counter with the value of the counter of the same name
+and creator on the element just before it in tree order — but for a
+rule of the reference browser's: a counter the sibling instantiated
+inside a counter of the same name that an ancestor of both instantiated
+ends with the sibling, so a nested list's `list-item` does not reach
+the item after the list. The `counters-scope` tests 001 to 003 hold
+that rule with the reference browser, and are followed; 004 wants a
+`::before`'s reset kept to the `::before`, which the draft and the
+reference browser pass on to what follows in its element, and the draft
+is followed there (this note first read the tests as agreeing on
+another rule, which the reference browser does not follow). A reset
 instantiates a counter, replacing an innermost one of the same name
 created by the element or a preceding sibling and nesting inside any
 other (§4.4.2); an increment or set of a counter the element does not
-have instantiates it at 0 first, as `counter()` does. A reversed
-counter without an integer starts at the value §4.4.2 calculates from
-the increments and sets in its scope, found by a walk of the scope
-ahead of the builder's. Pseudo-elements count as elements in tree
-order: `::marker` first, then `::before`, the children, `::after`.
+have instantiates it at 0 first, as `counter()` does on its
+pseudo-element, as Lists 3 and CSS 2.2 say and the reference browser
+does not, no test asking. A reversed counter without an integer starts
+at the value §4.4.2 calculates from the increments and sets in its
+scope, found by the first of the two walks; the reference browser has
+no `reversed()` there, dropping the declaration, and the draft and the
+`counter-reset-reversed` tests are followed. Pseudo-elements count as
+elements in tree order: `::marker` first, then `::before`, the
+children, `::after`. A set holds at most 1,024 counters and a walk
+instantiates at most 2²⁰, an instantiation past either not made, as
+though it were not written; a pseudo-element's text is at most
+`MAX_GENERATED_TEXT`, a mebibyte, and a walk's texts together at most
+256 MiB, a text past either cut after its last character that fits.
 
 `content` gains `counter(<name>, <counter-style>?)` and
 `counters(<name>, <string>, <counter-style>?)`, kept as such in the
-computed value and turned into text by the builder with the counters
-the box sees, where `content`'s quote marks are turned into text today.
-The style defaults to `decimal`. A box's laid-out text then depends on
-counters set anywhere earlier in the document, which the layout cache
-cannot see by its node and inputs alone; its `quote_depth` input gives
-way to a fingerprint of the generated text in the box's subtree —
-quote marks, counters, markers — which the builder computes as it
-makes the text, so an entry is reused only where every generated text
-inside it is what it was. Quote depth alone was a special case of
-this.
+computed value and turned into text by the walk with the counters the
+box sees, where `content`'s quote marks are turned into text too. The
+style defaults to `decimal`; a predefined style's name, and `none`, is
+ASCII-lowercased where it is parsed, any other kept as written, and a
+name no style has writes as `decimal`. A box's laid-out text then
+depends on counters set anywhere earlier in the document, which the
+layout cache cannot see by its node and inputs alone; its
+`quote_depth` input gives way to a fingerprint of the generated text in
+the box's subtree, found when the tree is numbered: of every text box a
+pseudo-element generates or a `::first-letter` took from one, and of
+the text decorations every text box has (step 6), which an ancestor's
+decoration changes without restyling the box; 0 for a subtree with
+none, which is so reused whatever comes before it. An entry is reused
+only where every generated text inside it is what it was. Quote depth
+alone was a special case of this.
 
 **Counter styles.** `style::counter_style` writes a counter's value in
 a style by Counter Styles 3 §3: the systems `cyclic`, `fixed`,
@@ -325,48 +439,71 @@ A name that is not one of these behaves as `decimal` but computes to
 itself (§5), which is also what the complex styles of §7 do here
 (section 2), and `none` writes nothing. In `counter()` the symbolic
 styles are their characters, `•` U+2022, `◦` U+25E6 and `▪` U+25AA;
-in a marker they are drawn shapes, below.
+in a marker they are drawn shapes, below. A representation is at most
+`MAX_REPRESENTATION`, 60 code points, which §2 asks a user agent to
+take at least, a longer one being the fallback's, and at most eight
+fallbacks are followed before `decimal`. The reference browser writes
+0 in `hebrew` as the word for zero, where the draft's range falls back
+to `decimal`; writes `square` as U+25A0, where the draft has U+25AA;
+and draws `disclosure-open` and `disclosure-closed` as triangles, in
+`content` as in markers, where the draft has the characters U+25BE and
+U+25B8. The draft is followed in all three, which the print page of
+counters leaves out.
 
 **List items and markers (M21.6).** `display: list-item` joins
-`Display`, with its block forms, `block list-item`, `list-item block`,
-`flow list-item`, and blockified to itself; a list item increments
-`list-item` by 1, or by -1 when the counter is reversed, unless its
-`counter-increment` names `list-item` (§4.6). `::marker` becomes a
-cascade target of its own, whose style inherits from the list item and
-to which only the properties Lists 3 §3.1.1 lets apply are applied: the
-inherited text and font properties the engine has, `color`, `content`,
-`direction`, `white-space`, `text-transform` and the custom properties.
-The user agent sheet gives it `white-space: pre` and `text-transform:
-none`, the parts of §3.1.1's rule the engine has. A marker is made
-only for a list item, before its `::before`, from the first of §3.2's
-conditions that holds: the marker's `content` if not `normal`, as
-`::before`'s; an image, which `list-style-image` never gives until
-images (M23) and so falls through; the list item's `list-style-type`
-— a counter style writes the list item's `list-item` counter between
-the style's prefix and suffix, `1. ` for `decimal`, and a string is
-itself — or no marker for `none`. `list-style-type`,
-`list-style-position` and `list-style-image`, the last `none` or a
-`url()` taken and never loaded, and the `list-style` shorthand with its
-rule for `none` (§3.6), are inherited.
+`Display`, with its block forms, `list-item` with `block` or `flow` or
+both in any order, each once, and blockified to itself; a list item
+increments `list-item` by 1, or by -1 when the counter is reversed,
+unless its `counter-increment` names `list-item` (§4.6). `::marker`
+becomes a cascade target of its own, whose style inherits from the list
+item and to which only the properties Lists 3 §3.1.1 lets apply are
+applied: the inherited text and font properties the engine has, `color`,
+`content`, `direction`, `white-space`, `text-transform`, `quotes`, which
+its quote marks read, and the custom properties; the counter properties
+are not among them, as in the reference browser (marker-counter). Its
+style is computed for list items alone, the user agent's rule matching
+every element. The user agent sheet gives it `white-space: pre` and
+`text-transform: none`, the parts of §3.1.1's rule the engine has. A
+marker is made only for a list item that is not replaced, before its
+`::before`, from the first of §3.2's conditions that holds: the marker's
+`content` if not `normal`, as `::before`'s; an image, which
+`list-style-image` never gives until images (M23) and so falls through;
+the list item's `list-style-type` — a counter style writes the list
+item's `list-item` counter between the style's prefix and suffix, `1. `
+for `decimal`, and a string is itself — or no marker for `none`.
+`list-style-type`, `list-style-position` and `list-style-image`, the
+last `none` or a `url()` taken and never loaded, and the `list-style`
+shorthand with its rule for `none` (§3.6), are inherited.
 
 An inside marker is an inline box at the start of the list item's
-content. An outside marker is placed as the reference browser places
-it, CSS leaving it undefined. The marker's box ends at the list item's
+content. An outside marker is placed as the reference browser places it,
+CSS leaving it undefined. The marker's box ends at the list item's
 border-box start edge, on the left for `ltr` and the right for `rtl`,
-whatever the list item's padding, its content's margins, `text-align`
-or a float in its first line. It sits in the first line box in the
-list item, found by descending into in-flow block boxes as
-`::first-line` finds its line, and takes part in that line's height as
-an inline box of its own font does, a large marker making the line
-taller. Where the list item's content begins with a flex, grid or table
-box instead, the marker is a line of its own whose baseline is that
-box's first baseline, as the reference browser aligns a marker with a
-flex container's first line; it aligns one beside a table differently,
-which section 2 says. A list item with neither — empty, or beginning
-with a box that has no baseline — gives the marker a line at the top of
-its content, and is at least that tall. The marker is a child of the
-list item's box, so `overflow: hidden` on the list item clips it away,
-as it does in the reference browser.
+whatever the list item's padding, its content's margins or `text-align`;
+where floats push the start of its line, it goes with them, by the room
+they take there from the content box's start edge, as the reference
+browser places it and the CSS2 lists tests expect (step 8). It sits in
+the first line box in the list item, found by descending into in-flow
+block boxes as `::first-line` finds its line, and takes part in that
+line's height as an inline box of its own font does, a large marker
+making the line taller. It is built as the list item's first child and
+moved into that line's run as the box tree is built; on the line it is
+an item of no width, the item after it never a place to break, and the
+list item's layout moves its fragments to their place. Its text is drawn
+in its direction's order, `1. ` as ` .1` in a right-to-left list, as the
+reference browser draws it, a letter-spaced marker a fragment a
+character moved together; a `::first-letter` passes it by
+(Pseudo-Elements 4 §2.2.3). Where the list item's content begins with a
+flex, grid or table box instead, the marker is a line of its own whose
+baseline is that box's first baseline, as the reference browser aligns a
+marker with a flex container's first line; it aligns one beside a table
+differently, which section 2 says. A list item with neither — empty, or
+beginning with a box that has no baseline — gives the marker a line at
+the top of its content, and is at least that tall, its margins below not
+collapsing through it; the marker's fragments go before its children's,
+whose places the layout cache keeps move along with them (found at step
+11). The marker is a child of the list item's box, so `overflow: hidden`
+on the list item clips it away, as it does in the reference browser.
 
 `disc`, `circle` and `square` in `list-style-type`, the marker's
 `content` being `normal`, are drawn shapes, as Counter Styles 3 §6.3
@@ -379,18 +516,33 @@ square filled. Outside, its left edge is `⌊2A/3⌋ + 7` pixels before
 the list item's border edge; inside, it starts at the content edge and
 the content follows `side + 1em + 1` pixels on. These numbers are the
 reference browser's, measured in DejaVu Sans at 16 and 32 pixels, and
-the golden cases hold them.
+the golden cases hold them; a disc's and a circle's edges are smoothed
+by another rasterizer, an edge pixel up to 36 levels from the
+reference browser's, which the reference page of markers allows.
 
 HTML's rules (§15.3.7) replace the sheet's list rules: `li` is a list
 item with `text-align: match-parent`; `ol` is `decimal`, `ul`, `menu`
 and `dir` `disc`, nested ones `circle` and then `square`; `ol`, `ul`
-and `menu` reset `list-item`; nested lists have no block margins. Its
-presentational hints join `dir`, which the cascade applies at the
-author level with no specificity today: `ol`'s `start` and `reversed`
-reset `list-item` as §15.3.7 says, to `start − 1`, or
-`reversed(list-item)` with `start + 1`; `li`'s `value` sets it; and
-`type` on `ol`, `ul` and `li` sets `list-style-type`. The engine has
-no quirks mode, so the quirks rules do not arise.
+and `menu` reset `list-item`; nested lists have no block margins; and
+`ul`, `ol`, `menu` and `dir` take its list margins and a padding of
+40 pixels on the left, the engine having no `padding-inline-start`, so
+a right-to-left list is padded on the wrong side (section 2). Its
+presentational hints are author declarations of no specificity ordered
+before every author sheet, which any author rule overrides — not as
+`dir` is applied, beneath the user agent sheet: `ol`'s `start` and
+`reversed` reset `list-item` as §15.3.7 says, to `start − 1`, or
+`reversed(list-item)` with `start + 1`, a `start` past 32 bits clamped
+after the arithmetic; `li`'s `value` sets it; and `type` on `ol`, `ul`
+and `li` sets `list-style-type`, `1`, `a`, `A`, `i` and `I` as written
+and `none`, `disc`, `circle` and `square` ASCII case-insensitively.
+Changing one restyles its element. The HTML parser closes an `li` at
+`menu` and `dir` as at `ol` and `ul`, so an `li` in a `menu` is now its
+item. The engine has no quirks mode, so the quirks rules do not arise.
+The reference browser counts a reversed list with a `value` set down
+from its number of items, 3 6 5 where li-value-reversed-001 wants
+7 6 5, and numbers `display: list-item` elements after a list from 1 by
+its own list numbering, where the draft's scoping passes the list's
+`list-item` on to them; the draft and the tests are followed in both.
 
 **Text decoration (M21.7).** The properties of Text Decoration 3 and 4:
 `text-decoration-line`, `none` or any of `underline`, `overline`,
@@ -410,38 +562,60 @@ A decoration is propagated through the box tree, not inherited (Text
 Decoration 3 §2): from the element that names it to every inline box
 and run of text in its inline formatting context, and to in-flow block
 descendants and theirs, but not into floats, absolutely positioned
-boxes, inline-blocks, inline tables or replaced elements. Each box
-carries the decorations in force over its text, shared through an
-`Arc` and grown only where an element adds one. Each keeps its origin's
+boxes, inline-blocks, inline tables or replaced elements. The box tree
+finds them by the document's ancestry, once for each element as the
+build asks; a pseudo-element's text takes its element's and its own,
+and a marker none. Each text box carries the decorations in force over
+its text, shared through an `Arc` and grown only where an element adds
+one, and layout resolves the lines each draws, which paint, having no
+fonts, could not: a fragment of decorated text carries them and how far
+past its edges they reach. Each keeps its origin's
 colour, style, thickness, underline offset and position and font, so a
 descendant's own font size or colour does not change a decoration it
 did not start, as the reference browser draws one underline of the
 same thickness under a paragraph's 16-pixel text and a 32-pixel span in
-it.
+it — but a block's decoration over the text of a block inside it is
+drawn with the inner block's font, the font of the lines the text is
+on, as the reference browser draws it (step 8).
 
 A decoration is drawn over each run of text it decorates on each line,
 across the white space and letter spacing between its words but not
 across white space at a line's ends, and not across an atomic inline in
-the line; the space between two words is decorated as the text it
-belongs to is, the first space of a collapsed run being the one white
-space processing keeps. It is drawn from the line's baseline with the
-origin's font, as the reference browser draws it, measured at 12, 16,
+the line, though the spaces either side of one are; the space between
+two words is decorated as the text it belongs to is, the first space of
+a collapsed run being the one white space processing keeps — the gap is
+the next word's when that word's decorations are the space's
+element's, reaching back over the inline boxes' edges between, else the
+word's before it — and is as wide as a space of that text's font, not
+of the word after it, as the reference browser has it (found at step 9;
+before this milestone the gap took the next word's font). It is drawn
+from the line's baseline with the origin's font, as the reference
+browser draws it, measured at 12, 16,
 18, 20, 24, 28, 32 and 40 pixels: with `B` the baseline, `A` the
 font's ascent rounded, `D` its descent rounded and `T` the thickness —
 the font size over ten for `auto`, the font's underline thickness for
-`from-font`, the value given otherwise — the line is
-`t = max(1, ⌊T⌋)` pixels thick for `auto`, the user agent's choice,
-and `t` is `T` rounded for a given thickness, as Level 4 says; an
+`from-font`, read from the font's `post` table, which a font without
+one makes `auto`, the value given otherwise, a negative one invalid —
+the line is `t = max(1, ⌊T⌋)` pixels thick for `auto`, the user agent's
+choice, and `t` is `T` rounded, and at least a pixel, for `from-font`
+and a given thickness, as Level 4 says and the reference browser
+rounds 2.7 pixels to 3, where a tentative test floors it; an
 underline's top is `B + max(1, ⌈T/2⌉)` for `auto`, `B` plus the rounded
 offset for a given `text-underline-offset`, `B + D` plus it for
 `under`, and `B` plus the font's underline position for `from-font`;
 an overline's top is `B − A − t`; a line-through's is
-`B − A/3 − T/2`, rounded; `double` draws a second line at the first's
-top plus `T + 1`, rounded. `dotted`, `dashed` and `wavy` are drawn in
-the shape the reference browser gives them — dots and dashes of the
-line's thickness, a wave of it — but not pixel for pixel; the golden
-cases hold `solid` and `double`. A decoration is ink overflow and
-extends no scrollable area.
+`B − A/3 − T/2`; `double` draws a second line `T + 1` from the first,
+below an underline and above an overline, and `⌊T + 1⌋` below a
+line-through; every place is rounded a half towards the bottom of the
+page, as the reference browser rounds −12.5 to −12 and 17.5 to 18
+(this note first gave the second line at the first's top plus `T + 1`
+for all three, which step 9's measures corrected). `dotted`, `dashed`
+and `wavy` are drawn in the shape the reference browser gives them —
+squares of the line's thickness a thickness apart, dashes of three
+thicknesses three apart, a wave of the thickness's amplitude and a
+half-wavelength of `2t + 1` — but not pixel for pixel; the golden cases
+hold `solid` and `double`. A decoration is ink overflow and extends no
+scrollable area.
 
 Painting follows Text Decoration 4 and CSS2 Appendix E: for each run of
 text, its underlines, then its overlines, then the text, then its
@@ -461,9 +635,11 @@ longhands are properties too. `start`, the new initial value, and
 `end` are resolved at layout by the block's direction, so a right-to-
 left paragraph is now right-aligned by default where it was left-
 aligned. `match-parent` computes to the parent's value with `start` and
-`end` resolved by the parent's direction, and to `start` on the root.
-`text-justify` takes `auto`, `none`, `inter-word`, `inter-character`
-and `distribute`, which is `inter-character`.
+`end` resolved by the parent's direction, and on the root to `left`,
+resolved against the initial style's direction, where the draft's
+`start` would follow a right-to-left root's. `text-align-all` takes no
+`justify-all`. `text-justify` takes `auto`, `none`, `inter-word`,
+`inter-character` and `distribute`, which is `inter-character`.
 
 A line is justified when its alignment is `justify`: the alignment of
 `text-align-last` for a block's last line and for a line ended by a
@@ -476,19 +652,23 @@ pixel. With `auto` and `inter-word` the opportunities are the word
 separators left after white space processing — each space between
 words, each preserved space under `pre-wrap` — the spaces either side
 of an atomic inline included; with `inter-character` they are also the
-places between typographic character units within a word. A line with
-no opportunity, or whose content overflows its line box, is aligned to
-its start. Justification never compresses: a line is filled only by
-growing its gaps. The justified gaps are part of the text, so a
-decoration runs across them. The reference browser does not take
-`inter-character`, and justifies such lines by word; the draft is
-followed.
+places between a word's characters, code point by code point rather
+than by grapheme cluster, the word then drawn a fragment a character as
+letter spacing draws it, at 2.3 times the layout of the same lines
+justified by word (M35.8's to mend). A line with no opportunity, or
+whose content overflows its line box, is aligned to its start.
+Justification never compresses: a line is filled only by growing its
+gaps. The justified gaps are part of the text, so a decoration runs
+across them. The reference browser takes neither `text-justify` nor
+`justify-all`: `inter-character` and `none` justify by word there, and
+`justify-all` is `start`; the draft is followed, and held by unit
+tests where the golden cases cannot hold it.
 
 **The style's size.** `ComputedStyle` gains three pointers, `custom`,
 `lists` and `decoration`; `text-align-last` and `text-justify` as a
-byte each beside `text_align`; and the larger percentage types above.
-Its size test states the new size, the reasons, and the history
-before.
+byte each beside `text_align`, in what was padding; and the larger
+percentage types above: 648 bytes where it was 448. Its size test
+states the new size, the reasons, and the history before.
 
 **Restyle and invalidation.** A change to a custom property restyles
 the element and, the property being inherited, every descendant whose
@@ -497,17 +677,25 @@ today. The attribute names `attr()` reads are selector features, above.
 The counters and markers depend on the document's order, not on an
 element's style, and the box tree is built again for every layout; the
 layout cache sees what they did to a box through the generated text
-fingerprint, above. `env()` has no change to follow.
+fingerprint, above. A list's presentational hints restyle their
+element when they change. `env()` has no change to follow.
 
 **Security.** The bounds above are this milestone's defences: a math
-function nested 32 deep, a substitution of 64 KiB, a cascade's
-substitutions of 64 MiB, a chain of custom properties resolved without
-recursion, counters clamped to 32 bits, and a counter style's
-representation bounded by the value's digits or, for an additive style,
-by the range it is defined over. `attr()` reads attributes the page
-never meant for styling; it can put one on the screen, which is
-allowed, and not in a URL, which M23 must keep so. Until
-`docs/security.md` (M33), the architecture's M21 entry records these.
+function nested 32 deep; a substitution weighing a mebibyte at most
+(`MAX_SUBSTITUTION`) and a cascade's substitutions 256 MiB
+(`MAX_CASCADE_SUBSTITUTION`), weighed by the memory their tokens take; a
+chain of custom properties resolved without recursion and a cycle found
+at the same cost however long; a counter's value kept to 32 bits, a set
+of 1,024 counters and a walk's 2²⁰; a pseudo-element's text of a
+mebibyte (`MAX_GENERATED_TEXT`) and a walk's texts of 256 MiB; a counter
+style's representation of 60 code points (`MAX_REPRESENTATION`) and
+eight fallbacks; and every length layout resolves from a percentage, a
+math function's or one written, within `MAX_LENGTH_PX`. The `values`
+fuzz target holds the engine to them from arbitrary bytes. `attr()`
+reads attributes the page never meant for styling; it can put one on the
+screen, which is allowed, and not in a URL, which M23 must keep so.
+Until `docs/security.md` (M33), the architecture's M21 entry records
+these.
 
 **The web-platform-tests.** The subset gains `css/css-variables`,
 `css/css-values`, `css/css-env`, `css/css-lists`,
@@ -521,39 +709,80 @@ computed values, which wait for scripts (M24, M25); many of the rest
 use the Ahem font, which the subset does not take, or features of
 those modules this note leaves out, which the rule's check of
 declarations leaves out with them. `expectations.txt` gains this
-milestone's section, each failure with what it asks of the engine.
+milestone's section, each failure with what it asks of the engine. As
+built, 729 tests join, 20 of them in directories taken before, for
+1,703 in all, of which 1,579 pass; the 77 new expected failures are
+the complex counter styles, colour functions, images and markers on
+pseudo-elements, which section 2 leaves out; six where the reference
+browser, the draft and the tests do not agree, or the tests disagree
+with themselves (counter-list-item-2 against counters-scope-001), each
+decided as section 1 says; and three gaps of other milestones,
+horizontal scrolling and presentational attributes. What the tests
+found is in the paragraphs above, each marked step 8: percentages of
+zero, the `<declaration-value>` check, counter overflow, the space
+after an empty inline box at a line's start, which the line's
+placement kept where its measure had dropped it, markers beside floats,
+a block's decoration in the inner block's font, and a rounded
+thickness; and the user agent sheet's `body` rule, which gave `body` a
+font size and a colour HTML does not, so that a root's font size never
+reached the page and a theme in `rem` broke.
 
 **The golden cases.** Box-only reference pages numbered from 91,
-captured and compared as the others are: colours and sizes from custom
-properties, with fallbacks, cycles, invalid substitutions, `inherit`
-and `initial` in them; `env()`; `calc()`, `min()`, `max()` and
-`clamp()` in widths, heights, margins, padding, insets, grid tracks and
-transforms, against definite and indefinite bases; `attr()` typed into
-widths and colours; list items' symbol markers, outside and inside, at
-two sizes, coloured and clipped, the items' own text transparent so
-only the shapes are compared; and every decoration line in `solid` and
-`double`, of each thickness rule and position, over text with no
-descenders, which the reference browser's ink skipping would cut, the
-text transparent and the decorations not. Text — numbers, letters,
-justified lines — is compared word by word by M20's print references:
-print pages of counters in nested sections and lists, every predefined
-style the font can draw, `start`, `reversed` and `value`, markers inside
-and outside with their content, and justified paragraphs with spaces,
-inline-blocks, forced breaks, `text-align-last` and
-`inter-character`, each word where the reference browser's print puts
-it within M20's slack.
+captured and compared as the others are: 91, colours and sizes from
+custom properties, with fallbacks, a chain, cycles, invalid
+substitutions, `inherit`, `initial` and `unset`, in shorthands,
+inherited and redeclared; 92, `env()`; 93, `calc()`, `min()`, `max()`
+and `clamp()` in widths, heights, margins, padding, borders and insets,
+against definite and indefinite bases, nested and clamped; 94, math
+functions in grid tracks, gaps and repetitions, flex bases and gaps,
+and transforms and their origins; 95, `attr()` typed into lengths,
+numbers with a unit, percentages and colours; 96, list items' symbol
+markers, outside and inside, at two sizes, coloured, beside floats and
+clipped, the items' own text transparent so only the shapes are
+compared, a marker's anti-aliased edge allowed the tolerance above; 97,
+every decoration line in `solid` and `double`, of each thickness rule
+and position, propagated through inline and block boxes and across the
+spaces their elements hold, over text with no descenders, which the
+reference browser's ink skipping would cut, the text transparent and
+the decorations not; and 98 and 99, the theming demo below. Text —
+numbers, letters, justified lines — is compared word by word by M20's
+print references: print pages of counters, in chapters and sections, an
+outline by `counters()` and every predefined style the font draws in
+range and out of it; of lists, from `start`, reversed and with values
+set, nested, markers inside and outside of strings and of `::marker`'s
+content and of another size, a `div` made a list item and right-to-left
+lists; and of justified paragraphs with spaces, inline-blocks, spans of
+another size, forced breaks and `text-align-last`, and the other
+alignments. Each word is where the reference browser's print puts it
+within M20's slack. Each piece of generated content is a run of text of
+its own in the reference browser's print, which the print reader joins
+to the next where the next starts where the last ends, as the engine's
+words are joined; the pages leave out what section 1 says the
+reference browser does otherwise — the zero of `hebrew`, `square` and
+the disclosure styles, a reversed list with a value set, `div` list
+items after a list, `text-justify` — and keep the Hebrew values in
+inline-blocks, the engine's bidi reordering within a text and not
+across inline boxes. What the golden cases found is in the paragraphs
+above, each marked step 9: the decorations' second lines and rounding,
+the width of a gap, and a marker's text in a right-to-left list.
 
 **Acceptance (M21.8).** `about:silver` is themed by custom properties:
-its colours are declared once on `:root`, for the light scheme and
-again for the dark one under `prefers-color-scheme`, and every rule
-reads them with `var()`; and its sections are numbered by counters,
-`1.`, `1.1` and so on, by `counter-reset`, `counter-increment` and
-`::before`. Its print is checked word by word as M20's is, the
-numbers included, and a test holds its colours under each scheme to the
-theme's. A theming demo of the milestone's own, a box-only page of
-components whose colours and sizes come from custom properties with
-fallbacks, switched by a class that redeclares them, is a reference
-page drawn against the reference browser's captures both ways.
+its colours are declared once on `:root`, for the light scheme, now
+the default and a palette of its own, and again for the dark one under
+`prefers-color-scheme`, and for paper under `print`, and every rule
+reads them with `var()`, its spacing too, through a `calc()` of one;
+and its sections are numbered by counters, `1.` to `5.` with `1.1` to
+`3.2` beneath them, by `counter-reset`, `counter-increment` and
+`::before`, with a paragraph and a tile of M21's. Its print, of four
+pages, is checked word by word as M20's is, the numbers included, and
+a test holds its page's, headings', text's, cards' and links' colours
+under each scheme to the theme's, the canvas painted the page's colour.
+A theming demo of the milestone's own, reference pages 98 and 99, the
+same box-only components whose colours and sizes come from custom
+properties with fallbacks, under the theme on `:root` and switched by
+a class that redeclares it, one property `unset` in the switched theme
+and taken from its fallback, is drawn against the reference browser's
+captures both ways.
 
 **Performance and fuzzing.** A benchmark, `benches/values.rs`,
 measures the cascade of the mutation benchmark's page with a theme of
@@ -572,59 +801,96 @@ targets that lay pages out run fifteen minutes each with the new
 functions and properties in their dictionary and the milestone's pages
 among their seeds.
 
+As built (step 11), the benchmark measures those, a theme of 8 and of
+200 properties and one with every paragraph declaring a property of
+its own, the doubling chain, a chain of 10,000 and a cycle of as many,
+and a page built to exhaust the cascade's bound, with the memory it
+takes; `docs/perf-budgets.md` has its numbers. Writing the fuzz target
+found the infinite and NaN percentages above; the `mutation` target
+found a list item's marker beside its content lost by the layout
+cache, above. T4.3 found the box tree doing the milestone's work for
+every document at every layout, mended — the walk run only when a
+generated text is asked for, the decorations and the generated texts
+kept in tables by node rather than hashed, the fingerprint hashing the
+decorations' fields rather than their printed form — and the style's
+size, which is not: an appended paragraph's frame 25% longer and the
+pseudo benchmark's 40–53%, the exception written down with M35.9 and,
+for the user agent sheet's twelve more rules matched against every
+element, M35.2. The four targets ran fifteen minutes each and again on
+the code as committed; nothing else failed.
+
 ## 2. Not in this milestone, said rather than hidden
 
 Each item here that no milestone of the roadmap holds is registered with
-the deferred items, the G list, at step 12.
+the deferred items, the G list, as step 12 did; the number follows each.
 
 - *Registered custom properties*: `@property` and
   `CSS.registerProperty()`, a custom property with a syntax, an initial
   value and inheritance of its own, computed and animated by its type
   (CSS Properties and Values API 1). Every custom property here is
-  unregistered: a token list.
+  unregistered: a token list. G14.
 - *The other math functions*: Values 4's `round()`, `mod()`, `rem()`,
   `abs()`, `sign()`, the trigonometric functions and `pow()`, `sqrt()`,
-  `hypot()`, `log()` and `exp()`; Values 5's typed arithmetic,
-  `progress()`, `random()`, `calc-size()`, `if()`, `inherit()`, custom
-  functions (`@function`) and the spread syntax, which only those
-  functions' arguments use.
+  `hypot()`, `log()` and `exp()`; Values 5's `progress()`, `random()`,
+  `calc-size()`, `if()`, `inherit()`, custom functions (`@function`) and
+  the spread syntax, which only those functions' arguments use. Typed
+  arithmetic, which this list first held as Values 5's, is in Values 4's
+  current draft and in this milestone. G15.
 - *Colours*: `rgb()`, `hsl()` and the other colour functions, which the
   engine has never parsed, and the `currentcolor` keyword outside
   `text-decoration-color`; a custom property can hold a hexadecimal or
-  named colour.
+  named colour. G16.
 - *`@counter-style` and `symbols()`*, author-defined counter styles; the
   complex predefined styles of Counter Styles 3 §7, the longhand
   Chinese, Japanese and Korean styles and `ethiopic-numeric`, which
-  behave as `decimal`; and `speak-as`.
+  behave as `decimal`; and `speak-as`. G17.
 - *Images*: `content: url()`, `list-style-image` and `<image>` in a
-  typed `attr()`, with images (M23), which also carries `attr()`'s
-  taint.
-- *`env()` outside properties*, in media queries and descriptors, which
-  the draft has not settled and the reference browser does not take;
-  author-defined environment variables.
+  typed `attr()`, with images (M23, whose CSS images item now names
+  them), which also carries `attr()`'s taint.
+- *`env()` and `var()` outside properties*: in media queries and in
+  `@page`'s descriptors, which the draft has not settled and the
+  reference browser does not take; author-defined environment
+  variables. G18.
 - *Markers on `::before` and `::after`* (`::before::marker`), `display:
-  inline list-item` and `flow-root list-item`, and `marker-side`.
-- *A marker beside a table*, which the reference browser places off the
-  table's first row, where this engine aligns it with the row.
-- *Ink skipping*: `text-decoration-skip-ink`, by whose `auto` the
-  reference browser breaks an underline around descenders, where this
-  engine draws it through them; `text-decoration-skip`, emphasis marks,
-  `text-shadow`, and the spelling and grammar error lines.
+  inline list-item` and `flow-root list-item`, and `marker-side`; and a
+  marker beside a table, which the reference browser places off the
+  table's first row, where this engine aligns it with the row. G19.
+- *The rest of text decoration*: `text-decoration-skip-ink`, by whose
+  `auto` the reference browser breaks an underline around descenders,
+  where this engine draws it through them; `text-decoration-skip`,
+  emphasis marks, `text-shadow`, and the spelling and grammar error
+  lines; and `text-decoration` on `::first-line` and `::first-letter`,
+  whose properties here do not include it, as Pseudo-Elements 4 says
+  they should. G20.
 - *Justification beyond expanding word separators and characters*:
   compressing a line, the priorities and script-specific rules of
   Chinese, Japanese, Korean and the South-East Asian scripts, whose text
   the engine cannot yet break into lines (G10), and cursive
-  elongation; `text-align` with a string, for table columns.
+  elongation; `text-align` with a string, for table columns; and
+  `match-parent` on a right-to-left root, which is `left` here. G21.
 - *The fonts' remaining properties*: `font-weight`, `font-style`,
   `font-feature-settings`, `line-height` and the `font` shorthand. M5.6
   and M8.2 pointed them at this milestone and M20's note did too, but
   none of M21's items holds them; they are registered rather than
-  taken in passing.
+  taken in passing. G22.
+- *`display: flow-root`*, which the cascade does not take, found writing
+  a test at step 9. G23.
+- *Logical properties and `:dir()`*: `padding-inline-start`, which
+  HTML's rules give lists, and the other logical properties, so that a
+  right-to-left list is padded on its right, where it is padded on the
+  left here, and the selectors of direction. G24.
+- *A grid's rows sized a second time* for an item's percentage of the
+  first sizing's height, as the reference browser grows an `auto` row
+  for an item's `min-height: calc(25px + 50%)`, where this engine takes
+  the percentage of zero. G25.
 - *Serializing custom properties as written*, comments and all, which
   only the CSSOM observes (M24, M25).
 - *Sharing computed styles between elements*, which would bound the
   memory of a substitution repeated over many elements by the size of
-  one; the per-cascade bound stands in for it.
+  one, the style sharing of M35.2; the per-cascade bound stands in for
+  it.
+- *Fragments that refer to their styles*, M35.9, which T4.3 found this
+  milestone's larger style needs (step 11).
 
 ## 3. Order of work
 

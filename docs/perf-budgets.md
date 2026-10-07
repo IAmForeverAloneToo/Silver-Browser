@@ -71,6 +71,8 @@ nothing that changes what is shown.
   - `cargo bench -p engine --bench flex` (M17).
   - `cargo bench -p engine --bench grid` (M18).
   - `cargo bench -p engine --bench composite` (M19), on both backends.
+  - `cargo bench -p engine --bench media` (M20).
+  - `cargo bench -p engine --bench values` (M21).
   - `cargo bench -p style --bench match` (M4.12; recorded since M16).
   - Criterion-tracked benchmarks run in CI are T4.2, for M35.
 - **Counters** prove work that is not done: `Engine::style_runs`,
@@ -707,6 +709,151 @@ the compositing benchmark a hundredth. The compositing benchmark's GPU
 rows on llvmpipe, recorded in M19's table, moved as much between rounds
 as between the two builds.
 
+### Custom properties, `calc()`, counters and generated content (M21)
+
+**The values benchmark.** `benches/values.rs`, at 1280 by 800, in
+release, two runs, each stage the median of ten: the mutation
+benchmark's page cascaded with its colours, sizes and spacing in custom
+properties on `:root` read by `var()`, against the values written out;
+custom properties at the substitution bounds, with the memory a page
+built to exhaust the cascade's bound takes; 1,000 boxes sized by math
+functions of percentages and lengths against the lengths they come to;
+an ordered list of 1,000 items, each holding a list of two numbered by
+`counters()`, against the same elements as blocks; and 1,000 paragraphs
+of six lines or so, justified, against the same left-aligned.
+
+| | Two runs |
+| --- | --- |
+| The cascade of 1,000 paragraphs, the values written out | 3.96–4.06ms |
+| The same under a theme of 8 custom properties | 4.33–4.46ms |
+| A theme of 200, the rules reading 8 | 4.39–4.67ms |
+| That, every paragraph declaring one of its own | 10.6–12.4ms |
+| Thirty properties each doubling the last | 1.79–2.67ms, the fourteenth the last with a value, of 16,383 tokens |
+| A chain of 10,000 each naming the next | 10.3–17.2ms |
+| The same closed into a cycle | 4.8–8.1ms |
+| 1,000 elements each declaring the doubling chain, cascaded once | 353–437ms, the chain whole in 135 of them |
+| The memory that cascade takes at its peak | 225 MiB, over 25 MiB resident before |
+| 1,000 boxes sized by lengths: cascade, box tree, layout | 3.4–3.8, 0.23–0.32 and 0.44–0.50ms |
+| Sized by math functions | 7.8–8.0, 0.28–0.31 and 0.93–0.96ms |
+| An ordered list of 1,000 items of two, as blocks | 14.9–18.7, 8.5–9.2 and 141–148ms |
+| Numbered by counters | 21.0–26.6, 20.7–25.3 and 195–215ms |
+| 1,000 paragraphs of six lines, left-aligned: their layout | 2.22–2.25s |
+| Justified | 2.20–2.29s |
+| Justified by `inter-character` | 5.49–5.89s |
+
+A theme read by `var()` costs the cascade a tenth more than the values
+written out, a theme of 200 properties no more than one of 8, the
+paragraphs sharing the root's map; a property declared on every
+paragraph, which copies the map on write and computes it for each,
+triples it. The page built to exhaust `MAX_CASCADE_SUBSTITUTION` meets
+it after 135 of its 1,000 elements, as the bound means it to, in under
+half a second and 225 MiB. Math functions double the cascade of the
+boxes they size and their layout, which stays under a millisecond. A
+list's markers and counters cost its box tree two and a half times and
+its layout two fifths more, the markers' lines. Justification by word
+costs nothing measurable; by character it lays a fragment a character
+out, each measured alone, as letter spacing does: 2.5 times as long,
+M35.8's (text measurement off the hot path).
+
+What the benchmark's step found, and mended before these runs: a math
+function's infinite or NaN percentage, and a written one as large as an
+`f32` holds, resolved to an infinite or NaN length, now censored where
+every percentage is resolved; and, under T4.3, the box tree doing the
+milestone's work for every document at every layout — the walk of the
+counters and generated text run whether or not anything generates
+text, the decorations and the generated texts kept in SipHash maps
+grown from empty, and the fingerprint of a box's generated text
+formatting its decorations' printed form for every decorated text,
+every link's. The walk now runs only when a generated text is asked
+for, the two maps are tables by node, and the decorations are hashed by
+their fields: under callgrind, twenty appended paragraphs' frames at
+1,000 paragraphs ran 804 million instructions, and 758 million now,
+against 596 million before M21.
+
+**T4.3.** The benchmarks above, the code before M21 (`21cdacc`) and
+M21's built side by side in release, four rounds of each in turn. The
+ranges are over the rounds. The machine is slower than M20's, which is
+why the two tables are not to be read against each other.
+
+| | Before M21 | M21 |
+| --- | --- | --- |
+| Scrolling: the layout, once | 366–479ms, median 396 | 397–461ms, median 410 |
+| Scrolling: a scroll frame, median | 0.96–1.02ms, median 0.98 | 1.00–1.11ms, median 1.09 |
+| Its raster, median | 0.57–0.60ms, median 0.59 | 0.59–0.62ms, median 0.60 |
+| Its paint, median | 0.37–0.39ms, median 0.37 | 0.42–0.44ms, median 0.43 |
+| Changing the document: the first frame | 740–845ms, median 825 | 769–890ms, median 829 |
+| An appended paragraph's frame, median | 10.5–12.3ms, median 11.2 | 13.5–14.2ms, median 13.9 |
+| Its layout, median | 8.8–10.3ms, median 9.3 | 11.6–12.1ms, median 11.9 |
+| Its paint, median | 1.30–1.43ms, median 1.37 | 1.40–1.49ms, median 1.46 |
+| Those frames over 16.7ms | 16–90 of 1,000 | 256–384 of 1,000 |
+| 1,000 appended in one frame | 745–856ms, median 774 | 790–923ms, median 840 |
+| Loading: `load` to the first frame drawn | 831–870ms, median 856 | 848–902ms, median 869 |
+| Going back to the page from the cache | 15.1–19.2ms, median 16.6 | 15.6–17.0ms, median 16.4 |
+| Going back to the page fetched again | 798–891ms, median 874 | 842–895ms, median 872 |
+| Matching: 1,000 selectors over 10,003 elements | 308–428ms, median 323 | 296–337ms, median 307 |
+| Flex: a grid of 1,000 cards, the first frame | 2.57–2.89s, median 2.76 | 2.68–2.93s, median 2.88 |
+| Flex: after a card's title changes, a frame, median | 2.63–2.76s, median 2.64 | 2.72–2.82s, median 2.79 |
+| Flex: a chain of 64 nested containers, its layout | 20.5–21.6ms, median 21.2 | 22.6–37.4ms, median 24.6 |
+| Grid: a gallery of 1,000 figures, the first frame | 1017–1105ms, median 1032 | 982–1107ms, median 1038 |
+| Grid: after a caption changes, a frame, median | 967–1003ms, median 983 | 976–1024ms, median 988 |
+| Grid: a dashboard of 200 cards, the first frame | 303–354ms, median 326 | 313–340ms, median 336 |
+| Grid: a chain of 64 nested grids, its layout | 15.4–19.4ms, median 16.2 | 18.4–22.8ms, median 19.4 |
+| Compositing: a scroll frame, median | 1.30–1.43ms, median 1.36 | 1.40–2.07ms, median 1.44 |
+| Compositing: a card turned, a frame, median | 11.8–13.3ms, median 12.2 | 11.4–13.3ms, median 12.1 |
+| Compositing: a card moved, a frame, median | 9.56–9.86ms, median 9.73 | 9.2–11.0ms, median 9.8 |
+| Compositing: 200 faded cards, the first frame | 110–142ms, median 121 | 105–184ms, median 108 |
+| Compositing: a scroll frame of them, median | 1.27–1.38ms, median 1.32 | 1.28–1.53ms, median 1.29 |
+| Media: 1,000 lists answered again, median of 1,000 | 21.0–27.9µs, median 21.1 | 24.3–24.5µs, median 24.3 |
+| Media: the page's cascade with the 1,000 rules | 9.0–11.1ms, median 9.9 | 10.4–23.0ms, median 11.9 |
+| Media: a resize across the breakpoint, a frame | 779–819ms, median 799 | 769–794ms, median 783 |
+| Media: a print, its layout, pagination and paint | 787–830ms, median 824 | 764–887ms, median 796 |
+| Its pagination alone | 3.04–3.42ms, median 3.33 | 3.40–4.40ms, median 3.88 |
+| The whole print | 8.08–8.84s, median 8.39 | 8.05–8.45s, median 8.19 |
+| The process's peak memory | 129–130 MB | 145–147 MB |
+
+The pseudo benchmark, the same four rounds:
+
+| Sheet | The first frame, before | M21 | An appended paragraph's frame, median, before | M21 |
+| --- | --- | --- | --- | --- |
+| None | 2.37–2.65s | 2.35–2.62s | 19.5–22.1ms, median 21.7 | 30.2–32.0ms, median 30.7 |
+| `::before` and `::after` | 2.39–2.53s | 2.33–2.61s | 25.6–29.3ms, median 27.0 | 37.0–42.7ms, median 39.6 |
+| `::first-letter` | 2.33–2.45s | 2.26–2.41s | 23.2–25.8ms, median 24.8 | 32.6–36.9ms, median 34.6 |
+| `::first-line`, colour and size | 2.69–2.94s | 2.67–3.04s | 26.7–29.8ms, median 28.4 | 42.4–44.9ms, median 43.3 |
+| `::first-line`, a background | 2.25–2.34s | 2.29–2.39s | 23.1–24.2ms, median 23.7 | 34.2–40.0ms, median 35.4 |
+| All of them | 2.90–3.42s | 3.08–3.29s | 52.9–58.1ms, median 54.3 | 76.5–82.7ms, median 77.6 |
+
+Within T4.3's 10% by their medians: every first frame, loading and
+going back, matching, the flex grid's frames, the grid's, the
+compositing benchmark's and a resize. Over it, written down here with
+the items that will undo them:
+
+- **An appended paragraph's frame**, 25% longer by the medians, its
+  layout 27%, and 256–384 of 1,000 over the budget against 16–90; the
+  pseudo benchmark's appended paragraphs' frames, 40–53%; the chains of
+  64 nested flex containers and grids, 16% and 20%; the scroll frame,
+  11%, its paint 18%; a print's pagination alone, 17%; and the print's
+  peak memory, 13%. Under callgrind, twenty appended paragraphs' frames
+  run 27% more instructions than before M21 (758 million against 596),
+  and the pseudo page's, with its links, 33% more; nearly all of it is
+  the style's size. `ComputedStyle` is 648 bytes where it was 448, and
+  its 22 fields that may now hold a `calc()` expression make its copy a
+  field at a time where it was a copy of bytes: 363 instructions a copy
+  where it was 142, besides the bytes moved, over the 482,424 copies of
+  the twenty frames, as the values note chose and left to T4.3 to
+  price.
+  The layout cache copies every fragment it gives back, 19,000 a frame
+  on the mutation page and 35,000 on the pseudo page, and each fragment
+  its style. Fragments that refer to their styles, the pass copying
+  only what it laid out, are M35.9's.
+- **The cascade of the media benchmark's page with its 1,000 rules**,
+  20% longer, and the pseudo page's `::first-line` cascading its
+  paragraphs' inline elements again at every build: the user agent
+  sheet has twelve more rules, 60 where it had 48, for HTML's lists and
+  decorated phrasing elements, and every rule is tried against every
+  element. Rule hash bucketing is M35.2's.
+- **1,000 media lists answered again**, 15% longer by the medians, 3µs,
+  the ranges of the two columns overlapping.
+
 ### Over budget, and why
 
 These are known and recorded rather than hidden. Each has the item that
@@ -753,7 +900,13 @@ is to take it on.
   times in 1,000, the median at 12.6ms. M17's larger computed style
   takes it further: 394–442 times in 1,000, the median at 15.1–15.5ms,
   against 259–291 and 13.7–14.6ms for the code before M17 measured in
-  the same rounds. M35.9 takes it on.
+  the same rounds. M21's larger style again: 256–384 times in 1,000,
+  the median at 13.9ms, against 16–90 and 11.2ms for the code before
+  M21 in the same rounds (T4.3, M21). M35.9 takes it on.
+- **Justification by character.** `text-justify: inter-character`, a
+  word laid out a fragment a character and each measured alone, as
+  letter spacing is: 1,000 paragraphs of six lines take 5.5–5.9s to lay
+  out against 2.2s justified by word. M35.8.
 - **A first line's boxes cascaded again at every build.** A
   `::first-line` that sets an inherited property has every inline
   element, `::before`, `::after` and `::first-letter` on a first line's

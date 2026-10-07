@@ -20,8 +20,9 @@
 //!
 //! Every function here keeps the arithmetic finite where its inputs are:
 //! a matrix that is not finite, or not invertible, renders its box and
-//! its content not at all (css-transforms-1 §2), and [`Matrix::inverse`]
-//! says `None` for both. The parsers clamp the numbers they take to the
+//! its content not at all (css-transforms-1 §2), and
+//! [`Matrix::inverse`](crate::transform::Matrix::inverse) says `None`
+//! for both. The parsers clamp the numbers they take to the
 //! magnitude of [`crate::cascade::MAX_LENGTH_PX`], so that the product
 //! of a few functions stays finite; past that the check is here.
 

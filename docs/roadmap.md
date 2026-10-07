@@ -1263,24 +1263,55 @@ Per css-grid-1 (level 2 subgrid included):
 
 ## M21 — Custom properties, calc, counters, generated content  ·  `style`  ·  Effort: L  ·  Depends: M5
 
-- [ ] M21.1 Custom properties: `--x` parse (the M3 tokenizer already
+- [x] M21.1 Custom properties: `--x` parse (the M3 tokenizer already
        handles `--custom` idents), inheritance (computed-value = token
        stream), `var()` substitution with fallback + cycles = invalid at
-       computed-value time (IACVT).
-- [ ] M21.2 `calc()`: +, -, ×, ÷ with unit algebra (length/number/
+       computed-value time (IACVT). Done 2026-10-07: `style::custom`, a
+       copy-on-write trie shared with the parent where the declarations
+       are the same; `var()` by Values 5's Appendix A on a stack of its
+       own, its arguments `{}`-wrapped or not; substitution bounded by
+       the memory its tokens take, a mebibyte a substitution and 256 MiB
+       a cascade (`docs/design/values.md`).
+- [x] M21.2 `calc()`: +, -, ×, ÷ with unit algebra (length/number/
        percentage type checking at compute time); `min()/max()/clamp()`.
-- [ ] M21.3 `env()` stubs (safe-area, viewport).
-- [ ] M21.4 Counters: `counter-increment/reset`, `counter()`, `counters()`
-       + `content` integration (M16).
-- [ ] M21.5 Generated content: `content: url()` (needs M23), `attr()`
+       Done 2026-10-07: `style::calc`, typed by Typed OM's algebra, 32
+       deep, an expression with a percentage kept for layout, in every
+       property, shorthand, grid track and line, transform, `@page`
+       value and media feature.
+- [x] M21.3 `env()` stubs (safe-area, viewport). Done 2026-10-07: the
+       safe-area insets 0, `preferred-text-scale` 1, the viewport
+       segments undefined, as the reference browser has them; in
+       properties (G18 for the rest).
+- [x] M21.4 Counters: `counter-increment/reset`, `counter()`, `counters()`
+       + `content` integration (M16). Done 2026-10-07: `counter-set` and
+       `reversed()` too, a walk of the document ahead of the box tree by
+       the reference browser's scoping where the tests hold it; the
+       predefined counter styles of Counter Styles 3 §6
+       (`style::counter_style`); the layout cache keyed on a fingerprint
+       of the generated text in a box.
+- [x] M21.5 Generated content: `content: url()` (needs M23), `attr()`
        (css-values-5's typed `attr()`; `content`'s string `attr()` is
-       M16's, see `docs/design/selectors-pseudo.md`).
-- [ ] M21.6 List styling: `list-style-type` (disc/decimal + 3 custom),
-       `::marker` content.
-- [ ] M21.7 `text-decoration` (underline position/thickness v1);
-       `text-justify` + real justification (M7 debt).
-- [ ] M21.8 Acceptance: theming demo (custom props drive colors),
-       auto-numbered sections with counters.
+       M16's, see `docs/design/selectors-pseudo.md`). Done 2026-10-07:
+       the typed `attr()` in every property, its `<syntax>` subset;
+       `content: url()` waits with images (M23.3).
+- [x] M21.6 List styling: `list-style-type` (disc/decimal + 3 custom),
+       `::marker` content. Done 2026-10-07: `display: list-item`,
+       `::marker` styled for list items, every predefined style and a
+       string, inside and outside markers, disc, circle and square drawn
+       by the reference browser's measures, HTML's list rules and
+       hints.
+- [x] M21.7 `text-decoration` (underline position/thickness v1);
+       `text-justify` + real justification (M7 debt). Done 2026-10-07:
+       the properties of Text Decoration 3 and 4, propagated through the
+       box tree, their lines placed as the reference browser places
+       them; `text-align`'s values and longhands, `text-justify`, a
+       line's slack shared across its gaps, or its characters too.
+- [x] M21.8 Acceptance: theming demo (custom props drive colors),
+       auto-numbered sections with counters. Done 2026-10-07:
+       `about:silver` themed by custom properties under each scheme and
+       in print, its sections numbered by counters, held word by word
+       to the reference browser's print; the theming demo, reference
+       pages 98 and 99, both ways.
 
 ---
 
@@ -1311,7 +1342,9 @@ Per css-grid-1 (level 2 subgrid included):
        aspect-ratio box, `alt` text rendering, `object-fit` + `object-position`.
 - [ ] M23.3 CSS images: `background-image`, border-image v1, gradients
        (linear/radial — gradient rasterization in tiny-skia/wgpu paths),
-       `image-set`.
+       `image-set`; `content: url()`, `list-style-image` and `<image>` in
+       a typed `attr()`, keeping `attr()`'s taint: an attribute's value
+       never a URL (M21, `docs/design/values.md` section 2).
 - [ ] M23.4 SVG-as-image v1 (render an SVG file to a surface via M32
        subset: static shapes/text only).
 - [ ] M23.5 Lazy decoding + downscale-on-decode for huge images (memory
@@ -1712,6 +1745,53 @@ Deferred from the milestones above, each with what it waits on:
 - [ ] G13 The print reftests of the web-platform-tests, which compare
        paginated renderings: the harness renders the screen alone.
        Deferred from M20.
+- [ ] G14 Registered custom properties: `@property` and
+       `CSS.registerProperty()`, a syntax, an initial value and
+       inheritance of a property's own, computed and animated by its
+       type (CSS Properties and Values API 1). Deferred from M21.1;
+       `docs/design/values.md`, section 2.
+- [ ] G15 The other math functions: `round()`, `mod()`, `rem()`,
+       `abs()`, `sign()`, the trigonometric functions, `pow()`,
+       `sqrt()`, `hypot()`, `log()` and `exp()`; Values 5's
+       `progress()`, `random()`, `calc-size()`, `if()`, `inherit()`,
+       `@function` and the spread syntax. Deferred from M21.2.
+- [ ] G16 Colour functions, `rgb()`, `hsl()` and the rest, and
+       `currentcolor` outside `text-decoration-color`; the engine takes
+       hexadecimal and named colours alone. Found again at M21.
+- [ ] G17 `@counter-style` and `symbols()`, the complex predefined
+       counter styles of Counter Styles 3 §7 (the longhand Chinese,
+       Japanese and Korean styles, `ethiopic-numeric`) and `speak-as`.
+       Deferred from M21.4.
+- [ ] G18 `env()` and `var()` outside properties, in media queries and
+       `@page`'s descriptors; author-defined environment variables.
+       Deferred from M21.3.
+- [ ] G19 Markers on `::before` and `::after`, `display: inline
+       list-item` and `flow-root list-item`, `marker-side`, and a
+       marker beside a table placed off its first row as the reference
+       browser places it. Deferred from M21.6.
+- [ ] G20 The rest of text decoration: `text-decoration-skip-ink` and
+       `-skip`, emphasis marks, `text-shadow`, the spelling and grammar
+       lines, and `text-decoration` on `::first-line` and
+       `::first-letter`. Deferred from M21.7.
+- [ ] G21 Justification beyond expanding gaps and characters:
+       compressing a line, the rules of Chinese, Japanese, Korean and the
+       South-East Asian scripts (with G10), cursive elongation,
+       `text-align` with a string; and `match-parent` on a right-to-left
+       root. Deferred from M21.7.
+- [ ] G22 The fonts' remaining properties: `font-weight`, `font-style`,
+       `font-feature-settings`, `line-height` and the `font` shorthand,
+       which M5.6, M8.2 and M20's note pointed at M21 and none of its
+       items holds. Registered at M21.
+- [ ] G23 `display: flow-root`, which the cascade does not take. Found
+       at M21.
+- [ ] G24 Logical properties (`padding-inline-start` and the rest) and
+       `:dir()`, which HTML's rules give lists, so that a right-to-left
+       list is padded on its right. Found at M21.6.
+- [ ] G25 A grid's rows sized a second time for an item's percentage of
+       the first sizing's height (css-grid-2 §11), as the reference
+       browser grows an `auto` row for an item's `min-height:
+       calc(25px + 50%)`, where this engine takes the percentage of
+       zero. Found at M21.
 
 ---
 
@@ -1742,13 +1822,16 @@ Deferred from the milestones above, each with what it waits on:
        (tokenizer, stylesheet and style attribute), `selector_parse`,
        `style_document` and `pipeline`; `mutation` since M13,
        `url_parse`, `encoding_decode`, `mime_sniff` and `http_response`
-       since M14, and `media_query` since M20, when `pipeline` began to
-       paginate and print; `font_data` waits for its milestone.
+       since M14, `media_query` since M20, when `pipeline` began to
+       paginate and print, and `values` since M21, which holds math
+       functions, substitution, typed `attr()`, counters and generated
+       text to their bounds; `font_data` waits for its milestone.
 - [ ] T2.2 Seed corpora from WPT + real-site captures; corpus committed.
 - [ ] T2.3 Coverage-guided runs in CI nightly; crash → reproducer test
        before anything else. Since 2026-10-01 CI runs every target for a
        minute a push and half an hour weekly, the corpus carried in the
-       actions cache.
+       actions cache (`media_query`, left out of the list at M20, and
+       `values` joined it at M21).
 - [ ] T2.4 Structured fuzzing for the JS boundary (M24+): API call
        sequences, not just strings.
 

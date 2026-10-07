@@ -1140,3 +1140,81 @@ the page-margin boxes; `color-scheme`; `revert-layer`; `@container`,
 it; and what the subset asks of the rest of the engine. 1,429 tests
 pass workspace-wide, two ignored. Next milestone: custom properties,
 `calc()`, counters and generated content (M21).
+
+Milestone 21 (custom properties, `calc()`, counters and generated
+content), designed in `docs/design/values.md` and built in its twelve
+steps. Declarations keep a function's block whole and a custom
+property's name and `{}` blocks as written, and the cascade's parsers
+take component values, so a shorthand splits at nesting. `style::calc`
+(step 1) parses `calc()`, `min()`, `max()` and `clamp()` 32 deep, types
+them by Typed OM's algebra, simplifies them where a value is computed
+and keeps an expression with a percentage in it, `Calc(Arc<Calc>)` in
+each of the 22 percentage-holding fields, for layout to resolve and
+clamp; every property, shorthand, grid track and line, transform,
+`@page` value and media feature takes them. `style::custom` (step 2)
+computes custom properties into a copy-on-write trie by a keyed hash,
+shared with the parent where the winning declarations are the same, and
+substitutes `var()`, `env()` and (step 3) the typed `attr()` by Values
+5's Appendix A, on a stack of its own with cycles marked on it, a
+cascade keeping what it substituted by declaration and map; a value
+invalid once substituted is `unset`. Counters (step 4) are the box
+tree's: `box_tree::generated` walks the document ahead of the build,
+when the build first asks for a generated text, writing quote marks,
+`counter()` and `counters()` and markers in `style::counter_style`'s
+predefined styles, by the reference browser's scoping where the
+`counters-scope` tests hold it with the browser, and the layout cache
+keys a box's results on a fingerprint of the generated text and
+decorations in it. List items (step 5): `display: list-item`,
+`::marker` styled for list items, HTML's rules and hints, inside and
+outside markers, text or shapes drawn by the reference browser's
+measures, an outside marker moved into the first line or beside
+content with none. Text decoration (step 6) is propagated through the
+box tree by ancestry and its lines resolved by layout into the
+fragments it decorates, painted under and over the text by Text
+Decoration 4's order; `text-align`'s values and longhands and
+`text-justify` (step 7) justify a line's slack across its gaps, or its
+characters too. The web-platform-tests subset (step 8) took eleven
+directories, 729 tests, 1,579 of its 1,703 passing, and found
+percentages of zero, a `<declaration-value>` check, counter overflow,
+a space after an empty inline box, markers beside floats, a block's
+decoration in its own font and the user agent sheet's `body` rule,
+mended. Reference pages 91 to 99 and print pages of counters, lists and
+justified text (step 9), held to the reference browser's PDFs by a
+reader that now joins text objects that touch, found the decorations'
+second lines and rounding, the width of a gap and a right-to-left
+marker's order. `about:silver` (step 10) is themed by custom properties
+under each scheme and in print and numbered by counters, and a theming
+demo is drawn both ways against the reference browser. The values
+benchmark (step 11) cascades a theme of 200 properties in 4.4–4.7ms
+against 4.0 written out, and a page built to exhaust the cascade's
+bound in 0.35–0.44s and 225 MiB; writing the `values` fuzz target found
+infinite and NaN percentages, which every resolution of a percentage
+now censors, and the `mutation` target a marker beside its content lost
+by the layout cache, mended; T4.3 found the box tree doing the
+milestone's work for every document, mended, and the larger style
+copied with every fragment the layout cache gives back, an appended
+paragraph's frame 25% longer and the pseudo benchmark's 40–53%, the
+exception written in `docs/perf-budgets.md` with M35.9. Security, until
+`docs/security.md` (M33): a math function nests 32 deep; a substitution
+weighs a mebibyte at most (`style::custom::MAX_SUBSTITUTION`) and a
+cascade's substitutions 256 MiB (`MAX_CASCADE_SUBSTITUTION`), by the
+memory their tokens take, so thirty properties each doubling the last
+stop at the fourteenth and a page of 1,000 such elements at 225 MiB; a
+chain of custom properties is resolved without recursion, a cycle found
+at the same cost however long; a counter keeps to 32 bits, a set to
+1,024 counters and a walk to 2²⁰; a pseudo-element's text is a mebibyte
+at most (`layout::MAX_GENERATED_TEXT`) and a walk's 256 MiB; a counter
+style's representation is 60 code points
+(`style::counter_style::MAX_REPRESENTATION`) and eight fallbacks; every
+length layout resolves from a percentage is within `MAX_LENGTH_PX`;
+`attr()` can put an attribute on the screen and never in a URL, which
+M23 must keep so; and the `values` fuzz target holds the engine to all
+of these from arbitrary bytes. Not in this milestone, said rather than
+hidden and registered (G14 to G25): registered custom properties; the
+other math functions; colour functions; `@counter-style`; `env()` and
+`var()` outside properties; markers on pseudo-elements; ink skipping and
+the rest of text decoration; justification beyond expanding; the fonts'
+remaining properties; `display: flow-root`; logical properties and
+`:dir()`; and a grid's second sizing for percentages. Images in
+`content` and lists are M23's. 1,529 tests pass workspace-wide, two
+ignored. Next milestone: transitions and animations (M22).

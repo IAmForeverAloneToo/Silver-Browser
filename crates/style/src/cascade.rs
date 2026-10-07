@@ -36,13 +36,13 @@
 //!   `align-self` with the `place-*` shorthands; `row-gap`, `column-gap`
 //!   and `gap`. A flex container's children are blockified. The
 //!   `-webkit-` aliases the Compatibility Standard requires (§3.4.1) are
-//!   the properties under a second name ([`canonical_name`]).
+//!   the properties under a second name (`canonical_name`).
 //! * Grid (M18): `grid-template-columns`, `grid-template-rows` and
 //!   `grid-template-areas`, `grid-auto-columns`, `grid-auto-rows` and
 //!   `grid-auto-flow`, the placement properties `grid-row-start`,
 //!   `grid-row-end`, `grid-column-start` and `grid-column-end`, and the
 //!   shorthands `grid-template`, `grid`, `grid-row`, `grid-column` and
-//!   `grid-area`, parsed in [`grid`]; `justify-items` and
+//!   `grid-area`, parsed in `cascade::grid`; `justify-items` and
 //!   `justify-self`, which `place-items` and `place-self` set too; and
 //!   the legacy gap names `grid-row-gap`, `grid-column-gap` and
 //!   `grid-gap`. A grid container's children are blockified, as a flex
@@ -373,7 +373,7 @@ pub struct CascadeContext<'a> {
 /// root, cascading the built-in UA stylesheet (lowest precedence) under
 /// `author_sheets` (in document order) and each element's inline
 /// `style` attribute (highest precedence short of `!important` — see
-/// [`tier`]), with the viewport and font units resolved against
+/// `tier`), with the viewport and font units resolved against
 /// `context`. `CascadeContext::default()`, no viewport and no font, is
 /// what a test or a fuzz target wants. An element outside the tree, a
 /// detached one, is not styled. A caller that cascades the same sheets

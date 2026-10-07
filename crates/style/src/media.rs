@@ -10,9 +10,9 @@
 //! parentheses the grammar has no place for, are `<general-enclosed>`,
 //! whose value is unknown: the evaluation is three-valued, `not` of
 //! unknown is unknown, and a query whose value is unknown is false.
-//! Parentheses nested past [`MAX_NESTING`] levels are unknown too, which
-//! bounds the recursion; a block the tokens end inside is closed by
-//! their end, as css-syntax-3 closes it.
+//! Parentheses nested past [`MAX_NESTING`](crate::media::MAX_NESTING)
+//! levels are unknown too, which bounds the recursion; a block the
+//! tokens end inside is closed by their end, as css-syntax-3 closes it.
 
 use css::Token;
 

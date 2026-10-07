@@ -395,8 +395,9 @@ impl LayoutBox {
     }
 
     /// Whether the box is a containing block for all its descendants,
-    /// the fixed ones included (M19): [`Effects::contains_all_of`] for
-    /// its kind, or a box in a 3D rendering context whose
+    /// the fixed ones included (M19):
+    /// [`Effects::contains_all_of`](style::computed::Effects::contains_all_of)
+    /// for its kind, or a box in a 3D rendering context whose
     /// `backface-visibility` is `hidden`.
     pub fn contains_all_descendants(&self) -> bool {
         self.style

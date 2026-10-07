@@ -92,8 +92,7 @@ pub enum PseudoElement {
     FirstLetter,
     /// `::first-line` (or `:first-line`)
     FirstLine,
-    /// `::marker`: recognised; nothing draws it before list items
-    /// (M21.6).
+    /// `::marker`: a list item's marker (M21.6).
     Marker,
     /// `::placeholder`: recognised; no control draws placeholder text
     /// yet.
