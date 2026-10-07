@@ -57,18 +57,17 @@ impl AxisTracks {
         self.sizes
             .iter()
             .zip(&self.collapsed)
-            .map(|(&size, &collapsed)| track(size, percent_of, collapsed))
+            .map(|(size, &collapsed)| track(size, percent_of, collapsed))
             .collect()
     }
 
     /// Whether any track's size has a percentage in it.
     fn has_percentages(&self) -> bool {
-        let percent =
-            |b: TrackBreadth| matches!(b, TrackBreadth::Fixed(LengthPercentage::Percent(_)));
-        self.sizes.iter().any(|size| match *size {
+        let percent = |b: &TrackBreadth| matches!(b, TrackBreadth::Fixed(v) if v.has_percent());
+        self.sizes.iter().any(|size| match size {
             TrackSize::Breadth(b) => percent(b),
             TrackSize::MinMax(min, max) => percent(min) || percent(max),
-            TrackSize::FitContent(limit) => matches!(limit, LengthPercentage::Percent(_)),
+            TrackSize::FitContent(limit) => limit.has_percent(),
         })
     }
 
@@ -105,14 +104,14 @@ impl AxisTracks {
 }
 
 /// A sizing function from a track breadth, a percentage of an unknown
-/// size being `auto`.
-fn sizing(breadth: TrackBreadth, percent_of: Option<f32>) -> Sizing {
+/// size, or a `calc()` with one in it, being `auto`.
+fn sizing(breadth: &TrackBreadth, percent_of: Option<f32>) -> Sizing {
     match breadth {
-        TrackBreadth::Fixed(LengthPercentage::Px(px)) => Sizing::Fixed(px),
-        TrackBreadth::Fixed(LengthPercentage::Percent(p)) => {
-            percent_of.map_or(Sizing::Auto, |of| Sizing::Fixed(of * p / 100.0))
+        TrackBreadth::Fixed(LengthPercentage::Px(px)) => Sizing::Fixed(*px),
+        TrackBreadth::Fixed(v) => {
+            percent_of.map_or(Sizing::Auto, |of| Sizing::Fixed(v.resolve(of)))
         }
-        TrackBreadth::Flex(f) => Sizing::Flex(f),
+        TrackBreadth::Flex(f) => Sizing::Flex(*f),
         TrackBreadth::MinContent => Sizing::MinContent,
         TrackBreadth::MaxContent => Sizing::MaxContent,
         TrackBreadth::Auto => Sizing::Auto,
@@ -123,7 +122,7 @@ fn sizing(breadth: TrackBreadth, percent_of: Option<f32>) -> Sizing {
 /// flex's minimum being `auto`; `fit-content()` is an `auto` minimum and
 /// a `max-content` maximum limited by its argument; a collapsed track is
 /// a fixed `0px`.
-fn track(size: TrackSize, percent_of: Option<f32>, collapsed: bool) -> Track {
+fn track(size: &TrackSize, percent_of: Option<f32>, collapsed: bool) -> Track {
     if collapsed {
         return Track::new(Sizing::Fixed(0.0), Sizing::Fixed(0.0), None);
     }
@@ -142,8 +141,8 @@ fn track(size: TrackSize, percent_of: Option<f32>, collapsed: bool) -> Track {
         }
         TrackSize::FitContent(limit) => {
             let limit = match limit {
-                LengthPercentage::Px(px) => Some(px),
-                LengthPercentage::Percent(p) => percent_of.map(|of| of * p / 100.0),
+                LengthPercentage::Px(px) => Some(*px),
+                limit => percent_of.map(|of| limit.resolve(of)),
             };
             Track::new(Sizing::Auto, Sizing::MaxContent, limit)
         }
@@ -392,7 +391,7 @@ struct Group {
 /// minimum. Such an item takes the fallback alignment.
 fn baseline_group(
     alignment: SelfAlignment,
-    margins: [LengthPercentageAuto; 2],
+    margins: [&LengthPercentageAuto; 2],
     percentage: bool,
     tracks: &[Track],
     span: &Range<usize>,
@@ -417,11 +416,9 @@ fn baseline_group(
     Some(Group { position, track })
 }
 
-/// Whether a size, a minimum or a maximum is a percentage.
-fn has_percentage(size: Size, min: Size, max: MaxSize) -> bool {
-    matches!(size, Size::Percent(_))
-        || matches!(min, Size::Percent(_))
-        || matches!(max, MaxSize::Percent(_))
+/// Whether a size, a minimum or a maximum has a percentage in it.
+fn has_percentage(size: &Size, min: &Size, max: &MaxSize) -> bool {
+    size.has_percent() || min.has_percent() || max.has_percent()
 }
 
 /// The distance from the outer edge an item's group aligns it at to its
@@ -491,9 +488,9 @@ fn baseline_offset(position: BaselinePosition, shim: f32, free: f32) -> f32 {
 
 /// A margin's size where the area it is a percentage of is not known
 /// yet: zero for a percentage or `auto`.
-fn fixed_margin(margin: LengthPercentageAuto) -> f32 {
+fn fixed_margin(margin: &LengthPercentageAuto) -> f32 {
     match margin {
-        LengthPercentageAuto::Px(px) => px,
+        LengthPercentageAuto::Px(px) => *px,
         _ => 0.0,
     }
 }
@@ -528,8 +525,8 @@ fn column_groups<'a>(
             let style = &item.b.style;
             baseline_group(
                 justify_self(style, container),
-                [style.margin[LEFT], style.margin[RIGHT]],
-                has_percentage(style.width, style.min_width, style.max_width),
+                [&style.margin[LEFT], &style.margin[RIGHT]],
+                has_percentage(&style.width, &style.min_width, &style.max_width),
                 columns,
                 &item.columns,
                 definite,
@@ -544,7 +541,7 @@ fn column_groups<'a>(
         .map(|(item, group)| match group {
             None => [0.0; 2],
             Some(group) => {
-                let left = fixed_margin(item.b.style.margin[LEFT]);
+                let left = fixed_margin(&item.b.style.margin[LEFT]);
                 let (min, max) = crate::intrinsic::contribution(item.b, pass);
                 [min, max].map(|outer| distance(group.position, left, outer))
             }
@@ -572,11 +569,11 @@ fn column_groups<'a>(
 
 /// A gap's size: a percentage of a size not known is zero (css-align-3
 /// §8.1), and `normal` is zero in a grid container.
-fn gap(gap: Option<LengthPercentage>, of: Option<f32>) -> f32 {
+fn gap(gap: &Option<LengthPercentage>, of: Option<f32>) -> f32 {
     match gap {
         None => 0.0,
-        Some(LengthPercentage::Px(px)) => px,
-        Some(LengthPercentage::Percent(p)) => of.map_or(0.0, |of| of * p / 100.0),
+        Some(LengthPercentage::Px(px)) => *px,
+        Some(gap) => of.map_or(0.0, |of| gap.resolve(of)),
     }
 }
 
@@ -608,7 +605,7 @@ fn align_self(item: &ComputedStyle, container: &ComputedStyle) -> SelfAlignment 
 /// Whether an item stretches in an axis (§6.2): its self-alignment
 /// there is `normal` or `stretch` (an item here is never replaced), its
 /// size there is `auto`, and neither of its margins there is `auto`.
-fn stretches(alignment: SelfAlignment, size: Size, margins: [LengthPercentageAuto; 2]) -> bool {
+fn stretches(alignment: SelfAlignment, size: &Size, margins: [&LengthPercentageAuto; 2]) -> bool {
     matches!(alignment, SelfAlignment::Normal | SelfAlignment::Stretch)
         && size.is_auto()
         && !margins.iter().any(|m| m.is_auto())
@@ -689,13 +686,19 @@ fn column_contribution<'a>(
 ) -> Contribution {
     let style = &item.b.style;
     let (min_content, max_content) = crate::intrinsic::contribution(item.b, pass);
-    let minimum = match style.width {
-        Size::Auto | Size::Percent(_) => {
+    let minimum = match &style.width {
+        Size::Auto | Size::Percent(_) | Size::Calc(_) => {
             let (non_content, margins) = crate::intrinsic::fixed_edges(item.b);
             let widths = || crate::intrinsic::content_widths(item.b, pass);
-            let minimum = match style.min_width {
-                Size::Px(px) => inner(style, px, non_content),
-                Size::Percent(_) => 0.0,
+            // A percentage minimum is a percentage of zero here (Sizing
+            // 3 §5.2.1c).
+            let minimum = match &style.min_width {
+                Size::Px(px) => inner(style, *px, non_content),
+                size @ (Size::Percent(_) | Size::Calc(_)) => inner(
+                    style,
+                    size.length_percentage().map_or(0.0, |v| v.resolve(0.0)),
+                    non_content,
+                ),
                 Size::Auto => automatic,
                 Size::MinContent | Size::FitContent => widths().0,
                 Size::MaxContent => widths().1,
@@ -716,11 +719,7 @@ fn column_contribution<'a>(
 /// that width on every side (§6.4, CSS2 §8.3); `auto` is zero until
 /// alignment gives it the free space.
 fn margins(style: &ComputedStyle, width: f32) -> [f32; 4] {
-    style.margin.map(|m| match m {
-        LengthPercentageAuto::Auto => 0.0,
-        LengthPercentageAuto::Px(px) => px,
-        LengthPercentageAuto::Percent(p) => width * p / 100.0,
-    })
+    style.margin.each_ref().map(|m| m.resolve(width, 0.0))
 }
 
 /// An item's content width in an area `width` wide (§6.2): its `width`;
@@ -747,14 +746,14 @@ fn item_width<'a>(
     let w = width_constraints(style, width, horizontal, &intrinsic, room);
     let stretched = stretches(
         justify_self(style, container),
-        style.width,
-        [style.margin[LEFT], style.margin[RIGHT]],
+        &style.width,
+        [&style.margin[LEFT], &style.margin[RIGHT]],
     );
     let content = w.width.unwrap_or_else(|| {
         if stretched {
             room
         } else {
-            intrinsic.keyword(Size::FitContent, room).unwrap_or(room)
+            intrinsic.keyword(&Size::FitContent, room).unwrap_or(room)
         }
     });
     let min = if style.min_width.is_auto() && w.width.is_none() {
@@ -821,11 +820,15 @@ fn row_contribution(
 ) -> Contribution {
     let style = &item.b.style;
     let vertical = edges.vertical();
-    let minimum = match style.height {
-        Size::Auto | Size::Percent(_) => {
-            let content = match style.min_height {
-                Size::Px(px) => inner(style, px, vertical),
-                Size::Percent(_) => 0.0,
+    let minimum = match &style.height {
+        Size::Auto | Size::Percent(_) | Size::Calc(_) => {
+            let content = match &style.min_height {
+                Size::Px(px) => inner(style, *px, vertical),
+                size @ (Size::Percent(_) | Size::Calc(_)) => inner(
+                    style,
+                    size.length_percentage().map_or(0.0, |v| v.resolve(0.0)),
+                    vertical,
+                ),
                 Size::Auto => automatic_minimum_height(
                     item,
                     measured.auto_height,
@@ -902,8 +905,8 @@ pub(crate) fn layout_grid_contents<'a>(
 
     // §11.1: the gaps; a percentage row gap of a height not yet known is
     // zero while the rows are sized, and resolves once it is known.
-    let column_gap = gap(style.column_gap, Some(content_width));
-    let row_gap = gap(style.row_gap, definite);
+    let column_gap = gap(&style.column_gap, Some(content_width));
+    let row_gap = gap(&style.row_gap, definite);
     let grid = build(
         b,
         AxisInputs {
@@ -1014,11 +1017,11 @@ pub(crate) fn layout_grid_contents<'a>(
             let item_style = &item.b.style;
             baseline_group(
                 align_self(item_style, style),
-                [item_style.margin[TOP], item_style.margin[BOTTOM]],
+                [&item_style.margin[TOP], &item_style.margin[BOTTOM]],
                 has_percentage(
-                    item_style.height,
-                    item_style.min_height,
-                    item_style.max_height,
+                    &item_style.height,
+                    &item_style.min_height,
+                    &item_style.max_height,
                 ),
                 &rows,
                 &item.rows,
@@ -1086,10 +1089,13 @@ pub(crate) fn layout_grid_contents<'a>(
     // css-align-3 §8.1).
     if definite.is_none()
         && (grid.rows.has_percentages()
-            || matches!(style.row_gap, Some(LengthPercentage::Percent(_))))
+            || style
+                .row_gap
+                .as_ref()
+                .is_some_and(LengthPercentage::has_percent))
     {
         rows = grid.rows.tracks(Some(content_height));
-        row_gutters = grid.rows.gutters(gap(style.row_gap, Some(content_height)));
+        row_gutters = grid.rows.gutters(gap(&style.row_gap, Some(content_height)));
         size_tracks(
             &mut rows,
             &row_items,
@@ -1123,8 +1129,8 @@ pub(crate) fn layout_grid_contents<'a>(
             let margin = s.margin;
             let stretched = stretches(
                 align_self(item_style, style),
-                item_style.height,
-                [item_style.margin[TOP], item_style.margin[BOTTOM]],
+                &item_style.height,
+                [&item_style.margin[TOP], &item_style.margin[BOTTOM]],
             );
             let imposed = stretched.then(|| {
                 let bounds = height_bounds(
@@ -1475,11 +1481,11 @@ pub(crate) fn content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32
         Size::Px(px) => Some(inner(style, px, non_content)),
         _ => None,
     };
-    let fixed_gap = |gap: Option<LengthPercentage>| match gap {
-        Some(LengthPercentage::Px(px)) => px,
+    let fixed_gap = |gap: &Option<LengthPercentage>| match gap {
+        Some(LengthPercentage::Px(px)) => *px,
         _ => 0.0,
     };
-    let column_gap = fixed_gap(style.column_gap);
+    let column_gap = fixed_gap(&style.column_gap);
     let grid = build(
         b,
         AxisInputs {
@@ -1489,7 +1495,7 @@ pub(crate) fn content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32
         },
         AxisInputs {
             room: Room::Unknown,
-            gap: fixed_gap(style.row_gap),
+            gap: fixed_gap(&style.row_gap),
             size: None,
         },
     );

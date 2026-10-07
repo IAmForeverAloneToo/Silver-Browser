@@ -11,6 +11,9 @@
 
 use std::sync::{Arc, LazyLock};
 
+pub use crate::calc::Calc;
+use crate::calc::Expression;
+
 /// An RGBA color, 0.0–1.0 channels (see `paint::Rgba8` for the 8-bit
 /// form `render` actually blits — `style` owns its own color type per
 /// the layering contract: `paint` sits *above* `style` and converts at
@@ -223,7 +226,7 @@ pub enum EmptyCells {
 /// and `bottom` align the cell in its row as §17.5.3 says and every
 /// other value is `baseline`, as §17.5.3 says too; its meaning on
 /// inline boxes is M42's.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum VerticalAlign {
     /// The initial value.
     Baseline,
@@ -239,6 +242,8 @@ pub enum VerticalAlign {
     Length(f32),
     /// A percentage of the line height, as written.
     Percent(f32),
+    /// A `calc()` with a percentage of the line height in it (M21).
+    Calc(Arc<Calc>),
 }
 
 /// `border-style` (CSS2 §8.5.3, all ten values since M10). `none` and
@@ -404,11 +409,9 @@ pub enum Direction {
     Rtl,
 }
 
-/// A `<length-percentage>` value, or `auto` (css-values-4 §6.3) — used
-/// for `width`/`height` (M6, which accept all three) and `margin` (which
-/// accepts `auto` and `<length>`, but not yet `<percentage>` — v1 scope,
-/// see `cascade`'s module docs).
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// A `<length-percentage>` value, or `auto` (css-values-4 §6.3): the
+/// margins (M6, M10.1) and the insets (M11).
+#[derive(Debug, Clone, PartialEq)]
 pub enum LengthPercentageAuto {
     /// The `auto` keyword — its meaning is property- (and even
     /// context-) specific, so callers resolve it themselves; see
@@ -419,6 +422,9 @@ pub enum LengthPercentageAuto {
     /// A percentage, as written (`50%` is `Percent(50.0)`, not `0.5`) —
     /// resolved against a containing-block dimension at layout time.
     Percent(f32),
+    /// A `calc()` with a percentage in it (M21), resolved at layout
+    /// time as a percentage is.
+    Calc(Arc<Calc>),
 }
 
 impl LengthPercentageAuto {
@@ -430,6 +436,7 @@ impl LengthPercentageAuto {
             LengthPercentageAuto::Auto => if_auto,
             LengthPercentageAuto::Px(v) => *v,
             LengthPercentageAuto::Percent(p) => basis * p / 100.0,
+            LengthPercentageAuto::Calc(c) => c.resolve(basis),
         }
     }
 
@@ -437,17 +444,29 @@ impl LengthPercentageAuto {
     pub fn is_auto(&self) -> bool {
         matches!(self, LengthPercentageAuto::Auto)
     }
+
+    /// Whether this depends on its percentage's basis: a percentage, or
+    /// a `calc()` with one in it.
+    pub fn has_percent(&self) -> bool {
+        matches!(
+            self,
+            LengthPercentageAuto::Percent(_) | LengthPercentageAuto::Calc(_)
+        )
+    }
 }
 
 /// A `<length-percentage>` (css-values-4 §6.3), kept as written until
 /// layout resolves the percentage against the containing block (M10.1):
 /// `padding` and the min and max sizes take this.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum LengthPercentage {
     /// An absolute length, in CSS pixels.
     Px(f32),
     /// A percentage, as written (`50%` is `Percent(50.0)`).
     Percent(f32),
+    /// A `calc()` with a percentage in it (M21), resolved at layout
+    /// time as a percentage is.
+    Calc(Arc<Calc>),
 }
 
 impl LengthPercentage {
@@ -457,6 +476,35 @@ impl LengthPercentage {
         match self {
             LengthPercentage::Px(v) => *v,
             LengthPercentage::Percent(p) => basis * p / 100.0,
+            LengthPercentage::Calc(c) => c.resolve(basis),
+        }
+    }
+
+    /// Whether this depends on its percentage's basis: a percentage, or
+    /// a `calc()` with one in it.
+    pub fn has_percent(&self) -> bool {
+        matches!(
+            self,
+            LengthPercentage::Percent(_) | LengthPercentage::Calc(_)
+        )
+    }
+
+    /// `percent` of a basis plus `px`, the form of an offset along an
+    /// axis — `right 10px` is `100%` minus `10px` (css-values-4 §4.3) —
+    /// as a length, a percentage, or the `calc()` of the two.
+    pub fn sum(percent: f32, px: f32) -> LengthPercentage {
+        if percent == 0.0 {
+            LengthPercentage::Px(px)
+        } else if px == 0.0 {
+            LengthPercentage::Percent(percent)
+        } else {
+            LengthPercentage::Calc(Arc::new(Calc::new(
+                Expression::Sum(Box::new([
+                    Expression::Percent(percent),
+                    Expression::Value(px),
+                ])),
+                false,
+            )))
         }
     }
 }
@@ -467,7 +515,7 @@ impl LengthPercentage {
 /// The intrinsic keywords are sizes in the inline axis; in the block
 /// axis a box's size, unless otherwise specified, takes them as its
 /// automatic size (§3.2).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Size {
     /// `auto`: what it means depends on the property and the layout. For
     /// `min-width` and `min-height` it is zero, but on a flex item's main
@@ -477,6 +525,8 @@ pub enum Size {
     Px(f32),
     /// A percentage, as written, never negative.
     Percent(f32),
+    /// A `calc()` with a percentage in it (M21), never negative.
+    Calc(Arc<Calc>),
     /// The box's min-content size.
     MinContent,
     /// The box's max-content size.
@@ -488,23 +538,30 @@ pub enum Size {
 impl Size {
     /// The size as a length or a percentage; `None` for `auto` and the
     /// keywords.
-    pub fn length_percentage(self) -> Option<LengthPercentage> {
+    pub fn length_percentage(&self) -> Option<LengthPercentage> {
         match self {
-            Size::Px(px) => Some(LengthPercentage::Px(px)),
-            Size::Percent(p) => Some(LengthPercentage::Percent(p)),
+            Size::Px(px) => Some(LengthPercentage::Px(*px)),
+            Size::Percent(p) => Some(LengthPercentage::Percent(*p)),
+            Size::Calc(c) => Some(LengthPercentage::Calc(c.clone())),
             Size::Auto | Size::MinContent | Size::MaxContent | Size::FitContent => None,
         }
     }
 
     /// Whether this is `auto`.
-    pub fn is_auto(self) -> bool {
-        self == Size::Auto
+    pub fn is_auto(&self) -> bool {
+        *self == Size::Auto
+    }
+
+    /// Whether this depends on its percentage's basis: a percentage, or
+    /// a `calc()` with one in it.
+    pub fn has_percent(&self) -> bool {
+        matches!(self, Size::Percent(_) | Size::Calc(_))
     }
 }
 
 /// A box's maximum size in one axis: `max-width` and `max-height`
 /// (css-sizing-3 §3.2, M17). In the block axis the keywords are `none`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum MaxSize {
     /// `none`: no limit. The initial value.
     None,
@@ -512,6 +569,8 @@ pub enum MaxSize {
     Px(f32),
     /// A percentage, as written, never negative.
     Percent(f32),
+    /// A `calc()` with a percentage in it (M21), never negative.
+    Calc(Arc<Calc>),
     /// The box's min-content size.
     MinContent,
     /// The box's max-content size.
@@ -523,12 +582,19 @@ pub enum MaxSize {
 impl MaxSize {
     /// The limit as a length or a percentage; `None` for `none` and the
     /// keywords.
-    pub fn length_percentage(self) -> Option<LengthPercentage> {
+    pub fn length_percentage(&self) -> Option<LengthPercentage> {
         match self {
-            MaxSize::Px(px) => Some(LengthPercentage::Px(px)),
-            MaxSize::Percent(p) => Some(LengthPercentage::Percent(p)),
+            MaxSize::Px(px) => Some(LengthPercentage::Px(*px)),
+            MaxSize::Percent(p) => Some(LengthPercentage::Percent(*p)),
+            MaxSize::Calc(c) => Some(LengthPercentage::Calc(c.clone())),
             MaxSize::None | MaxSize::MinContent | MaxSize::MaxContent | MaxSize::FitContent => None,
         }
+    }
+
+    /// Whether this depends on its percentage's basis: a percentage, or
+    /// a `calc()` with one in it.
+    pub fn has_percent(&self) -> bool {
+        matches!(self, MaxSize::Percent(_) | MaxSize::Calc(_))
     }
 }
 
@@ -571,7 +637,7 @@ pub enum FlexWrap {
 
 /// `flex-basis` (css-flexbox-1 §7.2.3, M17): `content`, or a size as
 /// `width` takes one; `auto` is the initial value.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum FlexBasis {
     /// The item's content size.
     Content,
@@ -683,7 +749,7 @@ impl JustifyItems {
 pub type LineNames = Vec<Arc<str>>;
 
 /// One end of a track's size, a `<track-breadth>` (css-grid-2 §7.2.1).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TrackBreadth {
     /// A non-negative length or percentage: a fixed sizing function.
     Fixed(LengthPercentage),
@@ -698,7 +764,7 @@ pub enum TrackBreadth {
 }
 
 /// A track's size, a `<track-size>` (css-grid-2 §7.2.1), as written.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TrackSize {
     /// One breadth, both the minimum and the maximum, a flex's minimum
     /// being `auto` (§12.2).
@@ -919,40 +985,18 @@ pub enum TransformFunction {
     Perspective(Option<f32>),
 }
 
-/// An offset along one axis of a box: a percentage of the box's size
-/// along it plus a length, which is what the forms of `<position>`
-/// (css-values-4 §4.3) and `transform-origin` resolve to: `right 10px`
-/// is 100% minus 10px.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Offset {
-    /// The percentage, as written (`50%` is `50.0`).
-    pub percent: f32,
-    /// The length, in CSS pixels.
-    pub px: f32,
-}
-
-impl Offset {
-    /// The centre: `50%`.
-    pub const CENTER: Offset = Offset {
-        percent: 50.0,
-        px: 0.0,
-    };
-
-    /// The offset of `basis`, the box's size along the axis.
-    pub fn resolve(&self, basis: f32) -> f32 {
-        basis * self.percent / 100.0 + self.px
-    }
-}
-
 /// `transform-origin` (css-transforms-1 §8, css-transforms-2 §8): the
 /// point the transform is about, offsets from the reference box's top
-/// left, and a length along z. The initial value is `50% 50%`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// left, and a length along z. The initial value is `50% 50%`. An
+/// offset is a percentage of the box's size along its axis plus a
+/// length, which is what the forms of `<position>` (css-values-4 §4.3)
+/// resolve to: `right 10px` is `calc(100% - 10px)`.
+#[derive(Debug, Clone, PartialEq)]
 pub struct TransformOrigin {
     /// Along x, of the box's width.
-    pub x: Offset,
+    pub x: LengthPercentage,
     /// Along y, of the box's height.
-    pub y: Offset,
+    pub y: LengthPercentage,
     /// Along z, a length.
     pub z: f32,
 }
@@ -960,8 +1004,8 @@ pub struct TransformOrigin {
 impl TransformOrigin {
     /// The initial value, `50% 50%`.
     pub const CENTER: TransformOrigin = TransformOrigin {
-        x: Offset::CENTER,
-        y: Offset::CENTER,
+        x: LengthPercentage::Percent(50.0),
+        y: LengthPercentage::Percent(50.0),
         z: 0.0,
     };
 }
@@ -969,19 +1013,19 @@ impl TransformOrigin {
 /// `perspective-origin` (css-transforms-2 §11): the vanishing point of
 /// a box's `perspective`, offsets from its border box's top left. The
 /// initial value is `50% 50%`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PerspectiveOrigin {
     /// Along x, of the box's width.
-    pub x: Offset,
+    pub x: LengthPercentage,
     /// Along y, of the box's height.
-    pub y: Offset,
+    pub y: LengthPercentage,
 }
 
 impl PerspectiveOrigin {
     /// The initial value, `50% 50%`.
     pub const CENTER: PerspectiveOrigin = PerspectiveOrigin {
-        x: Offset::CENTER,
-        y: Offset::CENTER,
+        x: LengthPercentage::Percent(50.0),
+        y: LengthPercentage::Percent(50.0),
     };
 }
 
@@ -1015,7 +1059,7 @@ impl TransformBox {
 /// The `translate` property (css-transforms-2 §2.1), other than `none`:
 /// percentages of the reference box's width and height, and a length
 /// along z.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Translate {
     /// Along x.
     pub x: LengthPercentage,
@@ -1746,8 +1790,8 @@ impl Default for ComputedStyle {
             direction: Direction::Ltr,
             width: Size::Auto,
             height: Size::Auto,
-            margin: [LengthPercentageAuto::Px(0.0); 4], // margin's initial value is `0`, not `auto`
-            padding: [LengthPercentage::Px(0.0); 4],
+            margin: [const { LengthPercentageAuto::Px(0.0) }; 4], // margin's initial value is `0`, not `auto`
+            padding: [const { LengthPercentage::Px(0.0) }; 4],
             border_width: [3.0; 4],          // `medium`
             border_color: [Color::BLACK; 4], // corrected to `color` post-cascade
             border_style: [BorderStyle::None; 4],
@@ -1760,7 +1804,7 @@ impl Default for ComputedStyle {
             float: Float::None,
             clear: Clear::None,
             position: Position::Static,
-            inset: [LengthPercentageAuto::Auto; 4],
+            inset: [const { LengthPercentageAuto::Auto }; 4],
             z_index: None,
             table_layout: TableLayout::Auto,
             border_collapse: BorderCollapse::Separate,
@@ -1955,7 +1999,7 @@ mod tests {
         assert_eq!(s.direction, Direction::Ltr);
         assert_eq!(s.width, Size::Auto);
         assert_eq!(s.height, Size::Auto);
-        assert_eq!(s.margin, [LengthPercentageAuto::Px(0.0); 4]);
+        assert_eq!(s.margin, [const { LengthPercentageAuto::Px(0.0) }; 4]);
         assert_eq!(s.border_style, [BorderStyle::None; 4]);
         assert_eq!(s.border_width, [3.0; 4], "medium");
         assert_eq!(s.used_border_width(), [0.0; 4], "none paints nothing");
@@ -1973,7 +2017,7 @@ mod tests {
         assert!(!s.position.is_positioned() && !s.position.is_out_of_flow());
         assert!(Position::Relative.is_positioned() && !Position::Relative.is_out_of_flow());
         assert!(Position::Fixed.is_positioned() && Position::Fixed.is_out_of_flow());
-        assert_eq!(s.inset, [LengthPercentageAuto::Auto; 4]);
+        assert_eq!(s.inset, [const { LengthPercentageAuto::Auto }; 4]);
         assert_eq!(s.z_index, None);
         assert_eq!(s.table_layout, TableLayout::Auto);
         assert_eq!(s.border_collapse, BorderCollapse::Separate);
@@ -2003,9 +2047,13 @@ mod tests {
         // 424 bytes before them; the transform, opacity and will-change
         // properties (M19) another, 432 before them; the break properties,
         // `orphans`, `widows` and `print-color-adjust` (M20) another, 440
-        // before them. Growing this is a decision, not an accident; say
-        // why where the number changes.
-        assert_eq!(std::mem::size_of::<ComputedStyle>(), 448);
+        // before them. `calc()` (M21.2) grew each value that may hold a
+        // percentage, 22 of them, from 8 bytes to 16, to hold its
+        // expression beside the length and the percentage: 448 before
+        // it (`docs/design/values.md` says why not smaller). Growing
+        // this is a decision, not an accident; say why where the number
+        // changes.
+        assert_eq!(std::mem::size_of::<ComputedStyle>(), 624);
         assert_eq!(ComputedStyle::default().grid, None);
         assert_eq!(*ComputedStyle::default().grid(), GridStyle::default());
         assert_eq!(ComputedStyle::default().effects, None);
@@ -2061,7 +2109,7 @@ mod tests {
         assert!(e.transform.is_empty());
         assert_eq!(e.transform_origin, TransformOrigin::CENTER);
         assert_eq!(e.transform_box, TransformBox::ViewBox);
-        assert_eq!((e.translate, e.rotate, e.scale), (None, None, None));
+        assert_eq!((&e.translate, e.rotate, e.scale), (&None, None, None));
         assert_eq!(e.transform_style, TransformStyle::Flat);
         assert_eq!(e.perspective, None);
         assert_eq!(e.perspective_origin, PerspectiveOrigin::CENTER);
@@ -2071,15 +2119,8 @@ mod tests {
         assert!(!e.has_transform());
         assert!(!e.contains_all_descendants());
         assert!(!e.is_stacking_context());
-        assert_eq!(Offset::CENTER.resolve(200.0), 100.0);
-        assert_eq!(
-            Offset {
-                percent: 100.0,
-                px: -10.0
-            }
-            .resolve(200.0),
-            190.0
-        );
+        assert_eq!(LengthPercentage::Percent(50.0).resolve(200.0), 100.0);
+        assert_eq!(LengthPercentage::sum(100.0, -10.0).resolve(200.0), 190.0);
     }
 
     #[test]

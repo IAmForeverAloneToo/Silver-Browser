@@ -32,6 +32,10 @@ impl fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+/// Math functions (M21.2): `calc()`, `min()`, `max()` and `clamp()`,
+/// parsed, typed and simplified.
+pub mod calc;
+
 /// The cascade: origin sorting, specificity, inheritance, and the
 /// built-in UA stylesheet. See the module docs for exact v1 scope
 /// (which properties, which value syntaxes) and its documented gaps.

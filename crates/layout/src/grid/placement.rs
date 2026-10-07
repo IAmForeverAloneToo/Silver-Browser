@@ -110,7 +110,7 @@ impl ExplicitAxis {
                         if sized.len() == MAX_EXPLICIT_TRACKS {
                             break 'sections;
                         }
-                        add_track(*size, &mut sized, &mut line_names);
+                        add_track(size.clone(), &mut sized, &mut line_names);
                     }
                     TrackSection::Repeat(repeat) => {
                         let count = match repeat.count {
@@ -127,7 +127,7 @@ impl ExplicitAxis {
                                     .last_mut()
                                     .expect("never empty")
                                     .extend(names.iter().cloned());
-                                add_track(*size, &mut sized, &mut line_names);
+                                add_track(size.clone(), &mut sized, &mut line_names);
                             }
                             let after = repeat.names.last().expect("one more than the tracks");
                             line_names
@@ -204,14 +204,14 @@ impl ExplicitAxis {
         let sized = self.sized.len() as i64;
         let start = i64::from(start);
         if start >= 0 && start < sized {
-            return self.sized[start as usize];
+            return self.sized[start as usize].clone();
         }
         let index = if start >= sized {
             (start - sized) % n
         } else {
             n - 1 - ((-start - 1) % n)
         };
-        self.auto[index as usize]
+        self.auto[index as usize].clone()
     }
 
     /// The explicit lines called `name`, ascending.
@@ -327,17 +327,15 @@ pub(crate) fn repetitions(
         Room::AtLeast(room) => (false, room),
         Room::Unknown => return 1,
     };
-    let fixed = |breadth: TrackBreadth| match breadth {
-        TrackBreadth::Fixed(LengthPercentage::Px(px)) => Some(Some(px)),
-        TrackBreadth::Fixed(LengthPercentage::Percent(p)) => {
-            Some(percent_of.map(|of| of * p / 100.0))
-        }
+    let fixed = |breadth: &TrackBreadth| match breadth {
+        TrackBreadth::Fixed(LengthPercentage::Px(px)) => Some(Some(*px)),
+        TrackBreadth::Fixed(v) => Some(percent_of.map(|of| v.resolve(of))),
         _ => None,
     };
     // A track's size for the count; `None` when a percentage has nothing
     // to resolve against.
     let size = |track: &TrackSize| -> Option<f64> {
-        let (min, max) = match *track {
+        let (min, max) = match track {
             TrackSize::Breadth(b) => (fixed(b), fixed(b)),
             TrackSize::MinMax(min, max) => (fixed(min), fixed(max)),
             TrackSize::FitContent(_) => (None, None),
@@ -901,14 +899,16 @@ mod tests {
     /// A track list of `before`, then `repeat(auto-fill, tracks)`, then
     /// `after`.
     fn auto_fill(before: &[TrackSize], tracks: &[TrackSize], after: &[TrackSize]) -> TrackList {
-        let mut sections: Vec<TrackSection> =
-            before.iter().map(|&t| TrackSection::Track(t)).collect();
+        let mut sections: Vec<TrackSection> = before
+            .iter()
+            .map(|t| TrackSection::Track(t.clone()))
+            .collect();
         sections.push(TrackSection::Repeat(TrackRepeat {
             count: RepeatCount::AutoFill,
             names: vec![vec![]; tracks.len() + 1],
             tracks: tracks.to_vec(),
         }));
-        sections.extend(after.iter().map(|&t| TrackSection::Track(t)));
+        sections.extend(after.iter().map(|t| TrackSection::Track(t.clone())));
         TrackList {
             names: vec![vec![]; sections.len() + 1],
             sections,

@@ -417,16 +417,16 @@ impl TransformFunction {
     /// percentages, which only a translation has, resolved against the
     /// `width` and `height` of the reference box.
     pub fn matrix(&self, width: f32, height: f32) -> Matrix {
-        match *self {
-            TransformFunction::Matrix(m) => Matrix::from_2d(m),
-            TransformFunction::Matrix3d(m) => Matrix(m),
+        match self {
+            TransformFunction::Matrix(m) => Matrix::from_2d(*m),
+            TransformFunction::Matrix3d(m) => Matrix(*m),
             TransformFunction::Translate(x, y, z) => {
-                Matrix::translate(x.resolve(width), y.resolve(height), z)
+                Matrix::translate(x.resolve(width), y.resolve(height), *z)
             }
-            TransformFunction::Scale(x, y, z) => Matrix::scale(x, y, z),
-            TransformFunction::Rotate { x, y, z, angle } => Matrix::rotate(x, y, z, angle),
-            TransformFunction::Skew(ax, ay) => Matrix::skew(ax, ay),
-            TransformFunction::Perspective(depth) => Matrix::perspective(depth),
+            TransformFunction::Scale(x, y, z) => Matrix::scale(*x, *y, *z),
+            TransformFunction::Rotate { x, y, z, angle } => Matrix::rotate(*x, *y, *z, *angle),
+            TransformFunction::Skew(ax, ay) => Matrix::skew(*ax, *ay),
+            TransformFunction::Perspective(depth) => Matrix::perspective(*depth),
         }
     }
 
@@ -544,18 +544,12 @@ impl Effects {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::computed::{LengthPercentage, Offset, Rotate, TransformOrigin, Translate};
+    use crate::computed::{LengthPercentage, Rotate, TransformOrigin, Translate};
 
     /// The origin at the top left corner.
     const TOP_LEFT: TransformOrigin = TransformOrigin {
-        x: Offset {
-            percent: 0.0,
-            px: 0.0,
-        },
-        y: Offset {
-            percent: 0.0,
-            px: 0.0,
-        },
+        x: LengthPercentage::Percent(0.0),
+        y: LengthPercentage::Percent(0.0),
         z: 0.0,
     };
 

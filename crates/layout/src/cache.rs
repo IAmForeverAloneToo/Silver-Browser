@@ -631,11 +631,23 @@ mod tests {
 
     #[test]
     fn nested_boxes_are_kept_once_however_deep() {
-        let mut s = Session::new(&"<div>x".repeat(100), "div { padding-left: 1px }");
-        assert_eq!(s.pass(), (102, 0));
-        // Every fragment of the layout is in exactly one entry.
-        assert_eq!(stored(&s.cache), preorder(&s.layout.roots).count());
-        assert_eq!(s.pass(), (0, 1));
+        // Layout recurses once a level of nesting: an unoptimized build's
+        // frames take more than a test thread's 2 MiB a hundred levels
+        // down, so this runs on a stack the size of the main thread's,
+        // where the engine lays out (8 MiB; an optimized build lays out
+        // the DOM's 512 levels in under 3).
+        std::thread::Builder::new()
+            .stack_size(8 << 20)
+            .spawn(|| {
+                let mut s = Session::new(&"<div>x".repeat(100), "div { padding-left: 1px }");
+                assert_eq!(s.pass(), (102, 0));
+                // Every fragment of the layout is in exactly one entry.
+                assert_eq!(stored(&s.cache), preorder(&s.layout.roots).count());
+                assert_eq!(s.pass(), (0, 1));
+            })
+            .expect("the thread starts")
+            .join()
+            .expect("no panic");
     }
 
     /// How many fragments the cache's entries hold between them.

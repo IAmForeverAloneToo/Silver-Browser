@@ -153,7 +153,7 @@ impl<'a> Item<'a> {
         // Margins are percentages of the containing block's width on
         // every side (CSS2 §8.3), the container's content box here.
         let margin: [f32; 4] =
-            std::array::from_fn(|side| used(style.margin[side], Some(c.width)).unwrap_or(0.0));
+            std::array::from_fn(|side| used(&style.margin[side], Some(c.width)).unwrap_or(0.0));
         let (main_edges, main_margins, cross_margins) = if c.column {
             (
                 edges.vertical(),
@@ -172,7 +172,11 @@ impl<'a> Item<'a> {
         } else {
             style.margin[TOP].is_auto() || style.margin[BOTTOM].is_auto()
         };
-        let cross_property = if c.column { style.width } else { style.height };
+        let cross_property = if c.column {
+            &style.width
+        } else {
+            &style.height
+        };
         let alignment = align_self(style, c.align_items);
         let stretches = matches!(alignment, SelfAlignment::Stretch | SelfAlignment::Normal)
             && cross_property.is_auto()
@@ -222,17 +226,23 @@ impl<'a> Item<'a> {
         // intrinsic keyword; `None` for `auto`, a percentage of an
         // indefinite size, and a keyword in the block axis, which is
         // `auto` there (css-sizing-3 §3.2).
-        let definite = |size: Size| match size {
-            Size::Px(px) => Some(inner(px)),
-            Size::Percent(p) => c.definite_main().map(|of| inner(of * p / 100.0)),
+        let definite = |size: &Size| match size {
+            Size::Px(px) => Some(inner(*px)),
+            Size::Percent(_) | Size::Calc(_) => c
+                .definite_main()
+                .map(|of| inner(size.length_percentage().map_or(0.0, |v| v.resolve(of)))),
             Size::Auto => None,
             keyword if !c.column => intrinsic.keyword(keyword, room),
             _ => None,
         };
-        let main_property = if c.column { style.height } else { style.width };
+        let main_property = if c.column {
+            &style.height
+        } else {
+            &style.width
+        };
         // §7.2.3: `flex-basis: auto` is the main size property; either
         // being `auto` is `content`.
-        let basis = match style.flex_basis {
+        let basis = match &style.flex_basis {
             FlexBasis::Content => None,
             FlexBasis::Size(Size::Auto) => definite(main_property),
             FlexBasis::Size(size) => definite(size),
@@ -276,17 +286,19 @@ impl<'a> Item<'a> {
         // A keyword in `min-height` or `max-height` is the column item's
         // content height, its automatic size (css-sizing-3 §3.2).
         let max = match if c.column {
-            style.max_height
+            &style.max_height
         } else {
-            style.max_width
+            &style.max_width
         } {
             MaxSize::None => None,
-            MaxSize::Px(px) => Some(inner(px)),
-            MaxSize::Percent(p) => c.definite_main().map(|of| inner(of * p / 100.0)),
+            MaxSize::Px(px) => Some(inner(*px)),
+            size @ (MaxSize::Percent(_) | MaxSize::Calc(_)) => c
+                .definite_main()
+                .map(|of| inner(size.length_percentage().map_or(0.0, |v| v.resolve(of)))),
             MaxSize::MinContent => Some(min_content()),
             MaxSize::MaxContent => Some(max_content()),
             MaxSize::FitContent if c.column => Some(content_height()),
-            MaxSize::FitContent => intrinsic.keyword(Size::FitContent, room),
+            MaxSize::FitContent => intrinsic.keyword(&Size::FitContent, room),
         };
         let max = max.unwrap_or(f32::INFINITY);
         // §4.5: the content-based minimum size, for an item that is not
@@ -303,17 +315,19 @@ impl<'a> Item<'a> {
                 .min(max)
         };
         let min = match if c.column {
-            style.min_height
+            &style.min_height
         } else {
-            style.min_width
+            &style.min_width
         } {
-            Size::Px(px) => inner(px),
-            Size::Percent(p) => c.definite_main().map_or(0.0, |of| inner(of * p / 100.0)),
+            Size::Px(px) => inner(*px),
+            size @ (Size::Percent(_) | Size::Calc(_)) => c.definite_main().map_or(0.0, |of| {
+                inner(size.length_percentage().map_or(0.0, |v| v.resolve(of)))
+            }),
             Size::Auto => automatic(),
             Size::MinContent => min_content(),
             Size::MaxContent => max_content(),
             Size::FitContent if c.column => content_height(),
-            Size::FitContent => intrinsic.keyword(Size::FitContent, room).unwrap_or(0.0),
+            Size::FitContent => intrinsic.keyword(&Size::FitContent, room).unwrap_or(0.0),
         };
         item.base = basis.unwrap_or_else(max_content);
         item.definite_basis = basis.is_some();
@@ -442,7 +456,7 @@ impl<'a> Item<'a> {
         let width = w
             .width
             .or(stretched)
-            .unwrap_or_else(|| intrinsic.keyword(Size::FitContent, room).unwrap_or(room));
+            .unwrap_or_else(|| intrinsic.keyword(&Size::FitContent, room).unwrap_or(room));
         w.max.map_or(width, |max| width.min(max)).max(w.min)
     }
 }
@@ -505,14 +519,14 @@ pub(crate) fn layout_flex_contents<'a>(
     // The gaps (CSS Gaps 1 §2): `normal` is zero in a flex container,
     // and so is a percentage of an indefinite height, as in the
     // reference browsers.
-    let gap = |gap: Option<LengthPercentage>, of: Option<f32>| match gap {
+    let gap = |gap: &Option<LengthPercentage>, of: Option<f32>| match gap {
         None => 0.0,
-        Some(LengthPercentage::Px(px)) => px,
-        Some(LengthPercentage::Percent(p)) => of.map_or(0.0, |of| of * p / 100.0),
+        Some(LengthPercentage::Px(px)) => *px,
+        Some(gap) => of.map_or(0.0, |of| gap.resolve(of)),
     };
     let column = style.flex_direction.is_column();
-    let column_gap = gap(style.column_gap, Some(content_width));
-    let row_gap = gap(style.row_gap, definite);
+    let column_gap = gap(&style.column_gap, Some(content_width));
+    let row_gap = gap(&style.row_gap, definite);
     let c = Container {
         column,
         reverse: style.flex_direction.is_reverse(),
@@ -1177,25 +1191,25 @@ fn main_contribution<'a>(item: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32) {
     let own = OnceCell::new();
     let own = || *own.get_or_init(|| crate::intrinsic::content_widths(item, pass));
     // A size under the constraint: `max_content` or min-content.
-    let size = |v: Size, max_content: bool| match v {
-        Size::Px(px) => Some(inner(px)),
+    let size = |v: &Size, max_content: bool| match v {
+        Size::Px(px) => Some(inner(*px)),
         Size::MinContent => Some(own().0),
         Size::MaxContent => Some(own().1),
         Size::FitContent if max_content => Some(own().1),
         Size::FitContent => Some(own().0),
-        Size::Auto | Size::Percent(_) => None,
+        Size::Auto | Size::Percent(_) | Size::Calc(_) => None,
     };
-    let limit = |v: MaxSize, max_content: bool| match v {
-        MaxSize::Px(px) => Some(inner(px)),
-        MaxSize::MinContent => size(Size::MinContent, max_content),
-        MaxSize::MaxContent => size(Size::MaxContent, max_content),
-        MaxSize::FitContent => size(Size::FitContent, max_content),
-        MaxSize::None | MaxSize::Percent(_) => None,
+    let limit = |v: &MaxSize, max_content: bool| match v {
+        MaxSize::Px(px) => Some(inner(*px)),
+        MaxSize::MinContent => size(&Size::MinContent, max_content),
+        MaxSize::MaxContent => size(&Size::MaxContent, max_content),
+        MaxSize::FitContent => size(&Size::FitContent, max_content),
+        MaxSize::None | MaxSize::Percent(_) | MaxSize::Calc(_) => None,
     };
     let contribution = |max_content: bool| {
         let content = if max_content { own().1 } else { own().0 };
-        let preferred = size(style.width, max_content);
-        let base = match style.flex_basis {
+        let preferred = size(&style.width, max_content);
+        let base = match &style.flex_basis {
             FlexBasis::Content => content,
             FlexBasis::Size(Size::Auto) => preferred.unwrap_or(content),
             FlexBasis::Size(basis) => size(basis, max_content).unwrap_or(content),
@@ -1207,10 +1221,10 @@ fn main_contribution<'a>(item: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32) {
         if style.flex_shrink == 0.0 {
             v = v.max(base);
         }
-        let max = limit(style.max_width, max_content);
-        let min = match style.min_width {
+        let max = limit(&style.max_width, max_content);
+        let min = match &style.min_width {
             Size::Auto if style.overflow.clips() => 0.0,
-            Size::Auto => size(style.width, max_content)
+            Size::Auto => size(&style.width, max_content)
                 .map_or(own().0, |specified| specified.min(own().0))
                 .min(max.unwrap_or(f32::INFINITY)),
             floor => size(floor, max_content).unwrap_or(0.0),

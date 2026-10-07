@@ -84,6 +84,7 @@ use std::sync::{Arc, OnceLock};
 use css::Token;
 use dom::{Change, Document, NodeId};
 
+use crate::calc::{self, LengthUnit, Want};
 use crate::computed::{
     AlignPosition, BOTTOM, BaselinePosition, BorderCollapse, BorderSpacing, BorderStyle, BoxSizing,
     CaptionSide, Clear, Color, ComputedStyle, Content, ContentAlignment, ContentItem, Direction,
@@ -92,7 +93,7 @@ use crate::computed::{
     Quotes, RIGHT, SelfAlignment, Size, TOP, TableLayout, TextAlign, TextTransform, VerticalAlign,
     WhiteSpace,
 };
-use crate::computed::{Effects, Fragmentation, GridStyle, JustifyItems};
+use crate::computed::{Calc, Effects, Fragmentation, GridStyle, JustifyItems};
 use crate::invalidation::{Reach, SelectorFeatures, invalidate};
 use crate::media::Media;
 use crate::page::{PagePosition, PageStyle};
@@ -481,7 +482,7 @@ impl Stylesheets {
                         style.size = size;
                     }
                 }
-                "margin" if wide => style.margin = [None; 4],
+                "margin" if wide => style.margin = Default::default(),
                 "margin" => {
                     if let Some(margins) = page::parse_page_margin(value, &bases) {
                         style.margin = margins.map(Some);
@@ -1371,7 +1372,7 @@ fn apply_declaration(
             &mut style.inset[edge_index(name)],
             parse_length_percentage_or_auto(value, bases),
         ),
-        "z-index" => set(&mut style.z_index, parse_z_index(value)),
+        "z-index" => set(&mut style.z_index, parse_z_index(value, bases)),
         "box-sizing" => set(&mut style.box_sizing, parse_box_sizing(value)),
         "min-width" => set(&mut style.min_width, parse_size(value, bases)),
         "min-height" => set(&mut style.min_height, parse_size(value, bases)),
@@ -1402,9 +1403,9 @@ fn apply_declaration(
                 style.flex_wrap = w;
             })
             .is_some(),
-        "order" => set(&mut style.order, parse_order(value)),
-        "flex-grow" => set(&mut style.flex_grow, parse_flex_factor(value)),
-        "flex-shrink" => set(&mut style.flex_shrink, parse_flex_factor(value)),
+        "order" => set(&mut style.order, parse_order(value, bases)),
+        "flex-grow" => set(&mut style.flex_grow, parse_flex_factor(value, bases)),
+        "flex-shrink" => set(&mut style.flex_shrink, parse_flex_factor(value, bases)),
         "flex-basis" => set(&mut style.flex_basis, parse_flex_basis(value, bases)),
         "flex" => parse_flex(value, bases)
             .map(|(grow, shrink, basis)| {
@@ -1547,8 +1548,12 @@ fn apply_declaration(
         "translate" => set_effects(style, effects::parse_translate(value, bases), |e, v| {
             e.translate = v
         }),
-        "rotate" => set_effects(style, effects::parse_rotate(value), |e, v| e.rotate = v),
-        "scale" => set_effects(style, effects::parse_scale(value), |e, v| e.scale = v),
+        "rotate" => set_effects(style, effects::parse_rotate(value, bases), |e, v| {
+            e.rotate = v
+        }),
+        "scale" => set_effects(style, effects::parse_scale(value, bases), |e, v| {
+            e.scale = v
+        }),
         "transform-style" => set_effects(style, effects::parse_transform_style(value), |e, v| {
             e.transform_style = v
         }),
@@ -1565,7 +1570,9 @@ fn apply_declaration(
                 e.backface_visibility = v
             })
         }
-        "opacity" => set_effects(style, effects::parse_opacity(value), |e, v| e.opacity = v),
+        "opacity" => set_effects(style, effects::parse_opacity(value, bases), |e, v| {
+            e.opacity = v
+        }),
         "will-change" => set_effects(style, effects::parse_will_change(value), |e, v| {
             e.will_change = v
         }),
@@ -1599,12 +1606,16 @@ fn apply_declaration(
             fragmentation::parse_page_break_inside(value),
             |f, v| f.break_inside = v,
         ),
-        "orphans" => set_fragmentation(style, fragmentation::parse_line_count(value), |f, v| {
-            f.orphans = v
-        }),
-        "widows" => set_fragmentation(style, fragmentation::parse_line_count(value), |f, v| {
-            f.widows = v
-        }),
+        "orphans" => set_fragmentation(
+            style,
+            fragmentation::parse_line_count(value, bases),
+            |f, v| f.orphans = v,
+        ),
+        "widows" => set_fragmentation(
+            style,
+            fragmentation::parse_line_count(value, bases),
+            |f, v| f.widows = v,
+        ),
         "print-color-adjust" => set_fragmentation(
             style,
             fragmentation::parse_print_color_adjust(value),
@@ -1619,6 +1630,14 @@ fn apply_declaration(
 /// A `font-size` (CSS2 §15.7): a non-negative length, or a percentage
 /// of the parent's font size, which is `bases.em` here.
 fn parse_font_size(value: &[Token], bases: &LengthBases<'_>) -> Option<f32> {
+    if let Some(calc::Computed::Value(px)) = math(
+        value,
+        Want::LengthPercentage,
+        bases,
+        Some(f64::from(bases.em)),
+    ) {
+        return Some(Range::NonNegative.clamp(px));
+    }
     if let Some(Token::Percentage { value }) = single_token(value) {
         let px = *value as f32 / 100.0 * bases.em;
         return (px.is_finite() && px >= 0.0).then(|| px.min(MAX_LENGTH_PX));
@@ -1852,18 +1871,18 @@ fn apply_css_wide(
         "white-space" => style.white_space = src.white_space,
         "letter-spacing" => style.letter_spacing = src.letter_spacing,
         "word-spacing" => style.word_spacing = src.word_spacing,
-        "width" => style.width = src.width,
-        "height" => style.height = src.height,
-        "margin" => style.margin = src.margin,
-        "margin-top" => style.margin[TOP] = src.margin[TOP],
-        "margin-right" => style.margin[RIGHT] = src.margin[RIGHT],
-        "margin-bottom" => style.margin[BOTTOM] = src.margin[BOTTOM],
-        "margin-left" => style.margin[LEFT] = src.margin[LEFT],
-        "padding" => style.padding = src.padding,
-        "padding-top" => style.padding[TOP] = src.padding[TOP],
-        "padding-right" => style.padding[RIGHT] = src.padding[RIGHT],
-        "padding-bottom" => style.padding[BOTTOM] = src.padding[BOTTOM],
-        "padding-left" => style.padding[LEFT] = src.padding[LEFT],
+        "width" => style.width = src.width.clone(),
+        "height" => style.height = src.height.clone(),
+        "margin" => style.margin = src.margin.clone(),
+        "margin-top" => style.margin[TOP] = src.margin[TOP].clone(),
+        "margin-right" => style.margin[RIGHT] = src.margin[RIGHT].clone(),
+        "margin-bottom" => style.margin[BOTTOM] = src.margin[BOTTOM].clone(),
+        "margin-left" => style.margin[LEFT] = src.margin[LEFT].clone(),
+        "padding" => style.padding = src.padding.clone(),
+        "padding-top" => style.padding[TOP] = src.padding[TOP].clone(),
+        "padding-right" => style.padding[RIGHT] = src.padding[RIGHT].clone(),
+        "padding-bottom" => style.padding[BOTTOM] = src.padding[BOTTOM].clone(),
+        "padding-left" => style.padding[LEFT] = src.padding[LEFT].clone(),
         "border-width" => style.border_width = src.border_width,
         "border-top-width" => style.border_width[TOP] = src.border_width[TOP],
         "border-right-width" => style.border_width[RIGHT] = src.border_width[RIGHT],
@@ -1902,16 +1921,16 @@ fn apply_css_wide(
         }
         "overflow" => style.overflow = src.overflow,
         "box-sizing" => style.box_sizing = src.box_sizing,
-        "min-width" => style.min_width = src.min_width,
-        "max-width" => style.max_width = src.max_width,
-        "min-height" => style.min_height = src.min_height,
-        "max-height" => style.max_height = src.max_height,
+        "min-width" => style.min_width = src.min_width.clone(),
+        "max-width" => style.max_width = src.max_width.clone(),
+        "min-height" => style.min_height = src.min_height.clone(),
+        "max-height" => style.max_height = src.max_height.clone(),
         "float" => style.float = src.float,
         "clear" => style.clear = src.clear,
         "position" => style.position = src.position,
         "top" | "right" | "bottom" | "left" => {
             let side = edge_index(name);
-            style.inset[side] = src.inset[side];
+            style.inset[side] = src.inset[side].clone();
         }
         "z-index" => style.z_index = src.z_index,
         "table-layout" => style.table_layout = src.table_layout,
@@ -1919,7 +1938,7 @@ fn apply_css_wide(
         "border-spacing" => style.border_spacing = src.border_spacing,
         "caption-side" => style.caption_side = src.caption_side,
         "empty-cells" => style.empty_cells = src.empty_cells,
-        "vertical-align" => style.vertical_align = src.vertical_align,
+        "vertical-align" => style.vertical_align = src.vertical_align.clone(),
         "content" => style.content = src.content.clone(),
         "quotes" => style.quotes = src.quotes.clone(),
         "flex-direction" => style.flex_direction = src.flex_direction,
@@ -1931,11 +1950,11 @@ fn apply_css_wide(
         "order" => style.order = src.order,
         "flex-grow" => style.flex_grow = src.flex_grow,
         "flex-shrink" => style.flex_shrink = src.flex_shrink,
-        "flex-basis" => style.flex_basis = src.flex_basis,
+        "flex-basis" => style.flex_basis = src.flex_basis.clone(),
         "flex" => {
             style.flex_grow = src.flex_grow;
             style.flex_shrink = src.flex_shrink;
-            style.flex_basis = src.flex_basis;
+            style.flex_basis = src.flex_basis.clone();
         }
         "justify-content" => style.justify_content = src.justify_content,
         "align-content" => style.align_content = src.align_content,
@@ -2014,17 +2033,17 @@ fn apply_css_wide(
             g.column_end = s.column_end.clone();
         }),
         "transform" => copy_effects(style, src, |e, s| e.transform = s.transform.clone()),
-        "transform-origin" => {
-            copy_effects(style, src, |e, s| e.transform_origin = s.transform_origin)
-        }
+        "transform-origin" => copy_effects(style, src, |e, s| {
+            e.transform_origin = s.transform_origin.clone()
+        }),
         "transform-box" => copy_effects(style, src, |e, s| e.transform_box = s.transform_box),
-        "translate" => copy_effects(style, src, |e, s| e.translate = s.translate),
+        "translate" => copy_effects(style, src, |e, s| e.translate = s.translate.clone()),
         "rotate" => copy_effects(style, src, |e, s| e.rotate = s.rotate),
         "scale" => copy_effects(style, src, |e, s| e.scale = s.scale),
         "transform-style" => copy_effects(style, src, |e, s| e.transform_style = s.transform_style),
         "perspective" => copy_effects(style, src, |e, s| e.perspective = s.perspective),
         "perspective-origin" => copy_effects(style, src, |e, s| {
-            e.perspective_origin = s.perspective_origin
+            e.perspective_origin = s.perspective_origin.clone()
         }),
         "backface-visibility" => copy_effects(style, src, |e, s| {
             e.backface_visibility = s.backface_visibility
@@ -2045,11 +2064,11 @@ fn apply_css_wide(
         "print-color-adjust" => copy_fragmentation(style, src, |f, s| {
             f.print_color_adjust = s.print_color_adjust
         }),
-        "row-gap" => style.row_gap = src.row_gap,
-        "column-gap" => style.column_gap = src.column_gap,
+        "row-gap" => style.row_gap = src.row_gap.clone(),
+        "column-gap" => style.column_gap = src.column_gap.clone(),
         "gap" => {
-            style.row_gap = src.row_gap;
-            style.column_gap = src.column_gap;
+            style.row_gap = src.row_gap.clone();
+            style.column_gap = src.column_gap.clone();
         }
         "border-color" => {
             // The parent's border color is a real color; the initial
@@ -2089,14 +2108,15 @@ fn set_margin_edge(
 /// Expands a 1–4 value list into `[top, right, bottom, left]` per CSS2
 /// §8.3's box-shorthand expansion rule (shared by `margin`, `padding`,
 /// and `border-width` — only the per-value parser differs).
-fn expand_1_to_4<T: Copy>(values: &[T]) -> Option<[T; 4]> {
-    match values {
-        [a] => Some([*a, *a, *a, *a]),
-        [a, b] => Some([*a, *b, *a, *b]),
-        [a, b, c] => Some([*a, *b, *c, *b]),
-        [a, b, c, d] => Some([*a, *b, *c, *d]),
-        _ => None,
-    }
+fn expand_1_to_4<T: Clone>(values: &[T]) -> Option<[T; 4]> {
+    let [a, b, c, d] = match values {
+        [a] => [a, a, a, a],
+        [a, b] => [a, b, a, b],
+        [a, b, c] => [a, b, c, b],
+        [a, b, c, d] => [a, b, c, d],
+        _ => return None,
+    };
+    Some([a.clone(), b.clone(), c.clone(), d.clone()])
 }
 
 /// Expands the `padding` box shorthand — like [`parse_box_shorthand`],
@@ -2175,16 +2195,21 @@ fn apply_border_shorthand(
 
 /// Splits `tokens` on whitespace into non-empty groups, preserving each
 /// group's internal token order — shared by `border`'s and the box
-/// shorthands' "one value per space-separated word" parsing.
+/// shorthands' "one value per space-separated word" parsing. White
+/// space inside a function or a block splits nothing, so that
+/// `calc(1px + 2px) 3px` is two groups (CSS Syntax 3's component
+/// values, M21).
 fn split_whitespace_groups(tokens: &[Token]) -> Vec<Vec<Token>> {
     let mut groups = Vec::new();
     let mut current = Vec::new();
+    let mut depth = Nesting::default();
     for t in tokens {
-        if matches!(t, Token::Whitespace) {
+        if matches!(t, Token::Whitespace) && depth.is_top() {
             if !current.is_empty() {
                 groups.push(std::mem::take(&mut current));
             }
         } else {
+            depth.step(t);
             current.push(t.clone());
         }
     }
@@ -2192,6 +2217,94 @@ fn split_whitespace_groups(tokens: &[Token]) -> Vec<Vec<Token>> {
         groups.push(current);
     }
     groups
+}
+
+/// The component values of `tokens` (CSS Syntax 3 §5.4.7), the white
+/// space between them left out: each a token, or a function or block
+/// with everything up to its closer, or to the end where it has none.
+pub(crate) fn components(tokens: &[Token]) -> Vec<&[Token]> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        if matches!(tokens[i], Token::Whitespace) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let mut nesting = Nesting::default();
+        loop {
+            nesting.step(&tokens[i]);
+            i += 1;
+            if nesting.is_top() || i == tokens.len() {
+                break;
+            }
+        }
+        out.push(&tokens[start..i]);
+    }
+    out
+}
+
+/// A function's name and its arguments, `component` being one: the
+/// component values between its commas, each one value, there being at
+/// least one; `None` when it is no function, is not closed, or an
+/// argument is empty or more than one value.
+fn function_arguments(component: &[Token]) -> Option<(&str, Vec<&[Token]>)> {
+    let (Token::Function(name), [inside @ .., Token::CloseParen]) =
+        (component.first()?, &component[1..])
+    else {
+        return None;
+    };
+    let mut arguments = Vec::new();
+    let mut nesting = Nesting::default();
+    let mut start = 0;
+    for (i, token) in inside.iter().enumerate() {
+        if matches!(token, Token::Comma) && nesting.is_top() {
+            arguments.push(&inside[start..i]);
+            start = i + 1;
+        } else {
+            nesting.step(token);
+        }
+    }
+    arguments.push(&inside[start..]);
+    arguments
+        .iter()
+        .all(|a| components(a).len() == 1)
+        .then_some((name.as_str(), arguments))
+}
+
+/// The blocks open at a token of a value, by CSS Syntax 3's component
+/// values: a function or `(` until its `)`, a `[` until its `]`, a `{`
+/// until its `}`; a closer with no block of its kind open closes none.
+#[derive(Debug, Default)]
+pub(crate) struct Nesting {
+    open: Vec<u8>,
+}
+
+impl Nesting {
+    /// Takes `token` into account.
+    pub(crate) fn step(&mut self, token: &Token) {
+        match token {
+            Token::Function(_) | Token::OpenParen => self.open.push(b')'),
+            Token::OpenSquare => self.open.push(b']'),
+            Token::OpenCurly => self.open.push(b'}'),
+            Token::CloseParen | Token::CloseSquare | Token::CloseCurly => {
+                let closer = match token {
+                    Token::CloseParen => b')',
+                    Token::CloseSquare => b']',
+                    _ => b'}',
+                };
+                if self.open.last() == Some(&closer) {
+                    self.open.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether no block is open.
+    pub(crate) fn is_top(&self) -> bool {
+        self.open.is_empty()
+    }
 }
 
 /// The largest length, in CSS pixels, a declaration can set in either
@@ -2208,58 +2321,154 @@ pub const MAX_LENGTH_PX: f32 = 33_554_431.0;
 /// [`MAX_LENGTH_PX`] in magnitude — see the module doc for what an
 /// infinity does to layout otherwise.
 fn parse_length_px(tokens: &[Token], bases: &LengthBases<'_>) -> Option<f32> {
+    length(tokens, bases, Range::All)
+}
+
+/// The values a place takes: any, or none below zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Range {
+    All,
+    NonNegative,
+}
+
+impl Range {
+    /// `v`, an infinity or a value past [`MAX_LENGTH_PX`] made the
+    /// largest the place takes and one below its least made that
+    /// (css-values-4 §10.9.2, §10.12): how a math function's value is
+    /// fitted to its place, where a value written out of range is
+    /// invalid.
+    pub(crate) fn clamp(self, v: f64) -> f32 {
+        let low = match self {
+            Range::All => -f64::from(MAX_LENGTH_PX),
+            Range::NonNegative => 0.0,
+        };
+        v.clamp(low, f64::from(MAX_LENGTH_PX)) as f32
+    }
+
+    /// Whether `v`, written as it is, is in the range.
+    fn holds(self, v: f32) -> bool {
+        self == Range::All || v >= 0.0
+    }
+}
+
+/// `value` of `unit` in CSS pixels, by the element's font and the
+/// viewport for the relative units.
+fn unit_px(value: f64, unit: LengthUnit, bases: &LengthBases<'_>) -> f64 {
+    if let Some(px) = unit.absolute() {
+        return value * px;
+    }
+    let r = bases.resolution;
+    let (vw, vh) = (r.context.viewport_width, r.context.viewport_height);
+    let viewport = |size: f32| {
+        r.viewport_used.set(true);
+        value * f64::from(size) / 100.0
+    };
+    let em = f64::from(bases.em);
+    match unit {
+        LengthUnit::Em => value * em,
+        LengthUnit::Rem => value * f64::from(r.rem),
+        LengthUnit::Ex => {
+            value
+                * r.context
+                    .fonts
+                    .map_or(em * 0.5, |f| f64::from(f.x_height(bases.em)))
+        }
+        LengthUnit::Ch => {
+            value
+                * r.context
+                    .fonts
+                    .map_or(em * 0.5, |f| f64::from(f.zero_advance(bases.em)))
+        }
+        LengthUnit::Vw => viewport(vw),
+        LengthUnit::Vh => viewport(vh),
+        LengthUnit::Vmin => viewport(vw.min(vh)),
+        LengthUnit::Vmax => viewport(vw.max(vh)),
+        _ => value,
+    }
+}
+
+impl calc::Lengths for LengthBases<'_> {
+    fn px(&self, value: f64, unit: LengthUnit) -> f64 {
+        unit_px(value, unit, self)
+    }
+}
+
+/// A math function (M21.2) in `tokens` for a place that takes `want`,
+/// computed for the element: its percentages of `basis` when that is
+/// known. `None` when `tokens` are not one math function, or it is not
+/// one the place takes.
+fn math(
+    tokens: &[Token],
+    want: Want,
+    bases: &LengthBases<'_>,
+    basis: Option<f64>,
+) -> Option<calc::Computed> {
+    if !calc::is_math_function(tokens) {
+        return None;
+    }
+    calc::parse(tokens, want).map(|parsed| parsed.compute(bases, basis))
+}
+
+/// A `<length>` in `range`, in CSS pixels: a dimension of one of the
+/// units css-values-4 §6 defines that this engine takes — the absolute
+/// ones, `em`, `rem`, `ex`, `ch`, `vw`, `vh`, `vmin` and `vmax` — the
+/// unitless `0`, or a math function. A written length out of `range`,
+/// or not finite, is no length; a math function's is fitted to it.
+fn length(tokens: &[Token], bases: &LengthBases<'_>, range: Range) -> Option<f32> {
+    if let Some(calc::Computed::Value(v)) = math(tokens, Want::Length, bases, None) {
+        return Some(range.clamp(v));
+    }
     let px = match single_token(tokens)? {
-        Token::Dimension { value, unit } => {
-            let value = *value as f32;
-            let r = bases.resolution;
-            let (vw, vh) = (r.context.viewport_width, r.context.viewport_height);
-            let viewport = |fraction: f32| {
-                r.viewport_used.set(true);
-                fraction * value / 100.0
-            };
-            match unit.to_ascii_lowercase().as_str() {
-                "px" => value,
-                "in" => value * 96.0,
-                "cm" => value * 96.0 / 2.54,
-                "mm" => value * 96.0 / 25.4,
-                "q" => value * 96.0 / 25.4 / 4.0,
-                "pt" => value * 96.0 / 72.0,
-                "pc" => value * 16.0,
-                "em" => value * bases.em,
-                "rem" => value * r.rem,
-                "ex" => {
-                    value
-                        * r.context
-                            .fonts
-                            .map_or(bases.em * 0.5, |f| f.x_height(bases.em))
-                }
-                "ch" => {
-                    value
-                        * r.context
-                            .fonts
-                            .map_or(bases.em * 0.5, |f| f.zero_advance(bases.em))
-                }
-                "vw" => viewport(vw),
-                "vh" => viewport(vh),
-                "vmin" => viewport(vw.min(vh)),
-                "vmax" => viewport(vw.max(vh)),
-                _ => return None,
-            }
+        // A value past what an `f32` holds is no length, whatever its
+        // unit would make of it.
+        Token::Dimension { value, unit } if (*value as f32).is_finite() => {
+            unit_px(*value, LengthUnit::of(unit)?, bases) as f32
         }
         Token::Number { value, .. } if *value == 0.0 => 0.0,
         _ => return None,
     };
-    if !px.is_finite() {
-        return None;
-    }
-    Some(px.clamp(-MAX_LENGTH_PX, MAX_LENGTH_PX))
+    (px.is_finite() && range.holds(px)).then(|| px.clamp(-MAX_LENGTH_PX, MAX_LENGTH_PX))
 }
 
 /// [`parse_length_px`] for the properties that take no negative value
 /// (`font-size`, `padding`, `border-width`): a negative one is an
 /// invalid declaration, ignored.
 fn parse_non_negative_length_px(tokens: &[Token], bases: &LengthBases<'_>) -> Option<f32> {
-    parse_length_px(tokens, bases).filter(|v| *v >= 0.0)
+    length(tokens, bases, Range::NonNegative)
+}
+
+/// A `<length-percentage>` in `range`: a length, a percentage kept as
+/// written, or a math function, which is a length, a percentage, or an
+/// expression with a percentage in it kept for layout (M21.2).
+fn length_percentage(
+    tokens: &[Token],
+    bases: &LengthBases<'_>,
+    range: Range,
+) -> Option<LengthPercentage> {
+    match math(tokens, Want::LengthPercentage, bases, None) {
+        Some(calc::Computed::Value(v)) => return Some(LengthPercentage::Px(range.clamp(v))),
+        // A percentage below zero is of a basis never below it, so it
+        // is fitted to a non-negative range as a length is.
+        Some(calc::Computed::Percent(p)) => {
+            let p = p as f32;
+            return Some(LengthPercentage::Percent(match range {
+                Range::All => p,
+                Range::NonNegative => p.max(0.0),
+            }));
+        }
+        Some(calc::Computed::Expression(e)) => {
+            return Some(LengthPercentage::Calc(Arc::new(Calc::new(
+                e,
+                range == Range::NonNegative,
+            ))));
+        }
+        None => {}
+    }
+    if let Some(Token::Percentage { value }) = single_token(tokens) {
+        let p = *value as f32;
+        return (p.is_finite() && range.holds(p)).then_some(LengthPercentage::Percent(p));
+    }
+    length(tokens, bases, range).map(LengthPercentage::Px)
 }
 
 /// A non-negative length or percentage, kept as written — `padding`.
@@ -2267,16 +2476,12 @@ fn parse_non_negative_length_percentage(
     tokens: &[Token],
     bases: &LengthBases<'_>,
 ) -> Option<LengthPercentage> {
-    if let Some(Token::Percentage { value }) = single_token(tokens) {
-        let p = *value as f32;
-        return (p.is_finite() && p >= 0.0).then_some(LengthPercentage::Percent(p));
-    }
-    parse_non_negative_length_px(tokens, bases).map(LengthPercentage::Px)
+    length_percentage(tokens, bases, Range::NonNegative)
 }
 
-/// `auto`, a length, or a percentage — `width`, `height` and the
-/// margins (M10.1). A percentage is kept as written for layout to
-/// resolve against the containing block.
+/// `auto`, a length, or a percentage — the margins (M10.1) and the
+/// insets (M11). A percentage is kept as written for layout to resolve
+/// against the containing block.
 fn parse_length_percentage_or_auto(
     tokens: &[Token],
     bases: &LengthBases<'_>,
@@ -2284,11 +2489,11 @@ fn parse_length_percentage_or_auto(
     if is_auto(tokens) {
         return Some(LengthPercentageAuto::Auto);
     }
-    if let Some(Token::Percentage { value }) = single_token(tokens) {
-        let p = *value as f32;
-        return p.is_finite().then_some(LengthPercentageAuto::Percent(p));
-    }
-    parse_length_px(tokens, bases).map(LengthPercentageAuto::Px)
+    length_percentage(tokens, bases, Range::All).map(|v| match v {
+        LengthPercentage::Px(px) => LengthPercentageAuto::Px(px),
+        LengthPercentage::Percent(p) => LengthPercentageAuto::Percent(p),
+        LengthPercentage::Calc(c) => LengthPercentageAuto::Calc(c),
+    })
 }
 
 fn is_auto(tokens: &[Token]) -> bool {
@@ -2396,11 +2601,11 @@ fn parse_vertical_align(tokens: &[Token], bases: &LengthBases<'_>) -> Option<Ver
             _ => None,
         };
     }
-    if let Some(Token::Percentage { value }) = single_token(tokens) {
-        let p = *value as f32;
-        return p.is_finite().then_some(VerticalAlign::Percent(p));
-    }
-    parse_length_px(tokens, bases).map(VerticalAlign::Length)
+    length_percentage(tokens, bases, Range::All).map(|v| match v {
+        LengthPercentage::Px(px) => VerticalAlign::Length(px),
+        LengthPercentage::Percent(p) => VerticalAlign::Percent(p),
+        LengthPercentage::Calc(c) => VerticalAlign::Calc(c),
+    })
 }
 
 /// The edge array index of `top`, `right`, `bottom` or `left`.
@@ -2447,24 +2652,30 @@ fn parse_position(tokens: &[Token]) -> Option<Position> {
 }
 
 /// `z-index` (M11.6): `auto`, or an integer; `Some(None)` is `auto`.
-fn parse_z_index(tokens: &[Token]) -> Option<Option<i32>> {
+fn parse_z_index(tokens: &[Token], bases: &LengthBases<'_>) -> Option<Option<i32>> {
     if is_auto(tokens) {
         return Some(None);
     }
-    integer(tokens).map(Some)
+    integer(tokens, bases).map(Some)
 }
 
 /// A lone `<integer>`, one beyond what an `i32` holds clamped to it
 /// (css-values-4 §5: a value outside the range an implementation
-/// supports is clamped, not dropped).
-fn integer(tokens: &[Token]) -> Option<i32> {
-    match single_token(tokens)? {
-        Token::Number {
-            value,
-            is_integer: true,
-        } => Some(value.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32),
-        _ => None,
-    }
+/// supports is clamped, not dropped); or a math function, whose number
+/// is rounded to the nearest integer, a half towards positive infinity
+/// (§10.9).
+fn integer(tokens: &[Token], bases: &LengthBases<'_>) -> Option<i32> {
+    let value = match math(tokens, Want::Number, bases, None) {
+        Some(calc::Computed::Value(v)) => (v + 0.5).floor(),
+        _ => match single_token(tokens)? {
+            Token::Number {
+                value,
+                is_integer: true,
+            } => *value,
+            _ => return None,
+        },
+    };
+    Some(value.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32)
 }
 
 /// `box-sizing` (M10.2).
@@ -2500,6 +2711,7 @@ fn parse_size(tokens: &[Token], bases: &LengthBases<'_>) -> Option<Size> {
     parse_non_negative_length_percentage(tokens, bases).map(|v| match v {
         LengthPercentage::Px(px) => Size::Px(px),
         LengthPercentage::Percent(p) => Size::Percent(p),
+        LengthPercentage::Calc(c) => Size::Calc(c),
     })
 }
 
@@ -2519,6 +2731,7 @@ fn parse_max_size(tokens: &[Token], bases: &LengthBases<'_>) -> Option<MaxSize> 
     parse_non_negative_length_percentage(tokens, bases).map(|v| match v {
         LengthPercentage::Px(px) => MaxSize::Px(px),
         LengthPercentage::Percent(p) => MaxSize::Percent(p),
+        LengthPercentage::Calc(c) => MaxSize::Calc(c),
     })
 }
 
@@ -2573,8 +2786,8 @@ fn parse_flex_flow(tokens: &[Token]) -> Option<(FlexDirection, FlexWrap)> {
 }
 
 /// `order` (css-flexbox-1 §5.4, M17): an integer.
-fn parse_order(tokens: &[Token]) -> Option<i32> {
-    integer(tokens)
+fn parse_order(tokens: &[Token], bases: &LengthBases<'_>) -> Option<i32> {
+    integer(tokens, bases)
 }
 
 /// A flex factor (`flex-grow`, `flex-shrink`; css-flexbox-1 §7.2): a
@@ -2583,12 +2796,22 @@ fn flex_factor(value: f64) -> Option<f32> {
     (value.is_finite() && value >= 0.0).then(|| value.min(f32::MAX as f64) as f32)
 }
 
-/// `flex-grow` and `flex-shrink` alone.
-fn parse_flex_factor(tokens: &[Token]) -> Option<f32> {
-    match single_token(tokens)? {
-        Token::Number { value, .. } => flex_factor(*value),
+/// A flex factor in `tokens`: `None` when they are not a number,
+/// `Some(None)` when they are one no factor can be. A math function's
+/// number is fitted to a factor's range (M21.2).
+fn factor(tokens: &[Token], bases: &LengthBases<'_>) -> Option<Option<f32>> {
+    if let Some(Token::Number { value, .. }) = single_token(tokens) {
+        return Some(flex_factor(*value));
+    }
+    match math(tokens, Want::Number, bases, None)? {
+        calc::Computed::Value(v) => Some(Some(v.clamp(0.0, f64::from(f32::MAX)) as f32)),
         _ => None,
     }
+}
+
+/// `flex-grow` and `flex-shrink` alone.
+fn parse_flex_factor(tokens: &[Token], bases: &LengthBases<'_>) -> Option<f32> {
+    factor(tokens, bases)?
 }
 
 /// `flex-basis` (css-flexbox-1 §7.2.3, M17): `content`, or what `width`
@@ -2621,16 +2844,16 @@ fn parse_flex(tokens: &[Token], bases: &LengthBases<'_>) -> Option<(f32, f32, Fl
     let (mut grow, mut shrink, mut basis) = (None, None, None);
     let mut after_grow = false;
     for g in &groups {
-        if let Some(Token::Number { value, .. }) = single_token(g)
+        if let Some(value) = factor(g, bases)
             && !(grow.is_some() && shrink.is_some())
         {
             if grow.is_none() {
-                grow = Some(flex_factor(*value)?);
+                grow = Some(value?);
                 after_grow = true;
                 continue;
             }
             if after_grow {
-                shrink = Some(flex_factor(*value)?);
+                shrink = Some(value?);
                 after_grow = false;
                 continue;
             }
@@ -2843,7 +3066,7 @@ fn parse_gap_shorthand(
     match split_whitespace_groups(tokens).as_slice() {
         [row] => {
             let row = parse_gap(row, bases)?;
-            Some((row, row))
+            Some((row.clone(), row))
         }
         [row, column] => Some((parse_gap(row, bases)?, parse_gap(column, bases)?)),
         _ => None,
@@ -3502,6 +3725,21 @@ mod tests {
             ("background", "green"),
             ("background", "none"),
             ("background", "none lightblue"),
+            // M21.2: the math functions, a negative width among them,
+            // which is clamped, not invalid.
+            ("width", "calc(10px + 1em)"),
+            ("width", "calc(10px - 20px)"),
+            ("margin", "min(1px, 2%) clamp(1px, 2em, 3px)"),
+            ("z-index", "calc(2.5)"),
+            ("opacity", "calc(100% / 3)"),
+            (
+                "transform",
+                "rotate(calc(1turn / 4)) translate(calc(50% - 1px))",
+            ),
+            (
+                "grid-template-columns",
+                "repeat(calc(2), minmax(calc(10px * 2), 1fr))",
+            ),
         ] {
             assert!(supports(name, value), "{name}: {value}");
         }
@@ -3519,7 +3757,8 @@ mod tests {
             ("display", "grid-lanes"),
             ("display", "-webkit-box"),
             ("width", "-5px"),
-            ("width", "calc(10px + 1em)"),
+            ("width", "calc(10px + 1s)"),
+            ("width", "sin(1deg)"),
             ("color", "rgb(0, 0, 0)"),
             ("writing-mode", "vertical-rl"),
             ("bogus", "inherit"),
@@ -3787,7 +4026,7 @@ mod tests {
         assert_eq!(s.font_size_px, 16.0, "an infinite font-size is ignored");
         assert_eq!(
             s.padding,
-            [LengthPercentage::Px(0.0); 4],
+            [const { LengthPercentage::Px(0.0) }; 4],
             "negative padding is ignored"
         );
         assert_eq!(
@@ -3942,7 +4181,7 @@ mod tests {
         assert_eq!(p.float, Float::None);
         assert_eq!(p.clear, Clear::None);
         assert_eq!(p.position, Position::Static);
-        assert_eq!(p.inset, [LengthPercentageAuto::Auto; 4]);
+        assert_eq!(p.inset, [const { LengthPercentageAuto::Auto }; 4]);
         assert_eq!(p.z_index, None);
         // Every keyword, whatever its case; an unknown one leaves the
         // value alone; `z-index` takes an integer or `auto`, nothing
@@ -4215,7 +4454,7 @@ mod tests {
         // Padding takes no negative percentage; a margin may be negative.
         let sheets = [sheet("p { padding: -5%; margin: -5%; }")];
         let s = style_of("<p>x</p>", &sheets, "p");
-        assert_eq!(s.padding, [LengthPercentage::Px(0.0); 4]);
+        assert_eq!(s.padding, [const { LengthPercentage::Px(0.0) }; 4]);
         assert_eq!(s.margin[TOP], LengthPercentageAuto::Percent(-5.0));
     }
 
@@ -5163,21 +5402,21 @@ mod tests {
         let zero_percent = FlexBasis::Size(Size::Percent(0.0));
         let px = |v| FlexBasis::Size(Size::Px(v));
         for (value, expected) in [
-            ("none", (0.0, 0.0, auto)),
-            ("auto", (1.0, 1.0, auto)),
-            ("initial", (0.0, 1.0, auto)),
+            ("none", (0.0, 0.0, auto.clone())),
+            ("auto", (1.0, 1.0, auto.clone())),
+            ("initial", (0.0, 1.0, auto.clone())),
             // The basis left out is 0% (web-platform-tests'
             // flex-computed.html), the factors 1.
-            ("1", (1.0, 1.0, zero_percent)),
-            ("2 3", (2.0, 3.0, zero_percent)),
+            ("1", (1.0, 1.0, zero_percent.clone())),
+            ("2 3", (2.0, 3.0, zero_percent.clone())),
             ("4 5 6px", (4.0, 5.0, px(6.0))),
             ("7% 8", (8.0, 1.0, FlexBasis::Size(Size::Percent(7.0)))),
-            ("8 auto", (8.0, 1.0, auto)),
+            ("8 auto", (8.0, 1.0, auto.clone())),
             ("10px 1 2", (1.0, 2.0, px(10.0))),
             ("content", (1.0, 1.0, FlexBasis::Content)),
             // A unitless zero is a factor unless two came before it.
-            ("0", (0.0, 1.0, zero_percent)),
-            ("1 0", (1.0, 0.0, zero_percent)),
+            ("0", (0.0, 1.0, zero_percent.clone())),
+            ("1 0", (1.0, 0.0, zero_percent.clone())),
             ("0 0 0", (0.0, 0.0, px(0.0))),
         ] {
             assert_eq!(flex(value), expected, "{value}");
@@ -5711,7 +5950,7 @@ mod tests {
         );
         assert_eq!(table.table_layout, TableLayout::Auto);
         let td = of("tbody td");
-        assert_eq!(td.padding, [LengthPercentage::Px(1.0); 4]);
+        assert_eq!(td.padding, [const { LengthPercentage::Px(1.0) }; 4]);
         assert_eq!(td.text_align, TextAlign::Left);
         assert_eq!(of("th").text_align, TextAlign::Center);
         assert_eq!(of("th").padding, td.padding);
@@ -5732,7 +5971,10 @@ mod tests {
         assert_eq!(of("table > tr").vertical_align, VerticalAlign::Middle);
         assert_eq!(of("table > tr > td").vertical_align, VerticalAlign::Middle);
         assert_eq!(of(".cell").vertical_align, VerticalAlign::Baseline);
-        assert_eq!(of(".cell").padding, [LengthPercentage::Px(0.0); 4]);
+        assert_eq!(
+            of(".cell").padding,
+            [const { LengthPercentage::Px(0.0) }; 4]
+        );
         // Row groups and rows take the table's border colour; a cell
         // keeps `currentcolor`.
         let red = Color::rgb8(255, 0, 0);
@@ -5741,7 +5983,10 @@ mod tests {
         assert_eq!(td.border_color, [Color::BLACK; 4]);
         // The caption and the column boxes have no padding or border of
         // their own from the sheet.
-        assert_eq!(of("caption").padding, [LengthPercentage::Px(0.0); 4]);
+        assert_eq!(
+            of("caption").padding,
+            [const { LengthPercentage::Px(0.0) }; 4]
+        );
         assert_eq!(of("col").used_border_width(), [0.0; 4]);
     }
 
@@ -5984,6 +6229,96 @@ mod tests {
     }
 
     #[test]
+    fn math_functions_compute_where_their_values_do() {
+        use crate::computed::{TransformFunction, Translate};
+        // M21.2: a math function is computed with the element's bases: a
+        // value with no percentage left is a length, a number or an
+        // integer, fitted to its property's range rather than dropped; one
+        // with a percentage keeps its expression for layout.
+        let of = |css: &str| {
+            let sheets = [sheet(&format!(
+                "div {{ font-size: 20px }} p {{ width: 7px; {css} }}"
+            ))];
+            style_of("<div><p>x</p></div>", &sheets, "p")
+        };
+        assert_eq!(of("width: calc(10px + 2em)").width, Size::Px(10.0 + 40.0));
+        assert_eq!(of("width: calc(10px - 20px)").width, Size::Px(0.0));
+        assert_eq!(of("width: calc(1px + 1)").width, Size::Px(7.0), "invalid");
+        let Size::Calc(width) = of("width: calc(100% - 2em)").width else {
+            panic!("an expression");
+        };
+        assert_eq!(width.resolve(200.0), 200.0 - 40.0);
+        assert_eq!(width.resolve(10.0), 0.0, "never negative");
+        assert_eq!(
+            of("margin: calc(-10px) calc(1px + 2px)").margin,
+            [
+                LengthPercentageAuto::Px(-10.0),
+                LengthPercentageAuto::Px(3.0),
+                LengthPercentageAuto::Px(-10.0),
+                LengthPercentageAuto::Px(3.0),
+            ]
+        );
+        let s = of("padding: calc(50% * 2) calc(-10%)");
+        assert_eq!(
+            (&s.padding[TOP], &s.padding[RIGHT]),
+            (
+                &LengthPercentage::Percent(100.0),
+                &LengthPercentage::Percent(0.0)
+            )
+        );
+        assert_eq!(of("font-size: calc(50% + 2px)").font_size_px, 12.0);
+        assert_eq!(of("font-size: calc(-1em)").font_size_px, 0.0);
+        assert_eq!(of("z-index: calc(2.5)").z_index, Some(3));
+        assert_eq!(of("z-index: calc(-2.5)").z_index, Some(-2));
+        assert_eq!(of("z-index: calc(1px)").z_index, None, "invalid");
+        assert_eq!(of("order: calc(infinity)").order, i32::MAX);
+        assert_eq!(of("opacity: calc(100% / 4)").effects().opacity, 0.25);
+        assert_eq!(of("opacity: calc(2)").effects().opacity, 1.0);
+        assert_eq!(of("border: calc(-1px) solid").border_width[TOP], 0.0);
+        assert_eq!(of("letter-spacing: calc(1px - 3px)").letter_spacing, -2.0);
+        assert_eq!(of("flex: calc(2) calc(-1) 5px").flex_shrink, 0.0);
+        assert_eq!(
+            of("width: calc(infinity * 1px)").width,
+            Size::Px(MAX_LENGTH_PX)
+        );
+        assert!(matches!(
+            of("vertical-align: calc(10% + 1px)").vertical_align,
+            VerticalAlign::Calc(_)
+        ));
+        assert!(matches!(
+            of("transform: translate(calc(50% - 1px))")
+                .effects()
+                .transform[..],
+            [TransformFunction::Translate(
+                LengthPercentage::Calc(_),
+                _,
+                _
+            )]
+        ));
+        assert!(matches!(
+            of("translate: calc(1px * 3) 2px").effects().translate,
+            Some(Translate {
+                x: LengthPercentage::Px(3.0),
+                ..
+            })
+        ));
+        assert_eq!(
+            of("transform: rotate(calc(1turn / 4))").effects().transform,
+            vec![TransformFunction::Rotate {
+                x: 0.0,
+                y: 0.0,
+                z: 1.0,
+                angle: 90.0
+            }]
+        );
+        // A viewport unit inside one is a viewport unit used.
+        let document = Document::from_node(&html::parse_document("<p>x</p>").expect("parses"));
+        let sheets = [sheet("p { margin-left: calc(1px + 1vw) }")];
+        let styles = cascade_document(&document, &sheets, &CascadeContext::default());
+        assert!(styles.uses_viewport_units);
+    }
+
+    #[test]
     fn track_lists_take_sizes_line_names_and_repetitions() {
         use crate::computed::{
             RepeatCount, TrackBreadth as B, TrackRepeat, TrackSection as S, TrackSize as T,
@@ -6091,7 +6426,7 @@ mod tests {
             "[inherit] 10px",
             "[1] 10px",
             "subgrid",
-            "calc(10px)",
+            "calc(1fr)",
             "10px 'a'",
             "10 px",
             "none 10px",
@@ -6227,7 +6562,10 @@ mod tests {
             vec![S::Track(T::Breadth(B::Fixed(LengthPercentage::Px(100.0))))]
         );
         assert_eq!(g.auto_flow, GridAutoFlow::default());
-        assert_eq!((g.auto_rows, g.auto_columns), (vec![fr], vec![T::AUTO]));
+        assert_eq!(
+            (g.auto_rows, g.auto_columns),
+            (vec![fr.clone()], vec![T::AUTO])
+        );
         let g = grid_of("p { grid: none / auto-flow dense 1fr 2fr }");
         assert_eq!((&g.template_rows, &g.template_columns), (&None, &None));
         assert_eq!(
@@ -6237,7 +6575,7 @@ mod tests {
                 dense: true
             }
         );
-        assert_eq!(g.auto_columns, vec![fr, T::Breadth(B::Flex(2.0))]);
+        assert_eq!(g.auto_columns, vec![fr.clone(), T::Breadth(B::Flex(2.0))]);
         assert_eq!(g.auto_rows, vec![T::AUTO]);
         let g = grid_of("p { grid: dense auto-flow / 10px }");
         assert_eq!(
@@ -6551,7 +6889,7 @@ mod tests {
         // inherited, land in `effects`; an element that sets none has
         // no pointer at all.
         use crate::computed::{
-            BackfaceVisibility, Offset, TransformBox, TransformFunction, TransformStyle, WillChange,
+            BackfaceVisibility, TransformBox, TransformFunction, TransformStyle, WillChange,
         };
         let html = "<div><p>x</p></div>";
         let s = style_of(
@@ -6582,14 +6920,14 @@ mod tests {
                 },
             ]
         );
-        let zero = Offset {
-            percent: 0.0,
-            px: 0.0,
-        };
-        assert_eq!((e.transform_origin.x, e.transform_origin.y), (zero, zero));
+        let zero = LengthPercentage::Percent(0.0);
+        assert_eq!(
+            (&e.transform_origin.x, &e.transform_origin.y),
+            (&zero, &zero)
+        );
         assert_eq!(e.transform_box, TransformBox::ContentBox);
         assert_eq!(
-            e.translate.map(|t| (t.x, t.y, t.z)),
+            e.translate.clone().map(|t| (t.x, t.y, t.z)),
             Some((LengthPercentage::Px(1.0), LengthPercentage::Px(2.0), 3.0))
         );
         assert_eq!(
@@ -6600,16 +6938,13 @@ mod tests {
         assert_eq!(e.transform_style, TransformStyle::Preserve3d);
         assert_eq!(e.perspective, Some(800.0));
         assert_eq!(
-            (e.perspective_origin.x, e.perspective_origin.y),
             (
-                Offset {
-                    percent: 100.0,
-                    px: -10.0
-                },
-                Offset {
-                    percent: 100.0,
-                    px: -20.0
-                }
+                e.perspective_origin.x.clone(),
+                e.perspective_origin.y.clone()
+            ),
+            (
+                LengthPercentage::sum(100.0, -10.0),
+                LengthPercentage::sum(100.0, -20.0)
             )
         );
         assert_eq!(e.backface_visibility, BackfaceVisibility::Hidden);
@@ -6643,10 +6978,11 @@ mod tests {
         );
         let e = s.effects();
         assert_eq!(e.transform, vec![TransformFunction::Scale(2.0, 2.0, 1.0)]);
-        assert_eq!(e.transform_origin.x, zero);
+        // `0` is a length, where `left` was a percentage.
+        assert_eq!(e.transform_origin.x, LengthPercentage::Px(0.0));
         assert_eq!(e.transform_style, TransformStyle::Preserve3d);
         assert_eq!(e.perspective, Some(1.0));
-        assert_eq!(e.perspective_origin.y, zero);
+        assert_eq!(e.perspective_origin.y, LengthPercentage::Px(0.0));
         assert_eq!(e.backface_visibility, BackfaceVisibility::Hidden);
         // A later invalid declaration leaves the earlier value.
         let s = style_of(
@@ -7048,7 +7384,7 @@ mod tests {
         // Nothing said: the print's own.
         let none = style("p { color: red }", paper, first);
         assert_eq!(none.size, PageSize::Auto);
-        assert_eq!(none.margin, [None; 4]);
+        assert_eq!(none.margin, <[Option<LengthPercentageAuto>; 4]>::default());
 
         let source = "@page { size: A4; margin: 1in }
             @page :left { margin-left: 2in; margin-right: 10% }
@@ -7087,7 +7423,10 @@ mod tests {
                 Some(px(192.0))
             ]
         );
-        assert_eq!(style(source, paper, right).margin, [Some(px(96.0)); 4]);
+        assert_eq!(
+            style(source, paper, right).margin,
+            std::array::from_fn(|_| Some(px(96.0)))
+        );
 
         // Specificity over order; importance over specificity; layers.
         let s = style(
@@ -7192,6 +7531,6 @@ mod tests {
             paper,
             first,
         );
-        assert_eq!(s.margin, [Some(px(1.0)); 4]);
+        assert_eq!(s.margin, std::array::from_fn(|_| Some(px(1.0))));
     }
 }

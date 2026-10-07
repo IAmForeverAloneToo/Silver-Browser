@@ -2614,8 +2614,8 @@ mod tests {
                 .into_iter()
                 .map(|n| {
                     let style = styles.get(n).expect("styled");
-                    let margin = match style.margin[style::computed::TOP] {
-                        style::computed::LengthPercentageAuto::Px(px) => px,
+                    let margin = match &style.margin[style::computed::TOP] {
+                        style::computed::LengthPercentageAuto::Px(px) => *px,
                         other => panic!("{other:?}"),
                     };
                     (style.font_size_px, margin)
@@ -4245,7 +4245,7 @@ mod tests {
         );
         engine.frame(400, 100);
         let p = first(&engine, "p");
-        let padding = engine.styles().get(p).expect("styled").padding;
+        let padding = engine.styles().get(p).expect("styled").padding.clone();
         let fonts = &engine.layout_fonts;
         use style::computed::LengthPercentage::Px;
         assert_eq!(padding[0], Px(20.0), "1rem of the root's 20px");

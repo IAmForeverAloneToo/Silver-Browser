@@ -300,7 +300,19 @@ fn parse_declarations(stream: &mut TokenStream, depth: usize) -> Vec<Declaration
 /// b {`-nothing, but `& b { ... }` reads as a declaration named `&`...
 /// no: as the `&` delim, which [`skip_until_delimiter`] handles; the
 /// case here is `x: y { ... }`): the block is consumed to its `}` and
-/// the declaration dropped, so what follows is parsed afresh.
+/// the declaration dropped, so what follows is parsed afresh. A custom
+/// property (`--*`, M21) is the exception: its value may hold a `{}`
+/// block, as CSS Syntax 3 §5.5.5 says, kept with its tokens.
+///
+/// The value is read by CSS Syntax 3's component values: a function, a
+/// `(`, a `[` and a custom property's `{` open a block that only its own
+/// closer ends, so a `;` or `}` inside `var(…)` or `calc(…)` is part of
+/// the value, and a `)` with no block open to close is a token like any
+/// other.
+///
+/// The name is ASCII-lowercased, CSS's property names being ASCII
+/// case-insensitive, except a custom property's, which is
+/// case-sensitive (Variables 1 §2).
 fn parse_declaration(stream: &mut TokenStream, name: String) -> Option<Declaration> {
     match stream.next() {
         Some(Token::Colon) => {}
@@ -311,38 +323,69 @@ fn parse_declaration(stream: &mut TokenStream, name: String) -> Option<Declarati
             return None;
         }
     }
+    let custom = name.starts_with("--");
     let mut value = Vec::new();
-    let mut paren_depth = 0i32;
-    loop {
-        match stream.next() {
-            None => break,
-            Some(Token::Semicolon) if paren_depth == 0 => break,
-            Some(Token::CloseCurly) if paren_depth == 0 => {
-                stream.reconsume(Token::CloseCurly);
-                break;
+    // The closer of each block open around the token being read,
+    // innermost last.
+    let mut open = Vec::new();
+    while let Some(token) = stream.next() {
+        if open.is_empty() {
+            match token {
+                Token::Semicolon => break,
+                Token::CloseCurly => {
+                    stream.reconsume(Token::CloseCurly);
+                    break;
+                }
+                Token::OpenCurly if !custom => {
+                    let _ = take_raw_block(stream);
+                    return None;
+                }
+                _ => {}
             }
-            Some(Token::OpenCurly) if paren_depth == 0 => {
-                let _ = take_raw_block(stream);
-                return None;
-            }
-            Some(t @ (Token::OpenParen | Token::OpenSquare)) => {
-                paren_depth += 1;
-                value.push(t);
-            }
-            Some(t @ (Token::CloseParen | Token::CloseSquare)) => {
-                paren_depth = (paren_depth - 1).max(0);
-                value.push(t);
-            }
-            Some(t) => value.push(t),
         }
+        match token {
+            Token::OpenParen | Token::Function(_) => open.push(Closer::Paren),
+            Token::OpenSquare => open.push(Closer::Square),
+            Token::OpenCurly => open.push(Closer::Curly),
+            Token::CloseParen | Token::CloseSquare | Token::CloseCurly
+                if open.last() == Some(&Closer::of(&token)) =>
+            {
+                open.pop();
+            }
+            _ => {}
+        }
+        value.push(token);
     }
     let important = strip_important(&mut value);
     trim_ws(&mut value);
     Some(Declaration {
-        name: name.to_lowercase(),
+        name: if custom {
+            name
+        } else {
+            name.to_ascii_lowercase()
+        },
         value,
         important,
     })
+}
+
+/// What ends a block of component values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Closer {
+    Paren,
+    Square,
+    Curly,
+}
+
+impl Closer {
+    /// The closer `token` is, which must be a closing token.
+    fn of(token: &Token) -> Closer {
+        match token {
+            Token::CloseSquare => Closer::Square,
+            Token::CloseCurly => Closer::Curly,
+            _ => Closer::Paren,
+        }
+    }
 }
 
 /// Strips a trailing `!important` (whitespace-tolerant, case-insensitive).
@@ -370,16 +413,16 @@ fn strip_important(value: &mut Vec<Token>) -> bool {
 }
 
 /// Skips tokens until `;`, `}` (reconsumed), or EOF, staying balanced
-/// inside `(...)` and `[...]`. A `{` at the top level is a nested rule's
-/// block (`& b { ... }` inside a declaration list): it is consumed to
-/// its matching `}` and the skip ends there, so the declaration after
-/// the block is read as one.
+/// inside functions, `(...)` and `[...]`. A `{` at the top level is a
+/// nested rule's block (`& b { ... }` inside a declaration list): it is
+/// consumed to its matching `}` and the skip ends there, so the
+/// declaration after the block is read as one.
 fn skip_until_delimiter(stream: &mut TokenStream, first: Token) {
     let mut depth = 0i32;
     let mut pending = Some(first);
     while let Some(token) = pending.take().or_else(|| stream.next()) {
         match token {
-            Token::OpenParen | Token::OpenSquare => depth += 1,
+            Token::OpenParen | Token::OpenSquare | Token::Function(_) => depth += 1,
             Token::CloseParen | Token::CloseSquare => depth = (depth - 1).max(0),
             Token::Semicolon if depth == 0 => return,
             Token::CloseCurly if depth == 0 => {
@@ -710,6 +753,46 @@ mod tests {
             panic!("expected a qualified rule");
         };
         assert_eq!(rule.declarations[0].value, vec![Token::Ident("red".into())]);
+    }
+
+    #[test]
+    fn a_function_holds_its_semicolons_and_braces() {
+        // M21: `;` and `}` inside a function are part of the value, as
+        // CSS Syntax 3's component values have them; the declaration
+        // after it is read as one.
+        let decls = parse_style_attribute("--x: f(a;b}c); color: red; width: calc(1px;2px)")
+            .expect("never fails");
+        let names: Vec<&str> = decls.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["--x", "color", "width"]);
+        assert_eq!(decls[0].value, tokenize("f(a;b}c)"));
+        assert_eq!(decls[2].value, tokenize("calc(1px;2px)"));
+        // A `)` with no block open is a token; it closes nothing.
+        let decls = parse_style_attribute("color: red) ; width: 1px").expect("never fails");
+        assert_eq!(decls.len(), 2);
+        assert_eq!(decls[0].value, tokenize("red)"));
+        // An invalid declaration skipped is skipped past a function too.
+        let decls = parse_style_attribute("x f(a;b); color: red").expect("never fails");
+        let names: Vec<&str> = decls.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["color"]);
+    }
+
+    #[test]
+    fn a_custom_property_keeps_its_case_and_its_braces() {
+        // Variables 1 §2: a custom property's name is case-sensitive,
+        // every other is ASCII case-insensitive; and CSS Syntax 3 lets a
+        // custom property's value hold a `{}` block, which drops any
+        // other declaration as a nested rule.
+        let sheet = parse_stylesheet("a { --MyVar: {a: b; c} 1; COLOR: red; Width: x { y } }")
+            .expect("never fails");
+        let Rule::Qualified(rule) = &sheet.rules[0] else {
+            panic!("expected a qualified rule");
+        };
+        let names: Vec<&str> = rule.declarations.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["--MyVar", "color"]);
+        assert_eq!(rule.declarations[0].value, tokenize("{a: b; c} 1"));
+        // A name's other letters are lowercased by ASCII's rules alone.
+        let decls = parse_style_attribute("COLOR\\212A: red").expect("never fails");
+        assert_eq!(decls[0].name, "color\u{212a}");
     }
 
     #[test]

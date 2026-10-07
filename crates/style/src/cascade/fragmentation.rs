@@ -8,7 +8,8 @@
 
 use css::Token;
 
-use super::single_ident;
+use super::{LengthBases, math, single_ident};
+use crate::calc::{Computed, Want};
 use crate::computed::{BreakBetween, BreakInside, PrintColorAdjust};
 
 /// `break-before` and `break-after`.
@@ -64,8 +65,12 @@ pub(super) fn parse_page_break_inside(value: &[Token]) -> Option<BreakInside> {
     })
 }
 
-/// `orphans` and `widows`: an integer of one or more.
-pub(super) fn parse_line_count(value: &[Token]) -> Option<u32> {
+/// `orphans` and `widows`: an integer of one or more, or a math
+/// function's number, rounded and fitted to that (M21.2).
+pub(super) fn parse_line_count(value: &[Token], bases: &LengthBases<'_>) -> Option<u32> {
+    if let Some(Computed::Value(v)) = math(value, Want::Number, bases, None) {
+        return Some((v + 0.5).floor().clamp(1.0, f64::from(u32::MAX)) as u32);
+    }
     match value {
         [
             Token::Number {
@@ -88,10 +93,15 @@ pub(super) fn parse_print_color_adjust(value: &[Token]) -> Option<PrintColorAdju
 
 #[cfg(test)]
 mod tests {
+    use super::super::tests::with_bases;
     use super::*;
 
     fn tokens(source: &str) -> Vec<Token> {
         css::tokenize(source)
+    }
+
+    fn line_count(source: &str) -> Option<u32> {
+        with_bases(|bases| parse_line_count(&tokens(source), bases))
     }
 
     #[test]
@@ -158,17 +168,17 @@ mod tests {
 
     #[test]
     fn line_counts_are_positive_integers() {
-        assert_eq!(parse_line_count(&tokens("1")), Some(1));
-        assert_eq!(parse_line_count(&tokens("234")), Some(234));
-        assert_eq!(
-            parse_line_count(&tokens("1e20")),
-            None,
-            "not an integer token"
-        );
-        assert_eq!(parse_line_count(&tokens("99999999999")), Some(u32::MAX));
-        for source in ["0", "-1", "2.5", "auto", "1 2"] {
-            assert_eq!(parse_line_count(&tokens(source)), None, "{source}");
+        assert_eq!(line_count("1"), Some(1));
+        assert_eq!(line_count("234"), Some(234));
+        assert_eq!(line_count("1e20"), None, "not an integer token");
+        assert_eq!(line_count("99999999999"), Some(u32::MAX));
+        for source in ["0", "-1", "2.5", "auto", "1 2", "calc(1px)"] {
+            assert_eq!(line_count(source), None, "{source}");
         }
+        // A math function's number is rounded and fitted (M21.2).
+        assert_eq!(line_count("calc(2.5)"), Some(3));
+        assert_eq!(line_count("calc(-5)"), Some(1));
+        assert_eq!(line_count("min(4, 7)"), Some(4));
         assert_eq!(
             parse_print_color_adjust(&tokens("EXACT")),
             Some(PrintColorAdjust::Exact)

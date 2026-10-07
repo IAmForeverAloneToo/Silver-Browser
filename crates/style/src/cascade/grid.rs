@@ -12,8 +12,10 @@ use std::sync::Arc;
 use css::Token;
 
 use super::{
-    LengthBases, baseline_position, parse_non_negative_length_percentage, positional, single_ident,
+    LengthBases, Nesting, baseline_position, function_arguments, math,
+    parse_non_negative_length_percentage, positional, single_ident, single_token,
 };
+use crate::calc::{Computed, Want};
 use crate::computed::{
     AlignPosition, GridAutoFlow, GridLine, JustifyItems, LineNames, NamedArea, OverflowAlign,
     RepeatCount, SelfAlignment, TemplateAreas, TrackBreadth, TrackList, TrackRepeat, TrackSection,
@@ -60,6 +62,23 @@ impl<'t> Cursor<'t> {
     fn at_end(&mut self) -> bool {
         self.peek().is_none()
     }
+
+    /// The next component value, taken: a token, or a function or a
+    /// block with everything up to its closer (M21: a math function is
+    /// one value).
+    fn component(&mut self) -> Option<&'t [Token]> {
+        self.peek()?;
+        let start = self.pos;
+        let mut nesting = Nesting::default();
+        loop {
+            nesting.step(&self.tokens[self.pos]);
+            self.pos += 1;
+            if nesting.is_top() || self.pos == self.tokens.len() {
+                break;
+            }
+        }
+        Some(&self.tokens[start..self.pos])
+    }
 }
 
 /// A `<custom-ident>` (css-values-4 §4.2) as a grid line's name: any
@@ -93,10 +112,23 @@ fn words(tokens: &[Token]) -> Option<Vec<String>> {
     Some(words)
 }
 
-/// The value's parts between `/`s. An empty part is one no parser
-/// takes.
+/// The value's parts between `/`s, a `/` inside a function, a math
+/// function's division, not dividing them. An empty part is one no
+/// parser takes.
 fn slash_parts(tokens: &[Token]) -> Vec<&[Token]> {
-    tokens.split(|t| *t == Token::Delim('/')).collect()
+    let mut parts = Vec::new();
+    let mut nesting = Nesting::default();
+    let mut start = 0;
+    for (i, token) in tokens.iter().enumerate() {
+        if *token == Token::Delim('/') && nesting.is_top() {
+            parts.push(&tokens[start..i]);
+            start = i + 1;
+        } else {
+            nesting.step(token);
+        }
+    }
+    parts.push(&tokens[start..]);
+    parts
 }
 
 /// `[ <custom-ident>* ]`, the cursor at its `[`.
@@ -116,48 +148,55 @@ fn line_names(c: &mut Cursor<'_>) -> Option<LineNames> {
 
 /// A `<track-breadth>`: a non-negative length or percentage, a
 /// non-negative `<flex>`, `min-content`, `max-content` or `auto`.
-fn breadth(token: &Token, bases: &LengthBases<'_>) -> Option<TrackBreadth> {
-    match token {
-        Token::Dimension { value, unit } if unit.eq_ignore_ascii_case("fr") => {
+fn breadth(component: &[Token], bases: &LengthBases<'_>) -> Option<TrackBreadth> {
+    match single_token(component) {
+        Some(Token::Dimension { value, unit }) if unit.eq_ignore_ascii_case("fr") => {
             let fr = *value as f32;
             (fr.is_finite() && fr >= 0.0).then_some(TrackBreadth::Flex(fr))
         }
-        Token::Ident(word) => match word.to_ascii_lowercase().as_str() {
+        Some(Token::Ident(word)) => match word.to_ascii_lowercase().as_str() {
             "min-content" => Some(TrackBreadth::MinContent),
             "max-content" => Some(TrackBreadth::MaxContent),
             "auto" => Some(TrackBreadth::Auto),
             _ => None,
         },
-        _ => parse_non_negative_length_percentage(std::slice::from_ref(token), bases)
-            .map(TrackBreadth::Fixed),
+        _ => parse_non_negative_length_percentage(component, bases).map(TrackBreadth::Fixed),
     }
 }
 
 /// A `<track-size>`: a breadth, `minmax(<inflexible-breadth>,
 /// <track-breadth>)` or `fit-content(<length-percentage [0,∞]>)`.
 fn track_size(c: &mut Cursor<'_>, bases: &LengthBases<'_>) -> Option<TrackSize> {
-    match c.next()? {
+    let component = c.component()?;
+    let arguments = |name: &str| match function_arguments(component) {
+        Some((function, arguments)) if function.eq_ignore_ascii_case(name) => Some(arguments),
+        _ => None,
+    };
+    match component.first()? {
         Token::Function(name) if name.eq_ignore_ascii_case("minmax") => {
-            let min = breadth(c.next()?, bases)?;
-            if matches!(min, TrackBreadth::Flex(_)) || !c.eat(&Token::Comma) {
+            let [min, max] = arguments("minmax")?[..] else {
+                return None;
+            };
+            let min = breadth(min, bases)?;
+            if matches!(min, TrackBreadth::Flex(_)) {
                 return None;
             }
-            let max = breadth(c.next()?, bases)?;
-            c.eat(&Token::CloseParen)
-                .then_some(TrackSize::MinMax(min, max))
+            Some(TrackSize::MinMax(min, breadth(max, bases)?))
         }
         Token::Function(name) if name.eq_ignore_ascii_case("fit-content") => {
-            let limit =
-                parse_non_negative_length_percentage(std::slice::from_ref(c.next()?), bases)?;
-            c.eat(&Token::CloseParen)
-                .then_some(TrackSize::FitContent(limit))
+            let [limit] = arguments("fit-content")?[..] else {
+                return None;
+            };
+            Some(TrackSize::FitContent(parse_non_negative_length_percentage(
+                limit, bases,
+            )?))
         }
-        token => breadth(token, bases).map(TrackSize::Breadth),
+        _ => breadth(component, bases).map(TrackSize::Breadth),
     }
 }
 
 /// Whether a breadth is fixed: a length or a percentage.
-fn is_fixed_breadth(breadth: TrackBreadth) -> bool {
+fn is_fixed_breadth(breadth: &TrackBreadth) -> bool {
     matches!(breadth, TrackBreadth::Fixed(_))
 }
 
@@ -166,7 +205,7 @@ fn is_fixed_breadth(breadth: TrackBreadth) -> bool {
 /// which is what an automatic repetition, and the list around one, may
 /// hold.
 fn is_fixed_size(size: &TrackSize) -> bool {
-    match *size {
+    match size {
         TrackSize::Breadth(breadth) => is_fixed_breadth(breadth),
         TrackSize::MinMax(min, max) => is_fixed_breadth(min) || is_fixed_breadth(max),
         TrackSize::FitContent(_) => false,
@@ -226,14 +265,21 @@ fn sections(
 /// one, `auto-fill` or `auto-fit`, then its list. A count beyond what a
 /// `u32` holds is kept as the largest one; layout limits it anyway.
 fn repeat(c: &mut Cursor<'_>, bases: &LengthBases<'_>) -> Option<TrackRepeat> {
-    let count = match c.next()? {
-        Token::Number {
+    let component = c.component()?;
+    let count = match single_token(component) {
+        Some(Token::Number {
             value,
             is_integer: true,
-        } if *value >= 1.0 => RepeatCount::Count(value.min(f64::from(u32::MAX)) as u32),
-        Token::Ident(word) if word.eq_ignore_ascii_case("auto-fill") => RepeatCount::AutoFill,
-        Token::Ident(word) if word.eq_ignore_ascii_case("auto-fit") => RepeatCount::AutoFit,
-        _ => return None,
+        }) if *value >= 1.0 => RepeatCount::Count(value.min(f64::from(u32::MAX)) as u32),
+        Some(Token::Ident(word)) if word.eq_ignore_ascii_case("auto-fill") => RepeatCount::AutoFill,
+        Some(Token::Ident(word)) if word.eq_ignore_ascii_case("auto-fit") => RepeatCount::AutoFit,
+        // A math function's number, rounded, at least one (M21.2).
+        _ => match math(component, Want::Number, bases, None)? {
+            Computed::Value(v) => {
+                RepeatCount::Count((v + 0.5).floor().clamp(1.0, f64::from(u32::MAX)) as u32)
+            }
+            _ => return None,
+        },
     };
     if !c.eat(&Token::Comma) {
         return None;

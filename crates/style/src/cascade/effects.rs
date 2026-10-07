@@ -18,13 +18,18 @@
 //! finite; a number that is not finite is not a value. Angles are kept
 //! in degrees; `0` is accepted where the grammar has `<zero>`.
 
+use std::sync::Arc;
+
 use css::Token;
 
 use super::{
-    LengthBases, MAX_LENGTH_PX, parse_length_px, parse_non_negative_length_px, single_ident,
+    LengthBases, MAX_LENGTH_PX, Range, components, function_arguments, math, parse_length_px,
+    parse_non_negative_length_px, single_ident, single_token,
 };
+use crate::calc::Expression;
+use crate::calc::{Computed, Want};
 use crate::computed::{
-    BackfaceVisibility, LengthPercentage, Offset, PerspectiveOrigin, Rotate, TransformBox,
+    BackfaceVisibility, Calc, LengthPercentage, PerspectiveOrigin, Rotate, TransformBox,
     TransformFunction, TransformOrigin, TransformStyle, Translate, WillChange,
 };
 
@@ -68,31 +73,16 @@ impl<'t> Cursor<'t> {
     fn at_end(&mut self) -> bool {
         self.peek().is_none()
     }
-
-    /// The arguments of a function, the cursor just past its name: the
-    /// tokens between its commas, up to its `)`, which is taken. An
-    /// argument is one token, and there is at least one; the functions
-    /// here take no other shape.
-    fn arguments(&mut self) -> Option<Vec<&'t Token>> {
-        let mut arguments = Vec::new();
-        loop {
-            let token = self.next()?;
-            if matches!(token, Token::CloseParen | Token::Comma) {
-                return None;
-            }
-            arguments.push(token);
-            match self.next()? {
-                Token::Comma => continue,
-                Token::CloseParen => return Some(arguments),
-                _ => return None,
-            }
-        }
-    }
 }
 
-/// A `<number>`, finite and clamped to the largest length's magnitude.
-fn number(token: &Token) -> Option<f32> {
-    match token {
+/// A `<number>`, finite and clamped to the largest length's magnitude;
+/// or a math function's number, an infinity clamped the same way
+/// (M21.2).
+fn number(arg: &[Token], bases: &LengthBases<'_>) -> Option<f32> {
+    if let Some(Computed::Value(v)) = math(arg, Want::Number, bases, None) {
+        return Some(Range::All.clamp(v));
+    }
+    match single_token(arg)? {
         Token::Number { value, .. } => {
             let v = *value as f32;
             v.is_finite()
@@ -104,21 +94,29 @@ fn number(token: &Token) -> Option<f32> {
 
 /// A `<number>` or a `<percentage>` that stands for one (css-transforms-2
 /// §2.3, §13): `50%` is `0.5`.
-fn number_or_percentage(token: &Token) -> Option<f32> {
-    match token {
+fn number_or_percentage(arg: &[Token], bases: &LengthBases<'_>) -> Option<f32> {
+    match math(arg, Want::NumberOrPercentage, bases, None) {
+        Some(Computed::Value(v)) => return Some(Range::All.clamp(v)),
+        Some(Computed::Percent(p)) => return Some(Range::All.clamp(p / 100.0)),
+        _ => {}
+    }
+    match single_token(arg)? {
         Token::Percentage { value } => {
             let v = *value as f32 / 100.0;
             v.is_finite()
                 .then(|| v.clamp(-MAX_LENGTH_PX, MAX_LENGTH_PX))
         }
-        _ => number(token),
+        _ => number(arg, bases),
     }
 }
 
 /// An `<angle>` in degrees (css-values-4 §6.2): `deg`, `grad`, `rad` or
-/// `turn`; `0` too when `zero` is allowed.
-fn angle(token: &Token, zero: bool) -> Option<f32> {
-    let degrees = match token {
+/// `turn`, or a math function's angle; `0` too when `zero` is allowed.
+fn angle(arg: &[Token], zero: bool, bases: &LengthBases<'_>) -> Option<f32> {
+    if let Some(Computed::Value(v)) = math(arg, Want::Angle, bases, None) {
+        return Some(Range::All.clamp(v));
+    }
+    let degrees = match single_token(arg)? {
         Token::Dimension { value, unit } => {
             let v = *value as f32;
             match unit.to_ascii_lowercase().as_str() {
@@ -136,34 +134,25 @@ fn angle(token: &Token, zero: bool) -> Option<f32> {
 }
 
 /// A `<length>` in CSS pixels.
-fn length(token: &Token, bases: &LengthBases<'_>) -> Option<f32> {
-    parse_length_px(std::slice::from_ref(token), bases)
+fn length(arg: &[Token], bases: &LengthBases<'_>) -> Option<f32> {
+    parse_length_px(arg, bases)
 }
 
 /// A `<length-percentage>`, the percentage kept.
-fn length_percentage(token: &Token, bases: &LengthBases<'_>) -> Option<LengthPercentage> {
-    if let Token::Percentage { value } = token {
-        let p = *value as f32;
-        return p
-            .is_finite()
-            .then(|| LengthPercentage::Percent(p.clamp(-MAX_LENGTH_PX, MAX_LENGTH_PX)));
-    }
-    length(token, bases).map(LengthPercentage::Px)
+fn length_percentage(arg: &[Token], bases: &LengthBases<'_>) -> Option<LengthPercentage> {
+    super::length_percentage(arg, bases, Range::All)
 }
 
 const ZERO_LENGTH: LengthPercentage = LengthPercentage::Px(0.0);
 
 /// One `<transform-function>` (css-transforms-1 §7, css-transforms-2
-/// §13), the cursor at its name.
-fn function(c: &mut Cursor<'_>, bases: &LengthBases<'_>) -> Option<TransformFunction> {
-    let Token::Function(name) = c.next()? else {
-        return None;
-    };
-    let args = c.arguments()?;
+/// §13), a component value.
+fn function(component: &[Token], bases: &LengthBases<'_>) -> Option<TransformFunction> {
+    let (name, args) = function_arguments(component)?;
     let name = name.to_ascii_lowercase();
     let numbers = |n: usize| -> Option<Vec<f32>> {
         (args.len() == n)
-            .then(|| args.iter().map(|t| number(t)).collect())
+            .then(|| args.iter().map(|t| number(t, bases)).collect())
             .flatten()
     };
     Some(match (name.as_str(), args.as_slice()) {
@@ -200,61 +189,61 @@ fn function(c: &mut Cursor<'_>, bases: &LengthBases<'_>) -> Option<TransformFunc
             length(z, bases)?,
         ),
         ("scale", [s]) => {
-            let s = number_or_percentage(s)?;
+            let s = number_or_percentage(s, bases)?;
             TransformFunction::Scale(s, s, 1.0)
         }
-        ("scale", [x, y]) => {
-            TransformFunction::Scale(number_or_percentage(x)?, number_or_percentage(y)?, 1.0)
-        }
-        ("scalex", [x]) => TransformFunction::Scale(number_or_percentage(x)?, 1.0, 1.0),
-        ("scaley", [y]) => TransformFunction::Scale(1.0, number_or_percentage(y)?, 1.0),
-        ("scalez", [z]) => TransformFunction::Scale(1.0, 1.0, number_or_percentage(z)?),
+        ("scale", [x, y]) => TransformFunction::Scale(
+            number_or_percentage(x, bases)?,
+            number_or_percentage(y, bases)?,
+            1.0,
+        ),
+        ("scalex", [x]) => TransformFunction::Scale(number_or_percentage(x, bases)?, 1.0, 1.0),
+        ("scaley", [y]) => TransformFunction::Scale(1.0, number_or_percentage(y, bases)?, 1.0),
+        ("scalez", [z]) => TransformFunction::Scale(1.0, 1.0, number_or_percentage(z, bases)?),
         ("scale3d", [x, y, z]) => TransformFunction::Scale(
-            number_or_percentage(x)?,
-            number_or_percentage(y)?,
-            number_or_percentage(z)?,
+            number_or_percentage(x, bases)?,
+            number_or_percentage(y, bases)?,
+            number_or_percentage(z, bases)?,
         ),
         ("rotate", [a]) | ("rotatez", [a]) => TransformFunction::Rotate {
             x: 0.0,
             y: 0.0,
             z: 1.0,
-            angle: angle(a, true)?,
+            angle: angle(a, true, bases)?,
         },
         ("rotatex", [a]) => TransformFunction::Rotate {
             x: 1.0,
             y: 0.0,
             z: 0.0,
-            angle: angle(a, true)?,
+            angle: angle(a, true, bases)?,
         },
         ("rotatey", [a]) => TransformFunction::Rotate {
             x: 0.0,
             y: 1.0,
             z: 0.0,
-            angle: angle(a, true)?,
+            angle: angle(a, true, bases)?,
         },
         ("rotate3d", [x, y, z, a]) => TransformFunction::Rotate {
-            x: number(x)?,
-            y: number(y)?,
-            z: number(z)?,
-            angle: angle(a, true)?,
+            x: number(x, bases)?,
+            y: number(y, bases)?,
+            z: number(z, bases)?,
+            angle: angle(a, true, bases)?,
         },
-        ("skew", [x]) => TransformFunction::Skew(angle(x, true)?, 0.0),
-        ("skew", [x, y]) => TransformFunction::Skew(angle(x, true)?, angle(y, true)?),
-        ("skewx", [x]) => TransformFunction::Skew(angle(x, true)?, 0.0),
-        ("skewy", [y]) => TransformFunction::Skew(0.0, angle(y, true)?),
+        ("skew", [x]) => TransformFunction::Skew(angle(x, true, bases)?, 0.0),
+        ("skew", [x, y]) => TransformFunction::Skew(angle(x, true, bases)?, angle(y, true, bases)?),
+        ("skewx", [x]) => TransformFunction::Skew(angle(x, true, bases)?, 0.0),
+        ("skewy", [y]) => TransformFunction::Skew(0.0, angle(y, true, bases)?),
         ("perspective", [d]) => TransformFunction::Perspective(perspective_depth(d, bases)?),
         _ => return None,
     })
 }
 
 /// `none` or a `<length [0,∞]>`, the depth of a `perspective`.
-fn perspective_depth(token: &Token, bases: &LengthBases<'_>) -> Option<Option<f32>> {
-    if let Token::Ident(word) = token
-        && word.eq_ignore_ascii_case("none")
-    {
+fn perspective_depth(arg: &[Token], bases: &LengthBases<'_>) -> Option<Option<f32>> {
+    if single_ident(arg).is_some_and(|word| word.eq_ignore_ascii_case("none")) {
         return Some(None);
     }
-    parse_non_negative_length_px(std::slice::from_ref(token), bases).map(Some)
+    parse_non_negative_length_px(arg, bases).map(Some)
 }
 
 /// `transform: none | <transform-list>` (css-transforms-1 §7): the
@@ -266,17 +255,16 @@ pub(super) fn parse_transform(
     if single_ident(tokens).is_some_and(|s| s.eq_ignore_ascii_case("none")) {
         return Some(Vec::new());
     }
-    let mut c = Cursor::new(tokens);
-    let mut functions = Vec::new();
-    while !c.at_end() {
-        functions.push(function(&mut c, bases)?);
-    }
-    (!functions.is_empty()).then_some(functions)
+    let functions: Option<Vec<TransformFunction>> = components(tokens)
+        .into_iter()
+        .map(|component| function(component, bases))
+        .collect();
+    functions.filter(|f| !f.is_empty())
 }
 
 /// One value of a `<position>` (css-values-4 §4.3): a keyword, or a
 /// length or percentage.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, PartialEq)]
 enum Place {
     Left,
     Right,
@@ -291,42 +279,38 @@ enum Place {
 impl Place {
     /// The offset the place stands for on its own: `left` and `top` are
     /// `0%`, `right` and `bottom` `100%`, `center` `50%`.
-    fn offset(self) -> Offset {
+    fn offset(&self) -> LengthPercentage {
         match self {
-            Place::Left | Place::Top => Offset {
-                percent: 0.0,
-                px: 0.0,
-            },
-            Place::Right | Place::Bottom => Offset {
-                percent: 100.0,
-                px: 0.0,
-            },
-            Place::Center => Offset::CENTER,
-            Place::Offset(LengthPercentage::Px(px)) => Offset { percent: 0.0, px },
-            Place::Offset(LengthPercentage::Percent(percent)) => Offset { percent, px: 0.0 },
+            Place::Left | Place::Top => LengthPercentage::Percent(0.0),
+            Place::Right | Place::Bottom => LengthPercentage::Percent(100.0),
+            Place::Center => LengthPercentage::Percent(50.0),
+            Place::Offset(offset) => offset.clone(),
         }
     }
 
     /// The offset of an edge keyword with an offset from its edge:
-    /// `right 10px` is `100% - 10px`, `right 10%` is `90%`, `left 10px`
-    /// is `10px`.
-    fn offset_from_edge(self, delta: LengthPercentage) -> Offset {
-        let from_end = matches!(self, Place::Right | Place::Bottom);
+    /// `right 10px` is `calc(100% - 10px)`, `right 10%` is `90%`, `left
+    /// 10px` is `10px`.
+    fn offset_from_edge(&self, delta: &LengthPercentage) -> LengthPercentage {
+        if !matches!(self, Place::Right | Place::Bottom) {
+            return delta.clone();
+        }
         match delta {
-            LengthPercentage::Px(px) => Offset {
-                percent: if from_end { 100.0 } else { 0.0 },
-                px: if from_end { -px } else { px },
-            },
-            LengthPercentage::Percent(p) => Offset {
-                percent: if from_end { 100.0 - p } else { p },
-                px: 0.0,
-            },
+            LengthPercentage::Px(px) => LengthPercentage::sum(100.0, -px),
+            LengthPercentage::Percent(p) => LengthPercentage::Percent(100.0 - p),
+            LengthPercentage::Calc(c) => LengthPercentage::Calc(Arc::new(Calc::new(
+                Expression::Sum(Box::new([
+                    Expression::Percent(100.0),
+                    Expression::Negate(Box::new(c.expression().clone())),
+                ])),
+                false,
+            ))),
         }
     }
 
     /// Whether the place can be the first of a two-value position, the
     /// one along x.
-    fn is_x(self) -> bool {
+    fn is_x(&self) -> bool {
         matches!(
             self,
             Place::Left | Place::Right | Place::Center | Place::Offset(_)
@@ -335,7 +319,7 @@ impl Place {
 
     /// Whether the place can be the second of a two-value position, the
     /// one along y.
-    fn is_y(self) -> bool {
+    fn is_y(&self) -> bool {
         matches!(
             self,
             Place::Top | Place::Bottom | Place::Center | Place::Offset(_)
@@ -344,9 +328,9 @@ impl Place {
 }
 
 /// One value of a `<position>`.
-fn place(token: &Token, bases: &LengthBases<'_>) -> Option<Place> {
-    match token {
-        Token::Ident(word) => match word.to_ascii_lowercase().as_str() {
+fn place(component: &[Token], bases: &LengthBases<'_>) -> Option<Place> {
+    match single_ident(component) {
+        Some(word) => match word.to_ascii_lowercase().as_str() {
             "left" => Some(Place::Left),
             "right" => Some(Place::Right),
             "top" => Some(Place::Top),
@@ -354,7 +338,7 @@ fn place(token: &Token, bases: &LengthBases<'_>) -> Option<Place> {
             "center" => Some(Place::Center),
             _ => None,
         },
-        _ => length_percentage(token, bases).map(Place::Offset),
+        None => length_percentage(component, bases).map(Place::Offset),
     }
 }
 
@@ -365,15 +349,19 @@ fn place(token: &Token, bases: &LengthBases<'_>) -> Option<Place> {
 /// four, an edge keyword and an offset from its edge for each axis, in
 /// either order. There is no three-value form: `background-position`'s
 /// is its own (§8.3's note), and the reference browser refuses it here.
-fn position(tokens: &[&Token], bases: &LengthBases<'_>, offsets: bool) -> Option<(Offset, Offset)> {
-    let places: Vec<Place> = tokens
+fn position(
+    components: &[&[Token]],
+    bases: &LengthBases<'_>,
+    offsets: bool,
+) -> Option<(LengthPercentage, LengthPercentage)> {
+    let places: Vec<Place> = components
         .iter()
-        .map(|t| place(t, bases))
+        .map(|c| place(c, bases))
         .collect::<Option<_>>()?;
     match places.as_slice() {
         [one] => Some(match one {
-            Place::Top | Place::Bottom => (Offset::CENTER, one.offset()),
-            _ => (one.offset(), Offset::CENTER),
+            Place::Top | Place::Bottom => (LengthPercentage::Percent(50.0), one.offset()),
+            _ => (one.offset(), LengthPercentage::Percent(50.0)),
         }),
         [x, y] if x.is_x() && y.is_y() => Some((x.offset(), y.offset())),
         [y, x]
@@ -389,7 +377,7 @@ fn position(tokens: &[&Token], bases: &LengthBases<'_>, offsets: bool) -> Option
 
 /// The four-value form of `<position>`: `[ [ left | right ]
 /// <length-percentage> ] && [ [ top | bottom ] <length-percentage> ]`.
-fn position_with_offsets(places: &[Place]) -> Option<(Offset, Offset)> {
+fn position_with_offsets(places: &[Place]) -> Option<(LengthPercentage, LengthPercentage)> {
     let [
         first,
         Place::Offset(first_delta),
@@ -403,13 +391,13 @@ fn position_with_offsets(places: &[Place]) -> Option<(Offset, Offset)> {
     let vertical = |p: &Place| matches!(p, Place::Top | Place::Bottom);
     if horizontal(first) && vertical(second) {
         Some((
-            first.offset_from_edge(*first_delta),
-            second.offset_from_edge(*second_delta),
+            first.offset_from_edge(first_delta),
+            second.offset_from_edge(second_delta),
         ))
     } else if vertical(first) && horizontal(second) {
         Some((
-            second.offset_from_edge(*second_delta),
-            first.offset_from_edge(*first_delta),
+            second.offset_from_edge(second_delta),
+            first.offset_from_edge(first_delta),
         ))
     } else {
         None
@@ -424,13 +412,10 @@ pub(super) fn parse_transform_origin(
     tokens: &[Token],
     bases: &LengthBases<'_>,
 ) -> Option<TransformOrigin> {
-    let tokens: Vec<&Token> = tokens
-        .iter()
-        .filter(|t| !matches!(t, Token::Whitespace))
-        .collect();
-    let (xy, z) = match tokens.as_slice() {
-        [_] | [_, _] => (&tokens[..], 0.0),
-        [_, _, z] => (&tokens[..2], length(z, bases)?),
+    let components = components(tokens);
+    let (xy, z) = match components.as_slice() {
+        [_] | [_, _] => (&components[..], 0.0),
+        [_, _, z] => (&components[..2], length(z, bases)?),
         _ => return None,
     };
     let (x, y) = position(xy, bases, false)?;
@@ -442,11 +427,7 @@ pub(super) fn parse_perspective_origin(
     tokens: &[Token],
     bases: &LengthBases<'_>,
 ) -> Option<PerspectiveOrigin> {
-    let tokens: Vec<&Token> = tokens
-        .iter()
-        .filter(|t| !matches!(t, Token::Whitespace))
-        .collect();
-    let (x, y) = position(&tokens, bases, true)?;
+    let (x, y) = position(&components(tokens), bases, true)?;
     Some(PerspectiveOrigin { x, y })
 }
 
@@ -471,11 +452,7 @@ pub(super) fn parse_translate(
     if single_ident(tokens).is_some_and(|s| s.eq_ignore_ascii_case("none")) {
         return Some(None);
     }
-    let tokens: Vec<&Token> = tokens
-        .iter()
-        .filter(|t| !matches!(t, Token::Whitespace))
-        .collect();
-    let (x, y, z) = match tokens.as_slice() {
+    let (x, y, z) = match components(tokens).as_slice() {
         [x] => (length_percentage(x, bases)?, ZERO_LENGTH, 0.0),
         [x, y] => (
             length_percentage(x, bases)?,
@@ -494,35 +471,26 @@ pub(super) fn parse_translate(
 
 /// `rotate: none | <angle> | [ x | y | z | <number>{3} ] && <angle>`
 /// (css-transforms-2 §2.2).
-pub(super) fn parse_rotate(tokens: &[Token]) -> Option<Option<Rotate>> {
+pub(super) fn parse_rotate(tokens: &[Token], bases: &LengthBases<'_>) -> Option<Option<Rotate>> {
     if single_ident(tokens).is_some_and(|s| s.eq_ignore_ascii_case("none")) {
         return Some(None);
     }
-    let tokens: Vec<&Token> = tokens
-        .iter()
-        .filter(|t| !matches!(t, Token::Whitespace))
-        .collect();
-    let axis_keyword = |t: &Token| match t {
-        Token::Ident(w) => match w.to_ascii_lowercase().as_str() {
-            "x" => Some((1.0, 0.0, 0.0)),
-            "y" => Some((0.0, 1.0, 0.0)),
-            "z" => Some((0.0, 0.0, 1.0)),
-            _ => None,
-        },
+    let axis_keyword = |c: &[Token]| match single_ident(c)?.to_ascii_lowercase().as_str() {
+        "x" => Some((1.0, 0.0, 0.0)),
+        "y" => Some((0.0, 1.0, 0.0)),
+        "z" => Some((0.0, 0.0, 1.0)),
         _ => None,
     };
-    let (x, y, z, a) = match tokens.as_slice() {
-        [a] => (0.0, 0.0, 1.0, angle(a, false)?),
-        [k, a] | [a, k] if axis_keyword(k).is_some() && angle(a, false).is_some() => {
+    let angle = |c: &[Token]| angle(c, false, bases);
+    let number = |c: &[Token]| number(c, bases);
+    let (x, y, z, a) = match components(tokens).as_slice() {
+        [a] => (0.0, 0.0, 1.0, angle(a)?),
+        [k, a] | [a, k] if axis_keyword(k).is_some() && angle(a).is_some() => {
             let (x, y, z) = axis_keyword(k)?;
-            (x, y, z, angle(a, false)?)
+            (x, y, z, angle(a)?)
         }
-        [x, y, z, a] if angle(a, false).is_some() => {
-            (number(x)?, number(y)?, number(z)?, angle(a, false)?)
-        }
-        [a, x, y, z] if angle(a, false).is_some() => {
-            (number(x)?, number(y)?, number(z)?, angle(a, false)?)
-        }
+        [x, y, z, a] if angle(a).is_some() => (number(x)?, number(y)?, number(z)?, angle(a)?),
+        [a, x, y, z] if angle(a).is_some() => (number(x)?, number(y)?, number(z)?, angle(a)?),
         _ => return None,
     };
     Some(Some(Rotate { x, y, z, angle: a }))
@@ -530,14 +498,13 @@ pub(super) fn parse_rotate(tokens: &[Token]) -> Option<Option<Rotate>> {
 
 /// `scale: none | [ <number> | <percentage> ]{1,3}` (css-transforms-2
 /// §2.3): one value for x and y, a third for z.
-pub(super) fn parse_scale(tokens: &[Token]) -> Option<Option<[f32; 3]>> {
+pub(super) fn parse_scale(tokens: &[Token], bases: &LengthBases<'_>) -> Option<Option<[f32; 3]>> {
     if single_ident(tokens).is_some_and(|s| s.eq_ignore_ascii_case("none")) {
         return Some(None);
     }
-    let factors: Option<Vec<f32>> = tokens
-        .iter()
-        .filter(|t| !matches!(t, Token::Whitespace))
-        .map(number_or_percentage)
+    let factors: Option<Vec<f32>> = components(tokens)
+        .into_iter()
+        .map(|c| number_or_percentage(c, bases))
         .collect();
     Some(Some(match factors?.as_slice() {
         [s] => [*s, *s, 1.0],
@@ -558,8 +525,7 @@ pub(super) fn parse_transform_style(tokens: &[Token]) -> Option<TransformStyle> 
 
 /// `perspective: none | <length [0,∞]>` (css-transforms-2 §10).
 pub(super) fn parse_perspective(tokens: &[Token], bases: &LengthBases<'_>) -> Option<Option<f32>> {
-    let token = super::single_token(tokens)?;
-    perspective_depth(token, bases)
+    perspective_depth(tokens, bases)
 }
 
 /// `backface-visibility: visible | hidden` (css-transforms-2 §12).
@@ -572,12 +538,17 @@ pub(super) fn parse_backface_visibility(tokens: &[Token]) -> Option<BackfaceVisi
 }
 
 /// `opacity: <alpha-value>` (css-color-4 §3.2): a number or a
-/// percentage, clamped to `[0, 1]`.
-pub(super) fn parse_opacity(tokens: &[Token]) -> Option<f32> {
-    let v = match super::single_token(tokens)? {
-        Token::Number { value, .. } => *value as f32,
-        Token::Percentage { value } => *value as f32 / 100.0,
-        _ => return None,
+/// percentage, or a math function of either, clamped to `[0, 1]`.
+pub(super) fn parse_opacity(tokens: &[Token], bases: &LengthBases<'_>) -> Option<f32> {
+    let v = match math(tokens, Want::NumberOrPercentage, bases, None) {
+        Some(Computed::Value(v)) => v.clamp(0.0, 1.0) as f32,
+        Some(Computed::Percent(p)) => (p / 100.0).clamp(0.0, 1.0) as f32,
+        Some(Computed::Expression(_)) => return None,
+        None => match single_token(tokens)? {
+            Token::Number { value, .. } => *value as f32,
+            Token::Percentage { value } => *value as f32 / 100.0,
+            _ => return None,
+        },
     };
     v.is_finite().then(|| v.clamp(0.0, 1.0))
 }
@@ -780,9 +751,17 @@ mod tests {
         with_bases(|bases| parse_transform_origin(&tokens(value), bases))
     }
 
-    fn offset(percent: f32, px: f32) -> Offset {
-        Offset { percent, px }
+    /// What a `<position>`'s offset is computed to: a percentage, a
+    /// length, or the `calc()` of the two.
+    fn offset(percent: f32, px: f32) -> LengthPercentage {
+        if px == 0.0 {
+            LengthPercentage::Percent(percent)
+        } else {
+            LengthPercentage::sum(percent, px)
+        }
     }
+
+    const CENTER: LengthPercentage = LengthPercentage::Percent(50.0);
 
     #[test]
     fn transform_origin_takes_its_three_forms() {
@@ -791,21 +770,21 @@ mod tests {
             origin("10px"),
             Some(TransformOrigin {
                 x: offset(0.0, 10.0),
-                y: Offset::CENTER,
+                y: CENTER,
                 z: 0.0
             })
         );
         assert_eq!(
             origin("bottom"),
             Some(TransformOrigin {
-                x: Offset::CENTER,
+                x: CENTER,
                 y: offset(100.0, 0.0),
                 z: 0.0
             })
         );
         assert_eq!(
             origin("left").map(|o| (o.x, o.y)),
-            Some((offset(0.0, 0.0), Offset::CENTER))
+            Some((offset(0.0, 0.0), CENTER))
         );
         // Two values: x then y, or the keywords either way round.
         assert_eq!(
@@ -818,11 +797,11 @@ mod tests {
         );
         assert_eq!(
             origin("bottom center").map(|o| (o.x, o.y)),
-            Some((Offset::CENTER, offset(100.0, 0.0)))
+            Some((CENTER, offset(100.0, 0.0)))
         );
         assert_eq!(
             origin("center bottom").map(|o| (o.x, o.y)),
-            Some((Offset::CENTER, offset(100.0, 0.0)))
+            Some((CENTER, offset(100.0, 0.0)))
         );
         assert_eq!(
             origin("1em 2em 3em"),
@@ -854,16 +833,13 @@ mod tests {
         }
     }
 
-    fn perspective_origin(value: &str) -> Option<(Offset, Offset)> {
+    fn perspective_origin(value: &str) -> Option<(LengthPercentage, LengthPercentage)> {
         with_bases(|bases| parse_perspective_origin(&tokens(value), bases)).map(|o| (o.x, o.y))
     }
 
     #[test]
     fn perspective_origin_takes_every_position_form() {
-        assert_eq!(
-            perspective_origin("10%"),
-            Some((offset(10.0, 0.0), Offset::CENTER))
-        );
+        assert_eq!(perspective_origin("10%"), Some((offset(10.0, 0.0), CENTER)));
         assert_eq!(
             perspective_origin("10% 20px"),
             Some((offset(10.0, 0.0), offset(0.0, 20.0)))
@@ -930,7 +906,7 @@ mod tests {
         assert_eq!(translate("10"), None);
         assert_eq!(translate("1px 2px 3px 4px"), None);
 
-        let rotate = |v: &str| parse_rotate(&tokens(v));
+        let rotate = |v: &str| with_bases(|b| parse_rotate(&tokens(v), b));
         let about = |x, y, z, angle| Some(Some(Rotate { x, y, z, angle }));
         assert_eq!(rotate("none"), Some(None));
         assert_eq!(rotate("45deg"), about(0.0, 0.0, 1.0, 45.0));
@@ -943,7 +919,7 @@ mod tests {
         assert_eq!(rotate("x y 45deg"), None);
         assert_eq!(rotate("1 1 45deg"), None);
 
-        let scale = |v: &str| parse_scale(&tokens(v));
+        let scale = |v: &str| with_bases(|b| parse_scale(&tokens(v), b));
         assert_eq!(scale("none"), Some(None));
         assert_eq!(scale("2"), Some(Some([2.0, 2.0, 1.0])));
         assert_eq!(scale("2 3"), Some(Some([2.0, 3.0, 1.0])));
@@ -998,7 +974,7 @@ mod tests {
         assert_eq!(perspective("-1px"), None);
         assert_eq!(perspective("50%"), None);
         assert_eq!(perspective("500"), None);
-        let opacity = |v: &str| parse_opacity(&tokens(v));
+        let opacity = |v: &str| with_bases(|b| parse_opacity(&tokens(v), b));
         assert_eq!(opacity("0.5"), Some(0.5));
         assert_eq!(opacity("50%"), Some(0.5));
         assert_eq!(opacity("2"), Some(1.0));

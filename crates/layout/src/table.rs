@@ -190,10 +190,10 @@ pub(crate) fn layout_table_contents<'a>(
         .iter()
         .zip(&grid.row_cells)
         .map(|(row, own)| {
-            is_length(row.b.style.height)
+            is_length(&row.b.style.height)
                 || own.clone().any(|i| {
                     let cell = &grid.cells[i];
-                    cell.rowspan == 1 && is_length(cell.b.style.height)
+                    cell.rowspan == 1 && is_length(&cell.b.style.height)
                 })
         })
         .collect();
@@ -234,7 +234,7 @@ pub(crate) fn layout_table_contents<'a>(
         heights[group.span()].iter().sum::<f32>() + group.rows.saturating_sub(1) as f32 * vspacing
     };
     for group in grid.groups.iter().filter(|g| g.rows > 0) {
-        let Some(Size::Px(h)) = group.b.map(|g| g.style.height) else {
+        let Some(&Size::Px(h)) = group.b.map(|g| &g.style.height) else {
             continue;
         };
         let have = group_extent(&heights, group);
@@ -279,7 +279,7 @@ pub(crate) fn layout_table_contents<'a>(
         let before: Vec<f32> = groups.iter().map(|g| group_extent(&heights, g)).collect();
         let groups_constrained: Vec<bool> = groups
             .iter()
-            .map(|g| g.b.is_some_and(|b| is_length(b.style.height)))
+            .map(|g| g.b.is_some_and(|b| is_length(&b.style.height)))
             .collect();
         let mut after = before.clone();
         distribute_height(wanted - rows_height, &mut after, &groups_constrained);
@@ -848,12 +848,12 @@ fn fixed_column_widths(grid: &Grid<'_>, assignable: f32, hspacing: f32) -> Vec<f
     let n = grid.columns;
     let mut widths: Vec<Option<f32>> = vec![None; n];
     for (c, cref) in grid.column_boxes.iter().enumerate() {
-        if let Some(w) = column_box_width(cref).and_then(|w| resolve_width(w, assignable)) {
+        if let Some(w) = column_box_width(cref).and_then(|w| resolve_width(&w, assignable)) {
             widths[c] = Some(w.max(0.0));
         }
     }
     for cell in grid.cells.iter().filter(|cell| cell.row == 0) {
-        let Some(w) = resolve_width(cell.b.style.width, assignable) else {
+        let Some(w) = resolve_width(&cell.b.style.width, assignable) else {
             continue;
         };
         let border_box = match cell.b.style.box_sizing {
@@ -888,7 +888,7 @@ fn fixed_column_widths(grid: &Grid<'_>, assignable: f32, hspacing: f32) -> Vec<f
 
 /// A `width` as a length, a percentage of `of`, or `None` for `auto`
 /// or an intrinsic keyword, which the table algorithms take as `auto`.
-fn resolve_width(width: Size, of: f32) -> Option<f32> {
+fn resolve_width(width: &Size, of: f32) -> Option<f32> {
     width.length_percentage().map(|w| w.resolve(of))
 }
 
@@ -899,8 +899,9 @@ fn column_box_width(cref: &ColumnRef<'_>) -> Option<Size> {
     [cref.column, cref.group]
         .into_iter()
         .flatten()
-        .map(|part| part.style.width)
+        .map(|part| &part.style.width)
         .find(|w| w.length_percentage().is_some())
+        .cloned()
 }
 
 /// The spacing around and between `columns` columns in the separated
@@ -961,13 +962,12 @@ fn measure_cell<'a>(
 ) -> ColumnMeasure {
     let style = &b.style;
     let (content_min, content_max) = crate::intrinsic::content_widths(b, pass);
-    let fixed = |v: LengthPercentage| match v {
-        LengthPercentage::Px(px) => px,
-        LengthPercentage::Percent(_) => 0.0,
-    };
+    // A percentage padding is a percentage of zero in a measure, as in
+    // any contribution (`intrinsic::fixed_edges`).
+    let fixed = |v: &LengthPercentage| v.resolve(0.0);
     let border = collapsed_border.unwrap_or_else(|| style.used_border_width());
     let edges =
-        border[LEFT] + border[RIGHT] + fixed(style.padding[LEFT]) + fixed(style.padding[RIGHT]);
+        border[LEFT] + border[RIGHT] + fixed(&style.padding[LEFT]) + fixed(&style.padding[RIGHT]);
     let border_box = |v: f32| match style.box_sizing {
         BoxSizing::ContentBox => v.max(0.0) + edges,
         BoxSizing::BorderBox => v.max(edges),
@@ -976,10 +976,10 @@ fn measure_cell<'a>(
     if let Size::Px(floor) = style.min_width {
         min = min.max(border_box(floor));
     }
-    match style.width {
+    match &style.width {
         Size::Px(w) => ColumnMeasure {
             min,
-            max: min.max(border_box(w)),
+            max: min.max(border_box(*w)),
             percent: None,
             constrained: true,
         },
@@ -989,12 +989,16 @@ fn measure_cell<'a>(
             percent: Some(p.max(0.0)),
             constrained: false,
         },
-        Size::Auto | Size::MinContent | Size::MaxContent | Size::FitContent => ColumnMeasure {
-            min,
-            max: min.max(content_max + edges),
-            percent: None,
-            constrained: false,
-        },
+        // A `calc()` with a percentage in it is no width a column can
+        // take: the column measures as for `auto`.
+        Size::Auto | Size::Calc(_) | Size::MinContent | Size::MaxContent | Size::FitContent => {
+            ColumnMeasure {
+                min,
+                max: min.max(content_max + edges),
+                percent: None,
+                constrained: false,
+            }
+        }
     }
 }
 
@@ -1268,16 +1272,13 @@ pub(crate) fn content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32
             hspacing,
         )
     };
-    let fixed = |v: LengthPercentage| match v {
-        LengthPercentage::Px(px) => px,
-        LengthPercentage::Percent(_) => 0.0,
-    };
+    let fixed = |v: &LengthPercentage| v.resolve(0.0);
     let border = style.used_border_width();
     let edges = if collapses(style) {
         let border = collapsed_table_border(b);
         border[LEFT] + border[RIGHT]
     } else {
-        border[LEFT] + border[RIGHT] + fixed(style.padding[LEFT]) + fixed(style.padding[RIGHT])
+        border[LEFT] + border[RIGHT] + fixed(&style.padding[LEFT]) + fixed(&style.padding[RIGHT])
     };
     let min = min.max(caption_min(b, edges, pass));
     (min, max.max(min))
@@ -1285,7 +1286,7 @@ pub(crate) fn content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32
 
 /// Whether a size is a length, which makes a row or a row group
 /// constrained.
-fn is_length(size: Size) -> bool {
+fn is_length(size: &Size) -> bool {
     matches!(size, Size::Px(_))
 }
 
@@ -2023,7 +2024,7 @@ fn inner_style(style: &ComputedStyle) -> ComputedStyle {
     inner.position = Position::Static;
     inner.float = Float::None;
     inner.z_index = None;
-    inner.inset = [LengthPercentageAuto::Auto; 4];
+    inner.inset = [const { LengthPercentageAuto::Auto }; 4];
     // The transform, opacity and will-change properties apply to the
     // wrapper, which the captions turn with (css-transforms-1 §3,
     // M19); the table box inside is not transformed again.
@@ -2351,7 +2352,7 @@ mod tests {
         );
         assert_eq!(
             fragment_of(&layout, 6).style.padding,
-            [LengthPercentage::Px(1.0); 4]
+            [const { LengthPercentage::Px(1.0) }; 4]
         );
     }
 

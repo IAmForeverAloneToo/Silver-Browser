@@ -989,7 +989,7 @@ impl<'a> Walk<'a, '_> {
     fn perspective_of(&self, f: &Fragment, rect: Rect) -> Option<Matrix> {
         let effects = f.style.effects();
         effects.perspective.map(|depth| {
-            let origin = effects.perspective_origin;
+            let origin = &effects.perspective_origin;
             Matrix::perspective_at(
                 depth,
                 rect.x + origin.x.resolve(rect.w),
@@ -1554,10 +1554,9 @@ pub fn sticky_shift(
     containing: Rect,
     scrollport: Rect,
 ) -> (f32, f32) {
-    let inset = |side: usize, of: f32| match style.inset[side] {
+    let inset = |side: usize, of: f32| match &style.inset[side] {
         LengthPercentageAuto::Auto => None,
-        LengthPercentageAuto::Px(px) => Some(px),
-        LengthPercentageAuto::Percent(p) => Some(of * p / 100.0),
+        inset => Some(inset.resolve(of, 0.0)),
     };
     // Along one axis: the box from `pos` for `size`, the scrollport
     // from `port` for `port_size`, the containing block from `cb` for
@@ -2073,11 +2072,11 @@ mod tests {
             inset,
             ..ComputedStyle::default()
         };
-        let auto = LengthPercentageAuto::Auto;
+        const AUTO: LengthPercentageAuto = LengthPercentageAuto::Auto;
         let px = LengthPercentageAuto::Px;
         let rect = |x, y, w, h| Rect { x, y, w, h };
         let port = rect(0.0, 0.0, 800.0, 600.0);
-        let top = sticky([px(10.0), auto, auto, auto]);
+        let top = sticky([px(10.0), AUTO, AUTO, AUTO]);
         // Already 10px or more below the scrollport's top: no shift.
         assert_eq!(
             sticky_shift(
@@ -2112,7 +2111,7 @@ mod tests {
         );
         // `bottom: 0` pulls a box sticking out below the scrollport up,
         // no further than its containing block's top.
-        let bottom = sticky([auto, auto, px(0.0), auto]);
+        let bottom = sticky([AUTO, AUTO, px(0.0), AUTO]);
         assert_eq!(
             sticky_shift(
                 &bottom,
@@ -2132,7 +2131,7 @@ mod tests {
             (0.0, -5.0)
         );
         // Both given: the start edge wins once it pushes.
-        let both = sticky([px(10.0), auto, px(0.0), auto]);
+        let both = sticky([px(10.0), AUTO, px(0.0), AUTO]);
         assert_eq!(
             sticky_shift(
                 &both,
@@ -2143,7 +2142,7 @@ mod tests {
             (0.0, 60.0)
         );
         // Horizontal the same way; a percentage is of the scrollport.
-        let left = sticky([auto, auto, auto, px(5.0)]);
+        let left = sticky([AUTO, AUTO, AUTO, px(5.0)]);
         assert_eq!(
             sticky_shift(
                 &left,
@@ -2153,7 +2152,7 @@ mod tests {
             ),
             (25.0, 0.0)
         );
-        let percent = sticky([LengthPercentageAuto::Percent(10.0), auto, auto, auto]);
+        let percent = sticky([LengthPercentageAuto::Percent(10.0), AUTO, AUTO, AUTO]);
         assert_eq!(
             sticky_shift(
                 &percent,
@@ -2164,7 +2163,7 @@ mod tests {
             (0.0, 60.0)
         );
         // Every inset `auto`: nothing holds the box, however far out.
-        let none = sticky([auto; 4]);
+        let none = sticky([AUTO; 4]);
         assert_eq!(
             sticky_shift(
                 &none,

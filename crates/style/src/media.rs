@@ -16,6 +16,8 @@
 
 use css::Token;
 
+use crate::calc::{self, Want};
+
 /// How deep conditions in parentheses may nest before what is inside is
 /// left unknown.
 pub const MAX_NESTING: usize = 32;
@@ -234,14 +236,79 @@ enum Kind {
 enum Value {
     /// A length: a number and its unit, lowercased; `0` is `0px`.
     Length(f64, LengthUnit),
+    /// A math function's length (M21.2), its relative units answered
+    /// as a written length's are when the query is.
+    LengthMath(Box<calc::Parsed>),
     /// `a / b`, or `a` alone, which is `a / 1`.
-    Ratio(f64, f64),
+    Ratio(Number, Number),
     /// Dots per CSS pixel, or `infinite`.
-    Resolution(f64),
+    Resolution(Number),
     /// An integer, or a number.
-    Number(f64),
+    Number(Number),
     /// A keyword, lowercased.
     Keyword(&'static str),
+}
+
+/// A number in a query: written, or a math function's (M21.2), which a
+/// number of lengths divided by lengths may make depend on the medium;
+/// fitted to the feature's range and, for an integer, rounded.
+#[derive(Debug, Clone, PartialEq)]
+enum Number {
+    Written(f64),
+    Math {
+        parsed: Box<calc::Parsed>,
+        /// The least the feature takes.
+        low: f64,
+        /// The most the feature takes.
+        high: f64,
+        /// Whether it is an integer, rounded a half up (css-values-4
+        /// §10.9).
+        integer: bool,
+    },
+}
+
+impl Number {
+    fn at(&self, media: &Media) -> f64 {
+        match self {
+            Number::Written(v) => *v,
+            Number::Math {
+                parsed,
+                low,
+                high,
+                integer,
+            } => {
+                let v = math_value(parsed, media).clamp(*low, *high);
+                if *integer { (v + 0.5).floor() } else { v }
+            }
+        }
+    }
+}
+
+/// A math function's value with the units of a query: lengths in
+/// pixels, relative ones of the initial font size and of the viewport,
+/// as a written length's (Media Queries 4 §1.3).
+fn math_value(parsed: &calc::Parsed, media: &Media) -> f64 {
+    struct Units<'m>(&'m Media);
+    impl calc::Lengths for Units<'_> {
+        fn px(&self, value: f64, unit: calc::LengthUnit) -> f64 {
+            let unit = match unit {
+                calc::LengthUnit::Em => LengthUnit::Em,
+                calc::LengthUnit::Rem => LengthUnit::Rem,
+                calc::LengthUnit::Ex => LengthUnit::Ex,
+                calc::LengthUnit::Ch => LengthUnit::Ch,
+                calc::LengthUnit::Vw => LengthUnit::Vw,
+                calc::LengthUnit::Vh => LengthUnit::Vh,
+                calc::LengthUnit::Vmin => LengthUnit::Vmin,
+                calc::LengthUnit::Vmax => LengthUnit::Vmax,
+                absolute => return value * absolute.absolute().unwrap_or(1.0),
+            };
+            px(value, unit, self.0)
+        }
+    }
+    match parsed.compute(&Units(media), None) {
+        calc::Computed::Value(v) => v,
+        _ => f64::NAN,
+    }
 }
 
 /// The units of a length in a query: absolute, or relative to the
@@ -779,7 +846,54 @@ fn parse_value(kind: Kind, tokens: &[Token]) -> Option<Value> {
         Token::Number { value, .. } if *value >= 0.0 && value.is_finite() => Some(*value),
         _ => None,
     };
+    // A math function in place of a value (M21.2).
+    let math = |want: Want, low: f64, high: f64, integer: bool| -> Option<Number> {
+        if !calc::is_math_function(tokens) {
+            return None;
+        }
+        Some(Number::Math {
+            parsed: Box::new(calc::parse(tokens, want)?),
+            low,
+            high,
+            integer,
+        })
+    };
+    let math_number = |component: &[Token]| -> Option<Number> {
+        if let [token] = component {
+            return number(token).map(Number::Written);
+        }
+        calc::is_math_function(component).then_some(())?;
+        Some(Number::Math {
+            parsed: Box::new(calc::parse(component, Want::Number)?),
+            low: 0.0,
+            high: f64::INFINITY,
+            integer: false,
+        })
+    };
     match kind {
+        Kind::Length if calc::is_math_function(tokens) => {
+            calc::parse(tokens, Want::Length).map(|p| Value::LengthMath(Box::new(p)))
+        }
+        Kind::Ratio => {
+            let parts = crate::cascade::components(tokens);
+            match parts.as_slice() {
+                [a] => Some(Value::Ratio(math_number(a)?, Number::Written(1.0))),
+                [a, [Token::Delim('/')], b] => Some(Value::Ratio(math_number(a)?, math_number(b)?)),
+                _ => None,
+            }
+        }
+        Kind::Resolution if calc::is_math_function(tokens) => {
+            math(Want::Resolution, 0.0, f64::INFINITY, false).map(Value::Resolution)
+        }
+        Kind::Integer if calc::is_math_function(tokens) => {
+            math(Want::Number, f64::MIN, f64::MAX, true).map(Value::Number)
+        }
+        Kind::Number if calc::is_math_function(tokens) => {
+            math(Want::Number, f64::MIN, f64::MAX, false).map(Value::Number)
+        }
+        Kind::Boolean if calc::is_math_function(tokens) => {
+            math(Want::Number, 0.0, 1.0, true).map(Value::Number)
+        }
         Kind::Length => match tokens {
             [Token::Number { value, .. }] if *value == 0.0 => {
                 Some(Value::Length(0.0, LengthUnit::Px))
@@ -807,17 +921,10 @@ fn parse_value(kind: Kind, tokens: &[Token]) -> Option<Value> {
             }
             _ => None,
         },
-        Kind::Ratio => {
-            let parts: Vec<&Token> = tokens.iter().filter(|t| **t != Token::Whitespace).collect();
-            match parts.as_slice() {
-                [a] => Some(Value::Ratio(number(a)?, 1.0)),
-                [a, Token::Delim('/'), b] => Some(Value::Ratio(number(a)?, number(b)?)),
-                _ => None,
-            }
-        }
+
         Kind::Resolution => match tokens {
             [Token::Ident(word)] if word.eq_ignore_ascii_case("infinite") => {
-                Some(Value::Resolution(f64::INFINITY))
+                Some(Value::Resolution(Number::Written(f64::INFINITY)))
             }
             [Token::Dimension { value, unit }] if *value >= 0.0 && value.is_finite() => {
                 let dppx = match unit.to_ascii_lowercase().as_str() {
@@ -826,7 +933,7 @@ fn parse_value(kind: Kind, tokens: &[Token]) -> Option<Value> {
                     "dpcm" => value * 2.54 / 96.0,
                     _ => return None,
                 };
-                Some(Value::Resolution(dppx))
+                Some(Value::Resolution(Number::Written(dppx)))
             }
             _ => None,
         },
@@ -836,11 +943,13 @@ fn parse_value(kind: Kind, tokens: &[Token]) -> Option<Value> {
                     value,
                     is_integer: true,
                 },
-            ] if value.is_finite() => Some(Value::Number(*value)),
+            ] if value.is_finite() => Some(Value::Number(Number::Written(*value))),
             _ => None,
         },
         Kind::Number => match tokens {
-            [Token::Number { value, .. }] if value.is_finite() => Some(Value::Number(*value)),
+            [Token::Number { value, .. }] if value.is_finite() => {
+                Some(Value::Number(Number::Written(*value)))
+            }
             _ => None,
         },
         Kind::Boolean => match tokens {
@@ -849,7 +958,7 @@ fn parse_value(kind: Kind, tokens: &[Token]) -> Option<Value> {
                     value,
                     is_integer: true,
                 },
-            ] if *value == 0.0 || *value == 1.0 => Some(Value::Number(*value)),
+            ] if *value == 0.0 || *value == 1.0 => Some(Value::Number(Number::Written(*value))),
             _ => None,
         },
         Kind::Keywords(words) => match tokens {
@@ -1027,10 +1136,14 @@ fn compare(actual: Actual, value: &Value, comparison: Comparison, media: &Media)
         (Actual::Number(actual), Value::Length(amount, unit)) => {
             px(*amount, *unit, media).partial_cmp(actual)
         }
+        (Actual::Number(actual), Value::LengthMath(parsed)) => {
+            math_value(parsed, media).partial_cmp(actual)
+        }
         (Actual::Number(actual), Value::Resolution(number) | Value::Number(number)) => {
-            number.partial_cmp(actual)
+            number.at(media).partial_cmp(actual)
         }
         (Actual::Ratio(w, h), Value::Ratio(a, b)) => {
+            let (a, b) = (&a.at(media), &b.at(media));
             // `0 / 0` is degenerate, and no comparison with it holds.
             if (*a == 0.0 && *b == 0.0) || (*w == 0.0 && *h == 0.0) {
                 return false;
@@ -1304,6 +1417,39 @@ mod tests {
             !holds("(min-width: 10lh)", &m),
             "a unit this engine has not"
         );
+    }
+
+    #[test]
+    fn math_functions_are_values_in_a_query() {
+        // M21.2: a math function in place of a length, a number, a ratio's
+        // numbers or a resolution, its relative units those of a written
+        // length, answered when the query is.
+        let m = screen(800.0, 600.0);
+        for (q, want) in [
+            ("(width: calc(400px + 25em))", true),
+            ("(min-width: calc(400px + 25em + 1px))", false),
+            ("(width = calc(50vw * 2))", true),
+            ("(400px < width <= max(10px, 800px))", true),
+            ("(width: clamp(0px, 900px, 800px))", true),
+            ("(min-width: calc(100% - 1px))", false),
+            ("(width: calc(800))", false),
+            ("(aspect-ratio: calc(8 / 6))", true),
+            ("(aspect-ratio: calc(8) / calc(6))", true),
+            ("(aspect-ratio: calc(800px / 1px) / 600)", true),
+            ("(resolution: calc(48dpi * 2))", true),
+            ("(color: calc(7.5 + 0.1))", true),
+            ("(color > calc(7.4))", true),
+            ("(grid: calc(0))", true),
+            ("(grid: calc(1px))", false),
+            ("(width: calc(infinity * 1px))", false),
+            ("(max-width: calc(infinity * 1px))", true),
+        ] {
+            assert_eq!(holds(q, &m), want, "{q}");
+        }
+        // The viewport units follow the medium as it changes.
+        let list = list("(width <= calc(50vh + 500px))");
+        assert!(list.evaluate(&screen(800.0, 600.0)));
+        assert!(!list.evaluate(&screen(800.0, 500.0)));
     }
 
     #[test]

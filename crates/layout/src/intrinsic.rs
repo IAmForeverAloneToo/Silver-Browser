@@ -51,34 +51,34 @@ pub(crate) fn contribution<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32) 
     // width, `fit-content` too.
     let own = std::cell::OnceCell::new();
     let own = || *own.get_or_init(|| content_widths(b, pass));
-    let keyword = |size: Size| match size {
+    let keyword = |size: &Size| match size {
         Size::MinContent => Some((own().0, own().0)),
         Size::MaxContent => Some((own().1, own().1)),
         Size::FitContent => Some(own()),
-        Size::Auto | Size::Px(_) | Size::Percent(_) => None,
+        Size::Auto | Size::Px(_) | Size::Percent(_) | Size::Calc(_) => None,
     };
-    let max_keyword = |size: MaxSize| match size {
-        MaxSize::MinContent => keyword(Size::MinContent),
-        MaxSize::MaxContent => keyword(Size::MaxContent),
-        MaxSize::FitContent => keyword(Size::FitContent),
-        MaxSize::None | MaxSize::Px(_) | MaxSize::Percent(_) => None,
+    let max_keyword = |size: &MaxSize| match size {
+        MaxSize::MinContent => keyword(&Size::MinContent),
+        MaxSize::MaxContent => keyword(&Size::MaxContent),
+        MaxSize::FitContent => keyword(&Size::FitContent),
+        MaxSize::None | MaxSize::Px(_) | MaxSize::Percent(_) | MaxSize::Calc(_) => None,
     };
     // A table's minimum is a floor under every other size it is given.
     let floor = if b.is_table() { own().0 } else { 0.0 };
-    let (mut min, mut max) = match style.width {
-        Size::Px(w) => (inner(w).max(floor), inner(w).max(floor)),
+    let (mut min, mut max) = match &style.width {
+        Size::Px(w) => (inner(*w).max(floor), inner(*w).max(floor)),
         width => keyword(width).unwrap_or_else(own),
     };
-    let limit = match style.max_width {
-        MaxSize::Px(limit) => Some((inner(limit), inner(limit))),
+    let limit = match &style.max_width {
+        MaxSize::Px(limit) => Some((inner(*limit), inner(*limit))),
         limit => max_keyword(limit),
     };
     if let Some((under_min, under_max)) = limit {
         min = min.min(under_min.max(floor));
         max = max.min(under_max.max(floor));
     }
-    let raise = match style.min_width {
-        Size::Px(floor) => Some((inner(floor), inner(floor))),
+    let raise = match &style.min_width {
+        Size::Px(floor) => Some((inner(*floor), inner(*floor))),
         floor => keyword(floor),
     };
     if let Some((under_min, under_max)) = raise {
@@ -92,27 +92,23 @@ pub(crate) fn contribution<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32) 
 }
 
 /// What `b`'s horizontal padding and border, and its horizontal margins,
-/// add to its content width in a contribution: a percentage is zero, as
-/// an `auto` margin is. A table whose borders collapse has no padding,
-/// and half its outer grid lines for its border (M12).
+/// add to its content width in a contribution: a percentage is a
+/// percentage of zero, so that a percentage alone is zero, as an `auto`
+/// margin is, and a `calc()` is what is left of it (css-sizing-3
+/// §5.2.1). A table whose borders collapse has no padding, and half its
+/// outer grid lines for its border (M12).
 pub(crate) fn fixed_edges(b: &LayoutBox) -> (f32, f32) {
     let style = &b.style;
-    let fixed = |v: LengthPercentage| match v {
-        LengthPercentage::Px(px) => px,
-        LengthPercentage::Percent(_) => 0.0,
-    };
-    let fixed_margin = |v: LengthPercentageAuto| match v {
-        LengthPercentageAuto::Px(px) => px,
-        LengthPercentageAuto::Percent(_) | LengthPercentageAuto::Auto => 0.0,
-    };
+    let fixed = |v: &LengthPercentage| v.resolve(0.0);
+    let fixed_margin = |v: &LengthPercentageAuto| v.resolve(0.0, 0.0);
     let border = style.used_border_width();
     let non_content = if crate::table::collapses(style) {
         let border = crate::table::collapsed_table_border(b);
         border[LEFT] + border[RIGHT]
     } else {
-        border[LEFT] + border[RIGHT] + fixed(style.padding[LEFT]) + fixed(style.padding[RIGHT])
+        border[LEFT] + border[RIGHT] + fixed(&style.padding[LEFT]) + fixed(&style.padding[RIGHT])
     };
-    let margins = fixed_margin(style.margin[LEFT]) + fixed_margin(style.margin[RIGHT]);
+    let margins = fixed_margin(&style.margin[LEFT]) + fixed_margin(&style.margin[RIGHT]);
     (non_content, margins)
 }
 

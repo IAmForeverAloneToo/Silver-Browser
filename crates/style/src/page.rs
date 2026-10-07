@@ -79,7 +79,7 @@ impl Orientation {
 }
 
 /// What the `@page` rules say of one page.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct PageStyle {
     /// `size`.
     pub size: PageSize,
@@ -360,7 +360,7 @@ mod tests {
         assert_eq!(none.viewport(), (741.0, 981.0));
         // An area of 740.4 by 980.4, as the reference browser rounds it.
         let fractional = PageStyle {
-            margin: [Some(LengthPercentageAuto::Px(37.8)); 4],
+            margin: [const { Some(LengthPercentageAuto::Px(37.8)) }; 4],
             ..PageStyle::default()
         }
         .page_box(LETTER, DEFAULT_MARGIN);
@@ -385,7 +385,7 @@ mod tests {
         assert_eq!(b.origin(), (-20.0, 82.0));
         // Margins past the page leave a pixel.
         let wide = PageStyle {
-            margin: [Some(LengthPercentageAuto::Px(1000.0)); 4],
+            margin: [const { Some(LengthPercentageAuto::Px(1000.0)) }; 4],
             ..PageStyle::default()
         };
         assert_eq!(wide.page_box(LETTER, 0.0).area(), (1.0, 1.0));

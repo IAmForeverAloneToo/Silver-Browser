@@ -28,7 +28,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
-use style::computed::{MaxSize, Size};
 use text::FontCollection;
 
 use crate::block::{BlockLayout, Imposed};
@@ -84,9 +83,9 @@ impl ItemKey {
         cb_height: Option<f32>,
     ) -> Self {
         let style = &b.style;
-        let reads_cb_height = matches!(style.height, Size::Percent(_))
-            || matches!(style.min_height, Size::Percent(_))
-            || matches!(style.max_height, MaxSize::Percent(_));
+        let reads_cb_height = style.height.has_percent()
+            || style.min_height.has_percent()
+            || style.max_height.has_percent();
         ItemKey {
             b: std::ptr::from_ref(b) as usize,
             content_width: content_width.to_bits(),

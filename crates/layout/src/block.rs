@@ -278,7 +278,7 @@ impl Fragment {
             return ReferenceBox::border(self.w, self.h);
         }
         let [top, right, bottom, left] = self.style.used_border_width();
-        let padding = self.style.padding.map(|p| p.resolve(cb_width));
+        let padding = self.style.padding.each_ref().map(|p| p.resolve(cb_width));
         ReferenceBox {
             x: left + padding[LEFT],
             y: top + padding[TOP],
@@ -582,14 +582,11 @@ fn layout_document_with(
     );
     let depends_on_viewport_height = viewport_height.is_some()
         && boxes.iter().any(|b| {
-            let percent_or_auto =
-                |v: LengthPercentageAuto| matches!(v, LengthPercentageAuto::Percent(_));
-            matches!(b.style.height, Size::Percent(_))
-                || matches!(b.style.min_height, Size::Percent(_))
-                || matches!(b.style.max_height, MaxSize::Percent(_))
+            b.style.height.has_percent()
+                || b.style.min_height.has_percent()
+                || b.style.max_height.has_percent()
                 || (b.style.position == Position::Relative
-                    && (percent_or_auto(b.style.inset[TOP])
-                        || percent_or_auto(b.style.inset[BOTTOM])))
+                    && (b.style.inset[TOP].has_percent() || b.style.inset[BOTTOM].has_percent()))
         });
     // The viewport is the one context with no further ancestor to
     // escape to — `leading` *must* materialize here, exactly once, or
@@ -715,10 +712,10 @@ impl<'p, 'a> Intrinsic<'p, 'a> {
     /// `max-content`, or `fit-content` in `stretch`, the content width
     /// the box would take filling its room, `min(max-content,
     /// max(min-content, stretch))`; `None` for anything else.
-    pub(crate) fn keyword(&self, size: Size, stretch: f32) -> Option<f32> {
+    pub(crate) fn keyword(&self, size: &Size, stretch: f32) -> Option<f32> {
         let (min, max) = match size {
             Size::MinContent | Size::MaxContent | Size::FitContent => self.widths(),
-            Size::Auto | Size::Px(_) | Size::Percent(_) => return None,
+            Size::Auto | Size::Px(_) | Size::Percent(_) | Size::Calc(_) => return None,
         };
         Some(match size {
             Size::MinContent => min,
@@ -730,12 +727,12 @@ impl<'p, 'a> Intrinsic<'p, 'a> {
 
 /// [`MaxSize`]'s keywords as the [`Size`] keyword they measure the
 /// same way.
-fn max_keyword(size: MaxSize) -> Size {
+fn max_keyword(size: &MaxSize) -> Size {
     match size {
         MaxSize::MinContent => Size::MinContent,
         MaxSize::MaxContent => Size::MaxContent,
         MaxSize::FitContent => Size::FitContent,
-        MaxSize::None | MaxSize::Px(_) | MaxSize::Percent(_) => Size::Auto,
+        MaxSize::None | MaxSize::Px(_) | MaxSize::Percent(_) | MaxSize::Calc(_) => Size::Auto,
     }
 }
 
@@ -753,16 +750,16 @@ pub(crate) fn width_constraints(
         BoxSizing::ContentBox => v.max(0.0),
         BoxSizing::BorderBox => (v - non_content).max(0.0),
     };
-    let size = |v: Size| match v.length_percentage() {
+    let size = |v: &Size| match v.length_percentage() {
         Some(v) => Some(inner(v.resolve(cb_width))),
         None => intrinsic.keyword(v, stretch),
     };
     WidthConstraints {
-        width: size(style.width),
-        min: size(style.min_width).unwrap_or(0.0),
+        width: size(&style.width),
+        min: size(&style.min_width).unwrap_or(0.0),
         max: match style.max_width.length_percentage() {
             Some(v) => Some(inner(v.resolve(cb_width))),
-            None => intrinsic.keyword(max_keyword(style.max_width), stretch),
+            None => intrinsic.keyword(&max_keyword(&style.max_width), stretch),
         },
     }
 }
@@ -873,8 +870,8 @@ fn tentative_width(
     width: Option<f32>,
 ) -> (f32, f32, f32) {
     let avail = available_width - non_content_width;
-    let margin_left = style.margin[LEFT];
-    let margin_right = style.margin[RIGHT];
+    let margin_left = &style.margin[LEFT];
+    let margin_right = &style.margin[RIGHT];
 
     let Some(w) = width else {
         // Unspecified margins default to 0 (not symmetrical centering —
@@ -931,7 +928,7 @@ pub(crate) fn definite_height(
     };
     match style.height.length_percentage()? {
         LengthPercentage::Px(v) => Some(inner(v)),
-        LengthPercentage::Percent(p) => cb_height.map(|h| inner(h * p / 100.0)),
+        v => cb_height.map(|h| inner(v.resolve(h))),
     }
 }
 
@@ -954,13 +951,13 @@ pub(crate) fn height_bounds(
     };
     let resolve = |v: LengthPercentage| match v {
         LengthPercentage::Px(px) => Some(inner(px)),
-        LengthPercentage::Percent(p) => cb_height.map(|h| inner(h * p / 100.0)),
+        v => cb_height.map(|h| inner(v.resolve(h))),
     };
-    let min = match style.min_height {
+    let min = match &style.min_height {
         Size::MinContent | Size::MaxContent | Size::FitContent => content,
         size => size.length_percentage().and_then(resolve),
     };
-    let max = match style.max_height {
+    let max = match &style.max_height {
         MaxSize::MinContent | MaxSize::MaxContent | MaxSize::FitContent => content,
         size => size.length_percentage().and_then(resolve),
     };
@@ -1174,25 +1171,17 @@ pub(crate) fn relative_offset(
     if style.position != Position::Relative {
         return (0.0, 0.0);
     }
-    let horizontal = |v: LengthPercentageAuto| match v {
-        LengthPercentageAuto::Auto => None,
-        LengthPercentageAuto::Px(px) => Some(px),
-        LengthPercentageAuto::Percent(p) => Some(cb_width * p / 100.0),
-    };
-    let vertical = |v: LengthPercentageAuto| match v {
-        LengthPercentageAuto::Auto => None,
-        LengthPercentageAuto::Px(px) => Some(px),
-        LengthPercentageAuto::Percent(p) => cb_height.map(|h| h * p / 100.0),
-    };
+    let horizontal = |v: &LengthPercentageAuto| used(v, Some(cb_width));
+    let vertical = |v: &LengthPercentageAuto| used(v, cb_height);
     let dx = match (
-        horizontal(style.inset[LEFT]),
-        horizontal(style.inset[RIGHT]),
+        horizontal(&style.inset[LEFT]),
+        horizontal(&style.inset[RIGHT]),
     ) {
         (Some(left), _) => left,
         (None, Some(right)) => -right,
         (None, None) => 0.0,
     };
-    let dy = match (vertical(style.inset[TOP]), vertical(style.inset[BOTTOM])) {
+    let dy = match (vertical(&style.inset[TOP]), vertical(&style.inset[BOTTOM])) {
         (Some(top), _) => top,
         (None, Some(bottom)) => -bottom,
         (None, None) => 0.0,
@@ -1253,7 +1242,7 @@ impl Edges {
         }
         Edges {
             border: effective_border_width(style),
-            padding: style.padding.map(|p| p.resolve(cb_width)),
+            padding: style.padding.each_ref().map(|p| p.resolve(cb_width)),
         }
     }
 
@@ -1475,7 +1464,7 @@ pub(crate) fn layout_inline_block<'a>(
     let mut content_width = match c.width {
         Some(w) => w,
         None => intrinsic
-            .keyword(Size::FitContent, available)
+            .keyword(&Size::FitContent, available)
             .unwrap_or(available),
     };
     if let Some(max) = c.max {
@@ -1922,11 +1911,11 @@ pub(crate) fn settle_absolutes_in<'a>(
 /// A `<length-percentage> | auto` inset or margin as a used value:
 /// `None` for `auto`, a percentage of `of` — or `auto` too when `of`,
 /// a containing block's height, is not known (CSS2 §9.3.2, §10.5).
-pub(crate) fn used(v: LengthPercentageAuto, of: Option<f32>) -> Option<f32> {
+pub(crate) fn used(v: &LengthPercentageAuto, of: Option<f32>) -> Option<f32> {
     match v {
         LengthPercentageAuto::Auto => None,
-        LengthPercentageAuto::Px(px) => Some(px),
-        LengthPercentageAuto::Percent(p) => of.map(|base| base * p / 100.0),
+        LengthPercentageAuto::Px(px) => Some(*px),
+        v => of.map(|base| v.resolve(base, 0.0)),
     }
 }
 
@@ -1935,11 +1924,11 @@ pub(crate) fn used(v: LengthPercentageAuto, of: Option<f32>) -> Option<f32> {
 /// `top`, `height`, `min-height` or `max-height`, or a `bottom` that
 /// is not `auto`.
 fn uses_cb_height(style: &ComputedStyle) -> bool {
-    matches!(style.inset[TOP], LengthPercentageAuto::Percent(_))
+    style.inset[TOP].has_percent()
         || !style.inset[BOTTOM].is_auto()
-        || matches!(style.height, Size::Percent(_))
-        || matches!(style.min_height, Size::Percent(_))
-        || matches!(style.max_height, MaxSize::Percent(_))
+        || style.height.has_percent()
+        || style.min_height.has_percent()
+        || style.max_height.has_percent()
 }
 
 /// Lays out the absolutely positioned box `d.b` (M11) against its
@@ -1978,16 +1967,16 @@ fn layout_absolute<'a>(
     let horizontal_edges = edges.horizontal();
     let vertical_edges = edges.vertical();
     let (left, right) = (
-        used(style.inset[LEFT], Some(cb_width)),
-        used(style.inset[RIGHT], Some(cb_width)),
+        used(&style.inset[LEFT], Some(cb_width)),
+        used(&style.inset[RIGHT], Some(cb_width)),
     );
     let (top, bottom) = (
-        used(style.inset[TOP], cb_height),
-        used(style.inset[BOTTOM], cb_height),
+        used(&style.inset[TOP], cb_height),
+        used(&style.inset[BOTTOM], cb_height),
     );
     // Margins: a percentage is of the containing block's width on every
     // side (CSS2 §8.3).
-    let margin = |side: usize| used(style.margin[side], Some(cb_width));
+    let margin = |side: usize| used(&style.margin[side], Some(cb_width));
     let (margin_left, margin_right) = (margin(LEFT), margin(RIGHT));
     let (margin_top, margin_bottom) = (margin(TOP), margin(BOTTOM));
 
@@ -2027,7 +2016,7 @@ fn layout_absolute<'a>(
     );
     let shrink = |available: f32| {
         intrinsic
-            .keyword(Size::FitContent, available.max(0.0))
+            .keyword(&Size::FitContent, available.max(0.0))
             .unwrap_or(0.0)
     };
     let solve_width = |width: Option<f32>| -> (f32, f32, f32, f32) {
@@ -2091,12 +2080,12 @@ fn layout_absolute<'a>(
     let specified_height = definite_height(style, cb_height, vertical_edges);
     let keyword_limit = !matches!(
         style.min_height,
-        Size::Auto | Size::Px(_) | Size::Percent(_)
+        Size::Auto | Size::Px(_) | Size::Percent(_) | Size::Calc(_)
     ) || matches!(
         style.max_height,
         MaxSize::MinContent | MaxSize::MaxContent | MaxSize::FitContent
     );
-    let imposed = match (top, style.height, bottom, cb_height) {
+    let imposed = match (top, &style.height, bottom, cb_height) {
         (Some(t), Size::Auto, Some(btm), Some(cb_h)) if !keyword_limit => {
             let room = (cb_h - t - margin_top.unwrap_or(0.0) - margin_bottom.unwrap_or(0.0) - btm)
                 .max(0.0);
@@ -3331,6 +3320,40 @@ mod tests {
         let l = layout_document(&boxes, VIEWPORT, &fonts);
         assert_eq!(l.roots[0].h, 0.0);
         assert!(!l.depends_on_viewport_height);
+    }
+
+    #[test]
+    fn a_calc_with_a_percentage_resolves_where_a_percentage_does() {
+        // M21.2: `calc()` with a percentage in it is kept until layout
+        // and resolved against the same basis as the percentage, clamped
+        // to its property's range there; a percentage of an indefinite
+        // height makes it `auto`, as a percentage alone does.
+        let root = Element::new("div").push(Element::new("p"));
+        let frags = fragments_of(
+            root.clone(),
+            "div { width: 200px; height: 100px; margin: 0; }
+             p { width: calc(100% - 40px); height: calc(50% + 10px);
+                 margin: 0 0 0 calc(10% + 5px); padding: max(5%, 3px); }",
+        );
+        let p = box_fragments(&frags)[1];
+        assert_eq!((p.x, p.w, p.h), (25.0, 160.0 + 20.0, 60.0 + 20.0));
+        let frags = fragments_of(
+            root.clone(),
+            "div { width: 200px; margin: 0; } p { width: calc(10% - 50px); height: calc(50% + 10px); margin: 0; }",
+        );
+        let p = box_fragments(&frags)[1];
+        assert_eq!((p.w, p.h), (0.0, 0.0), "clamped to zero; auto");
+        // min() with a percentage, the reference browser's `min(10px,
+        // 5%)`, against each basis.
+        for (width, want) in [(400.0, 10.0), (100.0, 5.0)] {
+            let frags = fragments_of(
+                root.clone(),
+                &format!(
+                    "div {{ width: {width}px; margin: 0; }} p {{ width: min(10px, 5%); margin: 0; }}"
+                ),
+            );
+            assert_eq!(box_fragments(&frags)[1].w, want, "{width}");
+        }
     }
 
     #[test]
