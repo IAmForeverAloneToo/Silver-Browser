@@ -90,6 +90,65 @@ pub struct PageStyle {
     pub margin: [Option<LengthPercentageAuto>; 4],
 }
 
+/// US Letter, 8.5 by 11 inches, in CSS pixels: the page the reference
+/// browser prints to PDF on when nothing says otherwise.
+pub const LETTER: (f32, f32) = (8.5 * IN, 11.0 * IN);
+
+/// The margin the reference browser gives each side of a page no rule
+/// sets one for, measured from its print to PDF: 28 points.
+pub const DEFAULT_MARGIN: f32 = 28.0 * IN / 72.0;
+
+/// A page box: its size, and its margins, top, right, bottom and left,
+/// in CSS pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PageBox {
+    pub width: f32,
+    pub height: f32,
+    pub margin: [f32; 4],
+}
+
+impl PageBox {
+    /// The page area's width and height: the page box less its margins,
+    /// at least a pixel each way.
+    pub fn area(&self) -> (f32, f32) {
+        let [top, right, bottom, left] = self.margin;
+        (
+            (self.width - left - right).max(1.0),
+            (self.height - top - bottom).max(1.0),
+        )
+    }
+
+    /// Where the page area's top left corner is in the page box: its
+    /// left and top margins, rounded to whole CSS pixels as the reference
+    /// browser places it.
+    pub fn origin(&self) -> (f32, f32) {
+        (self.margin[3].round(), self.margin[0].round())
+    }
+}
+
+impl PageStyle {
+    /// The page box these say, `default` being the size the print is
+    /// asked at and `default_margin` the margin of a side no rule sets:
+    /// `auto` is zero, as in the reference browser, and a percentage is
+    /// of the page box's width for the left and right margins and of its
+    /// height for the top and bottom (Paged Media 3 §6).
+    pub fn page_box(&self, default: (f32, f32), default_margin: f32) -> PageBox {
+        let (width, height) = self.size.resolve(default);
+        let mut margin = [default_margin; 4];
+        for (side, value) in self.margin.iter().enumerate() {
+            let basis = if side % 2 == 0 { height } else { width };
+            if let Some(value) = value {
+                margin[side] = value.resolve(basis, 0.0);
+            }
+        }
+        PageBox {
+            width,
+            height,
+            margin,
+        }
+    }
+}
+
 /// The named page sizes of Paged Media 3 §7.1.1, by their names in
 /// ASCII lowercase, in millimetres or inches as the draft gives them,
 /// portrait.
@@ -267,6 +326,38 @@ mod tests {
         assert_eq!(one(":blank:left").specificity(), (0, 1, 1));
         assert_eq!(one("cover:first").specificity(), (1, 1, 0));
         assert_eq!(selectors("").unwrap()[0].specificity(), (0, 0, 0));
+    }
+
+    #[test]
+    fn page_boxes_take_their_defaults_and_resolve_their_margins() {
+        let none = PageStyle::default().page_box(LETTER, DEFAULT_MARGIN);
+        assert_eq!((none.width, none.height), (816.0, 1056.0));
+        let (w, h) = none.area();
+        // The reference browser's page area on Letter: 741.33 by 981.33.
+        assert!((w - 741.333).abs() < 0.01 && (h - 981.333).abs() < 0.01);
+        assert_eq!(none.origin(), (37.0, 37.0));
+        let style = PageStyle {
+            size: PageSize::Oriented(Orientation::Landscape),
+            margin: [
+                Some(LengthPercentageAuto::Percent(10.0)),
+                Some(LengthPercentageAuto::Auto),
+                None,
+                Some(LengthPercentageAuto::Px(-20.0)),
+            ],
+        };
+        let b = style.page_box(LETTER, DEFAULT_MARGIN);
+        assert_eq!((b.width, b.height), (1056.0, 816.0));
+        assert_eq!(b.margin[0], 81.6, "10% of the height");
+        assert_eq!(b.margin[1], 0.0, "auto");
+        assert_eq!(b.margin[2], DEFAULT_MARGIN);
+        assert_eq!(b.margin[3], -20.0);
+        assert_eq!(b.origin(), (-20.0, 82.0));
+        // Margins past the page leave a pixel.
+        let wide = PageStyle {
+            margin: [Some(LengthPercentageAuto::Px(1000.0)); 4],
+            ..PageStyle::default()
+        };
+        assert_eq!(wide.page_box(LETTER, 0.0).area(), (1.0, 1.0));
     }
 
     #[test]

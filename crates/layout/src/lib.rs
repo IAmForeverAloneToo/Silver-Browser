@@ -27,6 +27,8 @@ mod float;
 mod grid;
 pub mod inline;
 mod intrinsic;
+/// Pagination (M20): a laid-out document cut into pages.
+pub mod paginate;
 mod pass;
 mod table;
 
@@ -36,6 +38,7 @@ pub use block::{
 };
 pub use box_tree::{BoxKind, FirstLine, LayoutBox, RowGroupKind, build_box_tree};
 pub use cache::LayoutCache;
+pub use paginate::{PageSlice, Paginated, paginate};
 
 #[cfg(test)]
 pub(crate) mod testing {
