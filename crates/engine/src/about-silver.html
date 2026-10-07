@@ -1,0 +1,132 @@
+<!doctype html>
+<html>
+<head>
+<title>Silver Browser</title>
+<style>
+  html { background-color: #1e1e2e; }
+  h1 { color: #cdd6f4; }
+  p { color: #a6adc8; }
+  .highlight { color: #f9e2af; font-size: 20px; }
+  .cards {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 16px;
+    margin: 16px 0;
+  }
+  .card {
+    display: block;
+    flex: 1 1 220px;
+    padding: 12px;
+    border-width: 2px;
+    border-style: solid;
+    border-color: #89b4fa;
+    background-color: #313244;
+  }
+  .card::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 4px;
+    color: #89b4fa;
+    font-size: 12px;
+    text-transform: uppercase;
+  }
+  .card::after { content: "§"; display: block; text-align: right; color: #6c7086; }
+  .tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    grid-auto-flow: dense;
+    gap: 8px;
+    margin: 16px 0;
+  }
+  .tile { padding: 8px; background-color: #313244; color: #cdd6f4; }
+  .tile.wide { grid-column: span 2; }
+  .tile.all { grid-column: 1 / -1; color: #a6adc8; }
+  .lead::first-letter {
+    float: left;
+    font-size: 52px;
+    padding-right: 6px;
+    color: #f9e2af;
+  }
+  .lead::first-line { text-transform: uppercase; color: #cdd6f4; }
+  /* The French marks hold no-break spaces. */
+  q:lang(fr) { quotes: "« " " »" "‹ " " ›"; }
+  .clipped { height: 40px; overflow: hidden; }
+  .scrolls { height: 60px; overflow: auto; }
+  a { color: #89b4fa; }
+
+  /* Breakpoints (M20): the cards stack in a narrow window, and the
+     tiles widen in a wide one. */
+  @media (width < 600px) {
+    .cards { flex-direction: column; align-items: stretch; }
+  }
+  @media (width >= 1000px) {
+    .tiles { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+  }
+
+  /* On paper (M20): dark text on white, the cards and tiles bordered
+     rather than filled, shown whole and kept together, and the last
+     paragraphs on a page of their own. */
+  @media print {
+    html { background-color: #ffffff; }
+    h1, p, a, .highlight, .tile, .tile.all { color: #1e1e2e; }
+    .lead::first-letter, .lead::first-line { color: #1e1e2e; }
+    .card { background-color: transparent; border-color: #45475a; break-inside: avoid; }
+    .card::before, .card::after { color: #45475a; }
+    .tile { background-color: transparent; border: 1px solid #45475a; }
+    .clipped, .scrolls { height: auto; overflow: visible; }
+    .cards, .tiles { break-inside: avoid; }
+    .more { break-before: page; }
+  }
+</style>
+</head>
+<body>
+<h1 id=top>Hello from Silver Browser</h1>
+<p>A hobby browser engine in Rust. This is about:silver, the browser's own page.</p>
+<p class="highlight">This page is laid out by our own block formatting context — real width/margin resolution and margin collapsing, not a flat vertical list.</p>
+<p class="lead">Pseudo-elements (M16): this paragraph opens with a drop cap, its first letter floated left and set large by ::first‑letter, and its first line is in capitals by ::first‑line, however wide the window makes it. The cards below are labelled by ::before, from their data‑label attributes, and closed by ::after. Quotation marks come from the quotes property: <q>a quotation, with <q>one inside it</q></q>, and in French, chosen by :lang(fr), <q lang="fr">une citation</q>.</p>
+<p>Media queries (M20): in a window narrower than 600 pixels the cards below stack in a column, and in one 1000 pixels wide or more the tiles widen. Printed, the page is dark text on white, its cards and tiles bordered rather than filled, and its last paragraphs begin a page of their own.</p>
+<div class="cards">
+<div class="card" data-label="Flexible boxes">
+<p>These cards are flex items (M17): they share a row, grow into the room it leaves, and wrap onto another when the window is too narrow for them, with a gap between them either way.</p>
+</div>
+<div class="card" data-label="The box model">
+<p>This card's background and border are painted from real fragment geometry (M6.8) — the box model actually exists now.</p>
+</div>
+<div class="card clipped" data-label="overflow: hidden">
+<p>This card is 40px tall with overflow: hidden, so this second sentence is clipped away at its padding edge rather than painted over whatever follows. The clip is a rectangle in the display list (M9.3).</p>
+</div>
+<div class="card scrolls" data-label="overflow: auto">
+<p>This card is 60px tall with overflow: auto, so it scrolls on its own: turn the wheel over it and its content moves inside the clip, with the overlay scrollbar at its right edge showing where it is (M10.5). At the end of its content the wheel goes on to the page, which is scroll chaining.</p>
+<p>A second paragraph, to give the card something more to scroll through.</p>
+</div>
+</div>
+<div class="tiles">
+<div class="tile all">These tiles are grid items (M18): as many columns as the window has room for, by repeat(auto‑fill, minmax(150px, 1fr)), each at least 150px wide and all sharing what is left. A wide tile spans two of them, and dense packing fills the holes the wide ones leave behind.</div>
+<div class="tile">M9 Scrolling</div>
+<div class="tile wide">M10 The box model, in full</div>
+<div class="tile wide">M11 Floats and positioning</div>
+<div class="tile">M12 Tables</div>
+<div class="tile">M13 Incremental layout</div>
+<div class="tile wide">M14 Networking, from URLs to TLS</div>
+<div class="tile">M15 Navigation</div>
+<div class="tile">M16 Selectors</div>
+<div class="tile">M17 Flexbox</div>
+<div class="tile">M18 Grid</div>
+<div class="tile">M19 Transforms</div>
+<div class="tile wide">M20 Media queries and printing</div>
+</div>
+<p>Scroll with the wheel, the arrow keys, Page Up and Page Down, Home and End, the space bar, or by dragging the scrollbar at the right (M9.2). <a href="#end">This link</a> goes to the end of the page without leaving it, a navigation to a fragment (M15); Back comes back here.</p>
+<p class="more">The paragraphs below only exist to make the page taller than the window.</p>
+<p>One. The quick brown fox jumps over the lazy dog, and the layout is cached across scrolls (M9.5): only paint and raster run again.</p>
+<p>Two. The quick brown fox jumps over the lazy dog.</p>
+<p>Three. The quick brown fox jumps over the lazy dog.</p>
+<p>Four. The quick brown fox jumps over the lazy dog.</p>
+<p>Five. The quick brown fox jumps over the lazy dog.</p>
+<p>Six. The quick brown fox jumps over the lazy dog.</p>
+<p>Seven. The quick brown fox jumps over the lazy dog.</p>
+<p>Eight. The quick brown fox jumps over the lazy dog.</p>
+<p>Nine. The quick brown fox jumps over the lazy dog.</p>
+<p id=end>Ten. The end of the page. <a href="#top">Back to the top</a>.</p>
+</body>
+</html>

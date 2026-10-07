@@ -1,8 +1,10 @@
-//! The print references (M20.4; see `docs/design/media.md`, "Print: what
-//! is checked against the reference browser"): the pages under
-//! `tests/print/`, each printed by the engine and compared, page by page,
-//! with the reference browser's print of it, which `examples/print.rs
-//! capture` read from its PDF into the text file beside the page. The
+//! The print references (M20.4 and M20.5; see `docs/design/media.md`,
+//! "Print: what is checked against the reference browser"): the pages
+//! under `tests/print/` and `about:silver`'s, `src/about-silver.html`,
+//! each printed by the engine and compared, page by page, with the
+//! reference browser's print of it, which `examples/print.rs capture`
+//! read from its PDF into the text file of its name under `tests/print/`.
+//! The
 //! print must have as many pages, each of the same size with its area in
 //! the same place, and each word on the same page as the reference
 //! browser's within [`SLACK`] pixels of the same place.
@@ -38,17 +40,34 @@ const SLACK: f32 = 2.0;
 /// in device pixels at 300 dots per inch, a third of a CSS pixel.
 const BOX_SLACK: f32 = 0.5;
 
-/// The print pages, in order.
+/// The print pages, in order: those under `tests/print/`, then
+/// `about:silver`'s.
 fn pages() -> Vec<PathBuf> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/print");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = root.join("tests/print");
     let mut pages: Vec<PathBuf> = fs::read_dir(&dir)
         .expect("the print pages are there")
         .map(|e| e.expect("the directory reads").path())
         .filter(|p| p.extension().is_some_and(|e| e == "html"))
         .collect();
     pages.sort();
-    assert!(!pages.is_empty(), "no print pages in {}", dir.display());
+    assert_eq!(
+        pages.len(),
+        7,
+        "paragraphs, forced breaks, avoid, orphans and widows, a table and a flex \
+         container, page rules and fixed boxes"
+    );
+    pages.push(root.join("src/about-silver.html"));
     pages
+}
+
+/// Where the capture of `page` is.
+fn captured(page: &Path) -> PathBuf {
+    let stem = page.file_stem().expect("a page name");
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/print")
+        .join(stem)
+        .with_extension("txt")
 }
 
 /// An engine with the bundled font showing `page`.
@@ -120,7 +139,7 @@ fn words(list: &DisplayList) -> Vec<Word> {
 fn each_page_prints_as_the_reference_browser_prints_it() {
     let mut failures = Vec::new();
     for page in pages() {
-        let captured = page.with_extension("txt");
+        let captured = captured(&page);
         let expected =
             fs::read_to_string(&captured).unwrap_or_else(|e| panic!("{}: {e}", captured.display()));
         let expected =

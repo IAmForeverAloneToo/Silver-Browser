@@ -19,10 +19,11 @@
 //!   a pixel, the CSSOM View values computed from the engine's fragments;
 //! - a crashtest must load and render without panicking.
 //!
-//! The acceptance layouts of M17 and M18 (`tests/layouts/`, M17.10 and
-//! M18.7) are check-layout pages too, their expectations captured from the
-//! reference browser by `examples/layouts.rs`, and run here the same
-//! way, every element of the body checked.
+//! The acceptance layouts of M17 to M20 (`tests/layouts/`, M17.10,
+//! M18.7, M19's and M20.5) are check-layout pages too, their expectations
+//! captured from the reference browser by `examples/layouts.rs`, and run
+//! here the same way, every element of the body checked, each at 800 by
+//! 600 or the size its `reference-size` asks for.
 //!
 //! `expectations.txt` names each test expected to fail, with the reason.
 //! A test that fails without being named fails the run, and so does one
@@ -79,6 +80,9 @@ enum Test {
     CheckLayout {
         path: String,
         selectors: Vec<String>,
+        /// The viewport's size: 800 by 600, or the size an acceptance
+        /// layout asks for.
+        size: (u32, u32),
     },
     Crashtest {
         path: String,
@@ -140,6 +144,7 @@ fn manifest() -> Vec<Test> {
             "checklayout" => Test::CheckLayout {
                 path,
                 selectors: fields.map(str::to_string).collect(),
+                size: (WIDTH, HEIGHT),
             },
             "crashtest" => Test::Crashtest { path },
             _ => panic!("an unknown kind in the manifest: {line}"),
@@ -624,14 +629,19 @@ fn describe(document: &Document, id: NodeId) -> String {
     out
 }
 
-fn run_check_layout(server: &TestServer, path: &str, selectors: &[String]) -> Outcome {
+fn run_check_layout(
+    server: &TestServer,
+    path: &str,
+    selectors: &[String],
+    (width, height): (u32, u32),
+) -> Outcome {
     let mut engine = match load(server, path) {
         Ok(engine) => engine,
         Err(error) => return Outcome::fail(error),
     };
     // A frame first: it sets the viewport the layout is for.
-    engine.frame(WIDTH, HEIGHT);
-    let boxes = boxes(engine.layout(WIDTH as f32));
+    engine.frame(width, height);
+    let boxes = boxes(engine.layout(width as f32));
     engine.styles();
     let document = engine.document().clone();
     let styles = engine.styles().clone();
@@ -683,7 +693,11 @@ fn run_crashtest(server: &TestServer, path: &str) -> Outcome {
 fn run(server: &TestServer, test: &Test) -> Outcome {
     let ran = panic::catch_unwind(AssertUnwindSafe(|| match test {
         Test::Reftest { path, refs, fuzzy } => run_reftest(server, path, refs, fuzzy),
-        Test::CheckLayout { path, selectors } => run_check_layout(server, path, selectors),
+        Test::CheckLayout {
+            path,
+            selectors,
+            size,
+        } => run_check_layout(server, path, selectors, *size),
         Test::Crashtest { path } => run_crashtest(server, path),
     }));
     ran.unwrap_or_else(|payload| {
@@ -840,6 +854,20 @@ fn the_web_platform_tests_subset_runs_as_expected() {
     );
 }
 
+/// The viewport's size an acceptance layout asks for with its
+/// `<meta name="reference-size" content="WxH">` (M20), as
+/// `examples/layouts.rs` captures it, else 800 by 600.
+fn size_of(source: &str) -> (u32, u32) {
+    let needle = "<meta name=\"reference-size\" content=\"";
+    let Some(at) = source.find(needle) else {
+        return (WIDTH, HEIGHT);
+    };
+    let size = source[at + needle.len()..].split('"').next().unwrap_or("");
+    size.split_once('x')
+        .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
+        .unwrap_or_else(|| panic!("the page's size {size:?} is not WxH"))
+}
+
 #[test]
 fn the_acceptance_layouts_lay_out_as_the_reference_browser_lays_them_out() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/layouts");
@@ -851,10 +879,11 @@ fn the_acceptance_layouts_lay_out_as_the_reference_browser_lays_them_out() {
     pages.sort();
     assert_eq!(
         pages.len(),
-        15,
+        18,
         "M17's navigation bar, card grid, holy grail, media objects and application shell, \
          M18's grid garden, dashboard, photo gallery, form grid, page of named areas and calendar, \
-         and M19's carousel, rotated panels, modal and fixed header in a transform"
+         M19's carousel, rotated panels, modal and fixed header in a transform, \
+         and M20's responsive page at three widths"
     );
     let server = serve(dir.clone());
     let mut failures = Vec::new();
@@ -868,6 +897,7 @@ fn the_acceptance_layouts_lay_out_as_the_reference_browser_lays_them_out() {
         let test = Test::CheckLayout {
             path: page.clone(),
             selectors: vec!["body".to_string()],
+            size: size_of(&source),
         };
         let outcome = run(&server, &test);
         if !outcome.passed {

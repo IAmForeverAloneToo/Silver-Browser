@@ -13,8 +13,10 @@
 //! Text is read through its font's ToUnicode map, a code being two bytes
 //! in a composite font and one in a simple one, and the `ActualText` of
 //! marked content stands for the glyphs it covers, as for a ligature.
-//! It is read as words: the text between spaces, at the origin of its
-//! first glyph, the left end of its baseline. A text object, and a move
+//! It is read as words: the text between white space, at the origin of
+//! its first glyph, the left end of its baseline; white space is what
+//! CSS collapses (css-text-3 §4.1), a no-break space being part of the
+//! word it is in, as in the engine's words. A text object, and a move
 //! to another baseline within one, ends a word. The reference browser
 //! places each glyph with an operator of its own, so that each word's
 //! place is its own; where a string shows several glyphs, a word that
@@ -274,10 +276,16 @@ impl Capture {
     }
 }
 
-/// `text` with its white space, the no-break space's included, collapsed
-/// to single spaces and none at either end.
+/// Whether `c` is white space as CSS collapses it (css-text-3 §4.1): a
+/// no-break space is not.
+fn is_white_space(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0c')
+}
+
+/// `text` with its white space collapsed to single spaces and none at
+/// either end.
 pub fn normalize(text: &str) -> String {
-    text.split(|c: char| c.is_whitespace() || c == '\u{a0}')
+    text.split(is_white_space)
         .filter(|word| !word.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
@@ -1202,7 +1210,7 @@ impl Painter<'_> {
         }
         text.baseline = Some(y);
         for c in shown.chars() {
-            if c.is_whitespace() || c == '\u{a0}' {
+            if is_white_space(c) {
                 self.end_word(text, false);
             } else {
                 text.word
@@ -1568,7 +1576,7 @@ mod tests {
             (816.0, 1056.0),
             Some(area),
             [
-                word("\u{a0}A\n", 8.0, 31.0),
+                word(" A\n", 8.0, 31.0),
                 word("   ", 8.0, 40.0),
                 word("below", 8.0, 990.0),
                 word("right", 750.0, 31.0),

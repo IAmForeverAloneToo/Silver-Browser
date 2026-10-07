@@ -4,10 +4,13 @@
  * (see css-cascade-5 §6: UA normal < author normal < author !important
  * < UA !important). Covers the tags M5.6 names: html/body, headings,
  * paragraphs, lists, bold/italic, links, blockquotes; the block-level
- * elements of the HTML standard; the form controls (M10.6). Sizes are
- * rough approximations of real browsers' UA sheets, not a spec (there
- * isn't one) — revisit once real pages make specific mismatches
- * visible.
+ * elements of the HTML standard; the form controls (M10.6). The
+ * headings' sizes and the margins of headings, paragraphs, lists,
+ * quotations, preformatted text and definition lists are the HTML
+ * standard's (§15.3.3, §15.3.6, §15.3.7), in `em` of the element's own
+ * font size; they were pixel approximations until M20's print of
+ * about:silver showed a paragraph of another size spaced otherwise than
+ * the reference browser's. The rest are approximations still.
  *
  * font-weight/font-style aren't in the v1 ComputedStyle field set yet
  * (they land with M8/M21), so the b/strong/i/em rules below parse but
@@ -42,30 +45,30 @@ body {
   color: black;
 }
 
-h1 { display: block; font-size: 32px; margin: 21px 0; }
-h2 { display: block; font-size: 24px; margin: 20px 0; }
-h3 { display: block; font-size: 19px; margin: 19px 0; }
-h4 { display: block; font-size: 16px; margin: 21px 0; }
-h5 { display: block; font-size: 13px; margin: 22px 0; }
-h6 { display: block; font-size: 11px; margin: 25px 0; }
+h1 { display: block; font-size: 2em; margin: 0.67em 0; }
+h2 { display: block; font-size: 1.5em; margin: 0.83em 0; }
+h3 { display: block; font-size: 1.17em; margin: 1em 0; }
+h4 { display: block; margin: 1.33em 0; }
+h5 { display: block; font-size: 0.83em; margin: 1.67em 0; }
+h6 { display: block; font-size: 0.67em; margin: 2.33em 0; }
 
-p { display: block; margin: 16px 0; }
+p { display: block; margin: 1em 0; }
 
 ul, ol {
   display: block;
-  margin: 16px 0;
+  margin: 1em 0;
   padding: 0 0 0 40px;
 }
 li { display: block; }
 
-blockquote { display: block; margin: 16px 40px; }
+blockquote { display: block; margin: 1em 40px; }
 
 /* `font-family` here parses and is stored (M5.1), but `text::FontStore`
  * doesn't act on it yet (M5's own note: real font *selection* per
  * `font-family` is M8.1 territory) — kept now so nothing has to be
  * remembered to add it later, same as b/strong/i/em below. `white-space:
  * pre` (M8.4) is real today: a <pre> block's line breaks are preserved. */
-pre { display: block; margin: 16px 0; font-family: monospace; white-space: pre; }
+pre { display: block; margin: 1em 0; font-family: monospace; white-space: pre; }
 
 b, strong { font-weight: bold; }
 i, em { font-style: italic; }
@@ -94,7 +97,7 @@ listing, main, menu, nav, plaintext, search, section, summary, xmp {
   display: block;
 }
 
-dl { margin: 16px 0; }
+dl { margin: 1em 0; }
 dd { margin-left: 40px; }
 hr { margin: 8px 0; border-width: 1px; border-style: solid; }
 

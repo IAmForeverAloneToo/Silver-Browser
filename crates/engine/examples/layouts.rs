@@ -16,7 +16,9 @@
 //! The browser is `$BROWSER`, else `chrome-headless-shell` on the PATH,
 //! with `$BROWSER_FLAGS` added (a container running as root needs
 //! `--no-sandbox`), at 800 by 600 and device scale one, as
-//! `tests/reference/capture.sh` runs it. A page's `@font-face` gives the
+//! `tests/reference/capture.sh` runs it; a page may ask for another
+//! size with `<meta name="reference-size" content="1100x600">` (M20),
+//! which `tests/wpt.rs` lays it out at too. A page's `@font-face` gives the
 //! browser this engine's own font, DejaVu Sans, from `crates/text/fonts`:
 //! the capture stops if the browser did not load it. Each page is
 //! measured from a copy beside it that carries the measuring script in
@@ -192,7 +194,7 @@ fn measure(page: &Path, source: &str) -> Result<Vec<Measured>, String> {
         .ok_or("the page's name is not text")?;
     let copy = page.with_file_name(format!(".capture-{name}"));
     fs::write(&copy, probe).map_err(|e| e.to_string())?;
-    let output = run_browser(&copy);
+    let output = run_browser(&copy, size_of(source)?);
     let _ = fs::remove_file(&copy);
     let dom = output?;
     let start = dom
@@ -225,8 +227,24 @@ fn measure(page: &Path, source: &str) -> Result<Vec<Measured>, String> {
         .collect()
 }
 
-/// The DOM the browser serializes for `page` once its layout is done.
-fn run_browser(page: &Path) -> Result<String, String> {
+/// The viewport's size a page asks for, 800 by 600 unless it says
+/// another.
+fn size_of(source: &str) -> Result<(u32, u32), String> {
+    let needle = "<meta name=\"reference-size\" content=\"";
+    let Some(at) = source.find(needle) else {
+        return Ok((800, 600));
+    };
+    let rest = &source[at + needle.len()..];
+    let size = rest.split('"').next().unwrap_or("");
+    let parsed = size
+        .split_once('x')
+        .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)));
+    parsed.ok_or_else(|| format!("the page's size {size:?} is not WxH"))
+}
+
+/// The DOM the browser serializes for `page` once its layout is done, in
+/// a viewport `size`.
+fn run_browser(page: &Path, size: (u32, u32)) -> Result<String, String> {
     let browser = env::var("BROWSER").unwrap_or_else(|_| "chrome-headless-shell".into());
     let flags = env::var("BROWSER_FLAGS").unwrap_or_default();
     let page = fs::canonicalize(page).map_err(|e| e.to_string())?;
@@ -236,9 +254,9 @@ fn run_browser(page: &Path) -> Result<String, String> {
             "--hide-scrollbars",
             "--force-device-scale-factor=1",
             "--force-color-profile=srgb",
-            "--window-size=800,600",
             "--virtual-time-budget=5000",
         ])
+        .arg(format!("--window-size={},{}", size.0, size.1))
         .args(flags.split_whitespace())
         .arg("--dump-dom")
         .arg(format!("file://{}", page.display()))
@@ -351,6 +369,14 @@ mod tests {
         assert_eq!(&source[tags[2].end..tags[2].end + 2], "/>");
         assert!(start_tags("<p>no body</p>").is_err());
         assert!(start_tags("<body><div title='open>").is_err());
+    }
+
+    #[test]
+    fn a_page_may_ask_for_its_size() {
+        assert_eq!(size_of("<p>x</p>"), Ok((800, 600)));
+        let page = "<head><meta name=\"reference-size\" content=\"1100x600\"></head>";
+        assert_eq!(size_of(page), Ok((1100, 600)));
+        assert!(size_of("<meta name=\"reference-size\" content=\"wide\">").is_err());
     }
 
     #[test]

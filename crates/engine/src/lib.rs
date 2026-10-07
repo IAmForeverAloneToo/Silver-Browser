@@ -2568,7 +2568,7 @@ mod tests {
         };
         for (width, columns) in [(800.0, 5), (400.0, 2)] {
             let tiles = tiles(width);
-            assert_eq!(tiles.len(), 11, "{tiles:?}");
+            assert_eq!(tiles.len(), 13, "{tiles:?}");
             let (all, rest) = tiles.split_first().expect("a tile");
             let mut lefts: Vec<f32> = rest.iter().map(|t| t.0).collect();
             lefts.sort_by(f32::total_cmp);
@@ -2581,7 +2581,7 @@ mod tests {
             );
             assert!(rest.iter().all(|t| t.1 > all.1), "{width}: {tiles:?}");
             let narrow = rest[0].2;
-            for wide in [rest[1], rest[2], rest[5]] {
+            for wide in [rest[1], rest[2], rest[5], rest[11]] {
                 assert!(
                     (wide.2 - (2.0 * narrow + 8.0)).abs() < 0.01,
                     "{width}: {tiles:?}"
@@ -2591,6 +2591,94 @@ mod tests {
         let narrow = tiles(400.0);
         let (m9, m10, m12) = (narrow[1], narrow[2], narrow[4]);
         assert!(m12.1 == m9.1 && m12.0 > m9.0 && m10.1 > m9.1, "{narrow:?}");
+    }
+
+    #[test]
+    fn the_user_agent_sheets_margins_are_in_ems_of_the_elements_own_font() {
+        // HTML's rendering section: a heading's size in ems of its
+        // parent's font, and its margins and a paragraph's in ems of its
+        // own, whatever font size the author gives it.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<h1>a</h1><h1 style=\"font-size: 24px\">b</h1><h3>c</h3>\
+             <p style=\"font-size: 20px\">d</p><div style=\"font-size: 10px\"><h2>e</h2></div>",
+        );
+        let styles: Vec<(f32, f32)> = {
+            let document = engine.document().clone();
+            let elements: Vec<NodeId> = document
+                .subtree(document.root())
+                .filter(|&n| matches!(document.tag(n), Some("h1" | "h2" | "h3" | "p")))
+                .collect();
+            let styles = engine.styles();
+            elements
+                .into_iter()
+                .map(|n| {
+                    let style = styles.get(n).expect("styled");
+                    let margin = match style.margin[style::computed::TOP] {
+                        style::computed::LengthPercentageAuto::Px(px) => px,
+                        other => panic!("{other:?}"),
+                    };
+                    (style.font_size_px, margin)
+                })
+                .collect()
+        };
+        let near =
+            |a: (f32, f32), b: (f32, f32)| (a.0 - b.0).abs() < 0.01 && (a.1 - b.1).abs() < 0.01;
+        let expected = [
+            (32.0, 21.44),
+            (24.0, 16.08),
+            (18.72, 18.72),
+            (20.0, 20.0),
+            (15.0, 12.45),
+        ];
+        assert!(
+            styles.iter().zip(expected).all(|(s, e)| near(*s, e)),
+            "{styles:?}"
+        );
+    }
+
+    #[test]
+    fn the_builtin_page_relays_out_at_its_breakpoints() {
+        // M20.5: below 600px the cards stack, from 1000px the tiles are
+        // at least 200px wide; a resize across a breakpoint cascades the
+        // page again, one between them does not.
+        let mut engine = builtin_engine();
+        let boxes = |engine: &mut Engine, width: u32, class: &str| -> Vec<(f32, f32)> {
+            engine.frame(width, 600);
+            let document = engine.document().clone();
+            engine
+                .fragments(width as f32)
+                .into_iter()
+                .filter(|f| {
+                    matches!(f.kind, layout::FragmentKind::Box)
+                        && f.generated.is_none()
+                        && document
+                            .attr(f.node, "class")
+                            .is_some_and(|c| c.split(' ').any(|c| c == class))
+                })
+                .map(|f| (f.x, f.w))
+                .collect()
+        };
+        // A row at 800px: the cards start at more than one place.
+        let cards = boxes(&mut engine, 800, "card");
+        assert_eq!(cards.len(), 4);
+        assert!(cards.iter().any(|c| c.0 != cards[0].0), "{cards:?}");
+        let runs = engine.style_runs();
+        boxes(&mut engine, 700, "card");
+        assert_eq!(engine.style_runs(), runs, "no breakpoint between");
+        // A column at 500px: each card the column's width.
+        let cards = boxes(&mut engine, 500, "card");
+        assert_eq!(engine.style_runs(), runs + 1);
+        assert!(
+            cards.iter().all(|c| *c == cards[0]) && cards[0].1 > 450.0,
+            "{cards:?}"
+        );
+        // The tiles: at least 150px wide at 800px, 200px at 1100px.
+        let narrowest = |tiles: &[(f32, f32)]| tiles.iter().map(|t| t.1).fold(f32::MAX, f32::min);
+        let tiles = boxes(&mut engine, 800, "tile");
+        assert!((150.0..200.0).contains(&narrowest(&tiles)), "{tiles:?}");
+        let tiles = boxes(&mut engine, 1100, "tile");
+        assert!(narrowest(&tiles) >= 200.0, "{tiles:?}");
     }
 
     // ---- M7 acceptance (roadmap M7.8) --------------------------------------

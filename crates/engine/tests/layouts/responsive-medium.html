@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<meta name="reference-size" content="800x600">
+<title>A responsive article page</title>
+<style>
+  /* M20.5: a responsive page, its rules in cascade layers and behind
+     feature queries, with breakpoints at 640 and 1024 pixels; the same
+     page as responsive-narrow, -medium and -wide, here between them, at 800 pixels. */
+  @font-face { font-family: "Layout Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  @layer reset, base, layout, components;
+  @layer reset {
+    body, h1, h2, h3, p, ul { margin: 0; padding: 0; }
+    /* Important in the first layer: over every later one's. */
+    .card h3 { margin: 0 0 6px !important; }
+  }
+  @layer base {
+    body { font-family: "Layout Test Sans"; font-size: 16px; color: #1f2328; }
+    h1, h2, h3 { font-weight: normal; }
+    h1 { font-size: 28px; }
+    h2 { font-size: 22px; margin-bottom: 8px; }
+    h3 { font-size: 18px; }
+    p + p { margin-top: 10px; }
+    .foot { background-color: #ff0000; padding: 40px; }
+  }
+  @layer layout {
+    .site { display: flex; flex-direction: column; gap: 8px; padding: 12px 16px; background-color: #eef2f7; }
+    .menu { display: flex; flex-wrap: wrap; gap: 8px; }
+    .menu a { display: block; padding: 4px 8px; }
+    .page { padding: 16px; }
+    .cards { display: flex; flex-direction: column; gap: 12px; margin-top: 16px; }
+    /* A medium window: the header in a row, the cards side by side. */
+    @media (width >= 640px) {
+      .site { flex-direction: row; justify-content: space-between; align-items: center; }
+      .cards { flex-direction: row; }
+      .card { flex: 1 1 0px; }
+    }
+    /* A wide one: the article and the sidebar in a grid. */
+    @media (width >= 1024px) {
+      @supports (display: grid) {
+        .page { display: grid; grid-template-columns: 1fr 260px; gap: 24px; padding: 24px; }
+      }
+    }
+  }
+  @layer components {
+    .card { padding: 12px; border: 1px solid #d0d7de; background-color: #ffffff; }
+    .card h3 { margin: 0 0 20px; }
+    .sidebar { margin-top: 16px; padding: 12px; background-color: #f6f8fa; }
+    .sidebar li { margin-top: 6px; }
+    @media (width >= 1024px) { .sidebar { margin-top: 0; } }
+  }
+  @supports not (display: grid) {
+    .page { padding: 64px; }
+  }
+  @supports (display: flex) and (not (display: foo)) {
+    .menu a { border: 1px solid #c8d1dc; }
+  }
+  /* Unlayered: over every layer. */
+  .foot { padding: 12px 16px; background-color: #24292f; color: #f6f8fa; }
+</style>
+</head>
+<body data-expected-width="800" data-expected-height="513">
+<header class="site" data-expected-width="800" data-expected-height="57" data-offset-x="0" data-offset-y="0">
+<h1 class="logo" data-expected-width="199" data-expected-height="33" data-offset-x="16" data-offset-y="12">Silver Gazette</h1>
+<nav class="menu" data-expected-width="319" data-expected-height="29" data-offset-x="465" data-offset-y="14"><a href="#news" data-expected-width="61" data-expected-height="29" data-offset-x="465" data-offset-y="14">News</a><a href="#features" data-expected-width="87" data-expected-height="29" data-offset-x="534" data-offset-y="14">Features</a><a href="#reviews" data-expected-width="82" data-expected-height="29" data-offset-x="629" data-offset-y="14">Reviews</a><a href="#about" data-expected-width="65" data-expected-height="29" data-offset-x="719" data-offset-y="14">About</a></nav>
+</header>
+<div class="page" data-expected-width="800" data-expected-height="413" data-offset-x="0" data-offset-y="57">
+<main class="article" data-expected-width="768" data-expected-height="245" data-offset-x="16" data-offset-y="73">
+<h2 data-expected-width="768" data-expected-height="25" data-offset-x="16" data-offset-y="73">Printing the web</h2>
+<p data-expected-width="768" data-expected-height="57" data-offset-x="16" data-offset-y="106">A page laid out for the screen is cut into pages for paper, and each page shows a slice of it. Where it is cut follows rules the author can give, keeping a heading with its paragraph or a figure whole.</p>
+<p data-expected-width="768" data-expected-height="38" data-offset-x="16" data-offset-y="173">The same page answers the window it is shown in: narrow, its parts stack; wider, they sit side by side; wide, a sidebar joins the article.</p>
+<div class="cards" data-expected-width="768" data-expected-height="91" data-offset-x="16" data-offset-y="227">
+<section class="card" data-expected-width="248" data-expected-height="91" data-offset-x="16" data-offset-y="227"><h3 data-expected-width="222" data-expected-height="21" data-offset-x="29" data-offset-y="240">Breakpoints</h3><p data-expected-width="222" data-expected-height="38" data-offset-x="29" data-offset-y="267">Media queries choose rules by the window's width.</p></section>
+<section class="card" data-expected-width="248" data-expected-height="91" data-offset-x="276" data-offset-y="227"><h3 data-expected-width="222" data-expected-height="21" data-offset-x="289" data-offset-y="240">Layers</h3><p data-expected-width="222" data-expected-height="38" data-offset-x="289" data-offset-y="267">Cascade layers order rules before their selectors do.</p></section>
+<section class="card" data-expected-width="248" data-expected-height="91" data-offset-x="536" data-offset-y="227"><h3 data-expected-width="222" data-expected-height="21" data-offset-x="549" data-offset-y="240">Support</h3><p data-expected-width="222" data-expected-height="38" data-offset-x="549" data-offset-y="267">Feature queries keep what a browser cannot do aside.</p></section>
+</div>
+</main>
+<aside class="sidebar" data-expected-width="768" data-expected-height="120" data-offset-x="16" data-offset-y="334">
+<h3 data-expected-width="744" data-expected-height="21" data-offset-x="28" data-offset-y="346">Related</h3>
+<ul data-expected-width="744" data-expected-height="69" data-offset-x="28" data-offset-y="373">
+<li data-expected-width="744" data-expected-height="19" data-offset-x="28" data-offset-y="373"><a href="#one">How pages break</a></li>
+<li data-expected-width="744" data-expected-height="19" data-offset-x="28" data-offset-y="398"><a href="#two">Margins on paper</a></li>
+<li data-expected-width="744" data-expected-height="19" data-offset-x="28" data-offset-y="423"><a href="#three">Fixed headers in print</a></li>
+</ul>
+</aside>
+</div>
+<footer class="foot" data-expected-width="800" data-expected-height="43" data-offset-x="0" data-offset-y="470"><p data-expected-width="768" data-expected-height="19" data-offset-x="16" data-offset-y="482">The Silver Gazette is a page of the engine's own tests.</p></footer>
+</body>
+</html>
