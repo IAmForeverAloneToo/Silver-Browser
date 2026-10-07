@@ -484,7 +484,7 @@ impl Substitutions {
         for declaration in declared {
             let kind = if let Some(keyword) = css_wide_keyword(declaration.value) {
                 Kind::Keyword(keyword)
-            } else if is_revert(declaration.value) || !check(declaration.value, true) {
+            } else if is_revert(declaration.value) || !check(declaration.value) {
                 continue;
             } else if has_substitution(declaration.value) {
                 Kind::Substituted
@@ -585,7 +585,7 @@ impl Substitutions {
         {
             return kept.substituted.clone();
         }
-        let substituted = if !check(value, false) {
+        let substituted = if !check(value) {
             Substituted::Ignored
         } else {
             let inherited = custom.map(|m| &**m);
@@ -621,7 +621,7 @@ fn is_revert(tokens: &[Token]) -> bool {
 /// custom property: a CSS-wide keyword the cascade knows, or a value
 /// [`check`] takes.
 pub(crate) fn is_valid_custom_declaration(value: &[Token]) -> bool {
-    css_wide_keyword(value).is_some() || (!is_revert(value) && check(value, true))
+    css_wide_keyword(value).is_some() || (!is_revert(value) && check(value))
 }
 
 /// The value of the environment variable `name` with `indices` indices
@@ -793,7 +793,7 @@ mod tests {
             "env(test, {})",
             "env(test, env(other, blue))",
         ] {
-            assert!(check(&css::tokenize(good), true), "{good:?} is valid");
+            assert!(check(&css::tokenize(good)), "{good:?} is valid");
         }
         for bad in [
             ";",
@@ -831,12 +831,20 @@ mod tests {
             "env()",
             "env(, 1px)",
         ] {
-            assert!(!check(&css::tokenize(bad), true), "{bad:?} is invalid");
+            assert!(!check(&css::tokenize(bad)), "{bad:?} is invalid");
         }
-        // Outside a custom property's value, only the functions are
-        // checked: the rest is the property's to parse once substituted.
-        assert!(check(&css::tokenize("a ! ) var(--a)"), false));
-        assert!(!check(&css::tokenize("a var(--a, !)"), false));
+        // Any other property's value with a substitution function in it
+        // is held to the same, as the reference browser holds it: the
+        // rest is the property's to parse once substituted.
+        assert!(check(&css::tokenize("a (!) [;] var(--a)")));
+        for bad in [
+            "a ! var(--a)",
+            "a ) var(--a)",
+            "var(--a) ]",
+            "var(--a) !important",
+        ] {
+            assert!(!check(&css::tokenize(bad)), "{bad:?} is invalid");
+        }
     }
 
     #[test]

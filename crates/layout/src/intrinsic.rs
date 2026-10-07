@@ -77,8 +77,15 @@ pub(crate) fn contribution<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32) 
         min = min.min(under_min.max(floor));
         max = max.min(under_max.max(floor));
     }
+    // A percentage in `min-width` is of zero here, and a `calc()` what is
+    // left of it, where one in `width` or `max-width` makes the whole
+    // value `auto` or `none` (css-sizing-3 §5.2.1).
     let raise = match &style.min_width {
         Size::Px(floor) => Some((inner(*floor), inner(*floor))),
+        floor @ (Size::Percent(_) | Size::Calc(_)) => floor.length_percentage().map(|v| {
+            let floor = inner(v.resolve(0.0));
+            (floor, floor)
+        }),
         floor => keyword(floor),
     };
     if let Some((under_min, under_max)) = raise {
@@ -267,6 +274,26 @@ mod tests {
             contribution(&t[0], &Pass::new(&fonts)),
             (w("aaaa"), w("aaaa"))
         );
+        // In a `calc()`, a percentage minimum is of zero and the length
+        // left a floor; one in `width` or `max-width` makes the whole
+        // value `auto` or `none` (css-sizing-3 §5.2.1,
+        // calc-min-width-block-intrinsic-1).
+        for (css, floor) in [
+            ("min-width: calc(80px - 0%)", 80.0),
+            ("min-width: calc(50% - 3px)", w("aaaa")),
+            ("width: calc(80px + 0%)", w("aaaa")),
+            ("max-width: calc(1px + 0%)", w("aaaa")),
+        ] {
+            let t = tree(
+                Element::new("div").text("aaaa"),
+                &format!("div {{ {css}; }}"),
+            );
+            assert_eq!(
+                contribution(&t[0], &Pass::new(&fonts)),
+                (floor, floor),
+                "{css}"
+            );
+        }
     }
 
     #[test]

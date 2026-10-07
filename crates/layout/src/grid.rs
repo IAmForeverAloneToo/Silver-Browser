@@ -567,14 +567,13 @@ fn column_groups<'a>(
     (groups, shims)
 }
 
-/// A gap's size: a percentage of a size not known is zero (css-align-3
-/// §8.1), and `normal` is zero in a grid container.
+/// A gap's size: a percentage of a size not known is resolved against
+/// zero (css-align-3 §8.1, css-sizing-3 §5.2.1), so that the length in a
+/// `calc()` with one still counts, and `normal` is zero in a grid
+/// container.
 fn gap(gap: &Option<LengthPercentage>, of: Option<f32>) -> f32 {
-    match gap {
-        None => 0.0,
-        Some(LengthPercentage::Px(px)) => *px,
-        Some(gap) => of.map_or(0.0, |of| gap.resolve(of)),
-    }
+    gap.as_ref()
+        .map_or(0.0, |gap| gap.resolve(of.unwrap_or(0.0)))
 }
 
 /// Whether a content distribution value stretches `auto` tracks (§12.8):
@@ -1340,6 +1339,7 @@ pub(crate) fn layout_grid_contents<'a>(
         bottom_edge: own_bottom,
         self_collapsing: false,
         first_baseline,
+        first_line: None,
         last_baseline,
         // An inline-block takes a grid container's first baseline, as it
         // does a flex container's (M17), in the reference browser.
@@ -1462,7 +1462,7 @@ fn container_baselines(
 /// The grid container `b`'s min-content and max-content content widths
 /// (§5.2): its columns and gaps sized under a min-content and a
 /// max-content constraint, percentages of its width counting as `auto`
-/// and percentage gaps as zero, since that width is what is being found
+/// and percentages in gaps as zero, since that width is what is being found
 /// (§7.2.1, css-align-3 §8.1). An automatic repetition repeats in its
 /// definite maximum width, else its minimum, else once. Its `width` is
 /// what these sizes stand in for, so it does not count: one 200 pixels
@@ -1481,10 +1481,7 @@ pub(crate) fn content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32
         Size::Px(px) => Some(inner(style, px, non_content)),
         _ => None,
     };
-    let fixed_gap = |gap: &Option<LengthPercentage>| match gap {
-        Some(LengthPercentage::Px(px)) => *px,
-        _ => 0.0,
-    };
+    let fixed_gap = |gap: &Option<LengthPercentage>| gap.as_ref().map_or(0.0, |g| g.resolve(0.0));
     let column_gap = fixed_gap(&style.column_gap);
     let grid = build(
         b,
@@ -2024,6 +2021,21 @@ mod tests {
              #a { grid-column: 1 / 3 }",
         );
         assert_eq!(rect(&l, "g").2, 100.0);
+    }
+
+    #[test]
+    fn a_percentage_in_a_gap_of_a_size_not_known_is_of_zero() {
+        // `calc(20px + 10%)`: its length counts while the grid's width and
+        // height are found, 50 + 20 + 50, and the gap is then resolved
+        // against them, 20 + 12, as in the reference browser
+        // (grid-gutters-009).
+        let l = laid(
+            &items(4),
+            "#g { display: inline-grid; gap: calc(20px + 10%); grid-template-columns: 50px 50px }
+             #g div { height: 50px }",
+        );
+        assert_eq!((rect(&l, "g").2, rect(&l, "g").3), (120.0, 120.0));
+        assert_eq!((rect(&l, "i1").0, rect(&l, "i2").1), (82.0, 82.0));
     }
 
     #[test]

@@ -1502,7 +1502,7 @@ pub fn supports(name: &str, value: &[Token]) -> bool {
     }
     let parent = ComputedStyle::default();
     if custom::has_substitution(value) {
-        return custom::check(value, false)
+        return custom::check(value)
             && apply_css_wide(
                 &mut ComputedStyle::default(),
                 canonical_name(name),
@@ -5194,8 +5194,9 @@ mod tests {
         );
         assert_eq!(
             style_of("<p>x</p>", &sheets, "p").font_size_px,
-            24.0,
-            "a percentage font size is of the parent's (the body's UA 16px)"
+            48.0,
+            "a percentage font size is of the parent's, the body's, which \
+             it inherits from the root"
         );
     }
 

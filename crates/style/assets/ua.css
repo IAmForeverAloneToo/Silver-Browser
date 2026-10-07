@@ -39,10 +39,11 @@ html, body {
   padding: 0;
 }
 
+/* HTML §15.3.3: the body's margin, and nothing of its font or colour,
+ * which it inherits from the root (M21: `html { font-size }` reaches
+ * the page, as `rem` and a theme's colours on `:root` do). */
 body {
   margin: 8px;
-  font-size: 16px;
-  color: black;
 }
 
 h1 { display: block; font-size: 2em; margin: 0.67em 0; }

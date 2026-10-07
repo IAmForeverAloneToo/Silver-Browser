@@ -4,7 +4,7 @@
 # The steps are those of the milestone a section names, in its design
 # note's section 3: docs/design/flexbox.md for M17, docs/design/grid.md
 # for M18, docs/design/compositing.md for M19, docs/design/media.md for
-# M20.
+# M20, docs/design/values.md for M21.
 
 # Not in either milestone (docs/design/flexbox.md and docs/design/grid.md,
 # section 2).
@@ -67,3 +67,90 @@ css/css-conditional/at-supports-selector-picker-icon.html                       
 css/css-conditional/at-supports-selector-webkit-slider-thumb.tentative.html               `::-webkit-slider-thumb` is taken only to match nothing (selectors-4 Appendix B), and Conditional 4 makes `selector()` of such a pseudo-element false; the tentative test expects the reference browser's own
 css/mediaqueries/scripting-print-noscript.html                                            the engine runs no script (M24), so `(scripting)` is false and the test's text shows, as it should; but the parser keeps the reference's `noscript` with its text in the head, where HTML's in head noscript mode ends it at the text and puts the text in the body
 css/mediaqueries/scripting-print-script.html                                              the engine runs no script (M24), so `(scripting)` is false and the text stays hidden; the reference shows it, as a browser that runs scripts does
+
+# Not in M21 (docs/design/values.md, section 2): the complex predefined
+# counter styles, colour functions, images, and markers on pseudo-elements.
+css/css-counter-styles/japanese-formal/counter-japanese-formal-extended.html              `japanese-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/japanese-formal/counter-japanese-formal.html                       `japanese-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/japanese-formal/css3-counter-styles-047.html                       `japanese-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/japanese-formal/css3-counter-styles-048.html                       `japanese-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/japanese-formal/css3-counter-styles-049.html                       `japanese-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/japanese-formal/css3-counter-styles-050.html                       `japanese-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/japanese-formal/css3-counter-styles-051.html                       `japanese-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/japanese-informal/counter-japanese-informal-extended.html          `japanese-informal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/japanese-informal/counter-japanese-informal.html                   `japanese-informal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/japanese-informal/css3-counter-styles-042.html                     `japanese-informal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/japanese-informal/css3-counter-styles-043.html                     `japanese-informal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/japanese-informal/css3-counter-styles-044.html                     `japanese-informal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/japanese-informal/css3-counter-styles-045.html                     `japanese-informal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/japanese-informal/css3-counter-styles-046.html                     `japanese-informal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/korean-hangul-formal/counter-korean-hangul-formal-extended.html    `korean-hangul-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/korean-hangul-formal/counter-korean-hangul-formal.html             `korean-hangul-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/korean-hangul-formal/css3-counter-styles-052.html                  `korean-hangul-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/korean-hangul-formal/css3-counter-styles-053.html                  `korean-hangul-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/korean-hangul-formal/css3-counter-styles-054.html                  `korean-hangul-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/korean-hangul-formal/css3-counter-styles-055.html                  `korean-hangul-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/korean-hangul-formal/css3-counter-styles-056.html                  `korean-hangul-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/korean-hanja-formal/counter-korean-hanja-formal-extended.html      `korean-hanja-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/korean-hanja-formal/counter-korean-hanja-formal.html               `korean-hanja-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/korean-hanja-formal/css3-counter-styles-062.html                   `korean-hanja-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/korean-hanja-formal/css3-counter-styles-063.html                   `korean-hanja-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/korean-hanja-formal/css3-counter-styles-064.html                   `korean-hanja-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/korean-hanja-formal/css3-counter-styles-065.html                   `korean-hanja-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/korean-hanja-formal/css3-counter-styles-066.html                   `korean-hanja-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/korean-hanja-informal/counter-korean-hanja-informal-extended.html  `korean-hanja-informal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/korean-hanja-informal/counter-korean-hanja-informal.html           `korean-hanja-informal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/korean-hanja-informal/css3-counter-styles-057.html                 `korean-hanja-informal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/korean-hanja-informal/css3-counter-styles-058.html                 `korean-hanja-informal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/korean-hanja-informal/css3-counter-styles-059.html                 `korean-hanja-informal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/korean-hanja-informal/css3-counter-styles-060.html                 `korean-hanja-informal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/korean-hanja-informal/css3-counter-styles-061.html                 `korean-hanja-informal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/simp-chinese-formal/counter-simp-chinese-formal.html               `simp-chinese-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/simp-chinese-formal/css3-counter-styles-076.html                   `simp-chinese-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/simp-chinese-formal/css3-counter-styles-077.html                   `simp-chinese-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/simp-chinese-formal/css3-counter-styles-078.html                   `simp-chinese-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/simp-chinese-formal/css3-counter-styles-079.html                   `simp-chinese-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/simp-chinese-formal/css3-counter-styles-080.html                   `simp-chinese-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/simp-chinese-informal/counter-simp-chinese-informal.html           `simp-chinese-informal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/simp-chinese-informal/css3-counter-styles-071.html                 `simp-chinese-informal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/simp-chinese-informal/css3-counter-styles-072.html                 `simp-chinese-informal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/simp-chinese-informal/css3-counter-styles-073.html                 `simp-chinese-informal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/simp-chinese-informal/css3-counter-styles-074.html                 `simp-chinese-informal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/simp-chinese-informal/css3-counter-styles-075.html                 `simp-chinese-informal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/trad-chinese-formal/counter-trad-chinese-formal.html               `trad-chinese-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/trad-chinese-formal/css3-counter-styles-086.html                   `trad-chinese-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/trad-chinese-formal/css3-counter-styles-087.html                   `trad-chinese-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/trad-chinese-formal/css3-counter-styles-088.html                   `trad-chinese-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/trad-chinese-formal/css3-counter-styles-089.html                   `trad-chinese-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/trad-chinese-formal/css3-counter-styles-090.html                   `trad-chinese-formal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/trad-chinese-informal/counter-trad-chinese-informal.html           `trad-chinese-informal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/trad-chinese-informal/css3-counter-styles-081.html                 `trad-chinese-informal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/trad-chinese-informal/css3-counter-styles-082.html                 `trad-chinese-informal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/trad-chinese-informal/css3-counter-styles-083.html                 `trad-chinese-informal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/trad-chinese-informal/css3-counter-styles-084.html                 `trad-chinese-informal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/trad-chinese-informal/css3-counter-styles-085.html                 `trad-chinese-informal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
+css/css-counter-styles/ethiopic-numeric/counter-ethiopic-numeric.html                     `ethiopic-numeric` (Counter Styles 3 §7) behaves as `decimal` here
+css/css-variables/variable-declaration-19.html                                            the substituted value is an `rgb()` colour, a function the engine does not parse, so `color` is invalid at computed-value time and the text inherits black
+css/css-variables/variable-declaration-21.html                                            the substituted value is an `rgb()` colour, a function the engine does not parse, so `color` is invalid at computed-value time and the text inherits black
+css/css-variables/variable-reference-36.html                                              the substituted `background` holds a `url()` image, which the cascade does not take before images (roadmap M23.3), so the shorthand is invalid at computed-value time and the background transparent
+css/css-variables/vars-background-shorthand-001.html                                      three of the four substituted backgrounds hold a `linear-gradient()`, an image, which the cascade does not take before images (roadmap M23.3), so they are invalid at computed-value time and transparent
+css/css-lists/list-type-none-style-image.html                                             a `list-style-image` is not drawn before images (roadmap M23), so the test's `list-style-type: none` item has no marker where the reference's disc shows
+css/css-lists/nested-marker.html                                                          a `::before` or `::after` with `display: list-item` is no list item here: it has no marker and does not count in `list-item`
+css/css-content/element-replacement-alt.html                                              `content: url()` on an element, which replaces its content with the image, waits for images (roadmap M23), so the element's own text shows
+css/CSS2/generated-content/content-004.xht                                                an image in `content` waits for images (roadmap M23)
+
+# Where the reference browser, the draft and the web-platform-tests do not
+# agree (docs/design/values.md, section 1: the reference browser and the
+# tests together over the draft, else the draft), or the tests disagree
+# with themselves.
+css/css-lists/counter-list-item-2.html                                 the web-platform-tests disagree with themselves: this one wants the nested `ol`'s `list-item` counter passed on to the `li` after it, as the draft has it, where counters-scope-001 wants a nested counter of the same name ended with its element, as the reference browser has it and this engine follows (design note, counters), giving 3 here as the reference browser does
+css/css-lists/counters-scope-004.html                                  the test wants the counter a `::before` resets kept to the `::before` (1 1 R 2 3); the draft passes it on to the elements after the `::before` in its element, and so do the reference browser and this engine (1 1 R 1.1 1.1)
+css/css-lists/counter-reset-reversed-siblings-003.html                 the test wants the reversed counter the inner div instantiates, inside the outer div's of the same name, passed on to the div after it, as the draft has it (4 2); this engine ends it with its element, as the reference browser ends such a counter (counters-scope-001), and gives 1 8; the reference browser, with no `reversed()` outside `list-item`, gives 9 7
+css/css-lists/marker-counter.html                                      the counter properties do not apply to `::marker` (Lists 3 §3.1.1 lists the properties that do), as in the reference browser, which renders the test as this engine does
+css/css-text-decor/text-decoration-thickness-length-rounding-002.html  a length thickness is rounded to the nearest whole pixel, 2.7px to 3, as in the reference browser; the tentative test wants it floored to 2
+css/CSS2/generated-content/content-counter-004.xht                     the counters are the text ▪ of the `square` style, drawn by the font as the reference browser draws them, where the reference's inside markers are `square` shapes, smaller, as the reference browser draws those too
+
+# Gaps outside M21, named at their milestones.
+css/css-values/viewport-units-scrollbars-auto-vhw-001.html  the viewport scrolls only vertically (horizontal scrolling is M26), so it has no horizontal scrollbar, and the body's bottom border at 100vh shows where the reference browser's horizontal scrollbar covers it
+css/CSS2/generated-content/content-048.xht                  HTML's `bgcolor` attribute on `body`, a presentational hint, is not one the cascade has (presentational attributes, a gap stated at M12), so the page is not yellow; `attr(bgcolor)` writes the text as it should
+css/CSS2/generated-content/content-145.xht                  HTML's `text` attribute on `body`, a presentational hint for `color`, is not one the cascade has (presentational attributes, a gap stated at M12), so the word `attr(text)` writes is black, not green

@@ -287,6 +287,10 @@ pub(crate) struct InlineLayout<'a> {
     /// The baseline of the first line, the same way (CSS2 §17.5.3: what
     /// a table cell's baseline is, M12).
     pub(crate) first_baseline: Option<f32>,
+    /// The first line's top, from the top of the run, and its height:
+    /// where a list item's outside marker on it looks for floats
+    /// (M21.6).
+    pub(crate) first_line: Option<(f32, f32)>,
     /// The absolutely positioned boxes met in the run or carried by its
     /// inline-blocks and floats (M11), relative to the run's top-left.
     pub(crate) absolutes: Vec<Deferred<'a>>,
@@ -361,6 +365,7 @@ pub(crate) fn layout_inline<'a>(
         fragments: Vec::new(),
         last_baseline: None,
         first_baseline: None,
+        first_line: None,
         deferred: Vec::new(),
         absolutes: Vec::new(),
     };
@@ -455,6 +460,7 @@ pub(crate) fn layout_inline<'a>(
                     );
                     lines.last_baseline = Some(lines.y + m.ascent);
                     lines.first_baseline = lines.first_baseline.or(lines.last_baseline);
+                    lines.first_line = lines.first_line.or(Some((lines.y, m.line_height())));
                     lines.y += m.line_height();
                     lines.end_first_line();
                 }
@@ -469,6 +475,7 @@ pub(crate) fn layout_inline<'a>(
         height: lines.y,
         last_baseline: lines.last_baseline,
         first_baseline: lines.first_baseline,
+        first_line: lines.first_line,
         absolutes: lines.absolutes,
     }
 }
@@ -539,6 +546,8 @@ struct Lines<'a, 'i, 'f, 'c> {
     fragments: Vec<Fragment>,
     last_baseline: Option<f32>,
     first_baseline: Option<f32>,
+    /// The first line's top and height.
+    first_line: Option<(f32, f32)>,
     /// Floats met on the line in progress that did not fit beside it,
     /// placed below it once its height is known, each with the
     /// absolutely positioned boxes it carries, from its border box.
@@ -661,11 +670,15 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
             }
         }
         // A gap stands between two pieces of content: none before the
-        // first on the line, and an inline box's edge is not content.
-        let gap = if !self.has_content || !gap_before {
-            0.0
-        } else {
+        // first on the line, and an inline box's edge is not content, so
+        // that a space after an empty inline at the line's start goes as
+        // one at its start does (css-text-3 §4.1.2). What is placed keeps
+        // only a gap taken, for the line's placement to agree.
+        let gap_before = gap_before && self.has_content;
+        let gap = if gap_before {
             space_width(item.style(), self.pass.fonts)
+        } else {
+            0.0
         };
         // Greedy line breaking at a soft-wrap opportunity (M7.3): if
         // this item doesn't fit, start a new line — unless the line is
@@ -787,6 +800,7 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
     /// forced break, which `text-align-last` aligns.
     fn flush(&mut self, ends: bool) -> bool {
         let first_line = self.first.as_ref().map(|first| first.chain);
+        let top = self.y;
         let placement = self.alignment.place(
             &self.line,
             (self.available_width - self.line_width).max(0.0),
@@ -826,6 +840,9 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
         );
         self.last_baseline = baseline.or(self.last_baseline);
         self.first_baseline = self.first_baseline.or(baseline);
+        if baseline.is_some() {
+            self.first_line = self.first_line.or(Some((top, self.y - top)));
+        }
         self.line_width = 0.0;
         self.has_content = false;
         if baseline.is_some() {
@@ -2607,6 +2624,25 @@ mod tests {
         assert_eq!(line_of("a"), line_of("b"));
         assert_ne!(line_of("b"), line_of("c"));
         assert_eq!(line_of("c"), line_of("d"));
+    }
+
+    #[test]
+    fn a_space_after_an_empty_inline_at_a_lines_start_goes() {
+        // css-text-3 §4.1.2: the space after `<span></span>` at a line's
+        // start is at its start still, an inline box's edge being no
+        // content, as in the reference browser; after a word it stays.
+        let fonts = test_fonts();
+        let items = [inline_box(vec![]), text_box(" a", 16.0)];
+        let (fragments, _) = lay(&items, 800.0, TextAlign::Left, &fonts);
+        assert_eq!(texts(&fragments)[0].x, 0.0);
+        let items = [
+            text_box("a", 16.0),
+            inline_box(vec![]),
+            text_box(" b", 16.0),
+        ];
+        let (fragments, _) = lay(&items, 800.0, TextAlign::Left, &fonts);
+        let gap = space_width(&ComputedStyle::default(), &fonts);
+        assert_eq!(texts(&fragments)[1].x, fonts.measure("a", 16.0) + gap);
     }
 
     #[test]

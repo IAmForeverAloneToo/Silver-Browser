@@ -320,9 +320,13 @@ impl<'a> Item<'a> {
             &style.min_width
         } {
             Size::Px(px) => inner(*px),
-            size @ (Size::Percent(_) | Size::Calc(_)) => c.definite_main().map_or(0.0, |of| {
-                inner(size.length_percentage().map_or(0.0, |v| v.resolve(of)))
-            }),
+            // A percentage of an indefinite size is resolved against
+            // zero, the lengths in a `calc()` with one still counting,
+            // as in the reference browser.
+            size @ (Size::Percent(_) | Size::Calc(_)) => inner(
+                size.length_percentage()
+                    .map_or(0.0, |v| v.resolve(c.definite_main().unwrap_or(0.0))),
+            ),
             Size::Auto => automatic(),
             Size::MinContent => min_content(),
             Size::MaxContent => max_content(),
@@ -517,12 +521,12 @@ pub(crate) fn layout_flex_contents<'a>(
         known => clamp_height(known.unwrap_or(content), bounds(Some(content))),
     };
     // The gaps (CSS Gaps 1 §2): `normal` is zero in a flex container,
-    // and so is a percentage of an indefinite height, as in the
-    // reference browsers.
-    let gap = |gap: &Option<LengthPercentage>, of: Option<f32>| match gap {
-        None => 0.0,
-        Some(LengthPercentage::Px(px)) => *px,
-        Some(gap) => of.map_or(0.0, |of| gap.resolve(of)),
+    // and a percentage of an indefinite height is resolved against zero,
+    // the length in a `calc()` with one still counting, as in the
+    // reference browsers (css-sizing-3 §5.2.1).
+    let gap = |gap: &Option<LengthPercentage>, of: Option<f32>| {
+        gap.as_ref()
+            .map_or(0.0, |gap| gap.resolve(of.unwrap_or(0.0)))
     };
     let column = style.flex_direction.is_column();
     let column_gap = gap(&style.column_gap, Some(content_width));
@@ -876,6 +880,7 @@ pub(crate) fn layout_flex_contents<'a>(
         bottom_edge: own_bottom,
         self_collapsing: false,
         first_baseline: first_baseline.map(|y| content_y + y),
+        first_line: None,
         last_baseline: last_baseline.map(|y| content_y + y),
         // An inline-block takes a flex container's first baseline, as the
         // reference browsers have it.
@@ -1135,8 +1140,8 @@ fn baselines(
 /// when it wraps. A column container's are its items' largest
 /// contributions, as a block container's are (a wrapping column
 /// container's as a single-line one's, design note section 2). A
-/// percentage gap is of the width being found, zero here (css-sizing-3
-/// §5.2.1).
+/// percentage in a gap is of the width being found, zero here
+/// (css-sizing-3 §5.2.1).
 pub(crate) fn content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32) {
     let style = &b.style;
     let items = b
@@ -1150,10 +1155,10 @@ pub(crate) fn content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32
                 (min.max(item_min), max.max(item_max))
             });
     }
-    let gap = match style.column_gap {
-        Some(LengthPercentage::Px(px)) => px,
-        _ => 0.0,
-    };
+    let gap = style
+        .column_gap
+        .as_ref()
+        .map_or(0.0, |gap| gap.resolve(0.0));
     let (mut count, mut min_sum, mut max_sum, mut widest_min) = (0usize, 0.0f32, 0.0f32, 0.0f32);
     for item in items {
         let (min, max) = main_contribution(item, pass);
@@ -1179,7 +1184,8 @@ pub(crate) fn content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32
 /// automatic minimum among them, plus its border, padding and margins.
 /// The base size is under the constraint being found: a definite basis,
 /// else the content size. A percentage is of the width being found, so
-/// `auto` for a size and zero for an edge, and `auto` margins are zero;
+/// `auto` for a size and zero for a minimum and an edge, and `auto`
+/// margins are zero;
 /// a table is never narrower than its minimum, as in a block.
 fn main_contribution<'a>(item: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32) {
     let style = &item.style;
@@ -1227,6 +1233,11 @@ fn main_contribution<'a>(item: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32) {
             Size::Auto => size(&style.width, max_content)
                 .map_or(own().0, |specified| specified.min(own().0))
                 .min(max.unwrap_or(f32::INFINITY)),
+            // A percentage minimum is of zero, a `calc()` what is left of
+            // it (css-sizing-3 §5.2.1).
+            floor @ (Size::Percent(_) | Size::Calc(_)) => floor
+                .length_percentage()
+                .map_or(0.0, |v| inner(v.resolve(0.0))),
             floor => size(floor, max_content).unwrap_or(0.0),
         };
         if let Some(max) = max {
@@ -1397,6 +1408,20 @@ mod tests {
         );
         assert_eq!(rect(&l, "a").3, 40.0);
         assert_eq!(rect(&l, "b"), (0.0, 40.0, 800.0, 10.0));
+        // A `calc()` minimum with a percentage of a size not known: the
+        // percentage is of zero and the length is the floor, a column
+        // item's in an indefinite height as the reference browser has it,
+        // and a row item's in the container's intrinsic width.
+        let l = laid(
+            "<div id=c><div id=a></div></div>",
+            "#c { display: flex; flex-direction: column } #a { min-height: calc(25px + 50%) }",
+        );
+        assert_eq!(rect(&l, "a").3, 25.0);
+        let l = laid(
+            "<div id=c><div id=a></div></div>",
+            "#c { display: inline-flex } #a { min-width: calc(30px - 0%) }",
+        );
+        assert_eq!((rect(&l, "c").2, rect(&l, "a").2), (30.0, 30.0));
     }
 
     #[test]
@@ -1689,6 +1714,22 @@ mod tests {
         // right below, the row gap being nothing.
         assert_eq!(rect(&l, "b").0, 35.0);
         assert_eq!((rect(&l, "e").0, rect(&l, "e").1), (0.0, 20.0));
+        // In a `calc()`, such a percentage is of zero and the length
+        // still counts, as in the reference browser: the row container
+        // is 50 + 20 + 50 wide, its gap then 20 + 12; the column
+        // container's gap 20.
+        let l = laid(
+            "<div id=c><div id=a></div><div id=b></div></div>",
+            "#c { display: inline-flex; column-gap: calc(20px + 10%) }
+             #c div { width: 50px; height: 20px; flex: none }",
+        );
+        assert_eq!((rect(&l, "c").2, rect(&l, "b").0), (120.0, 82.0));
+        let l = laid(
+            "<div id=c><div id=a></div><div id=b></div></div>",
+            "#c { display: flex; flex-direction: column; row-gap: calc(20px + 10%) }
+             #c div { height: 20px }",
+        );
+        assert_eq!((rect(&l, "b").1, rect(&l, "c").3), (40.0, 60.0));
     }
 
     #[test]

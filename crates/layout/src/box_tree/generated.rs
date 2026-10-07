@@ -367,7 +367,12 @@ impl<'w, 'a> Walk<'w, 'a> {
             let counter = &mut walk.counters[id as usize];
             // A list item's own increment counts down a reversed counter.
             let by = by.unwrap_or(if counter.reversed { -1 } else { 1 });
-            counter.value = counter.value.saturating_add(by);
+            // An increment that would take the value past what a 32-bit
+            // integer holds is not made, the value staying, as in the
+            // reference browser and the web-platform-tests
+            // (counter-reset-increment-overflow-underflow), where the
+            // draft clamps it.
+            counter.value = counter.value.checked_add(by).unwrap_or(counter.value);
             if walk.pending.contains_key(&id) {
                 let (sum, _) = seen.entry(id).or_default();
                 *sum = sum.saturating_add(i64::from(by));

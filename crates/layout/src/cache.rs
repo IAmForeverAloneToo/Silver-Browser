@@ -104,6 +104,7 @@ struct Entry {
     self_collapsing: bool,
     last_baseline: Option<f32>,
     first_baseline: Option<f32>,
+    first_line: Option<(f32, f32)>,
     inline_block_baseline: Option<f32>,
     auto_content_height: f32,
 }
@@ -225,6 +226,7 @@ impl LayoutCache {
             self_collapsing: entry.self_collapsing,
             last_baseline: entry.last_baseline,
             first_baseline: entry.first_baseline,
+            first_line: entry.first_line,
             inline_block_baseline: entry.inline_block_baseline,
             absolutes: Vec::new(),
             auto_content_height: entry.auto_content_height,
@@ -283,6 +285,7 @@ impl LayoutCache {
                 self_collapsing: layout.self_collapsing,
                 last_baseline: layout.last_baseline,
                 first_baseline: layout.first_baseline,
+                first_line: layout.first_line,
                 inline_block_baseline: layout.inline_block_baseline,
                 auto_content_height: layout.auto_content_height,
             },

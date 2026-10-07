@@ -478,7 +478,7 @@ impl<'t, 's> Resolver<'t, 's> {
                         // A value that is no `<declaration-value>`, or
                         // whose own functions are invalid, parses as no
                         // syntax.
-                        if !check(&tokens, true) {
+                        if !check(&tokens) {
                             returned = Some(Returned::Attribute(None));
                             continue;
                         }

@@ -6,31 +6,36 @@
 //! context and in its in-flow block descendants, but not into a float,
 //! an absolutely positioned box, an atomic inline or a replaced element,
 //! whose content takes the decorations it names itself alone. Each keeps
-//! its element's colour, style, thickness, underline offset and position
-//! and font size, whatever the text it decorates has: the reference
-//! browser draws one underline of the same thickness under a paragraph's
-//! 16-pixel text and a 32-pixel span in it. The box tree gives each text
-//! box the decorations in force over it, outermost element's first
+//! its element's colour, style, thickness, underline offset and
+//! position; its lines are drawn with the font of its decorating box,
+//! whatever the text it decorates has: an inline element's own, and for
+//! a decoration that reaches the text through a block, the anonymous
+//! inline box of the block container whose lines the text is on (§2),
+//! that block's. So the reference browser draws one underline of the
+//! same thickness under a paragraph's 16-pixel text and a 32-pixel span
+//! in it, and a blockquote's 80-pixel underline as a 20-pixel paragraph's
+//! inside it (text-decoration-subelements-004). The box tree gives each
+//! text box the decorations in force over it, outermost element's first
 //! ([`crate::LayoutBox::decorations`]).
 //!
-//! A line is drawn from the line box's baseline `B` with its element's
-//! font, as the reference browser draws it, measured at 12 to 40
+//! A line is drawn from the line box's baseline `B` with its decorating
+//! box's font, as the reference browser draws it, measured at 12 to 40
 //! pixels: with `A` the font's ascent rounded, `D` its descent rounded
 //! and `T` the thickness — a tenth of the font size for `auto`, the
-//! font's underline thickness for `from-font`, the value given otherwise
-//! — the line is `max(1, ⌊T⌋)` pixels thick for `auto` and `T` rounded,
-//! at least one, otherwise. An underline's top is `B + max(1, ⌈T/2⌉)`,
-//! or `B` plus the rounded `text-underline-offset` when one is given; `B
-//! + D` plus the offset for `under`, and `B` plus the font's underline
-//! position for `from-font`. An overline's top is `B − A − t`, a
-//! line-through's `B − A/3 − T/2` rounded; a `double` line's second line
-//! is the first's top plus `T + 1`, rounded.
+//! font's underline thickness for `from-font`, the value given otherwise,
+//! each but `auto` rounded to whole pixels, at least one, before anything
+//! else — the line is `max(1, ⌊T⌋)` pixels thick. An underline's top is
+//! `B + max(1, ⌈T/2⌉)`, or `B` plus the rounded `text-underline-offset`
+//! when one is given; `B + D` plus the offset for `under`, and `B` plus
+//! the font's underline position for `from-font`. An overline's top is
+//! `B − A − t`, a line-through's `B − A/3 − T/2` rounded; a `double`
+//! line's second line is the first's top plus `T + 1`, rounded.
 
 use std::sync::Arc;
 
 use style::ComputedStyle;
 use style::computed::{
-    Color, DecorationLine, DecorationStyle, DecorationThickness, Float, LengthPercentage,
+    Color, DecorationLine, DecorationStyle, DecorationThickness, Display, Float, LengthPercentage,
     UnderlinePosition,
 };
 use text::FontCollection;
@@ -46,7 +51,7 @@ pub struct Decorating {
     pub thickness: DecorationThickness,
     pub underline_offset: Option<LengthPercentage>,
     pub underline_position: UnderlinePosition,
-    /// The element's font size, which its lines are drawn with.
+    /// The decorating box's font size, which its lines are drawn with.
     pub font_size: f32,
 }
 
@@ -74,6 +79,30 @@ pub(crate) fn stops_propagation(style: &ComputedStyle) -> bool {
     style.float != Float::None
         || style.position.is_out_of_flow()
         || style.display.is_atomic_inline()
+}
+
+/// The decorations `parent`'s give an element styled `style` whose box is
+/// not an inline box: drawn with its font, its anonymous inline box
+/// being their decorating box for the text in it (§2). `parent`'s own
+/// list when its font is theirs already, or the box is an inline one.
+pub(crate) fn through(
+    parent: Option<&Arc<[Decorating]>>,
+    style: &ComputedStyle,
+) -> Option<Arc<[Decorating]>> {
+    let parent = parent?;
+    let size = style.font_size_px;
+    if style.display == Display::Inline || parent.iter().all(|d| d.font_size == size) {
+        return Some(Arc::clone(parent));
+    }
+    Some(
+        parent
+            .iter()
+            .map(|d| Decorating {
+                font_size: size,
+                ..d.clone()
+            })
+            .collect(),
+    )
 }
 
 /// The decorations `parent`'s give with `own` added inside them:
@@ -121,15 +150,19 @@ pub(crate) fn lines(decorations: &[Decorating], fonts: &FontCollection) -> Vec<D
         let metrics = fonts.primary().metrics(d.font_size);
         let (ascent, descent) = (metrics.ascent, metrics.descent);
         let underline = fonts.underline(d.font_size);
+        // `auto` is a tenth of the font size, the line that many whole
+        // pixels and placed by the tenth itself; any other thickness is
+        // rounded to whole pixels first, and placed by that, as in the
+        // reference browser (text-decoration-thickness-length-rounding).
         let thickness = match &d.thickness {
             DecorationThickness::Auto => d.font_size / 10.0,
-            DecorationThickness::FromFont => underline.map_or(d.font_size / 10.0, |(_, t)| t),
-            DecorationThickness::Length(length) => length.resolve(d.font_size),
+            DecorationThickness::FromFont => underline
+                .map_or(d.font_size / 10.0, |(_, t)| t)
+                .round()
+                .max(1.0),
+            DecorationThickness::Length(length) => length.resolve(d.font_size).round().max(1.0),
         };
-        let drawn = match d.thickness {
-            DecorationThickness::Auto => thickness.floor().max(1.0),
-            _ => thickness.round().max(1.0),
-        };
+        let drawn = thickness.floor().max(1.0);
         let offset = d
             .underline_offset
             .as_ref()
@@ -248,6 +281,40 @@ mod tests {
     }
 
     #[test]
+    fn a_decoration_through_a_block_is_drawn_with_the_blocks_font() {
+        // §2: a block's decoration is the anonymous inline box's of the
+        // block container whose lines the text is on, and drawn with its
+        // font; an inline element's with its own; a span in the
+        // paragraph does not change the paragraph's
+        // (text-decoration-subelements-004).
+        let texts = texts(
+            "<blockquote><p>a <span>b</span></p></blockquote>",
+            "blockquote { text-decoration: underline; font-size: 80px }
+             p { font-size: 20px } span { text-decoration: overline; font-size: 32px }",
+        );
+        let a = texts[0].1.clone().expect("the blockquote's");
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].font_size, 20.0);
+        let b = texts[1].1.clone().expect("both");
+        assert_eq!((b[0].font_size, b[1].font_size), (20.0, 32.0));
+        // A block whose font is the decorations' already shares their
+        // list, and so does an inline box, whatever its font.
+        let block = ComputedStyle {
+            display: Display::Block,
+            font_size_px: 20.0,
+            ..ComputedStyle::default()
+        };
+        let through_block = through(Some(&a), &block).expect("the list");
+        assert!(Arc::ptr_eq(&through_block, &a));
+        let inline = ComputedStyle {
+            font_size_px: 40.0,
+            ..ComputedStyle::default()
+        };
+        let through_inline = through(Some(&a), &inline).expect("the list");
+        assert!(Arc::ptr_eq(&through_inline, &a));
+    }
+
+    #[test]
     fn the_lines_are_where_the_reference_browser_draws_them() {
         let fonts = fonts();
         let a = fonts.primary().metrics(16.0).ascent;
@@ -285,8 +352,24 @@ mod tests {
             one("text-decoration: underline; font-size: 32px"),
             (2.0, 3.0, None)
         );
-        // A thickness and an offset given are rounded.
+        // A thickness and an offset given are rounded, the thickness
+        // before it places anything, as in the reference browser: 2.3px
+        // is 2px a pixel down, a tenth of 25px is 3px two down where
+        // `auto`'s tenth is 2px two down.
         assert_eq!(one("text-decoration: underline 2.6px"), (2.0, 3.0, None));
+        assert_eq!(one("text-decoration: underline 2.3px"), (1.0, 2.0, None));
+        assert_eq!(
+            one("text-decoration: underline double 2.3px"),
+            (1.0, 2.0, Some(4.0))
+        );
+        assert_eq!(
+            one("text-decoration: underline 10%; font-size: 25px"),
+            (2.0, 3.0, None)
+        );
+        assert_eq!(
+            one("text-decoration: underline; font-size: 25px"),
+            (2.0, 2.0, None)
+        );
         assert_eq!(
             one("text-decoration: underline; text-underline-offset: 4.4px"),
             (4.0, 1.0, None)

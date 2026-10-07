@@ -1,7 +1,7 @@
-//! What a value with substitution functions in it must be where it is
-//! parsed (M21.1, M21.3, M21.5): every substitution function valid by its
-//! grammar, and, for a custom property, the whole a
-//! `<declaration-value>?` (Variables 1 §2.1).
+//! What a value with substitution functions in it, or a custom property's
+//! value, must be where it is parsed (M21.1, M21.3, M21.5): every
+//! substitution function valid by its grammar, and the whole a
+//! `<declaration-value>?` (Variables 1 §2.1, §3).
 
 use css::Token;
 
@@ -158,32 +158,30 @@ impl Block {
 /// argument grammars, their arguments `<declaration-value>`s, wrapped in
 /// `{}` or not, the first not empty, and `attr()`'s first argument by its
 /// own grammar when nothing is substituted into it; `env()` with its
-/// first argument a `<custom-ident>` and integers no less than 0 — and,
-/// when `custom`, the whole a custom property's value (Variables 1 §2.1).
+/// first argument a `<custom-ident>` and integers no less than 0 — and
+/// the whole a `<declaration-value>`: no bad string or URL, no closer
+/// without its block, and no `;` or `!` at its top level. That is a
+/// custom property's value (Variables 1 §2.1), and the reference browser
+/// holds any other property's value with a substitution function in it
+/// to it too where it is parsed, so that `var(--a) !important
+/// !important` or `var(--a) )` is dropped there (variable-reference-30).
 /// One pass over the tokens, however deep the functions nest, each
 /// `attr()`'s first argument read once more. A block a value leaves open
 /// at its end is closed there, as CSS Syntax 3 closes it.
-pub(crate) fn check(tokens: &[Token], custom: bool) -> bool {
+pub(crate) fn check(tokens: &[Token]) -> bool {
     let mut open: Vec<Block> = Vec::new();
     // Where the substitution functions open are in `open`, the innermost
     // last: inside one, the rules of a `<declaration-value>` hold.
     let mut functions: Vec<usize> = Vec::new();
     for (at, token) in tokens.iter().enumerate() {
         match token {
-            Token::String { bad: true, .. } | Token::Url { bad: true, .. }
-                if custom || !functions.is_empty() =>
-            {
-                return false;
-            }
+            Token::String { bad: true, .. } | Token::Url { bad: true, .. } => return false,
             _ => {}
         }
         if let Some(closer) = closer(token) {
             if open.last().map(Block::closer) != Some(closer) {
                 // A closer with no block of its kind open.
-                if custom || !functions.is_empty() {
-                    return false;
-                }
-                continue;
+                return false;
             }
             match open.pop().expect("a block is open") {
                 Block::Function(function) => {
@@ -231,7 +229,7 @@ pub(crate) fn check(tokens: &[Token], custom: bool) -> bool {
             },
             Some(Block::Plain(_)) => {}
             None => {
-                if custom && matches!(token, Token::Semicolon | Token::Delim('!')) {
+                if matches!(token, Token::Semicolon | Token::Delim('!')) {
                     return false;
                 }
             }

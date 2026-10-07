@@ -1,6 +1,8 @@
 //! The web-platform-tests subset the engine runs (M17, T1.1; its grid
-//! tests M18's, its transforms tests M19's, and its media queries,
-//! conditional rules and cascade tests M20's).
+//! tests M18's, its transforms tests M19's, its media queries,
+//! conditional rules and cascade tests M20's, and its tests of custom
+//! properties, values, lists, counters, generated content, decoration
+//! and alignment M21's).
 //!
 //! `cargo run -p engine --example wpt -- pull <checkout>` reads a
 //! checkout of web-platform-tests and copies into `tests/wpt/` the tests
@@ -16,10 +18,12 @@
 //!   `check-layout-th.js`, and calls to `checkLayout` with a selector,
 //!   in an inline script or `onload`;
 //! - no element that makes no box here: images, SVG, canvases, frames,
-//!   media, form controls, lists and `br`;
+//!   media, form controls and `br`;
 //! - every stylesheet only qualified rules whose selectors the matcher
 //!   parses, and every declaration one the cascade accepts, as
-//!   `style::supports` says, no custom property among them; and no
+//!   `style::supports` says, custom properties and declarations with
+//!   `var()`, `env()` or `attr()` among them as the cascade takes them
+//!   (M21); and no
 //!   at-rule but `@charset`, `@import`, whose sheet is on the checkout
 //!   and held to the rule too, and `@media`, `@supports` and `@layer`
 //!   (M20), the rules inside them held to it as well but for those in an
@@ -54,6 +58,17 @@ const DIRECTORIES: &[&str] = &[
     "css/mediaqueries",
     "css/css-conditional",
     "css/css-cascade",
+    "css/css-variables",
+    "css/css-values",
+    "css/css-env",
+    "css/css-lists",
+    "css/css-counter-styles",
+    "css/css-content",
+    "css/css-text-decor",
+    "css/css-text/text-align",
+    "css/css-text/text-justify",
+    "css/CSS2/lists",
+    "css/CSS2/generated-content",
 ];
 
 /// How deep `@import`s may go; the engine fetches no deeper.
@@ -63,8 +78,7 @@ const MAX_IMPORT_DEPTH: usize = 16;
 const NO_BOX: &[&str] = &[
     "img", "svg", "canvas", "iframe", "frame", "frameset", "object", "embed", "video", "audio",
     "picture", "math", "input", "button", "select", "textarea", "fieldset", "legend", "meter",
-    "progress", "output", "details", "summary", "dialog", "marquee", "ul", "ol", "li", "menu",
-    "br", "hr",
+    "progress", "output", "details", "summary", "dialog", "marquee", "br", "hr",
 ];
 
 /// The scripts a test may load: the harness, which the runner stands in
@@ -1041,6 +1055,55 @@ mod tests {
                 ]
                 .map(String::from)
             )
+        );
+    }
+
+    #[test]
+    fn the_rule_takes_custom_properties_substitutions_and_lists() {
+        let checkout = Checkout::new(
+            "values",
+            &[
+                (
+                    "css/x/t.html",
+                    "<link rel=match href=r.html>\
+                     <style>:root { --w: 10px; --c: green } \
+                     .a { width: calc(var(--w) * 2); color: var(--c, red); \
+                     margin: env(safe-area-inset-top, 0px) } \
+                     li::marker { color: var(--c) } \
+                     .b::before { content: counter(list-item) attr(data-test) }</style>\
+                     <ol><li class=a>x</li></ol><ul><li class=b data-test=y></li></ul>\
+                     <menu><li>z</li></menu>",
+                ),
+                ("css/x/r.html", "<div></div>"),
+                (
+                    "css/x/u.html",
+                    "<link rel=match href=r.html>\
+                     <style>.a { writing-mode: var(--m) }</style>",
+                ),
+                (
+                    "css/x/v.html",
+                    "<link rel=match href=r.html>\
+                     <style>@property --w { syntax: '<length>' }</style>",
+                ),
+                (
+                    "css/x/w.html",
+                    "<link rel=match href=r.html>\
+                     <style>@counter-style c { system: cyclic }</style>",
+                ),
+            ],
+        );
+        assert!(checkout.take("css/x/t.html").is_ok());
+        assert_eq!(
+            checkout.take("css/x/u.html").err().as_deref(),
+            Some("declaration of writing-mode")
+        );
+        assert_eq!(
+            checkout.take("css/x/v.html").err().as_deref(),
+            Some("@property")
+        );
+        assert_eq!(
+            checkout.take("css/x/w.html").err().as_deref(),
+            Some("@counter-style")
         );
     }
 

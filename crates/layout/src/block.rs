@@ -80,7 +80,7 @@
 use dom::NodeId;
 
 use style::computed::{
-    BOTTOM, BoxSizing, Clear, ComputedStyle, Display, Float, LEFT, LengthPercentage,
+    BOTTOM, BoxSizing, Clear, ComputedStyle, Direction, Display, Float, LEFT, LengthPercentage,
     LengthPercentageAuto, ListStylePosition, MaxSize, Position, RIGHT, Size, TOP,
 };
 use style::selector_matching::PseudoElement;
@@ -943,7 +943,9 @@ pub(crate) fn definite_height(
 
 /// `min-height` and `max-height` as content-box heights (CSS2 §10.7):
 /// a percentage of an indefinite containing-block height is `0` and
-/// `none` respectively. A keyword is the box's automatic height (M17,
+/// `none` respectively, and so a `calc()` with one is resolved against
+/// zero for `min-height`, its lengths still counting, and is `none` for
+/// `max-height`, as in the reference browser (M21). A keyword is the box's automatic height (M17,
 /// css-sizing-3 §3.2: in the block axis `min-content`, `max-content`
 /// and `fit-content` are the box's automatic size), `content`, the
 /// content-box height it has with `height: auto`; `None` while that is
@@ -964,7 +966,9 @@ pub(crate) fn height_bounds(
     };
     let min = match &style.min_height {
         Size::MinContent | Size::MaxContent | Size::FitContent => content,
-        size => size.length_percentage().and_then(resolve),
+        size => size
+            .length_percentage()
+            .map(|v| inner(v.resolve(cb_height.unwrap_or(0.0)))),
     };
     let max = match &style.max_height {
         MaxSize::MinContent | MaxSize::MaxContent | MaxSize::FitContent => content,
@@ -1125,6 +1129,11 @@ pub(crate) struct BlockLayout<'a> {
     /// first row's (CSS2 §17.5.3: a table cell's baseline; §10.8.1: an
     /// inline table's, M12) or a flex or grid container's.
     pub(crate) first_baseline: Option<f32>,
+    /// The top of the line box that first baseline is on, from the
+    /// border-box top, and its height; `None` when the first baseline is
+    /// not a line's of this box's block flow (M21.6: where a list item's
+    /// outside marker on that line looks for floats).
+    pub(crate) first_line: Option<(f32, f32)>,
     /// The baseline an inline-block of this content takes (CSS2
     /// §10.8.1): its last baseline, but for a flex or grid container
     /// inside it, which counts by its first, as in the reference
@@ -1613,6 +1622,7 @@ pub(crate) fn layout_block_contents<'a>(
             self_collapsing: true,
             last_baseline: None,
             first_baseline: None,
+            first_line: None,
             inline_block_baseline: None,
             absolutes: Vec::new(),
             auto_content_height: 0.0,
@@ -1651,6 +1661,8 @@ pub(crate) fn layout_block_contents<'a>(
             (floats, at)
         }
     };
+    // The content box's start edges in the float context.
+    let float_left = at.x;
     let mut children = layout_children(
         &b.children,
         content_width,
@@ -1711,6 +1723,7 @@ pub(crate) fn layout_block_contents<'a>(
             self_collapsing: true,
             last_baseline: None,
             first_baseline: None,
+            first_line: None,
             inline_block_baseline: None,
             absolutes,
             auto_content_height: 0.0,
@@ -1822,18 +1835,48 @@ pub(crate) fn layout_block_contents<'a>(
     // the first line, which laid it out at the line's start.
     let mut first_baseline = children.first_baseline.map(|y| content_y + y);
     let mut last_baseline = children.last_baseline.map(|y| content_y + y);
+    // Where the floats push the start of the content on the marker's
+    // line, the marker goes with it, as in the reference browser: by the
+    // room they take there from the content box's start edge, whatever
+    // boxes in the list item the line is in (M21.6). `band` is the line's
+    // top, from the content's, and its height.
+    // An empty list item's content top is where the flow is once the
+    // margins above it resolve, which nothing in it did.
+    let float_shift = |band: Option<(f32, f32)>| {
+        let Some((top, height)) = band else {
+            return 0.0;
+        };
+        let origin = children
+            .end
+            .origin
+            .unwrap_or_else(|| children.end.position());
+        let right_edge = float_left + content_width;
+        let (left, right) = floats.space(origin + top, height, float_left, right_edge);
+        match b.style.direction {
+            Direction::Ltr => (left - float_left).max(0.0),
+            Direction::Rtl => -(right_edge - right).max(0.0),
+        }
+    };
     if let Some(marker) = &beside {
         let baseline = match (first_baseline, marker_line) {
             (Some(baseline), _) => baseline,
             (None, Some((ascent, _))) => content_y + ascent,
             (None, None) => content_y,
         };
+        let band = match marker_line {
+            Some((_, height)) => (0.0, height),
+            None => (
+                baseline - content_y - marker.metrics.ascent,
+                marker.metrics.ascent + marker.metrics.descent,
+            ),
+        };
         first_baseline.get_or_insert(baseline);
         last_baseline.get_or_insert(baseline);
         let shape = matches!(marker.b.kind, BoxKind::Marker { shape: Some(_), .. })
             .then(|| crate::marker::Shape::of(&marker.metrics));
         let x =
-            crate::marker::outside_left(&b.style, border_box_width, marker.width, shape.as_ref());
+            crate::marker::outside_left(&b.style, border_box_width, marker.width, shape.as_ref())
+                + float_shift(Some(band));
         let fragments = marker.fragments(
             x,
             baseline,
@@ -1850,6 +1893,7 @@ pub(crate) fn layout_block_contents<'a>(
             b.node,
             &b.style,
             border_box_width,
+            float_shift(children.first_line),
             pass.fonts,
         );
     }
@@ -1906,6 +1950,9 @@ pub(crate) fn layout_block_contents<'a>(
         self_collapsing: false,
         last_baseline,
         first_baseline,
+        first_line: children
+            .first_line
+            .map(|(top, height)| (content_y + top, height)),
         inline_block_baseline: children.inline_block_baseline.map(|y| content_y + y),
         absolutes,
         auto_content_height,
@@ -2572,6 +2619,9 @@ struct ChildrenLayout<'a> {
     last_baseline: Option<f32>,
     /// The first, the same way, a block child's first counting (M12).
     first_baseline: Option<f32>,
+    /// The line box that first baseline is on, its top the same way,
+    /// and its height, when it is a line's (M21.6).
+    first_line: Option<(f32, f32)>,
     /// The last again, a block child's inline-block baseline counting.
     inline_block_baseline: Option<f32>,
     /// The flow position after the last child, in the float context's
@@ -2622,6 +2672,7 @@ fn layout_children<'a>(
     let mut leading = AdjoiningMargins::default();
     let mut last_baseline = None;
     let mut first_baseline: Option<f32> = None;
+    let mut first_band: Option<(f32, f32)> = None;
     let mut inline_block_baseline = None;
     // The content top is resolved: the leading set is this container's
     // to materialise, at the first content's top.
@@ -2684,8 +2735,11 @@ fn layout_children<'a>(
                         if let Some(baseline) = layout.last_baseline {
                             last_baseline = Some(child_y + baseline);
                         }
-                        if let Some(baseline) = layout.first_baseline {
-                            first_baseline = first_baseline.or(Some(child_y + baseline));
+                        if let Some(baseline) = layout.first_baseline
+                            && first_baseline.is_none()
+                        {
+                            first_baseline = Some(child_y + baseline);
+                            first_band = layout.first_line.map(|(top, h)| (child_y + top, h));
                         }
                         if let Some(baseline) = layout.inline_block_baseline {
                             inline_block_baseline = Some(child_y + baseline);
@@ -2740,8 +2794,11 @@ fn layout_children<'a>(
                 if let Some(baseline) = layout.last_baseline {
                     last_baseline = Some(child_y + baseline);
                 }
-                if let Some(baseline) = layout.first_baseline {
-                    first_baseline = first_baseline.or(Some(child_y + baseline));
+                if let Some(baseline) = layout.first_baseline
+                    && first_baseline.is_none()
+                {
+                    first_baseline = Some(child_y + baseline);
+                    first_band = layout.first_line.map(|(top, h)| (child_y + top, h));
                 }
                 if let Some(baseline) = layout.inline_block_baseline {
                     inline_block_baseline = Some(child_y + baseline);
@@ -2871,8 +2928,11 @@ fn layout_children<'a>(
                     last_baseline = Some(y + baseline);
                     inline_block_baseline = Some(y + baseline);
                 }
-                if let Some(baseline) = lines.first_baseline {
-                    first_baseline = first_baseline.or(Some(y + baseline));
+                if let Some(baseline) = lines.first_baseline
+                    && first_baseline.is_none()
+                {
+                    first_baseline = Some(y + baseline);
+                    first_band = lines.first_line.map(|(top, h)| (y + top, h));
                 }
                 fragments.extend(lines.fragments.into_iter().map(|f| f.translated(0.0, y)));
                 absolutes.extend(carried(lines.absolutes, 0.0, y));
@@ -2892,6 +2952,7 @@ fn layout_children<'a>(
         nothing_materialised: still_leading,
         last_baseline,
         first_baseline,
+        first_line: first_band,
         inline_block_baseline,
         end: at,
         absolutes,
@@ -3471,6 +3532,19 @@ mod tests {
         );
         let m = test_fonts().primary().metrics(16.0);
         assert_eq!(box_fragments(&frags)[1].h, m.line_height());
+        // In a `calc()`, a percentage of an indefinite height is of zero
+        // in `min-height`, its length counting, and makes `max-height`
+        // `none`, as in the reference browser (calc-min-height-block-1).
+        for (css, h) in [
+            ("min-height: calc(25px + 50%)", 25.0),
+            ("min-height: calc(40px - 10%)", 40.0),
+            ("min-height: calc(50% - 30px)", m.line_height()),
+            ("max-height: calc(1px + 50%)", m.line_height()),
+        ] {
+            let root = Element::new("div").push(Element::new("p").text("x"));
+            let frags = fragments_of(root, &format!("div, p {{ margin: 0; }} p {{ {css}; }}"));
+            assert_eq!(box_fragments(&frags)[1].h, h, "{css}");
+        }
     }
 
     #[test]

@@ -618,6 +618,7 @@ pub(crate) fn layout_table_contents<'a>(
         // aligns by it); the last row's is what a box ending in the table
         // takes as its last, an inline-block's included.
         first_baseline: first_row_baseline.map(|b| top_height + b),
+        first_line: None,
         last_baseline: last_row_baseline.map(|b| top_height + b),
         inline_block_baseline: last_row_baseline.map(|b| top_height + b),
         absolutes,
@@ -886,10 +887,15 @@ fn fixed_column_widths(grid: &Grid<'_>, assignable: f32, hspacing: f32) -> Vec<f
     widths
 }
 
-/// A `width` as a length, a percentage of `of`, or `None` for `auto`
-/// or an intrinsic keyword, which the table algorithms take as `auto`.
+/// A `width` as a length, a percentage of `of`, or `None` for `auto`, an
+/// intrinsic keyword or a `calc()` with a percentage in it, which the
+/// table algorithms take as `auto` (M21, as `measure_cell` does and the
+/// reference browser in either algorithm: calc-width-table-fixed-1).
 fn resolve_width(width: &Size, of: f32) -> Option<f32> {
-    width.length_percentage().map(|w| w.resolve(of))
+    match width {
+        Size::Calc(_) => None,
+        width => width.length_percentage().map(|w| w.resolve(of)),
+    }
 }
 
 /// The `width` a column's boxes give it: its column box's, else its
@@ -900,7 +906,7 @@ fn column_box_width(cref: &ColumnRef<'_>) -> Option<Size> {
         .into_iter()
         .flatten()
         .map(|part| &part.style.width)
-        .find(|w| w.length_percentage().is_some())
+        .find(|w| resolve_width(w, 0.0).is_some())
         .cloned()
 }
 
@@ -2553,6 +2559,16 @@ mod tests {
              .h { width: 50%; }",
         );
         assert_eq!(columns_of(&layout, &[6, 7]), [(10.0, 90.0), (110.0, 90.0)]);
+        // A `calc()` with a percentage is `auto` here, as in the automatic
+        // algorithm and the reference browser (calc-width-table-fixed-1):
+        // the free column takes the 180 less the other's 60.
+        let layout = document_of(
+            "<table><tr><td class=h></td><td class=w></td></tr></table>",
+            "body { margin: 0; } td { padding: 0; }
+             table { table-layout: fixed; width: 210px; border-spacing: 10px; }
+             .h { width: calc(50% + 1px); } .w { width: 60px; }",
+        );
+        assert_eq!(columns_of(&layout, &[6, 7]), [(10.0, 120.0), (140.0, 60.0)]);
     }
 
     #[test]

@@ -760,6 +760,10 @@ impl<'a> Styled<'a> {
                 let parent = self
                     .element_decorations(node)
                     .filter(|_| !style.is_some_and(decoration::stops_propagation));
+                let parent = match style {
+                    Some(style) => decoration::through(parent.as_ref(), style),
+                    None => parent,
+                };
                 decoration::within(parent.as_ref(), style.and_then(Decorating::of))
             }
         }
@@ -778,6 +782,7 @@ impl<'a> Styled<'a> {
                 Some(parent) if !stops => self.element_decorations(parent),
                 _ => None,
             };
+            let parent = decoration::through(parent.as_ref(), style);
             decoration::within(parent.as_ref(), Decorating::of(style))
         });
         self.decorations.borrow_mut().insert(node, found.clone());
@@ -3276,8 +3281,9 @@ mod tests {
     }
 
     #[test]
-    fn a_counter_clamps_to_32_bits() {
-        // css/css-lists/counter-reset-increment-overflow-underflow.
+    fn an_increment_past_32_bits_is_not_made() {
+        // css/css-lists/counter-reset-increment-overflow-underflow, as the
+        // reference browser has it: the value stays where it was.
         assert_eq!(
             texts_of(
                 "<div class=o><h3></h3><h3></h3><h3></h3></div>\
@@ -3289,10 +3295,10 @@ mod tests {
             [
                 "2050000000",
                 "2100000000",
-                "2147483647",
+                "2100000000",
                 "-2050000000",
                 "-2100000000",
-                "-2147483648"
+                "-2100000000"
             ]
         );
     }

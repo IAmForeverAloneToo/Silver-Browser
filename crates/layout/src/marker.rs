@@ -203,57 +203,81 @@ pub(crate) fn outside_left(
 }
 
 /// Moves the outside marker of the list item `node`, styled
-/// `list_item` and `border_box_width` wide, to its place, when it is on
-/// a line among `children`, the fragments in the list item's border box
-/// at `(0, 0)`: the fragments of the marker, which lie together, are
-/// moved as one. Whether it was found. The walk stops at the first.
+/// `list_item` and `border_box_width` wide, to its place, `shift` along
+/// from where [`outside_left`] puts it (where floats push the start of
+/// its line), when it is on a line among `children`, the fragments in
+/// the list item's border box at `(0, 0)`: the fragments of the marker,
+/// which lie together, are moved as one. Whether it was found. The walk
+/// stops at the first.
 pub(crate) fn place_on_line(
     children: &mut [Fragment],
     node: NodeId,
     list_item: &ComputedStyle,
     border_box_width: f32,
+    shift: f32,
     fonts: &FontCollection,
 ) -> bool {
-    place_in(children, 0.0, node, list_item, border_box_width, fonts)
+    let place = Place {
+        node,
+        list_item,
+        border_box_width,
+        shift,
+        fonts,
+    };
+    place.within(children, 0.0)
 }
 
-fn place_in(
-    children: &mut [Fragment],
-    left: f32,
+/// What [`place_on_line`] moves a marker by.
+struct Place<'a> {
     node: NodeId,
-    list_item: &ComputedStyle,
+    list_item: &'a ComputedStyle,
     border_box_width: f32,
-    fonts: &FontCollection,
-) -> bool {
-    let is_marker = |f: &Fragment| f.generated == Some(PseudoElement::Marker) && f.node == node;
-    if let Some(first) = children.iter().position(is_marker) {
-        let count = children[first..]
-            .iter()
-            .take_while(|f| is_marker(f))
-            .count();
-        let group = &mut children[first..first + count];
-        let start = group.iter().map(|f| f.x).fold(f32::INFINITY, f32::min);
-        let end = group
-            .iter()
-            .map(|f| f.x + f.w)
-            .fold(f32::NEG_INFINITY, f32::max);
-        let shape = match group[0].kind {
-            FragmentKind::Marker(_) => Some(Shape::of(
-                &fonts.metrics_for_text(" ", group[0].style.font_size_px),
-            )),
-            _ => None,
-        };
-        let to = outside_left(list_item, border_box_width, end - start, shape.as_ref());
-        let dx = to - (left + start);
-        for f in group {
-            f.x += dx;
+    shift: f32,
+    fonts: &'a FontCollection,
+}
+
+impl Place<'_> {
+    /// Moves the marker if it is among `children`, which are `left` from
+    /// the list item's border box, or among theirs.
+    fn within(&self, children: &mut [Fragment], left: f32) -> bool {
+        let is_marker =
+            |f: &Fragment| f.generated == Some(PseudoElement::Marker) && f.node == self.node;
+        if let Some(first) = children.iter().position(is_marker) {
+            let count = children[first..]
+                .iter()
+                .take_while(|f| is_marker(f))
+                .count();
+            let group = &mut children[first..first + count];
+            let start = group.iter().map(|f| f.x).fold(f32::INFINITY, f32::min);
+            let end = group
+                .iter()
+                .map(|f| f.x + f.w)
+                .fold(f32::NEG_INFINITY, f32::max);
+            let shape = match group[0].kind {
+                FragmentKind::Marker(_) => Some(Shape::of(
+                    &self
+                        .fonts
+                        .metrics_for_text(" ", group[0].style.font_size_px),
+                )),
+                _ => None,
+            };
+            let to = outside_left(
+                self.list_item,
+                self.border_box_width,
+                end - start,
+                shape.as_ref(),
+            ) + self.shift;
+            let dx = to - (left + start);
+            for f in group {
+                f.x += dx;
+            }
+            return true;
         }
-        return true;
+        children.iter_mut().any(|f| {
+            let x = left + f.x;
+            self.within(&mut f.children, x)
+        })
     }
-    children.iter_mut().any(|f| {
-        let x = left + f.x;
-        place_in(&mut f.children, x, node, list_item, border_box_width, fonts)
-    })
 }
 
 #[cfg(test)]
@@ -334,6 +358,34 @@ mod tests {
         );
         let li = by_id(&laid, "a");
         assert_eq!(marker_of(&laid, "a")[0].x, li.x + li.w);
+    }
+
+    #[test]
+    fn an_outside_marker_goes_where_floats_push_its_lines_start() {
+        // By the room the floats take on its line from the list item's
+        // content box, whatever box the line is in; an empty list item's
+        // marker too, on a line of its own; none for a float that does
+        // not reach the content box (the reference browser,
+        // CSS2/lists/list-style-applies-to-017).
+        let laid = lay(
+            "<div><i></i><ol><li id=a>A</li></ol></div>\
+             <div><i></i><ol><li id=b style='padding-left: 20px'>B</li></ol></div>\
+             <div><i></i><ol><li id=c><p>C</p></li></ol></div>\
+             <div><i></i><ol><li id=d></li></ol></div>\
+             <div><i style='width: 100px'></i><ol><li id=e>E</li></ol></div>",
+            "div { overflow: hidden } ol { padding-left: 200px; margin: 0 }
+             p { margin: 0 0 0 80px } i { float: left; width: 250px; height: 30px }",
+        );
+        for (id, end) in [
+            ("a", 250.0),
+            ("b", 230.0),
+            ("c", 250.0),
+            ("d", 250.0),
+            ("e", 200.0),
+        ] {
+            let marker = marker_of(&laid, id);
+            assert_eq!(marker[0].x + marker[0].w, end, "#{id}");
+        }
     }
 
     #[test]
