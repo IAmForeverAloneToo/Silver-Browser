@@ -30,8 +30,10 @@ const TAGS: [&str; 20] = [
 /// The attributes a [`Mutator`] sets and removes, those selectors and
 /// the cascade read and those table layout reads, each with the values
 /// it is given: class names and ids a page's selectors can name, span
-/// counts, directions, inline styles that reach every kind of box, and
-/// what `:lang()`, `:link` and the form pseudo-classes read. `class`
+/// counts, directions, inline styles that reach every kind of box, with
+/// transforms and opacities that change from one to another without
+/// layout (M22.4), and what `:lang()`, `:link` and the form
+/// pseudo-classes read. `class`
 /// and `style`, the ones pages change most, come up most.
 const ATTRIBUTES: [(&str, &[&str]); 23] = [
     ("class", CLASSES),
@@ -78,6 +80,10 @@ const STYLES: &[&str] = &[
     "font-size: 20px; color: #f00",
     "background-color: #0f0; min-height: 5px",
     "color: inherit; padding: inherit",
+    "rotate: 30deg; opacity: 0.5",
+    "opacity: 0.7",
+    "transform: translate(5px, 40px) scale(2)",
+    "translate: 0 -8px; opacity: 0.2",
 ];
 
 /// The data a [`Mutator`] gives text nodes: empty, white space, words,

@@ -104,8 +104,8 @@ pub mod transform;
 pub use selector_matching::{matches_selector, matches_selector_list, parse_selector_list};
 
 pub use cascade::{
-    CascadeContext, FontMeasure, PseudoStyles, Recascade, Recascader, Restyle, Styles, Stylesheets,
-    cascade_document, supports,
+    CascadeContext, Composited, FontMeasure, PseudoStyles, Recascade, Recascader, Restyle, Styles,
+    Stylesheets, cascade_document, supports,
 };
 pub use computed::ComputedStyle;
 pub use conditions::supports_condition;

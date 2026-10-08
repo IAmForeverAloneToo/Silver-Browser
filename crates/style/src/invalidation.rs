@@ -542,8 +542,11 @@ fn siblings(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::computed::Display;
+    use crate::selector_matching::PseudoElement;
     use crate::{CascadeContext, Restyle, Styles, Stylesheets};
 
     /// The document `html` parses to, `css` prepared as its one sheet,
@@ -589,6 +592,74 @@ mod tests {
             .subtree(document.root())
             .find(|&n| document.attr(n, "id") == Some(id))
             .unwrap_or_else(|| panic!("#{id}"))
+    }
+
+    #[test]
+    fn a_change_of_a_transform_or_an_opacity_alone_is_composited() {
+        // M22.4: the restyle sorts the changes it makes. One of the
+        // composited properties alone, which leaves the box what it was
+        // to layout, is listed with the effects it replaces and its new
+        // ones, an element's or a pseudo-element's, and the element is
+        // not listed as changed; any other is a change.
+        let (mut document, sheets, mut styles) = setup(
+            "<div id=d><p id=p>text</p></div><div id=e></div><section id=f></section>\
+             <section id=g></section>",
+            "div { rotate: 0deg; opacity: 0.9 } .turned { rotate: 30deg } .faded { opacity: 0.5 } \
+             .wide { width: 10px } .flat { rotate: none } .origin { transform-origin: 0 0 } \
+             div::after { content: 'z' } #e { opacity: 1 } #e.faded { opacity: 0.5 } \
+             #f { transform-style: preserve-3d; will-change: opacity } #f.faded { opacity: 0.5 } \
+             #g { will-change: transform } #g.turned { rotate: 30deg } \
+             p::before { content: 'x'; translate: 0 0 } .turned p::before { translate: 0 5px }",
+        );
+        let [d, p, e, f, g] = ["d", "p", "e", "f", "g"].map(|id| by_id(&document, id));
+        let effects = |styles: &Styles| styles.get(d).unwrap().effects.clone().unwrap();
+        let old = effects(&styles);
+        let restyle = change(&mut document, &sheets, &mut styles, |doc| {
+            doc.set_attribute(d, "class", "turned").unwrap();
+        });
+        assert!(restyle.changed.is_empty(), "{restyle:?}");
+        let sorted: Vec<_> = restyle
+            .composited
+            .iter()
+            .map(|c| (c.node, c.pseudo, c.transformed))
+            .collect();
+        assert_eq!(
+            sorted,
+            vec![(d, None, true), (p, Some(PseudoElement::Before), true)]
+        );
+        assert!(Arc::ptr_eq(&restyle.composited[0].old, &old));
+        assert!(Arc::ptr_eq(&restyle.composited[0].new, &effects(&styles)));
+        // An opacity's change changes no transform.
+        let restyle = change(&mut document, &sheets, &mut styles, |doc| {
+            doc.set_attribute(d, "class", "turned faded").unwrap();
+        });
+        let sorted: Vec<_> = restyle
+            .composited
+            .iter()
+            .map(|c| (c.node, c.transformed))
+            .collect();
+        assert_eq!((restyle.changed, sorted), (Vec::new(), vec![(d, false)]));
+        // A width is read by layout; a transform's origin, outside the
+        // composited properties, is not composited; with no transform
+        // the box is no longer a containing block.
+        for class in ["turned origin", "turned faded wide", "turned", "flat"] {
+            let restyle = change(&mut document, &sheets, &mut styles, |doc| {
+                doc.set_attribute(d, "class", class).unwrap();
+            });
+            assert_eq!(restyle.changed, vec![d], "{class}");
+            assert!(restyle.composited.iter().all(|c| c.node != d), "{class}");
+        }
+        // An opacity from 1 makes a stacking context of a box no
+        // transform applies to, an inline box's, which the cascade
+        // cannot tell from another; it flattens a box's 3D content; and
+        // a transform makes a containing block, whatever `will-change`
+        // makes the box already.
+        for (element, class) in [(e, "faded"), (f, "faded"), (g, "turned")] {
+            let restyle = change(&mut document, &sheets, &mut styles, |doc| {
+                doc.set_attribute(element, "class", class).unwrap();
+            });
+            assert_eq!(restyle.changed, vec![element], "{class}");
+        }
     }
 
     #[test]

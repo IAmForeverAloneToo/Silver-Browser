@@ -52,6 +52,7 @@ use std::collections::HashMap;
 use dom::{Change, Document, NodeId};
 
 use crate::block::{AdjoiningMargins, BlockLayout, Fragment, FragmentKind};
+use crate::composite::{EffectsChange, patch};
 
 /// The layout results kept between passes, and what the last pass did.
 #[derive(Debug, Default)]
@@ -188,6 +189,15 @@ impl LayoutCache {
             forget(node);
         }
         entries.retain(|node, _| document.contains(*node));
+    }
+
+    /// Gives the fragments of the kept entries that `change` reaches its
+    /// new effects, so that a later layout taking them has them: a
+    /// composited change (M22.4, `crate::composite`).
+    pub fn composite(&self, change: &EffectsChange<'_>) {
+        for entry in self.entries.borrow_mut().values_mut() {
+            patch(&mut entry.root, change);
+        }
     }
 
     /// Starts a pass: its counts from zero.
@@ -441,8 +451,39 @@ mod tests {
             if restyle.full {
                 self.cache.clear();
             } else {
-                self.cache
-                    .invalidate(&self.document, &changes, &restyle.changed);
+                // A composited change (M22.4) is laid out again, as the
+                // engine lays it out when it does not keep its layout.
+                let mut restyled = restyle.changed;
+                restyled.extend(restyle.composited.iter().map(|c| c.node));
+                self.cache.invalidate(&self.document, &changes, &restyled);
+            }
+        }
+
+        /// Changes the document with `f`, then restyles it, every change
+        /// of style composited (M22.4), and writes them into the cache's
+        /// entries rather than forget them, as the engine does when it
+        /// keeps its layout.
+        fn composite(&mut self, f: impl FnOnce(&mut Document)) {
+            f(&mut self.document);
+            let changes = self.document.take_changes();
+            let restyle = self.sheets.restyle(
+                &self.document,
+                &CascadeContext::default(),
+                &mut self.styles,
+                &changes,
+            );
+            assert!(
+                !restyle.full && restyle.changed.is_empty() && !restyle.composited.is_empty(),
+                "{restyle:?}"
+            );
+            for c in &restyle.composited {
+                self.cache.composite(&EffectsChange {
+                    node: c.node,
+                    pseudo: c.pseudo,
+                    old: &c.old,
+                    new: &c.new,
+                    transformed: c.transformed,
+                });
             }
         }
 
@@ -501,6 +542,25 @@ mod tests {
         assert_eq!(s.pass(), (5, 0));
         assert_eq!(s.cache.len(), 5);
         assert_eq!(s.pass(), (0, 1));
+    }
+
+    #[test]
+    fn the_entries_a_composited_change_is_written_into_are_what_a_pass_takes() {
+        // M22.4: a box turned and faded, its change written into the
+        // entries that hold its fragments, the top box's and its own:
+        // the pass that takes the top box whole has the new effects, as
+        // a fresh layout does.
+        let mut s = Session::new(
+            "<div id=d><p id=t>turned</p><p>still</p></div><p>after</p>",
+            "#t { rotate: 5deg; opacity: 0.9 } #t.more { rotate: 30deg; opacity: 0.5 }",
+        );
+        s.pass();
+        let t = s.id("t");
+        s.composite(|d| d.set_attribute(t, "class", "more").unwrap());
+        assert_eq!(s.pass(), (0, 1));
+        // Laid out again, the change reaches its box and its ancestors.
+        s.change(|d| d.set_attribute(t, "class", "").unwrap());
+        assert_eq!(s.pass(), (4, 2));
     }
 
     #[test]

@@ -221,6 +221,10 @@ pub struct Engine {
     restyled_elements: u64,
     /// How many layouts have run: what proves a scroll does not.
     layout_runs: u64,
+    /// How many restyles left the layout standing (M22.4): their changes
+    /// reached nothing layout reads, or only the transforms and
+    /// opacities of boxes, which were written into it.
+    layouts_kept: u64,
     /// How many boxes placed in flow the layouts have laid out, and how
     /// many they took from the cache instead: what proves a change lays
     /// out what it reaches and no more.
@@ -570,6 +574,7 @@ impl Engine {
             style_runs: 0,
             restyled_elements: 0,
             layout_runs: 0,
+            layouts_kept: 0,
             boxes_laid_out: 0,
             boxes_reused: 0,
             viewport: (0, 0),
@@ -1242,10 +1247,11 @@ impl Engine {
     /// again or fetched again otherwise, and dropped with the element.
     /// If the sheets that apply changed, the next frame cascades the
     /// whole document and lays it out afresh; otherwise the next frame
-    /// restyles the
-    /// elements the changes reach (M13.1) and lays out the boxes the
-    /// changes and those restyles reach (M13.2). The scroll offsets of
-    /// freed elements are dropped, and
+    /// restyles the elements the changes reach (M13.1) and lays out the
+    /// boxes the changes and those restyles reach (M13.2), or keeps the
+    /// layout when they reach nothing layout reads, a change of a
+    /// transform or an opacity alone written into it (M22.4). The
+    /// scroll offsets of freed elements are dropped, and
     /// [`Engine::needs_frame`] says a frame is wanted; the document's
     /// own scroll offset stays, clamped to the new layout by the next
     /// frame. When it records none — a value set to the one already
@@ -1306,7 +1312,8 @@ impl Engine {
                 self.shown.pending.extend(changes);
             }
         }
-        self.shown.layout = None;
+        // The layout stands until the restyle says what the changes
+        // reach (M22.4).
         let document = &self.shown.document;
         self.shown
             .element_scroll
@@ -1520,17 +1527,60 @@ impl Engine {
             if restyle.full {
                 self.style_runs += 1;
                 self.shown.layout_cache.clear();
+                self.shown.layout = None;
             } else {
                 self.restyled_elements += restyle.computed as u64;
-                self.shown.layout_cache.invalidate(
-                    &self.shown.document,
-                    &changes,
-                    &restyle.changed,
-                );
+                // The layout stands when nothing changed that layout
+                // reads — the document's structure or text, a table's
+                // spans, a style but in its composited properties — and
+                // the composited changes are written into it (M22.4).
+                let read = changes.iter().any(|change| match change {
+                    Change::AttributeChanged { name, .. } => {
+                        matches!(name.as_str(), "colspan" | "rowspan" | "span")
+                    }
+                    _ => true,
+                });
+                let kept =
+                    !read && restyle.changed.is_empty() && self.composite(&restyle.composited);
+                if kept {
+                    self.layouts_kept += 1;
+                } else {
+                    let mut restyled = restyle.changed;
+                    restyled.extend(restyle.composited.iter().map(|c| c.node));
+                    self.shown
+                        .layout_cache
+                        .invalidate(&self.shown.document, &changes, &restyled);
+                    self.shown.layout = None;
+                }
             }
-            self.shown.layout = None;
         }
         &self.shown.styled.as_ref().expect("just computed").styles
+    }
+
+    /// Writes the composited changes `composited` into the layout shown
+    /// and the layout cache (M22.4, `layout::composite`): says whether
+    /// there is a layout and it stands, every change having found the
+    /// boxes it reaches and left the scrollable overflow as it was. When
+    /// it does not, the caller lays the document out again.
+    fn composite(&mut self, composited: &[style::Composited]) -> bool {
+        let Some(cached) = self.shown.layout.as_mut() else {
+            return false;
+        };
+        for change in composited {
+            let change = layout::EffectsChange {
+                node: change.node,
+                pseudo: change.pseudo,
+                old: &change.old,
+                new: &change.new,
+                transformed: change.transformed,
+            };
+            let done = cached.layout.composite(&change, cached.width);
+            self.shown.layout_cache.composite(&change);
+            if done != layout::Composited::Done {
+                return false;
+            }
+        }
+        true
     }
 
     /// The document's layout for `viewport_width`, computed once per
@@ -1584,6 +1634,13 @@ impl Engine {
     /// How many layouts this session has run.
     pub fn layout_runs(&self) -> u64 {
         self.layout_runs
+    }
+
+    /// How many restyles this session has kept the layout through
+    /// (M22.4): their changes reached nothing layout reads, or only the
+    /// transforms and opacities of boxes, which were written into it.
+    pub fn layouts_kept(&self) -> u64 {
+        self.layouts_kept
     }
 
     /// How many boxes placed in flow this session's layouts have laid
@@ -4909,6 +4966,29 @@ mod tests {
         <table><tr><td class=a>cell <q>q</q></td></tr></table>\
         <div class=c style='position: relative'>abs <q>r</q></div>";
 
+    /// A page of transformed and translucent boxes (M19), whose classes
+    /// and `style` attributes the mutator changes from one transform or
+    /// opacity to another, which keeps the layout (M22.4): blocks, a
+    /// pseudo-element, a table's wrapper, an inline-block, a box near a
+    /// scroll container's bottom and one at the document's, and a fixed
+    /// box.
+    const TRANSFORMED_PAGE: &str = "<style>\
+          body { margin: 4px; font-size: 10px }\
+          div { rotate: 0deg } p { opacity: 0.9 }\
+          .a { rotate: 20deg; opacity: 0.6 }\
+          .b { translate: 3px 12px; scale: 1.5 }\
+          .c { transform: skewX(10deg) translateY(-4px); opacity: 0.3 }\
+          p.a::before { content: 'A'; display: inline-block; rotate: 45deg }\
+          p.b::after { content: 'B'; display: block; translate: 0 6px; opacity: 0.5 }\
+          .s { overflow: auto; height: 30px }\
+          .f { position: fixed; bottom: 0; right: 0; width: 10px; height: 10px; background-color: #f80 }\
+        </style>\
+        <div class=a><p>one <b>two</b></p><p class=b>three</p></div>\
+        <div class=s><p>scroll</p><div class=b>moved</div></div>\
+        <table class=c><tr><td>1</td><td>2</td></tr></table>\
+        <span class=a style='display: inline-block'>ib</span>\
+        <div class='f a'></div><div class=c>last</div>";
+
     #[test]
     fn after_random_mutations_the_engine_shows_what_a_fresh_engine_shows() {
         // Seeded runs of random mutations, each compared after every
@@ -4922,22 +5002,37 @@ mod tests {
             ("nested", NESTED_PAGE),
             ("forms", FORMS_PAGE),
             ("generated", GENERATED_PAGE),
+            ("transformed", TRANSFORMED_PAGE),
         ] {
-            let changed: usize = (1..=8)
-                .map(|seed| mutate_and_compare(&mut fresh, name, page, seed))
-                .sum();
+            let (mut changed, mut reused, mut kept) = (0, 0, 0);
+            for seed in 1..=8 {
+                let run = mutate_and_compare(&mut fresh, name, page, seed);
+                changed += run.0;
+                reused += run.1;
+                kept += run.2;
+            }
             // Enough of the steps did something, over all the runs.
             assert!(
                 changed >= 8 * 15,
                 "{name} page: only {changed} steps changed anything"
             );
+            // The layout cache was put to use, and so was a layout kept
+            // through changes that reached nothing it reads (M22.4).
+            assert!(reused > 0, "{name} page: no box reused");
+            assert!(kept > 0, "{name} page: no layout kept");
         }
     }
 
     /// Fifty random mutations of `page` from `seed`, each followed by
     /// the differential check against `fresh`; returns how many changed
-    /// anything.
-    fn mutate_and_compare(fresh: &mut Engine, name: &str, page: &str, seed: u64) -> usize {
+    /// anything, how many boxes the layouts reused and how many restyles
+    /// kept the layout.
+    fn mutate_and_compare(
+        fresh: &mut Engine,
+        name: &str,
+        page: &str,
+        seed: u64,
+    ) -> (usize, u64, u64) {
         let mut engine = test_engine();
         engine.load_document(page);
         let mut mutator = differential::Mutator::new(engine.document());
@@ -4963,12 +5058,7 @@ mod tests {
                 panic!("{name} page, seed {seed}, step {step}: {difference}");
             }
         }
-        // The layout cache was put to use.
-        assert!(
-            engine.boxes_reused() > 0,
-            "{name} page, seed {seed}: no box reused"
-        );
-        changed
+        (changed, engine.boxes_reused(), engine.layouts_kept())
     }
 
     #[test]
@@ -5574,5 +5664,263 @@ mod tests {
         });
         draw_at(&mut engine, 400);
         assert!(!engine.needs_frame());
+    }
+
+    /// The changes a page's classes and `style` attributes can make
+    /// from one transform or opacity to another (M22.4).
+    const COMPOSITED_CHANGES: [(&str, &str); 10] = [
+        ("class", "a"),
+        ("class", "b"),
+        ("class", "c"),
+        ("class", "b c"),
+        ("style", "rotate: 30deg; opacity: 0.5"),
+        ("style", "opacity: 0.3"),
+        ("style", "opacity: 0.7"),
+        ("style", "transform: translate(5px, 40px) scale(2)"),
+        ("style", "translate: 0 -8px; opacity: 0.2"),
+        ("style", ""),
+    ];
+
+    #[test]
+    fn composited_changes_keep_the_layout_and_show_what_a_fresh_engine_shows() {
+        // Each element of the transformed page given each change in
+        // turn, compared after each with a fresh engine's full pass (the
+        // differential check): the layouts kept through the composited
+        // changes, their fragments given the new effects and the
+        // scrollable overflow measured again, are those a full pass
+        // computes, scrolled or not.
+        let mut fresh = test_engine();
+        let mut engine = test_engine();
+        engine.load_document(TRANSFORMED_PAGE);
+        let check = |engine: &mut Engine, fresh: &mut Engine, step: &str| {
+            if let Err(difference) = differential::compare_with_fresh(engine, fresh, 160, 120) {
+                panic!("{step}: {difference}");
+            }
+        };
+        check(&mut engine, &mut fresh, "loaded");
+        let document = engine.document();
+        let elements: Vec<NodeId> = document
+            .subtree(document.root())
+            .filter(|&n| {
+                document.is_element(n)
+                    && !matches!(document.tag(n), Some("html" | "head" | "style"))
+            })
+            .collect();
+        let (runs, kept) = (engine.layout_runs(), engine.layouts_kept());
+        let mut steps = 0;
+        for (i, &element) in elements.iter().enumerate() {
+            // The changes, then the attributes put back as they were, so
+            // that the next element's changes are made in the page as
+            // it was loaded.
+            let document = engine.document();
+            let restore = ["class", "style"]
+                .map(|name| (name, document.attr(element, name).map(str::to_string)));
+            let changes = COMPOSITED_CHANGES
+                .iter()
+                .map(|&(name, value)| (name, Some(value.to_string())))
+                .chain(restore);
+            for (name, value) in changes {
+                if engine.document().attr(element, name) == value.as_deref() {
+                    continue; // no change
+                }
+                engine.mutate(|document| match &value {
+                    Some(value) => document.set_attribute(element, name, value).unwrap(),
+                    None => document.remove_attribute(element, name).unwrap(),
+                });
+                if steps % 7 == 3 {
+                    engine.set_scroll(steps as f32);
+                }
+                check(
+                    &mut engine,
+                    &mut fresh,
+                    &format!("element {i}, {name}={value:?}"),
+                );
+                steps += 1;
+            }
+        }
+        let (laid, kept) = (engine.layout_runs() - runs, engine.layouts_kept() - kept);
+        // A third of the changes and more kept the layout: those that
+        // restyled nothing, and the composited changes but where a
+        // transform moved the bottom of a scroll container's overflow or
+        // the document's, which this small page's boxes are often near.
+        // The others laid it out.
+        assert_eq!(laid + kept, steps, "every step restyled");
+        assert!(kept * 3 > steps, "{kept} of {steps} kept the layout");
+        assert!(laid > 0, "no step laid out");
+    }
+
+    #[test]
+    fn a_transform_or_opacity_animation_lays_nothing_out_and_is_drawn_and_hit_where_it_is() {
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0 } div { width: 50px; height: 50px }
+             @keyframes slide { from { translate: 0px } to { translate: 100px } }
+             @keyframes fade { from { opacity: 1 } to { opacity: 0 } }
+             #a { background: #f00; animation: slide 1s linear }
+             #b { background: #00f; animation: fade 1s linear }
+             #c { height: 400px }</style><div id=a></div><div id=b></div><div id=c></div>",
+        );
+        draw_at(&mut engine, 0);
+        let a = node_by_id(&engine, "a");
+        assert_ne!(engine.hit_test(60.0, 10.0), Some(a));
+        let (runs, kept) = (engine.layout_runs(), engine.layouts_kept());
+        let frame = engine
+            .frame_at(200, 100, FrameTime::at(Duration::from_millis(500)))
+            .to_vec();
+        // Both changes were written into the layout standing.
+        assert_eq!(engine.layout_runs(), runs);
+        assert_eq!(engine.layouts_kept(), kept + 1);
+        // The red box is drawn and hit 50px along, the blue one half
+        // faded.
+        assert_eq!(px(&frame, 200, 60, 10), [255, 0, 0, 255]);
+        assert_eq!(px(&frame, 200, 40, 10), [255, 255, 255, 255]);
+        assert_eq!(engine.hit_test(60.0, 10.0), Some(a));
+        assert_ne!(engine.hit_test(40.0, 10.0), Some(a));
+        let faded = px(&frame, 200, 10, 60);
+        assert!(
+            faded[0] > 100 && faded[0] < 160 && faded[2] == 255,
+            "{faded:?}"
+        );
+        // Nor do the frames after.
+        for ms in [600, 700, 800] {
+            draw_at(&mut engine, ms);
+        }
+        assert_eq!(engine.layout_runs(), runs);
+        assert_eq!(engine.layouts_kept(), kept + 4);
+        assert_eq!(engine.hit_test(90.0, 10.0), Some(a));
+    }
+
+    #[test]
+    fn a_transform_reaching_its_scroll_containers_bottom_or_the_documents_is_laid_out() {
+        // A transform is part of the scrollable overflow (M19): a box an
+        // animation moves down past its scroll container's bottom, or
+        // the document's, makes them taller, as in the reference
+        // browser, where a 100px scroller's `scrollHeight` is 548px when
+        // its 50px box is 498px down.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0 } #s { overflow: auto; height: 100px }
+             #a, #b { height: 50px; animation: down 1s linear }
+             #b { animation-name: up }
+             @keyframes down { from { translate: 0 0 } to { translate: 0 996px } }
+             @keyframes up { from { translate: 0 0 } to { translate: 0 100px } }
+             </style><div id=s><div id=a></div></div><div id=b></div>",
+        );
+        draw_at(&mut engine, 0);
+        let s = node_by_id(&engine, "s");
+        assert_eq!(engine.element_max_scroll(s), 0.0);
+        assert_eq!(engine.max_scroll(), 50.0);
+        let runs = engine.layout_runs();
+        draw_at(&mut engine, 500);
+        assert_eq!(engine.layout_runs(), runs + 1);
+        assert_eq!(engine.element_max_scroll(s), 448.0);
+        assert_eq!(engine.max_scroll(), 100.0);
+    }
+
+    #[test]
+    fn a_box_turned_through_its_style_attribute_lays_nothing_out() {
+        // The card M19's acceptance turns, one of a dozen inline blocks,
+        // turned two degrees more at each frame; and a change of an
+        // attribute that restyles nothing.
+        let mut engine = test_engine();
+        let cards = "<div class=card><p>card</p></div>".repeat(11);
+        engine.load_document(&format!(
+            "<style>body {{ margin: 0 }} .card {{ display: inline-block; width: 60px;
+             height: 40px; margin: 0 10px 10px 0; background: #0a0 }}</style>\
+             <div><div class=card id=spin style='transform: rotate(0deg)'><p>card</p></div>\
+             {cards}</div>"
+        ));
+        engine.frame(200, 100);
+        let spin = node_by_id(&engine, "spin");
+        let (runs, kept) = (engine.layout_runs(), engine.layouts_kept());
+        for degrees in (2..=90).step_by(2) {
+            set(
+                &mut engine,
+                "spin",
+                "style",
+                &format!("transform: rotate({degrees}deg)"),
+            );
+            engine.frame(200, 100);
+        }
+        assert_eq!(engine.layout_runs(), runs);
+        assert_eq!(engine.layouts_kept(), kept + 45);
+        // Turned a quarter about its centre (30, 20): 40px wide and 60px
+        // tall, from -10px to 50px down.
+        let in_spin = |engine: &mut Engine, x: f32, y: f32| {
+            engine.hit_test(x, y).is_some_and(|hit| {
+                hit == spin || engine.document().ancestors(hit).any(|n| n == spin)
+            })
+        };
+        assert!(in_spin(&mut engine, 25.0, 45.0));
+        assert!(!in_spin(&mut engine, 5.0, 5.0));
+        set(&mut engine, "spin", "data-turned", "");
+        engine.frame(200, 100);
+        assert_eq!(
+            (engine.layout_runs(), engine.layouts_kept()),
+            (runs, kept + 46)
+        );
+        // A change to what layout reads lays it out.
+        set(
+            &mut engine,
+            "spin",
+            "style",
+            "transform: rotate(90deg); width: 80px",
+        );
+        engine.frame(200, 100);
+        assert_eq!(engine.layout_runs(), runs + 1);
+    }
+
+    #[test]
+    fn a_restyle_to_the_same_style_leaves_the_boxes_effects_to_be_found() {
+        // The element restyled for a selector's sake to the style it had:
+        // the style in place stays, whose effects its boxes carry, and
+        // the composited change after finds them.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>#t { rotate: 5deg; height: 20px } [data-on] #t { rotate: 5deg }
+             #t.more { rotate: 10deg }</style><div id=d><div id=t></div></div><p>after</p>",
+        );
+        engine.frame(200, 100);
+        let (runs, kept, restyled) = (
+            engine.layout_runs(),
+            engine.layouts_kept(),
+            engine.restyled_elements(),
+        );
+        set(&mut engine, "d", "data-on", "");
+        engine.frame(200, 100);
+        assert!(engine.restyled_elements() > restyled, "restyled");
+        set(&mut engine, "t", "class", "more");
+        engine.frame(200, 100);
+        assert_eq!(
+            (engine.layout_runs(), engine.layouts_kept()),
+            (runs, kept + 2)
+        );
+    }
+
+    #[test]
+    fn a_box_the_cache_keeps_through_a_composited_change_keeps_its_new_effects() {
+        // A later change lays the document out again from the cache: the
+        // turned box taken from it is turned as it was last shown.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0 } #t { width: 100px; height: 20px; translate: 0px;
+             background: #00f } section { margin: 0 }</style>\
+             <section><div id=t></div><p>held</p></section><p id=text>words</p>",
+        );
+        engine.frame(200, 100);
+        set(&mut engine, "t", "style", "translate: 50px");
+        engine.frame(200, 100);
+        let t = node_by_id(&engine, "t");
+        let text = node_by_id(&engine, "text");
+        let (runs, reused) = (engine.layout_runs(), engine.boxes_reused());
+        engine.mutate(|document| {
+            let word = document.first_child(text).unwrap();
+            document.set_text(word, "other words").unwrap();
+        });
+        engine.frame(200, 100);
+        assert_eq!(engine.layout_runs(), runs + 1);
+        assert!(engine.boxes_reused() > reused, "the section was taken");
+        assert_eq!(engine.hit_test(120.0, 10.0), Some(t));
+        assert_ne!(engine.hit_test(20.0, 10.0), Some(t));
     }
 }

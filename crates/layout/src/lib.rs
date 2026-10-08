@@ -22,6 +22,7 @@ mod align;
 pub mod block;
 pub mod box_tree;
 mod cache;
+mod composite;
 pub mod decoration;
 mod flex;
 mod float;
@@ -42,6 +43,7 @@ pub use box_tree::{
     BoxKind, FirstLine, LayoutBox, MAX_GENERATED_TEXT, MarkerShape, RowGroupKind, build_box_tree,
 };
 pub use cache::LayoutCache;
+pub use composite::{Composited, EffectsChange};
 pub use paginate::{MAX_PAGES, PageSlice, Paginated, paginate};
 
 #[cfg(test)]

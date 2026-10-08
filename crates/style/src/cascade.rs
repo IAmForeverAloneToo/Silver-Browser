@@ -832,9 +832,19 @@ impl Stylesheets {
                 let computed = cascader.style_of(node, Parent::of(parent), rem, before, old);
                 restyle.computed += 1;
                 let changed = old != Some(&computed);
-                styles.set(node, computed);
+                let composited = old
+                    .filter(|_| changed)
+                    .and_then(|old| composited_change(node, old, &computed));
+                // An equal style leaves the one in place, whose effects
+                // the layout's boxes carry: what a later composited
+                // change finds them by (M22.4).
                 if changed {
-                    restyle.changed.push(node);
+                    styles.set(node, computed);
+                }
+                match composited {
+                    Some(composited) => restyle.composited.extend(composited),
+                    None if changed => restyle.changed.push(node),
+                    None => {}
                 }
                 if changed || reach == Reach::Subtree {
                     let child_reach = if reach == Reach::Subtree {
@@ -1128,10 +1138,136 @@ pub struct Restyle {
     /// changed, and [`Restyle::changed`] is empty.
     pub full: bool,
     /// The elements whose computed style changed, a newly styled one
-    /// among them, in the order they were restyled.
+    /// among them, in the order they were restyled — but for those whose
+    /// changes are composited.
     pub changed: Vec<NodeId>,
+    /// The changes of style that are composited (M22.4): of an element,
+    /// or a pseudo-element of it, in its transform or its opacity alone,
+    /// leaving its box what it was to layout.
+    pub composited: Vec<Composited>,
     /// How many elements had their style computed.
     pub computed: usize,
+}
+
+/// A composited change of style (M22.4): of an element's, or its
+/// pseudo-element's, `transform`, `translate`, `rotate`, `scale` or
+/// `opacity` alone, which leaves its box what it was to layout — a
+/// stacking context or not, a containing block for absolutely and fixed
+/// positioned boxes or not, flattening its 3D content or not. Nothing
+/// inherits those properties, and layout reads none of them: the
+/// caller can give the boxes the new effects rather than lay them out.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Composited {
+    pub node: NodeId,
+    pub pseudo: Option<PseudoElement>,
+    /// The effects the style it replaces had, which its boxes carry.
+    pub old: Arc<Effects>,
+    /// Its new effects.
+    pub new: Arc<Effects>,
+    /// Whether its transform changed, which can change the scrollable
+    /// overflow its boxes are part of.
+    pub transformed: bool,
+}
+
+/// The composited changes from `old` to `new`, the computed styles of the
+/// element `node` before a change and after it, when every change is one;
+/// `None` when any is not, an element's own or a pseudo-element's.
+fn composited_change(node: NodeId, old: &Computed, new: &Computed) -> Option<Vec<Composited>> {
+    if old.display_none != new.display_none || old.unrendered != new.unrendered {
+        return None;
+    }
+    let mut out = Vec::new();
+    composited_style(node, None, &old.style, &new.style, &mut out)?;
+    match (old.after_change.as_deref(), new.after_change.as_deref()) {
+        (None, None) => {}
+        (Some(a), Some(b)) => composited_style(node, None, a, b, &mut Vec::new())?,
+        _ => return None,
+    }
+    match (old.pseudo.as_deref(), new.pseudo.as_deref()) {
+        (None, None) => {}
+        (Some(a), Some(b)) => {
+            // Every pseudo-element style kept, named so that one kept
+            // later is not passed over.
+            let PseudoStyles {
+                before,
+                after,
+                first_letter,
+                first_line,
+                marker,
+            } = a;
+            for (pseudo, a, b) in [
+                (PseudoElement::Before, before, &b.before),
+                (PseudoElement::After, after, &b.after),
+                (PseudoElement::FirstLetter, first_letter, &b.first_letter),
+                (PseudoElement::FirstLine, first_line, &b.first_line),
+                (PseudoElement::Marker, marker, &b.marker),
+            ] {
+                match (a, b) {
+                    (None, None) => {}
+                    (Some(a), Some(b)) => composited_style(node, Some(pseudo), a, b, &mut out)?,
+                    _ => return None,
+                }
+            }
+        }
+        _ => return None,
+    }
+    Some(out)
+}
+
+/// Adds to `out` the composited change from `old` to `new`, styles of
+/// `node`'s `pseudo`, if they differ; `None` when they differ otherwise.
+/// A style with no effects of its own is not composited from: no box
+/// can be told to carry them.
+fn composited_style(
+    node: NodeId,
+    pseudo: Option<PseudoElement>,
+    old: &ComputedStyle,
+    new: &ComputedStyle,
+    out: &mut Vec<Composited>,
+) -> Option<()> {
+    if old == new {
+        return Some(());
+    }
+    let (Some(a), Some(b)) = (&old.effects, &new.effects) else {
+        return None;
+    };
+    let without = |style: &ComputedStyle| ComputedStyle {
+        effects: None,
+        ..style.clone()
+    };
+    let blank = |effects: &Effects| Effects {
+        transform: Vec::new(),
+        translate: None,
+        rotate: None,
+        scale: None,
+        opacity: 1.0,
+        ..effects.clone()
+    };
+    if without(old) != without(new) || blank(a) != blank(b) {
+        return None;
+    }
+    // The rest of the effects equal, whether the box has a transform
+    // decides whether it contains its absolutely and fixed positioned
+    // descendants; whether it is a stacking context when no transform
+    // applies to it, an inline box, decides whether it is one when one
+    // does; and an opacity can flatten its 3D content.
+    let same_to_layout = a.has_transform() == b.has_transform()
+        && a.is_stacking_context_of(false) == b.is_stacking_context_of(false)
+        && a.used_transform_style(old.overflow) == b.used_transform_style(new.overflow);
+    if !same_to_layout {
+        return None;
+    }
+    out.push(Composited {
+        node,
+        pseudo,
+        old: Arc::clone(a),
+        new: Arc::clone(b),
+        transformed: a.transform != b.transform
+            || a.translate != b.translate
+            || a.rotate != b.rotate
+            || a.scale != b.scale,
+    });
+    Some(())
 }
 
 impl Restyle {
@@ -1140,6 +1276,7 @@ impl Restyle {
         Restyle {
             full: true,
             changed: Vec::new(),
+            composited: Vec::new(),
             computed: styles.entries.iter().flatten().count().saturating_sub(1),
         }
     }
