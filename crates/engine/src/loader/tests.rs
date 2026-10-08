@@ -1558,6 +1558,106 @@ fn an_animated_image_steps_through_its_frames_on_the_documents_timeline() {
     );
 }
 
+/// The size of the pixels kept for the image at `url`, once decoded.
+fn kept_size(engine: &Engine, url: &Url) -> Option<(u32, u32)> {
+    use crate::image_store::{ImageState, Pixels};
+    match image_state(engine, url) {
+        Some(ImageState::Ready(ready)) => match ready.pixels {
+            Pixels::Decoded(image) => Some((image.width, image.height)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+#[test]
+fn an_image_drawn_small_is_kept_small_until_drawn_larger() {
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<body style='margin: 0'><img id=i src=big.png style='width: 10px; height: 10px'>",
+        )),
+        "/big.png" => Some(Reply::ok("image/png", &png_bytes(100, 50))),
+        _ => None,
+    });
+    let url = server.url("/big.png");
+    let mut tab = Tab::new();
+    load_all(&mut tab, server.url("/page.html"));
+    tab.engine.frame(100, 100);
+    // Drawn 10 by 10, under half of 100 by 50: kept at twice that.
+    tab.wait_until(|engine| kept_size(engine, &url).is_some());
+    assert_eq!(kept_size(&tab.engine, &url), Some((20, 20)));
+    let grey = |frame: &[u8], x: usize, y: usize| frame[(y * 100 + x) * 4];
+    assert_eq!(grey(&tab.engine.frame(100, 100), 5, 5), 212);
+    // A print has it whole.
+    let id = image_id(&tab.engine, &url);
+    let whole = tab.engine.shown.images.decoded_now(id).expect("decoded");
+    assert_eq!((whole.width, whole.height), (100, 50));
+    // Drawn larger, it is decoded again, the copy drawn meanwhile.
+    let img = by_id(&tab.engine, "i");
+    tab.engine
+        .mutate(|document| document.set_attribute(img, "style", "width: 60px; height: 10px"))
+        .unwrap();
+    assert_eq!(grey(&tab.engine.frame(100, 100), 50, 5), 212);
+    tab.wait_until(|engine| kept_size(engine, &url) == Some((100, 50)));
+    // Drawn in the frame, it is kept past the budget.
+    tab.engine.shown.images.set_budget(0);
+    let style = |tab: &mut Tab, css: &str| {
+        tab.engine
+            .mutate(|document| document.set_attribute(img, "style", css))
+            .unwrap();
+        tab.engine.frame(100, 100);
+    };
+    style(&mut tab, "width: 10px; height: 10px");
+    assert_eq!(kept_size(&tab.engine, &url), Some((100, 50)));
+    // Not drawn, it goes; decoded again for the largest it was drawn at.
+    style(&mut tab, "display: none");
+    assert_eq!(kept_size(&tab.engine, &url), None);
+    style(&mut tab, "width: 10px; height: 10px");
+    tab.wait_until(|engine| kept_size(engine, &url).is_some());
+    assert_eq!(kept_size(&tab.engine, &url), Some((100, 50)));
+}
+
+#[test]
+fn past_the_budget_the_pixels_drawn_longest_ago_are_dropped() {
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<body style='margin: 0; height: 2100px'>\
+             <img src=a.png style='position: absolute; top: 0'>\
+             <img src=b.png style='position: absolute; top: 1000px'>\
+             <img src=c.png style='position: absolute; top: 2000px'></body>",
+        )),
+        "/a.png" | "/b.png" | "/c.png" => Some(Reply::ok("image/png", &png_bytes(100, 100))),
+        _ => None,
+    });
+    let (a, b, c) = (
+        server.url("/a.png"),
+        server.url("/b.png"),
+        server.url("/c.png"),
+    );
+    let mut tab = Tab::new();
+    load_all(&mut tab, server.url("/page.html"));
+    // Room for two of the three, each 40,000 bytes.
+    tab.engine.shown.images.set_budget(100_000);
+    for (scroll, url) in [(0.0, &a), (1000.0, &b), (2000.0, &c)] {
+        tab.engine.set_scroll(scroll);
+        tab.engine.frame(100, 100);
+        tab.wait_until(|engine| kept_size(engine, url).is_some());
+    }
+    tab.engine.frame(100, 100);
+    let kept = |engine: &Engine| [&a, &b, &c].map(|url| kept_size(engine, url).is_some());
+    assert_eq!(
+        kept(&tab.engine),
+        [false, true, true],
+        "a, drawn first, dropped"
+    );
+    // Drawn again, decoded again; b, now drawn longest ago, goes.
+    tab.engine.set_scroll(0.0);
+    tab.engine.frame(100, 100);
+    tab.wait_until(|engine| kept_size(engine, &a).is_some());
+    tab.engine.frame(100, 100);
+    assert_eq!(kept(&tab.engine), [true, false, true]);
+}
+
 #[test]
 fn an_images_pixels_are_decoded_when_first_asked_for() {
     use crate::image_store::{ImageState, Pixels};

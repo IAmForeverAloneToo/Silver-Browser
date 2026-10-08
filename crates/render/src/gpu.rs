@@ -441,10 +441,11 @@ pub struct GpuBackend {
     /// it, as the shell says what it cannot do.
     errors: Arc<Mutex<Vec<String>>>,
     reported: usize,
-    /// The images uploaded (M23.2), by number, frame and turn, and the
-    /// bytes they hold.
+    /// The images uploaded (M23.2), by number, frame, turn and crop, the
+    /// bytes they hold, and the most they may (M23.5).
     images: HashMap<ImageKey, ImageTexture>,
     image_bytes: usize,
+    image_budget: usize,
     /// The images drawn turned.
     turned: Turned,
 }
@@ -515,6 +516,7 @@ impl GpuBackend {
             reported: 0,
             images: HashMap::new(),
             image_bytes: 0,
+            image_budget: IMAGE_TEXTURE_BUDGET,
             turned: Turned::default(),
         })
     }
@@ -681,7 +683,7 @@ impl GpuBackend {
         let linear_repeat = bind(&self.pipelines.linear_repeat);
         let nearest_repeat = bind(&self.pipelines.nearest_repeat);
         self.image_bytes += texture.bytes();
-        while self.image_bytes > IMAGE_TEXTURE_BUDGET {
+        while self.image_bytes > self.image_budget {
             let Some(oldest) = self
                 .images
                 .iter()
@@ -2465,6 +2467,59 @@ mod tests {
 
     fn rgba(r: u8, g: u8, b: u8, a: u8) -> Rgba8 {
         Rgba8 { r, g, b, a }
+    }
+
+    #[test]
+    fn image_textures_drawn_longest_ago_are_dropped_past_the_budget() {
+        let Some((_, mut gpu)) = backends() else {
+            return;
+        };
+        let texels = vec![[200, 100, 50, 255]; 64];
+        let (a, b) = (
+            crate::tests::picture(1, 8, 8, &texels),
+            crate::tests::picture(2, 8, 8, &texels),
+        );
+        let draw = |image: &ImageRef| DisplayItem::Image {
+            x: 0.0,
+            y: 0.0,
+            w: 8.0,
+            h: 8.0,
+            image: image.clone(),
+            sharp: false,
+        };
+        // Room for one 8 by 8 texture; one drawn in the frame is kept
+        // past it.
+        gpu.image_budget = 8 * 8 * 4;
+        let ids = |gpu: &GpuBackend| {
+            let mut ids: Vec<u64> = gpu.images.keys().map(|k| k.0).collect();
+            ids.sort_unstable();
+            ids
+        };
+        gpu.rasterize(
+            &DisplayList {
+                items: vec![draw(&a)],
+            },
+            16,
+            16,
+        );
+        assert_eq!(ids(&gpu), [1]);
+        gpu.rasterize(
+            &DisplayList {
+                items: vec![draw(&b)],
+            },
+            16,
+            16,
+        );
+        assert_eq!((ids(&gpu), gpu.image_bytes), (vec![2], 256), "a dropped");
+        gpu.rasterize(
+            &DisplayList {
+                items: vec![draw(&a), draw(&b)],
+            },
+            16,
+            16,
+        );
+        assert_eq!(ids(&gpu), [1, 2], "both drawn in the frame: kept");
+        assert_eq!(gpu.errors(), Vec::<String>::new());
     }
 
     /// Draws `frames` on both backends in turn and holds each of the

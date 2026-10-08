@@ -19,6 +19,11 @@ pub const MAX_DECODE_THREADS: usize = 4;
 /// ones drawn longest ago are dropped, and rendered again when drawn.
 pub const GRADIENT_BUDGET: usize = 64 << 20;
 
+/// The bytes of decoded pixels a document keeps (M23.5): past it the
+/// images drawn longest ago, none drawn in the frame, are dropped, and
+/// decoded again when next drawn.
+pub const MAX_DECODED_BYTES: usize = 512 << 20;
+
 /// What became of an image's URL.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ImageState {
@@ -42,6 +47,37 @@ pub(crate) struct Ready {
     /// where an animation's timeline starts, which every box showing it
     /// shares (HTML section 15.4.2, M23.1).
     pub(crate) started: f64,
+    /// The number of the last frame that drew it, and the largest it was
+    /// drawn at, in raster pixels each way (M23.5).
+    drawn: u64,
+    largest: (f32, f32),
+    /// The largest drawn size the pixels kept are a downscaled copy for,
+    /// `None` for the natural size; and while a decode is under way, the
+    /// one it is for.
+    kept_for: Option<(f32, f32)>,
+    asked: Option<Option<(f32, f32)>>,
+}
+
+impl Ready {
+    /// What the pixels are decoded for, drawn as large as they have been
+    /// (M23.5): a copy for that size where it is under half the natural
+    /// size both ways, else the natural size.
+    fn wanted(&self) -> Option<(f32, f32)> {
+        let (w, h) = self.largest;
+        (w > 0.0
+            && h > 0.0
+            && w * 2.0 < self.header.width as f32
+            && h * 2.0 < self.header.height as f32)
+            .then_some((w, h))
+    }
+
+    /// The work that decodes the pixels for `wanted`: at twice that
+    /// size for a copy.
+    fn work(&mut self, wanted: Option<(f32, f32)>) -> Work {
+        self.asked = Some(wanted);
+        let size = wanted.map(|(w, h)| ((w * 2.0).ceil() as u32, (h * 2.0).ceil() as u32));
+        Work::Pixels(self.bytes.clone(), size)
+    }
 }
 
 /// An image's pixels.
@@ -62,10 +98,11 @@ pub(crate) struct ImageEntry {
     pub(crate) state: ImageState,
 }
 
-/// What a decode thread is given.
+/// What a decode thread is given: bytes whose header to read, or whose
+/// pixels to decode, downscaled to a size where one is given (M23.5).
 pub(crate) enum Work {
     Header(Arc<[u8]>),
-    Pixels(Arc<[u8]>),
+    Pixels(Arc<[u8]>, Option<(u32, u32)>),
 }
 
 /// What a decode thread gives back.
@@ -93,6 +130,10 @@ pub(crate) struct ImageStore {
     /// The gradients rendered (M23.3), by their numbers, with when each
     /// was last asked for; and the bytes they hold.
     gradients: RefCell<Gradients>,
+    /// The frames drawn, which number them (M23.5).
+    frames: u64,
+    /// The decoded bytes kept, when not [`MAX_DECODED_BYTES`]: a test's.
+    budget: Option<usize>,
 }
 
 /// Rendered gradients, kept under [`GRADIENT_BUDGET`].
@@ -291,6 +332,10 @@ impl ImageStore {
                     bytes,
                     pixels: Pixels::NotDecoded,
                     started: now,
+                    drawn: 0,
+                    largest: (0.0, 0.0),
+                    kept_for: None,
+                    asked: None,
                 });
                 true
             }
@@ -303,10 +348,12 @@ impl ImageStore {
                     Ok(image) => Pixels::Decoded(Arc::new(image)),
                     Err(_) => Pixels::Failed,
                 };
+                ready.kept_for = ready.asked.take().flatten();
                 false
             }
             (Err(_), ImageState::Ready(ready)) => {
                 ready.pixels = Pixels::Failed;
+                ready.asked = None;
                 false
             }
             _ => false,
@@ -333,16 +380,19 @@ impl ImageStore {
             return None;
         };
         match &ready.pixels {
-            Pixels::Decoded(image) => Some(image.clone()),
+            Pixels::Decoded(image) if ready.kept_for.is_none() => Some(image.clone()),
             Pixels::Failed => None,
-            Pixels::NotDecoded | Pixels::Decoding => {
+            // A downscaled copy is for the screen: the page has it whole.
+            Pixels::Decoded(_) | Pixels::NotDecoded | Pixels::Decoding => {
                 images::decode(&ready.bytes).ok().map(Arc::new)
             }
         }
     }
 
     /// The pixels of `url` if decoded; otherwise, the first time they are
-    /// asked for, the work that decodes them.
+    /// asked for, the work that decodes them, for the largest it was
+    /// drawn at (M23.5). A downscaled copy since drawn larger than it was
+    /// made for is decoded again, and drawn until then.
     pub(crate) fn pixels(&mut self, url: &str) -> (Option<Arc<Image>>, Option<Work>) {
         let Some(ImageEntry {
             state: ImageState::Ready(ready),
@@ -352,13 +402,94 @@ impl ImageStore {
             return (None, None);
         };
         match &ready.pixels {
-            Pixels::Decoded(image) => (Some(image.clone()), None),
+            Pixels::Decoded(image) => {
+                let image = image.clone();
+                let (w, h) = ready.largest;
+                let small = ready.kept_for.is_some_and(|k| w > k.0 || h > k.1);
+                if small && ready.asked.is_none() {
+                    let wanted = ready.wanted();
+                    return (Some(image), Some(ready.work(wanted)));
+                }
+                (Some(image), None)
+            }
             Pixels::NotDecoded => {
                 ready.pixels = Pixels::Decoding;
-                (None, Some(Work::Pixels(ready.bytes.clone())))
+                let wanted = ready.wanted();
+                (None, Some(ready.work(wanted)))
             }
             Pixels::Decoding | Pixels::Failed => (None, None),
         }
+    }
+
+    /// Starts frame drawing: its number.
+    pub(crate) fn next_frame(&mut self) -> u64 {
+        self.frames += 1;
+        self.frames
+    }
+
+    /// The image numbered `id` was drawn in frame `frame` at `size`, in
+    /// raster pixels each way (M23.5).
+    pub(crate) fn drew(&mut self, id: u64, frame: u64, size: (f32, f32)) {
+        let Some(url) = self.ids.get(&id) else {
+            return;
+        };
+        if let Some(ImageEntry {
+            state: ImageState::Ready(ready),
+            ..
+        }) = self.entries.get_mut(url)
+        {
+            ready.drawn = frame;
+            ready.largest.0 = ready.largest.0.max(size.0);
+            ready.largest.1 = ready.largest.1.max(size.1);
+        }
+    }
+
+    /// Drops the decoded pixels of the images drawn longest ago, none
+    /// drawn in frame `frame`, while all kept hold more than the budget
+    /// (M23.5); they are decoded again when next drawn.
+    pub(crate) fn keep_within_budget(&mut self, frame: u64) {
+        let budget = self.budget.unwrap_or(MAX_DECODED_BYTES);
+        let mut kept: Vec<(u64, usize, &String)> = Vec::new();
+        let mut total = 0;
+        for (url, entry) in &self.entries {
+            if let ImageState::Ready(ready) = &entry.state
+                && let Pixels::Decoded(image) = &ready.pixels
+            {
+                total += image.bytes();
+                if ready.drawn < frame {
+                    kept.push((ready.drawn, image.bytes(), url));
+                }
+            }
+        }
+        if total <= budget {
+            return;
+        }
+        kept.sort_unstable();
+        let dropped: Vec<String> = kept
+            .into_iter()
+            .take_while(|(_, bytes, _)| {
+                let over = total > budget;
+                total = total.saturating_sub(*bytes);
+                over
+            })
+            .map(|(_, _, url)| url.clone())
+            .collect();
+        for url in dropped {
+            if let Some(ImageEntry {
+                state: ImageState::Ready(ready),
+                ..
+            }) = self.entries.get_mut(&url)
+            {
+                ready.pixels = Pixels::NotDecoded;
+                ready.kept_for = None;
+            }
+        }
+    }
+
+    /// Keeps `bytes` of decoded pixels in place of [`MAX_DECODED_BYTES`].
+    #[cfg(test)]
+    pub(crate) fn set_budget(&mut self, bytes: usize) {
+        self.budget = Some(bytes);
     }
 }
 
@@ -503,12 +634,19 @@ impl Decoder {
         let id = self.next;
         self.next += 1;
         let bytes = match &work {
-            Work::Header(bytes) | Work::Pixels(bytes) => bytes.clone(),
+            Work::Header(bytes) | Work::Pixels(bytes, _) => bytes.clone(),
         };
         self.jobs.insert(id, Job { page, url, bytes });
         self.pool.run(id, move || match work {
             Work::Header(bytes) => Done::Header(images::read_header(&bytes)),
-            Work::Pixels(bytes) => Done::Pixels(images::decode(&bytes)),
+            Work::Pixels(bytes, size) => {
+                Done::Pixels(images::decode(&bytes).map(|image| match size {
+                    Some((w, h)) if w < image.width && h < image.height => {
+                        images::downscale(&image, w, h)
+                    }
+                    _ => image,
+                }))
+            }
         });
     }
 
@@ -542,6 +680,39 @@ impl Decoder {
 mod tests {
     use super::*;
     use paint::Pictures;
+
+    #[test]
+    fn pixels_are_wanted_at_twice_the_largest_drawn_size_when_under_half() {
+        let mut ready = Ready {
+            header: Header {
+                format: images::Format::Png,
+                width: 100,
+                height: 50,
+                orientation: images::Orientation::Normal,
+            },
+            bytes: Arc::from(Vec::new()),
+            pixels: Pixels::NotDecoded,
+            started: 0.0,
+            drawn: 0,
+            largest: (0.0, 0.0),
+            kept_for: None,
+            asked: None,
+        };
+        let size = |ready: &mut Ready, largest| {
+            ready.largest = largest;
+            let wanted = ready.wanted();
+            match ready.work(wanted) {
+                Work::Pixels(_, size) => size,
+                Work::Header(_) => unreachable!("pixels"),
+            }
+        };
+        assert_eq!(size(&mut ready, (0.0, 0.0)), None, "never drawn: whole");
+        assert_eq!(size(&mut ready, (10.5, 20.0)), Some((21, 40)));
+        assert_eq!(ready.asked, Some(Some((10.5, 20.0))));
+        assert_eq!(size(&mut ready, (49.0, 25.0)), None, "half the height");
+        assert_eq!(size(&mut ready, (50.0, 10.0)), None, "half the width");
+        assert_eq!(ready.asked, Some(None));
+    }
 
     fn gradient(colour: &str) -> style::computed::Gradient {
         let html =

@@ -149,6 +149,92 @@ pub fn frame_at(image: &Image, elapsed: f64) -> (usize, Option<f64>) {
     (last, Some(end))
 }
 
+/// `image` made `width` by `height`, neither more than its own (M23.5):
+/// each new pixel the average of the old pixels its area covers, a part
+/// pixel weighted by how much of it is covered; a box filter, in
+/// premultiplied colour. Every frame is, its delay kept.
+pub fn downscale(image: &Image, width: u32, height: u32) -> Image {
+    let width = width.clamp(1, image.width.max(1));
+    let height = height.clamp(1, image.height.max(1));
+    let frames = image
+        .frames
+        .iter()
+        .map(|frame| Frame {
+            pixels: Arc::from(box_filter(
+                &frame.pixels,
+                (image.width, image.height),
+                (width, height),
+            )),
+            delay: frame.delay,
+        })
+        .collect();
+    Image {
+        width,
+        height,
+        frames,
+        plays: image.plays,
+    }
+}
+
+/// For each of `to` new pixels along an axis `from` old ones long, the
+/// first old pixel it covers and the weight of each it covers, which
+/// add up to one.
+fn spans(from: u32, to: u32) -> Vec<(usize, Vec<f32>)> {
+    let scale = f64::from(from) / f64::from(to);
+    (0..to)
+        .map(|i| {
+            let start = f64::from(i) * scale;
+            let end = (f64::from(i + 1) * scale).min(f64::from(from));
+            let first = start.floor() as usize;
+            let last = (end.ceil() as usize).clamp(first + 1, from as usize);
+            let weights = (first..last)
+                .map(|j| {
+                    let covered = end.min(j as f64 + 1.0) - start.max(j as f64);
+                    (covered.max(0.0) / scale) as f32
+                })
+                .collect();
+            (first, weights)
+        })
+        .collect()
+}
+
+/// [`downscale`]'s filter of one frame's `pixels`, along x and then y.
+fn box_filter(pixels: &[u8], (w, h): (u32, u32), (to_w, to_h): (u32, u32)) -> Vec<u8> {
+    let (w, to_w) = (w as usize, to_w as usize);
+    let xs = spans(w as u32, to_w as u32);
+    let ys = spans(h, to_h);
+    let mut rows = vec![0f32; to_w * h as usize * 4];
+    for (y, row) in rows.chunks_exact_mut(to_w * 4).enumerate() {
+        let source = &pixels[y * w * 4..(y + 1) * w * 4];
+        for (out, (first, weights)) in row.as_chunks_mut::<4>().0.iter_mut().zip(&xs) {
+            for (k, weight) in weights.iter().enumerate() {
+                let texel = &source[(first + k) * 4..(first + k + 1) * 4];
+                for (o, &v) in out.iter_mut().zip(texel) {
+                    *o += f32::from(v) * weight;
+                }
+            }
+        }
+    }
+    let mut out = vec![0u8; to_w * to_h as usize * 4];
+    for (row, (first, weights)) in out.chunks_exact_mut(to_w * 4).zip(&ys) {
+        for (x, texel) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let mut sum = [0f32; 4];
+            for (k, weight) in weights.iter().enumerate() {
+                let at = ((first + k) * to_w + x) * 4;
+                for (s, &v) in sum.iter_mut().zip(&rows[at..at + 4]) {
+                    *s += v * weight;
+                }
+            }
+            // No channel passes the alpha: each old one did not, and
+            // all are weighed alike.
+            for (t, s) in texel.iter_mut().zip(sum) {
+                *t = s.round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    out
+}
+
 /// Reads the header of `bytes`, panics caught.
 pub fn read_header(bytes: &[u8]) -> Result<Header, Error> {
     isolated(|| formats::header(bytes))

@@ -115,6 +115,46 @@ fn apng(plays: u32, separate_default: bool) -> Vec<u8> {
 }
 
 #[test]
+fn a_downscaled_copy_averages_the_area_each_pixel_covers() {
+    let image = |width, height, pixels: &[[u8; 4]]| Image {
+        width,
+        height,
+        frames: vec![
+            Frame {
+                pixels: Arc::from(pixels.concat()),
+                delay: 70,
+            },
+            Frame {
+                pixels: Arc::from(vec![0; pixels.len() * 4]),
+                delay: 80,
+            },
+        ],
+        plays: Plays::Forever,
+    };
+    let (white, clear) = ([255; 4], [0; 4]);
+    // Two by two blocks to one pixel each: half white is grey.
+    let four = image(4, 2, &[white, white, RED, BLUE, clear, white, RED, BLUE]);
+    let two = downscale(&four, 2, 1);
+    assert_eq!((two.width, two.height, two.frames.len()), (2, 1, 2));
+    assert_eq!(pixel(&two, 0, 0, 0), [191; 4]);
+    assert_eq!(pixel(&two, 0, 1, 0), [128, 0, 128, 255]);
+    assert_eq!(
+        (two.frames[1].delay, two.plays),
+        (80, Plays::Forever),
+        "every frame, as timed"
+    );
+    // Three to two: the middle pixel half in each.
+    let three = image(3, 1, &[RED, [0, 90, 0, 255], BLUE]);
+    let thirds = downscale(&three, 2, 1);
+    assert_eq!(pixel(&thirds, 0, 0, 0), [170, 30, 0, 255]);
+    assert_eq!(pixel(&thirds, 0, 1, 0), [0, 30, 170, 255]);
+    // Never larger, never empty.
+    let same = downscale(&three, 9, 0);
+    assert_eq!((same.width, same.height), (3, 1));
+    assert_eq!(pixel(&same, 0, 2, 0), BLUE);
+}
+
+#[test]
 fn an_animation_shows_each_frame_for_its_delay_as_many_times_as_it_plays() {
     let frame = |delay| Frame {
         pixels: Arc::from(vec![0; 4]),

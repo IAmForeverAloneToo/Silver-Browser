@@ -459,6 +459,28 @@ struct CachedStyle {
 /// The engine's fonts, lent to the cascade for `ex` and `ch`.
 struct FontMeasurer<'a>(&'a text::FontCollection);
 
+/// The size in raster pixels each way that `image`, one tile `tile` of
+/// it in the coordinates `matrix` maps to the raster's, is drawn at
+/// (M23.5): the whole image's, of which a slice is drawn, as its pixels
+/// lie before they are turned.
+fn drawn_size(
+    matrix: &style::transform::Matrix,
+    tile: [f32; 4],
+    image: &paint::ImageRef,
+) -> (f32, f32) {
+    let (mut w, mut h) = matrix
+        .bounds(tile[0], tile[1], tile[2], tile[3])
+        .map_or((tile[2], tile[3]), |(l, t, r, b)| (r - l, b - t));
+    if let Some([x0, y0, x1, y1]) = image.crop {
+        w /= (x1 - x0).max(f32::EPSILON);
+        h /= (y1 - y0).max(f32::EPSILON);
+    }
+    if image.orientation.swaps_sides() {
+        (w, h) = (h, w);
+    }
+    (w, h)
+}
+
 /// Whether `change` may change the images the document's `img` elements
 /// show: nodes in or out, a `src`, or an `href` that may be a base URL's.
 fn may_touch_images(change: &Change) -> bool {
@@ -1155,10 +1177,13 @@ impl Engine {
     /// unseen.
     fn show_pixels(&mut self, items: &mut [DisplayItem], width: f32, height: f32) {
         let now = self.shown.animations.borrow().time();
-        let mut next: Option<f64> = None;
+        let frame = self.shown.images.next_frame();
+        // First the size each image is drawn at and whether in view, so
+        // that a decode asked for knows how large (M23.5).
+        let mut seen = Vec::new();
         let mut groups = vec![style::transform::Matrix::IDENTITY];
-        for item in items {
-            let (image, rect) = match item {
+        for item in items.iter() {
+            let (image, rect, tile) = match item {
                 DisplayItem::PushGroup { matrix, .. } => {
                     let outer = groups.last().expect("the viewport's");
                     groups.push(outer.then(matrix));
@@ -1172,12 +1197,35 @@ impl Engine {
                 }
                 DisplayItem::Image {
                     x, y, w, h, image, ..
-                }
-                | DisplayItem::Pattern {
-                    x, y, w, h, image, ..
-                } => (image, [*x, *y, *w, *h]),
+                } => (image, [*x, *y, *w, *h], [*x, *y, *w, *h]),
+                DisplayItem::Pattern {
+                    x,
+                    y,
+                    w,
+                    h,
+                    tile,
+                    image,
+                    ..
+                } => (image, [*x, *y, *w, *h], *tile),
                 _ => continue,
             };
+            let matrix = groups.last().expect("the viewport's");
+            seen.push(
+                matrix
+                    .bounds(rect[0], rect[1], rect[2], rect[3])
+                    .is_none_or(|(l, t, r, b)| l < width && r > 0.0 && t < height && b > 0.0),
+            );
+            let size = drawn_size(matrix, tile, image);
+            self.shown.images.drew(image.id, frame, size);
+        }
+        let mut next: Option<f64> = None;
+        let mut seen = seen.into_iter();
+        for item in items {
+            let image = match item {
+                DisplayItem::Image { image, .. } | DisplayItem::Pattern { image, .. } => image,
+                _ => continue,
+            };
+            let seen = seen.next().unwrap_or(true);
             if image.pixels.is_none() {
                 image.pixels = self.image_pixels(image.id);
             }
@@ -1187,18 +1235,15 @@ impl Engine {
             let Some(started) = self.shown.images.started(image.id) else {
                 continue;
             };
-            let (frame, change) = images::frame_at(pixels, (now - started) * 1000.0);
-            image.frame = frame as u32;
-            let matrix = groups.last().expect("the viewport's");
-            let seen = matrix
-                .bounds(rect[0], rect[1], rect[2], rect[3])
-                .is_none_or(|(l, t, r, b)| l < width && r > 0.0 && t < height && b > 0.0);
+            let (shown, change) = images::frame_at(pixels, (now - started) * 1000.0);
+            image.frame = shown as u32;
             if let Some(change) = change.filter(|_| seen) {
                 let at = started + change / 1000.0;
                 next = Some(next.map_or(at, |n| n.min(at)));
             }
         }
         self.shown.next_image_frame = next;
+        self.shown.images.keep_within_budget(frame);
     }
 
     /// Applies one fetch's result.
@@ -2770,6 +2815,27 @@ mod tests {
             text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
                 .expect("the bundled font parses"),
         )
+    }
+
+    #[test]
+    fn an_image_is_drawn_at_its_tiles_size_on_the_raster_whole_and_unturned() {
+        let image = |crop, orientation| paint::ImageRef {
+            id: 1,
+            frame: 0,
+            orientation,
+            crop,
+            pixels: None,
+        };
+        let plain = image(None, images::Orientation::Normal);
+        let tile = [5.0, 5.0, 40.0, 10.0];
+        let identity = style::transform::Matrix::IDENTITY;
+        assert_eq!(drawn_size(&identity, tile, &plain), (40.0, 10.0));
+        let doubled = style::transform::Matrix::scale(2.0, 3.0, 1.0);
+        assert_eq!(drawn_size(&doubled, tile, &plain), (80.0, 30.0));
+        let slice = image(Some([0.0, 0.5, 0.25, 1.0]), images::Orientation::Normal);
+        assert_eq!(drawn_size(&identity, tile, &slice), (160.0, 20.0));
+        let turned = image(None, images::Orientation::Rotate90);
+        assert_eq!(drawn_size(&identity, tile, &turned), (10.0, 40.0));
     }
 
     #[test]
