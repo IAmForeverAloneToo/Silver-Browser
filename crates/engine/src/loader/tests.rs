@@ -1725,6 +1725,34 @@ fn image_orientation_none_leaves_an_image_of_another_origin_turned() {
 }
 
 #[test]
+fn image_orientation_none_leaves_a_background_of_another_origin_turned() {
+    let other = serve(|path| match path {
+        "/turned.jpg" => Some(Reply::ok("image/jpeg", &exif_jpeg(6))),
+        _ => None,
+    });
+    let elsewhere = other.url("/turned.jpg");
+    let server = serve(move |path| match path {
+        "/page.html" => Some(html(&format!(
+            "<body style='margin: 0'><style>div {{ width: 16px; height: 16px; \
+             image-orientation: none; background: no-repeat }}</style>\
+             <div style='background-image: url(turned.jpg)'></div>\
+             <div style='background-image: url({elsewhere})'></div></body>"
+        ))),
+        "/turned.jpg" => Some(Reply::ok("image/jpeg", &exif_jpeg(6))),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    load_all(&mut tab, server.url("/page.html"));
+    tab.engine.frame(100, 100);
+    tab.wait_until(|engine| !engine.decoding());
+    let drawn = tab.engine.frame(100, 100);
+    let painted = |x: usize, y: usize| drawn[(y * 100 + x) * 4..][..3] != [255, 255, 255];
+    // The same origin's as stored, 16 by 8; the other's turned, 8 by 16.
+    assert!(painted(12, 4) && !painted(4, 12), "same origin");
+    assert!(!painted(12, 20) && painted(4, 28), "another origin");
+}
+
+#[test]
 fn a_page_left_while_an_image_decodes_is_not_kept() {
     let server = serve(|path| match path {
         "/a.html" => Some(html("<body><img src=a.png></body>")),

@@ -214,6 +214,28 @@ impl Pictures for () {
     }
 }
 
+/// How an image whose header is `header` is drawn under `style`'s
+/// `image-orientation` (CSS Images 3 section 5.1, M23): its size as
+/// drawn, and what turns its decoded pixels, which are oriented: nothing,
+/// but under `none` the inverse of its orientation, its size then the
+/// size it is stored at. An `img`'s, a background's, a border image's and
+/// a marker's alike.
+fn oriented(
+    style: &style::ComputedStyle,
+    header: &images::Header,
+) -> ((f32, f32), images::Orientation) {
+    let (w, h) = (header.width as f32, header.height as f32);
+    if style.image().image_orientation != ImageOrientation::None {
+        return ((w, h), images::Orientation::Normal);
+    }
+    let size = if header.orientation.swaps_sides() {
+        (h, w)
+    } else {
+        (w, h)
+    };
+    (size, header.orientation.inverse())
+}
+
 /// The colour of the icon of an image that cannot be shown.
 pub const ICON_COLOUR: Rgba8 = Rgba8::rgb(0x8c, 0x8c, 0x8c);
 /// The colour of the border around a box the icon is in, when the box
@@ -680,7 +702,7 @@ pub fn paint_fragments_with(
     // top-level box, and a viewport more for the margins after it. It is
     // the same whatever the scroll offset, so that a scroll draws them
     // from the document's layer (M19) rather than anew.
-    let backdrop = Backdrop {
+    let mut backdrop = Backdrop {
         pictures,
         offsets,
         viewport: Rect {
@@ -689,7 +711,10 @@ pub fn paint_fragments_with(
             w: viewport.width,
             h: viewport.height,
         },
+        in_transform: false,
     };
+    // Whether each group open is a transformed box's.
+    let mut transformed: Vec<bool> = Vec::new();
     let bottom = roots.iter().map(|f| f.top() + f.h).fold(0.0, f32::max);
     let canvas_area = Rect {
         x: 0.0,
@@ -703,7 +728,44 @@ pub fn paint_fragments_with(
     // below the viewport is listed too, for the tiles a scroll brings
     // in next. A `position: fixed` box, which does not scroll, is
     // outside them, in viewport coordinates.
-    for step in paint_order_in(roots, viewport, offsets, viewport.height) {
+    let steps = paint_order_in(roots, viewport, offsets, viewport.height);
+    // A fixed root is painted outside the document's groups, which are
+    // then empty and left out: its canvas's images go under everything,
+    // over the viewport, which it does not scroll with.
+    let document = steps.iter().any(|step| {
+        matches!(
+            step,
+            Step::PushGroup {
+                key: GroupKey::Document(0),
+                ..
+            }
+        )
+    });
+    if !document && let (Some(canvas), Some(root)) = (canvas, roots.first()) {
+        let root_rect = snapped(Rect {
+            x: root.x,
+            y: root.top(),
+            w: root.w,
+            h: root.h,
+        });
+        push_layers(
+            &mut items,
+            canvas,
+            Placed {
+                by: root,
+                border: root_rect,
+                cb_width: viewport.width,
+                area: Some(Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: viewport.width,
+                    h: viewport.height,
+                }),
+            },
+            &backdrop,
+        );
+    }
+    for step in steps {
         match step {
             Step::Box {
                 fragment,
@@ -760,12 +822,14 @@ pub fn paint_fragments_with(
             }
             Step::PopClip => items.push(DisplayItem::PopClip),
             Step::PushGroup {
+                fragment,
                 matrix,
                 opacity,
                 key,
                 layer,
-                ..
             } => {
+                transformed.push(fragment.is_some_and(|f| f.style.effects().has_transform()));
+                backdrop.in_transform = transformed.contains(&true);
                 items.push(DisplayItem::PushGroup {
                     matrix,
                     opacity,
@@ -797,7 +861,11 @@ pub fn paint_fragments_with(
                     );
                 }
             }
-            Step::PopGroup => items.push(DisplayItem::PopGroup),
+            Step::PopGroup => {
+                transformed.pop();
+                backdrop.in_transform = transformed.contains(&true);
+                items.push(DisplayItem::PopGroup)
+            }
             Step::Scrollbar {
                 fragment,
                 rect,
@@ -1057,12 +1125,7 @@ fn push_replaced(
         }
         Replaced::Image { id, header } => {
             let image = fragment.style.image();
-            let unturned = image.image_orientation == ImageOrientation::None;
-            let natural = if unturned && header.orientation.swaps_sides() {
-                (header.height as f32, header.width as f32)
-            } else {
-                (header.width as f32, header.height as f32)
-            };
+            let (natural, orientation) = oriented(&fragment.style, header);
             let (w, h) = fitted(image.object_fit, natural, (rect.w, rect.h));
             let x = rect.x + image.object_position.x.resolve(rect.w - w);
             let y = rect.y + image.object_position.y.resolve(rect.h - h);
@@ -1085,11 +1148,7 @@ fn push_replaced(
                 image: ImageRef {
                     id: *id,
                     frame: 0,
-                    orientation: if unturned {
-                        header.orientation.inverse()
-                    } else {
-                        images::Orientation::Normal
-                    },
+                    orientation,
                     crop: None,
                     pixels: None,
                 },
@@ -1312,14 +1371,14 @@ fn push_border_image(
             let Some((id, header)) = pictures.picture(url) else {
                 return pictures.coming(url);
             };
+            let (size, orientation) = oriented(&f.style, &header);
             let image = ImageRef {
                 id,
                 frame: 0,
-                orientation: images::Orientation::Normal,
+                orientation,
                 crop: None,
                 pixels: None,
             };
-            let size = (header.width as f32, header.height as f32);
             (size.0, size.1, Some(1.0 / resolution), image)
         }
         Image::Gradient(g) => {
@@ -1359,8 +1418,9 @@ fn push_border_image(
         BorderImageWidth::Number(n) => n * widths[side],
         BorderImageWidth::Length(v) if side == TOP || side == BOTTOM => v.resolve(area.h),
         BorderImageWidth::Length(v) => v.resolve(area.w),
-        BorderImageWidth::Auto if scale.is_some() => s[side] * css,
-        BorderImageWidth::Auto => widths[side],
+        // A gradient's slices have sizes too, cut from it at the area's
+        // size (section 6.2).
+        BorderImageWidth::Auto => s[side] * css,
     };
     let mut w = [width(TOP), width(RIGHT), width(BOTTOM), width(LEFT)];
     let fit = (area.w / (w[LEFT] + w[RIGHT])).min(area.h / (w[TOP] + w[BOTTOM]));
@@ -1473,6 +1533,8 @@ struct Backdrop<'p> {
     pictures: &'p dyn Pictures,
     offsets: &'p dyn ScrollOffsets,
     viewport: Rect,
+    /// Whether what is painted is inside a transformed box's group.
+    in_transform: bool,
 }
 
 /// Where a background's layers go: the box `by` whose boxes place them,
@@ -1538,11 +1600,11 @@ fn push_layers(
                 let Some((id, header)) = backdrop.pictures.picture(url) else {
                     continue;
                 };
-                let natural = (
-                    header.width as f32 / resolution,
-                    header.height as f32 / resolution,
-                );
-                (Some(natural), Some(id))
+                let ((w, h), orientation) = oriented(&f.style, &header);
+                (
+                    Some((w / resolution, h / resolution)),
+                    Some((id, orientation)),
+                )
             }
             Some(Image::Gradient(_)) => (None, None),
             None => continue,
@@ -1550,7 +1612,9 @@ fn push_layers(
         let area = placed.area.unwrap_or_else(|| placed.box_of(layer.clip));
         let mut positioning = placed.box_of(layer.origin);
         match layer.attachment {
-            Attachment::Fixed => positioning = backdrop.viewport,
+            // Inside a transformed box it is `scroll` (CSS Transforms 1
+            // section 6).
+            Attachment::Fixed if !backdrop.in_transform => positioning = backdrop.viewport,
             // A scroll container's local layer is placed in its content,
             // as tall as it scrolls, and moves with it.
             Attachment::Local if placed.by.clips() => {
@@ -1558,7 +1622,7 @@ fn push_layers(
                 positioning.y -= backdrop.offsets.offset(placed.by.node);
                 positioning.h += (placed.by.scroll_height - padding.h).max(0.0);
             }
-            Attachment::Local | Attachment::Scroll => {}
+            Attachment::Fixed | Attachment::Local | Attachment::Scroll => {}
         }
         let (tile_w, tile_h) = tile_size(layer.size, natural, positioning, layer.repeat);
         if !(tile_w > 0.0 && tile_h > 0.0 && area.w > 0.0 && area.h > 0.0) {
@@ -1566,10 +1630,10 @@ fn push_layers(
         }
         // A gradient is rendered for its tile, which names it.
         let image = match (picture, layer.image) {
-            (Some(id), _) => ImageRef {
+            (Some((id, orientation)), _) => ImageRef {
                 id,
                 frame: 0,
-                orientation: images::Orientation::Normal,
+                orientation,
                 crop: None,
                 pixels: None,
             },
@@ -2339,6 +2403,11 @@ mod fragment_tests {
     /// border and 5px padding at (0, 0), is styled by `css`, scrolled to
     /// `scroll_y`, its images [`Twenty`]'s.
     fn patterns(css: &str, scroll_y: f32) -> Vec<DisplayItem> {
+        patterns_of(css, scroll_y, &Twenty)
+    }
+
+    /// [`patterns`], its images `pictures`'.
+    fn patterns_of(css: &str, scroll_y: f32, pictures: &dyn Pictures) -> Vec<DisplayItem> {
         let fonts = test_fonts();
         let root = Element::new("html").push(Element::new("body").push(Element::new("div")));
         let doc = dom::Node::document(vec![root.into()]);
@@ -2353,11 +2422,98 @@ mod fragment_tests {
             height: 600.0,
             scroll_y,
         };
-        paint_fragments_with(&layout.roots, viewport, &(), &Twenty)
+        paint_fragments_with(&layout.roots, viewport, &(), pictures)
             .items
             .into_iter()
             .filter(|i| matches!(i, DisplayItem::Pattern { .. }))
             .collect()
+    }
+
+    /// Every image 20 by 10 as shown, stored 10 by 20 and turned a
+    /// quarter.
+    struct Turned;
+    impl Pictures for Turned {
+        fn picture(&self, _: &str) -> Option<(u64, images::Header)> {
+            Some((
+                1,
+                images::Header {
+                    format: images::Format::Jpeg,
+                    width: 20,
+                    height: 10,
+                    orientation: images::Orientation::Rotate90,
+                },
+            ))
+        }
+    }
+
+    #[test]
+    fn image_orientation_none_draws_a_background_and_a_border_image_as_stored() {
+        let image = |item: &DisplayItem| match item {
+            DisplayItem::Pattern { image, .. } | DisplayItem::Image { image, .. } => image.clone(),
+            other => panic!("not an image: {other:?}"),
+        };
+        let shown = patterns_of("div { background: url(a.png) no-repeat }", 0.0, &Turned);
+        assert_eq!(laid(&shown[0]).1[2..], [20.0, 10.0]);
+        assert_eq!(image(&shown[0]).orientation, images::Orientation::Normal);
+        let stored = patterns_of(
+            "div { background: url(a.png) no-repeat; image-orientation: none }",
+            0.0,
+            &Turned,
+        );
+        assert_eq!(laid(&stored[0]).1[2..], [10.0, 20.0]);
+        assert_eq!(
+            image(&stored[0]).orientation,
+            images::Orientation::Rotate90.inverse()
+        );
+        // A border image's slices are of the image as stored: 3 of its
+        // 10 wide.
+        let pieces = border_image(
+            "div { border-image: url(a.png) 3; image-orientation: none }",
+            &Turned,
+        );
+        assert_eq!(pieces[0].1, [0.0, 0.0, 3.0 / 10.0, 3.0 / 20.0]);
+    }
+
+    #[test]
+    fn a_fixed_background_in_a_transformed_box_is_placed_as_scroll() {
+        let at = |attachment: &str| {
+            let css = format!(
+                "div {{ transform: translateX(1px); background: url(a.png) no-repeat {attachment} right top }}"
+            );
+            laid(&patterns(&css, 30.0)[0]).1
+        };
+        assert_eq!(at("fixed"), at("scroll"));
+        // Outside one, in the viewport.
+        let fixed = patterns(
+            "div { background: url(a.png) no-repeat fixed right top }",
+            30.0,
+        );
+        assert_ne!(laid(&fixed[0]).1, at("scroll"));
+    }
+
+    #[test]
+    fn a_fixed_roots_canvas_images_cover_the_viewport_under_it() {
+        let fonts = test_fonts();
+        let root = Element::new("html").push(Element::new("body").push(Element::new("p")));
+        let doc = dom::Node::document(vec![root.into()]);
+        let sheet = css::parse_stylesheet(
+            "html { position: fixed; margin: 0 } body { margin: 0; background: url(a.png) }",
+        )
+        .expect("test css is valid");
+        let layout = laid_out(&doc, &[sheet], VIEWPORT, &fonts);
+        let list =
+            paint_fragments_with(&layout.roots, Viewport::new(VIEWPORT, 600.0), &(), &Twenty);
+        let patterns: Vec<&DisplayItem> = list
+            .items
+            .iter()
+            .filter(|i| matches!(i, DisplayItem::Pattern { .. }))
+            .collect();
+        assert_eq!(patterns.len(), 1);
+        assert_eq!(laid(patterns[0]).0, [0.0, 0.0, VIEWPORT, 600.0]);
+        assert!(
+            matches!(list.items[1], DisplayItem::Pattern { .. }),
+            "on the canvas's colour, under everything"
+        );
     }
 
     /// The images the border image of a page's `div` draws, as
@@ -2448,6 +2604,12 @@ mod fragment_tests {
         assert_eq!(wide[0].0, [0.0, 0.0, 40.0, 40.0]);
         let auto = border_image("div { border-image: url(a.png) 3 / auto }", &Twenty);
         assert_eq!(auto[0].0, [0.0, 0.0, 3.0, 3.0]);
+        // A gradient's slices have sizes too.
+        let gradient = border_image(
+            "div { border-image: linear-gradient(red, blue) 3 / auto }",
+            &Twenty,
+        );
+        assert_eq!(gradient[0].0, [0.0, 0.0, 3.0, 3.0]);
     }
 
     #[test]

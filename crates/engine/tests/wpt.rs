@@ -42,7 +42,7 @@ use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::channel;
+use std::sync::mpsc::{Receiver, channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -193,7 +193,12 @@ fn content_type(path: &str) -> &'static str {
         Some("xht" | "xhtml") => "application/xhtml+xml",
         Some("css") => "text/css",
         Some("js") => "text/javascript",
-        Some("png") => "image/png",
+        Some("png" | "apng") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("svg") => "image/svg+xml",
+        Some("avif") => "image/avif",
         _ => "application/octet-stream",
     }
 }
@@ -212,8 +217,8 @@ fn serve(root: PathBuf) -> TestServer {
 }
 
 /// An engine with the bundled font that has loaded `path` from `server`,
-/// or why it could not.
-fn load(server: &TestServer, path: &str) -> Result<Engine, String> {
+/// and what its waker sends; or why it could not.
+fn load_waking(server: &TestServer, path: &str) -> Result<(Engine, Receiver<()>), String> {
     let mut engine = Engine::with_fonts(
         text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
             .expect("the bundled font parses"),
@@ -227,7 +232,7 @@ fn load(server: &TestServer, path: &str) -> Result<Engine, String> {
     loop {
         engine.poll_network();
         match engine.load_state() {
-            LoadState::Loaded => return Ok(engine),
+            LoadState::Loaded => return Ok((engine, woken)),
             LoadState::Failed(error) => return Err(format!("{path} failed to load: {error}")),
             LoadState::Loading => {}
         }
@@ -238,10 +243,34 @@ fn load(server: &TestServer, path: &str) -> Result<Engine, String> {
     }
 }
 
-/// The RGB pixels of the page at `path`.
+/// An engine with the bundled font that has loaded `path` from `server`,
+/// or why it could not.
+fn load(server: &TestServer, path: &str) -> Result<Engine, String> {
+    load_waking(server, path).map(|(engine, _)| engine)
+}
+
+/// The RGB pixels of the page at `path`, drawn once what it draws is
+/// decoded (M23): a frame asks for its images' pixels, and the one after
+/// they are decoded draws them.
 fn render(server: &TestServer, path: &str) -> Result<Vec<u8>, String> {
-    let mut engine = load(server, path)?;
-    let rgba = engine.frame(WIDTH, HEIGHT);
+    let (mut engine, woken) = load_waking(server, path)?;
+    let deadline = Instant::now() + LOAD;
+    let rgba = loop {
+        let rgba = engine.frame(WIDTH, HEIGHT);
+        if !engine.decoding() {
+            break rgba;
+        }
+        while engine.decoding() {
+            engine.poll_network();
+            if !engine.decoding() {
+                break;
+            }
+            let left = deadline
+                .checked_duration_since(Instant::now())
+                .ok_or_else(|| format!("{path}'s images took more than {LOAD:?} to decode"))?;
+            let _ = woken.recv_timeout(left);
+        }
+    };
     Ok(rgba.chunks(4).flat_map(|p| [p[0], p[1], p[2]]).collect())
 }
 

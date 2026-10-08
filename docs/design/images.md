@@ -224,17 +224,35 @@ algorithm, with a default object size of 300 by 150, everywhere a box
 is sized:
 - **Block and inline:** as an atomic inline.
 - **Flex:** its case B, which `docs/design/flexbox.md` left to this
-  milestone.
-- **Grid:** items that are replaced.
+  milestone. *(corrected)* A row item whose height is definite, its own
+  or the one a single-line container of definite height stretches it to
+  (section 9.8), takes its flex base size and its content size
+  suggestion from that height through its ratio, and the container's
+  content sizes take it too. A column item is measured at its natural
+  width, its height's limits applied after.
+- **Grid:** items that are replaced. *(corrected)* Its rows, where each
+  has a fixed maximum, give an item its height before the columns are
+  sized (Grid 2 section 12.1 step 1): a percentage height or limit
+  resolves against them, and an item that stretches fills them; its
+  ratio makes its width of that height. One stretched to its area's
+  height takes its width from it, as the reference browser has it, past
+  its column if need be.
 - **Intrinsic sizes:** a replaced box contributes its size.
+  *(corrected)* Its content sizes leave out its own `width` and its
+  limits, which whoever asks applies (css-sizing-3 section 5.1); its
+  height's limits stay in them.
+- **Found by the web-platform tests** *(corrected)*: a declaration may
+  have white space before its colon (CSS Syntax 3 section 5.4.6), which
+  the parser refused.
 
 **Orientation and fit.**
 - **`image-orientation`:** `from-image` (the initial value) and `none`.
   Natural sizes are taken after rotation. The deprecated angles and
   `flip` are not taken. *(corrected)* `none` applies to an image of the
   document's origin alone (section 5.3); an image of another origin keeps
-  its orientation. It does not apply to backgrounds, which are drawn
-  oriented.
+  its orientation. It applies to backgrounds, border images and markers
+  as to an `img` (section 5.1: to CSS images too), with the same rule of
+  origins.
 - **`object-fit` and `object-position`:** as section 4.5-4.6 says, the
   image clipped to the content box.
 - **Printing:** a replaced box is monolithic when paginated, as
@@ -274,10 +292,13 @@ or an `image-set()`.
   *(corrected)* The canvas's images are painted first in the document's
   group, placed by the root's boxes, over the document from its top to
   its last top-level box and a viewport more: the same area whatever the
-  scroll, so that a scroll composites them from the document's layer.
+  scroll, so that a scroll composites them from the document's layer. A
+  fixed root leaves that group empty: its canvas's images are painted
+  first of all, over the viewport.
 - **Attachment:** *(corrected)* `fixed` is placed against the viewport at
   the scroll offset painted, inside the document's group, not in a group
-  of its own: a scroll draws it again rather than compositing it. `local`
+  of its own: a scroll draws it again rather than compositing it. Inside
+  a transformed box it is `scroll` (CSS Transforms 1 section 6). `local`
   is placed in a scroll container's content, moved by its offset and as
   tall as it scrolls.
 
@@ -300,7 +321,8 @@ one still coming draws nothing there. The outset is ink overflow: it
 affects no layout. A slice is a display item's crop of the image
 (`ImageRef::crop`, fractions of the image, put on whole pixels by the
 backends), so a gradient's one-pixel strip cuts too; a raster image's
-slices are whole image pixels.
+slices are whole image pixels. *(corrected)* A gradient's slices have
+sizes as an image's do, so `border-image-width: auto` is theirs.
 
 **Markers and content.**
 - **`list-style-image`:** an `<image>`. *(corrected)* Its marker is the
@@ -311,7 +333,9 @@ slices are whole image pixels.
 - **`content: url()`:**
   - **Alone,** with its alt after `/`, it makes the element replaced,
     a table display taken as a block's. An image that cannot be shown is
-    0 by 0.
+    0 by 0. *(corrected)* On an `img` too, in place of its own, unless it
+    is broken, when the `img` shows its own, as the reference browser
+    does.
   - **In a list of content,** the image is an inline replaced box, and
     one that cannot be shown is skipped. Content 3 allows the skip or an
     icon; the skip is the simpler of the two.
@@ -341,7 +365,11 @@ too, not `-webkit-radial-gradient()`. A stop takes two positions.
   `ReplaceColorHintsWithColorStops`), which differs from the curve by
   up to 14 levels.
 - **Degenerate gradients:** a repeating gradient whose period is too
-  small to draw paints its average colour (section 3.3).
+  small to draw paints its average colour (section 3.3). *(corrected)*
+  One of no period paints its last colour, as the reference browser
+  does and the web-platform tests ask. Positions along the gradient are
+  found in `f64`, so that a pixel beside a stop far out, as lengths
+  clamped to the largest are, is not rounded onto it.
 - **Bound:** `MAX_GRADIENT_STOPS`, 256, bounds a gradient's stops.
 
 **Paint and render.**
@@ -415,9 +443,16 @@ default resolver reads local files. An SVG image is broken until M32.
 - **Web-platform tests:** the subset gains `css/css-images`,
   `css/css-backgrounds` and the `img` element's reftests. `wpt pull` now
   copies the images a test uses, which it never needed before, and the
-  runner serves their types. *(corrected)* Not done when the milestone's
-  code was: the checkout the subset is pulled from was not on the
-  machine; see the roadmap's M23 entry.
+  runner serves their types. *(corrected)* Done after the rest of the
+  milestone, once the checkout was on the machine (the same commit as
+  before, outside the repository). An `img` with `srcset` or `sizes`
+  (G35), an SVG or AVIF image, and a `.sub` file, which wptserve fills
+  in and the runner's server does not, are left out. The runner waits
+  for decodes before it draws. 402 tests more, 2,140 in all, failed 63
+  times: the 31 failures that were this milestone's were mended, the
+  sizes above among them, and two tests expected to fail before pass
+  now; the 31 left are listed with their reasons, each outside it, and
+  one was a `.sub` file.
 - **Golden pages:** 110 to 115, with images beside them under `images/`.
   A page with images says so with `<meta name="reference-load"
   content="file">` and is loaded by its `file:` URL, then drawn once its

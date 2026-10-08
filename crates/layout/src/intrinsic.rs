@@ -39,6 +39,16 @@ use crate::pass::Pass;
 /// padding, border and margins. A table (M12) is never narrower than
 /// its own minimum, whatever its `width` and `max-width` say.
 pub(crate) fn contribution<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32) {
+    contribution_with(b, pass, None)
+}
+
+/// [`contribution`], the box's content widths `known` where its
+/// formatting context knows them (M23).
+pub(crate) fn contribution_with<'a>(
+    b: &'a LayoutBox,
+    pass: &Pass<'a>,
+    known: Option<(f32, f32)>,
+) -> (f32, f32) {
     let style = &b.style;
     let (non_content, margins) = fixed_edges(b);
     let inner = |v: f32| match style.box_sizing {
@@ -50,7 +60,7 @@ pub(crate) fn contribution<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32) 
     // and `fit-content` too; under a max-content one, its max-content
     // width, `fit-content` too.
     let own = std::cell::OnceCell::new();
-    let own = || *own.get_or_init(|| content_widths(b, pass));
+    let own = || *own.get_or_init(|| known.unwrap_or_else(|| content_widths(b, pass)));
     let keyword = |size: &Size| match size {
         Size::MinContent => Some((own().0, own().0)),
         Size::MaxContent => Some((own().1, own().1)),

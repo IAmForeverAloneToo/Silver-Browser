@@ -710,16 +710,34 @@ pub(crate) struct WidthConstraints {
 pub(crate) struct Intrinsic<'p, 'a> {
     b: &'a LayoutBox,
     pass: &'p Pass<'a>,
+    /// Its content widths when its formatting context knows them better
+    /// than the box alone does: a replaced item's whose height its
+    /// container knows (M23).
+    known: Option<(f32, f32)>,
 }
 
 impl<'p, 'a> Intrinsic<'p, 'a> {
     pub(crate) fn of(b: &'a LayoutBox, pass: &'p Pass<'a>) -> Self {
-        Intrinsic { b, pass }
+        Intrinsic {
+            b,
+            pass,
+            known: None,
+        }
+    }
+
+    /// The box `b`, its content widths `widths`.
+    pub(crate) fn known(b: &'a LayoutBox, pass: &'p Pass<'a>, widths: (f32, f32)) -> Self {
+        Intrinsic {
+            b,
+            pass,
+            known: Some(widths),
+        }
     }
 
     /// The box's min-content and max-content content widths.
     pub(crate) fn widths(&self) -> (f32, f32) {
-        crate::intrinsic::content_widths(self.b, self.pass)
+        self.known
+            .unwrap_or_else(|| crate::intrinsic::content_widths(self.b, self.pass))
     }
 
     /// The content width a keyword stands for: `min-content`,

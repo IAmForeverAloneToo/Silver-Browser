@@ -1415,7 +1415,10 @@ Per css-grid-1 (level 2 subgrid included):
        nothing laid out; `tests/demos.rs` holds what holds whatever the
        machine. T4.3 within 10% (`docs/perf-budgets.md`, "Images (M23)").
        The web-platform-tests subset's image directories (the note's
-       step 9) wait for its checkout.
+       step 9), done once the checkout was on the machine: `css-images`,
+       `css-backgrounds` and the `img` element, 402 tests more, 2,140 in
+       all; the 31 failures that were M23's mended, the 31 left listed
+       with their reasons.
 
 ---
 

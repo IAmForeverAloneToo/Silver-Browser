@@ -358,7 +358,8 @@ size, `content` meaning `max-content`:
   indefinite in that layout, as in the reference browsers, so content
   sized by percentages inside it measures as nothing.
 
-Case B, an aspect ratio, waits for replaced elements (M23). Case C,
+Case B, an aspect ratio, came with replaced elements (M23,
+`docs/design/images.md`); on other boxes it waits for G36. Case C,
 sizing under a min-content or max-content constraint, is the intrinsic
 sizes' (below). Case D, an orthogonal flow, needs writing modes. The
 hypothetical main size is the base size clamped by the item's minimum
@@ -785,7 +786,7 @@ input.
   `visibility` property.
 - *Aspect ratios and replaced items*: case B of the base size and the
   transferred size suggestion of the automatic minimum, with images
-  (M23).
+  (M23, done for replaced items; on other boxes G36).
 - *The sizing functions and keywords of css-sizing-4*: `fit-content()`,
   `stretch`, `contain` and `calc-size()`.
 - *The intrinsic keywords on table cells and columns*: the table

@@ -633,6 +633,40 @@ fn fixed_maximum(tracks: &[Track], gutters: &[f32], span: &Range<usize>) -> Opti
     Some(sum + between)
 }
 
+/// A replaced item's content widths as the columns see it (M23): its
+/// rows' height known where each has a fixed maximum, the space it has
+/// before the rows are sized (section 12.1 step 1), against which its
+/// `height` and its limits resolve and which it fills if it stretches,
+/// its ratio making a width of the height. `None` for any other item.
+fn known_widths(
+    item: &GridItem<'_>,
+    container: &ComputedStyle,
+    rows: &[Track],
+    gutters: &[f32],
+) -> Option<(f32, f32)> {
+    let replaced = item.b.replaced.as_ref()?;
+    let style = &item.b.style;
+    let area = fixed_maximum(rows, gutters, &item.rows);
+    let stretched = area
+        .filter(|_| {
+            stretches(
+                item.b,
+                align_self(style, container),
+                &style.height,
+                [&style.margin[TOP], &style.margin[BOTTOM]],
+            )
+        })
+        .map(|area| {
+            // Percentages of a width not yet known count as zero.
+            let margin = margins(style, 0.0);
+            let vertical = Edges::of_box(item.b, 0.0).vertical();
+            (area - margin[TOP] - margin[BOTTOM] - vertical).max(0.0)
+        });
+    Some(crate::replaced::widths_in(
+        item.b, replaced, area, stretched,
+    ))
+}
+
 /// Whether an item's automatic minimum size in an axis is its
 /// content-based minimum size (§6.6): it is not a scroll container, it
 /// spans a track whose minimum is `auto`, and when it spans more than
@@ -658,11 +692,13 @@ fn inner(style: &ComputedStyle, v: f32, non_content: f32) -> f32 {
 /// zero when it does not apply: its min-content width, clamped by a
 /// definite `max-width` and, when every column it spans has a fixed
 /// maximum, by what those leave it after its margins and its `shim`.
+/// Its content widths are `known` where its rows give them.
 fn automatic_minimum_width<'a>(
     item: &GridItem<'a>,
     columns: &[Track],
     gutters: &[f32],
     shim: f32,
+    known: Option<(f32, f32)>,
     pass: &Pass<'a>,
 ) -> f32 {
     let style = &item.b.style;
@@ -670,7 +706,9 @@ fn automatic_minimum_width<'a>(
         return 0.0;
     }
     let (non_content, margins) = crate::intrinsic::fixed_edges(item.b);
-    let mut content = crate::intrinsic::content_widths(item.b, pass).0;
+    let mut content = known
+        .unwrap_or_else(|| crate::intrinsic::content_widths(item.b, pass))
+        .0;
     if let MaxSize::Px(max) = style.max_width {
         content = content.min(inner(style, max, non_content));
     }
@@ -685,18 +723,20 @@ fn automatic_minimum_width<'a>(
 /// child gives them, and its minimum contribution, the outer size its
 /// minimum width, `automatic` for `auto`, would give it when its `width`
 /// is `auto` or a percentage; each with its baseline shim (§12.5 step 1).
+/// Its content widths are `known` where its rows give them.
 fn column_contribution<'a>(
     item: &GridItem<'a>,
     automatic: f32,
     shims: Shims,
+    known: Option<(f32, f32)>,
     pass: &Pass<'a>,
 ) -> Contribution {
     let style = &item.b.style;
-    let (min_content, max_content) = crate::intrinsic::contribution(item.b, pass);
+    let (min_content, max_content) = crate::intrinsic::contribution_with(item.b, pass, known);
     let minimum = match &style.width {
         Size::Auto | Size::Percent(_) | Size::Calc(_) => {
             let (non_content, margins) = crate::intrinsic::fixed_edges(item.b);
-            let widths = || crate::intrinsic::content_widths(item.b, pass);
+            let widths = || known.unwrap_or_else(|| crate::intrinsic::content_widths(item.b, pass));
             // A percentage minimum is a percentage of zero here (Sizing
             // 3 §5.2.1c).
             let minimum = match &style.min_width {
@@ -735,7 +775,8 @@ fn margins(style: &ComputedStyle, width: f32) -> [f32; 4] {
 /// An `auto` minimum is `automatic`, but for an item whose `width` is
 /// definite here, a percentage one included: its content-based minimum
 /// is that width (§6.6's specified size suggestion), which the width
-/// already meets.
+/// already meets. Its content widths are `known` where its rows give
+/// them.
 #[allow(clippy::too_many_arguments)]
 fn item_width<'a>(
     item: &GridItem<'a>,
@@ -744,12 +785,16 @@ fn item_width<'a>(
     edges: &Edges,
     margin: &[f32; 4],
     automatic: f32,
+    known: Option<(f32, f32)>,
     pass: &Pass<'a>,
 ) -> f32 {
     let style = &item.b.style;
     let horizontal = edges.horizontal();
     let room = (width - margin[LEFT] - margin[RIGHT] - horizontal).max(0.0);
-    let intrinsic = Intrinsic::of(item.b, pass);
+    let intrinsic = match known {
+        Some(widths) => Intrinsic::known(item.b, pass, widths),
+        None => Intrinsic::of(item.b, pass),
+    };
     let w = width_constraints(style, width, horizontal, &intrinsic, room);
     let stretched = stretches(
         item.b,
@@ -929,7 +974,16 @@ pub(crate) fn layout_grid_contents<'a>(
         },
     );
 
-    // The columns (§12.1 step 1), sized in the content width.
+    // The columns (section 12.1 step 1), sized in the content width;
+    // the rows with a fixed maximum give a replaced item its height
+    // there.
+    let mut rows = grid.rows.tracks(definite);
+    let mut row_gutters = grid.rows.gutters(row_gap);
+    let known: Vec<Option<(f32, f32)>> = grid
+        .items
+        .iter()
+        .map(|item| known_widths(item, style, &rows, &row_gutters))
+        .collect();
     let mut columns = grid.columns.tracks(Some(content_width));
     let column_gutters = grid.columns.gutters(column_gap);
     let (column_groups, column_shims) = column_groups(&grid.items, style, &columns, true, pass);
@@ -937,8 +991,16 @@ pub(crate) fn layout_grid_contents<'a>(
         .items
         .iter()
         .zip(&column_shims)
-        .map(|(item, shims)| {
-            automatic_minimum_width(item, &columns, &column_gutters, shims.min_content, pass)
+        .zip(&known)
+        .map(|((item, shims), &known)| {
+            automatic_minimum_width(
+                item,
+                &columns,
+                &column_gutters,
+                shims.min_content,
+                known,
+                pass,
+            )
         })
         .collect();
     let column_items: Vec<Contribution> = grid
@@ -946,7 +1008,10 @@ pub(crate) fn layout_grid_contents<'a>(
         .iter()
         .zip(&automatic_widths)
         .zip(&column_shims)
-        .map(|((item, &automatic), &shims)| column_contribution(item, automatic, shims, pass))
+        .zip(&known)
+        .map(|(((item, &automatic), &shims), &known)| {
+            column_contribution(item, automatic, shims, known, pass)
+        })
         .collect();
     size_tracks(
         &mut columns,
@@ -976,17 +1041,17 @@ pub(crate) fn layout_grid_contents<'a>(
     // `max-height` is cyclic and counts as their initial value here
     // (css-sizing-3 §5.2.1c), as in the reference browser; the item's
     // final layout resolves it against its area.
-    let mut rows = grid.rows.tracks(definite);
-    let mut row_gutters = grid.rows.gutters(row_gap);
     let sized: Vec<Sized> = grid
         .items
         .iter()
         .zip(&automatic_widths)
-        .map(|(item, &automatic)| {
+        .zip(&known)
+        .map(|((item, &automatic), &known)| {
             let (_, width) = column_lines.area(&item.columns);
             let edges = Edges::of_box(item.b, width);
             let margin = margins(&item.b.style, width);
-            let content_width = item_width(item, style, width, &edges, &margin, automatic, pass);
+            let content_width =
+                item_width(item, style, width, &edges, &margin, automatic, known, pass);
             let key = ItemKey::of(item.b, content_width, None, width, None);
             let lay_out = || {
                 layout_contents(
@@ -1125,11 +1190,12 @@ pub(crate) fn layout_grid_contents<'a>(
     let content_y = border[TOP] + padding[TOP];
     let height = content_height + vertical_edges;
     let mut root = box_fragment(content_width + edges.horizontal(), height, b);
-    let laid: Vec<BlockLayout<'a>> = grid
+    let (laid, widths): (Vec<BlockLayout<'a>>, Vec<f32>) = grid
         .items
         .iter()
         .zip(&sized)
-        .map(|(item, s)| {
+        .zip(&automatic_widths)
+        .map(|((item, s), &automatic)| {
             let item_style = &item.b.style;
             let (_, width) = column_lines.area(&item.columns);
             let (_, area_height) = row_lines.area(&item.rows);
@@ -1167,30 +1233,58 @@ pub(crate) fn layout_grid_contents<'a>(
                     definite: true,
                 }
             });
-            let key = ItemKey::of(item.b, s.content_width, imposed, width, Some(area_height));
-            pass.item(key, || {
+            // A replaced item stretched to its area's height takes its
+            // width from that height through its ratio, as the reference
+            // browser has it, though its columns were sized without (M23).
+            let content_width = match (imposed, &item.b.replaced) {
+                (Some(imposed), Some(replaced)) => {
+                    let height = imposed.height - vertical;
+                    let known = crate::replaced::widths_in(
+                        item.b,
+                        replaced,
+                        Some(area_height),
+                        Some(height),
+                    );
+                    let margin = &s.margin;
+                    item_width(
+                        item,
+                        style,
+                        width,
+                        &s.edges,
+                        margin,
+                        automatic,
+                        Some(known),
+                        pass,
+                    )
+                }
+                _ => s.content_width,
+            };
+            let key = ItemKey::of(item.b, content_width, imposed, width, Some(area_height));
+            let layout = pass.item(key, || {
                 layout_contents(
                     item.b,
                     &s.edges,
                     width,
                     Some(area_height),
-                    s.content_width,
+                    content_width,
                     0.0,
                     Content::Root,
                     pass,
                     None,
                     imposed,
                 )
-            })
+            });
+            (layout, content_width)
         })
-        .collect();
+        .unzip();
     // Each item's outer size, and its baselines from its border box's
     // top, as laid out; the groups align by these.
     let outer: Vec<(f32, f32)> = laid
         .iter()
         .zip(&sized)
-        .map(|(layout, s)| {
-            let width = s.content_width + s.edges.horizontal() + s.margin[LEFT] + s.margin[RIGHT];
+        .zip(&widths)
+        .map(|((layout, s), &content_width)| {
+            let width = content_width + s.edges.horizontal() + s.margin[LEFT] + s.margin[RIGHT];
             (width, layout.height + s.margin[TOP] + s.margin[BOTTOM])
         })
         .collect();
@@ -1508,15 +1602,18 @@ pub(crate) fn content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32
     );
     let columns = grid.columns.tracks(None);
     let gutters = grid.columns.gutters(column_gap);
+    let rows = grid.rows.tracks(None);
+    let row_gutters = grid.rows.gutters(fixed_gap(&style.row_gap));
     let (_, shims) = column_groups(&grid.items, style, &columns, false, pass);
     let items: Vec<Contribution> = grid
         .items
         .iter()
         .zip(&shims)
         .map(|(item, &shims)| {
+            let known = known_widths(item, style, &rows, &row_gutters);
             let automatic =
-                automatic_minimum_width(item, &columns, &gutters, shims.min_content, pass);
-            column_contribution(item, automatic, shims, pass)
+                automatic_minimum_width(item, &columns, &gutters, shims.min_content, known, pass);
+            column_contribution(item, automatic, shims, known, pass)
         })
         .collect();
     let size_under = |available| {

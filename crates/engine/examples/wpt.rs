@@ -18,8 +18,12 @@
 //! - no script but `testharness.js`, `testharnessreport.js` and
 //!   `check-layout-th.js`, and calls to `checkLayout` with a selector,
 //!   in an inline script or `onload`;
-//! - no element that makes no box here: images, SVG, canvases, frames,
-//!   media, form controls and `br`;
+//! - no element that makes no box here: SVG, canvases, frames, media,
+//!   form controls and `br`; an `img` is taken (M23) but one with a
+//!   `srcset` or `sizes`, which this engine does not read (G35), and the
+//!   images it and its page's stylesheets name, by `url()` or
+//!   `image-set()`, are copied with it where they are on the checkout;
+//!   no SVG image (M32) and no AVIF one (G34);
 //! - every stylesheet only qualified rules whose selectors the matcher
 //!   parses, and every declaration one the cascade accepts, as
 //!   `style::supports` says, custom properties and declarations with
@@ -38,6 +42,8 @@
 //! - in an XHTML file, which this engine reads with its HTML parser (M15),
 //!   nothing that parser reads otherwise than an XML parser does: no
 //!   CDATA section and no self-closing element that is not void.
+//! - no `.sub` file, a template wptserve fills in before it is served,
+//!   which the runner's server does not (M23).
 //!
 //! The manifest has a line per test, its fields separated by tabs: the
 //! kind and the path, then for a reftest each reference as `==path` or
@@ -75,6 +81,9 @@ const DIRECTORIES: &[&str] = &[
     "css/css-animations",
     "css/css-transitions",
     "css/css-easing",
+    "css/css-images",
+    "css/css-backgrounds",
+    "html/semantics/embedded-content/the-img-element",
 ];
 
 /// How deep `@import`s may go; the engine fetches no deeper.
@@ -82,9 +91,9 @@ const MAX_IMPORT_DEPTH: usize = 16;
 
 /// Elements that make no box here, or not the box the tests mean.
 const NO_BOX: &[&str] = &[
-    "img", "svg", "canvas", "iframe", "frame", "frameset", "object", "embed", "video", "audio",
-    "picture", "math", "input", "button", "select", "textarea", "fieldset", "legend", "meter",
-    "progress", "output", "details", "summary", "dialog", "marquee", "br", "hr",
+    "svg", "canvas", "iframe", "frame", "frameset", "object", "embed", "video", "audio", "picture",
+    "math", "input", "button", "select", "textarea", "fieldset", "legend", "meter", "progress",
+    "output", "details", "summary", "dialog", "marquee", "br", "hr",
 ];
 
 /// The scripts a test may load: the harness, which the runner stands in
@@ -161,7 +170,7 @@ struct Page {
     selectors: Vec<String>,
     /// Whether it loads `check-layout-th.js`.
     check_layout: bool,
-    /// Its stylesheets, resolved.
+    /// Its stylesheets and the images it and they name, resolved.
     stylesheets: Vec<String>,
 }
 
@@ -193,11 +202,11 @@ fn pull(checkout: &Path) -> Result<(), String> {
             }
         }
     }
-    // The vendored files are replaced wholesale; the expectations stay.
-    for directory in DIRECTORIES {
-        let first = directory.split('/').next().unwrap_or(directory);
-        let old = out.join(first);
-        if old.exists() {
+    // The vendored files are replaced wholesale, every directory of
+    // them, the images' too; the expectations stay.
+    for entry in fs::read_dir(&out).map_err(|e| format!("{}: {e}", out.display()))? {
+        let old = entry.map_err(|e| e.to_string())?.path();
+        if old.is_dir() {
             fs::remove_dir_all(&old).map_err(|e| format!("{}: {e}", old.display()))?;
         }
     }
@@ -307,6 +316,15 @@ fn is_test(rel: &str) -> bool {
 /// The test at `rel`, if the rule takes it: how it is run and the files
 /// it needs besides itself; else why it is left out.
 fn take(checkout: &Path, rel: &str) -> Result<(Kind, Vec<String>), String> {
+    // A `.sub` file is a template wptserve fills in with its hosts and
+    // ports, which the runner's one server does not.
+    if rel
+        .rsplit('/')
+        .next()
+        .is_some_and(|name| name.contains(".sub."))
+    {
+        return Err("wptserve substitution (.sub)".to_string());
+    }
     let page = read_page(checkout, rel)?;
     let mut needs = page.stylesheets.clone();
     if !page.refs.is_empty() {
@@ -398,6 +416,26 @@ fn element(
         if name == "style" {
             let declarations = css::parse_style_attribute(value).unwrap_or_default();
             declarations_supported(&declarations)?;
+            for d in &declarations {
+                images(checkout, rel, &d.value, &mut page.stylesheets)?;
+            }
+        }
+    }
+    if tag == "img" {
+        if document.attr(id, "srcset").is_some() || document.attr(id, "sizes").is_some() {
+            return Err("img srcset".to_string());
+        }
+        if let Some(src) = document.attr(id, "src") {
+            unsupported_image(src)?;
+        }
+        if let Some(src) = document.attr(id, "src")
+            && !is_data(src)
+            && !src.trim().is_empty()
+        {
+            let path = resolve(rel, src)?;
+            if checkout.join(&path).is_file() && !page.stylesheets.contains(&path) {
+                page.stylesheets.push(path);
+            }
         }
     }
     match tag.as_str() {
@@ -619,6 +657,9 @@ fn rules_supported(
             css::Rule::Qualified(rule) => {
                 style::parse_selector_list(&rule.prelude).map_err(|_| "selector".to_string())?;
                 declarations_supported(&rule.declarations)?;
+                for d in &rule.declarations {
+                    images(checkout, at, &d.value, needs)?;
+                }
                 continue;
             }
             css::Rule::At(at_rule) => at_rule,
@@ -673,6 +714,80 @@ fn rules_supported(
                 }
             }
             _ => return Err(format!("@{name}")),
+        }
+    }
+    Ok(())
+}
+
+/// Whether `url` is a data URL, which names no file.
+fn is_data(url: &str) -> bool {
+    url.trim_start()
+        .get(..5)
+        .is_some_and(|s| s.eq_ignore_ascii_case("data:"))
+}
+
+/// Fails on an image this engine does not read: an SVG one (M32) or an
+/// AVIF one (G34), by its name or its data URL's type.
+fn unsupported_image(url: &str) -> Result<(), String> {
+    let url = url.trim().to_ascii_lowercase();
+    let path = url.split(['?', '#']).next().unwrap_or(&url);
+    if path.ends_with(".svg") || path.ends_with(".svgz") || url.starts_with("data:image/svg") {
+        return Err("SVG image".to_string());
+    }
+    if path.ends_with(".avif") || url.starts_with("data:image/avif") {
+        return Err("AVIF image".to_string());
+    }
+    Ok(())
+}
+
+/// Puts in `needs` the images a declaration's `value` names (M23): each
+/// `url()`, and each string of an `image-set()`, resolved against `at`,
+/// where it is a file on the checkout. One that is not, a broken image
+/// the test may mean, a link elsewhere and a data URL are left as they
+/// are. Fails on an image this engine does not read.
+fn images(
+    checkout: &Path,
+    at: &str,
+    value: &[css::Token],
+    needs: &mut Vec<String>,
+) -> Result<(), String> {
+    let mut functions: Vec<String> = Vec::new();
+    for token in value {
+        let url = match token {
+            css::Token::Url { value, .. } => Some(value.as_str()),
+            css::Token::Function(name) => {
+                functions.push(name.to_ascii_lowercase());
+                None
+            }
+            css::Token::OpenParen => {
+                functions.push(String::new());
+                None
+            }
+            css::Token::CloseParen => {
+                functions.pop();
+                None
+            }
+            css::Token::String { value, .. }
+                if matches!(
+                    functions.last().map(String::as_str),
+                    Some("url" | "image-set" | "-webkit-image-set")
+                ) =>
+            {
+                Some(value.as_str())
+            }
+            _ => None,
+        };
+        if let Some(url) = url {
+            unsupported_image(url)?;
+        }
+        let Some(url) = url.filter(|url| !is_data(url)) else {
+            continue;
+        };
+        if let Ok(path) = resolve(at, url)
+            && checkout.join(&path).is_file()
+            && !needs.contains(&path)
+        {
+            needs.push(path);
         }
     }
     Ok(())
@@ -805,8 +920,8 @@ fn readme(
          ```\n\n\
          They are the tests of {directories}\n\
          that use only what this engine has, chosen by the rule in\n\
-         `examples/wpt.rs` and copied with their references and stylesheets\n\
-         at their own paths by\n\n\
+         `examples/wpt.rs` and copied with their references, stylesheets\n\
+         and images at their own paths by\n\n\
          ```sh\n\
          cargo run -p engine --example wpt -- pull <checkout>\n\
          ```\n\n\
@@ -922,10 +1037,79 @@ mod tests {
     }
 
     #[test]
+    fn the_images_a_test_names_are_copied_with_it() {
+        let checkout = Checkout::new(
+            "images",
+            &[
+                (
+                    "css/x/t.html",
+                    "<link rel=match href=t-ref.html><link rel=stylesheet href=s/s.css>\
+                     <style>.b { background-image: image-set(\"c.png\" 1x) }</style>\
+                     <img src=a.png><img src=missing.png><img src='data:image/png;base64,AA'>\
+                     <div style='background: url(\"/images/b.png\")'></div>",
+                ),
+                ("css/x/t-ref.html", "<img src=a.png>"),
+                (
+                    "css/x/s/s.css",
+                    ".a { list-style-image: url(../d.png); content: \"e.png\" }",
+                ),
+                ("css/x/a.png", "a"),
+                ("css/x/c.png", "c"),
+                ("css/x/d.png", "d"),
+                ("css/x/e.png", "e"),
+                ("images/b.png", "b"),
+            ],
+        );
+        let (_, mut needs) = checkout.take("css/x/t.html").expect("taken");
+        needs.sort();
+        needs.dedup();
+        assert_eq!(
+            needs,
+            [
+                "css/x/a.png",
+                "css/x/c.png",
+                "css/x/d.png",
+                "css/x/s/s.css",
+                "css/x/t-ref.html",
+                "images/b.png",
+            ],
+            "a missing image, a data URL and a string that is no URL are not copied"
+        );
+    }
+
+    #[test]
+    fn a_template_wptserve_fills_in_is_left_out() {
+        let checkout = Checkout::new(
+            "sub",
+            &[
+                (
+                    "css/x/t.sub.html",
+                    "<link rel=match href=r.html><div></div>",
+                ),
+                ("css/x/r.html", "<div></div>"),
+            ],
+        );
+        assert_eq!(
+            checkout.take("css/x/t.sub.html"),
+            Err("wptserve substitution (.sub)".to_string())
+        );
+    }
+
+    #[test]
     fn the_rule_leaves_out_what_this_engine_does_not_have() {
         let reftest = |body: &str| format!("<link rel=match href=r.html>{body}");
         let pages = [
-            (reftest("<img src=a.png>"), "element <img>"),
+            (reftest("<img srcset='a.png 2x'>"), "img srcset"),
+            (reftest("<img src=a.svg>"), "SVG image"),
+            (
+                reftest("<div style='background: url(\"data:image/svg+xml,<svg/>\")'></div>"),
+                "SVG image",
+            ),
+            (
+                reftest("<style>.a { list-style-image: url(b.avif) }</style>"),
+                "AVIF image",
+            ),
+            (reftest("<svg></svg>"), "element <svg>"),
             (reftest("<div onclick=go()></div>"), "script"),
             (reftest("<script>go()</script>"), "script"),
             (reftest("<script src=x.js></script>"), "script"),

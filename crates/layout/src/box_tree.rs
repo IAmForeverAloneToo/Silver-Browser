@@ -1051,6 +1051,29 @@ impl<'a> Styled<'a> {
         b
     }
 
+    /// The replaced box of the element `item`, styled `style`, if it is
+    /// one (M23): an element whose `content` is an image alone, an `img`
+    /// too (Content 3 section 1) unless that image is broken, when the
+    /// `img` shows its own, as the reference browser does; else an `img`.
+    fn replaced_of(&self, item: Item, style: &ComputedStyle) -> Option<LayoutBox> {
+        let Item::Node(node) = item else {
+            return None;
+        };
+        let img = self.document.tag(node) == Some("img");
+        if let Some(image) = self.content_image(style) {
+            let broken = match image {
+                style::computed::Image::Url { url, .. } => {
+                    self.images.url_image(url) == ImageState::Broken
+                }
+                style::computed::Image::Gradient(_) => false,
+            };
+            if !(img && broken) {
+                return Some(self.content_box(item, style, image));
+            }
+        }
+        img.then(|| self.img_box(item, node, style))
+    }
+
     /// The box of the element `item`, styled `style`, whose `content` is
     /// `image` (M23.3): replaced, showing the image, or nothing while it
     /// is coming or when it cannot be shown.
@@ -1261,15 +1284,7 @@ fn build_items(styled: &Styled<'_>, item: Item) -> Vec<LayoutBox> {
             continue;
         };
         flush_text_run(styled, item, &mut run, &mut out);
-        let replaced = match child {
-            Item::Node(node) if styled.document.tag(node) == Some("img") => {
-                Some(styled.img_box(child, node, style))
-            }
-            Item::Node(_) => styled
-                .content_image(style)
-                .map(|image| styled.content_box(child, style, image)),
-            _ => None,
-        };
+        let replaced = styled.replaced_of(child, style);
         if let Some(mut img) = replaced {
             if img.kind != BoxKind::Absolute {
                 // An item is blockified (css-flexbox-1 section 4).
@@ -1438,10 +1453,8 @@ impl BlockContainer<'_> {
         }
         // An `img` is replaced, or its alt text: a table-internal
         // `display` is a block's for it (M23.2).
-        let img = matches!(child, Item::Node(node) if styled.document.tag(node) == Some("img"));
-        let replaced =
-            img || (matches!(child, Item::Node(_)) && styled.content_image(style).is_some());
-        if needs_a_table(style.display) && !replaced {
+        let replaced = styled.replaced_of(child, style);
+        if needs_a_table(style.display) && replaced.is_none() {
             self.collect_misplaced(misplaced, child, style);
             return;
         }
@@ -1450,17 +1463,7 @@ impl BlockContainer<'_> {
             self.add_marker(child, element, style);
             return;
         }
-        if let Item::Node(node) = child
-            && img
-        {
-            let img = styled.img_box(child, node, style);
-            self.add_img(img);
-            return;
-        }
-        if let Item::Node(_) = child
-            && let Some(image) = styled.content_image(style)
-        {
-            let replaced = styled.content_box(child, style, image);
+        if let Some(replaced) = replaced {
             self.add_img(replaced);
             return;
         }

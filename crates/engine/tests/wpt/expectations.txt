@@ -4,7 +4,8 @@
 # The steps are those of the milestone a section names, in its design
 # note's section 3: docs/design/flexbox.md for M17, docs/design/grid.md
 # for M18, docs/design/compositing.md for M19, docs/design/media.md for
-# M20, docs/design/values.md for M21, docs/design/animations.md for M22.
+# M20, docs/design/values.md for M21, docs/design/animations.md for M22,
+# docs/design/images.md for M23.
 
 # Not in either milestone (docs/design/flexbox.md and docs/design/grid.md,
 # section 2).
@@ -131,9 +132,7 @@ css/css-counter-styles/trad-chinese-informal/css3-counter-styles-085.html       
 css/css-counter-styles/ethiopic-numeric/counter-ethiopic-numeric.html                     `ethiopic-numeric` (Counter Styles 3 §7) behaves as `decimal` here
 css/css-variables/variable-declaration-19.html                                            the substituted value is an `rgb()` colour, a function the engine does not parse, so `color` is invalid at computed-value time and the text inherits black
 css/css-variables/variable-declaration-21.html                                            the substituted value is an `rgb()` colour, a function the engine does not parse, so `color` is invalid at computed-value time and the text inherits black
-css/css-lists/list-type-none-style-image.html                                             a `list-style-image` is not drawn before images (roadmap M23), so the test's `list-style-type: none` item has no marker where the reference's disc shows
 css/css-lists/nested-marker.html                                                          a `::before` or `::after` with `display: list-item` is no list item here: it has no marker and does not count in `list-item`
-css/CSS2/generated-content/content-004.xht                                                an image in `content` waits for images (roadmap M23)
 
 # Where the reference browser, the draft and the web-platform-tests do not
 # agree (docs/design/values.md, section 1: the reference browser and the
@@ -156,3 +155,38 @@ css/css-values/vh-interpolate-px.html                          the root's overfl
 css/css-values/vh-interpolate-vh.html                          the root's overflow is not carried to the viewport (css-overflow-3 3.3), so the viewport shows a scrollbar for the box the animation holds at 115vw by 115vh, which the root's `overflow: hidden` hides in the reference browser
 css/css-animations/animation-name-in-nested-shadow.html        declarative shadow roots (`shadowrootmode`) are not attached, shadow trees being in no milestone of the roadmap, so the hosts' columns are not drawn
 css/css-animations/transform-animation-under-large-scale.html  the animated box is a layer, as a running transform animation makes it (M22.4), drawn at a raster scale capped at 64 (M19): under the outer box's `scale(100)` its texels are magnified, and its edges against the clip blend over a pixel; raster at the device transform is M35.10's
+
+# Not in M23 (docs/design/images.md, section 2), and gaps outside it, named
+# at their milestones: the image directories' tests that ask for more than
+# images.
+css/css-flexbox/aspect-ratio-intrinsic-size-003.html                     `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
+css/css-flexbox/aspect-ratio-intrinsic-size-008.html                     `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
+css/css-flexbox/aspect-ratio-intrinsic-size-010.html                     `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
+css/css-flexbox/aspect-ratio-transferred-max-size.html                   `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
+css/css-flexbox/flex-aspect-ratio-content-box-padding-001.html           `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
+css/css-flexbox/flex-aspect-ratio-cross-size-001.html                    the flex containers' height is from `aspect-ratio`, on a box that is not replaced, which computes but sizes nothing (G36)
+css/css-flexbox/flex-aspect-ratio-cross-size-002.html                    `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
+css/css-flexbox/flex-item-transferred-sizes-padding-border-sizing.html   `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
+css/css-flexbox/flex-item-transferred-sizes-padding-content-sizing.html  `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
+css/css-grid/grid-definition/grid-auto-repeat-aspect-ratio-001.html      the grid container's height is from `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
+css/css-grid/grid-definition/grid-auto-repeat-aspect-ratio-002.html      the grid container's height is from `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
+css/css-grid/grid-items/aspect-ratio-001.html                            `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
+css/css-grid/grid-items/aspect-ratio-002.html                            `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
+css/css-grid/grid-items/aspect-ratio-003.html                            `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
+css/css-grid/grid-items/aspect-ratio-005.html                            `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
+css/css-flexbox/align-self-016.html                                      a column-wrap item with `align-self: start` is fitted to the container's width and not fitted again to its line's cross size once that is known, as the test and csswg-drafts#11784 ask (M17's sizing); the gradient that shows it is drawn right
+css/css-transforms/transform-translate-background-001.html               the root's overflow is not carried to the viewport (css-overflow-3 3.3), so the viewport shows a scrollbar for the root's overflow; the transformed root's gradient matches the reference
+css/css-backgrounds/background-color-body-propagation-005.html           a root of `display: none` leaves the document no box, and the window shows the placeholder text it shows for an empty or failed load rather than a blank canvas, a rule of paint's; nothing propagates, as it should not
+css/css-backgrounds/background-color-root-propagation-001.html           a root of `display: none` leaves the document no box, and the window shows the placeholder text it shows for an empty or failed load rather than a blank canvas, a rule of paint's; nothing propagates, as it should not
+css/css-backgrounds/border-image-repeat-002.htm                          the reference sizes its table's columns by `<col width>`, a presentational attribute the cascade does not have (a gap stated at M12); the border image matches the reference browser's
+css/css-backgrounds/border-image-repeat-004.htm                          the reference sizes its table's columns by `<col width>`, a presentational attribute the cascade does not have (a gap stated at M12); the border image matches the reference browser's
+css/css-backgrounds/css3-border-image-repeat-repeat.html                 the reference sizes its table's columns by `<col width>`, a presentational attribute the cascade does not have (a gap stated at M12); the border image matches the reference browser's
+css/css-backgrounds/css3-border-image-repeat-stretch.html                the reference sizes its table's columns by `<col width>`, a presentational attribute the cascade does not have (a gap stated at M12); the border image matches the reference browser's
+css/css-backgrounds/border-image-repeat-round-stretch-001.html           the reference's inline tables are placed by `vertical-align: bottom`, which inline layout does not read (roadmap M7.7), and by the baseline of a first row of empty cells; the border images match the reference browser's
+css/css-backgrounds/border-image-repeat-stretch-round-001.html           the reference's inline tables are placed by `vertical-align: bottom`, which inline layout does not read (roadmap M7.7), and by the baseline of a first row of empty cells; the border images match the reference browser's
+css/css-images/gradient/gradient-analogous-missing-components-002.html   `color()` with `none` components (G16) and a `<color-interpolation-method>` (G37), each of which makes the gradient invalid here
+css/css-images/gradient/gradient-analogous-missing-components-003.html   `color()` with `none` components (G16) and a `<color-interpolation-method>` (G37), each of which makes the gradient invalid here
+css/css-images/gradient/gradient-single-stop-longer-hue-hsl-002.html     `in hsl longer hue`, a `<color-interpolation-method>`, makes the gradient invalid here (G37)
+css/css-images/image-orientation/image-orientation-exif-png.html         the first image's orientation is in a zTXt chunk, "Raw profile type exif", a convention outside the PNG specification that this engine and the reference browser (Chrome 154) both leave unread, drawing it upright; the late eXIf chunk is ignored, as asked
+css/css-text/text-justify/text-justify-inter-character-cursive.html      inter-character justification spreads the letters of a cursive script, Arabic, apart, where the reference keeps a word's letters joined and spaces between words (css-text-3 7.3, G21)
+css/CSS2/generated-content/content-attr-case-002.xht                     read with the HTML parser (M15), the page is an HTML document, whose attribute names are matched without regard to case, so `attr(Title)` names `title`; in XHTML it names nothing and the pseudo-element is empty

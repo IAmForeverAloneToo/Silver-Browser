@@ -242,6 +242,7 @@ pub(crate) fn used_size(
     let natural = s.natural;
     match (width, height) {
         (Some(w), Some(h)) => (clamp(w, width_bounds), clamp_height(h, height_bounds)),
+        (None, None) => natural_fit(&s, width_bounds, height_bounds),
         (Some(w), None) => {
             let w = clamp(w, width_bounds);
             let h = s.height_for(w).or(natural.height).unwrap_or(DEFAULT_HEIGHT);
@@ -252,27 +253,100 @@ pub(crate) fn used_size(
             let w = s.width_for(h).or(natural.width).unwrap_or(DEFAULT_WIDTH);
             (clamp(w, width_bounds), h)
         }
-        (None, None) => {
-            let (w, h) = match (natural.width, natural.height) {
-                (Some(w), h) => (w, s.height_for(w).or(h).unwrap_or(DEFAULT_HEIGHT)),
-                (None, Some(h)) => (s.width_for(h).unwrap_or(DEFAULT_WIDTH), h),
-                // A ratio and no size: contained in the default object
-                // size.
-                (None, None) => match s.ratio {
-                    Some((r, _)) if r >= DEFAULT_WIDTH / DEFAULT_HEIGHT => {
-                        (DEFAULT_WIDTH, DEFAULT_WIDTH / r)
-                    }
-                    Some((r, _)) => (DEFAULT_HEIGHT * r, DEFAULT_HEIGHT),
-                    None => (DEFAULT_WIDTH, DEFAULT_HEIGHT),
-                },
-            };
-            if s.ratio.is_some() {
-                fit(w, h, width_bounds, height_bounds)
-            } else {
-                (clamp(w, width_bounds), clamp_height(h, height_bounds))
-            }
-        }
     }
+}
+
+/// The size of a replaced box with neither `width` nor `height` given,
+/// fitted between `width_bounds` and `height_bounds`: its natural size,
+/// a side it lacks from the other through its ratio, else the default
+/// object size, kept in its ratio by section 10.4's table.
+fn natural_fit(
+    s: &Sizing<'_>,
+    width_bounds: (f32, Option<f32>),
+    height_bounds: (f32, Option<f32>),
+) -> (f32, f32) {
+    let natural = s.natural;
+    let (w, h) = match (natural.width, natural.height) {
+        (Some(w), h) => (w, s.height_for(w).or(h).unwrap_or(DEFAULT_HEIGHT)),
+        (None, Some(h)) => (s.width_for(h).unwrap_or(DEFAULT_WIDTH), h),
+        // A ratio and no size: contained in the default object size.
+        (None, None) => match s.ratio {
+            Some((r, _)) if r >= DEFAULT_WIDTH / DEFAULT_HEIGHT => {
+                (DEFAULT_WIDTH, DEFAULT_WIDTH / r)
+            }
+            Some((r, _)) => (DEFAULT_HEIGHT * r, DEFAULT_HEIGHT),
+            None => (DEFAULT_WIDTH, DEFAULT_HEIGHT),
+        },
+    };
+    if s.ratio.is_some() {
+        fit(w, h, width_bounds, height_bounds)
+    } else {
+        (clamp(w, width_bounds), clamp_height(h, height_bounds))
+    }
+}
+
+/// The content-box width of the replaced box `b` as if its `width`,
+/// `min-width` and `max-width` were their initial values (css-sizing-3
+/// section 5.1, M23): what its ratio makes of a definite height, its
+/// `height` against `cb_height` or else `stretched`, one its formatting
+/// context makes definite, between its height limits; else its natural
+/// size fitted under its height limits alone.
+fn auto_width(
+    b: &LayoutBox,
+    replaced: &Replaced,
+    cb_height: Option<f32>,
+    stretched: Option<f32>,
+) -> f32 {
+    let s = Sizing::of(b, replaced, None);
+    if s.fixed {
+        return ICON_SIZE;
+    }
+    let bounds = height_bounds(s.style, cb_height, s.vertical, None);
+    match definite_height(s.style, cb_height, s.vertical).or(stretched) {
+        Some(h) => {
+            let h = clamp_height(h, bounds);
+            s.width_for(h).or(s.natural.width).unwrap_or(DEFAULT_WIDTH)
+        }
+        None => natural_fit(&s, (0.0, None), bounds).0,
+    }
+}
+
+/// The content-box width of the replaced box `b` as if none of its
+/// sizes and limits were given: its natural size, or the default object
+/// size, kept in its ratio; what a flex container measures a column item
+/// at before its own main size, a height, counts (css-flexbox-1 section
+/// 9.2 step 3).
+pub(crate) fn natural_width(b: &LayoutBox, replaced: &Replaced) -> f32 {
+    let s = Sizing::of(b, replaced, None);
+    if s.fixed {
+        return ICON_SIZE;
+    }
+    natural_fit(&s, (0.0, None), (0.0, None)).0
+}
+
+/// The content-box width the replaced box `b`'s ratio makes of the
+/// content-box `height` (css-sizing-4 section 5.1): `None` for a box with
+/// no ratio, and for the icon, which keeps its size.
+pub(crate) fn transferred_width(b: &LayoutBox, replaced: &Replaced, height: f32) -> Option<f32> {
+    let s = Sizing::of(b, replaced, None);
+    if s.fixed {
+        return None;
+    }
+    s.width_for(height)
+}
+
+/// The content-box height of the replaced box `b` at the content-box
+/// `width` as if its `height`, `min-height` and `max-height` were their
+/// initial values: what its ratio makes of the width, else its natural
+/// height, else 150; a block's automatic content height, unclamped.
+fn auto_height(b: &LayoutBox, replaced: &Replaced, width: f32, cb_width: f32) -> f32 {
+    let s = Sizing::of(b, replaced, Some(cb_width));
+    if s.fixed {
+        return ICON_SIZE;
+    }
+    s.height_for(width)
+        .or(s.natural.height)
+        .unwrap_or(DEFAULT_HEIGHT)
 }
 
 /// The content-box height of the replaced box `b` given the content-box
@@ -301,11 +375,25 @@ pub(crate) fn used_height(
 }
 
 /// The min-content and max-content content widths of the replaced box
-/// `b`: its width with percentages against nothing, and for the
-/// minimum zero where its `width` or `max-width` is a percentage
-/// (css-sizing-3 section 5.2.2: such a box is compressible).
+/// `b`: [`widths_in`] with the block axis unknown.
 pub(crate) fn content_widths(b: &LayoutBox, replaced: &Replaced) -> (f32, f32) {
-    let (width, _) = used_size(b, replaced, None, None);
+    widths_in(b, replaced, None, None)
+}
+
+/// The min-content and max-content content widths of the replaced box
+/// `b` (css-sizing-3 section 5.1): its width as if its own `width`,
+/// `min-width` and `max-width` were their initial values, which whoever
+/// asks applies, its height known from `cb_height`, against which a
+/// percentage of its own resolves, or `stretched` (see [`auto_width`]);
+/// for the minimum zero where its `width` or `max-width` is a percentage
+/// (section 5.2.2: such a box is compressible).
+pub(crate) fn widths_in(
+    b: &LayoutBox,
+    replaced: &Replaced,
+    cb_height: Option<f32>,
+    stretched: Option<f32>,
+) -> (f32, f32) {
+    let width = auto_width(b, replaced, cb_height, stretched);
     let percentage = |v: Option<style::computed::LengthPercentage>| {
         v.is_some_and(|v| v.resolve(0.0) != v.resolve(100.0))
     };
@@ -361,7 +449,9 @@ pub(crate) fn layout_replaced<'a>(
         last_baseline: None,
         inline_block_baseline: None,
         absolutes: Vec::new(),
-        auto_content_height: content_height,
+        // As a block's, the height its `height: auto` would be, unclamped:
+        // what a flex container's minimum and keywords read.
+        auto_content_height: auto_height(b, replaced, content_width, cb_width),
         held: Vec::new(),
     }
 }
@@ -620,13 +710,69 @@ mod tests {
     }
 
     #[test]
+    fn an_imgs_content_image_replaces_its_own_unless_broken() {
+        let img = "<img id=i src=10x10.png>";
+        assert_eq!(
+            size(img, "#i { content: url(200x100.png) }"),
+            (200.0, 100.0)
+        );
+        assert_eq!(size(img, "#i { content: url(broken.png) }"), (10.0, 10.0));
+    }
+
+    #[test]
+    fn a_replaced_flex_items_sizes_come_through_its_ratio() {
+        let item = |html: &str, css: &str| {
+            let ((_, _, w, h), _) = img(&laid(html, css));
+            (w, h)
+        };
+        let one = "<div id=c><img id=i src=200x100.png></div>";
+        // Its content size suggestion, the automatic minimum, from its
+        // stretched height: it shrinks no further in a container of none.
+        assert_eq!(
+            item(one, "#c { display: flex; width: 0; height: 50px }"),
+            (100.0, 50.0)
+        );
+        // The minimum is the smaller of its `width` and its content size,
+        // which its own `width` has no part in.
+        assert_eq!(
+            item(
+                one,
+                "#c { display: flex; width: 0; align-items: flex-start } \
+                 #i { width: 400px; height: 30px }"
+            ),
+            (60.0, 30.0)
+        );
+        // An inline-flex container's width from its height, which a
+        // single line stretches its item to; a multi-line one does not.
+        let l = laid(one, "#c { display: inline-flex; height: 50px }");
+        assert_eq!((img(&l).0.2, fragments(&l, "c")[0].w), (100.0, 100.0));
+        let l = laid(
+            one,
+            "#c { display: inline-flex; height: 50px; flex-wrap: wrap }",
+        );
+        assert_eq!((img(&l).0.2, fragments(&l, "c")[0].w), (200.0, 200.0));
+        // A column item's base size from its natural size, its
+        // `min-height` applied after: 100 at its natural width, then the
+        // 300px left over shared with its sibling.
+        let column = "<div id=c><img id=i src=200x100.png><div style='flex: 1 0 0px'></div></div>";
+        let (_, h) = item(
+            column,
+            "#c { display: flex; flex-direction: column; height: 400px; align-items: flex-start } \
+             #i { min-height: 200px; flex: 1 0 auto }",
+        );
+        assert_eq!(h, 250.0);
+    }
+
+    #[test]
     fn a_flex_container_stretches_a_replaced_item_and_a_grid_does_not() {
         let html = "<div id=c><img id=i src=200x100.png></div>";
         let item = |css: &str| {
             let ((_, _, w, h), _) = img(&laid(html, css));
             (w, h)
         };
-        assert_eq!(item("#c { display: flex; height: 300px }"), (200.0, 300.0));
+        // Its width what its ratio makes of the stretched height
+        // (css-flexbox-1 section 9.2 step 3, case B).
+        assert_eq!(item("#c { display: flex; height: 300px }"), (600.0, 300.0));
         assert_eq!(
             item("#c { display: flex; height: 300px; align-items: flex-start }"),
             (200.0, 100.0)
@@ -642,9 +788,50 @@ mod tests {
             item(&format!("{grid} #i {{ justify-self: stretch }}")),
             (400.0, 200.0)
         );
+        // Stretched, its width what its ratio makes of its height, past
+        // its column, as the reference browser has it.
         assert_eq!(
             item(&format!("{grid} #i {{ align-self: stretch }}")),
-            (200.0, 300.0)
+            (600.0, 300.0)
+        );
+    }
+
+    #[test]
+    fn a_replaced_grid_items_width_comes_from_its_rows() {
+        let html = "<div id=c><img id=i src=200x100.png></div>";
+        let item = |css: &str| {
+            let l = laid(html, css);
+            let ((_, _, w, h), _) = img(&l);
+            (w, h, fragments(&l, "c")[0].w)
+        };
+        // Its height a percentage of its row's: its column sized to the
+        // width its ratio makes of it (the reference browser's sizes).
+        assert_eq!(
+            item("#c { display: inline-grid; grid-template-rows: 50px } #i { height: 100% }"),
+            (100.0, 50.0, 100.0)
+        );
+        assert_eq!(
+            item("#c { display: grid; grid-template-rows: 80px } #i { max-height: 50% }"),
+            (80.0, 40.0, 800.0)
+        );
+        // Stretched in a row with a fixed maximum.
+        assert_eq!(
+            item(
+                "#c { display: inline-grid; grid-template-rows: minmax(0, 60px) } #i { align-self: stretch }"
+            ),
+            (120.0, 60.0, 120.0)
+        );
+        assert_eq!(
+            item(
+                "#c { display: inline-grid; grid-template-rows: 80px } \
+                 #i { align-self: stretch; margin: 10px; padding: 5px }"
+            ),
+            (110.0, 60.0, 130.0)
+        );
+        // A row with no fixed maximum gives it nothing.
+        assert_eq!(
+            item("#c { display: inline-grid } #i { height: 100% }"),
+            (200.0, 100.0, 200.0)
         );
     }
 

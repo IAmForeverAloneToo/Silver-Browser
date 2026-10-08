@@ -1377,10 +1377,18 @@ medians and faster over six more. The `image_decode` fuzz target found a
 frame of no area cut into rows zero bytes apart, a panic the decode
 thread caught, mended; the targets that lay pages out ran with the new
 properties and found nothing. The web-platform-tests subset's image
-directories (step 9) wait for its checkout, which was not on the
-machine. Not in this milestone, said rather than hidden and registered
+directories (step 9), pulled once the checkout was on the machine, add
+402 tests, 2,140 in all, with the images they use; the runner waits for
+decodes. They found 31 failures that were this milestone's, all mended:
+replaced boxes' content sizes, which now leave their own axis's limits
+out; flexbox's case B and a replaced item's width from the height its
+container gives it, in flex and grid alike; `image-orientation` on
+backgrounds and border images; repeating gradients of no period;
+`fixed` backgrounds in transformed boxes and on a fixed root; a
+declaration with white space before its colon. The 31 left are each
+outside it and listed with their reasons. Not in this milestone, said rather than hidden and registered
 (G34 to G40): AVIF; `srcset`, `sizes` and `<picture>`; `aspect-ratio` on
 boxes that are not replaced; Images 4's conic gradients and the rest;
 colour management; progressive display; `background-position-x` and
-`-y`. SVG as an image moves to M32.1. 1,739 tests pass workspace-wide,
+`-y`. SVG as an image moves to M32.1. 1,750 tests pass workspace-wide,
 two ignored. Next milestone: JS engine integration (M24).

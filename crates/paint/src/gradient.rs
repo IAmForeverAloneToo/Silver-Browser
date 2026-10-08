@@ -173,16 +173,23 @@ impl Geometry {
         }
     }
 
-    /// How far along the line the point `(x, y)` is, in pixels.
-    fn position(&self, x: f32, y: f32) -> f32 {
+    /// How far along the line the point `(x, y)` is, in pixels: in
+    /// `f64`, so that a point a pixel from a stop far out, as lengths
+    /// clamped to the largest are, is not rounded onto it.
+    fn position(&self, x: f32, y: f32) -> f64 {
+        let (x, y) = (f64::from(x), f64::from(y));
         match *self {
-            Geometry::Linear { start, dir } => (x - start.0) * dir.0 + (y - start.1) * dir.1,
-            Geometry::Radial { flat: true, .. } => f32::INFINITY,
+            Geometry::Linear { start, dir } => {
+                (x - f64::from(start.0)) * f64::from(dir.0)
+                    + (y - f64::from(start.1)) * f64::from(dir.1)
+            }
+            Geometry::Radial { flat: true, .. } => f64::INFINITY,
             Geometry::Radial { center, rx, ry, .. } => {
-                let (dx, dy) = (x - center.0, y - center.1);
+                let (dx, dy) = (x - f64::from(center.0), y - f64::from(center.1));
                 if ry.is_infinite() {
                     return dx.abs();
                 }
+                let (rx, ry) = (f64::from(rx), f64::from(ry));
                 ((dx / rx).powi(2) + (dy / ry).powi(2)).sqrt() * rx
             }
         }
@@ -311,21 +318,21 @@ fn hint_stops(
 /// The colour of the gradient line at `t` (section 3.4.2): the first
 /// stop's before it, the last's after, and between two stops a blend of
 /// theirs; of coincident stops, the last from their position on.
-fn color_at(stops: &[(f32, Premultiplied)], t: f32) -> Premultiplied {
+fn color_at(stops: &[(f32, Premultiplied)], t: f64) -> Premultiplied {
     let first = stops[0];
-    if t < first.0 || stops.len() == 1 {
+    if t < f64::from(first.0) || stops.len() == 1 {
         return first.1;
     }
-    let i = stops.partition_point(|s| s.0 <= t);
+    let i = stops.partition_point(|s| f64::from(s.0) <= t);
     if i >= stops.len() {
         return stops[stops.len() - 1].1;
     }
     let (a, b) = (stops[i - 1], stops[i]);
-    let span = b.0 - a.0;
+    let span = f64::from(b.0) - f64::from(a.0);
     if span <= 0.0 {
         return b.1;
     }
-    mix(a.1, b.1, (t - a.0) / span)
+    mix(a.1, b.1, ((t - f64::from(a.0)) / span) as f32)
 }
 
 /// The average colour of stops spread over their span (section 3.3):
@@ -396,9 +403,15 @@ fn render_on(gradient: &Gradient, w: f32, h: f32, threads: usize) -> images::Ima
     let stops = stops(&gradient.items, length);
     let (first, last) = (stops[0].0, stops[stops.len() - 1].0);
     let period = last - first;
-    // A repeating gradient too fine to show, or flat, is its average.
+    // A repeating gradient of no period is its last colour, as the
+    // reference browser draws it and the web-platform tests ask; one too
+    // fine to show, or flat, its average (section 3.3).
     let flat = matches!(geometry, Geometry::Radial { flat: true, .. });
-    let solid = (gradient.repeating && (period < MIN_PERIOD || flat)).then(|| average(&stops));
+    let solid = match gradient.repeating {
+        true if period <= 0.0 && !flat => Some(stops[stops.len() - 1].1),
+        true if period < MIN_PERIOD || flat => Some(average(&stops)),
+        _ => None,
+    };
     // A channel to a byte, rounded; the cast saturates, below 0 and
     // above 255 alike.
     let byte = |v: f32| (v * 255.0 + 0.5) as u8;
@@ -411,7 +424,8 @@ fn render_on(gradient: &Gradient, w: f32, h: f32, threads: usize) -> images::Ima
             let c = solid.unwrap_or_else(|| {
                 let mut t = geometry.position(x, y);
                 if gradient.repeating {
-                    t = first + (t - first).rem_euclid(period);
+                    let first = f64::from(first);
+                    t = first + (t - first).rem_euclid(f64::from(period));
                 }
                 color_at(&stops, t)
             });
@@ -659,6 +673,19 @@ mod tests {
     }
 
     #[test]
+    fn a_point_a_pixel_from_a_stop_far_out_is_not_rounded_onto_it() {
+        // Lengths clamped to the largest: the stop and the centre at 2^25,
+        // where an f32 is two apart; every pixel is inside the circle.
+        let g = gradient(
+            "radial-gradient(circle farthest-corner at 0 33554432px, lime 33554432px, red 33554432px)",
+        );
+        let image = render(&g, 10.0, 10.0);
+        for x in 0..image.width {
+            assert_eq!(over_white(&image, x, 0), [0, 255, 0], "{x}");
+        }
+    }
+
+    #[test]
     fn degenerate_and_repeating_gradients_are_solid_where_images_3_says() {
         let solid = |css: &str| {
             let image = render(&gradient(css), 50.0, 20.0);
@@ -666,12 +693,15 @@ mod tests {
             let last = over_white(&image, image.width - 1, image.height - 1);
             (first, last)
         };
-        // A period too fine to show, and none at all: the average.
+        // A period too fine to show: the average; none at all: the last
+        // colour, as the reference browser draws it.
         let (a, b) = solid("repeating-linear-gradient(to right, red 0, blue 0.2px)");
         assert_eq!(a, b);
         assert!(near(a, [128, 0, 128]), "{a:?}");
-        let (a, _) = solid("repeating-linear-gradient(red 0px, white 0px, blue 0px)");
-        assert!(near(a, [191, 128, 191]), "{a:?}");
+        let (a, b) = solid("repeating-linear-gradient(red 0px, white 0px, blue 0px)");
+        assert_eq!((a, b), ([0, 0, 255], [0, 0, 255]));
+        let (a, _) = solid("repeating-radial-gradient(red 50%, blue 50%)");
+        assert_eq!(a, [0, 0, 255]);
         // An ellipse of no height: the last colour, or the average if it
         // repeats.
         let (a, b) = solid("radial-gradient(10px 0px, red, blue)");

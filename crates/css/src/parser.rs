@@ -327,7 +327,13 @@ fn parse_declarations(stream: &mut TokenStream, depth: usize) -> Vec<Declaration
 /// case-insensitive, except a custom property's, which is
 /// case-sensitive (Variables 1 §2).
 fn parse_declaration(stream: &mut TokenStream, name: String) -> Option<Declaration> {
-    match stream.next() {
+    // White space may stand between the name and the colon (CSS Syntax 3
+    // section 5.4.6).
+    let mut next = stream.next();
+    while next == Some(Token::Whitespace) {
+        next = stream.next();
+    }
+    match next {
         Some(Token::Colon) => {}
         None => return None,
         Some(t) => {
@@ -685,6 +691,18 @@ mod tests {
             panic!("expected a qualified rule");
         };
         assert_eq!(p.declarations.len(), 1);
+    }
+
+    #[test]
+    fn white_space_may_come_before_the_colon() {
+        let sheet = parse_stylesheet("p { color : red; width\n:\t10px } a { color } ").unwrap();
+        let Rule::Qualified(p) = &sheet.rules[0] else {
+            panic!("expected a qualified rule");
+        };
+        let names: Vec<&str> = p.declarations.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["color", "width"]);
+        let declarations = parse_style_attribute("height  : 5px").unwrap();
+        assert_eq!(declarations[0].name, "height");
     }
 
     #[test]

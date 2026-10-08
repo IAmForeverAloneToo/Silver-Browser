@@ -259,12 +259,43 @@ impl<'a> Item<'a> {
             *measured.get_or_init(|| {
                 let room = (c.width - cross_margins - item.edges.horizontal()).max(0.0);
                 let stretched = (single_line && item.stretches).then_some(room);
-                let width = item.column_width(c, stretched, pass);
+                // A replaced item at its natural width: its own height
+                // and its limits, the main size's, wait (M23).
+                let width = match &b.replaced {
+                    Some(replaced) => {
+                        let natural = crate::replaced::natural_width(b, replaced);
+                        let intrinsic = Intrinsic::known(b, pass, (natural, natural));
+                        item.column_width_with(c, stretched, &intrinsic)
+                    }
+                    None => item.column_width(c, stretched, pass),
+                };
                 item.measure_in(c, width, None, None, pass, |layout| {
                     layout.auto_content_height
                 })
             })
         };
+        // A row item with a ratio and a definite cross size, its own
+        // height or the one a single-line container of definite height
+        // stretches it to (section 9.8): its content size is what the
+        // ratio makes of it, its flex base size (section 9.2 step 3, case
+        // B) and its content size suggestion (section 4.5) alike (M23).
+        let transferred = b
+            .replaced
+            .as_ref()
+            .filter(|_| !c.column)
+            .and_then(|replaced| {
+                let vertical = item.edges.vertical();
+                let stretched = c
+                    .definite_height
+                    .filter(|_| single_line && item.stretches)
+                    .map(|h| (h - cross_margins - vertical).max(0.0));
+                let height = definite_height(style, c.definite_height, vertical).or(stretched)?;
+                let height = clamp_height(
+                    height,
+                    height_bounds(style, c.definite_height, vertical, None),
+                );
+                crate::replaced::transferred_width(b, replaced, height)
+            });
         // The content size in the main axis, measured if anything asks:
         // under a max-content constraint, what `content` means (case E);
         // the min-content size, for the automatic minimum. A column
@@ -273,14 +304,14 @@ impl<'a> Item<'a> {
             if c.column {
                 content_height()
             } else {
-                intrinsic.widths().0
+                transferred.unwrap_or_else(|| intrinsic.widths().0)
             }
         };
         let max_content = || {
             if c.column {
                 content_height()
             } else {
-                intrinsic.widths().1
+                transferred.unwrap_or_else(|| intrinsic.widths().1)
             }
         };
         // A keyword in `min-height` or `max-height` is the column item's
@@ -453,10 +484,19 @@ impl<'a> Item<'a> {
     /// margins, border and padding; clamped by `min-width` and
     /// `max-width`.
     fn column_width(&self, c: &Container, stretched: Option<f32>, pass: &Pass<'a>) -> f32 {
+        self.column_width_with(c, stretched, &Intrinsic::of(self.b, pass))
+    }
+
+    /// [`Item::column_width`], the item's content widths `intrinsic`.
+    fn column_width_with(
+        &self,
+        c: &Container,
+        stretched: Option<f32>,
+        intrinsic: &Intrinsic<'_, 'a>,
+    ) -> f32 {
         let horizontal = self.edges.horizontal();
         let room = (c.width - self.cross_margins - horizontal).max(0.0);
-        let intrinsic = Intrinsic::of(self.b, pass);
-        let w = width_constraints(&self.b.style, c.width, horizontal, &intrinsic, room);
+        let w = width_constraints(&self.b.style, c.width, horizontal, intrinsic, room);
         let width = w
             .width
             .or(stretched)
@@ -1159,9 +1199,16 @@ pub(crate) fn content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32
         .column_gap
         .as_ref()
         .map_or(0.0, |gap| gap.resolve(0.0));
+    // A single-line container's definite height, which stretches its
+    // items (section 9.8): a replaced one's width follows (M23).
+    let edges = Edges::of_box(b, 0.0);
+    let line_height = (style.flex_wrap == FlexWrap::NoWrap)
+        .then(|| definite_height(style, None, edges.vertical()))
+        .flatten()
+        .map(|h| clamp_height(h, height_bounds(style, None, edges.vertical(), None)));
     let (mut count, mut min_sum, mut max_sum, mut widest_min) = (0usize, 0.0f32, 0.0f32, 0.0f32);
     for item in items {
-        let (min, max) = main_contribution(item, pass);
+        let (min, max) = main_contribution(item, style, line_height, pass);
         count += 1;
         min_sum += min;
         max_sum += max;
@@ -1186,16 +1233,44 @@ pub(crate) fn content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32
 /// else the content size. A percentage is of the width being found, so
 /// `auto` for a size and zero for a minimum and an edge, and `auto`
 /// margins are zero;
-/// a table is never narrower than its minimum, as in a block.
-fn main_contribution<'a>(item: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32) {
+/// a table is never narrower than its minimum, as in a block. A replaced
+/// item the container's definite `line_height` stretches takes its
+/// content size from that height through its ratio (M23).
+fn main_contribution<'a>(
+    item: &'a LayoutBox,
+    container: &ComputedStyle,
+    line_height: Option<f32>,
+    pass: &Pass<'a>,
+) -> (f32, f32) {
     let style = &item.style;
     let (non_content, margins) = crate::intrinsic::fixed_edges(item);
     let inner = |v: f32| match style.box_sizing {
         BoxSizing::ContentBox => v.max(0.0),
         BoxSizing::BorderBox => (v - non_content).max(0.0),
     };
+    let stretched = item.replaced.as_ref().and_then(|replaced| {
+        let alignment = align_self(style, container.align_items);
+        let auto_margin = style.margin[TOP].is_auto() || style.margin[BOTTOM].is_auto();
+        let stretches = matches!(alignment, SelfAlignment::Stretch | SelfAlignment::Normal)
+            && style.height.is_auto()
+            && !auto_margin;
+        let line = line_height.filter(|_| stretches)?;
+        let edges = Edges::of_box(item, 0.0);
+        let margin = |side: usize| used(&style.margin[side], Some(0.0)).unwrap_or(0.0);
+        let height = (line - margin(TOP) - margin(BOTTOM) - edges.vertical()).max(0.0);
+        Some(crate::replaced::widths_in(
+            item,
+            replaced,
+            None,
+            Some(height),
+        ))
+    });
     let own = OnceCell::new();
-    let own = || *own.get_or_init(|| crate::intrinsic::content_widths(item, pass));
+    let own = || {
+        *own.get_or_init(|| {
+            stretched.unwrap_or_else(|| crate::intrinsic::content_widths(item, pass))
+        })
+    };
     // A size under the constraint: `max_content` or min-content.
     let size = |v: &Size, max_content: bool| match v {
         Size::Px(px) => Some(inner(*px)),

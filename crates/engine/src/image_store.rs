@@ -621,7 +621,7 @@ impl paint::Pictures for ImageStore {
         let entry = self.entries.get(key)?;
         match &entry.state {
             ImageState::Ready(ready) if ready.pixels != Pixels::Failed => {
-                Some((entry.id, ready.header))
+                Some((entry.id, entry.shown_header(ready.header)))
             }
             _ => None,
         }
