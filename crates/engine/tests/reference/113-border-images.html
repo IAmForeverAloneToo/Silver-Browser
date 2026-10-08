@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+<head>
+<title>Border images: nine slices stretched, repeated, rounded and spaced along the border, filled, outset, of their own widths, and over no border, drawn pixelated</title>
+<meta name="reference-load" content="file">
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  div { position: absolute; image-rendering: pixelated; background-color: #b8b0a0; border: 12px solid #2f4f7f; width: 96px; height: 96px; border-image: url(images/nine.png) 3; }
+</style>
+</head>
+<body>
+  <!-- nine.png is 9 by 9, nine squares of 3 by 3 each its own colour. -->
+  <div style="left: 10px; top: 10px"></div>
+  <div style="left: 150px; top: 10px; border-image-repeat: repeat"></div>
+  <div style="left: 290px; top: 10px; border-image-repeat: round; width: 100px"></div>
+  <div style="left: 440px; top: 10px; border-image-repeat: space; width: 118px; height: 118px"></div>
+  <div style="left: 610px; top: 10px; border-image: url(images/nine.png) 3 fill"></div>
+
+  <div style="left: 20px; top: 180px; border-image-outset: 6px"></div>
+  <div style="left: 170px; top: 180px; border-image-width: 1 2"></div>
+  <div style="left: 320px; top: 180px; border-image-width: 6px; border-image-repeat: repeat stretch"></div>
+  <div style="left: 470px; top: 180px; border: none; width: 120px; height: 120px; border-image: url(images/nine.png) 3 fill / 12px"></div>
+  <div style="left: 620px; top: 180px; border-image-slice: 33.3333%; border-image-outset: 1"></div>
+
+  <div style="left: 10px; top: 360px; border-width: 6px 24px; border-image-width: auto"></div>
+  <div style="left: 180px; top: 360px; border-image: url(images/nine.png) 3 6 / 12px 24px / 0 stretch"></div>
+  <div style="left: 360px; top: 360px; border-image: url(images/missing.png) 3"></div>
+</body>
+</html>

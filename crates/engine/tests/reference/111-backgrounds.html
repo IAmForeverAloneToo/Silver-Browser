@@ -1,0 +1,35 @@
+<!doctype html>
+<html>
+<head>
+<title>Background images: repeated, placed, sized, spaced and rounded, by origin and clip, layered, and fixed to the viewport, drawn pixelated</title>
+<meta name="reference-load" content="file">
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  div { position: absolute; image-rendering: pixelated; }
+  .grey { background-color: #b8b0a0; }
+</style>
+</head>
+<body>
+  <!-- quad.png is 20 by 10; stripes.png 4 by 4, red over blue; bars.png
+       4 by 4, green beside purple; dot.png 6 by 6, one colour. -->
+  <div style="left: 10px; top: 10px; width: 100px; height: 50px; background-image: url(images/quad.png)"></div>
+  <div class="grey" style="left: 120px; top: 10px; width: 100px; height: 50px; background: url(images/quad.png) no-repeat right bottom #b8b0a0"></div>
+  <div class="grey" style="left: 230px; top: 10px; width: 100px; height: 50px; background: url(images/quad.png) repeat-x 0 50% #b8b0a0"></div>
+  <div class="grey" style="left: 340px; top: 10px; width: 100px; height: 50px; background: url(images/quad.png) repeat-y 30px 0 #b8b0a0"></div>
+  <div style="left: 450px; top: 10px; width: 100px; height: 60px; background: url(images/quad.png) 0 0 / 40px 20px"></div>
+  <div class="grey" style="left: 560px; top: 10px; width: 70px; height: 30px; background: url(images/quad.png) space #b8b0a0"></div>
+  <div style="left: 640px; top: 10px; width: 50px; height: 40px; background: url(images/stripes.png) round repeat"></div>
+  <div style="left: 700px; top: 10px; width: 40px; height: 50px; background: url(images/bars.png) repeat round"></div>
+
+  <div class="grey" style="left: 10px; top: 90px; width: 60px; height: 40px; border: 10px solid transparent; padding: 10px; background-image: url(images/quad.png); background-repeat: no-repeat; background-origin: content-box; background-clip: padding-box"></div>
+  <div style="left: 140px; top: 90px; width: 80px; height: 40px; border: 10px solid transparent; padding: 5px; background: url(images/quad.png) border-box"></div>
+  <div style="left: 270px; top: 90px; width: 100px; height: 50px; background: url(images/dot.png) no-repeat 10px 10px, url(images/quad.png)"></div>
+  <div class="grey" style="left: 390px; top: 90px; width: 60px; height: 60px; background: url(images/quad.png) no-repeat 0 0 / contain #b8b0a0"></div>
+  <div class="grey" style="left: 470px; top: 90px; width: 60px; height: 60px; background: url(images/quad.png) no-repeat 0 0 / cover"></div>
+  <div class="grey" style="left: 550px; top: 90px; width: 60px; height: 60px; background: url(images/quad.png) repeat-x 0 0 / auto 20px #b8b0a0"></div>
+  <div style="left: 630px; top: 90px; width: 100px; height: 60px; background: url(images/quad.png) fixed"></div>
+  <div class="grey" style="left: 10px; top: 180px; width: 100px; height: 50px; background: url(images/quad.png) no-repeat right 10px bottom 5px #b8b0a0"></div>
+  <div class="grey" style="left: 120px; top: 180px; width: 100px; height: 50px; background: url(images/quad.png) repeat 15px 5px"></div>
+</body>
+</html>

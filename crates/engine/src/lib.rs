@@ -1051,6 +1051,13 @@ impl Engine {
         self.needs_frame()
     }
 
+    /// Whether an image a frame drew is being decoded (M23.5): a frame
+    /// drawn once it is shows it, as one drawn now does not. The waker
+    /// wakes the caller when it is done.
+    pub fn decoding(&self) -> bool {
+        self.shown.images.decoding()
+    }
+
     /// Fetches the images the shown document's `img` elements show that
     /// are not yet wanted (M23.1). A page with no URL fetches nothing,
     /// nor does one the browser made.

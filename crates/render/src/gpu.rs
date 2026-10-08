@@ -297,6 +297,16 @@ struct Records {
     composites: Vec<f32>,
 }
 
+/// How far a sharp image's texture coordinates are moved back, as a
+/// fraction of a `texture` that size: [`crate::NEAREST_NUDGE`] texels,
+/// as the software backend moves them.
+fn nudge(sharp: bool, texture: (u32, u32)) -> [f32; 2] {
+    if !sharp {
+        return [0.0; 2];
+    }
+    [texture.0, texture.1].map(|side| crate::NEAREST_NUDGE / side.max(1) as f32)
+}
+
 /// What names an uploaded image: its number, frame, turn and crop's
 /// bits.
 type ImageKey = (u64, u32, Orientation, Option<[u32; 4]>);
@@ -608,16 +618,16 @@ impl GpuBackend {
     }
 
     /// The group a composite samples `image` by, the nearest texel where
-    /// `sharp`: its texture uploaded the first time it is drawn, and the
-    /// textures drawn longest ago, not in this raster, dropped while
-    /// they hold more than the budget. `None` until it is decoded, and
-    /// for one larger than a texture may be.
+    /// `sharp`, and the texture's size: its texture uploaded the first
+    /// time it is drawn, and the textures drawn longest ago, not in this
+    /// raster, dropped while they hold more than the budget. `None` until
+    /// it is decoded, and for one larger than a texture may be.
     fn image_bind(
         &mut self,
         image: &ImageRef,
         sharp: bool,
         repeat: bool,
-    ) -> Option<wgpu::BindGroup> {
+    ) -> Option<(wgpu::BindGroup, (u32, u32))> {
         let key = (
             image.id,
             image.frame,
@@ -625,11 +635,14 @@ impl GpuBackend {
             image.crop.map(|c| c.map(f32::to_bits)),
         );
         let frame = self.frame;
-        let pick = |kept: &ImageTexture| match (sharp, repeat) {
-            (true, false) => kept.nearest.clone(),
-            (false, false) => kept.texture.bind.clone(),
-            (true, true) => kept.nearest_repeat.clone(),
-            (false, true) => kept.linear_repeat.clone(),
+        let pick = |kept: &ImageTexture| {
+            let bind = match (sharp, repeat) {
+                (true, false) => kept.nearest.clone(),
+                (false, false) => kept.texture.bind.clone(),
+                (true, true) => kept.nearest_repeat.clone(),
+                (false, true) => kept.linear_repeat.clone(),
+            };
+            (bind, (kept.texture.width, kept.texture.height))
         };
         if let Some(kept) = self.images.get_mut(&key) {
             kept.used = frame;
@@ -1343,9 +1356,10 @@ impl GpuBackend {
                 else {
                     return;
                 };
-                let Some(bind) = self.image_bind(image, *sharp, false) else {
+                let Some((bind, texture)) = self.image_bind(image, *sharp, false) else {
                     return;
                 };
+                let [nx, ny] = nudge(*sharp, texture);
                 Self::push_composite(
                     &mut self.records,
                     draws,
@@ -1355,7 +1369,7 @@ impl GpuBackend {
                     1.0,
                     scissor,
                     size,
-                    [0.0, 0.0, 1.0, 1.0],
+                    [-nx, -ny, 1.0 - nx, 1.0 - ny],
                 );
             }
             DisplayItem::Pattern {
@@ -1383,9 +1397,10 @@ impl GpuBackend {
                     else {
                         continue;
                     };
-                    let Some(bind) = self.image_bind(image, *sharp, one.repeat) else {
+                    let Some((bind, texture)) = self.image_bind(image, *sharp, one.repeat) else {
                         return;
                     };
+                    let [nx, ny] = nudge(*sharp, texture);
                     let (tw, th) = (t.x1 - t.x0, t.y1 - t.y0);
                     Self::push_composite(
                         &mut self.records,
@@ -1397,10 +1412,10 @@ impl GpuBackend {
                         scissor,
                         size,
                         [
-                            (f.x0 - t.x0) / tw,
-                            (f.y0 - t.y0) / th,
-                            (f.x1 - t.x0) / tw,
-                            (f.y1 - t.y0) / th,
+                            (f.x0 - t.x0) / tw - nx,
+                            (f.y0 - t.y0) / th - ny,
+                            (f.x1 - t.x0) / tw - nx,
+                            (f.y1 - t.y0) / th - ny,
                         ],
                     );
                 }
@@ -2572,6 +2587,9 @@ mod tests {
                 image(100.0, 4.0, 6.0, 8.0, &turned, true),
                 image(160.0, 4.0, 9.0, 16.0, &cut, false),
                 image(175.0, 4.0, 3.0, 4.0, &cut, true),
+                // Samples between texels, halved and by one and a half.
+                image(4.0, 40.0, 4.0, 3.0, &picture, true),
+                image(20.0, 40.0, 12.0, 9.0, &picture, true),
                 DisplayItem::PushClip {
                     x: 120.0,
                     y: 10.0,

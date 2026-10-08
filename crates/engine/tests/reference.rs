@@ -38,6 +38,11 @@
 //! the same capture (M13): whatever the engine keeps from frame to
 //! frame, the page must draw as it did.
 //!
+//! A page with images (M23) declares `<meta name="reference-load"
+//! content="file">`: it is loaded by its `file:` URL, since a document
+//! loaded from a string fetches nothing, its images beside it under
+//! `images/`, and drawn once what it draws is decoded.
+//!
 //! A page may declare `<meta name="reference-tolerance" content="N">`:
 //! a channel may then differ by up to `N`, and the test says how many
 //! pixels did. M11's multi-colour page uses it for the last bit of the
@@ -64,10 +69,15 @@
 
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{Receiver, channel};
+use std::time::{Duration, Instant};
 
-use std::time::Duration;
+use engine::{
+    ColorScheme, Engine, FrameTime, LoadState, MediaType, Preferences, SCROLLBAR_WIDTH, Url,
+};
 
-use engine::{ColorScheme, Engine, FrameTime, MediaType, Preferences, SCROLLBAR_WIDTH};
+/// How long a page loaded by its URL may take to load and decode.
+const LOAD: Duration = Duration::from_secs(30);
 
 /// The size a page is drawn at unless it says another.
 const WIDTH: u32 = 800;
@@ -187,15 +197,55 @@ fn make_changes(engine: &mut Engine, changes: &Changes, setting: Setting) {
     at(engine, *changes.times.last().expect("a time to draw at"));
 }
 
-/// An engine with the bundled font showing `source` as it asks, and its
-/// frame, RGB.
-fn render(source: &str, setting: Setting, change: impl FnOnce(&mut Engine)) -> (Engine, Vec<u8>) {
+/// Takes what arrives until `done` says the engine is there.
+fn wait(engine: &mut Engine, woken: &Receiver<()>, page: &Path, done: impl Fn(&Engine) -> bool) {
+    let deadline = Instant::now() + LOAD;
+    loop {
+        engine.poll_network();
+        if done(engine) {
+            return;
+        }
+        let left = deadline
+            .checked_duration_since(Instant::now())
+            .unwrap_or_else(|| panic!("{} took more than {LOAD:?}", page.display()));
+        let _ = woken.recv_timeout(left);
+    }
+}
+
+/// An engine with the bundled font showing the page at `page`, whose
+/// source is `source`, as it asks, and its frame, RGB: a page with
+/// images loaded by its URL, and drawn once its images are decoded.
+fn render(
+    page: &Path,
+    source: &str,
+    setting: Setting,
+    change: impl FnOnce(&mut Engine),
+) -> (Engine, Vec<u8>) {
     let mut engine = engine();
     engine.set_media_type(setting.media_type);
     engine.set_preferences(setting.preferences);
-    engine.load_document(source);
+    let by_url = meta(source, "reference-load") == Some("file");
+    let (wake, woken) = channel();
+    engine.set_waker(move || {
+        let _ = wake.send(());
+    });
+    if by_url {
+        let url = Url::from_file_path(page).expect("the page has a path");
+        engine.navigate(url);
+        wait(&mut engine, &woken, page, |engine| {
+            engine.load_state() == &LoadState::Loaded
+        });
+    } else {
+        engine.load_document(source);
+    }
     change(&mut engine);
-    let frame = engine.frame(setting.width, setting.height);
+    let frame = loop {
+        let frame = engine.frame(setting.width, setting.height);
+        if !by_url || !engine.decoding() {
+            break frame;
+        }
+        wait(&mut engine, &woken, page, |engine| !engine.decoding());
+    };
     let rgb = frame.chunks(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
     (engine, rgb)
 }
@@ -393,10 +443,10 @@ fn every_reference_page_renders_as_its_capture() {
     let pages = pages();
     assert_eq!(
         pages.len(),
-        109,
+        115,
         "the ten cases of M10's design note, the eleven of M11's, the five of M12's, the three of M16's, \
          the twenty of M17's, the twenty of M18's, the ten of M19's, the eleven of M20's, the nine \
-         of M21's and the ten of M22's"
+         of M21's, the ten of M22's and the six of M23's"
     );
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/reference");
     let mut failures = Vec::new();
@@ -410,7 +460,7 @@ fn every_reference_page_renders_as_its_capture() {
         let expected = read_capture(&page.with_extension("png"), setting);
         let tolerance = tolerance_of(&source);
         let changes = changes_of(&source);
-        let (mut engine, mut actual) = render(&source, setting, |engine| {
+        let (mut engine, mut actual) = render(page, &source, setting, |engine| {
             if let Some(changes) = &changes {
                 make_changes(engine, changes, setting);
             }
@@ -533,7 +583,7 @@ fn every_reference_page_changed_and_changed_back_renders_as_its_capture() {
         // transitions they start: an element hidden has its
         // transitions cancelled, and shown again starts none.
         let changes = changes_of(&source);
-        let (_, mut actual) = render(&source, setting, |engine| {
+        let (_, mut actual) = render(page, &source, setting, |engine| {
             mutate_and_restore(engine, setting);
             if let Some(changes) = &changes {
                 make_changes(engine, changes, setting);

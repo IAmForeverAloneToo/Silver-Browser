@@ -185,11 +185,11 @@ impl Geometry {
 }
 
 /// A gradient's stops on its line, `length` long: each its position in
-/// pixels and its colour, with where the hint after it is, if any; after
-/// section 3.4.3's fixup: the first stop at 0% and the last at 100% where
-/// they have no position, no position before an earlier one, and the
-/// rest spaced evenly between those around them.
-fn stops(items: &[GradientItem], length: f32) -> Vec<(f32, Premultiplied, Option<f32>)> {
+/// pixels and its colour; after section 3.4.3's fixup: the first stop at
+/// 0% and the last at 100% where they have no position, no position
+/// before an earlier one, and the rest spaced evenly between those
+/// around them; and each hint made stops, as [`hint_stops`] makes them.
+fn stops(items: &[GradientItem], length: f32) -> Vec<(f32, Premultiplied)> {
     let mut out: Vec<(Option<f32>, Premultiplied, Option<f32>)> = Vec::new();
     let mut floor = f32::NEG_INFINITY;
     let count = items
@@ -246,14 +246,67 @@ fn stops(items: &[GradientItem], length: f32) -> Vec<(f32, Premultiplied, Option
             }
         }
     }
-    placed
+    let mut out = Vec::with_capacity(placed.len());
+    for (i, &(at, color, hint)) in placed.iter().enumerate() {
+        out.push((at, color));
+        if let (Some(hint), Some(&(right, next, _))) = (hint, placed.get(i + 1)) {
+            out.extend(hint_stops((at, color), hint, (right, next)));
+        }
+    }
+    out
+}
+
+/// The stops the reference browser draws a hint at `hint` between the
+/// stops `left` and `right` as (M23.3; Blink's
+/// `ReplaceColorHintsWithColorStops`): none halfway, where the blend is
+/// even; one of the far stop's colour at a hint on a stop; else nine,
+/// seven on the longer side from its middle and two on the shorter,
+/// each coloured by section 3.4.2's curve `p^(ln 0.5 / ln h)`. Between
+/// them the colours blend evenly: a hint's curve is followed in pieces.
+fn hint_stops(
+    left: (f32, Premultiplied),
+    hint: f32,
+    right: (f32, Premultiplied),
+) -> Vec<(f32, Premultiplied)> {
+    let (left_dist, right_dist) = (hint - left.0, right.0 - hint);
+    let total = right.0 - left.0;
+    let near = |a: f32, b: f32| (a - b).abs() <= f32::EPSILON * total.abs().max(1.0);
+    if near(left_dist, right_dist) {
+        return Vec::new();
+    }
+    if near(left_dist, 0.0) {
+        return vec![(hint, right.1)];
+    }
+    if near(right_dist, 0.0) {
+        return vec![(hint, left.1)];
+    }
+    let mut at = [0.0f32; 9];
+    if left_dist > right_dist {
+        for (y, at) in at[..7].iter_mut().enumerate() {
+            *at = left.0 + left_dist * ((7.0 + y as f32) / 13.0);
+        }
+        at[7] = hint + right_dist / 3.0;
+        at[8] = hint + right_dist * 2.0 / 3.0;
+    } else {
+        at[0] = left.0 + left_dist / 3.0;
+        at[1] = left.0 + left_dist * 2.0 / 3.0;
+        for (y, at) in at[2..].iter_mut().enumerate() {
+            *at = hint + right_dist * (y as f32 / 13.0);
+        }
+    }
+    let exponent = 0.5f32.ln() / (left_dist / total).ln();
+    at.iter()
+        .map(|&at| {
+            let weight = ((at - left.0) / total).powf(exponent);
+            (at, mix(left.1, right.1, weight))
+        })
+        .collect()
 }
 
 /// The colour of the gradient line at `t` (section 3.4.2): the first
 /// stop's before it, the last's after, and between two stops a blend of
-/// theirs, bent by a hint between them; of coincident stops, the last
-/// from their position on.
-fn color_at(stops: &[(f32, Premultiplied, Option<f32>)], t: f32) -> Premultiplied {
+/// theirs; of coincident stops, the last from their position on.
+fn color_at(stops: &[(f32, Premultiplied)], t: f32) -> Premultiplied {
     let first = stops[0];
     if t < first.0 || stops.len() == 1 {
         return first.1;
@@ -267,26 +320,12 @@ fn color_at(stops: &[(f32, Premultiplied, Option<f32>)], t: f32) -> Premultiplie
     if span <= 0.0 {
         return b.1;
     }
-    let p = (t - a.0) / span;
-    let c = match a.2 {
-        Some(hint) => {
-            let h = (hint - a.0) / span;
-            if h <= 0.0 {
-                1.0
-            } else if h >= 1.0 {
-                0.0
-            } else {
-                p.powf(0.5f32.ln() / h.ln())
-            }
-        }
-        None => p,
-    };
-    mix(a.1, b.1, c)
+    mix(a.1, b.1, (t - a.0) / span)
 }
 
 /// The average colour of stops spread over their span (section 3.3):
 /// each pair of neighbours weighted by half the distance between them.
-fn average(stops: &[(f32, Premultiplied, Option<f32>)]) -> Premultiplied {
+fn average(stops: &[(f32, Premultiplied)]) -> Premultiplied {
     let total = stops[stops.len() - 1].0 - stops[0].0;
     // Stops all at one place are taken evenly spread.
     let spread: Vec<f32> = if total > 0.0 {
@@ -536,9 +575,31 @@ mod tests {
             at("linear-gradient(red 10%, lime, blue 50%)"),
             [10.0, 30.0, 50.0]
         );
+        // A hint is nine stops, as the reference browser makes them:
+        // two on the shorter side, seven on the longer from the hint.
+        let hinted = at("linear-gradient(red, 25%, blue)");
+        let mut want = vec![0.0, 25.0 / 3.0, 50.0 / 3.0];
+        want.extend((0..7).map(|y| 25.0 + 75.0 * y as f32 / 13.0));
+        want.push(100.0);
+        assert_eq!(hinted.len(), want.len());
+        assert!(
+            hinted.iter().zip(&want).all(|(a, b)| (a - b).abs() < 1e-4),
+            "{hinted:?}"
+        );
+        let long_left = at("linear-gradient(red, 75%, blue)");
+        assert!(
+            (long_left[1] - (75.0 * 7.0 / 13.0)).abs() < 1e-4,
+            "{long_left:?}"
+        );
+        assert_eq!(
+            at("linear-gradient(red, 50%, blue)"),
+            [0.0, 100.0],
+            "halfway: none"
+        );
+        // The hint on the stop after it: a stop of red there.
         assert_eq!(
             at("linear-gradient(red, 60%, lime 30%, blue)"),
-            [0.0, 60.0, 100.0]
+            [0.0, 60.0, 60.0, 100.0]
         );
         assert_eq!(
             at("linear-gradient(red 10px 30px, blue)"),

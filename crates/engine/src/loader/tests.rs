@@ -1676,9 +1676,52 @@ fn an_images_pixels_are_decoded_when_first_asked_for() {
     assert_eq!(pixels(&tab.engine), Pixels::NotDecoded);
     let id = image_id(&tab.engine, &url);
     assert!(tab.engine.image_pixels(id).is_none());
+    assert!(tab.engine.decoding());
     tab.wait_until(|engine| matches!(pixels(engine), Pixels::Decoded(_)));
+    assert!(!tab.engine.decoding());
     let image = tab.engine.image_pixels(id).expect("decoded");
     assert_eq!((image.width, image.height, image.frames.len()), (4, 3, 1));
+}
+
+/// The red and blue JPEG, 16 by 8, with an EXIF orientation.
+fn exif_jpeg(orientation: u16) -> Vec<u8> {
+    let jpeg = include_bytes!("../../../images/fixtures/red-blue-16x8.jpg");
+    let mut tiff = b"MM\x00\x2a\x00\x00\x00\x08\x00\x01".to_vec();
+    tiff.extend([0x01, 0x12, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01]);
+    tiff.extend(orientation.to_be_bytes());
+    tiff.extend([0; 6]);
+    let mut app1 = b"Exif\0\0".to_vec();
+    app1.extend(tiff);
+    let mut out = jpeg[..2].to_vec();
+    out.extend([0xFF, 0xE1]);
+    out.extend(((app1.len() + 2) as u16).to_be_bytes());
+    out.extend(app1);
+    out.extend(&jpeg[2..]);
+    out
+}
+
+#[test]
+fn image_orientation_none_leaves_an_image_of_another_origin_turned() {
+    let other = serve(|path| match path {
+        "/turned.jpg" => Some(Reply::ok("image/jpeg", &exif_jpeg(6))),
+        _ => None,
+    });
+    let elsewhere = other.url("/turned.jpg");
+    let server = serve(move |path| match path {
+        "/page.html" => Some(html(&format!(
+            "<body><img id=same src=turned.jpg style='image-orientation: none'>\
+             <img id=other src='{elsewhere}' style='image-orientation: none'>\
+             <img id=turned src=turned.jpg></body>"
+        ))),
+        "/turned.jpg" => Some(Reply::ok("image/jpeg", &exif_jpeg(6))),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    load_all(&mut tab, server.url("/page.html"));
+    let size = |id| img_box(&tab.engine, id).1;
+    assert_eq!(size("turned"), Some((8.0, 16.0)));
+    assert_eq!(size("same"), Some((16.0, 8.0)), "same origin: as stored");
+    assert_eq!(size("other"), Some((8.0, 16.0)), "another origin: turned");
 }
 
 #[test]

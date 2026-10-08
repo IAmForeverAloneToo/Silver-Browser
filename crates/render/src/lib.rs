@@ -1091,10 +1091,16 @@ impl Turned {
     }
 }
 
+/// How far, in texels, a sample is moved back before its nearest texel
+/// is taken (M23.3): a sample on the edge between two texels takes the
+/// lower one, as the reference browser's does.
+pub(crate) const NEAREST_NUDGE: f32 = 1.0 / 1024.0;
+
 /// Fills the pixels of `pixmap` whose centres are in `r` with `source`
 /// stretched over `dest` (M23.2): blended between texel centres, or the
-/// nearest texel where `sharp`; past `dest`, the image again where it
-/// `repeat`s (M23.3), its edge texels otherwise.
+/// nearest texel where `sharp`, a sample between two the lower
+/// ([`NEAREST_NUDGE`]); past `dest`, the image again where it `repeat`s
+/// (M23.3), its edge texels otherwise.
 fn draw_image(
     pixmap: &mut tiny_skia::Pixmap,
     source: tiny_skia::PixmapRef<'_>,
@@ -1118,13 +1124,18 @@ fn draw_image(
     ) else {
         return;
     };
-    let transform = tiny_skia::Transform::from_row(
+    let (sx, sy) = (
         (dest.x1 - dest.x0) / source.width() as f32,
-        0.0,
-        0.0,
         (dest.y1 - dest.y0) / source.height() as f32,
-        dest.x0,
-        dest.y0,
+    );
+    let nudge = if sharp { NEAREST_NUDGE } else { 0.0 };
+    let transform = tiny_skia::Transform::from_row(
+        sx,
+        0.0,
+        0.0,
+        sy,
+        dest.x0 + sx * nudge,
+        dest.y0 + sy * nudge,
     );
     let quality = if sharp {
         tiny_skia::FilterQuality::Nearest
@@ -4296,6 +4307,25 @@ mod tests {
             image,
             sharp,
         }
+    }
+
+    #[test]
+    fn a_sharp_sample_between_two_texels_takes_the_lower() {
+        let mut backend = test_backend();
+        // Four texels a row, drawn two pixels wide: each pixel's centre
+        // falls between two texels, and takes the first of them.
+        let row = picture(1, 4, 1, &[RED, GREEN, BLUE, WHITE]);
+        let mut all = vec![white_frame(8.0, 8.0)];
+        all.push(image(0.0, 0.0, 2.0, 1.0, row.clone(), true));
+        // Half as large again: the second and fifth pixels' centres are
+        // on the edges after the first and third texels.
+        all.push(image(0.0, 2.0, 6.0, 1.0, row, true));
+        let buf = backend
+            .rasterize(&DisplayList { items: all }, 8, 8)
+            .to_vec();
+        assert_eq!([px(&buf, 8, 0, 0), px(&buf, 8, 1, 0)], [RED, BLUE]);
+        let line: Vec<_> = (0..6).map(|x| px(&buf, 8, x, 2)).collect();
+        assert_eq!(line, [RED, RED, GREEN, BLUE, BLUE, WHITE]);
     }
 
     #[test]

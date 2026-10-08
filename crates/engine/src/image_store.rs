@@ -96,6 +96,31 @@ pub(crate) struct ImageEntry {
     /// Its number, unique in the engine: what display items compare.
     pub(crate) id: u64,
     pub(crate) state: ImageState,
+    /// Whether its URL is same origin with the document's (M23.2).
+    same_origin: bool,
+}
+
+/// Whether `url` is same origin with the document `page` shows: never
+/// for a page with no URL, nor for a `file:` one, whose origin is
+/// opaque.
+fn same_origin(page: &Page, url: &net::Url) -> bool {
+    page.url()
+        .is_some_and(|document| document.origin() == url.origin())
+}
+
+impl ImageEntry {
+    /// The header the boxes showing it are given (M23.2): of an image of
+    /// another origin, its orientation as applied for good, which
+    /// `image-orientation: none` does not undo (CSS Images 3 section 5.3).
+    fn shown_header(&self, header: Header) -> Header {
+        if self.same_origin {
+            return header;
+        }
+        Header {
+            orientation: images::Orientation::Normal,
+            ..header
+        }
+    }
 }
 
 /// What a decode thread is given: bytes whose header to read, or whose
@@ -187,6 +212,7 @@ impl ImageStore {
                     ImageEntry {
                         id: *next,
                         state: ImageState::Fetching,
+                        same_origin: same_origin(page, &url),
                     },
                 );
                 self.ids.insert(*next, key.clone());
@@ -267,6 +293,7 @@ impl ImageStore {
                             ImageEntry {
                                 id: *next,
                                 state: ImageState::Fetching,
+                                same_origin: same_origin(page, &url),
                             },
                         );
                         self.ids.insert(*next, key);
@@ -421,6 +448,13 @@ impl ImageStore {
         }
     }
 
+    /// Whether a decode is under way (M23.5).
+    pub(crate) fn decoding(&self) -> bool {
+        self.entries
+            .values()
+            .any(|entry| matches!(&entry.state, ImageState::Ready(ready) if ready.asked.is_some()))
+    }
+
     /// Starts frame drawing: its number.
     pub(crate) fn next_frame(&mut self) -> u64 {
         self.frames += 1;
@@ -504,11 +538,11 @@ impl layout::Images for ImageStore {
             .sources
             .get(&node)
             .and_then(|url| self.entries.get(url));
-        match entry.map(|entry| (entry.id, &entry.state)) {
-            Some((id, ImageState::Ready(ready))) if ready.pixels != Pixels::Failed => {
+        match entry.map(|entry| (entry, &entry.state)) {
+            Some((entry, ImageState::Ready(ready))) if ready.pixels != Pixels::Failed => {
                 layout::ImageState::Ready {
-                    id,
-                    header: ready.header,
+                    id: entry.id,
+                    header: entry.shown_header(ready.header),
                 }
             }
             Some((_, ImageState::Fetching | ImageState::Reading)) => layout::ImageState::Coming,
@@ -523,11 +557,11 @@ impl layout::Images for ImageStore {
             return layout::ImageState::Coming;
         };
         let entry = key.as_ref().and_then(|key| self.entries.get(key));
-        match entry.map(|entry| (entry.id, &entry.state)) {
-            Some((id, ImageState::Ready(ready))) if ready.pixels != Pixels::Failed => {
+        match entry.map(|entry| (entry, &entry.state)) {
+            Some((entry, ImageState::Ready(ready))) if ready.pixels != Pixels::Failed => {
                 layout::ImageState::Ready {
-                    id,
-                    header: ready.header,
+                    id: entry.id,
+                    header: entry.shown_header(ready.header),
                 }
             }
             Some((_, ImageState::Fetching | ImageState::Reading)) => layout::ImageState::Coming,
