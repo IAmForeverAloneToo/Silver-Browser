@@ -1,9 +1,9 @@
 # Design note: images
 
-Roadmap M23. Written before the code, as the record of the decisions;
-what ships is described in `docs/architecture.md` "Current state" when
-the code lands. Where this note and the code later disagree, the code
-wins and this note is corrected.
+Roadmap M23. Written before the code, as the record of the decisions,
+and corrected to the code when the milestone ended: where they
+disagreed, the code won, and the places are marked *(corrected)*. What
+ships is described in `docs/architecture.md` "Current state".
 
 No page shows a picture. An `<img>` is an empty inline box that makes
 no line; `background` keeps its colour and drops the whole shorthand
@@ -62,11 +62,32 @@ What the drafts leave to rendering was put to the reference browser
 - a GIF frame delay of 10ms or less is shown for 100ms. No standard says
   so: the three engines' sources do, and so does this one.
 
+What the code found the reference browser does besides, probed while it
+was written:
+
+- a broken image with no `alt` is 16 by 16 unless both its width and its
+  height are given, by attribute or style; one side is not enough;
+- `image-set()` takes the option of the smallest resolution at or above
+  1x, else the largest, the first of equal ones;
+- an image marker sits with its bottom on the baseline, 7px from the
+  text, inside or outside; a gradient's marker is a square half the
+  font's ascent;
+- `image-orientation: none` does nothing to an image of another origin,
+  and a `file:` page's images are all of another origin;
+- a `pixelated` sample exactly between two texels takes the lower;
+- a colour hint is drawn as nine stops along its curve, Blink's
+  approximation, not the curve itself;
+- a border image still coming draws nothing where the border is; a
+  broken one gives the border.
+
 ## 1. Decisions
 
 **A crate of its own (M23.1).** A new leaf crate, `images`, holds the
-decoders behind an `ImageDecoder` trait (D6), the `Image` type, frame
-composition and the decode bounds. It depends on no crate of the
+decoders, the `Image` type, frame composition, the decode bounds, frame
+timing (`frame_at`) and the box filter of downscaled copies
+(`downscale`). *(corrected)* There is no `ImageDecoder` trait: D6's
+"per-format crates behind a trait" is two functions, `read_header` and
+`decode`, which dispatch on the sniffed format, and that was enough. It depends on no crate of the
 engine's. Layout reads an image's natural size and orientation, paint
 puts an image in a display item, and render draws its pixels, so the
 type must sit below all three. The layering becomes
@@ -96,7 +117,8 @@ panic on hostile input, so every decode runs on a decode thread inside
 `catch_unwind`. A panic, an error or a bound exceeded makes the image
 broken. Nothing a decoder does reaches the main thread but its result.
 
-**Bounds.** Named constants in `images`:
+**Bounds.** Named constants, in `images` but for the last two, which
+are the engine's *(corrected)*:
 
 - `MAX_IMAGE_BYTES`, 32 MiB: an encoded image. The fetch stops reading
   past it, rather than reading up to the 64 MiB body limit first.
@@ -115,18 +137,27 @@ The decoders' own limits are set from these too: `png`'s byte limit,
 limit is partial, so its header is checked first like every other's.
 
 **Two decodes (M23.5).** When an image arrives, only its header is read:
-its size, its orientation and whether it animates. That is enough for
-layout. Its pixels are decoded the first time a frame draws it, off the
+its size and its orientation *(corrected: not whether it animates,
+which nothing needs before the pixels)*. That is enough for layout. Its pixels are decoded the first time a frame draws it, off the
 main thread. That frame draws nothing in its place, and the next one
 draws the image. This is `decoding="async"` for every image. A script
 could tell `sync` from `async`; nothing here can.
 
 Downscaling on decode is narrower than the roadmap hoped. `zune-jpeg`
-has no scaled decode. Instead, an image decoded and then drawn at less
-than half its natural size in both directions is kept downscaled to
-twice its largest drawn size, by a box filter, and the full decode is
-dropped. That bounds what a page of huge thumbnails keeps, but not the
-peak of one decode, which `MAX_IMAGE_PIXELS` bounds.
+has no scaled decode. Instead *(corrected)*, the frame that first draws
+an image knows the size it is drawn at, its tile mapped through its
+groups' matrices, and an image drawn at less than half its natural size
+both ways is decoded on the decode thread and kept downscaled to twice
+that size, by a box filter, the full decode never kept. "Largest" is the
+largest ever drawn: a copy since drawn larger than it was made for is
+decoded again, drawn stretched meanwhile. That bounds what a page of
+huge thumbnails keeps, but not the peak of one decode, which
+`MAX_IMAGE_PIXELS` bounds. A print decodes whole.
+
+The decoded budget is checked after each frame: the pixels drawn
+longest ago are dropped, never those the frame drew, so one frame's
+images may hold more than it. `Engine::decoding()` says a decode is
+under way, for a caller that wants a frame with the images drawn.
 
 **Fetching (M23.1, M14).** Images are fetched by the loader, with a new
 target and the destination "image", in no-cors mode, with Fetch's
@@ -155,8 +186,10 @@ scripting is disabled (section 2.5.7), and scripts are M24.
 
 **An image arriving.** An `<img>`, a `content: url()` or a list-style
 image changes its box's size when its image arrives or breaks.
-- **Invalidation:** the engine marks each element showing that URL as
+- **Invalidation:** the engine marks each `img` showing that URL as
   changed in a way layout reads, and the layout cache drops those boxes.
+  *(corrected)* Which boxes show a marker's or a `content`'s image is not
+  kept: such an arrival, rarer, drops the whole layout cache.
 - **No re-layout for backgrounds:** a background or border image changes
   no layout. Paint reads the image when it paints, so its arrival draws
   a frame and lays nothing out.
@@ -169,7 +202,7 @@ shows follows HTML section 15.4.2, as the reference browser draws it:
 | Has an image | The image, a replaced box sized by its natural size |
 | Image still coming | An empty replaced box of the size its attributes and style give |
 | Broken or no `src`, with alt text | A non-replaced inline box of the text, after a 16 by 16 icon; `width` and `height` do not apply |
-| Broken, no `alt` | A 16 by 16 replaced box of the icon |
+| Broken, no `alt` | A 16 by 16 replaced box of the icon, unless both its width and height are given |
 | `alt=""`, or no `src` and no `alt` | Nothing: a replaced box of 0 by 0 |
 
 - **The icon** is drawn by the engine, a box and a cross: the reference
@@ -177,6 +210,9 @@ shows follows HTML section 15.4.2, as the reference browser draws it:
 - **The attributes:** `width` and `height` are presentational hints for
   `width` and `height`. When both parse, they also give `aspect-ratio:
   auto w / h` (section 15.4.3).
+- **A known difference:** a broken `img` with no `alt` and `display:
+  block` is 16 wide here, the line's width in the reference browser,
+  whose icon sits in a block container.
 
 **`aspect-ratio`.** The property is added for replaced elements, with
 `auto`, `<ratio>` and both together. A natural ratio wins under `auto`.
@@ -195,7 +231,10 @@ is sized:
 **Orientation and fit.**
 - **`image-orientation`:** `from-image` (the initial value) and `none`.
   Natural sizes are taken after rotation. The deprecated angles and
-  `flip` are not taken.
+  `flip` are not taken. *(corrected)* `none` applies to an image of the
+  document's origin alone (section 5.3); an image of another origin keeps
+  its orientation. It does not apply to backgrounds, which are drawn
+  oriented.
 - **`object-fit` and `object-position`:** as section 4.5-4.6 says, the
   image clipped to the content box.
 - **Printing:** a replaced box is monolithic when paginated, as
@@ -204,53 +243,75 @@ is sized:
 **CSS image values (M23.3).** `<image>` computes to a URL, a gradient
 or an `image-set()`.
 - **URLs:** a URL is resolved against its stylesheet's URL, or the
-  document's for a `style` attribute. `css::Stylesheet` gains its base
-  URL from the loader, since nothing kept it until now. The style crate
-  keeps the URL as written beside that base, and the engine resolves it
-  with `net`, as it resolves a link's.
-- **`image-set()`:** chooses the option whose resolution is nearest 1x,
-  after dropping options with an unsupported `type()` and duplicate
-  resolutions (Images 4 section 2.4). `-webkit-image-set()` is its
-  alias.
-- **The `attr()` taint:** a string option of `image-set()` is a URL, so
-  an `attr()` that reaches it makes the declaration invalid. An
-  attribute's value never becomes a URL (`docs/design/values.md`).
+  document's for a `style` attribute. *(corrected)* `css::Stylesheet` is
+  unchanged: the loader makes every `url()` and `image-set()` string of a
+  fetched sheet absolute when it parses it, custom properties' values
+  included; the style crate keeps a URL as it gets it, and the engine
+  resolves what reaches it against the document's base with `net`.
+- **`image-set()`:** *(corrected)* chooses the option of the smallest
+  resolution at or above 1x, else the largest, the first of equal ones,
+  after dropping options with an unsupported `type()` (Images 4 section
+  2.4), as the reference browser does. An option's resolution is its
+  image's natural resolution: a 40 by 20 image at 2x is 20 by 10.
+  `-webkit-image-set()` is its alias.
+- **The `attr()` taint:** an attribute's value never becomes a URL
+  (`docs/design/values.md`). *(corrected)* The rule is per value: an
+  `attr()` whose value parses to a URL fails where it is substituted; a
+  declaration is invalid when an `attr()`, or a `var()` of a custom
+  property that read one (found to a fixed point), sits in an
+  `image-set()`. A literal `url()` beside an `attr()` stands.
 
 **Backgrounds.**
 - **The longhands:** `background-image`, `-repeat` (`repeat`, `space`,
   `round`, `no-repeat`, per axis), `-position` with its 3- and 4-value
   forms, `-size` (`auto`, `cover`, `contain`, lengths), `-origin`,
-  `-clip` and `-attachment`.
+  `-clip` and `-attachment`. Not Backgrounds 4's `background-position-x`
+  and `-y` (G40).
 - **The shorthand:** `background`, in full.
 - **Layers:** the first is on top. The colour goes under them all,
   clipped by the bottom layer's `background-clip`. The root's and the
   body's backgrounds propagate to the canvas, images with colours.
-- **Attachment:** `fixed` is drawn in a group of its own that does not
-  scroll; `local` scrolls with the box's content.
+  *(corrected)* The canvas's images are painted first in the document's
+  group, placed by the root's boxes, over the document from its top to
+  its last top-level box and a viewport more: the same area whatever the
+  scroll, so that a scroll composites them from the document's layer.
+- **Attachment:** *(corrected)* `fixed` is placed against the viewport at
+  the scroll offset painted, inside the document's group, not in a group
+  of its own: a scroll draws it again rather than compositing it. `local`
+  is placed in a scroll container's content, moved by its offset and as
+  tall as it scrolls.
 
 **Repeated images.**
 - **One item, not one per tile:** a repeated image is one display item,
   a pattern, not one item per tile. A 1px image repeated over a long
   page stays one item.
 - **`space` and `round`** are solved in paint to a tile size and gap.
+  Tiles with gaps are drawn one by one, up to 4,096 a pattern; past
+  that the gaps are left out.
 - **Number of layers:** `MAX_IMAGE_LAYERS`, 256, bounds the layers a
   box may have.
 
 **`border-image`.** `border-image-source`, `-slice` (with `fill`),
 `-width`, `-outset` and `-repeat`, and the shorthand, drawn by
-Backgrounds 3 section 5.6's nine-slice algorithm just in front of the
-backgrounds.
-An image that cannot be shown gives the box its ordinary borders. The
-outset is ink overflow: it affects no layout.
+Backgrounds 3 section 6's nine-slice algorithm *(corrected)* in the
+border's place. `border` resets them; `border-top` and the others do
+not. A broken or `none` image gives the box its ordinary borders, and
+one still coming draws nothing there. The outset is ink overflow: it
+affects no layout. A slice is a display item's crop of the image
+(`ImageRef::crop`, fractions of the image, put on whole pixels by the
+backends), so a gradient's one-pixel strip cuts too; a raster image's
+slices are whole image pixels.
 
 **Markers and content.**
-- **`list-style-image`:** keeps the URL it parses today, now resolved.
-  Its marker is an inline replaced box sized with a 1em square default
-  object size, and `list-style-type` stands in until the image loads or
-  when it breaks.
+- **`list-style-image`:** an `<image>`. *(corrected)* Its marker is the
+  image at its natural size, its bottom on the baseline, 7px from the
+  text, inside or outside; a gradient's is a square half the font's
+  ascent. `list-style-type` stands in until the image loads or when it
+  breaks; a marker's own `content` wins.
 - **`content: url()`:**
-  - **Alone,** with its alt after `/`, it makes the element replaced.
-    An image that cannot be shown is 0 by 0.
+  - **Alone,** with its alt after `/`, it makes the element replaced,
+    a table display taken as a block's. An image that cannot be shown is
+    0 by 0.
   - **In a list of content,** the image is an inline replaced box, and
     one that cannot be shown is skipped. Content 3 allows the skip or an
     icon; the skip is the simpler of the two.
@@ -258,16 +319,27 @@ outset is ink overflow: it affects no layout.
 
 **Gradients.** `linear-gradient()`, `radial-gradient()` and their
 `repeating-` forms, with Images 3 section 3's geometry and colour-stop
-fixup, and transition hints.
+fixup, and transition hints; *(corrected)* the reference browser's
+`-webkit-linear-gradient()` and `-webkit-repeating-linear-gradient()`
+too, not `-webkit-radial-gradient()`. A stop takes two positions.
 - **Interpolation:** colours interpolate in gamma-encoded sRGB with
   premultiplied alpha, as CSS Color 4 section 13.2 says for legacy
   colours and as the reference browser draws them. Legacy colours are
   the only ones the engine parses (G16). A
   `<color-interpolation-method>` makes the gradient invalid.
 - **Rendering:** a gradient is rendered by the engine's own code into
-  an image the size of its box, once, and drawn as an image by both
+  an image the size of its tile, once, and drawn as an image by both
   backends. So both draw the same pixels, and the equivalence suite
-  holds them to it without a tolerance for shaders.
+  holds them to it without a tolerance for shaders. *(corrected)* A
+  straight linear one is rendered one pixel thick and stretched; any
+  other at most `MAX_GRADIENT_PIXELS` (2^22), stretched; a large one a
+  band of rows a thread (scoped threads, at most 8). The engine keeps
+  them by gradient and size under 64 MiB. Within one level of the
+  reference browser's, two at a transparent end.
+- **Hints:** *(corrected)* drawn as the reference browser draws them,
+  nine stops along the curve (Blink's
+  `ReplaceColorHintsWithColorStops`), which differs from the curve by
+  up to 14 levels.
 - **Degenerate gradients:** a repeating gradient whose period is too
   small to draw paints its average colour (section 3.3).
 - **Bound:** `MAX_GRADIENT_STOPS`, 256, bounds a gradient's stops.
@@ -281,29 +353,40 @@ fixup, and transition hints.
   one item.
 - **Software backend:** draws images and patterns through tiny-skia's
   pattern shader, bilinear, or nearest for `image-rendering: pixelated`
-  and `crisp-edges`.
+  and `crisp-edges`, filling the pixels whose centres are inside.
+  *(corrected)* A nearest sample exactly between two texels takes the
+  lower, as the reference browser's does (`NEAREST_NUDGE`, 1/1024 of a
+  texel, on both backends).
 - **GPU backend:** uploads each image to a texture, kept within its own
-  least-recently-used budget, and draws it through a fifth pipeline.
+  least-recently-used budget of 256 MiB, never dropping one the frame
+  drew, and draws it *(corrected)* through the composite pipeline, not a
+  fifth.
 - **Colour:** decoded pixels are premultiplied 8-bit sRGB. Embedded
   colour profiles, `gAMA` and `cICP` are not applied: section 2.
 - **Printing:** the print path draws images at its 300 dpi, from the
-  same decoded pixels.
+  same decoded pixels, decoded at once; *(corrected)* a gradient is
+  rendered at its tile's CSS size and scaled, and an animation shows its
+  first frame.
 
 **Animated images (M23.1).**
 - **Composition:** GIF, APNG and animated WebP frames are composed in
   `images`, honouring each format's disposal and blending.
 - **Timing:** every element showing the same image in a document shares
   one timeline, which starts when the first of them is added (HTML
-  section 15.4.2), and the frame shown is read from the document
-  timeline of M22.
+  section 15.4.2): *(corrected)* when its header is read, on the
+  document timeline of M22. The frame shown is chosen when a frame is
+  drawn, not in paint.
 - **Delays and loops:** a frame's delay of 10ms or less counts as
   100ms. Loop counts are honoured, and a finished animation rests on
   its last frame.
 - **Cost:** a frame change is a change of one display item. It lays
   nothing out, and its raster is a partial redraw of the image's area.
-- **Waking the scheduler:** `needs_frame` and `next_frame_at` include
-  the next frame change of every animated image on screen. Images off
-  screen still advance in time but draw nothing.
+- **Waking the scheduler:** *(corrected)* `next_frame_at` includes the
+  next frame change of every animated image in view, its rectangle
+  mapped through its groups' matrices (clips not looked at), and `tick`
+  keeps wanting frames while one has some to come; `needs_frame` does
+  not, an image's frame being a timed wake. Images out of view still
+  advance in time but wake nothing.
 - **Reduced motion:** the reference browser does not stop animated
   images under `prefers-reduced-motion`, and neither does this engine.
   A user's setting to stop them is G30's.
@@ -332,10 +415,16 @@ default resolver reads local files. An SVG image is broken until M32.
 - **Web-platform tests:** the subset gains `css/css-images`,
   `css/css-backgrounds` and the `img` element's reftests. `wpt pull` now
   copies the images a test uses, which it never needed before, and the
-  runner serves their types.
-- **Golden pages:** numbered from 110, with images beside them. A page
-  with images is loaded by its `file:` URL, which `reference.rs` gains,
-  since a document loaded from a string fetches nothing.
+  runner serves their types. *(corrected)* Not done when the milestone's
+  code was: the checkout the subset is pulled from was not on the
+  machine; see the roadmap's M23 entry.
+- **Golden pages:** 110 to 115, with images beside them under `images/`.
+  A page with images says so with `<meta name="reference-load"
+  content="file">` and is loaded by its `file:` URL, then drawn once its
+  images are decoded. All match the reference browser byte for byte but
+  the gradients' page, within 2.
+- **Acceptance:** the photo grid, `tests/demos/photo-grid.html`, and
+  `benches/images.rs`; `docs/perf-budgets.md` has the numbers.
 
 ## 2. Not in this milestone, said rather than hidden
 
@@ -365,6 +454,7 @@ documents step; the number follows each.
 - *Opaque response blocking*, which matters once scripts can read
   responses: M27.
 - *Images in the PDF as images rather than raster*: G5.
+- *`background-position-x` and `-y`* (Backgrounds 4). G40.
 
 ## 3. Order of work
 

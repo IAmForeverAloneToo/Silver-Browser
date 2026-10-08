@@ -25,6 +25,8 @@ shell          (bin "silver-browser": windowing, event loop, input, clipboard)
     ├ layout  (box tree construction + layout algorithms)
     ├ style   (selector matching, cascade, computed values)
     ├ text    (font loading, shaping, glyph rasterization)
+    | images  (image decoding, animation frames, decode bounds: a leaf
+    |          crate, since M23, below layout, paint and render)
     ├ net     (URL parsing, resource fetching)
     ├ html    (bytes → DOM)
     ├ css     (stylesheet bytes → CSSOM)
@@ -1323,3 +1325,62 @@ overflow carried to the viewport; `border-radius`, `box-shadow` and
 through an animation (M35.10) and a colour's animation laying nothing
 out (M35.9) are at their milestones. 1,628 tests pass workspace-wide,
 two ignored. Next milestone: images (M23).
+
+Milestone 23 (images; `docs/design/images.md`): a new leaf crate,
+`images` (step 1), reads PNG and APNG (`png`), JPEG (`zune-jpeg`,
+without its SIMD and with it every `unsafe` block), GIF (`gif`) and WebP
+(`image-webp`), a header apart from the pixels, EXIF orientation by a
+reader of its own, an animation's frames composed with each format's
+disposal and blending; every decode is bounded (`MAX_IMAGE_BYTES`,
+`MAX_IMAGE_SIDE`, `MAX_IMAGE_PIXELS`, `MAX_FRAMES`,
+`MAX_ANIMATION_BYTES`) and runs inside `catch_unwind`, so a hostile
+image is a broken one. The loader fetches images (step 2) with the
+destination "image", sniffing their type, an `http:` image of an
+`https:` page upgraded, the body bounded, one URL once a document; the
+engine's image store reads headers and decodes pixels on threads of its
+own (`MAX_DECODE_THREADS`), and `Loaded` waits for the document's
+images. An `img` (step 3) is a replaced box, or its alt text after a 16
+by 16 icon, as the reference browser draws them, sized by CSS Images 3's
+default sizing in block, inline, flex, grid and intrinsic sizing, with
+`aspect-ratio`, `object-fit`, `object-position`, `image-orientation`
+(`none` for an image of the document's origin alone) and
+`image-rendering`. Paint's `DisplayItem::Image` and, for repeated images
+(step 4), `DisplayItem::Pattern`, one item however many tiles, carry an
+`ImageRef`, the image's number, frame, turn and crop, and both backends
+draw them, the GPU's through its composite pipeline with its textures
+under 256 MiB, a nearest sample between two texels taking the lower as
+the reference browser's does. Backgrounds take every longhand and the
+shorthand, layers, `image-set()`, `fixed` and `local`, and the canvas
+takes the root's or the body's images over the whole document, so that a
+scroll composites them; gradients (step 5), linear, radial and
+repeating, are rendered by paint's own code into an image both backends
+draw, a large one on several threads, hints as the reference browser's
+nine stops. Border images (step 6) cut the image in nine by the crops of
+their display items; markers and `content` take images, an element whose
+`content` is an image alone being replaced. An animated image (step 7)
+has one timeline a document, from its arrival on the document timeline;
+its frame is chosen as a frame is drawn, and its next one, while it is
+in view, is when the next frame is wanted. Pixels (step 8) are decoded
+on first draw and kept under 512 MiB (`MAX_DECODED_BYTES`), those drawn
+longest ago dropped; an image drawn at under half its size is decoded to
+a box-filtered copy at twice it; `Engine::decoding` says a decode is
+under way. Reference pages 110 to 115 (step 10), loaded by their `file:`
+URLs, match the reference browser byte for byte but the gradients',
+within 2. The photo grid (step 11, `tests/demos/photo-grid.html`)
+scrolls at sixty frames a second on both backends, a frame's median
+0.44ms on the software backend and 1.7ms on the GPU's, nothing laid out,
+and `benches/images.rs` measures it and the costs; it found the canvas's
+images drawn again at every scroll, 37ms a frame, and gradients taking
+54-67ms to render for a viewport, both mended. T4.3 holds every
+benchmark within 10%, the grid's gallery once 12% by four rounds'
+medians and faster over six more. The `image_decode` fuzz target found a
+frame of no area cut into rows zero bytes apart, a panic the decode
+thread caught, mended; the targets that lay pages out ran with the new
+properties and found nothing. The web-platform-tests subset's image
+directories (step 9) wait for its checkout, which was not on the
+machine. Not in this milestone, said rather than hidden and registered
+(G34 to G40): AVIF; `srcset`, `sizes` and `<picture>`; `aspect-ratio` on
+boxes that are not replaced; Images 4's conic gradients and the rest;
+colour management; progressive display; `background-position-x` and
+`-y`. SVG as an image moves to M32.1. 1,739 tests pass workspace-wide,
+two ignored. Next milestone: JS engine integration (M24).

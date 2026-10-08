@@ -234,6 +234,19 @@ fn grey_pixels_become_rgba() {
     );
 }
 
+#[test]
+fn a_frame_of_no_area_is_no_pixels() {
+    // Found by the image_decode fuzz target (M23): a frame 0 wide or 0
+    // tall, its rows cut zero bytes apart, panicked; it is now no pixels,
+    // drawing nothing.
+    assert_eq!(formats::rgba(&[], 4, 0, 3, 0), Ok(Vec::new()));
+    assert_eq!(formats::rgba(&[1, 2, 3, 4], 4, 1, 0, 4), Ok(Vec::new()));
+    assert_eq!(
+        formats::rgba(&[9, 8, 7], 3, 1, 1, 3),
+        Ok(vec![9, 8, 7, 255])
+    );
+}
+
 fn gif(frames: &[(&[u8], Option<u8>, u16, gif::DisposalMethod)], repeat: gif::Repeat) -> Vec<u8> {
     let palette = [255, 0, 0, 0, 0, 255, 0, 0, 0];
     let mut out = Vec::new();

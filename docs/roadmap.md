@@ -1372,22 +1372,50 @@ Per css-grid-1 (level 2 subgrid included):
 
 ## M23 — Images  ·  `render`/`net`  ·  Effort: L  ·  Depends: M14
 
-- [ ] M23.1 Decode pipeline: PNG (png crate), JPEG (jpeg-decoder), GIF
+- [x] M23.1 Decode pipeline: PNG (png crate), JPEG (jpeg-decoder), GIF
        (incl. animation), WebP (image-webp), AVIF (ravif) — behind a
-       `ImageDecoder` trait; decode off-main-thread.
-- [ ] M23.2 `<img>` element: intrinsic sizing, `width/height` attrs +
+       `ImageDecoder` trait; decode off-main-thread. Done 2026-10-09: a
+       new leaf crate, `images` (`docs/design/images.md`), PNG and APNG
+       by `png`, JPEG by `zune-jpeg` (jpeg-decoder being in maintenance
+       for it), GIF by `gif`, WebP by `image-webp`, behind `read_header`
+       and `decode` rather than a trait; EXIF orientation; frames
+       composed; every decode bounded and isolated, on the engine's
+       decode threads. AVIF is G34: `ravif` only encodes. Animated
+       images on the document timeline (step 7).
+- [x] M23.2 `<img>` element: intrinsic sizing, `width/height` attrs +
        aspect-ratio box, `alt` text rendering, `object-fit` + `object-position`.
-- [ ] M23.3 CSS images: `background-image`, border-image v1, gradients
+       Done 2026-10-09: a replaced box or its alt text with an icon, as
+       the reference browser draws them; CSS Images 3's default sizing
+       in block, inline, flex, grid and intrinsic sizing;
+       `aspect-ratio`, `object-fit`, `object-position`,
+       `image-orientation` and `image-rendering`.
+- [x] M23.3 CSS images: `background-image`, border-image v1, gradients
        (linear/radial — gradient rasterization in tiny-skia/wgpu paths),
        `image-set`; `content: url()`, `list-style-image` and `<image>` in
        a typed `attr()`, keeping `attr()`'s taint: an attribute's value
-       never a URL (M21, `docs/design/values.md` section 2).
+       never a URL (M21, `docs/design/values.md` section 2). Done
+       2026-10-09: every background longhand and the shorthand, layers,
+       the canvas; `border-image` in full; gradients rendered by paint's
+       own code into an image both backends draw; image markers and
+       `content` images; the taint per value.
 - [ ] M23.4 SVG-as-image v1 (render an SVG file to a surface via M32
-       subset: static shapes/text only).
-- [ ] M23.5 Lazy decoding + downscale-on-decode for huge images (memory
-       cap posture, `decoding=async`).
-- [ ] M23.6 Acceptance: a photo-grid page with mixed formats + gradients
-       + an animated GIF renders at 60fps scroll.
+       subset: static shapes/text only). Moved to M32.1, which it
+       depends on: an SVG image is broken until then.
+- [x] M23.5 Lazy decoding + downscale-on-decode for huge images (memory
+       cap posture, `decoding=async`). Done 2026-10-09: headers read on
+       arrival, pixels decoded on first draw; 512 MiB of decoded pixels
+       kept, those drawn longest ago dropped; an image drawn under half
+       its size decoded to a box-filtered copy at twice it, `zune-jpeg`
+       having no scaled decode; the GPU's textures under 256 MiB.
+- [x] M23.6 Acceptance: a photo-grid page with mixed formats + gradients
+       + an animated GIF renders at 60fps scroll. Done 2026-10-09:
+       `tests/demos/photo-grid.html` scrolled 40px a frame sixty a second
+       (`benches/images.rs`): a frame's median 0.43-0.44ms on the
+       software backend and 1.64-1.68ms on the GPU's, the worst 6.8ms,
+       nothing laid out; `tests/demos.rs` holds what holds whatever the
+       machine. T4.3 within 10% (`docs/perf-budgets.md`, "Images (M23)").
+       The web-platform-tests subset's image directories (the note's
+       step 9) wait for its checkout.
 
 ---
 
@@ -1864,6 +1892,24 @@ Deferred from the milestones above, each with what it waits on:
        so that a transition of a transform from `none`, or of an
        opacity from 1, is composited from its start rather than laid
        out where the box becomes a stacking context. Found at M22.
+- [ ] G34 AVIF, once an AV1 decoder meets `deny.toml` and builds on
+       Windows without NASM: `ravif`, which M23.1 named, only encodes.
+       Until then an AVIF image is broken, and an `image-set()` option
+       of its type is skipped. Found at M23.
+- [ ] G35 `srcset`, `sizes` and `<picture>`, and EXIF density correction
+       (HTML 4.8.4.3.6): an `img`'s `src` is its fallback. Found at M23.
+- [ ] G36 `aspect-ratio` on boxes that are not replaced: it computes but
+       sizes only replaced boxes. Found at M23.
+- [ ] G37 Images 4: conic gradients, `<color-interpolation-method>`,
+       `image()`, `cross-fade()`, `element()` and `image-resolution`.
+       Found at M23.
+- [ ] G38 Colour management: embedded ICC profiles, `gAMA`, `cHRM` and
+       `cICP` are not applied; decoded pixels are taken as sRGB. Found
+       at M23.
+- [ ] G39 Progressive display of an image not yet completely loaded,
+       which HTML allows; an image is shown whole or not at all. Found
+       at M23.
+- [ ] G40 Backgrounds 4's `background-position-x` and `-y`. Found at M23.
 
 ---
 

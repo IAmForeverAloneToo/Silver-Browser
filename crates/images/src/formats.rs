@@ -145,7 +145,7 @@ impl Frames {
 
 /// Premultiplied RGBA from `channels` (1 grey, 2 grey and alpha, 3 RGB,
 /// 4 RGBA) samples a pixel, rows `stride` bytes apart.
-fn rgba(
+pub(crate) fn rgba(
     buf: &[u8],
     channels: usize,
     width: u32,
@@ -153,6 +153,10 @@ fn rgba(
     stride: usize,
 ) -> Result<Vec<u8>, Error> {
     let (w, h) = (width as usize, height as usize);
+    // A frame of no area, which GIF and APNG allow, draws nothing.
+    if w == 0 || h == 0 {
+        return Ok(Vec::new());
+    }
     if stride < w * channels || buf.len() < stride * h {
         return Err(Error::Malformed);
     }

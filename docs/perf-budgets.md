@@ -73,6 +73,8 @@ nothing that changes what is shown.
   - `cargo bench -p engine --bench composite` (M19), on both backends.
   - `cargo bench -p engine --bench media` (M20).
   - `cargo bench -p engine --bench values` (M21).
+  - `cargo bench -p engine --bench animation` (M22), on both backends.
+  - `cargo bench -p engine --bench images` (M23), on both backends.
   - `cargo bench -p style --bench match` (M4.12; recorded since M16).
   - Criterion-tracked benchmarks run in CI are T4.2, for M35.
 - **Counters** prove work that is not done: `Engine::style_runs`,
@@ -1028,6 +1030,150 @@ medians, are within each other's ranges, and its plain cascade is 17%
 shorter. The rest is the machine's variance, which moves a measure by
 as much as a third from one round to the next: the faded cards' first
 frame before M22 took 97ms in one round and 132ms in another.
+
+### Images (M23)
+
+**The acceptance.** `benches/images.rs` loads the photo grid
+(`tests/demos/photo-grid.html`: 48 figures, photos in PNG, JPEG, GIF and
+WebP, an animated GIF, gradients on the canvas, the header and some
+figures) by its `file:` URL at 1280 by 800, draws frames until its
+images are decoded, then scrolls it 40px a frame down and back up, 116
+frames sixty a second through `Engine::frame_at`, the time a frame
+leaves before its deadline spent drawing ahead. Three runs, in release,
+on this laptop (Intel UHD Graphics for the GPU backend):
+
+| 116 scroll frames | The software backend | The GPU backend, Intel UHD Graphics |
+| --- | --- | --- |
+| Loaded, the navigation to `Loaded` | 3.3-4.8ms | 2.5-3.4ms |
+| The frames until its images are decoded | 2, in 68.8-77.1ms, the first 51.0-59.5ms | 2, in 61.7-64.4ms, the first 53.2-55.5ms |
+| A scroll frame's median | 0.43-0.44ms | 1.64-1.68ms |
+| Its 95th percentile | 2.64-2.65ms | 4.70-4.87ms |
+| Its worst | 2.71-2.84ms | 6.09-6.79ms |
+| Its raster, median | 0.23ms | 1.43-1.46ms |
+| Frames over 16.7ms, over 20ms | none | none |
+| Layouts | none | none |
+
+Both backends keep sixty frames a second scrolling the grid, no frame
+near the budget, and lay nothing out. The first frame asks for every
+listed image's pixels and draws the page without them; the second,
+once they are decoded on their threads, draws them.
+
+What the benchmark found, and what was mended before these runs: the
+canvas's images, the grid's repeating gradient, covered the viewport
+and a viewport above and below it, so their display item changed at
+every scroll and the document layer's tiles were drawn again each
+frame, 37ms a frame on the software backend; they now cover the
+document, the same item whatever the scroll. And the gradient renderer
+took 54-67ms for a gradient the size of the viewport, which made the
+grid's first frame 310ms; it now computes each column's position once,
+rounds by a saturating cast, and renders a large gradient a band of
+rows a thread.
+
+**The costs.** The same benchmark, medians of their runs:
+
+| | Three runs |
+| --- | --- |
+| Decoding `hills-1.jpg`, 480 by 320 | 1.27-1.30ms |
+| `valley-1.png`, 480 by 320 | 1.44-1.57ms |
+| `hills-4.webp`, 480 by 320, lossy | 4.62-4.71ms |
+| `bands-1.gif`, 240 by 160 | 0.22-0.23ms |
+| `spinner.gif`, 160 by 160, eight frames | 1.41-1.44ms |
+| A 4096 by 2732 image made a copy for 256 by 171 drawn (512 by 342) | 34.6-35.1ms |
+| A linear gradient rendered, 1280 by 800 | 4.35-4.77ms |
+| A radial one | 4.65-4.86ms |
+| A repeating linear one | 6.02-6.15ms |
+
+The grid's first frame, 51-59ms, renders the canvas's repeating
+gradient for the whole document, 1280 by 3082, and lays the page out;
+the frame after it draws the decoded images. A downscaled copy is made
+on a decode thread, so its 35ms never falls in a frame.
+
+**T4.3.** The benchmarks above, the code before M23 (`e920942`) and
+M23's (`1a40055`) built side by side in release, four rounds of each
+in turn. The ranges are over the rounds.
+
+| | Before M23 | M23 |
+| --- | --- | --- |
+| Scrolling: the layout, once | 381-421ms, median 392 | 375-439ms, median 422 |
+| Scrolling: a scroll frame, median | 0.62-0.66ms, median 0.62 | 0.61-0.66ms, median 0.62 |
+| Its raster, median | 0.35-0.37ms, median 0.36 | 0.35-0.38ms, median 0.36 |
+| Its paint, median | 0.26-0.29ms, median 0.27 | 0.26-0.28ms, median 0.26 |
+| Changing the document: the first frame | 733-797ms, median 751 | 741-811ms, median 805 |
+| An appended paragraph's frame, median | 10.8-11.9ms, median 11.1 | 10.9-12.6ms, median 11.6 |
+| Its layout, median | 9.8-10.7ms, median 10.0 | 9.9-11.5ms, median 10.6 |
+| Its paint, median | 0.75-0.88ms, median 0.77 | 0.74-0.88ms, median 0.76 |
+| Those frames over 16.7ms | 10-26 of 1,000 | 24-37 of 1,000 |
+| 1,000 appended in one frame | 730-809ms, median 750 | 729-820ms, median 816 |
+| Loading: `load` to the first frame drawn | 787-809ms, median 800 | 774-864ms, median 802 |
+| Going back to the page from the cache | 11.4-11.7ms, median 11.5 | 11.4-11.7ms, median 11.6 |
+| Going back to the page fetched again | 764-839ms, median 813 | 769-943ms, median 813 |
+| Matching: 1,000 selectors over 10,003 elements | 248-258ms, median 254 | 246-256ms, median 252 |
+| Flex: a grid of 1,000 cards, the first frame | 2.42-2.74s, median 2.69 | 2.68-2.70s, median 2.69 |
+| Flex: after a card's title changes, a frame, median | 2.40-2.67s, median 2.65 | 2.63-2.67s, median 2.64 |
+| Flex: a chain of 64 nested containers, its layout | 15.8-16.2ms, median 16.0 | 15.8-16.0ms, median 15.9 |
+| Grid: a gallery of 1,000 figures, the first frame | 908-1055ms, median 917 | 902-1059ms, median 1027 |
+| Grid: after a caption changes, a frame, median | 874-1031ms, median 897 | 890-1042ms, median 1006 |
+| Grid: a dashboard of 200 cards, the first frame | 307-341ms, median 312 | 281-387ms, median 327 |
+| Grid: a chain of 64 nested grids, its layout | 14.0-15.7ms, median 15.2 | 14.3-16.1ms, median 14.6 |
+| Compositing: a scroll frame, median | 0.77-0.80ms, median 0.78 | 0.76-0.78ms, median 0.78 |
+| Compositing: a card turned, a frame, median | 1.72-1.78ms, median 1.74 | 1.73-1.76ms, median 1.74 |
+| Compositing: a card moved, a frame, median | 0.29-0.30ms, median 0.29 | 0.29-0.31ms, median 0.29 |
+| Compositing: 200 faded cards, the first frame | 103-104ms, median 103 | 104-110ms, median 104 |
+| Compositing: a scroll frame of them, median | 0.87-0.89ms, median 0.88 | 0.87-0.88ms, median 0.88 |
+| Media: 1,000 lists answered again, median of 1,000 | 15.6-16.3us, median 15.8 | 15.8-16.5us, median 15.9 |
+| Media: the page's cascade with the 1,000 rules | 9.53-9.95ms, median 9.86 | 9.6-10.0ms, median 9.6 |
+| Media: a resize across the breakpoint, a frame | 712-717ms, median 715 | 704-729ms, median 717 |
+| Media: a print, its layout, pagination and paint | 689-707ms, median 698 | 696-710ms, median 708 |
+| Its pagination alone | 2.98-3.37ms, median 3.07 | 2.94-3.15ms, median 3.04 |
+| The whole print | 5.26-5.32s, median 5.31 | 5.26-5.32s, median 5.28 |
+| Values: the cascade of 1,000 paragraphs, written out | 4.35-4.66ms, median 4.44 | 4.66-4.81ms, median 4.71 |
+| Under a theme of 8 custom properties | 5.21-5.45ms, median 5.36 | 5.37-5.59ms, median 5.51 |
+| A theme of 200, the rules reading 8 | 5.45-5.66ms, median 5.54 | 5.53-5.76ms, median 5.71 |
+| That, every paragraph declaring one of its own | 12.0-12.6ms, median 12.1 | 11.9-12.2ms, median 12.0 |
+| 1,000 elements each declaring the doubling chain | 255-264ms, median 258 | 248-264ms, median 256 |
+| 1,000 boxes sized by lengths: cascade | 4.30-4.33ms, median 4.31 | 4.29-4.53ms, median 4.43 |
+| Sized by math functions: cascade | 10.8-10.9ms, median 10.9 | 10.9-11.2ms, median 11.0 |
+| An ordered list of 1,000 items, as blocks: cascade | 14.8-15.2ms, median 15.0 | 15.1-15.2ms, median 15.1 |
+| Its box tree | 8.32-8.54ms, median 8.50 | 8.94-9.09ms, median 9.00 |
+| Numbered by counters: cascade | 21.8-22.3ms, median 22.0 | 22.5-22.7ms, median 22.6 |
+| Its box tree | 16.9-17.4ms, median 17.2 | 17.8-18.1ms, median 18.0 |
+| 1,000 paragraphs of six lines, left-aligned: their layout | 2.26-2.30s, median 2.29 | 2.20-2.43s, median 2.27 |
+| Justified | 2.25-2.31s, median 2.28 | 2.20-2.44s, median 2.27 |
+
+The pseudo benchmark, the same four rounds:
+
+| Sheet | The first frame, before | M23 | An appended paragraph's frame, median, before | M23 |
+| --- | --- | --- | --- | --- |
+| no pseudo-elements | 2.15-2.38s | 2.19-2.41s | 19.3-20.4ms, median 20.3 | 18.4-20.5ms, median 18.6 |
+| ::before and ::after | 2.25-2.45s | 2.24-2.51s | 23.8-25.5ms, median 24.6 | 23.6-25.5ms, median 23.9 |
+| ::first-letter | 2.34-2.43s | 2.39-2.44s | 20.6-22.2ms, median 21.0 | 20.8-22.5ms, median 21.1 |
+| ::first-line, inherited properties | 2.74-2.86s | 2.79-2.94s | 26.6-28.9ms, median 27.3 | 27.4-29.8ms, median 27.6 |
+| ::first-line, a background | 2.34-2.38s | 2.34-2.49s | 22.1-24.1ms, median 22.5 | 21.6-23.1ms, median 21.9 |
+| all of them | 2.95-3.02s | 3.05-3.18s | 44.7-49.5ms, median 45.0 | 45.8-46.5ms, median 45.9 |
+
+The animation benchmark, the same four rounds, a frame's median:
+
+| | Before M23 | M23 |
+| --- | --- | --- |
+| The spinner, software | 0.50-0.51ms, median 0.51 | 0.50-0.52ms, median 0.51 |
+| The colour fade, software | 1.56-1.75ms, median 1.67 | 1.70-1.78ms, median 1.71 |
+| The spinner, GPU | 1.69-1.75ms, median 1.70 | 1.69-1.76ms, median 1.71 |
+| The colour fade, GPU | 2.90-3.04ms, median 2.91 | 2.88-3.02ms, median 2.90 |
+| A transform on one of 1,000 paragraphs | 1.50-1.53ms, median 1.51 | 1.50-1.55ms, median 1.53 |
+| A colour there | 13.62-13.83ms, median 13.68 | 13.91-14.47ms, median 14.20 |
+| An opacity on every paragraph | 20.32-20.52ms, median 20.41 | 20.23-20.87ms, median 20.58 |
+
+Within T4.3's 10% by their medians but for the gallery's two rows of
+the grid benchmark, 12% by the medians of four rounds, whose ranges
+cover each other's. Its layouts fall at about 890ms or about 1,020ms a
+round, whichever tree runs (the code before M23 took 1,037ms in one
+round and M23's 884ms in another). Six more rounds of each by turns
+give medians of 983ms before and 955ms after for the first frame, and
+1,059ms before and 1,043ms after for a caption's frame: the machine,
+not the change. The mutation page's appended paragraphs went over the
+budget 24-37 times in 1,000 against 10-26, their median frame 4%
+longer, frames close to the budget either way. The process's peak
+memory is not measured on Windows.
 
 ### Over budget, and why
 
