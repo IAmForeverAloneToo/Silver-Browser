@@ -115,6 +115,42 @@ fn apng(plays: u32, separate_default: bool) -> Vec<u8> {
 }
 
 #[test]
+fn an_animation_shows_each_frame_for_its_delay_as_many_times_as_it_plays() {
+    let frame = |delay| Frame {
+        pixels: Arc::from(vec![0; 4]),
+        delay,
+    };
+    let image = |plays| Image {
+        width: 1,
+        height: 1,
+        frames: vec![frame(100), frame(200), frame(50)],
+        plays,
+    };
+    let twice = image(Plays::Times(2));
+    assert_eq!(frame_at(&twice, 0.0), (0, Some(100.0)));
+    assert_eq!(frame_at(&twice, 99.9), (0, Some(100.0)));
+    assert_eq!(frame_at(&twice, 100.0), (1, Some(300.0)));
+    assert_eq!(frame_at(&twice, 320.0), (2, Some(350.0)));
+    assert_eq!(frame_at(&twice, 350.0), (0, Some(450.0)), "again");
+    assert_eq!(frame_at(&twice, 690.0), (2, Some(700.0)));
+    assert_eq!(frame_at(&twice, 700.0), (2, None), "played out");
+    assert_eq!(frame_at(&twice, 1e9), (2, None));
+    assert_eq!(frame_at(&twice, -5.0), (0, Some(100.0)));
+    let forever = image(Plays::Forever);
+    assert_eq!(frame_at(&forever, 3500.0 + 120.0), (1, Some(3800.0)));
+    assert_eq!(
+        frame_at(&image(Plays::Times(0)), 50.0),
+        (0, Some(100.0)),
+        "once at least"
+    );
+    let still = Image {
+        frames: vec![frame(100)],
+        ..image(Plays::Forever)
+    };
+    assert_eq!(frame_at(&still, 50.0), (0, None));
+}
+
+#[test]
 fn an_apng_composes_its_frames() {
     let image = decode(&apng(2, false)).unwrap();
     assert_eq!(image.frames.len(), 2);

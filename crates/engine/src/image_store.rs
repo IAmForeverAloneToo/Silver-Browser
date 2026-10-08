@@ -38,6 +38,10 @@ pub(crate) struct Ready {
     pub(crate) header: Header,
     bytes: Arc<[u8]>,
     pub(crate) pixels: Pixels,
+    /// When on the document's timeline, in seconds, the header was read:
+    /// where an animation's timeline starts, which every box showing it
+    /// shares (HTML section 15.4.2, M23.1).
+    pub(crate) started: f64,
 }
 
 /// An image's pixels.
@@ -267,12 +271,14 @@ impl ImageStore {
     }
 
     /// Takes a decode thread's result for `url`, its bytes kept for the
-    /// pixels. Says whether the image's size or brokenness changed.
+    /// pixels, at `now` on the document's timeline. Says whether the
+    /// image's size or brokenness changed.
     pub(crate) fn done(
         &mut self,
         url: &str,
         done: Result<Done, Lost>,
         bytes: Option<Arc<[u8]>>,
+        now: f64,
     ) -> bool {
         let Some(entry) = self.entries.get_mut(url) else {
             return false;
@@ -284,6 +290,7 @@ impl ImageStore {
                     header,
                     bytes,
                     pixels: Pixels::NotDecoded,
+                    started: now,
                 });
                 true
             }
@@ -303,6 +310,14 @@ impl ImageStore {
                 false
             }
             _ => false,
+        }
+    }
+
+    /// When the timeline of the image numbered `id` starts (M23.1).
+    pub(crate) fn started(&self, id: u64) -> Option<f64> {
+        match &self.entries.get(self.url_of(id)?)?.state {
+            ImageState::Ready(ready) => Some(ready.started),
+            _ => None,
         }
     }
 

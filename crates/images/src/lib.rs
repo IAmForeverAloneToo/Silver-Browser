@@ -117,6 +117,38 @@ pub fn frame_delay(ms: u32) -> u32 {
     if ms <= 10 { 100 } else { ms }
 }
 
+/// The frame of `image` shown `elapsed` milliseconds into its timeline
+/// (M23.1), and when on it, in milliseconds, the next frame comes: each
+/// frame for its delay, the frames again as many times as the image
+/// plays, and then the last frame for good. `None` for a still image and
+/// for one that has played out.
+pub fn frame_at(image: &Image, elapsed: f64) -> (usize, Option<f64>) {
+    let last = image.frames.len().saturating_sub(1);
+    if last == 0 {
+        return (0, None);
+    }
+    let elapsed = elapsed.max(0.0);
+    let period: f64 = image.frames.iter().map(|f| f64::from(f.delay)).sum();
+    if period <= 0.0 {
+        return (last, None);
+    }
+    let round = (elapsed / period).floor();
+    if let Plays::Times(n) = image.plays
+        && round >= f64::from(n.max(1))
+    {
+        return (last, None);
+    }
+    let mut end = round * period;
+    for (i, frame) in image.frames.iter().enumerate() {
+        end += f64::from(frame.delay);
+        if elapsed < end {
+            return (i, Some(end));
+        }
+    }
+    // Only rounding puts it past the round's last frame.
+    (last, Some(end))
+}
+
 /// Reads the header of `bytes`, panics caught.
 pub fn read_header(bytes: &[u8]) -> Result<Header, Error> {
     isolated(|| formats::header(bytes))

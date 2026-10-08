@@ -320,6 +320,9 @@ struct Shown {
     animated: Vec<NodeId>,
     /// The document's images (M23).
     images: ImageStore,
+    /// When on the timeline the next frame of an animated image the last
+    /// frame showed in the viewport comes (M23.1).
+    next_image_frame: Option<f64>,
 }
 
 impl Shown {
@@ -349,6 +352,7 @@ impl Shown {
             timeline_origin: None,
             animated: Vec::new(),
             images: ImageStore::default(),
+            next_image_frame: None,
         }
     }
 }
@@ -1102,7 +1106,8 @@ impl Engine {
         let image_store::Finished {
             url, done, bytes, ..
         } = finished;
-        if self.shown.images.done(&url, done, Some(bytes)) {
+        let now = self.shown.animations.borrow().time();
+        if self.shown.images.done(&url, done, Some(bytes), now) {
             self.image_changed(&url);
         } else {
             // New pixels to draw; nothing to lay out.
@@ -1143,15 +1148,57 @@ impl Engine {
     }
 
     /// Gives each image `items` draw its pixels where they are decoded,
-    /// and has the others decoded (M23.2).
-    fn show_pixels(&mut self, items: &mut [DisplayItem]) {
+    /// and has the others decoded (M23.2); and an animation the frame its
+    /// timeline is at (M23.1). Notes when the next frame comes of those
+    /// in the viewport, `width` by `height`, through their groups'
+    /// matrices, or whose place cannot be told; one elsewhere moves on
+    /// unseen.
+    fn show_pixels(&mut self, items: &mut [DisplayItem], width: f32, height: f32) {
+        let now = self.shown.animations.borrow().time();
+        let mut next: Option<f64> = None;
+        let mut groups = vec![style::transform::Matrix::IDENTITY];
         for item in items {
-            if let DisplayItem::Image { image, .. } | DisplayItem::Pattern { image, .. } = item
-                && image.pixels.is_none()
-            {
+            let (image, rect) = match item {
+                DisplayItem::PushGroup { matrix, .. } => {
+                    let outer = groups.last().expect("the viewport's");
+                    groups.push(outer.then(matrix));
+                    continue;
+                }
+                DisplayItem::PopGroup => {
+                    if groups.len() > 1 {
+                        groups.pop();
+                    }
+                    continue;
+                }
+                DisplayItem::Image {
+                    x, y, w, h, image, ..
+                }
+                | DisplayItem::Pattern {
+                    x, y, w, h, image, ..
+                } => (image, [*x, *y, *w, *h]),
+                _ => continue,
+            };
+            if image.pixels.is_none() {
                 image.pixels = self.image_pixels(image.id);
             }
+            let Some(pixels) = image.pixels.as_deref().filter(|p| p.is_animated()) else {
+                continue;
+            };
+            let Some(started) = self.shown.images.started(image.id) else {
+                continue;
+            };
+            let (frame, change) = images::frame_at(pixels, (now - started) * 1000.0);
+            image.frame = frame as u32;
+            let matrix = groups.last().expect("the viewport's");
+            let seen = matrix
+                .bounds(rect[0], rect[1], rect[2], rect[3])
+                .is_none_or(|(l, t, r, b)| l < width && r > 0.0 && t < height && b > 0.0);
+            if let Some(change) = change.filter(|_| seen) {
+                let at = started + change / 1000.0;
+                next = Some(next.map_or(at, |n| n.min(at)));
+            }
         }
+        self.shown.next_image_frame = next;
     }
 
     /// Applies one fetch's result.
@@ -1526,8 +1573,9 @@ impl Engine {
 
     /// When a frame is next wanted, on the clock [`Engine::frame_at`] is
     /// given, when none is now (M22.3): the end of the soonest delay of a
-    /// playing animation, which shows nothing new before then, so that a
-    /// caller waits for it rather than drawing frames. `None` when a
+    /// playing animation, which shows nothing new before then, or the
+    /// next frame of an animated image in view (M23.1), so that a caller
+    /// waits for it rather than drawing frames. `None` when a
     /// frame is wanted now, when none will be without a change, or when
     /// no frame was drawn for a time.
     pub fn next_frame_at(&self) -> Option<Duration> {
@@ -1535,7 +1583,12 @@ impl Engine {
             return None;
         }
         let origin = self.shown.timeline_origin?;
-        let at = self.shown.animations.borrow().next_change()?;
+        // An animated image's next frame too (M23.1).
+        let animation = self.shown.animations.borrow().next_change();
+        let at = match (animation, self.shown.next_image_frame) {
+            (Some(a), Some(b)) => a.min(b),
+            (a, b) => a.or(b)?,
+        };
         Some(origin + Duration::try_from_secs_f64(at).unwrap_or(Duration::MAX))
     }
 
@@ -2082,7 +2135,7 @@ impl Engine {
         self.layout(width as f32);
         let layout = &self.shown.layout.as_ref().expect("just laid out").layout;
         let mut list = paint_fragments_with(&layout.roots, viewport, &offsets, &self.shown.images);
-        self.show_pixels(&mut list.items);
+        self.show_pixels(&mut list.items, width as f32, height as f32);
         if let Some(bar) = scrollbar {
             list.items.push(DisplayItem::Rect {
                 x: bar.x,
@@ -2215,12 +2268,15 @@ impl Engine {
     /// Advances the scroll animations and the document's timeline by one
     /// frame of [`FRAME_BUDGET`], for a caller without a clock (see
     /// [`Engine::frame_at`]). Returns whether another frame is wanted:
-    /// an offset has not reached its target, or an animation plays.
+    /// an offset has not reached its target, an animation plays, or an
+    /// animated image in view has frames to come.
     pub fn tick(&mut self) -> bool {
         let animations = self.shown.animations.get_mut();
         let time = animations.time();
         animations.set_time(time + FRAME_BUDGET.as_secs_f64());
-        self.advance(FRAME_BUDGET) || self.shown.animations.get_mut().needs_frame()
+        self.advance(FRAME_BUDGET)
+            || self.shown.animations.get_mut().needs_frame()
+            || self.shown.next_image_frame.is_some()
     }
 
     /// Advances the scroll animations by `elapsed`: each shown offset,

@@ -1415,6 +1415,149 @@ fn a_border_image_is_fetched_and_drawn_in_the_borders_place() {
     assert_eq!(at(&second, 15, 15), [255; 4], "no fill");
 }
 
+/// An APNG 2 by 2, red for 100ms, or `first` seconds as a fraction,
+/// then blue for 200ms, played `plays` times.
+fn apng_bytes(plays: u32, first: (u16, u16)) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, 2, 2);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_animated(2, plays).unwrap();
+    encoder.set_frame_delay(first.0, first.1).unwrap();
+    let mut writer = encoder.write_header().unwrap();
+    writer
+        .write_image_data(&[255, 0, 0, 255].repeat(4))
+        .unwrap();
+    writer.set_frame_delay(2, 10).unwrap();
+    writer
+        .write_image_data(&[0, 0, 255, 255].repeat(4))
+        .unwrap();
+    writer.finish().unwrap();
+    out
+}
+
+#[test]
+fn an_animated_image_steps_through_its_frames_on_the_documents_timeline() {
+    use crate::FrameTime;
+    use crate::image_store::{ImageState, Pixels};
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<body style='margin: 0'><img src=a.png style='display: block; width: 10px'>\
+             <img src=a.png style='display: block; margin-top: 300px; width: 10px'></body>",
+        )),
+        "/below.html" => Some(html(
+            "<body style='margin: 0'>\
+             <img src=b.png style='display: block; margin-top: 150px; width: 10px'></body>",
+        )),
+        "/two.html" => Some(html(
+            "<body style='margin: 0'><img src=a.png><img src=d.png></body>",
+        )),
+        "/a.png" | "/b.png" | "/c.png" => Some(Reply::ok("image/png", &apng_bytes(2, (1, 10)))),
+        "/d.png" => Some(Reply::ok("image/png", &apng_bytes(2, (1, 20)))),
+        _ => None,
+    });
+    let start = Duration::from_secs(1);
+    let at = |ms: u64| FrameTime {
+        now: start + Duration::from_millis(ms),
+        deadline: start + Duration::from_millis(ms + 16),
+    };
+    let decoded = |url: Url| {
+        move |engine: &Engine| {
+            matches!(
+                image_state(engine, &url),
+                Some(ImageState::Ready(ready)) if matches!(ready.pixels, Pixels::Decoded(_))
+            )
+        }
+    };
+    let mut tab = Tab::new();
+    load_all(&mut tab, server.url("/page.html"));
+    // The timeline starts at its arrival, before the first frame: its
+    // time then is 0.
+    tab.engine.frame_at(100, 100, at(0));
+    tab.wait_until(decoded(server.url("/a.png")));
+    let runs = tab.engine.layout_runs();
+    let colour_at = |tab: &mut Tab, ms: u64| {
+        let frame = tab.engine.frame_at(100, 100, at(ms));
+        let i = (5 * 100 + 5) * 4;
+        let colour = [frame[i], frame[i + 1], frame[i + 2]];
+        (colour, tab.engine.next_frame_at())
+    };
+    let (red, blue) = ([255, 0, 0], [0, 0, 255]);
+    assert_eq!(
+        colour_at(&mut tab, 50),
+        (red, Some(start + Duration::from_millis(100)))
+    );
+    assert_eq!(
+        colour_at(&mut tab, 150),
+        (blue, Some(start + Duration::from_millis(300)))
+    );
+    let image = render::PixelRect {
+        x0: 0,
+        y0: 0,
+        x1: 10,
+        y1: 10,
+    };
+    assert_eq!(
+        tab.engine.redrawn(),
+        &render::Redrawn::Rects(vec![image]),
+        "the image alone drawn again"
+    );
+    assert_eq!(
+        colour_at(&mut tab, 350),
+        (red, Some(start + Duration::from_millis(400)))
+    );
+    assert!(tab.engine.tick(), "frames to come");
+    assert_eq!(
+        colour_at(&mut tab, 700),
+        (blue, None),
+        "played twice, it rests"
+    );
+    assert_eq!(tab.engine.layout_runs(), runs, "nothing laid out");
+    assert!(!tab.engine.tick());
+    // One that arrives later starts its own timeline then.
+    tab.engine.mutate(|document| {
+        let body = document
+            .subtree(document.root())
+            .find(|&n| document.tag(n) == Some("body"))
+            .unwrap();
+        let img = document.create_element("img").unwrap();
+        document.set_attribute(img, "src", "c.png").unwrap();
+        document
+            .set_attribute(img, "style", "display: block; width: 10px")
+            .unwrap();
+        let first = document.first_child(body);
+        document.insert_before(body, img, first).unwrap();
+    });
+    let c = server.url("/c.png");
+    tab.wait_until(|engine| matches!(image_state(engine, &c), Some(ImageState::Ready(_))));
+    tab.engine.frame_at(100, 100, at(720));
+    tab.wait_until(decoded(c));
+    assert_eq!(colour_at(&mut tab, 760).0, red);
+    // One out of view, listed for the tiles drawn ahead of a scroll,
+    // wakes nothing; scrolled into view, it does.
+    load_all(&mut tab, server.url("/below.html"));
+    tab.engine.frame_at(100, 100, at(0));
+    tab.wait_until(decoded(server.url("/b.png")));
+    tab.engine.frame_at(100, 100, at(50));
+    assert_eq!(tab.engine.next_frame_at(), None);
+    tab.engine.set_scroll(60.0);
+    tab.engine.frame_at(100, 100, at(60));
+    assert_eq!(
+        tab.engine.next_frame_at(),
+        Some(start + Duration::from_millis(100))
+    );
+    // Of two, the sooner.
+    load_all(&mut tab, server.url("/two.html"));
+    tab.engine.frame_at(100, 100, at(0));
+    tab.wait_until(decoded(server.url("/a.png")));
+    tab.wait_until(decoded(server.url("/d.png")));
+    tab.engine.frame_at(100, 100, at(10));
+    assert_eq!(
+        tab.engine.next_frame_at(),
+        Some(start + Duration::from_millis(50))
+    );
+}
+
 #[test]
 fn an_images_pixels_are_decoded_when_first_asked_for() {
     use crate::image_store::{ImageState, Pixels};
