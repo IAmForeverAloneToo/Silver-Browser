@@ -108,6 +108,7 @@ use std::time::{Duration, Instant};
 pub use loader::{LoadError, LoadState};
 pub use net::{Client, NetworkError, Url};
 pub use print::{PrintError, PrintOptions, PrintedPage};
+pub use style::animation::{AnimationEvent, EventKind, Running as RunningAnimation};
 pub use style::{ColorScheme, MediaType, Preferences};
 
 use dom::{Change, Document, NodeId};
@@ -243,6 +244,9 @@ pub struct Engine {
     /// Whether the document was replaced or changed, or a scroll offset
     /// set, since the last frame.
     changed: bool,
+    /// The animation and transition events the last frame queued, with
+    /// those queued between it and the frame before (M22.2).
+    events: Vec<AnimationEvent>,
 }
 
 /// A document and everything the engine made from it (M15): what the
@@ -574,6 +578,7 @@ impl Engine {
             animation_clock: None,
             stats: FrameStats::default(),
             changed: true,
+            events: Vec::new(),
         }
     }
 
@@ -623,6 +628,7 @@ impl Engine {
         self.backend.clear_glyph_cache();
         self.backend.forget_frame();
         self.animation_clock = None;
+        self.events.clear();
         self.changed = true;
         left
     }
@@ -1339,6 +1345,22 @@ impl Engine {
             || self.shown.element_scroll.values().any(|s| s.y != s.target)
     }
 
+    /// The animation and transition events of the last frame (M22.2):
+    /// those its animation frame queued, at each change of phase of an
+    /// animation or a transition (Animations 2 §5.1, Transitions 2 §5.1),
+    /// and those of the animations and transitions cancelled since the
+    /// frame before, in the order they were queued. Nothing dispatches
+    /// them yet (M26.1).
+    pub fn animation_events(&self) -> &[AnimationEvent] {
+        &self.events
+    }
+
+    /// The CSS animations and transitions the document shown runs, with
+    /// their targets, phases and times: for the tests.
+    pub fn animations(&self) -> Vec<RunningAnimation> {
+        self.shown.animations.borrow().running()
+    }
+
     /// The document's stylesheets that apply, in cascade order: those
     /// of its `<link>` and `<style>` elements in tree order, the rules of
     /// the sheets each imports in place of its `@import` rules, and each
@@ -1746,7 +1768,9 @@ impl Engine {
             self.shown.animated.extend(moved);
         }
         self.cached_styles();
-        self.shown.animations.get_mut().start_pending();
+        let animations = self.shown.animations.get_mut();
+        animations.start_pending();
+        self.events = animations.take_events();
         let style_time = start.elapsed();
         let stage = Instant::now();
         self.layout(width as f32);
@@ -5335,6 +5359,65 @@ mod tests {
         );
         draw_at(&mut engine, 1200);
         assert_eq!(engine.hit_test(10.0, 10.0), None);
+    }
+
+    #[test]
+    fn a_frame_gives_its_events_and_the_engine_lists_what_runs() {
+        let mut engine = test_engine();
+        engine.load_document(&format!(
+            "{SLIDE}<style>#a {{ animation: s 1s linear }}
+             #b {{ margin-left: 0px; transition: margin-left 1s linear }}
+             #b.on {{ margin-left: 100px }}</style><div id=a></div><div id=b></div>"
+        ));
+        draw_at(&mut engine, 0);
+        assert!(
+            engine.animation_events().is_empty(),
+            "made by this frame's style"
+        );
+        set(&mut engine, "b", "class", "on");
+        draw_at(&mut engine, 100);
+        let (a, b) = (node_by_id(&engine, "a"), node_by_id(&engine, "b"));
+        let events: Vec<(NodeId, EventKind, &str)> = engine
+            .animation_events()
+            .iter()
+            .map(|e| (e.node, e.kind, &*e.name))
+            .collect();
+        // The transition this frame's style made starts at its end, and
+        // its events come with the next frame.
+        assert_eq!(events, vec![(a, EventKind::AnimationStart, "s")]);
+        let running = engine.animations();
+        assert_eq!(running.len(), 2);
+        assert_eq!((running[0].node, &*running[0].name), (a, "s"));
+        assert_eq!(running[0].phase, Some(style::animation::Phase::Active));
+        assert!((running[0].current_time - 0.1).abs() < 1e-9);
+        assert!(running[1].transition && running[1].current_time == 0.0);
+        draw_at(&mut engine, 200);
+        let events: Vec<(NodeId, EventKind)> = engine
+            .animation_events()
+            .iter()
+            .map(|e| (e.node, e.kind))
+            .collect();
+        assert_eq!(
+            events,
+            vec![
+                (b, EventKind::TransitionRun),
+                (b, EventKind::TransitionStart)
+            ]
+        );
+        // Each frame gives its own.
+        draw_at(&mut engine, 300);
+        assert!(engine.animation_events().is_empty());
+        draw_at(&mut engine, 1100);
+        let kinds: Vec<EventKind> = engine.animation_events().iter().map(|e| e.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![EventKind::AnimationEnd, EventKind::TransitionEnd]
+        );
+        // The transition is gone; the animation stays, finished, while
+        // `animation-name` names it.
+        let running = engine.animations();
+        assert_eq!(running.len(), 1);
+        assert_eq!(running[0].phase, Some(style::animation::Phase::After));
     }
 
     #[test]

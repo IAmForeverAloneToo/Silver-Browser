@@ -18,7 +18,11 @@ use std::sync::Arc;
 
 use css::Token;
 
-use super::{Animations, Clock, MAX_ANIMATIONS, Phase, Sampled, Target, Timing, clock_time};
+use super::events::{Reported, cancelled, transition_events};
+use super::{
+    AnimationEvent, Animations, Clock, EventKind, MAX_ANIMATIONS, Phase, Sampled, Target, Timing,
+    clock_time, event,
+};
 use crate::animate::{self, AnimationType, Longhand, longhands_of};
 use crate::cascade::canonical_name;
 use crate::computed::{
@@ -32,6 +36,16 @@ use crate::easing::Easing;
 pub(crate) enum Property {
     Longhand(Longhand),
     Custom(Arc<str>),
+}
+
+impl Property {
+    /// Its name, as a transition event gives it.
+    pub(super) fn name(&self) -> Arc<str> {
+        match self {
+            Property::Longhand(longhand) => Arc::from(longhand.name()),
+            Property::Custom(name) => Arc::clone(name),
+        }
+    }
 }
 
 /// A transitioning property's value: a computed style that holds it, for a
@@ -89,6 +103,38 @@ pub(super) struct CssTransition {
     /// The reversing shortening factor (§3.1).
     shortening: f64,
     pub(super) last: Sampled,
+    /// Its phase at the last animation frame, for the events.
+    reported: Reported,
+}
+
+impl CssTransition {
+    /// Queues the events of its change of phase to the one at the
+    /// timeline's time `time`.
+    fn report(&mut self, events: &mut Vec<AnimationEvent>, target: Target, time: f64) {
+        if matches!(self.clock, Clock::Pending { .. }) {
+            return;
+        }
+        let now = Reported::from(self.timing.phase(clock_time(&self.clock, time)));
+        let name = self.property.name();
+        for (kind, elapsed) in transition_events(&self.timing, self.reported, now) {
+            events.push(event(target, &name, kind, elapsed));
+        }
+        self.reported = now;
+    }
+
+    /// Queues its cancel event, it being cancelled at the timeline's time
+    /// `time`, if one is due.
+    pub(super) fn cancelled(&self, events: &mut Vec<AnimationEvent>, target: Target, time: f64) {
+        let local = clock_time(&self.clock, time);
+        if let Some(elapsed) = cancelled(&self.timing, self.reported, local) {
+            events.push(event(
+                target,
+                &self.property.name(),
+                EventKind::TransitionCancel,
+                elapsed,
+            ));
+        }
+    }
 }
 
 /// A completed transition: its property and end value.
@@ -270,10 +316,12 @@ impl Animations {
         let mut running = self.transitions.remove(&target).unwrap_or_default();
         let mut completed = self.completed.remove(&target).unwrap_or_default();
         // A transition past its end time is completed, whether or not a
-        // frame has said so yet.
-        running.retain(|t| {
+        // frame has said so yet: its events are queued as a frame's.
+        let events = &mut self.events;
+        running.retain_mut(|t| {
             let over = ended(t, time);
             if over {
+                t.report(events, target, time);
                 self.count -= 1;
                 completed.retain(|c| c.property != t.property);
                 completed.push(Completed {
@@ -360,7 +408,7 @@ impl Animations {
                 continue;
             };
             let Some(matching) = matching else {
-                running.remove(at);
+                running.remove(at).cancelled(&mut self.events, target, time);
                 self.count -= 1;
                 continue;
             };
@@ -370,6 +418,7 @@ impl Animations {
             // The running transition's end is no longer the property's
             // value: cancelled, replaced or reversed.
             let old = running.remove(at);
+            old.cancelled(&mut self.events, target, time);
             self.count -= 1;
             let progress = old.timing.progress(clock_time(&old.clock, time));
             let p = progress.progress.unwrap_or(1.0);
@@ -413,8 +462,23 @@ impl Animations {
     pub(crate) fn cancel_transitions(&mut self, target: Target) {
         if let Some(running) = self.transitions.remove(&target) {
             self.count -= running.len();
+            for transition in &running {
+                transition.cancelled(&mut self.events, target, self.time);
+            }
         }
         self.completed.remove(&target);
+    }
+
+    /// Queues the events of every running transition's change of phase
+    /// since the last animation frame: this one.
+    pub(super) fn report_transitions(&mut self) {
+        let time = self.time;
+        let events = &mut self.events;
+        for (&target, running) in &mut self.transitions {
+            for transition in running {
+                transition.report(events, target, time);
+            }
+        }
     }
 
     /// Whether `target` has a running transition.
@@ -514,5 +578,6 @@ fn new_transition(
         reversing_start,
         shortening,
         last,
+        reported: Reported::Idle,
     }
 }

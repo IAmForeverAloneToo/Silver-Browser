@@ -37,8 +37,11 @@ use crate::computed::{AnimationDirection, AnimationFillMode};
 use crate::easing::Easing;
 use crate::selector_matching::PseudoElement;
 
+mod events;
 mod transition;
 
+pub use events::{AnimationEvent, EventKind, Running};
+use events::{Reported, animation_events, cancelled};
 use transition::{Completed, CssTransition};
 pub(crate) use transition::{Property, Transitioning, Value};
 
@@ -291,6 +294,10 @@ struct CssAnimation {
     clock: Clock,
     /// What the last sample gave, for the next frame to compare with.
     last: Sampled,
+    /// The phase and current iteration at the last animation frame, for
+    /// the events.
+    reported: Reported,
+    reported_iteration: Option<f64>,
 }
 
 /// What a sample gives that a style is computed from.
@@ -351,6 +358,8 @@ pub struct Animations {
     /// How many animations and running transitions there are together,
     /// at most [`MAX_ANIMATIONS`].
     count: usize,
+    /// The events queued since they were last taken (M22.2).
+    events: Vec<AnimationEvent>,
 }
 
 impl Animations {
@@ -418,22 +427,63 @@ impl Animations {
     /// elements whose animations or transitions give something other than
     /// at the last sample, a transition that ended among them, which a
     /// frame restyles, each once, in order.
+    ///
+    /// It is an animation frame: each animation and transition not
+    /// waiting for one queues the events its change of phase since the
+    /// last asks for (Animations 2 §5.1, Transitions 2 §5.1), the frame's
+    /// by element, a transition's before an animation's as their
+    /// composite order has them, each one's in the order of its table.
     pub fn sample(&mut self) -> Vec<NodeId> {
         let time = self.time;
+        let queued = self.events.len();
+        self.report_transitions();
         let mut changed: Vec<NodeId> = self
             .end_transitions()
             .into_iter()
             .map(|(node, _)| node)
             .collect();
-        for (&(node, _), animations) in &mut self.css {
+        let mut events = Vec::new();
+        for (&target, animations) in &mut self.css {
             for animation in animations {
-                let now = Sampled::from(animation.timing.progress(current_time(animation, time)));
+                let progress = animation.timing.progress(current_time(animation, time));
+                if !matches!(animation.clock, Clock::Pending { .. }) {
+                    let reported = Reported::from(progress.phase);
+                    for (kind, elapsed) in animation_events(
+                        &animation.timing,
+                        animation.reported,
+                        reported,
+                        animation.reported_iteration,
+                        progress.iteration,
+                    ) {
+                        events.push(event(target, &animation.name, kind, elapsed));
+                    }
+                    animation.reported = reported;
+                    animation.reported_iteration = progress.iteration;
+                }
+                let now = Sampled::from(progress);
                 if now != animation.last {
                     animation.last = now;
-                    changed.push(node);
+                    changed.push(target.0);
                 }
             }
         }
+        self.events.extend(events);
+        self.events[queued..].sort_by_key(|e| {
+            let pseudo = match e.pseudo {
+                None => 0,
+                Some(PseudoElement::Before) => 1,
+                Some(PseudoElement::After) => 2,
+                Some(_) => 3,
+            };
+            let animation = !matches!(
+                e.kind,
+                EventKind::TransitionRun
+                    | EventKind::TransitionStart
+                    | EventKind::TransitionEnd
+                    | EventKind::TransitionCancel
+            );
+            (e.node, pseudo, animation, Arc::clone(&e.name))
+        });
         for (&(node, _), transitions) in &mut self.transitions {
             for transition in transitions {
                 let now = Sampled::from(
@@ -484,18 +534,26 @@ impl Animations {
     /// cancelling the others': those of elements no longer in the
     /// document.
     pub fn retain(&mut self, mut keep: impl FnMut(NodeId) -> bool) {
+        let time = self.time;
         let count = &mut self.count;
-        self.css.retain(|&(node, _), animations| {
-            let kept = keep(node);
+        let events = &mut self.events;
+        self.css.retain(|&target, animations| {
+            let kept = keep(target.0);
             if !kept {
                 *count -= animations.len();
+                for animation in animations.iter() {
+                    animation_cancelled(events, target, animation, time);
+                }
             }
             kept
         });
-        self.transitions.retain(|&(node, _), transitions| {
-            let kept = keep(node);
+        self.transitions.retain(|&target, transitions| {
+            let kept = keep(target.0);
             if !kept {
                 *count -= transitions.len();
+                for transition in transitions.iter() {
+                    transition.cancelled(events, target, time);
+                }
             }
             kept
         });
@@ -568,6 +626,8 @@ impl Animations {
                             progress: None,
                             before: false,
                         },
+                        reported: Reported::Idle,
+                        reported_iteration: None,
                     }
                 }
                 None => continue,
@@ -586,11 +646,63 @@ impl Animations {
                 .into();
             new.push(animation);
         }
-        self.count -= taken.iter().filter(|&&t| !t).count();
+        for (animation, _) in old.iter().zip(&taken).filter(|(_, taken)| !**taken) {
+            self.count -= 1;
+            animation_cancelled(&mut self.events, target, animation, time);
+        }
         if !new.is_empty() {
             new.reverse();
             self.css.insert(target, new);
         }
+    }
+
+    /// The events queued since this was last asked, in the order they
+    /// were queued, and none after.
+    pub fn take_events(&mut self) -> Vec<AnimationEvent> {
+        std::mem::take(&mut self.events)
+    }
+
+    /// Every animation and transition running, sorted by element, kind
+    /// and name: for the tests.
+    pub fn running(&self) -> Vec<Running> {
+        let time = self.time;
+        let state = |clock: &Clock, timing: &Timing| {
+            let local = clock_time(clock, time);
+            let phase = (!matches!(clock, Clock::Pending { .. })).then(|| timing.phase(local));
+            (phase, local, matches!(clock, Clock::Held { .. }))
+        };
+        let mut running: Vec<Running> = Vec::new();
+        for (&(node, pseudo), animations) in &self.css {
+            for a in animations {
+                let (phase, current_time, paused) = state(&a.clock, &a.timing);
+                running.push(Running {
+                    node,
+                    pseudo,
+                    name: Arc::clone(&a.name),
+                    transition: false,
+                    phase,
+                    current_time,
+                    paused,
+                });
+            }
+        }
+        for (&(node, pseudo), transitions) in &self.transitions {
+            for t in transitions {
+                let (phase, current_time, paused) = state(&t.clock, &t.timing);
+                running.push(Running {
+                    node,
+                    pseudo,
+                    name: t.property.name(),
+                    transition: true,
+                    phase,
+                    current_time,
+                    paused,
+                });
+            }
+        }
+        running
+            .sort_by(|a, b| (a.node, a.transition, &a.name).cmp(&(b.node, b.transition, &b.name)));
+        running
     }
 
     /// What `target`'s animations give at the timeline's time, in their
@@ -613,6 +725,36 @@ impl Animations {
 /// `animation`'s current time when the timeline's is `time`.
 fn current_time(animation: &CssAnimation, time: f64) -> f64 {
     clock_time(&animation.clock, time)
+}
+
+/// An event of `kind` from `target`'s animation or transition `name`.
+fn event(target: Target, name: &Arc<str>, kind: EventKind, elapsed: f64) -> AnimationEvent {
+    AnimationEvent {
+        kind,
+        node: target.0,
+        pseudo: target.1,
+        name: Arc::clone(name),
+        elapsed,
+    }
+}
+
+/// Queues the cancel event of `target`'s `animation`, cancelled at the
+/// timeline's time `time`, if one is due.
+fn animation_cancelled(
+    events: &mut Vec<AnimationEvent>,
+    target: Target,
+    animation: &CssAnimation,
+    time: f64,
+) {
+    let local = current_time(animation, time);
+    if let Some(elapsed) = cancelled(&animation.timing, animation.reported, local) {
+        events.push(event(
+            target,
+            &animation.name,
+            EventKind::AnimationCancel,
+            elapsed,
+        ));
+    }
 }
 
 /// A clock's current time when the timeline's is `time`.

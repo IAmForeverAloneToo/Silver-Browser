@@ -481,6 +481,197 @@ mod tests {
     const WIDTHS: &str = ".w { width: 0px; transition: width 1s linear }
         .w.on { width: 100px } .w.far { width: 300px }";
 
+    /// The events queued since the last asked: each element's id, the
+    /// event's type, its animation's or transition's name and its elapsed
+    /// time, in milliseconds.
+    fn events(page: &Page) -> Vec<(String, &'static str, String, i64)> {
+        page.animations
+            .borrow_mut()
+            .take_events()
+            .into_iter()
+            .map(|e| {
+                let id = page
+                    .document
+                    .attr(e.node, "id")
+                    .unwrap_or_default()
+                    .to_owned();
+                (
+                    id,
+                    e.kind.name(),
+                    e.name.to_string(),
+                    (e.elapsed * 1000.0).round() as i64,
+                )
+            })
+            .collect()
+    }
+
+    fn ev(
+        id: &str,
+        kind: &'static str,
+        name: &str,
+        ms: i64,
+    ) -> (String, &'static str, String, i64) {
+        (id.to_owned(), kind, name.to_owned(), ms)
+    }
+
+    #[test]
+    fn animations_queue_their_events_at_each_change_of_phase() {
+        let mut page = Page::new(
+            "@keyframes k { to { margin-left: 100px } }
+             #a { animation: k 1s linear 0.5s 2 }
+             #b { animation: k 1s linear -0.3s }
+             .run { animation: k 1s linear }",
+            "<div id=a></div><div id=b></div><div id=c class=run></div><div id=d class=run></div>",
+        );
+        page.frame(0.0);
+        assert_eq!(
+            events(&page),
+            vec![
+                ev("b", "animationstart", "k", 300),
+                ev("c", "animationstart", "k", 0),
+                ev("d", "animationstart", "k", 0),
+            ]
+        );
+        page.frame(0.4);
+        page.class("d", "");
+        assert_eq!(events(&page), vec![ev("d", "animationcancel", "k", 400)]);
+        page.frame(0.6);
+        assert_eq!(events(&page), vec![ev("a", "animationstart", "k", 0)]);
+        page.frame(1.6);
+        assert_eq!(
+            events(&page),
+            vec![
+                ev("a", "animationiteration", "k", 1000),
+                ev("b", "animationend", "k", 1000),
+                ev("c", "animationend", "k", 1000),
+            ]
+        );
+        page.frame(2.6);
+        assert_eq!(events(&page), vec![ev("a", "animationend", "k", 2000)]);
+        page.frame(3.0);
+        assert!(events(&page).is_empty());
+        // Slowed down, its current iteration back to the one before: the
+        // iteration's boundary is the end of the one it is in now.
+        page.class("d", "run");
+        page.frame(3.05);
+        page.frame(3.6);
+        let d = page.node("d");
+        page.document
+            .set_attribute(d, "style", "animation-iteration-count: infinite")
+            .unwrap();
+        page.restyle(&[]);
+        page.frame(4.7);
+        events(&page);
+        page.document
+            .set_attribute(
+                d,
+                "style",
+                "animation-iteration-count: infinite; animation-duration: 2s",
+            )
+            .unwrap();
+        page.restyle(&[]);
+        page.frame(4.8);
+        assert_eq!(
+            events(&page),
+            vec![ev("d", "animationiteration", "k", 2000)]
+        );
+        page.class("d", "");
+        assert_eq!(events(&page), vec![ev("d", "animationcancel", "k", 1750)]);
+        // Taken out of the document while it runs: cancelled. Finished,
+        // it is cancelled without an event.
+        page.class("c", "");
+        page.class("c", "run");
+        page.frame(5.2);
+        page.frame(5.5);
+        assert_eq!(events(&page), vec![ev("c", "animationstart", "k", 0)]);
+        let c = page.node("c");
+        let parent = page.document.parent(c).unwrap();
+        page.document.remove_child(parent, c).unwrap();
+        page.restyle(&[]);
+        assert_eq!(events(&page), vec![ev("c", "animationcancel", "k", 300)]);
+    }
+
+    #[test]
+    fn transitions_queue_their_events_at_each_change_of_phase() {
+        let mut page = Page::new(
+            ".t { margin-left: 0px; transition: margin-left 1s linear }
+             .t.on { margin-left: 100px }
+             .t.late { transition-delay: 0.5s }",
+            "<div id=t class=t></div><div id=u class='t late'></div><div id=v class=t></div>\
+             <div id=w class=t></div>",
+        );
+        page.frame(0.0);
+        page.class("t", "t on");
+        page.class("u", "t late on");
+        page.class("v", "t on");
+        assert!(events(&page).is_empty(), "none before a frame");
+        // A sample before a frame has started them: still none.
+        page.animations.borrow_mut().sample();
+        assert!(events(&page).is_empty());
+        page.frame(1.0);
+        assert_eq!(
+            events(&page),
+            vec![
+                ev("t", "transitionrun", "margin-left", 0),
+                ev("t", "transitionstart", "margin-left", 0),
+                ev("u", "transitionrun", "margin-left", 0),
+                ev("v", "transitionrun", "margin-left", 0),
+                ev("v", "transitionstart", "margin-left", 0),
+            ]
+        );
+        page.frame(1.5);
+        assert_eq!(
+            events(&page),
+            vec![ev("u", "transitionstart", "margin-left", 0)]
+        );
+        // Undone half way: cancelled, and the transition back runs.
+        page.class("v", "t");
+        assert_eq!(
+            events(&page),
+            vec![ev("v", "transitioncancel", "margin-left", 500)]
+        );
+        page.frame(1.6);
+        assert_eq!(
+            events(&page),
+            vec![
+                ev("v", "transitionrun", "margin-left", 0),
+                ev("v", "transitionstart", "margin-left", 0),
+            ]
+        );
+        page.frame(2.0);
+        assert_eq!(
+            events(&page),
+            vec![ev("t", "transitionend", "margin-left", 1000)]
+        );
+        // On one element, a transition's events before an animation's.
+        page.sheets = Stylesheets::new(vec![
+            css::parse_stylesheet(
+                "@keyframes k { to { height: 10px } }
+                 .t { margin-left: 0px; transition: margin-left 1s linear }
+                 .t.on { margin-left: 100px }
+                 .t.late { transition-delay: 0.5s }
+                 .t.k { animation: k 1s }",
+            )
+            .unwrap(),
+        ]);
+        page.class("w", "t on k");
+        page.frame(2.1);
+        assert_eq!(
+            events(&page),
+            vec![
+                ev("v", "transitionend", "margin-left", 500),
+                ev("w", "transitionrun", "margin-left", 0),
+                ev("w", "transitionstart", "margin-left", 0),
+                ev("w", "animationstart", "k", 0),
+            ]
+        );
+        page.frame(2.6);
+        assert_eq!(
+            events(&page),
+            vec![ev("u", "transitionend", "margin-left", 1000)]
+        );
+    }
+
     #[test]
     fn a_transition_starts_at_the_next_frame_and_runs_from_the_old_value() {
         let mut page = Page::new(WIDTHS, "<div id=a class=w></div>");
