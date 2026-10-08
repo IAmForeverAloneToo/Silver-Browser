@@ -505,8 +505,13 @@ impl<'t, 's> Resolver<'t, 's> {
                     }
                     Some(Returned::Value(value, tainted)) => {
                         let cyclic = self.unguard();
-                        let value =
-                            value.filter(|(tokens, _)| !cyclic && typed.syntax.matches(tokens));
+                        // An attribute's value never becomes a URL
+                        // (M23.3): one that parses to one fails.
+                        let value = value.filter(|(tokens, _)| {
+                            !cyclic
+                                && typed.syntax.matches(tokens)
+                                && !crate::custom::carries_url(tokens)
+                        });
                         returned = Some(Returned::Attribute(value, tainted));
                     }
                     Some(_) => unreachable!("an attribute waits for its value"),

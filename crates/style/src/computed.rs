@@ -1760,6 +1760,148 @@ impl ImageStyle {
     }
 }
 
+/// An `<image>` (CSS Images 3 section 2, M23.3): what a background, a
+/// border image, a list marker and `content` show.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Image {
+    /// A `url()`, or the option an `image-set()` chose (Images 4 section
+    /// 2.4): absolute where its sheet's URL was known, the loader having
+    /// made it so; as written in a `style` attribute or element, which
+    /// the document's base resolves. `resolution` is the image's natural
+    /// resolution, in image pixels a CSS pixel: 1 but for an
+    /// `image-set()` option that says otherwise.
+    Url { url: Arc<str>, resolution: f32 },
+}
+
+impl Image {
+    /// The URL the image is fetched from, if it is fetched.
+    pub fn url(&self) -> Option<&str> {
+        match self {
+            Image::Url { url, .. } => Some(url),
+        }
+    }
+}
+
+/// One axis of `background-repeat` (CSS Backgrounds 3 section 2.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Repeat {
+    #[default]
+    Repeat,
+    Space,
+    Round,
+    NoRepeat,
+}
+
+/// One layer's `background-size` (section 2.4): `cover`, `contain`, or a
+/// width and a height, `None` for `auto`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BackgroundSize {
+    Cover,
+    Contain,
+    Sized(Option<LengthPercentage>, Option<LengthPercentage>),
+}
+
+impl Default for BackgroundSize {
+    fn default() -> Self {
+        BackgroundSize::Sized(None, None)
+    }
+}
+
+/// A box `background-origin` and `background-clip` name (sections 2.6
+/// and 2.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackgroundBox {
+    BorderBox,
+    PaddingBox,
+    ContentBox,
+}
+
+/// One layer's `background-attachment` (section 2.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Attachment {
+    #[default]
+    Scroll,
+    Fixed,
+    Local,
+}
+
+/// The most layers a box's background may have (M23.3): a list longer
+/// than this makes its declaration invalid.
+pub const MAX_IMAGE_LAYERS: usize = 256;
+
+/// The background properties but `background-color` (CSS Backgrounds 3
+/// section 2, M23.3): what [`ComputedStyle::background`] points to when
+/// any of them is not its initial value. Each is a list of one value a
+/// layer, the first on top; none is inherited. There are as many layers
+/// as `background-image` has values, the other lists repeated to that
+/// number or cut to it (section 2.2).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Backgrounds {
+    /// `background-image`: `None` for `none`.
+    pub image: Vec<Option<Image>>,
+    /// `background-repeat`, along x and along y.
+    pub repeat: Vec<[Repeat; 2]>,
+    /// `background-position`, each from the left and the top edge.
+    pub position: Vec<[LengthPercentage; 2]>,
+    pub size: Vec<BackgroundSize>,
+    pub origin: Vec<BackgroundBox>,
+    pub clip: Vec<BackgroundBox>,
+    pub attachment: Vec<Attachment>,
+}
+
+impl Default for Backgrounds {
+    fn default() -> Self {
+        Backgrounds {
+            image: vec![None],
+            repeat: vec![[Repeat::Repeat; 2]],
+            position: vec![[
+                LengthPercentage::Percent(0.0),
+                LengthPercentage::Percent(0.0),
+            ]],
+            size: vec![BackgroundSize::default()],
+            origin: vec![BackgroundBox::PaddingBox],
+            clip: vec![BackgroundBox::BorderBox],
+            attachment: vec![Attachment::Scroll],
+        }
+    }
+}
+
+/// One background layer, each of its values taken from its list.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BackgroundLayer<'a> {
+    pub image: Option<&'a Image>,
+    pub repeat: [Repeat; 2],
+    pub position: &'a [LengthPercentage; 2],
+    pub size: &'a BackgroundSize,
+    pub origin: BackgroundBox,
+    pub clip: BackgroundBox,
+    pub attachment: Attachment,
+}
+
+impl Backgrounds {
+    /// The layers, the first on top.
+    pub fn layers(&self) -> impl Iterator<Item = BackgroundLayer<'_>> {
+        fn at<T>(list: &[T], i: usize) -> &T {
+            &list[i % list.len()]
+        }
+        (0..self.image.len()).map(move |i| BackgroundLayer {
+            image: self.image[i].as_ref(),
+            repeat: *at(&self.repeat, i),
+            position: at(&self.position, i),
+            size: at(&self.size, i),
+            origin: *at(&self.origin, i),
+            clip: *at(&self.clip, i),
+            attachment: *at(&self.attachment, i),
+        })
+    }
+
+    /// The box the colour is painted in: the bottom layer's
+    /// `background-clip` (section 2.7).
+    pub fn color_clip(&self) -> BackgroundBox {
+        self.clip[(self.image.len() - 1) % self.clip.len()]
+    }
+}
+
 /// The text decoration properties (Text Decoration 3 and 4, M21.7):
 /// what [`ComputedStyle::decoration`] points to when any of them is not
 /// its initial value. The line, its style, colour and thickness are not
@@ -2117,6 +2259,10 @@ static INITIAL_FRAGMENTATION: LazyLock<Fragmentation> = LazyLock::new(Fragmentat
 
 static INITIAL_LISTS: LazyLock<Lists> = LazyLock::new(Lists::default);
 
+/// The background properties' initial values, which
+/// [`ComputedStyle::background`] gives a style that sets none of them.
+static INITIAL_BACKGROUND: LazyLock<Backgrounds> = LazyLock::new(Backgrounds::default);
+
 /// The image properties' initial values, which [`ComputedStyle::image`]
 /// gives a style that sets none of them.
 static INITIAL_IMAGE: LazyLock<ImageStyle> = LazyLock::new(ImageStyle::default);
@@ -2430,6 +2576,10 @@ pub struct ComputedStyle {
     /// properties are; `None` is every initial value. Read through
     /// [`ComputedStyle::image`].
     pub image: Option<Arc<ImageStyle>>,
+    /// The background properties but `background-color` (M23.3), behind
+    /// one pointer; `None` is every initial value. Read through
+    /// [`ComputedStyle::background`].
+    pub background: Option<Arc<Backgrounds>>,
 }
 
 /// `font-family`'s initial value, one for every style that has it.
@@ -2502,6 +2652,7 @@ impl Default for ComputedStyle {
             inert: false,
             motion: None,
             image: None,
+            background: None,
         }
     }
 }
@@ -2617,6 +2768,18 @@ impl ComputedStyle {
     /// own copy made first if it shares them or has none.
     pub fn motion_mut(&mut self) -> &mut Motion {
         Arc::make_mut(self.motion.get_or_insert_with(Default::default))
+    }
+
+    /// The background properties but `background-color` (M23.3), the
+    /// initial values when the style sets none of them.
+    pub fn background(&self) -> &Backgrounds {
+        self.background.as_deref().unwrap_or(&INITIAL_BACKGROUND)
+    }
+
+    /// The background properties to change, this style's own copy made
+    /// first if it shares them or has none.
+    pub fn background_mut(&mut self) -> &mut Backgrounds {
+        Arc::make_mut(self.background.get_or_insert_with(Default::default))
     }
 
     /// `aspect-ratio` and the image properties (M23.2), the initial
@@ -2836,9 +2999,10 @@ mod tests {
         // decoration properties (M21.7) another, 640 before them. The
         // transition and animation properties (M22) another, 648 before
         // them. `aspect-ratio` and the image properties (M23.2) another,
-        // 656 before them. Growing this is a decision, not an accident;
+        // 656 before them, and the background properties (M23.3) another,
+        // 664 before them. Growing this is a decision, not an accident;
         // say why where the number changes.
-        assert_eq!(std::mem::size_of::<ComputedStyle>(), 664);
+        assert_eq!(std::mem::size_of::<ComputedStyle>(), 672);
         assert_eq!(ComputedStyle::default().grid, None);
         assert_eq!(*ComputedStyle::default().grid(), GridStyle::default());
         assert_eq!(ComputedStyle::default().effects, None);

@@ -120,7 +120,7 @@ use loader::{Incoming, Network, Page, PageId, Target};
 use navigation::{History, StateId};
 use paint::{
     DisplayItem, Rect, SCROLLBAR_THUMB, SCROLLBAR_TRACK, Step, Viewport, padding_box,
-    paint_fragments_in, paint_order, scrollbar_thumb,
+    paint_fragments_with, paint_order, scrollbar_thumb,
 };
 pub use render::Backend;
 use render::{RenderBackend, SoftwareBackend};
@@ -1049,6 +1049,35 @@ impl Engine {
         }
     }
 
+    /// Fetches the images the shown document's styles name that are not
+    /// yet wanted (M23.3), as [`Engine::request_images`] does its `img`s'.
+    fn request_css_images(&mut self) {
+        if self.shown.made {
+            return;
+        }
+        let Some(initiator) = self.shown.page.initiator() else {
+            return;
+        };
+        let shown = &mut self.shown;
+        let Some(styled) = &shown.styled else {
+            return;
+        };
+        let wanted = shown.images.scan_styles(
+            &shown.document,
+            &styled.styles,
+            &shown.page,
+            &mut self.next_image,
+        );
+        for url in wanted {
+            let key = url.as_str().to_owned();
+            let request = net::Request::get(url, net::Destination::Image)
+                .initiated_by(initiator.clone())
+                .with_body_limit(images::MAX_IMAGE_BYTES);
+            self.network
+                .fetch(shown.page.id(), Target::Image { url: key }, request);
+        }
+    }
+
     /// Takes the response to one of the shown document's images: its
     /// header is read next, off this thread.
     fn image_arrived(&mut self, page: PageId, url: &str, result: Result<net::Response, LoadError>) {
@@ -1111,7 +1140,7 @@ impl Engine {
     /// and has the others decoded (M23.2).
     fn show_pixels(&mut self, items: &mut [DisplayItem]) {
         for item in items {
-            if let DisplayItem::Image { image, .. } = item
+            if let DisplayItem::Image { image, .. } | DisplayItem::Pattern { image, .. } = item
                 && image.pixels.is_none()
             {
                 image.pixels = self.image_pixels(image.id);
@@ -1300,7 +1329,12 @@ impl Engine {
             && self.shown.page.settled()
             && self.shown.images.settled()
         {
-            self.load_state = LoadState::Loaded;
+            // The images the styles name are waited for too (M23.3): the
+            // styles are computed now, if no frame has, to find them.
+            self.cached_styles();
+            if self.shown.images.settled() {
+                self.load_state = LoadState::Loaded;
+            }
         }
     }
 
@@ -1316,7 +1350,10 @@ impl Engine {
         } else if let Some(failure) = &self.shown.failure {
             LoadState::Failed(failure.clone())
         } else {
-            LoadState::Loaded
+            // Loaded once the images its styles name are in (M23.3).
+            self.load_state = LoadState::Loading;
+            self.update_load_state();
+            return;
         };
     }
 
@@ -1668,6 +1705,7 @@ impl Engine {
                 viewport: self.viewport,
                 styles,
             });
+            self.request_css_images();
         } else if !self.shown.pending.is_empty() || !self.shown.animated.is_empty() {
             let changes = std::mem::take(&mut self.shown.pending);
             let animated = std::mem::take(&mut self.shown.animated);
@@ -1714,6 +1752,7 @@ impl Engine {
                     self.shown.layout = None;
                 }
             }
+            self.request_css_images();
         }
         &self.shown.styled.as_ref().expect("just computed").styles
     }
@@ -2034,8 +2073,9 @@ impl Engine {
             scroll_y,
         };
         let scrollbar = self.scrollbar();
-        let layout = self.layout(width as f32);
-        let mut list = paint_fragments_in(&layout.roots, viewport, &offsets);
+        self.layout(width as f32);
+        let layout = &self.shown.layout.as_ref().expect("just laid out").layout;
+        let mut list = paint_fragments_with(&layout.roots, viewport, &offsets, &self.shown.images);
         self.show_pixels(&mut list.items);
         if let Some(bar) = scrollbar {
             list.items.push(DisplayItem::Rect {
@@ -2401,7 +2441,7 @@ impl Engine {
                 // (M22.1).
                 Step::Box { fragment, .. } | Step::Text { fragment, .. }
                     if fragment.style.inert => {}
-                Step::Box { fragment, rect } => {
+                Step::Box { fragment, rect, .. } => {
                     if under(&rect, &clips, &points) {
                         let (px, py) = points[points.len() - 1];
                         let mut chain: Vec<NodeId> = chain(&clips);
@@ -2541,7 +2581,7 @@ impl Engine {
         let mut chain: Vec<Option<NodeId>> = Vec::new();
         for step in paint_order(&layout.roots, whole, &offsets) {
             match step {
-                Step::Box { fragment, rect } | Step::Text { fragment, rect, .. } => {
+                Step::Box { fragment, rect, .. } | Step::Text { fragment, rect, .. } => {
                     if fragment.generated.is_some() {
                         continue;
                     }

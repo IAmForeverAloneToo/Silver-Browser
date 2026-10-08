@@ -23,7 +23,7 @@
 use std::cell::RefCell;
 
 use dom::Document;
-use paint::{DisplayItem, DisplayList, GroupKey, Viewport, paint_fragments_in};
+use paint::{DisplayItem, DisplayList, GroupKey, Viewport, paint_fragments_with};
 use render::RenderBackend;
 use render::SoftwareBackend;
 use render::pdf::{PdfPage, write_pdf};
@@ -186,11 +186,14 @@ impl Engine {
                     height: page.height,
                     scroll_y: page.top,
                 };
-                let mut list = paint_fragments_in(&paginated.roots, viewport, &());
+                let mut list =
+                    paint_fragments_with(&paginated.roots, viewport, &(), &self.shown.images);
                 // A print waits for no decode: its images are decoded
                 // now (M23.2).
                 for item in &mut list.items {
-                    if let DisplayItem::Image { image, .. } = item {
+                    if let DisplayItem::Image { image, .. } | DisplayItem::Pattern { image, .. } =
+                        item
+                    {
                         image.pixels = self.shown.images.decoded_now(image.id);
                     }
                 }
@@ -349,7 +352,10 @@ mod tests {
             .expect("the pixels");
         writer.finish().expect("written");
         let server = serve(move |path| match path {
-            "/page.html" => Some(html("<body style='margin: 0'><img src=a.png></body>")),
+            "/page.html" => Some(html(
+                "<body style='margin: 0'><img src=a.png>\
+                 <div style='height: 50px; background: url(a.png) no-repeat'></div></body>",
+            )),
             "/a.png" => Some(net::test_server::Reply::ok("image/png", &png)),
             _ => None,
         });
@@ -362,6 +368,10 @@ mod tests {
         let pages = tab.engine.print_pages(&small()).expect("printed");
         assert_eq!(at(&pages[0], 50.0, 50.0), RED);
         assert_eq!(at(&pages[0], 150.0, 50.0), WHITE);
+        // The background below it, decoded now as the image is.
+        let below = 104.0;
+        assert_eq!(at(&pages[0], 50.0, below + 20.0), RED);
+        assert_eq!(at(&pages[0], 150.0, below + 20.0), WHITE);
     }
 
     #[test]

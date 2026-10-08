@@ -122,8 +122,8 @@ use crate::computed::{
     TextTransform, VerticalAlign, WhiteSpace,
 };
 use crate::computed::{
-    AnimationPlayState, Calc, Decoration, Effects, Fragmentation, GridStyle, ImageStyle,
-    JustifyItems, Lists, Motion, WillChange,
+    AnimationPlayState, Backgrounds, Calc, Decoration, Effects, Fragmentation, GridStyle,
+    ImageStyle, JustifyItems, Lists, Motion, WillChange,
 };
 use crate::custom::{self, CustomProperties, DataType, Substituted, Substitutions};
 use crate::invalidation::{Reach, SelectorFeatures, invalidate};
@@ -133,6 +133,7 @@ use crate::rule_set::{KeyframesInForce, RuleSet};
 use crate::selector_matching::{Matcher, PseudoElement, SelectorList, Specificity};
 
 mod animated;
+mod backgrounds;
 mod decoration;
 mod effects;
 mod fragmentation;
@@ -406,6 +407,14 @@ impl Target {
                 | "font-family"
                 | "color"
                 | "background-color"
+                | "background"
+                | "background-image"
+                | "background-repeat"
+                | "background-position"
+                | "background-size"
+                | "background-origin"
+                | "background-clip"
+                | "background-attachment"
                 | "text-transform"
                 | "letter-spacing"
                 | "word-spacing"
@@ -2367,6 +2376,9 @@ fn substituted<'v>(
         resolution.attributes,
         animatable,
     ) {
+        // An attribute's value never becomes a URL (Values 5's attr()
+        // taint, M23.3).
+        Substituted::Value(_) if custom::url_from_attribute(value, custom) => Specified::Invalid,
         Substituted::Value(value) => Specified::Substituted(value),
         Substituted::Invalid => Specified::Invalid,
         Substituted::Ignored => Specified::Ignored,
@@ -2504,7 +2516,49 @@ fn apply_declaration(
     match name {
         "color" => set(&mut style.color, parse_color(value)),
         "background-color" => set(&mut style.background_color, parse_color(value)),
-        "background" => set(&mut style.background_color, parse_background(value)),
+        "background" => match backgrounds::parse_background(value, bases) {
+            Some((color, layers)) => {
+                style.background_color = color;
+                style.background = (layers != Backgrounds::default()).then(|| Arc::new(layers));
+                true
+            }
+            None => false,
+        },
+        "background-image" => set_background(
+            style,
+            backgrounds::parse_background_image(value, bases),
+            |b, v| b.image = v,
+        ),
+        "background-repeat" => set_background(
+            style,
+            backgrounds::parse_background_repeat(value),
+            |b, v| b.repeat = v,
+        ),
+        "background-position" => set_background(
+            style,
+            backgrounds::parse_background_position(value, bases),
+            |b, v| b.position = v,
+        ),
+        "background-size" => set_background(
+            style,
+            backgrounds::parse_background_size(value, bases),
+            |b, v| b.size = v,
+        ),
+        "background-origin" => {
+            set_background(style, backgrounds::parse_background_box(value), |b, v| {
+                b.origin = v
+            })
+        }
+        "background-clip" => {
+            set_background(style, backgrounds::parse_background_box(value), |b, v| {
+                b.clip = v
+            })
+        }
+        "background-attachment" => set_background(
+            style,
+            backgrounds::parse_background_attachment(value),
+            |b, v| b.attachment = v,
+        ),
         // The first pass of `compute_style` applies it.
         "font-size" => parse_font_size(value, bases).is_some(),
         "font-family" => set(
@@ -3132,6 +3186,15 @@ fn set_lists<T>(
     v.map(|v| update(style.lists_mut(), v)).is_some()
 }
 
+/// [`set_grid`] for the background properties (M23.3).
+fn set_background<T>(
+    style: &mut ComputedStyle,
+    v: Option<T>,
+    update: impl FnOnce(&mut Backgrounds, T),
+) -> bool {
+    v.map(|v| update(style.background_mut(), v)).is_some()
+}
+
 /// [`set_grid`] for the image properties (M23.2).
 fn set_image<T>(
     style: &mut ComputedStyle,
@@ -3196,6 +3259,19 @@ fn copy_lists(
     }
     let src = src.lists().clone();
     copy(style.lists_mut(), &src);
+}
+
+/// [`copy_grid`] for the background properties (M23.3).
+fn copy_background(
+    style: &mut ComputedStyle,
+    src: &ComputedStyle,
+    copy: impl FnOnce(&mut Backgrounds, &Backgrounds),
+) {
+    if style.background.is_none() && src.background.is_none() {
+        return;
+    }
+    let src = src.background().clone();
+    copy(style.background_mut(), &src);
 }
 
 /// [`copy_grid`] for the image properties (M23.2).
@@ -3374,7 +3450,22 @@ fn apply_css_wide(
     let src = if from_parent { parent } else { &initial };
     match name {
         "color" => style.color = src.color,
-        "background-color" | "background" => style.background_color = src.background_color,
+        "background-color" => style.background_color = src.background_color,
+        "background" => {
+            style.background_color = src.background_color;
+            style.background = src.background.clone();
+        }
+        "background-image" => copy_background(style, src, |b, s| b.image = s.image.clone()),
+        "background-repeat" => copy_background(style, src, |b, s| b.repeat = s.repeat.clone()),
+        "background-position" => {
+            copy_background(style, src, |b, s| b.position = s.position.clone())
+        }
+        "background-size" => copy_background(style, src, |b, s| b.size = s.size.clone()),
+        "background-origin" => copy_background(style, src, |b, s| b.origin = s.origin.clone()),
+        "background-clip" => copy_background(style, src, |b, s| b.clip = s.clip.clone()),
+        "background-attachment" => {
+            copy_background(style, src, |b, s| b.attachment = s.attachment.clone())
+        }
         "font-size" => {} // the first pass, see `compute_style`
         "font-family" => style.font_family = src.font_family.clone(),
         "display" => style.display = src.display,
@@ -4929,37 +5020,6 @@ fn parse_font_family(tokens: &[Token]) -> Option<String> {
     Some(families.join(", "))
 }
 
-/// Hex colors and a small, deliberately-not-exhaustive named-color set
-/// (see the module doc) — filters whitespace, then requires exactly one
-/// remaining token (trailing garbage invalidates the value, matching
-/// real CSS: a malformed value drops the whole declaration).
-/// The `background` shorthand (css-backgrounds-3 §3.10, M17) as far as
-/// this engine paints backgrounds: one layer of a `<color>` and the
-/// image `none`, each at most once and either left out; the colour it
-/// sets, `transparent` when it gives none. Any other component — an
-/// image, a position, a size, a second layer — is one this engine cannot
-/// honour, so the declaration is dropped rather than half applied.
-fn parse_background(tokens: &[Token]) -> Option<Color> {
-    let groups = split_components(tokens);
-    if groups.is_empty() {
-        return None;
-    }
-    let mut color = None;
-    let mut image = false;
-    for group in &groups {
-        if !image && single_ident(group).is_some_and(|i| i.eq_ignore_ascii_case("none")) {
-            image = true;
-        } else if color.is_none()
-            && let Some(c) = parse_color(group)
-        {
-            color = Some(c);
-        } else {
-            return None;
-        }
-    }
-    Some(color.unwrap_or(ComputedStyle::default().background_color))
-}
-
 fn parse_color(tokens: &[Token]) -> Option<Color> {
     match single_token(tokens)? {
         Token::Hash { value, .. } => parse_hex_color(value),
@@ -5305,11 +5365,89 @@ mod tests {
     }
 
     #[test]
+    fn an_attributes_value_never_becomes_a_url() {
+        // Values 5's attr() taint (M23.3): directly, through a custom
+        // property, and parsed as CSS by `type(*)`.
+        let images = |html: &str, css: &str| {
+            let sheet = css::parse_stylesheet(css).expect("never fails");
+            style_of(html, &[sheet], "div").background().image.clone()
+        };
+        let html = "<div data-u='a.png' data-v='url(a.png)' data-c='red'>x</div>";
+        let none = vec![None];
+        assert_eq!(
+            images(html, "div { background-image: image-set(attr(data-u)) }"),
+            none
+        );
+        assert_eq!(
+            images(
+                html,
+                "div { --u: attr(data-u); background-image: image-set(var(--u)) }"
+            ),
+            none
+        );
+        assert_eq!(
+            images(
+                html,
+                "div { --u: attr(data-u); --w: var(--u); background-image: image-set(var(--w)) }"
+            ),
+            none
+        );
+        assert_eq!(
+            images(
+                html,
+                "body { --u: attr(data-u) } div { background-image: image-set(var(--u)) }"
+            ),
+            none
+        );
+        // A chain written last to first is followed to its end.
+        assert_eq!(
+            images(
+                html,
+                "div { --a: var(--b); --b: var(--c); --c: attr(data-u);
+                 background-image: image-set(var(--a)) }"
+            ),
+            none
+        );
+        assert_eq!(
+            images(html, "div { background-image: attr(data-v type(*)) }"),
+            none
+        );
+        // A string of the sheet's own is a URL as it should be, and an
+        // attribute may give what is not one.
+        assert_eq!(
+            images(
+                html,
+                "div { --u: \"a.png\"; background-image: image-set(var(--u)) }"
+            ),
+            vec![Some(crate::computed::Image::Url {
+                url: Arc::from("a.png"),
+                resolution: 1.0
+            })]
+        );
+        let sheet =
+            css::parse_stylesheet("div { background: url(b.png) attr(data-c type(<color>)) }")
+                .expect("never fails");
+        let div = style_of(html, &[sheet], "div");
+        assert_eq!(div.background_color, Color::rgb8(255, 0, 0));
+        assert_eq!(div.background().image.len(), 1);
+        assert!(
+            div.background().image[0].is_some(),
+            "the sheet's own URL stands"
+        );
+        assert_eq!(
+            images(
+                html,
+                "div { --s: image-set(attr(data-u)); background-image: var(--s) }"
+            ),
+            none
+        );
+    }
+
+    #[test]
     fn the_background_shorthand_sets_the_colour_and_resets_it() {
-        // M17: `background` is its colour here, the rest of the layer at
-        // its initial value; a later shorthand without a colour resets
-        // an earlier `background-color`, and one the engine cannot honour
-        // is dropped whole.
+        // M17: a later shorthand without a colour resets an earlier
+        // `background-color`; since M23.3 it sets the layers too, and one
+        // the engine cannot honour is dropped whole.
         let colour = |css: &str| {
             let sheet = css::parse_stylesheet(css).expect("never fails");
             style_of("<p>x</p>", &[sheet], "p").background_color
@@ -5321,7 +5459,26 @@ mod tests {
         );
         assert_eq!(
             colour("p { background: green; background: url(a.png) red }"),
+            Color::rgb8(255, 0, 0)
+        );
+        assert_eq!(
+            colour("p { background: green; background: url(a.png) url(b.png) }"),
             Color::rgb8(0, 128, 0)
+        );
+        let sheet = css::parse_stylesheet(
+            "p { background-image: url(a.png); background-position: right; background: blue }",
+        )
+        .expect("never fails");
+        let p = style_of("<p>x</p>", &[sheet], "p");
+        assert!(p.background.is_none(), "the shorthand resets the layers");
+        let sheet =
+            css::parse_stylesheet("p { background: url(a.png) } p { background-repeat: inherit }")
+                .expect("never fails");
+        let p = style_of("<p>x</p>", &[sheet], "p");
+        assert_eq!(p.background().image.len(), 1);
+        assert_eq!(
+            p.background().repeat,
+            ComputedStyle::default().background().repeat
         );
     }
 
@@ -5438,9 +5595,15 @@ mod tests {
         }
         for (name, value) in [
             ("background", "url(a.png) green"),
+            ("background", "left top green"),
+            ("background-image", "image-set(\"a.png\" 2x)"),
+        ] {
+            assert!(supports(name, value), "{name}: {value}");
+        }
+        for (name, value) in [
             ("background", "green, red"),
             ("background", "green red"),
-            ("background", "left top green"),
+            ("background", "url(a.png) url(b.png)"),
         ] {
             assert!(!supports(name, value), "{name}: {value}");
         }

@@ -51,7 +51,6 @@ css/css-will-change/will-change-stacking-context-opacity-2.html                a
 # and conditional rules tests ask of parts of the engine other than
 # its media queries, cascade and loader.
 css/css-conditional/at-supports-010.html                                                  the condition holds only if `visibility: hidden` is supported, and the engine has no `visibility` property (docs/design/flexbox.md, section 2; no milestone yet)
-css/css-conditional/at-supports-017.html                                                  `background` with a `url()` image is not a value the cascade takes before images (roadmap M23.3), so the condition is false
 css/css-conditional/at-supports-at-rule-001.html                                          `at-rule()` is CSS Conditional 5's, which this engine does not take, nor the reference browser: the condition does not parse and the rule is dropped
 css/css-conditional/at-supports-at-rule-002.html                                          `at-rule()` is CSS Conditional 5's, which this engine does not take, nor the reference browser: the condition does not parse and the rule is dropped
 css/css-conditional/at-supports-at-rule-003.html                                          `at-rule()` is CSS Conditional 5's, which this engine does not take, nor the reference browser: the condition does not parse and the rule is dropped
@@ -132,7 +131,6 @@ css/css-counter-styles/trad-chinese-informal/css3-counter-styles-085.html       
 css/css-counter-styles/ethiopic-numeric/counter-ethiopic-numeric.html                     `ethiopic-numeric` (Counter Styles 3 §7) behaves as `decimal` here
 css/css-variables/variable-declaration-19.html                                            the substituted value is an `rgb()` colour, a function the engine does not parse, so `color` is invalid at computed-value time and the text inherits black
 css/css-variables/variable-declaration-21.html                                            the substituted value is an `rgb()` colour, a function the engine does not parse, so `color` is invalid at computed-value time and the text inherits black
-css/css-variables/variable-reference-36.html                                              the substituted `background` holds a `url()` image, which the cascade does not take before images (roadmap M23.3), so the shorthand is invalid at computed-value time and the background transparent
 css/css-variables/vars-background-shorthand-001.html                                      three of the four substituted backgrounds hold a `linear-gradient()`, an image, which the cascade does not take before images (roadmap M23.3), so they are invalid at computed-value time and transparent
 css/css-lists/list-type-none-style-image.html                                             a `list-style-image` is not drawn before images (roadmap M23), so the test's `list-style-type: none` item has no marker where the reference's disc shows
 css/css-lists/nested-marker.html                                                          a `::before` or `::after` with `display: list-item` is no list item here: it has no marker and does not count in `list-item`

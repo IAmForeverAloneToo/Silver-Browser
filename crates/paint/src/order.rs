@@ -134,8 +134,14 @@ impl Rect {
 /// One step of the paint order.
 #[derive(Debug, Clone, Copy)]
 pub enum Step<'a> {
-    /// A box's own background and border, over its border box `rect`.
-    Box { fragment: &'a Fragment, rect: Rect },
+    /// A box's own background and border, over its border box `rect`;
+    /// `cb_width` is its containing block's width, which a percentage of
+    /// its padding is of (M23.3: a background's content box).
+    Box {
+        fragment: &'a Fragment,
+        rect: Rect,
+        cb_width: f32,
+    },
     /// A text run: `rect` is its line box, `baseline` where its glyphs
     /// sit.
     Text {
@@ -795,13 +801,17 @@ impl<'a> Walk<'a, '_> {
     /// A fragment's own step — a box's background and border, a text
     /// run — when the viewport meets it.
     #[inline(always)]
-    fn own(&mut self, f: &'a Fragment) {
+    fn own(&mut self, f: &'a Fragment, cb_width: f32) {
         let rect = self.rect_of(f);
         if !self.visible(rect) {
             return;
         }
         self.steps.push(match f.kind {
-            FragmentKind::Box | FragmentKind::InlineBox => Step::Box { fragment: f, rect },
+            FragmentKind::Box | FragmentKind::InlineBox => Step::Box {
+                fragment: f,
+                rect,
+                cb_width,
+            },
             // A marker drawn as a shape is on its line as text is
             // (M21.6), and so is what a replaced box shows (M23.2), which
             // CSS2 Appendix E paints with the inline content.
@@ -1158,7 +1168,7 @@ impl<'a> Walk<'a, '_> {
                     w.groups.push(composed);
                     w.steps.len()
                 });
-                w.own(f);
+                w.own(f, containing.w);
                 w.content(f, Emit::ClipAndScrollbar, |w, padding| {
                     w.layers(&f.children, padding, positioned, has_items(f));
                 });
@@ -1410,7 +1420,7 @@ impl<'a> Walk<'a, '_> {
             match f.kind {
                 FragmentKind::Text(_) | FragmentKind::Marker(_) | FragmentKind::Replaced(_) => {
                     if phase == Phase::Inlines {
-                        self.own(f);
+                        self.own(f, containing.w);
                     }
                 }
                 // An inline element's box on a line (M11.6) and all it
@@ -1422,7 +1432,7 @@ impl<'a> Walk<'a, '_> {
                         && !f.style.position.is_positioned()
                         && !stacking_context(f, false)
                     {
-                        self.own(f);
+                        self.own(f, containing.w);
                         self.phase(&f.children, containing, phase, false);
                     }
                 }
@@ -1454,7 +1464,7 @@ impl<'a> Walk<'a, '_> {
                     }
                     Kind::Block => {
                         if phase == Phase::Blocks {
-                            self.own(f);
+                            self.own(f, containing.w);
                         }
                         // The scrollbar goes over the content, after the
                         // last pass.
@@ -1480,7 +1490,7 @@ impl<'a> Walk<'a, '_> {
     /// painted at their layers there.
     fn unit(&mut self, f: &'a Fragment, containing: Rect) {
         self.shifted(f, containing, |w| {
-            w.own(f);
+            w.own(f, containing.w);
             w.content(f, Emit::ClipAndScrollbar, |w, padding| {
                 for phase in PHASES {
                     w.phase(&f.children, padding, phase, has_items(f));
@@ -1770,7 +1780,7 @@ mod tests {
         let generated = steps
             .iter()
             .find_map(|s| match s {
-                Step::Box { fragment, rect } if fragment.generated.is_some() => Some(rect.y),
+                Step::Box { fragment, rect, .. } if fragment.generated.is_some() => Some(rect.y),
                 _ => None,
             })
             .expect("the generated box has a step");
@@ -1814,7 +1824,7 @@ mod tests {
             steps
                 .iter()
                 .find_map(|s| match s {
-                    Step::Box { fragment, rect } if layout.number(fragment.node) == node => {
+                    Step::Box { fragment, rect, .. } if layout.number(fragment.node) == node => {
                         Some(*rect)
                     }
                     _ => None,
@@ -2205,7 +2215,7 @@ mod tests {
             let s = steps
                 .iter()
                 .find_map(|st| match st {
-                    Step::Box { fragment, rect } if layout.number(fragment.node) == 2 => {
+                    Step::Box { fragment, rect, .. } if layout.number(fragment.node) == 2 => {
                         Some(rect.y)
                     }
                     _ => None,
@@ -2647,7 +2657,7 @@ mod tests {
             steps
                 .iter()
                 .find_map(|s| match s {
-                    Step::Box { fragment, rect } if layout.number(fragment.node) == node => {
+                    Step::Box { fragment, rect, .. } if layout.number(fragment.node) == node => {
                         Some(*rect)
                     }
                     _ => None,
@@ -3209,7 +3219,7 @@ mod tests {
             steps
                 .iter()
                 .find_map(|s| match s {
-                    Step::Box { fragment, rect } if layout.number(fragment.node) == node => {
+                    Step::Box { fragment, rect, .. } if layout.number(fragment.node) == node => {
                         Some(*rect)
                     }
                     _ => None,

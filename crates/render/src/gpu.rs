@@ -255,6 +255,10 @@ struct Pipelines {
     /// The sampler of a composite: between texel centres, the edge
     /// texels standing in beyond the edges, as the software resamples.
     linear: wgpu::Sampler,
+    /// The samplers of a repeated image (M23.3): the texture again past
+    /// its edges.
+    nearest_repeat: wgpu::Sampler,
+    linear_repeat: wgpu::Sampler,
 }
 
 /// A render pass recorded, drawn when the frame is flushed: what it
@@ -299,6 +303,10 @@ struct Records {
 struct ImageTexture {
     texture: Texture,
     nearest: wgpu::BindGroup,
+    /// The groups a repeated image is sampled by (M23.3), between
+    /// texels and the nearest texel.
+    linear_repeat: wgpu::BindGroup,
+    nearest_repeat: wgpu::BindGroup,
     used: u64,
 }
 
@@ -598,16 +606,23 @@ impl GpuBackend {
     /// textures drawn longest ago, not in this raster, dropped while
     /// they hold more than the budget. `None` until it is decoded, and
     /// for one larger than a texture may be.
-    fn image_bind(&mut self, image: &ImageRef, sharp: bool) -> Option<wgpu::BindGroup> {
+    fn image_bind(
+        &mut self,
+        image: &ImageRef,
+        sharp: bool,
+        repeat: bool,
+    ) -> Option<wgpu::BindGroup> {
         let key = (image.id, image.frame, image.orientation);
         let frame = self.frame;
+        let pick = |kept: &ImageTexture| match (sharp, repeat) {
+            (true, false) => kept.nearest.clone(),
+            (false, false) => kept.texture.bind.clone(),
+            (true, true) => kept.nearest_repeat.clone(),
+            (false, true) => kept.linear_repeat.clone(),
+        };
         if let Some(kept) = self.images.get_mut(&key) {
             kept.used = frame;
-            return Some(if sharp {
-                kept.nearest.clone()
-            } else {
-                kept.texture.bind.clone()
-            });
+            return Some(pick(kept));
         }
         let (pixels, w, h) = self.turned.pixels(image)?;
         let texture = self.texture(
@@ -637,20 +652,25 @@ impl GpuBackend {
                 depth_or_array_layers: 1,
             },
         );
-        let nearest = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &self.pipelines.sampled,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&texture.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.pipelines.nearest),
-                },
-            ],
-        });
+        let bind = |sampler: &wgpu::Sampler| {
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &self.pipelines.sampled,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&texture.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(sampler),
+                    },
+                ],
+            })
+        };
+        let nearest = bind(&self.pipelines.nearest);
+        let linear_repeat = bind(&self.pipelines.linear_repeat);
+        let nearest_repeat = bind(&self.pipelines.nearest_repeat);
         self.image_bytes += texture.bytes();
         while self.image_bytes > IMAGE_TEXTURE_BUDGET {
             let Some(oldest) = self
@@ -666,19 +686,15 @@ impl GpuBackend {
                 self.image_bytes -= dropped.texture.bytes();
             }
         }
-        let bind = if sharp {
-            nearest.clone()
-        } else {
-            texture.bind.clone()
+        let kept = ImageTexture {
+            texture,
+            nearest,
+            linear_repeat,
+            nearest_repeat,
+            used: frame,
         };
-        self.images.insert(
-            key,
-            ImageTexture {
-                texture,
-                nearest,
-                used: frame,
-            },
-        );
+        let bind = pick(&kept);
+        self.images.insert(key, kept);
         Some(bind)
     }
 
@@ -896,6 +912,7 @@ impl GpuBackend {
                 opacity,
                 region,
                 size,
+                [0.0, 0.0, 1.0, 1.0],
             );
             return;
         }
@@ -949,6 +966,7 @@ impl GpuBackend {
             opacity,
             within,
             size,
+            [0.0, 0.0, 1.0, 1.0],
         );
     }
 
@@ -1032,6 +1050,7 @@ impl GpuBackend {
                         opacity,
                         within,
                         size,
+                        [0.0, 0.0, 1.0, 1.0],
                     );
                 }
                 Store::Tiles { left, width, rows } => {
@@ -1074,6 +1093,7 @@ impl GpuBackend {
                             opacity,
                             within,
                             size,
+                            [0.0, 0.0, 1.0, 1.0],
                         );
                     }
                 }
@@ -1098,15 +1118,15 @@ impl GpuBackend {
         opacity: f32,
         scissor: PixelRect,
         size: (u32, u32),
+        texels: [f32; 4],
     ) {
         let index = (records.composites.len() / COMPOSITE_FLOATS) as u32;
         records
             .composites
             .extend([corners.0, corners.1, corners.2, corners.3]);
         records.composites.extend(clip_matrix(matrix, size));
-        records
-            .composites
-            .extend([0.0, 0.0, 1.0, 1.0, opacity, 0.0, 0.0, 0.0]);
+        records.composites.extend(texels);
+        records.composites.extend([opacity, 0.0, 0.0, 0.0]);
         draws.push(Draw {
             kind: Kind::Composite(bind),
             scissor,
@@ -1312,7 +1332,7 @@ impl GpuBackend {
                 else {
                     return;
                 };
-                let Some(bind) = self.image_bind(image, *sharp) else {
+                let Some(bind) = self.image_bind(image, *sharp, false) else {
                     return;
                 };
                 Self::push_composite(
@@ -1324,7 +1344,55 @@ impl GpuBackend {
                     1.0,
                     scissor,
                     size,
+                    [0.0, 0.0, 1.0, 1.0],
                 );
+            }
+            DisplayItem::Pattern {
+                x,
+                y,
+                w,
+                h,
+                tile,
+                gap,
+                repeat,
+                image,
+                sharp,
+            } => {
+                let fills = crate::pattern_fills(
+                    [*x, *y, *w, *h],
+                    *tile,
+                    *gap,
+                    *repeat,
+                    clip,
+                    (sx, sy, tx, ty),
+                );
+                for one in fills {
+                    let (t, f) = (one.tile, one.fill);
+                    let Some(scissor) = PixelRect::centred(f.x0, f.y0, f.x1, f.y1, width, height)
+                    else {
+                        continue;
+                    };
+                    let Some(bind) = self.image_bind(image, *sharp, one.repeat) else {
+                        return;
+                    };
+                    let (tw, th) = (t.x1 - t.x0, t.y1 - t.y0);
+                    Self::push_composite(
+                        &mut self.records,
+                        draws,
+                        bind,
+                        (f.x0, f.y0, f.x1, f.y1),
+                        &Matrix::IDENTITY,
+                        1.0,
+                        scissor,
+                        size,
+                        [
+                            (f.x0 - t.x0) / tw,
+                            (f.y0 - t.y0) / th,
+                            (f.x1 - t.x0) / tw,
+                            (f.y1 - t.y0) / th,
+                        ],
+                    );
+                }
             }
         }
     }
@@ -1475,8 +1543,10 @@ impl GpuBackend {
                     seen,
                     &mut inner_extra,
                 );
-                let was = self.layers.contains(key) && !self.doubled.contains(key);
-                let held = if seen.insert(*key) {
+                // A key two groups share is known before
+                // (`crate::doubled_keys`), the first group's too.
+                let was = self.layers.contains(key);
+                let held = if !self.doubled.contains(key) && seen.insert(*key) {
                     self.update_layer(*key, *reason, inner, &composed, clip, &inner_extra)
                 } else {
                     self.layers.drop(*key);
@@ -2106,11 +2176,11 @@ impl Pipelines {
                 float4(6, 96),
             ],
         );
-        let sampler = |filter: wgpu::FilterMode| {
+        let sampler_of = |filter: wgpu::FilterMode, address: wgpu::AddressMode| {
             device.create_sampler(&wgpu::SamplerDescriptor {
                 label: None,
-                address_mode_u: wgpu::AddressMode::ClampToEdge,
-                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                address_mode_u: address,
+                address_mode_v: address,
                 address_mode_w: wgpu::AddressMode::ClampToEdge,
                 mag_filter: filter,
                 min_filter: filter,
@@ -2118,6 +2188,7 @@ impl Pipelines {
                 ..Default::default()
             })
         };
+        let sampler = |filter| sampler_of(filter, wgpu::AddressMode::ClampToEdge);
         Pipelines {
             rect,
             quad,
@@ -2126,6 +2197,8 @@ impl Pipelines {
             sampled,
             nearest: sampler(wgpu::FilterMode::Nearest),
             linear: sampler(wgpu::FilterMode::Linear),
+            nearest_repeat: sampler_of(wgpu::FilterMode::Nearest, wgpu::AddressMode::Repeat),
+            linear_repeat: sampler_of(wgpu::FilterMode::Linear, wgpu::AddressMode::Repeat),
         }
     }
 }
@@ -2173,7 +2246,7 @@ impl RenderBackend for GpuBackend {
         self.frame += 1;
         self.layered = Layered::default();
         self.deferred.clear();
-        self.doubled.clear();
+        self.doubled = crate::doubled_keys(&list.items);
         self.passes.clear();
         self.records = Records::default();
         let frame = self.frame;
@@ -2445,6 +2518,76 @@ mod tests {
             ],
         };
         equivalent("images", &[list], 200, 120);
+    }
+
+    #[test]
+    fn patterns_match() {
+        let white = Rgba8::rgb(255, 255, 255);
+        let texels: Vec<[u8; 4]> = (0..24)
+            .map(|i| {
+                [
+                    (i * 10) as u8,
+                    200 - (i * 7) as u8,
+                    (i * 41 % 256) as u8,
+                    255,
+                ]
+            })
+            .collect();
+        let picture = crate::tests::picture(5, 6, 4, &texels);
+        let pattern = |area: [f32; 4], tile: [f32; 4], gap: [f32; 2], repeat: [bool; 2], sharp| {
+            DisplayItem::Pattern {
+                x: area[0],
+                y: area[1],
+                w: area[2],
+                h: area[3],
+                tile,
+                gap,
+                repeat,
+                image: picture.clone(),
+                sharp,
+            }
+        };
+        let list = DisplayList {
+            items: vec![
+                rect(0.0, 0.0, 200.0, 120.0, white),
+                pattern(
+                    [0.0, 0.0, 60.0, 50.0],
+                    [3.0, 2.0, 6.0, 4.0],
+                    [0.0; 2],
+                    [true; 2],
+                    true,
+                ),
+                pattern(
+                    [70.0, 0.0, 60.0, 50.0],
+                    [70.0, 0.0, 12.0, 8.0],
+                    [0.0; 2],
+                    [true; 2],
+                    false,
+                ),
+                pattern(
+                    [140.0, 0.0, 60.0, 50.0],
+                    [140.0, 5.0, 6.0, 4.0],
+                    [3.0, 0.0],
+                    [true, false],
+                    true,
+                ),
+                pattern(
+                    [0.0, 60.0, 90.0, 50.0],
+                    [10.0, 70.0, 18.0, 12.0],
+                    [0.0; 2],
+                    [false; 2],
+                    true,
+                ),
+                pattern(
+                    [100.0, 60.0, 90.0, 50.0],
+                    [100.0, 60.0, 6.0, 4.0],
+                    [0.0; 2],
+                    [false, true],
+                    true,
+                ),
+            ],
+        };
+        equivalent("patterns", &[list], 200, 120);
     }
 
     #[test]

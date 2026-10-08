@@ -32,7 +32,8 @@ use dom::{Document, Node, NodeData, NodeId};
 use layout::{Fragment, FragmentKind, MarkerShape, Replaced};
 use style::Styles;
 use style::computed::{
-    BOTTOM, BorderStyle, Color, Display, ImageOrientation, LEFT, ObjectFit, RIGHT, TOP,
+    Attachment, BOTTOM, BackgroundBox, BackgroundSize, BorderStyle, Color, Display, Image,
+    ImageOrientation, LEFT, LengthPercentage, ObjectFit, RIGHT, Repeat, TOP,
 };
 use style::transform::Matrix;
 
@@ -176,6 +177,20 @@ impl PartialEq for ImageRef {
     }
 }
 
+/// What paint asks of the images a style names (M23.3): the number and
+/// header of the image at a URL, as a computed `<image>` has it, once its
+/// header is read; `None` for one still coming, broken, or never asked
+/// for. The engine's image store answers; `()` knows none.
+pub trait Pictures {
+    fn picture(&self, url: &str) -> Option<(u64, images::Header)>;
+}
+
+impl Pictures for () {
+    fn picture(&self, _url: &str) -> Option<(u64, images::Header)> {
+        None
+    }
+}
+
 /// The colour of the icon of an image that cannot be shown.
 pub const ICON_COLOUR: Rgba8 = Rgba8::rgb(0x8c, 0x8c, 0x8c);
 /// The colour of the border around a box the icon is in, when the box
@@ -310,6 +325,24 @@ pub enum DisplayItem {
         h: f32,
         image: ImageRef,
         /// `image-rendering: pixelated` or `crisp-edges`.
+        sharp: bool,
+    },
+    /// Tile an image over the rectangle at `(x, y)` of size `w` by `h`
+    /// (M23.3): a tile at `tile`'s `(x, y)` of its size, the image
+    /// stretched over it, repeated along x every tile width plus
+    /// `gap[0]`, both ways, where `repeat[0]`, and along y likewise; each
+    /// pixel whose centre is in the rectangle and a tile taking the
+    /// image's colour there, as [`DisplayItem::Image`] does. One item
+    /// however many tiles: a background layer.
+    Pattern {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        tile: [f32; 4],
+        gap: [f32; 2],
+        repeat: [bool; 2],
+        image: ImageRef,
         sharp: bool,
     },
 }
@@ -590,21 +623,53 @@ pub fn paint_fragments_in(
     viewport: Viewport,
     offsets: &dyn ScrollOffsets,
 ) -> DisplayList {
+    paint_fragments_with(roots, viewport, offsets, &())
+}
+
+/// [`paint_fragments_in`] with the background images `pictures` knows
+/// (M23.3).
+pub fn paint_fragments_with(
+    roots: &[Fragment],
+    viewport: Viewport,
+    offsets: &dyn ScrollOffsets,
+    pictures: &dyn Pictures,
+) -> DisplayList {
     // CSS2 §14.2: the root element's background paints the canvas, the
     // whole viewport; when the root's is transparent, the body's — the
     // root's first box child, in an HTML document — does instead and is
     // not painted on the body itself. The canvas is white otherwise.
     let canvas = canvas_background(roots);
     let canvas_node = canvas.map(|f| f.node);
+    let white = Rgba8::rgb(0xff, 0xff, 0xff);
     let mut items = vec![DisplayItem::Rect {
         x: 0.0,
         y: 0.0,
         w: viewport.width,
         h: viewport.height,
-        color: canvas.map_or(Rgba8::rgb(0xff, 0xff, 0xff), |f| {
-            to_rgba8(f.style.background_color)
-        }),
+        color: canvas
+            .map(|f| to_rgba8(f.style.background_color))
+            .filter(|c| c.a > 0)
+            .unwrap_or(white),
     }];
+    // The viewport in the document's coordinates, which a fixed
+    // background is placed in (M23.3), and the part of the canvas the
+    // document's groups list, which the canvas's images cover.
+    let backdrop = Backdrop {
+        pictures,
+        offsets,
+        viewport: Rect {
+            x: 0.0,
+            y: viewport.scroll_y,
+            w: viewport.width,
+            h: viewport.height,
+        },
+    };
+    let canvas_area = Rect {
+        x: 0.0,
+        y: viewport.scroll_y - viewport.height,
+        w: viewport.width,
+        h: 3.0 * viewport.height,
+    };
     // The document's content comes in groups that scroll it (M19), the
     // items inside in document coordinates and the group's matrix the
     // scroll offset, and the content a viewport's height above and
@@ -613,7 +678,11 @@ pub fn paint_fragments_in(
     // outside them, in viewport coordinates.
     for step in paint_order_in(roots, viewport, offsets, viewport.height) {
         match step {
-            Step::Box { fragment, rect } => push_box(&mut items, fragment, rect, canvas_node),
+            Step::Box {
+                fragment,
+                rect,
+                cb_width,
+            } => push_box(&mut items, fragment, rect, cb_width, canvas_node, &backdrop),
             Step::Text {
                 fragment,
                 rect,
@@ -669,12 +738,38 @@ pub fn paint_fragments_in(
                 key,
                 layer,
                 ..
-            } => items.push(DisplayItem::PushGroup {
-                matrix,
-                opacity,
-                key,
-                layer,
-            }),
+            } => {
+                items.push(DisplayItem::PushGroup {
+                    matrix,
+                    opacity,
+                    key,
+                    layer,
+                });
+                // The canvas's images (CSS Backgrounds 3 section 2.11.2):
+                // under the whole document, which they scroll with, the
+                // root's box placing them.
+                if key == GroupKey::Document(0)
+                    && let (Some(canvas), Some(root)) = (canvas, roots.first())
+                {
+                    let root_rect = snapped(Rect {
+                        x: root.x,
+                        y: root.top(),
+                        w: root.w,
+                        h: root.h,
+                    });
+                    push_layers(
+                        &mut items,
+                        canvas,
+                        Placed {
+                            by: root,
+                            border: root_rect,
+                            cb_width: viewport.width,
+                            area: Some(canvas_area),
+                        },
+                        &backdrop,
+                    );
+                }
+            }
             Step::PopGroup => items.push(DisplayItem::PopGroup),
             Step::Scrollbar {
                 fragment,
@@ -712,7 +807,12 @@ fn canvas_background(roots: &[Fragment]) -> Option<&Fragment> {
         matches!(f.kind, FragmentKind::Box)
     }
     fn with_background(f: &Fragment) -> Option<&Fragment> {
-        (f.style.background_color.a > 0.0).then_some(f)
+        let images = f
+            .style
+            .background
+            .as_ref()
+            .is_some_and(|b| b.image.iter().any(Option::is_some));
+        (f.style.background_color.a > 0.0 || images).then_some(f)
     }
     let root = roots.first().filter(|f| is_box(f))?;
     with_background(root).or_else(|| {
@@ -1043,7 +1143,14 @@ fn snapped(rect: Rect) -> Rect {
 /// is the element whose background the canvas already took (CSS2
 /// §14.2), which is not painted on its own box again — but is on the
 /// boxes its `::before` and `::after` generate (M16).
-fn push_box(items: &mut Vec<DisplayItem>, f: &Fragment, rect: Rect, canvas_node: Option<NodeId>) {
+fn push_box(
+    items: &mut Vec<DisplayItem>,
+    f: &Fragment,
+    rect: Rect,
+    cb_width: f32,
+    canvas_node: Option<NodeId>,
+    backdrop: &Backdrop<'_>,
+) {
     let outer = snapped(rect);
     let inner = snapped(padding_box(f, rect));
     let widths = [
@@ -1053,17 +1160,245 @@ fn push_box(items: &mut Vec<DisplayItem>, f: &Fragment, rect: Rect, canvas_node:
         (inner.x - outer.x).max(0.0),
     ];
     let canvas_took = f.generated.is_none() && canvas_node == Some(f.node);
-    if f.style.background_color.a > 0.0 && !canvas_took {
-        items.push(DisplayItem::Rect {
-            x: outer.x,
-            y: outer.y,
-            w: outer.w,
-            h: outer.h,
-            color: to_rgba8(f.style.background_color),
-        });
+    if !canvas_took {
+        let placed = Placed {
+            by: f,
+            border: outer,
+            cb_width,
+            area: None,
+        };
+        // The colour under every layer, in the bottom one's clip box
+        // (CSS Backgrounds 3 section 2.7).
+        if f.style.background_color.a > 0.0 {
+            let r = placed.box_of(f.style.background().color_clip());
+            items.push(DisplayItem::Rect {
+                x: r.x,
+                y: r.y,
+                w: r.w,
+                h: r.h,
+                color: to_rgba8(f.style.background_color),
+            });
+        }
+        push_layers(items, f, placed, backdrop);
     }
     if f.style.border_style.iter().any(|s| s.paints()) {
         push_border(items, f, outer, widths);
+    }
+}
+
+/// What a box's background images are painted against (M23.3): the
+/// images, the viewport in the document's coordinates, which a `fixed`
+/// layer is placed in, and the scroll offsets, which a `local` one moves
+/// with.
+struct Backdrop<'p> {
+    pictures: &'p dyn Pictures,
+    offsets: &'p dyn ScrollOffsets,
+    viewport: Rect,
+}
+
+/// Where a background's layers go: the box `by` whose boxes place them,
+/// its border box `border`, its containing block's width, and the area
+/// they cover when it is not their clip box, the canvas's.
+struct Placed<'f> {
+    by: &'f Fragment,
+    border: Rect,
+    cb_width: f32,
+    area: Option<Rect>,
+}
+
+impl Placed<'_> {
+    /// The box `which` names, on whole pixels: the border box, the
+    /// padding box, or the content box, whose padding may be a
+    /// percentage of the containing block's width.
+    fn box_of(&self, which: BackgroundBox) -> Rect {
+        let padding = padding_box(self.by, self.border);
+        match which {
+            BackgroundBox::BorderBox => self.border,
+            BackgroundBox::PaddingBox => snapped(padding),
+            BackgroundBox::ContentBox => {
+                let p = self
+                    .by
+                    .style
+                    .padding
+                    .each_ref()
+                    .map(|v| v.resolve(self.cb_width));
+                snapped(Rect {
+                    x: padding.x + p[LEFT],
+                    y: padding.y + p[TOP],
+                    w: (padding.w - p[LEFT] - p[RIGHT]).max(0.0),
+                    h: (padding.h - p[TOP] - p[BOTTOM]).max(0.0),
+                })
+            }
+        }
+    }
+}
+
+/// Paints the image layers of `f`'s background (CSS Backgrounds 3 section
+/// 2, M23.3), the bottom one first: each image whose header is read, one
+/// [`DisplayItem::Pattern`], over its clip box, or the canvas's area;
+/// sized by `background-size` against its positioning area, its origin
+/// box, the viewport for `fixed`, a scroll container's content for
+/// `local`; placed in it by `background-position`; repeated, spaced or
+/// rounded by `background-repeat`. A layer whose image has no size, or
+/// is `none`, paints nothing.
+fn push_layers(
+    items: &mut Vec<DisplayItem>,
+    f: &Fragment,
+    placed: Placed<'_>,
+    backdrop: &Backdrop<'_>,
+) {
+    let Some(background) = &f.style.background else {
+        return;
+    };
+    let layers: Vec<_> = background.layers().collect();
+    for layer in layers.iter().rev() {
+        let Some(Image::Url { url, resolution }) = layer.image else {
+            continue;
+        };
+        let Some((id, header)) = backdrop.pictures.picture(url) else {
+            continue;
+        };
+        let natural = (
+            header.width as f32 / resolution,
+            header.height as f32 / resolution,
+        );
+        let area = placed.area.unwrap_or_else(|| placed.box_of(layer.clip));
+        let mut positioning = placed.box_of(layer.origin);
+        match layer.attachment {
+            Attachment::Fixed => positioning = backdrop.viewport,
+            // A scroll container's local layer is placed in its content,
+            // as tall as it scrolls, and moves with it.
+            Attachment::Local if placed.by.clips() => {
+                let padding = padding_box(placed.by, placed.border);
+                positioning.y -= backdrop.offsets.offset(placed.by.node);
+                positioning.h += (placed.by.scroll_height - padding.h).max(0.0);
+            }
+            Attachment::Local | Attachment::Scroll => {}
+        }
+        let (tile_w, tile_h) = tile_size(layer.size, natural, positioning, layer.repeat);
+        if !(tile_w > 0.0 && tile_h > 0.0 && area.w > 0.0 && area.h > 0.0) {
+            continue;
+        }
+        let (x, gap_x, repeat_x) = place(
+            layer.repeat[0],
+            &layer.position[0],
+            positioning.x,
+            positioning.w,
+            tile_w,
+        );
+        let (y, gap_y, repeat_y) = place(
+            layer.repeat[1],
+            &layer.position[1],
+            positioning.y,
+            positioning.h,
+            tile_h,
+        );
+        items.push(DisplayItem::Pattern {
+            x: area.x,
+            y: area.y,
+            w: area.w,
+            h: area.h,
+            tile: [x, y, tile_w, tile_h],
+            gap: [gap_x, gap_y],
+            repeat: [repeat_x, repeat_y],
+            image: ImageRef {
+                id,
+                frame: 0,
+                orientation: images::Orientation::Normal,
+                pixels: None,
+            },
+            sharp: f.style.image().image_rendering.is_sharp(),
+        });
+    }
+}
+
+/// A layer's tile size (CSS Backgrounds 3 sections 2.4 and 2.3): what
+/// `size` makes of the image's `natural` size in the positioning `area`,
+/// `auto` keeping its ratio; then, for `round`, as wide or tall as fits a
+/// whole number of times, the other side, where `auto`, keeping the
+/// ratio.
+pub fn tile_size(
+    size: &BackgroundSize,
+    natural: (f32, f32),
+    area: Rect,
+    repeat: [Repeat; 2],
+) -> (f32, f32) {
+    let (nw, nh) = natural;
+    let ratio = (nw > 0.0 && nh > 0.0).then(|| nw / nh);
+    let (w, h, auto) = match size {
+        BackgroundSize::Cover | BackgroundSize::Contain => {
+            if ratio.is_none() {
+                return (area.w, area.h);
+            }
+            let (sx, sy) = (area.w / nw, area.h / nh);
+            let scale = if *size == BackgroundSize::Cover {
+                sx.max(sy)
+            } else {
+                sx.min(sy)
+            };
+            (nw * scale, nh * scale, [false, false])
+        }
+        BackgroundSize::Sized(sw, sh) => {
+            let sw = sw.as_ref().map(|v| v.resolve(area.w));
+            let sh = sh.as_ref().map(|v| v.resolve(area.h));
+            let (w, h) = match (sw, sh) {
+                (Some(w), Some(h)) => (w, h),
+                (Some(w), None) => (w, ratio.map_or(nh, |r| w / r)),
+                (None, Some(h)) => (ratio.map_or(nw, |r| h * r), h),
+                (None, None) => (nw, nh),
+            };
+            (w, h, [sw.is_none(), sh.is_none()])
+        }
+    };
+    let fitted = |room: f32, tile: f32| {
+        if tile > 0.0 {
+            room / (room / tile).round().max(1.0)
+        } else {
+            tile
+        }
+    };
+    let round = [repeat[0] == Repeat::Round, repeat[1] == Repeat::Round];
+    let (mut fw, mut fh) = (w, h);
+    if round[0] {
+        fw = fitted(area.w, w);
+    }
+    if round[1] {
+        fh = fitted(area.h, h);
+    }
+    if round[0] && !round[1] && auto[1] && w > 0.0 {
+        fh = h * fw / w;
+    }
+    if round[1] && !round[0] && auto[0] && h > 0.0 {
+        fw = w * fh / h;
+    }
+    (fw, fh)
+}
+
+/// Where a layer's tiles go along one axis (sections 2.3 and 2.5): the
+/// first tile's start, the gap between tiles and whether they repeat.
+/// `position` places a tile in the positioning area, `start` and `len`
+/// long, a percentage of the room beside it; `space` puts as many as fit
+/// whole from edge to edge with even gaps, or one, placed, where two do
+/// not fit.
+pub fn place(
+    repeat: Repeat,
+    position: &LengthPercentage,
+    start: f32,
+    len: f32,
+    tile: f32,
+) -> (f32, f32, bool) {
+    let placed = start + position.resolve(len - tile);
+    match repeat {
+        Repeat::Space => {
+            let n = (len / tile).floor();
+            if n >= 2.0 {
+                (start, (len - n * tile) / (n - 1.0), true)
+            } else {
+                (placed, 0.0, false)
+            }
+        }
+        Repeat::NoRepeat => (placed, 0.0, false),
+        Repeat::Repeat | Repeat::Round => (placed, 0.0, true),
     }
 }
 
@@ -1683,6 +2018,252 @@ mod fragment_tests {
             }
         ));
         assert!(matches!(sized[1], DisplayItem::Border { w: 16.0, .. }));
+    }
+
+    /// Every image 20 by 10, numbered by its URL's length.
+    struct Twenty;
+    impl Pictures for Twenty {
+        fn picture(&self, url: &str) -> Option<(u64, images::Header)> {
+            Some((
+                url.len() as u64,
+                images::Header {
+                    format: images::Format::Png,
+                    width: 20,
+                    height: 10,
+                    orientation: images::Orientation::Normal,
+                },
+            ))
+        }
+    }
+
+    /// The patterns of a page whose `div`, 100 by 50 inside a 10px
+    /// border and 5px padding at (0, 0), is styled by `css`, scrolled to
+    /// `scroll_y`, its images [`Twenty`]'s.
+    fn patterns(css: &str, scroll_y: f32) -> Vec<DisplayItem> {
+        let fonts = test_fonts();
+        let root = Element::new("html").push(Element::new("body").push(Element::new("div")));
+        let doc = dom::Node::document(vec![root.into()]);
+        let sheet = css::parse_stylesheet(&format!(
+            "html, body {{ margin: 0 }} div {{ width: 100px; height: 50px; padding: 5px;
+             border: 10px solid transparent }} {css}"
+        ))
+        .expect("test css is valid");
+        let layout = laid_out(&doc, &[sheet], VIEWPORT, &fonts);
+        let viewport = Viewport {
+            width: VIEWPORT,
+            height: 600.0,
+            scroll_y,
+        };
+        paint_fragments_with(&layout.roots, viewport, &(), &Twenty)
+            .items
+            .into_iter()
+            .filter(|i| matches!(i, DisplayItem::Pattern { .. }))
+            .collect()
+    }
+
+    /// A pattern's area, tile, gap and repeat.
+    type Laid = ([f32; 4], [f32; 4], [f32; 2], [bool; 2]);
+
+    fn laid(item: &DisplayItem) -> Laid {
+        match item {
+            DisplayItem::Pattern {
+                x,
+                y,
+                w,
+                h,
+                tile,
+                gap,
+                repeat,
+                ..
+            } => ([*x, *y, *w, *h], *tile, *gap, *repeat),
+            other => panic!("not a pattern: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_background_image_tiles_its_clip_box_from_its_origin_box() {
+        let border = [0.0, 0.0, 130.0, 80.0];
+        // Repeated over the border box from the padding box's corner.
+        let one = patterns("div { background-image: url(a.png) }", 0.0);
+        assert_eq!(
+            laid(&one[0]),
+            (border, [10.0, 10.0, 20.0, 10.0], [0.0; 2], [true; 2])
+        );
+        // Placed alone at the padding box's centre.
+        let one = patterns("div { background: url(a.png) no-repeat center }", 0.0);
+        assert_eq!(laid(&one[0]).1, [10.0 + 45.0, 10.0 + 25.0, 20.0, 10.0]);
+        assert_eq!(laid(&one[0]).3, [false; 2]);
+        // From the far edges, in the content box.
+        let one = patterns(
+            "div { background: url(a.png) no-repeat right 4px bottom 2px; background-clip: content-box;
+             background-origin: content-box }",
+            0.0,
+        );
+        assert_eq!(laid(&one[0]).0, [15.0, 15.0, 100.0, 50.0]);
+        assert_eq!(
+            laid(&one[0]).1,
+            [
+                15.0 + 100.0 - 4.0 - 20.0,
+                15.0 + 50.0 - 2.0 - 10.0,
+                20.0,
+                10.0
+            ]
+        );
+        // Sized: one side keeps the ratio, cover and contain fill the
+        // positioning area.
+        let size = |css: &str| {
+            laid(
+                &patterns(
+                    &format!("div {{ background: url(a.png); background-size: {css} }}"),
+                    0.0,
+                )[0],
+            )
+            .1
+        };
+        assert_eq!(size("40px")[2..], [40.0, 20.0]);
+        assert_eq!(size("auto 30px")[2..], [60.0, 30.0]);
+        assert_eq!(size("50% 50%")[2..], [55.0, 30.0]);
+        assert_eq!(size("cover")[2..], [120.0, 60.0]);
+        assert_eq!(size("contain")[2..], [110.0, 55.0]);
+        // Rounded to a whole number of tiles, the other side keeping the
+        // ratio; spaced from edge to edge.
+        let round = laid(&patterns("div { background: url(a.png) round }", 0.0)[0]);
+        assert_eq!(round.1[2..], [110.0 / 6.0, 60.0 / 6.0]);
+        let space = laid(&patterns("div { background: url(a.png) space }", 0.0)[0]);
+        assert_eq!(space.1[..2], [10.0, 10.0]);
+        assert_eq!(
+            space.2,
+            [(110.0 - 5.0 * 20.0) / 4.0, (60.0 - 6.0 * 10.0) / 5.0]
+        );
+        // Layers, the last at the bottom, painted first.
+        let two = patterns("div { background: url(a.png), url(bb.png) no-repeat }", 0.0);
+        assert_eq!(two.len(), 2);
+        assert!(matches!(&two[0], DisplayItem::Pattern { image, .. } if image.id == 6));
+        assert!(matches!(&two[1], DisplayItem::Pattern { image, .. } if image.id == 5));
+        // `fixed` is placed in the viewport, where the document is
+        // scrolled to.
+        let fixed = patterns(
+            "div { background: url(a.png) no-repeat fixed right top }",
+            30.0,
+        );
+        assert_eq!(laid(&fixed[0]).1, [VIEWPORT - 20.0, 30.0, 20.0, 10.0]);
+        // A percentage padding is of the containing block's width.
+        let one = patterns(
+            "div { padding: 1%; background: url(a.png) no-repeat content-box }",
+            0.0,
+        );
+        assert_eq!(laid(&one[0]).1[..2], [10.0 + 8.0, 10.0 + 8.0]);
+        // No image, or none of a size: nothing.
+        assert!(patterns("div { background-image: none }", 0.0).is_empty());
+        assert!(patterns("div { background: url(a.png); background-size: 0 }", 0.0).is_empty());
+    }
+
+    #[test]
+    fn the_colour_is_painted_in_the_bottom_layers_clip_box() {
+        let fonts = test_fonts();
+        let root = Element::new("html").push(Element::new("body").push(Element::new("div")));
+        let doc = dom::Node::document(vec![root.into()]);
+        let sheet = css::parse_stylesheet(
+            "html, body { margin: 0 } div { width: 100px; height: 50px; padding: 5px;
+             border: 10px solid transparent;
+             background: url(a.png) content-box, url(bb.png) padding-box red }",
+        )
+        .expect("test css is valid");
+        let layout = laid_out(&doc, &[sheet], VIEWPORT, &fonts);
+        let list =
+            paint_fragments_with(&layout.roots, Viewport::new(VIEWPORT, 600.0), &(), &Twenty);
+        let red = list
+            .items
+            .iter()
+            .find_map(|i| match i {
+                DisplayItem::Rect { x, y, w, h, color } if *color == Rgba8::rgb(255, 0, 0) => {
+                    Some([*x, *y, *w, *h])
+                }
+                _ => None,
+            })
+            .expect("the colour");
+        assert_eq!(red, [10.0, 10.0, 110.0, 60.0]);
+    }
+
+    #[test]
+    fn the_root_backgrounds_images_cover_the_canvas_under_the_document() {
+        let fonts = test_fonts();
+        let root = Element::new("html").push(Element::new("body").push(Element::new("p")));
+        let doc = dom::Node::document(vec![root.into()]);
+        let sheet = css::parse_stylesheet(
+            "html { margin: 0; border: 7px solid transparent } body { margin: 0; background: url(a.png) }",
+        )
+        .expect("test css is valid");
+        let layout = laid_out(&doc, &[sheet], VIEWPORT, &fonts);
+        let list =
+            paint_fragments_with(&layout.roots, Viewport::new(VIEWPORT, 600.0), &(), &Twenty);
+        let group = list
+            .items
+            .iter()
+            .position(|i| {
+                matches!(
+                    i,
+                    DisplayItem::PushGroup {
+                        key: GroupKey::Document(0),
+                        ..
+                    }
+                )
+            })
+            .expect("the document's group");
+        // The body's image, propagated, first in the group, over the
+        // canvas, placed by the root's padding box.
+        let (area, tile, _, repeat) = laid(&list.items[group + 1]);
+        assert_eq!(area, [0.0, -600.0, VIEWPORT, 1800.0]);
+        assert_eq!(tile[..2], [7.0, 7.0]);
+        assert_eq!(repeat, [true; 2]);
+        let patterns = list
+            .items
+            .iter()
+            .filter(|i| matches!(i, DisplayItem::Pattern { .. }))
+            .count();
+        assert_eq!(patterns, 1, "the body does not paint it again");
+    }
+
+    #[test]
+    fn tiles_are_sized_and_placed_as_backgrounds_3_says() {
+        let area = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 40.0,
+        };
+        let auto = BackgroundSize::Sized(None, None);
+        let no = [Repeat::NoRepeat; 2];
+        assert_eq!(tile_size(&auto, (20.0, 10.0), area, no), (20.0, 10.0));
+        assert_eq!(
+            tile_size(&BackgroundSize::Cover, (0.0, 0.0), area, no),
+            (100.0, 40.0)
+        );
+        assert_eq!(
+            tile_size(&auto, (30.0, 10.0), area, [Repeat::Round, Repeat::NoRepeat]),
+            (100.0 / 3.0, 100.0 / 9.0)
+        );
+        assert_eq!(
+            tile_size(&auto, (30.0, 10.0), area, [Repeat::Round; 2]),
+            (100.0 / 3.0, 10.0)
+        );
+        let p = LengthPercentage::Percent;
+        assert_eq!(
+            place(Repeat::NoRepeat, &p(50.0), 0.0, 100.0, 20.0),
+            (40.0, 0.0, false)
+        );
+        assert_eq!(
+            place(Repeat::Repeat, &p(100.0), 10.0, 100.0, 20.0),
+            (90.0, 0.0, true)
+        );
+        assert_eq!(
+            place(Repeat::Space, &p(100.0), 0.0, 100.0, 30.0),
+            (0.0, 5.0, true)
+        );
+        assert_eq!(
+            place(Repeat::Space, &p(100.0), 0.0, 100.0, 60.0),
+            (40.0, 0.0, false)
+        );
     }
 
     #[test]

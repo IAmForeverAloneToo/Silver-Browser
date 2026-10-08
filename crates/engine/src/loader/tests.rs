@@ -1248,6 +1248,71 @@ fn an_imgs_new_src_or_alt_is_laid_out_again() {
 }
 
 #[test]
+fn a_background_image_is_fetched_against_its_sheet_waited_for_and_drawn() {
+    use crate::image_store::{ImageState, Pixels};
+    let server = serve(|path| {
+        match path {
+        "/page.html" => Some(html(
+            "<link rel=stylesheet href=css/s.css><body style='margin: 0'>\
+             <div style='width: 40px; height: 30px'></div>\
+             <p style='height: 4px; background: url(b.png)'></p></body>",
+        )),
+        "/css/s.css" => Some(Reply::ok(
+            "text/css",
+            b"div { background: url(a.png) no-repeat } p::before { content: ''; background: url(c.png) }",
+        )),
+        "/css/a.png" => Some(Reply::ok("image/png", &png_bytes(20, 10))),
+        "/b.png" | "/css/c.png" | "/d.png" => Some(Reply::ok("image/png", &png_bytes(4, 4))),
+        _ => None,
+    }
+    });
+    let (a, b, c) = (
+        server.url("/css/a.png"),
+        server.url("/b.png"),
+        server.url("/css/c.png"),
+    );
+    let mut tab = Tab::new();
+    load_all(&mut tab, server.url("/page.html"));
+    // Loaded once all are read, a `::before`'s too: no frame needed to
+    // find them.
+    for url in [&a, &b, &c] {
+        assert!(
+            matches!(image_state(&tab.engine, url), Some(ImageState::Ready(_))),
+            "{url}"
+        );
+    }
+    let at = |frame: &[u8], x: usize, y: usize| {
+        let i = (y * 100 + x) * 4;
+        [frame[i], frame[i + 1], frame[i + 2], frame[i + 3]]
+    };
+    let first = tab.engine.frame(100, 100);
+    assert_eq!(at(&first, 5, 5), [255; 4], "nothing until decoded");
+    tab.wait_until(|engine| {
+        matches!(
+            image_state(engine, &a),
+            Some(ImageState::Ready(ready)) if matches!(ready.pixels, Pixels::Decoded(_))
+        )
+    });
+    let second = tab.engine.frame(100, 100);
+    assert_eq!(at(&second, 5, 5), [212, 212, 212, 255]);
+    assert_eq!(at(&second, 19, 9), [212, 212, 212, 255]);
+    assert_eq!(at(&second, 25, 5), [255; 4], "not repeated");
+    assert_eq!(at(&second, 5, 15), [255; 4]);
+    // One a style names later is fetched when the styles are computed.
+    let d = server.url("/d.png");
+    let document = &tab.engine.shown.document;
+    let div = document
+        .subtree(document.root())
+        .find(|&n| document.tag(n) == Some("div"))
+        .expect("the div");
+    tab.engine
+        .mutate(|document| document.set_attribute(div, "style", "background: url(d.png)"))
+        .unwrap();
+    tab.engine.frame(100, 100);
+    tab.wait_until(|engine| matches!(image_state(engine, &d), Some(ImageState::Ready(_))));
+}
+
+#[test]
 fn an_images_pixels_are_decoded_when_first_asked_for() {
     use crate::image_store::{ImageState, Pixels};
     let server = serve(|path| match path {
@@ -1286,16 +1351,21 @@ fn a_page_left_while_an_image_decodes_is_not_kept() {
     };
     let a = server.url("/a.html");
     let mut tab = Tab::new();
-    // Left with its image read: kept, and shown again from the cache.
+    // Left with its image read: kept, and shown again from the cache;
+    // `b`, left with nothing in flight, kept too.
     load_all(&mut tab, a.clone());
     load_all(&mut tab, server.url("/b.html"));
+    tab.settle();
     tab.engine.go_back();
     tab.wait_until(|engine| engine.url() == Some(&a));
     assert_eq!(pages(&server), 1);
-    // Left with its pixels being decoded: fetched again.
+    // Left with its pixels being decoded, for the page the cache kept,
+    // which is shown at once, before any result is taken: not kept, and
+    // fetched again.
     let id = image_id(&tab.engine, &server.url("/a.png"));
     assert!(tab.engine.image_pixels(id).is_none());
-    load_all(&mut tab, server.url("/b.html"));
+    tab.engine.go_forward();
+    assert_eq!(tab.engine.url(), Some(&server.url("/b.html")));
     tab.engine.go_back();
     tab.wait_until(|engine| engine.url() == Some(&a) && engine.load_state() == &LoadState::Loaded);
     assert_eq!(pages(&server), 2);

@@ -153,6 +153,11 @@ pub struct CustomProperties {
     /// M22): an animation's, or one that substituted such a value,
     /// sorted; `None` when there is none, as nearly always.
     tainted: Option<Arc<[Arc<str>]>>,
+    /// The names whose values read an attribute (Values 5's attr()
+    /// taint, M23.3): one whose declaration has an `attr()`, or a `var()`
+    /// of such a value, or the parent's inherited; sorted, `None` when
+    /// there is none. An attribute's value never becomes a URL.
+    attr_tainted: Option<Arc<[Arc<str>]>>,
 }
 
 /// The winning custom property declarations of an element, by their
@@ -171,6 +176,7 @@ impl Default for CustomProperties {
             len: 0,
             declared: None,
             tainted: None,
+            attr_tainted: None,
         }
     }
 }
@@ -223,20 +229,20 @@ impl CustomProperties {
 
     /// Marks the value of `name` animation-tainted, or not.
     fn set_tainted(&mut self, name: &str, tainted: bool) {
-        let names = self.tainted.as_deref().unwrap_or_default();
-        match (names.binary_search_by(|n| (**n).cmp(name)), tainted) {
-            (Ok(index), false) => {
-                let mut names = names.to_vec();
-                names.remove(index);
-                self.tainted = (!names.is_empty()).then(|| names.into());
-            }
-            (Err(index), true) => {
-                let mut names = names.to_vec();
-                names.insert(index, Arc::from(name));
-                self.tainted = Some(names.into());
-            }
-            _ => {}
-        }
+        mark(&mut self.tainted, name, tainted);
+    }
+
+    /// Whether the value of `name` read an attribute (M23.3), by its own
+    /// `attr()` or another custom property's.
+    pub(crate) fn is_attr_tainted(&self, name: &str) -> bool {
+        self.attr_tainted
+            .as_deref()
+            .is_some_and(|names| names.binary_search_by(|n| (**n).cmp(name)).is_ok())
+    }
+
+    /// Marks the value of `name` as having read an attribute, or not.
+    fn set_attr_tainted(&mut self, name: &str, tainted: bool) {
+        mark(&mut self.attr_tainted, name, tainted);
     }
 
     /// Gives `name` the value `value`.
@@ -307,6 +313,7 @@ impl PartialEq for CustomProperties {
         };
         self.len == other.len
             && self.tainted == other.tainted
+            && self.attr_tainted == other.attr_tainted
             && self
                 .branches
                 .iter()
@@ -358,6 +365,98 @@ fn reads_attributes(tokens: &[Token]) -> bool {
     tokens
         .iter()
         .any(|t| substitution_function(t) == Some(Function::Attr))
+}
+
+/// Puts `name` in the sorted set `names`, or takes it out.
+fn mark(names: &mut Option<Arc<[Arc<str>]>>, name: &str, on: bool) {
+    let list = names.as_deref().unwrap_or_default();
+    match (list.binary_search_by(|n| (**n).cmp(name)), on) {
+        (Ok(index), false) => {
+            let mut list = list.to_vec();
+            list.remove(index);
+            *names = (!list.is_empty()).then(|| list.into());
+        }
+        (Err(index), true) => {
+            let mut list = list.to_vec();
+            list.insert(index, Arc::from(name));
+            *names = Some(list.into());
+        }
+        _ => {}
+    }
+}
+
+/// The names of the custom properties a `var()` in `tokens` reads, its
+/// fallback's among them.
+fn var_names(tokens: &[Token]) -> impl Iterator<Item = &str> {
+    tokens
+        .iter()
+        .enumerate()
+        .filter_map(|(i, token)| match token {
+            Token::Function(name) if name.eq_ignore_ascii_case("var") => tokens[i + 1..]
+                .iter()
+                .find(|t| !matches!(t, Token::Whitespace))
+                .and_then(|t| match t {
+                    Token::Ident(name) => Some(name.as_str()),
+                    _ => None,
+                }),
+            _ => None,
+        })
+}
+
+/// Whether `value`, a declaration's of a property other than a custom
+/// one, would make an attribute's value a URL (Values 5's attr() taint,
+/// M23.3): an `attr()`, or a `var()` of a custom property in `custom`
+/// that read one, inside an `image-set()`, whose strings are URLs; or a
+/// `var()` of such a property whose value holds a URL. An `attr()`'s
+/// own value never parses to a URL: the resolver fails one that does.
+pub(crate) fn url_from_attribute(value: &[Token], custom: Option<&Arc<CustomProperties>>) -> bool {
+    let tainted = |name: &str| custom.is_some_and(|map| map.is_attr_tainted(name));
+    if var_names(value).any(|name| {
+        tainted(name)
+            && custom
+                .and_then(|map| map.get(name))
+                .is_some_and(|v| carries_url(v))
+    }) {
+        return true;
+    }
+    // How deep the walk is in an `image-set()`, counting the blocks
+    // inside it: anything an attribute gives there is a URL's.
+    let mut depth = 0usize;
+    for (i, token) in value.iter().enumerate() {
+        match token {
+            Token::Function(name) if depth > 0 => {
+                let read = name.eq_ignore_ascii_case("attr")
+                    || (name.eq_ignore_ascii_case("var")
+                        && var_names(&value[i..]).next().is_some_and(tainted));
+                if read {
+                    return true;
+                }
+                depth += 1;
+            }
+            Token::Function(name)
+                if name.eq_ignore_ascii_case("image-set")
+                    || name.eq_ignore_ascii_case("-webkit-image-set") =>
+            {
+                depth = 1
+            }
+            Token::OpenParen | Token::OpenSquare | Token::OpenCurly if depth > 0 => depth += 1,
+            Token::CloseParen | Token::CloseSquare | Token::CloseCurly if depth > 0 => depth -= 1,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Whether `tokens` hold a URL: a `url()` or a function whose strings
+/// are URLs (M23.3).
+pub(crate) fn carries_url(tokens: &[Token]) -> bool {
+    tokens.iter().any(|token| match token {
+        Token::Url { .. } => true,
+        Token::Function(name) => ["url", "src", "image", "image-set", "-webkit-image-set"]
+            .iter()
+            .any(|f| name.eq_ignore_ascii_case(f)),
+        _ => false,
+    })
 }
 
 /// The closer of the block `token` opens, a function or a `(`, `[` or
@@ -597,8 +696,43 @@ impl Substitutions {
             Some(parent) => CustomProperties::clone(parent),
             None => CustomProperties::default(),
         };
-        for (((declaration, _), state), &tainted) in
-            winners.iter().zip(&resolver.states).zip(&resolver.taints)
+        // Which values read an attribute (M23.3): those whose declaration
+        // has an `attr()`, those inherited from one that did, and, to a
+        // fixed point, those with a `var()` of one that did.
+        let mut attr: Vec<bool> = winners
+            .iter()
+            .map(|(declaration, kind)| match kind {
+                Kind::Keyword(CssWide::Inherit | CssWide::Unset) => {
+                    inherited.is_some_and(|m| m.is_attr_tainted(declaration.name))
+                }
+                Kind::Substituted => reads_attributes(declaration.value),
+                Kind::Keyword(CssWide::Initial) | Kind::Literal => false,
+            })
+            .collect();
+        loop {
+            let mut grew = false;
+            for (index, (declaration, kind)) in winners.iter().enumerate() {
+                if attr[index] || !matches!(kind, Kind::Substituted) {
+                    continue;
+                }
+                let reads = var_names(declaration.value).any(|name| match places.get(name) {
+                    Some(&other) => attr[other],
+                    None => inherited.is_some_and(|m| m.is_attr_tainted(name)),
+                });
+                if reads {
+                    attr[index] = true;
+                    grew = true;
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+        for ((((declaration, _), state), &tainted), &reads) in winners
+            .iter()
+            .zip(&resolver.states)
+            .zip(&resolver.taints)
+            .zip(&attr)
         {
             let State::Done(value) = state else {
                 unreachable!("every property is computed")
@@ -613,6 +747,7 @@ impl Substitutions {
                 None => map.remove(declaration.name),
             }
             map.set_tainted(declaration.name, tainted && value.is_some());
+            map.set_attr_tainted(declaration.name, reads && value.is_some());
         }
         map.declared = fingerprint;
         (!map.is_empty()).then(|| Arc::new(map))

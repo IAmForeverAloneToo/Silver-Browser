@@ -6,6 +6,7 @@
 //! blocks.
 
 use css::{AtRule, Block, Rule, Stylesheet, Token};
+use net::Url;
 use style::{Media, is_layer_name, parse_media_query_list, supports_condition};
 
 /// An `@import` rule at the start of a sheet: its URL as written, and
@@ -21,6 +22,81 @@ pub(crate) struct Import {
     supports: Option<Vec<Token>>,
     /// The media query list; empty when there is none.
     media: Vec<Token>,
+}
+
+/// Makes the URLs in the declarations of `rules`, a sheet fetched from
+/// `base`, absolute against it (M23.3, `docs/design/images.md`): each
+/// `url()`, and each string of an `image-set()`, which is a URL there;
+/// in nested rules and custom properties' values too, a URL in one being
+/// its sheet's (Values 4 section 4.5.4: parsed as UTF-8). One that does
+/// not parse becomes empty, which shows nothing. What the style crate
+/// then gets is absolute, and the engine resolves what is not, a
+/// `style` attribute's or element's, against the document's base.
+pub(crate) fn absolute_urls(rules: &mut [Rule], base: &Url) {
+    for rule in rules {
+        match rule {
+            Rule::Qualified(rule) => {
+                for declaration in &mut rule.declarations {
+                    absolute_in(&mut declaration.value, base);
+                }
+            }
+            Rule::At(AtRule {
+                block: Some(Block::Declarations(declarations)),
+                ..
+            }) => {
+                for declaration in declarations {
+                    absolute_in(&mut declaration.value, base);
+                }
+            }
+            Rule::At(AtRule {
+                block: Some(Block::Rules(rules)),
+                ..
+            }) => absolute_urls(rules, base),
+            Rule::At(_) => {}
+        }
+    }
+}
+
+/// [`absolute_urls`] for one value's tokens.
+fn absolute_in(tokens: &mut [Token], base: &Url) {
+    // An empty URL stays empty: it names nothing (Values 4 section 4.5.1).
+    let absolute = |value: &str| {
+        if value.is_empty() {
+            return String::new();
+        }
+        base.join(value)
+            .map_or_else(|_| String::new(), |url| url.as_str().to_owned())
+    };
+    // How deep the value is in `image-set()`s, and in other blocks inside
+    // the innermost: a string right inside one is a URL.
+    let mut sets: Vec<usize> = Vec::new();
+    for token in tokens {
+        match token {
+            Token::Url { value, bad: false } => *value = absolute(value),
+            Token::String { value, bad: false } if sets.last() == Some(&0) => {
+                *value = absolute(value)
+            }
+            Token::Function(name)
+                if name.eq_ignore_ascii_case("image-set")
+                    || name.eq_ignore_ascii_case("-webkit-image-set") =>
+            {
+                sets.push(0)
+            }
+            Token::Function(_) | Token::OpenParen | Token::OpenSquare | Token::OpenCurly => {
+                if let Some(depth) = sets.last_mut() {
+                    *depth += 1;
+                }
+            }
+            Token::CloseParen | Token::CloseSquare | Token::CloseCurly => match sets.last_mut() {
+                Some(0) => {
+                    sets.pop();
+                }
+                Some(depth) => *depth -= 1,
+                None => {}
+            },
+            _ => {}
+        }
+    }
 }
 
 /// The `@import` rules at the start of `sheet`, in order. Cascade 5
@@ -223,6 +299,50 @@ fn import_url(prelude: &[Token]) -> Option<(String, &[Token])> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_fetched_sheets_urls_are_made_absolute_against_it() {
+        let base = Url::parse("http://a.test/css/s.css").unwrap();
+        let mut sheet = css::parse_stylesheet(
+            "p { background: url(i.png), image-set(\"j.png\" 2x type(\"image/png\"), url(k.png));              content: \"x.png\"; --v: url(../v.png); list-style-image: url('') }
+             @media screen { q { background-image: url(/m.png) } }",
+        )
+        .unwrap();
+        absolute_urls(&mut sheet.rules, &base);
+        let strings = |rule: &Rule| -> Vec<String> {
+            let Rule::Qualified(rule) = rule else {
+                panic!("a style rule")
+            };
+            rule.declarations
+                .iter()
+                .flat_map(|d| d.value.iter())
+                .filter_map(|t| match t {
+                    Token::Url { value, .. } | Token::String { value, .. } => Some(value.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(
+            strings(&sheet.rules[0]),
+            [
+                "http://a.test/css/i.png",
+                "http://a.test/css/j.png",
+                "image/png",
+                "http://a.test/css/k.png",
+                "x.png",
+                "http://a.test/v.png",
+                "",
+            ]
+        );
+        let Rule::At(AtRule {
+            block: Some(Block::Rules(inner)),
+            ..
+        }) = &sheet.rules[1]
+        else {
+            panic!("a block of rules")
+        };
+        assert_eq!(strings(&inner[0]), ["http://a.test/m.png"]);
+    }
 
     fn imports_of(source: &str) -> Vec<Import> {
         imports(&css::parse_stylesheet(source).expect("never fails"))

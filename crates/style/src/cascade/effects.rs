@@ -375,6 +375,41 @@ pub(super) fn position(
     }
 }
 
+/// A `<bg-position>` (CSS Backgrounds 3 section 2.4, M23.3): a
+/// `<position>`, or its three-value form, an edge keyword with an offset
+/// for one axis and a keyword for the other, in either order.
+pub(super) fn background_position(
+    components: &[&[Token]],
+    bases: &LengthBases<'_>,
+) -> Option<(LengthPercentage, LengthPercentage)> {
+    if components.len() != 3 {
+        return position(components, bases, true);
+    }
+    let places: Vec<Place> = components
+        .iter()
+        .map(|c| place(c, bases))
+        .collect::<Option<_>>()?;
+    let edge_x = |p: &Place| matches!(p, Place::Left | Place::Right);
+    let edge_y = |p: &Place| matches!(p, Place::Top | Place::Bottom);
+    let keyword_x = |p: &Place| edge_x(p) || matches!(p, Place::Center);
+    let keyword_y = |p: &Place| edge_y(p) || matches!(p, Place::Center);
+    match places.as_slice() {
+        [a, Place::Offset(d), b] if edge_x(a) && keyword_y(b) => {
+            Some((a.offset_from_edge(d), b.offset()))
+        }
+        [a, Place::Offset(d), b] if edge_y(a) && keyword_x(b) => {
+            Some((b.offset(), a.offset_from_edge(d)))
+        }
+        [a, b, Place::Offset(d)] if keyword_x(a) && edge_y(b) => {
+            Some((a.offset(), b.offset_from_edge(d)))
+        }
+        [a, b, Place::Offset(d)] if keyword_y(a) && edge_x(b) => {
+            Some((b.offset_from_edge(d), a.offset()))
+        }
+        _ => None,
+    }
+}
+
 /// The four-value form of `<position>`: `[ [ left | right ]
 /// <length-percentage> ] && [ [ top | bottom ] <length-percentage> ]`.
 fn position_with_offsets(places: &[Place]) -> Option<(LengthPercentage, LengthPercentage)> {

@@ -389,8 +389,12 @@ impl Page {
         if let Some(location) = &location {
             chain.push(location.without_fragment().to_owned());
         }
+        let mut rules = css::parse_stylesheet(&text).unwrap_or_default();
+        if let Some(location) = &location {
+            rules::absolute_urls(&mut rules.rules, location);
+        }
         let mut sheet = Sheet {
-            rules: css::parse_stylesheet(&text).unwrap_or_default(),
+            rules,
             location,
             encoding,
             imports: Vec::new(),

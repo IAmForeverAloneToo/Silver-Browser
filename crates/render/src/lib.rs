@@ -982,6 +982,25 @@ pub struct SoftwareBackend {
     turned: Turned,
 }
 
+/// The layer keys two or more groups of `items` give: none of those
+/// groups is composited from a layer, which holds one.
+pub(crate) fn doubled_keys(items: &[DisplayItem]) -> HashSet<GroupKey> {
+    let mut seen = HashSet::new();
+    let mut doubled = HashSet::new();
+    for item in items {
+        if let DisplayItem::PushGroup {
+            key,
+            layer: Some(_),
+            ..
+        } = item
+            && !seen.insert(*key)
+        {
+            doubled.insert(*key);
+        }
+    }
+    doubled
+}
+
 /// The most images turned for `image-orientation: none` kept at once:
 /// past it they are all turned again as they are drawn.
 const MAX_TURNED: usize = 16;
@@ -1023,14 +1042,15 @@ impl Turned {
 
 /// Fills the pixels of `pixmap` whose centres are in `r` with `source`
 /// stretched over `dest` (M23.2): blended between texel centres, or the
-/// nearest texel where `sharp`, the edge texels standing beyond the
-/// edges.
+/// nearest texel where `sharp`; past `dest`, the image again where it
+/// `repeat`s (M23.3), its edge texels otherwise.
 fn draw_image(
     pixmap: &mut tiny_skia::Pixmap,
     source: tiny_skia::PixmapRef<'_>,
     dest: Clip,
     r: Clip,
     sharp: bool,
+    repeat: bool,
 ) {
     // The pixels whose centres are in `r`, as whole pixels: tiny-skia
     // rounds a fractional edge its own way, which a part of the frame
@@ -1063,7 +1083,11 @@ fn draw_image(
     let paint = tiny_skia::Paint {
         shader: tiny_skia::Pattern::new(
             source,
-            tiny_skia::SpreadMode::Pad,
+            if repeat {
+                tiny_skia::SpreadMode::Repeat
+            } else {
+                tiny_skia::SpreadMode::Pad
+            },
             quality,
             1.0,
             transform,
@@ -1072,6 +1096,111 @@ fn draw_image(
         ..tiny_skia::Paint::default()
     };
     pixmap.fill_rect(rect, &paint, tiny_skia::Transform::identity(), None);
+}
+
+/// The most tiles a pattern with gaps between them is drawn as one by
+/// one: past it, the gaps are left out and the tiles drawn as one fill.
+const MAX_SPACED_TILES: i64 = 4096;
+
+/// One fill of a [`DisplayItem::Pattern`] in the raster (M23.3): the
+/// tile the image is stretched over, the part of the raster filled, and
+/// whether the image repeats past the tile there.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TileFill {
+    pub(crate) tile: Clip,
+    pub(crate) fill: Clip,
+    pub(crate) repeat: bool,
+}
+
+/// The fills a pattern over `area` takes, its tile `tile`, `gap` and
+/// `repeat` as the item has them, in the raster's coordinates through
+/// the scale and translation `(sx, sy, tx, ty)`, inside `clip`: one
+/// that repeats the image over the area, cut to the tile's column or
+/// row along an axis that does not repeat; or, where tiles have gaps
+/// between them, one a tile, up to [`MAX_SPACED_TILES`].
+pub(crate) fn pattern_fills(
+    area: [f32; 4],
+    tile: [f32; 4],
+    gap: [f32; 2],
+    repeat: [bool; 2],
+    clip: Clip,
+    (sx, sy, tx, ty): (f32, f32, f32, f32),
+) -> Vec<TileFill> {
+    let area = Clip::new(
+        area[0] * sx + tx,
+        area[1] * sy + ty,
+        area[2] * sx,
+        area[3] * sy,
+    )
+    .intersect(clip);
+    let t = Clip::new(
+        tile[0] * sx + tx,
+        tile[1] * sy + ty,
+        tile[2] * sx,
+        tile[3] * sy,
+    );
+    let finite = |c: &Clip| [c.x0, c.y0, c.x1, c.y1].iter().all(|v| v.is_finite());
+    if area.is_empty() || t.is_empty() || !finite(&area) || !finite(&t) {
+        return Vec::new();
+    }
+    let mut fill = area;
+    if !repeat[0] {
+        fill.x0 = fill.x0.max(t.x0);
+        fill.x1 = fill.x1.min(t.x1);
+    }
+    if !repeat[1] {
+        fill.y0 = fill.y0.max(t.y0);
+        fill.y1 = fill.y1.min(t.y1);
+    }
+    if fill.is_empty() {
+        return Vec::new();
+    }
+    let (tw, th) = (t.x1 - t.x0, t.y1 - t.y0);
+    let (gx, gy) = (gap[0] * sx, gap[1] * sy);
+    let spaced = (repeat[0] && gx > 0.0) || (repeat[1] && gy > 0.0);
+    // The tiles along an axis that meet the fill: just the first where it
+    // does not repeat.
+    let span = |on: bool, start: f32, step: f32, lo: f32, hi: f32| -> (i64, i64) {
+        if !on || step <= 0.0 {
+            return (0, 0);
+        }
+        (
+            ((lo - start) / step).floor() as i64 - 1,
+            ((hi - start) / step).ceil() as i64 + 1,
+        )
+    };
+    let (x0, x1) = span(repeat[0], t.x0, tw + gx, fill.x0, fill.x1);
+    let (y0, y1) = span(repeat[1], t.y0, th + gy, fill.y0, fill.y1);
+    let count = (x1 - x0 + 1).saturating_mul(y1 - y0 + 1);
+    if !spaced || count > MAX_SPACED_TILES {
+        return vec![TileFill {
+            tile: t,
+            fill,
+            repeat: repeat[0] || repeat[1],
+        }];
+    }
+    let mut fills = Vec::new();
+    for j in y0..=y1 {
+        for i in x0..=x1 {
+            let x = t.x0 + i as f32 * (tw + gx);
+            let y = t.y0 + j as f32 * (th + gy);
+            let one = Clip {
+                x0: x,
+                y0: y,
+                x1: x + tw,
+                y1: y + th,
+            };
+            let part = one.intersect(fill);
+            if !part.is_empty() {
+                fills.push(TileFill {
+                    tile: one,
+                    fill: part,
+                    repeat: false,
+                });
+            }
+        }
+    }
+    fills
 }
 
 /// The text a backend draws (M19.3): the fonts, the shaped runs and the
@@ -1712,8 +1841,11 @@ impl SoftwareBackend {
                     seen,
                     &mut inner_extra,
                 );
-                let was = self.layers.contains(key) && !self.doubled.contains(key);
-                let kept = if seen.insert(*key) {
+                // A key two groups share is known before (`doubled_keys`):
+                // the first group of it is drawn another way too, and its
+                // reach is damage like the others'.
+                let was = self.layers.contains(key);
+                let kept = if !self.doubled.contains(key) && seen.insert(*key) {
                     self.update_layer(*key, *reason, inner, &composed, clip, &inner_extra)
                 } else {
                     self.layers.drop(*key);
@@ -2149,7 +2281,7 @@ impl SoftwareBackend {
         self.frame += 1;
         self.layered = Layered::default();
         self.deferred.clear();
-        self.doubled.clear();
+        self.doubled = doubled_keys(&list.items);
         let last = self.retained.take();
         if width as u64 * height as u64 > MAX_FRAME_PIXELS {
             return None;
@@ -2574,7 +2706,39 @@ impl SoftwareBackend {
                 let Some(source) = tiny_skia::PixmapRef::from_bytes(&pixels, iw, ih) else {
                     return;
                 };
-                draw_image(pixmap, source, dest, r, *sharp);
+                draw_image(pixmap, source, dest, r, *sharp, false);
+            }
+            DisplayItem::Pattern {
+                x,
+                y,
+                w,
+                h,
+                tile,
+                gap,
+                repeat,
+                image,
+                sharp,
+            } => {
+                let fills = pattern_fills(
+                    [*x, *y, *w, *h],
+                    *tile,
+                    *gap,
+                    *repeat,
+                    clip,
+                    (sx, sy, tx, ty),
+                );
+                if fills.is_empty() {
+                    return;
+                }
+                let Some((pixels, iw, ih)) = self.turned.pixels(image) else {
+                    return;
+                };
+                let Some(source) = tiny_skia::PixmapRef::from_bytes(&pixels, iw, ih) else {
+                    return;
+                };
+                for one in fills {
+                    draw_image(pixmap, source, one.tile, one.fill, *sharp, one.repeat);
+                }
             }
         }
     }
@@ -2650,7 +2814,8 @@ impl SoftwareBackend {
                 DisplayItem::Rect { .. }
                 | DisplayItem::Border { .. }
                 | DisplayItem::Text { .. }
-                | DisplayItem::Image { .. } => {
+                | DisplayItem::Image { .. }
+                | DisplayItem::Pattern { .. } => {
                     self.draw(pixmap, item, clip.intersect(inside), through);
                 }
                 DisplayItem::Polygon { points, color } => {
@@ -2726,7 +2891,8 @@ fn extent(text: &mut GlyphCache, item: &DisplayItem, state: &State) -> Option<Cl
         | DisplayItem::PopGroup => return None,
         DisplayItem::Rect { x, y, w, h, .. }
         | DisplayItem::Border { x, y, w, h, .. }
-        | DisplayItem::Image { x, y, w, h, .. } => (Clip::new(*x, *y, *w, *h), 0.0, 0.0),
+        | DisplayItem::Image { x, y, w, h, .. }
+        | DisplayItem::Pattern { x, y, w, h, .. } => (Clip::new(*x, *y, *w, *h), 0.0, 0.0),
         DisplayItem::Text {
             text: run,
             x,
@@ -4158,6 +4324,142 @@ mod tests {
         assert_eq!(px(&buf, 8, 4, 4), WHITE);
     }
 
+    fn pattern(
+        area: [f32; 4],
+        tile: [f32; 4],
+        gap: [f32; 2],
+        repeat: [bool; 2],
+        image: ImageRef,
+    ) -> DisplayItem {
+        DisplayItem::Pattern {
+            x: area[0],
+            y: area[1],
+            w: area[2],
+            h: area[3],
+            tile,
+            gap,
+            repeat,
+            image,
+            sharp: true,
+        }
+    }
+
+    #[test]
+    fn a_pattern_repeats_its_tile_over_its_area_and_no_further() {
+        let mut backend = test_backend();
+        let two = picture(1, 2, 1, &[RED, BLUE]);
+        let draw = |backend: &mut SoftwareBackend, item: DisplayItem| {
+            backend
+                .rasterize(
+                    &DisplayList {
+                        items: vec![white_frame(16.0, 8.0), item],
+                    },
+                    16,
+                    8,
+                )
+                .to_vec()
+        };
+        // Both ways, from a tile at (1, 1): each pixel's texel by its
+        // place in the tile.
+        let buf = draw(
+            &mut backend,
+            pattern(
+                [0.0, 0.0, 16.0, 8.0],
+                [1.0, 1.0, 2.0, 1.0],
+                [0.0; 2],
+                [true; 2],
+                two.clone(),
+            ),
+        );
+        assert_eq!(
+            [px(&buf, 16, 0, 0), px(&buf, 16, 1, 0), px(&buf, 16, 2, 5)],
+            [BLUE, RED, BLUE]
+        );
+        // Along x alone: the tile's row, cut to the area.
+        let buf = draw(
+            &mut backend,
+            pattern(
+                [4.0, 0.0, 6.0, 8.0],
+                [1.0, 3.0, 2.0, 1.0],
+                [0.0; 2],
+                [true, false],
+                two.clone(),
+            ),
+        );
+        assert_eq!(
+            [px(&buf, 16, 4, 3), px(&buf, 16, 5, 3), px(&buf, 16, 9, 3)],
+            [BLUE, RED, RED]
+        );
+        assert_eq!(
+            [px(&buf, 16, 3, 3), px(&buf, 16, 10, 3), px(&buf, 16, 5, 2)],
+            [WHITE; 3]
+        );
+        // Spaced: a gap of two between tiles.
+        let buf = draw(
+            &mut backend,
+            pattern(
+                [0.0, 0.0, 16.0, 1.0],
+                [0.0, 0.0, 2.0, 1.0],
+                [2.0, 0.0],
+                [true, false],
+                two.clone(),
+            ),
+        );
+        assert_eq!(
+            [
+                px(&buf, 16, 0, 0),
+                px(&buf, 16, 1, 0),
+                px(&buf, 16, 2, 0),
+                px(&buf, 16, 3, 0),
+                px(&buf, 16, 4, 0)
+            ],
+            [RED, BLUE, WHITE, WHITE, RED]
+        );
+        // One tile, alone.
+        let buf = draw(
+            &mut backend,
+            pattern(
+                [0.0, 0.0, 16.0, 8.0],
+                [3.0, 2.0, 4.0, 2.0],
+                [0.0; 2],
+                [false; 2],
+                two,
+            ),
+        );
+        assert_eq!(
+            [
+                px(&buf, 16, 3, 2),
+                px(&buf, 16, 6, 3),
+                px(&buf, 16, 7, 2),
+                px(&buf, 16, 3, 4)
+            ],
+            [RED, BLUE, WHITE, WHITE]
+        );
+    }
+
+    #[test]
+    fn a_pattern_of_too_many_spaced_tiles_is_one_fill() {
+        let fills = pattern_fills(
+            [0.0, 0.0, 10_000.0, 10_000.0],
+            [0.0, 0.0, 1.0, 1.0],
+            [0.5, 0.5],
+            [true; 2],
+            Clip::new(0.0, 0.0, 10_000.0, 10_000.0),
+            (1.0, 1.0, 0.0, 0.0),
+        );
+        assert_eq!(fills.len(), 1);
+        assert!(fills[0].repeat);
+        let fills = pattern_fills(
+            [0.0, 0.0, 10.0, 1.0],
+            [0.0, 0.0, 1.0, 1.0],
+            [1.0, 0.0],
+            [true, false],
+            Clip::new(0.0, 0.0, 10.0, 1.0),
+            (1.0, 1.0, 0.0, 0.0),
+        );
+        assert_eq!(fills.len(), 5);
+    }
+
     #[test]
     fn an_image_given_its_pixels_is_drawn_again_where_it_is() {
         let mut backend = test_backend();
@@ -4686,13 +4988,35 @@ mod tests {
                 if rng.below(5) == 0 {
                     picture.pixels = None;
                 }
-                DisplayItem::Image {
-                    x,
-                    y,
-                    w: rng.coord(0.0, w / 2.0),
-                    h: rng.coord(0.0, h / 2.0),
-                    image: picture,
-                    sharp: rng.below(2) == 0,
+                if rng.below(2) == 0 {
+                    DisplayItem::Image {
+                        x,
+                        y,
+                        w: rng.coord(0.0, w / 2.0),
+                        h: rng.coord(0.0, h / 2.0),
+                        image: picture,
+                        sharp: rng.below(2) == 0,
+                    }
+                } else {
+                    DisplayItem::Pattern {
+                        x,
+                        y,
+                        w: rng.coord(0.0, w / 2.0),
+                        h: rng.coord(0.0, h / 2.0),
+                        tile: [
+                            x + rng.coord(-6.0, 6.0),
+                            y + rng.coord(-6.0, 6.0),
+                            rng.coord(1.0, 9.0),
+                            rng.coord(1.0, 9.0),
+                        ],
+                        gap: [
+                            [0.0, rng.coord(0.0, 3.0)][rng.below(2)],
+                            [0.0, rng.coord(0.0, 3.0)][rng.below(2)],
+                        ],
+                        repeat: [rng.below(3) > 0, rng.below(3) > 0],
+                        image: picture,
+                        sharp: rng.below(2) == 0,
+                    }
                 }
             }
             _ => DisplayItem::PopClip,
@@ -4760,7 +5084,7 @@ mod tests {
             let mut pixmap = tiny_skia::Pixmap::new(w, h).expect("a frame");
             pixmap.data_mut().copy_from_slice(&old);
             backend.frame += 1;
-            backend.doubled.clear();
+            backend.doubled = doubled_keys(&list.items);
             let base = State::new(w, h);
             let frame = backend.frame;
             backend.layers.mark(&list.items, &base, frame);

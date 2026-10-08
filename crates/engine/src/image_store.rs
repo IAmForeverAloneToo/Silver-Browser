@@ -74,6 +74,10 @@ pub(crate) struct ImageStore {
     sources: HashMap<NodeId, String>,
     /// Each entry's URL by its number, which display items name it by.
     ids: HashMap<u64, String>,
+    /// Each URL a style's `<image>` names, as the style has it, and the
+    /// URL of its entry (M23.3): what paint asks for an image by. `None`
+    /// for one that does not resolve.
+    css: HashMap<Arc<str>, Option<String>>,
 }
 
 impl ImageStore {
@@ -126,6 +130,59 @@ impl ImageStore {
                 wanted.push(url);
             }
             self.sources.insert(node, key);
+        }
+        wanted
+    }
+
+    /// Scans the computed `styles` of `document`'s elements, and of their
+    /// `::before` and `::after`, for the images their backgrounds name
+    /// (M23.3), against `page`'s base URL, which leaves one a fetched
+    /// sheet made absolute as it is; returns the URLs not yet wanted,
+    /// which are now being fetched. `next` numbers the new entries.
+    pub(crate) fn scan_styles(
+        &mut self,
+        document: &Document,
+        styles: &style::Styles,
+        page: &Page,
+        next: &mut u64,
+    ) -> Vec<net::Url> {
+        let mut wanted = Vec::new();
+        for node in document.subtree(document.root()) {
+            let pseudo = styles.pseudo_styles(node);
+            let all = styles.get(node).into_iter().chain(
+                pseudo
+                    .into_iter()
+                    .flat_map(|p| [p.before.as_ref(), p.after.as_ref()])
+                    .flatten(),
+            );
+            for style in all {
+                let Some(background) = &style.background else {
+                    continue;
+                };
+                for image in background.image.iter().flatten() {
+                    let style::computed::Image::Url { url: written, .. } = image;
+                    if written.is_empty() || self.css.contains_key(written) {
+                        continue;
+                    }
+                    let url = page.resolve(document, written);
+                    let key = url.as_ref().map(|url| url.as_str().to_owned());
+                    self.css.insert(Arc::clone(written), key.clone());
+                    if let (Some(url), Some(key)) = (url, key)
+                        && !self.entries.contains_key(&key)
+                    {
+                        self.entries.insert(
+                            key.clone(),
+                            ImageEntry {
+                                id: *next,
+                                state: ImageState::Fetching,
+                            },
+                        );
+                        self.ids.insert(*next, key);
+                        *next += 1;
+                        wanted.push(url);
+                    }
+                }
+            }
         }
         wanted
     }
@@ -257,6 +314,22 @@ impl layout::Images for ImageStore {
             }
             Some((_, ImageState::Fetching | ImageState::Reading)) => layout::ImageState::Coming,
             _ => layout::ImageState::Broken,
+        }
+    }
+}
+
+/// What paint asks of a style's images (M23.3): the image a URL names,
+/// as the style has it, once its header is read, unless its pixels did
+/// not decode.
+impl paint::Pictures for ImageStore {
+    fn picture(&self, url: &str) -> Option<(u64, images::Header)> {
+        let key = self.css.get(url)?.as_ref()?;
+        let entry = self.entries.get(key)?;
+        match &entry.state {
+            ImageState::Ready(ready) if ready.pixels != Pixels::Failed => {
+                Some((entry.id, ready.header))
+            }
+            _ => None,
         }
     }
 }
