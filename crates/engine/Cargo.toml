@@ -70,6 +70,10 @@ harness = false
 name = "values"
 harness = false
 
+[[bench]]
+name = "animation"
+harness = false
+
 [dev-dependencies]
 # The scripted server the loader's tests fetch from.
 net = { workspace = true, features = ["test-server"] }

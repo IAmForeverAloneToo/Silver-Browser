@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+<head>
+<title>A spinner</title>
+<!-- M22.6's acceptance: a ring turned by an infinite linear animation of
+     `rotate`, on a page of text, drawn at 1280 by 800. Reference pages
+     107 and 109 are this page's boxes, without its text, held at a
+     moment and under reduced motion. -->
+<style>
+  html { background-color: #f6f8fa; color: #1f2328; font-size: 16px; }
+  body { margin: 0; }
+  header { height: 56px; background-color: #24292f; }
+  main { width: 720px; margin: 48px auto 0 auto; }
+  .panel { padding: 40px; border: 1px solid #d0d7de; background-color: #ffffff; }
+  /* A square ring, its top side the colour that turns. */
+  .spinner { width: 72px; height: 72px; margin: 0 auto 24px auto; border: 12px solid #d8dee4; border-top-color: #3a7a4a;
+             animation: spin 1s linear infinite; }
+  @keyframes spin { to { rotate: 360deg; } }
+  /* The page's own answer to a user who asked for less motion. */
+  @media (prefers-reduced-motion: reduce) {
+    .spinner { animation: none; }
+  }
+  h1 { margin: 0 0 12px 0; font-size: 24px; text-align: center; }
+  p { margin: 0 0 12px 0; line-height: 24px; }
+</style>
+</head>
+<body>
+  <header></header>
+  <main>
+    <div class="panel">
+      <div class="spinner"></div>
+      <h1>Loading your workspace</h1>
+      <p>The spinner turns once a second for as long as the page is shown. Its frames lay
+         nothing out: the ring's transform changes alone, written into the layout that
+         stands, and its layer is composited at each frame rather than drawn again.</p>
+      <p>A user who asked for less motion sees it still: the page's own
+         prefers-reduced-motion query stops it, as every browser leaves to the page.</p>
+    </div>
+  </main>
+</body>
+</html>
