@@ -1771,6 +1771,8 @@ pub enum Image {
     /// resolution, in image pixels a CSS pixel: 1 but for an
     /// `image-set()` option that says otherwise.
     Url { url: Arc<str>, resolution: f32 },
+    /// A gradient (section 3).
+    Gradient(Arc<Gradient>),
 }
 
 impl Image {
@@ -1778,8 +1780,73 @@ impl Image {
     pub fn url(&self) -> Option<&str> {
         match self {
             Image::Url { url, .. } => Some(url),
+            Image::Gradient(_) => None,
         }
     }
+}
+
+/// The most colour stops a gradient may have (M23.3): one with more is
+/// invalid.
+pub const MAX_GRADIENT_STOPS: usize = 256;
+
+/// A gradient (CSS Images 3 section 3, M23.3): its line or ending shape,
+/// whether it repeats, and its colour stops and transition hints.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Gradient {
+    pub shape: GradientShape,
+    /// A `repeating-` gradient: its stops repeat along its line.
+    pub repeating: bool,
+    /// The stops and hints as written, a double position being two
+    /// stops: a stop first and last, a hint only between two stops.
+    pub items: Vec<GradientItem>,
+}
+
+/// What a gradient's line is (sections 3.1 and 3.2).
+#[derive(Debug, Clone, PartialEq)]
+pub enum GradientShape {
+    /// `linear-gradient()`: its line's direction.
+    Linear(LineDirection),
+    /// `radial-gradient()`: an ellipse or a circle, its size, and its
+    /// centre, a position in the gradient box.
+    Radial {
+        ellipse: bool,
+        size: RadialSize,
+        center: [LengthPercentage; 2],
+    },
+}
+
+/// A linear gradient's direction (section 3.1.1).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LineDirection {
+    /// An angle in degrees, 0 up and clockwise: `to top` is 0, `to
+    /// right` 90.
+    Angle(f32),
+    /// `to` a corner: towards the right or the left, the bottom or the
+    /// top.
+    Corner { right: bool, bottom: bool },
+}
+
+/// A radial gradient's size (section 3.2.1).
+#[derive(Debug, Clone, PartialEq)]
+pub enum RadialSize {
+    ClosestSide,
+    FarthestSide,
+    ClosestCorner,
+    FarthestCorner,
+    /// A circle's radius, in pixels.
+    Circle(f32),
+    /// An ellipse's radii, a percentage of the box's side.
+    Ellipse(LengthPercentage, LengthPercentage),
+}
+
+/// One of a gradient's colour stops or transition hints (section 3.4).
+#[derive(Debug, Clone, PartialEq)]
+pub enum GradientItem {
+    /// A colour, at a position along the line or where the fixup puts
+    /// it.
+    Stop(Color, Option<LengthPercentage>),
+    /// Where the colour halfway between the stops on either side is.
+    Hint(LengthPercentage),
 }
 
 /// One axis of `background-repeat` (CSS Backgrounds 3 section 2.3).

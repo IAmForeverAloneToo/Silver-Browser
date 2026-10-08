@@ -42,9 +42,13 @@ fn is(part: &[Token], word: &str) -> bool {
     single_ident(part).is_some_and(|w| w.eq_ignore_ascii_case(word))
 }
 
-/// An `<image>`: a `url()`, or an `image-set()`, which is `None` when it
-/// has no option this engine can show, and so shows nothing.
+/// An `<image>`: a `url()`, a gradient, or an `image-set()`, which is
+/// `None` when it has no option this engine can show, and so shows
+/// nothing.
 pub(super) fn image(part: &[Token], bases: &LengthBases<'_>) -> Option<Option<Image>> {
+    if let Some(gradient) = super::gradients::gradient(part, bases) {
+        return Some(Some(Image::Gradient(Arc::new(gradient))));
+    }
     match part {
         [Token::Url { value, bad: false }] => Some(Some(Image::Url {
             url: Arc::from(value.as_str()),
@@ -110,14 +114,17 @@ fn image_set(part: &[Token], bases: &LengthBases<'_>) -> Option<Option<Image>> {
     let [_, inside @ .., Token::CloseParen] = part else {
         return None;
     };
-    let mut chosen: Option<(Arc<str>, f32)> = None;
+    let mut chosen: Option<(Image, f32)> = None;
     for option in items(inside)? {
         let (first, rest) = option.split_first()?;
-        let url = match first {
+        let image = match first {
             [Token::Url { value, bad: false }] | [Token::String { value, bad: false }] => {
-                Arc::from(value.as_str())
+                Image::Url {
+                    url: Arc::from(value.as_str()),
+                    resolution: 1.0,
+                }
             }
-            _ => return None,
+            part => Image::Gradient(Arc::new(super::gradients::gradient(part, bases)?)),
         };
         let (mut dppx, mut supported) = (None, None);
         for part in rest {
@@ -139,10 +146,13 @@ fn image_set(part: &[Token], bases: &LengthBases<'_>) -> Option<Option<Image>> {
             Some((_, best)) => dppx > *best,
         };
         if better {
-            chosen = Some((url, dppx));
+            chosen = Some((image, dppx));
         }
     }
-    Some(chosen.map(|(url, resolution)| Image::Url { url, resolution }))
+    Some(chosen.map(|(image, resolution)| match image {
+        Image::Url { url, .. } => Image::Url { url, resolution },
+        gradient => gradient,
+    }))
 }
 
 /// `background-image`: a list of `none` or an `<image>`.
@@ -448,6 +458,15 @@ mod tests {
             images("-webkit-image-set(\"a.png\" 1x)"),
             Some(vec![url("a.png", 1.0)])
         );
+    }
+
+    #[test]
+    fn a_gradient_is_an_image_and_an_image_sets_option() {
+        let images = images("linear-gradient(red, blue), image-set(radial-gradient(red, blue) 2x)")
+            .expect("valid");
+        assert!(matches!(images[0], Some(Image::Gradient(_))));
+        assert!(matches!(images[1], Some(Image::Gradient(_))));
+        assert_eq!(images.len(), 2);
     }
 
     #[test]

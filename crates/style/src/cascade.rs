@@ -137,6 +137,7 @@ mod backgrounds;
 mod decoration;
 mod effects;
 mod fragmentation;
+mod gradients;
 mod grid;
 mod images;
 mod lists;

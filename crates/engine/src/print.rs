@@ -193,6 +193,7 @@ impl Engine {
                 for item in &mut list.items {
                     if let DisplayItem::Image { image, .. } | DisplayItem::Pattern { image, .. } =
                         item
+                        && image.pixels.is_none()
                     {
                         image.pixels = self.shown.images.decoded_now(image.id);
                     }
@@ -354,7 +355,8 @@ mod tests {
         let server = serve(move |path| match path {
             "/page.html" => Some(html(
                 "<body style='margin: 0'><img src=a.png>\
-                 <div style='height: 50px; background: url(a.png) no-repeat'></div></body>",
+                 <div style='height: 50px; background: url(a.png) no-repeat'></div>\
+                 <div style='height: 50px; background: linear-gradient(red, red)'></div></body>",
             )),
             "/a.png" => Some(net::test_server::Reply::ok("image/png", &png)),
             _ => None,
@@ -372,6 +374,8 @@ mod tests {
         let below = 104.0;
         assert_eq!(at(&pages[0], 50.0, below + 20.0), RED);
         assert_eq!(at(&pages[0], 150.0, below + 20.0), WHITE);
+        // A gradient, rendered as paint rendered it.
+        assert_eq!(at(&pages[0], 150.0, below + 70.0), RED);
     }
 
     #[test]

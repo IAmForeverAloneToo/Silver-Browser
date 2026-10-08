@@ -23,6 +23,8 @@
 //! `dom::Document` with its `style::Styles`, real cascaded
 //! colors/font-sizes but still no real box model.
 
+/// Gradients rendered (M23.3).
+pub mod gradient;
 pub mod order;
 
 use std::collections::HashMap;
@@ -183,6 +185,13 @@ impl PartialEq for ImageRef {
 /// for. The engine's image store answers; `()` knows none.
 pub trait Pictures {
     fn picture(&self, url: &str) -> Option<(u64, images::Header)>;
+
+    /// `gradient` rendered for a tile `w` by `h`: rendered each time it
+    /// is asked for, unless the implementation keeps it, as the engine
+    /// does.
+    fn gradient(&self, gradient: &style::computed::Gradient, w: f32, h: f32) -> Arc<images::Image> {
+        Arc::new(gradient::render(gradient, w, h))
+    }
 }
 
 impl Pictures for () {
@@ -1252,16 +1261,22 @@ fn push_layers(
     };
     let layers: Vec<_> = background.layers().collect();
     for layer in layers.iter().rev() {
-        let Some(Image::Url { url, resolution }) = layer.image else {
-            continue;
+        // An image's natural size, its resolution applied, and its
+        // number; a gradient has neither.
+        let (natural, picture) = match layer.image {
+            Some(Image::Url { url, resolution }) => {
+                let Some((id, header)) = backdrop.pictures.picture(url) else {
+                    continue;
+                };
+                let natural = (
+                    header.width as f32 / resolution,
+                    header.height as f32 / resolution,
+                );
+                (Some(natural), Some(id))
+            }
+            Some(Image::Gradient(_)) => (None, None),
+            None => continue,
         };
-        let Some((id, header)) = backdrop.pictures.picture(url) else {
-            continue;
-        };
-        let natural = (
-            header.width as f32 / resolution,
-            header.height as f32 / resolution,
-        );
         let area = placed.area.unwrap_or_else(|| placed.box_of(layer.clip));
         let mut positioning = placed.box_of(layer.origin);
         match layer.attachment {
@@ -1279,6 +1294,22 @@ fn push_layers(
         if !(tile_w > 0.0 && tile_h > 0.0 && area.w > 0.0 && area.h > 0.0) {
             continue;
         }
+        // A gradient is rendered for its tile, which names it.
+        let image = match (picture, layer.image) {
+            (Some(id), _) => ImageRef {
+                id,
+                frame: 0,
+                orientation: images::Orientation::Normal,
+                pixels: None,
+            },
+            (None, Some(Image::Gradient(g))) => ImageRef {
+                id: gradient::number(g, tile_w, tile_h),
+                frame: 0,
+                orientation: images::Orientation::Normal,
+                pixels: Some(backdrop.pictures.gradient(g, tile_w, tile_h)),
+            },
+            _ => continue,
+        };
         let (x, gap_x, repeat_x) = place(
             layer.repeat[0],
             &layer.position[0],
@@ -1301,12 +1332,7 @@ fn push_layers(
             tile: [x, y, tile_w, tile_h],
             gap: [gap_x, gap_y],
             repeat: [repeat_x, repeat_y],
-            image: ImageRef {
-                id,
-                frame: 0,
-                orientation: images::Orientation::Normal,
-                pixels: None,
-            },
+            image,
             sharp: f.style.image().image_rendering.is_sharp(),
         });
     }
@@ -1316,15 +1342,16 @@ fn push_layers(
 /// `size` makes of the image's `natural` size in the positioning `area`,
 /// `auto` keeping its ratio; then, for `round`, as wide or tall as fits a
 /// whole number of times, the other side, where `auto`, keeping the
-/// ratio.
+/// ratio. An image with no natural size, a gradient, is the area's size
+/// where `size` leaves it `auto` (CSS Images 3 section 4.3).
 pub fn tile_size(
     size: &BackgroundSize,
-    natural: (f32, f32),
+    natural: Option<(f32, f32)>,
     area: Rect,
     repeat: [Repeat; 2],
 ) -> (f32, f32) {
-    let (nw, nh) = natural;
-    let ratio = (nw > 0.0 && nh > 0.0).then(|| nw / nh);
+    let (nw, nh) = natural.unwrap_or((area.w, area.h));
+    let ratio = natural.and_then(|(nw, nh)| (nw > 0.0 && nh > 0.0).then(|| nw / nh));
     let (w, h, auto) = match size {
         BackgroundSize::Cover | BackgroundSize::Contain => {
             if ratio.is_none() {
@@ -2225,6 +2252,28 @@ mod fragment_tests {
     }
 
     #[test]
+    fn a_gradient_layer_is_rendered_for_its_tile_and_named_by_it() {
+        let one = patterns("div { background: linear-gradient(red, blue) }", 0.0);
+        let (area, tile, _, repeat) = laid(&one[0]);
+        // As big as the padding box, over the border box, repeated.
+        assert_eq!(area, [0.0, 0.0, 130.0, 80.0]);
+        assert_eq!(tile, [10.0, 10.0, 110.0, 60.0]);
+        assert_eq!(repeat, [true; 2]);
+        let DisplayItem::Pattern { image, .. } = &one[0] else {
+            unreachable!()
+        };
+        assert!(image.id >> 63 == 1);
+        let pixels = image.pixels.as_ref().expect("rendered");
+        assert_eq!((pixels.width, pixels.height), (1, 60));
+        // Sized: one side given, the other the area's, no ratio kept.
+        let one = patterns(
+            "div { background: linear-gradient(red, blue) 0 0 / 20px }",
+            0.0,
+        );
+        assert_eq!(laid(&one[0]).1[2..], [20.0, 60.0]);
+    }
+
+    #[test]
     fn tiles_are_sized_and_placed_as_backgrounds_3_says() {
         let area = Rect {
             x: 0.0,
@@ -2234,17 +2283,22 @@ mod fragment_tests {
         };
         let auto = BackgroundSize::Sized(None, None);
         let no = [Repeat::NoRepeat; 2];
-        assert_eq!(tile_size(&auto, (20.0, 10.0), area, no), (20.0, 10.0));
+        assert_eq!(tile_size(&auto, Some((20.0, 10.0)), area, no), (20.0, 10.0));
         assert_eq!(
-            tile_size(&BackgroundSize::Cover, (0.0, 0.0), area, no),
+            tile_size(&BackgroundSize::Cover, Some((0.0, 0.0)), area, no),
             (100.0, 40.0)
         );
         assert_eq!(
-            tile_size(&auto, (30.0, 10.0), area, [Repeat::Round, Repeat::NoRepeat]),
+            tile_size(
+                &auto,
+                Some((30.0, 10.0)),
+                area,
+                [Repeat::Round, Repeat::NoRepeat]
+            ),
             (100.0 / 3.0, 100.0 / 9.0)
         );
         assert_eq!(
-            tile_size(&auto, (30.0, 10.0), area, [Repeat::Round; 2]),
+            tile_size(&auto, Some((30.0, 10.0)), area, [Repeat::Round; 2]),
             (100.0 / 3.0, 10.0)
         );
         let p = LengthPercentage::Percent;

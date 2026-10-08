@@ -3,6 +3,7 @@
 //! when it arrives and its pixels decoded when first drawn, both on
 //! threads of their own.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -13,6 +14,10 @@ use crate::loader::{JobId, Lost, Page, PageId, Pool, Waker};
 
 /// The most images decoded at once, each on a thread of its own.
 pub const MAX_DECODE_THREADS: usize = 4;
+
+/// The bytes of rendered gradients a document keeps (M23.3): past it the
+/// ones drawn longest ago are dropped, and rendered again when drawn.
+pub const GRADIENT_BUDGET: usize = 64 << 20;
 
 /// What became of an image's URL.
 #[derive(Debug, Clone, PartialEq)]
@@ -78,6 +83,17 @@ pub(crate) struct ImageStore {
     /// URL of its entry (M23.3): what paint asks for an image by. `None`
     /// for one that does not resolve.
     css: HashMap<Arc<str>, Option<String>>,
+    /// The gradients rendered (M23.3), by their numbers, with when each
+    /// was last asked for; and the bytes they hold.
+    gradients: RefCell<Gradients>,
+}
+
+/// Rendered gradients, kept under [`GRADIENT_BUDGET`].
+#[derive(Default)]
+struct Gradients {
+    kept: HashMap<u64, (Arc<Image>, u64)>,
+    bytes: usize,
+    asked: u64,
 }
 
 impl ImageStore {
@@ -160,7 +176,9 @@ impl ImageStore {
                     continue;
                 };
                 for image in background.image.iter().flatten() {
-                    let style::computed::Image::Url { url: written, .. } = image;
+                    let style::computed::Image::Url { url: written, .. } = image else {
+                        continue;
+                    };
                     if written.is_empty() || self.css.contains_key(written) {
                         continue;
                     }
@@ -322,6 +340,36 @@ impl layout::Images for ImageStore {
 /// as the style has it, once its header is read, unless its pixels did
 /// not decode.
 impl paint::Pictures for ImageStore {
+    /// A gradient rendered once for its size and kept, the least
+    /// recently asked for dropped past the budget.
+    fn gradient(&self, gradient: &style::computed::Gradient, w: f32, h: f32) -> Arc<Image> {
+        let number = paint::gradient::number(gradient, w, h);
+        let mut gradients = self.gradients.borrow_mut();
+        gradients.asked += 1;
+        let asked = gradients.asked;
+        if let Some((image, when)) = gradients.kept.get_mut(&number) {
+            *when = asked;
+            return Arc::clone(image);
+        }
+        let image = Arc::new(paint::gradient::render(gradient, w, h));
+        gradients.bytes += image.bytes();
+        while gradients.bytes > GRADIENT_BUDGET {
+            let Some(oldest) = gradients
+                .kept
+                .iter()
+                .min_by_key(|(_, (_, when))| *when)
+                .map(|(number, _)| *number)
+            else {
+                break;
+            };
+            if let Some((dropped, _)) = gradients.kept.remove(&oldest) {
+                gradients.bytes -= dropped.bytes();
+            }
+        }
+        gradients.kept.insert(number, (Arc::clone(&image), asked));
+        image
+    }
+
     fn picture(&self, url: &str) -> Option<(u64, images::Header)> {
         let key = self.css.get(url)?.as_ref()?;
         let entry = self.entries.get(key)?;
@@ -406,5 +454,51 @@ impl Decoder {
     /// Forgets `page`'s work: its results are not taken.
     pub(crate) fn forget(&mut self, page: PageId) {
         self.jobs.retain(|_, job| job.page != page);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use paint::Pictures;
+
+    fn gradient(colour: &str) -> style::computed::Gradient {
+        let html =
+            format!("<div style=\"background: linear-gradient(45deg, {colour}, blue)\"></div>");
+        let document = Document::from_node(&html::parse_document(&html).expect("never fails"));
+        let styles = style::Stylesheets::new(Vec::new())
+            .cascade(&document, &style::CascadeContext::default());
+        let div = document
+            .subtree(document.root())
+            .find(|&n| document.tag(n) == Some("div"))
+            .expect("the div");
+        match &styles.get(div).expect("styled").background().image[0] {
+            Some(style::computed::Image::Gradient(g)) => (**g).clone(),
+            other => panic!("not a gradient: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_gradient_is_rendered_once_for_its_size_and_kept_under_the_budget() {
+        let store = ImageStore::default();
+        let red = gradient("red");
+        let a = store.gradient(&red, 40.0, 30.0);
+        assert!(Arc::ptr_eq(&a, &store.gradient(&red, 40.0, 30.0)));
+        assert!(!Arc::ptr_eq(&a, &store.gradient(&red, 40.0, 31.0)));
+        // Large ones push out the least recently asked for.
+        for i in 0..5 {
+            store.gradient(&red, 2000.0 - i as f32, 2000.0);
+        }
+        let gradients = store.gradients.borrow();
+        assert!(gradients.bytes <= GRADIENT_BUDGET);
+        assert!(gradients.kept.len() < 10);
+        assert_eq!(
+            gradients.bytes,
+            gradients
+                .kept
+                .values()
+                .map(|(i, _)| i.bytes())
+                .sum::<usize>()
+        );
     }
 }

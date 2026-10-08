@@ -14,4 +14,5 @@ style.workspace = true
 # text: only `paint_fragments`'s tests need a FontStore for `layout::layout`.
 [dev-dependencies]
 css.workspace = true
+html.workspace = true
 text.workspace = true

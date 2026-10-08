@@ -2710,6 +2710,22 @@ mod tests {
         )
     }
 
+    #[test]
+    fn a_gradient_background_is_drawn_with_no_fetch() {
+        let mut engine = test_engine();
+        engine.load_document(
+            "<body style='margin: 0'><div style='width: 100px; height: 10px;              background: linear-gradient(to right, red, blue)'></div>",
+        );
+        let frame = engine.frame(120, 20);
+        let at = |x: usize, y: usize| {
+            let i = (y * 120 + x) * 4;
+            [frame[i], frame[i + 1], frame[i + 2]]
+        };
+        assert_eq!(at(0, 5), [254, 0, 1]);
+        assert_eq!(at(99, 5), [1, 0, 254]);
+        assert_eq!(at(110, 5), [255, 255, 255]);
+    }
+
     /// A test engine showing the built-in page.
     fn builtin_engine() -> Engine {
         let mut engine = test_engine();
