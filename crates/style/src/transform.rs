@@ -26,7 +26,7 @@
 //! magnitude of [`crate::cascade::MAX_LENGTH_PX`], so that the product
 //! of a few functions stays finite; past that the check is here.
 
-use crate::computed::{Effects, TransformFunction};
+use crate::computed::{Effects, TransformFunction, TransformMix};
 
 /// A four-by-four transformation matrix, column-major.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -427,7 +427,10 @@ impl TransformFunction {
             TransformFunction::Scale(x, y, z) => Matrix::scale(*x, *y, *z),
             TransformFunction::Rotate { x, y, z, angle } => Matrix::rotate(*x, *y, *z, *angle),
             TransformFunction::Skew(ax, ay) => Matrix::skew(*ax, *ay),
+            TransformFunction::SkewX(ax) => Matrix::skew(*ax, 0.0),
+            TransformFunction::SkewY(ay) => Matrix::skew(0.0, *ay),
             TransformFunction::Perspective(depth) => Matrix::perspective(*depth),
+            TransformFunction::Interpolated(mix) => mix.matrix(width, height),
         }
     }
 
@@ -439,13 +442,53 @@ impl TransformFunction {
     /// says what was written.
     pub fn is_3d(&self) -> bool {
         match *self {
-            TransformFunction::Matrix(_) | TransformFunction::Skew(..) => false,
+            TransformFunction::Matrix(_)
+            | TransformFunction::Skew(..)
+            | TransformFunction::SkewX(_)
+            | TransformFunction::SkewY(_) => false,
             TransformFunction::Matrix3d(_) | TransformFunction::Perspective(_) => true,
             TransformFunction::Translate(_, _, z) => z != 0.0,
             TransformFunction::Scale(_, _, z) => z != 1.0,
             TransformFunction::Rotate { x, y, .. } => x != 0.0 || y != 0.0,
+            TransformFunction::Interpolated(ref mix) => {
+                mix.from.iter().any(TransformFunction::is_3d)
+                    || mix.to.iter().any(TransformFunction::is_3d)
+            }
         }
     }
+}
+
+/// The matrix of a list of transform functions, in order, its
+/// percentages of a reference box `width` by `height`.
+pub fn list_matrix(list: &[TransformFunction], width: f32, height: f32) -> Matrix {
+    list.iter().fold(Matrix::IDENTITY, |m, function| {
+        m.then(&function.matrix(width, height))
+    })
+}
+
+impl TransformMix {
+    /// The matrix the interpolation comes to with the reference box
+    /// `width` by `height`: the two lists' matrices interpolated by
+    /// decomposition, a 2D pair to a 2D matrix; or, when either does not
+    /// decompose, the nearer list's, as a discrete interpolation is.
+    pub fn matrix(&self, width: f32, height: f32) -> Matrix {
+        let from = list_matrix(&self.from, width, height);
+        let to = list_matrix(&self.to, width, height);
+        match interpolate_matrices(&from, &to, self.progress) {
+            Some(m) if from.is_2d() && to.is_2d() => flattened_2d(&m),
+            Some(m) => m,
+            None if self.progress < 0.5 => from,
+            None => to,
+        }
+    }
+}
+
+/// The 2D matrix with the components of `m` that a 2D matrix has: what
+/// the interpolation of two 2D matrices is, whatever rounding left in
+/// the others.
+pub fn flattened_2d(m: &Matrix) -> Matrix {
+    let c = &m.0;
+    Matrix::from_2d([c[0], c[1], c[4], c[5], c[12], c[13]])
 }
 
 /// The reference box of a transform (css-transforms-1 §9): the box its
@@ -542,10 +585,504 @@ impl Effects {
     }
 }
 
+/// A matrix decomposed (css-transforms-2 §13.1.1, M22): the parts that
+/// interpolating two matrices interpolates, the matrix being
+/// `perspective × translate × rotate × skew × scale`, a point taking the
+/// scale first.
+///
+/// Every matrix is decomposed so, a 2D one too: the reference browser
+/// does, and the web-platform-tests agree with it, where Transforms 1
+/// §11.2 decomposes a 2D matrix by an angle and a 2×2 remainder —
+/// `matrix(1, 0, 0, 7, 0, 0)` to `matrix(7, 0, 1, 1, 0, 0)` half way is
+/// `matrix(4, 0, 2, 4, 0, 0)` in the tests, which only this
+/// decomposition gives.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Decomposed {
+    /// Along x, y and z.
+    pub translate: [f64; 3],
+    /// Along x, y and z.
+    pub scale: [f64; 3],
+    /// The shears XY, XZ and YZ.
+    pub skew: [f64; 3],
+    /// The last row of the matrix the perspective is.
+    pub perspective: [f64; 4],
+    /// The rotation, a unit quaternion `x, y, z, w`.
+    pub quaternion: [f64; 4],
+}
+
+/// A matrix as rows of `f64`: `rows[r][c]` is `Matrix::at(r, c)`.
+type Rows = [[f64; 4]; 4];
+
+fn rows_of(m: &Matrix) -> Rows {
+    let mut rows = [[0.0; 4]; 4];
+    for (r, row) in rows.iter_mut().enumerate() {
+        for (c, v) in row.iter_mut().enumerate() {
+            *v = f64::from(m.at(r, c));
+        }
+    }
+    rows
+}
+
+/// The matrix of `rows`, each component fitted into an `f32`.
+fn matrix_of(rows: &Rows) -> Matrix {
+    let mut m = [0.0; 16];
+    for (r, row) in rows.iter().enumerate() {
+        for (c, v) in row.iter().enumerate() {
+            m[c * 4 + r] = v.clamp(-f64::from(f32::MAX), f64::from(f32::MAX)) as f32;
+        }
+    }
+    Matrix(m)
+}
+
+fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// `a + scale × b`.
+fn combine(a: [f64; 3], b: [f64; 3], scale: f64) -> [f64; 3] {
+    [
+        a[0] + scale * b[0],
+        a[1] + scale * b[1],
+        a[2] + scale * b[2],
+    ]
+}
+
+fn length(a: [f64; 3]) -> f64 {
+    dot3(a, a).sqrt()
+}
+
+fn lerp(a: f64, b: f64, p: f64) -> f64 {
+    a + (b - a) * p
+}
+
+impl Matrix {
+    /// The matrix decomposed (css-transforms-2 §13.1.1), or `None` when
+    /// it cannot be: its `w` scale is zero, its upper 3×3 part is
+    /// singular, or it is not finite. Interpolating such a matrix is
+    /// discrete (css-transforms-1 §11).
+    pub fn decompose(&self) -> Option<Decomposed> {
+        let mut m = rows_of(self);
+        let w = m[3][3];
+        if w == 0.0 || !w.is_finite() {
+            return None;
+        }
+        for row in m.iter_mut() {
+            for v in row.iter_mut() {
+                *v /= w;
+            }
+        }
+        // The upper 3×3 part, A, must be invertible: the matrix with the
+        // perspective taken out, [A t; 0 1], is then too.
+        let a = [
+            [m[0][0], m[0][1], m[0][2]],
+            [m[1][0], m[1][1], m[1][2]],
+            [m[2][0], m[2][1], m[2][2]],
+        ];
+        let det = dot3(a[0], cross(a[1], a[2]));
+        if det == 0.0 || !det.is_finite() {
+            return None;
+        }
+        let translate = [m[0][3], m[1][3], m[2][3]];
+        // The matrix is P × [A t; 0 1], P the identity with the
+        // perspective as its last row p: the last row of the matrix is
+        // p × [A t; 0 1], so p's first three are the last row's first
+        // three times A's inverse, and its fourth what remains of the
+        // corner.
+        let perspective = if m[3][0] != 0.0 || m[3][1] != 0.0 || m[3][2] != 0.0 {
+            // A's inverse is its cofactor matrix transposed over its
+            // determinant, the cofactors of a row being the cross
+            // product of the other two rows; so (last × A⁻¹)_j is last
+            // · (cofactor row j) over the determinant.
+            let cofactors = [cross(a[1], a[2]), cross(a[2], a[0]), cross(a[0], a[1])];
+            let last = [m[3][0], m[3][1], m[3][2]];
+            let p: [f64; 3] = std::array::from_fn(|j| dot3(last, cofactors[j]) / det);
+            [p[0], p[1], p[2], m[3][3] - dot3(p, translate)]
+        } else {
+            [0.0, 0.0, 0.0, 1.0]
+        };
+        // Scale and shear, by Gram–Schmidt over A's columns.
+        let mut column: [[f64; 3]; 3] = std::array::from_fn(|c| [a[0][c], a[1][c], a[2][c]]);
+        let mut scale = [0.0; 3];
+        let mut skew = [0.0; 3];
+        scale[0] = length(column[0]);
+        column[0] = column[0].map(|v| v / scale[0]);
+        skew[0] = dot3(column[0], column[1]);
+        column[1] = combine(column[1], column[0], -skew[0]);
+        scale[1] = length(column[1]);
+        column[1] = column[1].map(|v| v / scale[1]);
+        skew[0] /= scale[1];
+        skew[1] = dot3(column[0], column[2]);
+        column[2] = combine(column[2], column[0], -skew[1]);
+        skew[2] = dot3(column[1], column[2]);
+        column[2] = combine(column[2], column[1], -skew[2]);
+        scale[2] = length(column[2]);
+        column[2] = column[2].map(|v| v / scale[2]);
+        skew[1] /= scale[2];
+        skew[2] /= scale[2];
+        // A flipped coordinate system: negate the scales and the axes.
+        if dot3(column[0], cross(column[1], column[2])) < 0.0 {
+            for (s, axis) in scale.iter_mut().zip(column.iter_mut()) {
+                *s = -*s;
+                *axis = axis.map(|v| -v);
+            }
+        }
+        // The rotation, Q[r][c] being column c's component r.
+        let q = |r: usize, c: usize| column[c][r];
+        let mut quaternion = [
+            0.5 * (1.0 + q(0, 0) - q(1, 1) - q(2, 2)).max(0.0).sqrt(),
+            0.5 * (1.0 - q(0, 0) + q(1, 1) - q(2, 2)).max(0.0).sqrt(),
+            0.5 * (1.0 - q(0, 0) - q(1, 1) + q(2, 2)).max(0.0).sqrt(),
+            0.5 * (1.0 + q(0, 0) + q(1, 1) + q(2, 2)).max(0.0).sqrt(),
+        ];
+        if q(1, 2) > q(2, 1) {
+            quaternion[0] = -quaternion[0];
+        }
+        if q(2, 0) > q(0, 2) {
+            quaternion[1] = -quaternion[1];
+        }
+        if q(0, 1) > q(1, 0) {
+            quaternion[2] = -quaternion[2];
+        }
+        let parts = Decomposed {
+            translate,
+            scale,
+            skew,
+            perspective,
+            quaternion,
+        };
+        let finite = [
+            &parts.translate[..],
+            &parts.scale,
+            &parts.skew,
+            &parts.perspective,
+            &parts.quaternion,
+        ]
+        .iter()
+        .all(|part| part.iter().all(|v| v.is_finite()));
+        finite.then_some(parts)
+    }
+}
+
+impl Decomposed {
+    /// The matrix again (css-transforms-2 §13.1.3): `perspective ×
+    /// translate × rotate × skew × scale`.
+    pub fn recompose(&self) -> Matrix {
+        let [x, y, z, w] = self.quaternion;
+        let rotate = [
+            [
+                1.0 - 2.0 * (y * y + z * z),
+                2.0 * (x * y - z * w),
+                2.0 * (x * z + y * w),
+            ],
+            [
+                2.0 * (x * y + z * w),
+                1.0 - 2.0 * (x * x + z * z),
+                2.0 * (y * z - x * w),
+            ],
+            [
+                2.0 * (x * z - y * w),
+                2.0 * (y * z + x * w),
+                1.0 - 2.0 * (x * x + y * y),
+            ],
+        ];
+        let [xy, xz, yz] = self.skew;
+        let skew = [[1.0, xy, xz], [0.0, 1.0, yz], [0.0, 0.0, 1.0]];
+        let mut m: Rows = [[0.0; 4]; 4];
+        for r in 0..3 {
+            for c in 0..3 {
+                let rotated_skew: f64 = (0..3).map(|k| rotate[r][k] * skew[k][c]).sum();
+                m[r][c] = rotated_skew * self.scale[c];
+            }
+            m[r][3] = self.translate[r];
+        }
+        m[3] = [0.0, 0.0, 0.0, 1.0];
+        // The perspective's row times the affine rest.
+        let p = self.perspective;
+        let last: [f64; 4] = std::array::from_fn(|c| (0..4).map(|k| p[k] * m[k][c]).sum());
+        m[3] = last;
+        matrix_of(&m)
+    }
+
+    /// The parts at `p` of the way from `self` to `other`
+    /// (css-transforms-2 §13.1.2): each linearly but the rotation, by
+    /// spherical linear interpolation of the quaternions; `p` outside
+    /// [0, 1] goes on past them.
+    pub fn interpolate(&self, other: &Decomposed, p: f64) -> Decomposed {
+        let mix3 =
+            |a: [f64; 3], b: [f64; 3]| -> [f64; 3] { std::array::from_fn(|i| lerp(a[i], b[i], p)) };
+        let qa = self.quaternion;
+        let qb = other.quaternion;
+        let product = (0..4).map(|i| qa[i] * qb[i]).sum::<f64>().clamp(-1.0, 1.0);
+        let quaternion = if product.abs() == 1.0 {
+            qa
+        } else {
+            let theta = product.acos();
+            let w = (p * theta).sin() / (1.0 - product * product).sqrt();
+            let a = (p * theta).cos() - product * w;
+            std::array::from_fn(|i| qa[i] * a + qb[i] * w)
+        };
+        Decomposed {
+            translate: mix3(self.translate, other.translate),
+            scale: mix3(self.scale, other.scale),
+            skew: mix3(self.skew, other.skew),
+            perspective: std::array::from_fn(|i| {
+                lerp(self.perspective[i], other.perspective[i], p)
+            }),
+            quaternion,
+        }
+    }
+}
+
+/// The matrix `p` of the way from `a` to `b` by decomposition
+/// (css-transforms-2 §13), or `None` when either does not decompose,
+/// which makes the interpolation discrete.
+pub fn interpolate_matrices(a: &Matrix, b: &Matrix, p: f64) -> Option<Matrix> {
+    Some(a.decompose()?.interpolate(&b.decompose()?, p).recompose())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::computed::{LengthPercentage, Rotate, TransformOrigin, Translate};
+
+    /// The cosine of an eighth turn, as the reference browser prints
+    /// 0.707107.
+    const R: f32 = std::f32::consts::FRAC_1_SQRT_2;
+
+    /// Whether the matrices agree to `epsilon` in every component.
+    fn near(a: &Matrix, b: &Matrix, epsilon: f32) -> bool {
+        a.0.iter()
+            .zip(b.0.iter())
+            .all(|(x, y)| (x - y).abs() < epsilon)
+    }
+
+    #[test]
+    fn a_matrix_decomposes_and_recomposes_to_itself() {
+        let matrices = [
+            Matrix::IDENTITY,
+            Matrix::from_2d([2.0, 1.0, 0.5, 1.0, 10.0, 20.0]),
+            Matrix::from_2d([-1.0, 0.0, 0.0, -1.0, 0.0, 0.0]),
+            Matrix::from_2d([-1.0, 0.0, 0.0, 1.0, 3.0, 0.0]),
+            Matrix::skew(30.0, 10.0).then(&Matrix::scale(2.0, 0.5, 1.0)),
+            Matrix::rotate(1.0, 2.0, 3.0, 70.0)
+                .then(&Matrix::scale(1.5, 2.0, 0.5))
+                .then(&Matrix::translate(4.0, -5.0, 6.0)),
+            Matrix::perspective(Some(100.0)).then(&Matrix::rotate(0.0, 1.0, 0.0, 30.0)),
+            Matrix([
+                1.0, 0.0, 0.0, 0.0, //
+                0.0, 1.0, 0.0, 0.0, //
+                0.0, 0.0, 1.0, -0.01, //
+                0.0, 0.0, 0.0, 1.0,
+            ]),
+        ];
+        for m in matrices {
+            let parts = m.decompose().unwrap_or_else(|| panic!("{m:?} decomposes"));
+            let again = parts.recompose();
+            assert!(near(&again, &m, 1e-4), "{m:?}\n{again:?}\n{parts:?}");
+            // At either end, the matrix itself.
+            let other = Matrix::rotate(0.0, 0.0, 1.0, 45.0);
+            assert!(near(
+                &interpolate_matrices(&m, &other, 0.0).unwrap(),
+                &m,
+                1e-4
+            ));
+            assert!(near(
+                &interpolate_matrices(&m, &other, 1.0).unwrap(),
+                &other,
+                1e-4
+            ));
+        }
+        // Singular, or with a w of zero: no decomposition.
+        assert_eq!(Matrix::scale(0.0, 1.0, 1.0).decompose(), None);
+        assert_eq!(Matrix::from_2d([0.0; 6]).decompose(), None);
+        let mut flat = Matrix::IDENTITY;
+        flat.0[15] = 0.0;
+        assert_eq!(flat.decompose(), None);
+    }
+
+    #[test]
+    fn matrices_interpolate_as_the_reference_browser_and_the_tests_have_them() {
+        let m2 = |m: [f32; 6]| Matrix::from_2d(m);
+        let at =
+            |a: &Matrix, b: &Matrix, p: f64| interpolate_matrices(a, b, p).expect("decomposes");
+        let check = |a: &Matrix, b: &Matrix, p: f64, want: Matrix| {
+            let got = at(a, b, p);
+            assert!(near(&got, &want, 1e-4), "{p}: {got:?} not {want:?}");
+        };
+        // The web-platform-tests' transform-interpolation-005.
+        let (cos30, sin30) = (30f32.to_radians().cos(), 30f32.to_radians().sin());
+        let from = m2([1.0, 0.0, 0.0, 1.0, 0.0, -6.0]);
+        let to = m2([0.0, 7.0, -1.0, 0.0, 6.0, 0.0]);
+        check(
+            &from,
+            &to,
+            1.0 / 3.0,
+            m2([3.0 * cos30, 3.0 * sin30, -sin30, cos30, 2.0, -4.0]),
+        );
+        check(&from, &to, -1.0, m2([0.0, 5.0, 1.0, 0.0, -6.0, -12.0]));
+        check(&from, &to, 2.0, m2([-13.0, 0.0, 0.0, -1.0, 12.0, 6.0]));
+        let from = m2([1.0, 0.0, 0.0, 7.0, 0.0, 0.0]);
+        let to = m2([7.0, 0.0, 1.0, 1.0, 0.0, 0.0]);
+        check(&from, &to, 0.5, m2([4.0, 0.0, 2.0, 4.0, 0.0, 0.0]));
+        check(
+            &from,
+            &to,
+            1.0 / 3.0,
+            m2([3.0, 0.0, 5.0 / 3.0, 5.0, 0.0, 0.0]),
+        );
+        check(&from, &to, -1.0, m2([-5.0, 0.0, -13.0, 13.0, 0.0, 0.0]));
+        // The reference browser.
+        let skew_x = Matrix::skew(30.0, 0.0);
+        let quarter = Matrix::rotate_z(90.0);
+        check(
+            &skew_x,
+            &quarter,
+            0.25,
+            m2([0.92388, 0.382683, 0.0173681, 1.08959, 0.0, 0.0]),
+        );
+        check(
+            &skew_x,
+            &quarter,
+            0.5,
+            m2([R, R, -0.502983, 0.911231, 0.0, 0.0]),
+        );
+        let a = m2([2.0, 1.0, 0.5, 1.0, 10.0, 20.0]);
+        let b = m2([1.0, -0.5, 1.0, 2.0, -5.0, 5.0]);
+        check(
+            &a,
+            &b,
+            0.25,
+            m2([1.90422, 0.449525, 0.789691, 1.27775, 6.25, 16.25]),
+        );
+        check(
+            &a,
+            &b,
+            0.5,
+            m2([1.67705, 0.0, 0.968963, 1.45344, 2.5, 12.5]),
+        );
+        let a = Matrix::rotate_z(30.0)
+            .then(&Matrix::skew(0.0, 20.0))
+            .then(&Matrix::scale(1.5, 0.5, 1.0));
+        let b = Matrix::scale(2.0, 2.0, 1.0).then(&Matrix::rotate_z(170.0));
+        check(
+            &a,
+            &b,
+            0.25,
+            m2([0.294716, 1.67142, -0.79903, 0.377162, 0.0, 0.0]),
+        );
+        check(
+            &a,
+            &b,
+            0.5,
+            m2([-0.614998, 1.68969, -1.23731, -0.211184, 0.0, 0.0]),
+        );
+        // A half turn: the quaternions' shorter way, as the reference
+        // browser turns.
+        let half = m2([-1.0, 0.0, 0.0, -1.0, 0.0, 0.0]);
+        check(&Matrix::IDENTITY, &half, 0.25, Matrix::rotate_z(45.0));
+        check(&Matrix::IDENTITY, &half, 0.5, Matrix::rotate_z(90.0));
+        check(
+            &Matrix::rotate_z(90.0),
+            &Matrix::rotate_z(-90.0),
+            0.25,
+            Matrix::rotate_z(45.0),
+        );
+        check(
+            &Matrix::rotate_z(90.0),
+            &Matrix::rotate_z(-90.0),
+            0.5,
+            Matrix::IDENTITY,
+        );
+        let x60 = Matrix::rotate(1.0, 0.0, 0.0, 60.0);
+        let y60 = Matrix::rotate(0.0, 1.0, 0.0, 60.0);
+        check(
+            &x60,
+            &y60,
+            0.5,
+            Matrix([
+                0.857143, 0.142857, -0.494872, 0.0, //
+                0.142857, 0.857143, 0.494872, 0.0, //
+                0.494872, -0.494872, 0.714286, 0.0, //
+                0.0, 0.0, 0.0, 1.0,
+            ]),
+        );
+        check(
+            &x60,
+            &y60,
+            0.25,
+            Matrix([
+                0.963094, 0.105951, -0.247436, 0.0, //
+                0.105951, 0.695833, 0.710346, 0.0, //
+                0.247436, -0.710346, 0.658927, 0.0, //
+                0.0, 0.0, 0.0, 1.0,
+            ]),
+        );
+        let a = Matrix([
+            1.0, 0.0, 0.0, 0.0, //
+            0.0, 1.0, 0.0, 0.0, //
+            0.0, 0.0, 1.0, -0.01, //
+            0.0, 0.0, 0.0, 1.0,
+        ]);
+        let b = Matrix([
+            2.0, 0.0, 0.0, 0.0, //
+            0.0, 1.0, 0.0, 0.0, //
+            0.0, 0.0, 1.0, 0.0, //
+            10.0, 20.0, 30.0, 1.0,
+        ]);
+        check(
+            &a,
+            &b,
+            0.25,
+            Matrix([
+                1.25, 0.0, 0.0, 0.0, //
+                0.0, 1.0, 0.0, 0.0, //
+                0.0, 0.0, 1.0, -0.0075, //
+                2.5, 5.0, 7.5, 0.94375,
+            ]),
+        );
+        check(
+            &a,
+            &b,
+            0.5,
+            Matrix([
+                1.5, 0.0, 0.0, 0.0, //
+                0.0, 1.0, 0.0, 0.0, //
+                0.0, 0.0, 1.0, -0.005, //
+                5.0, 10.0, 15.0, 0.925,
+            ]),
+        );
+        let skewed = Matrix::skew(10.0, 20.0);
+        let b = m2([1.0, 0.3, 0.2, 1.0, 0.0, 0.0]);
+        check(
+            &skewed,
+            &b,
+            0.25,
+            m2([1.00038, 0.347876, 0.182357, 1.0, 0.0, 0.0]),
+        );
+        check(
+            &skewed,
+            &b,
+            0.5,
+            m2([1.00051, 0.331847, 0.188312, 1.0, 0.0, 0.0]),
+        );
+        let a = Matrix::rotate_z(45.0).then(&Matrix::translate(10.0, 0.0, 0.0));
+        let b = Matrix::translate(10.0, 0.0, 0.0).then(&Matrix::rotate_z(45.0));
+        check(&a, &b, 0.25, m2([R, R, -R, R, 7.8033, 5.3033]));
+        check(&a, &b, 0.5, m2([R, R, -R, R, 8.53553, 3.53553]));
+        // The tests' matrix-interpolation: quaternions whose product is
+        // -1, the first kept.
+        let y360 = Matrix::rotate(0.0, 1.0, 0.0, 360.0);
+        let x720 = Matrix::rotate(1.0, 0.0, 0.0, 720.0);
+        check(&y360, &x720, 0.5, Matrix::IDENTITY);
+    }
 
     /// The origin at the top left corner.
     const TOP_LEFT: TransformOrigin = TransformOrigin {

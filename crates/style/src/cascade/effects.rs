@@ -231,8 +231,8 @@ fn function(component: &[Token], bases: &LengthBases<'_>) -> Option<TransformFun
         },
         ("skew", [x]) => TransformFunction::Skew(angle(x, true, bases)?, 0.0),
         ("skew", [x, y]) => TransformFunction::Skew(angle(x, true, bases)?, angle(y, true, bases)?),
-        ("skewx", [x]) => TransformFunction::Skew(angle(x, true, bases)?, 0.0),
-        ("skewy", [y]) => TransformFunction::Skew(0.0, angle(y, true, bases)?),
+        ("skewx", [x]) => TransformFunction::SkewX(angle(x, true, bases)?),
+        ("skewy", [y]) => TransformFunction::SkewY(angle(y, true, bases)?),
         ("perspective", [d]) => TransformFunction::Perspective(perspective_depth(d, bases)?),
         _ => return None,
     })
@@ -628,7 +628,7 @@ mod tests {
                     angle: 180.0
                 },
                 Scale(2.0, 2.0, 1.0),
-                Skew(10.0, 0.0),
+                SkewX(10.0),
             ])
         );
         assert_eq!(
@@ -692,7 +692,7 @@ mod tests {
         );
         assert_eq!(
             transform("skew(10deg, 20deg) skew(0) skewY(5deg)"),
-            Some(vec![Skew(10.0, 20.0), Skew(0.0, 0.0), Skew(0.0, 5.0)])
+            Some(vec![Skew(10.0, 20.0), Skew(0.0, 0.0), SkewY(5.0)])
         );
         assert_eq!(
             transform("matrix(1, 0, 0, 1, 10, 20) perspective(500px) perspective(none)"),

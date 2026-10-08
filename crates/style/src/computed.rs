@@ -1057,11 +1057,36 @@ pub enum TransformFunction {
         /// The angle, in degrees.
         angle: f32,
     },
-    /// `skew()`, `skewX()` and `skewY()`: the angles along x and y, in
-    /// degrees.
+    /// `skew()`: the angles along x and y, in degrees, the second zero
+    /// when it is not written.
     Skew(f32, f32),
+    /// `skewX()`, in degrees. Kept apart from `skew()` and `skewY()`:
+    /// the three share no primitive, and interpolate pairwise only with
+    /// their own kind (css-transforms-1 §10, M22), as the reference
+    /// browser has them.
+    SkewX(f32),
+    /// `skewY()`, in degrees.
+    SkewY(f32),
     /// `perspective()`: `None` for `none`, else the depth, a length.
     Perspective(Option<f32>),
+    /// An interpolation the box must finish (M22, css-transforms-1 §9):
+    /// the rests of two lists that met as matrices with a translation's
+    /// percentage among them, which only the reference box can make a
+    /// matrix of, kept with the progress between them. No declaration
+    /// computes to one; an animation or a transition does.
+    Interpolated(Arc<TransformMix>),
+}
+
+/// The two lists and the progress of a [`TransformFunction::Interpolated`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct TransformMix {
+    /// The list interpolated from.
+    pub from: Vec<TransformFunction>,
+    /// The list interpolated to.
+    pub to: Vec<TransformFunction>,
+    /// How far from `from` to `to`, outside [0, 1] when an easing
+    /// overshoots.
+    pub progress: f64,
 }
 
 /// `transform-origin` (css-transforms-1 §8, css-transforms-2 §8): the

@@ -32,6 +32,10 @@ impl fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+/// Animating the properties (M22): their animation types, and their
+/// computed values copied, compared and interpolated.
+pub mod animate;
+
 /// Math functions (M21.2): `calc()`, `min()`, `max()` and `clamp()`,
 /// parsed, typed and simplified.
 pub mod calc;
