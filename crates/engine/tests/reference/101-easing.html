@@ -1,0 +1,60 @@
+<!doctype html>
+<html>
+<head>
+<title>Every easing keyword, cubic-bezier() with an overshoot, steps() at each position and at a step's boundary, linear() with points and flat sections, and the before flag in a backwards-filled delay, as bars side by side</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 6px 0 0 10px; }
+  .cell { width: 244px; height: 24px; margin-right: 10px; background-color: #e0d8c8; }
+  .bar { width: 30px; height: 24px; background-color: #3a7a4a; animation: grow 1s paused; }
+  /* A bar 0 to 244px wide, held a fifth, half and four fifths of the
+     way: each width at least a quarter of a pixel from a half. */
+  @keyframes grow { from { width: 0px; } to { width: 244px; } }
+  .t1 { animation-delay: -0.2s; }
+  .t2 { animation-delay: -0.5s; }
+  .t3 { animation-delay: -0.8s; }
+  .ease { animation-timing-function: ease; }
+  .ease-in { animation-timing-function: ease-in; }
+  .ease-out { animation-timing-function: ease-out; }
+  .ease-in-out { animation-timing-function: ease-in-out; }
+  .linear { animation-timing-function: linear; }
+  .bezier { animation-timing-function: cubic-bezier(0.1, 0.7, 0.9, 0.3); }
+  /* Below 0 and past 1: a width of less than none is none. */
+  .overshoot { animation-timing-function: cubic-bezier(0.6, -0.4, 0.4, 1.4); }
+  .jump-start { animation-timing-function: steps(4, jump-start); }
+  .jump-end { animation-timing-function: steps(4, jump-end); }
+  .jump-none { animation-timing-function: steps(4, jump-none); }
+  .jump-both { animation-timing-function: steps(4, jump-both); }
+  .start { animation-timing-function: steps(4, start); }
+  .step-start { animation-timing-function: step-start; }
+  .step-end { animation-timing-function: step-end; }
+  .points { animation-timing-function: linear(0, 0.25, 1); }
+  .flat { animation-timing-function: linear(0, 0.5 25% 75%, 1); }
+  /* The before flag: in a positive delay, filled backwards, a step that
+     jumps at the start has not yet; unfilled, the bar has its own 30px;
+     held at its start, the first step is taken. */
+  .before { animation-delay: 1s; animation-fill-mode: backwards; }
+  .unfilled { animation-delay: 1s; }
+  .at-start { animation-delay: 0s; }
+</style>
+</head>
+<body>
+  <div class="row"><div class="cell"><div class="bar ease t1"></div></div><div class="cell"><div class="bar ease t2"></div></div><div class="cell"><div class="bar ease t3"></div></div></div>
+  <div class="row"><div class="cell"><div class="bar ease-in t1"></div></div><div class="cell"><div class="bar ease-in t2"></div></div><div class="cell"><div class="bar ease-in t3"></div></div></div>
+  <div class="row"><div class="cell"><div class="bar ease-out t1"></div></div><div class="cell"><div class="bar ease-out t2"></div></div><div class="cell"><div class="bar ease-out t3"></div></div></div>
+  <div class="row"><div class="cell"><div class="bar ease-in-out t1"></div></div><div class="cell"><div class="bar ease-in-out t2"></div></div><div class="cell"><div class="bar ease-in-out t3"></div></div></div>
+  <div class="row"><div class="cell"><div class="bar linear t1"></div></div><div class="cell"><div class="bar linear t2"></div></div><div class="cell"><div class="bar linear t3"></div></div></div>
+  <div class="row"><div class="cell"><div class="bar bezier t1"></div></div><div class="cell"><div class="bar bezier t2"></div></div><div class="cell"><div class="bar bezier t3"></div></div></div>
+  <div class="row"><div class="cell"><div class="bar overshoot t1"></div></div><div class="cell"><div class="bar overshoot t2"></div></div><div class="cell"><div class="bar overshoot t3"></div></div></div>
+  <div class="row"><div class="cell"><div class="bar jump-start t1"></div></div><div class="cell"><div class="bar jump-start t2"></div></div><div class="cell"><div class="bar jump-start t3"></div></div></div>
+  <div class="row"><div class="cell"><div class="bar jump-end t1"></div></div><div class="cell"><div class="bar jump-end t2"></div></div><div class="cell"><div class="bar jump-end t3"></div></div></div>
+  <div class="row"><div class="cell"><div class="bar jump-none t1"></div></div><div class="cell"><div class="bar jump-none t2"></div></div><div class="cell"><div class="bar jump-none t3"></div></div></div>
+  <div class="row"><div class="cell"><div class="bar jump-both t1"></div></div><div class="cell"><div class="bar jump-both t2"></div></div><div class="cell"><div class="bar jump-both t3"></div></div></div>
+  <div class="row"><div class="cell"><div class="bar start t2"></div></div><div class="cell"><div class="bar step-start t2"></div></div><div class="cell"><div class="bar step-end t2"></div></div></div>
+  <div class="row"><div class="cell"><div class="bar points t1"></div></div><div class="cell"><div class="bar points t2"></div></div><div class="cell"><div class="bar points t3"></div></div></div>
+  <div class="row"><div class="cell"><div class="bar flat t1"></div></div><div class="cell"><div class="bar flat t2"></div></div><div class="cell"><div class="bar flat t3"></div></div></div>
+  <div class="row"><div class="cell"><div class="bar jump-start before"></div></div><div class="cell"><div class="bar jump-start unfilled"></div></div><div class="cell"><div class="bar jump-start at-start"></div></div></div>
+  <div class="row"><div class="cell"><div class="bar jump-both before"></div></div><div class="cell"><div class="bar jump-both unfilled"></div></div><div class="cell"><div class="bar jump-both at-start"></div></div></div>
+</body>
+</html>

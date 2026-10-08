@@ -1,0 +1,65 @@
+<!doctype html>
+<html>
+<head>
+<title>Transitions: an inherited colour reaching the box inside; an animation outranking a transition; display leaving with allow-discrete and without; a transform and an opacity; and a transition retargeted half way</title>
+<!-- The boxes' classes change at the first frame; the retargeted one's
+     at half a second; the page is drawn at three quarters. -->
+<meta name="reference-change" content="all class go; retarget class bar far">
+<meta name="reference-time" content="0 500 750">
+<script src="reference-change.js"></script>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 6px 0 0 10px; }
+  .cell { position: relative; width: 200px; height: 40px; margin-right: 10px; background-color: #e0d8c8; }
+  .bar { width: 40px; height: 40px; background-color: #3a7a4a; }
+
+  /* A colour a second and a half long, half way: red to blue through
+     purple. The box inside inherits it as it runs. (A box inside with a
+     transition of its own runs it once, from red to blue, in the
+     reference browser as in the engine; holding the parent's transition
+     for the capture is a change of style in which the browser makes the
+     child's chase its parent's colour, so the capture cannot show it.) */
+  .ink { display: flex; height: 40px; border-left: 40px solid; color: #c80000; transition: color 1.5s linear; }
+  .go .ink { color: #0000c8; }
+  /* The borders are in the colour, as a border's colour is by default. */
+  .ink div { width: 40px; height: 12px; margin: 10px 0 0 30px; border: 4px solid; }
+
+  /* An animation outranks a transition of its property: the width the
+     animation holds, half way from 80px to 160px. */
+  .ranked { transition: width 1s linear; animation: held 1s linear paused -0.5s; }
+  @keyframes held { from { width: 80px; } to { width: 160px; } }
+  .go .ranked { width: 200px; }
+
+  /* Leaving with allow-discrete: shown until the end, half faded;
+     without, gone at once. */
+  .leaving { transition: display 1.5s allow-discrete, opacity 1.5s linear; }
+  .gone { transition: display 1.5s, opacity 1.5s linear; }
+  .go .leaving, .go .gone { display: none; opacity: 0; }
+
+  /* A transform, three quarters of the way to 80px. */
+  .moving { transform: translateX(0px); transition: transform 1s linear; }
+  .go .moving { transform: translateX(80px); }
+
+  /* Retargeted half way, at 120px, to 160px: a new transition from
+     there, a quarter of the way at 130px. */
+  #retarget { transition: width 1s linear; }
+  .go #retarget { width: 200px; }
+  .go #retarget.far { width: 160px; }
+</style>
+</head>
+<body>
+  <div id="all">
+    <div class="row">
+      <div class="cell"><div class="ink"><div></div></div></div>
+      <div class="cell"><div class="bar ranked"></div></div>
+      <div class="cell"><div class="bar" id="retarget"></div></div>
+    </div>
+    <div class="row">
+      <div class="cell"><div class="bar leaving"></div></div>
+      <div class="cell"><div class="bar gone"></div></div>
+      <div class="cell"><div class="bar moving"></div></div>
+    </div>
+  </div>
+</body>
+</html>

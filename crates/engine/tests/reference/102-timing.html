@@ -1,0 +1,70 @@
+<!doctype html>
+<html>
+<head>
+<title>Animation timing: each fill mode before and after the active interval, each direction in two iterations, fractional and zero iteration counts, a zero duration, negative delays, and the moment an iteration ends</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 0; }
+  .row { display: flex; margin: 6px 0 0 10px; }
+  .cell { width: 200px; height: 24px; margin-right: 10px; background-color: #e0d8c8; }
+  /* A bar 40px to 200px wide over a second, linear, held where its delay
+     puts it; its own width is 20px. */
+  .bar { width: 20px; height: 24px; background-color: #3a7a4a; animation: grow 1s linear paused; }
+  @keyframes grow { from { width: 40px; } to { width: 200px; } }
+
+  /* Before the active interval, a second's delay away. */
+  .before { animation-delay: 1s; }
+  /* After it: two seconds in, a second-long animation is over. */
+  .after { animation-delay: -2s; }
+  .none { animation-fill-mode: none; }
+  .forwards { animation-fill-mode: forwards; }
+  .backwards { animation-fill-mode: backwards; }
+  .both { animation-fill-mode: both; }
+  /* No iteration at all, filled forwards, at its start. */
+  .zero { animation-iteration-count: 0; animation-fill-mode: forwards; }
+
+  /* Directions, three iterations, held a quarter into the second and
+     into the third. */
+  .three { animation-iteration-count: 3; }
+  .i2 { animation-delay: -1.25s; }
+  .i3 { animation-delay: -2.25s; }
+  .normal { animation-direction: normal; }
+  .reverse { animation-direction: reverse; }
+  .alternate { animation-direction: alternate; }
+  .alternate-reverse { animation-direction: alternate-reverse; }
+
+  /* Fractional iteration counts, over and filled forwards: half way
+     through the second; a quarter into the second, reversed. */
+  .half { animation-iteration-count: 1.5; animation-fill-mode: forwards; animation-delay: -3s; }
+  .quarter { animation-iteration-count: 1.25; animation-direction: alternate; animation-fill-mode: forwards; animation-delay: -3s; }
+
+  /* The moment an iteration ends: the next begins; the last ends at its
+     end, filled forwards, alternate or not. */
+  .next { animation-iteration-count: 2; animation-delay: -1s; }
+  .last { animation-iteration-count: 1; animation-fill-mode: forwards; animation-delay: -1s; }
+  .last-alternate { animation-iteration-count: 2; animation-direction: alternate; animation-fill-mode: forwards; animation-delay: -2s; }
+
+  /* A zero duration, two iterations: over at once, at the end of the
+     second, alternate or not. */
+  .instant { animation-duration: 0s; animation-iteration-count: 2; animation-fill-mode: both; }
+  .instant-alternate { animation-duration: 0s; animation-iteration-count: 2; animation-direction: alternate; animation-fill-mode: both; }
+
+  /* Negative delays: a quarter into the fourth of an infinite run, at
+     the start, and half way. */
+  .infinite { animation-iteration-count: infinite; animation-delay: -3.25s; }
+  .start { animation-delay: 0s; }
+  .middle { animation-delay: -0.5s; }
+</style>
+</head>
+<body>
+  <div class="row"><div class="cell"><div class="bar before none"></div></div><div class="cell"><div class="bar before forwards"></div></div><div class="cell"><div class="bar before backwards"></div></div></div>
+  <div class="row"><div class="cell"><div class="bar before both"></div></div><div class="cell"><div class="bar after none"></div></div><div class="cell"><div class="bar after forwards"></div></div></div>
+  <div class="row"><div class="cell"><div class="bar after backwards"></div></div><div class="cell"><div class="bar after both"></div></div><div class="cell"><div class="bar zero"></div></div></div>
+  <div class="row"><div class="cell"><div class="bar three normal i2"></div></div><div class="cell"><div class="bar three normal i3"></div></div><div class="cell"><div class="bar three reverse i2"></div></div></div>
+  <div class="row"><div class="cell"><div class="bar three reverse i3"></div></div><div class="cell"><div class="bar three alternate i2"></div></div><div class="cell"><div class="bar three alternate i3"></div></div></div>
+  <div class="row"><div class="cell"><div class="bar three alternate-reverse i2"></div></div><div class="cell"><div class="bar three alternate-reverse i3"></div></div><div class="cell"><div class="bar half"></div></div></div>
+  <div class="row"><div class="cell"><div class="bar quarter"></div></div><div class="cell"><div class="bar next"></div></div><div class="cell"><div class="bar last"></div></div></div>
+  <div class="row"><div class="cell"><div class="bar last-alternate"></div></div><div class="cell"><div class="bar instant"></div></div><div class="cell"><div class="bar instant-alternate"></div></div></div>
+  <div class="row"><div class="cell"><div class="bar infinite"></div></div><div class="cell"><div class="bar start"></div></div><div class="cell"><div class="bar middle"></div></div></div>
+</body>
+</html>

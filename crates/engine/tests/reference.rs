@@ -21,6 +21,18 @@
 //! pixels in red over the capture, dimmed) are written under
 //! `target/reference/` for a look, and the failure names the pixels.
 //!
+//! A page's animations are drawn at their first frame, the document's
+//! timeline at zero, as the capture shows them: paused, or at a negative
+//! delay, they show the moment they ask for (M22). A transition needs a
+//! change after the first frame: a page may ask for changes with
+//! `<meta name="reference-change">`, each an element's id, an attribute
+//! and its value, separated by semicolons, and for the times they are
+//! made and the page drawn with `<meta name="reference-time">`, in
+//! milliseconds from the first frame. The capture's browser makes them
+//! by the page's `reference-change.js`, holding every animation at each
+//! time; this test makes them through [`Engine::mutate`] between frames
+//! drawn at those times.
+//!
 //! A second test loads each page, changes its document and changes it
 //! back, drawing a frame after every step, and holds what is left to
 //! the same capture (M13): whatever the engine keeps from frame to
@@ -53,7 +65,9 @@
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
-use engine::{ColorScheme, Engine, MediaType, Preferences, SCROLLBAR_WIDTH};
+use std::time::Duration;
+
+use engine::{ColorScheme, Engine, FrameTime, MediaType, Preferences, SCROLLBAR_WIDTH};
 
 /// The size a page is drawn at unless it says another.
 const WIDTH: u32 = 800;
@@ -107,6 +121,70 @@ fn setting_of(source: &str) -> Setting {
             reduced_motion,
         },
     }
+}
+
+/// The changes a page asks for with `<meta name="reference-change">`,
+/// each an element's id, an attribute and its value, and the times
+/// `<meta name="reference-time">` gives, of each change and then of the
+/// drawing, in milliseconds (M22).
+struct Changes {
+    changes: Vec<(String, String, String)>,
+    times: Vec<u64>,
+}
+
+/// The changes `source` asks for, if it asks for any.
+fn changes_of(source: &str) -> Option<Changes> {
+    let changes: Vec<(String, String, String)> = meta(source, "reference-change")?
+        .split(';')
+        .map(|change| {
+            let mut words = change.split_whitespace();
+            let id = words.next().expect("an element's id").to_string();
+            let name = words.next().expect("an attribute").to_string();
+            (id, name, words.collect::<Vec<_>>().join(" "))
+        })
+        .collect();
+    let times: Vec<u64> = meta(source, "reference-time")
+        .expect("a page that changes says when")
+        .split_whitespace()
+        .map(|time| time.parse().expect("a time in milliseconds"))
+        .collect();
+    assert_eq!(
+        times.len(),
+        changes.len() + 1,
+        "a time for each change and one for the drawing"
+    );
+    Some(Changes { changes, times })
+}
+
+/// Makes `changes` as `reference-change.js` makes them for the capture:
+/// the first frame drawn at time zero; each change made between two
+/// frames drawn at its time, the first showing the animations there, the
+/// second starting the transitions the change asks for; then a frame at
+/// the drawing's time.
+fn make_changes(engine: &mut Engine, changes: &Changes, setting: Setting) {
+    let at = |engine: &mut Engine, ms: u64| {
+        engine.frame_at(
+            setting.width,
+            setting.height,
+            FrameTime::at(Duration::from_millis(ms)),
+        );
+    };
+    at(engine, 0);
+    for ((id, name, value), &time) in changes.changes.iter().zip(&changes.times) {
+        at(engine, time);
+        let element = {
+            let document = engine.document();
+            document
+                .subtree(document.root())
+                .find(|&n| document.attr(n, "id") == Some(id.as_str()))
+                .unwrap_or_else(|| panic!("no element has the id {id}"))
+        };
+        engine
+            .mutate(|document| document.set_attribute(element, name, value))
+            .expect("an element");
+        at(engine, time);
+    }
+    at(engine, *changes.times.last().expect("a time to draw at"));
 }
 
 /// An engine with the bundled font showing `source` as it asks, and its
@@ -315,10 +393,10 @@ fn every_reference_page_renders_as_its_capture() {
     let pages = pages();
     assert_eq!(
         pages.len(),
-        99,
+        106,
         "the ten cases of M10's design note, the eleven of M11's, the five of M12's, the three of M16's, \
-         the twenty of M17's, the twenty of M18's, the ten of M19's, the eleven of M20's and the nine \
-         of M21's"
+         the twenty of M17's, the twenty of M18's, the ten of M19's, the eleven of M20's, the nine \
+         of M21's and the seven of M22's"
     );
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/reference");
     let mut failures = Vec::new();
@@ -331,7 +409,12 @@ fn every_reference_page_renders_as_its_capture() {
         let setting = setting_of(&source);
         let expected = read_capture(&page.with_extension("png"), setting);
         let tolerance = tolerance_of(&source);
-        let (mut engine, mut actual) = render(&source, setting, |_| {});
+        let changes = changes_of(&source);
+        let (mut engine, mut actual) = render(&source, setting, |engine| {
+            if let Some(changes) = &changes {
+                make_changes(engine, changes, setting);
+            }
+        });
         if ignores_scrollbar(&source) {
             assert!(
                 engine.max_scroll() > 0.0,
@@ -446,8 +529,15 @@ fn every_reference_page_changed_and_changed_back_renders_as_its_capture() {
         let source = fs::read_to_string(page).expect("the page is read");
         let setting = setting_of(&source);
         let expected = read_capture(&page.with_extension("png"), setting);
+        // A page's own changes after the steps, which would cancel the
+        // transitions they start: an element hidden has its
+        // transitions cancelled, and shown again starts none.
+        let changes = changes_of(&source);
         let (_, mut actual) = render(&source, setting, |engine| {
-            mutate_and_restore(engine, setting)
+            mutate_and_restore(engine, setting);
+            if let Some(changes) = &changes {
+                make_changes(engine, changes, setting);
+            }
         });
         if ignores_scrollbar(&source) {
             actual = without_scrollbar(&actual, &expected, setting);

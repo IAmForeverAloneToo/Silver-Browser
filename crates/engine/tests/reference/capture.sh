@@ -17,6 +17,12 @@
 #   <meta name="reference-reduced-motion" content="reduce">: reduced
 #     motion preferred.
 #
+# A page's animations are captured at their first frame (M22). A page
+# that asks for changes after it, <meta name="reference-change"> and
+# <meta name="reference-time">, makes them itself by loading
+# reference-change.js, which holds the animations at the times asked:
+# the capture needs nothing more.
+#
 # The browser is $BROWSER, else `chrome-headless-shell` on the PATH: the
 # headless shell lays the page out in a viewport exactly the window's
 # size, which is what makes the capture the page at the size asked. The

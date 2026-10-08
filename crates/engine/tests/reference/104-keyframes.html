@@ -1,0 +1,102 @@
+<!doctype html>
+<html>
+<head>
+<title>Keyframes: implicit ends, offsets repeated and listed, a keyframe's easing, !important ignored, the rule that wins by layer and by order, @-webkit-keyframes, ::before, ::after and ::marker animated, display and float animated discretely, and a custom property read by var()</title>
+<style>
+  /* The reference browser is given the engine's own font, whose
+     metrics place and size the markers. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f6f2ea; font-family: "Reference Sans"; font-size: 16px; }
+  body { margin: 0; }
+  .row { display: flex; margin: 6px 0 0 10px; }
+  .cell { width: 200px; height: 24px; margin-right: 10px; background-color: #e0d8c8; }
+  /* A bar 40px wide of its own, its animation a second long, linear and
+     held half way unless it says otherwise. */
+  .bar { width: 40px; height: 24px; background-color: #3a7a4a;
+         animation-duration: 1s; animation-timing-function: linear; animation-play-state: paused; animation-delay: -0.5s; }
+  .early { animation-delay: -0.25s; }
+  .late { animation-delay: -0.75s; }
+  .later { animation-delay: -0.6s; }
+
+  /* Implicit ends: the bar's own width. */
+  @keyframes implicit { 50% { width: 160px; } }
+  @keyframes only-to { to { width: 200px; } }
+  /* Offsets repeated: the blocks of one offset taken together, the
+     later winning; a list of offsets. */
+  @keyframes repeated { 50% { width: 100px; } from { width: 40px; } 50% { height: 12px; width: 160px; } to { width: 200px; } }
+  @keyframes listed { 0%, 100% { width: 200px; } 50% { width: 40px; } }
+  /* A keyframe's easing, for the interval it begins. */
+  @keyframes stepped { from { width: 40px; animation-timing-function: steps(2, end); } to { width: 200px; } }
+  /* !important in a keyframe drops the declaration: the end is the
+     bar's own width. */
+  @keyframes important { from { width: 120px; } to { width: 200px !important; } }
+  /* By order: the last rule of a name. */
+  @keyframes order { to { width: 80px; } }
+  @keyframes order { to { width: 200px; } }
+  /* By layer: the rule of the layer that wins, wherever it is; an
+     unlayered rule over any layer's. */
+  @layer low, high;
+  @layer high { @keyframes layered { to { width: 200px; } } }
+  @layer low { @keyframes layered { to { width: 80px; } } }
+  @keyframes unlayered { to { width: 200px; } }
+  @layer high { @keyframes unlayered { to { width: 80px; } } }
+  /* The Compatibility Standard's prefixed rule. */
+  @-webkit-keyframes webkit { to { width: 200px; } }
+
+  /* Pseudo-elements animated. */
+  .pseudo { width: 200px; height: 24px; background-color: #e0d8c8; margin-right: 10px; }
+  .pseudo::before, .pseudo::after { content: ''; display: block; width: 40px; height: 12px;
+         animation: grow 1s linear paused -0.5s; }
+  .pseudo::before { background-color: #3a7a4a; }
+  .pseudo::after { background-color: #a0522d; animation-name: shrink; }
+  @keyframes grow { to { width: 200px; } }
+  @keyframes shrink { from { width: 200px; } to { width: 0px; } }
+  ul { width: 160px; height: 40px; margin: 0 10px 0 0; padding: 0 0 0 40px; list-style-type: square; background-color: #e0d8c8; color: transparent; }
+  li::marker { color: #c80000; animation: marker 1s linear paused -0.5s; }
+  @keyframes marker { to { color: #0000c8; } }
+
+  /* Discrete: display none from half way, float right from half way. */
+  @keyframes vanish { from { display: block; } to { display: none; } }
+  .floats .bar { float: left; animation-name: float; }
+  @keyframes float { from { float: left; } to { float: right; } }
+  /* A custom property, animated discretely, read by var(). */
+  .custom { width: var(--w, 30px); animation-name: custom; }
+  @keyframes custom { from { --w: 40px; } to { --w: 200px; } }
+</style>
+</head>
+<body>
+  <div class="row">
+    <div class="cell"><div class="bar early" style="animation-name: implicit"></div></div>
+    <div class="cell"><div class="bar late" style="animation-name: implicit"></div></div>
+    <div class="cell"><div class="bar" style="animation-name: only-to"></div></div>
+  </div>
+  <div class="row">
+    <div class="cell"><div class="bar" style="animation-name: repeated"></div></div>
+    <div class="cell"><div class="bar early" style="animation-name: listed"></div></div>
+    <div class="cell"><div class="bar later" style="animation-name: stepped"></div></div>
+  </div>
+  <div class="row">
+    <div class="cell"><div class="bar" style="animation-name: important"></div></div>
+    <div class="cell"><div class="bar" style="animation-name: order"></div></div>
+    <div class="cell"><div class="bar" style="animation-name: layered"></div></div>
+  </div>
+  <div class="row">
+    <div class="cell"><div class="bar" style="animation-name: unlayered"></div></div>
+    <div class="cell"><div class="bar" style="animation-name: webkit"></div></div>
+    <div class="pseudo"></div>
+  </div>
+  <div class="row">
+    <ul><li>xx</li><li>xx</li></ul>
+    <div class="cell"><div class="bar early" style="animation-name: vanish"></div></div>
+    <div class="cell"><div class="bar late" style="animation-name: vanish"></div></div>
+  </div>
+  <div class="row">
+    <div class="cell floats"><div class="bar early"></div></div>
+    <div class="cell floats"><div class="bar late"></div></div>
+    <div class="cell"><div class="bar custom early"></div></div>
+  </div>
+  <div class="row">
+    <div class="cell"><div class="bar custom late"></div></div>
+  </div>
+</body>
+</html>
