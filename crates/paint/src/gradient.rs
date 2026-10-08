@@ -23,6 +23,11 @@ const MIN_PERIOD: f32 = 0.5;
 /// A radius taken for one of zero (section 3.2.3).
 const TINY: f32 = 1e-4;
 
+/// The bytes from which a gradient is rendered on several threads, a
+/// band of rows each, and the most threads.
+const PARALLEL_BYTES: usize = 1 << 20;
+const MAX_THREADS: usize = 8;
+
 /// A colour, premultiplied, its channels from 0 to 1.
 type Premultiplied = [f32; 4];
 
@@ -372,8 +377,19 @@ fn resolution(gradient: &Gradient, w: f32, h: f32) -> (u32, u32) {
 
 /// `gradient` rendered for a tile `w` by `h` CSS pixels: premultiplied
 /// RGBA, one frame, at [`resolution`]'s size, each pixel the colour at
-/// the tile's point its centre stands for.
+/// the tile's point its centre stands for. A large one is rendered a
+/// band of rows a thread.
 pub fn render(gradient: &Gradient, w: f32, h: f32) -> images::Image {
+    let (pw, ph) = resolution(gradient, w.max(0.0), h.max(0.0));
+    let threads = match pw as usize * ph as usize * 4 >= PARALLEL_BYTES {
+        true => std::thread::available_parallelism().map_or(1, |n| n.get().min(MAX_THREADS)),
+        false => 1,
+    };
+    render_on(gradient, w, h, threads)
+}
+
+/// [`render`] on `threads` threads.
+fn render_on(gradient: &Gradient, w: f32, h: f32, threads: usize) -> images::Image {
     let (w, h) = (w.max(0.0), h.max(0.0));
     let (pw, ph) = resolution(gradient, w, h);
     let (geometry, length) = Geometry::of(gradient, w, h);
@@ -382,26 +398,44 @@ pub fn render(gradient: &Gradient, w: f32, h: f32) -> images::Image {
     let period = last - first;
     // A repeating gradient too fine to show, or flat, is its average.
     let flat = matches!(geometry, Geometry::Radial { flat: true, .. });
-    let solid = gradient.repeating && (period < MIN_PERIOD || flat);
-    let color = |x: f32, y: f32| {
-        if solid {
-            return average(&stops);
+    let solid = (gradient.repeating && (period < MIN_PERIOD || flat)).then(|| average(&stops));
+    // A channel to a byte, rounded; the cast saturates, below 0 and
+    // above 255 alike.
+    let byte = |v: f32| (v * 255.0 + 0.5) as u8;
+    let xs: Vec<f32> = (0..pw)
+        .map(|px| (px as f32 + 0.5) * w / pw as f32)
+        .collect();
+    let row = |py: usize, line: &mut [u8]| {
+        let y = (py as f32 + 0.5) * h / ph as f32;
+        for (&x, texel) in xs.iter().zip(line.as_chunks_mut::<4>().0) {
+            let c = solid.unwrap_or_else(|| {
+                let mut t = geometry.position(x, y);
+                if gradient.repeating {
+                    t = first + (t - first).rem_euclid(period);
+                }
+                color_at(&stops, t)
+            });
+            *texel = c.map(byte);
         }
-        let mut t = geometry.position(x, y);
-        if gradient.repeating {
-            t = first + (t - first).rem_euclid(period);
-        }
-        color_at(&stops, t)
     };
-    let mut pixels = Vec::with_capacity(pw as usize * ph as usize * 4);
-    for py in 0..ph {
-        for px in 0..pw {
-            let x = (px as f32 + 0.5) * w / pw as f32;
-            let y = (py as f32 + 0.5) * h / ph as f32;
-            let c = color(x, y);
-            pixels.extend(c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8));
+    let stride = pw as usize * 4;
+    let mut pixels = vec![0u8; stride * ph as usize];
+    let band = (ph as usize).div_ceil(threads).max(1);
+    std::thread::scope(|scope| {
+        for (k, rows) in pixels.chunks_mut(band * stride).enumerate() {
+            let row = &row;
+            let mut draw = move || {
+                for (i, line) in rows.chunks_mut(stride).enumerate() {
+                    row(k * band + i, line);
+                }
+            };
+            if threads > 1 {
+                scope.spawn(draw);
+            } else {
+                draw();
+            }
         }
-    }
+    });
     images::Image {
         width: pw,
         height: ph,
@@ -466,6 +500,23 @@ mod tests {
         for &(x, colour) in expected {
             let got = over_white(&image, x / sx, y / sy);
             assert!(near(got, colour), "{css} at {x}: {got:?}, not {colour:?}");
+        }
+    }
+
+    #[test]
+    fn a_gradient_is_the_same_rendered_on_one_thread_or_several() {
+        for css in [
+            "linear-gradient(45deg, red, blue 40%, lime)",
+            "repeating-radial-gradient(circle at 30% 70%, red 0 7px, blue 7px 13px)",
+        ] {
+            let g = gradient(css);
+            let one = render_on(&g, 301.0, 203.0, 1);
+            for threads in [2, 5, 8] {
+                assert!(
+                    one == render_on(&g, 301.0, 203.0, threads),
+                    "{css} on {threads}"
+                );
+            }
         }
     }
 

@@ -1,5 +1,7 @@
-//! M22.6's acceptance, as far as it holds whatever the machine: what
-//! the frames of the milestone's two demos (`tests/demos/`) do. The
+//! M22.6's and M23.6's acceptance, as far as it holds whatever the
+//! machine: what the frames of the milestones' demos (`tests/demos/`)
+//! do; for M23, the photo grid's images drawn and its frames, scrolled
+//! and turning, laying nothing out, `benches/images.rs` timing them. The
 //! spinner's frames lay nothing out and composite its layer without
 //! drawing it again; the colour fade's lay out the card alone, the rest
 //! of the page taken from the layout cache. How long the frames take,
@@ -7,9 +9,9 @@
 //! `benches/animation.rs`'s to measure.
 
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use engine::{ColorScheme, Engine, FRAME_BUDGET, FrameTime, Preferences};
+use engine::{ColorScheme, Engine, FRAME_BUDGET, FrameTime, LoadState, Preferences, Url};
 use paint::GroupKey;
 
 const WIDTH: u32 = 1280;
@@ -124,4 +126,67 @@ fn the_colour_fades_frames_lay_out_the_card_alone() {
         engine.needs_frame(),
         "it alternates for as long as it is shown"
     );
+}
+
+#[test]
+fn the_photo_grids_images_are_drawn_and_its_frames_lay_nothing_out() {
+    // M23.6's page: photos in four formats, an animated GIF and
+    // gradients, loaded by its URL, drawn once its images are decoded.
+    let mut engine = engine();
+    let (wake, woken) = std::sync::mpsc::channel();
+    engine.set_waker(move || {
+        let _ = wake.send(());
+    });
+    let wait = |engine: &mut Engine, done: &dyn Fn(&Engine) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            engine.poll_network();
+            if done(engine) {
+                return;
+            }
+            let left = deadline
+                .checked_duration_since(Instant::now())
+                .expect("the page loads in time");
+            let _ = woken.recv_timeout(left);
+        }
+    };
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/demos/photo-grid.html");
+    engine.navigate(Url::from_file_path(&path).expect("a path"));
+    wait(&mut engine, &|e| e.load_state() == &LoadState::Loaded);
+    draw(&mut engine, 0);
+    wait(&mut engine, &|e| !e.decoding());
+    let frame = draw(&mut engine, 1);
+    // Each photo in view, at its middle, is the photo, not its figure.
+    let document = engine.document();
+    let imgs: Vec<_> = document
+        .subtree(document.root())
+        .filter(|&n| document.tag(n) == Some("img"))
+        .collect();
+    let fragments = engine.fragments(WIDTH as f32);
+    let mut seen = 0;
+    for img in imgs {
+        let Some(f) = fragments.iter().find(|f| f.node == img) else {
+            continue;
+        };
+        let (x, y) = (f.x + f.w / 2.0, f.y + f.h / 2.0);
+        if y >= HEIGHT as f32 {
+            continue;
+        }
+        seen += 1;
+        assert_ne!(px(&frame, x as u32, y as u32), [0xff, 0xfd, 0xf8], "{f:?}");
+    }
+    assert!(seen >= 8, "two rows of photos in view: {seen}");
+    // The animated GIF in view wakes the next frame when it turns.
+    assert!(!engine.needs_frame());
+    let next = engine.next_frame_at().expect("the spinner turns");
+    assert!(next <= Duration::from_millis(100), "{next:?}");
+    // Scrolled to the bottom and back up, nothing is laid out again.
+    let runs = engine.layout_runs();
+    let range = engine.max_scroll();
+    for i in 2..=60u32 {
+        let k = if i <= 31 { i - 1 } else { 61 - i } as f32;
+        engine.set_scroll(range * k / 30.0);
+        draw(&mut engine, i);
+    }
+    assert_eq!(engine.layout_runs(), runs, "no frame laid anything out");
 }

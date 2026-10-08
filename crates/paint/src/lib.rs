@@ -675,8 +675,11 @@ pub fn paint_fragments_with(
             .unwrap_or(white),
     }];
     // The viewport in the document's coordinates, which a fixed
-    // background is placed in (M23.3), and the part of the canvas the
-    // document's groups list, which the canvas's images cover.
+    // background is placed in (M23.3), and the canvas the canvas's
+    // images cover: the document from its top to the bottom of its last
+    // top-level box, and a viewport more for the margins after it. It is
+    // the same whatever the scroll offset, so that a scroll draws them
+    // from the document's layer (M19) rather than anew.
     let backdrop = Backdrop {
         pictures,
         offsets,
@@ -687,11 +690,12 @@ pub fn paint_fragments_with(
             h: viewport.height,
         },
     };
+    let bottom = roots.iter().map(|f| f.top() + f.h).fold(0.0, f32::max);
     let canvas_area = Rect {
         x: 0.0,
-        y: viewport.scroll_y - viewport.height,
+        y: 0.0,
         w: viewport.width,
-        h: 3.0 * viewport.height,
+        h: bottom + viewport.height,
     };
     // The document's content comes in groups that scroll it (M19), the
     // items inside in document coordinates and the group's matrix the
@@ -2661,9 +2665,24 @@ mod fragment_tests {
             })
             .expect("the document's group");
         // The body's image, propagated, first in the group, over the
-        // canvas, placed by the root's padding box.
+        // canvas, the document and a viewport more, placed by the root's
+        // padding box.
         let (area, tile, _, repeat) = laid(&list.items[group + 1]);
-        assert_eq!(area, [0.0, -600.0, VIEWPORT, 1800.0]);
+        let bottom = layout.roots[0].top() + layout.roots[0].h;
+        assert_eq!(area, [0.0, 0.0, VIEWPORT, bottom + 600.0]);
+        // The same scrolled: the document's layer keeps it.
+        let viewport = Viewport {
+            width: VIEWPORT,
+            height: 600.0,
+            scroll_y: 250.0,
+        };
+        let scrolled = paint_fragments_with(&layout.roots, viewport, &(), &Twenty);
+        let item = scrolled
+            .items
+            .iter()
+            .find(|i| matches!(i, DisplayItem::Pattern { .. }))
+            .expect("the canvas's image");
+        assert_eq!(item, &list.items[group + 1]);
         assert_eq!(tile[..2], [7.0, 7.0]);
         assert_eq!(repeat, [true; 2]);
         let patterns = list
