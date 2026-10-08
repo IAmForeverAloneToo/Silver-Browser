@@ -118,9 +118,13 @@ bytes, to 656, which its size test states.
 
 **Easing functions.** `style::easing` parses an `<easing-function>`:
 `linear`; `ease`, `ease-in`, `ease-out`, `ease-in-out` and
-`cubic-bezier()`, an x value outside [0, 1] making it invalid;
-`steps()`, a count below one, or below two with `jump-none`, making it
-invalid, with each step position, and `step-start` and `step-end`; and
+`cubic-bezier()`, an x value written outside [0, 1] making it invalid
+and a math function's clamped to it, as the draft and the
+web-platform-tests have `cubic-bezier(calc(-2), …)` computing to 0,
+where the reference browser rejects it; `steps()`, a count written below
+one, or below two with `jump-none`, making it invalid, a math function's
+rounded a half up and raised to that least, a `NaN` one invalid, with
+each step position, and `step-start` and `step-end`; and
 Level 2's `linear()`, whose control points are canonicalized where it is
 computed (Easing 2 §2.1), as the web-platform-tests read them back.
 Level 2's grammar takes a `linear()` of a single point, and its output
@@ -138,7 +142,11 @@ jump-start)` in a backwards-filled delay is at its bottom step, as in
 the reference browser, and at the bottom of a step at the step's own
 input when the flag is set. `linear()` extrapolates along its first or
 last two points (Easing 2 §2.1.2). An input outside [0, 1] reaches a
-keyframe's easing when the animation's own easing overshoots.
+keyframe's easing when the animation's own easing overshoots. An output
+is kept within 10⁹ of zero (`style::easing::MAX_PROGRESS`) and is never
+`NaN`, so that what interpolates by it stays finite however the numbers
+were written; every interpolated value is clamped to its property's
+range long before.
 
 **`@keyframes` (M22.2).** The css crate parses an `@keyframes` block,
 and an `@-webkit-keyframes` one, as a list of rules, as it parses
@@ -157,11 +165,17 @@ section 2's; a block one of whose selectors is otherwise, or does not
 parse, is dropped. The declarations keep their tokens; one marked
 `!important` is ignored (§3), as are those of the properties that are
 not animatable but `animation-timing-function`, which is the keyframe's
-easing. The keyframes are processed by Animations 2 §3.2: sorted by
-offset, the blocks of one offset taken together, a property's last
-declaration among them winning and each keyframe keeping its own easing,
-so that `50% { width: 110px } 50% { height: 7px }` animates both, as in
-the reference browser. A property that no keyframe at 0% or at 100%
+easing, and those the cascade would not take, checked where the
+keyframes are read as a style rule's are, so that a value that does not
+parse sets nothing at its offset. Of a block's
+`animation-timing-function`s the last valid one is its easing; one
+that substitutes `var()` cannot be read apart from an element, and the
+keyframe takes the animation's easing. The keyframes
+are processed by Animations 2 §3.2: sorted by offset, the blocks of one
+offset and one easing taken together, a property's last declaration
+among them winning and each keyframe keeping its own easing, so that
+`50% { width: 110px } 50% { height: 7px }` animates both, as in the
+reference browser. A property that no keyframe at 0% or at 100%
 names takes its underlying value there at each sample, so that `to {
 width: 110px }` over a width of 10px is 60px half way, as in the
 reference browser.
@@ -246,10 +260,14 @@ property's range, so that an easing that overshoots takes an opacity to
   the shorter list is extended by the identity functions of the longer
   one's; from the start, pairs of functions of one name or of one
   primitive interpolate as that primitive (Transforms 2 §14), a rotation
-  about two different axes by quaternions; at the first pair that
-  differ, the rest of each list becomes one matrix and the two are
-  interpolated by decomposition, two-dimensional matrices by Transforms
-  1 §11.2 and any other by Transforms 2 §13: translation, scale, skew,
+  about two different axes by quaternions; the three skews, `skewX`,
+  `skewY` and `skew`, are each a primitive of its own, paired only by
+  name, as the reference browser pairs them, where §14 makes them one;
+  at the first pair that differ, the rest of each list becomes one
+  matrix and the two are interpolated by decomposition in three
+  dimensions (Transforms 2 §13), a two-dimensional matrix too, as the
+  reference browser and the web-platform-tests have it, rather than by
+  Transforms 1 §11.2's decomposition in two: translation, scale, skew,
   perspective and a rotation interpolated spherically. `matrix()`,
   `matrix3d()` and `perspective()` are matrices whatever they meet. A
   matrix that does not decompose, one with no inverse, makes the
@@ -291,9 +309,11 @@ property's range, so that an easing that overshoots takes an opacity to
   rendered to the end, as the reference browser keeps one. Display 3's
   current draft calls `display` not animatable; Level 4 and the
   reference browser are followed. The element is inert while its style
-  without animations and transitions has `display: none` (§2.9): hit
-  testing passes over its boxes, which is all that inertness can mean in
-  an engine without focus.
+  without animations and transitions has `display: none` (§2.9), a flag
+  of its computed style, `ComputedStyle::inert`, that its descendants
+  inherit: hit testing passes over its boxes and its text and over what
+  is inside them, which is all that inertness can mean in an engine
+  without focus.
 - *Custom properties* are discrete, their values lists of tokens
   (Variables 1 §2).
 - *Not animatable* are the animation and transition properties
@@ -337,10 +357,13 @@ does not animate, are not animated here either, their animation and
 transition properties having no effect. Layout's cascade of an element
 on a first line (M16's `Recascade`) applies the element's animations at
 the timeline's time as the cascade does, and starts none. A custom
-property an animation sets is tainted (Variables 1 §2, §3): `var()` of
-it in a property that is not animatable is invalid at computed-value
-time, so that `animation-duration: var(--d)` cannot be animated by
-animating `--d`.
+property an animation sets is tainted (Variables 1 §2, §3), a mark kept
+with each value in the custom properties' map: a custom property whose
+value substitutes a tainted one, by `var()` or its fallback, or that
+inherits one, is tainted too; and `var()` of a tainted one in a property
+that is not animatable substitutes the guaranteed-invalid value, its
+fallback taken if it has one, so that `animation-duration: var(--d)`
+cannot be animated by animating `--d`.
 
 **CSS animations (M22.2).** An element's animations are those its
 `animation-name` names whose keyframes are in force; a name that has
@@ -355,7 +378,9 @@ animation had had them from its start, so that a shorter delay can end
 it at once. An element whose style without animations and transitions
 has `display: none`, or whose ancestor's has, has no animations: making
 it so cancels them, and showing it again starts them anew (§2); taking
-it out of the document cancels them too. While an animation is current
+it out of the document cancels them too, and so moving it elsewhere in
+the document starts them again, as the reference browser does, whatever
+its place before and after. While an animation is current
 or in effect, the engine acts as if the element's `will-change` named
 each property the animation animates (Web Animations §5.6): an animated
 transform or opacity makes the box a stacking context, a containing
@@ -363,7 +388,9 @@ block for the boxes inside it as a transform does, and a layer by the
 compositing note's policy, for the animation's whole run, its delay with
 it, so that its values never change what layout made of the box (below).
 The computed `will-change` is not changed: the side effect is kept
-beside it, in the effects.
+beside it, in the effects (`Effects::animated`), the two together being
+the `will-change` in effect. A CSS transition has no such side effect
+here.
 
 **CSS transitions (M22.1).** By Transitions 1 §3, to the letter, at each
 change of style of an element that was rendered at the last change of
@@ -372,18 +399,30 @@ change left it, with its animations and transitions brought to the time
 of this one, which in this engine is the style the cascade holds, every
 element whose animated values change being restyled at each frame's
 time; its after-change style is the new cascade's with the animations'
-values and without the transitions'. For each longhand whose values in
+values and without the transitions', inheriting from its parent's
+after-change style, so that a child's own transition of an inherited
+property runs once, from the old value to the new, rather than chasing
+its parent's transition, as in the reference browser. The after-change
+style of an element whose transitions run is kept beside its style for
+its children to inherit from; it is the cascade's, and layout does not
+read it, so that a transition's start or end changing it alone lays
+nothing out. For each longhand whose values in
 the two differ, the last item of `transition-property` that names it —
 by its name, by a shorthand of it, or by `all` — gives its duration,
 delay, easing and behaviour; a transition starts when the duration's
 positive part and the delay together are above zero and the two values
 are transitionable: interpolable, or discrete with `allow-discrete`
-(Transitions 2 §2.5). A running transition whose end value is no longer
+(Transitions 2 §2.5); none starts for a property a CSS animation of the
+element animates, or animated at its last change of style, as the
+reference browser starts none when the animation is taken away either.
+A running transition whose end value is no longer
 the after-change value is cancelled, or replaced by one from its current
 value, or reversed, its reversing-adjusted start value and shortening
 factor making a change undone half way take half the time back (§3.1).
-The completed transitions are kept until the next change of style, which
-the rules ask of them. `all` names every animatable longhand but the
+A completed transition is kept while the element's style before a change
+and after it still differ in its property, which is when the rules ask
+of it, and forgotten after, so that what is kept is bounded by what
+runs. `all` names every animatable longhand but the
 custom properties, as the `all` shorthand does, which the reference
 browser agrees with; a custom property named by itself transitions,
 discretely and so only with `allow-discrete`, as the drafts say, where
@@ -398,9 +437,12 @@ property, which ends it at once at its end value (Transitions 1 §3).
 A whole cascade, made when the sheets change or a breakpoint is crossed,
 is a restyle of every element against the styles it replaces, which are
 their before-change styles, so that a change of sheets starts
-transitions as a change of class does, as in the reference browser. The
-cascade records whether each element is rendered, which the next change
-of style asks.
+transitions as a change of class does, as in the reference browser
+(`Stylesheets::cascade_from`); the engine keeps the styles it shows
+through a change of the sheets, the viewport or the medium, marking them
+to be cascaded again rather than dropping them, so that there are styles
+to replace. The cascade records whether each element is rendered, which
+the next change of style asks.
 
 **Events (M22.2).** Each sample compares an animation's phase and
 iteration with the last sample's and queues the events of Animations 2
@@ -434,35 +476,61 @@ show nothing new. An animation that never ends asks for a frame at every
 refresh while its document is shown, as in every browser.
 
 **Composited changes (M22.4).** The restyle sorts the changes it makes.
-A change of an element's style in `transform`, `translate`, `rotate`,
-`scale` and `opacity` alone, which leaves it what it was to layout — a
-stacking context or not, a containing block for absolute and fixed boxes
-or not, in a 3D rendering context or not — is composited: nothing
-inherits those properties, so its descendants are not restyled for it,
-and the layout is kept. Its own fragments, those of its node and its
-pseudo-element whose style carries its effects, which no anonymous box's
-does, take its new effects, in the layout shown and in the layout
-cache's entries that hold them, so that a later layout taking them from
-the cache has them too. When a transform changed, the scrollable
-overflow it is part of is measured again — the extent of the scroll
-container the box is in, or the document's height — where the box
-reached, or now reaches, its edge: a transform's projection is part of
-the scrollable overflow (M19), and the reference browser moves it with a
-running animation: a 100px scroller's `scrollHeight` follows a 50px box
-an animation moves down inside it, 548px when the box is 498px down. Hit
+A change of an element's style, or of its pseudo-element's, in
+`transform`, `translate`, `rotate`, `scale` and `opacity` alone, which
+leaves the box what it was to layout, is composited and the layout is
+kept. What it was to layout is three things, each of which decides a
+change alone in the tests: a transform or none, since a transform makes
+the box a containing block for every box inside it; a stacking context
+or not, judged as for a box no transform applies to, since the restyle
+cannot tell whether the box is transformable, so that an opacity from 1
+to less is a change of layout unless the box is a stacking context
+already, by `will-change` or an animation's side effect; and its 3D
+content flattened or not. The other effects being equal, these imply
+the rest, a containing block for absolutely and fixed positioned boxes
+and a stacking context when the box is transformable. The element's
+descendants are restyled still, since an explicit `inherit` can read
+those properties, each change of theirs sorted by the same rule. A
+restyle to the style an element had leaves that style in place, whose
+effects the boxes carry: the fragments of the element's node and of its
+pseudo-element, which no anonymous box's style shares, are found by
+those effects and take the new ones, in the layout shown and in the
+layout cache's entries that hold them, so that a later layout taking
+them from the cache has them too, all of a restyle's changes in one walk
+of each. When a transform changed, the box, or the outermost transformed
+box around it that clips nothing in the same scroll container, whose
+projection holds it, is measured before the change and after it, and
+where it reached, or now reaches, the bottom of its scroll container or
+of the document, to within half a pixel, the scrollable overflow is
+measured again by laying the document out from the cache: a transform's
+projection is part of the scrollable overflow (M19), and the reference
+browser moves it with a running animation: a 100px scroller's
+`scrollHeight` follows a 50px box an animation moves down inside it,
+548px when the box is 498px down. A fixed box reaches no such edge. Hit
 testing and painting read the fragments, so they follow the change.
-Every frame of an animation of a transform or an opacity makes such a
+Every frame of a CSS animation of a transform or an opacity makes such a
 change, the side effect above keeping the box what it was to layout
 throughout: the frame restyles the element and composites its layer,
 laying nothing out and drawing the layer again only at a new raster
-scale, as M19 draws it. A scale animation therefore draws its layer at
-each frame; keeping a layer's raster scale through an animation is
-M35.10's, which the roadmap holds. Changes that are not animated are
-composited by the same rule: the card M19's acceptance turned through
-its `style` attribute now lays nothing out, its transform changing from
-one value to another. A frame whose changes reach nothing layout reads —
-an attribute's change that restyles nothing, say — keeps the layout as
-well, where today every change of the document drops it.
+scale, as M19 draws it, though the document's tiles under it are drawn
+again where it reaches until a layer tree composites it over them
+(M35.10). A scale animation therefore draws its layer at each frame;
+keeping a layer's raster scale through an animation is M35.10's, which
+the roadmap holds. A transition from one transform to another is
+composited from its start to its end; one from `none`, or of an opacity
+from 1, lays the box out where it becomes a stacking context, a
+transition having no side effect here. Changes that are not animated
+are composited by the same rule: the card M19's acceptance turned
+through its `style` attribute now lays nothing out, its transform
+changing from one value to another. A frame whose changes reach nothing
+layout reads — an attribute's change that restyles nothing, say, or a
+transition's start, which changes only the after-change style — keeps
+the layout as well, where before every change of the document dropped
+it; a change of the tree or of its text, or of an attribute layout reads
+itself, `colspan`, `rowspan` or `span`, lays it out whatever the styles,
+and drops it when it is made, between frames, as every change did
+before, so that the frame does not pay for freeing it.
+`Engine::layouts_kept` counts the frames that kept it.
 
 Everything else animates by restyle and layout, as the roadmap says: a
 colour, a width, any property. A colour's change lays out again the
@@ -478,9 +546,12 @@ at their ends and when their events come, and Transitions 1 §10.1 leaves
 stopping or slowing them to a user agent's settings, which section 2
 registers. The engine's own motion is the system's that Media Queries 5
 §12.1 asks to keep to what is essential: under `reduce`, a scroll by the
-wheel, by the keys or to a fragment jumps to its target rather than
-animate there, the document's and a scroll container's alike, and
-`Engine::needs_frame` asks for no frames for it.
+wheel or by the keys jumps to its target rather than animate there, the
+document's and a scroll container's alike, and `Engine::needs_frame`
+asks for no frames for it but the one that shows it; reduced motion
+asked for while a scroll is on its way puts it at its target at once. A
+scroll to a fragment, or one restored, jumped already whatever the
+preference.
 
 **Printing.** The print cascade (M20) takes the screen's animations and
 transitions as they stand at the timeline's time and starts none of its
@@ -490,9 +561,10 @@ its start.
 
 **The style's size.** `ComputedStyle` gains the pointer `motion`: 656
 bytes where it was 648. The side effects — the properties animations act
-as if `will-change` named, and inertness — and the interpolated
-transform function live in the effects, behind their pointer. Its size
-test states the new size and the reason.
+as if `will-change` named — and the interpolated transform function live
+in the effects, behind their pointer; inertness is a flag, `inert`,
+which the padding held. Its size test states the new size and the
+reason.
 
 **Restyle and invalidation.** The animated targets join the restyle of
 each frame as elements whose own style changed, restyled from their
@@ -502,10 +574,13 @@ an animation of the root's font size cascades the document whole at each
 frame, as any change of it does (M13.1). Keeping an animated element's
 matched rules between frames, so that a frame of its animation does not
 match its selectors again, is restyle work for M35.2. A page that
-declares no animation or transition pays a test per element computed,
-which T4.3 checks. The styles of elements taken out of the document are
-forgotten with their animations and transitions, whose `animationcancel`
-and `transitioncancel` are queued.
+declares no animation or transition pays a few tests and a copy or two
+of the larger style for each element computed, the tables of
+animations and transitions not asked while they are empty: 4% more
+work in a whole cascade under callgrind, which T4.3 measures within its
+10% (`docs/perf-budgets.md`). The styles of elements taken out of the
+document are forgotten with their animations and transitions, whose
+`animationcancel` and `transitioncancel` are queued.
 
 **Security.** A document runs at most 65,536 animations and transitions
 together, `MAX_ANIMATIONS`; past that a new animation does not start and
@@ -515,10 +590,12 @@ are kept once for each rule, however many elements name them, and a
 sample computes the two keyframes around its progress for each animated
 property, so a sample's work is bounded by what the sheets hold and the
 bound above. An interpolated transform kept for its box nests inside
-another when a transition is interrupted during one, at most eight deep,
-past which the interpolation is discrete. Times are `f64` seconds,
-infinities clamped and a `NaN` zero, and no step makes an infinity of
-finite inputs that the next step cannot take. A frame's events are a few
+another when a transition is interrupted during one, at most eight deep
+(`style::animate::transform::MAX_MIX_DEPTH`), past which the
+interpolation is discrete. Times are `f64` seconds, infinities clamped
+and a `NaN` zero, an easing's output is finite and within 10⁹ of zero,
+and no step makes an infinity of finite inputs that the next step
+cannot take. A frame's events are a few
 for each animation. The layers animations make stay within M19's layer
 budget, past which a box is drawn through: Transitions 1 §8 asks that a
 page not exhaust graphics memory by animating many elements or large
@@ -536,8 +613,16 @@ draws as the reference browser's first frame does. The tests of the
 directories taken before that the rule left out for these properties —
 34 for `@keyframes`, 10 for `transition`, 9 for `animation` and a few
 for the longhands, by the first reason it found — are decided again by
-it. `expectations.txt` gains this milestone's section, each failure with
-what it asks of the engine.
+it. As built, 36 tests join, 13 of them from the directories taken
+before: most of those the rule had left out wait for scripts or use
+properties the engine has not got, which their second reason says. One
+leaves, `css-variables/variable-reference-30`, whose M21 manifest was
+pulled before that milestone made the cascade drop its declaration. The
+subset holds 1,738 tests, 1,610 passing. `expectations.txt` gains this
+milestone's section, each failure with what it asks of the engine: the
+four are gaps outside it, the root's overflow not carried to the
+viewport (two), declarative shadow roots, and a layer's raster scale
+capped at 64 under a scale of 100 (M35.10).
 
 **The golden cases.** Box-only reference pages numbered from 100,
 captured and compared as the others are, each animation paused at a time
@@ -557,35 +642,53 @@ keyframe's easing, `!important` ignored, the winning rule by layer and
 by order, `@-webkit-keyframes`, `::before`, `::after` and `::marker`
 animated, `display` and other discrete properties, and a custom property
 read by `var()`. Transitions need a change after the first frame. A page
-may ask for one with `<meta name="reference-change">`, naming an
-element, an attribute and its new value, and for the times at which it
-is made and the page drawn with `<meta name="reference-time">`:
-`capture.sh`'s browser makes the change by a script of the page's own,
-which this engine does not run, and pauses the transitions at the time
-asked, and `tests/reference.rs` makes it through `Engine::mutate`
-between frames drawn at those times. 105 and 106 are transitions by
-those means: a transition, its delay, one reversed half way, `all` and a
-shorthand named, an inherited property's reaching the text inside, an
-animation outranking a transition, and `display` transitioning out with
-`allow-discrete`. The change-and-restore test of M13 draws every page
-with the timeline still: a transition a step starts shows its start
-value, and the step's undoing cancels it, so each page still draws as
-captured.
+may ask for changes with `<meta name="reference-change">`, each an
+element's id, an attribute and its new value, the changes separated by
+semicolons, and for the times at which they are made and the page drawn
+with `<meta name="reference-time">`, in milliseconds from the first
+frame: `capture.sh`'s browser makes them by the page's
+`reference-change.js`, which this engine does not run, holding every
+running animation at each change's time while it makes the change, so
+that the transitions it starts begin there, and at the drawing's time at
+the end, an animation the page pauses keeping its own; and
+`tests/reference.rs` makes them through `Engine::mutate` between frames
+drawn at those times. 105 and 106 are transitions by those means: a
+transition, its delay, one reversed half way, `all` and a shorthand
+named, an inherited colour reaching the box inside, an animation
+outranking a transition, `display` leaving with `allow-discrete` and
+without, a transform and an opacity, and one retargeted half way. A
+child's own transition of the colour it inherits is left out: holding
+its parent's transition through the API is a change of style in which
+the reference browser retargets the child's, which in real time it does
+not, so that the capture cannot show what the engine draws. The pages
+write colours in hexadecimal and take `currentcolor` from a border's
+default, `rgb()` and a written `currentcolor` being G16's. The
+change-and-restore test of M13 makes its steps before a page's own
+changes, since an element its steps hide has its transitions cancelled,
+and each page then draws as captured.
 
-**Acceptance (M22.6).** Two demos of the milestone's own, each a page
-drawn at 1280 by 800: a spinner, a ring turned by an infinite linear
-animation of `rotate`, and a colour fade, a card whose background and
-text colours alternate between two themes. Each is drawn for ten seconds
-of frames sixty a second through `Engine::frame_at`, on the software
-backend and on the GPU backend where the machine has an adapter, and
-each frame's time is recorded: sixty frames a second is every frame
-within `FRAME_BUDGET`, and the jank budget is no frame over 20ms. A test
-holds what makes that so whatever the machine: the spinner's frames lay
-nothing out and draw no layer again, and the colour fade's lay out the
-card alone. Pages 107 and 108 are the demos paused at a moment, and 109
-the spinner under reduced motion, which the page's own query stops
-(`reference-reduced-motion`), drawn against the reference browser's
-captures.
+**Acceptance (M22.6).** Two demos of the milestone's own,
+`tests/demos/spinner.html` and `colour-fade.html`, each a page drawn at
+1280 by 800: a spinner, a square ring, `border-radius` being in no
+milestone (section 2), turned by an infinite linear animation of
+`rotate` on a page of text; and a colour fade, a card whose background,
+text and border colours alternate between a light and a dark theme
+among cards that stay, the dark border chosen so that its half way is a
+whole colour. Each is drawn for ten seconds of frames sixty a second
+through `Engine::frame_at`, on the software backend and on the GPU
+backend where the machine has an adapter, and each frame's time is
+recorded: sixty frames a second is every frame within `FRAME_BUDGET`,
+and the jank budget is no frame over 20ms. `tests/demos.rs` holds what
+makes that so whatever the machine: the spinner's frames lay nothing out
+and composite its layer without drawing it again, the document's tiles
+under it drawn again where it reaches (M35.10); under reduced motion it
+draws one frame; and the colour fade's frames lay out seven boxes, the
+card, the three inside it and the three around it, and take the header
+and the other two cards whole from the layout cache. Pages 107 and 108
+are the demos held at a moment, an eighth of a turn and half way between
+the themes, and 109 the spinner under reduced motion, which the page's
+own query stops (`reference-reduced-motion`), drawn against the
+reference browser's captures.
 
 **Performance and fuzzing.** A benchmark, `benches/animation.rs`, runs
 the acceptance's demos and measures the frame of a transform animated on
@@ -602,16 +705,40 @@ bytes, checking that every result is finite, within its property's range
 and its bounds; and draws a page with animations at a series of times,
 checking each frame against a fresh engine drawn at the first time and
 then at that one. The `mutation` target's styles take transforms,
-opacities, animations and transitions, and its comparison finishes the
-mutated engine's transitions before it compares, as a script's
-`finish()` would, since a fresh engine has none; the targets that lay
-pages out run fifteen minutes each with the new properties in their
-dictionary and the milestone's pages among their seeds.
+opacities, animations and transitions, and two of its sheets keyframes;
+its comparison draws a frame, so that the changes no frame has drawn
+start their transitions, and finishes the mutated engine's transitions
+before it compares, as a script's `finish()` would
+(`Engine::finish_transitions`), since a fresh engine has none, the start
+stepped down an ulp at a time where the time less the end time rounds
+to a current time short of it; the targets that lay pages out run
+fifteen minutes each with the new properties in their dictionary and
+the milestone's pages among their seeds.
+
+As built (step 12), the benchmark measures those and a class change
+under `transition: all`; `docs/perf-budgets.md` has its numbers, and
+the acceptance's on both backends. It found `layout::composite` walking
+the layout and its cache once for each change, a thousand opacities
+406ms a frame, now one walk for all of a restyle's changes; and the
+restyle counting an element changed when only its after-change style
+did, so that the frame starting a transition laid the page out, now
+that layout reads only the style. T4.3 found three costs every page
+paid, mended: the previous layout freed inside the next frame's style
+stage, now when the change is made, as before, for a change layout
+reads whatever the styles; a default `Motion`, thirteen lists, built to
+compare every computed style with; and the empty tables of animations
+and transitions hashed into for every element's pseudo-elements. The
+cascade then does 4% more work than before M22, and the rows of T4.3
+over 10% do the same work as before, which callgrind's counts of
+instructions, cache misses and branches show. The `mutation` target
+found, within a minute, the change that no frame had drawn, above. The
+targets ran fifteen minutes each, `mutation` and `animations` again on
+the code as committed; nothing else failed.
 
 ## 2. Not in this milestone, said rather than hidden
 
 Each item here that no milestone of the roadmap holds is registered with
-the deferred items, the G list, at step 13; the number follows each.
+the deferred items, the G list, as step 13 did; the number follows each.
 
 - *The Web Animations API*: `Element.animate()`, `getAnimations()`, the
   `Animation`, `KeyframeEffect`, `CSSAnimation` and `CSSTransition`
@@ -654,7 +781,20 @@ the deferred items, the G list, at step 13; the number follows each.
 - *The properties the engine has not got* — `visibility`, `box-shadow`,
   `filter`, `background-position`, `line-height`, `font-weight` (G22)
   and the rest — animate by their types when they come; each declares
-  its type in the table above.
+  its type in the table above. `border-radius`, `box-shadow` and
+  `filter`, which no milestone holds, and for want of the first of which
+  the acceptance's spinner is a square ring. G32.
+- *What the subset asks of the rest of the engine*: shadow trees, which
+  no milestone holds, `animation-name-in-nested-shadow` attaching its
+  declarative shadow roots; and the root's or the body's overflow
+  carried to the viewport (Overflow 3 §3.3), which tests since M17 have
+  asked for. G31.
+- *A transition's side effect*: a CSS transition does not act as if
+  `will-change` named its property, as Web Animations §5.6 asks of every
+  running animation, so that a transition of a transform from `none`,
+  or of an opacity from 1, lays its box out where it becomes a stacking
+  context; between two values that keep it what it was to layout it is
+  composited throughout. G33.
 
 ## 3. Order of work
 
@@ -677,7 +817,9 @@ tests pass.
 3. *Keyframes and timing.* `RuleSet`'s keyframes by name, with layers,
    media and order; the processing of keyframes; `style::animation`'s
    timing model, phases, progress, directions, fill modes and the before
-   flag, tested against Web Animations' examples. M22.2.
+   flag, tested against Web Animations' examples. M22.2. Built with
+   step 4 as one, the keyframes having nothing to use them without the
+   cascade's animations.
 4. *CSS animations.* The two origins in `compute_style`'s passes;
    keyframes computed at each sample; implicit keyframes;
    pseudo-elements; the taint; matching `animation-name`'s changes;
@@ -712,3 +854,14 @@ tests pass.
     M22 entry with its security notes, the roadmap's ticks (M22.1 to
     M22.6) and the items section 2 names registered, and the numbers in
     `docs/perf-budgets.md`.
+
+The sabotage passes left three mutants no test can see, kept as guards
+whose loss changes nothing observable: Transitions 1 §3's test, in the
+rule that starts a transition, that the two values differ (step 5); the
+composited change's test of `display: none`, since a change of it is
+a change of layout of the element or of an ancestor (step 7); and the
+restyle's asking for a composited change only where what layout reads
+changed, since equal styles give an empty list (step 12). Step 7
+found two faults of M19's raster, a group's opacity and its layer
+missing from the state a partial redraw compares, mended in a commit of
+their own.

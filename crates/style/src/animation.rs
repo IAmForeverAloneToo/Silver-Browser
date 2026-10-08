@@ -3,12 +3,14 @@
 //! timeline, a playback rate of one, an iteration start of zero and
 //! `replace` composition.
 //!
-//! [`Timing`] is an effect's timing: its delay, iteration duration,
-//! iteration count, direction, fill mode and easing. Given a local time
-//! it gives the effect's [`Progress`]: its phase, its active time as the
-//! fill mode allows one, its current iteration, and its transformed
-//! progress with the before flag. [`interval`] then finds the keyframes
-//! on either side of that progress among one property's keyframes
+//! [`Timing`](crate::animation::Timing) is an effect's timing: its
+//! delay, iteration duration, iteration count, direction, fill mode and
+//! easing. Given a local time it gives the effect's
+//! [`Progress`](crate::animation::Progress): its phase, its active time
+//! as the fill mode allows one, its current iteration, and its
+//! transformed progress with the before flag.
+//! [`interval`](crate::animation::interval) then finds the keyframes on
+//! either side of that progress among one property's keyframes
 //! (§5.3.4).
 //!
 //! Times are seconds in an `f64`. An infinite iteration count makes the
@@ -16,17 +18,17 @@
 //! it zero; no step computes an infinity less an infinity or zero times
 //! an infinity, so that every result is a number or `None`.
 //!
-//! [`Animations`] is what a document runs (M22.1 to M22.3): its
-//! timeline's time, which the caller moves on and which never goes back,
-//! and each target's CSS animations and transitions with their clocks.
-//! The cascade keeps them as it computes styles — an element's
-//! `animation-name` matched to the animations it had (Animations 1 §2),
-//! its transitions started, replaced and cancelled at a change of its
-//! style (`transition`), each new one waiting for the next frame to
-//! start it — and reads their progress at the timeline's time; a frame
-//! moves the timeline on, starts what waits, ends the transitions past
-//! their end, and asks which targets' animations and transitions give
-//! something new, to be restyled.
+//! [`Animations`](crate::animation::Animations) is what a document runs
+//! (M22.1 to M22.3): its timeline's time, which the caller moves on and
+//! which never goes back, and each target's CSS animations and
+//! transitions with their clocks. The cascade keeps them as it computes
+//! styles — an element's `animation-name` matched to the animations it
+//! had (Animations 1 §2), its transitions started, replaced and
+//! cancelled at a change of its style (`transition`), each new one
+//! waiting for the next frame to start it — and reads their progress at
+//! the timeline's time; a frame moves the timeline on, starts what
+//! waits, ends the transitions past their end, and asks which targets'
+//! animations and transitions give something new, to be restyled.
 
 use std::collections::HashMap;
 use std::sync::Arc;

@@ -854,6 +854,165 @@ the items that will undo them:
 - **1,000 media lists answered again**, 15% longer by the medians, 3µs,
   the ranges of the two columns overlapping.
 
+### Transitions and animations (M22)
+
+**The acceptance.** `benches/animation.rs` draws the milestone's two
+demos (`tests/demos/`) at 1280 by 800 for ten seconds of frames sixty a
+second through `Engine::frame_at`, the time a frame leaves before its
+deadline spent drawing ahead, and records every frame: a spinner, a
+ring turned by an infinite animation of `rotate`, and a colour fade, a
+card alternating between two themes. Three runs, in release, on the
+code as M22 left it:
+
+| 600 frames | The software backend | The GPU backend, llvmpipe |
+| --- | --- | --- |
+| The spinner, a frame's median | 0.69–0.71ms | 6.39–6.97ms |
+| Its worst frame | 1.38–5.49ms | 30.9–56.5ms |
+| Its frames over 16.7ms, over 20ms | none | 1–2, 1–2 |
+| Its layouts | none | none |
+| The colour fade, a frame's median | 1.70–1.76ms | 8.49–9.05ms |
+| Its worst frame | 3.63–6.06ms | 15.6–25.6ms |
+| Its frames over 16.7ms, over 20ms | none | 0–2, 0–1 |
+| Its boxes laid out a frame | 7 | 7 |
+
+On the software backend both demos keep sixty frames a second with
+room to spare, no frame of either near the budget. The spinner's frames
+lay nothing out and composite its layer; the fade's lay out the card,
+the three boxes inside it and the three around it, and take the rest
+from the layout cache. This machine's GPU backend is llvmpipe, which
+rasterizes on the same cores: its medians keep the budget, and a single
+frame now and then takes 20 to 130ms in its raster, at no frame in
+particular. A logger of every slow frame, built from the code before
+step 12 and from the code after it and run by turns six times each,
+found such frames in both, 57ms the worst before and 26ms after: the
+machine, not the change. On a real GPU the demos are unmeasured, there
+being none here (M19.8).
+
+**The costs.** The same benchmark, on the software backend, two
+seconds of frames each, three runs:
+
+| | Three runs |
+| --- | --- |
+| A transform animated on one of 1,000 paragraphs, a frame's median | 2.65–3.41ms, no layout |
+| A colour animated there | 8.50–9.58ms, of it layout 6.4–7.2ms, three boxes a frame |
+| An opacity animated on every paragraph | 23.5–26.8ms, of it style 15.5–17.2ms and raster 6.85–7.65ms |
+| The body's class changed under 1,000 paragraphs, the frame of the change | 824–864ms, of it layout 798–837ms |
+| The same with `transition: all` on every paragraph | 19.9–21.2ms, of it style 18.2–19.6ms and no layout |
+| `composite.rs`'s turned card, a frame | 2.30–2.88ms, no layout (10.8ms before M22) |
+
+A transform or an opacity animated is a composited change: its frames
+restyle the element and lay nothing out. A colour lays out the
+paragraph it is on and the two boxes around it, the paint-only change
+being M35.9's. A thousand animations at once keep no budget: each
+frame restyles 1,000 elements, their selectors matched again (M35.2),
+and draws their groups. A class change that starts a transition on
+every paragraph costs its cascade twice what it costs without, the
+before-change and after-change styles of every element, and lays
+nothing out at its frame, every paragraph showing its old value; the
+frames after lay out the paragraphs as their paddings move.
+
+What the step found, and mended before these runs: `layout::composite`
+walked the layout and the cache once for each change, a thousand
+opacities taking 406ms a frame, now one walk for all of a restyle's
+changes, 16ms; the restyle counted an element changed when only the
+after-change style the cascade keeps beside its style changed, so that
+the frame starting a transition laid the page out though nothing on it
+moved; and, under T4.3, three costs every page paid. The previous
+frame's layout was freed in the next frame's style stage, where it
+waited for the restyle to say whether a composited change kept it,
+7 million instructions a frame of the mutation benchmark that were
+paid between frames before: a change layout reads whatever the styles
+drops it when it is made again. Every computed style built a default
+`Motion`, thirteen lists, to compare itself with, and the older grid
+properties theirs; the initial values are now made only for a style
+that holds a copy. And each element's unstyled pseudo-elements hashed
+their targets to look them up in the empty tables of animations and
+transitions, which are now not asked. Under callgrind the cascade of
+the flex benchmark's grid did 23% more work than before M22 and does 4%
+more, the copies of the larger style; twenty appended paragraphs'
+frames 0.3%.
+
+**T4.3.** The benchmarks above, the code before M22 (`ca4b878`) and
+M22's built side by side in release, four rounds of each in turn. The
+ranges are over the rounds.
+
+| | Before M22 | M22 |
+| --- | --- | --- |
+| Scrolling: the layout, once | 342–416ms, median 364 | 330–488ms, median 418 |
+| Scrolling: a scroll frame, median | 0.98–1.32ms, median 1.00 | 0.89–1.30ms, median 1.14 |
+| Its raster, median | 0.54–0.72ms, median 0.56 | 0.51–0.73ms, median 0.63 |
+| Its paint, median | 0.40–0.57ms, median 0.41 | 0.37–0.58ms, median 0.48 |
+| Changing the document: the first frame | 682–733ms, median 697 | 747–878ms, median 781 |
+| An appended paragraph's frame, median | 12.2–14.5ms, median 12.6 | 12.7–14.4ms, median 13.1 |
+| Its layout, median | 10.3–12.4ms, median 10.7 | 10.8–12.5ms, median 11.3 |
+| Its paint, median | 1.33–1.50ms, median 1.39 | 1.31–1.40ms, median 1.38 |
+| Those frames over 16.7ms | 103–446 of 1,000 | 58–299 of 1,000 |
+| 1,000 appended in one frame | 742–951ms, median 780 | 695–820ms, median 771 |
+| Loading: `load` to the first frame drawn | 750–835ms, median 778 | 752–882ms, median 814 |
+| Going back to the page from the cache | 14.9–15.6ms, median 15.4 | 14.3–15.7ms, median 15.1 |
+| Going back to the page fetched again | 808–872ms, median 836 | 748–842ms, median 796 |
+| Matching: 1,000 selectors over 10,003 elements | 260–320ms, median 289 | 273–330ms, median 286 |
+| Flex: a grid of 1,000 cards, the first frame | 2.48–2.79s, median 2.74 | 2.31–2.68s, median 2.57 |
+| Flex: after a card's title changes, a frame, median | 2.45–2.66s, median 2.51 | 2.46–2.55s, median 2.50 |
+| Flex: a chain of 64 nested containers, its layout | 20.5–27.1ms, median 21.8 | 20.6–24.0ms, median 21.9 |
+| Grid: a gallery of 1,000 figures, the first frame | 934–1241ms, median 1025 | 856–1093ms, median 941 |
+| Grid: after a caption changes, a frame, median | 883–933ms, median 909 | 864–942ms, median 924 |
+| Grid: a dashboard of 200 cards, the first frame | 276–319ms, median 298 | 274–317ms, median 284 |
+| Grid: a chain of 64 nested grids, its layout | 13.3–18.4ms, median 16.5 | 14.8–19.5ms, median 17.2 |
+| Compositing: a scroll frame, median | 1.28–1.53ms, median 1.50 | 1.30–1.40ms, median 1.31 |
+| Compositing: a card turned, a frame, median | 10.7–12.0ms, median 10.8 | 2.29–3.86ms, median 2.40 |
+| Compositing: a card moved, a frame, median | 8.30–9.26ms, median 8.92 | 0.35–0.62ms, median 0.36 |
+| Compositing: 200 faded cards, the first frame | 97–132ms, median 98 | 100–147ms, median 118 |
+| Compositing: a scroll frame of them, median | 1.15–1.24ms, median 1.21 | 1.24–1.65ms, median 1.38 |
+| Media: 1,000 lists answered again, median of 1,000 | 23.1–30.9µs, median 27.1 | 21.1–22.5µs, median 21.8 |
+| Media: the page's cascade with the 1,000 rules | 8.9–17.1ms, median 12.8 | 8.4–10.3ms, median 9.8 |
+| Media: a resize across the breakpoint, a frame | 723–763ms, median 736 | 704–760ms, median 743 |
+| Media: a print, its layout, pagination and paint | 721–850ms, median 754 | 671–802ms, median 733 |
+| Its pagination alone | 3.33–3.79ms, median 3.59 | 3.15–3.86ms, median 3.37 |
+| The whole print | 7.63–8.01s, median 7.93 | 7.49–7.81s, median 7.77 |
+| The process's peak memory | 145–146 MB | 146–147 MB |
+| Values: the cascade of 1,000 paragraphs, written out | 3.11–4.98ms, median 4.23 | 3.51–5.82ms, median 3.54 |
+| Under a theme of 8 custom properties | 3.70–4.43ms, median 4.30 | 3.84–5.63ms, median 4.66 |
+| A theme of 200, the rules reading 8 | 4.00–6.65ms, median 4.46 | 4.06–7.01ms, median 4.56 |
+| That, every paragraph declaring one of its own | 10.4–15.5ms, median 10.9 | 9.3–16.7ms, median 12.1 |
+| 1,000 elements each declaring the doubling chain | 290–369ms, median 353 | 290–309ms, median 297 |
+| 1,000 boxes sized by lengths: cascade | 3.13–3.51ms, median 3.25 | 3.15–4.68ms, median 3.38 |
+| Sized by math functions: cascade | 7.1–11.7ms, median 7.6 | 7.04–7.94ms, median 7.63 |
+| An ordered list of 1,000 items, as blocks: cascade | 13.1–14.2ms, median 13.8 | 14.2–18.3ms, median 15.4 |
+| Its box tree | 7.15–8.03ms, median 7.85 | 7.43–8.38ms, median 8.21 |
+| Numbered by counters: cascade | 18.1–20.3ms, median 19.2 | 19.3–21.9ms, median 20.4 |
+| Its box tree | 17.4–19.4ms, median 18.2 | 18.1–20.9ms, median 18.7 |
+| 1,000 paragraphs of six lines, left-aligned: their layout | 2.02–2.08s, median 2.05 | 1.96–2.21s, median 2.09 |
+| Justified | 2.00–2.18s, median 2.14 | 1.96–2.04s, median 2.00 |
+
+The pseudo benchmark, the same four rounds:
+
+| Sheet | The first frame, before | M22 | An appended paragraph's frame, median, before | M22 |
+| --- | --- | --- | --- | --- |
+| None | 2.01–2.41s | 2.03–2.37s | 24.7–36.1ms, median 27.7 | 26.1–29.3ms, median 26.9 |
+| `::before` and `::after` | 2.12–2.62s | 2.12–2.71s | 33.6–36.4ms, median 34.5 | 34.2–41.1ms, median 36.6 |
+| `::first-letter` | 1.92–2.37s | 2.12–2.25s | 30.8–33.6ms, median 31.8 | 32.2–35.6ms, median 34.2 |
+| `::first-line`, colour and size | 2.43–2.94s | 2.42–3.07s | 37.0–44.9ms, median 38.8 | 39.1–41.2ms, median 39.8 |
+| `::first-line`, a background | 2.04–2.24s | 2.09–2.32s | 30.8–38.4ms, median 31.6 | 29.5–40.0ms, median 32.0 |
+| All of them | 2.78–3.23s | 2.61–3.42s | 66.7–68.8ms, median 67.0 | 67.7–75.5ms, median 69.9 |
+
+Within T4.3's 10% by their medians but for the rows below, each of
+which does the work it did before M22. Scrolling's layout and frames,
+12–16% by the medians, have ranges that all but cover each other's. The
+mutation page's first frame, 697 against 781ms, and the 200 faded
+cards, whose first frame and scroll frames were before M22's in two of
+the four rounds, were run again under callgrind: the first frame does
+6,523.1 million instructions before M22 and 6,529.4 million now, its
+scroll frames 1.1% fewer, the faded cards' first frame 0.15% more and
+their scroll frames 0.1% fewer; the simulated cache misses are within
+1% and the mispredicted branches 4% fewer; the page faults 1% more. The
+first frame timed alone, five runs of each by turns, has medians of 749
+and 753ms. Two of the values benchmark's cascades, 11% and 12% by their
+medians, are within each other's ranges, and its plain cascade is 17%
+shorter. The rest is the machine's variance, which moves a measure by
+as much as a third from one round to the next: the faded cards' first
+frame before M22 took 97ms in one round and 132ms in another.
+
 ### Over budget, and why
 
 These are known and recorded rather than hidden. Each has the item that
@@ -902,7 +1061,9 @@ is to take it on.
   against 259–291 and 13.7–14.6ms for the code before M17 measured in
   the same rounds. M21's larger style again: 256–384 times in 1,000,
   the median at 13.9ms, against 16–90 and 11.2ms for the code before
-  M21 in the same rounds (T4.3, M21). M35.9 takes it on.
+  M21 in the same rounds (T4.3, M21). M22 leaves it as it was: 58–299
+  times in 1,000, the median at 13.1ms, against 103–446 and 12.6ms
+  before M22 (T4.3, M22). M35.9 takes it on.
 - **Justification by character.** `text-justify: inter-character`, a
   word laid out a fragment a character and each measured alone, as
   letter spacing is: 1,000 paragraphs of six lines take 5.5–5.9s to lay
@@ -915,6 +1076,16 @@ is to take it on.
   appended paragraph's frame with links and emphases alone, and 30–35ms
   with generated boxes and first letters as well. A box tree kept and
   updated in place, M35.9, keeps those styles with it.
+- **Many animations at once.** An opacity animated on each of 1,000
+  paragraphs takes 23.5–26.8ms a frame: every frame restyles the 1,000
+  elements, their selectors matched again, 15.5–17.2ms, and draws their
+  groups, 7ms (M22). Keeping an animated element's matched rules
+  between frames is M35.2's.
+- **A colour's animation lays out what it reaches.** A colour animated
+  on one of 1,000 paragraphs lays out that paragraph and the boxes
+  around it at every frame, 6.4–7.2ms of an 8.5–9.6ms frame, though it
+  only repaints (M22). Fragments that refer to their styles, so that a
+  paint-only change lays nothing out, are M35.9's.
 - **Positions counted from the end.** With `:last-child` or
   `:nth-last-child` in a stylesheet, inserting an element restyles every
   sibling before it: 20,015 elements and 42ms at 10,000 paragraphs. That

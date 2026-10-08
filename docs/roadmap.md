@@ -1317,19 +1317,51 @@ Per css-grid-1 (level 2 subgrid included):
 
 ## M22 — Transitions + animations  ·  `style`/`render`  ·  Effort: XL  ·  Depends: M19, M13
 
-- [ ] M22.1 CSS transitions: property interpolation (lengths, colors,
+- [x] M22.1 CSS transitions: property interpolation (lengths, colors,
        transforms, opacity), easing functions (the standard set + cubic
-       bezier), start/end edge cases per css-transitions-1.
-- [ ] M22.2 CSS animations: `@keyframes` (the M3 parser keeps unknown
+       bezier), start/end edge cases per css-transitions-1. Done
+       2026-10-08: every longhand interpolated by its animation type
+       (`style::animate`), transforms decomposed as Transforms 1 and 2
+       say; the easing functions with `steps()` and `linear()`
+       (`style::easing`); Transitions 1 §3 to the letter, with
+       Transitions 2's `transition-behavior` and `display`
+       (`docs/design/animations.md`).
+- [x] M22.2 CSS animations: `@keyframes` (the M3 parser keeps unknown
        at-rules raw — now parse `@keyframes` properly), iteration/direction/
-       fill/delay/play-state, animation events.
-- [ ] M22.3 `requestAnimationFrame`-aligned ticking (real rAF needs JS —
-       M25; here: the frame scheduler drives animation timelines).
-- [ ] M22.4 Compositor-only animations (transform/opacity) run off the
+       fill/delay/play-state, animation events. Done 2026-10-08:
+       `@keyframes` and `@-webkit-keyframes` by name, layer and order;
+       Web Animations' timing model (`style::animation`); the events of
+       Animations 2 and Transitions 2 queued at each frame,
+       `Engine::animation_events`, dispatched with the event loop
+       (M26.1).
+- [x] M22.3 `requestAnimationFrame`-aligned ticking (real rAF needs JS —
+       M25; here: the frame scheduler drives animation timelines). Done
+       2026-10-08: a document timeline on `frame_at`, `tick` and
+       `frame`, an animation starting at the first frame after it is
+       made; `Engine::needs_frame` and `next_frame_at`, the shell
+       waiting out a delay.
+- [x] M22.4 Compositor-only animations (transform/opacity) run off the
        main layout path; everything else animates via style recalc.
-- [ ] M22.5 Reduced-motion respect (M20.3 dependency).
-- [ ] M22.6 Acceptance: a spinner (rotate) and a color-fade demo hit
+       Done 2026-10-08: a change of a transform or an opacity alone that
+       leaves the box what it was to layout is written into the
+       fragments of the layout and its cache, the layout kept
+       (`layout::composite`); on the engine's one thread, a thread of
+       their own being G29.
+- [x] M22.5 Reduced-motion respect (M20.3 dependency). Done 2026-10-08:
+       the engine's own scrolling jumps under `reduce`; CSS animations
+       and transitions run as written, the page's own query being its
+       means of honouring the user, as in every browser (a user's
+       setting to stop them is G30).
+- [x] M22.6 Acceptance: a spinner (rotate) and a color-fade demo hit
        60fps; jank budget test (no frame > 20ms during a 10s animation).
+       Done 2026-10-08: `tests/demos/`, ten seconds sixty a second
+       (`benches/animation.rs`): no frame over 16.7ms on the software
+       backend, the worst 6.1ms; on this machine's GPU backend,
+       llvmpipe, which rasterizes on the CPU's cores, the medians
+       within the budget and a single frame of 20 to 130ms in its
+       raster in some runs, at no frame in particular, the code before
+       the milestone's last changes alike; a real GPU is unmeasured
+       here (M19.8). `tests/demos.rs` holds the work their frames do.
 
 ---
 
@@ -1757,7 +1789,8 @@ Deferred from the milestones above, each with what it waits on:
        `@function` and the spread syntax. Deferred from M21.2.
 - [ ] G16 Colour functions, `rgb()`, `hsl()` and the rest, and
        `currentcolor` outside `text-decoration-color`; the engine takes
-       hexadecimal and named colours alone. Found again at M21.
+       hexadecimal and named colours alone. Found again at M21, and at
+       M22, whose reference pages write theirs in hexadecimal.
 - [ ] G17 `@counter-style` and `symbols()`, the complex predefined
        counter styles of Counter Styles 3 §7 (the longhand Chinese,
        Japanese and Korean styles, `ethiopic-numeric`) and `speak-as`.
@@ -1792,6 +1825,40 @@ Deferred from the milestones above, each with what it waits on:
        browser grows an `auto` row for an item's `min-height:
        calc(25px + 50%)`, where this engine takes the percentage of
        zero. Found at M21.
+- [ ] G26 The Web Animations API: `Element.animate()`,
+       `getAnimations()`, the `Animation`, `KeyframeEffect`,
+       `CSSAnimation` and `CSSTransition` objects, playback rates,
+       seeking and reversing, iteration start, and the `add` and
+       `accumulate` composite operations with Animations 2's
+       `animation-composition`. Deferred from M22;
+       `docs/design/animations.md`, section 2.
+- [ ] G27 Scroll-driven animations: `animation-timeline`, `scroll()`
+       and `view()` timelines, `animation-range`, keyframe selectors of
+       a timeline's ranges, and `animation-delay-start` and
+       `-end`. Deferred from M22.
+- [ ] G28 Entry transitions and sizes: `@starting-style`, `overlay`,
+       and `interpolate-size` with `calc-size()` (G15), so that an
+       element just shown transitions from a style and a size from
+       `auto`. Deferred from M22.
+- [ ] G29 A compositor thread: transform and opacity animations kept at
+       their rate while a page's own work takes longer than a frame.
+       Here they are composited without layout, on the engine's one
+       thread. Deferred from M22.4.
+- [ ] G30 A user's setting to stop or slow animations (Transitions 1
+       §10.1), their events still sent. Deferred from M22.5.
+- [ ] G31 What M22's web-platform-tests ask of the rest of the engine:
+       shadow trees, declarative shadow roots among them, which no
+       milestone holds; and the root's or the body's overflow carried
+       to the viewport (css-overflow-3 §3.3), which tests since M17
+       have asked for. Found at M22.
+- [ ] G32 `border-radius`, `box-shadow` and `filter`, which no
+       milestone holds: M22's spinner is a square ring for want of the
+       first. Found at M22.
+- [ ] G33 A CSS transition's side effect (Web Animations 1 §5.6): the
+       box acting as if `will-change` named the property it transitions,
+       so that a transition of a transform from `none`, or of an
+       opacity from 1, is composited from its start rather than laid
+       out where the box becomes a stacking context. Found at M22.
 
 ---
 
@@ -1823,15 +1890,17 @@ Deferred from the milestones above, each with what it waits on:
        `style_document` and `pipeline`; `mutation` since M13,
        `url_parse`, `encoding_decode`, `mime_sniff` and `http_response`
        since M14, `media_query` since M20, when `pipeline` began to
-       paginate and print, and `values` since M21, which holds math
+       paginate and print, `values` since M21, which holds math
        functions, substitution, typed `attr()`, counters and generated
-       text to their bounds; `font_data` waits for its milestone.
+       text to their bounds, and `animations` since M22, which holds
+       easing functions, timing, interpolation and frames drawn at a
+       series of times to theirs; `font_data` waits for its milestone.
 - [ ] T2.2 Seed corpora from WPT + real-site captures; corpus committed.
 - [ ] T2.3 Coverage-guided runs in CI nightly; crash → reproducer test
        before anything else. Since 2026-10-01 CI runs every target for a
        minute a push and half an hour weekly, the corpus carried in the
        actions cache (`media_query`, left out of the list at M20, and
-       `values` joined it at M21).
+       `values` joined it at M21, `animations` at M22).
 - [ ] T2.4 Structured fuzzing for the JS boundary (M24+): API call
        sequences, not just strings.
 

@@ -13,8 +13,9 @@
 //! An input is any real number: chained easing functions, an
 //! animation's and then a keyframe's, give a keyframe's easing what the
 //! animation's made of its input, which may overshoot. The output is
-//! kept within [`MAX_PROGRESS`] of zero and is never `NaN`, so that what
-//! interpolates by it stays finite however the numbers were written.
+//! kept within [`MAX_PROGRESS`](crate::easing::MAX_PROGRESS) of zero
+//! and is never `NaN`, so that what interpolates by it stays finite
+//! however the numbers were written.
 
 use std::sync::Arc;
 

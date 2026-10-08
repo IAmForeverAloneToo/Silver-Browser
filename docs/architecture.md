@@ -1218,3 +1218,108 @@ remaining properties; `display: flow-root`; logical properties and
 `:dir()`; and a grid's second sizing for percentages. Images in
 `content` and lists are M23's. 1,529 tests pass workspace-wide, two
 ignored. Next milestone: transitions and animations (M22).
+
+Milestone 22 (transitions and animations), designed in
+`docs/design/animations.md` and built in its thirteen steps. The cascade
+(step 1) takes the five transition and eight animation longhands, their
+shorthands and the Compatibility Standard's `-webkit-` names, computed
+behind one pointer, `ComputedStyle::motion`, the style 656 bytes;
+`style::easing` evaluates the easing functions, cubic Béziers solved for
+x and extended along their tangents, steps with the before flag and
+`linear()` canonicalized, an output kept within 10⁹ of zero
+(`MAX_PROGRESS`); the css crate parses `@keyframes` and
+`@-webkit-keyframes` blocks. `style::animate` (step 2) holds the
+longhands' animation types and interpolates each computed value, colours
+premultiplied, integers rounded a half up, a length and a percentage as
+their sum, everything clamped to its property's range, `display` by
+Display 4's rule; transforms by Transforms 1 §9, pairs of a primitive
+and the rest decomposed as matrices, a rest with a translation's
+percentage kept as an interpolated transform function for its box,
+nested eight deep at most (`MAX_MIX_DEPTH`). The rule set keeps
+keyframes by name, the winner by layer, media and order, processed once
+for every element that names them, and `style::animation` (steps 3 and
+4) holds Web Animations' timing model and a document's animations: the
+cascade applies their values between the normal and the important
+declarations in each of its passes, each keyframe computed against the
+element, an implicit keyframe its underlying value; `::before`,
+`::after` and `::marker` animate; a custom property an animation sets is
+tainted; and while one runs, the element acts as if `will-change` named
+what it animates (`Effects::animated`). The engine runs the document
+timeline on `frame_at`, `tick` and `frame`, an animation starting at the
+first frame after it is made; each frame restyles the targets whose
+animations moved; `needs_frame` and `next_frame_at` say when a frame is
+wanted, and the shell waits out a delay with `WaitUntil`. Transitions
+(step 5) follow Transitions 1 §3 to the letter, each element's
+after-change style inheriting from its parent's, with Transitions 2's
+`transition-behavior`; a whole cascade is a change of style from the
+styles it replaces; an element shown by a transition of `display` alone
+is inert, and hit testing passes over it. The events of both drafts'
+tables (step 6) are queued at each frame, `Engine::animation_events`
+giving them until the event loop dispatches them (M26.1). A change of
+`transform`, `translate`, `rotate`, `scale` or `opacity` alone that
+leaves the box what it was to layout (step 7) is composited:
+`layout::composite` writes a restyle's changes into the fragments of the
+layout and of the layout cache in one walk, measuring the scrollable
+overflow again where a transformed box reached its scroll container's
+bottom or the document's, and the layout is kept, as it is through a
+frame whose changes reach nothing layout reads (`Engine::layouts_kept`);
+writing it found two M19 raster bugs, a group's opacity and its layer
+missing from the damage state, mended. Under
+`prefers-reduced-motion: reduce` (step 8) the engine's own scrolling
+jumps; CSS animations and transitions run as written, the page's own
+query being its means of honouring the user. The web-platform-tests
+subset (step 9) took `css/css-animations`, `css/css-transitions` and
+`css/css-easing`, 36 tests joining, 1,610 of 1,738 passing; the four new
+failures are gaps outside the milestone. Reference pages 100 to 106
+(step 10) hold the values of each type, every easing, the timing,
+transforms, keyframes and transitions to the reference browser's, a page
+asking for changes after its first frame with
+`<meta name="reference-change">` and `<meta name="reference-time">`; 107
+to 109 are the acceptance's demos (step 11), a spinner and a colour
+fade, whose frames on the software backend take at most 6.1ms, none near
+the budget, and on this machine's GPU backend, llvmpipe, which
+rasterizes on the CPU's cores, keep it by their medians with a single
+frame of 20 to 130ms in its raster in some runs, the code before the
+milestone's last changes alike; `tests/demos.rs` holds that the
+spinner's frames lay nothing out and draw its layer once, and the fade's
+lay out the card alone. The animation benchmark (step 12) measures a
+transform animated on one of 1,000 paragraphs at 2.7–3.4ms a frame,
+laying nothing out, a colour there at 8.5–9.6ms, an opacity on every
+paragraph at 23.5–26.8ms, over the budget (M35.2), and a class change
+under `transition: all` at 19.9–21.2ms; it found `layout::composite`
+walking the layout once for each change, a thousand opacities 406ms a
+frame, and the restyle counting an element changed when only the
+after-change style it keeps beside its style did, so that a transition's
+start laid the page out, both mended. T4.3 found the previous frame's
+layout freed inside the next frame, a default `Motion` built to compare
+every computed style with, and the empty tables of animations hashed
+into for every element, mended: the cascade does 4% more work than
+before M22, and every benchmark is within 10% or does the same work, by
+callgrind's counts. The `animations` fuzz target holds easing functions,
+timing, interpolation and frames drawn at a series of times to their
+bounds; the `mutation` target's styles take transitions and animations,
+and its comparison finishes the engine's transitions as `finish()` would
+(`Engine::finish_transitions`), which found a change no frame had drawn;
+the targets ran fifteen minutes each and found nothing else. Security,
+until `docs/security.md` (M33): a document runs at most 65,536
+animations and transitions together
+(`style::animation::MAX_ANIMATIONS`), past which a new animation does
+not start and a new transition's property takes its value at once;
+keyframes are kept once for each rule and a sample computes the two
+keyframes around its progress for each property, so its work is bounded
+by the sheets and that bound; an interpolated transform nests eight
+deep; times are `f64` seconds, infinities clamped and `NaN` zero, and an
+easing's output is finite and within 10⁹ of zero; a frame's events are a
+few for each animation; the layers animations make keep to M19's layer
+budget; and the `animations` fuzz target holds the engine to these from
+arbitrary bytes. Not in this milestone, said rather than hidden and
+registered (G26 to G33): the Web Animations API; scroll-driven
+animations; `@starting-style`, `overlay` and `interpolate-size`; a
+compositor thread; a user's setting to stop or slow animations; what the
+subset asks of the rest of the engine, shadow trees and the root's
+overflow carried to the viewport; `border-radius`, `box-shadow` and
+`filter`; and a transition's side effect. Dispatching the events
+(M26.1), hover starting transitions (M26.4), a layer's raster scale kept
+through an animation (M35.10) and a colour's animation laying nothing
+out (M35.9) are at their milestones. 1,628 tests pass workspace-wide,
+two ignored. Next milestone: images (M23).
