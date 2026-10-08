@@ -139,6 +139,9 @@ pub(crate) fn content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32
 /// [`content_widths`], measured.
 fn measure_content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32) {
     pass.measuring();
+    if let Some(replaced) = &b.replaced {
+        return crate::replaced::content_widths(b, replaced);
+    }
     if b.is_table() {
         return crate::table::content_widths(b, pass);
     }

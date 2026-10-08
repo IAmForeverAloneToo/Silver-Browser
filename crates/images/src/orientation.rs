@@ -2,7 +2,7 @@
 //! from-image`): the eight ways a camera's pixels are stored.
 
 /// Tag 0x0112's value; `Normal` when absent or out of range.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Orientation {
     #[default]
     Normal,
@@ -38,6 +38,16 @@ impl Orientation {
                 | Orientation::Transverse
                 | Orientation::Rotate270
         )
+    }
+
+    /// The orientation that undoes this one: what turns oriented pixels
+    /// back to the ones stored.
+    pub fn inverse(self) -> Orientation {
+        match self {
+            Orientation::Rotate90 => Orientation::Rotate270,
+            Orientation::Rotate270 => Orientation::Rotate90,
+            other => other,
+        }
     }
 
     /// The size once oriented.

@@ -12,6 +12,7 @@ default = ["gpu"]
 gpu = ["dep:wgpu", "dep:pollster"]
 
 [dependencies]
+images.workspace = true
 paint.workspace = true
 style.workspace = true
 text.workspace = true

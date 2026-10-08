@@ -802,12 +802,16 @@ impl<'a> Walk<'a, '_> {
         }
         self.steps.push(match f.kind {
             FragmentKind::Box | FragmentKind::InlineBox => Step::Box { fragment: f, rect },
-            // A marker drawn as a shape is on its line as text is (M21.6).
-            FragmentKind::Text(_) | FragmentKind::Marker(_) => Step::Text {
-                fragment: f,
-                rect,
-                baseline: f.y + self.dy,
-            },
+            // A marker drawn as a shape is on its line as text is
+            // (M21.6), and so is what a replaced box shows (M23.2), which
+            // CSS2 Appendix E paints with the inline content.
+            FragmentKind::Text(_) | FragmentKind::Marker(_) | FragmentKind::Replaced(_) => {
+                Step::Text {
+                    fragment: f,
+                    rect,
+                    baseline: f.y + self.dy,
+                }
+            }
         });
     }
 
@@ -1404,7 +1408,7 @@ impl<'a> Walk<'a, '_> {
     fn phase(&mut self, fragments: &'a [Fragment], containing: Rect, phase: Phase, items: bool) {
         for f in fragments {
             match f.kind {
-                FragmentKind::Text(_) | FragmentKind::Marker(_) => {
+                FragmentKind::Text(_) | FragmentKind::Marker(_) | FragmentKind::Replaced(_) => {
                     if phase == Phase::Inlines {
                         self.own(f);
                     }
@@ -1638,6 +1642,7 @@ mod tests {
                 Step::Text { fragment, .. } => match &fragment.kind {
                     FragmentKind::Text(t) => format!("text {t}"),
                     FragmentKind::Marker(shape) => format!("marker {shape:?}"),
+                    FragmentKind::Replaced(replaced) => format!("replaced {replaced:?}"),
                     FragmentKind::Box | FragmentKind::InlineBox => unreachable!(),
                 },
                 Step::PushClip { node, rect } => {

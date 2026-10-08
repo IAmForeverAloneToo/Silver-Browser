@@ -281,6 +281,7 @@ fn split(
         item: false,
         parent: None,
         in_3d: false,
+        replaced: None,
     };
     let generated = |kind, style: ComputedStyle, children| LayoutBox {
         style,
@@ -297,6 +298,7 @@ fn split(
         item: false,
         parent: None,
         in_3d: false,
+        replaced: None,
     };
     let letter = generated(
         BoxKind::Text(text[start..end].to_string()),

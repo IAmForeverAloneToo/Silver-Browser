@@ -1641,6 +1641,125 @@ impl Lists {
     }
 }
 
+/// A `<ratio>` (css-values-4 section 6.2): a width over a height, as
+/// written, both finite and never negative.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Ratio {
+    pub width: f32,
+    pub height: f32,
+}
+
+impl Ratio {
+    /// Width over height; `None` for a degenerate ratio, one with a zero
+    /// on either side, which is no ratio (css-values-4 section 6.2).
+    pub fn value(self) -> Option<f32> {
+        (self.width > 0.0 && self.height > 0.0).then(|| self.width / self.height)
+    }
+}
+
+/// `aspect-ratio` (css-sizing-4 section 5.1, M23.2).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum AspectRatio {
+    /// A replaced element's natural ratio, else none.
+    #[default]
+    Auto,
+    /// This ratio.
+    Ratio(Ratio),
+    /// `auto && <ratio>`: a replaced element's natural ratio, else this
+    /// one.
+    AutoOr(Ratio),
+}
+
+/// `object-fit` (CSS Images 3 section 4.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ObjectFit {
+    #[default]
+    Fill,
+    Contain,
+    Cover,
+    None,
+    ScaleDown,
+}
+
+/// `object-position` (CSS Images 3 section 4.6): where the image goes
+/// in its box, as a `<position>`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ObjectPosition {
+    /// Along x, of the room left beside the image.
+    pub x: LengthPercentage,
+    /// Along y, the same way.
+    pub y: LengthPercentage,
+}
+
+impl ObjectPosition {
+    /// The initial value, `50% 50%`.
+    pub const CENTER: ObjectPosition = ObjectPosition {
+        x: LengthPercentage::Percent(50.0),
+        y: LengthPercentage::Percent(50.0),
+    };
+}
+
+impl Default for ObjectPosition {
+    fn default() -> Self {
+        ObjectPosition::CENTER
+    }
+}
+
+/// `image-orientation` (CSS Images 3 section 5.1): the deprecated angles
+/// and `flip` are not taken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ImageOrientation {
+    /// The orientation the image's EXIF data gives.
+    #[default]
+    FromImage,
+    /// The pixels as stored.
+    None,
+}
+
+/// `image-rendering` (CSS Images 3 section 5.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ImageRendering {
+    #[default]
+    Auto,
+    Smooth,
+    HighQuality,
+    Pixelated,
+    CrispEdges,
+}
+
+impl ImageRendering {
+    /// Whether an image scaled is drawn with its pixels kept sharp:
+    /// `pixelated` and `crisp-edges`, nearest neighbour.
+    pub fn is_sharp(self) -> bool {
+        matches!(self, ImageRendering::Pixelated | ImageRendering::CrispEdges)
+    }
+}
+
+/// `aspect-ratio` and the image properties of CSS Images 3 (M23.2):
+/// what [`ComputedStyle::image`] points to when any of them is not its
+/// initial value. `aspect-ratio`, `object-fit` and `object-position` are
+/// not inherited; `image-orientation` and `image-rendering` are.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ImageStyle {
+    pub aspect_ratio: AspectRatio,
+    pub object_fit: ObjectFit,
+    pub object_position: ObjectPosition,
+    pub image_orientation: ImageOrientation,
+    pub image_rendering: ImageRendering,
+}
+
+impl ImageStyle {
+    /// The values a child inherits: the inherited ones kept, the others
+    /// initial.
+    fn inherited(&self) -> ImageStyle {
+        ImageStyle {
+            image_orientation: self.image_orientation,
+            image_rendering: self.image_rendering,
+            ..ImageStyle::default()
+        }
+    }
+}
+
 /// The text decoration properties (Text Decoration 3 and 4, M21.7):
 /// what [`ComputedStyle::decoration`] points to when any of them is not
 /// its initial value. The line, its style, colour and thickness are not
@@ -1998,6 +2117,10 @@ static INITIAL_FRAGMENTATION: LazyLock<Fragmentation> = LazyLock::new(Fragmentat
 
 static INITIAL_LISTS: LazyLock<Lists> = LazyLock::new(Lists::default);
 
+/// The image properties' initial values, which [`ComputedStyle::image`]
+/// gives a style that sets none of them.
+static INITIAL_IMAGE: LazyLock<ImageStyle> = LazyLock::new(ImageStyle::default);
+
 /// The text decoration properties' initial values, which
 /// [`ComputedStyle::decoration`] gives a style that sets none of them.
 static INITIAL_DECORATION: LazyLock<Decoration> = LazyLock::new(Decoration::default);
@@ -2302,6 +2425,11 @@ pub struct ComputedStyle {
     /// as the effects are; `None` is every initial value. Read through
     /// [`ComputedStyle::motion`].
     pub motion: Option<Arc<Motion>>,
+    /// `aspect-ratio` and the image properties (M23.2), behind one
+    /// pointer, the inherited half copied to a child as the list
+    /// properties are; `None` is every initial value. Read through
+    /// [`ComputedStyle::image`].
+    pub image: Option<Arc<ImageStyle>>,
 }
 
 /// `font-family`'s initial value, one for every style that has it.
@@ -2373,6 +2501,7 @@ impl Default for ComputedStyle {
             decoration: None,
             inert: false,
             motion: None,
+            image: None,
         }
     }
 }
@@ -2490,6 +2619,18 @@ impl ComputedStyle {
         Arc::make_mut(self.motion.get_or_insert_with(Default::default))
     }
 
+    /// `aspect-ratio` and the image properties (M23.2), the initial
+    /// values when the style sets none of them.
+    pub fn image(&self) -> &ImageStyle {
+        self.image.as_deref().unwrap_or(&INITIAL_IMAGE)
+    }
+
+    /// The image properties to change, this style's own copy made first
+    /// if it shares them or has none.
+    pub fn image_mut(&mut self) -> &mut ImageStyle {
+        Arc::make_mut(self.image.get_or_insert_with(Default::default))
+    }
+
     /// The value of the custom property `name` (M21.1), its substitution
     /// functions replaced; `None` when it has the guaranteed-invalid
     /// value, as one never declared has.
@@ -2553,6 +2694,7 @@ impl ComputedStyle {
             fragmentation: inherited_fragmentation(from),
             lists: inherited_lists(from),
             decoration: inherited_decoration(from),
+            image: inherited_image(from),
             custom: from.custom.clone(),
             inert: from.inert,
             ..self
@@ -2581,6 +2723,20 @@ fn inherited_decoration(from: &ComputedStyle) -> Option<Arc<Decoration>> {
     let own = from.decoration.as_ref()?;
     let inherited = own.inherited();
     if inherited == Decoration::default() {
+        None
+    } else if **own == inherited {
+        Some(Arc::clone(own))
+    } else {
+        Some(Arc::new(inherited))
+    }
+}
+
+/// The image properties a child of `from` inherits, as
+/// [`inherited_fragmentation`] gives the fragmentation properties.
+fn inherited_image(from: &ComputedStyle) -> Option<Arc<ImageStyle>> {
+    let own = from.image.as_ref()?;
+    let inherited = own.inherited();
+    if inherited == ImageStyle::default() {
         None
     } else if **own == inherited {
         Some(Arc::clone(own))
@@ -2679,9 +2835,10 @@ mod tests {
         // properties (M21.4) another, 632 before them, and the text
         // decoration properties (M21.7) another, 640 before them. The
         // transition and animation properties (M22) another, 648 before
-        // them. Growing this is a decision, not an accident; say why where
-        // the number changes.
-        assert_eq!(std::mem::size_of::<ComputedStyle>(), 656);
+        // them. `aspect-ratio` and the image properties (M23.2) another,
+        // 656 before them. Growing this is a decision, not an accident;
+        // say why where the number changes.
+        assert_eq!(std::mem::size_of::<ComputedStyle>(), 664);
         assert_eq!(ComputedStyle::default().grid, None);
         assert_eq!(*ComputedStyle::default().grid(), GridStyle::default());
         assert_eq!(ComputedStyle::default().effects, None);

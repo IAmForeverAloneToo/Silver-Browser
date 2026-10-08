@@ -18,7 +18,7 @@ pub use document::{
     Change, Children, Document, MAX_DEPTH, MAX_JOURNAL, MAX_NODES, MutationError, NodeData, NodeId,
     Subtree,
 };
-pub use microsyntax::{parse_integer, parse_non_negative_integer};
+pub use microsyntax::{Dimension, parse_dimension, parse_integer, parse_non_negative_integer};
 
 /// A text node's payload.
 #[derive(Debug, Clone, PartialEq, Eq)]

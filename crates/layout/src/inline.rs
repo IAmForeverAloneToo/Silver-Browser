@@ -2197,6 +2197,7 @@ mod tests {
             item: false,
             parent: None,
             in_3d: false,
+            replaced: None,
         }
     }
 
@@ -2216,6 +2217,7 @@ mod tests {
             item: false,
             parent: None,
             in_3d: false,
+            replaced: None,
         }
     }
 
@@ -2224,7 +2226,10 @@ mod tests {
             .iter()
             .filter_map(|f| match &f.kind {
                 FragmentKind::Text(t) => Some(t.as_str()),
-                FragmentKind::Box | FragmentKind::InlineBox | FragmentKind::Marker(_) => None,
+                FragmentKind::Box
+                | FragmentKind::InlineBox
+                | FragmentKind::Marker(_)
+                | FragmentKind::Replaced(_) => None,
             })
             .collect()
     }
@@ -2238,7 +2243,7 @@ mod tests {
                 match f.kind {
                     FragmentKind::Text(_) => out.push(f.clone().translated(dx, dy)),
                     FragmentKind::InlineBox => walk(&f.children, dx + f.x, dy + f.y, out),
-                    FragmentKind::Box | FragmentKind::Marker(_) => {}
+                    FragmentKind::Box | FragmentKind::Marker(_) | FragmentKind::Replaced(_) => {}
                 }
             }
         }
@@ -2572,6 +2577,7 @@ mod tests {
             item: false,
             parent: None,
             in_3d: false,
+            replaced: None,
         }
     }
 

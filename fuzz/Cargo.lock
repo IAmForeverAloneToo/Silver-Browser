@@ -417,6 +417,7 @@ name = "layout"
 version = "0.0.1"
 dependencies = [
  "dom",
+ "images",
  "style",
  "text",
  "unicode-properties",
@@ -535,6 +536,7 @@ name = "paint"
 version = "0.0.1"
 dependencies = [
  "dom",
+ "images",
  "layout",
  "style",
 ]
@@ -615,6 +617,7 @@ version = "0.0.1"
 dependencies = [
  "ab_glyph",
  "flate2",
+ "images",
  "paint",
  "pdf-writer",
  "style",

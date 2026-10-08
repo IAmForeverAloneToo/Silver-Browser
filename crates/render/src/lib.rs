@@ -15,9 +15,11 @@ pub mod pdf;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::ops::RangeInclusive;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use paint::{DisplayItem, DisplayList, GroupKey, LayerReason, Rgba8, TILE_HEIGHT};
+use images::Orientation;
+use paint::{DisplayItem, DisplayList, GroupKey, ImageRef, LayerReason, Rgba8, TILE_HEIGHT};
 use style::transform::Matrix;
 use text::{
     Curve, FontCollection, FontError, GlyphMask, MAX_MASK_PIXELS, Script, ShapedGlyph,
@@ -141,6 +143,23 @@ impl PixelRect {
             y1: fit(y1),
         };
         (rect.x1 > rect.x0 && rect.y1 > rect.y0).then_some(rect)
+    }
+
+    /// The pixels whose centres `[x0, x1)` by `[y0, y1)` holds, within a
+    /// `width` by `height` frame: the ones an image covers (M23.2).
+    fn centred(x0: f32, y0: f32, x1: f32, y1: f32, width: u32, height: u32) -> Option<Self> {
+        let rect = PixelRect::new(
+            (x0 - 0.5).ceil() as i64,
+            (y0 - 0.5).ceil() as i64,
+            (x1 - 0.5).ceil() as i64,
+            (y1 - 0.5).ceil() as i64,
+        )?;
+        rect.intersect(PixelRect {
+            x0: 0,
+            y0: 0,
+            x1: width,
+            y1: height,
+        })
     }
 
     /// The pixels `[x0, x1)` by `[y0, y1)` reaches into, the edges
@@ -959,6 +978,100 @@ pub struct SoftwareBackend {
     /// How long the last tile drawn ahead took: one is not begun with
     /// less time than that left.
     tile_time: Duration,
+    /// The images drawn turned (M23.2).
+    turned: Turned,
+}
+
+/// The most images turned for `image-orientation: none` kept at once:
+/// past it they are all turned again as they are drawn.
+const MAX_TURNED: usize = 16;
+
+/// The images a backend draws turned for `image-orientation: none`
+/// (M23.2), kept while they are drawn; few are, and the others are
+/// drawn from their decoded pixels as they are.
+#[derive(Default)]
+struct Turned {
+    pixels: HashMap<(u64, u32, Orientation), Arc<[u8]>>,
+}
+
+impl Turned {
+    /// The pixels `image` draws, turned as it says, with their width and
+    /// height; `None` until it is decoded, or for a frame it has not.
+    fn pixels(&mut self, image: &ImageRef) -> Option<(Arc<[u8]>, u32, u32)> {
+        let decoded = image.pixels.as_deref()?;
+        let frame = decoded.frames.get(image.frame as usize)?;
+        let (w, h) = image.orientation.size(decoded.width, decoded.height);
+        if image.orientation == Orientation::Normal {
+            return Some((Arc::clone(&frame.pixels), w, h));
+        }
+        if self.pixels.len() >= MAX_TURNED {
+            self.pixels.clear();
+        }
+        let turned = self
+            .pixels
+            .entry((image.id, image.frame, image.orientation))
+            .or_insert_with(|| {
+                Arc::from(
+                    image
+                        .orientation
+                        .apply(&frame.pixels, decoded.width, decoded.height),
+                )
+            });
+        Some((Arc::clone(turned), w, h))
+    }
+}
+
+/// Fills the pixels of `pixmap` whose centres are in `r` with `source`
+/// stretched over `dest` (M23.2): blended between texel centres, or the
+/// nearest texel where `sharp`, the edge texels standing beyond the
+/// edges.
+fn draw_image(
+    pixmap: &mut tiny_skia::Pixmap,
+    source: tiny_skia::PixmapRef<'_>,
+    dest: Clip,
+    r: Clip,
+    sharp: bool,
+) {
+    // The pixels whose centres are in `r`, as whole pixels: tiny-skia
+    // rounds a fractional edge its own way, which a part of the frame
+    // drawn again would not repeat.
+    let Some(pixels) = PixelRect::centred(r.x0, r.y0, r.x1, r.y1, pixmap.width(), pixmap.height())
+    else {
+        return;
+    };
+    let Some(rect) = tiny_skia::Rect::from_ltrb(
+        pixels.x0 as f32,
+        pixels.y0 as f32,
+        pixels.x1 as f32,
+        pixels.y1 as f32,
+    ) else {
+        return;
+    };
+    let transform = tiny_skia::Transform::from_row(
+        (dest.x1 - dest.x0) / source.width() as f32,
+        0.0,
+        0.0,
+        (dest.y1 - dest.y0) / source.height() as f32,
+        dest.x0,
+        dest.y0,
+    );
+    let quality = if sharp {
+        tiny_skia::FilterQuality::Nearest
+    } else {
+        tiny_skia::FilterQuality::Bilinear
+    };
+    let paint = tiny_skia::Paint {
+        shader: tiny_skia::Pattern::new(
+            source,
+            tiny_skia::SpreadMode::Pad,
+            quality,
+            1.0,
+            transform,
+        ),
+        anti_alias: false,
+        ..tiny_skia::Paint::default()
+    };
+    pixmap.fill_rect(rect, &paint, tiny_skia::Transform::identity(), None);
 }
 
 /// The text a backend draws (M19.3): the fonts, the shaped runs and the
@@ -1181,6 +1294,7 @@ impl SoftwareBackend {
             doubled: HashSet::new(),
             deferred: Vec::new(),
             tile_time: Duration::ZERO,
+            turned: Turned::default(),
         }
     }
 
@@ -2441,6 +2555,27 @@ impl SoftwareBackend {
                 let points: Vec<(f32, f32)> = points.iter().map(|p| point(*p)).collect();
                 fill_polygon_by_area(pixmap, &points, color, clip, frame);
             }
+            DisplayItem::Image {
+                x,
+                y,
+                w,
+                h,
+                image,
+                sharp,
+            } => {
+                let dest = Clip::new(x * sx + tx, y * sy + ty, w * sx, h * sy);
+                let r = dest.intersect(clip);
+                if r.is_empty() || dest.is_empty() {
+                    return;
+                }
+                let Some((pixels, iw, ih)) = self.turned.pixels(image) else {
+                    return;
+                };
+                let Some(source) = tiny_skia::PixmapRef::from_bytes(&pixels, iw, ih) else {
+                    return;
+                };
+                draw_image(pixmap, source, dest, r, *sharp);
+            }
         }
     }
 
@@ -2514,7 +2649,8 @@ impl SoftwareBackend {
             match item {
                 DisplayItem::Rect { .. }
                 | DisplayItem::Border { .. }
-                | DisplayItem::Text { .. } => {
+                | DisplayItem::Text { .. }
+                | DisplayItem::Image { .. } => {
                     self.draw(pixmap, item, clip.intersect(inside), through);
                 }
                 DisplayItem::Polygon { points, color } => {
@@ -2588,9 +2724,9 @@ fn extent(text: &mut GlyphCache, item: &DisplayItem, state: &State) -> Option<Cl
         | DisplayItem::PopClip
         | DisplayItem::PushGroup { .. }
         | DisplayItem::PopGroup => return None,
-        DisplayItem::Rect { x, y, w, h, .. } | DisplayItem::Border { x, y, w, h, .. } => {
-            (Clip::new(*x, *y, *w, *h), 0.0, 0.0)
-        }
+        DisplayItem::Rect { x, y, w, h, .. }
+        | DisplayItem::Border { x, y, w, h, .. }
+        | DisplayItem::Image { x, y, w, h, .. } => (Clip::new(*x, *y, *w, *h), 0.0, 0.0),
         DisplayItem::Text {
             text: run,
             x,
@@ -2622,6 +2758,9 @@ fn extent(text: &mut GlyphCache, item: &DisplayItem, state: &State) -> Option<Cl
     let pixels = pixels + if in_scratch { 1.0 } else { 0.0 };
     let reach = grown(reach, texels);
     let mapped = state.map(reach.x0, reach.y0, reach.x1 - reach.x0, reach.y1 - reach.y0)?;
+    // A clip inside a scratch group cuts the group's pixels before they
+    // are resampled, which reaches a pixel past it.
+    let clip = if in_scratch { grown(clip, 1.0) } else { clip };
     let extent = grown(mapped, pixels).intersect(clip);
     (!extent.is_empty()).then_some(extent)
 }
@@ -3906,6 +4045,143 @@ mod tests {
         }
     }
 
+    /// An opaque image `width` by `height` of the colours `pixels` gives,
+    /// numbered `id`, as decoded: premultiplied RGBA.
+    pub(crate) fn picture(id: u64, width: u32, height: u32, pixels: &[[u8; 4]]) -> ImageRef {
+        let bytes: Vec<u8> = pixels.iter().flatten().copied().collect();
+        ImageRef {
+            id,
+            frame: 0,
+            orientation: Orientation::Normal,
+            pixels: Some(Arc::new(images::Image {
+                width,
+                height,
+                frames: vec![images::Frame {
+                    pixels: Arc::from(bytes),
+                    delay: 100,
+                }],
+                plays: images::Plays::Times(1),
+            })),
+        }
+    }
+
+    const RED: [u8; 4] = [0xff, 0, 0, 0xff];
+    const GREEN: [u8; 4] = [0, 0x80, 0, 0xff];
+    const BLUE: [u8; 4] = [0, 0, 0xff, 0xff];
+
+    fn image(x: f32, y: f32, w: f32, h: f32, image: ImageRef, sharp: bool) -> DisplayItem {
+        DisplayItem::Image {
+            x,
+            y,
+            w,
+            h,
+            image,
+            sharp,
+        }
+    }
+
+    #[test]
+    fn an_image_is_drawn_stretched_over_its_rectangle_once_it_has_pixels() {
+        let mut backend = test_backend();
+        let four = picture(1, 2, 2, &[RED, GREEN, BLUE, WHITE]);
+        let draw = |backend: &mut SoftwareBackend, items: Vec<DisplayItem>| {
+            let mut all = vec![white_frame(8.0, 8.0)];
+            all.extend(items);
+            backend
+                .rasterize(&DisplayList { items: all }, 8, 8)
+                .to_vec()
+        };
+        // Each texel over two by two pixels, the nearest taken.
+        let buf = draw(
+            &mut backend,
+            vec![image(2.0, 2.0, 4.0, 4.0, four.clone(), true)],
+        );
+        assert_eq!(px(&buf, 8, 2, 2), RED);
+        assert_eq!(px(&buf, 8, 3, 3), RED);
+        assert_eq!(px(&buf, 8, 4, 2), GREEN);
+        assert_eq!(px(&buf, 8, 2, 5), BLUE);
+        assert_eq!(px(&buf, 8, 5, 5), WHITE);
+        assert_eq!(px(&buf, 8, 1, 1), WHITE);
+        assert_eq!(px(&buf, 8, 6, 2), WHITE);
+        // Texel for pixel, blended or not, each pixel is its texel.
+        let buf = draw(
+            &mut backend,
+            vec![image(0.0, 0.0, 2.0, 2.0, four.clone(), false)],
+        );
+        assert_eq!(
+            [px(&buf, 8, 0, 0), px(&buf, 8, 1, 0), px(&buf, 8, 0, 1)],
+            [RED, GREEN, BLUE]
+        );
+        // Blended between texel centres when stretched.
+        let buf = draw(
+            &mut backend,
+            vec![image(0.0, 0.0, 8.0, 2.0, four.clone(), false)],
+        );
+        let middle = px(&buf, 8, 3, 0);
+        assert!(middle[0] > 0 && middle[1] > 0, "{middle:?}");
+        // Clipped.
+        let buf = draw(
+            &mut backend,
+            vec![
+                DisplayItem::PushClip {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 3.0,
+                    h: 3.0,
+                },
+                image(0.0, 0.0, 4.0, 4.0, four.clone(), true),
+                DisplayItem::PopClip,
+            ],
+        );
+        assert_eq!(px(&buf, 8, 2, 0), GREEN);
+        assert_eq!(px(&buf, 8, 3, 0), WHITE, "clipped");
+        // Turned before it is drawn: a quarter turn clockwise puts the
+        // left column, bottom first, along the top.
+        let mut turned = picture(2, 2, 2, &[RED, GREEN, BLUE, WHITE]);
+        turned.orientation = Orientation::Rotate90;
+        let buf = draw(&mut backend, vec![image(0.0, 0.0, 2.0, 2.0, turned, true)]);
+        assert_eq!(
+            [px(&buf, 8, 0, 0), px(&buf, 8, 1, 0), px(&buf, 8, 0, 1)],
+            [BLUE, RED, WHITE]
+        );
+        // A pixel is the image's where its centre is inside the image.
+        let buf = draw(
+            &mut backend,
+            vec![image(0.4, 0.0, 2.0, 2.0, four.clone(), true)],
+        );
+        assert_eq!([px(&buf, 8, 0, 0), px(&buf, 8, 1, 0)], [RED, GREEN]);
+        assert_eq!(px(&buf, 8, 2, 0), WHITE);
+        // Nothing before it is decoded.
+        let mut coming = four.clone();
+        coming.pixels = None;
+        let buf = draw(&mut backend, vec![image(0.0, 0.0, 8.0, 8.0, coming, true)]);
+        assert_eq!(px(&buf, 8, 4, 4), WHITE);
+    }
+
+    #[test]
+    fn an_image_given_its_pixels_is_drawn_again_where_it_is() {
+        let mut backend = test_backend();
+        let four = picture(1, 2, 2, &[RED, GREEN, BLUE, WHITE]);
+        let mut coming = four.clone();
+        coming.pixels = None;
+        let list = |picture: ImageRef| DisplayList {
+            items: vec![
+                white_frame(32.0, 32.0),
+                image(4.0, 4.0, 8.0, 8.0, picture, true),
+            ],
+        };
+        backend.rasterize(&list(coming), 32, 32);
+        let buf = backend.rasterize(&list(four), 32, 32).to_vec();
+        assert_eq!(px(&buf, 32, 4, 4), RED);
+        assert_eq!(px(&buf, 32, 11, 11), WHITE);
+        match backend.redrawn() {
+            Redrawn::Rects(rects) => {
+                assert!(rects.iter().all(|r| r.x0 >= 4 && r.x1 <= 12), "{rects:?}")
+            }
+            other => panic!("drawn again in part, not {other:?}"),
+        }
+    }
+
     #[test]
     fn a_clip_keeps_a_rect_inside_it_and_an_unmatched_pop_is_harmless() {
         let mut backend = test_backend();
@@ -4393,6 +4669,32 @@ mod tests {
                 w: rng.coord(0.0, w),
                 h: rng.coord(0.0, h),
             },
+            // An image (M23.2) now and then, turned or not, its pixels
+            // there or still coming.
+            _ if rng.below(2) == 0 => {
+                let mut picture = picture(
+                    rng.below(3) as u64,
+                    3,
+                    2,
+                    &[RED, GREEN, BLUE, WHITE, BLACK, [0x40, 0x20, 0x10, 0x80]],
+                );
+                picture.orientation = [
+                    Orientation::Normal,
+                    Orientation::Rotate90,
+                    Orientation::FlipHorizontal,
+                ][rng.below(3)];
+                if rng.below(5) == 0 {
+                    picture.pixels = None;
+                }
+                DisplayItem::Image {
+                    x,
+                    y,
+                    w: rng.coord(0.0, w / 2.0),
+                    h: rng.coord(0.0, h / 2.0),
+                    image: picture,
+                    sharp: rng.below(2) == 0,
+                }
+            }
             _ => DisplayItem::PopClip,
         }
     }

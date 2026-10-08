@@ -26,11 +26,14 @@
 pub mod order;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use dom::{Document, Node, NodeData, NodeId};
-use layout::{Fragment, FragmentKind, MarkerShape};
+use layout::{Fragment, FragmentKind, MarkerShape, Replaced};
 use style::Styles;
-use style::computed::{BOTTOM, BorderStyle, Color, Display, LEFT, RIGHT, TOP};
+use style::computed::{
+    BOTTOM, BorderStyle, Color, Display, ImageOrientation, LEFT, ObjectFit, RIGHT, TOP,
+};
 use style::transform::Matrix;
 
 pub use order::{Rect, Step, padding_box, paint_order, paint_order_in};
@@ -146,6 +149,38 @@ impl Rgba8 {
         Rgba8 { r, g, b, a: 255 }
     }
 }
+
+/// The image a [`DisplayItem::Image`] draws (M23.2): its number in the
+/// engine, the frame shown, how its pixels are turned before they are
+/// drawn, and the pixels, which the engine gives once they are decoded.
+/// Two compare equal when they draw the same: one image's same frame,
+/// turned the same way, both with pixels or both without.
+#[derive(Debug, Clone)]
+pub struct ImageRef {
+    pub id: u64,
+    pub frame: u32,
+    /// What turns the decoded pixels, which are oriented, before they
+    /// are drawn: `Normal`, but under `image-orientation: none` the
+    /// inverse of the image's orientation.
+    pub orientation: images::Orientation,
+    /// The decoded image; `None` until it is, when nothing is drawn.
+    pub pixels: Option<Arc<images::Image>>,
+}
+
+impl PartialEq for ImageRef {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.frame == other.frame
+            && self.orientation == other.orientation
+            && self.pixels.is_some() == other.pixels.is_some()
+    }
+}
+
+/// The colour of the icon of an image that cannot be shown.
+pub const ICON_COLOUR: Rgba8 = Rgba8::rgb(0x8c, 0x8c, 0x8c);
+/// The colour of the border around a box the icon is in, when the box
+/// is larger than the icon.
+pub const ICON_BOX_COLOUR: Rgba8 = Rgba8::rgb(0xc0, 0xc0, 0xc0);
 
 /// One drawable operation in a display list. Items compare by value:
 /// two equal items draw the same pixels over the same pixels under the
@@ -263,6 +298,20 @@ pub enum DisplayItem {
     },
     /// End the innermost [`DisplayItem::PushGroup`].
     PopGroup,
+    /// Draw an image (M23.2) into the rectangle at `(x, y)` of size `w`
+    /// by `h`, stretched to it, each pixel of the raster whose centre is
+    /// inside the rectangle and the clip taking the image's colour
+    /// there, the pixels between texel centres blended, or the nearest
+    /// texel taken where `sharp`; nothing until its pixels are decoded.
+    Image {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        image: ImageRef,
+        /// `image-rendering: pixelated` or `crisp-edges`.
+        sharp: bool,
+    },
 }
 
 /// The window onto the document a display list is painted for (M9.1):
@@ -599,6 +648,9 @@ pub fn paint_fragments_in(
                 FragmentKind::Marker(shape) => {
                     push_marker(&mut items, *shape, rect, to_rgba8(fragment.style.color));
                 }
+                FragmentKind::Replaced(replaced) => {
+                    push_replaced(&mut items, fragment, replaced, rect);
+                }
                 _ => {}
             },
             Step::PushClip { rect, .. } => {
@@ -794,6 +846,144 @@ fn push_decorations(
 /// or the square filled. A circle is a polygon of 32 sides,
 /// anti-aliased; the stroked one goes round the outer circle and back
 /// round the inner, which the fill's signed area leaves open.
+/// The size an image `natural` in size is drawn at in a content box
+/// `room` in size under `fit` (CSS Images 3 section 4.5): the box's,
+/// the largest that fits in it or the smallest that covers it with the
+/// image's ratio kept, the natural size, or the smaller of that and the
+/// contained size.
+pub fn fitted(fit: ObjectFit, natural: (f32, f32), room: (f32, f32)) -> (f32, f32) {
+    let (nw, nh) = natural;
+    let (bw, bh) = room;
+    let scaled = |by: fn(f32, f32) -> f32| {
+        if nw <= 0.0 || nh <= 0.0 {
+            return room;
+        }
+        let s = by(bw / nw, bh / nh);
+        (nw * s, nh * s)
+    };
+    match fit {
+        ObjectFit::Fill => room,
+        ObjectFit::Contain => scaled(f32::min),
+        ObjectFit::Cover => scaled(f32::max),
+        ObjectFit::None => natural,
+        ObjectFit::ScaleDown => {
+            let contained = scaled(f32::min);
+            if contained.0 < nw { contained } else { natural }
+        }
+    }
+}
+
+/// Paints what a replaced box shows (M23.2) in its content box `rect`:
+/// its image, placed by `object-fit` and `object-position` (CSS Images 3
+/// sections 4.5 and 4.6) and clipped to the box where it reaches past
+/// it; or the icon of one that cannot be shown, at the box's top left,
+/// a light border round a box larger than it; or nothing.
+fn push_replaced(
+    items: &mut Vec<DisplayItem>,
+    fragment: &Fragment,
+    replaced: &Replaced,
+    rect: Rect,
+) {
+    match replaced {
+        Replaced::Empty => {}
+        Replaced::Icon => {
+            let size = layout::ICON_SIZE;
+            if rect.w > size || rect.h > size {
+                let r = snapped(rect);
+                items.push(DisplayItem::Border {
+                    x: r.x,
+                    y: r.y,
+                    w: r.w,
+                    h: r.h,
+                    widths: [1.0; 4],
+                    color: ICON_BOX_COLOUR,
+                });
+            }
+            push_icon(
+                items,
+                snapped(Rect {
+                    w: size,
+                    h: size,
+                    ..rect
+                }),
+            );
+        }
+        Replaced::Image { id, header } => {
+            let image = fragment.style.image();
+            let unturned = image.image_orientation == ImageOrientation::None;
+            let natural = if unturned && header.orientation.swaps_sides() {
+                (header.height as f32, header.width as f32)
+            } else {
+                (header.width as f32, header.height as f32)
+            };
+            let (w, h) = fitted(image.object_fit, natural, (rect.w, rect.h));
+            let x = rect.x + image.object_position.x.resolve(rect.w - w);
+            let y = rect.y + image.object_position.y.resolve(rect.h - h);
+            let clipped =
+                x < rect.x || y < rect.y || x + w > rect.x + rect.w || y + h > rect.y + rect.h;
+            if clipped {
+                let r = snapped(rect);
+                items.push(DisplayItem::PushClip {
+                    x: r.x,
+                    y: r.y,
+                    w: r.w,
+                    h: r.h,
+                });
+            }
+            items.push(DisplayItem::Image {
+                x,
+                y,
+                w,
+                h,
+                image: ImageRef {
+                    id: *id,
+                    frame: 0,
+                    orientation: if unturned {
+                        header.orientation.inverse()
+                    } else {
+                        images::Orientation::Normal
+                    },
+                    pixels: None,
+                },
+                sharp: image.image_rendering.is_sharp(),
+            });
+            if clipped {
+                items.push(DisplayItem::PopClip);
+            }
+        }
+    }
+}
+
+/// The icon of an image that cannot be shown, in the 16 by 16 square
+/// `rect`: the engine's own, a square with a cross in it.
+fn push_icon(items: &mut Vec<DisplayItem>, rect: Rect) {
+    items.push(DisplayItem::Border {
+        x: rect.x,
+        y: rect.y,
+        w: rect.w,
+        h: rect.h,
+        widths: [1.0; 4],
+        color: ICON_COLOUR,
+    });
+    let (x0, y0) = (rect.x + 4.0, rect.y + 4.0);
+    let (x1, y1) = (rect.x + rect.w - 4.0, rect.y + rect.h - 4.0);
+    let t = 0.75;
+    for (a, b) in [((x0, y0), (x1, y1)), ((x1, y0), (x0, y1))] {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let length = (dx * dx + dy * dy).sqrt();
+        let (nx, ny) = (-dy / length * t, dx / length * t);
+        items.push(DisplayItem::Polygon {
+            points: vec![
+                (a.0 + nx, a.1 + ny),
+                (b.0 + nx, b.1 + ny),
+                (b.0 - nx, b.1 - ny),
+                (a.0 - nx, a.1 - ny),
+            ],
+            color: ICON_COLOUR,
+        });
+    }
+}
+
 fn push_marker(items: &mut Vec<DisplayItem>, shape: MarkerShape, rect: Rect, color: Rgba8) {
     let rect = snapped(rect);
     let (cx, cy) = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
@@ -1329,6 +1519,226 @@ mod fragment_tests {
             .iter()
             .filter(|i| matches!(i, DisplayItem::Rect { .. }))
             .collect()
+    }
+
+    /// The display list of an `img` whose `src` is `src`, styled by
+    /// `css`, its image 200 by 100 and turned by `orientation` when
+    /// `src` is `a.png`, broken otherwise (M23.2).
+    fn img_list(src: &str, orientation: images::Orientation, css: &str) -> DisplayList {
+        struct Shown(images::Orientation);
+        impl layout::Images for Shown {
+            fn image(&self, _node: NodeId) -> layout::ImageState {
+                let (width, height) = if self.0.swaps_sides() {
+                    (100, 200)
+                } else {
+                    (200, 100)
+                };
+                layout::ImageState::Ready {
+                    id: 9,
+                    header: images::Header {
+                        format: images::Format::Png,
+                        width,
+                        height,
+                        orientation: self.0,
+                    },
+                }
+            }
+        }
+        struct Broken;
+        impl layout::Images for Broken {
+            fn image(&self, _node: NodeId) -> layout::ImageState {
+                layout::ImageState::Broken
+            }
+        }
+        let fonts = test_fonts();
+        let root = Element::new("html")
+            .push(Element::new("body").push(Element::new("img").attr("id", "i").attr("src", src)));
+        let document = Document::from_node(&dom::Node::document(vec![root.into()]));
+        let sheet = css::parse_stylesheet(&format!(
+            "html, body {{ margin: 0 }} img {{ display: block }} {css}"
+        ))
+        .expect("test css is valid");
+        let sheets = style::Stylesheets::new(vec![sheet]);
+        let context = style::CascadeContext::default();
+        let styles = sheets.cascade(&document, &context);
+        let recascade = sheets.recascader(&document, &styles, &context);
+        let shown = Shown(orientation);
+        let images: &dyn layout::Images = if src == "a.png" { &shown } else { &Broken };
+        let boxes = layout::build_box_tree_showing(&document, &styles, &recascade, images);
+        let layout = layout::layout_document(&boxes, VIEWPORT, &fonts);
+        paint_fragments(&layout.roots, Viewport::new(VIEWPORT, 600.0))
+    }
+
+    /// The items after the canvas, inside the document's group.
+    fn after_canvas(list: &DisplayList) -> Vec<DisplayItem> {
+        list.items[1..]
+            .iter()
+            .filter(|i| !matches!(i, DisplayItem::PushGroup { .. } | DisplayItem::PopGroup))
+            .cloned()
+            .collect()
+    }
+
+    fn image_at(item: &DisplayItem) -> (f32, f32, f32, f32, images::Orientation, bool) {
+        match item {
+            DisplayItem::Image {
+                x,
+                y,
+                w,
+                h,
+                image,
+                sharp,
+            } => (*x, *y, *w, *h, image.orientation, *sharp),
+            other => panic!("not an image: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_image_is_placed_by_object_fit_and_object_position_and_clipped_to_its_box() {
+        use images::Orientation::{Normal, Rotate90, Rotate270};
+        let box_css = "img { width: 100px; height: 100px }";
+        let items =
+            |css: &str| after_canvas(&img_list("a.png", Normal, &format!("{box_css} {css}")));
+        // `fill`: stretched over the box.
+        let fill = items("");
+        assert_eq!(fill.len(), 1);
+        assert_eq!(image_at(&fill[0]), (0.0, 0.0, 100.0, 100.0, Normal, false));
+        // `contain`: as wide as the box, centred down it.
+        let contain = items("img { object-fit: contain }");
+        assert_eq!(
+            image_at(&contain[0]),
+            (0.0, 25.0, 100.0, 50.0, Normal, false)
+        );
+        // `cover`: as tall as the box, at its left, clipped to it.
+        let cover = items("img { object-fit: cover; object-position: 0 0 }");
+        assert_eq!(cover.len(), 3);
+        assert!(matches!(
+            cover[0],
+            DisplayItem::PushClip {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 100.0
+            }
+        ));
+        assert_eq!(image_at(&cover[1]), (0.0, 0.0, 200.0, 100.0, Normal, false));
+        assert_eq!(cover[2], DisplayItem::PopClip);
+        // `none`, at the right: its natural size, clipped.
+        let none = items("img { object-fit: none; object-position: right 0 }");
+        assert_eq!(
+            image_at(&none[1]),
+            (-100.0, 0.0, 200.0, 100.0, Normal, false)
+        );
+        // `scale-down` of an image larger than the box is `contain`.
+        let down = items("img { object-fit: scale-down }");
+        assert_eq!(image_at(&down[0]).3, 50.0);
+        // `pixelated` keeps texels sharp.
+        let sharp = items("img { image-rendering: pixelated }");
+        assert!(image_at(&sharp[0]).5);
+        // Turned back where `image-orientation` is `none`: its natural
+        // size, and its pixels turned, the other way.
+        let turned = after_canvas(&img_list(
+            "a.png",
+            Rotate90,
+            "img { image-orientation: none }",
+        ));
+        assert_eq!(
+            image_at(&turned[0]),
+            (0.0, 0.0, 200.0, 100.0, Rotate270, false)
+        );
+        let applied = after_canvas(&img_list("a.png", Rotate90, ""));
+        assert_eq!(
+            image_at(&applied[0]),
+            (0.0, 0.0, 100.0, 200.0, Normal, false)
+        );
+    }
+
+    #[test]
+    fn an_image_that_cannot_be_shown_is_its_icon_in_a_light_box() {
+        let icon = after_canvas(&img_list("missing.png", images::Orientation::Normal, ""));
+        assert_eq!(icon.len(), 3, "{icon:?}");
+        assert!(matches!(
+            icon[0],
+            DisplayItem::Border {
+                x: 0.0,
+                y: 0.0,
+                w: 16.0,
+                h: 16.0,
+                color: ICON_COLOUR,
+                ..
+            }
+        ));
+        assert!(matches!(icon[1], DisplayItem::Polygon { .. }));
+        let sized = after_canvas(&img_list(
+            "missing.png",
+            images::Orientation::Normal,
+            "img { width: 50px; height: 40px }",
+        ));
+        assert!(matches!(
+            sized[0],
+            DisplayItem::Border {
+                w: 50.0,
+                h: 40.0,
+                color: ICON_BOX_COLOUR,
+                ..
+            }
+        ));
+        assert!(matches!(sized[1], DisplayItem::Border { w: 16.0, .. }));
+    }
+
+    #[test]
+    fn fitting_keeps_the_ratio_but_for_fill() {
+        let natural = (200.0, 100.0);
+        assert_eq!(fitted(ObjectFit::Fill, natural, (50.0, 50.0)), (50.0, 50.0));
+        assert_eq!(
+            fitted(ObjectFit::Contain, natural, (50.0, 50.0)),
+            (50.0, 25.0)
+        );
+        assert_eq!(
+            fitted(ObjectFit::Cover, natural, (50.0, 50.0)),
+            (100.0, 50.0)
+        );
+        assert_eq!(fitted(ObjectFit::None, natural, (50.0, 50.0)), natural);
+        assert_eq!(
+            fitted(ObjectFit::ScaleDown, natural, (50.0, 50.0)),
+            (50.0, 25.0)
+        );
+        assert_eq!(
+            fitted(ObjectFit::ScaleDown, natural, (500.0, 500.0)),
+            natural
+        );
+        assert_eq!(
+            fitted(ObjectFit::Contain, (0.0, 0.0), (5.0, 5.0)),
+            (5.0, 5.0)
+        );
+    }
+
+    #[test]
+    fn image_refs_compare_by_what_they_draw() {
+        let picture = |id, pixels: bool| ImageRef {
+            id,
+            frame: 0,
+            orientation: images::Orientation::Normal,
+            pixels: pixels.then(|| {
+                Arc::new(images::Image {
+                    width: 1,
+                    height: 1,
+                    frames: vec![images::Frame {
+                        pixels: Arc::from(vec![0u8; 4]),
+                        delay: 100,
+                    }],
+                    plays: images::Plays::Times(1),
+                })
+            }),
+        };
+        assert_eq!(picture(1, true), picture(1, true));
+        assert_ne!(picture(1, true), picture(1, false));
+        assert_ne!(picture(1, true), picture(2, true));
+        let mut turned = picture(1, true);
+        turned.orientation = images::Orientation::Rotate90;
+        assert_ne!(turned, picture(1, true));
+        let mut later = picture(1, true);
+        later.frame = 1;
+        assert_ne!(later, picture(1, true));
     }
 
     #[test]

@@ -39,15 +39,16 @@ use std::ops::Range;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use paint::{DisplayItem, DisplayList, GroupKey, LayerReason, Rgba8, TILE_HEIGHT};
+use images::Orientation;
+use paint::{DisplayItem, DisplayList, GroupKey, ImageRef, LayerReason, Rgba8, TILE_HEIGHT};
 use style::transform::Matrix;
 use text::{FontCollection, FontError, Script};
 
 use crate::{
     Backend, Clip, GlyphCache, Layer, LayerInfo, Layered, Layers, MAX_FRAME_PIXELS,
-    MAX_PARTIAL_SIDE, PixelRect, Pixels, Redrawn, RenderBackend, State, Store, Tile, bounds,
-    clip_polygon, damaged, fits_a_frame, group_end, landing_of, outward_clip, polygon_coverage,
-    raster_scale, reach, reach_at, tile_rows, unscaled, visible_in, whole_reach,
+    MAX_PARTIAL_SIDE, PixelRect, Pixels, Redrawn, RenderBackend, State, Store, Tile, Turned,
+    bounds, clip_polygon, damaged, fits_a_frame, group_end, landing_of, outward_clip,
+    polygon_coverage, raster_scale, reach, reach_at, tile_rows, unscaled, visible_in, whole_reach,
 };
 
 /// The side of an atlas page, in texels: four mebibytes of coverage,
@@ -74,6 +75,10 @@ const MASK_FLOATS: usize = 12;
 /// own coordinates, the matrix from there to clip coordinates, the
 /// texture coordinates of the corners, and the opacity with padding.
 const COMPOSITE_FLOATS: usize = 28;
+
+/// The bytes of image textures kept (M23.2): past it the ones drawn
+/// longest ago are dropped, and uploaded again when drawn.
+const IMAGE_TEXTURE_BUDGET: usize = 256 << 20;
 
 /// The shaders of the four pipelines.
 const SHADERS: &str = r#"
@@ -288,6 +293,15 @@ struct Records {
     composites: Vec<f32>,
 }
 
+/// An image uploaded (M23.2): its texture, with the group a composite
+/// samples it by between texels, and the one it samples the nearest
+/// texel by; and the raster it was last drawn in.
+struct ImageTexture {
+    texture: Texture,
+    nearest: wgpu::BindGroup,
+    used: u64,
+}
+
 /// A scratch texture a group is drawn into for one frame, kept for the
 /// next frame's group of the same size.
 struct Scratch {
@@ -415,6 +429,12 @@ pub struct GpuBackend {
     /// it, as the shell says what it cannot do.
     errors: Arc<Mutex<Vec<String>>>,
     reported: usize,
+    /// The images uploaded (M23.2), by number, frame and turn, and the
+    /// bytes they hold.
+    images: HashMap<(u64, u32, Orientation), ImageTexture>,
+    image_bytes: usize,
+    /// The images drawn turned.
+    turned: Turned,
 }
 
 impl GpuBackend {
@@ -481,6 +501,9 @@ impl GpuBackend {
             pixels: Vec::new(),
             errors,
             reported: 0,
+            images: HashMap::new(),
+            image_bytes: 0,
+            turned: Turned::default(),
         })
     }
 
@@ -568,6 +591,95 @@ impl GpuBackend {
             height,
             depth,
         })
+    }
+
+    /// The group a composite samples `image` by, the nearest texel where
+    /// `sharp`: its texture uploaded the first time it is drawn, and the
+    /// textures drawn longest ago, not in this raster, dropped while
+    /// they hold more than the budget. `None` until it is decoded, and
+    /// for one larger than a texture may be.
+    fn image_bind(&mut self, image: &ImageRef, sharp: bool) -> Option<wgpu::BindGroup> {
+        let key = (image.id, image.frame, image.orientation);
+        let frame = self.frame;
+        if let Some(kept) = self.images.get_mut(&key) {
+            kept.used = frame;
+            return Some(if sharp {
+                kept.nearest.clone()
+            } else {
+                kept.texture.bind.clone()
+            });
+        }
+        let (pixels, w, h) = self.turned.pixels(image)?;
+        let texture = self.texture(
+            w,
+            h,
+            wgpu::TextureFormat::Rgba8Unorm,
+            4,
+            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            &self.pipelines.linear,
+        )?;
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * w),
+                rows_per_image: Some(h),
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+        );
+        let nearest = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.pipelines.sampled,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&texture.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.pipelines.nearest),
+                },
+            ],
+        });
+        self.image_bytes += texture.bytes();
+        while self.image_bytes > IMAGE_TEXTURE_BUDGET {
+            let Some(oldest) = self
+                .images
+                .iter()
+                .filter(|(_, kept)| kept.used < frame)
+                .min_by_key(|(_, kept)| kept.used)
+                .map(|(key, _)| *key)
+            else {
+                break;
+            };
+            if let Some(dropped) = self.images.remove(&oldest) {
+                self.image_bytes -= dropped.texture.bytes();
+            }
+        }
+        let bind = if sharp {
+            nearest.clone()
+        } else {
+            texture.bind.clone()
+        };
+        self.images.insert(
+            key,
+            ImageTexture {
+                texture,
+                nearest,
+                used: frame,
+            },
+        );
+        Some(bind)
     }
 
     /// A colour texture a pass draws into and a composite samples.
@@ -1177,6 +1289,42 @@ impl GpuBackend {
                     coverage.y0 + h as i64,
                 );
                 self.push_mask(draws, place, at, premultiplied(color), outer, size);
+            }
+            DisplayItem::Image {
+                x,
+                y,
+                w,
+                h,
+                image,
+                sharp,
+            } => {
+                let dest = Clip::new(x * sx + tx, y * sy + ty, w * sx, h * sy);
+                let r = dest.intersect(clip);
+                let finite = [dest.x0, dest.y0, dest.x1, dest.y1]
+                    .iter()
+                    .all(|v| v.is_finite());
+                if r.is_empty() || dest.is_empty() || !finite {
+                    return;
+                }
+                // The pixels whose centres are in the image and the
+                // clip, as the software backend fills them.
+                let Some(scissor) = PixelRect::centred(r.x0, r.y0, r.x1, r.y1, width, height)
+                else {
+                    return;
+                };
+                let Some(bind) = self.image_bind(image, *sharp) else {
+                    return;
+                };
+                Self::push_composite(
+                    &mut self.records,
+                    draws,
+                    bind,
+                    (dest.x0, dest.y0, dest.x1, dest.y1),
+                    &Matrix::IDENTITY,
+                    1.0,
+                    scissor,
+                    size,
+                );
             }
         }
     }
@@ -2254,6 +2402,49 @@ mod tests {
                 found.differing, found.bounds, found.first
             );
         }
+    }
+
+    #[test]
+    fn images_match() {
+        let white = Rgba8::rgb(255, 255, 255);
+        let texels: Vec<[u8; 4]> = (0..48)
+            .map(|i| {
+                let v = (i * 5) as u8;
+                [v, 255 - v, (i * 37 % 256) as u8, 255]
+            })
+            .collect();
+        let picture = crate::tests::picture(7, 8, 6, &texels);
+        let mut turned = picture.clone();
+        turned.orientation = images::Orientation::Rotate270;
+        let image = |x, y, w, h, image: &ImageRef, sharp| DisplayItem::Image {
+            x,
+            y,
+            w,
+            h,
+            image: image.clone(),
+            sharp,
+        };
+        let list = DisplayList {
+            items: vec![
+                rect(0.0, 0.0, 200.0, 120.0, white),
+                image(4.0, 4.0, 8.0, 6.0, &picture, false),
+                image(20.0, 4.0, 32.0, 24.0, &picture, true),
+                image(60.0, 4.0, 32.0, 24.0, &picture, false),
+                image(100.0, 4.0, 6.0, 8.0, &turned, true),
+                DisplayItem::PushClip {
+                    x: 120.0,
+                    y: 10.0,
+                    w: 20.0,
+                    h: 10.0,
+                },
+                image(115.0, 5.0, 32.0, 24.0, &picture, true),
+                DisplayItem::PopClip,
+                group(Matrix::scale(2.0, 2.0, 1.0), 1.0, 1, None),
+                image(10.0, 20.0, 8.0, 6.0, &picture, true),
+                DisplayItem::PopGroup,
+            ],
+        };
+        equivalent("images", &[list], 200, 120);
     }
 
     #[test]

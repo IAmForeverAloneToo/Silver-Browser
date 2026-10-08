@@ -1115,6 +1115,7 @@ dependencies = [
  "css",
  "dom",
  "html",
+ "images",
  "style",
  "text",
  "unicode-properties",
@@ -1752,6 +1753,7 @@ version = "0.0.1"
 dependencies = [
  "css",
  "dom",
+ "images",
  "layout",
  "style",
  "text",
@@ -2036,6 +2038,7 @@ dependencies = [
  "ab_glyph",
  "dom",
  "flate2",
+ "images",
  "paint",
  "pdf-writer",
  "pollster",

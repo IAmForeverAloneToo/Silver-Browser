@@ -122,8 +122,8 @@ use crate::computed::{
     TextTransform, VerticalAlign, WhiteSpace,
 };
 use crate::computed::{
-    AnimationPlayState, Calc, Decoration, Effects, Fragmentation, GridStyle, JustifyItems, Lists,
-    Motion, WillChange,
+    AnimationPlayState, Calc, Decoration, Effects, Fragmentation, GridStyle, ImageStyle,
+    JustifyItems, Lists, Motion, WillChange,
 };
 use crate::custom::{self, CustomProperties, DataType, Substituted, Substitutions};
 use crate::invalidation::{Reach, SelectorFeatures, invalidate};
@@ -137,11 +137,13 @@ mod decoration;
 mod effects;
 mod fragmentation;
 mod grid;
+mod images;
 mod lists;
 mod motion;
 mod page;
 
 use animated::Animated;
+pub(crate) use images::is_img_hint;
 pub(crate) use lists::is_list_hint;
 
 /// The built-in default stylesheet (M5.6), compiled in — loading it is
@@ -1875,7 +1877,8 @@ fn declarations_for<'a>(
     // specificity, before every author sheet's, so that any author rule
     // overrides them.
     let hints = document.tag(element).map_or_else(String::new, |tag| {
-        lists::list_hints(tag, |name| document.attr(element, name).map(str::to_string))
+        let attr = |name: &str| document.attr(element, name).map(str::to_string);
+        lists::list_hints(tag, attr) + &images::img_hints(tag, attr)
     });
     if !hints.is_empty()
         && let Ok(decls) = css::parse_style_attribute(&hints)
@@ -2977,6 +2980,23 @@ fn apply_declaration(
                 l.list_style_type = kind;
             },
         ),
+        "aspect-ratio" => set_image(style, images::parse_aspect_ratio(value, bases), |i, v| {
+            i.aspect_ratio = v
+        }),
+        "object-fit" => set_image(style, images::parse_object_fit(value), |i, v| {
+            i.object_fit = v
+        }),
+        "object-position" => set_image(
+            style,
+            images::parse_object_position(value, bases),
+            |i, v| i.object_position = v,
+        ),
+        "image-orientation" => set_image(style, images::parse_image_orientation(value), |i, v| {
+            i.image_orientation = v
+        }),
+        "image-rendering" => set_image(style, images::parse_image_rendering(value), |i, v| {
+            i.image_rendering = v
+        }),
         "text-decoration-line" => {
             set_decoration(style, decoration::parse_line(value), |d, v| d.line = v)
         }
@@ -3112,6 +3132,15 @@ fn set_lists<T>(
     v.map(|v| update(style.lists_mut(), v)).is_some()
 }
 
+/// [`set_grid`] for the image properties (M23.2).
+fn set_image<T>(
+    style: &mut ComputedStyle,
+    v: Option<T>,
+    update: impl FnOnce(&mut ImageStyle, T),
+) -> bool {
+    v.map(|v| update(style.image_mut(), v)).is_some()
+}
+
 /// [`set_grid`] for the text decoration properties.
 fn set_decoration<T>(
     style: &mut ComputedStyle,
@@ -3167,6 +3196,19 @@ fn copy_lists(
     }
     let src = src.lists().clone();
     copy(style.lists_mut(), &src);
+}
+
+/// [`copy_grid`] for the image properties (M23.2).
+fn copy_image(
+    style: &mut ComputedStyle,
+    src: &ComputedStyle,
+    copy: impl FnOnce(&mut ImageStyle, &ImageStyle),
+) {
+    if style.image.is_none() && src.image.is_none() {
+        return;
+    }
+    let src = src.image().clone();
+    copy(style.image_mut(), &src);
 }
 
 /// [`copy_grid`] for the effects properties.
@@ -3306,6 +3348,8 @@ fn is_inherited(name: &str) -> bool {
             | "text-align-all"
             | "text-align-last"
             | "text-justify"
+            | "image-orientation"
+            | "image-rendering"
     )
 }
 
@@ -3609,6 +3653,15 @@ fn apply_css_wide(
             l.list_style_position = s.list_style_position;
             l.list_style_image = s.list_style_image.clone();
         }),
+        "aspect-ratio" => copy_image(style, src, |i, s| i.aspect_ratio = s.aspect_ratio),
+        "object-fit" => copy_image(style, src, |i, s| i.object_fit = s.object_fit),
+        "object-position" => copy_image(style, src, |i, s| {
+            i.object_position = s.object_position.clone()
+        }),
+        "image-orientation" => {
+            copy_image(style, src, |i, s| i.image_orientation = s.image_orientation)
+        }
+        "image-rendering" => copy_image(style, src, |i, s| i.image_rendering = s.image_rendering),
         "text-decoration-line" => copy_decoration(style, src, |d, s| d.line = s.line),
         "text-decoration-style" => copy_decoration(style, src, |d, s| d.style = s.style),
         "text-decoration-color" => copy_decoration(style, src, |d, s| d.color = s.color),
@@ -9997,6 +10050,64 @@ mod tests {
         assert_eq!(of("#o").margin[TOP], LengthPercentageAuto::Px(16.0));
         assert_eq!(of("#u").margin[TOP], LengthPercentageAuto::Px(0.0));
         assert_eq!(of("#dl").margin[BOTTOM], LengthPercentageAuto::Px(0.0));
+    }
+
+    #[test]
+    fn an_img_width_and_height_are_presentational_hints() {
+        use crate::computed::{AspectRatio, Ratio};
+        let img = |html: &str, css: &str| style_of(html, &[sheet(css)], "img");
+        let s = img("<img width=300 height=150>", "");
+        assert_eq!(
+            (s.width.clone(), s.height.clone()),
+            (Size::Px(300.0), Size::Px(150.0))
+        );
+        assert_eq!(
+            s.image().aspect_ratio,
+            AspectRatio::AutoOr(Ratio {
+                width: 300.0,
+                height: 150.0
+            })
+        );
+        let s = img("<img width=50% height=20>", "");
+        assert_eq!(s.width, Size::Percent(50.0));
+        assert_eq!(s.image().aspect_ratio, AspectRatio::Auto);
+        // An author rule overrides a hint, however unspecific, and the
+        // ratio stays to size the other side by.
+        let s = img("<img width=300 height=150>", "* { height: auto }");
+        assert_eq!(s.height, Size::Auto);
+        assert!(matches!(s.image().aspect_ratio, AspectRatio::AutoOr(_)));
+        // On another element they are no hints.
+        let s = style_of("<video width=300></video>", &[], "video");
+        assert_eq!(s.width, Size::Auto);
+    }
+
+    #[test]
+    fn the_image_properties_cascade_and_two_inherit() {
+        use crate::computed::{ImageOrientation, ImageRendering, ObjectFit};
+        let css = "div { object-fit: cover; object-position: right top; image-rendering: pixelated;
+                   image-orientation: none; aspect-ratio: 2 }";
+        let div = style_of("<div><p>x</p></div>", &[sheet(css)], "div");
+        assert_eq!(div.image().object_fit, ObjectFit::Cover);
+        assert_eq!(
+            div.image().object_position.x,
+            LengthPercentage::Percent(100.0)
+        );
+        assert_eq!(
+            div.image().object_position.y,
+            LengthPercentage::Percent(0.0)
+        );
+        let p = style_of("<div><p>x</p></div>", &[sheet(css)], "p");
+        assert_eq!(p.image().image_rendering, ImageRendering::Pixelated);
+        assert_eq!(p.image().image_orientation, ImageOrientation::None);
+        assert_eq!(p.image().object_fit, ObjectFit::Fill);
+        assert_eq!(p.image().aspect_ratio, crate::computed::AspectRatio::Auto);
+        let css = "div { object-fit: cover; image-rendering: pixelated }
+                   p { object-fit: inherit; image-rendering: initial }";
+        let p = style_of("<div><p>x</p></div>", &[sheet(css)], "p");
+        assert_eq!(p.image().object_fit, ObjectFit::Cover);
+        assert_eq!(p.image().image_rendering, ImageRendering::Auto);
+        // Nothing set, nothing allocated.
+        assert!(style_of("<p>x</p>", &[], "p").image.is_none());
     }
 
     #[test]

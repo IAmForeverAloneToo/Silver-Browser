@@ -441,7 +441,9 @@ pub(crate) fn invalidate(
             }
         } else if name == "style"
             || name == "dir"
-            || tag.is_some_and(|tag| crate::cascade::is_list_hint(tag, name))
+            || tag.is_some_and(|tag| {
+                crate::cascade::is_list_hint(tag, name) || crate::cascade::is_img_hint(tag, name)
+            })
             || inline_reads_attributes(document, element)
         {
             out.mark(document, element, Reach::Element);
@@ -795,6 +797,26 @@ mod tests {
         // On another element it is no hint.
         let r = change(&mut d, &sheets, &mut styles, |d| {
             d.set_attribute(z, "start", "4").unwrap();
+        });
+        assert_eq!(r.computed, 0);
+    }
+
+    #[test]
+    fn an_img_dimension_attribute_restyles_its_element() {
+        // HTML's dimension hints (M23.2): `width` and `height` on an
+        // `img` are its `width`, `height` and `aspect-ratio`.
+        let (mut d, sheets, mut styles) = setup("<img id=x><p id=z>b</p>", "");
+        let (x, z) = (by_id(&d, "x"), by_id(&d, "z"));
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(x, "width", "40").unwrap();
+        });
+        assert_eq!((r.computed, r.changed.len()), (1, 1));
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(x, "alt", "a").unwrap();
+        });
+        assert_eq!(r.computed, 0);
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(z, "height", "4").unwrap();
         });
         assert_eq!(r.computed, 0);
     }

@@ -954,6 +954,16 @@ fn image_state(engine: &Engine, url: &Url) -> Option<crate::image_store::ImageSt
         .map(|entry| entry.state.clone())
 }
 
+/// The number of the image at `url` in the shown document.
+fn image_id(engine: &Engine, url: &Url) -> u64 {
+    engine
+        .shown
+        .images
+        .get(url.as_str())
+        .expect("an image of the document")
+        .id
+}
+
 /// Navigates to `url` and takes results until its page is shown and
 /// loaded, images and all.
 fn load_all(tab: &mut Tab, url: Url) {
@@ -1082,6 +1092,161 @@ fn an_img_added_later_is_fetched() {
     tab.wait_until(|engine| matches!(image_state(engine, &url), Some(ImageState::Ready(_))));
 }
 
+/// The element of the shown document whose `id` is `id`.
+fn by_id(engine: &Engine, id: &str) -> dom::NodeId {
+    let document = &engine.shown.document;
+    document
+        .subtree(document.root())
+        .find(|&n| document.attr(n, "id") == Some(id))
+        .unwrap_or_else(|| panic!("no element #{id}"))
+}
+
+/// The kinds of the fragments of the element `#id` in a layout 800px
+/// wide, and the size of its first box: `(w, h)`.
+fn img_box(engine: &Engine, id: &str) -> (Vec<String>, Option<(f32, f32)>) {
+    let node = by_id(engine, id);
+    let fragments: Vec<layout::Fragment> = engine
+        .fragments(800.0)
+        .into_iter()
+        .filter(|f| f.node == node)
+        .collect();
+    let kinds = fragments
+        .iter()
+        .map(|f| match &f.kind {
+            layout::FragmentKind::Box => "box".to_string(),
+            layout::FragmentKind::InlineBox => "inline".to_string(),
+            layout::FragmentKind::Replaced(r) => format!("{r:?}")
+                .split([' ', '{'])
+                .next()
+                .unwrap_or_default()
+                .to_string(),
+            layout::FragmentKind::Text(t) => format!("text {t}"),
+            layout::FragmentKind::Marker(_) => "marker".to_string(),
+        })
+        .collect();
+    let size = fragments
+        .iter()
+        .find(|f| matches!(f.kind, layout::FragmentKind::Box))
+        .map(|f| (f.w, f.h));
+    (kinds, size)
+}
+
+#[test]
+fn an_img_shows_its_image_its_icon_or_its_alt_text() {
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<body><img id=a src=a.png><img id=b src=missing.png>\
+             <p><img id=c src=missing.png alt=Hi></p><img id=d alt=''></body>",
+        )),
+        "/a.png" => Some(Reply::ok("image/png", &png_bytes(40, 30))),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    load_all(&mut tab, server.url("/page.html"));
+    let engine = &tab.engine;
+    assert_eq!(img_box(engine, "a").1, Some((40.0, 30.0)));
+    assert!(img_box(engine, "a").0.contains(&"Image".to_string()));
+    assert_eq!(img_box(engine, "b").1, Some((16.0, 16.0)));
+    assert!(img_box(engine, "b").0.contains(&"Icon".to_string()));
+    let (kinds, _) = img_box(engine, "c");
+    assert!(kinds.contains(&"inline".to_string()), "{kinds:?}");
+    assert!(kinds.contains(&"text Hi".to_string()), "{kinds:?}");
+    assert_eq!(img_box(engine, "d").1, Some((0.0, 0.0)));
+}
+
+#[test]
+fn a_frame_draws_an_image_once_its_pixels_are_decoded() {
+    use crate::image_store::{ImageState, Pixels};
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<body style='margin: 0'><img src=a.png style='display: block'></body>",
+        )),
+        "/a.png" => Some(Reply::ok("image/png", &png_bytes(40, 30))),
+        _ => None,
+    });
+    let url = server.url("/a.png");
+    let mut tab = Tab::new();
+    load_all(&mut tab, server.url("/page.html"));
+    let at = |frame: &[u8], x: usize, y: usize| {
+        let i = (y * 100 + x) * 4;
+        [frame[i], frame[i + 1], frame[i + 2], frame[i + 3]]
+    };
+    // The first frame asks for the pixels and draws nothing in their
+    // place.
+    let first = tab.engine.frame(100, 100);
+    assert_eq!(at(&first, 10, 10), [255; 4]);
+    tab.wait_until(|engine| {
+        matches!(
+            image_state(engine, &url),
+            Some(ImageState::Ready(ready)) if matches!(ready.pixels, Pixels::Decoded(_))
+        )
+    });
+    assert!(tab.engine.needs_frame());
+    // The next draws them: 200 grey at 200 alpha over white.
+    let second = tab.engine.frame(100, 100);
+    assert_eq!(at(&second, 10, 10), [212, 212, 212, 255]);
+    assert_eq!(at(&second, 39, 29), [212, 212, 212, 255]);
+    assert_eq!(at(&second, 40, 10), [255; 4]);
+    assert_eq!(at(&second, 10, 30), [255; 4]);
+}
+
+#[test]
+fn an_imgs_new_src_or_alt_is_laid_out_again() {
+    let server = serve(|path| match path {
+        "/page.html" => Some(html("<body><img id=a src=a.png></body>")),
+        "/a.png" => Some(Reply::ok("image/png", &png_bytes(40, 30))),
+        "/b.png" => Some(Reply::ok("image/png", &png_bytes(20, 10))),
+        _ => None,
+    });
+    let b = server.url("/b.png");
+    let mut tab = Tab::new();
+    load_all(&mut tab, server.url("/page.html"));
+    tab.engine.frame(100, 100);
+    assert_eq!(img_box(&tab.engine, "a").1, Some((40.0, 30.0)));
+    let a = by_id(&tab.engine, "a");
+    tab.engine
+        .mutate(|document| document.set_attribute(a, "src", "b.png"))
+        .unwrap();
+    // Coming: nothing, laid out at once.
+    tab.engine.frame(100, 100);
+    assert_eq!(img_box(&tab.engine, "a").1, Some((0.0, 0.0)));
+    tab.wait_until(|engine| {
+        matches!(
+            image_state(engine, &b),
+            Some(crate::image_store::ImageState::Ready(_))
+        )
+    });
+    tab.engine.frame(100, 100);
+    let size = |engine: &mut Engine| {
+        let node = by_id(engine, "a");
+        engine
+            .layout(100.0)
+            .iter()
+            .find(|f| f.node == node && matches!(f.kind, layout::FragmentKind::Box))
+            .map(|f| (f.w, f.h))
+    };
+    assert_eq!(size(&mut tab.engine), Some((20.0, 10.0)));
+    // A broken one's alt text, put in, is shown in the layout the frame
+    // draws.
+    tab.engine
+        .mutate(|document| document.set_attribute(a, "src", "missing.png"))
+        .unwrap();
+    tab.wait_until(|engine| engine.shown.images.settled());
+    tab.engine.frame(100, 100);
+    assert_eq!(size(&mut tab.engine), Some((16.0, 16.0)));
+    tab.engine
+        .mutate(|document| document.set_attribute(a, "alt", "Hi"))
+        .unwrap();
+    tab.engine.frame(100, 100);
+    let node = by_id(&tab.engine, "a");
+    assert!(
+        tab.engine
+            .layout(100.0)
+            .iter()
+            .any(|f| f.node == node && matches!(f.kind, layout::FragmentKind::InlineBox))
+    );
+}
+
 #[test]
 fn an_images_pixels_are_decoded_when_first_asked_for() {
     use crate::image_store::{ImageState, Pixels};
@@ -1098,9 +1263,10 @@ fn an_images_pixels_are_decoded_when_first_asked_for() {
         other => panic!("{other:?}"),
     };
     assert_eq!(pixels(&tab.engine), Pixels::NotDecoded);
-    assert!(tab.engine.image_pixels(url.as_str()).is_none());
+    let id = image_id(&tab.engine, &url);
+    assert!(tab.engine.image_pixels(id).is_none());
     tab.wait_until(|engine| matches!(pixels(engine), Pixels::Decoded(_)));
-    let image = tab.engine.image_pixels(url.as_str()).expect("decoded");
+    let image = tab.engine.image_pixels(id).expect("decoded");
     assert_eq!((image.width, image.height, image.frames.len()), (4, 3, 1));
 }
 
@@ -1127,11 +1293,8 @@ fn a_page_left_while_an_image_decodes_is_not_kept() {
     tab.wait_until(|engine| engine.url() == Some(&a));
     assert_eq!(pages(&server), 1);
     // Left with its pixels being decoded: fetched again.
-    assert!(
-        tab.engine
-            .image_pixels(server.url("/a.png").as_str())
-            .is_none()
-    );
+    let id = image_id(&tab.engine, &server.url("/a.png"));
+    assert!(tab.engine.image_pixels(id).is_none());
     load_all(&mut tab, server.url("/b.html"));
     tab.engine.go_back();
     tab.wait_until(|engine| engine.url() == Some(&a) && engine.load_state() == &LoadState::Loaded);

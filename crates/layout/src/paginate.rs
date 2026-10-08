@@ -689,15 +689,20 @@ fn is_inline_level(f: &Fragment) -> bool {
     match f.kind {
         FragmentKind::Text(_) | FragmentKind::InlineBox | FragmentKind::Marker(_) => true,
         FragmentKind::Box => f.style.display.is_atomic_inline(),
+        FragmentKind::Replaced(_) => false,
     }
 }
 
 /// Whether a page never breaks inside the block-level box `f`: one
-/// whose `overflow` clips, a flex or grid container, a table, or a
+/// whose `overflow` clips, a flex or grid container, a table, a
 /// transformed box (Fragmentation 3 names scroll containers; the others
-/// are this milestone's, docs/design/media.md section 2).
+/// are this milestone's, docs/design/media.md section 2), or a replaced
+/// box (M23.2), whose fragment holds what it shows.
 fn is_monolithic(f: &Fragment) -> bool {
     f.clips()
+        || f.children
+            .first()
+            .is_some_and(|c| matches!(c.kind, FragmentKind::Replaced(_)))
         || f.style.display.is_flex()
         || f.style.display.is_grid()
         || matches!(f.style.display, Display::Table | Display::InlineTable)
@@ -709,7 +714,9 @@ fn is_monolithic(f: &Fragment) -> bool {
 fn inline_extent(item: &Fragment) -> (f32, f32) {
     let own = |f: &Fragment| match f.kind {
         FragmentKind::Text(_) => Some((f.top(), f.top() + f.h)),
-        FragmentKind::Box | FragmentKind::Marker(_) => Some((f.y, f.y + f.h)),
+        FragmentKind::Box | FragmentKind::Marker(_) | FragmentKind::Replaced(_) => {
+            Some((f.y, f.y + f.h))
+        }
         FragmentKind::InlineBox => None,
     };
     if let Some(extent) = own(item) {
@@ -905,6 +912,21 @@ mod tests {
         assert_eq!(c.y, 1000.0);
         assert_eq!(c.h, 900.0);
         assert_eq!(p.pages.len(), 4);
+    }
+
+    #[test]
+    fn a_replaced_box_is_never_cut() {
+        // An image still coming, which its style sizes (M23.2).
+        let p = paged(
+            "<div class=a></div><img class=b>",
+            &format!(
+                "{NAMED} body {{ margin: 0 }} div {{ height: 300px }}
+                 img {{ display: block; width: 100px; height: 300px }}"
+            ),
+            500.0,
+            500.0,
+        );
+        assert_eq!(by_class(&p, "b")[0].y, 500.0);
     }
 
     #[test]

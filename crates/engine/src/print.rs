@@ -172,7 +172,8 @@ impl Engine {
         }
         let context = context(&first_box);
         let recascade = sheets.recascader(document, &styles, &context);
-        let boxes = layout::build_box_tree(document, &styles, &recascade);
+        let boxes =
+            layout::build_box_tree_showing(document, &styles, &recascade, &self.shown.images);
         let (width, height) = first_box.layout_area();
         let laid = layout::layout_document_in(&boxes, width, Some(height), &self.layout_fonts);
         let paginated = layout::paginate(laid, &|position| page_box(rem, position).layout_area().1);
@@ -185,10 +186,18 @@ impl Engine {
                     height: page.height,
                     scroll_y: page.top,
                 };
+                let mut list = paint_fragments_in(&paginated.roots, viewport, &());
+                // A print waits for no decode: its images are decoded
+                // now (M23.2).
+                for item in &mut list.items {
+                    if let DisplayItem::Image { image, .. } = item {
+                        image.pixels = self.shown.images.decoded_now(image.id);
+                    }
+                }
                 PrintedPage {
                     page_box: page_box(rem, page.position),
                     position: page.position,
-                    list: paint_fragments_in(&paginated.roots, viewport, &()),
+                    list,
                 }
             })
             .collect();
@@ -326,6 +335,34 @@ mod tests {
     const GREEN: [u8; 3] = [0, 255, 0];
     const BLUE: [u8; 3] = [0, 0, 255];
     const WHITE: [u8; 3] = [255, 255, 255];
+
+    #[test]
+    fn an_image_prints_though_no_frame_drew_it() {
+        use crate::testing::{Tab, html, serve};
+        let mut png = Vec::new();
+        let mut encoder = png::Encoder::new(&mut png, 100, 100);
+        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().expect("a header");
+        writer
+            .write_image_data(&[255, 0, 0].repeat(100 * 100))
+            .expect("the pixels");
+        writer.finish().expect("written");
+        let server = serve(move |path| match path {
+            "/page.html" => Some(html("<body style='margin: 0'><img src=a.png></body>")),
+            "/a.png" => Some(net::test_server::Reply::ok("image/png", &png)),
+            _ => None,
+        });
+        let mut tab = Tab::new();
+        let url = server.url("/page.html");
+        tab.engine.navigate(url.clone());
+        tab.wait_until(|engine| {
+            engine.url() == Some(&url) && engine.load_state() == &crate::LoadState::Loaded
+        });
+        let pages = tab.engine.print_pages(&small()).expect("printed");
+        assert_eq!(at(&pages[0], 50.0, 50.0), RED);
+        assert_eq!(at(&pages[0], 150.0, 50.0), WHITE);
+    }
 
     #[test]
     fn a_short_page_prints_on_one_letter_page_with_the_default_margins() {

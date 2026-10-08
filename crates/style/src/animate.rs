@@ -214,6 +214,11 @@ longhands! {
     TextDecorationThickness = "text-decoration-thickness": ByComputedValue,
     TextUnderlineOffset = "text-underline-offset": ByComputedValue,
     TextUnderlinePosition = "text-underline-position": Discrete,
+    AspectRatio = "aspect-ratio": ByComputedValue,
+    ObjectFit = "object-fit": Discrete,
+    ObjectPosition = "object-position": ByComputedValue,
+    ImageOrientation = "image-orientation": Discrete,
+    ImageRendering = "image-rendering": Discrete,
 }
 
 impl Longhand {
@@ -537,6 +542,11 @@ pub fn copy(property: Longhand, from: &ComputedStyle, to: &mut ComputedStyle) {
             fragmentation_mut,
             print_color_adjust
         ),
+        AspectRatio => copy_group!(to, from, image, image, image_mut, aspect_ratio),
+        ObjectFit => copy_group!(to, from, image, image, image_mut, object_fit),
+        ObjectPosition => copy_group!(to, from, image, image, image_mut, object_position),
+        ImageOrientation => copy_group!(to, from, image, image, image_mut, image_orientation),
+        ImageRendering => copy_group!(to, from, image, image, image_mut, image_rendering),
         CounterReset => copy_group!(to, from, lists, lists, lists_mut, counter_reset),
         CounterIncrement => copy_group!(to, from, lists, lists, lists_mut, counter_increment),
         CounterSet => copy_group!(to, from, lists, lists, lists_mut, counter_set),
@@ -699,6 +709,11 @@ pub fn same(property: Longhand, a: &ComputedStyle, b: &ComputedStyle) -> bool {
         PrintColorAdjust => {
             a.fragmentation().print_color_adjust == b.fragmentation().print_color_adjust
         }
+        AspectRatio => a.image().aspect_ratio == b.image().aspect_ratio,
+        ObjectFit => a.image().object_fit == b.image().object_fit,
+        ObjectPosition => a.image().object_position == b.image().object_position,
+        ImageOrientation => a.image().image_orientation == b.image().image_orientation,
+        ImageRendering => a.image().image_rendering == b.image().image_rendering,
         CounterReset => a.lists().counter_reset == b.lists().counter_reset,
         CounterIncrement => a.lists().counter_increment == b.lists().counter_increment,
         CounterSet => a.lists().counter_set == b.lists().counter_set,
@@ -1411,6 +1426,41 @@ pub fn interpolate(
                 _ => false,
             }
         }
+        // Two ratios of one kind interpolate by their logarithms
+        // (css-values-4 section 6.2); `auto` and a degenerate ratio do not.
+        AspectRatio => {
+            use crate::computed::{AspectRatio as A, Ratio};
+            let log = |r: &Ratio| r.value().map(|v| f64::from(v).ln());
+            let blended = |x: &Ratio, y: &Ratio| {
+                let v = lerp(log(x)?, log(y)?, p).exp() as f32;
+                v.is_finite().then_some(Ratio {
+                    width: v,
+                    height: 1.0,
+                })
+            };
+            match (a.image().aspect_ratio, b.image().aspect_ratio) {
+                (A::Ratio(x), A::Ratio(y)) => {
+                    set!(to.image_mut().aspect_ratio, blended(&x, &y).map(A::Ratio))
+                }
+                (A::AutoOr(x), A::AutoOr(y)) => {
+                    set!(to.image_mut().aspect_ratio, blended(&x, &y).map(A::AutoOr))
+                }
+                _ => false,
+            }
+        }
+        ObjectPosition => {
+            let (x, y) = (&a.image().object_position, &b.image().object_position);
+            let (Some(ox), Some(oy)) = (
+                length_percentage(&x.x, &y.x, p, false),
+                length_percentage(&x.y, &y.y, p, false),
+            ) else {
+                return false;
+            };
+            let position = &mut to.image_mut().object_position;
+            position.x = ox;
+            position.y = oy;
+            true
+        }
         _ => false,
     }
 }
@@ -1437,6 +1487,37 @@ mod tests {
             .find(|&node| document.tag(node) == Some("div"))
             .expect("the div");
         styles.get(div).expect("styled").clone()
+    }
+
+    #[test]
+    fn ratios_interpolate_by_their_logarithms_and_positions_as_lengths() {
+        use crate::computed::{AspectRatio, Ratio};
+        let (a, b) = (style("aspect-ratio: 1 / 1"), style("aspect-ratio: 4 / 1"));
+        let mut to = a.clone();
+        assert!(interpolate(Longhand::AspectRatio, &a, &b, 0.5, &mut to));
+        let AspectRatio::Ratio(r) = to.image().aspect_ratio else {
+            panic!("a ratio");
+        };
+        assert!((r.value().unwrap() - 2.0).abs() < 1e-5, "{r:?}");
+        let auto = style("aspect-ratio: auto 1 / 1");
+        assert!(!interpolate(Longhand::AspectRatio, &a, &auto, 0.5, &mut to));
+        let zero = style("aspect-ratio: 0 / 1");
+        assert!(!interpolate(Longhand::AspectRatio, &a, &zero, 0.5, &mut to));
+        assert_eq!(
+            AspectRatio::Ratio(Ratio {
+                width: 1.0,
+                height: 1.0
+            }),
+            a.image().aspect_ratio
+        );
+        let (a, b) = (
+            style("object-position: 0 0"),
+            style("object-position: 100px 50%"),
+        );
+        let mut to = a.clone();
+        assert!(interpolate(Longhand::ObjectPosition, &a, &b, 0.5, &mut to));
+        assert_eq!(to.image().object_position.x, LengthPercentage::Px(50.0));
+        assert!(!same(Longhand::ObjectFit, &style("object-fit: cover"), &a));
     }
 
     /// `property` `p` of the way from the style of `from` to that of `to`.

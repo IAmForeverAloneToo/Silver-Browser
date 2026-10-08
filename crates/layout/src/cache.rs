@@ -155,8 +155,9 @@ impl LayoutCache {
     /// layout may differ and of all its ancestors, whose layouts hold
     /// it. That is a parent whose children changed, the parent of a
     /// text node whose data changed, an element whose `colspan`,
-    /// `rowspan` or `span` changed (what table layout reads), and every
-    /// restyled element. An overflowed journal forgets everything; the
+    /// `rowspan` or `span` changed (what table layout reads), an `img`
+    /// whose `src` or `alt` changed (what its box shows, M23.2), and
+    /// every restyled element. An overflowed journal forgets everything; the
     /// entries of nodes freed since go too.
     pub fn invalidate(&mut self, document: &Document, changes: &[Change], restyled: &[NodeId]) {
         let entries = self.entries.get_mut();
@@ -179,7 +180,10 @@ impl LayoutCache {
                     }
                 }
                 Change::AttributeChanged { element, name, .. } => {
-                    if matches!(name.as_str(), "colspan" | "rowspan" | "span") {
+                    let img = document.tag(*element) == Some("img");
+                    if matches!(name.as_str(), "colspan" | "rowspan" | "span")
+                        || (img && matches!(name.as_str(), "src" | "alt"))
+                    {
                         forget(*element);
                     }
                 }

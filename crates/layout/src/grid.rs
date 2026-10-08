@@ -601,11 +601,19 @@ fn align_self(item: &ComputedStyle, container: &ComputedStyle) -> SelfAlignment 
     }
 }
 
-/// Whether an item stretches in an axis (§6.2): its self-alignment
-/// there is `normal` or `stretch` (an item here is never replaced), its
-/// size there is `auto`, and neither of its margins there is `auto`.
-fn stretches(alignment: SelfAlignment, size: &Size, margins: [&LengthPercentageAuto; 2]) -> bool {
-    matches!(alignment, SelfAlignment::Normal | SelfAlignment::Stretch)
+/// Whether the item `b` stretches in an axis (section 6.2): its
+/// self-alignment there is `stretch`, or `normal` and it is not replaced
+/// (M23.2: `normal` is `start` for a replaced item, css-align-3 section
+/// 6.1), its size there is `auto`, and neither of its margins there is
+/// `auto`.
+fn stretches(
+    b: &LayoutBox,
+    alignment: SelfAlignment,
+    size: &Size,
+    margins: [&LengthPercentageAuto; 2],
+) -> bool {
+    (alignment == SelfAlignment::Stretch
+        || (alignment == SelfAlignment::Normal && b.replaced.is_none()))
         && size.is_auto()
         && !margins.iter().any(|m| m.is_auto())
 }
@@ -744,6 +752,7 @@ fn item_width<'a>(
     let intrinsic = Intrinsic::of(item.b, pass);
     let w = width_constraints(style, width, horizontal, &intrinsic, room);
     let stretched = stretches(
+        item.b,
         justify_self(style, container),
         &style.width,
         [&style.margin[LEFT], &style.margin[RIGHT]],
@@ -1127,6 +1136,7 @@ pub(crate) fn layout_grid_contents<'a>(
             let vertical = s.edges.vertical();
             let margin = s.margin;
             let stretched = stretches(
+                item.b,
                 align_self(item_style, style),
                 &item_style.height,
                 [&item_style.margin[TOP], &item_style.margin[BOTTOM]],

@@ -387,7 +387,7 @@ fn boxes(layout: &layout::DocumentLayout) -> HashMap<NodeId, Boxes> {
         let inline = match f.kind {
             FragmentKind::Box => false,
             FragmentKind::InlineBox => true,
-            FragmentKind::Text(_) | FragmentKind::Marker(_) => continue,
+            FragmentKind::Text(_) | FragmentKind::Marker(_) | FragmentKind::Replaced(_) => continue,
         };
         match out.get_mut(&f.node) {
             None => {

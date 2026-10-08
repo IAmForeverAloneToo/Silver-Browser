@@ -33,6 +33,7 @@ mod marker;
 /// Pagination (M20): a laid-out document cut into pages.
 pub mod paginate;
 mod pass;
+mod replaced;
 mod table;
 
 pub use block::{
@@ -40,11 +41,13 @@ pub use block::{
     layout_document, layout_document_cached, layout_document_in, preorder,
 };
 pub use box_tree::{
-    BoxKind, FirstLine, LayoutBox, MAX_GENERATED_TEXT, MarkerShape, RowGroupKind, build_box_tree,
+    BoxKind, FirstLine, ImageState, Images, LayoutBox, MAX_GENERATED_TEXT, MarkerShape, Replaced,
+    RowGroupKind, build_box_tree, build_box_tree_showing,
 };
 pub use cache::LayoutCache;
 pub use composite::{Composited, EffectsChange};
 pub use paginate::{MAX_PAGES, PageSlice, Paginated, paginate};
+pub use replaced::ICON_SIZE;
 
 #[cfg(test)]
 pub(crate) mod testing {
@@ -66,6 +69,29 @@ pub(crate) mod testing {
         let styles = sheets.cascade(&document, &context);
         let recascade = sheets.recascader(&document, &styles, &context);
         let boxes = crate::build_box_tree(&document, &styles, &recascade);
+        (document, boxes)
+    }
+
+    /// [`boxes_of`] with each `img` showing what `image` says of it, from
+    /// the document and the element (M23.2).
+    pub(crate) fn boxes_with(
+        node: &Node,
+        sheets: &[css::Stylesheet],
+        image: impl Fn(&Document, NodeId) -> crate::ImageState,
+    ) -> (Document, Vec<LayoutBox>) {
+        struct Shown<'d, F>(&'d Document, F);
+        impl<F: Fn(&Document, NodeId) -> crate::ImageState> crate::Images for Shown<'_, F> {
+            fn image(&self, node: NodeId) -> crate::ImageState {
+                (self.1)(self.0, node)
+            }
+        }
+        let document = Document::from_node(node);
+        let sheets = style::Stylesheets::new(sheets.to_vec());
+        let context = style::CascadeContext::default();
+        let styles = sheets.cascade(&document, &context);
+        let recascade = sheets.recascader(&document, &styles, &context);
+        let boxes =
+            crate::build_box_tree_showing(&document, &styles, &recascade, &Shown(&document, image));
         (document, boxes)
     }
 

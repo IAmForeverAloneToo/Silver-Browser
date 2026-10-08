@@ -155,6 +155,55 @@ pub struct LayoutBox {
     /// `hidden` is a stacking context and a containing block for all
     /// its descendants. The builder sets it when it numbers the tree.
     pub in_3d: bool,
+    /// What the box shows when it is a replaced element's (M23.2): an
+    /// `img`'s image, its icon, or nothing. The box has no children and
+    /// its kind is what it is on the outside: an inline-block for one
+    /// that is inline-level, a block, a float or an absolutely
+    /// positioned box, its `style.display` the used one,
+    /// `inline-block` or `block`. `None` for every other box.
+    pub replaced: Option<Replaced>,
+}
+
+/// What a replaced box shows (M23.2, `docs/design/images.md`), as HTML
+/// section 15.4.2 and the reference browser have it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Replaced {
+    /// An image whose header is read: its number in the engine, which
+    /// the fragments and display items name it by, and its header.
+    Image { id: u64, header: images::Header },
+    /// The icon of an image that cannot be shown: 16 by 16, its box's
+    /// `width` and `height` applying only when both are given, as in the
+    /// reference browser.
+    Icon,
+    /// Nothing: an image still coming, or one that stands for nothing.
+    /// It is 0 by 0, with no ratio, unless its style sizes it.
+    Empty,
+}
+
+/// What the engine knows of an `img` element's image (M23.1): what the
+/// box tree builder asks of it.
+pub trait Images {
+    /// The image of the `img` element `node`, whose `src` is not empty.
+    fn image(&self, node: NodeId) -> ImageState;
+}
+
+/// An `img`'s image, as the engine has it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ImageState {
+    /// Its header is read: its number and its header.
+    Ready { id: u64, header: images::Header },
+    /// Being fetched or read.
+    Coming,
+    /// Not fetched, not an image, or not one this engine reads.
+    Broken,
+}
+
+/// No image is known: every one is still coming. What a tree built
+/// without an engine shows.
+impl Images for () {
+    fn image(&self, _node: NodeId) -> ImageState {
+        ImageState::Coming
+    }
 }
 
 /// What a box is on the first formatted line (M16).
@@ -457,10 +506,22 @@ pub fn build_box_tree(
     styles: &Styles,
     recascade: &dyn Recascade,
 ) -> Vec<LayoutBox> {
+    build_box_tree_showing(document, styles, recascade, &())
+}
+
+/// [`build_box_tree`] with each `img` showing what `images` says of its
+/// image (M23.2).
+pub fn build_box_tree_showing(
+    document: &Document,
+    styles: &Styles,
+    recascade: &dyn Recascade,
+    images: &dyn Images,
+) -> Vec<LayoutBox> {
     let styled = Styled {
         document,
         styles,
         recascade,
+        images,
         generated: OnceCell::new(),
         decorations: RefCell::new(vec![None; document.slot_count()]),
     };
@@ -648,6 +709,8 @@ struct Styled<'a> {
     document: &'a Document,
     styles: &'a Styles,
     recascade: &'a dyn Recascade,
+    /// What each `img` shows.
+    images: &'a dyn Images,
     /// The generated texts, found by a walk of the document the first
     /// time the build asks for one: a document that generates none is
     /// not walked.
@@ -833,7 +896,117 @@ impl<'a> Styled<'a> {
             item: false,
             parent: None,
             in_3d: false,
+            replaced: None,
         }
+    }
+
+    /// The box the `img` element `node`, `item`, generates with the
+    /// computed `style` (M23.2, HTML section 15.4.2, as the reference
+    /// browser draws it): a replaced box showing its image when its
+    /// header is read, nothing while it is coming; when it cannot be
+    /// shown, or has no `src`, its alt text after the icon in a box that
+    /// is not replaced, which its `width` and `height` do not size; with
+    /// no `alt`, the icon, or nothing where there is no `src` either;
+    /// with an empty `alt`, nothing. A replaced box's kind and used
+    /// display are `inline-block` for an inline-level `display` and
+    /// `block` for any other, a float's and an absolutely positioned
+    /// one's `Float` and `Absolute`; the alt text's box is an inline box
+    /// for `inline`, and a block container around a run of the icon and
+    /// the text otherwise.
+    fn img_box(&self, item: Item, node: NodeId, style: &ComputedStyle) -> LayoutBox {
+        let src = self
+            .document
+            .attr(node, "src")
+            .filter(|src| !src.is_empty());
+        let alt = self.document.attr(node, "alt");
+        let state = match src {
+            Some(_) => self.images.image(node),
+            None => ImageState::Broken,
+        };
+        let replaced = match (state, alt) {
+            (ImageState::Ready { id, header }, _) => Some(Replaced::Image { id, header }),
+            (ImageState::Coming, _) => Some(Replaced::Empty),
+            (ImageState::Broken, Some("")) => Some(Replaced::Empty),
+            (ImageState::Broken, Some(_)) => None,
+            (ImageState::Broken, None) if src.is_some() => Some(Replaced::Icon),
+            (ImageState::Broken, None) => Some(Replaced::Empty),
+        };
+        let out_of_flow = if style.position.is_out_of_flow() {
+            Some(BoxKind::Absolute)
+        } else if style.float != Float::None {
+            Some(BoxKind::Float)
+        } else {
+            None
+        };
+        let inline_level = matches!(
+            style.display,
+            Display::Inline
+                | Display::InlineBlock
+                | Display::InlineTable
+                | Display::InlineFlex
+                | Display::InlineGrid
+        );
+        let mut used = style.clone();
+        if let Some(replaced) = replaced {
+            let (kind, display) = match out_of_flow {
+                Some(kind) => (kind, Display::Block),
+                None if inline_level => (BoxKind::InlineBlock, Display::InlineBlock),
+                None => (BoxKind::Block, Display::Block),
+            };
+            used.display = display;
+            let mut img = self.own_box(item, &used, kind, Vec::new);
+            img.replaced = Some(replaced);
+            return img;
+        }
+        let text = self.alt_text(item, node);
+        let (kind, display, children) = match out_of_flow {
+            Some(kind) => (kind, Display::Block, vec![self.alt_block(item, text)]),
+            None if style.display == Display::Inline => (BoxKind::Inline, Display::Inline, text),
+            None if inline_level => (
+                BoxKind::InlineBlock,
+                Display::InlineBlock,
+                vec![self.alt_block(item, text)],
+            ),
+            None => (
+                BoxKind::Block,
+                Display::Block,
+                vec![self.alt_block(item, text)],
+            ),
+        };
+        used.display = display;
+        self.own_box(item, &used, kind, || children)
+    }
+
+    /// The inline-level content of an `img` shown by its alt text: the
+    /// icon, sized by nothing of the element's, then the text.
+    fn alt_text(&self, item: Item, node: NodeId) -> Vec<LayoutBox> {
+        let mut icon =
+            self.anonymous_box(item, Display::InlineBlock, BoxKind::InlineBlock, Vec::new());
+        icon.replaced = Some(Replaced::Icon);
+        let alt = self.document.attr(node, "alt").unwrap_or_default();
+        let text = LayoutBox {
+            style: self.style_or_initial(item),
+            kind: BoxKind::Text(alt.to_owned()),
+            children: Vec::new(),
+            node,
+            anonymous: true,
+            generated: None,
+            generated_text: 0,
+            decorations: self.decorations(item),
+            styled_by_ancestor: false,
+            first_line: None,
+            tree_order: 0,
+            item: false,
+            parent: None,
+            in_3d: false,
+            replaced: None,
+        };
+        vec![icon, text]
+    }
+
+    /// An anonymous block in `item` around the inline-level `content`.
+    fn alt_block(&self, item: Item, content: Vec<LayoutBox>) -> LayoutBox {
+        self.anonymous_box(item, Display::Block, BoxKind::AnonymousBlock, content)
     }
 
     /// An anonymous box of `kind` in `item`, with the style
@@ -860,6 +1033,7 @@ impl<'a> Styled<'a> {
             item: false,
             parent: None,
             in_3d: false,
+            replaced: None,
         }
     }
 }
@@ -1000,6 +1174,21 @@ fn build_items(styled: &Styled<'_>, item: Item) -> Vec<LayoutBox> {
             continue;
         };
         flush_text_run(styled, item, &mut run, &mut out);
+        if let Item::Node(node) = child
+            && styled.document.tag(node) == Some("img")
+        {
+            let mut img = styled.img_box(child, node, style);
+            if img.kind != BoxKind::Absolute {
+                // An item is blockified (css-flexbox-1 section 4).
+                img.kind = BoxKind::Block;
+                img.style.display = Display::Block;
+                if img.replaced.is_none() {
+                    img.children = vec![styled.alt_block(child, img.children)];
+                }
+            }
+            out.push(img);
+            continue;
+        }
         let kind = match style.display {
             _ if style.position.is_out_of_flow() => BoxKind::Absolute,
             Display::Table => BoxKind::Table,
@@ -1128,6 +1317,7 @@ impl BlockContainer<'_> {
                 item: false,
                 parent: None,
                 in_3d: false,
+                replaced: None,
             });
         }
         self.flush_misplaced(parent, &mut misplaced);
@@ -1147,13 +1337,23 @@ impl BlockContainer<'_> {
         if style.display == Display::None {
             return;
         }
-        if needs_a_table(style.display) {
+        // An `img` is replaced, or its alt text: a table-internal
+        // `display` is a block's for it (M23.2).
+        let img = matches!(child, Item::Node(node) if styled.document.tag(node) == Some("img"));
+        if needs_a_table(style.display) && !img {
             self.collect_misplaced(misplaced, child, style);
             return;
         }
         self.flush_misplaced(parent, misplaced);
         if let Item::Generated(element, Side::Marker) = child {
             self.add_marker(child, element, style);
+            return;
+        }
+        if let Item::Node(node) = child
+            && img
+        {
+            let img = styled.img_box(child, node, style);
+            self.add_img(img);
             return;
         }
         match style.display {
@@ -1234,6 +1434,18 @@ impl BlockContainer<'_> {
         }
     }
 
+    /// Adds an `img`'s box (M23.2) where its kind puts it: a float or an
+    /// absolutely positioned one where it is met, as any is.
+    fn add_img(&mut self, img: LayoutBox) {
+        match img.kind {
+            BoxKind::Float | BoxKind::Absolute if self.open.is_empty() && self.run.is_empty() => {
+                self.out.push(img)
+            }
+            BoxKind::Block => self.add_block(img),
+            _ => self.add_inline_level(img),
+        }
+    }
+
     /// Adds the inline element or generated box `item`, with the computed
     /// `style`, and its content inside it.
     fn add_inline(&mut self, item: Item, style: &ComputedStyle) {
@@ -1281,6 +1493,7 @@ impl BlockContainer<'_> {
                     item: false,
                     parent: None,
                     in_3d: false,
+                    replaced: None,
                 }),
             _ => None,
         };
@@ -1387,6 +1600,7 @@ impl BlockContainer<'_> {
                 item: false,
                 parent: None,
                 in_3d: false,
+                replaced: None,
             })
             .collect();
         while let Some(inline) = self.open.pop() {
@@ -1425,6 +1639,7 @@ impl BlockContainer<'_> {
             item: false,
             parent: None,
             in_3d: false,
+            replaced: None,
         });
     }
 

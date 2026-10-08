@@ -72,6 +72,8 @@ pub(crate) struct ImageStore {
     entries: HashMap<String, ImageEntry>,
     /// Each `img` element's URL, as last scanned.
     sources: HashMap<NodeId, String>,
+    /// Each entry's URL by its number, which display items name it by.
+    ids: HashMap<u64, String>,
 }
 
 impl ImageStore {
@@ -119,6 +121,7 @@ impl ImageStore {
                         state: ImageState::Fetching,
                     },
                 );
+                self.ids.insert(*next, key.clone());
                 *next += 1;
                 wanted.push(url);
             }
@@ -193,6 +196,26 @@ impl ImageStore {
         }
     }
 
+    /// The URL of the image numbered `id`.
+    pub(crate) fn url_of(&self, id: u64) -> Option<&str> {
+        self.ids.get(&id).map(String::as_str)
+    }
+
+    /// The pixels of the image numbered `id`, decoded now on this thread
+    /// if they are not yet: what a print draws, which waits for nothing.
+    pub(crate) fn decoded_now(&self, id: u64) -> Option<Arc<Image>> {
+        let ImageState::Ready(ready) = &self.entries.get(self.url_of(id)?)?.state else {
+            return None;
+        };
+        match &ready.pixels {
+            Pixels::Decoded(image) => Some(image.clone()),
+            Pixels::Failed => None,
+            Pixels::NotDecoded | Pixels::Decoding => {
+                images::decode(&ready.bytes).ok().map(Arc::new)
+            }
+        }
+    }
+
     /// The pixels of `url` if decoded; otherwise, the first time they are
     /// asked for, the work that decodes them.
     pub(crate) fn pixels(&mut self, url: &str) -> (Option<Arc<Image>>, Option<Work>) {
@@ -210,6 +233,30 @@ impl ImageStore {
                 (None, Some(Work::Pixels(ready.bytes.clone())))
             }
             Pixels::Decoding | Pixels::Failed => (None, None),
+        }
+    }
+}
+
+/// What each `img` shows, as the box tree builder asks (M23.2): the
+/// image its URL names once its header is read, unless its pixels did
+/// not decode; nothing yet while it is fetched or read; broken when it
+/// was not fetched, did not read, or has a URL that does not parse or
+/// was never fetched.
+impl layout::Images for ImageStore {
+    fn image(&self, node: NodeId) -> layout::ImageState {
+        let entry = self
+            .sources
+            .get(&node)
+            .and_then(|url| self.entries.get(url));
+        match entry.map(|entry| (entry.id, &entry.state)) {
+            Some((id, ImageState::Ready(ready))) if ready.pixels != Pixels::Failed => {
+                layout::ImageState::Ready {
+                    id,
+                    header: ready.header,
+                }
+            }
+            Some((_, ImageState::Fetching | ImageState::Reading)) => layout::ImageState::Coming,
+            _ => layout::ImageState::Broken,
         }
     }
 }

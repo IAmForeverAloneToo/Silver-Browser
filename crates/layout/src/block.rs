@@ -87,7 +87,7 @@ use style::selector_matching::PseudoElement;
 use style::transform::{Matrix, ReferenceBox};
 use text::FontCollection;
 
-use crate::box_tree::{BoxKind, LayoutBox, MarkerShape};
+use crate::box_tree::{BoxKind, LayoutBox, MarkerShape, Replaced};
 use crate::cache::{Held, Inputs, LayoutCache};
 use crate::decoration::Decorated;
 use crate::float::{At, FloatContext, FloatKey, PendingFloat, attach_floats};
@@ -204,6 +204,11 @@ pub enum FragmentKind {
     /// A list item's marker drawn as a shape (M21.6): the shape, in
     /// `style`'s colour, in the square `(x, y, w, h)`.
     Marker(MarkerShape),
+    /// What a replaced box shows (M23.2), in its content box `(x, y, w,
+    /// h)`, the only child of the box's own fragment, whose style it
+    /// shares: the image there, as `object-fit` and `object-position`
+    /// place it, or the icon, or nothing.
+    Replaced(Replaced),
 }
 
 impl Fragment {
@@ -1321,6 +1326,22 @@ fn layout_block<'a>(
     // oversight.
     let (content_width, margin_left, _margin_right) = if b.is_table() {
         table_width_and_margins(b, cb_width, available_width, edges.horizontal(), pass)
+    } else if let Some(replaced) = &b.replaced {
+        // A block-level replaced box is as wide as an inline one, its
+        // margins resolved for that width (CSS2 section 10.3.4).
+        let (width, _) = crate::replaced::used_size(b, replaced, Some(cb_width), cb_height);
+        let definite = WidthConstraints {
+            width: Some(width),
+            min: 0.0,
+            max: None,
+        };
+        solve_width(
+            &b.style,
+            &definite,
+            cb_width,
+            available_width,
+            edges.horizontal(),
+        )
     } else {
         resolve_width_and_margins(b, cb_width, available_width, edges.horizontal(), pass)
     };
@@ -1362,6 +1383,18 @@ pub(crate) fn layout_contents<'a>(
     cache: Option<&LayoutCache>,
     imposed: Option<Imposed>,
 ) -> BlockLayout<'a> {
+    if let Some(replaced) = &b.replaced {
+        return crate::replaced::layout_replaced(
+            b,
+            replaced,
+            edges,
+            cb_width,
+            cb_height,
+            content_width,
+            margin_left,
+            imposed,
+        );
+    }
     if b.is_table() {
         return crate::table::layout_table_contents(
             b,
@@ -1472,13 +1505,21 @@ pub(crate) fn layout_inline_block<'a>(
     // leave (M17).
     let available = (cb_width - margin_left - margin_right - edges.horizontal()).max(0.0);
     let intrinsic = Intrinsic::of(b, pass);
-    let c = width_constraints(
-        &b.style,
-        cb_width,
-        edges.horizontal(),
-        &intrinsic,
-        available,
-    );
+    let c = match &b.replaced {
+        // A replaced box's width is its own (CSS2 section 10.3.2).
+        Some(replaced) => WidthConstraints {
+            width: Some(crate::replaced::used_size(b, replaced, Some(cb_width), cb_height).0),
+            min: 0.0,
+            max: None,
+        },
+        None => width_constraints(
+            &b.style,
+            cb_width,
+            edges.horizontal(),
+            &intrinsic,
+            available,
+        ),
+    };
     let mut content_width = match c.width {
         Some(w) => w,
         None => intrinsic
@@ -2134,13 +2175,22 @@ fn layout_absolute<'a>(
     } - margin_left.unwrap_or(0.0)
         - margin_right.unwrap_or(0.0)
         - horizontal_edges;
-    let c = width_constraints(
-        style,
-        cb_width,
-        horizontal_edges,
-        &intrinsic,
-        stretch.max(0.0),
-    );
+    let c = match &b.replaced {
+        // A replaced box's width is its own, whatever the insets (CSS2
+        // section 10.3.8), and so is its height (section 10.6.5).
+        Some(replaced) => WidthConstraints {
+            width: Some(crate::replaced::used_size(b, replaced, Some(cb_width), cb_height).0),
+            min: 0.0,
+            max: None,
+        },
+        None => width_constraints(
+            style,
+            cb_width,
+            horizontal_edges,
+            &intrinsic,
+            stretch.max(0.0),
+        ),
+    };
     let shrink = |available: f32| {
         intrinsic
             .keyword(&Size::FitContent, available.max(0.0))
@@ -2204,7 +2254,16 @@ fn layout_absolute<'a>(
     // inside resolve against it (CSS2 §10.5) and a flex container lays
     // its items out in it (M17). A keyword limit, the content's height,
     // leaves the height to the content as before, to be clamped after.
-    let specified_height = definite_height(style, cb_height, vertical_edges);
+    let specified_height = match &b.replaced {
+        Some(replaced) => Some(crate::replaced::used_height(
+            b,
+            replaced,
+            content_width,
+            cb_width,
+            cb_height,
+        )),
+        None => definite_height(style, cb_height, vertical_edges),
+    };
     let keyword_limit = !matches!(
         style.min_height,
         Size::Auto | Size::Px(_) | Size::Percent(_) | Size::Calc(_)
@@ -2213,7 +2272,7 @@ fn layout_absolute<'a>(
         MaxSize::MinContent | MaxSize::MaxContent | MaxSize::FitContent
     );
     let imposed = match (top, &style.height, bottom, cb_height) {
-        (Some(t), Size::Auto, Some(btm), Some(cb_h)) if !keyword_limit => {
+        (Some(t), Size::Auto, Some(btm), Some(cb_h)) if !keyword_limit && b.replaced.is_none() => {
             let room = (cb_h - t - margin_top.unwrap_or(0.0) - margin_bottom.unwrap_or(0.0) - btm)
                 .max(0.0);
             let bounds = height_bounds(style, cb_height, vertical_edges, None);
@@ -3993,6 +4052,7 @@ mod tests {
             item: false,
             parent: None,
             in_3d: false,
+            replaced: None,
         };
         let block = LayoutBox {
             style: ComputedStyle {
@@ -4012,6 +4072,7 @@ mod tests {
             item: false,
             parent: None,
             in_3d: false,
+            replaced: None,
         };
         let layout = layout_document(&[block], VIEWPORT, &fonts);
         let m = fonts.primary().metrics(16.0);

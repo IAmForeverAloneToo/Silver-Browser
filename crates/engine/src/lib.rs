@@ -470,7 +470,10 @@ fn may_touch_images(change: &Change) -> bool {
 fn read_by_layout(change: &Change) -> bool {
     match change {
         Change::AttributeChanged { name, .. } => {
-            matches!(name.as_str(), "colspan" | "rowspan" | "span")
+            matches!(
+                name.as_str(),
+                "colspan" | "rowspan" | "span" | "src" | "alt"
+            )
         }
         _ => true,
     }
@@ -1092,16 +1095,28 @@ impl Engine {
         self.update_load_state();
     }
 
-    /// The pixels of the shown document's image at `url`, if decoded;
-    /// asked for the first time, they are decoded off this thread (M23.5).
-    #[allow(dead_code)]
-    fn image_pixels(&mut self, url: &str) -> Option<std::sync::Arc<images::Image>> {
-        let (pixels, work) = self.shown.images.pixels(url);
+    /// The pixels of the shown document's image numbered `id`, if
+    /// decoded; asked for the first time, they are decoded off this
+    /// thread (M23.5), and a frame drawn once they are shows them.
+    fn image_pixels(&mut self, id: u64) -> Option<std::sync::Arc<images::Image>> {
+        let url = self.shown.images.url_of(id)?.to_owned();
+        let (pixels, work) = self.shown.images.pixels(&url);
         if let Some(work) = work {
-            self.decoder
-                .start(self.shown.page.id(), url.to_owned(), work);
+            self.decoder.start(self.shown.page.id(), url, work);
         }
         pixels
+    }
+
+    /// Gives each image `items` draw its pixels where they are decoded,
+    /// and has the others decoded (M23.2).
+    fn show_pixels(&mut self, items: &mut [DisplayItem]) {
+        for item in items {
+            if let DisplayItem::Image { image, .. } = item
+                && image.pixels.is_none()
+            {
+                image.pixels = self.image_pixels(image.id);
+            }
+        }
     }
 
     /// Applies one fetch's result.
@@ -1599,7 +1614,12 @@ impl Engine {
             .shown
             .stylesheets
             .recascader(&self.shown.document, &styles, &context);
-        let boxes = layout::build_box_tree(&self.shown.document, &styles, &recascade);
+        let boxes = layout::build_box_tree_showing(
+            &self.shown.document,
+            &styles,
+            &recascade,
+            &self.shown.images,
+        );
         layout::flatten(
             layout::layout_document_in(
                 &boxes,
@@ -1750,7 +1770,12 @@ impl Engine {
                 self.shown
                     .stylesheets
                     .recascader(&self.shown.document, styles, &context);
-            let boxes = layout::build_box_tree(&self.shown.document, styles, &recascade);
+            let boxes = layout::build_box_tree_showing(
+                &self.shown.document,
+                styles,
+                &recascade,
+                &self.shown.images,
+            );
             let layout = layout::layout_document_cached(
                 &boxes,
                 viewport_width,
@@ -2011,6 +2036,7 @@ impl Engine {
         let scrollbar = self.scrollbar();
         let layout = self.layout(width as f32);
         let mut list = paint_fragments_in(&layout.roots, viewport, &offsets);
+        self.show_pixels(&mut list.items);
         if let Some(bar) = scrollbar {
             list.items.push(DisplayItem::Rect {
                 x: bar.x,
@@ -3218,7 +3244,8 @@ mod tests {
                     layout::FragmentKind::Text(_) => Some(f.y.round() as i32),
                     layout::FragmentKind::Box
                     | layout::FragmentKind::InlineBox
-                    | layout::FragmentKind::Marker(_) => None,
+                    | layout::FragmentKind::Marker(_)
+                    | layout::FragmentKind::Replaced(_) => None,
                 })
                 .collect();
             ys.sort_unstable();

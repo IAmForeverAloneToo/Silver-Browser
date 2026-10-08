@@ -349,7 +349,7 @@ fn place(component: &[Token], bases: &LengthBases<'_>) -> Option<Place> {
 /// four, an edge keyword and an offset from its edge for each axis, in
 /// either order. There is no three-value form: `background-position`'s
 /// is its own (§8.3's note), and the reference browser refuses it here.
-fn position(
+pub(super) fn position(
     components: &[&[Token]],
     bases: &LengthBases<'_>,
     offsets: bool,
