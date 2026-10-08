@@ -1697,8 +1697,11 @@ impl Engine {
     /// operating system or its own options (M20.3). A frame is wanted
     /// when an `@media` list of the document shown answers otherwise
     /// for them, and cascades the document again; a page that asks
-    /// nothing of them is left alone. The engine reads no preference
-    /// itself.
+    /// nothing of them is left alone. The engine reads one itself:
+    /// under reduced motion its scrolls jump to their targets, one on
+    /// its way there included (M22.5). Animations and transitions run
+    /// as the page wrote them, which the page's own
+    /// `prefers-reduced-motion` query is the means to change.
     pub fn set_preferences(&mut self, preferences: Preferences) {
         self.preferences = preferences;
         let media = self.media(self.viewport);
@@ -1710,6 +1713,7 @@ impl Engine {
         {
             self.changed = true;
         }
+        self.settle_scrolls();
     }
 
     /// The medium the document shown is styled for.
@@ -1938,15 +1942,16 @@ impl Engine {
     }
 
     /// Scrolls by `dy` px (down when positive), animated over the next
-    /// ticks; the target is clamped to the document.
+    /// ticks, or at once under reduced motion (M22.5); the target is
+    /// clamped to the document.
     pub fn scroll_by(&mut self, dy: f32) {
         let target = self.shown.scroll_target + dy;
         self.scroll_to(target);
     }
 
-    /// Scrolls to offset `y`, animated over the next ticks; clamped to
-    /// the document (so an infinite `y` means the bottom or the top),
-    /// and a NaN is ignored.
+    /// Scrolls to offset `y`, animated over the next ticks, or at once
+    /// under reduced motion (M22.5); clamped to the document (so an
+    /// infinite `y` means the bottom or the top), and a NaN is ignored.
     pub fn scroll_to(&mut self, y: f32) {
         if y.is_nan() {
             return;
@@ -1955,6 +1960,29 @@ impl Engine {
         self.goal = None;
         let max = self.max_scroll();
         self.shown.scroll_target = y.clamp(0.0, max);
+        self.settle_scrolls();
+    }
+
+    /// Under reduced motion, puts every scroll offset, the document's
+    /// and each scroll container's, at its target at once (M22.5): the
+    /// engine's own motion is kept to what is essential (Media Queries
+    /// 5 §12.1), and no frame is wanted for a scroll but the one that
+    /// shows where it went.
+    fn settle_scrolls(&mut self) {
+        if !self.preferences.reduced_motion {
+            return;
+        }
+        let shown = &mut self.shown;
+        if shown.scroll_y != shown.scroll_target {
+            shown.scroll_y = shown.scroll_target;
+            self.changed = true;
+        }
+        for scroll in shown.element_scroll.values_mut() {
+            if scroll.y != scroll.target {
+                scroll.y = scroll.target;
+                self.changed = true;
+            }
+        }
     }
 
     /// Jumps to offset `y` at once, no animation (a thumb drag follows
@@ -2048,9 +2076,10 @@ impl Engine {
     }
 
     /// Scrolls the element's content to offset `y`, animated over the
-    /// next ticks and clamped to its content, as [`Engine::scroll_to`]
-    /// does for the viewport; a NaN is ignored. An `overflow: hidden`
-    /// box scrolls this way too, by program only (CSS2 §11.1.1).
+    /// next ticks, or at once under reduced motion, and clamped to its
+    /// content, as [`Engine::scroll_to`] does for the viewport; a NaN
+    /// is ignored. An `overflow: hidden` box scrolls this way too, by
+    /// program only (CSS2 §11.1.1).
     pub fn scroll_element_to(&mut self, node: NodeId, y: f32) {
         if y.is_nan() {
             return;
@@ -2058,10 +2087,11 @@ impl Engine {
         self.goal = None;
         let max = self.element_max_scroll(node);
         self.shown.element_scroll.entry(node).or_default().target = y.clamp(0.0, max);
+        self.settle_scrolls();
     }
 
     /// Scrolls the element's content by `dy` px (down when positive),
-    /// animated over the next ticks.
+    /// animated over the next ticks, or at once under reduced motion.
     pub fn scroll_element_by(&mut self, node: NodeId, dy: f32) {
         let target = self.element_scroll_target(node) + dy;
         self.scroll_element_to(node, target);
@@ -5922,5 +5952,101 @@ mod tests {
         assert!(engine.boxes_reused() > reused, "the section was taken");
         assert_eq!(engine.hit_test(120.0, 10.0), Some(t));
         assert_ne!(engine.hit_test(20.0, 10.0), Some(t));
+    }
+
+    /// The preferences of a user who asked for reduced motion.
+    const REDUCED: Preferences = Preferences {
+        color_scheme: ColorScheme::Light,
+        reduced_motion: true,
+    };
+
+    /// A 50px scroll container holding a 200px block, then another
+    /// 200px block below: 150px of scrolling for each, the container
+    /// and the viewport, at 200 by 100.
+    const SCROLLERS: &str = "<style>body { margin: 0 } .s { overflow: auto; height: 50px }
+         .tall { height: 200px }</style>\
+         <div class=s id=s><div class=tall></div></div><div class=tall></div>";
+
+    #[test]
+    fn under_reduced_motion_a_scroll_jumps_to_its_target() {
+        // M22.5: the engine's own motion kept to what is essential. A
+        // scroll by the keys or the wheel, the document's or a scroll
+        // container's, is where it goes at once, and the frame that
+        // shows it is the one wanted.
+        let mut engine = test_engine();
+        engine.set_preferences(REDUCED);
+        engine.load_document(SCROLLERS);
+        engine.frame(200, 100);
+        assert!(!engine.needs_frame());
+        let s = node_by_id(&engine, "s");
+        engine.scroll_by(40.0);
+        assert_eq!((engine.scroll_y(), engine.scroll_target()), (40.0, 40.0));
+        assert!(engine.needs_frame(), "the frame that shows it");
+        engine.frame(200, 100);
+        assert!(!engine.needs_frame());
+        assert!(!engine.tick());
+        engine.scroll_to(f32::INFINITY);
+        assert_eq!(engine.scroll_y(), 150.0);
+        engine.scroll_to(0.0);
+        engine.frame(200, 100);
+        engine.wheel(10.0, 5.0, 30.0);
+        assert_eq!(
+            (engine.element_scroll(s), engine.element_scroll_target(s)),
+            (30.0, 30.0)
+        );
+        assert!(engine.needs_frame());
+        engine.frame(200, 100);
+        assert!(!engine.needs_frame());
+        assert!(!engine.tick());
+    }
+
+    #[test]
+    fn reduced_motion_asked_for_during_a_scroll_puts_it_where_it_goes() {
+        let mut engine = test_engine();
+        engine.load_document(SCROLLERS);
+        engine.frame(200, 100);
+        let s = node_by_id(&engine, "s");
+        engine.scroll_by(100.0);
+        engine.scroll_element_by(s, 30.0);
+        assert!(engine.tick(), "on their way");
+        assert!(engine.scroll_y() < 100.0 && engine.element_scroll(s) < 30.0);
+        engine.set_preferences(REDUCED);
+        assert_eq!((engine.scroll_y(), engine.element_scroll(s)), (100.0, 30.0));
+        assert!(engine.needs_frame());
+        engine.frame(200, 100);
+        assert!(!engine.tick());
+        // Asked no more, a scroll moves over the frames again.
+        engine.set_preferences(Preferences::default());
+        engine.scroll_by(-100.0);
+        assert_eq!(engine.scroll_y(), 100.0);
+        assert!(engine.tick());
+    }
+
+    #[test]
+    fn animations_and_transitions_run_as_written_under_reduced_motion() {
+        // M22.5: the page's own `prefers-reduced-motion` query is its
+        // means of honouring the user, as in every browser; the engine
+        // stops nothing, which would change what pages show at their
+        // ends and when their events come.
+        let mut engine = test_engine();
+        engine.set_preferences(REDUCED);
+        engine.load_document(&format!(
+            "{SLIDE}<style>#a {{ animation: s 1s linear }}
+             @media (prefers-reduced-motion: no-preference) {{ #b {{ animation: s 1s linear }} }}
+             #c {{ margin-left: 0px; transition: margin-left 1s linear }}
+             #c.on {{ margin-left: 100px }}</style>\
+             <div id=a></div><div id=b></div><div id=c></div>"
+        ));
+        draw_at(&mut engine, 0);
+        set(&mut engine, "c", "class", "on");
+        draw_at(&mut engine, 500);
+        // The animation half way, the one the page's query leaves out
+        // not made.
+        assert_eq!(margin_left_of(&mut engine, "a"), 50.0);
+        assert_eq!(margin_left_of(&mut engine, "b"), 0.0);
+        assert!(engine.needs_frame());
+        // The transition, made by the frame at 500, half way at 1000.
+        draw_at(&mut engine, 1000);
+        assert_eq!(margin_left_of(&mut engine, "c"), 50.0);
     }
 }
