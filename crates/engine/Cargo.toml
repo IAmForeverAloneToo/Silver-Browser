@@ -77,6 +77,6 @@ harness = false
 [dev-dependencies]
 # The scripted server the loader's tests fetch from.
 net = { workspace = true, features = ["test-server"] }
-png = "0.17"
+png.workspace = true
 # The print tests' reader of PDFs inflates their streams.
 flate2.workspace = true

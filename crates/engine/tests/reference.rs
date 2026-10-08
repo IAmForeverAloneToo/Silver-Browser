@@ -230,10 +230,10 @@ fn read_capture(path: &Path, setting: Setting) -> Vec<u8> {
             path.display()
         )
     });
-    let mut reader = png::Decoder::new(file)
+    let mut reader = png::Decoder::new(std::io::BufReader::new(file))
         .read_info()
         .expect("the capture is a PNG");
-    let mut buf = vec![0; reader.output_buffer_size()];
+    let mut buf = vec![0; reader.output_buffer_size().expect("its size fits")];
     let info = reader.next_frame(&mut buf).expect("the capture decodes");
     assert_eq!(
         (info.width, info.height),

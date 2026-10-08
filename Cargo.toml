@@ -13,6 +13,7 @@ license = "AGPL-3.0-only"
 #   shell -> { engine, ui }
 #   engine -> { render, paint, layout, style, text, net, html, css } -> { dom, encoding }
 #   ui -> { render, paint, text }
+#   layout, paint, render -> images (a leaf: decoders, M23)
 # See docs/architecture.md — the layering contract is binding.
 [workspace.dependencies]
 # Internal crates
@@ -25,6 +26,7 @@ layout = { path = "crates/layout" }
 text = { path = "crates/text" }
 net = { path = "crates/net" }
 paint = { path = "crates/paint" }
+images = { path = "crates/images" }
 # Without their default features: the GPU backend (M19.3) is a feature
 # of each, `gpu`, which the shell's own turns on down the line.
 render = { path = "crates/render", default-features = false }
@@ -34,7 +36,15 @@ ui = { path = "crates/ui" }
 # External crates
 winit = "0.30"
 softbuffer = "0.4"
-tiny-skia = "0.11"
+# Without its PNG support, which nothing calls: `images` decodes PNG.
+tiny-skia = { version = "0.11", default-features = false, features = ["std", "simd"] }
+# The image decoders (M23.1, docs/design/images.md): pure Rust; zune-jpeg
+# without its SIMD code, which is its only unsafe code.
+png = "0.18"
+zune-jpeg = { version = "0.5", default-features = false, features = ["std"] }
+zune-core = "0.5"
+gif = { version = "0.14", default-features = false, features = ["std"] }
+image-webp = "0.2"
 fontdb = "0.23"
 rustybuzz = "0.20"
 ab_glyph = "0.2"
