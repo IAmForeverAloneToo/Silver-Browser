@@ -515,6 +515,22 @@ scroll in every frame, and by the turned card in 103–118 frames of
 composite; on the GPU backend, met by the scroll on llvmpipe, and to
 be measured on an integrated GPU, which this machine has not got.
 
+**M19.8, on an integrated GPU.** 2026-10-08, three runs on another
+machine, a laptop's Intel UHD Graphics (i9-11950H, Windows 10), with
+the code at M22's end, where a turned card keeps its layout (M22.4).
+
+| GPU, Intel UHD | A frame, median | Worst | Over 16.7ms |
+| --- | --- | --- | --- |
+| Scrolling | 4.6-6.1ms | 8.9-17.1ms | 0, 0, 1 of 120 |
+| A card turned | 3.8-5.4ms | 19.3-29.6ms | 1 of 120 |
+| The same, `will-change: transform` | 3.2-5.0ms | 15.3-24.3ms | 0-1 of 120 |
+| A card moved | 3.4-5.3ms | 16.0-22.3ms | 0-1 of 120 |
+| 200 faded cards, a scroll frame | 3.2-4.8ms | 28.0-51.0ms | 1 of 120 |
+
+A card's frame over the budget is the one that lays it out and draws
+its layer; the scroll's, in one run, a raster of 14.8ms against a
+median of 3.2ms, no tile drawn. M19.8 is met but for that one frame.
+
 **T4.3.** The benchmarks above, run on the same kind of machine as
 M18's: the code before M19 (`d6f47ed`) and M19's built side by side
 in release, four rounds of each in turn. The ranges are over the

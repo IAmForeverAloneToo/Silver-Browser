@@ -1003,12 +1003,14 @@ code and corrected to it after; built in its twelve steps on
 - [x] M15.5 Page title → window title; favicon fetch (v0: no UI display).
        Done 2026-10-02: `Engine::title`, cleaned for the window; the
        icon fetched as an image and kept.
-- [ ] M15.6 Acceptance: navigate to a real static site over HTTPS
+- [x] M15.6 Acceptance: navigate to a real static site over HTTPS
        (e.g., example.com) and read it. **This is the T1 gate-crasher
        milestone.** 2026-10-02: the engine's live test reads
        `https://example.com/`, run on a network whose TLS is intercepted
        by trusting its root; the browser pointed at the site from a
-       direct connection waits for a run by hand.
+       direct connection waits for a run by hand. Done 2026-10-08: from
+       a direct connection the browser shows the page, title and text,
+       and both live tests pass; its background is `light-dark()` (G6).
 
 ---
 
@@ -1207,10 +1209,13 @@ Per css-grid-1 (level 2 subgrid included):
        software path, and the equivalence suite holds the GPU backend
        to it over every reference page and layout. The run on an
        integrated GPU is M19.8.
-- [ ] M19.8 M19.7's GPU half measured on an integrated GPU: the
+- [x] M19.8 M19.7's GPU half measured on an integrated GPU: the
        compositing benchmark's scroll and turned card inside 16.7ms a
        frame on the GPU backend (found at M19: the machine the
        milestone was built on has a software Vulkan driver alone).
+       Done 2026-10-08 on Intel UHD Graphics: inside the budget but for
+       each card's first, layout frame and one scroll frame in 360
+       (17.1ms; `docs/perf-budgets.md`).
 
 ---
 
