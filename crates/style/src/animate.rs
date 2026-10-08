@@ -226,6 +226,11 @@ longhands! {
     ObjectPosition = "object-position": ByComputedValue,
     ImageOrientation = "image-orientation": Discrete,
     ImageRendering = "image-rendering": Discrete,
+    BorderImageSource = "border-image-source": Discrete,
+    BorderImageSlice = "border-image-slice": ByComputedValue,
+    BorderImageWidth = "border-image-width": ByComputedValue,
+    BorderImageOutset = "border-image-outset": ByComputedValue,
+    BorderImageRepeat = "border-image-repeat": Discrete,
 }
 
 impl Longhand {
@@ -289,6 +294,18 @@ pub fn longhands_of(name: &str) -> Vec<Longhand> {
             BorderRightColor,
             BorderBottomColor,
             BorderLeftColor,
+            BorderImageSource,
+            BorderImageSlice,
+            BorderImageWidth,
+            BorderImageOutset,
+            BorderImageRepeat,
+        ],
+        "border-image" => &[
+            BorderImageSource,
+            BorderImageSlice,
+            BorderImageWidth,
+            BorderImageOutset,
+            BorderImageRepeat,
         ],
         "border-top" => &[BorderTopWidth, BorderTopStyle, BorderTopColor],
         "border-right" => &[BorderRightWidth, BorderRightStyle, BorderRightColor],
@@ -578,6 +595,57 @@ pub fn copy(property: Longhand, from: &ComputedStyle, to: &mut ComputedStyle) {
         ObjectPosition => copy_group!(to, from, image, image, image_mut, object_position),
         ImageOrientation => copy_group!(to, from, image, image, image_mut, image_orientation),
         ImageRendering => copy_group!(to, from, image, image, image_mut, image_rendering),
+        BorderImageSource => {
+            copy_group!(
+                to,
+                from,
+                border_image,
+                border_image,
+                border_image_mut,
+                source
+            )
+        }
+        BorderImageSlice => {
+            copy_group!(
+                to,
+                from,
+                border_image,
+                border_image,
+                border_image_mut,
+                slice
+            );
+            copy_group!(to, from, border_image, border_image, border_image_mut, fill)
+        }
+        BorderImageWidth => {
+            copy_group!(
+                to,
+                from,
+                border_image,
+                border_image,
+                border_image_mut,
+                width
+            )
+        }
+        BorderImageOutset => {
+            copy_group!(
+                to,
+                from,
+                border_image,
+                border_image,
+                border_image_mut,
+                outset
+            )
+        }
+        BorderImageRepeat => {
+            copy_group!(
+                to,
+                from,
+                border_image,
+                border_image,
+                border_image_mut,
+                repeat
+            )
+        }
         CounterReset => copy_group!(to, from, lists, lists, lists_mut, counter_reset),
         CounterIncrement => copy_group!(to, from, lists, lists, lists_mut, counter_increment),
         CounterSet => copy_group!(to, from, lists, lists, lists_mut, counter_set),
@@ -749,6 +817,14 @@ pub fn same(property: Longhand, a: &ComputedStyle, b: &ComputedStyle) -> bool {
         BackgroundAttachment => a.background().attachment == b.background().attachment,
         AspectRatio => a.image().aspect_ratio == b.image().aspect_ratio,
         ObjectFit => a.image().object_fit == b.image().object_fit,
+        BorderImageSource => a.border_image().source == b.border_image().source,
+        BorderImageSlice => {
+            let (x, y) = (a.border_image(), b.border_image());
+            x.slice == y.slice && x.fill == y.fill
+        }
+        BorderImageWidth => a.border_image().width == b.border_image().width,
+        BorderImageOutset => a.border_image().outset == b.border_image().outset,
+        BorderImageRepeat => a.border_image().repeat == b.border_image().repeat,
         ObjectPosition => a.image().object_position == b.image().object_position,
         ImageOrientation => a.image().image_orientation == b.image().image_orientation,
         ImageRendering => a.image().image_rendering == b.image().image_rendering,
@@ -1530,6 +1606,56 @@ pub fn interpolate(
                 _ => false,
             }
         }
+        // Each side of one kind interpolates (M23.3); others step.
+        BorderImageSlice => {
+            use crate::computed::SliceSide as S;
+            let (x, y) = (a.border_image(), b.border_image());
+            if x.fill != y.fill {
+                return false;
+            }
+            let mut sides = x.slice;
+            for (side, (x, y)) in sides.iter_mut().zip(x.slice.iter().zip(&y.slice)) {
+                *side = match (x, y) {
+                    (S::Number(x), S::Number(y)) => S::Number(number(*x, *y, p, 0.0, f32::MAX)),
+                    (S::Percent(x), S::Percent(y)) => S::Percent(number(*x, *y, p, 0.0, f32::MAX)),
+                    _ => return false,
+                };
+            }
+            to.border_image_mut().slice = sides;
+            true
+        }
+        BorderImageWidth => {
+            use crate::computed::BorderImageWidth as W;
+            let (x, y) = (&a.border_image().width, &b.border_image().width);
+            let mut sides = x.clone();
+            for (side, (x, y)) in sides.iter_mut().zip(x.iter().zip(y)) {
+                *side = match (x, y) {
+                    (W::Number(x), W::Number(y)) => W::Number(number(*x, *y, p, 0.0, f32::MAX)),
+                    (W::Length(x), W::Length(y)) => match length_percentage(x, y, p, true) {
+                        Some(v) => W::Length(v),
+                        None => return false,
+                    },
+                    (W::Auto, W::Auto) => W::Auto,
+                    _ => return false,
+                };
+            }
+            to.border_image_mut().width = sides;
+            true
+        }
+        BorderImageOutset => {
+            use crate::computed::Outset as O;
+            let (x, y) = (&a.border_image().outset, &b.border_image().outset);
+            let mut sides = *x;
+            for (side, (x, y)) in sides.iter_mut().zip(x.iter().zip(y)) {
+                *side = match (x, y) {
+                    (O::Number(x), O::Number(y)) => O::Number(number(*x, *y, p, 0.0, f32::MAX)),
+                    (O::Px(x), O::Px(y)) => O::Px(length(*x, *y, p, true)),
+                    _ => return false,
+                };
+            }
+            to.border_image_mut().outset = sides;
+            true
+        }
         ObjectPosition => {
             let (x, y) = (&a.image().object_position, &b.image().object_position);
             let (Some(ox), Some(oy)) = (
@@ -1569,6 +1695,75 @@ mod tests {
             .find(|&node| document.tag(node) == Some("div"))
             .expect("the div");
         styles.get(div).expect("styled").clone()
+    }
+
+    #[test]
+    fn border_image_sides_of_one_kind_interpolate() {
+        use crate::computed::{BorderImageWidth, Outset, SliceSide};
+        let (a, b) = (
+            style(
+                "border-image-slice: 10 20%; border-image-width: 1 auto 10px 0; border-image-outset: 2px 1",
+            ),
+            style(
+                "border-image-slice: 30 40%; border-image-width: 3 auto 30px 2; border-image-outset: 4px 3",
+            ),
+        );
+        let mut to = a.clone();
+        assert!(interpolate(
+            Longhand::BorderImageSlice,
+            &a,
+            &b,
+            0.5,
+            &mut to
+        ));
+        assert_eq!(to.border_image().slice[0], SliceSide::Number(20.0));
+        assert_eq!(to.border_image().slice[1], SliceSide::Percent(30.0));
+        assert!(interpolate(
+            Longhand::BorderImageWidth,
+            &a,
+            &b,
+            0.5,
+            &mut to
+        ));
+        assert_eq!(
+            to.border_image().width,
+            [
+                BorderImageWidth::Number(2.0),
+                BorderImageWidth::Auto,
+                BorderImageWidth::Length(LengthPercentage::Px(20.0)),
+                BorderImageWidth::Number(1.0),
+            ]
+        );
+        assert!(interpolate(
+            Longhand::BorderImageOutset,
+            &a,
+            &b,
+            0.5,
+            &mut to
+        ));
+        assert_eq!(to.border_image().outset[0], Outset::Px(3.0));
+        assert_eq!(to.border_image().outset[1], Outset::Number(2.0));
+        // Sides of other kinds, or `fill` on one only, step.
+        let c = style("border-image-slice: 10% 20% fill; border-image-outset: 2 1");
+        assert!(!interpolate(
+            Longhand::BorderImageSlice,
+            &a,
+            &c,
+            0.5,
+            &mut to
+        ));
+        assert!(!interpolate(
+            Longhand::BorderImageOutset,
+            &a,
+            &c,
+            0.5,
+            &mut to
+        ));
+        assert!(!same(
+            Longhand::BorderImageSource,
+            &style("border-image-source: url(a.png)"),
+            &a
+        ));
     }
 
     #[test]
@@ -1671,7 +1866,7 @@ mod tests {
                 longhand.name()
             );
         }
-        assert_eq!(longhands_of("border").len(), 12);
+        assert_eq!(longhands_of("border").len(), 17, "the border image too");
         assert_eq!(
             longhands_of("margin"),
             vec![

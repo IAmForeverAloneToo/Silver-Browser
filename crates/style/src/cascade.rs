@@ -122,8 +122,8 @@ use crate::computed::{
     TextTransform, VerticalAlign, WhiteSpace,
 };
 use crate::computed::{
-    AnimationPlayState, Backgrounds, Calc, Decoration, Effects, Fragmentation, GridStyle,
-    ImageStyle, JustifyItems, Lists, Motion, WillChange,
+    AnimationPlayState, Backgrounds, BorderImage, Calc, Decoration, Effects, Fragmentation,
+    GridStyle, ImageStyle, JustifyItems, Lists, Motion, WillChange,
 };
 use crate::custom::{self, CustomProperties, DataType, Substituted, Substitutions};
 use crate::invalidation::{Reach, SelectorFeatures, invalidate};
@@ -134,6 +134,7 @@ use crate::selector_matching::{Matcher, PseudoElement, SelectorList, Specificity
 
 mod animated;
 mod backgrounds;
+mod border_image;
 mod decoration;
 mod effects;
 mod fragmentation;
@@ -446,7 +447,10 @@ impl Target {
                         | "content"
                 ) || motion::is_motion_property(name)
             }
-            Target::Element => name != "content",
+            // An element takes `content` too (M23.3): an image alone
+            // replaces its content, which the box tree honours, and the
+            // rest it ignores.
+            Target::Element => true,
             Target::Before | Target::After => true,
         }
     }
@@ -2208,9 +2212,16 @@ fn compute_style(
             }
         }
     }
-    // `normal` computes to `none` on `::before` and `::after`.
+    // `normal` computes to `none` on `::before` and `::after`. On an
+    // element `content` is an image alone, which replaces what it shows
+    // (M23.3), or `normal`.
     if target.takes_content() && style.content == Content::Normal {
         style.content = Content::None;
+    }
+    if target == Target::Element
+        && !matches!(&style.content, Content::Items(items) if matches!(**items, [ContentItem::Image(_)]))
+    {
+        style.content = Content::Normal;
     }
     for (color, set) in style.border_color.iter_mut().zip(border_color_set) {
         if !set {
@@ -2560,6 +2571,41 @@ fn apply_declaration(
             backgrounds::parse_background_attachment(value),
             |b, v| b.attachment = v,
         ),
+        "border-image" => match border_image::parse_border_image(value, bases) {
+            Some(image) => {
+                style.border_image = (image != BorderImage::default()).then(|| Arc::new(image));
+                true
+            }
+            None => false,
+        },
+        "border-image-source" => set_border_image(
+            style,
+            border_image::parse_border_image_source(value, bases),
+            |b, v| b.source = v,
+        ),
+        "border-image-slice" => set_border_image(
+            style,
+            border_image::parse_border_image_slice(value, bases),
+            |b, (slice, fill)| {
+                b.slice = slice;
+                b.fill = fill;
+            },
+        ),
+        "border-image-width" => set_border_image(
+            style,
+            border_image::parse_border_image_width(value, bases),
+            |b, v| b.width = v,
+        ),
+        "border-image-outset" => set_border_image(
+            style,
+            border_image::parse_border_image_outset(value, bases),
+            |b, v| b.outset = v,
+        ),
+        "border-image-repeat" => set_border_image(
+            style,
+            border_image::parse_border_image_repeat(value),
+            |b, v| b.repeat = v,
+        ),
         // The first pass of `compute_style` applies it.
         "font-size" => parse_font_size(value, bases).is_some(),
         "font-family" => set(
@@ -2653,13 +2699,20 @@ fn apply_declaration(
         "border-right-style" => set_border_style(style, RIGHT, value),
         "border-bottom-style" => set_border_style(style, BOTTOM, value),
         "border-left-style" => set_border_style(style, LEFT, value),
-        "border" => apply_border_shorthand(
-            style,
-            &[TOP, RIGHT, BOTTOM, LEFT],
-            value,
-            bases,
-            border_color_set,
-        ),
+        // It resets the border image too (Backgrounds 3 section 4.4).
+        "border" => {
+            let applied = apply_border_shorthand(
+                style,
+                &[TOP, RIGHT, BOTTOM, LEFT],
+                value,
+                bases,
+                border_color_set,
+            );
+            if applied {
+                style.border_image = None;
+            }
+            applied
+        }
         "border-top" => apply_border_shorthand(style, &[TOP], value, bases, border_color_set),
         "border-right" => apply_border_shorthand(style, &[RIGHT], value, bases, border_color_set),
         "border-bottom" => apply_border_shorthand(style, &[BOTTOM], value, bases, border_color_set),
@@ -2692,7 +2745,7 @@ fn apply_declaration(
             &mut style.vertical_align,
             parse_vertical_align(value, bases),
         ),
-        "content" => set(&mut style.content, parse_content(value)),
+        "content" => set(&mut style.content, parse_content(value, bases)),
         "quotes" => set(&mut style.quotes, parse_quotes(value)),
         "flex-direction" => set(&mut style.flex_direction, parse_flex_direction(value)),
         "flex-wrap" => set(&mut style.flex_wrap, parse_flex_wrap(value)),
@@ -3023,12 +3076,14 @@ fn apply_declaration(
                 l.list_style_position = v
             })
         }
-        "list-style-image" => set_lists(style, lists::parse_list_style_image(value), |l, v| {
-            l.list_style_image = v
-        }),
+        "list-style-image" => set_lists(
+            style,
+            lists::parse_list_style_image(value, bases),
+            |l, v| l.list_style_image = v,
+        ),
         "list-style" => set_lists(
             style,
-            lists::parse_list_style(value),
+            lists::parse_list_style(value, bases),
             |l, (position, image, kind)| {
                 l.list_style_position = position;
                 l.list_style_image = image;
@@ -3196,6 +3251,15 @@ fn set_background<T>(
     v.map(|v| update(style.background_mut(), v)).is_some()
 }
 
+/// [`set_grid`] for the border image properties (M23.3).
+fn set_border_image<T>(
+    style: &mut ComputedStyle,
+    v: Option<T>,
+    update: impl FnOnce(&mut BorderImage, T),
+) -> bool {
+    v.map(|v| update(style.border_image_mut(), v)).is_some()
+}
+
 /// [`set_grid`] for the image properties (M23.2).
 fn set_image<T>(
     style: &mut ComputedStyle,
@@ -3273,6 +3337,19 @@ fn copy_background(
     }
     let src = src.background().clone();
     copy(style.background_mut(), &src);
+}
+
+/// [`copy_grid`] for the border image properties (M23.3).
+fn copy_border_image(
+    style: &mut ComputedStyle,
+    src: &ComputedStyle,
+    copy: impl FnOnce(&mut BorderImage, &BorderImage),
+) {
+    if style.border_image.is_none() && src.border_image.is_none() {
+        return;
+    }
+    let src = src.border_image().clone();
+    copy(style.border_image_mut(), &src);
 }
 
 /// [`copy_grid`] for the image properties (M23.2).
@@ -3467,6 +3544,15 @@ fn apply_css_wide(
         "background-attachment" => {
             copy_background(style, src, |b, s| b.attachment = s.attachment.clone())
         }
+        "border-image" => style.border_image = src.border_image.clone(),
+        "border-image-source" => copy_border_image(style, src, |b, s| b.source = s.source.clone()),
+        "border-image-slice" => copy_border_image(style, src, |b, s| {
+            b.slice = s.slice;
+            b.fill = s.fill;
+        }),
+        "border-image-width" => copy_border_image(style, src, |b, s| b.width = s.width.clone()),
+        "border-image-outset" => copy_border_image(style, src, |b, s| b.outset = s.outset),
+        "border-image-repeat" => copy_border_image(style, src, |b, s| b.repeat = s.repeat),
         "font-size" => {} // the first pass, see `compute_style`
         "font-family" => style.font_family = src.font_family.clone(),
         "display" => style.display = src.display,
@@ -3793,6 +3879,7 @@ fn apply_css_wide(
         "border" => {
             style.border_width = src.border_width;
             style.border_style = src.border_style;
+            style.border_image = src.border_image.clone();
             if from_parent {
                 style.border_color = parent.border_color;
             }
@@ -5039,7 +5126,7 @@ fn parse_color(tokens: &[Token]) -> Option<Color> {
 /// `counters()` (M21.4) are kept as such, for the box tree to write
 /// with the counters the box sees; the alternative text takes them too,
 /// as css-content-3 says.
-fn parse_content(tokens: &[Token]) -> Option<Content> {
+fn parse_content(tokens: &[Token], bases: &LengthBases<'_>) -> Option<Content> {
     if let Some(keyword) = single_ident(tokens) {
         if keyword.eq_ignore_ascii_case("normal") {
             return Some(Content::Normal);
@@ -5062,9 +5149,11 @@ fn parse_content(tokens: &[Token]) -> Option<Content> {
                 lists::counter_item(part)
             }
             _ if alternative.is_some() => return None,
-            // The tokenizer makes the whole of a `url(…)`, quoted or not,
-            // one token.
-            [Token::Url { bad: false, .. }] => None,
+            // An image (M23.3), one an `image-set()` with no option this
+            // engine shows leaves out.
+            part if backgrounds::image(part, bases).is_some() => {
+                backgrounds::image(part, bases)?.map(ContentItem::Image)
+            }
             [Token::Ident(keyword)] => Some(match keyword.to_ascii_lowercase().as_str() {
                 "open-quote" => ContentItem::OpenQuote,
                 "close-quote" => ContentItem::CloseQuote,
@@ -5442,6 +5531,37 @@ mod tests {
             ),
             none
         );
+    }
+
+    #[test]
+    fn the_border_image_properties_apply_and_border_resets_them() {
+        use crate::computed::{BorderImageRepeat, SliceSide};
+        let p = |css: &str| {
+            let sheet = css::parse_stylesheet(css).expect("never fails");
+            style_of("<div><p>x</p></div>", &[sheet], "p")
+        };
+        let set = p("p { border-image: url(a.png) 10 / 2 round; border-image-slice: 20% fill }");
+        let image = set.border_image();
+        assert!(image.source.is_some() && image.fill);
+        assert_eq!(image.slice, [SliceSide::Percent(20.0); 4]);
+        assert_eq!(image.repeat, [BorderImageRepeat::Round; 2]);
+        assert!(
+            p("p { border-image: url(a.png) } p { border: 1px solid }")
+                .border_image
+                .is_none()
+        );
+        assert!(
+            p("p { border-image: url(a.png) } p { border-top: 1px solid }")
+                .border_image
+                .is_some(),
+            "a side's shorthand leaves it"
+        );
+        assert!(p("p { border-image: none }").border_image.is_none());
+        // Not inherited, but taken when asked for.
+        assert!(p("div { border-image: url(a.png) }").border_image.is_none());
+        let inherited = p("div { border-image: url(a.png) 7 } p { border-image-slice: inherit }");
+        assert_eq!(inherited.border_image().slice, [SliceSide::Number(7.0); 4]);
+        assert!(inherited.border_image().source.is_none());
     }
 
     #[test]
@@ -6787,6 +6907,15 @@ mod tests {
         assert_eq!(of(PseudoElement::After), Content::None);
         assert_eq!(of(PseudoElement::FirstLine), Content::Normal);
         assert_eq!(style_of(html, &sheets, "p").content, Content::Normal);
+        // An image alone is an element's (M23.3).
+        let sheets = [sheet(
+            "p { content: url(a.png) / 'alt' } q { content: url(a.png) 'x' }",
+        )];
+        assert!(matches!(
+            &style_of("<p>x</p>", &sheets, "p").content,
+            Content::Items(items) if matches!(**items, [ContentItem::Image(_)])
+        ));
+        assert_eq!(style_of("<q>x</q>", &sheets, "q").content, Content::Normal);
         // So `inherit` takes the element's `normal`, and `initial` is
         // `normal`: both `none` here.
         assert_eq!(content("<p>x</p>", "inherit"), Content::None);
@@ -6799,6 +6928,12 @@ mod tests {
     #[test]
     fn content_takes_strings_attributes_urls_and_quotes() {
         let p = "<p title=T data-x='a b'>x</p>";
+        let image = |url: &str| {
+            ContentItem::Image(crate::computed::Image::Url {
+                url: Arc::from(url),
+                resolution: 1.0,
+            })
+        };
         assert_eq!(
             content(
                 p,
@@ -6807,6 +6942,8 @@ mod tests {
             items(&[
                 text("a"),
                 text("T"),
+                image("x.png"),
+                image("y"),
                 ContentItem::OpenQuote,
                 ContentItem::CloseQuote,
                 ContentItem::NoOpenQuote,
@@ -6866,8 +7003,14 @@ mod tests {
             ])
         );
         assert_eq!(content(p, "'a' / counter(x)"), items(&[text("a")]));
-        // An image is left out: a box with nothing in it.
-        assert_eq!(content(p, "url(x.png)"), items(&[]));
+        // An image is kept (M23.3); an image-set() with no option this
+        // engine shows is left out: a box with nothing in it.
+        assert_eq!(content(p, "url(x.png)"), items(&[image("x.png")]));
+        assert_eq!(
+            content(p, "image-set('x.avif' type('image/avif'))"),
+            items(&[])
+        );
+        assert_eq!(content(p, "url(x.png) / 'alt'"), items(&[image("x.png")]));
         // Alternative text is accepted and set aside.
         assert_eq!(content(p, "'a' / 'alt' attr(title)"), items(&[text("a")]));
         // Anything else drops the declaration: the earlier one stands.
@@ -10079,7 +10222,12 @@ mod tests {
                 lists.list_style_image.clone(),
             )
         };
-        let url = |u: &str| Some(Arc::from(u));
+        let url = |u: &str| {
+            Some(crate::computed::Image::Url {
+                url: Arc::from(u),
+                resolution: 1.0,
+            })
+        };
         let outside = ListStylePosition::Outside;
         let inside = ListStylePosition::Inside;
         assert_eq!(of(""), (style("disc"), outside, None));

@@ -56,6 +56,10 @@ mod generated;
 
 use crate::decoration::{self, Decorating};
 
+/// The character a generated text holds where its `content` has an image
+/// (M23.3): the builder makes the image's box there.
+pub(crate) const OBJECT: char = '\u{fffc}';
+
 use generated::GeneratedText;
 pub use generated::MAX_GENERATED_TEXT;
 
@@ -166,11 +170,13 @@ pub struct LayoutBox {
 
 /// What a replaced box shows (M23.2, `docs/design/images.md`), as HTML
 /// section 15.4.2 and the reference browser have it.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Replaced {
     /// An image whose header is read: its number in the engine, which
     /// the fragments and display items name it by, and its header.
     Image { id: u64, header: images::Header },
+    /// A gradient (M23.3): it has no natural size.
+    Gradient(Arc<style::computed::Gradient>),
     /// The icon of an image that cannot be shown: 16 by 16, its box's
     /// `width` and `height` applying only when both are given, as in the
     /// reference browser.
@@ -185,6 +191,12 @@ pub enum Replaced {
 pub trait Images {
     /// The image of the `img` element `node`, whose `src` is not empty.
     fn image(&self, node: NodeId) -> ImageState;
+
+    /// The image a style's `url()` names (M23.3): a marker's, or
+    /// `content`'s. Coming, unless the implementation knows it.
+    fn url_image(&self, _url: &str) -> ImageState {
+        ImageState::Coming
+    }
 }
 
 /// An `img`'s image, as the engine has it.
@@ -807,8 +819,46 @@ impl<'a> Styled<'a> {
             Content::Items(_) => true,
             Content::Normal if side == Side::Marker => {
                 style.lists().list_style_type != ListStyleType::None
+                    || self.list_image(style).is_some()
             }
             Content::Normal | Content::None => false,
+        }
+    }
+
+    /// What `image` shows, when it can be shown (M23.3): an image whose
+    /// header is read, or a gradient; `None` for one coming or broken.
+    fn shown(&self, image: &style::computed::Image) -> Option<Replaced> {
+        match image {
+            style::computed::Image::Url { url, .. } => match self.images.url_image(url) {
+                ImageState::Ready { id, header } => Some(Replaced::Image { id, header }),
+                ImageState::Coming | ImageState::Broken => None,
+            },
+            style::computed::Image::Gradient(gradient) => {
+                Some(Replaced::Gradient(Arc::clone(gradient)))
+            }
+        }
+    }
+
+    /// The image a marker styled `style` is (Lists 3 section 3.3, M23.3):
+    /// its `list-style-image`, its `content` being `normal`, when it can
+    /// be shown; `list-style-type` stands in otherwise.
+    fn list_image(&self, style: &ComputedStyle) -> Option<Replaced> {
+        if style.content != Content::Normal {
+            return None;
+        }
+        self.shown(style.lists().list_style_image.as_ref()?)
+    }
+
+    /// The image an element's `content` replaces its content with
+    /// (M23.3): an image alone, the cascade's only `content` on an
+    /// element; `None` when it has none.
+    fn content_image<'s>(&self, style: &'s ComputedStyle) -> Option<&'s style::computed::Image> {
+        match &style.content {
+            Content::Items(items) => match &**items {
+                [style::computed::ContentItem::Image(image)] => Some(image),
+                _ => None,
+            },
+            Content::Normal | Content::None => None,
         }
     }
 
@@ -948,15 +998,7 @@ impl<'a> Styled<'a> {
         );
         let mut used = style.clone();
         if let Some(replaced) = replaced {
-            let (kind, display) = match out_of_flow {
-                Some(kind) => (kind, Display::Block),
-                None if inline_level => (BoxKind::InlineBlock, Display::InlineBlock),
-                None => (BoxKind::Block, Display::Block),
-            };
-            used.display = display;
-            let mut img = self.own_box(item, &used, kind, Vec::new);
-            img.replaced = Some(replaced);
-            return img;
+            return self.replaced_box(item, style, replaced);
         }
         let text = self.alt_text(item, node);
         let (kind, display, children) = match out_of_flow {
@@ -975,6 +1017,51 @@ impl<'a> Styled<'a> {
         };
         used.display = display;
         self.own_box(item, &used, kind, || children)
+    }
+
+    /// The replaced box `item`, styled `style`, showing `replaced`: its
+    /// kind and used display `inline-block` for an inline-level
+    /// `display`, `block` for any other, a float's and an absolutely
+    /// positioned one's `Float` and `Absolute`.
+    fn replaced_box(&self, item: Item, style: &ComputedStyle, replaced: Replaced) -> LayoutBox {
+        let kind = if style.position.is_out_of_flow() {
+            Some(BoxKind::Absolute)
+        } else if style.float != Float::None {
+            Some(BoxKind::Float)
+        } else {
+            None
+        };
+        let inline_level = matches!(
+            style.display,
+            Display::Inline
+                | Display::InlineBlock
+                | Display::InlineTable
+                | Display::InlineFlex
+                | Display::InlineGrid
+        );
+        let (kind, display) = match kind {
+            Some(kind) => (kind, Display::Block),
+            None if inline_level => (BoxKind::InlineBlock, Display::InlineBlock),
+            None => (BoxKind::Block, Display::Block),
+        };
+        let mut used = style.clone();
+        used.display = display;
+        let mut b = self.own_box(item, &used, kind, Vec::new);
+        b.replaced = Some(replaced);
+        b
+    }
+
+    /// The box of the element `item`, styled `style`, whose `content` is
+    /// `image` (M23.3): replaced, showing the image, or nothing while it
+    /// is coming or when it cannot be shown.
+    fn content_box(
+        &self,
+        item: Item,
+        style: &ComputedStyle,
+        image: &style::computed::Image,
+    ) -> LayoutBox {
+        let replaced = self.shown(image).unwrap_or(Replaced::Empty);
+        self.replaced_box(item, style, replaced)
     }
 
     /// The inline-level content of an `img` shown by its alt text: the
@@ -1174,10 +1261,16 @@ fn build_items(styled: &Styled<'_>, item: Item) -> Vec<LayoutBox> {
             continue;
         };
         flush_text_run(styled, item, &mut run, &mut out);
-        if let Item::Node(node) = child
-            && styled.document.tag(node) == Some("img")
-        {
-            let mut img = styled.img_box(child, node, style);
+        let replaced = match child {
+            Item::Node(node) if styled.document.tag(node) == Some("img") => {
+                Some(styled.img_box(child, node, style))
+            }
+            Item::Node(_) => styled
+                .content_image(style)
+                .map(|image| styled.content_box(child, style, image)),
+            _ => None,
+        };
+        if let Some(mut img) = replaced {
             if img.kind != BoxKind::Absolute {
                 // An item is blockified (css-flexbox-1 section 4).
                 img.kind = BoxKind::Block;
@@ -1302,6 +1395,12 @@ impl BlockContainer<'_> {
                 continue;
             }
             let decorations = styled.decorations(parent);
+            if text.contains(OBJECT)
+                && let Item::GeneratedText(element, side) = child
+            {
+                self.add_generated_images(element, side, &text, decorations);
+                continue;
+            }
             self.add_inline_level(LayoutBox {
                 style: styled.style_or_initial(parent),
                 kind: BoxKind::Text(text.into_owned()),
@@ -1340,7 +1439,9 @@ impl BlockContainer<'_> {
         // An `img` is replaced, or its alt text: a table-internal
         // `display` is a block's for it (M23.2).
         let img = matches!(child, Item::Node(node) if styled.document.tag(node) == Some("img"));
-        if needs_a_table(style.display) && !img {
+        let replaced =
+            img || (matches!(child, Item::Node(_)) && styled.content_image(style).is_some());
+        if needs_a_table(style.display) && !replaced {
             self.collect_misplaced(misplaced, child, style);
             return;
         }
@@ -1354,6 +1455,13 @@ impl BlockContainer<'_> {
         {
             let img = styled.img_box(child, node, style);
             self.add_img(img);
+            return;
+        }
+        if let Item::Node(_) = child
+            && let Some(image) = styled.content_image(style)
+        {
+            let replaced = styled.content_box(child, style, image);
+            self.add_img(replaced);
             return;
         }
         match style.display {
@@ -1434,6 +1542,69 @@ impl BlockContainer<'_> {
         }
     }
 
+    /// Adds the text of the `side` pseudo-element of `element`, `text`,
+    /// which holds images (M23.3): its runs of text as text boxes with
+    /// `decorations`, and in place of each [`OBJECT`] the next image its
+    /// `content` names, an inline-block showing it, or nothing where it
+    /// cannot be shown (Content 3 allows that or an icon).
+    fn add_generated_images(
+        &mut self,
+        element: NodeId,
+        side: Side,
+        text: &str,
+        decorations: Option<Arc<[Decorating]>>,
+    ) {
+        let styled = self.styled;
+        let item = Item::Generated(element, side);
+        let style = styled.style_or_initial(item);
+        let mut images = match &style.content {
+            Content::Items(items) => items
+                .iter()
+                .filter_map(|i| match i {
+                    style::computed::ContentItem::Image(image) => Some(image.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .into_iter(),
+            Content::Normal | Content::None => Vec::new().into_iter(),
+        };
+        for (i, run) in text.split(OBJECT).enumerate() {
+            if i > 0
+                && let Some(image) = images.next()
+                && let Some(replaced) = styled.shown(&image)
+            {
+                let mut b = styled.anonymous_box(
+                    item,
+                    Display::InlineBlock,
+                    BoxKind::InlineBlock,
+                    Vec::new(),
+                );
+                b.replaced = Some(replaced);
+                self.add_inline_level(b);
+            }
+            if run.is_empty() {
+                continue;
+            }
+            self.add_inline_level(LayoutBox {
+                style: style.clone(),
+                kind: BoxKind::Text(run.to_owned()),
+                children: Vec::new(),
+                node: element,
+                anonymous: true,
+                generated: Some(side.pseudo_element()),
+                generated_text: 0,
+                decorations: decorations.clone(),
+                styled_by_ancestor: false,
+                first_line: None,
+                tree_order: 0,
+                item: false,
+                parent: None,
+                in_3d: false,
+                replaced: None,
+            });
+        }
+    }
+
     /// Adds an `img`'s box (M23.2) where its kind puts it: a float or an
     /// absolutely positioned one where it is met, as any is.
     fn add_img(&mut self, img: LayoutBox) {
@@ -1469,6 +1640,21 @@ impl BlockContainer<'_> {
         let outside = styled.styles.get(element).is_none_or(|list_item| {
             list_item.lists().list_style_position == ListStylePosition::Outside
         });
+        // An image marker (M23.3) is a marker box showing it.
+        if let Some(image) = styled.list_image(style) {
+            let kind = BoxKind::Marker {
+                outside,
+                shape: None,
+            };
+            let mut marker = styled.own_box(item, style, kind, Vec::new);
+            marker.replaced = Some(image);
+            if outside {
+                self.out.push(marker);
+            } else {
+                self.add_inline_level(marker);
+            }
+            return;
+        }
         let shape = marker_shape(style);
         if !outside && shape.is_none() {
             self.add_inline(item, style);
@@ -1477,6 +1663,11 @@ impl BlockContainer<'_> {
         let text = match (shape, item) {
             (None, Item::Generated(element, side)) => styled
                 .text(Item::GeneratedText(element, side))
+                // A marker's text shows no image (M23.3).
+                .map(|text| match text.contains(OBJECT) {
+                    true => Cow::Owned(text.replace(OBJECT, "")),
+                    false => text,
+                })
                 .filter(|text| !text.is_empty())
                 .map(|text| LayoutBox {
                     style: style.clone(),

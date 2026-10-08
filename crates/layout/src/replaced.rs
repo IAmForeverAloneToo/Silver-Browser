@@ -67,6 +67,13 @@ fn natural(style: &ComputedStyle, replaced: &Replaced) -> Natural {
             height: Some(0.0),
             ratio: None,
         },
+        // A gradient has no natural size nor ratio: the default object
+        // size stands in (CSS Images 3 section 4.3).
+        Replaced::Gradient(_) => Natural {
+            width: None,
+            height: None,
+            ratio: None,
+        },
     }
 }
 
@@ -333,7 +340,7 @@ pub(crate) fn layout_replaced<'a>(
     let height = content_height + edges.vertical();
     let mut root = box_fragment(content_width + edges.horizontal(), height, b);
     let mut content = box_fragment(content_width, content_height, b);
-    content.kind = FragmentKind::Replaced(*replaced);
+    content.kind = FragmentKind::Replaced(replaced.clone());
     content.x = edges.border[LEFT] + edges.padding[LEFT];
     content.y = edges.border[TOP] + edges.padding[TOP];
     root.children.push(content);
@@ -387,6 +394,10 @@ mod tests {
                 id: 2,
                 header: header(100, 200, Orientation::Rotate90),
             },
+            Some("10x10.png") => ImageState::Ready {
+                id: 3,
+                header: header(10, 10, Orientation::Normal),
+            },
             Some("broken.png") => ImageState::Broken,
             _ => ImageState::Coming,
         }
@@ -399,9 +410,7 @@ mod tests {
         let doc = html::parse_document(html).expect("html parsing never fails");
         let sheet = css::parse_stylesheet(&format!("body {{ margin: 0 }} {css}"))
             .expect("test css is valid");
-        let (document, boxes) = boxes_with(&doc, &[sheet], |document, node| {
-            state(document.attr(node, "src"))
-        });
+        let (document, boxes) = boxes_with(&doc, &[sheet], state);
         let layout = layout_document(&boxes, 800.0, &fonts);
         Laid { document, layout }
     }
@@ -673,6 +682,147 @@ mod tests {
         assert_eq!(
             display("#i { display: table-cell }"),
             style::computed::Display::Block
+        );
+    }
+
+    /// The marker's image fragment, and the text `x`'s fragment.
+    fn marker_and_text(l: &Laid) -> (Option<&Fragment>, &Fragment) {
+        use style::selector_matching::PseudoElement;
+        let marker = l.iter().find(|f| {
+            f.generated == Some(PseudoElement::Marker)
+                && matches!(f.kind, FragmentKind::Replaced(_))
+        });
+        let text = l
+            .iter()
+            .find(|f| matches!(&f.kind, FragmentKind::Text(t) if t == "x"))
+            .expect("the text");
+        (marker, text)
+    }
+
+    #[test]
+    fn an_image_marker_sits_on_the_baseline_seven_pixels_from_the_content() {
+        let list = "ul { margin: 0; padding: 0 0 0 100px; list-style-image: url(10x10.png) }";
+        let l = laid("<ul><li>x</li></ul>", list);
+        let (marker, text) = marker_and_text(&l);
+        let marker = marker.expect("an image marker");
+        assert_eq!((marker.x, marker.w, marker.h), (83.0, 10.0, 10.0));
+        assert_eq!(marker.y + marker.h, text.y, "its bottom on the baseline");
+        let rtl = "ul { margin: 0; padding: 0 100px 0 0; list-style-image: url(10x10.png) }";
+        let l = laid("<ul dir=rtl><li>x</li></ul>", rtl);
+        assert_eq!(marker_and_text(&l).0.expect("an image marker").x, 707.0);
+        // Inside: the content after it and the gap.
+        let l = laid(
+            "<ul><li>x</li></ul>",
+            &format!("{list} li {{ list-style-position: inside }}"),
+        );
+        let (marker, text) = marker_and_text(&l);
+        assert_eq!(marker.expect("an image marker").x, 100.0);
+        assert_eq!(text.x, 117.0);
+        // A gradient: a square half the font's ascent.
+        let l = laid(
+            "<ul><li>x</li></ul>",
+            "ul { list-style-image: linear-gradient(red, blue) }",
+        );
+        let (marker, _) = marker_and_text(&l);
+        let marker = marker.expect("a gradient marker");
+        let fonts = FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0).expect("the test font");
+        let side = (fonts.metrics_for_text(" ", 16.0).ascent / 2.0).floor();
+        assert_eq!((marker.w, marker.h), (side, side));
+    }
+
+    #[test]
+    fn the_list_style_type_stands_in_for_an_image_coming_or_broken() {
+        let shape = |css: &str| {
+            let l = laid("<ul><li>x</li></ul>", css);
+            let shape = l.iter().find_map(|f| match f.kind {
+                FragmentKind::Marker(shape) => Some(shape),
+                _ => None,
+            });
+            (shape, marker_and_text(&l).0.is_some())
+        };
+        let disc = Some(crate::MarkerShape::Disc);
+        assert_eq!(
+            shape("ul { list-style-image: url(later.png) }"),
+            (disc, false)
+        );
+        assert_eq!(
+            shape("ul { list-style-image: url(broken.png) }"),
+            (disc, false)
+        );
+        assert_eq!(
+            shape("ul { list-style-image: url(10x10.png) }"),
+            (None, true)
+        );
+        assert_eq!(
+            shape("ul { list-style: none url(later.png) }"),
+            (None, false),
+            "no type to stand in"
+        );
+        assert_eq!(
+            shape("ul { list-style: none url(10x10.png) }"),
+            (None, true)
+        );
+        // A marker's own content wins over the image.
+        assert_eq!(
+            shape("ul { list-style-image: url(10x10.png) } li::marker { content: '-' }"),
+            (None, false)
+        );
+    }
+
+    #[test]
+    fn content_with_an_image_replaces_an_element_and_joins_a_pseudo_elements_text() {
+        assert_eq!(
+            size("<div id=i>text</div>", "#i { content: url(200x100.png) }"),
+            (200.0, 100.0)
+        );
+        assert_eq!(
+            size(
+                "<span id=i>text</span>",
+                "#i { content: url(200x100.png); width: 50px }"
+            ),
+            (50.0, 25.0)
+        );
+        assert_eq!(
+            size("<div id=i>text</div>", "#i { content: url(later.png) }"),
+            (0.0, 0.0)
+        );
+        assert_eq!(
+            size(
+                "<div id=i>text</div>",
+                "#i { content: url(200x100.png); display: table-cell }"
+            ),
+            (200.0, 100.0),
+            "a table part's display is a block's"
+        );
+        // A `::before` of text and an image: the image between, on the
+        // line; one that cannot be shown is left out.
+        let pieces = |css: &str| {
+            use style::selector_matching::PseudoElement;
+            let l = laid("<p id=p>a</p>", css);
+            let mut found: Vec<(f32, String)> = l
+                .iter()
+                .filter(|f| f.generated == Some(PseudoElement::Before))
+                .filter_map(|f| match &f.kind {
+                    FragmentKind::Text(t) => Some((f.x, t.clone())),
+                    FragmentKind::Replaced(_) => Some((f.x, format!("{}x{}", f.w, f.h))),
+                    _ => None,
+                })
+                .collect();
+            found.sort_by(|a, b| a.0.total_cmp(&b.0));
+            found.into_iter().map(|(_, s)| s).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            pieces("#p::before { content: '[' url(200x100.png) ']' }"),
+            ["[", "200x100", "]"]
+        );
+        assert_eq!(
+            pieces("#p::before { content: '[' url(broken.png) ']' }"),
+            ["[", "]"]
+        );
+        assert_eq!(
+            pieces("#p::before { content: '\\fffc' url(10x10.png) }"),
+            ["\u{fffd}", "10x10"],
+            "a string's own object character is not an image's"
         );
     }
 

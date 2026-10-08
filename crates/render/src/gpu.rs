@@ -297,6 +297,10 @@ struct Records {
     composites: Vec<f32>,
 }
 
+/// What names an uploaded image: its number, frame, turn and crop's
+/// bits.
+type ImageKey = (u64, u32, Orientation, Option<[u32; 4]>);
+
 /// An image uploaded (M23.2): its texture, with the group a composite
 /// samples it by between texels, and the one it samples the nearest
 /// texel by; and the raster it was last drawn in.
@@ -439,7 +443,7 @@ pub struct GpuBackend {
     reported: usize,
     /// The images uploaded (M23.2), by number, frame and turn, and the
     /// bytes they hold.
-    images: HashMap<(u64, u32, Orientation), ImageTexture>,
+    images: HashMap<ImageKey, ImageTexture>,
     image_bytes: usize,
     /// The images drawn turned.
     turned: Turned,
@@ -612,7 +616,12 @@ impl GpuBackend {
         sharp: bool,
         repeat: bool,
     ) -> Option<wgpu::BindGroup> {
-        let key = (image.id, image.frame, image.orientation);
+        let key = (
+            image.id,
+            image.frame,
+            image.orientation,
+            image.crop.map(|c| c.map(f32::to_bits)),
+        );
         let frame = self.frame;
         let pick = |kept: &ImageTexture| match (sharp, repeat) {
             (true, false) => kept.nearest.clone(),
@@ -2489,6 +2498,8 @@ mod tests {
         let picture = crate::tests::picture(7, 8, 6, &texels);
         let mut turned = picture.clone();
         turned.orientation = images::Orientation::Rotate270;
+        let mut cut = turned.clone();
+        cut.crop = Some([0.25, 0.0, 0.75, 0.5]);
         let image = |x, y, w, h, image: &ImageRef, sharp| DisplayItem::Image {
             x,
             y,
@@ -2504,6 +2515,8 @@ mod tests {
                 image(20.0, 4.0, 32.0, 24.0, &picture, true),
                 image(60.0, 4.0, 32.0, 24.0, &picture, false),
                 image(100.0, 4.0, 6.0, 8.0, &turned, true),
+                image(160.0, 4.0, 9.0, 16.0, &cut, false),
+                image(175.0, 4.0, 3.0, 4.0, &cut, true),
                 DisplayItem::PushClip {
                     x: 120.0,
                     y: 10.0,

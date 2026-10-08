@@ -61,7 +61,7 @@ use style::ComputedStyle;
 use style::computed::{Content, ContentItem, Display, ListStyleType, Lists};
 use style::counter_style;
 
-use super::{Item, Side, Styled};
+use super::{Item, OBJECT, Side, Styled};
 
 /// The counter list items increment (Lists 3 §4.6).
 const LIST_ITEM: &str = "list-item";
@@ -524,7 +524,13 @@ impl<'w, 'a> Walk<'w, 'a> {
         };
         for part in items.iter() {
             match part {
+                // The character that stands for an image (M23.3) is
+                // another in a string.
+                ContentItem::Text(s) if s.contains(OBJECT) => {
+                    text.push(&s.replace(OBJECT, "\u{fffd}"))
+                }
                 ContentItem::Text(s) => text.push(s),
+                ContentItem::Image(_) => text.push(&OBJECT.to_string()),
                 ContentItem::OpenQuote => {
                     if let Some((open, _)) = style.quotes.marks(self.quote_depth as usize) {
                         text.push(open);

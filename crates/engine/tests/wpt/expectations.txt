@@ -133,7 +133,6 @@ css/css-variables/variable-declaration-19.html                                  
 css/css-variables/variable-declaration-21.html                                            the substituted value is an `rgb()` colour, a function the engine does not parse, so `color` is invalid at computed-value time and the text inherits black
 css/css-lists/list-type-none-style-image.html                                             a `list-style-image` is not drawn before images (roadmap M23), so the test's `list-style-type: none` item has no marker where the reference's disc shows
 css/css-lists/nested-marker.html                                                          a `::before` or `::after` with `display: list-item` is no list item here: it has no marker and does not count in `list-item`
-css/css-content/element-replacement-alt.html                                              `content: url()` on an element, which replaces its content with the image, waits for images (roadmap M23), so the element's own text shows
 css/CSS2/generated-content/content-004.xht                                                an image in `content` waits for images (roadmap M23)
 
 # Where the reference browser, the draft and the web-platform-tests do not

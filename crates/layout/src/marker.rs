@@ -28,7 +28,24 @@ use style::selector_matching::PseudoElement;
 use text::{FontCollection, FontMetrics};
 
 use crate::block::{Fragment, FragmentKind};
-use crate::box_tree::{BoxKind, LayoutBox};
+use crate::box_tree::{BoxKind, LayoutBox, Replaced};
+
+/// The room between an image marker and the content it marks, inside or
+/// outside (M23.3): the reference browser's 7 pixels.
+const IMAGE_GAP: f32 = 7.0;
+
+/// The size an image marker is drawn at (M23.3): the image's own, or for
+/// one with none, a gradient, a square half the font's ascent, as the
+/// reference browser draws it.
+fn image_size(image: &Replaced, metrics: &FontMetrics) -> (f32, f32) {
+    match image {
+        Replaced::Image { header, .. } => (header.width as f32, header.height as f32),
+        _ => {
+            let side = (metrics.ascent / 2.0).floor().max(1.0);
+            (side, side)
+        }
+    }
+}
 
 /// A [`BoxKind::Marker`] box as a line takes it.
 pub(crate) struct Marker<'a> {
@@ -52,9 +69,10 @@ impl<'a> Marker<'a> {
         };
         let text = text_of(b);
         let metrics = fonts.metrics_for_text(text.unwrap_or(" "), style.font_size_px);
-        let width = match shape {
-            Some(_) => Shape::of(&metrics).side,
-            None => text.map_or(0.0, |text| measure(text, style, fonts)),
+        let width = match (&b.replaced, shape) {
+            (Some(image), _) => image_size(image, &metrics).0 + IMAGE_GAP,
+            (None, Some(_)) => Shape::of(&metrics).side,
+            (None, None) => text.map_or(0.0, |text| measure(text, style, fonts)),
         };
         let advance = match (outside, shape) {
             (true, _) => 0.0,
@@ -109,6 +127,17 @@ impl<'a> Marker<'a> {
             in_3d: false,
             decorated: None,
         };
+        // An image, its bottom on the baseline, the gap after it.
+        if let Some(image) = &self.b.replaced {
+            let (w, h) = image_size(image, &self.metrics);
+            let left = if self.style.direction == Direction::Rtl {
+                x + IMAGE_GAP
+            } else {
+                x
+            };
+            let kind = FragmentKind::Replaced(image.clone());
+            return vec![fragment(left, baseline - h, w, h, kind, 0.0)];
+        }
         if let Some(shape) = shape {
             let geometry = Shape::of(&self.metrics);
             let top = baseline - self.metrics.ascent.round() + geometry.top;
@@ -266,12 +295,16 @@ impl Place<'_> {
                 )),
                 _ => None,
             };
-            let to = outside_left(
-                self.list_item,
-                self.border_box_width,
-                end - start,
-                shape.as_ref(),
-            ) + self.shift;
+            // An image's box holds the gap too, on its end side.
+            let (start, width) = match group[0].kind {
+                FragmentKind::Replaced(_) if group[0].style.direction == Direction::Rtl => {
+                    (start - IMAGE_GAP, end - start + IMAGE_GAP)
+                }
+                FragmentKind::Replaced(_) => (start, end - start + IMAGE_GAP),
+                _ => (start, end - start),
+            };
+            let to = outside_left(self.list_item, self.border_box_width, width, shape.as_ref())
+                + self.shift;
             let dx = to - (left + start);
             for f in group {
                 f.x += dx;

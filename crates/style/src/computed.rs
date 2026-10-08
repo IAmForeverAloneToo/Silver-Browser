@@ -1622,10 +1622,10 @@ pub struct Lists {
     pub list_style_type: ListStyleType,
     /// `list-style-position`: where a list item's marker goes (§3.5).
     pub list_style_position: ListStylePosition,
-    /// `list-style-image`: the URL of the image a marker would be, or
-    /// `None` for `none`; taken and never loaded until images (M23), so
-    /// that a marker falls through to `list-style-type` (§3.3).
-    pub list_style_image: Option<Arc<str>>,
+    /// `list-style-image`: the image a marker is (M23.3), or `None` for
+    /// `none`; `list-style-type` stands in until it loads and when it
+    /// cannot be shown (section 3.3).
+    pub list_style_image: Option<Image>,
 }
 
 impl Lists {
@@ -1847,6 +1847,70 @@ pub enum GradientItem {
     Stop(Color, Option<LengthPercentage>),
     /// Where the colour halfway between the stops on either side is.
     Hint(LengthPercentage),
+}
+
+/// A side of `border-image-slice` (CSS Backgrounds 3 section 6.2,
+/// M23.3): image pixels, or a percentage of the image's size.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SliceSide {
+    Number(f32),
+    Percent(f32),
+}
+
+/// A side of `border-image-width` (section 6.3): a multiple of the
+/// border's width; a length, or a percentage of the border image area;
+/// or `auto`, the slice's own size.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BorderImageWidth {
+    Number(f32),
+    Length(LengthPercentage),
+    Auto,
+}
+
+/// A side of `border-image-outset` (section 6.4): a multiple of the
+/// border's width, or a length.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Outset {
+    Number(f32),
+    Px(f32),
+}
+
+/// One axis of `border-image-repeat` (section 6.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BorderImageRepeat {
+    Stretch,
+    Repeat,
+    Round,
+    Space,
+}
+
+/// The `border-image-*` properties (section 6, M23.3), kept apart while
+/// any is not its initial value; none is inherited. Sides are top,
+/// right, bottom, left.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BorderImage {
+    /// `border-image-source`: `None` for `none`.
+    pub source: Option<Image>,
+    pub slice: [SliceSide; 4],
+    /// `fill` in `border-image-slice`: the middle is drawn too.
+    pub fill: bool,
+    pub width: [BorderImageWidth; 4],
+    pub outset: [Outset; 4],
+    /// Along x, then along y.
+    pub repeat: [BorderImageRepeat; 2],
+}
+
+impl Default for BorderImage {
+    fn default() -> Self {
+        BorderImage {
+            source: None,
+            slice: [SliceSide::Percent(100.0); 4],
+            fill: false,
+            width: std::array::from_fn(|_| BorderImageWidth::Number(1.0)),
+            outset: [Outset::Number(0.0); 4],
+            repeat: [BorderImageRepeat::Stretch; 2],
+        }
+    }
 }
 
 /// One axis of `background-repeat` (CSS Backgrounds 3 section 2.3).
@@ -2330,6 +2394,10 @@ static INITIAL_LISTS: LazyLock<Lists> = LazyLock::new(Lists::default);
 /// [`ComputedStyle::background`] gives a style that sets none of them.
 static INITIAL_BACKGROUND: LazyLock<Backgrounds> = LazyLock::new(Backgrounds::default);
 
+/// The border image properties' initial values, which
+/// [`ComputedStyle::border_image`] gives a style that sets none of them.
+static INITIAL_BORDER_IMAGE: LazyLock<BorderImage> = LazyLock::new(BorderImage::default);
+
 /// The image properties' initial values, which [`ComputedStyle::image`]
 /// gives a style that sets none of them.
 static INITIAL_IMAGE: LazyLock<ImageStyle> = LazyLock::new(ImageStyle::default);
@@ -2383,7 +2451,7 @@ pub enum Content {
 }
 
 /// One part of a [`Content`] list.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ContentItem {
     /// A string, or the value of an `attr()`.
     Text(String),
@@ -2409,6 +2477,10 @@ pub enum ContentItem {
     NoOpenQuote,
     /// `no-close-quote`: makes the depth shallower without a mark.
     NoCloseQuote,
+    /// An image (M23.3): alone on an element, what the element shows in
+    /// place of its content; in a pseudo-element's list, an image among
+    /// its text.
+    Image(Image),
 }
 
 /// `quotes`' computed value (CSS 2.2 §12.3.1, M16).
@@ -2647,6 +2719,9 @@ pub struct ComputedStyle {
     /// one pointer; `None` is every initial value. Read through
     /// [`ComputedStyle::background`].
     pub background: Option<Arc<Backgrounds>>,
+    /// The border image properties (M23.3): `None` while all are their
+    /// initial values.
+    pub border_image: Option<Arc<BorderImage>>,
 }
 
 /// `font-family`'s initial value, one for every style that has it.
@@ -2720,6 +2795,7 @@ impl Default for ComputedStyle {
             motion: None,
             image: None,
             background: None,
+            border_image: None,
         }
     }
 }
@@ -2847,6 +2923,20 @@ impl ComputedStyle {
     /// first if it shares them or has none.
     pub fn background_mut(&mut self) -> &mut Backgrounds {
         Arc::make_mut(self.background.get_or_insert_with(Default::default))
+    }
+
+    /// The border image properties (M23.3), the initial values when the
+    /// style sets none of them.
+    pub fn border_image(&self) -> &BorderImage {
+        self.border_image
+            .as_deref()
+            .unwrap_or(&INITIAL_BORDER_IMAGE)
+    }
+
+    /// The border image properties to change, this style's own copy
+    /// made first if it shares them or has none.
+    pub fn border_image_mut(&mut self) -> &mut BorderImage {
+        Arc::make_mut(self.border_image.get_or_insert_with(Default::default))
     }
 
     /// `aspect-ratio` and the image properties (M23.2), the initial
@@ -3069,7 +3159,7 @@ mod tests {
         // 656 before them, and the background properties (M23.3) another,
         // 664 before them. Growing this is a decision, not an accident;
         // say why where the number changes.
-        assert_eq!(std::mem::size_of::<ComputedStyle>(), 672);
+        assert_eq!(std::mem::size_of::<ComputedStyle>(), 680);
         assert_eq!(ComputedStyle::default().grid, None);
         assert_eq!(*ComputedStyle::default().grid(), GridStyle::default());
         assert_eq!(ComputedStyle::default().effects, None);

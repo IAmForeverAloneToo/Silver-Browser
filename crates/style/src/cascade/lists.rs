@@ -9,7 +9,9 @@ use std::sync::Arc;
 use css::Token;
 
 use super::{LengthBases, components, function_arguments, integer, single_ident};
-use crate::computed::{ContentItem, CounterChange, CounterReset, ListStylePosition, ListStyleType};
+use crate::computed::{
+    ContentItem, CounterChange, CounterReset, Image, ListStylePosition, ListStyleType,
+};
 use crate::counter_style;
 use crate::custom::is_custom_ident;
 
@@ -172,27 +174,27 @@ pub(super) fn parse_list_style_position(tokens: &[Token]) -> Option<ListStylePos
     }
 }
 
-/// `list-style-image`: `none`, or a `url()`, whose URL is kept; no other
-/// `<image>` until images (M23). `Some(None)` is `none`.
-pub(super) fn parse_list_style_image(tokens: &[Token]) -> Option<Option<Arc<str>>> {
+/// `list-style-image`: `none`, or an `<image>` (M23.3). `Some(None)` is
+/// `none`, and so is an `image-set()` with no option this engine shows.
+pub(super) fn parse_list_style_image(
+    tokens: &[Token],
+    bases: &LengthBases<'_>,
+) -> Option<Option<Image>> {
     match super::trim(tokens) {
         [Token::Ident(word)] if word.eq_ignore_ascii_case("none") => Some(None),
-        // The tokenizer makes the whole of a `url(…)`, quoted or not,
-        // one token.
-        [Token::Url { value, bad: false }] => Some(Some(Arc::from(value.as_str()))),
-        _ => None,
+        part => super::backgrounds::image(part, bases),
     }
 }
 
 /// What the `list-style` shorthand sets: a position, an image and a
 /// type, each the initial value where the shorthand leaves it out.
-pub(super) type ListStyle = (ListStylePosition, Option<Arc<str>>, ListStyleType);
+pub(super) type ListStyle = (ListStylePosition, Option<Image>, ListStyleType);
 
 /// The `list-style` shorthand (Lists 3 §3.6): a position, an image and a
 /// type in any order, each at most once. A `none` sets whichever of the
 /// image and the type the rest leaves unset, both when the rest sets
 /// neither.
-pub(super) fn parse_list_style(tokens: &[Token]) -> Option<ListStyle> {
+pub(super) fn parse_list_style(tokens: &[Token], bases: &LengthBases<'_>) -> Option<ListStyle> {
     let mut position = None;
     let mut image = None;
     let mut kind = None;
@@ -205,7 +207,7 @@ pub(super) fn parse_list_style(tokens: &[Token]) -> Option<ListStyle> {
         // Each a first time, or the value is not the shorthand's.
         let first = if let Some(value) = parse_list_style_position(part) {
             position.replace(value).is_none()
-        } else if let Some(value) = parse_list_style_image(part) {
+        } else if let Some(value) = parse_list_style_image(part, bases) {
             image.replace(value).is_none()
         } else if let Some(value) = parse_list_style_type(part) {
             kind.replace(value).is_none()

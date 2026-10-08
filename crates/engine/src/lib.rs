@@ -1120,6 +1120,12 @@ impl Engine {
                 .invalidate(&self.shown.document, &[], &users);
             self.shown.layout = None;
         }
+        // A marker's or a `content`'s image (M23.3): which boxes show it
+        // is not kept, and such an arrival is rare: all are laid out.
+        if self.shown.images.lays_out(url) {
+            self.shown.layout_cache.clear();
+            self.shown.layout = None;
+        }
         self.changed = true;
         self.update_load_state();
     }

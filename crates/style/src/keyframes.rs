@@ -326,6 +326,6 @@ mod tests {
         assert!(longhands.contains(&Longhand::Opacity));
         assert!(longhands.contains(&Longhand::BorderLeftColor));
         assert!(longhands.contains(&Longhand::BorderTopStyle));
-        assert_eq!(longhands.len(), 14);
+        assert_eq!(longhands.len(), 19);
     }
 }

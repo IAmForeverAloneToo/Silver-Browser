@@ -1001,42 +1001,93 @@ pub(crate) fn doubled_keys(items: &[DisplayItem]) -> HashSet<GroupKey> {
     doubled
 }
 
-/// The most images turned for `image-orientation: none` kept at once:
-/// past it they are all turned again as they are drawn.
-const MAX_TURNED: usize = 16;
+/// The most images turned for `image-orientation: none` or cut to a
+/// slice kept at once, and the most bytes they may hold: past either
+/// they are all turned and cut again as they are drawn.
+const MAX_TURNED: usize = 64;
+const MAX_TURNED_BYTES: usize = 64 << 20;
 
 /// The images a backend draws turned for `image-orientation: none`
-/// (M23.2), kept while they are drawn; few are, and the others are
-/// drawn from their decoded pixels as they are.
+/// (M23.2) or cut to a border image's slices (M23.3), kept while they
+/// are drawn; few are, and the others are drawn from their decoded
+/// pixels as they are.
 #[derive(Default)]
 struct Turned {
-    pixels: HashMap<(u64, u32, Orientation), Arc<[u8]>>,
+    pixels: HashMap<TurnedKey, Arc<[u8]>>,
+    bytes: usize,
+}
+
+/// What names a turned or cut image: its number, frame, turn and crop.
+type TurnedKey = (u64, u32, Orientation, Option<[u32; 4]>);
+
+/// The whole pixels of `crop`, fractions of an image `w` by `h` (M23.3):
+/// left, top, right and bottom, at least one pixel each way; `None` for
+/// an empty one.
+pub(crate) fn crop_pixels(crop: [f32; 4], w: u32, h: u32) -> Option<[u32; 4]> {
+    if !(crop[2] > crop[0] && crop[3] > crop[1]) || w == 0 || h == 0 {
+        return None;
+    }
+    let edge = |v: f32, len: u32| (v * len as f32).round().clamp(0.0, len as f32) as u32;
+    let (x0, y0) = (edge(crop[0], w).min(w - 1), edge(crop[1], h).min(h - 1));
+    let (x1, y1) = (edge(crop[2], w).max(x0 + 1), edge(crop[3], h).max(y0 + 1));
+    Some([x0, y0, x1, y1])
+}
+
+/// The pixels of the rectangle `[x0, y0, x1, y1]` of `pixels`, an image
+/// `w` wide.
+fn cut(pixels: &[u8], w: u32, [x0, y0, x1, y1]: [u32; 4]) -> Vec<u8> {
+    let row = w as usize * 4;
+    let len = (x1 - x0) as usize * 4;
+    let mut out = Vec::with_capacity(len * (y1 - y0) as usize);
+    for y in y0 as usize..y1 as usize {
+        let start = y * row + x0 as usize * 4;
+        out.extend_from_slice(&pixels[start..start + len]);
+    }
+    out
 }
 
 impl Turned {
-    /// The pixels `image` draws, turned as it says, with their width and
-    /// height; `None` until it is decoded, or for a frame it has not.
+    /// The pixels `image` draws, turned and cut as it says, with their
+    /// width and height; `None` until it is decoded, for a frame it has
+    /// not, or for an empty crop.
     fn pixels(&mut self, image: &ImageRef) -> Option<(Arc<[u8]>, u32, u32)> {
         let decoded = image.pixels.as_deref()?;
         let frame = decoded.frames.get(image.frame as usize)?;
         let (w, h) = image.orientation.size(decoded.width, decoded.height);
-        if image.orientation == Orientation::Normal {
+        let crop = match image.crop {
+            Some(crop) => Some(crop_pixels(crop, w, h)?),
+            None => None,
+        };
+        if image.orientation == Orientation::Normal && crop.is_none() {
             return Some((Arc::clone(&frame.pixels), w, h));
         }
-        if self.pixels.len() >= MAX_TURNED {
+        let key = (image.id, image.frame, image.orientation, crop);
+        if !self.pixels.contains_key(&key)
+            && (self.pixels.len() >= MAX_TURNED || self.bytes >= MAX_TURNED_BYTES)
+        {
             self.pixels.clear();
+            self.bytes = 0;
         }
-        let turned = self
-            .pixels
-            .entry((image.id, image.frame, image.orientation))
-            .or_insert_with(|| {
+        let bytes = &mut self.bytes;
+        let kept = self.pixels.entry(key).or_insert_with(|| {
+            let turned: Arc<[u8]> = if image.orientation == Orientation::Normal {
+                Arc::clone(&frame.pixels)
+            } else {
                 Arc::from(
                     image
                         .orientation
                         .apply(&frame.pixels, decoded.width, decoded.height),
                 )
-            });
-        Some((Arc::clone(turned), w, h))
+            };
+            let kept = match crop {
+                Some(r) => Arc::from(cut(&turned, w, r)),
+                None => turned,
+            };
+            *bytes += kept.len();
+            kept
+        });
+        let (w, h) = crop.map_or((w, h), |[x0, y0, x1, y1]| (x1 - x0, y1 - y0));
+        Some((Arc::clone(kept), w, h))
     }
 }
 
@@ -4219,6 +4270,7 @@ mod tests {
             id,
             frame: 0,
             orientation: Orientation::Normal,
+            crop: None,
             pixels: Some(Arc::new(images::Image {
                 width,
                 height,
@@ -4244,6 +4296,49 @@ mod tests {
             image,
             sharp,
         }
+    }
+
+    #[test]
+    fn a_cropped_image_draws_its_part_alone_repeated_or_not() {
+        let mut backend = test_backend();
+        // Four by one: red, green, blue, white; the middle two cut out.
+        let row = picture(1, 4, 1, &[RED, GREEN, BLUE, WHITE]);
+        let middle = ImageRef {
+            crop: Some([0.25, 0.0, 0.75, 1.0]),
+            ..row.clone()
+        };
+        let first = ImageRef {
+            crop: Some([0.0, 0.0, 0.5, 1.0]),
+            ..row.clone()
+        };
+        let mut all = vec![white_frame(8.0, 8.0)];
+        all.push(image(0.0, 0.0, 4.0, 1.0, middle.clone(), true));
+        all.push(image(4.0, 0.0, 4.0, 1.0, first, true));
+        all.push(DisplayItem::Pattern {
+            x: 0.0,
+            y: 2.0,
+            w: 8.0,
+            h: 1.0,
+            tile: [0.0, 2.0, 2.0, 1.0],
+            gap: [0.0; 2],
+            repeat: [true, false],
+            image: middle,
+            sharp: true,
+        });
+        let buf = backend
+            .rasterize(&DisplayList { items: all }, 8, 8)
+            .to_vec();
+        let line = |y| (0..8).map(|x| px(&buf, 8, x, y)).collect::<Vec<_>>();
+        assert_eq!(line(0), [GREEN, GREEN, BLUE, BLUE, RED, RED, GREEN, GREEN]);
+        assert_eq!(
+            line(2),
+            [GREEN, BLUE, GREEN, BLUE, GREEN, BLUE, GREEN, BLUE]
+        );
+        // Edges on whole pixels, one at least; none for an empty crop.
+        assert_eq!(crop_pixels([0.0, 0.0, 0.5, 1.0], 3, 1), Some([0, 0, 2, 1]));
+        assert_eq!(crop_pixels([0.1, 0.1, 0.3, 0.3], 1, 1), Some([0, 0, 1, 1]));
+        assert_eq!(crop_pixels([0.9, 0.0, 1.0, 1.0], 4, 4), Some([3, 0, 4, 4]));
+        assert_eq!(crop_pixels([0.5, 0.0, 0.5, 1.0], 4, 4), None);
     }
 
     #[test]

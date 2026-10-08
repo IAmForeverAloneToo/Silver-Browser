@@ -1313,6 +1313,109 @@ fn a_background_image_is_fetched_against_its_sheet_waited_for_and_drawn() {
 }
 
 #[test]
+fn markers_and_contents_images_are_fetched_and_lay_out_again_on_arrival() {
+    use crate::image_store::{ImageState, Pixels};
+    let gate = Gate::new();
+    let held = gate.clone();
+    let server = serve(move |path| match path {
+        "/page.html" => Some(html(
+            "<style>body { margin: 0 } ul { list-style-image: url(m.png) }             #c { content: url(c.png) } #p::after { content: 'x' url(c.png) }</style>             <body><div id=c>replaced</div><ul><li id=li>item</li></ul><p id=p>a</p></body>",
+        )),
+        "/m.png" => {
+            held.wait();
+            Some(Reply::ok("image/png", &png_bytes(4, 3)))
+        }
+        "/c.png" => Some(Reply::ok("image/png", &png_bytes(20, 10))),
+        _ => None,
+    });
+    let (page, c) = (server.url("/page.html"), server.url("/c.png"));
+    let mut tab = Tab::new();
+    tab.engine.navigate(page.clone());
+    tab.wait_until(|engine| {
+        incoming(engine).is_none()
+            && engine.url() == Some(&page)
+            && matches!(image_state(engine, &c), Some(ImageState::Ready(_)))
+    });
+    assert_eq!(
+        tab.engine.load_state(),
+        &LoadState::Loading,
+        "the marker's to come"
+    );
+    assert_eq!(
+        img_box(&tab.engine, "c"),
+        (
+            vec!["box".to_string(), "Image".to_string()],
+            Some((20.0, 10.0))
+        )
+    );
+    let kinds = img_box(&tab.engine, "p").0;
+    assert_eq!(kinds, ["box", "text a", "inline", "text x", "box", "Image"]);
+    let marker = |engine: &mut Engine| {
+        let li = by_id(engine, "li");
+        let layout = engine.layout(200.0);
+        layout::flatten(layout.roots.clone())
+            .into_iter()
+            .filter(|f| {
+                f.node == li && f.generated == Some(style::selector_matching::PseudoElement::Marker)
+            })
+            .map(|f| match f.kind {
+                layout::FragmentKind::Replaced(_) => (f.w, f.h),
+                _ => (0.0, 0.0),
+            })
+            .collect::<Vec<_>>()
+    };
+    tab.engine.frame(200, 100);
+    assert_eq!(marker(&mut tab.engine), [(0.0, 0.0)], "the disc for now");
+    let runs = tab.engine.layout_runs();
+    gate.open();
+    tab.wait_until(|engine| engine.load_state() == &LoadState::Loaded);
+    assert_eq!(marker(&mut tab.engine), [(4.0, 3.0)]);
+    assert_eq!(tab.engine.layout_runs(), runs + 1);
+    // Drawn once decoded.
+    tab.engine.frame(200, 100);
+    tab.wait_until(|engine| {
+        matches!(
+            image_state(engine, &c),
+            Some(ImageState::Ready(ready)) if matches!(ready.pixels, Pixels::Decoded(_))
+        )
+    });
+    let frame = tab.engine.frame(200, 100);
+    let i = (5 * 200 + 5) * 4;
+    assert_eq!(frame[i..i + 4], [212, 212, 212, 255]);
+}
+
+#[test]
+fn a_border_image_is_fetched_and_drawn_in_the_borders_place() {
+    use crate::image_store::{ImageState, Pixels};
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<body style='margin: 0'><div style='width: 20px; height: 20px;              border: 5px solid red; border-image: url(b.png) 1'></div></body>",
+        )),
+        "/b.png" => Some(Reply::ok("image/png", &png_bytes(4, 4))),
+        _ => None,
+    });
+    let b = server.url("/b.png");
+    let mut tab = Tab::new();
+    load_all(&mut tab, server.url("/page.html"));
+    let at = |frame: &[u8], x: usize, y: usize| {
+        let i = (y * 100 + x) * 4;
+        [frame[i], frame[i + 1], frame[i + 2], frame[i + 3]]
+    };
+    let first = tab.engine.frame(100, 100);
+    assert_eq!(at(&first, 2, 2), [255; 4], "no border while it decodes");
+    tab.wait_until(|engine| {
+        matches!(
+            image_state(engine, &b),
+            Some(ImageState::Ready(ready)) if matches!(ready.pixels, Pixels::Decoded(_))
+        )
+    });
+    let second = tab.engine.frame(100, 100);
+    assert_eq!(at(&second, 2, 2), [212, 212, 212, 255]);
+    assert_eq!(at(&second, 15, 2), [212, 212, 212, 255]);
+    assert_eq!(at(&second, 15, 15), [255; 4], "no fill");
+}
+
+#[test]
 fn an_images_pixels_are_decoded_when_first_asked_for() {
     use crate::image_store::{ImageState, Pixels};
     let server = serve(|path| match path {

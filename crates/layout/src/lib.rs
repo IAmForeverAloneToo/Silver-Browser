@@ -72,17 +72,23 @@ pub(crate) mod testing {
         (document, boxes)
     }
 
-    /// [`boxes_of`] with each `img` showing what `image` says of it, from
-    /// the document and the element (M23.2).
+    /// [`boxes_of`] with each `img` showing what `image` says of its
+    /// `src`, and each image a style names what it says of its URL
+    /// (M23.2, M23.3).
     pub(crate) fn boxes_with(
         node: &Node,
         sheets: &[css::Stylesheet],
-        image: impl Fn(&Document, NodeId) -> crate::ImageState,
+        image: impl Fn(Option<&str>) -> crate::ImageState,
     ) -> (Document, Vec<LayoutBox>) {
+        /// An `img`'s image by its `src`, a style's by its URL.
         struct Shown<'d, F>(&'d Document, F);
-        impl<F: Fn(&Document, NodeId) -> crate::ImageState> crate::Images for Shown<'_, F> {
+        impl<F: Fn(Option<&str>) -> crate::ImageState> crate::Images for Shown<'_, F> {
             fn image(&self, node: NodeId) -> crate::ImageState {
-                (self.1)(self.0, node)
+                (self.1)(self.0.attr(node, "src"))
+            }
+
+            fn url_image(&self, url: &str) -> crate::ImageState {
+                (self.1)(Some(url))
             }
         }
         let document = Document::from_node(node);

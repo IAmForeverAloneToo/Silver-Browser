@@ -34,8 +34,9 @@ use dom::{Document, Node, NodeData, NodeId};
 use layout::{Fragment, FragmentKind, MarkerShape, Replaced};
 use style::Styles;
 use style::computed::{
-    Attachment, BOTTOM, BackgroundBox, BackgroundSize, BorderStyle, Color, Display, Image,
-    ImageOrientation, LEFT, LengthPercentage, ObjectFit, RIGHT, Repeat, TOP,
+    Attachment, BOTTOM, BackgroundBox, BackgroundSize, BorderImageRepeat, BorderImageWidth,
+    BorderStyle, Color, Display, Image, ImageOrientation, LEFT, LengthPercentage, ObjectFit,
+    Outset, RIGHT, Repeat, SliceSide, TOP,
 };
 use style::transform::Matrix;
 
@@ -155,9 +156,10 @@ impl Rgba8 {
 
 /// The image a [`DisplayItem::Image`] draws (M23.2): its number in the
 /// engine, the frame shown, how its pixels are turned before they are
-/// drawn, and the pixels, which the engine gives once they are decoded.
-/// Two compare equal when they draw the same: one image's same frame,
-/// turned the same way, both with pixels or both without.
+/// drawn, the part of them drawn, and the pixels, which the engine gives
+/// once they are decoded. Two compare equal when they draw the same: one
+/// image's same frame, turned and cut the same way, both with pixels or
+/// both without.
 #[derive(Debug, Clone)]
 pub struct ImageRef {
     pub id: u64,
@@ -166,6 +168,11 @@ pub struct ImageRef {
     /// are drawn: `Normal`, but under `image-orientation: none` the
     /// inverse of the image's orientation.
     pub orientation: images::Orientation,
+    /// The part of the turned image drawn (M23.3), a border image's
+    /// slice: its left, top, right and bottom edges as fractions of the
+    /// image's width and height, which a backend puts on whole pixels;
+    /// `None` for all of it.
+    pub crop: Option<[f32; 4]>,
     /// The decoded image; `None` until it is, when nothing is drawn.
     pub pixels: Option<Arc<images::Image>>,
 }
@@ -175,6 +182,7 @@ impl PartialEq for ImageRef {
         self.id == other.id
             && self.frame == other.frame
             && self.orientation == other.orientation
+            && self.crop == other.crop
             && self.pixels.is_some() == other.pixels.is_some()
     }
 }
@@ -185,6 +193,12 @@ impl PartialEq for ImageRef {
 /// for. The engine's image store answers; `()` knows none.
 pub trait Pictures {
     fn picture(&self, url: &str) -> Option<(u64, images::Header)>;
+
+    /// Whether the image at `url` is still coming: neither read nor
+    /// broken yet.
+    fn coming(&self, _url: &str) -> bool {
+        false
+    }
 
     /// `gradient` rendered for a tile `w` by `h`: rendered each time it
     /// is asked for, unless the implementation keeps it, as the engine
@@ -727,7 +741,7 @@ pub fn paint_fragments_with(
                     push_marker(&mut items, *shape, rect, to_rgba8(fragment.style.color));
                 }
                 FragmentKind::Replaced(replaced) => {
-                    push_replaced(&mut items, fragment, replaced, rect);
+                    push_replaced(&mut items, fragment, replaced, rect, pictures);
                 }
                 _ => {}
             },
@@ -992,9 +1006,29 @@ fn push_replaced(
     fragment: &Fragment,
     replaced: &Replaced,
     rect: Rect,
+    pictures: &dyn Pictures,
 ) {
     match replaced {
         Replaced::Empty => {}
+        // A gradient (M23.3) fills the box, rendered for its size.
+        Replaced::Gradient(gradient) => {
+            if rect.w > 0.0 && rect.h > 0.0 {
+                items.push(DisplayItem::Image {
+                    x: rect.x,
+                    y: rect.y,
+                    w: rect.w,
+                    h: rect.h,
+                    image: ImageRef {
+                        id: gradient::number(gradient, rect.w, rect.h),
+                        frame: 0,
+                        orientation: images::Orientation::Normal,
+                        crop: None,
+                        pixels: Some(pictures.gradient(gradient, rect.w, rect.h)),
+                    },
+                    sharp: false,
+                });
+            }
+        }
         Replaced::Icon => {
             let size = layout::ICON_SIZE;
             if rect.w > size || rect.h > size {
@@ -1052,6 +1086,7 @@ fn push_replaced(
                     } else {
                         images::Orientation::Normal
                     },
+                    crop: None,
                     pixels: None,
                 },
                 sharp: image.image_rendering.is_sharp(),
@@ -1190,9 +1225,240 @@ fn push_box(
         }
         push_layers(items, f, placed, backdrop);
     }
-    if f.style.border_style.iter().any(|s| s.paints()) {
+    if !push_border_image(items, f, outer, widths, backdrop.pictures)
+        && f.style.border_style.iter().any(|s| s.paints())
+    {
         push_border(items, f, outer, widths);
     }
+}
+
+/// Where the tiles of one of a border image's slices go along one axis
+/// (CSS Backgrounds 3 section 6.5), the room `start` and `len` long, a
+/// tile `tile` long as scaled: the first tile's start, its length, the
+/// gap between tiles and whether they repeat. `stretch` makes one tile
+/// of the room; `repeat` tiles from one centred; `round` fits a whole
+/// number; `space` as many whole as fit with even gaps around them, and
+/// nothing where none fits.
+fn slice_axis(
+    rule: BorderImageRepeat,
+    start: f32,
+    len: f32,
+    tile: f32,
+) -> Option<(f32, f32, f32, bool)> {
+    if !(tile > 0.0 && tile.is_finite()) {
+        return None;
+    }
+    match rule {
+        BorderImageRepeat::Stretch => Some((start, len, 0.0, false)),
+        BorderImageRepeat::Repeat => Some((start + (len - tile) / 2.0, tile, 0.0, true)),
+        BorderImageRepeat::Round => {
+            let n = (len / tile).round().max(1.0);
+            Some((start, len / n, 0.0, true))
+        }
+        BorderImageRepeat::Space => {
+            let n = (len / tile).floor();
+            if n < 1.0 {
+                return None;
+            }
+            let gap = (len - n * tile) / (n + 1.0);
+            Some((start + gap, tile, gap, true))
+        }
+    }
+}
+
+/// Paints `f`'s border image (CSS Backgrounds 3 section 6, M23.3) over
+/// its border image area, the border box `outer` grown by the outset,
+/// `widths` the border's: the image cut in nine by the slices, the
+/// corners stretched over the corners of the area the widths leave, the
+/// edges and, with `fill`, the middle scaled and stretched, repeated,
+/// rounded or spaced along them. Whether it takes the border's place: it
+/// does while it is coming too, when the reference browser draws
+/// neither; `none`, or one broken, leaves it to the border.
+fn push_border_image(
+    items: &mut Vec<DisplayItem>,
+    f: &Fragment,
+    outer: Rect,
+    widths: [f32; 4],
+    pictures: &dyn Pictures,
+) -> bool {
+    let Some(border_image) = &f.style.border_image else {
+        return false;
+    };
+    let Some(source) = &border_image.source else {
+        return false;
+    };
+    let out = |side: usize| match border_image.outset[side] {
+        Outset::Number(n) => n * widths[side],
+        Outset::Px(v) => v,
+    };
+    let area = Rect {
+        x: outer.x - out(LEFT),
+        y: outer.y - out(TOP),
+        w: outer.w + out(LEFT) + out(RIGHT),
+        h: outer.h + out(TOP) + out(BOTTOM),
+    };
+    if !(area.w > 0.0 && area.h > 0.0) {
+        return true;
+    }
+    // The image's size in its pixels, the CSS pixels one is, and what
+    // draws it; a gradient is rendered for the area, its pixels CSS
+    // pixels.
+    let (iw, ih, scale, image) = match source {
+        Image::Url { url, resolution } => {
+            let Some((id, header)) = pictures.picture(url) else {
+                return pictures.coming(url);
+            };
+            let image = ImageRef {
+                id,
+                frame: 0,
+                orientation: images::Orientation::Normal,
+                crop: None,
+                pixels: None,
+            };
+            let size = (header.width as f32, header.height as f32);
+            (size.0, size.1, Some(1.0 / resolution), image)
+        }
+        Image::Gradient(g) => {
+            let image = ImageRef {
+                id: gradient::number(g, area.w, area.h),
+                frame: 0,
+                orientation: images::Orientation::Normal,
+                crop: None,
+                pixels: Some(pictures.gradient(g, area.w, area.h)),
+            };
+            (area.w, area.h, None, image)
+        }
+    };
+    if !(iw > 0.0 && ih > 0.0) {
+        return true;
+    }
+    // The slices, in the image's pixels, whole ones for a raster image;
+    // one past the image is all of it.
+    let slice = |side: usize, len: f32| {
+        let v = match border_image.slice[side] {
+            SliceSide::Number(n) => n,
+            SliceSide::Percent(p) => p / 100.0 * len,
+        };
+        let v = if scale.is_some() { v.round() } else { v };
+        v.min(len)
+    };
+    let s = [
+        slice(TOP, ih),
+        slice(RIGHT, iw),
+        slice(BOTTOM, ih),
+        slice(LEFT, iw),
+    ];
+    // The widths of the area's sides (section 6.3), scaled down
+    // together where two opposite ones overlap.
+    let css = scale.unwrap_or(1.0);
+    let width = |side: usize| match &border_image.width[side] {
+        BorderImageWidth::Number(n) => n * widths[side],
+        BorderImageWidth::Length(v) if side == TOP || side == BOTTOM => v.resolve(area.h),
+        BorderImageWidth::Length(v) => v.resolve(area.w),
+        BorderImageWidth::Auto if scale.is_some() => s[side] * css,
+        BorderImageWidth::Auto => widths[side],
+    };
+    let mut w = [width(TOP), width(RIGHT), width(BOTTOM), width(LEFT)];
+    let fit = (area.w / (w[LEFT] + w[RIGHT])).min(area.h / (w[TOP] + w[BOTTOM]));
+    if fit < 1.0 {
+        for v in &mut w {
+            *v *= fit;
+        }
+    }
+    let xs = [
+        area.x,
+        area.x + w[LEFT],
+        area.x + area.w - w[RIGHT],
+        area.x + area.w,
+    ];
+    let ys = [
+        area.y,
+        area.y + w[TOP],
+        area.y + area.h - w[BOTTOM],
+        area.y + area.h,
+    ];
+    let sx = [0.0, s[LEFT], iw - s[RIGHT], iw];
+    let sy = [0.0, s[TOP], ih - s[BOTTOM], ih];
+    // The middle's scale along x is the top's, else the bottom's, along
+    // y the left's, else the right's; else the image's own.
+    let factor = |a: usize, b: usize| {
+        [a, b]
+            .into_iter()
+            .map(|side| w[side] / s[side])
+            .find(|k| *k > 0.0 && k.is_finite())
+            .unwrap_or(css)
+    };
+    let middle = (factor(TOP, BOTTOM), factor(LEFT, RIGHT));
+    let sharp = f.style.image().image_rendering.is_sharp();
+    for row in 0..3 {
+        for col in 0..3 {
+            if row == 1 && col == 1 && !border_image.fill {
+                continue;
+            }
+            let (src_w, src_h) = (sx[col + 1] - sx[col], sy[row + 1] - sy[row]);
+            let (x, y) = (xs[col], ys[row]);
+            let (dst_w, dst_h) = (xs[col + 1] - x, ys[row + 1] - y);
+            if !(src_w > 0.0 && src_h > 0.0 && dst_w > 0.0 && dst_h > 0.0) {
+                continue;
+            }
+            // A tile's size as scaled: an edge keeps its ratio, its
+            // breadth the side's width; the middle by its factors.
+            let (tile_w, tile_h) = match (col, row) {
+                (1, 1) => (src_w * middle.0, src_h * middle.1),
+                (1, _) => (src_w * dst_h / src_h, dst_h),
+                (_, 1) => (dst_w, src_h * dst_w / src_w),
+                _ => (dst_w, dst_h),
+            };
+            let rule_x = if col == 1 {
+                border_image.repeat[0]
+            } else {
+                BorderImageRepeat::Stretch
+            };
+            let rule_y = if row == 1 {
+                border_image.repeat[1]
+            } else {
+                BorderImageRepeat::Stretch
+            };
+            let (Some((tx, tw, gx, rx)), Some((ty, th, gy, ry))) = (
+                slice_axis(rule_x, x, dst_w, tile_w),
+                slice_axis(rule_y, y, dst_h, tile_h),
+            ) else {
+                continue;
+            };
+            let image = ImageRef {
+                crop: Some([
+                    sx[col] / iw,
+                    sy[row] / ih,
+                    sx[col + 1] / iw,
+                    sy[row + 1] / ih,
+                ]),
+                ..image.clone()
+            };
+            if !rx && !ry {
+                items.push(DisplayItem::Image {
+                    x,
+                    y,
+                    w: dst_w,
+                    h: dst_h,
+                    image,
+                    sharp,
+                });
+            } else {
+                items.push(DisplayItem::Pattern {
+                    x,
+                    y,
+                    w: dst_w,
+                    h: dst_h,
+                    tile: [tx, ty, tw, th],
+                    gap: [gx, gy],
+                    repeat: [rx, ry],
+                    image,
+                    sharp,
+                });
+            }
+        }
+    }
+    true
 }
 
 /// What a box's background images are painted against (M23.3): the
@@ -1300,12 +1566,14 @@ fn push_layers(
                 id,
                 frame: 0,
                 orientation: images::Orientation::Normal,
+                crop: None,
                 pixels: None,
             },
             (None, Some(Image::Gradient(g))) => ImageRef {
                 id: gradient::number(g, tile_w, tile_h),
                 frame: 0,
                 orientation: images::Orientation::Normal,
+                crop: None,
                 pixels: Some(backdrop.pictures.gradient(g, tile_w, tile_h)),
             },
             _ => continue,
@@ -2088,6 +2356,161 @@ mod fragment_tests {
             .collect()
     }
 
+    /// The images the border image of a page's `div` draws, as
+    /// [`patterns`] lays it out, under `css`, its images `pictures`':
+    /// each one's area, crop, and its tile, gap and repeat if a pattern.
+    fn border_image(css: &str, pictures: &dyn Pictures) -> Vec<BorderPiece> {
+        let fonts = test_fonts();
+        let root = Element::new("html").push(Element::new("body").push(Element::new("div")));
+        let doc = dom::Node::document(vec![root.into()]);
+        let sheet = css::parse_stylesheet(&format!(
+            "html, body {{ margin: 0 }} div {{ width: 100px; height: 50px; padding: 5px;
+             border: 10px solid red }} {css}"
+        ))
+        .expect("test css is valid");
+        let layout = laid_out(&doc, &[sheet], VIEWPORT, &fonts);
+        paint_fragments_with(&layout.roots, Viewport::new(VIEWPORT, 600.0), &(), pictures)
+            .items
+            .into_iter()
+            .filter_map(|i| match i {
+                DisplayItem::Image {
+                    x, y, w, h, image, ..
+                } => Some(([x, y, w, h], image.crop.expect("cut"), None)),
+                DisplayItem::Pattern {
+                    x,
+                    y,
+                    w,
+                    h,
+                    tile,
+                    gap,
+                    repeat,
+                    image,
+                    ..
+                } => Some((
+                    [x, y, w, h],
+                    image.crop.expect("cut"),
+                    Some((tile, gap, repeat)),
+                )),
+                DisplayItem::Border { .. } => Some(([0.0; 4], [0.0; 4], None)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A border image's piece: its area, crop, and its tile, gap and
+    /// repeat if a pattern; a border's, zeros.
+    type BorderPiece = ([f32; 4], [f32; 4], Option<([f32; 4], [f32; 2], [bool; 2])>);
+
+    #[test]
+    fn a_border_image_is_cut_in_nine_and_its_pieces_stretched_over_the_border() {
+        // Twenty's 20 by 10 cut 3 from each edge, over a border box
+        // 130 by 80 with 10px sides.
+        let pieces = border_image("div { border-image: url(a.png) 3 }", &Twenty);
+        let (x, y) = ([0.0, 3.0 / 20.0, 17.0 / 20.0, 1.0], [0.0, 0.3, 0.7, 1.0]);
+        let want: Vec<BorderPiece> = vec![
+            ([0.0, 0.0, 10.0, 10.0], [x[0], y[0], x[1], y[1]], None),
+            ([10.0, 0.0, 110.0, 10.0], [x[1], y[0], x[2], y[1]], None),
+            ([120.0, 0.0, 10.0, 10.0], [x[2], y[0], x[3], y[1]], None),
+            ([0.0, 10.0, 10.0, 60.0], [x[0], y[1], x[1], y[2]], None),
+            ([120.0, 10.0, 10.0, 60.0], [x[2], y[1], x[3], y[2]], None),
+            ([0.0, 70.0, 10.0, 10.0], [x[0], y[2], x[1], y[3]], None),
+            ([10.0, 70.0, 110.0, 10.0], [x[1], y[2], x[2], y[3]], None),
+            ([120.0, 70.0, 10.0, 10.0], [x[2], y[2], x[3], y[3]], None),
+        ];
+        assert_eq!(pieces, want, "the border's place taken");
+        // `fill` draws the middle too.
+        let filled = border_image("div { border-image: url(a.png) 3 fill }", &Twenty);
+        assert_eq!(filled.len(), 9);
+        assert_eq!(
+            filled[4],
+            ([10.0, 10.0, 110.0, 60.0], [x[1], y[1], x[2], y[2]], None)
+        );
+        // Slices past the image leave the corners alone.
+        let corners = border_image("div { border-image: url(a.png) 12 }", &Twenty);
+        assert_eq!(corners.len(), 4);
+        assert_eq!(corners[1].1, [8.0 / 20.0, 0.0, 1.0, 1.0]);
+        // An outset grows the area; widths too wide are scaled down
+        // together; `auto` is the slice's own size.
+        let outset = border_image("div { border-image: url(a.png) 3 / 10px / 5px }", &Twenty);
+        assert_eq!(outset[0].0, [-5.0, -5.0, 10.0, 10.0]);
+        assert_eq!(outset[7].0, [125.0, 75.0, 10.0, 10.0]);
+        let times = border_image("div { border-image: url(a.png) 3 / 10px / 1 }", &Twenty);
+        assert_eq!(
+            times[0].0,
+            [-10.0, -10.0, 10.0, 10.0],
+            "the border's width once"
+        );
+        let wide = border_image("div { border-image: url(a.png) 3 / 50px }", &Twenty);
+        assert_eq!(wide[0].0, [0.0, 0.0, 40.0, 40.0]);
+        let auto = border_image("div { border-image: url(a.png) 3 / auto }", &Twenty);
+        assert_eq!(auto[0].0, [0.0, 0.0, 3.0, 3.0]);
+    }
+
+    #[test]
+    fn a_border_images_edges_repeat_round_and_space_along_them() {
+        // The top edge, 14 by 3, is 10 high: a tile 140 / 3 wide over
+        // 110; the left, 3 by 4, 10 wide: a tile 40 / 3 high over 60.
+        let tile = 140.0 / 3.0;
+        let at = |css: &str, i: usize| {
+            border_image(
+                &format!("div {{ border-image: url(a.png) 3 {css} }}"),
+                &Twenty,
+            )[i]
+                .2
+                .expect("a pattern")
+        };
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-3;
+        let (t, g, r) = at("repeat", 1);
+        assert!(
+            close(t[0], 10.0 + (110.0 - tile) / 2.0) && close(t[2], tile),
+            "{t:?}"
+        );
+        assert_eq!((t[1], t[3], g, r), (0.0, 10.0, [0.0, 0.0], [true, false]));
+        let (t, _, _) = at("repeat", 3);
+        assert!(close(t[1], 10.0 + (60.0 - 40.0 / 3.0) / 2.0) && close(t[3], 40.0 / 3.0));
+        let (t, _, r) = at("round", 1);
+        assert_eq!((t[0], t[2], r), (10.0, 55.0, [true, false]));
+        let (t, g, _) = at("space", 1);
+        let gap = (110.0 - 2.0 * tile) / 3.0;
+        assert!(close(g[0], gap) && close(t[0], 10.0 + gap) && close(t[2], tile));
+        // The middle scaled as the top along x, the left along y: 14 by
+        // 4 made 140 / 3 by 40 / 3, rounded over 110 by 60.
+        let (t, _, r) = at("fill round", 4);
+        assert_eq!((t[2], t[3], r), (55.0, 12.0, [true, true]));
+        // Stretched along x, repeated along y: the corners stay put.
+        let pieces = border_image("div { border-image: url(a.png) 3 stretch repeat }", &Twenty);
+        assert!(pieces[1].2.is_none() && pieces[3].2.is_some() && pieces[0].2.is_none());
+        // Space with no room for one tile draws none.
+        let none = border_image(
+            "div { border-image: url(a.png) 3 / 10px space; width: 10px }",
+            &Twenty,
+        );
+        assert_eq!(none.len(), 6, "{none:?}");
+    }
+
+    #[test]
+    fn a_border_image_coming_draws_nothing_and_one_broken_the_border() {
+        struct Coming(bool);
+        impl Pictures for Coming {
+            fn picture(&self, _url: &str) -> Option<(u64, images::Header)> {
+                None
+            }
+            fn coming(&self, _url: &str) -> bool {
+                self.0
+            }
+        }
+        let css = "div { border-image: url(a.png) 3 }";
+        assert_eq!(border_image(css, &Coming(true)), []);
+        let border = border_image(css, &Coming(false));
+        assert!(!border.is_empty() && border.iter().all(|p| p.0 == [0.0; 4]));
+        let none = border_image("div { border-image: none 3 }", &Twenty);
+        assert!(!none.is_empty() && none.iter().all(|p| p.0 == [0.0; 4]));
+        // A gradient is rendered for the area.
+        let gradient = border_image("div { border-image: linear-gradient(red, blue) 10% }", &());
+        assert_eq!(gradient.len(), 8);
+        assert_eq!(gradient[0].1, [0.0, 0.0, 0.1, 0.1]);
+    }
+
     /// A pattern's area, tile, gap and repeat.
     type Laid = ([f32; 4], [f32; 4], [f32; 2], [bool; 2]);
 
@@ -2321,6 +2744,26 @@ mod fragment_tests {
     }
 
     #[test]
+    fn a_gradient_an_element_shows_is_rendered_for_its_box() {
+        let list = display_list_of(
+            Element::new("div"),
+            "div { content: linear-gradient(red, blue); width: 40px; height: 20px }",
+        );
+        let image = list
+            .items
+            .iter()
+            .find_map(|i| match i {
+                DisplayItem::Image { w, h, image, .. } => Some((*w, *h, image)),
+                _ => None,
+            })
+            .expect("the gradient");
+        assert_eq!((image.0, image.1), (40.0, 20.0));
+        assert!(image.2.id >> 63 == 1);
+        let pixels = image.2.pixels.as_ref().expect("rendered");
+        assert_eq!((pixels.width, pixels.height), (1, 20));
+    }
+
+    #[test]
     fn fitting_keeps_the_ratio_but_for_fill() {
         let natural = (200.0, 100.0);
         assert_eq!(fitted(ObjectFit::Fill, natural, (50.0, 50.0)), (50.0, 50.0));
@@ -2353,6 +2796,7 @@ mod fragment_tests {
             id,
             frame: 0,
             orientation: images::Orientation::Normal,
+            crop: None,
             pixels: pixels.then(|| {
                 Arc::new(images::Image {
                     width: 1,

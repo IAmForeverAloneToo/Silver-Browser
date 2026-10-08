@@ -4,7 +4,7 @@
 //! threads of their own.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use dom::{Document, NodeId};
@@ -83,6 +83,9 @@ pub(crate) struct ImageStore {
     /// URL of its entry (M23.3): what paint asks for an image by. `None`
     /// for one that does not resolve.
     css: HashMap<Arc<str>, Option<String>>,
+    /// The entries a marker or a `content` shows, whose size is laid out
+    /// (M23.3), by URL: their arrival lays the document out again.
+    laid_out: HashSet<String>,
     /// The gradients rendered (M23.3), by their numbers, with when each
     /// was last asked for; and the bytes they hold.
     gradients: RefCell<Gradients>,
@@ -151,10 +154,11 @@ impl ImageStore {
     }
 
     /// Scans the computed `styles` of `document`'s elements, and of their
-    /// `::before` and `::after`, for the images their backgrounds name
-    /// (M23.3), against `page`'s base URL, which leaves one a fetched
-    /// sheet made absolute as it is; returns the URLs not yet wanted,
-    /// which are now being fetched. `next` numbers the new entries.
+    /// `::before`, `::after` and markers, for the images their
+    /// backgrounds, list markers and `content` name (M23.3), against
+    /// `page`'s base URL, which leaves one a fetched sheet made absolute
+    /// as it is; returns the URLs not yet wanted, which are now being
+    /// fetched. `next` numbers the new entries.
     pub(crate) fn scan_styles(
         &mut self,
         document: &Document,
@@ -168,23 +172,48 @@ impl ImageStore {
             let all = styles.get(node).into_iter().chain(
                 pseudo
                     .into_iter()
-                    .flat_map(|p| [p.before.as_ref(), p.after.as_ref()])
+                    .flat_map(|p| [p.before.as_ref(), p.after.as_ref(), p.marker.as_ref()])
                     .flatten(),
             );
             for style in all {
-                let Some(background) = &style.background else {
-                    continue;
-                };
-                for image in background.image.iter().flatten() {
+                // The images a style names, and whether its box's size
+                // depends on each.
+                let backgrounds = style
+                    .background
+                    .iter()
+                    .flat_map(|b| b.image.iter().flatten())
+                    .chain(style.border_image.iter().filter_map(|b| b.source.as_ref()))
+                    .map(|image| (image, false));
+                let marker = style
+                    .lists
+                    .iter()
+                    .filter_map(|l| l.list_style_image.as_ref())
+                    .map(|image| (image, true));
+                let content = match &style.content {
+                    style::computed::Content::Items(items) => items.as_ref(),
+                    _ => &[],
+                }
+                .iter()
+                .filter_map(|item| match item {
+                    style::computed::ContentItem::Image(image) => Some((image, true)),
+                    _ => None,
+                });
+                for (image, lays_out) in backgrounds.chain(marker).chain(content) {
                     let style::computed::Image::Url { url: written, .. } = image else {
                         continue;
                     };
+                    if lays_out && let Some(Some(key)) = self.css.get(written) {
+                        self.laid_out.insert(key.clone());
+                    }
                     if written.is_empty() || self.css.contains_key(written) {
                         continue;
                     }
                     let url = page.resolve(document, written);
                     let key = url.as_ref().map(|url| url.as_str().to_owned());
                     self.css.insert(Arc::clone(written), key.clone());
+                    if lays_out && let Some(key) = &key {
+                        self.laid_out.insert(key.clone());
+                    }
                     if let (Some(url), Some(key)) = (url, key)
                         && !self.entries.contains_key(&key)
                     {
@@ -203,6 +232,12 @@ impl ImageStore {
             }
         }
         wanted
+    }
+
+    /// Whether a marker or a `content` shows the image at `url`, whose
+    /// arrival changes a box's size (M23.3).
+    pub(crate) fn lays_out(&self, url: &str) -> bool {
+        self.laid_out.contains(url)
     }
 
     /// The elements showing `url`.
@@ -334,6 +369,25 @@ impl layout::Images for ImageStore {
             _ => layout::ImageState::Broken,
         }
     }
+
+    /// The image a style's URL names, as [`ImageStore::scan_styles`]
+    /// found it (M23.3): coming until scanned.
+    fn url_image(&self, url: &str) -> layout::ImageState {
+        let Some(key) = self.css.get(url) else {
+            return layout::ImageState::Coming;
+        };
+        let entry = key.as_ref().and_then(|key| self.entries.get(key));
+        match entry.map(|entry| (entry.id, &entry.state)) {
+            Some((id, ImageState::Ready(ready))) if ready.pixels != Pixels::Failed => {
+                layout::ImageState::Ready {
+                    id,
+                    header: ready.header,
+                }
+            }
+            Some((_, ImageState::Fetching | ImageState::Reading)) => layout::ImageState::Coming,
+            _ => layout::ImageState::Broken,
+        }
+    }
 }
 
 /// What paint asks of a style's images (M23.3): the image a URL names,
@@ -368,6 +422,18 @@ impl paint::Pictures for ImageStore {
         }
         gradients.kept.insert(number, (Arc::clone(&image), asked));
         image
+    }
+
+    /// Coming until scanned, and while fetched or read.
+    fn coming(&self, url: &str) -> bool {
+        let Some(key) = self.css.get(url) else {
+            return true;
+        };
+        let entry = key.as_ref().and_then(|key| self.entries.get(key));
+        matches!(
+            entry.map(|entry| &entry.state),
+            Some(ImageState::Fetching | ImageState::Reading)
+        )
     }
 
     fn picture(&self, url: &str) -> Option<(u64, images::Header)> {
