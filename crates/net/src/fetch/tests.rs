@@ -350,6 +350,76 @@ fn mixed_content_is_blocked() {
 }
 
 #[test]
+fn an_http_image_of_an_https_page_is_upgraded() {
+    let from_https = page("https://example.org/", AddressSpace::Loopback);
+    let from_http = page("http://example.org/", AddressSpace::Loopback);
+    let image = |input: &str, from: &Initiator| {
+        Request::get(url(input), Destination::Image).initiated_by(from.clone())
+    };
+    let upgraded = |request: &Request| {
+        upgrade_mixed_content(request, &request.url).map(|url| url.as_str().to_owned())
+    };
+    assert_eq!(
+        upgraded(&image("http://example.com/a.png", &from_https)).as_deref(),
+        Some("https://example.com/a.png")
+    );
+    // The default port goes with the scheme; another stays.
+    assert_eq!(
+        upgraded(&image("http://example.com:80/a.png", &from_https)).as_deref(),
+        Some("https://example.com/a.png")
+    );
+    assert_eq!(
+        upgraded(&image("http://example.com:8080/a.png", &from_https)).as_deref(),
+        Some("https://example.com:8080/a.png")
+    );
+    // Not an IP address, nor what is trustworthy already, nor from an
+    // http: page, nor anything but an image.
+    assert_eq!(
+        upgraded(&image("http://192.0.2.1/a.png", &from_https)),
+        None
+    );
+    assert_eq!(
+        upgraded(&image("http://[2001:db8::1]/a.png", &from_https)),
+        None
+    );
+    assert_eq!(
+        upgraded(&image("http://localhost/a.png", &from_https)),
+        None
+    );
+    assert_eq!(
+        upgraded(&image("http://example.com/a.png", &from_http)),
+        None
+    );
+    let style = Request::get(url("http://example.com/a.css"), Destination::Style)
+        .initiated_by(from_https.clone());
+    assert_eq!(upgraded(&style), None);
+    // An image from an IP address stays mixed, and blocked.
+    let error = client().fetch(&image("http://192.0.2.1/a.png", &from_https));
+    assert_eq!(error.unwrap_err(), NetworkError::MixedContent);
+}
+
+#[test]
+fn a_request_may_hold_its_body_to_less() {
+    let server = TestServer::plain(|_| Reply::ok("image/png", &[7; 100]));
+    let request = |limit: usize| {
+        Request::get(server.url("/a.png"), Destination::Image).with_body_limit(limit)
+    };
+    assert_eq!(client().fetch(&request(100)).unwrap().body.len(), 100);
+    assert_eq!(
+        client().fetch(&request(99)).unwrap_err(),
+        NetworkError::BodyTooLarge
+    );
+    let data = |limit: usize| {
+        Request::get(url("data:,0123456789"), Destination::Image).with_body_limit(limit)
+    };
+    assert_eq!(client().fetch(&data(10)).unwrap().body, b"0123456789");
+    assert_eq!(
+        client().fetch(&data(9)).unwrap_err(),
+        NetworkError::BodyTooLarge
+    );
+}
+
+#[test]
 fn address_spaces_are_checked() {
     let server = TestServer::plain(|_| hello());
     let from_public = page("https://example.org/", AddressSpace::Public);

@@ -222,6 +222,15 @@ impl Page {
         Url::parse_with(href, base.as_ref(), self.context.encoding).ok()
     }
 
+    /// What a request of the page's is initiated by; none for a page
+    /// with no URL, which fetches nothing.
+    pub(crate) fn initiator(&self) -> Option<Initiator> {
+        Some(Initiator {
+            url: self.context.url.clone()?,
+            address_space: self.context.address_space,
+        })
+    }
+
     /// The request for the document's icon (HTML's `icon` link type,
     /// M15): the last `<link>` in tree order whose `rel` has the token
     /// `icon`, whose `type`, if it has one, is an image type, and whose

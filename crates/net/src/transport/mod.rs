@@ -109,6 +109,8 @@ pub struct Exchange<'a> {
     /// user asked for, which may go anywhere.
     pub initiator: Option<AddressSpace>,
     pub abort: &'a AbortHandle,
+    /// The most the body may hold, when less than the configured limit.
+    pub body_limit: Option<usize>,
 }
 
 /// A response, and the address space of the server it came from.
@@ -209,6 +211,10 @@ impl Transport {
     /// (RFC 9110 §9.2.2).
     pub fn exchange(&self, exchange: &Exchange) -> Result<Received, NetworkError> {
         let url = exchange.url;
+        let mut limits = self.config.limits;
+        if let Some(own) = exchange.body_limit {
+            limits.body_bytes = limits.body_bytes.min(own);
+        }
         let (Some(host), Some(port), true) = (
             url.host(),
             url.port_or_default(),
@@ -249,7 +255,7 @@ impl Transport {
             connection.reader.get_mut().lend(exchange.abort);
             let result = match http::write_request(connection.reader.get_mut(), &message) {
                 Err(e) => Err(Failure::Send(e)),
-                Ok(()) => http::read_response(&mut connection.reader, to_head, self.config.limits)
+                Ok(()) => http::read_response(&mut connection.reader, to_head, limits)
                     .map_err(Failure::Read),
             };
             connection.reader.get_mut().release();
@@ -262,11 +268,8 @@ impl Transport {
                     drop(lease);
                     if !to_head {
                         let body = std::mem::take(&mut response.body);
-                        response.body = content_coding::decode(
-                            &response.headers,
-                            body,
-                            self.config.limits.body_bytes,
-                        )?;
+                        response.body =
+                            content_coding::decode(&response.headers, body, limits.body_bytes)?;
                     }
                     return Ok(Received {
                         response,

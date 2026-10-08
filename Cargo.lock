@@ -625,6 +625,7 @@ dependencies = [
  "encoding",
  "flate2",
  "html",
+ "images",
  "layout",
  "net",
  "paint",

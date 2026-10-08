@@ -16,9 +16,7 @@ use dom::{Document, NodeId};
 use encoding::Encoding;
 use net::{AbortHandle, Client, NetworkError, Request, Response};
 
-use pool::{Lost, Pool};
-
-pub(crate) use pool::Waker;
+pub(crate) use pool::{JobId, Lost, Pool, Waker};
 pub(crate) use sheets::{Page, may_touch_sheets};
 
 /// The most fetches in flight at once; further ones wait in the order
@@ -77,6 +75,8 @@ pub(crate) enum Target {
     Sheet { owner: NodeId, path: Vec<usize> },
     /// A page's icon.
     Icon,
+    /// An image a page shows, by its URL (M23).
+    Image { url: String },
 }
 
 /// A fetch in flight.

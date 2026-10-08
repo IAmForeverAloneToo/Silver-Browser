@@ -35,6 +35,7 @@ fn send(
         body: (method == "POST").then_some(&b"x"[..]),
         initiator,
         abort,
+        body_limit: None,
     })
 }
 
@@ -386,6 +387,7 @@ fn a_server_that_takes_nothing_times_the_request_out() {
         body: Some(&body),
         initiator: None,
         abort: &AbortHandle::new(),
+        body_limit: None,
     });
     assert_eq!(result.unwrap_err(), NetworkError::Timeout);
     assert!(

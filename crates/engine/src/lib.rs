@@ -94,6 +94,7 @@
 
 pub mod address;
 pub mod differential;
+mod image_store;
 mod loader;
 mod navigation;
 mod pages;
@@ -105,6 +106,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
+pub use image_store::MAX_DECODE_THREADS;
 pub use loader::{LoadError, LoadState};
 pub use net::{Client, NetworkError, Url};
 pub use print::{PrintError, PrintOptions, PrintedPage};
@@ -112,6 +114,7 @@ pub use style::animation::{AnimationEvent, EventKind, Running as RunningAnimatio
 pub use style::{ColorScheme, MediaType, Preferences};
 
 use dom::{Change, Document, NodeId};
+use image_store::{Decoder, ImageStore};
 use layout::{DocumentLayout, Fragment, FragmentKind, LayoutCache};
 use loader::{Incoming, Network, Page, PageId, Target};
 use navigation::{History, StateId};
@@ -251,6 +254,10 @@ pub struct Engine {
     /// The animation and transition events the last frame queued, with
     /// those queued between it and the frame before (M22.2).
     events: Vec<AnimationEvent>,
+    /// The threads images are read and decoded on (M23).
+    decoder: Decoder,
+    /// The number the next image is given.
+    next_image: u64,
 }
 
 /// A document and everything the engine made from it (M15): what the
@@ -311,6 +318,8 @@ struct Shown {
     /// The elements whose animations gave something new at the last
     /// frame's time, for the style stage to restyle.
     animated: Vec<NodeId>,
+    /// The document's images (M23).
+    images: ImageStore,
 }
 
 impl Shown {
@@ -339,6 +348,7 @@ impl Shown {
             animations: RefCell::new(Animations::new()),
             timeline_origin: None,
             animated: Vec::new(),
+            images: ImageStore::default(),
         }
     }
 }
@@ -444,6 +454,16 @@ struct CachedStyle {
 
 /// The engine's fonts, lent to the cascade for `ex` and `ch`.
 struct FontMeasurer<'a>(&'a text::FontCollection);
+
+/// Whether `change` may change the images the document's `img` elements
+/// show: nodes in or out, a `src`, or an `href` that may be a base URL's.
+fn may_touch_images(change: &Change) -> bool {
+    match change {
+        Change::Inserted { .. } | Change::Removed { .. } | Change::Everything => true,
+        Change::AttributeChanged { name, .. } => matches!(name.as_str(), "src" | "href"),
+        Change::TextChanged { .. } => false,
+    }
+}
 
 /// Whether layout reads `change` whatever the styles: a change of the
 /// document's structure or text, or of a table's spans (M22.4).
@@ -595,6 +615,8 @@ impl Engine {
             stats: FrameStats::default(),
             changed: true,
             events: Vec::new(),
+            decoder: Decoder::new(),
+            next_image: 0,
         }
     }
 
@@ -655,7 +677,9 @@ impl Engine {
     /// an entry still has its state.
     fn leave(&mut self, left: Shown, state: StateId) {
         let aborted = self.network.cancel(left.page.id(), None);
-        if left.salvageable && !aborted && !left.initial {
+        let decoding = self.decoder.busy(left.page.id());
+        self.decoder.forget(left.page.id());
+        if left.salvageable && !aborted && !decoding && !left.initial {
             // What the cache lets go is dropped here.
             drop(self.history.keep(state, Box::new(left)));
         }
@@ -992,7 +1016,92 @@ impl Engine {
         while let Some(arrived) = self.network.take() {
             self.arrived(arrived);
         }
+        while let Some(finished) = self.decoder.take() {
+            self.image_read(finished);
+        }
         self.needs_frame()
+    }
+
+    /// Fetches the images the shown document's `img` elements show that
+    /// are not yet wanted (M23.1). A page with no URL fetches nothing,
+    /// nor does one the browser made.
+    fn request_images(&mut self) {
+        if self.shown.made {
+            return;
+        }
+        let Some(initiator) = self.shown.page.initiator() else {
+            return;
+        };
+        let shown = &mut self.shown;
+        let wanted = shown
+            .images
+            .scan(&shown.document, &shown.page, &mut self.next_image);
+        for url in wanted {
+            let key = url.as_str().to_owned();
+            let request = net::Request::get(url, net::Destination::Image)
+                .initiated_by(initiator.clone())
+                .with_body_limit(images::MAX_IMAGE_BYTES);
+            self.network
+                .fetch(shown.page.id(), Target::Image { url: key }, request);
+        }
+    }
+
+    /// Takes the response to one of the shown document's images: its
+    /// header is read next, off this thread.
+    fn image_arrived(&mut self, page: PageId, url: &str, result: Result<net::Response, LoadError>) {
+        if page != self.shown.page.id() {
+            return;
+        }
+        match self
+            .shown
+            .images
+            .fetched(url, result.ok().map(|response| response.body))
+        {
+            Some(work) => self.decoder.start(page, url.to_owned(), work),
+            None => self.image_changed(url),
+        }
+    }
+
+    /// Takes a decode thread's result for the shown document.
+    fn image_read(&mut self, finished: image_store::Finished) {
+        if finished.page != self.shown.page.id() {
+            return;
+        }
+        let image_store::Finished {
+            url, done, bytes, ..
+        } = finished;
+        if self.shown.images.done(&url, done, Some(bytes)) {
+            self.image_changed(&url);
+        } else {
+            // New pixels to draw; nothing to lay out.
+            self.changed = true;
+        }
+    }
+
+    /// An image's size or brokenness changed: the boxes showing it are
+    /// laid out again.
+    fn image_changed(&mut self, url: &str) {
+        let users = self.shown.images.users(url);
+        if !users.is_empty() {
+            self.shown
+                .layout_cache
+                .invalidate(&self.shown.document, &[], &users);
+            self.shown.layout = None;
+        }
+        self.changed = true;
+        self.update_load_state();
+    }
+
+    /// The pixels of the shown document's image at `url`, if decoded;
+    /// asked for the first time, they are decoded off this thread (M23.5).
+    #[allow(dead_code)]
+    fn image_pixels(&mut self, url: &str) -> Option<std::sync::Arc<images::Image>> {
+        let (pixels, work) = self.shown.images.pixels(url);
+        if let Some(work) = work {
+            self.decoder
+                .start(self.shown.page.id(), url.to_owned(), work);
+        }
+        pixels
     }
 
     /// Applies one fetch's result.
@@ -1006,6 +1115,7 @@ impl Engine {
         match target {
             Target::Document => self.document_arrived(page, result),
             Target::Icon => self.icon_arrived(page, result),
+            Target::Image { url } => self.image_arrived(page, &url, result),
             Target::Sheet { owner, path } => {
                 if page == self.shown.page.id() {
                     if self
@@ -1155,6 +1265,7 @@ impl Engine {
             self.network
                 .fetch(self.shown.page.id(), Target::Icon, request);
         }
+        self.request_images();
         if handling == Handling::Reload {
             // The entry's state has the new document; the old one is
             // gone, not kept.
@@ -1172,6 +1283,7 @@ impl Engine {
         if self.load_state == LoadState::Loading
             && self.navigation.is_none()
             && self.shown.page.settled()
+            && self.shown.images.settled()
         {
             self.load_state = LoadState::Loaded;
         }
@@ -1181,7 +1293,10 @@ impl Engine {
     /// make it, after a document is shown or a load stopped: failed while
     /// an error page is shown.
     fn settle_load_state(&mut self) {
-        self.load_state = if self.navigation.is_some() || !self.shown.page.settled() {
+        self.load_state = if self.navigation.is_some()
+            || !self.shown.page.settled()
+            || !self.shown.images.settled()
+        {
             LoadState::Loading
         } else if let Some(failure) = &self.shown.failure {
             LoadState::Failed(failure.clone())
@@ -1233,7 +1348,9 @@ impl Engine {
     /// Calls `waker`, from a fetch's thread, whenever a fetch finishes:
     /// the shell's way to be woken to call [`Engine::poll_network`].
     pub fn set_waker(&mut self, waker: impl Fn() + Send + Sync + 'static) {
-        self.network.set_waker(std::sync::Arc::new(waker));
+        let waker: loader::Waker = std::sync::Arc::new(waker);
+        self.network.set_waker(waker.clone());
+        self.decoder.set_waker(waker);
     }
 
     /// Fetches from now on with `client`, in place of the one the
@@ -1307,6 +1424,9 @@ impl Engine {
             self.update_load_state();
             sheets = Some(self.shown.page.sheets())
                 .filter(|sheets| sheets != self.shown.stylesheets.sheets());
+        }
+        if changes.iter().any(may_touch_images) {
+            self.request_images();
         }
         // A change layout reads whatever the styles drops the layout now,
         // between frames, as every change did before M22: only the others

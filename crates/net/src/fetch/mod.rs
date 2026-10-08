@@ -111,6 +111,9 @@ pub struct Request {
     pub initiator: Option<Initiator>,
     /// Stops the fetch.
     pub abort: AbortHandle,
+    /// The most the response's body may hold, when less than the
+    /// client's limit: an image's bound (M23).
+    pub body_limit: Option<usize>,
 }
 
 impl Request {
@@ -129,7 +132,19 @@ impl Request {
             },
             initiator: None,
             abort: AbortHandle::new(),
+            body_limit: None,
         }
+    }
+
+    /// The request, its response's body held to `limit` bytes.
+    pub fn with_body_limit(mut self, limit: usize) -> Request {
+        self.body_limit = Some(limit);
+        self
+    }
+
+    /// The body limit of this request under a client's `limit`.
+    fn limit(&self, limit: usize) -> usize {
+        self.body_limit.map_or(limit, |own| own.min(limit))
     }
 
     /// The request, made by `initiator`'s document.
@@ -204,6 +219,10 @@ impl Client {
             if request.abort.is_aborted() {
                 return Err(NetworkError::Aborted);
             }
+            if let Some(upgraded) = upgrade_mixed_content(request, &url) {
+                url = upgraded;
+                *url_list.last_mut().expect("never empty") = url.clone();
+            }
             check(request, &url)?;
             let mut response = self.scheme_fetch(request, &url, method, body.as_deref())?;
             let Some(location) = location(&response, &url)? else {
@@ -239,8 +258,8 @@ impl Client {
     ) -> Result<Response, NetworkError> {
         match url.scheme() {
             "about" => about(url),
-            "data" => data(url),
-            "file" => file::fetch(url, self.body_limit),
+            "data" => data(url, request.limit(self.body_limit)),
+            "file" => file::fetch(url, request.limit(self.body_limit)),
             "http" | "https" => {
                 let headers = request_headers(request.destination);
                 let received = self.transport.exchange(&Exchange {
@@ -253,6 +272,7 @@ impl Client {
                         .as_ref()
                         .map(|initiator| initiator.address_space),
                     abort: &request.abort,
+                    body_limit: request.body_limit,
                 })?;
                 let response = received.response;
                 Ok(Response {
@@ -301,6 +321,23 @@ fn check(request: &Request, url: &Url) -> Result<(), NetworkError> {
         }
     }
     Ok(())
+}
+
+/// Mixed Content section 4.1: an `http:` image of an `https:` page is
+/// fetched over `https:` instead, unless its host is an IP address or
+/// counts as trustworthy already. Other mixed content stays blocked.
+fn upgrade_mixed_content(request: &Request, url: &Url) -> Option<Url> {
+    let initiator = request.initiator.as_ref()?;
+    if request.destination != Destination::Image
+        || initiator.url.scheme() != "https"
+        || url.scheme() != "http"
+        || is_potentially_trustworthy_host(url)
+        || matches!(url.host(), Some(Host::Ipv4(_) | Host::Ipv6(_)))
+    {
+        return None;
+    }
+    // The default port goes with the scheme; another is kept.
+    Url::parse(&format!("https{}", &url.as_str()["http".len()..])).ok()
 }
 
 /// Whether an `http:` URL's host is one Secure Contexts counts as
@@ -369,8 +406,11 @@ fn about(url: &Url) -> Result<Response, NetworkError> {
 }
 
 /// A `data:` URL's body and type.
-fn data(url: &Url) -> Result<Response, NetworkError> {
+fn data(url: &Url, limit: usize) -> Result<Response, NetworkError> {
     let data_url = data_url::process(url).ok_or(NetworkError::DataUrl)?;
+    if data_url.body.len() > limit {
+        return Err(NetworkError::BodyTooLarge);
+    }
     Ok(basic(url, data_url.mime_type, data_url.body))
 }
 

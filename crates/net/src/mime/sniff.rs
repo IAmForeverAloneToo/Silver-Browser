@@ -53,9 +53,13 @@ pub fn computed_type(
     if check_for_apache_bug {
         return text_or_binary(header);
     }
-    // Steps 5 to 8 check an image, audio or video type the engine
-    // supports against that type's signatures. It supports none until
-    // M23 reads images.
+    // Steps 5 to 8: an image type the engine decodes is checked against
+    // the image signatures (M23); it decodes no audio or video.
+    if SUPPORTED_IMAGES.contains(&supplied.essence())
+        && let Some(row) = IMAGE.iter().find(|row| row.matches(header))
+    {
+        return MimeType::known(row.mime_type);
+    }
     supplied.clone()
 }
 
@@ -299,6 +303,9 @@ static OTHER: [Row; 4] = [
 const RIFF_MASK_12: &[u8] = &[
     0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF,
 ];
+
+/// The image types the engine decodes (M23).
+const SUPPORTED_IMAGES: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 
 /// §6.1's table.
 static IMAGE: [Row; 8] = [
@@ -632,12 +639,19 @@ mod tests {
     }
 
     #[test]
-    fn other_supplied_types_stand() {
-        // No image, audio or video type is supported yet, so none is
-        // checked against its signature.
+    fn a_decoded_image_type_is_checked_and_other_types_stand() {
+        // The engine decodes PNG, JPEG, GIF and WebP (M23).
         assert_eq!(
             computed(Some("image/png"), false, false, b"GIF89a"),
+            "image/gif"
+        );
+        assert_eq!(
+            computed(Some("image/png"), false, false, b"no signature"),
             "image/png"
+        );
+        assert_eq!(
+            computed(Some("image/avif"), false, false, b"GIF89a"),
+            "image/avif"
         );
         assert_eq!(
             computed(Some("application/json"), false, false, b"<html>"),

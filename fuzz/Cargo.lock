@@ -168,6 +168,7 @@ dependencies = [
  "dom",
  "encoding",
  "html",
+ "images",
  "layout",
  "net",
  "paint",

@@ -929,3 +929,211 @@ fn every_load_error_says_something() {
         .collect();
     assert_eq!(said, ["timed out", "the fetch's thread failed"]);
 }
+
+// Images (M23.1, M23.5): fetched once, read off the engine's thread,
+// waited for by the load, and decoded when first asked for.
+
+fn png_bytes(width: u32, height: u32) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().unwrap();
+    writer
+        .write_image_data(&vec![200; (width * height * 4) as usize])
+        .unwrap();
+    writer.finish().unwrap();
+    out
+}
+
+fn image_state(engine: &Engine, url: &Url) -> Option<crate::image_store::ImageState> {
+    engine
+        .shown
+        .images
+        .get(url.as_str())
+        .map(|entry| entry.state.clone())
+}
+
+/// Navigates to `url` and takes results until its page is shown and
+/// loaded, images and all.
+fn load_all(tab: &mut Tab, url: Url) {
+    tab.engine.navigate(url.clone());
+    tab.wait_until(|engine| {
+        incoming(engine).is_none()
+            && engine.url() == Some(&url)
+            && engine.load_state() == &LoadState::Loaded
+    });
+}
+
+#[test]
+fn an_image_is_fetched_once_read_and_waited_for() {
+    use crate::image_store::ImageState;
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<body><img src=a.png><img src=a.png><img src=b.png><img src=''><img></body>",
+        )),
+        "/a.png" => Some(Reply::ok("image/png", &png_bytes(4, 3))),
+        "/b.png" => Some(Reply::ok("image/png", &png_bytes(2, 2))),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    load_all(&mut tab, server.url("/page.html"));
+    match image_state(&tab.engine, &server.url("/a.png")) {
+        Some(ImageState::Ready(ready)) => {
+            assert_eq!((ready.header.width, ready.header.height), (4, 3));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(
+        image_state(&tab.engine, &server.url("/b.png")),
+        Some(ImageState::Ready(_))
+    ));
+    // Each URL once.
+    let mut fetched: Vec<String> = server
+        .requests()
+        .into_iter()
+        .map(|request| request.target)
+        .filter(|target| target.ends_with(".png"))
+        .collect();
+    fetched.sort_unstable();
+    assert_eq!(fetched, ["/a.png", "/b.png"]);
+    // An empty `src` fetches nothing, not the page again.
+    let pages = server
+        .requests()
+        .into_iter()
+        .filter(|request| request.target == "/page.html");
+    assert_eq!(pages.count(), 1);
+}
+
+#[test]
+fn what_is_no_image_is_broken() {
+    use crate::image_store::ImageState;
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<body><img src=missing.png><img src=text.png><img src=empty.png>\
+             <img src=picture.svg></body>",
+        )),
+        "/text.png" => Some(html("not an image")),
+        "/empty.png" => Some(Reply::ok("image/png", b"")),
+        "/picture.svg" => Some(Reply::ok(
+            "image/svg+xml",
+            b"<svg xmlns='http://www.w3.org/2000/svg'/>",
+        )),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    load_all(&mut tab, server.url("/page.html"));
+    for path in ["/missing.png", "/text.png", "/empty.png", "/picture.svg"] {
+        assert_eq!(
+            image_state(&tab.engine, &server.url(path)),
+            Some(ImageState::Broken),
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn the_load_waits_for_an_image_whose_arrival_lays_out_again() {
+    let gate = Gate::new();
+    let held = gate.clone();
+    let server = serve(move |path| match path {
+        "/page.html" => Some(html("<body><p>Some text</p><img src=slow.png></body>")),
+        "/slow.png" => {
+            held.wait();
+            Some(Reply::ok("image/png", &png_bytes(3, 3)))
+        }
+        _ => None,
+    });
+    let page = server.url("/page.html");
+    let mut tab = Tab::new();
+    tab.engine.navigate(page.clone());
+    tab.wait_until(|engine| incoming(engine).is_none() && engine.url() == Some(&page));
+    assert_eq!(tab.engine.load_state(), &LoadState::Loading);
+    tab.engine.frame(200, 100);
+    let runs = tab.engine.layout_runs();
+    tab.engine.frame(200, 100);
+    assert_eq!(tab.engine.layout_runs(), runs, "nothing changed yet");
+    gate.open();
+    tab.wait_until(|engine| engine.load_state() == &LoadState::Loaded);
+    tab.engine.frame(200, 100);
+    assert_eq!(tab.engine.layout_runs(), runs + 1);
+}
+
+#[test]
+fn an_img_added_later_is_fetched() {
+    use crate::image_store::ImageState;
+    let server = serve(|path| match path {
+        "/page.html" => Some(html("<body><p>Nothing yet</p></body>")),
+        "/c.png" => Some(Reply::ok("image/png", &png_bytes(5, 1))),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.load(server.url("/page.html"));
+    tab.engine.mutate(|document| {
+        let body = document
+            .subtree(document.root())
+            .find(|&node| document.tag(node) == Some("body"))
+            .unwrap();
+        let img = document.create_element("img").unwrap();
+        document.set_attribute(img, "src", "c.png").unwrap();
+        document.append_child(body, img).unwrap();
+    });
+    let url = server.url("/c.png");
+    tab.wait_until(|engine| matches!(image_state(engine, &url), Some(ImageState::Ready(_))));
+}
+
+#[test]
+fn an_images_pixels_are_decoded_when_first_asked_for() {
+    use crate::image_store::{ImageState, Pixels};
+    let server = serve(|path| match path {
+        "/page.html" => Some(html("<body><img src=a.png></body>")),
+        "/a.png" => Some(Reply::ok("image/png", &png_bytes(4, 3))),
+        _ => None,
+    });
+    let url = server.url("/a.png");
+    let mut tab = Tab::new();
+    load_all(&mut tab, server.url("/page.html"));
+    let pixels = |engine: &Engine| match image_state(engine, &url) {
+        Some(ImageState::Ready(ready)) => ready.pixels,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(pixels(&tab.engine), Pixels::NotDecoded);
+    assert!(tab.engine.image_pixels(url.as_str()).is_none());
+    tab.wait_until(|engine| matches!(pixels(engine), Pixels::Decoded(_)));
+    let image = tab.engine.image_pixels(url.as_str()).expect("decoded");
+    assert_eq!((image.width, image.height, image.frames.len()), (4, 3, 1));
+}
+
+#[test]
+fn a_page_left_while_an_image_decodes_is_not_kept() {
+    let server = serve(|path| match path {
+        "/a.html" => Some(html("<body><img src=a.png></body>")),
+        "/b.html" => Some(html("<body><p>B</p></body>")),
+        "/a.png" => Some(Reply::ok("image/png", &png_bytes(4, 3))),
+        _ => None,
+    });
+    let pages = |server: &TestServer| {
+        let requests = server.requests().into_iter();
+        requests
+            .filter(|request| request.target == "/a.html")
+            .count()
+    };
+    let a = server.url("/a.html");
+    let mut tab = Tab::new();
+    // Left with its image read: kept, and shown again from the cache.
+    load_all(&mut tab, a.clone());
+    load_all(&mut tab, server.url("/b.html"));
+    tab.engine.go_back();
+    tab.wait_until(|engine| engine.url() == Some(&a));
+    assert_eq!(pages(&server), 1);
+    // Left with its pixels being decoded: fetched again.
+    assert!(
+        tab.engine
+            .image_pixels(server.url("/a.png").as_str())
+            .is_none()
+    );
+    load_all(&mut tab, server.url("/b.html"));
+    tab.engine.go_back();
+    tab.wait_until(|engine| engine.url() == Some(&a) && engine.load_state() == &LoadState::Loaded);
+    assert_eq!(pages(&server), 2);
+}

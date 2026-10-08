@@ -15,6 +15,7 @@ css.workspace = true
 dom.workspace = true
 encoding.workspace = true
 html.workspace = true
+images.workspace = true
 layout.workspace = true
 net.workspace = true
 paint.workspace = true
