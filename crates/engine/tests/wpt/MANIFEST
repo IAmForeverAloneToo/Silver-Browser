@@ -30,6 +30,7 @@ checklayout	css/css-flexbox/column-flex-child-with-overflow-scroll.html	.flexbox
 checklayout	css/css-flexbox/column-reverse-gap.html	.flexbox
 checklayout	css/css-flexbox/columns-height-set-via-top-bottom.html	.flexbox
 reftest	css/css-flexbox/content-height-with-scrollbars.html	==css/css-flexbox/reference/content-height-with-scrollbars-ref.html
+reftest	css/css-flexbox/css-flexbox-height-animation-stretch.html	==css/css-flexbox/css-flexbox-height-animation-stretch-ref.html
 reftest	css/css-flexbox/display-flex-001.htm	==css/css-flexbox/reference/align-content-001-ref.html
 reftest	css/css-flexbox/empty-flex-box-and-margin-collapsing.html	==css/css-flexbox/empty-flex-box-and-margin-collapsing-ref.html
 reftest	css/css-flexbox/fixed-table-layout-with-percentage-width-in-flex-item.html	==css/css-flexbox/fixed-table-layout-with-percentage-width-in-flex-item-ref.html
@@ -605,6 +606,7 @@ reftest	css/css-transforms/3d-rendering-context-and-z-ordering-001.html	==css/cs
 reftest	css/css-transforms/3d-rendering-context-and-z-ordering-002.html	==css/css-transforms/transform-lime-square-ref.html
 reftest	css/css-transforms/3dtransform-and-position-sticky-001.html	==css/css-transforms/3dtransform-and-position-sticky-ref.html
 reftest	css/css-transforms/3dtransform-and-position-sticky-002.html	==css/css-transforms/3dtransform-and-position-sticky-ref.html
+reftest	css/css-transforms/animation/rotate-animation-with-will-change-transform-001.html	==css/css-transforms/animation/rotate-animation-with-will-change-transform-001-ref.html
 reftest	css/css-transforms/backface-visibility-001.html	==css/css-transforms/backface-visibility-001.ref.html	fuzzy=:0-1;0-2
 reftest	css/css-transforms/backface-visibility-hidden-002.html	==css/css-transforms/backface-visibility-hidden-002-ref.html
 reftest	css/css-transforms/backface-visibility-hidden-003.html	==css/css-transforms/backface-visibility-hidden-003-ref.html
@@ -641,6 +643,8 @@ reftest	css/css-transforms/css3-transform-rotateY.html	==css/css-transforms/css3
 reftest	css/css-transforms/css3-transform-scale-002.html	==css/css-transforms/css3-transform-scale-ref-002.html
 reftest	css/css-transforms/css3-transform-scale.html	==css/css-transforms/reference/css3-transform-scale-ref.html
 reftest	css/css-transforms/huge-length-tiny-scale.html	==css/css-transforms/huge-length-tiny-scale-ref.html
+reftest	css/css-transforms/individual-transform/animation/individual-transform-combine.html	==css/css-transforms/individual-transform/animation/individual-transform-combine-ref.html
+reftest	css/css-transforms/individual-transform/animation/individual-transform-ordering.html	==css/css-transforms/individual-transform/animation/individual-transform-ordering-ref.html
 reftest	css/css-transforms/individual-transform/individual-transform-1.html	==css/css-transforms/individual-transform/individual-transform-1-ref.html
 reftest	css/css-transforms/individual-transform/individual-transform-2a.html	==css/css-transforms/individual-transform/individual-transform-2-ref.html
 reftest	css/css-transforms/individual-transform/individual-transform-2b.html	==css/css-transforms/individual-transform/individual-transform-2-ref.html
@@ -683,6 +687,7 @@ reftest	css/css-transforms/rotate_45deg.html	==css/css-transforms/rotate_45deg-r
 reftest	css/css-transforms/rotate_x_45deg.html	==css/css-transforms/rotate_x_45deg-ref.html	fuzzy=:0-255;0-200
 reftest	css/css-transforms/rotate_y_45deg.html	==css/css-transforms/rotate_y_45deg-ref.html	fuzzy=:159-255;50-200
 reftest	css/css-transforms/rotated-clip-under-opacity.html	==css/css-transforms/reference/green.html
+reftest	css/css-transforms/scale-animation-with-var-001.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-transforms/scale-optional-second-001.html	==css/css-transforms/reference/scale-optional-second-ref.html
 reftest	css/css-transforms/scale-transform-overlap.html	==css/css-transforms/scale-transform-overlap-ref.html
 reftest	css/css-transforms/scale-zero-001.html	==css/css-transforms/reference/scale-zero-ref.html
@@ -931,6 +936,7 @@ reftest	css/mediaqueries/scripting-print-noscript.html	==css/mediaqueries/script
 reftest	css/mediaqueries/scripting-print-script.html	==css/mediaqueries/scripting-print-script-ref.html
 reftest	css/css-conditional/at-media-001.html	==css/css-conditional/at-supports-001-ref.html
 reftest	css/css-conditional/at-media-002.html	==css/css-conditional/at-supports-001-ref.html
+reftest	css/css-conditional/at-media-content-003.html	==css/css-conditional/at-supports-001-ref.html
 reftest	css/css-conditional/at-media-whitespace-optional-001.html	==css/css-conditional/reference/background-lime.html
 reftest	css/css-conditional/at-media-whitespace-optional-002.html	==css/css-conditional/reference/background-lime.html
 reftest	css/css-conditional/at-supports-001.html	==css/css-conditional/at-supports-001-ref.html
@@ -978,6 +984,7 @@ reftest	css/css-conditional/at-supports-at-rule-003.html	==css/css-conditional/a
 reftest	css/css-conditional/at-supports-at-rule-004.html	==css/css-conditional/at-supports-001-ref.html
 reftest	css/css-conditional/at-supports-at-rule-005.html	==css/css-conditional/at-supports-001-ref.html
 reftest	css/css-conditional/at-supports-at-rule-006.html	==css/css-conditional/at-supports-001-ref.html
+reftest	css/css-conditional/at-supports-content-003.html	==css/css-conditional/at-supports-001-ref.html
 reftest	css/css-conditional/at-supports-font-format-001.html	==css/css-conditional/at-supports-001-ref.html
 reftest	css/css-conditional/at-supports-font-tech-001.html	==css/css-conditional/at-supports-001-ref.html
 reftest	css/css-conditional/at-supports-selector-001.html	==css/css-conditional/at-supports-001-ref.html
@@ -993,8 +1000,10 @@ reftest	css/css-conditional/at-supports-selector-picker.html	==css/css-condition
 reftest	css/css-conditional/at-supports-selector-placeholder.html	==css/css-conditional/at-supports-001-ref.html
 reftest	css/css-conditional/at-supports-selector-webkit-slider-thumb.tentative.html	==css/css-conditional/at-supports-001-ref.html
 crashtest	css/css-conditional/crashtests/supports-malformed.html
+reftest	css/css-cascade/important-prop.html	==css/css-cascade/important-prop-ref.html
 reftest	css/css-cascade/initial-background-color.html	==css/css-cascade/reference/all-green.html
 reftest	css/css-cascade/initial-color-background-001.html	==css/css-cascade/initial-color-background-001-ref.html
+checklayout	css/css-variables/variable-animation-guaranteed-invalid.html	.test
 reftest	css/css-variables/variable-declaration-01.html	==css/css-variables/support/color-green-ref.html
 reftest	css/css-variables/variable-declaration-02.html	==css/css-variables/support/color-green-ref.html
 reftest	css/css-variables/variable-declaration-03.html	==css/css-variables/support/color-green-ref.html
@@ -1072,7 +1081,6 @@ reftest	css/css-variables/variable-reference-26.html	==css/css-variables/support
 reftest	css/css-variables/variable-reference-27.html	==css/css-variables/support/color-green-ref.html
 reftest	css/css-variables/variable-reference-28.html	==css/css-variables/support/color-green-ref.html
 reftest	css/css-variables/variable-reference-29.html	==css/css-variables/support/color-green-ref.html
-reftest	css/css-variables/variable-reference-30.html	==css/css-variables/support/color-green-ref.html
 reftest	css/css-variables/variable-reference-31.html	==css/css-variables/support/color-green-ref.html
 reftest	css/css-variables/variable-reference-33.html	==css/css-variables/support/color-green-ref.html
 reftest	css/css-variables/variable-reference-36.html	==css/css-variables/variable-reference-36-ref.html
@@ -1142,6 +1150,7 @@ reftest	css/css-variables/vars-background-shorthand-001.html	==css/css-variables
 crashtest	css/css-variables/whitespace-in-fallback-crash.html
 reftest	css/css-variables/wide-keyword-fallback-001.html	==css/css-variables/wide-keyword-fallback-001-ref.html
 reftest	css/css-variables/wide-keyword-fallback-002.html	==css/css-variables/wide-keyword-fallback-002-ref.html
+crashtest	css/css-values/animations/scale-interpolation-crash.html
 reftest	css/css-values/attr-color-invalid-cast.html	==css/css-values/reference/200-200-green.html
 reftest	css/css-values/attr-color-valid.html	==css/css-values/reference/200-200-green.html
 reftest	css/css-values/attr-in-max.html	==css/css-values/reference/200-200-green.html
@@ -1188,12 +1197,16 @@ reftest	css/css-values/html-attr-case-insensitivity.html	==css/css-values/html-a
 reftest	css/css-values/max-20-arguments.html	==css/css-values/reference/all-green.html
 reftest	css/css-values/max-length-percent-001.html	==css/css-values/reference/200-200-green.html
 reftest	css/css-values/min-length-percent-001.html	==css/css-values/reference/200-200-green.html
+reftest	css/css-values/min-max-percentage-length-interpolation.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-values/percentage-rem-low.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-values/resolution-with-percentage-without-context.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-values/vh-calc-support-pct.html	==css/css-values/reference/all-green.html
 reftest	css/css-values/vh-calc-support.html	==css/css-values/reference/all-green.html
 reftest	css/css-values/vh-em-inherit.html	==css/css-values/reference/all-green.html
 reftest	css/css-values/vh-inherit.html	==css/css-values/reference/all-green.html
+reftest	css/css-values/vh-interpolate-pct.html	==css/css-values/reference/all-green.html
+reftest	css/css-values/vh-interpolate-px.html	==css/css-values/reference/all-green.html
+reftest	css/css-values/vh-interpolate-vh.html	==css/css-values/reference/all-green.html
 reftest	css/css-values/vh-support-margin.html	==css/css-values/reference/all-green.html
 reftest	css/css-values/vh-support.html	==css/css-values/reference/all-green.html
 reftest	css/css-values/vh-zero-support.html	==css/css-values/reference/all-green.html
@@ -1704,3 +1717,25 @@ reftest	css/CSS2/generated-content/quotes-applies-to-012.xht	==css/reference/pas
 reftest	css/CSS2/generated-content/quotes-applies-to-013.xht	==css/reference/pass_if_pass_below.html
 reftest	css/CSS2/generated-content/quotes-applies-to-014.xht	==css/reference/pass_if_pass_below.html
 reftest	css/CSS2/generated-content/quotes-applies-to-015.xht	==css/reference/pass_if_pass_below.html
+reftest	css/css-animations/animate-font-size-with-margin-override.html	==css/css-animations/animate-font-size-with-margin-override-ref.html
+reftest	css/css-animations/animation-delay-011.html	==css/css-animations/animation-common-ref.html
+reftest	css/css-animations/animation-delay-012.html	==css/reference/ref-filled-green-200px-square.html
+reftest	css/css-animations/animation-duration-infinite.html	==css/css-animations/animation-duration-infinite-ref.html
+reftest	css/css-animations/animation-name-in-nested-shadow.html	==css/css-animations/animation-name-in-nested-shadow-ref.html
+crashtest	css/css-animations/crashtests/inherit.html
+crashtest	css/css-animations/crashtests/keyframe-timing-function-unset.html
+crashtest	css/css-animations/crashtests/pseudo-element-animation-with-color.html
+crashtest	css/css-animations/crashtests/servo-bug-45008.html
+crashtest	css/css-animations/crashtests/transform-css-animation-squash.html
+crashtest	css/css-animations/crashtests/universal-selector-opacity-inherit.html
+crashtest	css/css-animations/crashtests/update-delay-of-paused-animation.html
+reftest	css/css-animations/inheritance-pseudo-element.html	==css/css-animations/inheritance-pseudo-element-ref.html
+crashtest	css/css-animations/neutral-var-keyframe-cycle-crash.html
+reftest	css/css-animations/transform-animation-under-large-scale.html	==css/css-animations/transform-animation-under-large-scale-ref.html
+reftest	css/css-animations/translation-animation-on-important-property.html	==css/css-animations/translation-animation-on-important-property-ref.html
+reftest	css/css-animations/translation-animation-subpixel-offset.html	==css/css-animations/translation-animation-subpixel-offset-ref.html
+reftest	css/css-transitions/render-blocking/no-transition-from-ua-to-blocking-stylesheet.html	==css/css-transitions/render-blocking/no-transition-from-ua-to-blocking-stylesheet-ref.html
+checklayout	css/css-easing/step-jump-both.html	.test
+checklayout	css/css-easing/step-jump-end.html	.test
+checklayout	css/css-easing/step-jump-none.html	.test
+checklayout	css/css-easing/step-jump-start.html	.test

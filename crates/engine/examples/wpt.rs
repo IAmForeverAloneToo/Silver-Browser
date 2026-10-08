@@ -1,8 +1,9 @@
 //! The web-platform-tests subset the engine runs (M17, T1.1; its grid
 //! tests M18's, its transforms tests M19's, its media queries,
-//! conditional rules and cascade tests M20's, and its tests of custom
+//! conditional rules and cascade tests M20's, its tests of custom
 //! properties, values, lists, counters, generated content, decoration
-//! and alignment M21's).
+//! and alignment M21's, and its animation, transition and easing tests
+//! M22's).
 //!
 //! `cargo run -p engine --example wpt -- pull <checkout>` reads a
 //! checkout of web-platform-tests and copies into `tests/wpt/` the tests
@@ -25,11 +26,13 @@
 //!   `var()`, `env()` or `attr()` among them as the cascade takes them
 //!   (M21); and no
 //!   at-rule but `@charset`, `@import`, whose sheet is on the checkout
-//!   and held to the rule too, and `@media`, `@supports` and `@layer`
+//!   and held to the rule too, `@media`, `@supports` and `@layer`
 //!   (M20), the rules inside them held to it as well but for those in an
 //!   `@supports` block whose condition is false here, which the cascade
-//!   drops whatever they hold: so no `@font-face`, no `@container`, and
-//!   no rule inside a style rule;
+//!   drops whatever they hold, and `@keyframes` and `@-webkit-keyframes`
+//!   (M22), each keyframe's declarations held to it as a style rule's
+//!   are: so no `@font-face`, no `@container`, and no rule inside a
+//!   style rule;
 //! - no Ahem font, no `dir=rtl`, and only the `data-*` expectations the
 //!   runner checks;
 //! - in an XHTML file, which this engine reads with its HTML parser (M15),
@@ -69,6 +72,9 @@ const DIRECTORIES: &[&str] = &[
     "css/css-text/text-justify",
     "css/CSS2/lists",
     "css/CSS2/generated-content",
+    "css/css-animations",
+    "css/css-transitions",
+    "css/css-easing",
 ];
 
 /// How deep `@import`s may go; the engine fetches no deeper.
@@ -652,6 +658,20 @@ fn rules_supported(
                     rules_supported(checkout, at, inner, depth, needs)?;
                 }
             }
+            // A keyframe whose selector or a rule whose name does not
+            // parse is dropped by the draft, as the cascade drops it.
+            "keyframes" | "-webkit-keyframes" => {
+                for keyframe in inner {
+                    match keyframe {
+                        css::Rule::Qualified(keyframe) => {
+                            declarations_supported(&keyframe.declarations)?;
+                        }
+                        css::Rule::At(rule) => {
+                            return Err(format!("@{} in @{name}", rule.name.to_ascii_lowercase()));
+                        }
+                    }
+                }
+            }
             _ => return Err(format!("@{name}")),
         }
     }
@@ -932,8 +952,14 @@ mod tests {
                 "@container",
             ),
             (
-                reftest("<style>@media all { @keyframes k { } }</style>"),
-                "@keyframes",
+                reftest(
+                    "<style>@media all { @keyframes k { to { writing-mode: vertical-rl } } }</style>",
+                ),
+                "declaration of writing-mode",
+            ),
+            (
+                reftest("<style>@keyframes k { @media all { } }</style>"),
+                "@media in @keyframes",
             ),
             (
                 reftest("<style>@media all { .a { writing-mode: vertical-rl } }</style>"),
@@ -1056,6 +1082,29 @@ mod tests {
                 .map(String::from)
             )
         );
+    }
+
+    #[test]
+    fn the_rule_takes_keyframes_animations_and_transitions() {
+        // M22: `@keyframes` and `@-webkit-keyframes`, their keyframes'
+        // declarations held to the rule; a keyframe the draft drops, its
+        // selector not parsing, is taken as the cascade drops it.
+        let checkout = Checkout::new(
+            "animations",
+            &[
+                (
+                    "css/x/t.html",
+                    "<link rel=match href=r.html><style>\
+                     @keyframes k { from { opacity: 0; --x: 1 } 50% { animation-timing-function: \
+                     steps(2) } to { translate: 10px !important } 120% { color: red } }\
+                     @-webkit-keyframes w { to { margin-left: 5px } }\
+                     .a { animation: k 1s -0.5s paused; transition: margin 1s ease-in-out }\
+                     </style>",
+                ),
+                ("css/x/r.html", "<div></div>"),
+            ],
+        );
+        assert!(checkout.take("css/x/t.html").is_ok());
     }
 
     #[test]

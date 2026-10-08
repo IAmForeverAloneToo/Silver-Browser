@@ -8,7 +8,7 @@ under its BSD licence (`LICENSE.md` beside this file), at commit
 dc7f6a3c0000e1da9e575ff4ef5618cff136697b (2026-10-03)
 ```
 
-They are the tests of `css/css-flexbox`, `css/css-grid`, `css/css-transforms`, `css/css-will-change`, `css/mediaqueries`, `css/css-conditional`, `css/css-cascade`, `css/css-variables`, `css/css-values`, `css/css-env`, `css/css-lists`, `css/css-counter-styles`, `css/css-content`, `css/css-text-decor`, `css/css-text/text-align`, `css/css-text/text-justify`, `css/CSS2/lists` and `css/CSS2/generated-content`
+They are the tests of `css/css-flexbox`, `css/css-grid`, `css/css-transforms`, `css/css-will-change`, `css/mediaqueries`, `css/css-conditional`, `css/css-cascade`, `css/css-variables`, `css/css-values`, `css/css-env`, `css/css-lists`, `css/css-counter-styles`, `css/css-content`, `css/css-text-decor`, `css/css-text/text-align`, `css/css-text/text-justify`, `css/CSS2/lists`, `css/CSS2/generated-content`, `css/css-animations`, `css/css-transitions` and `css/css-easing`
 that use only what this engine has, chosen by the rule in
 `examples/wpt.rs` and copied with their references and stylesheets
 at their own paths by
@@ -24,10 +24,10 @@ them; `expectations.txt` names those expected to fail, and why.
 
 | Kind | Tests |
 | --- | ---: |
-| checklayout | 41 |
-| crashtest | 32 |
-| reftest | 1630 |
-| all | 1703 |
+| checklayout | 46 |
+| crashtest | 41 |
+| reftest | 1651 |
+| all | 1738 |
 
 ## Left out
 
@@ -35,53 +35,52 @@ The first reason the rule found for each test it left out:
 
 | Reason | Tests |
 | --- | ---: |
-| script | 1154 |
+| script | 1429 |
 | missing file fonts/ahem.css | 774 |
 | declaration of font | 704 |
 | declaration of display | 494 |
 | CDATA section in XHTML | 378 |
-| element <svg> | 326 |
-| declaration of line-height | 216 |
+| element <svg> | 328 |
+| declaration of line-height | 217 |
 | declaration of writing-mode | 201 |
-| not a reftest, a check-layout test or a crashtest | 191 |
-| script (reftest-wait) | 136 |
+| not a reftest, a check-layout test or a crashtest | 198 |
+| script (reftest-wait) | 155 |
 | element <img> | 134 |
 | element <br> | 93 |
 | declaration of direction | 86 |
 | declaration of white-space | 77 |
 | declaration of container-type | 66 |
+| declaration of background | 50 |
 | @font-face | 47 |
-| declaration of background | 47 |
 | element <canvas> | 47 |
 | declaration of font-variant-numeric | 43 |
 | declaration of outline | 41 |
 | self-closing <div/> in XHTML | 40 |
+| declaration of background-image | 38 |
 | declaration of flex-wrap | 38 |
 | declaration of aspect-ratio | 35 |
-| declaration of background-image | 35 |
-| @keyframes | 34 |
+| element <input> | 34 |
 | @counter-style | 33 |
-| element <input> | 32 |
 | dir=rtl | 31 |
+| element <iframe> | 30 |
 | declaration of visibility | 29 |
 | missing file css/CSS2/reference/pass-if-number-0-30px.xht | 28 |
-| element <iframe> | 27 |
+| declaration of transform | 27 |
+| @property | 26 |
 | declaration of grid-template-rows | 26 |
 | declaration of inline-size | 26 |
-| declaration of transform | 26 |
+| declaration of background-color | 25 |
+| selector | 24 |
 | @scope | 23 |
+| declaration of color | 23 |
 | nested rule | 23 |
 | @container | 22 |
-| @property | 21 |
 | declaration of grid-template-columns | 21 |
-| selector | 21 |
-| declaration of background-color | 19 |
-| declaration of color | 18 |
+| declaration of width | 18 |
 | declaration of overflow-y | 16 |
 | declaration of text-shadow | 16 |
-| declaration of width | 16 |
 | declaration of block-size | 13 |
-| declaration of fill | 12 |
+| declaration of fill | 13 |
 | declaration of text-decoration-inset | 12 |
 | declaration of align-self | 11 |
 | declaration of height | 11 |
@@ -90,13 +89,12 @@ The first reason the rule found for each test it left out:
 | declaration of overflow-x | 10 |
 | declaration of text-decoration-skip-spaces | 10 |
 | declaration of text-emphasis | 10 |
-| declaration of transition | 10 |
 | @namespace | 9 |
-| declaration of animation | 9 |
 | declaration of text-decoration-skip-ink | 9 |
 | unchecked attribute data-foo | 9 |
 | declaration of break-after | 7 |
 | declaration of contain | 7 |
+| declaration of filter | 7 |
 | declaration of grid-template | 7 |
 | element <button> | 7 |
 | declaration of columns | 6 |
@@ -105,47 +103,53 @@ The first reason the rule found for each test it left out:
 | unchecked attribute data-val | 6 |
 | declaration of --a | 5 |
 | declaration of break-before | 5 |
-| declaration of filter | 5 |
 | declaration of overflow | 5 |
 | declaration of background-clip | 4 |
+| declaration of border-radius | 4 |
+| declaration of clip-path | 4 |
+| declaration of column-width | 4 |
+| declaration of font-weight | 4 |
+| declaration of inset | 4 |
 | declaration of min-width | 4 |
 | declaration of scrollbar-gutter | 4 |
 | declaration of scrollbar-width | 4 |
 | declaration of text-indent | 4 |
+| declaration of z-index | 4 |
 | self-closing <canvas/> in XHTML | 4 |
+| @starting-style | 3 |
 | declaration of appearance | 3 |
-| declaration of border-radius | 3 |
 | declaration of box-shadow | 3 |
-| declaration of clip-path | 3 |
-| declaration of column-width | 3 |
 | declaration of container-name | 3 |
 | declaration of content | 3 |
 | declaration of flex-line-count | 3 |
-| declaration of font-weight | 3 |
-| declaration of inset | 3 |
 | declaration of min-height | 3 |
 | declaration of padding-inline-start | 3 |
 | declaration of text-orientation | 3 |
 | declaration of transform-origin | 3 |
-| declaration of transition-property | 3 |
-| declaration of z-index | 3 |
 | element <math> | 3 |
 | element <select> | 3 |
 | declaration of -webkit-text-fill-color | 2 |
-| declaration of animation-timing-function | 2 |
 | declaration of border-top-left-radius | 2 |
 | declaration of flex-basis | 2 |
 | declaration of flex-grow | 2 |
 | declaration of flex-shrink | 2 |
 | declaration of float | 2 |
+| declaration of font-size | 2 |
 | declaration of margin-block-end | 2 |
+| declaration of margin-top | 2 |
 | declaration of order | 2 |
 | declaration of padding-left | 2 |
+| declaration of scrollbar-color | 2 |
 | declaration of text-decoration-line | 2 |
 | declaration of text-emphasis-style | 2 |
 | declaration of text-overflow | 2 |
+| declaration of text-size-adjust | 2 |
 | declaration of unicode-bidi | 2 |
+| declaration of zoom | 2 |
 | element <details> | 2 |
+| element <dialog> | 2 |
+| element <marquee> | 2 |
+| element <object> | 2 |
 | element <textarea> | 2 |
 | missing file css/CSS2/reference/no-red-on-blank-page-ref.xht | 2 |
 | missing file css/css-transforms/about:blank | 2 |
@@ -154,16 +158,25 @@ The first reason the rule found for each test it left out:
 | self-closing <textarea/> in XHTML | 2 |
 | self-closing <video/> in XHTML | 2 |
 | unchecked attribute data-color | 2 |
+| unchecked attribute data-expected | 2 |
 | unchecked attribute data-marker | 2 |
+| unchecked attribute data-section-title | 2 |
 | @custom-media | 1 |
 | @page | 1 |
+| @position-try | 1 |
 | declaration of -- | 1 |
 | declaration of --prop | 1 |
 | declaration of --var | 1 |
 | declaration of --w | 1 |
 | declaration of -webkit-appearance | 1 |
+| declaration of -webkit-filter | 1 |
+| declaration of -webkit-perspective-origin-y | 1 |
+| declaration of -webkit-writing-mode | 1 |
 | declaration of accent-color | 1 |
 | declaration of align-items | 1 |
+| declaration of anchor-name | 1 |
+| declaration of animation-name | 1 |
+| declaration of background-size | 1 |
 | declaration of border-block | 1 |
 | declaration of border-image | 1 |
 | declaration of border-inline | 1 |
@@ -174,8 +187,11 @@ The first reason the rule found for each test it left out:
 | declaration of expando | 1 |
 | declaration of flex-direction | 1 |
 | declaration of font-feature-settings | 1 |
-| declaration of font-size | 1 |
+| declaration of font-size-adjust | 1 |
+| declaration of font-style | 1 |
 | declaration of font-variant | 1 |
+| declaration of font-variation-settings | 1 |
+| declaration of foo | 1 |
 | declaration of grid | 1 |
 | declaration of grid-column-start | 1 |
 | declaration of grid-row | 1 |
@@ -185,25 +201,32 @@ The first reason the rule found for each test it left out:
 | declaration of list-style-position | 1 |
 | declaration of margin | 1 |
 | declaration of margin-inline | 1 |
+| declaration of marker | 1 |
 | declaration of max-width | 1 |
 | declaration of mix-blend-mode | 1 |
 | declaration of padding-block-end | 1 |
 | declaration of perspective | 1 |
 | declaration of pointer-events | 1 |
-| declaration of scrollbar-color | 1 |
+| declaration of rotate | 1 |
+| declaration of scale | 1 |
 | declaration of stroke-dasharray | 1 |
 | declaration of text-align | 1 |
 | declaration of text-autospace | 1 |
 | declaration of text-decoration | 1 |
 | declaration of text-decoration-skip | 1 |
+| declaration of top | 1 |
+| declaration of transition-delay | 1 |
+| declaration of transition-duration | 1 |
+| declaration of transition-properties | 1 |
+| declaration of transition-timing-function | 1 |
+| declaration of translate | 1 |
 | declaration of var-a | 1 |
 | declaration of will-change | 1 |
 | declaration of xcolor | 1 |
-| declaration of zoom | 1 |
 | element <audio> | 1 |
 | element <frameset> | 1 |
 | element <hr> | 1 |
-| element <marquee> | 1 |
+| element <output> | 1 |
 | element <video> | 1 |
 | missing file css/CSS2/reference/ref-nothing-below.xht | 1 |
 | missing file css/css-cascade/data:text/css,@layer foo;@media(all){} | 1 |
@@ -214,7 +237,6 @@ The first reason the rule found for each test it left out:
 | self-closing <param/> in XHTML | 1 |
 | unchecked attribute data-bar | 1 |
 | unchecked attribute data-crash | 1 |
-| unchecked attribute data-expected | 1 |
 | unchecked attribute data-expected-left | 1 |
 | unchecked attribute data-expected-padding-left | 1 |
 | unchecked attribute data-expected-scroll-height | 1 |
