@@ -32,6 +32,10 @@ impl fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+/// The timing model of Web Animations (M22): an animation effect's
+/// phase, iteration and progress at a time.
+pub mod animation;
+
 /// Animating the properties (M22): their animation types, and their
 /// computed values copied, compared and interpolated.
 pub mod animate;
@@ -68,6 +72,10 @@ pub mod easing;
 /// Style invalidation (M13.1): which elements a change to a document
 /// can restyle.
 pub mod invalidation;
+
+/// `@keyframes` rules (M22): their names, selectors and keyframes,
+/// processed apart from any element.
+mod keyframes;
 
 /// Media queries (M20): the environment a document is styled for, and
 /// query lists parsed from tokens and evaluated against it.

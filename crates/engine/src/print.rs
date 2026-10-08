@@ -20,6 +20,8 @@
 //! the viewport units measuring the area rounded down, and each page is
 //! drawn clipped to its area as it is (see [`PageBox::layout_area`]).
 
+use std::cell::RefCell;
+
 use dom::Document;
 use paint::{DisplayItem, DisplayList, GroupKey, Viewport, paint_fragments_in};
 use render::RenderBackend;
@@ -144,6 +146,10 @@ impl Engine {
         // area and a viewport unit was used.
         let initial = style::ComputedStyle::default().font_size_px;
         let mut first_box = page_box(initial, first);
+        // The screen's animations as they stand at the timeline's time
+        // (M22): the print starts none of the screen's, and draws one
+        // only its own styles name at its start.
+        let animations = RefCell::new(self.shown.animations.borrow().clone());
         let context = |page_box: &PageBox| {
             let (width, height) = page_box.viewport();
             CascadeContext {
@@ -152,6 +158,7 @@ impl Engine {
                 fonts: Some(&fonts),
                 language: self.shown.page.language(),
                 media,
+                animations: Some(&animations),
             }
         };
         let mut styles = sheets.cascade(document, &context(&first_box));
@@ -364,6 +371,42 @@ mod tests {
             style.expect("styled").background_color,
             style::computed::Color::rgb8(0, 0, 255)
         );
+    }
+
+    #[test]
+    fn a_print_shows_the_screens_animations_at_the_timelines_time() {
+        // The first box's animation has ended at the time of the print,
+        // filled forwards; the second box's animation only the print
+        // styles name, drawn at its start; the third box's is the
+        // screen's, paused half way.
+        let mut e = engine(
+            "<style>body { margin: 0 } @page { margin: 0 }
+             div { width: 40px; height: 40px; background: #f00 }
+             @keyframes in { from { margin-left: 0px } to { margin-left: 200px } }
+             @keyframes off { from { margin-left: 300px } to { margin-left: 0px } }
+             .a { animation: in 1s linear forwards }
+             .c { animation: in 1s linear -0.5s paused }
+             @media print { .b { animation: off 1s linear } }</style>
+             <div class=a></div><div class=b></div><div class=c></div>",
+        );
+        let at_time = |e: &mut Engine, ms: u64| {
+            e.frame_at(
+                200,
+                100,
+                crate::FrameTime::at(std::time::Duration::from_millis(ms)),
+            );
+        };
+        at_time(&mut e, 0);
+        at_time(&mut e, 2000);
+        let animations = e.shown.animations.borrow().len();
+        let pages = e.print_pages(&small()).expect("printed");
+        assert_eq!(at(&pages[0], 220.0, 20.0), RED);
+        assert_eq!(at(&pages[0], 20.0, 20.0), WHITE);
+        assert_eq!(at(&pages[0], 320.0, 60.0), RED);
+        assert_eq!(at(&pages[0], 120.0, 100.0), RED);
+        // The screen's animations are as they were.
+        assert_eq!(e.shown.animations.borrow().len(), animations);
+        assert!(!e.needs_frame());
     }
 
     #[test]

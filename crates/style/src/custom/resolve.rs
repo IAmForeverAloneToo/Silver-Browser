@@ -224,13 +224,15 @@ enum Waiting {
 /// What a frame gave the one under it.
 enum Returned {
     /// A run's tokens and their weight, or `None` for the
-    /// guaranteed-invalid value.
-    Value(Option<(Vec<Token>, usize)>),
+    /// guaranteed-invalid value, and whether it substituted an
+    /// animation-tainted value.
+    Value(Option<(Vec<Token>, usize)>, bool),
     /// A custom property computed, which the frame under reads.
     Property,
     /// An attribute's value, substituted and matching its syntax, and its
-    /// weight; `None` when it failed.
-    Attribute(Option<(Vec<Token>, usize)>),
+    /// weight; `None` when it failed; and whether it substituted an
+    /// animation-tainted value.
+    Attribute(Option<(Vec<Token>, usize)>, bool),
 }
 
 /// Tokens being substituted: a run of a source's from `pos` to `end`, and
@@ -244,6 +246,8 @@ struct Run {
     /// Set once the run has met the guaranteed-invalid value; the rest of
     /// it is still read, for the cycles in it, but not kept.
     invalid: bool,
+    /// Set once it has substituted an animation-tainted value (M22).
+    tainted: bool,
     waiting: Option<Waiting>,
 }
 
@@ -256,6 +260,7 @@ impl Run {
             out: Vec::new(),
             weight: 0,
             invalid: false,
+            tainted: false,
             waiting: None,
         }
     }
@@ -340,6 +345,13 @@ pub(super) struct Resolver<'t, 's> {
     /// Their names, by their places.
     names: Vec<&'t str>,
     pub(super) states: Vec<State<'t>>,
+    /// Whether each is animation-tainted (M22): an animation's, or once
+    /// computed, one that substituted a tainted value.
+    pub(super) taints: Vec<bool>,
+    /// Whether the value substituted is a property's that is not
+    /// animatable, where a `var()` of a tainted custom property is the
+    /// guaranteed-invalid value (Variables 1 §3).
+    pub(super) forbid_tainted: bool,
     /// The contexts guarded, the newest last.
     guards: Vec<Guard>,
     inherited: Option<&'s CustomProperties>,
@@ -359,10 +371,13 @@ impl<'t, 's> Resolver<'t, 's> {
         substitutions: &'s Substitutions,
     ) -> Self {
         let own = names.iter().enumerate().map(|(i, &n)| (n, i)).collect();
+        let taints = vec![false; states.len()];
         Resolver {
             own,
             names,
             states,
+            taints,
+            forbid_tainted: false,
             guards: Vec::new(),
             inherited,
             attributes,
@@ -450,11 +465,11 @@ impl<'t, 's> Resolver<'t, 's> {
                         stack.push(Frame::Property(index));
                         stack.push(Frame::Value(Run::new(sources.len() - 1, 0, tokens.len())));
                     }
-                    Some(Returned::Value(value)) => {
+                    Some(Returned::Value(value, tainted)) => {
                         let cyclic = self.unguard();
                         let value = value
                             .filter(|_| !cyclic)
-                            .and_then(|(tokens, _)| self.settle(index, tokens));
+                            .and_then(|(tokens, _)| self.settle(index, tokens, tainted));
                         self.states[index] = State::Done(value);
                         returned = Some(Returned::Property);
                     }
@@ -470,7 +485,7 @@ impl<'t, 's> Resolver<'t, 's> {
                         );
                         if let Some(place) = again {
                             self.cycle_to(place);
-                            returned = Some(Returned::Attribute(None));
+                            returned = Some(Returned::Attribute(None, false));
                             continue;
                         }
                         let value = self.attribute(&typed.name).unwrap_or_default();
@@ -479,7 +494,7 @@ impl<'t, 's> Resolver<'t, 's> {
                         // whose own functions are invalid, parses as no
                         // syntax.
                         if !check(&tokens) {
-                            returned = Some(Returned::Attribute(None));
+                            returned = Some(Returned::Attribute(None, false));
                             continue;
                         }
                         let len = tokens.len();
@@ -488,11 +503,11 @@ impl<'t, 's> Resolver<'t, 's> {
                         stack.push(Frame::Attribute(typed));
                         stack.push(Frame::Value(Run::new(sources.len() - 1, 0, len)));
                     }
-                    Some(Returned::Value(value)) => {
+                    Some(Returned::Value(value, tainted)) => {
                         let cyclic = self.unguard();
                         let value =
                             value.filter(|(tokens, _)| !cyclic && typed.syntax.matches(tokens));
-                        returned = Some(Returned::Attribute(value));
+                        returned = Some(Returned::Attribute(value, tainted));
                     }
                     Some(_) => unreachable!("an attribute waits for its value"),
                 },
@@ -501,34 +516,42 @@ impl<'t, 's> Resolver<'t, 's> {
                         stack.push(Frame::Value(run));
                         stack.push(child);
                     }
-                    None => returned = Some(Returned::Value(run.finish())),
+                    None => {
+                        let tainted = run.tainted;
+                        returned = Some(Returned::Value(run.finish(), tainted));
+                    }
                 },
             }
         }
         match returned {
-            Some(Returned::Value(value)) => value.map(|(tokens, _)| tokens),
+            Some(Returned::Value(value, _)) => value.map(|(tokens, _)| tokens),
             _ => None,
         }
     }
 
     /// The computed value of the element's custom property at `index`,
-    /// whose declared value substituted to `tokens`. A lone CSS-wide
-    /// keyword is that keyword, as if it were declared (Values 5 Appendix
-    /// A): `initial` the guaranteed-invalid value, `inherit` and `unset`
-    /// the inherited value. `revert` and `revert-layer`, which the
-    /// cascade does not know (G7), are `unset`, which is what they give a
-    /// custom property no stylesheet of an earlier origin declares.
-    fn settle(&self, index: usize, tokens: Vec<Token>) -> Option<Arc<[Token]>> {
-        let inherited = || {
-            self.inherited
-                .and_then(|m| m.get(self.names[index]))
-                .cloned()
+    /// whose declared value substituted to `tokens`, `tainted` when it
+    /// substituted an animation-tainted value, which taints it. A lone
+    /// CSS-wide keyword is that keyword, as if it were declared (Values 5
+    /// Appendix A): `initial` the guaranteed-invalid value, `inherit` and
+    /// `unset` the inherited value, tainted as the parent's is or the
+    /// declaration is. `revert` and `revert-layer`, which the cascade
+    /// does not know (G7), are `unset`, which is what they give a custom
+    /// property no stylesheet of an earlier origin declares.
+    fn settle(&mut self, index: usize, tokens: Vec<Token>, tainted: bool) -> Option<Arc<[Token]>> {
+        let name = self.names[index];
+        let inherited = |resolver: &mut Self| {
+            resolver.taints[index] |= resolver.inherited.is_some_and(|m| m.is_tainted(name));
+            resolver.inherited.and_then(|m| m.get(name)).cloned()
         };
         match css_wide_keyword(&tokens) {
             Some(CssWide::Initial) => None,
-            Some(CssWide::Inherit | CssWide::Unset) => inherited(),
-            None if is_revert(&tokens) => inherited(),
-            None => Some(tokens.into()),
+            Some(CssWide::Inherit | CssWide::Unset) => inherited(self),
+            None if is_revert(&tokens) => inherited(self),
+            None => {
+                self.taints[index] |= tainted;
+                Some(tokens.into())
+            }
         }
     }
 
@@ -601,7 +624,8 @@ impl<'t, 's> Resolver<'t, 's> {
     /// Resumes the run with what the frame it waited for `returned`.
     fn resume(&mut self, run: &mut Run, returned: Returned) -> Option<Frame> {
         match (run.waiting.take(), returned) {
-            (Some(Waiting::Name { end, fallback }), Returned::Value(value)) => {
+            (Some(Waiting::Name { end, fallback }), Returned::Value(value, tainted)) => {
+                run.tainted |= tainted;
                 match value
                     .as_ref()
                     .and_then(|(tokens, _)| custom_property_name(tokens))
@@ -621,23 +645,29 @@ impl<'t, 's> Resolver<'t, 's> {
                 let State::Done(value) = &self.states[index] else {
                     unreachable!("the property waited for is computed")
                 };
-                let value = value.clone();
+                let value = self.untainted(run, value.clone(), self.taints[index]);
                 self.replace(run, value, end, fallback)
             }
-            (Some(Waiting::AttrName { end, fallback }), Returned::Value(value)) => match value {
-                Some((tokens, _)) => self.attr(run, &tokens, end, fallback),
-                None => self.attr_failed(run, end, fallback, true),
-            },
-            (Some(Waiting::Attribute { end, fallback }), Returned::Attribute(value)) => match value
-            {
-                Some((tokens, weight)) => {
-                    run.append(tokens, weight);
-                    run.pos = end + 1;
-                    None
+            (Some(Waiting::AttrName { end, fallback }), Returned::Value(value, tainted)) => {
+                run.tainted |= tainted;
+                match value {
+                    Some((tokens, _)) => self.attr(run, &tokens, end, fallback),
+                    None => self.attr_failed(run, end, fallback, true),
                 }
-                None => self.attr_failed(run, end, fallback, true),
-            },
-            (Some(Waiting::Fallback { end }), Returned::Value(value)) => {
+            }
+            (Some(Waiting::Attribute { end, fallback }), Returned::Attribute(value, tainted)) => {
+                match value {
+                    Some((tokens, weight)) => {
+                        run.tainted |= tainted;
+                        run.append(tokens, weight);
+                        run.pos = end + 1;
+                        None
+                    }
+                    None => self.attr_failed(run, end, fallback, true),
+                }
+            }
+            (Some(Waiting::Fallback { end }), Returned::Value(value, tainted)) => {
+                run.tainted |= tainted;
                 match value {
                     Some((tokens, weight)) => run.append(tokens, weight),
                     None => run.fail(),
@@ -673,11 +703,34 @@ impl<'t, 's> Resolver<'t, 's> {
                     self.cycle_to(place);
                     None
                 }
-                State::Done(value) => value.clone(),
+                State::Done(value) => self.untainted(run, value.clone(), self.taints[index]),
             },
-            None => self.inherited.and_then(|m| m.get(name)).cloned(),
+            None => {
+                let value = self.inherited.and_then(|m| m.get(name)).cloned();
+                let tainted = self.inherited.is_some_and(|m| m.is_tainted(name));
+                self.untainted(run, value, tainted)
+            }
         };
         self.replace(run, value, end, fallback)
+    }
+
+    /// A `var()`'s custom property's `value`, `tainted` when it is
+    /// animation-tainted: the guaranteed-invalid value in a property that
+    /// is not animatable (Variables 1 §3), and otherwise the value, which
+    /// taints the run.
+    fn untainted(
+        &self,
+        run: &mut Run,
+        value: Option<Arc<[Token]>>,
+        tainted: bool,
+    ) -> Option<Arc<[Token]>> {
+        if tainted && value.is_some() {
+            if self.forbid_tainted {
+                return None;
+            }
+            run.tainted = true;
+        }
+        value
     }
 
     /// Replaces the `attr()` ending at `end` whose first argument,

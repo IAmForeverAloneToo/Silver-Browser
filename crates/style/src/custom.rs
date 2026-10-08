@@ -149,6 +149,10 @@ pub struct CustomProperties {
     /// whose winning custom property declarations are the same ones may
     /// share it (see [`Substitutions::compute`]).
     declared: Option<Declared>,
+    /// The names whose values are animation-tainted (Variables 1 §2,
+    /// M22): an animation's, or one that substituted such a value,
+    /// sorted; `None` when there is none, as nearly always.
+    tainted: Option<Arc<[Arc<str>]>>,
 }
 
 /// The winning custom property declarations of an element, by their
@@ -166,6 +170,7 @@ impl Default for CustomProperties {
             branches: [const { None }; FANOUT],
             len: 0,
             declared: None,
+            tainted: None,
         }
     }
 }
@@ -199,6 +204,39 @@ impl CustomProperties {
             .flat_map(|branch| branch.iter().flatten())
             .flat_map(|leaf| leaf.iter())
             .map(|(name, value)| (&**name, &**value))
+    }
+
+    /// Whether the value of `name` is animation-tainted (Variables 1 §2):
+    /// an animation's, or one that substituted such a value. A `var()`
+    /// of it in a property that is not animatable is the
+    /// guaranteed-invalid value (§3).
+    pub fn is_tainted(&self, name: &str) -> bool {
+        self.tainted
+            .as_deref()
+            .is_some_and(|names| names.binary_search_by(|n| (**n).cmp(name)).is_ok())
+    }
+
+    /// Whether any value is animation-tainted.
+    pub(crate) fn has_taint(&self) -> bool {
+        self.tainted.is_some()
+    }
+
+    /// Marks the value of `name` animation-tainted, or not.
+    fn set_tainted(&mut self, name: &str, tainted: bool) {
+        let names = self.tainted.as_deref().unwrap_or_default();
+        match (names.binary_search_by(|n| (**n).cmp(name)), tainted) {
+            (Ok(index), false) => {
+                let mut names = names.to_vec();
+                names.remove(index);
+                self.tainted = (!names.is_empty()).then(|| names.into());
+            }
+            (Err(index), true) => {
+                let mut names = names.to_vec();
+                names.insert(index, Arc::from(name));
+                self.tainted = Some(names.into());
+            }
+            _ => {}
+        }
     }
 
     /// Gives `name` the value `value`.
@@ -268,6 +306,7 @@ impl PartialEq for CustomProperties {
             })
         };
         self.len == other.len
+            && self.tainted == other.tainted
             && self
                 .branches
                 .iter()
@@ -366,6 +405,9 @@ pub(crate) struct Declaration<'t> {
     /// Its place in memory, when it is a stylesheet's, which every
     /// element it applies to shares; `None` for an inline style's.
     pub(crate) identity: Option<usize>,
+    /// Whether it is an animation's, a keyframe's (M22): its value is
+    /// animation-tainted.
+    pub(crate) animated: bool,
 }
 
 /// What became of a property's value with its substitution functions
@@ -392,12 +434,13 @@ pub(crate) struct Substitutions {
     /// function in them, by the declaration's place in memory: one
     /// list of tokens for every element that declares them.
     literals: RefCell<HashMap<usize, Arc<[Token]>>>,
-    /// Values substituted, by the declaration's place in memory and the
-    /// custom properties': the same declaration with the same custom
-    /// properties substitutes to the same tokens, which the elements that
-    /// share a map, nearly all of a page's, then substitute once. The
-    /// map is held, so its place is not reused while the entry lives.
-    values: RefCell<HashMap<(usize, usize), Kept>>,
+    /// Values substituted, by the declaration's place in memory, the
+    /// custom properties' and whether its property is animatable: the
+    /// same declaration with the same custom properties substitutes to
+    /// the same tokens, which the elements that share a map, nearly all
+    /// of a page's, then substitute once. The map is held, so its place
+    /// is not reused while the entry lives.
+    values: RefCell<HashMap<(usize, usize, bool), Kept>>,
 }
 
 /// A substitution kept for the elements that need it again: what it gave,
@@ -468,6 +511,10 @@ impl Substitutions {
     /// every element. Declarations that read the element's attributes,
     /// by `attr()`, are never so shared. A map is `None` when no custom
     /// property has a value.
+    ///
+    /// A value is animation-tainted (Variables 1 §2, M22) when its
+    /// declaration is an animation's, when it substituted a tainted
+    /// value, or when it is the parent's tainted value inherited.
     pub(crate) fn compute(
         &self,
         declared: &[Declaration<'_>],
@@ -523,19 +570,24 @@ impl Substitutions {
             return Some(Arc::clone(parent));
         }
         let inherited = parent.map(|p| &**p);
-        let states = winners
+        let (states, taints): (Vec<State<'_>>, Vec<bool>) = winners
             .iter()
             .map(|(declaration, kind)| match kind {
-                Kind::Keyword(CssWide::Initial) => State::Done(None),
-                Kind::Keyword(CssWide::Inherit | CssWide::Unset) => {
-                    State::Done(inherited.and_then(|m| m.get(declaration.name)).cloned())
-                }
-                Kind::Literal => State::Done(Some(self.literal(declaration))),
-                Kind::Substituted => State::Pending(declaration.value),
+                Kind::Keyword(CssWide::Initial) => (State::Done(None), false),
+                Kind::Keyword(CssWide::Inherit | CssWide::Unset) => (
+                    State::Done(inherited.and_then(|m| m.get(declaration.name)).cloned()),
+                    inherited.is_some_and(|m| m.is_tainted(declaration.name)),
+                ),
+                Kind::Literal => (
+                    State::Done(Some(self.literal(declaration))),
+                    declaration.animated,
+                ),
+                Kind::Substituted => (State::Pending(declaration.value), declaration.animated),
             })
-            .collect();
+            .unzip();
         let names = winners.iter().map(|(d, _)| d.name).collect();
         let mut resolver = Resolver::new(names, states, inherited, attributes, self);
+        resolver.taints = taints;
         for index in 0..winners.len() {
             if matches!(resolver.states[index], State::Pending(_)) {
                 resolver.compute(index);
@@ -545,7 +597,9 @@ impl Substitutions {
             Some(parent) => CustomProperties::clone(parent),
             None => CustomProperties::default(),
         };
-        for ((declaration, _), state) in winners.iter().zip(&resolver.states) {
+        for (((declaration, _), state), &tainted) in
+            winners.iter().zip(&resolver.states).zip(&resolver.taints)
+        {
             let State::Done(value) = state else {
                 unreachable!("every property is computed")
             };
@@ -558,6 +612,7 @@ impl Substitutions {
                 Some(value) => map.insert(declaration.name, Arc::clone(value)),
                 None => map.remove(declaration.name),
             }
+            map.set_tainted(declaration.name, tainted && value.is_some());
         }
         map.declared = fingerprint;
         (!map.is_empty()).then(|| Arc::new(map))
@@ -569,17 +624,26 @@ impl Substitutions {
     /// element's, `attributes`; `identity` is the declaration's, when it
     /// is a stylesheet's. A value that reads no attribute is kept by its
     /// declaration and custom properties, for the next element that has
-    /// the same.
+    /// the same. For a property that is not `animatable`, a `var()` of an
+    /// animation-tainted custom property is the guaranteed-invalid value
+    /// (Variables 1 §3).
     pub(crate) fn substitute(
         &self,
         value: &[Token],
         identity: Option<usize>,
         custom: Option<&Arc<CustomProperties>>,
         attributes: &[(String, String)],
+        animatable: bool,
     ) -> Substituted {
         let key = identity
             .filter(|_| !reads_attributes(value))
-            .map(|identity| (identity, custom.map_or(0, |m| Arc::as_ptr(m) as usize)));
+            .map(|identity| {
+                (
+                    identity,
+                    custom.map_or(0, |m| Arc::as_ptr(m) as usize),
+                    animatable,
+                )
+            });
         if let Some(key) = key
             && let Some(kept) = self.values.borrow().get(&key)
         {
@@ -590,6 +654,7 @@ impl Substitutions {
         } else {
             let inherited = custom.map(|m| &**m);
             let mut resolver = Resolver::new(Vec::new(), Vec::new(), inherited, attributes, self);
+            resolver.forbid_tainted = !animatable;
             match resolver.substitute(value) {
                 Some(tokens) => Substituted::Value(tokens.into()),
                 None => Substituted::Invalid,
@@ -712,6 +777,7 @@ mod tests {
                 name: &d.name,
                 value: &d.value,
                 identity: Some(std::ptr::from_ref(d) as usize),
+                animated: false,
             })
             .collect();
         substitutions.compute(&declarations, parent, &[])
@@ -753,7 +819,93 @@ mod tests {
     }
 
     fn substitute(value: &str, custom: &Option<Arc<CustomProperties>>) -> Substituted {
-        Substitutions::new(1).substitute(&css::tokenize(value), None, custom.as_ref(), &[])
+        Substitutions::new(1).substitute(&css::tokenize(value), None, custom.as_ref(), &[], true)
+    }
+
+    #[test]
+    fn an_animations_values_taint_what_takes_them() {
+        // `--a` is an animation's, and the parent's `--p` is tainted:
+        // what takes either, through fallbacks or other properties, is
+        // tainted, as is `--p` inherited by keyword.
+        let substitutions = Substitutions::new(1);
+        let parent = compute_with(&substitutions, &declared("--p: 1"), None);
+        let parent = parent.map(|map| {
+            let mut map = CustomProperties::clone(&map);
+            map.set_tainted("--p", true);
+            Arc::new(map)
+        });
+        let own = declared(
+            "--a: 2s; --b: var(--a); --c: var(--x, 1px) var(--zzz, var(--a)); \
+             --d: var(--p); --e: var(--d); --f: var(--x, var(--a)); --p: inherit; \
+             --g: var(--x, 1px)",
+        );
+        let declarations: Vec<Declaration<'_>> = own
+            .iter()
+            .map(|d| Declaration {
+                name: &d.name,
+                value: &d.value,
+                identity: None,
+                animated: d.name == "--a",
+            })
+            .collect();
+        let map = substitutions.compute(&declarations, parent.as_ref(), &[]);
+        let map = map.expect("values");
+        let tainted: Vec<&str> = ["--a", "--b", "--c", "--d", "--e", "--f", "--g", "--p"]
+            .into_iter()
+            .filter(|name| map.is_tainted(name))
+            .collect();
+        // `--c`'s fallbacks are both taken: `var(--zzz, var(--a))` takes
+        // `--a`.
+        assert_eq!(tainted, ["--a", "--b", "--c", "--d", "--e", "--f", "--p"]);
+        // Where a value is the guaranteed-invalid value, there is no taint.
+        let none = declared("--a: initial; --b: var(--a)");
+        let declarations: Vec<Declaration<'_>> = none
+            .iter()
+            .map(|d| Declaration {
+                name: &d.name,
+                value: &d.value,
+                identity: None,
+                animated: true,
+            })
+            .collect();
+        let empty = substitutions.compute(&declarations, None, &[]);
+        assert!(empty.is_none());
+        // In a property that is not animatable, a `var()` of a tainted
+        // value is the guaranteed-invalid value, its fallback taken.
+        let map = Some(map);
+        let in_property = |value: &str, animatable: bool| match Substitutions::new(1).substitute(
+            &css::tokenize(value),
+            None,
+            map.as_ref(),
+            &[],
+            animatable,
+        ) {
+            Substituted::Value(tokens) => Some(text(&tokens)),
+            _ => None,
+        };
+        assert_eq!(in_property("var(--a)", true), Some("2s".into()));
+        assert_eq!(in_property("var(--a)", false), None);
+        assert_eq!(in_property("var(--a, 3s)", false), Some("3s".into()));
+        assert_eq!(in_property("var(--b, 3s)", false), Some("3s".into()));
+        assert_eq!(in_property("var(--x, var(--a))", false), None);
+        // A map with no taint gives the same either way.
+        assert_eq!(
+            Substitutions::new(1).substitute(
+                &css::tokenize("var(--p)"),
+                None,
+                compute("--p: 1").as_ref(),
+                &[],
+                false
+            ),
+            Substituted::Value(Arc::from(css::tokenize("1").as_slice()))
+        );
+        // Two maps alike but for a taint differ.
+        let plain = compute("--q: 1").expect("a value");
+        let mut tainted = CustomProperties::clone(&plain);
+        tainted.set_tainted("--q", true);
+        assert_ne!(*plain, tainted);
+        tainted.set_tainted("--q", false);
+        assert_eq!(*plain, tainted);
     }
 
     #[test]
@@ -1083,6 +1235,7 @@ mod tests {
                 name: &d.name,
                 value: &d.value,
                 identity: None,
+                animated: false,
             })
             .collect();
         let child = substitutions.compute(&declarations, parent.as_ref(), &[]);
@@ -1173,6 +1326,7 @@ mod tests {
             None,
             map.as_ref(),
             &attrs,
+            true,
         ) {
             Substituted::Value(tokens) => Ok(text(&tokens)),
             other => Err(other),
@@ -1224,7 +1378,13 @@ mod tests {
         // The first argument substituted first.
         let map = compute("--name: data-foo px; --type: type(<number>)");
         let value = |source: &str| {
-            Substitutions::new(1).substitute(&css::tokenize(source), None, map.as_ref(), &attrs)
+            Substitutions::new(1).substitute(
+                &css::tokenize(source),
+                None,
+                map.as_ref(),
+                &attrs,
+                true,
+            )
         };
         assert_eq!(
             value("attr(var(--name))"),
@@ -1257,6 +1417,7 @@ mod tests {
                     name: &d.name,
                     value: &d.value,
                     identity: None,
+                    animated: false,
                 })
                 .collect();
             Substitutions::new(1).compute(&declarations, None, &attrs)
@@ -1341,6 +1502,7 @@ mod tests {
                     name: &d.name,
                     value: &d.value,
                     identity: Some(std::ptr::from_ref(d) as usize),
+                    animated: false,
                 })
                 .collect();
             substitutions.compute(&declarations, parent, &attributes(pairs))
@@ -1431,7 +1593,8 @@ mod tests {
         let substitutions = Substitutions::new(1);
         let value = css::tokenize("var(--big)");
         let mut substituted = 0;
-        while let Substituted::Value(_) = substitutions.substitute(&value, None, map.as_ref(), &[])
+        while let Substituted::Value(_) =
+            substitutions.substitute(&value, None, map.as_ref(), &[], true)
         {
             substituted += 1;
             assert!(
@@ -1442,7 +1605,7 @@ mod tests {
         assert_eq!(substituted, MAX_CASCADE_SUBSTITUTION / one);
         let small = compute("--s: 1");
         assert_eq!(
-            substitutions.substitute(&css::tokenize("var(--s)"), None, small.as_ref(), &[]),
+            substitutions.substitute(&css::tokenize("var(--s)"), None, small.as_ref(), &[], true),
             Substituted::Invalid
         );
     }
@@ -1453,12 +1616,12 @@ mod tests {
         let map = compute("--a: 1px");
         let value = css::tokenize("var(--a)");
         let identity = Some(std::ptr::from_ref(&value) as usize);
-        let first = substitutions.substitute(&value, identity, map.as_ref(), &[]);
+        let first = substitutions.substitute(&value, identity, map.as_ref(), &[], true);
         let Substituted::Value(first) = first else {
             panic!("substitutes")
         };
         let Substituted::Value(again) =
-            substitutions.substitute(&value, identity, map.as_ref(), &[])
+            substitutions.substitute(&value, identity, map.as_ref(), &[], true)
         else {
             panic!("substitutes")
         };
@@ -1466,7 +1629,7 @@ mod tests {
         // Another map, another substitution.
         let other = compute("--a: 2px");
         assert_eq!(
-            substitutions.substitute(&value, identity, other.as_ref(), &[]),
+            substitutions.substitute(&value, identity, other.as_ref(), &[], true),
             Substituted::Value(Arc::from(tokens("2px")))
         );
     }

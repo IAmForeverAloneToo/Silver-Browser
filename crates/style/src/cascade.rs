@@ -72,6 +72,12 @@
 //!   `animation-*` with their shorthands and the Compatibility
 //!   Standard's `-webkit-` names, their easing functions by
 //!   [`crate::easing`]; a `::marker` takes them too.
+//! * CSS animations (M22.2): with a [`CascadeContext::animations`], an
+//!   element's `animation-name` runs the `@keyframes` rules in force by
+//!   [`crate::animation`], and their values at the timeline's time apply
+//!   between the normal declarations and the important ones
+//!   (`cascade::animated`), on the element and on its `::before`,
+//!   `::after` and `::marker`.
 //!
 //! What every property accepts: the CSS-wide keywords `inherit`,
 //! `initial` and `unset` (css-cascade-5 §7.3), resolved against the
@@ -90,13 +96,14 @@
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use css::Token;
 use dom::{Change, Document, NodeId};
 
+use crate::animation::{Animations, Phase, Timing, Wanted};
 use crate::calc::{self, LengthUnit, Want};
 use crate::computed::{
     AlignPosition, BOTTOM, BaselinePosition, BorderCollapse, BorderSpacing, BorderStyle, BoxSizing,
@@ -107,15 +114,17 @@ use crate::computed::{
     TextTransform, VerticalAlign, WhiteSpace,
 };
 use crate::computed::{
-    Calc, Decoration, Effects, Fragmentation, GridStyle, JustifyItems, Lists, Motion,
+    AnimationPlayState, Calc, Decoration, Effects, Fragmentation, GridStyle, JustifyItems, Lists,
+    Motion, WillChange,
 };
 use crate::custom::{self, CustomProperties, DataType, Substituted, Substitutions};
 use crate::invalidation::{Reach, SelectorFeatures, invalidate};
 use crate::media::Media;
 use crate::page::{PagePosition, PageStyle};
-use crate::rule_set::RuleSet;
+use crate::rule_set::{KeyframesInForce, RuleSet};
 use crate::selector_matching::{Matcher, PseudoElement, SelectorList, Specificity};
 
+mod animated;
 mod decoration;
 mod effects;
 mod fragmentation;
@@ -124,6 +133,7 @@ mod lists;
 mod motion;
 mod page;
 
+use animated::Animated;
 pub(crate) use lists::is_list_hint;
 
 /// The built-in default stylesheet (M5.6), compiled in — loading it is
@@ -207,6 +217,11 @@ struct Computed {
     style: ComputedStyle,
     /// `None` when no rule styles any of them, as for most elements.
     pseudo: Option<Box<PseudoStyles>>,
+    /// Whether the element's style without its animations, or an
+    /// ancestor's, has `display: none` (M22.2): such an element runs no
+    /// animation, nor do its pseudo-elements, and its children are
+    /// restyled when this changes.
+    display_none: bool,
 }
 
 /// The styles of an element's pseudo-elements that some rule styles
@@ -272,6 +287,18 @@ impl Target {
     /// and `::after` (CSS 2.2 §12.2); on `::marker` it stays.
     fn takes_content(self) -> bool {
         matches!(self, Target::Before | Target::After)
+    }
+
+    /// The pseudo-element it is, when its animations run (M22.2): the
+    /// reference browser animates `::before`, `::after` and `::marker`,
+    /// and not `::first-letter` or `::first-line`.
+    fn animated(self) -> Option<PseudoElement> {
+        match self {
+            Target::Before => Some(PseudoElement::Before),
+            Target::After => Some(PseudoElement::After),
+            Target::Marker => Some(PseudoElement::Marker),
+            Target::Element | Target::FirstLetter | Target::FirstLine => None,
+        }
     }
 
     /// The target a pseudo-element's style is kept as; `None` for the
@@ -376,6 +403,13 @@ pub struct CascadeContext<'a> {
     /// size by default. Its size is the caller's to keep with the
     /// viewport's above.
     pub media: Media,
+    /// The animations the document runs and its timeline (M22.2), which
+    /// the cascade keeps as it computes styles: an element's animations
+    /// are matched to its `animation-name`, started and cancelled, and
+    /// their values at the timeline's time applied. `None` runs none,
+    /// the cascade of a test or a fuzz target. A [`Recascader`] reads
+    /// them and changes nothing.
+    pub animations: Option<&'a RefCell<Animations>>,
 }
 
 /// Resolves the computed style of every element under `document`'s
@@ -583,7 +617,8 @@ impl Stylesheets {
     }
 
     /// A cascader over `document` with the rules in force under
-    /// `context`'s medium.
+    /// `context`'s medium, the `@keyframes` rules among them when the
+    /// context runs animations (the user agent's sheet has none).
     fn cascader<'a>(
         &'a self,
         document: &'a Document,
@@ -596,9 +631,16 @@ impl Stylesheets {
             .rules
             .in_force(std::slice::from_ref(&ua.sheet), &ua_answers);
         let author = self.rules.in_force(&self.sheets, &answers);
+        let keyframes = if context.animations.is_some() && self.rules.has_keyframes() {
+            self.rules.keyframes_in_force(&self.sheets, &answers)
+        } else {
+            HashMap::new()
+        };
         let mut media = ua_answers;
         media.extend(answers);
-        Cascader::new(document, ua_rules, author, context, media, self.id)
+        let mut cascader = Cascader::new(document, ua_rules, author, context, media, self.id);
+        cascader.keyframes = keyframes;
+        cascader
     }
 
     /// Brings `styles`, computed for `document` with these sheets and
@@ -621,6 +663,40 @@ impl Stylesheets {
         styles: &mut Styles,
         changes: &[Change],
     ) -> Restyle {
+        self.restyle_animated(document, context, styles, changes, &[])
+    }
+
+    /// [`Stylesheets::restyle`], with the elements `animated` restyled
+    /// too, as elements whose own style changed: those whose animations
+    /// give something new at the timeline's time (M22.3). A node taken
+    /// out of the document, put back or not, has its animations
+    /// cancelled, as in the reference browser, where an element moved
+    /// starts its animations again.
+    pub fn restyle_animated(
+        &self,
+        document: &Document,
+        context: &CascadeContext<'_>,
+        styles: &mut Styles,
+        changes: &[Change],
+        animated: &[NodeId],
+    ) -> Restyle {
+        if let Some(animations) = context.animations
+            && !animations.borrow().is_empty()
+        {
+            let taken_out: HashSet<NodeId> = changes
+                .iter()
+                .filter_map(|change| match change {
+                    Change::Removed { child, .. } => Some(*child),
+                    _ => None,
+                })
+                .flat_map(|child| document.subtree(child))
+                .collect();
+            if !taken_out.is_empty() {
+                animations
+                    .borrow_mut()
+                    .retain(|node| !taken_out.contains(&node));
+            }
+        }
         let invalidation = invalidate(document, &self.features, changes);
         let mut cascader = self.cascader(document, context);
         if invalidation.everything || cascader.media != styles.media {
@@ -637,6 +713,11 @@ impl Stylesheets {
         // before a node is restyled from its parent's.
         let mut levels: BTreeMap<usize, Vec<NodeId>> = BTreeMap::new();
         let mut pending = invalidation.dirty;
+        for &node in animated {
+            if document.is_element(node) && styles.get(node).is_some() {
+                pending.entry(node).or_insert(Reach::Element);
+            }
+        }
         for &node in pending.keys() {
             levels
                 .entry(document.ancestors(node).count())
@@ -649,11 +730,11 @@ impl Stylesheets {
                 let Some(reach) = pending.remove(&node) else {
                     continue; // listed twice
                 };
-                let parent_style = document
+                let parent = document
                     .parent(node)
-                    .and_then(|parent| styles.get(parent))
-                    .cloned()
-                    .unwrap_or_default();
+                    .and_then(|parent| styles.computed(parent));
+                let parent_style = parent.map(|p| p.style.clone()).unwrap_or_default();
+                let parent_display_none = parent.is_some_and(|p| p.display_none);
                 // The root element resolves `rem` against the initial
                 // font size, every other element against the root's.
                 let rem = if Some(node) == first_element {
@@ -663,7 +744,7 @@ impl Stylesheets {
                 };
                 // A change to a pseudo-element's style counts as one to
                 // the element's: how layout hears of it.
-                let computed = cascader.style_of(node, &parent_style, rem);
+                let computed = cascader.style_of(node, &parent_style, parent_display_none, rem);
                 restyle.computed += 1;
                 let changed = styles.computed(node) != Some(&computed);
                 styles.set(node, computed);
@@ -790,8 +871,23 @@ impl Recascader<'_> {
 
 impl Recascade for Recascader<'_> {
     fn element(&self, element: NodeId, parent: &ComputedStyle) -> ComputedStyle {
-        self.with_matched(element, |matched, resolution| {
-            element_style(self.document, element, matched, parent, resolution)
+        let base = self.with_matched(element, |matched, resolution| {
+            element_style(self.document, element, matched, parent, resolution, None)
+        });
+        // Its animations at the timeline's time, as the cascade applied
+        // them, none started or matched again.
+        let sampled = self.cascader.borrow().sample((element, None), &base, None);
+        with_animations(base, sampled, |animated| {
+            self.with_matched(element, |matched, resolution| {
+                element_style(
+                    self.document,
+                    element,
+                    matched,
+                    parent,
+                    resolution,
+                    Some(animated),
+                )
+            })
         })
     }
 
@@ -813,16 +909,36 @@ impl Recascade for Recascader<'_> {
         if marker && self.styles.get(element).map(|s| s.display) != Some(Display::ListItem) {
             return None;
         }
-        self.with_matched(element, |matched, resolution| {
+        let base = self.with_matched(element, |matched, resolution| {
             let applied = matched.of(target);
             (marker || !applied.is_empty())
-                .then(|| compute_style(applied, parent, target, None, resolution))
-        })
+                .then(|| compute_style(applied, parent, target, None, resolution, None))
+        })?;
+        let Some(pseudo) = target.animated() else {
+            return Some(base);
+        };
+        let sampled = self
+            .cascader
+            .borrow()
+            .sample((element, Some(pseudo)), &base, None);
+        Some(with_animations(base, sampled, |animated| {
+            self.with_matched(element, |matched, resolution| {
+                compute_style(
+                    matched.of(target),
+                    parent,
+                    target,
+                    None,
+                    resolution,
+                    Some(animated),
+                )
+            })
+        }))
     }
 }
 
 /// An element's style from its `matched` declarations, inheriting from
-/// `parent`: its `dir` attribute read, and the root element's `display`
+/// `parent`, with the values of its animations in effect, `animated`:
+/// its `dir` attribute read, and the root element's `display`
 /// blockified.
 fn element_style(
     document: &Document,
@@ -830,6 +946,7 @@ fn element_style(
     matched: &Matched<'_>,
     parent: &ComputedStyle,
     resolution: &Resolution<'_>,
+    animated: Option<&Animated<'_>>,
 ) -> ComputedStyle {
     let mut style = compute_style(
         matched.of(Target::Element),
@@ -837,6 +954,7 @@ fn element_style(
         Target::Element,
         document.attr(element, "dir"),
         resolution,
+        animated,
     );
     // The root element's box is a block container or a table, whatever
     // its `display` (CSS2 §9.7, css-display-3 §2.7): what the canvas
@@ -845,6 +963,55 @@ fn element_style(
         style.display = style.display.blockified();
     }
     style
+}
+
+/// `base`, a target's style without its animations, with what they give,
+/// `sampled` ([`Cascader::sample`]): when any is in effect, the style
+/// `recompute` makes with their values; and the properties those current
+/// or in effect animate, which the engine acts as if `will-change` named,
+/// beside its effects.
+fn with_animations(
+    base: ComputedStyle,
+    sampled: Option<(Option<Animated<'_>>, WillChange)>,
+    recompute: impl FnOnce(&Animated<'_>) -> ComputedStyle,
+) -> ComputedStyle {
+    let Some((animated, acts)) = sampled else {
+        return base;
+    };
+    let mut style = match animated {
+        Some(animated) => recompute(&animated),
+        None => base,
+    };
+    if !acts.is_auto() {
+        style.effects_mut().animated = acts;
+    }
+    style
+}
+
+/// The animations `motion` asks for (Animations 1 §2): an item of its
+/// `animation-name` that names keyframes in force, with the other
+/// properties' items at its place; an animation's effect is linear, its
+/// timing function its keyframes'.
+fn wanted(motion: &Motion, keyframes: &HashMap<&str, KeyframesInForce<'_>>) -> Vec<Wanted> {
+    motion
+        .animations()
+        .filter_map(|item| {
+            let name = item.name?;
+            keyframes.contains_key(&**name).then(|| Wanted {
+                name: Arc::clone(name),
+                timing: Timing {
+                    delay: item.delay,
+                    duration: item.duration,
+                    iterations: item.iteration_count,
+                    direction: item.direction,
+                    fill: item.fill_mode,
+                    easing: crate::easing::Easing::Linear,
+                },
+                easing: item.timing_function.clone(),
+                paused: item.play_state == AnimationPlayState::Paused,
+            })
+        })
+        .collect()
 }
 
 /// What [`Stylesheets::restyle`] did.
@@ -908,6 +1075,9 @@ struct Cascader<'a> {
     viewport_used: Cell<bool>,
     /// What the substitutions of this cascade share (M21.1).
     substitutions: Substitutions,
+    /// The `@keyframes` rules in force by name, when the context runs
+    /// animations (M22.2).
+    keyframes: HashMap<&'a str, KeyframesInForce<'a>>,
 }
 
 impl<'a> Cascader<'a> {
@@ -930,13 +1100,23 @@ impl<'a> Cascader<'a> {
             media,
             viewport_used: Cell::new(false),
             substitutions: Substitutions::new(sheets),
+            keyframes: HashMap::new(),
         }
     }
 
     /// The computed style of `element`, a child of an element (or of the
     /// document node) whose style is `parent_style`, with `rem` the
-    /// root element's font size.
-    fn style_of(&mut self, element: NodeId, parent_style: &ComputedStyle, rem: f32) -> Computed {
+    /// root element's font size, `parent_display_none` when the parent's
+    /// style without its animations, or an ancestor's, has `display:
+    /// none`. The element's animations, and its pseudo-elements', are
+    /// matched to what their styles ask for (M22.2).
+    fn style_of(
+        &mut self,
+        element: NodeId,
+        parent_style: &ComputedStyle,
+        parent_display_none: bool,
+        rem: f32,
+    ) -> Computed {
         let matched = declarations_for(
             self.document,
             &mut self.matcher,
@@ -951,31 +1131,128 @@ impl<'a> Cascader<'a> {
             attributes: self.document.attrs(element).unwrap_or_default(),
             substitutions: &self.substitutions,
         };
-        let style = element_style(self.document, element, &matched, parent_style, &resolution);
-        // Each pseudo-element some rule styles, from the element's style.
-        let pseudo = |target: Target| {
-            let applied = matched.of(target);
-            (!applied.is_empty()).then(|| compute_style(applied, &style, target, None, &resolution))
-        };
-        // A list item's marker, styled or not: it is drawn either way.
-        let marker = (style.display == Display::ListItem).then(|| {
-            compute_style(
-                matched.of(Target::Marker),
-                &style,
-                Target::Marker,
-                None,
+        let base = element_style(
+            self.document,
+            element,
+            &matched,
+            parent_style,
+            &resolution,
+            None,
+        );
+        let display_none = parent_display_none || base.display == Display::None;
+        let sampled = self.sample((element, None), &base, Some(!display_none));
+        let style = with_animations(base, sampled, |animated| {
+            element_style(
+                self.document,
+                element,
+                &matched,
+                parent_style,
                 &resolution,
+                Some(animated),
             )
         });
+        // Each pseudo-element some rule styles, from the element's style,
+        // a list item's marker whether one does or not, as it is drawn
+        // either way; with the animations of those that run them, and
+        // those of the others cancelled.
+        let pseudo = |target: Target| {
+            let applied = matched.of(target);
+            let styled = if target == Target::Marker {
+                style.display == Display::ListItem
+            } else {
+                !applied.is_empty()
+            };
+            let pseudo = target.animated();
+            if !styled {
+                if let Some(pseudo) = pseudo {
+                    self.sample((element, Some(pseudo)), &style, Some(false));
+                }
+                return None;
+            }
+            let base = compute_style(applied, &style, target, None, &resolution, None);
+            let Some(pseudo) = pseudo else {
+                return Some(base);
+            };
+            // A `::before` or an `::after` is rendered when it has a box.
+            let rendered = !display_none
+                && base.display != Display::None
+                && !(target.takes_content() && base.content == Content::None);
+            let sampled = self.sample((element, Some(pseudo)), &base, Some(rendered));
+            Some(with_animations(base, sampled, |animated| {
+                compute_style(applied, &style, target, None, &resolution, Some(animated))
+            }))
+        };
         let pseudo = PseudoStyles {
             before: pseudo(Target::Before),
             after: pseudo(Target::After),
             first_letter: pseudo(Target::FirstLetter),
             first_line: pseudo(Target::FirstLine),
-            marker,
+            marker: pseudo(Target::Marker),
         };
         let pseudo = (pseudo != PseudoStyles::default()).then(|| Box::new(pseudo));
-        Computed { style, pseudo }
+        Computed {
+            style,
+            pseudo,
+            display_none,
+        }
+    }
+
+    /// What `target`'s animations give at the timeline's time, its style
+    /// without them being `base`: those in effect to sample, and the
+    /// properties those current or in effect animate, which the engine
+    /// acts as if `will-change` named (Web Animations §5.6). When
+    /// `update` says whether the target is rendered, its animations are
+    /// first matched to what `base` asks for, none when it is not
+    /// (Animations 1 §2). `None` when it has none, as nearly every
+    /// target, which costs a test.
+    fn sample(
+        &self,
+        target: crate::animation::Target,
+        base: &ComputedStyle,
+        update: Option<bool>,
+    ) -> Option<(Option<Animated<'a>>, WillChange)> {
+        let cell = self.context.animations?;
+        if let Some(rendered) = update {
+            let wanted = match (rendered, base.motion.as_deref()) {
+                (true, Some(motion)) if !self.keyframes.is_empty() => {
+                    wanted(motion, &self.keyframes)
+                }
+                _ => Vec::new(),
+            };
+            if wanted.is_empty() && cell.borrow().is_empty() {
+                return None;
+            }
+            cell.borrow_mut().update(target, &wanted);
+        }
+        let animations = cell.borrow();
+        if !animations.animates(target) {
+            return None;
+        }
+        let mut samples = Vec::new();
+        let mut acts = WillChange::AUTO;
+        for sample in animations.samples(target) {
+            let Some(&keyframes) = self.keyframes.get(sample.name) else {
+                continue;
+            };
+            let progress = sample.progress;
+            if progress.phase != Phase::After || progress.progress.is_some() {
+                for longhand in &keyframes.keyframes.longhands {
+                    if let Some(feature) = WillChange::feature(longhand.name()) {
+                        acts = acts.with(feature);
+                    }
+                }
+            }
+            if let Some(p) = progress.progress {
+                samples.push(animated::Sampled {
+                    keyframes,
+                    progress: p,
+                    before: progress.before,
+                    easing: sample.easing.clone(),
+                });
+            }
+        }
+        let animated = (!samples.is_empty()).then_some(Animated { samples });
+        Some((animated, acts))
     }
 
     /// Every element's style, cascaded afresh.
@@ -997,11 +1274,14 @@ impl<'a> Cascader<'a> {
         // reached, and no depth of tree costs stack.
         let mut pending = vec![document.root()];
         while let Some(parent) = pending.pop() {
-            let parent_style = styles.get(parent).cloned().unwrap_or_default();
+            let (parent_style, parent_display_none) = styles
+                .computed(parent)
+                .map(|p| (p.style.clone(), p.display_none))
+                .unwrap_or_default();
             let children: Vec<NodeId> = document.element_children(parent).collect();
             for &child in &children {
                 let rem = root_font_size.unwrap_or(ComputedStyle::default().font_size_px);
-                let computed = self.style_of(child, &parent_style, rem);
+                let computed = self.style_of(child, &parent_style, parent_display_none, rem);
                 if root_font_size.is_none() {
                     root_font_size = Some(computed.style.font_size_px);
                     styles.rem = computed.style.font_size_px;
@@ -1011,6 +1291,13 @@ impl<'a> Cascader<'a> {
             pending.extend(children.into_iter().rev());
         }
         styles.uses_viewport_units = self.viewport_used.get();
+        // The animations of elements the cascade did not reach are those
+        // of elements out of the document: cancelled.
+        if let Some(animations) = self.context.animations {
+            animations
+                .borrow_mut()
+                .retain(|node| styles.get(node).is_some());
+        }
         styles
     }
 }
@@ -1263,16 +1550,22 @@ fn collect_from_sheet<'a>(
 /// Sorts `applied` into cascade order and folds it into a fresh
 /// `ComputedStyle` inherited from `parent`, for `target`, in three passes
 /// (M21): the custom properties, which the other values substitute; then
-/// `font-size`, which the other lengths' `em` is of; then the rest.
+/// `font-size`, which the other lengths' `em` is of; then the rest. The
+/// values of the target's animations in effect, `animated`, apply in each
+/// pass after the normal declarations and before the important ones, the
+/// animations' origin (Cascade 5 §6.1, M22.2).
 fn compute_style(
     applied: &[Applied<'_>],
     parent: &ComputedStyle,
     target: Target,
     dir_attr: Option<&str>,
     resolution: &Resolution<'_>,
+    animated: Option<&Animated<'_>>,
 ) -> ComputedStyle {
     let mut sorted: Vec<&Applied<'_>> = applied.iter().collect();
     sorted.sort_by_key(|a| (a.tier, a.layer, a.specificity, a.order));
+    // Where the important declarations begin.
+    let important = sorted.partition_point(|a| a.tier < tier(TierBase::AuthorSheet, true));
 
     let mut style = ComputedStyle::inherited_from(parent);
 
@@ -1293,15 +1586,23 @@ fn compute_style(
     // The custom properties first (M21.1), on every target: the other
     // values substitute them. An element that declares none keeps its
     // parent's, which it inherited.
-    let declared: Vec<custom::Declaration<'_>> = sorted
-        .iter()
-        .filter(|a| custom::is_custom_property_name(&a.decl.name))
-        .map(|a| custom::Declaration {
-            name: &a.decl.name,
-            value: &a.decl.value,
-            identity: a.identity(),
-        })
-        .collect();
+    fn custom_of<'d>(applied: &[&'d Applied<'_>]) -> Vec<custom::Declaration<'d>> {
+        applied
+            .iter()
+            .filter(|a| custom::is_custom_property_name(&a.decl.name))
+            .map(|a| custom::Declaration {
+                name: &a.decl.name,
+                value: &a.decl.value,
+                identity: a.identity(),
+                animated: false,
+            })
+            .collect()
+    }
+    let mut declared = custom_of(&sorted[..important]);
+    if let Some(animated) = animated {
+        declared.extend(animated.custom_declarations());
+    }
+    declared.extend(custom_of(&sorted[important..]));
     if !declared.is_empty() {
         style.custom = resolution.substitutions.compute(
             &declared,
@@ -1314,33 +1615,24 @@ fn compute_style(
     // *this* element's own font-size, which itself must already be
     // final before those are processed. Its own `em` (and `%`) is the
     // parent's font size.
-    let parent_bases = LengthBases {
-        em: parent.font_size_px,
-        resolution,
-    };
-    let font_size = |value: &[Token]| match css_wide_keyword(value) {
-        Some(CssWide::Initial) => Some(ComputedStyle::default().font_size_px),
-        // `font-size` is inherited, so `unset` means `inherit`.
-        Some(CssWide::Inherit | CssWide::Unset) => Some(parent.font_size_px),
-        None => parse_font_size(value, &parent_bases),
-    };
-    for a in &sorted {
+    for (n, a) in sorted.iter().enumerate() {
+        if n == important
+            && let Some(animated) = animated
+        {
+            animated.font_size(&mut style, parent, resolution);
+        }
         if a.decl.name != "font-size" {
             continue;
         }
-        match specified(a, style.custom.as_ref(), resolution) {
-            Specified::Written(value) => {
-                if let Some(px) = font_size(value) {
-                    style.font_size_px = px;
-                }
-            }
-            // Invalid at computed-value time: `unset`, which is `inherit`.
-            Specified::Substituted(value) => {
-                style.font_size_px = font_size(&value).unwrap_or(parent.font_size_px);
-            }
-            Specified::Invalid => style.font_size_px = parent.font_size_px,
-            Specified::Ignored => {}
+        let specified = specified(a, style.custom.as_ref(), resolution);
+        if let Some(px) = declared_font_size(specified, parent, resolution) {
+            style.font_size_px = px;
         }
+    }
+    if important == sorted.len()
+        && let Some(animated) = animated
+    {
+        animated.font_size(&mut style, parent, resolution);
     }
 
     let bases = LengthBases {
@@ -1348,7 +1640,12 @@ fn compute_style(
         resolution,
     };
     let mut border_color_set = [false; 4];
-    for a in &sorted {
+    for (n, a) in sorted.iter().enumerate() {
+        if n == important
+            && let Some(animated) = animated
+        {
+            animated.apply(&mut style, parent, target, &bases, &mut border_color_set);
+        }
         let name = canonical_name(&a.decl.name);
         if custom::is_custom_property_name(name) || !target.applies(name) {
             continue;
@@ -1398,6 +1695,11 @@ fn compute_style(
             }
             Specified::Ignored => {}
         }
+    }
+    if important == sorted.len()
+        && let Some(animated) = animated
+    {
+        animated.apply(&mut style, parent, target, &bases, &mut border_color_set);
     }
     // `normal` computes to `none` on `::before` and `::after`.
     if target.takes_content() && style.content == Content::Normal {
@@ -1451,7 +1753,38 @@ fn compute_style(
     if style.decoration.as_deref() == Some(&Decoration::default()) {
         style.decoration = None;
     }
+    if style.motion.as_deref() == Some(&Motion::default()) {
+        style.motion = None;
+    }
     style
+}
+
+/// The font size a `font-size` declaration whose value is `specified`
+/// gives an element whose parent's style is `parent`: its own `em` and
+/// percentage of the parent's; `unset`, which is `inherit`, when it is
+/// invalid at computed-value time; `None` when it is ignored.
+fn declared_font_size(
+    specified: Specified<'_>,
+    parent: &ComputedStyle,
+    resolution: &Resolution<'_>,
+) -> Option<f32> {
+    let parent_bases = LengthBases {
+        em: parent.font_size_px,
+        resolution,
+    };
+    let font_size = |value: &[Token]| match css_wide_keyword(value) {
+        Some(CssWide::Initial) => Some(ComputedStyle::default().font_size_px),
+        // `font-size` is inherited, so `unset` means `inherit`.
+        Some(CssWide::Inherit | CssWide::Unset) => Some(parent.font_size_px),
+        None => parse_font_size(value, &parent_bases),
+    };
+    match specified {
+        Specified::Written(value) => font_size(value),
+        // Invalid at computed-value time: `unset`, which is `inherit`.
+        Specified::Substituted(value) => Some(font_size(&value).unwrap_or(parent.font_size_px)),
+        Specified::Invalid => Some(parent.font_size_px),
+        Specified::Ignored => None,
+    }
 }
 
 /// A declaration's value as the cascade applies it (M21.1).
@@ -1476,14 +1809,41 @@ fn specified<'v>(
     custom: Option<&Arc<CustomProperties>>,
     resolution: &Resolution<'_>,
 ) -> Specified<'v> {
-    let value = a.decl.value.as_slice();
+    substituted(
+        &a.decl.value,
+        a.identity(),
+        canonical_name(&a.decl.name),
+        custom,
+        resolution,
+    )
+}
+
+/// `value`, a declaration's of the property `name` whose place in memory
+/// is `identity`, as the cascade applies it: its substitution functions
+/// replaced against the custom properties `custom`, a `var()` of an
+/// animation-tainted one the guaranteed-invalid value in a property that
+/// is not animatable (Variables 1 §3, M22).
+fn substituted<'v>(
+    value: &'v [Token],
+    identity: Option<usize>,
+    name: &str,
+    custom: Option<&Arc<CustomProperties>>,
+    resolution: &Resolution<'_>,
+) -> Specified<'v> {
     if !custom::has_substitution(value) {
         return Specified::Written(value);
     }
-    match resolution
-        .substitutions
-        .substitute(value, a.identity(), custom, resolution.attributes)
-    {
+    let animatable = custom.is_none_or(|m| !m.has_taint())
+        || crate::animate::longhands_of(name)
+            .iter()
+            .any(|longhand| longhand.is_animatable());
+    match resolution.substitutions.substitute(
+        value,
+        identity,
+        custom,
+        resolution.attributes,
+        animatable,
+    ) {
         Substituted::Value(value) => Specified::Substituted(value),
         Substituted::Invalid => Specified::Invalid,
         Substituted::Ignored => Specified::Ignored,
@@ -3776,7 +4136,7 @@ fn parse_gap_shorthand(
 /// Compatibility Standard requires (§3.4.1), or a legacy gap name
 /// css-align-3 §8.3 requires (M18), as the property itself, every other
 /// name as it is.
-fn canonical_name(name: &str) -> &str {
+pub(crate) fn canonical_name(name: &str) -> &str {
     match name {
         "grid-row-gap" => "row-gap",
         "grid-column-gap" => "column-gap",
@@ -3820,6 +4180,28 @@ fn canonical_name(name: &str) -> &str {
         "-webkit-animation-fill-mode" => "animation-fill-mode",
         other => other,
     }
+}
+
+/// A keyframe's `animation-timing-function` (Animations 1 §3.2, M22),
+/// read apart from any element: a math function's lengths against the
+/// initial font size and the default viewport; a list's first item.
+pub(crate) fn keyframe_easing(tokens: &[Token]) -> Option<crate::easing::Easing> {
+    let context = CascadeContext::default();
+    let viewport_used = Cell::new(false);
+    let substitutions = Substitutions::new(0);
+    let initial = ComputedStyle::default().font_size_px;
+    let resolution = Resolution {
+        rem: initial,
+        context: &context,
+        viewport_used: &viewport_used,
+        attributes: &[],
+        substitutions: &substitutions,
+    };
+    let bases = LengthBases {
+        em: initial,
+        resolution: &resolution,
+    };
+    motion::parse_easings(tokens, &bases)?.into_iter().next()
 }
 
 /// `overflow` (M9.3): the four keywords, one value for both axes. The
@@ -4518,6 +4900,7 @@ mod tests {
             fonts: None,
             language: None,
             media: Media::screen(800.0, 600.0),
+            animations: None,
         };
         let viewport_used = Cell::new(false);
         let substitutions = Substitutions::new(0);
@@ -5328,6 +5711,7 @@ mod tests {
             fonts: Some(&StubFont),
             language: None,
             media: Media::screen(800.0, 600.0),
+            animations: None,
         };
         let sheets = [sheet(
             "html { font-size: 20px }

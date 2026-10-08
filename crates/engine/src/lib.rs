@@ -78,6 +78,17 @@
 //! and scroll offsets, by the back-forward cache of six, and shown again
 //! without being fetched; any other is fetched again for its entry,
 //! which is shown at its saved scroll position.
+//!
+//! CSS animations run on the document's timeline (M22,
+//! docs/design/animations.md): its time is a frame's [`FrameTime::now`]
+//! less that of the first frame drawn for a time while the document was
+//! shown, [`Engine::tick`] moves it on by a frame for a caller without a
+//! clock, and it never goes back. A frame starts the animations made
+//! since the last one at its time and restyles the elements whose
+//! animations give something new at it; [`Engine::needs_frame`] is true
+//! while one plays, and [`Engine::next_frame_at`] says when the end of a
+//! delay will want a frame. The cascade keeps the animations (see
+//! `style::animation`); a print takes them as they stand.
 
 pub mod address;
 pub mod differential;
@@ -88,7 +99,8 @@ mod print;
 #[cfg(test)]
 mod testing;
 
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 pub use loader::{LoadError, LoadState};
@@ -106,6 +118,7 @@ use paint::{
 };
 pub use render::Backend;
 use render::{RenderBackend, SoftwareBackend};
+use style::animation::Animations;
 use style::computed::Overflow;
 use style::{CascadeContext, FontMeasure, Media, Styles, Stylesheets};
 use text::FontError;
@@ -275,6 +288,15 @@ struct Shown {
     made: bool,
     /// The document's icon, once it has arrived.
     icon: Option<Icon>,
+    /// The animations the document runs and its timeline (M22.3), which
+    /// the cascade keeps.
+    animations: RefCell<Animations>,
+    /// The caller's time of the first frame drawn for a time while the
+    /// document was shown: its timeline's origin.
+    timeline_origin: Option<Duration>,
+    /// The elements whose animations gave something new at the last
+    /// frame's time, for the style stage to restyle.
+    animated: Vec<NodeId>,
 }
 
 impl Shown {
@@ -299,6 +321,9 @@ impl Shown {
             failure: None,
             made: false,
             icon: None,
+            animations: RefCell::new(Animations::new()),
+            timeline_origin: None,
+            animated: Vec::new(),
         }
     }
 }
@@ -407,12 +432,14 @@ struct FontMeasurer<'a>(&'a text::FontCollection);
 
 /// What a cascade of a document knows from outside it: the `viewport`,
 /// the engine's fonts as `fonts` measures them, the `language` its
-/// response gave, and the `media` it is shown on.
+/// response gave, the `media` it is shown on, and the `animations` it
+/// runs.
 fn cascade_context<'a>(
     viewport: (u32, u32),
     fonts: &'a FontMeasurer<'a>,
     language: Option<&'a str>,
     media: Media,
+    animations: &'a RefCell<Animations>,
 ) -> CascadeContext<'a> {
     CascadeContext {
         viewport_width: viewport.0 as f32,
@@ -420,6 +447,7 @@ fn cascade_context<'a>(
         fonts: Some(fonts),
         language,
         media,
+        animations: Some(animations),
     }
 }
 
@@ -1222,6 +1250,22 @@ impl Engine {
     /// when the stylesheets changed and by restyle otherwise, the
     /// layout, and the scroll offsets of freed elements.
     fn document_changed(&mut self, changes: Vec<Change>) {
+        // An element taken out of the document, put back or not, loses
+        // its animations (M22.2): one put back starts them again, as in
+        // the reference browser.
+        let animations = self.shown.animations.get_mut();
+        if !animations.is_empty() {
+            let document = &self.shown.document;
+            let taken_out: HashSet<NodeId> = changes
+                .iter()
+                .filter_map(|change| match change {
+                    Change::Removed { child, .. } => Some(*child),
+                    _ => None,
+                })
+                .flat_map(|child| document.subtree(child))
+                .collect();
+            animations.retain(|node| document.contains(node) && !taken_out.contains(&node));
+        }
         let mut sheets = None;
         if changes
             .iter()
@@ -1259,10 +1303,26 @@ impl Engine {
     /// Whether a frame is wanted: the document was replaced or changed,
     /// or a scroll offset set, since the last frame, or a scroll offset,
     /// the document's or a scroll container's, is on its way to its
-    /// target. A new viewport size is the caller's to know: the frame
-    /// takes it.
+    /// target, or an animation plays in its active phase or waits for a
+    /// frame to start it (M22.3). A new viewport size is the caller's to
+    /// know: the frame takes it.
     pub fn needs_frame(&self) -> bool {
-        self.changed || self.animating()
+        self.changed || self.animating() || self.shown.animations.borrow().needs_frame()
+    }
+
+    /// When a frame is next wanted, on the clock [`Engine::frame_at`] is
+    /// given, when none is now (M22.3): the end of the soonest delay of a
+    /// playing animation, which shows nothing new before then, so that a
+    /// caller waits for it rather than drawing frames. `None` when a
+    /// frame is wanted now, when none will be without a change, or when
+    /// no frame was drawn for a time.
+    pub fn next_frame_at(&self) -> Option<Duration> {
+        if self.needs_frame() {
+            return None;
+        }
+        let origin = self.shown.timeline_origin?;
+        let at = self.shown.animations.borrow().next_change()?;
+        Some(origin + Duration::try_from_secs_f64(at).unwrap_or(Duration::MAX))
     }
 
     /// Whether a scroll offset is on its way to its target.
@@ -1300,13 +1360,16 @@ impl Engine {
         }
     }
 
-    fn cascade(&self, viewport: (u32, u32)) -> Styles {
+    /// The document cascaded whole for `viewport`, its animations kept
+    /// in `animations`.
+    fn cascade(&self, viewport: (u32, u32), animations: &RefCell<Animations>) -> Styles {
         let fonts = FontMeasurer(&self.layout_fonts);
         let context = cascade_context(
             viewport,
             &fonts,
             self.shown.page.language(),
             self.media(viewport),
+            animations,
         );
         self.shown
             .stylesheets
@@ -1330,13 +1393,16 @@ impl Engine {
     /// frame pipeline uses [`Engine::layout`].
     pub fn fragments(&self, viewport_width: f32) -> Vec<Fragment> {
         let viewport = (viewport_width as u32, self.viewport.1);
-        let styles = self.cascade(viewport);
+        // The animations as they stand, changed by nothing done here.
+        let animations = RefCell::new(self.shown.animations.borrow().clone());
+        let styles = self.cascade(viewport, &animations);
         let fonts = FontMeasurer(&self.layout_fonts);
         let context = cascade_context(
             viewport,
             &fonts,
             self.shown.page.language(),
             self.media(viewport),
+            &animations,
         );
         let recascade = self
             .shown
@@ -1358,7 +1424,9 @@ impl Engine {
     /// none is cached, when the viewport changed and the document's
     /// styles depend on it (M10.1), or when an `@media` list answers
     /// otherwise for the medium now, a resize across a breakpoint
-    /// (M20); restyled when the document changed since (M13.1). Either drops the cached layout, and brings the
+    /// (M20); restyled when the document changed since (M13.1), or an
+    /// element's animations give something new (M22.3). Either drops the
+    /// cached layout, and brings the
     /// layout cache up to date: emptied by a whole cascade, its entries
     /// the changes and the restyled elements reach forgotten by a
     /// restyle (M13.2).
@@ -1369,30 +1437,34 @@ impl Engine {
                 || self.shown.stylesheets.media_changed(&cached.styles, &media)
         });
         if stale {
-            let styles = self.cascade(self.viewport);
+            let styles = self.cascade(self.viewport, &self.shown.animations);
             self.style_runs += 1;
             self.shown.pending.clear();
+            self.shown.animated.clear();
             self.shown.layout = None;
             self.shown.layout_cache.clear();
             self.shown.styled = Some(CachedStyle {
                 viewport: self.viewport,
                 styles,
             });
-        } else if !self.shown.pending.is_empty() {
+        } else if !self.shown.pending.is_empty() || !self.shown.animated.is_empty() {
             let changes = std::mem::take(&mut self.shown.pending);
+            let animated = std::mem::take(&mut self.shown.animated);
             let fonts = FontMeasurer(&self.layout_fonts);
             let context = cascade_context(
                 self.viewport,
                 &fonts,
                 self.shown.page.language(),
                 self.media(self.viewport),
+                &self.shown.animations,
             );
             let cached = self.shown.styled.as_mut().expect("not stale");
-            let restyle = self.shown.stylesheets.restyle(
+            let restyle = self.shown.stylesheets.restyle_animated(
                 &self.shown.document,
                 &context,
                 &mut cached.styles,
                 &changes,
+                &animated,
             );
             // Styles that did not depend on the viewport stand for this
             // one; any computed now used it.
@@ -1434,6 +1506,7 @@ impl Engine {
                 &fonts,
                 self.shown.page.language(),
                 self.media(self.viewport),
+                &self.shown.animations,
             );
             let recascade =
                 self.shown
@@ -1585,11 +1658,13 @@ impl Engine {
     /// Draws the frame for `time` (M13.4): the scroll animations are
     /// advanced to `time.now` — by the time since the last frame drawn
     /// while one ran, or by one frame of [`FRAME_BUDGET`] for one begun
-    /// since — and the frame is drawn as [`Engine::frame`] draws it,
-    /// overrunning when it ends past `time.deadline`. The pixels are lent
-    /// out until the next frame; [`Engine::frame_stats`] says what it
-    /// took. What it shows is a function of the document, the viewport,
-    /// the scroll inputs and the times passed in.
+    /// since — the document's timeline moves to `time.now` less the time
+    /// of the first frame drawn for a time while it was shown, its
+    /// origin (M22.3), and the frame is drawn as [`Engine::frame`] draws
+    /// it, overrunning when it ends past `time.deadline`. The pixels are
+    /// lent out until the next frame; [`Engine::frame_stats`] says what
+    /// it took. What it shows is a function of the document, the
+    /// viewport, the scroll inputs and the times passed in.
     pub fn frame_at(&mut self, width: u32, height: u32, time: FrameTime) -> &[u8] {
         if self.animating() {
             let elapsed = self
@@ -1598,6 +1673,9 @@ impl Engine {
             self.advance(elapsed);
         }
         self.animation_clock = self.animating().then_some(time.now);
+        let origin = *self.shown.timeline_origin.get_or_insert(time.now);
+        let timeline = time.now.saturating_sub(origin).as_secs_f64();
+        self.shown.animations.get_mut().set_time(timeline);
         self.draw(width, height, time.deadline.saturating_sub(time.now))
     }
 
@@ -1606,9 +1684,10 @@ impl Engine {
     /// the scrollbar when the document is taller than the viewport. A
     /// viewport over `render::MAX_FRAME_PIXELS` gets an empty buffer
     /// rather than an allocation the machine cannot make. No animation
-    /// is advanced: [`Engine::tick`] does that for a caller without a
-    /// clock, and [`Engine::frame_at`] draws by time. The frame overruns
-    /// past [`FRAME_BUDGET`].
+    /// is advanced, and the timeline keeps its time: [`Engine::tick`]
+    /// moves them for a caller without a clock, and [`Engine::frame_at`]
+    /// draws by time; the animations waiting for a frame start at the
+    /// timeline's time. The frame overruns past [`FRAME_BUDGET`].
     ///
     /// A pure function of (document, stylesheets, size, scroll): no
     /// platform state, no side effects outside the caches.
@@ -1630,7 +1709,18 @@ impl Engine {
         }
         self.changed = false;
         self.viewport = (width, height);
+        // The frame's animations (M22.3): those made since the last frame
+        // start at its time, and the elements whose animations give
+        // something new at it are restyled with the document's changes;
+        // those the style stage makes start at its time too.
+        let animations = self.shown.animations.get_mut();
+        if !animations.is_empty() {
+            animations.start_pending();
+            let moved = animations.sample();
+            self.shown.animated.extend(moved);
+        }
         self.cached_styles();
+        self.shown.animations.get_mut().start_pending();
         let style_time = start.elapsed();
         let stage = Instant::now();
         self.layout(width as f32);
@@ -1775,12 +1865,15 @@ impl Engine {
         self.set_scroll(f.clamp(0.0, 1.0) * max);
     }
 
-    /// Advances the scroll animations by one frame of [`FRAME_BUDGET`],
-    /// for a caller without a clock (see [`Engine::frame_at`]). Returns
-    /// whether another frame is wanted (an offset has not reached its
-    /// target).
+    /// Advances the scroll animations and the document's timeline by one
+    /// frame of [`FRAME_BUDGET`], for a caller without a clock (see
+    /// [`Engine::frame_at`]). Returns whether another frame is wanted:
+    /// an offset has not reached its target, or an animation plays.
     pub fn tick(&mut self) -> bool {
-        self.advance(FRAME_BUDGET)
+        let animations = self.shown.animations.get_mut();
+        let time = animations.time();
+        animations.set_time(time + FRAME_BUDGET.as_secs_f64());
+        self.advance(FRAME_BUDGET) || self.shown.animations.get_mut().needs_frame()
     }
 
     /// Advances the scroll animations by `elapsed`: each shown offset,
@@ -5123,4 +5216,176 @@ mod tests {
     /// The time the page of ten thousand transformed boxes may take, in
     /// the unoptimised build, which is what the tests run in.
     const TEN_THOUSAND_SECONDS: u64 = 20;
+
+    /// The left margin of the element `id`, as the engine's styles hold
+    /// it.
+    fn margin_left_of(engine: &mut Engine, id: &str) -> f32 {
+        let node = node_by_id(engine, id);
+        engine.styles().get(node).expect("styled").margin[style::computed::LEFT]
+            .resolve(0.0, f32::NAN)
+    }
+
+    /// Draws a frame for the caller's time `ms`.
+    fn draw_at(engine: &mut Engine, ms: u64) {
+        engine.frame_at(200, 100, FrameTime::at(Duration::from_millis(ms)));
+    }
+
+    const SLIDE: &str = "<style>@keyframes s { from { margin-left: 0px } \
+                         to { margin-left: 100px } }</style>";
+
+    #[test]
+    fn an_animation_starts_at_the_first_frame_after_it_is_made_and_runs_on_its_times() {
+        let mut engine = test_engine();
+        engine.load_document(&format!(
+            "{SLIDE}<style>#a {{ animation: s 1s linear }}</style><div id=a></div>"
+        ));
+        // The timeline begins at the first frame drawn for a time, and
+        // the animation, made by that frame's style, starts there.
+        draw_at(&mut engine, 5000);
+        assert_eq!(margin_left_of(&mut engine, "a"), 0.0);
+        assert!(engine.needs_frame(), "it plays");
+        draw_at(&mut engine, 5250);
+        assert_eq!(margin_left_of(&mut engine, "a"), 25.0);
+        // However many frames share the time.
+        draw_at(&mut engine, 5500);
+        draw_at(&mut engine, 5500);
+        assert_eq!(margin_left_of(&mut engine, "a"), 50.0);
+        assert_eq!(engine.next_frame_at(), None);
+        // Ended, without a fill: the underlying value, and no frame.
+        draw_at(&mut engine, 6200);
+        assert_eq!(margin_left_of(&mut engine, "a"), 0.0);
+        assert!(!engine.needs_frame());
+        assert_eq!(engine.next_frame_at(), None);
+        // An animation made between frames shows its start until the
+        // next frame starts it.
+        engine.mutate(|document| {
+            let b = document.create_element("div").unwrap();
+            document.set_attribute(b, "id", "b").unwrap();
+            document
+                .set_attribute(b, "style", "animation: s 1s linear")
+                .unwrap();
+            let body = document
+                .subtree(document.root())
+                .find(|&n| document.tag(n) == Some("body"))
+                .unwrap();
+            document.append_child(body, b).unwrap();
+        });
+        assert_eq!(margin_left_of(&mut engine, "b"), 0.0);
+        assert!(engine.needs_frame());
+        draw_at(&mut engine, 7000);
+        assert_eq!(margin_left_of(&mut engine, "b"), 0.0);
+        draw_at(&mut engine, 7100);
+        assert_eq!(margin_left_of(&mut engine, "b"), 10.0);
+    }
+
+    #[test]
+    fn a_delay_asks_for_no_frame_until_it_ends() {
+        let mut engine = test_engine();
+        engine.load_document(&format!(
+            "{SLIDE}<style>#a {{ animation: s 1s linear 2s }}</style><div id=a></div>"
+        ));
+        draw_at(&mut engine, 1000);
+        assert!(
+            !engine.needs_frame(),
+            "nothing to show before the delay ends"
+        );
+        assert_eq!(engine.next_frame_at(), Some(Duration::from_millis(3000)));
+        draw_at(&mut engine, 2999);
+        assert_eq!(margin_left_of(&mut engine, "a"), 0.0);
+        draw_at(&mut engine, 3500);
+        assert_eq!(margin_left_of(&mut engine, "a"), 50.0);
+        assert!(engine.needs_frame());
+        // A document shown again finds its timeline where the clock has
+        // gone: a new one starts its own.
+        engine.load_document(&format!(
+            "{SLIDE}<style>#a {{ animation: s 1s linear 2s }}</style><div id=a></div>"
+        ));
+        draw_at(&mut engine, 9000);
+        assert_eq!(engine.next_frame_at(), Some(Duration::from_millis(11000)));
+    }
+
+    #[test]
+    fn frames_without_a_time_show_each_animation_at_its_start_and_tick_moves_them_on() {
+        let mut engine = test_engine();
+        engine.load_document(&format!(
+            "{SLIDE}<style>#a {{ animation: s 1s linear }} \
+             #b {{ animation: s 1s linear -0.5s paused }}</style><div id=a></div><div id=b></div>"
+        ));
+        for _ in 0..3 {
+            engine.frame(200, 100);
+        }
+        assert_eq!(margin_left_of(&mut engine, "a"), 0.0);
+        assert_eq!(margin_left_of(&mut engine, "b"), 50.0);
+        // Fifteen ticks are a quarter of a second.
+        for _ in 0..15 {
+            assert!(engine.tick(), "the animation plays");
+        }
+        engine.frame(200, 100);
+        assert!((margin_left_of(&mut engine, "a") - 25.0).abs() < 1e-3);
+        assert_eq!(margin_left_of(&mut engine, "b"), 50.0);
+    }
+
+    #[test]
+    fn a_frame_restyles_the_animated_elements_alone_and_a_moved_one_starts_again() {
+        let mut engine = test_engine();
+        let paragraphs = "<p>still</p>".repeat(20);
+        engine.load_document(&format!(
+            "{SLIDE}<style>#a {{ animation: s 1s linear }}</style>{paragraphs}\
+             <div id=a></div><div id=b></div>"
+        ));
+        draw_at(&mut engine, 0);
+        let restyled = engine.restyled_elements();
+        draw_at(&mut engine, 100);
+        assert_eq!(engine.restyled_elements(), restyled + 1);
+        assert_eq!(margin_left_of(&mut engine, "a"), 10.0);
+        // A frame at the same time restyles nothing.
+        draw_at(&mut engine, 100);
+        assert_eq!(engine.restyled_elements(), restyled + 1);
+        // Moved, the element's animation starts again.
+        engine.mutate(|document| {
+            let a = document
+                .subtree(document.root())
+                .find(|&n| document.attr(n, "id") == Some("a"))
+                .unwrap();
+            let b = document
+                .subtree(document.root())
+                .find(|&n| document.attr(n, "id") == Some("b"))
+                .unwrap();
+            document.append_child(b, a).unwrap();
+        });
+        draw_at(&mut engine, 200);
+        assert_eq!(margin_left_of(&mut engine, "a"), 0.0);
+        draw_at(&mut engine, 300);
+        assert_eq!(margin_left_of(&mut engine, "a"), 10.0);
+        // Moved while the sheets change, the document cascaded whole: it
+        // starts again all the same.
+        engine.mutate(|document| {
+            let find = |id: &str| {
+                document
+                    .subtree(document.root())
+                    .find(|&n| document.attr(n, "id") == Some(id))
+                    .unwrap()
+            };
+            let (a, b) = (find("a"), find("b"));
+            let parent = document.parent(b).unwrap();
+            document.append_child(parent, a).unwrap();
+            let style = document.create_element("style").unwrap();
+            let text = document.create_text("p { color: #00f }").unwrap();
+            document.append_child(style, text).unwrap();
+            document.append_child(parent, style).unwrap();
+        });
+        draw_at(&mut engine, 350);
+        assert_eq!(margin_left_of(&mut engine, "a"), 0.0);
+        // Taken out, it runs nothing.
+        engine.mutate(|document| {
+            let a = document
+                .subtree(document.root())
+                .find(|&n| document.attr(n, "id") == Some("a"))
+                .unwrap();
+            let parent = document.parent(a).unwrap();
+            document.remove_child(parent, a).unwrap();
+        });
+        draw_at(&mut engine, 400);
+        assert!(!engine.needs_frame());
+    }
 }

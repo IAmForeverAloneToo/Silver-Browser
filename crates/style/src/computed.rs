@@ -1399,6 +1399,12 @@ pub struct Effects {
     pub opacity: f32,
     /// `will-change`.
     pub will_change: WillChange,
+    /// Not a property: what the element's animations current or in
+    /// effect animate, which the engine acts as if `will-change` named
+    /// (Web Animations §5.6, M22.2), so that an animated transform or
+    /// opacity makes the box what it will be to layout for the whole
+    /// run. The cascade sets it beside the properties.
+    pub animated: WillChange,
 }
 
 impl Default for Effects {
@@ -1417,11 +1423,18 @@ impl Default for Effects {
             backface_visibility: BackfaceVisibility::Visible,
             opacity: 1.0,
             will_change: WillChange::AUTO,
+            animated: WillChange::AUTO,
         }
     }
 }
 
 impl Effects {
+    /// `will-change` with what the element's animations act as if it
+    /// named ([`Effects::animated`]).
+    pub fn will_change_in_effect(&self) -> WillChange {
+        self.will_change.with(self.animated)
+    }
+
     /// Whether a transformable box with these properties is a
     /// containing block for all its descendants, the fixed-positioned
     /// ones included: it has a transform, a `perspective`,
@@ -1444,7 +1457,9 @@ impl Effects {
             && (self.has_transform()
                 || self.perspective.is_some()
                 || self.transform_style == TransformStyle::Preserve3d))
-            || self.will_change.names_any(WillChange::CONTAINING)
+            || self
+                .will_change_in_effect()
+                .names_any(WillChange::CONTAINING)
     }
 
     /// Whether the box is a containing block for its absolutely
@@ -1453,7 +1468,9 @@ impl Effects {
     /// `position` (css-will-change-1 §2.2).
     pub fn contains_absolutes_of(&self, transformable: bool) -> bool {
         self.contains_all_of(transformable)
-            || self.will_change.names_any(WillChange::CONTAINING_ABSOLUTES)
+            || self
+                .will_change_in_effect()
+                .names_any(WillChange::CONTAINING_ABSOLUTES)
     }
 
     /// Whether a transformable box is a stacking context by these
@@ -1470,7 +1487,7 @@ impl Effects {
     pub fn is_stacking_context_of(&self, transformable: bool) -> bool {
         self.contains_all_of(transformable)
             || self.opacity < 1.0
-            || self.will_change.names_any(WillChange::STACKING)
+            || self.will_change_in_effect().names_any(WillChange::STACKING)
     }
 
     /// The used `transform-style` (css-transforms-2 §9.1): `flat` when
@@ -2491,7 +2508,11 @@ impl ComputedStyle {
     /// counts as a `z-index` would.
     pub fn is_stacking_context_of(&self, item: bool, transformable: bool) -> bool {
         ((self.position.is_positioned() || item)
-            && (self.z_index.is_some() || self.effects().will_change.names(WillChange::Z_INDEX)))
+            && (self.z_index.is_some()
+                || self
+                    .effects()
+                    .will_change_in_effect()
+                    .names(WillChange::Z_INDEX)))
             || self.effects().is_stacking_context_of(transformable)
     }
 

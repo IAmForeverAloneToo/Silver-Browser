@@ -48,8 +48,10 @@ use engine::{
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
-use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event::{
+    ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, StartCause, WindowEvent,
+};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::NamedKey;
 use winit::window::{CursorIcon, Theme, Window, WindowId};
 
@@ -193,6 +195,27 @@ impl Browser {
 }
 
 impl ApplicationHandler<NetworkWake> for Browser {
+    /// The time the session asked to be woken at has come (M22.3): the
+    /// end of an animation's delay, which wants a frame.
+    fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
+        if let StartCause::ResumeTimeReached { .. } = cause
+            && let Some(window) = &self.window
+        {
+            window.request_redraw();
+        }
+    }
+
+    /// Waits for the next event, or, when the session wants no frame now
+    /// but will at a time, until then: an animation waiting out its
+    /// delay draws no frame before it ends.
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let flow = match self.session.next_frame_at() {
+            Some(at) if !self.session.needs_frame() => ControlFlow::WaitUntil(self.start + at),
+            _ => ControlFlow::Wait,
+        };
+        event_loop.set_control_flow(flow);
+    }
+
     /// A fetch finished: the engine takes what arrived.
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, _wake: NetworkWake) {
         self.session.network();

@@ -18,12 +18,14 @@
 //! false having no place (Cascade 5 §6.4.3).
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use css::{Block, Rule, Token};
 
 use crate::cascade::ParsedRule;
 use crate::conditions::supports_condition;
 use crate::invalidation::SelectorFeatures;
+use crate::keyframes::{Keyframe, Keyframes, keyframes_name};
 use crate::media::{Media, MediaQueryList, parse_media_query_list, split_commas, trim};
 use crate::page::{PageSelector, parse_page_selectors};
 use crate::selector_matching::{SelectorList, parse_selector_list};
@@ -43,6 +45,49 @@ pub(crate) struct RuleSet {
     /// Each place a layer is named, in order: the layer, and the
     /// innermost `@media` block around the name.
     named: Vec<(u32, Option<u32>)>,
+    /// The `@keyframes` rules kept, in the order they appear (M22).
+    keyframes: Vec<KeyframesRule>,
+}
+
+/// A `@keyframes` rule kept: its name, where it is, as a
+/// [`StyleRule`]'s, and its keyframes processed.
+#[derive(Debug, Clone)]
+struct KeyframesRule {
+    name: Arc<str>,
+    sheet: u32,
+    path: (u32, u32),
+    block: Option<u32>,
+    layer: u32,
+    keyframes: Keyframes,
+}
+
+/// The `@keyframes` rule of one name in force: what an animation of
+/// that name runs (M22).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct KeyframesInForce<'s> {
+    /// Its keyframes, processed.
+    pub(crate) keyframes: &'s Keyframes,
+    /// The rule's keyframe blocks, which the keyframes' declarations
+    /// are places in.
+    blocks: &'s [Rule],
+}
+
+impl<'s> KeyframesInForce<'s> {
+    /// The declarations of `keyframe`, one of [`Self::keyframes`]', in
+    /// order.
+    pub(crate) fn declarations(
+        &self,
+        keyframe: &'s Keyframe,
+    ) -> impl Iterator<Item = &'s css::Declaration> + 's {
+        let blocks = self.blocks;
+        keyframe
+            .declarations
+            .iter()
+            .map(move |&(b, i)| match &blocks[b as usize] {
+                Rule::Qualified(block) => &block.declarations[i as usize],
+                Rule::At(_) => unreachable!("a keyframe's declarations are a block's"),
+            })
+    }
 }
 
 /// A style rule kept.
@@ -208,6 +253,53 @@ impl RuleSet {
             .collect()
     }
 
+    /// The `@keyframes` rules of `sheets`, those this set was made from,
+    /// that `answers` leave in force, by name: of the rules of a name,
+    /// the one in the layer last in the order of normal declarations
+    /// wins (Cascade 5 §6.4), and of those the last in the sheets' order
+    /// (Animations 1 §3).
+    pub(crate) fn keyframes_in_force<'s>(
+        &'s self,
+        sheets: &'s [css::Stylesheet],
+        answers: &[bool],
+    ) -> HashMap<&'s str, KeyframesInForce<'s>> {
+        let (holds, places) = self.ordered(answers);
+        let mut best: HashMap<&'s str, (u32, usize)> = HashMap::new();
+        for (index, rule) in self.keyframes.iter().enumerate() {
+            if !rule.block.is_none_or(|b| holds[b as usize]) {
+                continue;
+            }
+            let rank = (places[rule.layer as usize], index);
+            let entry = best.entry(&*rule.name).or_insert(rank);
+            *entry = (*entry).max(rank);
+        }
+        best.into_iter()
+            .map(|(name, (_, index))| {
+                let rule = &self.keyframes[index];
+                let blocks = match rule_at(&sheets[rule.sheet as usize], self.path(rule.path)) {
+                    Rule::At(at) => match &at.block {
+                        Some(Block::Rules(blocks)) => blocks.as_slice(),
+                        _ => unreachable!("a keyframes rule has a block of rules"),
+                    },
+                    Rule::Qualified(_) => unreachable!("a keyframes rule is an at-rule"),
+                };
+                (
+                    name,
+                    KeyframesInForce {
+                        keyframes: &rule.keyframes,
+                        blocks,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Whether any `@keyframes` rule was kept: a document with none runs
+    /// no animation, and its cascade asks nothing of them.
+    pub(crate) fn has_keyframes(&self) -> bool {
+        !self.keyframes.is_empty()
+    }
+
     /// Which `@media` blocks hold under `answers`, a block holding when
     /// its list and every list around it do, and each layer's place.
     fn ordered(&self, answers: &[bool]) -> (Vec<bool>, Vec<u32>) {
@@ -338,6 +430,20 @@ impl Builder<'_> {
                         selectors,
                         block: place.block,
                         layer: place.layer,
+                    });
+                }
+            }
+            ("keyframes" | "-webkit-keyframes", Some(rules)) => {
+                if let Some(name) = keyframes_name(&at.prelude) {
+                    let start = self.set.paths.len() as u32;
+                    self.set.paths.extend_from_slice(&self.path);
+                    self.set.keyframes.push(KeyframesRule {
+                        name,
+                        sheet: place.sheet,
+                        path: (start, self.path.len() as u32),
+                        block: place.block,
+                        layer: place.layer,
+                        keyframes: crate::keyframes::process(rules),
                     });
                 }
             }

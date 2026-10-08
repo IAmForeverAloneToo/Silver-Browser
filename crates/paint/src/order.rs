@@ -609,13 +609,14 @@ impl Positioned<'_> {
 /// a layer, or `None` for a group drawn through (M19, the compositing
 /// note's policy): its matrix rotates, skews or is projective, or its
 /// `will-change` names a transform property, `opacity`, `perspective`
-/// or `transform-style`; a `will-change` naming `contents` makes no
+/// or `transform-style`, or its animations act as if it did (M22.2,
+/// `Effects::animated`); a `will-change` naming `contents` makes no
 /// layer. A member of a 3D rendering context is no layer for being
 /// one: a member whose flattened matrix only scales, a `translateZ()`
 /// under a perspective, is drawn through, sharp, where a layer would
 /// be resampled.
 fn layer_reason(f: &Fragment, matrix: &Matrix) -> Option<LayerReason> {
-    let will_change = f.style.effects().will_change;
+    let will_change = f.style.effects().will_change_in_effect();
     if will_change.names(WillChange::CONTENTS) {
         return None;
     }

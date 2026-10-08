@@ -767,6 +767,12 @@ fn lerp(a: f64, b: f64, p: f64) -> f64 {
     a + (b - a) * p
 }
 
+/// A font size `p` of the way from `a` to `b`, in pixels, not below
+/// zero: what the cascade's font size pass mixes (M22.2).
+pub(crate) fn font_size(a: f32, b: f32, p: f64) -> f32 {
+    length(a, b, p, true)
+}
+
 /// A number interpolated, within `min` and `max`.
 fn number(a: f32, b: f32, p: f64, min: f32, max: f32) -> f32 {
     let v = lerp(f64::from(a), f64::from(b), p);

@@ -217,6 +217,12 @@ impl Session {
             || self.drawn_bubble.as_deref() != self.bubble_text()
     }
 
+    /// When a frame is next wanted, on the clock the frames are drawn
+    /// by, when none is now: the end of an animation's delay (M22.3).
+    pub(crate) fn next_frame_at(&self) -> Option<Duration> {
+        self.engine.next_frame_at()
+    }
+
     /// The window has a new size.
     pub(crate) fn resized(&mut self, width: u32, height: u32) {
         self.size = (width, height);
