@@ -765,6 +765,17 @@ mod tests {
             .collect()
     }
 
+    /// A number for the stylesheets of one test cascade, never given
+    /// before, as the engine numbers each set of stylesheets.
+    /// [`Substitutions::new`] takes every declaration with an identity
+    /// it meets to be its stylesheets', alive as long as they are; a
+    /// test's declarations are freed when it moves on, and their places
+    /// may then be another list's, so no two cascades may share a number.
+    fn sheets() -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
     fn compute_with(
         substitutions: &Substitutions,
         source: &[Declared],
@@ -784,7 +795,7 @@ mod tests {
     }
 
     fn compute(source: &str) -> Option<Arc<CustomProperties>> {
-        compute_with(&Substitutions::new(1), &declared(source), None)
+        compute_with(&Substitutions::new(sheets()), &declared(source), None)
     }
 
     /// The value of `name` in `map`, serialized as its tokens' text with
@@ -819,7 +830,13 @@ mod tests {
     }
 
     fn substitute(value: &str, custom: &Option<Arc<CustomProperties>>) -> Substituted {
-        Substitutions::new(1).substitute(&css::tokenize(value), None, custom.as_ref(), &[], true)
+        Substitutions::new(sheets()).substitute(
+            &css::tokenize(value),
+            None,
+            custom.as_ref(),
+            &[],
+            true,
+        )
     }
 
     #[test]
@@ -827,7 +844,7 @@ mod tests {
         // `--a` is an animation's, and the parent's `--p` is tainted:
         // what takes either, through fallbacks or other properties, is
         // tainted, as is `--p` inherited by keyword.
-        let substitutions = Substitutions::new(1);
+        let substitutions = Substitutions::new(sheets());
         let parent = compute_with(&substitutions, &declared("--p: 1"), None);
         let parent = parent.map(|map| {
             let mut map = CustomProperties::clone(&map);
@@ -873,13 +890,9 @@ mod tests {
         // In a property that is not animatable, a `var()` of a tainted
         // value is the guaranteed-invalid value, its fallback taken.
         let map = Some(map);
-        let in_property = |value: &str, animatable: bool| match Substitutions::new(1).substitute(
-            &css::tokenize(value),
-            None,
-            map.as_ref(),
-            &[],
-            animatable,
-        ) {
+        let in_property = |value: &str, animatable: bool| match Substitutions::new(sheets())
+            .substitute(&css::tokenize(value), None, map.as_ref(), &[], animatable)
+        {
             Substituted::Value(tokens) => Some(text(&tokens)),
             _ => None,
         };
@@ -890,7 +903,7 @@ mod tests {
         assert_eq!(in_property("var(--x, var(--a))", false), None);
         // A map with no taint gives the same either way.
         assert_eq!(
-            Substitutions::new(1).substitute(
+            Substitutions::new(sheets()).substitute(
                 &css::tokenize("var(--p)"),
                 None,
                 compute("--p: 1").as_ref(),
@@ -1109,7 +1122,7 @@ mod tests {
                 if order {
                     list.reverse();
                 }
-                let map = compute_with(&Substitutions::new(1), &list, None);
+                let map = compute_with(&Substitutions::new(sheets()), &list, None);
                 for name in *invalid {
                     assert_eq!(value(&map, name), None, "{source}: {name}");
                 }
@@ -1160,7 +1173,7 @@ mod tests {
         ];
         for (source, expected) in cases {
             let list = declared(source);
-            let map = compute_with(&Substitutions::new(1), &list, parent.as_ref());
+            let map = compute_with(&Substitutions::new(sheets()), &list, parent.as_ref());
             assert_eq!(value(&map, "--w").as_deref(), expected, "{source}");
         }
     }
@@ -1169,7 +1182,7 @@ mod tests {
     fn inherited_and_keyword_values() {
         let parent = compute("--a: 1; --b: 2; --c: 3");
         let list = declared("--a: initial; --b: inherit; --c: unset; --d: var(--b) var(--c)");
-        let map = compute_with(&Substitutions::new(1), &list, parent.as_ref());
+        let map = compute_with(&Substitutions::new(sheets()), &list, parent.as_ref());
         assert_eq!(value(&map, "--a"), None);
         assert_eq!(value(&map, "--b").as_deref(), Some("2"));
         assert_eq!(value(&map, "--c").as_deref(), Some("3"));
@@ -1180,24 +1193,24 @@ mod tests {
             "--empty: ; --a: var(--empty) initial; --b: var(--empty) inherit; \
              --c: var(--empty) UNSET; --d: var(--empty) revert; --e: var(--a) var(--b)",
         );
-        let map = compute_with(&Substitutions::new(1), &list, parent.as_ref());
+        let map = compute_with(&Substitutions::new(sheets()), &list, parent.as_ref());
         assert_eq!(value(&map, "--a"), None);
         assert_eq!(value(&map, "--b").as_deref(), Some("2"));
         assert_eq!(value(&map, "--c").as_deref(), Some("3"));
         assert_eq!(value(&map, "--d"), None, "the parent has none");
         assert_eq!(value(&map, "--e"), None, "--a is guaranteed-invalid");
         let list = declared("--a: var(--nope, inherit); --f: var(--a) x");
-        let map = compute_with(&Substitutions::new(1), &list, parent.as_ref());
+        let map = compute_with(&Substitutions::new(sheets()), &list, parent.as_ref());
         assert_eq!(value(&map, "--a").as_deref(), Some("1"));
         assert_eq!(value(&map, "--f").as_deref(), Some("1 x"));
         // `revert`, which the cascade does not know (G7), is passed over:
         // the declaration before it stands.
         let list = declared("--a: 4; --a: revert");
-        let map = compute_with(&Substitutions::new(1), &list, parent.as_ref());
+        let map = compute_with(&Substitutions::new(sheets()), &list, parent.as_ref());
         assert_eq!(value(&map, "--a").as_deref(), Some("4"));
         // Nothing declared, or nothing valid: the parent's map itself.
         let list = declared("--a: !; color: red");
-        let map = compute_with(&Substitutions::new(1), &list, parent.as_ref());
+        let map = compute_with(&Substitutions::new(sheets()), &list, parent.as_ref());
         assert!(Arc::ptr_eq(map.as_ref().unwrap(), parent.as_ref().unwrap()));
         // Every property guaranteed-invalid: no map.
         assert_eq!(compute("--a: initial; --b: var(--b)"), None);
@@ -1206,7 +1219,7 @@ mod tests {
     #[test]
     fn the_same_declarations_share_the_parents_map() {
         // As a rule on `*` gives every element the same declarations.
-        let substitutions = Substitutions::new(1);
+        let substitutions = Substitutions::new(sheets());
         let root = declared("--a: 1; --b: var(--a) var(--a)");
         let parent = compute_with(&substitutions, &root, None);
         let child = compute_with(&substitutions, &root, parent.as_ref());
@@ -1223,7 +1236,7 @@ mod tests {
         ));
         assert_eq!(parent, child);
         // As are the same declarations in other stylesheets.
-        let child = compute_with(&Substitutions::new(2), &root, parent.as_ref());
+        let child = compute_with(&Substitutions::new(sheets()), &root, parent.as_ref());
         assert!(!Arc::ptr_eq(
             parent.as_ref().unwrap(),
             child.as_ref().unwrap()
@@ -1244,6 +1257,39 @@ mod tests {
             child.as_ref().unwrap()
         ));
         assert_eq!(parent, child);
+    }
+
+    #[test]
+    fn a_place_is_the_parents_declaration_only_under_its_stylesheets_number() {
+        // A declaration is known by its place in memory and its
+        // stylesheets' number: under the number the parent's map was
+        // computed with, a place of the parent's is the parent's
+        // declaration, whatever text is there now, and the map is shared.
+        // That is why a place freed and given to another declaration must
+        // never come back under the same number. Under another number it
+        // is another declaration, and computed.
+        fn at(list: &[Declared], place: usize) -> Vec<Declaration<'_>> {
+            list.iter()
+                .map(|d| Declaration {
+                    name: &d.name,
+                    value: &d.value,
+                    identity: Some(place),
+                    animated: false,
+                })
+                .collect()
+        }
+        let first = declared("--other: 10px");
+        let second = declared("--w: var(var(--unset), 30px)");
+        let substitutions = Substitutions::new(sheets());
+        let parent = substitutions.compute(&at(&first, 64), None, &[]);
+        let same = substitutions.compute(&at(&second, 64), parent.as_ref(), &[]);
+        assert!(Arc::ptr_eq(
+            same.as_ref().unwrap(),
+            parent.as_ref().unwrap()
+        ));
+        let other = Substitutions::new(sheets()).compute(&at(&second, 64), parent.as_ref(), &[]);
+        assert_eq!(value(&other, "--w").as_deref(), Some("30px"));
+        assert_eq!(value(&other, "--other").as_deref(), Some("10px"));
     }
 
     #[test]
@@ -1321,7 +1367,7 @@ mod tests {
             ("data-open", "attr("),
         ]);
         let map = compute("--color: red");
-        let value = |source: &str| match Substitutions::new(1).substitute(
+        let value = |source: &str| match Substitutions::new(sheets()).substitute(
             &css::tokenize(source),
             None,
             map.as_ref(),
@@ -1378,7 +1424,7 @@ mod tests {
         // The first argument substituted first.
         let map = compute("--name: data-foo px; --type: type(<number>)");
         let value = |source: &str| {
-            Substitutions::new(1).substitute(
+            Substitutions::new(sheets()).substitute(
                 &css::tokenize(source),
                 None,
                 map.as_ref(),
@@ -1420,7 +1466,7 @@ mod tests {
                     animated: false,
                 })
                 .collect();
-            Substitutions::new(1).compute(&declarations, None, &attrs)
+            Substitutions::new(sheets()).compute(&declarations, None, &attrs)
         };
         // A custom property, the element's attributes, and its value.
         type Case<'a> = (&'a str, &'a [(&'a str, &'a str)], Option<&'a str>);
@@ -1493,7 +1539,7 @@ mod tests {
 
     #[test]
     fn declarations_reading_attributes_are_never_shared() {
-        let substitutions = Substitutions::new(1);
+        let substitutions = Substitutions::new(sheets());
         let list = declared("--a: attr(data-a)");
         let compute = |pairs: &[(&str, &str)], parent: Option<&Arc<CustomProperties>>| {
             let declarations: Vec<Declaration<'_>> = list
@@ -1553,7 +1599,7 @@ mod tests {
         for i in 0..31 {
             source.push_str(&format!("--v{}: var(--v{i}) var(--v{i});", i + 1));
         }
-        let substitutions = Substitutions::new(1);
+        let substitutions = Substitutions::new(sheets());
         let map = compute_with(&substitutions, &declared(&source), None);
         let map = map.expect("the short ones have values");
         // Each level's weight doubles: from some level on, every one is
@@ -1590,7 +1636,7 @@ mod tests {
             one <= MAX_SUBSTITUTION && one > MAX_SUBSTITUTION / 2,
             "{one}"
         );
-        let substitutions = Substitutions::new(1);
+        let substitutions = Substitutions::new(sheets());
         let value = css::tokenize("var(--big)");
         let mut substituted = 0;
         while let Substituted::Value(_) =
@@ -1612,7 +1658,7 @@ mod tests {
 
     #[test]
     fn a_substitution_is_kept_for_the_same_map() {
-        let substitutions = Substitutions::new(1);
+        let substitutions = Substitutions::new(sheets());
         let map = compute("--a: 1px");
         let value = css::tokenize("var(--a)");
         let identity = Some(std::ptr::from_ref(&value) as usize);
