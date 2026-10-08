@@ -21,7 +21,7 @@ use css::Token;
 use super::events::{Reported, cancelled, transition_events};
 use super::{
     AnimationEvent, Animations, Clock, EventKind, MAX_ANIMATIONS, Phase, Sampled, Target, Timing,
-    clock_time, event,
+    clock_time, event, take,
 };
 use crate::animate::{self, AnimationType, Longhand, longhands_of};
 use crate::cascade::canonical_name;
@@ -241,10 +241,15 @@ impl Animations {
             }
             return;
         };
-        let items: Vec<_> = after.motion().transitions().collect();
-        if !has_any && items.iter().all(|t| t.duration.max(0.0) + t.delay <= 0.0) {
+        if !has_any
+            && after
+                .motion()
+                .transitions()
+                .all(|t| t.duration.max(0.0) + t.delay <= 0.0)
+        {
             return;
         }
+        let items: Vec<_> = after.motion().transitions().collect();
         // The matching item of each property: the last that names it.
         let mut longhands: Vec<Option<usize>> = vec![None; Longhand::ALL.len()];
         let mut custom: Vec<(Arc<str>, usize)> = Vec::new();
@@ -460,13 +465,13 @@ impl Animations {
     /// Cancels `target`'s running transitions and forgets its completed
     /// ones: it is no longer rendered, or no longer in the document.
     pub(crate) fn cancel_transitions(&mut self, target: Target) {
-        if let Some(running) = self.transitions.remove(&target) {
+        if let Some(running) = take(&mut self.transitions, &target) {
             self.count -= running.len();
             for transition in &running {
                 transition.cancelled(&mut self.events, target, self.time);
             }
         }
-        self.completed.remove(&target);
+        take(&mut self.completed, &target);
     }
 
     /// Queues the events of every running transition's change of phase

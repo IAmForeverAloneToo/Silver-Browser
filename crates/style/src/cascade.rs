@@ -832,18 +832,34 @@ impl Stylesheets {
                 let computed = cascader.style_of(node, Parent::of(parent), rem, before, old);
                 restyle.computed += 1;
                 let changed = old != Some(&computed);
+                // What layout reads, the style and the pseudo-elements',
+                // changed; or only what the cascade keeps beside them,
+                // which the children read: the after-change style a
+                // transition's start or end alone changes (M22.1).
+                let shown = changed
+                    && old.is_none_or(|old| {
+                        old.style != computed.style || old.pseudo != computed.pseudo
+                    });
                 let composited = old
-                    .filter(|_| changed)
+                    .filter(|_| shown)
                     .and_then(|old| composited_change(node, old, &computed));
                 // An equal style leaves the one in place, whose effects
                 // the layout's boxes carry: what a later composited
                 // change finds them by (M22.4).
+                let computed = match old {
+                    Some(old) if changed && !shown => Computed {
+                        style: old.style.clone(),
+                        pseudo: old.pseudo.clone(),
+                        ..computed
+                    },
+                    _ => computed,
+                };
                 if changed {
                     styles.set(node, computed);
                 }
                 match composited {
                     Some(composited) => restyle.composited.extend(composited),
-                    None if changed => restyle.changed.push(node),
+                    None if shown => restyle.changed.push(node),
                     None => {}
                 }
                 if changed || reach == Reach::Subtree {
@@ -1177,12 +1193,8 @@ fn composited_change(node: NodeId, old: &Computed, new: &Computed) -> Option<Vec
         return None;
     }
     let mut out = Vec::new();
+    // The after-change styles are the children's to read, not layout's.
     composited_style(node, None, &old.style, &new.style, &mut out)?;
-    match (old.after_change.as_deref(), new.after_change.as_deref()) {
-        (None, None) => {}
-        (Some(a), Some(b)) => composited_style(node, None, a, b, &mut Vec::new())?,
-        _ => return None,
-    }
     match (old.pseudo.as_deref(), new.pseudo.as_deref()) {
         (None, None) => {}
         (Some(a), Some(b)) => {
@@ -2219,23 +2231,49 @@ fn compute_style(
         style.display = style.display.blockified();
     }
     // Grid and effects properties set back to their initial values leave
-    // no copy of them behind, so that two styles alike compare equal.
-    if style.grid.as_deref() == Some(&GridStyle::default()) {
+    // no copy of them behind, so that two styles alike compare equal. The
+    // initial values are made only for a style that holds a copy: most
+    // hold none, and `Motion`'s alone allocates thirteen lists.
+    if style
+        .grid
+        .as_deref()
+        .is_some_and(|g| *g == GridStyle::default())
+    {
         style.grid = None;
     }
-    if style.effects.as_deref() == Some(&Effects::default()) {
+    if style
+        .effects
+        .as_deref()
+        .is_some_and(|e| *e == Effects::default())
+    {
         style.effects = None;
     }
-    if style.fragmentation.as_deref() == Some(&Fragmentation::default()) {
+    if style
+        .fragmentation
+        .as_deref()
+        .is_some_and(|f| *f == Fragmentation::default())
+    {
         style.fragmentation = None;
     }
-    if style.lists.as_deref() == Some(&Lists::default()) {
+    if style
+        .lists
+        .as_deref()
+        .is_some_and(|l| *l == Lists::default())
+    {
         style.lists = None;
     }
-    if style.decoration.as_deref() == Some(&Decoration::default()) {
+    if style
+        .decoration
+        .as_deref()
+        .is_some_and(|d| *d == Decoration::default())
+    {
         style.decoration = None;
     }
-    if style.motion.as_deref() == Some(&Motion::default()) {
+    if style
+        .motion
+        .as_deref()
+        .is_some_and(|m| *m == Motion::default())
+    {
         style.motion = None;
     }
     style

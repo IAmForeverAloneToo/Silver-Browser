@@ -445,6 +445,17 @@ struct CachedStyle {
 /// The engine's fonts, lent to the cascade for `ex` and `ch`.
 struct FontMeasurer<'a>(&'a text::FontCollection);
 
+/// Whether layout reads `change` whatever the styles: a change of the
+/// document's structure or text, or of a table's spans (M22.4).
+fn read_by_layout(change: &Change) -> bool {
+    match change {
+        Change::AttributeChanged { name, .. } => {
+            matches!(name.as_str(), "colspan" | "rowspan" | "span")
+        }
+        _ => true,
+    }
+}
+
 /// What a cascade of a document knows from outside it: the `viewport`,
 /// the engine's fonts as `fonts` measures them, the `language` its
 /// response gave, the `media` it is shown on, and the `animations` it
@@ -1297,6 +1308,12 @@ impl Engine {
             sheets = Some(self.shown.page.sheets())
                 .filter(|sheets| sheets != self.shown.stylesheets.sheets());
         }
+        // A change layout reads whatever the styles drops the layout now,
+        // between frames, as every change did before M22: only the others
+        // wait for the restyle to say what they reach (M22.4).
+        if sheets.is_some() || changes.iter().any(read_by_layout) {
+            self.shown.layout = None;
+        }
         if let Some(sheets) = sheets {
             self.shown.stylesheets = Stylesheets::new(sheets);
             self.shown.recascade = true;
@@ -1312,8 +1329,6 @@ impl Engine {
                 self.shown.pending.extend(changes);
             }
         }
-        // The layout stands until the restyle says what the changes
-        // reach (M22.4).
         let document = &self.shown.document;
         self.shown
             .element_scroll
@@ -1344,6 +1359,17 @@ impl Engine {
         let origin = self.shown.timeline_origin?;
         let at = self.shown.animations.borrow().next_change()?;
         Some(origin + Duration::try_from_secs_f64(at).unwrap_or(Duration::MAX))
+    }
+
+    /// Finishes every transition running, as a script's `finish()` of
+    /// each would (Web Animations 1 §4.4.13): the next frame ends it, its
+    /// element showing the value it was going to, and a frame is wanted.
+    /// The differential check does so before it compares the engine with
+    /// a fresh one, which runs none (M22).
+    pub fn finish_transitions(&mut self) {
+        if self.shown.animations.get_mut().finish_transitions() {
+            self.changed = true;
+        }
     }
 
     /// Whether a scroll offset is on its way to its target.
@@ -1534,12 +1560,7 @@ impl Engine {
                 // reads — the document's structure or text, a table's
                 // spans, a style but in its composited properties — and
                 // the composited changes are written into it (M22.4).
-                let read = changes.iter().any(|change| match change {
-                    Change::AttributeChanged { name, .. } => {
-                        matches!(name.as_str(), "colspan" | "rowspan" | "span")
-                    }
-                    _ => true,
-                });
+                let read = changes.iter().any(read_by_layout);
                 let kept =
                     !read && restyle.changed.is_empty() && self.composite(&restyle.composited);
                 if kept {
@@ -5454,6 +5475,52 @@ mod tests {
     }
 
     #[test]
+    fn finishing_the_transitions_shows_where_they_were_going() {
+        // As a script's finish() of each: the next frame ends them, the
+        // element showing the value it was going to, and the
+        // differential check compares a fresh engine, which has none,
+        // with the engine so finished.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>#a { margin-left: 0px; transition: margin-left 1s linear 0.5s }
+             #a.on { margin-left: 100px }
+             #b { transition: margin-left 0.1s linear } #b.on { margin-left: 50px }</style>
+             <div id=a></div><div id=b></div>",
+        );
+        draw_at(&mut engine, 0);
+        set(&mut engine, "a", "class", "on");
+        draw_at(&mut engine, 100);
+        assert_eq!(margin_left_of(&mut engine, "a"), 0.0);
+        engine.finish_transitions();
+        assert!(engine.needs_frame());
+        draw_at(&mut engine, 100);
+        assert_eq!(margin_left_of(&mut engine, "a"), 100.0);
+        assert!(engine.animations().is_empty());
+        assert!(!engine.needs_frame());
+        // One started again, back, and the check made in its delay.
+        set(&mut engine, "a", "class", "");
+        draw_at(&mut engine, 200);
+        assert_eq!(engine.animations().len(), 1);
+        let mut fresh = test_engine();
+        if let Err(difference) = differential::compare_with_fresh(&mut engine, &mut fresh, 200, 100)
+        {
+            panic!("{difference}");
+        }
+        assert_eq!(margin_left_of(&mut engine, "a"), 0.0);
+        // A change no frame has drawn yet, its transition started by the
+        // check's first frame: finished all the same, though at 0.7s the
+        // time 0.1s before rounds to less than 0.1s before.
+        draw_at(&mut engine, 700);
+        set(&mut engine, "b", "class", "on");
+        if let Err(difference) = differential::compare_with_fresh(&mut engine, &mut fresh, 200, 100)
+        {
+            panic!("{difference}");
+        }
+        assert_eq!(margin_left_of(&mut engine, "b"), 50.0);
+        assert!(engine.animations().is_empty());
+    }
+
+    #[test]
     fn an_element_transitioning_out_of_view_is_drawn_and_not_hit() {
         let mut engine = test_engine();
         engine.load_document(
@@ -5924,6 +5991,42 @@ mod tests {
             (engine.layout_runs(), engine.layouts_kept()),
             (runs, kept + 2)
         );
+    }
+
+    #[test]
+    fn a_transition_of_a_transform_lays_nothing_out_from_its_start_to_its_end() {
+        // Its start changes the after-change style the cascade keeps
+        // beside the element's, which the children read and layout does
+        // not; its frames and its end are composited changes, its boxes
+        // found by the effects of the style left in place. A width's
+        // start lays nothing out either; its frames do.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0 } #t { rotate: 5deg; height: 20px; transition: rotate 1s linear }
+             #t.on { rotate: 45deg } #w { width: 50px; height: 20px; transition: width 1s linear }
+             #w.on { width: 150px } #c { height: 400px }</style>
+             <div id=t><p>inside</p></div><div id=w></div><div id=c></div>",
+        );
+        draw_at(&mut engine, 0);
+        let (runs, kept) = (engine.layout_runs(), engine.layouts_kept());
+        set(&mut engine, "t", "class", "on");
+        for ms in [100, 600, 1200] {
+            draw_at(&mut engine, ms);
+        }
+        assert_eq!(engine.layout_runs(), runs);
+        assert_eq!(engine.layouts_kept(), kept + 3);
+        assert!(engine.animations().is_empty());
+        let mut fresh = test_engine();
+        if let Err(difference) = differential::compare_with_fresh(&mut engine, &mut fresh, 200, 100)
+        {
+            panic!("{difference}");
+        }
+        let runs = engine.layout_runs();
+        set(&mut engine, "w", "class", "on");
+        draw_at(&mut engine, 1300);
+        assert_eq!(engine.layout_runs(), runs);
+        draw_at(&mut engine, 1800);
+        assert_eq!(engine.layout_runs(), runs + 1);
     }
 
     #[test]

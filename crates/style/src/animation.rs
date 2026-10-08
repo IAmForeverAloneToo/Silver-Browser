@@ -267,6 +267,17 @@ pub const MAX_ANIMATIONS: usize = 65_536;
 /// or `::marker`.
 pub type Target = (NodeId, Option<PseudoElement>);
 
+/// `map`'s entry for `target`, taken out. An empty map is not asked:
+/// removing hashes the key even then, and the cascade asks for every
+/// element and pseudo-element of a document that animates nothing.
+fn take<V>(map: &mut HashMap<Target, V>, target: &Target) -> Option<V> {
+    if map.is_empty() {
+        None
+    } else {
+        map.remove(target)
+    }
+}
+
 /// Where an animation's current time comes from (Web Animations §4.4).
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Clock {
@@ -573,7 +584,7 @@ impl Animations {
         longhands: Vec<crate::animate::Longhand>,
     ) {
         if longhands.is_empty() {
-            self.styled.remove(&target);
+            take(&mut self.styled, &target);
         } else {
             self.styled.insert(target, longhands);
         }
@@ -594,12 +605,12 @@ impl Animations {
     /// timeline's time.
     pub(crate) fn update(&mut self, target: Target, wanted: &[Wanted]) {
         let old = if wanted.is_empty() {
-            match self.css.remove(&target) {
+            match take(&mut self.css, &target) {
                 Some(old) => old,
                 None => return,
             }
         } else {
-            self.css.remove(&target).unwrap_or_default()
+            take(&mut self.css, &target).unwrap_or_default()
         };
         let time = self.time;
         let mut taken = vec![false; old.len()];
@@ -654,6 +665,27 @@ impl Animations {
             new.reverse();
             self.css.insert(target, new);
         }
+    }
+
+    /// Finishes every transition running, as a script's `finish()` of
+    /// each would (Web Animations 1 §4.4.13): its current time put at
+    /// its end, so that the next sample ends it, its element showing the
+    /// value it was going to. Says whether there was one.
+    pub fn finish_transitions(&mut self) -> bool {
+        let time = self.time;
+        let mut any = false;
+        for transition in self.transitions.values_mut().flatten() {
+            let end = transition.timing.end_time();
+            // The start that long before the time can round to a current
+            // time short of the end; each step down an ulp lengthens it.
+            let mut start = time - end;
+            while time - start < end {
+                start = start.next_down();
+            }
+            transition.clock = Clock::Running { start };
+            any = true;
+        }
+        any
     }
 
     /// The events queued since this was last asked, in the order they

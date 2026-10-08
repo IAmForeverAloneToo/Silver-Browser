@@ -32,8 +32,8 @@ const TAGS: [&str; 20] = [
 /// it is given: class names and ids a page's selectors can name, span
 /// counts, directions, inline styles that reach every kind of box, with
 /// transforms and opacities that change from one to another without
-/// layout (M22.4), and what `:lang()`, `:link` and the form
-/// pseudo-classes read. `class`
+/// layout (M22.4), transitions and animations (M22), and what
+/// `:lang()`, `:link` and the form pseudo-classes read. `class`
 /// and `style`, the ones pages change most, come up most.
 const ATTRIBUTES: [(&str, &[&str]); 23] = [
     ("class", CLASSES),
@@ -84,11 +84,16 @@ const STYLES: &[&str] = &[
     "opacity: 0.7",
     "transform: translate(5px, 40px) scale(2)",
     "translate: 0 -8px; opacity: 0.2",
+    "transition: all 1s; width: 40px; color: #0a0",
+    "transition: margin 2s 1s, display 1s allow-discrete; margin-left: 9px",
+    "animation: m 2s -0.5s infinite alternate",
+    "animation: m 1s paused -0.25s, n 3s steps(3) backwards 1s",
 ];
 
 /// The data a [`Mutator`] gives text nodes: empty, white space, words,
-/// right-to-left letters, and stylesheets for a `style` element.
-const TEXTS: [&str; 17] = [
+/// right-to-left letters, and stylesheets for a `style` element, two of
+/// them with keyframes (M22).
+const TEXTS: [&str; 19] = [
     "",
     " ",
     "x",
@@ -106,6 +111,8 @@ const TEXTS: [&str; 17] = [
     ".b::before { content: open-quote; display: block } q::after { display: table-cell }",
     "p::first-letter { float: left; font-size: 20px } div::first-letter { color: #f00 }",
     "div::first-line { font-size: 24px } p::first-line { background-color: #ff0; color: #00f }",
+    "@keyframes m { to { width: 30px; rotate: 9deg; opacity: 0.3 } } .b { animation: m 2s -1s }",
+    "@keyframes n { 50% { margin-top: 7px; display: none } } div { transition: padding 1s }",
 ];
 
 /// Turns bytes into mutations of a document: each step reads an
@@ -210,7 +217,11 @@ impl Mutator {
 /// Draws a `width` by `height` frame with `engine` and compares what it
 /// keeps with what `fresh` computes for a snapshot of its document,
 /// scrolled as `engine` is: the computed style of every element, every
-/// fragment of the layout, and every pixel of the frame. `fresh` is
+/// fragment of the layout, and every pixel of the frame. `engine`'s
+/// transitions are finished first, as a script's `finish()` would
+/// finish them, those of the changes no frame has drawn yet with them,
+/// since `fresh` starts none (M22); its animations, drawn
+/// without a time as `fresh`'s are, show where `fresh`'s do. `fresh` is
 /// any engine with the same fonts; its document is replaced. `Err`
 /// describes the first difference found.
 pub fn compare_with_fresh(
@@ -219,6 +230,10 @@ pub fn compare_with_fresh(
     width: u32,
     height: u32,
 ) -> Result<(), String> {
+    // A frame first, so that the changes no frame has drawn yet start
+    // their transitions, and they are finished too.
+    engine.frame(width, height);
+    engine.finish_transitions();
     let pixels = engine.frame(width, height);
     fresh.set_document(Document::from_node(&engine.shown.document.to_node()));
     fresh.frame(width, height);

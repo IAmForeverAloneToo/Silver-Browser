@@ -92,6 +92,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "animations"
+path = "fuzz_targets/animations.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "encoding_decode"
 path = "fuzz_targets/encoding_decode.rs"
 test = false
