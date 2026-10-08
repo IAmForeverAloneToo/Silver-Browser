@@ -68,6 +68,10 @@
 //!   which substitute them; a value that its property does not take once
 //!   substituted is invalid at computed-value time, and the property
 //!   `unset`.
+//! * The transition and animation properties (M22): `transition-*` and
+//!   `animation-*` with their shorthands and the Compatibility
+//!   Standard's `-webkit-` names, their easing functions by
+//!   [`crate::easing`]; a `::marker` takes them too.
 //!
 //! What every property accepts: the CSS-wide keywords `inherit`,
 //! `initial` and `unset` (css-cascade-5 §7.3), resolved against the
@@ -102,7 +106,9 @@ use crate::computed::{
     Quotes, RIGHT, SelfAlignment, Size, TOP, TableLayout, TextAlign, TextAlignLast, TextJustify,
     TextTransform, VerticalAlign, WhiteSpace,
 };
-use crate::computed::{Calc, Decoration, Effects, Fragmentation, GridStyle, JustifyItems, Lists};
+use crate::computed::{
+    Calc, Decoration, Effects, Fragmentation, GridStyle, JustifyItems, Lists, Motion,
+};
 use crate::custom::{self, CustomProperties, DataType, Substituted, Substitutions};
 use crate::invalidation::{Reach, SelectorFeatures, invalidate};
 use crate::media::Media;
@@ -115,6 +121,7 @@ mod effects;
 mod fragmentation;
 mod grid;
 mod lists;
+mod motion;
 mod page;
 
 pub(crate) use lists::is_list_hint;
@@ -318,19 +325,21 @@ impl Target {
                         // A table's, not the box's border.
                         && !matches!(name, "border-collapse" | "border-spacing"))
             }
-            Target::Marker => matches!(
-                name,
-                "font-size"
-                    | "font-family"
-                    | "color"
-                    | "text-transform"
-                    | "white-space"
-                    | "letter-spacing"
-                    | "word-spacing"
-                    | "quotes"
-                    | "direction"
-                    | "content"
-            ),
+            Target::Marker => {
+                matches!(
+                    name,
+                    "font-size"
+                        | "font-family"
+                        | "color"
+                        | "text-transform"
+                        | "white-space"
+                        | "letter-spacing"
+                        | "word-spacing"
+                        | "quotes"
+                        | "direction"
+                        | "content"
+                ) || motion::is_motion_property(name)
+            }
             Target::Element => name != "content",
             Target::Before | Target::After => true,
         }
@@ -1942,6 +1951,74 @@ fn apply_declaration(
         "will-change" => set_effects(style, effects::parse_will_change(value), |e, v| {
             e.will_change = v
         }),
+        "transition-property" => {
+            set_motion(style, motion::parse_transition_property(value), |m, v| {
+                m.transition_property = v
+            })
+        }
+        "transition-duration" => {
+            set_motion(style, motion::parse_durations(value, bases), |m, v| {
+                m.transition_duration = v
+            })
+        }
+        "transition-timing-function" => {
+            set_motion(style, motion::parse_easings(value, bases), |m, v| {
+                m.transition_timing_function = v
+            })
+        }
+        "transition-delay" => set_motion(style, motion::parse_delays(value, bases), |m, v| {
+            m.transition_delay = v
+        }),
+        "transition-behavior" => set_motion(style, motion::parse_behaviors(value), |m, v| {
+            m.transition_behavior = v
+        }),
+        "transition" => set_motion(style, motion::parse_transition(value, bases), |m, v| {
+            m.transition_property = v.property;
+            m.transition_duration = v.duration;
+            m.transition_timing_function = v.timing_function;
+            m.transition_delay = v.delay;
+            m.transition_behavior = v.behavior;
+        }),
+        "animation-name" => set_motion(style, motion::parse_animation_names(value), |m, v| {
+            m.animation_name = v
+        }),
+        "animation-duration" => set_motion(
+            style,
+            motion::parse_animation_durations(value, bases),
+            |m, v| m.animation_duration = v,
+        ),
+        "animation-timing-function" => {
+            set_motion(style, motion::parse_easings(value, bases), |m, v| {
+                m.animation_timing_function = v
+            })
+        }
+        "animation-iteration-count" => set_motion(
+            style,
+            motion::parse_iteration_counts(value, bases),
+            |m, v| m.animation_iteration_count = v,
+        ),
+        "animation-direction" => set_motion(style, motion::parse_directions(value), |m, v| {
+            m.animation_direction = v
+        }),
+        "animation-play-state" => set_motion(style, motion::parse_play_states(value), |m, v| {
+            m.animation_play_state = v
+        }),
+        "animation-delay" => set_motion(style, motion::parse_delays(value, bases), |m, v| {
+            m.animation_delay = v
+        }),
+        "animation-fill-mode" => set_motion(style, motion::parse_fill_modes(value), |m, v| {
+            m.animation_fill_mode = v
+        }),
+        "animation" => set_motion(style, motion::parse_animation(value, bases), |m, v| {
+            m.animation_name = v.name;
+            m.animation_duration = v.duration;
+            m.animation_timing_function = v.timing_function;
+            m.animation_iteration_count = v.iteration_count;
+            m.animation_direction = v.direction;
+            m.animation_play_state = v.play_state;
+            m.animation_delay = v.delay;
+            m.animation_fill_mode = v.fill_mode;
+        }),
         "break-before" => {
             set_fragmentation(style, fragmentation::parse_break_between(value), |f, v| {
                 f.break_before = v
@@ -2162,6 +2239,28 @@ fn set_decoration<T>(
     update: impl FnOnce(&mut Decoration, T),
 ) -> bool {
     v.map(|v| update(style.decoration_mut(), v)).is_some()
+}
+
+/// [`set_grid`] for the transition and animation properties (M22).
+fn set_motion<T>(
+    style: &mut ComputedStyle,
+    v: Option<T>,
+    update: impl FnOnce(&mut Motion, T),
+) -> bool {
+    v.map(|v| update(style.motion_mut(), v)).is_some()
+}
+
+/// [`copy_grid`] for the transition and animation properties.
+fn copy_motion(
+    style: &mut ComputedStyle,
+    src: &ComputedStyle,
+    copy: impl FnOnce(&mut Motion, &Motion),
+) {
+    if style.motion.is_none() && src.motion.is_none() {
+        return;
+    }
+    let src = src.motion().clone();
+    copy(style.motion_mut(), &src);
 }
 
 /// [`copy_grid`] for the text decoration properties.
@@ -2545,6 +2644,62 @@ fn apply_css_wide(
         }),
         "opacity" => copy_effects(style, src, |e, s| e.opacity = s.opacity),
         "will-change" => copy_effects(style, src, |e, s| e.will_change = s.will_change),
+        "transition-property" => copy_motion(style, src, |m, s| {
+            m.transition_property = s.transition_property.clone()
+        }),
+        "transition-duration" => copy_motion(style, src, |m, s| {
+            m.transition_duration = s.transition_duration.clone()
+        }),
+        "transition-timing-function" => copy_motion(style, src, |m, s| {
+            m.transition_timing_function = s.transition_timing_function.clone()
+        }),
+        "transition-delay" => copy_motion(style, src, |m, s| {
+            m.transition_delay = s.transition_delay.clone()
+        }),
+        "transition-behavior" => copy_motion(style, src, |m, s| {
+            m.transition_behavior = s.transition_behavior.clone()
+        }),
+        "transition" => copy_motion(style, src, |m, s| {
+            m.transition_property = s.transition_property.clone();
+            m.transition_duration = s.transition_duration.clone();
+            m.transition_timing_function = s.transition_timing_function.clone();
+            m.transition_delay = s.transition_delay.clone();
+            m.transition_behavior = s.transition_behavior.clone();
+        }),
+        "animation-name" => copy_motion(style, src, |m, s| {
+            m.animation_name = s.animation_name.clone()
+        }),
+        "animation-duration" => copy_motion(style, src, |m, s| {
+            m.animation_duration = s.animation_duration.clone()
+        }),
+        "animation-timing-function" => copy_motion(style, src, |m, s| {
+            m.animation_timing_function = s.animation_timing_function.clone()
+        }),
+        "animation-iteration-count" => copy_motion(style, src, |m, s| {
+            m.animation_iteration_count = s.animation_iteration_count.clone()
+        }),
+        "animation-direction" => copy_motion(style, src, |m, s| {
+            m.animation_direction = s.animation_direction.clone()
+        }),
+        "animation-play-state" => copy_motion(style, src, |m, s| {
+            m.animation_play_state = s.animation_play_state.clone()
+        }),
+        "animation-delay" => copy_motion(style, src, |m, s| {
+            m.animation_delay = s.animation_delay.clone()
+        }),
+        "animation-fill-mode" => copy_motion(style, src, |m, s| {
+            m.animation_fill_mode = s.animation_fill_mode.clone()
+        }),
+        "animation" => copy_motion(style, src, |m, s| {
+            m.animation_name = s.animation_name.clone();
+            m.animation_duration = s.animation_duration.clone();
+            m.animation_timing_function = s.animation_timing_function.clone();
+            m.animation_iteration_count = s.animation_iteration_count.clone();
+            m.animation_direction = s.animation_direction.clone();
+            m.animation_play_state = s.animation_play_state.clone();
+            m.animation_delay = s.animation_delay.clone();
+            m.animation_fill_mode = s.animation_fill_mode.clone();
+        }),
         "break-before" | "page-break-before" => {
             copy_fragmentation(style, src, |f, s| f.break_before = s.break_before)
         }
@@ -3647,6 +3802,22 @@ fn canonical_name(name: &str) -> &str {
         "-webkit-backface-visibility" => "backface-visibility",
         // Color Adjust 1's legacy name.
         "-webkit-print-color-adjust" => "print-color-adjust",
+        // The Compatibility Standard's for transitions and animations
+        // (M22).
+        "-webkit-transition" => "transition",
+        "-webkit-transition-delay" => "transition-delay",
+        "-webkit-transition-duration" => "transition-duration",
+        "-webkit-transition-property" => "transition-property",
+        "-webkit-transition-timing-function" => "transition-timing-function",
+        "-webkit-animation" => "animation",
+        "-webkit-animation-name" => "animation-name",
+        "-webkit-animation-duration" => "animation-duration",
+        "-webkit-animation-timing-function" => "animation-timing-function",
+        "-webkit-animation-iteration-count" => "animation-iteration-count",
+        "-webkit-animation-direction" => "animation-direction",
+        "-webkit-animation-play-state" => "animation-play-state",
+        "-webkit-animation-delay" => "animation-delay",
+        "-webkit-animation-fill-mode" => "animation-fill-mode",
         other => other,
     }
 }
@@ -4169,6 +4340,9 @@ fn named_color(name: &str) -> Option<Color> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::computed::{
+        AnimationDirection, AnimationFillMode, AnimationPlayState, TransitionProperty,
+    };
     use crate::selector_matching::{matches_selector, matches_selector_list, parse_selector_list};
 
     fn sheet(src: &str) -> css::Stylesheet {
@@ -6099,6 +6273,91 @@ mod tests {
             (s.flex_grow, s.flex_shrink, s.flex_basis),
             (initial.flex_grow, initial.flex_shrink, initial.flex_basis)
         );
+    }
+
+    #[test]
+    fn the_motion_properties_cascade_with_their_shorthands_and_aliases() {
+        let motion = |css: &str| style_of("<p>x</p>", &[sheet(css)], "p").motion().clone();
+        let name = |n: &str| Some(Arc::from(n));
+        // The shorthand sets every longhand, those it leaves out to their
+        // initial values; a longhand after it wins.
+        let m = motion(
+            "p { animation-delay: 9s; animation-play-state: paused; \
+             animation: spin 2s linear infinite; animation-direction: reverse }",
+        );
+        assert_eq!(m.animation_name, vec![name("spin")]);
+        assert_eq!(m.animation_duration, vec![2.0]);
+        assert_eq!(m.animation_delay, vec![0.0]);
+        assert_eq!(m.animation_play_state, vec![AnimationPlayState::Running]);
+        assert_eq!(m.animation_iteration_count, vec![f64::INFINITY]);
+        assert_eq!(m.animation_direction, vec![AnimationDirection::Reverse]);
+        // The Compatibility Standard's names are the properties.
+        let m = motion(
+            "p { -webkit-transition: opacity 1s; -webkit-transition-delay: 2s; \
+             -webkit-animation: a 3s; -webkit-animation-fill-mode: both }",
+        );
+        assert_eq!(
+            m.transition_property,
+            vec![TransitionProperty::Name(Arc::from("opacity"))]
+        );
+        assert_eq!(
+            (m.transition_duration[0], m.transition_delay[0]),
+            (1.0, 2.0)
+        );
+        assert_eq!(m.animation_name, vec![name("a")]);
+        assert_eq!(m.animation_fill_mode, vec![AnimationFillMode::Both]);
+        // An invalid value leaves what came before.
+        let m = motion("p { transition: width 1s; transition: none, width 2s }");
+        assert_eq!(m.transition_duration, vec![1.0]);
+        // A substituted value is the shorthand's; one it does not take is
+        // invalid at computed-value time, every longhand `unset`.
+        let m = motion("p { --t: opacity 4s; transition: var(--t) }");
+        assert_eq!(m.transition_duration, vec![4.0]);
+        let m = motion("p { animation: a 1s; --t: 1px; animation: var(--t) }");
+        assert_eq!(*ComputedStyle::default().motion(), m);
+        // `initial`, `inherit`, `unset` (none is inherited).
+        let child = |css: &str| style_of("<div><p>x</p></div>", &[sheet(css)], "p");
+        let inherited = child(
+            "div { animation: a 1s; transition: opacity 2s } p { animation: inherit; transition-duration: inherit }",
+        );
+        assert_eq!(inherited.motion().animation_name, vec![name("a")]);
+        assert_eq!(inherited.motion().transition_duration, vec![2.0]);
+        assert_eq!(
+            inherited.motion().transition_property,
+            vec![TransitionProperty::All]
+        );
+        let unset = child("div { animation: a 1s } p { animation: b 2s; animation-name: unset }");
+        assert_eq!(unset.motion().animation_name, vec![None]);
+        assert_eq!(unset.motion().animation_duration, vec![2.0]);
+        assert!(
+            child("div { animation: a 1s } p { color: red }")
+                .motion
+                .is_none()
+        );
+        // `@supports` knows them.
+        assert!(supports(
+            "animation",
+            &css::tokenize("spin 1s steps(2, jump-none)")
+        ));
+        assert!(supports(
+            "transition-behavior",
+            &css::tokenize("allow-discrete")
+        ));
+        assert!(!supports("animation-duration", &css::tokenize("-1s")));
+    }
+
+    #[test]
+    fn a_marker_takes_the_motion_properties_and_a_first_line_does_not() {
+        let sheets = [sheet(
+            "li::marker { animation: m 1s; transition: color 2s } \
+             p::first-line { animation: f 1s; color: red }",
+        )];
+        let marker =
+            pseudo_of("<ol><li>a</li></ol>", &sheets, "li", PseudoElement::Marker).expect("styled");
+        assert_eq!(marker.motion().animation_name, vec![Some(Arc::from("m"))]);
+        assert_eq!(marker.motion().transition_duration, vec![2.0]);
+        let line = pseudo_of("<p>a</p>", &sheets, "p", PseudoElement::FirstLine).expect("styled");
+        assert!(line.motion.is_none());
     }
 
     #[test]

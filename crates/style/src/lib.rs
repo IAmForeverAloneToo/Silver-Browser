@@ -57,6 +57,10 @@ pub mod counter_style;
 /// substituted, within bounds.
 pub mod custom;
 
+/// Easing functions (M22): the computed values of the timing functions
+/// of transitions and animations, and the progress each gives.
+pub mod easing;
+
 /// Style invalidation (M13.1): which elements a change to a document
 /// can restyle.
 pub mod invalidation;

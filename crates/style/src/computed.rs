@@ -15,6 +15,7 @@ pub use crate::calc::Calc;
 use crate::calc::Expression;
 use crate::cascade::MAX_LENGTH_PX;
 use crate::custom::CustomProperties;
+use crate::easing::Easing;
 
 /// An RGBA color, 0.0–1.0 channels (see `paint::Rgba8` for the 8-bit
 /// form `render` actually blits — `style` owns its own color type per
@@ -1653,6 +1654,185 @@ impl DecorationLine {
     }
 }
 
+/// The transition and animation properties (Transitions 1 and 2 §2,
+/// Animations 1 and 2 §4; M22): what [`ComputedStyle::motion`] points to
+/// when any of them is not its initial value. None is inherited. Each is
+/// a list: an element's transitions are as many as the items of
+/// `transition-property`, its animations as those of `animation-name`,
+/// and each other list of the group is repeated or cut to that length
+/// (Values 4 Appendix A), as [`Motion::transitions`] and
+/// [`Motion::animations`] give them. Every list but
+/// `transition-property`'s has at least one item.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Motion {
+    /// `transition-property`: empty for `none`.
+    pub transition_property: Vec<TransitionProperty>,
+    /// `transition-duration`, in seconds, none below zero.
+    pub transition_duration: Vec<f64>,
+    /// `transition-timing-function`.
+    pub transition_timing_function: Vec<Easing>,
+    /// `transition-delay`, in seconds.
+    pub transition_delay: Vec<f64>,
+    /// `transition-behavior` (Transitions 2).
+    pub transition_behavior: Vec<TransitionBehavior>,
+    /// `animation-name`: `None` for `none`, the name as written
+    /// otherwise, an identifier's or a string's.
+    pub animation_name: Vec<Option<Arc<str>>>,
+    /// `animation-duration`, in seconds, none below zero: `auto`
+    /// (Animations 2) is zero, as it is for an animation on a
+    /// document's timeline.
+    pub animation_duration: Vec<f64>,
+    /// `animation-timing-function`.
+    pub animation_timing_function: Vec<Easing>,
+    /// `animation-iteration-count`: none below zero, `infinite` an
+    /// infinity.
+    pub animation_iteration_count: Vec<f64>,
+    /// `animation-direction`.
+    pub animation_direction: Vec<AnimationDirection>,
+    /// `animation-play-state`.
+    pub animation_play_state: Vec<AnimationPlayState>,
+    /// `animation-delay`, in seconds.
+    pub animation_delay: Vec<f64>,
+    /// `animation-fill-mode`.
+    pub animation_fill_mode: Vec<AnimationFillMode>,
+}
+
+impl Default for Motion {
+    fn default() -> Self {
+        Motion {
+            transition_property: vec![TransitionProperty::All],
+            transition_duration: vec![0.0],
+            transition_timing_function: vec![Easing::EASE],
+            transition_delay: vec![0.0],
+            transition_behavior: vec![TransitionBehavior::Normal],
+            animation_name: vec![None],
+            animation_duration: vec![0.0],
+            animation_timing_function: vec![Easing::EASE],
+            animation_iteration_count: vec![1.0],
+            animation_direction: vec![AnimationDirection::Normal],
+            animation_play_state: vec![AnimationPlayState::Running],
+            animation_delay: vec![0.0],
+            animation_fill_mode: vec![AnimationFillMode::None],
+        }
+    }
+}
+
+/// The item of a coordinated list at `index`, the list repeated as far
+/// as it must be (Values 4 Appendix A); the list has at least one item.
+fn coordinated<T>(list: &[T], index: usize) -> &T {
+    &list[index % list.len()]
+}
+
+impl Motion {
+    /// The element's transitions, one for each item of
+    /// `transition-property`, with the other properties' items at its
+    /// place.
+    pub fn transitions(&self) -> impl Iterator<Item = SingleTransition<'_>> {
+        self.transition_property
+            .iter()
+            .enumerate()
+            .map(|(i, property)| SingleTransition {
+                property,
+                duration: *coordinated(&self.transition_duration, i),
+                timing_function: coordinated(&self.transition_timing_function, i),
+                delay: *coordinated(&self.transition_delay, i),
+                behavior: *coordinated(&self.transition_behavior, i),
+            })
+    }
+
+    /// The element's animations, one for each item of `animation-name`,
+    /// `none` included, with the other properties' items at its place.
+    pub fn animations(&self) -> impl Iterator<Item = SingleAnimation<'_>> {
+        self.animation_name
+            .iter()
+            .enumerate()
+            .map(|(i, name)| SingleAnimation {
+                name: name.as_ref(),
+                duration: *coordinated(&self.animation_duration, i),
+                timing_function: coordinated(&self.animation_timing_function, i),
+                iteration_count: *coordinated(&self.animation_iteration_count, i),
+                direction: *coordinated(&self.animation_direction, i),
+                play_state: *coordinated(&self.animation_play_state, i),
+                delay: *coordinated(&self.animation_delay, i),
+                fill_mode: *coordinated(&self.animation_fill_mode, i),
+            })
+    }
+}
+
+/// One item of `transition-property`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransitionProperty {
+    /// `all`: every property that can transition.
+    All,
+    /// A property by its name, ASCII-lowercased unless it is a custom
+    /// property's; one that names no property is kept and matches
+    /// nothing (Transitions 1 §2.1).
+    Name(Arc<str>),
+}
+
+/// One item of `transition-behavior` (Transitions 2 §2.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransitionBehavior {
+    /// The initial value: a discrete change does not transition.
+    Normal,
+    /// `allow-discrete`: a discrete change transitions too, flipping half
+    /// way.
+    AllowDiscrete,
+}
+
+/// One item of `animation-direction`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnimationDirection {
+    Normal,
+    Reverse,
+    Alternate,
+    AlternateReverse,
+}
+
+/// One item of `animation-play-state`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnimationPlayState {
+    Running,
+    Paused,
+}
+
+/// One item of `animation-fill-mode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnimationFillMode {
+    None,
+    Forwards,
+    Backwards,
+    Both,
+}
+
+/// One transition an element's style asks for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SingleTransition<'m> {
+    pub property: &'m TransitionProperty,
+    /// In seconds.
+    pub duration: f64,
+    pub timing_function: &'m Easing,
+    /// In seconds.
+    pub delay: f64,
+    pub behavior: TransitionBehavior,
+}
+
+/// One animation an element's style asks for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SingleAnimation<'m> {
+    /// `None` for `none`, which runs nothing but keeps its place.
+    pub name: Option<&'m Arc<str>>,
+    /// In seconds.
+    pub duration: f64,
+    pub timing_function: &'m Easing,
+    pub iteration_count: f64,
+    pub direction: AnimationDirection,
+    pub play_state: AnimationPlayState,
+    /// In seconds.
+    pub delay: f64,
+    pub fill_mode: AnimationFillMode,
+}
+
 /// `text-decoration-style`'s computed value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DecorationStyle {
@@ -1779,6 +1959,10 @@ static INITIAL_LISTS: LazyLock<Lists> = LazyLock::new(Lists::default);
 /// The text decoration properties' initial values, which
 /// [`ComputedStyle::decoration`] gives a style that sets none of them.
 static INITIAL_DECORATION: LazyLock<Decoration> = LazyLock::new(Decoration::default);
+
+/// The transition and animation properties' initial values, which
+/// [`ComputedStyle::motion`] gives a style that sets none of them.
+static INITIAL_MOTION: LazyLock<Motion> = LazyLock::new(Motion::default);
 
 /// The box-model edges, one value per side, in CSS's `top, right,
 /// bottom, left` order (matches `margin`/`padding`/`border-width`
@@ -2067,6 +2251,10 @@ pub struct ComputedStyle {
     /// list properties are; `None` is every initial value. Read through
     /// [`ComputedStyle::decoration`].
     pub decoration: Option<Arc<Decoration>>,
+    /// The transition and animation properties (M22), behind one pointer
+    /// as the effects are; `None` is every initial value. Read through
+    /// [`ComputedStyle::motion`].
+    pub motion: Option<Arc<Motion>>,
 }
 
 /// `font-family`'s initial value, one for every style that has it.
@@ -2136,6 +2324,7 @@ impl Default for ComputedStyle {
             custom: None,
             lists: None,
             decoration: None,
+            motion: None,
         }
     }
 }
@@ -2239,6 +2428,18 @@ impl ComputedStyle {
     /// made first if it shares them or has none.
     pub fn decoration_mut(&mut self) -> &mut Decoration {
         Arc::make_mut(self.decoration.get_or_insert_with(Default::default))
+    }
+
+    /// The transition and animation properties (M22), the initial values
+    /// when the style sets none of them.
+    pub fn motion(&self) -> &Motion {
+        self.motion.as_deref().unwrap_or(&INITIAL_MOTION)
+    }
+
+    /// The transition and animation properties to change, this style's
+    /// own copy made first if it shares them or has none.
+    pub fn motion_mut(&mut self) -> &mut Motion {
+        Arc::make_mut(self.motion.get_or_insert_with(Default::default))
     }
 
     /// The value of the custom property `name` (M21.1), its substitution
@@ -2423,10 +2624,11 @@ mod tests {
         // it (`docs/design/values.md` says why not smaller). The custom
         // properties (M21.1) cost a pointer, 624 before them, the counter
         // properties (M21.4) another, 632 before them, and the text
-        // decoration properties (M21.7) another, 640 before them. Growing
-        // this is a decision, not an accident; say why where the number
-        // changes.
-        assert_eq!(std::mem::size_of::<ComputedStyle>(), 648);
+        // decoration properties (M21.7) another, 640 before them. The
+        // transition and animation properties (M22) another, 648 before
+        // them. Growing this is a decision, not an accident; say why where
+        // the number changes.
+        assert_eq!(std::mem::size_of::<ComputedStyle>(), 656);
         assert_eq!(ComputedStyle::default().grid, None);
         assert_eq!(*ComputedStyle::default().grid(), GridStyle::default());
         assert_eq!(ComputedStyle::default().effects, None);
@@ -2436,6 +2638,46 @@ mod tests {
             *ComputedStyle::default().fragmentation(),
             Fragmentation::default()
         );
+        assert_eq!(ComputedStyle::default().motion, None);
+        assert_eq!(*ComputedStyle::default().motion(), Motion::default());
+    }
+
+    #[test]
+    fn the_motion_properties_are_not_inherited_and_their_lists_coordinate() {
+        let mut parent = ComputedStyle::default();
+        parent.motion_mut().animation_name = vec![Some(Arc::from("a"))];
+        assert_eq!(ComputedStyle::inherited_from(&parent).motion, None);
+        // Values 4 Appendix A: the base list's length, the others
+        // repeated or cut.
+        let motion = Motion {
+            animation_name: vec![Some(Arc::from("a")), None, Some(Arc::from("c"))],
+            animation_duration: vec![1.0, 2.0],
+            animation_delay: vec![0.5, 0.25, 0.125, 9.0],
+            ..Motion::default()
+        };
+        let animations: Vec<_> = motion
+            .animations()
+            .map(|a| (a.name.map(|n| n.to_string()), a.duration, a.delay))
+            .collect();
+        assert_eq!(
+            animations,
+            vec![
+                (Some("a".to_string()), 1.0, 0.5),
+                (None, 2.0, 0.25),
+                (Some("c".to_string()), 1.0, 0.125)
+            ]
+        );
+        // `transition-property: none` asks for no transition at all.
+        let none = Motion {
+            transition_property: Vec::new(),
+            ..Motion::default()
+        };
+        assert_eq!(none.transitions().count(), 0);
+        let initial = Motion::default();
+        let all: Vec<_> = initial.transitions().collect();
+        assert_eq!(all.len(), 1);
+        assert_eq!(*all[0].property, TransitionProperty::All);
+        assert_eq!((all[0].duration, all[0].delay), (0.0, 0.0));
     }
 
     #[test]

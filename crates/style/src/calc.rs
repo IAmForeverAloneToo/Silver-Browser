@@ -790,6 +790,17 @@ impl Parsed {
             Folded::Tree(tree) => Computed::Expression(tree),
         }
     }
+
+    /// The calculation's value before §10.9.2 censors it, its lengths
+    /// resolved by `lengths`: `NaN` kept, for a place that tells it from
+    /// a number, as `steps()`'s count does (M22). `None` when a
+    /// percentage is left in it.
+    pub fn uncensored(&self, lengths: &dyn Lengths) -> Option<f64> {
+        match simplify(&self.expr, lengths, None) {
+            Folded::Value(v) => Some(v),
+            Folded::Tree(_) => None,
+        }
+    }
 }
 
 /// A subtree simplified: its value, or what is left with a percentage

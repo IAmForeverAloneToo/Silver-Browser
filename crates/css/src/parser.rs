@@ -7,7 +7,9 @@
 //!   ([`Block::Raw`]) — browsers never drop unknown rules at parse time,
 //!   which is what keeps old engines rendering new pages.
 //! * Known at-rules parse into nested rules (`@media`, `@supports`,
-//!   `@layer`, `@container`, `@scope`) or declaration blocks
+//!   `@layer`, `@container`, `@scope`, and `@keyframes` with the
+//!   Compatibility Standard's `@-webkit-keyframes`, whose rules'
+//!   preludes are keyframe selectors) or declaration blocks
 //!   (`@font-face`, `@page`, `@property`, `@counter-style`).
 //! * Declarations missing their colon are skipped to the next `;`.
 //! * Unclosed blocks at EOF close gracefully.
@@ -125,8 +127,18 @@ pub fn parse_style_attribute(input: &str) -> Result<Vec<Declaration>, crate::Par
     Ok(parse_declarations(&mut stream, 0))
 }
 
-/// At-rule names whose blocks contain nested rules.
-const NESTED_RULE_AT: [&str; 5] = ["media", "supports", "layer", "container", "scope"];
+/// At-rule names whose blocks contain nested rules: a keyframes rule's
+/// are its keyframes, a selector list of offsets and a block of
+/// declarations each (CSS Animations 1 §3, M22).
+const NESTED_RULE_AT: [&str; 7] = [
+    "media",
+    "supports",
+    "layer",
+    "container",
+    "scope",
+    "keyframes",
+    "-webkit-keyframes",
+];
 
 /// At-rule names whose blocks contain declarations.
 const DECLARATION_AT: [&str; 4] = ["font-face", "page", "property", "counter-style"];
@@ -613,6 +625,38 @@ mod tests {
         // The nested braces are preserved; the closing outer `}` is not.
         assert!(tokens.contains(&Token::OpenCurly));
         assert!(tokens.contains(&Token::CloseCurly));
+    }
+
+    #[test]
+    fn keyframes_blocks_hold_rules_of_offsets_and_declarations() {
+        for name in ["keyframes", "-webkit-keyframes", "KeyFrames"] {
+            let sheet = parse_stylesheet(&format!(
+                "@{name} spin {{ from {{ opacity: 0 }} 50%, 75% {{ opacity: .5 !important }} to {{}} }}"
+            ))
+            .unwrap();
+            let Rule::At(at) = &sheet.rules[0] else {
+                panic!("expected an at-rule");
+            };
+            assert_eq!(at.prelude, vec![Token::Ident("spin".into())]);
+            let Some(Block::Rules(keyframes)) = &at.block else {
+                panic!("expected a block of rules for @{name}");
+            };
+            assert_eq!(keyframes.len(), 3);
+            let Rule::Qualified(half) = &keyframes[1] else {
+                panic!("expected a keyframe");
+            };
+            assert_eq!(
+                half.prelude,
+                vec![
+                    Token::Percentage { value: 50.0 },
+                    Token::Comma,
+                    Token::Whitespace,
+                    Token::Percentage { value: 75.0 }
+                ]
+            );
+            assert_eq!(half.declarations.len(), 1);
+            assert!(half.declarations[0].important);
+        }
     }
 
     #[test]
