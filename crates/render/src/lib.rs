@@ -221,13 +221,18 @@ pub enum Redrawn {
 /// one matrix, from the group's coordinates to the raster's; whether
 /// the group's pixels are resampled into the raster from a pixmap of
 /// its own, a scratch or a layer, rather than drawn where a raster of
-/// them would put them, which [`State::is_resampled`] decides; and how
-/// many clips were in force when it began, since a clip the group
-/// leaves open ends with it.
+/// them would put them, which [`State::is_resampled`] decides; its
+/// opacity and, when it is a layer, its key: its items draw otherwise
+/// under another opacity, or into another layer, whose pixels lie
+/// otherwise, though nothing else changed (M22.4); and how many clips
+/// were in force when it began, since a clip the group leaves open
+/// ends with it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct GroupState {
     matrix: Matrix,
     resampled: bool,
+    opacity: f32,
+    layer: Option<GroupKey>,
     clips: usize,
 }
 
@@ -270,6 +275,8 @@ impl State {
         state.groups.push(GroupState {
             matrix: base,
             resampled: false,
+            opacity: 1.0,
+            layer: None,
             clips: 0,
         });
         state
@@ -358,12 +365,19 @@ impl State {
                     self.clips.pop();
                 }
             }
-            DisplayItem::PushGroup { matrix, layer, .. } => {
+            DisplayItem::PushGroup {
+                matrix,
+                opacity,
+                key,
+                layer,
+            } => {
                 let composed = self.matrix().map_or(*matrix, |m| m.then(matrix));
                 let resampled = self.resampling() || State::is_resampled(matrix, *layer);
                 self.groups.push(GroupState {
                     matrix: composed,
                     resampled,
+                    opacity: *opacity,
+                    layer: layer.map(|_| *key),
                     clips: self.clips.len(),
                 });
             }
@@ -2643,6 +2657,8 @@ fn reach_at(text: &mut GlyphCache, items: &[DisplayItem], (sx, sy): (f32, f32)) 
         state.groups.push(GroupState {
             matrix: Matrix::scale(sx, sy, 1.0),
             resampled: false,
+            opacity: 1.0,
+            layer: None,
             clips: 0,
         });
     }
@@ -5536,6 +5552,142 @@ mod tests {
                 pixels,
                 fresh.rasterize(&moved, w, h).to_vec(),
                 "{matrix:?} {opacity}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_group_whose_opacity_alone_changed_is_drawn_again() {
+        // What an animation of an opacity changes at each frame (M22.4):
+        // the group's opacity, its matrix and its items as they were.
+        // The items draw otherwise under it, a layer or not, and the
+        // frame is a fresh raster's.
+        let (w, h) = (48u32, 40u32);
+        for layer in [None, Some(LayerReason::WillChange)] {
+            let mut backend = test_backend();
+            let key = fresh_key();
+            let list = |opacity: f32| DisplayList {
+                items: vec![
+                    white_frame(w as f32, h as f32),
+                    DisplayItem::PushGroup {
+                        matrix: Matrix::translate(10.0, 10.0, 0.0),
+                        opacity,
+                        key,
+                        layer,
+                    },
+                    rect(4.0, 4.0, 10.0, 10.0, Rgba8::rgb(0, 0, 255)),
+                    DisplayItem::PopGroup,
+                ],
+            };
+            backend.rasterize(&list(1.0), w, h);
+            for opacity in [0.5, 0.2, 1.0, 0.0] {
+                let pixels = backend.rasterize(&list(opacity), w, h).to_vec();
+                assert!(
+                    matches!(backend.redrawn(), Redrawn::Rects(rects) if !rects.is_empty()),
+                    "{layer:?} {opacity}: {:?}",
+                    backend.redrawn()
+                );
+                assert_eq!(
+                    pixels,
+                    test_backend().rasterize(&list(opacity), w, h).to_vec(),
+                    "{layer:?} {opacity}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_group_drawn_into_another_layer_than_the_last_frames_is_drawn_again() {
+        // A fixed box among the document's content cuts it into scrolled
+        // groups (M19); one held from a frame that had it comes back with
+        // a box that the last frame drew into the first group's layer.
+        // The box's items and the groups' states are what they were but
+        // for the layer they are drawn into, whose tiles start elsewhere:
+        // the box's own layer is resampled into them otherwise, and the
+        // frame must be a fresh raster's.
+        let (w, h) = (160u32, 120u32);
+        let (first, second) = (fresh_key(), fresh_key());
+        let (turned, skewed) = (fresh_key(), fresh_key());
+        let scrolled = |key: GroupKey, dy: f32| DisplayItem::PushGroup {
+            matrix: Matrix::translate(0.0, dy, 0.0),
+            opacity: 1.0,
+            key,
+            layer: Some(LayerReason::Scrolled),
+        };
+        let layer = |key: GroupKey, m: [f32; 16], opacity: f32, text: &str, y: f32| {
+            [
+                DisplayItem::PushGroup {
+                    matrix: Matrix(m),
+                    opacity,
+                    key,
+                    layer: Some(LayerReason::Transformed),
+                },
+                DisplayItem::Text {
+                    text: text.to_string(),
+                    x: 4.0,
+                    y,
+                    size: 10.0,
+                    color: Rgba8::rgb(0, 0, 0),
+                },
+                DisplayItem::PopGroup,
+            ]
+        };
+        let ib = layer(
+            turned,
+            [
+                0.9396926,
+                0.34202015,
+                0.0,
+                0.0,
+                -0.34202015,
+                0.9396926,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                40.015938,
+                4.0583344,
+                0.0,
+                1.0,
+            ],
+            0.6,
+            "ib",
+            119.0,
+        );
+        let last = layer(
+            skewed,
+            [
+                1.0, 0.0, 0.0, 0.0, 0.17632698, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, -23.010666,
+                -4.0, 0.0, 1.0,
+            ],
+            0.3,
+            "last",
+            130.0,
+        );
+        let background = white_frame(w as f32, h as f32);
+        let held = DisplayList {
+            items: vec![scrolled(second, 0.0), DisplayItem::PopGroup],
+        };
+        let mut items = vec![background.clone(), scrolled(first, -16.0)];
+        items.extend(ib.clone());
+        items.extend(last.clone());
+        items.push(DisplayItem::PopGroup);
+        let one = DisplayList { items };
+        let mut items = vec![background, scrolled(first, -16.0)];
+        items.extend(ib);
+        items.extend([DisplayItem::PopGroup, scrolled(second, -16.0)]);
+        items.extend(last);
+        items.push(DisplayItem::PopGroup);
+        let cut = DisplayList { items };
+        let mut backend = test_backend();
+        for (step, list) in [&held, &one, &cut].into_iter().enumerate() {
+            let pixels = backend.rasterize(list, w, h).to_vec();
+            assert!(
+                pixels == test_backend().rasterize(list, w, h),
+                "step {step}: {:?}",
+                backend.redrawn()
             );
         }
     }
