@@ -410,6 +410,44 @@ mod tests {
                 .pseudo(self.node(id), pseudo)
                 .expect("the pseudo-element is styled")
         }
+
+        /// Restyles the document after what was done to it since, and
+        /// the elements `animated`, as a frame's style stage or a change
+        /// between frames does.
+        fn restyle(&mut self, animated: &[NodeId]) {
+            let changes = self.document.take_changes();
+            let context = CascadeContext {
+                animations: Some(&self.animations),
+                ..CascadeContext::default()
+            };
+            self.sheets.restyle_animated(
+                &self.document,
+                &context,
+                &mut self.styles,
+                &changes,
+                animated,
+            );
+        }
+
+        /// Gives the element `id` the class `class` and restyles, a
+        /// change of style between frames.
+        fn class(&mut self, id: &str, class: &str) {
+            let node = self.node(id);
+            self.document.set_attribute(node, "class", class).unwrap();
+            self.restyle(&[]);
+        }
+
+        /// A frame at the timeline's time `time`, as the engine draws one.
+        fn frame(&mut self, time: f64) {
+            let moved = {
+                let mut animations = self.animations.borrow_mut();
+                animations.set_time(time);
+                animations.start_pending();
+                animations.sample()
+            };
+            self.restyle(&moved);
+            self.animations.borrow_mut().start_pending();
+        }
     }
 
     /// A colour's channels as the reference browser prints them, alpha
@@ -438,6 +476,386 @@ mod tests {
 
     fn close(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-3
+    }
+
+    const WIDTHS: &str = ".w { width: 0px; transition: width 1s linear }
+        .w.on { width: 100px } .w.far { width: 300px }";
+
+    #[test]
+    fn a_transition_starts_at_the_next_frame_and_runs_from_the_old_value() {
+        let mut page = Page::new(WIDTHS, "<div id=a class=w></div>");
+        page.frame(0.0);
+        page.class("a", "w on");
+        // Made between frames, it shows its start until the next one.
+        assert_eq!(width(page.style("a"), 0.0), 0.0);
+        page.frame(1.0);
+        assert_eq!(width(page.style("a"), 0.0), 0.0);
+        page.frame(1.5);
+        assert_eq!(width(page.style("a"), 0.0), 50.0);
+        // A whole cascade with nothing before it applies the transition
+        // as it stands, and cancels nothing.
+        let context = page.context();
+        let fresh = page.sheets.cascade(&page.document, &context);
+        assert_eq!(width(fresh.get(page.node("a")).unwrap(), 0.0), 50.0);
+        assert_eq!(page.animations.borrow().len(), 1);
+        page.frame(2.0);
+        assert_eq!(width(page.style("a"), 0.0), 100.0);
+        assert!(page.animations.borrow().is_empty(), "ended");
+        // Completed, and kept while the style before a change and after
+        // it differ in its property, which they no longer do.
+        assert_eq!(page.animations.borrow().completed_count(), 1);
+        let a = page.node("a");
+        page.document
+            .set_attribute(a, "style", "color: #f00")
+            .unwrap();
+        page.restyle(&[]);
+        assert_eq!(page.animations.borrow().completed_count(), 0);
+    }
+
+    #[test]
+    fn interrupted_transitions_reverse_faster_or_go_on_from_where_they_were() {
+        let mut page = Page::new(
+            &format!(
+                "{WIDTHS} .e {{ width: 0px; transition: width 1s ease }} .e.on {{ width: 100px }}"
+            ),
+            "<div id=r class=w></div><div id=i class=w></div><div id=e class=e></div>",
+        );
+        page.frame(0.0);
+        page.class("r", "w on");
+        page.class("i", "w on");
+        page.class("e", "e on");
+        page.frame(1.0);
+        page.frame(1.5);
+        assert_eq!(width(page.style("r"), 0.0), 50.0);
+        // `ease` half way, as the reference browser has it when the
+        // transition is reversed there.
+        assert!((width(page.style("e"), 0.0) - 80.2403).abs() < 1e-3);
+        // Undone half way: back from 50px in half the time.
+        page.class("r", "w");
+        // Sent elsewhere half way: from 50px to 300px in the whole time.
+        page.class("i", "w far");
+        // Undone after the eased half: back in 0.8024 of the time.
+        page.class("e", "e");
+        page.frame(1.6);
+        assert_eq!(width(page.style("r"), 0.0), 50.0);
+        assert_eq!(width(page.style("i"), 0.0), 50.0);
+        page.frame(1.85);
+        assert!((width(page.style("r"), 0.0) - 25.0).abs() < 1e-3);
+        assert!((width(page.style("i"), 0.0) - 112.5).abs() < 1e-3);
+        page.frame(1.6 + 0.8024);
+        assert!(width(page.style("e"), 0.0) < 0.01);
+        page.frame(2.1);
+        assert_eq!(width(page.style("r"), 0.0), 0.0);
+        page.frame(2.6);
+        assert_eq!(width(page.style("i"), 0.0), 300.0);
+        assert!(page.animations.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_reversal_of_a_reversal_and_of_a_negative_delay_shorten_as_the_reference_browser_does() {
+        let mut page = Page::new(
+            &format!(
+                "{WIDTHS} .n {{ width: 0px; transition: width 1s linear -0.2s }} \
+                 .n.on {{ width: 100px }}"
+            ),
+            "<div id=r class=w></div><div id=n class=n></div>",
+        );
+        page.frame(0.0);
+        page.class("r", "w on");
+        page.class("n", "n on");
+        page.frame(1.0);
+        page.frame(1.3);
+        assert_eq!(width(page.style("n"), 0.0), 50.0);
+        // Back from 50px with half the delay and half the time: 40px at
+        // once.
+        page.class("n", "n");
+        page.frame(1.4);
+        assert!((width(page.style("n"), 0.0) - 40.0).abs() < 1e-3);
+        page.frame(1.5);
+        page.class("r", "w");
+        page.frame(1.6);
+        page.frame(1.85);
+        assert!((width(page.style("r"), 0.0) - 25.0).abs() < 1e-3);
+        // Reversed again a quarter of the way back: to 100px in three
+        // quarters of the time.
+        page.class("r", "w on");
+        page.frame(1.9);
+        page.frame(2.275);
+        assert!((width(page.style("r"), 0.0) - 62.5).abs() < 1e-3);
+        page.frame(2.65);
+        assert_eq!(width(page.style("r"), 0.0), 100.0);
+    }
+
+    #[test]
+    fn which_properties_transition_and_how() {
+        let mut page = Page::new(
+            "div { height: 10px }
+             #m { margin: 0px; transition: margin 1s linear }
+             #m.on { margin: 0px 0px 0px 100px }
+             #n { width: 0px; transition: width 1s linear -0.25s }
+             #n.on { width: 100px }
+             #d { width: 0px; transition: width 1s linear 0.5s }
+             #d.on { width: 100px }
+             #p { position: static; transition: position 1s linear }
+             #p.on { position: relative }
+             #q { position: static; transition: position 1s linear allow-discrete }
+             #q.on { position: relative }
+             #v { --x: 10px; width: var(--x); transition: --x 1s allow-discrete }
+             #v.on { --x: 50px }
+             #all { --x: 10px; width: var(--x); transition: all 1s allow-discrete }
+             #all.on { --x: 50px }
+             #t { width: 0px; transition: width 1s linear }
+             #t.on { width: 100px }
+             #t.off { width: 100px; transition-property: height }
+             #z { width: 0px; transition: width 0s, height 1s }
+             #z.on { width: 100px }
+             #vn { --x: 10px; width: var(--x); transition: --x 1s }
+             #vn.on { --x: 50px }
+             #ad { width: auto; transition: width 1s linear allow-discrete }
+             #ad.on { width: 100px }",
+            "<div id=m></div><div id=n></div><div id=d></div><div id=p></div>\
+             <div id=q></div><div id=v></div><div id=all></div><div id=t></div>\
+             <div id=z></div><div id=vn></div><div id=ad></div>",
+        );
+        page.frame(0.0);
+        for id in ["m", "n", "d", "p", "q", "v", "all", "t", "z", "vn", "ad"] {
+            page.class(id, "on");
+        }
+        // One each: `margin`'s changed longhand, `width` for `#n`, `#d`,
+        // `#all`, `#t` and `#ad`, `position` with `allow-discrete`, `--x`
+        // with it; none for a zero duration, nor for `--x` without it.
+        assert_eq!(page.animations.borrow().len(), 8);
+        assert_eq!(width(page.style("z"), 0.0), 100.0);
+        assert_eq!(width(page.style("vn"), 0.0), 50.0);
+        page.frame(1.0);
+        // A shorthand named transitions the longhands that changed.
+        let m = page.node("m");
+        assert!(page.animations.borrow().transitions_of((m, None)));
+        // A negative delay starts part way; a positive one shows the
+        // start value through it.
+        assert_eq!(width(page.style("n"), 0.0), 25.0);
+        page.frame(1.25);
+        assert_eq!(width(page.style("d"), 0.0), 0.0);
+        // A discrete change transitions only with `allow-discrete`, and
+        // flips half way.
+        assert_eq!(
+            page.style("p").position,
+            crate::computed::Position::Relative
+        );
+        assert_eq!(page.style("q").position, crate::computed::Position::Static);
+        // A custom property named transitions, discretely; `all` does not
+        // name one, though the width that takes it transitions.
+        assert_eq!(width(page.style("v"), 0.0), 10.0);
+        let x = |id: &str| {
+            let style = page.style(id);
+            let value = style.custom.as_ref().and_then(|m| m.get("--x")).cloned();
+            value.map(|tokens| tokens.to_vec())
+        };
+        assert_eq!(x("all"), Some(css::tokenize("50px")));
+        assert!((width(page.style("all"), 0.0) - 26.3404).abs() < 1e-3);
+        // A pair that does not interpolate transitions discretely with
+        // `allow-discrete`.
+        assert_eq!(page.style("ad").width, Size::Auto);
+        page.frame(1.5);
+        assert_eq!(width(page.style("ad"), 0.0), 100.0);
+        assert_eq!(margin_left(page.style("m")), 50.0);
+        assert_eq!(
+            page.style("q").position,
+            crate::computed::Position::Relative
+        );
+        assert_eq!(width(page.style("v"), 0.0), 50.0);
+        assert_eq!(width(page.style("t"), 0.0), 50.0);
+        // `transition-property` no longer naming it: the end at once.
+        page.class("t", "off");
+        assert_eq!(width(page.style("t"), 0.0), 100.0);
+        let t = page.node("t");
+        assert!(!page.animations.borrow().transitions_of((t, None)));
+    }
+
+    #[test]
+    fn transitioned_values_inherit_and_a_childs_own_transition_starts_once() {
+        let mut page = Page::new(
+            "#p { color: #000; transition: color 4s linear }
+             #p.on { color: #c80000 }
+             #c { transition: color 1s linear }",
+            "<div id=p><span id=c>c</span><em id=e>e</em></div>",
+        );
+        page.frame(0.0);
+        page.class("p", "on");
+        page.frame(1.0);
+        page.frame(1.5);
+        // The child without a transition takes the parent's value; the
+        // one with its own runs it from black to the end, once.
+        assert_eq!(rgba(page.style("p").color), [25.0, 0.0, 0.0, 1.0]);
+        assert_eq!(rgba(page.style("e").color), [25.0, 0.0, 0.0, 1.0]);
+        assert_eq!(rgba(page.style("c").color), [100.0, 0.0, 0.0, 1.0]);
+        page.frame(2.5);
+        // Its own ended, it inherits the parent's again, and no second
+        // transition starts for it.
+        assert_eq!(rgba(page.style("c").color), [75.0, 0.0, 0.0, 1.0]);
+        let c = page.node("c");
+        assert!(!page.animations.borrow().transitions_of((c, None)));
+        page.frame(3.0);
+        assert!(!page.animations.borrow().transitions_of((c, None)));
+        assert_eq!(page.animations.borrow().len(), 1);
+        page.frame(5.0);
+        assert_eq!(rgba(page.style("c").color), [200.0, 0.0, 0.0, 1.0]);
+        assert!(page.animations.borrow().is_empty());
+    }
+
+    #[test]
+    fn an_animation_outranks_a_transition_and_starts_none() {
+        let mut page = Page::new(
+            "@keyframes grow { from { width: 0px } to { width: 100px } }
+             #a { width: 10px; transition: width 1s linear; animation: grow 2s linear }
+             #a.on { width: 50px }
+             #a.off { width: 50px; animation: none }
+             #b { width: 10px; transition: width 1s linear }
+             #b.on { width: 50px; animation: grow 2s linear paused -1s }",
+            "<div id=a></div><div id=b></div>",
+        );
+        page.frame(0.0);
+        page.frame(0.5);
+        page.class("a", "on");
+        page.class("b", "on");
+        // No transition for a property an animation animates: the
+        // animation's value.
+        assert_eq!(width(page.style("a"), 0.0), 25.0);
+        assert_eq!(width(page.style("b"), 0.0), 50.0);
+        assert_eq!(page.animations.borrow().len(), 2, "the two animations");
+        // Nor when the animation goes: the value jumps.
+        page.class("a", "off");
+        assert_eq!(width(page.style("a"), 0.0), 50.0);
+        assert_eq!(page.animations.borrow().len(), 1);
+    }
+
+    #[test]
+    fn a_running_transition_yields_to_an_animation_of_its_property() {
+        let mut page = Page::new(
+            &format!(
+                "{WIDTHS} @keyframes grow {{ from {{ width: 0px }} to {{ width: 100px }} }}
+                 .w.on.a {{ animation: grow 2s linear paused -0.4s }}"
+            ),
+            "<div id=c class=w></div>",
+        );
+        page.frame(0.0);
+        page.class("c", "w on");
+        page.frame(1.0);
+        page.frame(1.5);
+        assert_eq!(width(page.style("c"), 0.0), 50.0);
+        page.class("c", "w on a");
+        assert_eq!(width(page.style("c"), 0.0), 20.0);
+        let c = page.node("c");
+        assert!(page.animations.borrow().transitions_of((c, None)));
+    }
+
+    #[test]
+    fn values_transition_as_computed_and_inherit_and_an_unrendered_element_starts_none() {
+        let mut page = Page::new(
+            "#b { border-left: 2px solid #f00; color: #00f; transition: border-left-color 1s linear }
+             #b.on { border-left: 2px solid }
+             #f { font-size: 10px; width: 10em; transition: font-size 1s linear }
+             #f.on { font-size: 30px }
+             #h { display: none; width: 0px; transition: width 1s linear }
+             #h.on { display: block; width: 100px }",
+            "<div id=b></div><div id=f></div><div id=h></div>",
+        );
+        page.frame(0.0);
+        page.class("b", "on");
+        page.class("f", "on");
+        page.class("h", "on");
+        // Not rendered before the change: nothing to transition from.
+        assert_eq!(width(page.style("h"), 0.0), 100.0);
+        assert_eq!(page.animations.borrow().len(), 2);
+        page.frame(1.0);
+        page.frame(1.5);
+        // To `currentcolor`, the colour of the element.
+        assert_eq!(
+            rgba(page.style("b").border_color[LEFT]),
+            [127.5, 0.0, 127.5, 1.0]
+        );
+        // A length in `em` follows the transitioned font size.
+        assert_eq!(page.style("f").font_size_px, 20.0);
+        assert_eq!(width(page.style("f"), 0.0), 200.0);
+    }
+
+    #[test]
+    fn display_transitions_out_with_allow_discrete_and_is_inert_meanwhile() {
+        let mut page = Page::new(
+            "#a { opacity: 1; transition: opacity 1s linear, display 1s allow-discrete }
+             #a.hidden { display: none; opacity: 0 }
+             #b { opacity: 1; transition: opacity 1s linear }
+             #b.hidden { display: none; opacity: 0 }",
+            "<div id=a><span id=s>s</span></div><div id=b></div>",
+        );
+        page.frame(0.0);
+        page.class("a", "hidden");
+        page.class("b", "hidden");
+        page.frame(1.0);
+        page.frame(1.5);
+        let a = page.style("a");
+        assert_eq!(a.display, crate::computed::Display::Block);
+        assert_eq!(a.effects().opacity, 0.5);
+        assert!(a.inert && page.style("s").inert, "inert, and what is in it");
+        // Without `display` transitioning, it is gone at once and its
+        // transitions with it.
+        assert_eq!(page.style("b").display, crate::computed::Display::None);
+        let b = page.node("b");
+        assert!(!page.animations.borrow().transitions_of((b, None)));
+        page.frame(2.0);
+        assert_eq!(page.style("a").display, crate::computed::Display::None);
+        assert!(!page.style("a").inert);
+        assert!(page.animations.borrow().is_empty());
+    }
+
+    #[test]
+    fn transitions_end_with_the_element_rendered_and_a_whole_cascade_starts_them() {
+        let mut page = Page::new(
+            WIDTHS,
+            "<section id=s><div id=a class=w></div></section><div id=b class=w></div>",
+        );
+        page.frame(0.0);
+        page.class("a", "w on");
+        page.class("b", "w on");
+        page.frame(1.0);
+        page.frame(1.5);
+        assert_eq!(page.animations.borrow().len(), 2);
+        // Its parent not displayed: no longer rendered.
+        let s = page.node("s");
+        page.document
+            .set_attribute(s, "style", "display: none")
+            .unwrap();
+        page.restyle(&[]);
+        assert_eq!(page.animations.borrow().len(), 1);
+        // Shown again, it starts nothing: it was not rendered before.
+        page.document.remove_attribute(s, "style").unwrap();
+        page.restyle(&[]);
+        assert_eq!(page.animations.borrow().len(), 1);
+        // Taken out of the document.
+        let b = page.node("b");
+        let parent = page.document.parent(b).unwrap();
+        page.document.remove_child(parent, b).unwrap();
+        page.restyle(&[]);
+        assert!(page.animations.borrow().is_empty());
+        // A change of the sheets, the document cascaded whole from the
+        // styles it had.
+        page.sheets = Stylesheets::new(vec![
+            css::parse_stylesheet(
+                ".w { width: 0px; transition: width 1s linear } .w.on { width: 200px }",
+            )
+            .unwrap(),
+        ]);
+        let context = CascadeContext {
+            animations: Some(&page.animations),
+            ..CascadeContext::default()
+        };
+        page.styles = page
+            .sheets
+            .cascade_from(&page.document, &context, &page.styles);
+        assert_eq!(width(page.style("a"), 0.0), 100.0);
+        page.frame(2.0);
+        page.frame(2.5);
+        assert_eq!(width(page.style("a"), 0.0), 150.0);
     }
 
     #[test]

@@ -2293,6 +2293,11 @@ pub struct ComputedStyle {
     /// list properties are; `None` is every initial value. Read through
     /// [`ComputedStyle::decoration`].
     pub decoration: Option<Arc<Decoration>>,
+    /// Not a property: whether the element, or an ancestor, is inert
+    /// (Display 4 §2.9, M22.1) — shown by a transition of `display` alone
+    /// while its style without it has `display: none` — so that hit
+    /// testing passes over it and over what is inside it. Inherited.
+    pub inert: bool,
     /// The transition and animation properties (M22), behind one pointer
     /// as the effects are; `None` is every initial value. Read through
     /// [`ComputedStyle::motion`].
@@ -2366,6 +2371,7 @@ impl Default for ComputedStyle {
             custom: None,
             lists: None,
             decoration: None,
+            inert: false,
             motion: None,
         }
     }
@@ -2548,6 +2554,7 @@ impl ComputedStyle {
             lists: inherited_lists(from),
             decoration: inherited_decoration(from),
             custom: from.custom.clone(),
+            inert: from.inert,
             ..self
         }
     }

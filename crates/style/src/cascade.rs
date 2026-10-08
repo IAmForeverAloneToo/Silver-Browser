@@ -78,6 +78,13 @@
 //!   between the normal declarations and the important ones
 //!   (`cascade::animated`), on the element and on its `::before`,
 //!   `::after` and `::marker`.
+//! * CSS transitions (M22.1): a restyle, and a whole cascade from the
+//!   styles it replaces ([`Stylesheets::cascade_from`]), is a change of
+//!   style that starts, replaces and cancels transitions by Transitions 1
+//!   §3, each element's style before it against its after-change style,
+//!   which inherits from its parent's; their values apply after
+//!   everything, but for a property an animation animates. An element
+//!   shown by a transition of `display` alone is inert.
 //!
 //! What every property accepts: the CSS-wide keywords `inherit`,
 //! `initial` and `unset` (css-cascade-5 §7.3), resolved against the
@@ -103,7 +110,8 @@ use std::sync::{Arc, OnceLock};
 use css::Token;
 use dom::{Change, Document, NodeId};
 
-use crate::animation::{Animations, Phase, Timing, Wanted};
+use crate::animate::{self, Longhand};
+use crate::animation::{Animations, Phase, Property, Timing, Transitioning, Value, Wanted};
 use crate::calc::{self, LengthUnit, Want};
 use crate::computed::{
     AlignPosition, BOTTOM, BaselinePosition, BorderCollapse, BorderSpacing, BorderStyle, BoxSizing,
@@ -222,6 +230,65 @@ struct Computed {
     /// animation, nor do its pseudo-elements, and its children are
     /// restyled when this changes.
     display_none: bool,
+    /// Whether the element is not rendered: its style, its transitions'
+    /// values with it, or an ancestor's has `display: none` (M22.1). A
+    /// change of style starts no transition for an element that was not
+    /// rendered before it.
+    unrendered: bool,
+    /// The element's style without its transitions' values, when it
+    /// differs from [`Computed::style`]: its after-change style
+    /// (Transitions 1 §3), which its children's inherit from.
+    after_change: Option<Arc<ComputedStyle>>,
+}
+
+/// What an element's style inherits from, and what is known of its
+/// parent beside: the parent's [`Computed`].
+#[derive(Clone, Copy)]
+struct Parent<'p> {
+    style: &'p ComputedStyle,
+    /// The parent's after-change style, when it differs from its style.
+    after_change: Option<&'p ComputedStyle>,
+    display_none: bool,
+    unrendered: bool,
+}
+
+impl<'p> Parent<'p> {
+    fn of(computed: &'p Computed) -> Self {
+        Parent {
+            style: &computed.style,
+            after_change: computed.after_change.as_deref(),
+            display_none: computed.display_none,
+            unrendered: computed.unrendered,
+        }
+    }
+}
+
+/// What a change of style knows of a target's style before it, the
+/// before-change style (Transitions 1 §3, M22.1).
+#[derive(Clone, Copy)]
+enum Before<'o> {
+    /// Nothing: the cascade starts and cancels no transition, applying
+    /// those running as they stand — a first cascade's, a print's, a
+    /// recascade's.
+    Unknown,
+    /// The style the last change left, `None` when there was none: the
+    /// target was not rendered, or not in the document.
+    Known(Option<&'o ComputedStyle>),
+}
+
+/// What a target's animations give its style at the timeline's time.
+struct Animating<'a> {
+    /// Those in effect, to apply.
+    animated: Option<Animated<'a>>,
+    /// What those current or in effect animate, which the engine acts as
+    /// if `will-change` named (Web Animations §5.6).
+    acts: WillChange,
+    /// The longhands those in effect animate now: no transition's value
+    /// is applied to them, and none starts for them.
+    now: Vec<Longhand>,
+    /// The longhands they animated in the target's last style, which no
+    /// transition starts for either, as in the reference browser.
+    before: Vec<Longhand>,
 }
 
 /// The styles of an element's pseudo-elements that some rule styles
@@ -496,7 +563,21 @@ impl Stylesheets {
 
     /// [`cascade_document`] with these sheets.
     pub fn cascade(&self, document: &Document, context: &CascadeContext<'_>) -> Styles {
-        self.cascader(document, context).cascade()
+        self.cascader(document, context).cascade(None)
+    }
+
+    /// [`Stylesheets::cascade`] as a change of style from `before`, the
+    /// styles the new ones replace (M22.1): each element's transitions
+    /// started, replaced and cancelled as a restyle's are, so that a
+    /// change of the sheets, of the viewport or of the medium starts
+    /// transitions as a change of the document does.
+    pub fn cascade_from(
+        &self,
+        document: &Document,
+        context: &CascadeContext<'_>,
+        before: &Styles,
+    ) -> Styles {
+        self.cascader(document, context).cascade(Some(before))
     }
 
     /// Whether the rules in force under `media` differ from those
@@ -700,7 +781,7 @@ impl Stylesheets {
         let invalidation = invalidate(document, &self.features, changes);
         let mut cascader = self.cascader(document, context);
         if invalidation.everything || cascader.media != styles.media {
-            *styles = cascader.cascade();
+            *styles = cascader.cascade(Some(styles));
             return Restyle::full(styles);
         }
         for removed in &invalidation.removed {
@@ -725,6 +806,7 @@ impl Stylesheets {
                 .push(node);
         }
         let first_element = document.document_element();
+        let no_parent = Computed::default();
         while let Some((depth, nodes)) = levels.pop_first() {
             for node in nodes {
                 let Some(reach) = pending.remove(&node) else {
@@ -732,9 +814,8 @@ impl Stylesheets {
                 };
                 let parent = document
                     .parent(node)
-                    .and_then(|parent| styles.computed(parent));
-                let parent_style = parent.map(|p| p.style.clone()).unwrap_or_default();
-                let parent_display_none = parent.is_some_and(|p| p.display_none);
+                    .and_then(|parent| styles.computed(parent))
+                    .unwrap_or(&no_parent);
                 // The root element resolves `rem` against the initial
                 // font size, every other element against the root's.
                 let rem = if Some(node) == first_element {
@@ -742,11 +823,15 @@ impl Stylesheets {
                 } else {
                     styles.rem
                 };
+                // The style it had is its before-change style, if it was
+                // rendered (M22.1).
+                let old = styles.computed(node);
+                let before = Before::Known(old.filter(|old| !old.unrendered).map(|old| &old.style));
                 // A change to a pseudo-element's style counts as one to
                 // the element's: how layout hears of it.
-                let computed = cascader.style_of(node, &parent_style, parent_display_none, rem);
+                let computed = cascader.style_of(node, Parent::of(parent), rem, before, old);
                 restyle.computed += 1;
-                let changed = styles.computed(node) != Some(&computed);
+                let changed = old != Some(&computed);
                 styles.set(node, computed);
                 if changed {
                     restyle.changed.push(node);
@@ -774,7 +859,7 @@ impl Stylesheets {
             .and_then(|root| styles.get(root))
             .map_or(ComputedStyle::default().font_size_px, |s| s.font_size_px);
         if rem != styles.rem {
-            *styles = cascader.cascade();
+            *styles = cascader.cascade(Some(styles));
             return Restyle::full(styles);
         }
         restyle
@@ -872,23 +957,49 @@ impl Recascader<'_> {
 impl Recascade for Recascader<'_> {
     fn element(&self, element: NodeId, parent: &ComputedStyle) -> ComputedStyle {
         let base = self.with_matched(element, |matched, resolution| {
-            element_style(self.document, element, matched, parent, resolution, None)
+            element_style(
+                self.document,
+                element,
+                matched,
+                parent,
+                resolution,
+                None,
+                None,
+            )
         });
-        // Its animations at the timeline's time, as the cascade applied
-        // them, none started or matched again.
-        let sampled = self.cascader.borrow().sample((element, None), &base, None);
-        with_animations(base, sampled, |animated| {
-            self.with_matched(element, |matched, resolution| {
-                element_style(
-                    self.document,
-                    element,
-                    matched,
-                    parent,
-                    resolution,
-                    Some(animated),
-                )
-            })
-        })
+        // Its animations and transitions at the timeline's time, as the
+        // cascade applied them, none started, matched again or cancelled.
+        let animating = self.cascader.borrow().sample((element, None), &base, None);
+        let parent = Parent {
+            style: parent,
+            after_change: None,
+            display_none: false,
+            unrendered: false,
+        };
+        let animations = self.cascader.borrow().context.animations;
+        changed_style(
+            animations,
+            (element, None),
+            base,
+            animating.as_ref(),
+            parent,
+            Before::Unknown,
+            |_| true,
+            |parent, animated, transitioned| {
+                self.with_matched(element, |matched, resolution| {
+                    element_style(
+                        self.document,
+                        element,
+                        matched,
+                        parent,
+                        resolution,
+                        animated,
+                        transitioned,
+                    )
+                })
+            },
+        )
+        .0
     }
 
     fn pseudo_element(
@@ -912,34 +1023,51 @@ impl Recascade for Recascader<'_> {
         let base = self.with_matched(element, |matched, resolution| {
             let applied = matched.of(target);
             (marker || !applied.is_empty())
-                .then(|| compute_style(applied, parent, target, None, resolution, None))
+                .then(|| compute_style(applied, parent, target, None, resolution, None, None))
         })?;
         let Some(pseudo) = target.animated() else {
             return Some(base);
         };
-        let sampled = self
-            .cascader
-            .borrow()
-            .sample((element, Some(pseudo)), &base, None);
-        Some(with_animations(base, sampled, |animated| {
-            self.with_matched(element, |matched, resolution| {
-                compute_style(
-                    matched.of(target),
-                    parent,
-                    target,
-                    None,
-                    resolution,
-                    Some(animated),
-                )
-            })
-        }))
+        let target_of = (element, Some(pseudo));
+        let animating = self.cascader.borrow().sample(target_of, &base, None);
+        let parent = Parent {
+            style: parent,
+            after_change: None,
+            display_none: false,
+            unrendered: false,
+        };
+        let animations = self.cascader.borrow().context.animations;
+        let style = changed_style(
+            animations,
+            target_of,
+            base,
+            animating.as_ref(),
+            parent,
+            Before::Unknown,
+            |_| true,
+            |parent, animated, transitioned| {
+                self.with_matched(element, |matched, resolution| {
+                    compute_style(
+                        matched.of(target),
+                        parent,
+                        target,
+                        None,
+                        resolution,
+                        animated,
+                        transitioned,
+                    )
+                })
+            },
+        )
+        .0;
+        Some(style)
     }
 }
 
 /// An element's style from its `matched` declarations, inheriting from
-/// `parent`, with the values of its animations in effect, `animated`:
-/// its `dir` attribute read, and the root element's `display`
-/// blockified.
+/// `parent`, with the values of its animations in effect, `animated`,
+/// and of its running transitions, `transitioned`: its `dir` attribute
+/// read, and the root element's `display` blockified.
 fn element_style(
     document: &Document,
     element: NodeId,
@@ -947,6 +1075,7 @@ fn element_style(
     parent: &ComputedStyle,
     resolution: &Resolution<'_>,
     animated: Option<&Animated<'_>>,
+    transitioned: Option<&[Transitioning]>,
 ) -> ComputedStyle {
     let mut style = compute_style(
         matched.of(Target::Element),
@@ -955,35 +1084,13 @@ fn element_style(
         document.attr(element, "dir"),
         resolution,
         animated,
+        transitioned,
     );
     // The root element's box is a block container or a table, whatever
     // its `display` (CSS2 §9.7, css-display-3 §2.7): what the canvas
     // takes its background from, and every other box is inside.
     if document.document_element() == Some(element) {
         style.display = style.display.blockified();
-    }
-    style
-}
-
-/// `base`, a target's style without its animations, with what they give,
-/// `sampled` ([`Cascader::sample`]): when any is in effect, the style
-/// `recompute` makes with their values; and the properties those current
-/// or in effect animate, which the engine acts as if `will-change` named,
-/// beside its effects.
-fn with_animations(
-    base: ComputedStyle,
-    sampled: Option<(Option<Animated<'_>>, WillChange)>,
-    recompute: impl FnOnce(&Animated<'_>) -> ComputedStyle,
-) -> ComputedStyle {
-    let Some((animated, acts)) = sampled else {
-        return base;
-    };
-    let mut style = match animated {
-        Some(animated) => recompute(&animated),
-        None => base,
-    };
-    if !acts.is_auto() {
-        style.effects_mut().animated = acts;
     }
     style
 }
@@ -1104,18 +1211,19 @@ impl<'a> Cascader<'a> {
         }
     }
 
-    /// The computed style of `element`, a child of an element (or of the
-    /// document node) whose style is `parent_style`, with `rem` the
-    /// root element's font size, `parent_display_none` when the parent's
-    /// style without its animations, or an ancestor's, has `display:
-    /// none`. The element's animations, and its pseudo-elements', are
-    /// matched to what their styles ask for (M22.2).
+    /// The computed style of `element`, a child of `parent`, with `rem`
+    /// the root element's font size, and `before` what is known of its
+    /// style before this change. Its animations, and its
+    /// pseudo-elements', are matched to what their styles ask for
+    /// (M22.2), and their transitions started, replaced and cancelled as
+    /// the change asks (M22.1).
     fn style_of(
         &mut self,
         element: NodeId,
-        parent_style: &ComputedStyle,
-        parent_display_none: bool,
+        parent: Parent<'_>,
         rem: f32,
+        before: Before<'_>,
+        old: Option<&Computed>,
     ) -> Computed {
         let matched = declarations_for(
             self.document,
@@ -1135,26 +1243,50 @@ impl<'a> Cascader<'a> {
             self.document,
             element,
             &matched,
-            parent_style,
+            parent.style,
             &resolution,
             None,
+            None,
         );
-        let display_none = parent_display_none || base.display == Display::None;
-        let sampled = self.sample((element, None), &base, Some(!display_none));
-        let style = with_animations(base, sampled, |animated| {
-            element_style(
-                self.document,
-                element,
-                &matched,
-                parent_style,
-                &resolution,
-                Some(animated),
-            )
-        });
+        let base_display = base.display;
+        let display_none = parent.display_none || base_display == Display::None;
+        let animating = self.sample((element, None), &base, Some(!display_none));
+        let (mut style, after_change) = changed_style(
+            self.context.animations,
+            (element, None),
+            base,
+            animating.as_ref(),
+            parent,
+            before,
+            |style| !parent.unrendered && style.display != Display::None,
+            |parent, animated, transitioned| {
+                element_style(
+                    self.document,
+                    element,
+                    &matched,
+                    parent,
+                    &resolution,
+                    animated,
+                    transitioned,
+                )
+            },
+        );
+        // Shown by a transition of `display` alone, it is inert (Display 4
+        // §2.9): hit testing passes over it.
+        if base_display == Display::None && style.display != Display::None {
+            style.inert = true;
+        }
+        let unrendered = parent.unrendered || style.display == Display::None;
+        let element_parent = Parent {
+            style: &style,
+            after_change: after_change.as_deref(),
+            display_none,
+            unrendered,
+        };
         // Each pseudo-element some rule styles, from the element's style,
         // a list item's marker whether one does or not, as it is drawn
-        // either way; with the animations of those that run them, and
-        // those of the others cancelled.
+        // either way; with the animations and transitions of those that
+        // run them, and those of the others cancelled.
         let pseudo = |target: Target| {
             let applied = matched.of(target);
             let styled = if target == Target::Marker {
@@ -1166,21 +1298,57 @@ impl<'a> Cascader<'a> {
             if !styled {
                 if let Some(pseudo) = pseudo {
                     self.sample((element, Some(pseudo)), &style, Some(false));
+                    if let Some(cell) = self.context.animations {
+                        cell.borrow_mut()
+                            .cancel_transitions((element, Some(pseudo)));
+                    }
                 }
                 return None;
             }
-            let base = compute_style(applied, &style, target, None, &resolution, None);
+            let base = compute_style(applied, &style, target, None, &resolution, None, None);
             let Some(pseudo) = pseudo else {
                 return Some(base);
             };
             // A `::before` or an `::after` is rendered when it has a box.
-            let rendered = !display_none
-                && base.display != Display::None
-                && !(target.takes_content() && base.content == Content::None);
-            let sampled = self.sample((element, Some(pseudo)), &base, Some(rendered));
-            Some(with_animations(base, sampled, |animated| {
-                compute_style(applied, &style, target, None, &resolution, Some(animated))
-            }))
+            let has_box = |style: &ComputedStyle| {
+                !unrendered
+                    && style.display != Display::None
+                    && !(target.takes_content() && style.content == Content::None)
+            };
+            let animating = self.sample(
+                (element, Some(pseudo)),
+                &base,
+                Some(!display_none && has_box(&base)),
+            );
+            let before = match before {
+                Before::Unknown => Before::Unknown,
+                Before::Known(_) => Before::Known(
+                    old.filter(|old| !old.unrendered)
+                        .and_then(|old| old.pseudo.as_deref())
+                        .and_then(|old| old.get(pseudo)),
+                ),
+            };
+            let (style, _) = changed_style(
+                self.context.animations,
+                (element, Some(pseudo)),
+                base,
+                animating.as_ref(),
+                element_parent,
+                before,
+                has_box,
+                |parent, animated, transitioned| {
+                    compute_style(
+                        applied,
+                        parent,
+                        target,
+                        None,
+                        &resolution,
+                        animated,
+                        transitioned,
+                    )
+                },
+            );
+            Some(style)
         };
         let pseudo = PseudoStyles {
             before: pseudo(Target::Before),
@@ -1194,24 +1362,27 @@ impl<'a> Cascader<'a> {
             style,
             pseudo,
             display_none,
+            unrendered,
+            after_change,
         }
     }
 
     /// What `target`'s animations give at the timeline's time, its style
-    /// without them being `base`: those in effect to sample, and the
-    /// properties those current or in effect animate, which the engine
-    /// acts as if `will-change` named (Web Animations §5.6). When
-    /// `update` says whether the target is rendered, its animations are
-    /// first matched to what `base` asks for, none when it is not
-    /// (Animations 1 §2). `None` when it has none, as nearly every
-    /// target, which costs a test.
+    /// without them being `base`: those in effect to sample, what those
+    /// current or in effect animate, and the longhands they animate now
+    /// and did in the target's last style. When `update` says whether the
+    /// target is rendered, its animations are first matched to what
+    /// `base` asks for, none when it is not (Animations 1 §2), and what
+    /// they animate now recorded. `None` when it has none and had none,
+    /// as nearly every target, which costs a test.
     fn sample(
         &self,
         target: crate::animation::Target,
         base: &ComputedStyle,
         update: Option<bool>,
-    ) -> Option<(Option<Animated<'a>>, WillChange)> {
+    ) -> Option<Animating<'a>> {
         let cell = self.context.animations?;
+        let mut before = Vec::new();
         if let Some(rendered) = update {
             let wanted = match (rendered, base.motion.as_deref()) {
                 (true, Some(motion)) if !self.keyframes.is_empty() => {
@@ -1219,17 +1390,20 @@ impl<'a> Cascader<'a> {
                 }
                 _ => Vec::new(),
             };
-            if wanted.is_empty() && cell.borrow().is_empty() {
+            let mut animations = cell.borrow_mut();
+            if wanted.is_empty()
+                && !animations.animates(target)
+                && animations.animated_longhands(target).is_empty()
+            {
                 return None;
             }
-            cell.borrow_mut().update(target, &wanted);
+            before = animations.animated_longhands(target).to_vec();
+            animations.update(target, &wanted);
         }
-        let animations = cell.borrow();
-        if !animations.animates(target) {
-            return None;
-        }
+        let mut animations = cell.borrow_mut();
         let mut samples = Vec::new();
         let mut acts = WillChange::AUTO;
+        let mut now = Vec::new();
         for sample in animations.samples(target) {
             let Some(&keyframes) = self.keyframes.get(sample.name) else {
                 continue;
@@ -1243,6 +1417,7 @@ impl<'a> Cascader<'a> {
                 }
             }
             if let Some(p) = progress.progress {
+                now.extend_from_slice(&keyframes.keyframes.longhands);
                 samples.push(animated::Sampled {
                     keyframes,
                     progress: p,
@@ -1251,12 +1426,27 @@ impl<'a> Cascader<'a> {
                 });
             }
         }
+        now.sort_unstable();
+        now.dedup();
+        if update.is_some() {
+            animations.set_animated_longhands(target, now.clone());
+        }
+        if samples.is_empty() && acts.is_auto() && before.is_empty() && now.is_empty() {
+            return None;
+        }
         let animated = (!samples.is_empty()).then_some(Animated { samples });
-        Some((animated, acts))
+        Some(Animating {
+            animated,
+            acts,
+            now,
+            before,
+        })
     }
 
-    /// Every element's style, cascaded afresh.
-    fn cascade(&mut self) -> Styles {
+    /// Every element's style, cascaded afresh; when `old` holds the
+    /// styles the new ones replace, a change of style of every element
+    /// from those (M22.1).
+    fn cascade(&mut self, old: Option<&Styles>) -> Styles {
         let document = self.document;
         self.viewport_used.set(false);
         let mut styles = Styles {
@@ -1273,15 +1463,30 @@ impl<'a> Cascader<'a> {
         // together, from its own finished style, before any grandchild is
         // reached, and no depth of tree costs stack.
         let mut pending = vec![document.root()];
-        while let Some(parent) = pending.pop() {
-            let (parent_style, parent_display_none) = styles
-                .computed(parent)
-                .map(|p| (p.style.clone(), p.display_none))
+        while let Some(node) = pending.pop() {
+            // What the children need of their parent, its pseudo-elements'
+            // styles aside.
+            let parent = styles
+                .computed(node)
+                .map(|p| Computed {
+                    style: p.style.clone(),
+                    pseudo: None,
+                    display_none: p.display_none,
+                    unrendered: p.unrendered,
+                    after_change: p.after_change.clone(),
+                })
                 .unwrap_or_default();
-            let children: Vec<NodeId> = document.element_children(parent).collect();
+            let children: Vec<NodeId> = document.element_children(node).collect();
             for &child in &children {
                 let rem = root_font_size.unwrap_or(ComputedStyle::default().font_size_px);
-                let computed = self.style_of(child, &parent_style, parent_display_none, rem);
+                let replaced = old.and_then(|old| old.computed(child));
+                let before = match old {
+                    Some(_) => {
+                        Before::Known(replaced.filter(|old| !old.unrendered).map(|old| &old.style))
+                    }
+                    None => Before::Unknown,
+                };
+                let computed = self.style_of(child, Parent::of(&parent), rem, before, replaced);
                 if root_font_size.is_none() {
                     root_font_size = Some(computed.style.font_size_px);
                     styles.rem = computed.style.font_size_px;
@@ -1291,14 +1496,98 @@ impl<'a> Cascader<'a> {
             pending.extend(children.into_iter().rev());
         }
         styles.uses_viewport_units = self.viewport_used.get();
-        // The animations of elements the cascade did not reach are those
-        // of elements out of the document: cancelled.
+        // The animations and transitions of elements the cascade did not
+        // reach are those of elements out of the document: cancelled.
         if let Some(animations) = self.context.animations {
             animations
                 .borrow_mut()
                 .retain(|node| styles.get(node).is_some());
         }
         styles
+    }
+}
+
+/// The style of `target` after a change (M22.1, M22.2), from `base`,
+/// its style without animations and transitions inheriting from
+/// `parent`'s style, and `animating`, what its animations give: the
+/// style with its animations' values, `compute` making it from the
+/// parent's style the target inherits from, the animations and the
+/// transitions; its after-change style, which inherits from the
+/// parent's after-change style; its transitions started, replaced
+/// and cancelled by Transitions 1 §3 when `before` is known; and the
+/// style with the values of those running, but for a property an
+/// animation animates. A target that `rendered` says is not rendered
+/// by that style loses its transitions. The style, and its
+/// after-change style when that differs.
+#[allow(clippy::too_many_arguments)]
+fn changed_style(
+    animations: Option<&RefCell<Animations>>,
+    target: crate::animation::Target,
+    base: ComputedStyle,
+    animating: Option<&Animating<'_>>,
+    parent: Parent<'_>,
+    before: Before<'_>,
+    rendered: impl Fn(&ComputedStyle) -> bool,
+    compute: impl Fn(&ComputedStyle, Option<&Animated<'_>>, Option<&[Transitioning]>) -> ComputedStyle,
+) -> (ComputedStyle, Option<Arc<ComputedStyle>>) {
+    let acts = animating.map_or(WillChange::AUTO, |a| a.acts);
+    let animated = animating.and_then(|a| a.animated.as_ref());
+    let finish = |mut style: ComputedStyle| {
+        if !acts.is_auto() {
+            style.effects_mut().animated = acts;
+        }
+        style
+    };
+    let style = match animated {
+        Some(animated) => finish(compute(parent.style, Some(animated), None)),
+        None => finish(base),
+    };
+    let Some(cell) = animations else {
+        return (style, None);
+    };
+    let after = parent
+        .after_change
+        .map(|parent| finish(compute(parent, animated, None)));
+    if let Before::Known(before) = before {
+        let skip = |longhand: Longhand| {
+            animating.is_some_and(|a| a.now.contains(&longhand) || a.before.contains(&longhand))
+        };
+        cell.borrow_mut().update_transitions(
+            target,
+            before,
+            after.as_ref().unwrap_or(&style),
+            &skip,
+        );
+    }
+    let transitioned: Vec<Transitioning> = {
+        let animations = cell.borrow();
+        if animations.transitions_of(target) {
+            animations
+                .transitioning(target)
+                .into_iter()
+                .filter(|t| match t.property {
+                    Property::Longhand(longhand) => {
+                        !animating.is_some_and(|a| a.now.contains(&longhand))
+                    }
+                    Property::Custom(_) => true,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        }
+    };
+    let mut transitioned_style = (!transitioned.is_empty())
+        .then(|| finish(compute(parent.style, animated, Some(&transitioned))));
+    if !rendered(transitioned_style.as_ref().unwrap_or(&style)) {
+        cell.borrow_mut().cancel_transitions(target);
+        transitioned_style = None;
+    }
+    match transitioned_style {
+        Some(shown) => (shown, Some(Arc::new(after.unwrap_or(style)))),
+        None => {
+            let after = after.filter(|after| *after != style).map(Arc::new);
+            (style, after)
+        }
     }
 }
 
@@ -1553,7 +1842,9 @@ fn collect_from_sheet<'a>(
 /// `font-size`, which the other lengths' `em` is of; then the rest. The
 /// values of the target's animations in effect, `animated`, apply in each
 /// pass after the normal declarations and before the important ones, the
-/// animations' origin (Cascade 5 §6.1, M22.2).
+/// animations' origin, and those of its running transitions,
+/// `transitioned`, after everything, the transitions' (Cascade 5 §6.1,
+/// M22.1, M22.2).
 fn compute_style(
     applied: &[Applied<'_>],
     parent: &ComputedStyle,
@@ -1561,7 +1852,9 @@ fn compute_style(
     dir_attr: Option<&str>,
     resolution: &Resolution<'_>,
     animated: Option<&Animated<'_>>,
+    transitioned: Option<&[Transitioning]>,
 ) -> ComputedStyle {
+    let transitioned = transitioned.unwrap_or_default();
     let mut sorted: Vec<&Applied<'_>> = applied.iter().collect();
     sorted.sort_by_key(|a| (a.tier, a.layer, a.specificity, a.order));
     // Where the important declarations begin.
@@ -1603,6 +1896,26 @@ fn compute_style(
         declared.extend(animated.custom_declarations());
     }
     declared.extend(custom_of(&sorted[important..]));
+    // A transition of a custom property gives its value at the step, or
+    // the guaranteed-invalid value, which `initial` is.
+    let initial = [Token::Ident("initial".into())];
+    for transition in transitioned {
+        if let (Property::Custom(name), Value::Custom(start), Value::Custom(end)) =
+            (&transition.property, &transition.start, &transition.end)
+        {
+            let value = if transition.progress < 0.5 {
+                start
+            } else {
+                end
+            };
+            declared.push(custom::Declaration {
+                name,
+                value: value.as_deref().unwrap_or(&initial),
+                identity: None,
+                animated: false,
+            });
+        }
+    }
     if !declared.is_empty() {
         style.custom = resolution.substitutions.compute(
             &declared,
@@ -1633,6 +1946,19 @@ fn compute_style(
         && let Some(animated) = animated
     {
         animated.font_size(&mut style, parent, resolution);
+    }
+    for transition in transitioned {
+        if let (Property::Longhand(Longhand::FontSize), Value::Style(start), Value::Style(end)) =
+            (&transition.property, &transition.start, &transition.end)
+        {
+            animate::blend(
+                Longhand::FontSize,
+                start,
+                end,
+                transition.progress,
+                &mut style,
+            );
+        }
     }
 
     let bases = LengthBases {
@@ -1700,6 +2026,25 @@ fn compute_style(
         && let Some(animated) = animated
     {
         animated.apply(&mut style, parent, target, &bases, &mut border_color_set);
+    }
+    for transition in transitioned {
+        if let (Property::Longhand(longhand), Value::Style(start), Value::Style(end)) =
+            (&transition.property, &transition.start, &transition.end)
+            && *longhand != Longhand::FontSize
+            && target.applies(longhand.name())
+        {
+            animate::blend(*longhand, start, end, transition.progress, &mut style);
+            let side = match longhand {
+                Longhand::BorderTopColor => Some(TOP),
+                Longhand::BorderRightColor => Some(RIGHT),
+                Longhand::BorderBottomColor => Some(BOTTOM),
+                Longhand::BorderLeftColor => Some(LEFT),
+                _ => None,
+            };
+            if let Some(side) = side {
+                border_color_set[side] = true;
+            }
+        }
     }
     // `normal` computes to `none` on `::before` and `::after`.
     if target.takes_content() && style.content == Content::Normal {
@@ -5091,7 +5436,7 @@ mod tests {
             Vec::new(),
             0,
         )
-        .cascade();
+        .cascade(None);
         let p = styles.get(first(&document, "p")).expect("styled");
         assert_eq!(p.color, Color::rgb8(255, 0, 0));
         // A normal UA declaration still loses to an important author one.

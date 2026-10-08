@@ -16,14 +16,17 @@
 //! it zero; no step computes an infinity less an infinity or zero times
 //! an infinity, so that every result is a number or `None`.
 //!
-//! [`Animations`] is what a document runs (M22.2, M22.3): its timeline's
-//! time, which the caller moves on and which never goes back, and each
-//! target's CSS animations with their clocks. The cascade keeps them as
-//! it computes styles — an element's `animation-name` matched to the
-//! animations it had (Animations 1 §2), each new one waiting for the
-//! next frame to start it — and reads their progress at the timeline's
-//! time; a frame moves the timeline on, starts what waits, and asks
-//! which targets' animations give something new, to be restyled.
+//! [`Animations`] is what a document runs (M22.1 to M22.3): its
+//! timeline's time, which the caller moves on and which never goes back,
+//! and each target's CSS animations and transitions with their clocks.
+//! The cascade keeps them as it computes styles — an element's
+//! `animation-name` matched to the animations it had (Animations 1 §2),
+//! its transitions started, replaced and cancelled at a change of its
+//! style (`transition`), each new one waiting for the next frame to
+//! start it — and reads their progress at the timeline's time; a frame
+//! moves the timeline on, starts what waits, ends the transitions past
+//! their end, and asks which targets' animations and transitions give
+//! something new, to be restyled.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,6 +36,11 @@ use dom::NodeId;
 use crate::computed::{AnimationDirection, AnimationFillMode};
 use crate::easing::Easing;
 use crate::selector_matching::PseudoElement;
+
+mod transition;
+
+use transition::{Completed, CssTransition};
+pub(crate) use transition::{Property, Transitioning, Value};
 
 /// An animation effect's timing.
 #[derive(Debug, Clone, PartialEq)]
@@ -323,7 +331,8 @@ pub(crate) struct Sample<'a> {
     pub(crate) progress: Progress,
 }
 
-/// The animations a document runs, and its timeline (M22.2, M22.3).
+/// The animations and transitions a document runs, and its timeline
+/// (M22.1 to M22.3).
 #[derive(Debug, Clone, Default)]
 pub struct Animations {
     /// The timeline's time, in seconds from its origin.
@@ -331,7 +340,16 @@ pub struct Animations {
     /// Each target's CSS animations, in its `animation-name`'s order,
     /// the last of which wins a property they share.
     css: HashMap<Target, Vec<CssAnimation>>,
-    /// How many there are together, at most [`MAX_ANIMATIONS`].
+    /// Each target's running transitions, one for a property.
+    transitions: HashMap<Target, Vec<CssTransition>>,
+    /// Each target's completed transitions (Transitions 1 §3).
+    completed: HashMap<Target, Vec<Completed>>,
+    /// The longhands each target's animations gave its last style: what
+    /// a change of its style starts no transition for, as in the
+    /// reference browser, since an animation's values hold them.
+    styled: HashMap<Target, Vec<crate::animate::Longhand>>,
+    /// How many animations and running transitions there are together,
+    /// at most [`MAX_ANIMATIONS`].
     count: usize,
 }
 
@@ -354,7 +372,7 @@ impl Animations {
         }
     }
 
-    /// How many animations there are.
+    /// How many animations and running transitions there are.
     pub fn len(&self) -> usize {
         self.count
     }
@@ -364,23 +382,49 @@ impl Animations {
         self.count == 0
     }
 
-    /// Starts every animation waiting for a frame at the timeline's time,
-    /// the frame's: its current time goes on from what it showed.
+    /// The clocks of every animation and running transition.
+    fn clocks(&self) -> impl Iterator<Item = (&Clock, &Timing)> {
+        self.css
+            .values()
+            .flatten()
+            .map(|a| (&a.clock, &a.timing))
+            .chain(
+                self.transitions
+                    .values()
+                    .flatten()
+                    .map(|t| (&t.clock, &t.timing)),
+            )
+    }
+
+    /// Starts every animation and transition waiting for a frame at the
+    /// timeline's time, the frame's: its current time goes on from what
+    /// it showed.
     pub fn start_pending(&mut self) {
         let time = self.time;
-        for animation in self.css.values_mut().flatten() {
-            if let Clock::Pending { from } = animation.clock {
-                animation.clock = Clock::Running { start: time - from };
+        let clocks = self.css.values_mut().flatten().map(|a| &mut a.clock).chain(
+            self.transitions
+                .values_mut()
+                .flatten()
+                .map(|t| &mut t.clock),
+        );
+        for clock in clocks {
+            if let Clock::Pending { from } = *clock {
+                *clock = Clock::Running { start: time - from };
             }
         }
     }
 
-    /// Samples every animation at the timeline's time: the elements
-    /// whose animations give something other than at the last sample,
-    /// which a frame restyles, each once, in order.
+    /// Samples every animation and transition at the timeline's time: the
+    /// elements whose animations or transitions give something other than
+    /// at the last sample, a transition that ended among them, which a
+    /// frame restyles, each once, in order.
     pub fn sample(&mut self) -> Vec<NodeId> {
         let time = self.time;
-        let mut changed = Vec::new();
+        let mut changed: Vec<NodeId> = self
+            .end_transitions()
+            .into_iter()
+            .map(|(node, _)| node)
+            .collect();
         for (&(node, _), animations) in &mut self.css {
             for animation in animations {
                 let now = Sampled::from(animation.timing.progress(current_time(animation, time)));
@@ -390,43 +434,55 @@ impl Animations {
                 }
             }
         }
+        for (&(node, _), transitions) in &mut self.transitions {
+            for transition in transitions {
+                let now = Sampled::from(
+                    transition
+                        .timing
+                        .progress(clock_time(&transition.clock, time)),
+                );
+                if now != transition.last {
+                    transition.last = now;
+                    changed.push(node);
+                }
+            }
+        }
         changed.sort_unstable();
         changed.dedup();
         changed
     }
 
-    /// Whether a frame is wanted now: an animation waits for one to
-    /// start it, or plays in its active phase, its values changing with
-    /// the time.
+    /// Whether a frame is wanted now: an animation or a transition waits
+    /// for one to start it, or plays in its active phase, its values
+    /// changing with the time.
     pub fn needs_frame(&self) -> bool {
         let time = self.time;
-        self.css.values().flatten().any(|a| match a.clock {
+        self.clocks().any(|(clock, timing)| match *clock {
             Clock::Pending { .. } => true,
-            Clock::Running { start } => a.timing.phase(time - start) == Phase::Active,
+            Clock::Running { start } => timing.phase(time - start) == Phase::Active,
             Clock::Held { .. } => false,
         })
     }
 
     /// The timeline's time at which a frame is next wanted when none is
-    /// now: the soonest end of a playing animation's delay; `None` when
-    /// no playing animation is in its delay.
+    /// now: the soonest end of a playing animation's or transition's
+    /// delay; `None` when none is in its delay.
     pub fn next_change(&self) -> Option<f64> {
         let time = self.time;
-        self.css
-            .values()
-            .flatten()
-            .filter_map(|a| match a.clock {
-                Clock::Running { start } if a.timing.phase(time - start) == Phase::Before => {
-                    let end = a.timing.end_time();
-                    Some(start + a.timing.delay.min(end).max(0.0))
+        self.clocks()
+            .filter_map(|(clock, timing)| match *clock {
+                Clock::Running { start } if timing.phase(time - start) == Phase::Before => {
+                    let end = timing.end_time();
+                    Some(start + timing.delay.min(end).max(0.0))
                 }
                 _ => None,
             })
             .min_by(f64::total_cmp)
     }
 
-    /// Keeps the animations of the elements `keep` says, cancelling the
-    /// others': those of elements no longer in the document.
+    /// Keeps the animations and transitions of the elements `keep` says,
+    /// cancelling the others': those of elements no longer in the
+    /// document.
     pub fn retain(&mut self, mut keep: impl FnMut(NodeId) -> bool) {
         let count = &mut self.count;
         self.css.retain(|&(node, _), animations| {
@@ -436,6 +492,33 @@ impl Animations {
             }
             kept
         });
+        self.transitions.retain(|&(node, _), transitions| {
+            let kept = keep(node);
+            if !kept {
+                *count -= transitions.len();
+            }
+            kept
+        });
+        self.completed.retain(|&(node, _), _| keep(node));
+        self.styled.retain(|&(node, _), _| keep(node));
+    }
+
+    /// The longhands `target`'s animations gave its last style.
+    pub(crate) fn animated_longhands(&self, target: Target) -> &[crate::animate::Longhand] {
+        self.styled.get(&target).map_or(&[], Vec::as_slice)
+    }
+
+    /// Records the longhands `target`'s animations give its style now.
+    pub(crate) fn set_animated_longhands(
+        &mut self,
+        target: Target,
+        longhands: Vec<crate::animate::Longhand>,
+    ) {
+        if longhands.is_empty() {
+            self.styled.remove(&target);
+        } else {
+            self.styled.insert(target, longhands);
+        }
     }
 
     /// Whether `target` has an animation.
@@ -529,7 +612,12 @@ impl Animations {
 
 /// `animation`'s current time when the timeline's is `time`.
 fn current_time(animation: &CssAnimation, time: f64) -> f64 {
-    match animation.clock {
+    clock_time(&animation.clock, time)
+}
+
+/// A clock's current time when the timeline's is `time`.
+fn clock_time(clock: &Clock, time: f64) -> f64 {
+    match *clock {
         Clock::Pending { from } => from,
         Clock::Running { start } => time - start,
         Clock::Held { at } => at,
