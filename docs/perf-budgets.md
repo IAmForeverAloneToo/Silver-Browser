@@ -202,7 +202,7 @@ the one way, and faster the other.
 
 M16 was measured on a new machine, with an Intel Xeon at 2.8GHz, which
 ran the benchmarks above again for T4.3: the code before M16
-(`770049c`) and M16's in turn, two runs of each, in release.
+(`6cec3c1`) and M16's in turn, two runs of each, in release.
 
 | | Before M16 | M16 |
 | --- | --- | --- |
@@ -285,7 +285,7 @@ appended paragraph, M16.5 changed three things:
 ### Flexbox (M17)
 
 **T4.3.** The benchmarks above, run on the same kind of machine as M16's:
-the code before M17 (`f04fcc6`) and M17's in turn, in release. The
+the code before M17 (`60f44c9`) and M17's in turn, in release. The
 scrolling and loading rows are four rounds of each, and the matching
 row eight runs; the mutation and pseudo rows are two more rounds, run
 once the layout cache's change below was in. The ranges are over the
@@ -377,7 +377,7 @@ of the container above them, 12% of the instructions at 64 levels and
 ### Grid (M18)
 
 **T4.3.** The benchmarks above, run on the same kind of machine as M17's:
-the code before M18 (`ef22f07`) and M18's built side by side in
+the code before M18 (`1988b4e`) and M18's built side by side in
 release, four rounds of each in turn. The ranges are over the rounds.
 
 | | Before M18 | M18 |
@@ -516,7 +516,7 @@ composite; on the GPU backend, met by the scroll on llvmpipe, and to
 be measured on an integrated GPU, which this machine has not got.
 
 **T4.3.** The benchmarks above, run on the same kind of machine as
-M18's: the code before M19 (`82b6c49`) and M19's built side by side
+M18's: the code before M19 (`d6f47ed`) and M19's built side by side
 in release, four rounds of each in turn. The ranges are over the
 rounds.
 
@@ -654,7 +654,7 @@ page's groups are now drawn through. And the print held every page's raw
 raster, 21 MiB, until the file was written, 1.28 GB at its peak for the
 53; a page's raster is now compressed when it is drawn.
 
-**T4.3.** The benchmarks above, the code before M20 (`8edc19d`) and
+**T4.3.** The benchmarks above, the code before M20 (`edc17df`) and
 M20's built side by side in release, four rounds of each in turn. The
 ranges are over the rounds. The machine is faster than M19's: the same
 rows are shorter in both columns than in M19's table, which is why the
@@ -770,7 +770,7 @@ their fields: under callgrind, twenty appended paragraphs' frames at
 1,000 paragraphs ran 804 million instructions, and 758 million now,
 against 596 million before M21.
 
-**T4.3.** The benchmarks above, the code before M21 (`21cdacc`) and
+**T4.3.** The benchmarks above, the code before M21 (`4e93f37`) and
 M21's built side by side in release, four rounds of each in turn. The
 ranges are over the rounds. The machine is slower than M20's, which is
 why the two tables are not to be read against each other.
@@ -932,7 +932,7 @@ the flex benchmark's grid did 23% more work than before M22 and does 4%
 more, the copies of the larger style; twenty appended paragraphs'
 frames 0.3%.
 
-**T4.3.** The benchmarks above, the code before M22 (`ca4b878`) and
+**T4.3.** The benchmarks above, the code before M22 (`0f1ce3a`) and
 M22's built side by side in release, four rounds of each in turn. The
 ranges are over the rounds.
 
