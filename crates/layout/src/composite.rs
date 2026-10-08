@@ -2,7 +2,9 @@
 //! transform or its opacity alone, which leaves its box what it was to
 //! layout, written into the fragments that carry the element's effects —
 //! in the layout shown and in the layout cache's entries — rather than
-//! laid out again.
+//! laid out again. A restyle's changes are written together, in one walk
+//! over the fragments, each found by the element and pseudo-element it
+//! is of: a frame of a thousand animations walks them once.
 //!
 //! The fragments a change reaches are the element's own boxes, or its
 //! pseudo-element's: those of its node and pseudo-element whose style
@@ -18,6 +20,7 @@
 //! toward the overflow through that box's projection: the outermost such
 //! box around it is measured instead.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use dom::NodeId;
@@ -45,41 +48,63 @@ pub struct EffectsChange<'a> {
     pub transformed: bool,
 }
 
-impl EffectsChange<'_> {
-    /// Whether `fragment` carries the effects the change replaces: one of
-    /// the element's own, or its pseudo-element's.
-    fn reaches(&self, fragment: &Fragment) -> bool {
-        fragment.node == self.node
-            && fragment.generated == self.pseudo
-            && fragment
-                .style
-                .effects
-                .as_ref()
-                .is_some_and(|effects| Arc::ptr_eq(effects, self.old))
-    }
-}
-
-/// What a composited change did to a layout.
+/// What a restyle's composited changes did to a layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Composited {
-    /// Its fragments carry the new effects, and the scrollable overflow
-    /// is as it was.
+    /// Their fragments carry the new effects, and the scrollable
+    /// overflow is as it was.
     Done,
-    /// Its fragments carry the new effects, but a transformed box
+    /// Their fragments carry the new effects, but a transformed box
     /// reached, or now reaches, the bottom of its scroll container or
     /// of the document: the overflow is to be measured again.
     Overflow,
-    /// No fragment carried the old effects: nothing was changed.
+    /// A change found no fragment carrying its old effects.
     Missed,
 }
 
+/// A restyle's changes, found by the element and pseudo-element each is
+/// of: a restyle makes one for each at most.
+struct Changes<'c, 'a> {
+    changes: &'c [EffectsChange<'a>],
+    by_box: HashMap<(NodeId, Option<PseudoElement>), usize>,
+}
+
+impl<'c, 'a> Changes<'c, 'a> {
+    fn new(changes: &'c [EffectsChange<'a>]) -> Self {
+        let by_box: HashMap<_, _> = changes
+            .iter()
+            .enumerate()
+            .map(|(i, change)| ((change.node, change.pseudo), i))
+            .collect();
+        debug_assert_eq!(by_box.len(), changes.len(), "a change for each box");
+        Changes { changes, by_box }
+    }
+
+    /// The change that reaches `fragment`, if one does: one of its
+    /// element's, or its pseudo-element's, whose old effects it carries.
+    fn reaching(&self, fragment: &Fragment) -> Option<usize> {
+        let &i = self.by_box.get(&(fragment.node, fragment.generated))?;
+        fragment
+            .style
+            .effects
+            .as_ref()
+            .is_some_and(|effects| Arc::ptr_eq(effects, self.changes[i].old))
+            .then_some(i)
+    }
+
+    /// Gives `fragment` the new effects of the change `i`.
+    fn write(&self, fragment: &mut Fragment, i: usize) {
+        fragment.style.effects = Some(Arc::clone(self.changes[i].new));
+    }
+}
+
 impl DocumentLayout {
-    /// Gives the fragments `change` reaches its new effects, the
+    /// Gives the fragments `changes` reach their new effects, the
     /// document laid out `viewport_width` wide (M22.4).
-    pub fn composite(&mut self, change: &EffectsChange<'_>, viewport_width: f32) -> Composited {
+    pub fn composite(&mut self, changes: &[EffectsChange<'_>], viewport_width: f32) -> Composited {
         let mut walk = Walk {
-            change,
-            patched: 0,
+            changes: Changes::new(changes),
+            patched: vec![false; changes.len()],
             overflow: false,
         };
         let height = self.height;
@@ -89,29 +114,41 @@ impl DocumentLayout {
             let edge = (root.style.position != Position::Fixed).then_some(height);
             walk.visit(root, viewport_width, edge, false);
         }
-        match (walk.patched, walk.overflow) {
-            (0, _) => Composited::Missed,
-            (_, true) => Composited::Overflow,
-            (_, false) => Composited::Done,
+        if walk.patched.contains(&false) {
+            Composited::Missed
+        } else if walk.overflow {
+            Composited::Overflow
+        } else {
+            Composited::Done
         }
     }
 }
 
-/// Gives the fragments under and at `fragment` that `change` reaches its
-/// new effects: a layout cache entry's.
-pub(crate) fn patch(fragment: &mut Fragment, change: &EffectsChange<'_>) {
-    if change.reaches(fragment) {
-        fragment.style.effects = Some(Arc::clone(change.new));
+/// Gives the fragments of `roots` and under them that `changes` reach
+/// their new effects: the layout cache's entries'.
+pub(crate) fn patch<'f>(
+    roots: impl Iterator<Item = &'f mut Fragment>,
+    changes: &[EffectsChange<'_>],
+) {
+    fn visit(fragment: &mut Fragment, changes: &Changes<'_, '_>) {
+        if let Some(i) = changes.reaching(fragment) {
+            changes.write(fragment, i);
+        }
+        for child in &mut fragment.children {
+            visit(child, changes);
+        }
     }
-    for child in &mut fragment.children {
-        patch(child, change);
+    let changes = Changes::new(changes);
+    for root in roots {
+        visit(root, &changes);
     }
 }
 
-/// A walk over a layout's fragments for one change.
+/// A walk over a layout's fragments for a restyle's changes.
 struct Walk<'c, 'a> {
-    change: &'c EffectsChange<'a>,
-    patched: usize,
+    changes: Changes<'c, 'a>,
+    /// Which changes found a fragment.
+    patched: Vec<bool>,
     overflow: bool,
 }
 
@@ -119,23 +156,23 @@ impl Walk<'_, '_> {
     /// Visits `fragment`, whose containing block is `cb_width` wide, in a
     /// scroll container whose scrollable overflow ends at `edge`, `None`
     /// when it counts toward none; `covered` when a box around it in
-    /// that container is measured for the change, which measures it too.
+    /// that container is measured for the changes, which measures it
+    /// too.
     fn visit(&mut self, fragment: &mut Fragment, cb_width: f32, edge: Option<f32>, covered: bool) {
-        let reached = self.change.reaches(fragment);
+        let reached = self.changes.reaching(fragment);
         // A box whose transform changed is measured, or the outermost
         // transformed box around one, which projects it.
         let measured = edge.is_some()
             && !covered
-            && self.change.transformed
             && matches!(fragment.kind, FragmentKind::Box)
-            && (reached
+            && (reached.is_some_and(|i| self.changes.changes[i].transformed)
                 || (!fragment.clips()
                     && fragment.matrix(cb_width).is_some()
                     && self.holds(fragment)));
         let before = measured.then(|| reach(fragment, cb_width));
-        if reached {
-            fragment.style.effects = Some(Arc::clone(self.change.new));
-            self.patched += 1;
+        if let Some(i) = reached {
+            self.changes.write(fragment, i);
+            self.patched[i] = true;
         }
         let content_width = fragment.content_width(cb_width);
         let (inner_edge, inner_covered) = if fragment.clips() {
@@ -157,11 +194,16 @@ impl Walk<'_, '_> {
         }
     }
 
-    /// Whether a box the change reaches is inside `fragment` where its
-    /// extent counts toward `fragment`'s: not inside a box that clips.
+    /// Whether a box a change of its transform reaches is inside
+    /// `fragment` where its extent counts toward `fragment`'s: not
+    /// inside a box that clips.
     fn holds(&self, fragment: &Fragment) -> bool {
         fragment.children.iter().any(|child| {
-            (matches!(child.kind, FragmentKind::Box) && self.change.reaches(child))
+            (matches!(child.kind, FragmentKind::Box)
+                && self
+                    .changes
+                    .reaching(child)
+                    .is_some_and(|i| self.changes.changes[i].transformed))
                 || (!child.clips() && self.holds(child))
         })
     }
@@ -258,7 +300,7 @@ mod tests {
             new: &new,
             transformed: true,
         };
-        laid.layout.composite(&change, VIEWPORT)
+        laid.layout.composite(&[change], VIEWPORT)
     }
 
     #[test]
@@ -276,7 +318,7 @@ mod tests {
             new: &new,
             transformed: true,
         };
-        assert_eq!(laid.layout.composite(&change, VIEWPORT), Composited::Done);
+        assert_eq!(laid.layout.composite(&[change], VIEWPORT), Composited::Done);
         assert!(Arc::ptr_eq(&effects(&laid, "a"), &new));
         assert!(Arc::ptr_eq(&effects(&laid, "b"), &b));
         // The paragraph inside has effects of its own, none.
@@ -293,8 +335,59 @@ mod tests {
             new: &a,
             ..change
         };
-        assert_eq!(laid.layout.composite(&change, VIEWPORT), Composited::Missed);
+        assert_eq!(
+            laid.layout.composite(&[change], VIEWPORT),
+            Composited::Missed
+        );
         assert!(Arc::ptr_eq(&effects(&laid, "a"), &new));
+    }
+
+    #[test]
+    fn a_restyles_changes_are_written_together() {
+        let mut laid = laid(
+            "<div id=a></div><div id=b></div><div id=c></div>",
+            "div { translate: 0 0; height: 100px }",
+        );
+        let [a, b, c] = ["a", "b", "c"].map(|id| effects(&laid, id));
+        let nodes = ["a", "b", "c"].map(|id| (id, node(&laid, id)));
+        let (new_a, new_b) = (moved(&a, 5.0, 0.5), moved(&b, 5.0, 1.0));
+        let change = |id: &str, old, new, transformed| EffectsChange {
+            node: nodes.iter().find(|(name, _)| *name == id).expect("a box").1,
+            pseudo: None,
+            old,
+            new,
+            transformed,
+        };
+        // Two in the middle: both written, the overflow as it was.
+        let changes = [
+            change("a", &a, &new_a, false),
+            change("b", &b, &new_b, true),
+        ];
+        assert_eq!(laid.layout.composite(&changes, VIEWPORT), Composited::Done);
+        assert!(Arc::ptr_eq(&effects(&laid, "a"), &new_a));
+        assert!(Arc::ptr_eq(&effects(&laid, "b"), &new_b));
+        // One finding no box: missed, though the other is written.
+        let (newer_a, stale) = (moved(&new_a, 0.0, 1.0), Arc::new((*b).clone()));
+        let changes = [
+            change("a", &new_a, &newer_a, true),
+            change("b", &stale, &b, true),
+        ];
+        assert_eq!(
+            laid.layout.composite(&changes, VIEWPORT),
+            Composited::Missed
+        );
+        assert!(Arc::ptr_eq(&effects(&laid, "a"), &newer_a));
+        // One at the bottom: the overflow to measure again.
+        let new_c = moved(&c, 5.0, 1.0);
+        let changes = [
+            change("c", &c, &new_c, true),
+            change("a", &newer_a, &new_a, false),
+        ];
+        assert_eq!(
+            laid.layout.composite(&changes, VIEWPORT),
+            Composited::Overflow
+        );
+        assert!(Arc::ptr_eq(&effects(&laid, "c"), &new_c));
     }
 
     #[test]
@@ -323,7 +416,7 @@ mod tests {
             new: &new,
             transformed: false,
         };
-        assert_eq!(laid.layout.composite(&change, VIEWPORT), Composited::Done);
+        assert_eq!(laid.layout.composite(&[change], VIEWPORT), Composited::Done);
     }
 
     #[test]

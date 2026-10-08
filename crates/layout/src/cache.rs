@@ -191,13 +191,17 @@ impl LayoutCache {
         entries.retain(|node, _| document.contains(*node));
     }
 
-    /// Gives the fragments of the kept entries that `change` reaches its
-    /// new effects, so that a later layout taking them has them: a
-    /// composited change (M22.4, `crate::composite`).
-    pub fn composite(&self, change: &EffectsChange<'_>) {
-        for entry in self.entries.borrow_mut().values_mut() {
-            patch(&mut entry.root, change);
-        }
+    /// Gives the fragments of the kept entries that `changes` reach
+    /// their new effects, so that a later layout taking them has them: a
+    /// restyle's composited changes (M22.4, `crate::composite`).
+    pub fn composite(&self, changes: &[EffectsChange<'_>]) {
+        patch(
+            self.entries
+                .borrow_mut()
+                .values_mut()
+                .map(|entry| &mut entry.root),
+            changes,
+        );
     }
 
     /// Starts a pass: its counts from zero.
@@ -476,15 +480,18 @@ mod tests {
                 !restyle.full && restyle.changed.is_empty() && !restyle.composited.is_empty(),
                 "{restyle:?}"
             );
-            for c in &restyle.composited {
-                self.cache.composite(&EffectsChange {
+            let changes: Vec<EffectsChange<'_>> = restyle
+                .composited
+                .iter()
+                .map(|c| EffectsChange {
                     node: c.node,
                     pseudo: c.pseudo,
                     old: &c.old,
                     new: &c.new,
                     transformed: c.transformed,
-                });
-            }
+                })
+                .collect();
+            self.cache.composite(&changes);
         }
 
         /// A pass with the cache, held to a pass over a full cascade

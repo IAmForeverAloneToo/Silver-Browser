@@ -1558,29 +1558,28 @@ impl Engine {
     }
 
     /// Writes the composited changes `composited` into the layout shown
-    /// and the layout cache (M22.4, `layout::composite`): says whether
-    /// there is a layout and it stands, every change having found the
-    /// boxes it reaches and left the scrollable overflow as it was. When
-    /// it does not, the caller lays the document out again.
+    /// and the layout cache, all in one walk of each (M22.4,
+    /// `layout::composite`): says whether there is a layout and it
+    /// stands, every change having found the boxes it reaches and left
+    /// the scrollable overflow as it was. When it does not, the caller
+    /// lays the document out again.
     fn composite(&mut self, composited: &[style::Composited]) -> bool {
         let Some(cached) = self.shown.layout.as_mut() else {
             return false;
         };
-        for change in composited {
-            let change = layout::EffectsChange {
+        let changes: Vec<layout::EffectsChange<'_>> = composited
+            .iter()
+            .map(|change| layout::EffectsChange {
                 node: change.node,
                 pseudo: change.pseudo,
                 old: &change.old,
                 new: &change.new,
                 transformed: change.transformed,
-            };
-            let done = cached.layout.composite(&change, cached.width);
-            self.shown.layout_cache.composite(&change);
-            if done != layout::Composited::Done {
-                return false;
-            }
-        }
-        true
+            })
+            .collect();
+        let done = cached.layout.composite(&changes, cached.width);
+        self.shown.layout_cache.composite(&changes);
+        done == layout::Composited::Done
     }
 
     /// The document's layout for `viewport_width`, computed once per
