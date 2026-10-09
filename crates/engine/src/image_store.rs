@@ -671,7 +671,7 @@ impl Decoder {
             Work::Header(bytes) | Work::Pixels(bytes, _) => bytes.clone(),
         };
         self.jobs.insert(id, Job { page, url, bytes });
-        self.pool.run(id, move || match work {
+        self.pool.run(id, move |_| match work {
             Work::Header(bytes) => Done::Header(images::read_header(&bytes)),
             Work::Pixels(bytes, size) => {
                 Done::Pixels(images::decode(&bytes).map(|image| match size {

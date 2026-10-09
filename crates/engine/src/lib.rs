@@ -1042,8 +1042,12 @@ impl Engine {
     /// as [`Engine::needs_frame`] does. The shell calls it when the
     /// waker wakes it.
     pub fn poll_network(&mut self) -> bool {
-        while let Some(arrived) = self.network.take() {
-            self.arrived(arrived);
+        while let Some(taken) = self.network.take() {
+            match taken {
+                loader::Taken::Arrived(arrived) => self.arrived(arrived),
+                loader::Taken::Head { page, response } => self.document_head(page, response),
+                loader::Taken::Body { page, bytes } => self.document_body(page, &bytes),
+            }
         }
         while let Some(finished) = self.decoder.take() {
             self.image_read(finished);
@@ -1288,6 +1292,32 @@ impl Engine {
         }
     }
 
+    /// The head of the response to the navigation under way's document
+    /// fetch: its body is to come (M24.8).
+    fn document_head(&mut self, page: PageId, response: net::Response) {
+        if let Some(navigation) = &mut self.navigation
+            && matches!(navigation.incoming, Incoming::Fetching(id) if id == page)
+        {
+            navigation.incoming = Incoming::Receiving {
+                id: page,
+                head: Box::new(response),
+                body: Vec::new(),
+            };
+        }
+    }
+
+    /// A piece of the body of the navigation under way's document.
+    fn document_body(&mut self, page: PageId, bytes: &[u8]) {
+        if let Some(Navigation {
+            incoming: Incoming::Receiving { id, body, .. },
+            ..
+        }) = &mut self.navigation
+            && *id == page
+        {
+            body.extend_from_slice(bytes);
+        }
+    }
+
     /// Takes the response to the document fetch of the navigation under
     /// way (docs/design/navigation.md, "What a response becomes"): a
     /// network error shows an error page; a document is parsed and its
@@ -1299,7 +1329,20 @@ impl Engine {
         let Some(navigation) = self.navigation.take() else {
             return;
         };
-        if !matches!(navigation.incoming, Incoming::Fetching(id) if id == page) {
+        // A streamed response is its head as it came, with the body that
+        // arrived after it in pieces.
+        let result = match (result, &navigation.incoming) {
+            (Ok(_), Incoming::Receiving { head, body, .. }) => {
+                let mut response = (**head).clone();
+                response.body = body.clone();
+                Ok(response)
+            }
+            (result, _) => result,
+        };
+        if !matches!(
+            navigation.incoming,
+            Incoming::Fetching(id) | Incoming::Receiving { id, .. } if id == page
+        ) {
             self.navigation = Some(navigation);
             return;
         }

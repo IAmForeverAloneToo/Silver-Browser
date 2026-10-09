@@ -26,7 +26,7 @@ pub mod url;
 
 pub use address_space::AddressSpace;
 pub use error::{AbortHandle, NetworkError, TlsFailure};
-pub use fetch::{Client, Destination, Initiator, Method, Mode, Request, Response};
+pub use fetch::{Client, Delivery, Destination, Initiator, Method, Mode, Request, Response};
 pub use headers::HeaderList;
 pub use mime::MimeType;
 pub use url::{Host, Origin, Url};

@@ -56,6 +56,9 @@ pub enum Reply {
     SendAndClose(Vec<u8>),
     /// Waits, then does the rest.
     After(Duration, Box<Reply>),
+    /// Writes each piece after waiting its time, and keeps the
+    /// connection: a response arriving as a slow network brings it.
+    Pieces(Vec<(Duration, Vec<u8>)>),
     /// Closes the connection without a word.
     Close,
     /// Never answers, holding the connection open until the server stops.
@@ -294,6 +297,14 @@ fn serve(shared: &Shared, tcp: TcpStream, connection: usize) -> io::Result<()> {
                 Reply::After(wait, then) => {
                     sleep_unless_stopped(shared, wait);
                     reply = *then;
+                }
+                Reply::Pieces(pieces) => {
+                    for (wait, bytes) in pieces {
+                        sleep_unless_stopped(shared, wait);
+                        stream.write_all(&bytes)?;
+                        stream.flush()?;
+                    }
+                    break;
                 }
                 Reply::Close => return Ok(()),
                 Reply::Hang => {

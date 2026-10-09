@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use dom::{Document, NodeId};
 use encoding::Encoding;
-use net::{AbortHandle, Client, NetworkError, Request, Response};
+use net::{AbortHandle, Client, Delivery, NetworkError, Request, Response};
 
 pub(crate) use pool::{JobId, Lost, Pool, Waker};
 pub(crate) use sheets::{Page, may_touch_sheets};
@@ -86,6 +86,30 @@ struct Flight {
     abort: AbortHandle,
 }
 
+/// What a fetch's thread sends back: a streamed document's head and
+/// the pieces of its body as they arrive (M24.8), and the result.
+pub(crate) enum Fetched {
+    Head(Response),
+    Body(Vec<u8>),
+    Done(Result<Response, NetworkError>),
+}
+
+/// What [`Network::take`] gives: a fetch's result, or a piece of a
+/// document's response on its way.
+pub(crate) enum Taken {
+    Arrived(Arrived),
+    /// The head of a document's response, its body to come.
+    Head {
+        page: PageId,
+        response: Response,
+    },
+    /// A piece of a document's body.
+    Body {
+        page: PageId,
+        bytes: Vec<u8>,
+    },
+}
+
 /// A fetch's result, with what it was for.
 pub(crate) struct Arrived {
     pub(crate) id: FetchId,
@@ -97,7 +121,7 @@ pub(crate) struct Arrived {
 /// The engine's fetches: the client they share, the threads they run
 /// on, and those in flight, each of which can be aborted.
 pub(crate) struct Network {
-    pool: Pool<Result<Response, NetworkError>>,
+    pool: Pool<Fetched>,
     /// Made at the first fetch: a document given to the engine needs
     /// none.
     client: Option<Arc<Client>>,
@@ -125,8 +149,10 @@ impl Network {
         self.pool.set_waker(waker);
     }
 
-    /// Starts fetching `request` for `target` of `page`.
+    /// Starts fetching `request` for `target` of `page`; a document's
+    /// response comes in pieces as it arrives.
     pub(crate) fn fetch(&mut self, page: PageId, target: Target, request: Request) -> FetchId {
+        let streamed = target == Target::Document;
         let client = self
             .client
             .get_or_insert_with(|| Arc::new(Client::default()))
@@ -141,7 +167,17 @@ impl Network {
                 abort: request.abort.clone(),
             },
         );
-        self.pool.run(id, move || client.fetch(&request));
+        self.pool.run(id, move |report| {
+            if !streamed {
+                return Fetched::Done(client.fetch(&request));
+            }
+            Fetched::Done(
+                client.fetch_streaming(&request, &mut |delivery| match delivery {
+                    Delivery::Head(response) => report.send(Fetched::Head(response.clone())),
+                    Delivery::Body(bytes) => report.send(Fetched::Body(bytes.to_vec())),
+                }),
+            )
+        });
         id
     }
 
@@ -171,11 +207,23 @@ impl Network {
         self.flights.clear();
     }
 
-    /// A finished fetch still wanted, if one has finished.
-    pub(crate) fn take(&mut self) -> Option<Arrived> {
+    /// A finished fetch still wanted, or a piece of a document's
+    /// response on its way, if one has come.
+    pub(crate) fn take(&mut self) -> Option<Taken> {
         while let Some((id, result)) = self.pool.try_take() {
-            if let Some(arrived) = self.arrived(id, result) {
-                return Some(arrived);
+            let page = |flights: &HashMap<FetchId, Flight>| flights.get(&id).map(|f| f.page);
+            let taken = match result {
+                Ok(Fetched::Head(response)) => {
+                    page(&self.flights).map(|page| Taken::Head { page, response })
+                }
+                Ok(Fetched::Body(bytes)) => {
+                    page(&self.flights).map(|page| Taken::Body { page, bytes })
+                }
+                Ok(Fetched::Done(result)) => self.arrived(id, Ok(result)).map(Taken::Arrived),
+                Err(Lost) => self.arrived(id, Err(Lost)).map(Taken::Arrived),
+            };
+            if taken.is_some() {
+                return taken;
             }
         }
         None
@@ -206,7 +254,7 @@ impl Network {
     }
 
     #[cfg(test)]
-    pub(crate) fn pool(&self) -> &Pool<Result<Response, NetworkError>> {
+    pub(crate) fn pool(&self) -> &Pool<Fetched> {
         &self.pool
     }
 }
@@ -335,6 +383,13 @@ fn is_attachment(response: &Response) -> bool {
 pub(crate) enum Incoming {
     /// Its document is being fetched.
     Fetching(PageId),
+    /// Its document's response has begun: its head, and its body so far
+    /// (M24.8).
+    Receiving {
+        id: PageId,
+        head: Box<Response>,
+        body: Vec<u8>,
+    },
     /// Its document has arrived, and waits for its blocking sheets.
     Waiting {
         page: Box<Page>,
@@ -345,7 +400,7 @@ pub(crate) enum Incoming {
 impl Incoming {
     pub(crate) fn id(&self) -> PageId {
         match self {
-            Incoming::Fetching(id) => *id,
+            Incoming::Fetching(id) | Incoming::Receiving { id, .. } => *id,
             Incoming::Waiting { page, .. } => page.id(),
         }
     }

@@ -11,7 +11,7 @@ use std::io::{self, Write};
 use crate::Url;
 use crate::headers::{HeaderList, is_http_token_code_point};
 
-pub use read::{Malformed, ReadError, read_response};
+pub use read::{BodySink, Malformed, ReadError, read_response, read_response_to};
 
 /// The most a response's status lines and header fields may take,
 /// interim responses and a chunked body's trailer fields included: 256

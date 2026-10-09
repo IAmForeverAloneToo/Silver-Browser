@@ -37,6 +37,96 @@ fn redirect(status: u16, location: &str) -> Reply {
     Reply::with_fields(status, &[("Location", location)], b"")
 }
 
+/// What a streamed fetch handed over, and when.
+#[derive(Debug, Default)]
+struct Handed {
+    head: Option<(u16, Vec<Url>)>,
+    pieces: Vec<(Instant, Vec<u8>)>,
+}
+
+fn streamed(request: &Request) -> (Result<Response, NetworkError>, Handed) {
+    let mut handed = Handed::default();
+    let result = client().fetch_streaming(request, &mut |delivery| match delivery {
+        Delivery::Head(response) => {
+            assert!(handed.head.is_none(), "one head");
+            assert!(response.body.is_empty());
+            handed.head = Some((response.status, response.url_list.clone()));
+        }
+        Delivery::Body(bytes) => handed.pieces.push((Instant::now(), bytes.to_vec())),
+    });
+    (result, handed)
+}
+
+#[test]
+fn a_streamed_body_comes_in_pieces_as_it_arrives() {
+    let gap = Duration::from_millis(400);
+    let server = TestServer::plain(move |request| match request.target.as_str() {
+        "/slow" => Reply::Pieces(vec![
+            (
+                Duration::ZERO,
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 10\r\n\r\nfirst"
+                    .to_vec(),
+            ),
+            (gap, b"after".to_vec()),
+        ]),
+        "/moved" => redirect(302, "/slow"),
+        _ => Reply::with_fields(404, &[], b""),
+    });
+    let start = Instant::now();
+    let (result, handed) = streamed(&document(server.url("/moved")));
+    let response = result.unwrap();
+    assert!(response.body.is_empty());
+    assert_eq!(response.status, 200);
+    // The redirect is followed, not handed over.
+    let (status, urls) = handed.head.unwrap();
+    assert_eq!(status, 200);
+    assert_eq!(urls, [server.url("/moved"), server.url("/slow")]);
+    let body: Vec<u8> = handed.pieces.iter().flat_map(|(_, p)| p.clone()).collect();
+    assert_eq!(body, b"firstafter");
+    // The first piece came before the second was sent.
+    let (first_at, first) = &handed.pieces[0];
+    assert_eq!(first, b"first");
+    assert!(
+        first_at.duration_since(start) < gap,
+        "{:?}",
+        first_at.duration_since(start)
+    );
+}
+
+#[test]
+fn a_streamed_fetch_hands_over_codings_removed_and_other_schemes_whole() {
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use std::io::Write;
+    let mut gzip = GzEncoder::new(Vec::new(), Compression::default());
+    gzip.write_all(&b"zipped ".repeat(1000)).unwrap();
+    let gzip = gzip.finish().unwrap();
+    let server = TestServer::plain(move |request| match request.target.as_str() {
+        "/zipped" => Reply::with_fields(
+            200,
+            &[("Content-Type", "text/plain"), ("Content-Encoding", "gzip")],
+            &gzip,
+        ),
+        _ => Reply::with_fields(404, &[], b""),
+    });
+    let (result, handed) = streamed(&document(server.url("/zipped")));
+    assert!(result.unwrap().body.is_empty());
+    let body: Vec<u8> = handed.pieces.iter().flat_map(|(_, p)| p.clone()).collect();
+    assert_eq!(body, b"zipped ".repeat(1000));
+    let (result, handed) = streamed(&document(url("data:text/html,hi")));
+    assert!(result.unwrap().body.is_empty());
+    assert_eq!(handed.head.unwrap().0, 200);
+    assert_eq!(handed.pieces.len(), 1);
+    assert_eq!(handed.pieces[0].1, b"hi");
+    // A failure after the head is the fetch's error.
+    let server = TestServer::plain(|_| {
+        Reply::SendAndClose(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nshort".to_vec())
+    });
+    let (result, handed) = streamed(&document(server.url("/cut")));
+    assert_eq!(result.unwrap_err(), NetworkError::Truncated);
+    assert!(handed.head.is_some());
+}
+
 #[test]
 fn a_client_is_shared_between_threads() {
     fn shared<T: Send + Sync>() {}

@@ -211,6 +211,27 @@ impl Client {
     /// Fetches `request`, blocking until the response is whole or the
     /// fetch fails.
     pub fn fetch(&self, request: &Request) -> Result<Response, NetworkError> {
+        self.fetch_to(request, None)
+    }
+
+    /// [`Client::fetch`], handing the final response to `deliver` as it
+    /// is read (M24.8): its head first, its body empty, then its body a
+    /// piece at a time, its content codings removed. The response
+    /// returned has an empty body. A redirect's response is not handed
+    /// over; what it redirects to is.
+    pub fn fetch_streaming(
+        &self,
+        request: &Request,
+        deliver: &mut dyn FnMut(Delivery<'_>),
+    ) -> Result<Response, NetworkError> {
+        self.fetch_to(request, Some(deliver))
+    }
+
+    fn fetch_to<'d>(
+        &self,
+        request: &Request,
+        mut deliver: Option<&mut (dyn FnMut(Delivery<'_>) + 'd)>,
+    ) -> Result<Response, NetworkError> {
         let mut url = request.url.clone();
         let mut method = request.method;
         let mut body = request.body.clone();
@@ -224,7 +245,14 @@ impl Client {
                 *url_list.last_mut().expect("never empty") = url.clone();
             }
             check(request, &url)?;
-            let mut response = self.scheme_fetch(request, &url, method, body.as_deref())?;
+            let mut response = self.scheme_fetch(
+                request,
+                &url,
+                &url_list,
+                method,
+                body.as_deref(),
+                deliver.as_deref_mut(),
+            )?;
             let Some(location) = location(&response, &url)? else {
                 response.url_list = url_list;
                 return Ok(response);
@@ -248,21 +276,26 @@ impl Client {
         }
     }
 
-    /// One hop's fetch, by `url`'s scheme.
-    fn scheme_fetch(
+    /// One hop's fetch, by `url`'s scheme, the response handed to
+    /// `deliver` as it is read when there is one (`url_list` the URLs so
+    /// far, this one last).
+    #[allow(clippy::too_many_arguments)]
+    fn scheme_fetch<'d>(
         &self,
         request: &Request,
         url: &Url,
+        url_list: &[Url],
         method: Method,
         body: Option<&[u8]>,
+        deliver: Option<&mut (dyn FnMut(Delivery<'_>) + 'd)>,
     ) -> Result<Response, NetworkError> {
         match url.scheme() {
-            "about" => about(url),
-            "data" => data(url, request.limit(self.body_limit)),
-            "file" => file::fetch(url, request.limit(self.body_limit)),
+            "about" => whole(about(url), deliver),
+            "data" => whole(data(url, request.limit(self.body_limit)), deliver),
+            "file" => whole(file::fetch(url, request.limit(self.body_limit)), deliver),
             "http" | "https" => {
                 let headers = request_headers(request.destination);
-                let received = self.transport.exchange(&Exchange {
+                let exchange = Exchange {
                     method: method.as_str(),
                     url,
                     headers: &headers,
@@ -273,7 +306,18 @@ impl Client {
                         .map(|initiator| initiator.address_space),
                     abort: &request.abort,
                     body_limit: request.body_limit,
-                })?;
+                };
+                let received = match deliver {
+                    None => self.transport.exchange(&exchange)?,
+                    Some(deliver) => {
+                        let mut stream = Streaming {
+                            url,
+                            url_list,
+                            deliver,
+                        };
+                        self.transport.exchange_streaming(&exchange, &mut stream)?
+                    }
+                };
                 let response = received.response;
                 Ok(Response {
                     url_list: vec![url.clone()],
@@ -287,6 +331,70 @@ impl Client {
             }
             other => Err(NetworkError::BadScheme(other.to_owned())),
         }
+    }
+}
+
+/// A response read whole, handed to `deliver` if there is one as a
+/// streamed one would be: its head, then its body.
+fn whole(
+    response: Result<Response, NetworkError>,
+    deliver: Option<&mut (dyn FnMut(Delivery<'_>) + '_)>,
+) -> Result<Response, NetworkError> {
+    let mut response = response?;
+    if let Some(deliver) = deliver {
+        let body = std::mem::take(&mut response.body);
+        deliver(Delivery::Head(&response));
+        if !body.is_empty() {
+            deliver(Delivery::Body(&body));
+        }
+    }
+    Ok(response)
+}
+
+/// What a streamed fetch hands over as the response is read (M24.8).
+pub enum Delivery<'a> {
+    /// The final response, its body empty: what [`Client::fetch`] would
+    /// return but for the body.
+    Head(&'a Response),
+    /// A piece of its body, its content codings removed.
+    Body(&'a [u8]),
+}
+
+/// A hop's response streamed to a fetch's `deliver`, unless it is a
+/// redirect, which is followed instead.
+struct Streaming<'a, 'd> {
+    url: &'a Url,
+    url_list: &'a [Url],
+    deliver: &'a mut (dyn FnMut(Delivery<'_>) + 'd),
+}
+
+impl transport::ResponseStream for Streaming<'_, '_> {
+    fn head(
+        &mut self,
+        status: u16,
+        reason: &[u8],
+        headers: &HeaderList,
+        space: AddressSpace,
+    ) -> bool {
+        let response = Response {
+            url_list: self.url_list.to_vec(),
+            status,
+            status_message: reason.to_vec(),
+            mime_type: mime::extract_mime_type(headers),
+            headers: headers.clone(),
+            body: Vec::new(),
+            address_space: Some(space),
+        };
+        // A redirect, or a broken one, is the fetch's to follow or fail.
+        if !matches!(location(&response, self.url), Ok(None)) {
+            return false;
+        }
+        (self.deliver)(Delivery::Head(&response));
+        true
+    }
+
+    fn body(&mut self, bytes: &[u8]) {
+        (self.deliver)(Delivery::Body(bytes));
     }
 }
 

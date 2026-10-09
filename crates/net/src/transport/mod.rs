@@ -21,7 +21,7 @@ use crate::address_space::AddressSpace;
 use crate::content_coding;
 use crate::error::{AbortHandle, NetworkError};
 use crate::headers::HeaderList;
-use crate::http::{self, Limits, ReadError, RequestMessage, Response};
+use crate::http::{self, BodySink, Limits, ReadError, RequestMessage, Response};
 
 use pool::{Connection, OriginKey, Pool};
 use stream::{Socket, Stream, Waiter};
@@ -113,6 +113,55 @@ pub struct Exchange<'a> {
     pub body_limit: Option<usize>,
 }
 
+/// Where a streamed exchange's response goes as it is read (M24.8).
+pub trait ResponseStream {
+    /// The response's head has been read from a server in `space`:
+    /// whether its body is to be handed here as it arrives, rather than
+    /// read whole into the response.
+    fn head(
+        &mut self,
+        status: u16,
+        reason: &[u8],
+        headers: &HeaderList,
+        space: AddressSpace,
+    ) -> bool;
+    /// A piece of the body, its content codings removed.
+    fn body(&mut self, bytes: &[u8]);
+}
+
+/// The reader's sink for a streamed exchange: the stream told of the
+/// head, and the body's content codings removed on the way to it.
+struct Decoding<'a> {
+    stream: &'a mut dyn ResponseStream,
+    space: AddressSpace,
+    limit: usize,
+    decoder: Option<content_coding::Decoder>,
+    /// Why the decoding stopped the read.
+    error: Option<NetworkError>,
+}
+
+impl BodySink for Decoding<'_> {
+    fn head(&mut self, status: u16, reason: &[u8], headers: &HeaderList) -> bool {
+        let streamed = self.stream.head(status, reason, headers, self.space);
+        if streamed {
+            self.decoder = Some(content_coding::Decoder::new(headers, self.limit));
+        }
+        streamed
+    }
+
+    fn body(&mut self, bytes: &[u8]) -> Result<(), ReadError> {
+        let (Some(decoder), stream) = (self.decoder.as_mut(), &mut *self.stream) else {
+            return Ok(());
+        };
+        decoder
+            .push(bytes, &mut |decoded| stream.body(decoded))
+            .map_err(|error| {
+                self.error = Some(error);
+                ReadError::Stopped
+            })
+    }
+}
+
 /// A response, and the address space of the server it came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Received {
@@ -170,6 +219,8 @@ impl Failure {
                 ReadError::HeadersTooLarge => NetworkError::HeadersTooLarge,
                 ReadError::BodyTooLarge => NetworkError::BodyTooLarge,
                 ReadError::SwitchingProtocols => NetworkError::UnaskedUpgrade,
+                // Its cause is the sink's; see `exchange_to`.
+                ReadError::Stopped => NetworkError::ContentCoding,
             },
         }
     }
@@ -210,6 +261,26 @@ impl Transport {
     /// connection: the server may have closed it just as it was taken
     /// (RFC 9110 §9.2.2).
     pub fn exchange(&self, exchange: &Exchange) -> Result<Received, NetworkError> {
+        self.exchange_to(exchange, None)
+    }
+
+    /// [`Transport::exchange`], the response's head given to `stream`
+    /// as soon as it is read and, if the stream asks, its body a piece
+    /// at a time as it arrives, its content codings removed; the
+    /// response returned then has an empty body (M24.8).
+    pub fn exchange_streaming(
+        &self,
+        exchange: &Exchange,
+        stream: &mut dyn ResponseStream,
+    ) -> Result<Received, NetworkError> {
+        self.exchange_to(exchange, Some(stream))
+    }
+
+    fn exchange_to(
+        &self,
+        exchange: &Exchange,
+        mut stream: Option<&mut dyn ResponseStream>,
+    ) -> Result<Received, NetworkError> {
         let url = exchange.url;
         let mut limits = self.config.limits;
         if let Some(own) = exchange.body_limit {
@@ -253,12 +324,47 @@ impl Transport {
                 });
             }
             connection.reader.get_mut().lend(exchange.abort);
+            let mut decoding = stream.as_deref_mut().map(|stream| Decoding {
+                stream,
+                space: connection.space,
+                limit: limits.body_bytes,
+                decoder: None,
+                error: None,
+            });
             let result = match http::write_request(connection.reader.get_mut(), &message) {
                 Err(e) => Err(Failure::Send(e)),
-                Ok(()) => http::read_response(&mut connection.reader, to_head, limits)
-                    .map_err(Failure::Read),
+                Ok(()) => http::read_response_to(
+                    &mut connection.reader,
+                    to_head,
+                    limits,
+                    decoding.as_mut().map(|d| d as &mut dyn BodySink),
+                )
+                .map_err(Failure::Read),
             };
             connection.reader.get_mut().release();
+            // The body was streamed: its codings' last bytes, or why the
+            // decoding stopped it. The response's own body is then empty.
+            let result = match (result, decoding) {
+                (result, Some(mut decoding)) if decoding.decoder.is_some() => {
+                    let stream = &mut *decoding.stream;
+                    match (result, decoding.error.take()) {
+                        (_, Some(error)) => return Err(error),
+                        (Ok(response), None) => {
+                            let finished = decoding
+                                .decoder
+                                .as_mut()
+                                .expect("a decoder")
+                                .finish(&mut |bytes| stream.body(bytes));
+                            match finished {
+                                Ok(()) => Ok(response),
+                                Err(error) => return Err(error),
+                            }
+                        }
+                        (Err(failure), None) => Err(failure),
+                    }
+                }
+                (result, _) => result,
+            };
             match result {
                 Ok(mut response) => {
                     // Bytes already waiting would be read as the next

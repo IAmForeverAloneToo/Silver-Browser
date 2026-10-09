@@ -21,7 +21,21 @@ pub(crate) type JobId = u64;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Lost;
 
-type Job<T> = Box<dyn FnOnce() -> T + Send>;
+type Job<T> = Box<dyn FnOnce(&Report<T>) -> T + Send>;
+
+/// What a running job reports through before it finishes (M24.8): each
+/// value goes back over the channel results take, the waker called, and
+/// is taken as a result is, the job still running.
+pub(crate) struct Report<T> {
+    shared: Arc<Shared<T>>,
+    id: JobId,
+}
+
+impl<T: Send + 'static> Report<T> {
+    pub(crate) fn send(&self, value: T) {
+        finish(&self.shared, self.id, Ok(value));
+    }
+}
 type Finished<T> = (JobId, Result<T, Lost>);
 
 /// Runs jobs on threads of its own.
@@ -73,7 +87,7 @@ impl<T: Send + 'static> Pool<T> {
     /// Runs `job` as `id`: on a new thread if fewer than the cap are
     /// running, or else on the first thread free, after the jobs
     /// already waiting.
-    pub(crate) fn run(&self, id: JobId, job: impl FnOnce() -> T + Send + 'static) {
+    pub(crate) fn run(&self, id: JobId, job: impl FnOnce(&Report<T>) -> T + Send + 'static) {
         let mut queue = lock(&self.shared.queue);
         queue.jobs.push_back((id, Box::new(job)));
         start_thread(&self.shared, &mut queue);
@@ -157,7 +171,11 @@ fn work<T: Send + 'static>(shared: &Arc<Shared<T>>) {
             next
         };
         guard.job = Some(id);
-        let result = job();
+        let report = Report {
+            shared: shared.clone(),
+            id,
+        };
+        let result = job(&report);
         guard.job = None;
         finish(shared, id, Ok(result));
     }
@@ -245,7 +263,7 @@ mod tests {
         for id in 0..10 {
             let gate = gate.clone();
             let started = started.clone();
-            pool.run(id, move || {
+            pool.run(id, move |_| {
                 started.fetch_add(1, Ordering::SeqCst);
                 gate.wait();
                 id as usize
@@ -270,7 +288,7 @@ mod tests {
         let order = Arc::new(Mutex::new(Vec::new()));
         for id in 0..20 {
             let order = order.clone();
-            pool.run(id, move || {
+            pool.run(id, move |_| {
                 lock(&order).push(id);
                 0
             });
@@ -287,7 +305,7 @@ mod tests {
         pool.set_waker(Arc::new(move || {
             counter.fetch_add(1, Ordering::SeqCst);
         }));
-        pool.run(7, || 42);
+        pool.run(7, |_| 42);
         assert_eq!(pool.take_within(WAIT), Some((7, Ok(42))));
         // The waker is called once the result can be taken, so it comes
         // after.
@@ -306,11 +324,29 @@ mod tests {
     }
 
     #[test]
+    fn a_job_reports_as_it_goes_before_it_finishes() {
+        let pool = Pool::new(2);
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        pool.run(3, move |report| {
+            report.send(1);
+            report.send(2);
+            // The reports can be taken while the job still runs.
+            let _ = wait.recv();
+            9
+        });
+        assert_eq!(pool.take_within(WAIT), Some((3, Ok(1))));
+        assert_eq!(pool.take_within(WAIT), Some((3, Ok(2))));
+        assert_eq!(pool.try_take(), None);
+        go.send(()).unwrap();
+        assert_eq!(pool.take_within(WAIT), Some((3, Ok(9))));
+    }
+
+    #[test]
     fn a_job_that_panics_is_lost_and_the_rest_still_run() {
         let pool = Pool::new(1);
-        pool.run(0, || panic!("a job's bug"));
+        pool.run(0, |_| panic!("a job's bug"));
         for id in 1..4 {
-            pool.run(id, move || id as usize);
+            pool.run(id, move |_| id as usize);
         }
         let mut finished = take_all(&pool, 4);
         finished.sort_unstable_by_key(|(id, _)| *id);

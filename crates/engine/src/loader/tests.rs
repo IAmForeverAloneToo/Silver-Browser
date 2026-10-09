@@ -976,6 +976,36 @@ fn load_all(tab: &mut Tab, url: Url) {
 }
 
 #[test]
+fn a_document_comes_in_pieces_as_its_body_arrives() {
+    let first = "<!DOCTYPE html><p>first</p>";
+    let rest = "<p>after</p>";
+    let head = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{first}",
+        first.len() + rest.len()
+    );
+    let server = serve(move |path| match path {
+        "/page.html" => Some(Reply::Pieces(vec![
+            (Duration::ZERO, head.clone().into_bytes()),
+            // Long enough that the first piece is surely taken alone.
+            (Duration::from_millis(1500), rest.as_bytes().to_vec()),
+        ])),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.navigate(server.url("/page.html"));
+    // The head and the first piece, before the rest is sent.
+    tab.wait_until(|engine| {
+        matches!(
+            incoming(engine),
+            Some(Incoming::Receiving { body, .. }) if body == first.as_bytes()
+        )
+    });
+    assert_eq!(tab.engine.load_state(), &LoadState::Loading);
+    load_all(&mut tab, server.url("/page.html"));
+    assert_eq!(text(&tab.engine), "firstafter");
+}
+
+#[test]
 fn a_document_arrives_with_no_change_pending() {
     // Built by the parser into the arena: what it built is the document,
     // not a change to it.

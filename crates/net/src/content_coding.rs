@@ -1,10 +1,11 @@
 //! Content codings (Fetch's *handle content codings*, RFC 9110 §8.4.1):
 //! a body in `gzip` or `deflate` decoded, as a request's
-//! `Accept-Encoding: gzip, deflate` asked for.
+//! `Accept-Encoding: gzip, deflate` asked for: whole, or a piece at a
+//! time as it arrives (M24.8), the same bytes coming out.
 
-use std::io::Read;
+use std::io::{self, Write};
 
-use flate2::read::{DeflateDecoder, GzDecoder, ZlibDecoder};
+use flate2::write::{DeflateDecoder, GzDecoder, ZlibDecoder};
 
 use crate::error::NetworkError;
 use crate::headers::HeaderList;
@@ -18,25 +19,202 @@ pub(crate) fn decode(
     body: Vec<u8>,
     limit: usize,
 ) -> Result<Vec<u8>, NetworkError> {
-    let Some(codings) = headers.get_decode_split(b"Content-Encoding") else {
-        return Ok(body);
-    };
-    let codings: Vec<String> = codings.iter().map(|c| c.to_ascii_lowercase()).collect();
-    let supported = |c: &String| matches!(c.as_str(), "gzip" | "x-gzip" | "deflate" | "identity");
-    if body.is_empty() || !codings.iter().all(supported) {
+    let mut decoder = Decoder::new(headers, limit);
+    if decoder.passes_through() {
         return Ok(body);
     }
-    codings
-        .iter()
-        .rev()
-        .try_fold(body, |body, coding| match coding.as_str() {
-            "gzip" | "x-gzip" => read_limited(GzDecoder::new(&body[..]), limit),
-            "deflate" if is_zlib(&body) => read_limited(ZlibDecoder::new(&body[..]), limit),
-            // Some servers send `deflate` without the zlib wrapper RFC 9110
-            // defines it with; browsers read it.
-            "deflate" => read_limited(DeflateDecoder::new(&body[..]), limit),
-            _ => Ok(body),
-        })
+    let mut out = Vec::new();
+    decoder.push(&body, &mut |bytes| out.extend_from_slice(bytes))?;
+    decoder.finish(&mut |bytes| out.extend_from_slice(bytes))?;
+    Ok(out)
+}
+
+/// The codings of a body removed as it arrives: each piece pushed in,
+/// what it decodes to handed on, and the end said by `finish`.
+pub(crate) struct Decoder {
+    /// The codings to undo, the last applied first; none when the body
+    /// passes through as it is.
+    stages: Vec<Stage>,
+    limit: usize,
+    /// Bytes handed on so far.
+    out: usize,
+    /// Whether any byte has been pushed: an empty body decodes to
+    /// nothing whatever its codings.
+    started: bool,
+}
+
+/// One coding being undone, writing what it decodes to into its own
+/// buffer.
+enum Stage {
+    Gzip(GzDecoder<Vec<u8>>),
+    Zlib(ZlibDecoder<Vec<u8>>),
+    Deflate(DeflateDecoder<Vec<u8>>),
+    /// `deflate` before its first two bytes say whether they are zlib's
+    /// wrapper: some servers send it raw, and browsers read it.
+    Undecided(Vec<u8>),
+    Identity,
+}
+
+impl Stage {
+    /// What `input` decodes to. Bytes after the end of a coded stream
+    /// are dropped, as reading one stream drops them.
+    fn push(&mut self, input: &[u8]) -> io::Result<Vec<u8>> {
+        fn feed<W: Write>(writer: &mut W, mut input: &[u8]) -> io::Result<()> {
+            while !input.is_empty() {
+                match writer.write(input)? {
+                    0 => break,
+                    n => input = &input[n..],
+                }
+            }
+            Ok(())
+        }
+        match self {
+            Stage::Gzip(decoder) => {
+                feed(decoder, input)?;
+                Ok(std::mem::take(decoder.get_mut()))
+            }
+            Stage::Zlib(decoder) => {
+                feed(decoder, input)?;
+                Ok(std::mem::take(decoder.get_mut()))
+            }
+            Stage::Deflate(decoder) => {
+                feed(decoder, input)?;
+                Ok(std::mem::take(decoder.get_mut()))
+            }
+            Stage::Undecided(start) => {
+                start.extend_from_slice(input);
+                if start.len() < 2 {
+                    return Ok(Vec::new());
+                }
+                let start = std::mem::take(start);
+                self.decide(&start);
+                self.push(&start)
+            }
+            Stage::Identity => Ok(input.to_vec()),
+        }
+    }
+
+    /// `deflate`'s decoder, by its first bytes.
+    fn decide(&mut self, start: &[u8]) {
+        *self = if is_zlib(start) {
+            Stage::Zlib(ZlibDecoder::new(Vec::new()))
+        } else {
+            Stage::Deflate(DeflateDecoder::new(Vec::new()))
+        };
+    }
+
+    /// The last of what it decodes to, its stream checked whole.
+    fn finish(&mut self) -> io::Result<Vec<u8>> {
+        match self {
+            Stage::Gzip(decoder) => {
+                decoder.try_finish()?;
+                Ok(std::mem::take(decoder.get_mut()))
+            }
+            Stage::Zlib(decoder) => {
+                decoder.try_finish()?;
+                Ok(std::mem::take(decoder.get_mut()))
+            }
+            Stage::Deflate(decoder) => {
+                decoder.try_finish()?;
+                Ok(std::mem::take(decoder.get_mut()))
+            }
+            Stage::Undecided(start) => {
+                let start = std::mem::take(start);
+                self.decide(&start);
+                let mut out = self.push(&start)?;
+                out.extend(self.finish()?);
+                Ok(out)
+            }
+            Stage::Identity => Ok(Vec::new()),
+        }
+    }
+}
+
+impl Decoder {
+    /// A decoder for a body with `headers`, handing on at most `limit`
+    /// bytes.
+    pub(crate) fn new(headers: &HeaderList, limit: usize) -> Decoder {
+        let codings: Vec<String> = headers
+            .get_decode_split(b"Content-Encoding")
+            .unwrap_or_default()
+            .iter()
+            .map(|c| c.to_ascii_lowercase())
+            .collect();
+        let supported =
+            |c: &String| matches!(c.as_str(), "gzip" | "x-gzip" | "deflate" | "identity");
+        let stages = if codings.iter().all(supported) {
+            codings
+                .iter()
+                .rev()
+                .map(|coding| match coding.as_str() {
+                    "gzip" | "x-gzip" => Stage::Gzip(GzDecoder::new(Vec::new())),
+                    "deflate" => Stage::Undecided(Vec::new()),
+                    _ => Stage::Identity,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Decoder {
+            stages,
+            limit,
+            out: 0,
+            started: false,
+        }
+    }
+
+    /// Whether the body passes through untouched.
+    pub(crate) fn passes_through(&self) -> bool {
+        self.stages.is_empty()
+    }
+
+    /// Hands `bytes` on to `out`, or past the limit fails.
+    fn hand_on(&mut self, bytes: &[u8], out: &mut dyn FnMut(&[u8])) -> Result<(), NetworkError> {
+        self.out += bytes.len();
+        if self.out > self.limit {
+            return Err(NetworkError::BodyTooLarge);
+        }
+        if !bytes.is_empty() {
+            out(bytes);
+        }
+        Ok(())
+    }
+
+    /// Decodes the next piece of the body, handing what it gives to
+    /// `out`.
+    pub(crate) fn push(
+        &mut self,
+        bytes: &[u8],
+        out: &mut dyn FnMut(&[u8]),
+    ) -> Result<(), NetworkError> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        self.started = true;
+        let mut data = bytes.to_vec();
+        for stage in &mut self.stages {
+            data = stage.push(&data).map_err(|_| NetworkError::ContentCoding)?;
+        }
+        self.hand_on(&data, out)
+    }
+
+    /// Ends the body: each coding's last bytes, its stream checked
+    /// whole, handed to `out`.
+    pub(crate) fn finish(&mut self, out: &mut dyn FnMut(&[u8])) -> Result<(), NetworkError> {
+        if !self.started {
+            return Ok(());
+        }
+        for i in 0..self.stages.len() {
+            let mut data = self.stages[i]
+                .finish()
+                .map_err(|_| NetworkError::ContentCoding)?;
+            for stage in &mut self.stages[i + 1..] {
+                data = stage.push(&data).map_err(|_| NetworkError::ContentCoding)?;
+            }
+            self.hand_on(&data, out)?;
+        }
+        Ok(())
+    }
 }
 
 /// Whether `body` starts with a zlib header: deflate as the method, a
@@ -48,20 +226,6 @@ fn is_zlib(body: &[u8]) -> bool {
         }
         _ => false,
     }
-}
-
-/// Everything `decoder` gives, at most `limit` bytes.
-fn read_limited(decoder: impl Read, limit: usize) -> Result<Vec<u8>, NetworkError> {
-    let mut out = Vec::new();
-    let cap = u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1);
-    decoder
-        .take(cap)
-        .read_to_end(&mut out)
-        .map_err(|_| NetworkError::ContentCoding)?;
-    if out.len() > limit {
-        return Err(NetworkError::BodyTooLarge);
-    }
-    Ok(out)
 }
 
 #[cfg(test)]
@@ -156,6 +320,74 @@ mod tests {
         assert_eq!(
             decode(&coded("gzip"), bomb, 100_000).unwrap().len(),
             100_000
+        );
+    }
+
+    /// `body` decoded pushed in pieces of `size`.
+    fn streamed(
+        headers: &HeaderList,
+        body: &[u8],
+        size: usize,
+        limit: usize,
+    ) -> Result<Vec<u8>, NetworkError> {
+        let mut decoder = Decoder::new(headers, limit);
+        let mut out = Vec::new();
+        for piece in body.chunks(size) {
+            decoder.push(piece, &mut |bytes| out.extend_from_slice(bytes))?;
+        }
+        decoder.finish(&mut |bytes| out.extend_from_slice(bytes))?;
+        Ok(out)
+    }
+
+    #[test]
+    fn a_body_decodes_in_pieces_as_it_does_whole() {
+        let text: Vec<u8> = (0..20_000u32)
+            .flat_map(|i| (i % 251).to_le_bytes())
+            .collect();
+        let mut zlib = ZlibEncoder::new(Vec::new(), Compression::default());
+        zlib.write_all(&text).unwrap();
+        let zlib = zlib.finish().unwrap();
+        let mut raw = DeflateEncoder::new(Vec::new(), Compression::default());
+        raw.write_all(&text).unwrap();
+        let raw = raw.finish().unwrap();
+        let mut gzip_deflated = ZlibEncoder::new(Vec::new(), Compression::default());
+        gzip_deflated.write_all(&gzip(&text)).unwrap();
+        let samples = [
+            (coded("gzip"), gzip(&text)),
+            (coded("deflate"), zlib),
+            (coded("deflate"), raw),
+            (coded("gzip, deflate"), gzip_deflated.finish().unwrap()),
+            (coded("identity"), text.clone()),
+        ];
+        for (headers, body) in &samples {
+            assert_eq!(decode(headers, body.clone(), 1 << 20).unwrap(), text);
+            for size in [1, 2, 7, 4096] {
+                assert_eq!(
+                    streamed(headers, body, size, 1 << 20).unwrap(),
+                    text,
+                    "{size}"
+                );
+            }
+        }
+        // The limit holds as it goes, and a cut stream fails at the end.
+        let bomb = gzip(&vec![0; 100_000]);
+        assert_eq!(
+            streamed(&coded("gzip"), &bomb, 10, 99_999),
+            Err(NetworkError::BodyTooLarge)
+        );
+        let mut cut = gzip(b"hello, hello, hello");
+        cut.truncate(cut.len() - 4);
+        assert_eq!(
+            streamed(&coded("gzip"), &cut, 3, 1000),
+            Err(NetworkError::ContentCoding)
+        );
+        assert_eq!(streamed(&coded("gzip"), b"", 3, 1000), Ok(Vec::new()));
+        // Bytes after a coded stream's end are dropped.
+        let mut trailing = gzip(b"hello");
+        trailing.extend_from_slice(b"junk");
+        assert_eq!(
+            streamed(&coded("gzip"), &trailing, 2, 1000).unwrap(),
+            b"hello"
         );
     }
 

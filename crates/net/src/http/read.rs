@@ -27,6 +27,9 @@ pub enum ReadError {
     BodyTooLarge,
     /// A 101: there is no upgrade a request asked for.
     SwitchingProtocols,
+    /// The sink the body was handed to refused the rest of it (M24.8);
+    /// why is the sink's to say.
+    Stopped,
 }
 
 /// What part of a response broke HTTP's syntax.
@@ -57,11 +60,41 @@ impl fmt::Display for ReadError {
             ReadError::HeadersTooLarge => f.write_str("the response's header is too large"),
             ReadError::BodyTooLarge => f.write_str("the response's body is too large"),
             ReadError::SwitchingProtocols => f.write_str("an unasked-for protocol switch"),
+            ReadError::Stopped => f.write_str("the body's reader stopped"),
         }
     }
 }
 
 impl std::error::Error for ReadError {}
+
+/// Where a response's body goes as it is read, when it is not read
+/// whole into the response (M24.8).
+pub trait BodySink {
+    /// The final response's head has been read: whether its body is to
+    /// be handed here, a piece at a time as it arrives.
+    fn head(&mut self, status: u16, reason: &[u8], headers: &HeaderList) -> bool;
+    /// A piece of the body, its transfer coding removed; an `Err`
+    /// ([`ReadError::Stopped`]) stops the read.
+    fn body(&mut self, bytes: &[u8]) -> Result<(), ReadError>;
+}
+
+/// Where a body read goes: into the response, or to a sink.
+enum Out<'s> {
+    Whole(Vec<u8>),
+    Sink(&'s mut dyn BodySink),
+}
+
+impl Out<'_> {
+    fn put(&mut self, bytes: &[u8]) -> Result<(), ReadError> {
+        match self {
+            Out::Whole(body) => {
+                body.extend_from_slice(bytes);
+                Ok(())
+            }
+            Out::Sink(sink) => sink.body(bytes),
+        }
+    }
+}
 
 /// Reads one response to a request from `reader`, interim (1xx)
 /// responses skipped. `to_head` says the request was a `HEAD`, whose
@@ -88,6 +121,18 @@ pub fn read_response<R: Read>(
     to_head: bool,
     limits: Limits,
 ) -> Result<Response, ReadError> {
+    read_response_to(reader, to_head, limits, None)
+}
+
+/// [`read_response`], the final response's body handed to `sink` a
+/// piece at a time as it is read if the sink asks for it at the head;
+/// the response returned then has an empty body.
+pub fn read_response_to<R: Read>(
+    reader: &mut BufReader<R>,
+    to_head: bool,
+    limits: Limits,
+    sink: Option<&mut dyn BodySink>,
+) -> Result<Response, ReadError> {
     let mut input = Input {
         reader,
         received: false,
@@ -101,7 +146,17 @@ pub fn read_response<R: Read>(
             _ => break head,
         }
     };
-    let (body, delimited) = read_body(&mut input, &head, to_head, limits.body_bytes)?;
+    let mut out = Out::Whole(Vec::new());
+    if let Some(sink) = sink
+        && sink.head(head.status, &head.reason, &head.headers)
+    {
+        out = Out::Sink(sink);
+    }
+    let delimited = read_body(&mut input, &head, to_head, limits.body_bytes, &mut out)?;
+    let body = match out {
+        Out::Whole(body) => body,
+        Out::Sink(_) => Vec::new(),
+    };
     let close = head
         .headers
         .get_decode_split(b"Connection")
@@ -204,35 +259,37 @@ impl<R: Read> Input<'_, R> {
         }
     }
 
-    /// Exactly `length` bytes onto `out`.
-    fn read_exact(&mut self, mut length: usize, out: &mut Vec<u8>) -> Result<(), ReadError> {
+    /// Exactly `length` bytes onto `out`, as they come.
+    fn copy_exact(&mut self, mut length: usize, out: &mut Out<'_>) -> Result<(), ReadError> {
         while length > 0 {
             let available = self.fill()?;
             if available.is_empty() {
                 return Err(self.early_end());
             }
             let take = available.len().min(length);
-            out.extend_from_slice(&available[..take]);
+            out.put(&available[..take])?;
             self.consume(take);
             length -= take;
         }
         Ok(())
     }
 
-    /// Everything to the end of the stream, at most `limit` bytes.
-    fn read_to_end(&mut self, limit: usize) -> Result<Vec<u8>, ReadError> {
-        let mut body = Vec::new();
+    /// Everything to the end of the stream onto `out`, as it comes, at
+    /// most `limit` bytes.
+    fn copy_to_end(&mut self, limit: usize, out: &mut Out<'_>) -> Result<(), ReadError> {
+        let mut received = 0;
         loop {
             let available = self.fill()?;
             let take = available.len();
             if take == 0 {
-                return Ok(body);
+                return Ok(());
             }
-            if take > limit - body.len() {
+            if take > limit - received {
                 return Err(ReadError::BodyTooLarge);
             }
-            body.extend_from_slice(available);
+            out.put(available)?;
             self.consume(take);
+            received += take;
         }
     }
 }
@@ -357,20 +414,22 @@ fn field_value(raw: &[u8]) -> Result<&[u8], ReadError> {
     Ok(value)
 }
 
-/// The body, and whether its end was marked by the message itself
-/// rather than by the connection's end.
+/// The body onto `out`, and whether its end was marked by the message
+/// itself rather than by the connection's end.
 fn read_body<R: Read>(
     input: &mut Input<R>,
     head: &Head,
     to_head: bool,
     limit: usize,
-) -> Result<(Vec<u8>, bool), ReadError> {
+    out: &mut Out<'_>,
+) -> Result<bool, ReadError> {
     if to_head || matches!(head.status, 204 | 304) {
-        return Ok((Vec::new(), true));
+        return Ok(true);
     }
     if let Some(codings) = head.headers.get_decode_split(b"Transfer-Encoding") {
         if head.version == Version::Http10 {
-            return Ok((input.read_to_end(limit)?, false));
+            input.copy_to_end(limit, out)?;
+            return Ok(false);
         }
         let last = codings
             .last()
@@ -380,13 +439,14 @@ fn read_body<R: Read>(
             None => (last, None),
         };
         if !name.eq_ignore_ascii_case("chunked") {
-            return Ok((input.read_to_end(limit)?, false));
+            input.copy_to_end(limit, out)?;
+            return Ok(false);
         }
         if parameters.is_some() {
             return Err(ReadError::Malformed(Malformed::TransferEncoding));
         }
-        let body = read_chunked(input, limit)?;
-        return Ok((body, !head.headers.contains(b"Content-Length")));
+        read_chunked(input, limit, out)?;
+        return Ok(!head.headers.contains(b"Content-Length"));
     }
     if let Some(value) = head.headers.get(b"Content-Length") {
         let length = content_length(&value)?;
@@ -394,11 +454,14 @@ fn read_body<R: Read>(
             .ok()
             .filter(|&length| length <= limit)
             .ok_or(ReadError::BodyTooLarge)?;
-        let mut body = Vec::with_capacity(length.min(64 * 1024));
-        input.read_exact(length, &mut body)?;
-        return Ok((body, true));
+        if let Out::Whole(body) = out {
+            body.reserve(length.min(64 * 1024));
+        }
+        input.copy_exact(length, out)?;
+        return Ok(true);
     }
-    Ok((input.read_to_end(limit)?, false))
+    input.copy_to_end(limit, out)?;
+    Ok(false)
 }
 
 /// The length the `Content-Length` values give: decimal digits, the same
@@ -426,8 +489,12 @@ fn content_length(value: &[u8]) -> Result<u64, ReadError> {
 /// dropped. The size lines and the line endings after each chunk's data
 /// may take as many bytes as the body may; trailer fields count against
 /// the header limit.
-fn read_chunked<R: Read>(input: &mut Input<R>, limit: usize) -> Result<Vec<u8>, ReadError> {
-    let mut body = Vec::new();
+fn read_chunked<R: Read>(
+    input: &mut Input<R>,
+    limit: usize,
+    out: &mut Out<'_>,
+) -> Result<(), ReadError> {
+    let mut received = 0;
     let mut framing = limit;
     loop {
         let line = input
@@ -439,9 +506,10 @@ fn read_chunked<R: Read>(input: &mut Input<R>, limit: usize) -> Result<Vec<u8>, 
         }
         let size = usize::try_from(size)
             .ok()
-            .filter(|&size| size <= limit - body.len())
+            .filter(|&size| size <= limit - received)
             .ok_or(ReadError::BodyTooLarge)?;
-        input.read_exact(size, &mut body)?;
+        input.copy_exact(size, out)?;
+        received += size;
         let end = input
             .read_line(Budget::Other(&mut framing), body_too_large)?
             .ok_or(ReadError::Truncated)?;
@@ -454,7 +522,7 @@ fn read_chunked<R: Read>(input: &mut Input<R>, limit: usize) -> Result<Vec<u8>, 
             .read_line(Budget::Header, headers_too_large)?
             .ok_or(ReadError::Truncated)?;
         if line.is_empty() {
-            return Ok(body);
+            return Ok(());
         }
     }
 }
@@ -872,6 +940,142 @@ mod tests {
             self.bytes = &self.bytes[n..];
             Ok(n)
         }
+    }
+
+    /// A sink that takes the body when `wanted`, as it comes.
+    struct Collect {
+        wanted: bool,
+        head: Option<(u16, Vec<u8>)>,
+        body: Vec<u8>,
+        pieces: usize,
+        refuse_after: Option<usize>,
+    }
+
+    impl BodySink for Collect {
+        fn head(&mut self, status: u16, reason: &[u8], _: &HeaderList) -> bool {
+            self.head = Some((status, reason.to_vec()));
+            self.wanted
+        }
+
+        fn body(&mut self, bytes: &[u8]) -> Result<(), ReadError> {
+            if self.refuse_after.is_some_and(|n| self.pieces >= n) {
+                return Err(ReadError::Stopped);
+            }
+            self.body.extend_from_slice(bytes);
+            self.pieces += 1;
+            Ok(())
+        }
+    }
+
+    fn collect(wanted: bool) -> Collect {
+        Collect {
+            wanted,
+            head: None,
+            body: Vec::new(),
+            pieces: 0,
+            refuse_after: None,
+        }
+    }
+
+    #[test]
+    fn a_body_goes_to_a_sink_as_it_is_read() {
+        let samples: [(&[u8], &[u8]); 3] = [
+            (
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n",
+                b"hello world",
+            ),
+            (b"HTTP/1.1 201 Made\r\nContent-Length: 11\r\n\r\nhello world", b"hello world"),
+            (b"HTTP/1.0 200 OK\r\n\r\nto the end", b"to the end"),
+        ];
+        for (bytes, want) in samples {
+            let pieces = Pieces {
+                bytes,
+                sizes: vec![3].into_iter().cycle(),
+            };
+            let mut sink = collect(true);
+            let response = read_response_to(
+                &mut BufReader::with_capacity(4, pieces),
+                false,
+                Limits::default(),
+                Some(&mut sink),
+            )
+            .unwrap();
+            assert!(response.body.is_empty(), "the sink had it");
+            assert_eq!(sink.body, want);
+            assert!(sink.pieces > 1, "in pieces: {}", sink.pieces);
+        }
+        // A sink that does not want it leaves it to the response; one told
+        // the head of the final response alone.
+        let bytes =
+            b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 404 Gone\r\nContent-Length: 2\r\n\r\nno";
+        let mut sink = collect(false);
+        let response = read_response_to(
+            &mut BufReader::new(&bytes[..]),
+            false,
+            Limits::default(),
+            Some(&mut sink),
+        )
+        .unwrap();
+        assert_eq!(response.body, b"no");
+        assert_eq!(sink.head, Some((404, b"Gone".to_vec())));
+        assert!(sink.body.is_empty());
+        // A sink that refuses stops the read; the limit holds as it goes.
+        let bytes = b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\nhello world";
+        let mut sink = collect(true);
+        sink.refuse_after = Some(1);
+        let pieces = Pieces {
+            bytes,
+            sizes: vec![2].into_iter().cycle(),
+        };
+        let result = read_response_to(
+            &mut BufReader::with_capacity(2, pieces),
+            false,
+            Limits::default(),
+            Some(&mut sink),
+        );
+        assert!(is(result, "Stopped"));
+        let limits = Limits {
+            body_bytes: 5,
+            ..Limits::default()
+        };
+        // The limit is on the whole of a chunked body, not on each chunk:
+        // two of 60 bytes under a limit of 100, the framing well under it.
+        let chunk = "x".repeat(60);
+        let chunked = format!(
+            "HTTP/1.1 200 OK
+Transfer-Encoding: chunked
+
+3c
+{chunk}
+3c
+{chunk}
+0
+
+"
+        );
+        let hundred = Limits {
+            body_bytes: 100,
+            ..Limits::default()
+        };
+        assert!(is(
+            read_with(chunked.as_bytes(), false, hundred),
+            "BodyTooLarge"
+        ));
+        let result = read_response_to(
+            &mut BufReader::new(chunked.as_bytes()),
+            false,
+            hundred,
+            Some(&mut collect(true)),
+        );
+        assert!(is(result, "BodyTooLarge"));
+        let bytes = b"HTTP/1.0 200 OK\r\n\r\nto the end";
+        let result = read_response_to(
+            &mut BufReader::new(&bytes[..]),
+            false,
+            limits,
+            Some(&mut collect(true)),
+        );
+        assert!(is(result, "BodyTooLarge"));
     }
 
     #[test]
