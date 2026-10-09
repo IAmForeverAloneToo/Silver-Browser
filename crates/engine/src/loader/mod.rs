@@ -6,6 +6,8 @@
 mod dom_tests;
 #[cfg(test)]
 mod event_tests;
+#[cfg(test)]
+mod lifecycle_tests;
 mod pool;
 mod rules;
 #[cfg(test)]
@@ -25,7 +27,7 @@ use encoding::Encoding;
 use net::{AbortHandle, Client, Delivery, NetworkError, Request, Response};
 
 pub(crate) use pool::{JobId, Lost, Pool, Waker};
-pub(crate) use sheets::{Page, may_touch_sheets};
+pub(crate) use sheets::{Page, is_stylesheet, may_touch_sheets};
 
 /// The most fetches in flight at once; further ones wait in the order
 /// they were made (docs/design/net.md, "Threads, not an asynchronous

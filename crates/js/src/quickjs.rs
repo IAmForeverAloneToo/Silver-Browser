@@ -17,8 +17,8 @@ use rquickjs::{
 };
 
 use crate::{
-    Completion, ConsoleLevel, Death, ErrorKind, EventInit, Field, Limits, Realm, Script,
-    ScriptEngine, ScriptError, ScriptingHost, Target, Task,
+    Completion, ConsoleLevel, Death, ErrorKind, Field, Limits, Realm, Script, ScriptEngine,
+    ScriptError, ScriptingHost, Target, Task,
 };
 
 /// QuickJS-ng 0.16, which `rquickjs` builds from its source.
@@ -211,27 +211,24 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
         errors
     }
 
-    /// Dispatches `event` at `target` (M26): the bootstrap's dispatch is
-    /// a generator, resumed until it ends, the microtask checkpoint run
-    /// between its steps, which are the listeners it calls. One budget
-    /// covers it all. Whether the event was canceled.
-    fn dispatch(
+    /// Runs one of the bootstrap's stepped tasks (M26): `start` calls the
+    /// entry point that makes it, a generator, which is resumed until it
+    /// ends, the microtask checkpoint run between its steps, the
+    /// listeners or callbacks it calls. One budget covers it all. What it
+    /// ends with: for a dispatch, whether the event was canceled.
+    fn stepped<F>(
         &mut self,
         entries: &Persistent<Object<'static>>,
-        target: Target,
-        event: &EventInit,
-    ) -> Result<bool, ScriptError> {
+        start: F,
+    ) -> Result<bool, ScriptError>
+    where
+        F: for<'js> FnOnce(&Ctx<'js>, Object<'js>) -> rquickjs::Result<Value<'js>>,
+    {
         let run = self.context.with(|ctx| {
-            let started = entries.clone().restore(&ctx).and_then(|entries| {
-                let at = match target {
-                    Target::Node(handle) => Value::new_float(ctx.clone(), handle.0 as f64),
-                    Target::Window => Value::new_null(ctx.clone()),
-                };
-                let init = init_object(&ctx, &event.fields)?;
-                entries
-                    .get::<_, Function<'_>>("dispatch")?
-                    .call::<_, Value<'_>>((at, event.interface, event.kind.as_str(), init))
-            });
+            let started = entries
+                .clone()
+                .restore(&ctx)
+                .and_then(|entries| start(&ctx, entries));
             started
                 .catch(&ctx)
                 .map(|run| Persistent::save(&ctx, run))
@@ -349,7 +346,21 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                     .map(|_| false)
                     .map_err(|caught| caught_error(&ctx, caught, "", false))
             }),
-            Task::Dispatch { target, event } => self.dispatch(&entries, *target, event),
+            Task::Dispatch { target, event } => self.stepped(&entries, |ctx, entries| {
+                let at = match target {
+                    Target::Node(handle) => Value::new_float(ctx.clone(), handle.0 as f64),
+                    Target::Window => Value::new_null(ctx.clone()),
+                };
+                let init = init_object(ctx, &event.fields)?;
+                entries
+                    .get::<_, Function<'_>>("dispatch")?
+                    .call::<_, Value<'_>>((at, event.interface, event.kind.as_str(), init))
+            }),
+            Task::AnimationFrames(now) => self.stepped(&entries, |_, entries| {
+                entries
+                    .get::<_, Function<'_>>("frames")?
+                    .call::<_, Value<'_>>((*now,))
+            }),
         };
         self.end(host);
         let result = match result {

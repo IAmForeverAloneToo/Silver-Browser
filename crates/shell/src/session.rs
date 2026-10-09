@@ -240,6 +240,14 @@ impl Session {
         self.sync();
     }
 
+    /// The window is hidden, covered or minimized, or shown again (M26):
+    /// the page hears it, and what its scripts wrote is printed.
+    pub(crate) fn set_hidden(&mut self, hidden: bool) {
+        self.engine.set_hidden(hidden);
+        print_console(&mut self.engine);
+        self.sync();
+    }
+
     /// The window has a new size: the page's viewport, under the toolbar,
     /// has too, as a page loading before the next frame reads it (M25).
     pub(crate) fn resized(&mut self, width: u32, height: u32) {

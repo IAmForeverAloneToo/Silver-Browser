@@ -163,6 +163,11 @@ pub type Clock = Arc<dyn Fn() -> Duration + Send + Sync>;
 /// from drawing.
 pub const TASK_SLICE: Duration = Duration::from_millis(50);
 
+/// The least time between two timers of a hidden document (M26): its
+/// timers run once a second at most, as the reference browser throttles
+/// a hidden page's.
+pub const HIDDEN_TIMER_PERIOD: Duration = Duration::from_secs(1);
+
 /// The time a frame may take: one of sixty a second (M13.4,
 /// `docs/perf-budgets.md`). The scroll animation's rate is given per
 /// such a frame too.
@@ -296,6 +301,16 @@ pub struct Engine {
     next_image: u64,
     /// The clock tasks, timers and scripts read (M26).
     clock: Clock,
+    /// Whether the window is hidden (M26): minimized or covered.
+    hidden: bool,
+    /// When a hidden document's timer last ran.
+    hidden_ran: Option<Duration>,
+    /// The animation and transition events the frames queued that the
+    /// next frame's rendering steps dispatch (M26).
+    pending_events: Vec<AnimationEvent>,
+    /// What a document wrote to its console as it was left (M26), for
+    /// the next [`Engine::take_console`].
+    departed: Vec<ConsoleEntry>,
 }
 
 /// A document and everything the engine made from it (M15): what the
@@ -366,6 +381,33 @@ struct Shown {
     parsing: Option<Box<loader::Parsing>>,
     /// The document's scripts (M24).
     scripts: scripts::Scripts,
+    /// Its lifecycle events fired so far (M26).
+    lifecycle: Lifecycle,
+    /// The viewport size and the scroll offsets of the last frame drawn
+    /// for a time: a frame that finds them changed fires `resize` and
+    /// `scroll` (M26).
+    rendered: Option<Rendered>,
+    /// The `img` elements told whether their image came, each with the
+    /// URL it was told of (M26).
+    told: HashMap<NodeId, String>,
+}
+
+/// The lifecycle events a document has had (HTML section 8.4.6, "the
+/// end"): `readystatechange` as its parse ends, `DOMContentLoaded`, and
+/// those of its load.
+#[derive(Debug, Clone, Copy, Default)]
+struct Lifecycle {
+    interactive: bool,
+    content_loaded: bool,
+    loaded: bool,
+}
+
+/// What a frame was drawn at, for the next one's rendering steps.
+#[derive(Debug, Clone, Default)]
+struct Rendered {
+    size: (u32, u32),
+    scroll_y: f32,
+    element_scroll: HashMap<NodeId, f32>,
 }
 
 impl Shown {
@@ -398,7 +440,31 @@ impl Shown {
             next_image_frame: None,
             parsing: None,
             scripts: scripts::Scripts::default(),
+            lifecycle: Lifecycle::default(),
+            rendered: None,
+            told: HashMap::new(),
         }
+    }
+
+    /// Dispatches `event` at `target` in this document, with what the
+    /// run needs lent (M26): whether a listener canceled it.
+    fn fire(
+        &mut self,
+        network: &mut loader::Network,
+        window: scripts::WindowEnv,
+        ready: scripts::ReadyState,
+        target: js::Target,
+        event: js::EventInit,
+    ) -> bool {
+        let mut lent = scripts::Lent {
+            document: &mut self.document,
+            page: &mut self.page,
+            parser: self.parsing.as_mut().map(|parsing| &mut parsing.load),
+            network,
+            ready,
+            window,
+        };
+        self.scripts.dispatch(&mut lent, target, event)
     }
 }
 
@@ -735,6 +801,10 @@ impl Engine {
                 let made = Instant::now();
                 Arc::new(move || made.elapsed())
             },
+            hidden: false,
+            hidden_ran: None,
+            pending_events: Vec::new(),
+            departed: Vec::new(),
         }
     }
 
@@ -800,17 +870,53 @@ impl Engine {
         let aborted = self.network.cancel(left.page.id(), None);
         let decoding = self.decoder.busy(left.page.id());
         self.decoder.forget(left.page.id());
-        if left.salvageable
+        let kept = left.salvageable
             && !aborted
             && !decoding
             && !left.initial
             && left.parsing.is_none()
-            && left.scripts.keepable()
-        {
+            && left.scripts.keepable();
+        self.unload(&mut left, kept);
+        if kept {
             left.scripts.collect();
             // What the cache lets go is dropped here.
             drop(self.history.keep(state, Box::new(left)));
         }
+    }
+
+    /// HTML's "unload a document" for `left`, a document no longer shown
+    /// (M26): `pagehide`, saying whether the cache keeps it, and `unload`
+    /// if not; what it writes to its console as it goes reaches the
+    /// engine's.
+    fn unload(&mut self, left: &mut Shown, kept: bool) {
+        if !self.scripting || left.made {
+            return;
+        }
+        let window = self.window_env();
+        let ready = if left.lifecycle.loaded {
+            scripts::ReadyState::Complete
+        } else {
+            scripts::ReadyState::Interactive
+        };
+        left.fire(
+            &mut self.network,
+            window.clone(),
+            ready,
+            js::Target::Window,
+            js::EventInit::new("PageTransitionEvent", "pagehide")
+                .with("persisted", js::Field::Bool(kept)),
+        );
+        if !kept {
+            left.fire(
+                &mut self.network,
+                window,
+                ready,
+                js::Target::Window,
+                js::EventInit::new("Event", "unload"),
+            );
+        }
+        left.document.take_changes();
+        self.departed.extend(left.scripts.take_console());
     }
 
     fn new_page_id(&mut self) -> PageId {
@@ -1036,6 +1142,166 @@ impl Engine {
             fonts: Some(self.layout_fonts.clone()),
             compat: self.compat_user_agent,
             clock: Some(self.clock.clone()),
+            hidden: self.hidden,
+        }
+    }
+
+    /// Dispatches `event` at `target` in the document shown, with scripts
+    /// on (M26), as a task: its changes are taken after. Whether a
+    /// listener canceled it.
+    fn fire(&mut self, target: js::Target, event: js::EventInit) -> bool {
+        if !self.scripting {
+            return false;
+        }
+        let ready = self.ready_state();
+        let window = self.window_env();
+        let canceled = self
+            .shown
+            .fire(&mut self.network, window, ready, target, event);
+        self.scripts_ran();
+        canceled
+    }
+
+    /// The document node as an event's target.
+    fn document_target(&self) -> js::Target {
+        js::Target::Node(scripts::handle(self.shown.document.root()))
+    }
+
+    /// The shown document's lifecycle events (HTML section 8.4.6, "the
+    /// end", M26), each once, as its load goes on and in the reference
+    /// browser's order: `readystatechange` as its parse ends, before its
+    /// deferred scripts run; `DOMContentLoaded` once they have; and, once
+    /// it has loaded, `readystatechange` again, `load` at the window, its
+    /// target the document, and `pageshow`.
+    fn lifecycle(&mut self) {
+        if !self.scripting || self.shown.made || self.shown.parsing.is_some() {
+            return;
+        }
+        let document = self.document_target();
+        if !self.shown.lifecycle.interactive {
+            self.shown.lifecycle.interactive = true;
+            self.fire(document, js::EventInit::new("Event", "readystatechange"));
+        }
+        if !self.shown.lifecycle.content_loaded && self.shown.scripts.deferred_settled() {
+            self.shown.lifecycle.content_loaded = true;
+            self.fire(
+                document,
+                js::EventInit::new("Event", "DOMContentLoaded")
+                    .with("bubbles", js::Field::Bool(true)),
+            );
+        }
+        if !self.shown.lifecycle.loaded
+            && self.shown.lifecycle.content_loaded
+            && self.load_state == LoadState::Loaded
+        {
+            self.shown.lifecycle.loaded = true;
+            self.fire(document, js::EventInit::new("Event", "readystatechange"));
+            self.fire(js::Target::Window, js::EventInit::new("Event", "load"));
+            self.fire(
+                js::Target::Window,
+                js::EventInit::new("PageTransitionEvent", "pageshow")
+                    .with("persisted", js::Field::Bool(false)),
+            );
+        }
+    }
+
+    /// Says whether the window is hidden, minimized or covered (HTML
+    /// section 6.2, M26): the document gets `visibilitychange`; while
+    /// hidden it draws no animation frame callbacks, and its timers run
+    /// once every [`HIDDEN_TIMER_PERIOD`] at most.
+    pub fn set_hidden(&mut self, hidden: bool) {
+        if self.hidden == hidden {
+            return;
+        }
+        self.hidden = hidden;
+        self.hidden_ran = None;
+        let document = self.document_target();
+        self.fire(
+            document,
+            js::EventInit::new("Event", "visibilitychange").with("bubbles", js::Field::Bool(true)),
+        );
+    }
+
+    /// HTML's "update the rendering" before a frame at `now` (section
+    /// 8.1.7.3, M26), in its order: `resize` at the window when the size
+    /// changed since the last frame, `scroll` at the document and at each
+    /// element that scrolled, the animation and transition events the
+    /// last frames queued, then the animation frame callbacks, given the
+    /// frame's time on the document's clock. The first frame fires none
+    /// of the first two: it sets what the next compares with.
+    fn update_the_rendering(&mut self, width: u32, height: u32, now: Duration) {
+        // The window's size is the frame's from now on.
+        self.viewport = (width, height);
+        let events = std::mem::take(&mut self.pending_events);
+        if !self.scripting || self.shown.made {
+            return;
+        }
+        let rendered = Rendered {
+            size: (width, height),
+            scroll_y: self.shown.scroll_y,
+            element_scroll: self
+                .shown
+                .element_scroll
+                .iter()
+                .map(|(&node, scroll)| (node, scroll.y))
+                .collect(),
+        };
+        let last = self.shown.rendered.replace(rendered.clone());
+        if let Some(last) = last {
+            if last.size != rendered.size {
+                self.fire(js::Target::Window, js::EventInit::new("Event", "resize"));
+            }
+            if last.scroll_y != rendered.scroll_y {
+                let document = self.document_target();
+                self.fire(
+                    document,
+                    js::EventInit::new("Event", "scroll").with("bubbles", js::Field::Bool(true)),
+                );
+            }
+            let mut scrolled: Vec<NodeId> = rendered
+                .element_scroll
+                .iter()
+                .filter(|&(node, y)| last.element_scroll.get(node).copied().unwrap_or(0.0) != *y)
+                .map(|(&node, _)| node)
+                .collect();
+            scrolled.sort_by_key(|node| node.to_bits());
+            for node in scrolled {
+                if self.shown.document.contains(node) {
+                    self.fire(
+                        js::Target::Node(scripts::handle(node)),
+                        js::EventInit::new("Event", "scroll"),
+                    );
+                }
+            }
+        }
+        for event in events {
+            if self.shown.document.contains(event.node) {
+                self.fire(
+                    js::Target::Node(scripts::handle(event.node)),
+                    animation_event(&event),
+                );
+            }
+        }
+        if !self.hidden && self.shown.scripts.wants_frame() {
+            let origin = self
+                .shown
+                .scripts
+                .origin()
+                .map_or(Duration::ZERO, |origin| origin.at);
+            let time = now.saturating_sub(origin).as_secs_f64() * 1000.0;
+            let ready = self.ready_state();
+            let window = self.window_env();
+            let shown = &mut self.shown;
+            let mut lent = scripts::Lent {
+                document: &mut shown.document,
+                page: &mut shown.page,
+                parser: shown.parsing.as_mut().map(|parsing| &mut parsing.load),
+                network: &mut self.network,
+                ready,
+                window,
+            };
+            shown.scripts.run_frames(&mut lent, time);
+            self.scripts_ran();
         }
     }
 
@@ -1076,7 +1342,7 @@ impl Engine {
                 self.wake();
                 break;
             }
-            let shown = self.shown.scripts.next_task_at().filter(|due| *due <= now);
+            let shown = self.shown_task_at().filter(|due| *due <= now);
             let incoming = self
                 .incoming_scripts()
                 .and_then(scripts::Scripts::next_task_at)
@@ -1095,13 +1361,23 @@ impl Engine {
     /// document shown or of the one on its way, for the caller to wake
     /// at and call [`Engine::run_tasks`].
     pub fn next_task_at(&self) -> Option<Duration> {
-        let shown = self.shown.scripts.next_task_at();
+        let shown = self.shown_task_at();
         let incoming = self
             .incoming_scripts()
             .and_then(scripts::Scripts::next_task_at);
         match (shown, incoming) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
+        }
+    }
+
+    /// When the shown document's next timer is due: no sooner than
+    /// [`HIDDEN_TIMER_PERIOD`] after the last while the window is hidden.
+    fn shown_task_at(&self) -> Option<Duration> {
+        let due = self.shown.scripts.next_task_at()?;
+        match self.hidden_ran {
+            Some(ran) if self.hidden => Some(due.max(ran + HIDDEN_TIMER_PERIOD)),
+            _ => Some(due),
         }
     }
 
@@ -1121,6 +1397,9 @@ impl Engine {
         let Some((id, nesting)) = self.shown.scripts.take_next_timer() else {
             return;
         };
+        if self.hidden {
+            self.hidden_ran = Some(self.now());
+        }
         let ready = self.ready_state();
         let window = self.window_env();
         let shown = &mut self.shown;
@@ -1183,12 +1462,14 @@ impl Engine {
     }
 
     /// The shown document's `readyState` (HTML section 3.1.5): `loading`
-    /// while it is parsed, `interactive` until it has loaded, then
-    /// `complete`.
+    /// while it is parsed, `interactive` until its load event, then
+    /// `complete` (M26: as its lifecycle events have it).
     fn ready_state(&self) -> scripts::ReadyState {
         if self.shown.parsing.is_some() {
             scripts::ReadyState::Loading
-        } else if self.load_state == LoadState::Loaded {
+        } else if self.shown.lifecycle.loaded
+            || (!self.scripting && self.load_state == LoadState::Loaded)
+        {
             scripts::ReadyState::Complete
         } else {
             scripts::ReadyState::Interactive
@@ -1325,9 +1606,12 @@ impl Engine {
     }
 
     /// The shown document's console since it was last taken (M24.7):
-    /// what its scripts wrote, and the errors they reported.
+    /// what its scripts wrote, and the errors they reported; after what
+    /// a document left wrote as it was left (M26).
     pub fn take_console(&mut self) -> Vec<ConsoleEntry> {
-        self.shown.scripts.take_console()
+        let mut entries = std::mem::take(&mut self.departed);
+        entries.extend(self.shown.scripts.take_console());
+        entries
     }
 
     /// Where the shown document's scripting stands (M24.7).
@@ -1408,6 +1692,12 @@ impl Engine {
             self.leave(left, left_state);
             self.goal = Some(ScrollGoal::Offset(scroll));
             self.settle_load_state();
+            // Shown again from the cache (M26).
+            self.fire(
+                js::Target::Window,
+                js::EventInit::new("PageTransitionEvent", "pageshow")
+                    .with("persisted", js::Field::Bool(true)),
+            );
         } else if let Some(url) = url {
             self.start_navigation(url, Handling::Traverse(index));
         }
@@ -1492,6 +1782,11 @@ impl Engine {
             self.network
                 .fetch(shown.page.id(), Target::Image { url: key }, request);
         }
+        // An element showing an image that came before it was made is
+        // told now (M26).
+        for url in self.shown.images.known() {
+            self.tell_images(&url);
+        }
     }
 
     /// Fetches the images the shown document's styles name that are not
@@ -1559,6 +1854,7 @@ impl Engine {
     /// An image's size or brokenness changed: the boxes showing it are
     /// laid out again.
     fn image_changed(&mut self, url: &str) {
+        self.tell_images(url);
         let users = self.shown.images.users(url);
         if !users.is_empty() {
             self.shown
@@ -1574,6 +1870,28 @@ impl Engine {
         }
         self.changed = true;
         self.update_load_state();
+    }
+
+    /// Tells the `img` elements showing `url` whether it came, once it is
+    /// known (M26): `load` once its size is, `error` if it is broken;
+    /// each element once for each URL.
+    fn tell_images(&mut self, url: &str) {
+        let Some(broken) = self.shown.images.outcome(url) else {
+            return;
+        };
+        let kind = if broken { "error" } else { "load" };
+        for node in self.shown.images.users(url) {
+            if self.shown.document.tag(node) != Some("img")
+                || self.shown.told.get(&node).is_some_and(|told| told == url)
+            {
+                continue;
+            }
+            self.shown.told.insert(node, url.to_owned());
+            self.fire(
+                js::Target::Node(scripts::handle(node)),
+                js::EventInit::new("Event", kind),
+            );
+        }
     }
 
     /// The pixels of the shown document's image numbered `id`, if
@@ -1697,6 +2015,8 @@ impl Engine {
             }
             Target::Sheet { owner, path } => {
                 if page == self.shown.page.id() {
+                    let ok = result.as_ref().is_ok_and(loader::is_stylesheet);
+                    let wanted = self.shown.page.awaits(owner, &path, id);
                     if self
                         .shown
                         .page
@@ -1704,20 +2024,82 @@ impl Engine {
                     {
                         self.sheets_changed();
                     }
+                    // A link element hears whether its sheet came (M26).
+                    if wanted && path.is_empty() && self.shown.document.tag(owner) == Some("link") {
+                        let kind = if ok { "load" } else { "error" };
+                        self.fire(
+                            js::Target::Node(scripts::handle(owner)),
+                            js::EventInit::new("Event", kind),
+                        );
+                    }
                     self.update_load_state();
-                } else if let Some(Navigation {
-                    incoming:
-                        Incoming::Waiting { page: incoming, .. }
-                        | Incoming::Parsing { page: incoming, .. },
-                    ..
-                }) = &mut self.navigation
-                    && incoming.id() == page
-                {
-                    incoming.sheet_arrived(owner, &path, id, result, &mut self.network);
-                    self.commit_if_ready();
+                } else {
+                    self.incoming_sheet_arrived(page, owner, &path, id, result);
                 }
             }
         }
+    }
+
+    /// Takes the result of fetch `id` for a sheet of the document on its
+    /// way, as [`Engine::arrived`] does the shown one's: a link element
+    /// of a document being parsed hears whether its sheet came (M26), and
+    /// the document is shown if it is now ready.
+    fn incoming_sheet_arrived(
+        &mut self,
+        page: PageId,
+        owner: NodeId,
+        path: &[usize],
+        id: loader::FetchId,
+        result: Result<net::Response, LoadError>,
+    ) {
+        let window = self.window_env();
+        let scripting = self.scripting;
+        let mut asked = None;
+        match &mut self.navigation {
+            Some(Navigation {
+                incoming: Incoming::Waiting { page: incoming, .. },
+                ..
+            }) if incoming.id() == page => {
+                incoming.sheet_arrived(owner, path, id, result, &mut self.network);
+            }
+            Some(Navigation {
+                incoming:
+                    Incoming::Parsing {
+                        page: incoming,
+                        document,
+                        parsing,
+                    },
+                ..
+            }) if incoming.id() == page => {
+                let ok = result.as_ref().is_ok_and(loader::is_stylesheet);
+                let wanted = incoming.awaits(owner, path, id);
+                incoming.sheet_arrived(owner, path, id, result, &mut self.network);
+                if scripting && wanted && path.is_empty() && document.tag(owner) == Some("link") {
+                    let loader::Parsing { load, scripts, .. } = &mut **parsing;
+                    let mut lent = scripts::Lent {
+                        document,
+                        page: incoming,
+                        parser: Some(load),
+                        network: &mut self.network,
+                        ready: scripts::ReadyState::Loading,
+                        window,
+                    };
+                    let kind = if ok { "load" } else { "error" };
+                    scripts.dispatch(
+                        &mut lent,
+                        js::Target::Node(scripts::handle(owner)),
+                        js::EventInit::new("Event", kind),
+                    );
+                    asked = scripts.take_navigation();
+                }
+            }
+            _ => return,
+        }
+        if let Some(navigation) = asked {
+            self.incoming_navigation(navigation);
+            return;
+        }
+        self.commit_if_ready();
     }
 
     /// The head of the response to the navigation under way's document
@@ -2248,6 +2630,8 @@ impl Engine {
         if handling == Handling::Reload {
             // The entry's state has the new document; the old one is
             // gone, not kept.
+            let mut left = left;
+            self.unload(&mut left, false);
             self.network.cancel(left.page.id(), None);
         } else {
             self.leave(left, left_state);
@@ -2274,6 +2658,7 @@ impl Engine {
                 self.load_state = LoadState::Loaded;
             }
         }
+        self.lifecycle();
     }
 
     /// The load state as the document shown and the navigation under way
@@ -2463,7 +2848,10 @@ impl Engine {
     /// frame to start it (M22.3). A new viewport size is the caller's to
     /// know: the frame takes it.
     pub fn needs_frame(&self) -> bool {
-        self.changed || self.animating() || self.shown.animations.borrow().needs_frame()
+        self.changed
+            || self.animating()
+            || self.shown.animations.borrow().needs_frame()
+            || (self.scripting && !self.hidden && self.shown.scripts.wants_frame())
     }
 
     /// When a frame is next wanted, on the clock [`Engine::frame_at`] is
@@ -2934,6 +3322,7 @@ impl Engine {
     /// it took. What it shows is a function of the document, the
     /// viewport, the scroll inputs and the times passed in.
     pub fn frame_at(&mut self, width: u32, height: u32, time: FrameTime) -> &[u8] {
+        self.update_the_rendering(width, height, time.now);
         if self.animating() {
             let elapsed = self
                 .animation_clock
@@ -2998,6 +3387,9 @@ impl Engine {
         let animations = self.shown.animations.get_mut();
         animations.start_pending();
         self.events = animations.take_events();
+        if self.scripting {
+            self.pending_events.extend(self.events.iter().cloned());
+        }
         let style_time = start.elapsed();
         let stage = Instant::now();
         self.layout(width as f32);
@@ -3683,6 +4075,36 @@ impl Drop for Engine {
     fn drop(&mut self) {
         self.network.cancel_all();
     }
+}
+
+/// The event an animation's or a transition's change of phase queued,
+/// as a script sees it (M26): an AnimationEvent or a TransitionEvent,
+/// bubbling and not cancelable, with its name, elapsed time and
+/// pseudo-element.
+fn animation_event(event: &AnimationEvent) -> js::EventInit {
+    let transition = matches!(
+        event.kind,
+        EventKind::TransitionRun
+            | EventKind::TransitionStart
+            | EventKind::TransitionEnd
+            | EventKind::TransitionCancel
+    );
+    let (interface, name) = if transition {
+        ("TransitionEvent", "propertyName")
+    } else {
+        ("AnimationEvent", "animationName")
+    };
+    let pseudo = match event.pseudo {
+        Some(style::selector_matching::PseudoElement::Before) => "::before",
+        Some(style::selector_matching::PseudoElement::After) => "::after",
+        Some(style::selector_matching::PseudoElement::Marker) => "::marker",
+        _ => "",
+    };
+    js::EventInit::new(interface, event.kind.name())
+        .with("bubbles", js::Field::Bool(true))
+        .with(name, js::Field::String(event.name.to_string()))
+        .with("elapsedTime", js::Field::Number(event.elapsed))
+        .with("pseudoElement", js::Field::String(pseudo.to_owned()))
 }
 
 #[cfg(test)]

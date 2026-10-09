@@ -46,6 +46,7 @@
   const WeakSetHas = uncurry(WeakSet.prototype.has);
   const WeakSetAdd = uncurry(WeakSet.prototype.add);
   const MapClear = uncurry(Map.prototype.clear);
+  const MapForEach = uncurry(Map.prototype.forEach);
   const GeneratorNext = uncurry(Object.getPrototypeOf(function* () {}).prototype.next);
   const WeakMapGet = uncurry(WeakMap.prototype.get);
   const WeakMapSet = uncurry(WeakMap.prototype.set);
@@ -286,11 +287,13 @@
     #handlers = null;
 
     static {
+      // A method called with no `this`, as a global function, is the
+      // window's (Web IDL section 3.7.5).
       listenersOf = (target) => {
         if (typeof target === "object" && target !== null && #listeners in target) {
           return target.#listeners;
         }
-        if (target === global) {
+        if (target === global || target === undefined || target === null) {
           return windowListeners;
         }
         throw illegalInvocation();
@@ -314,7 +317,7 @@
       const name = str(type);
       checkCallback(callback, "addEventListener");
       const flags = addOptions(options);
-      addListener(this, listeners, name, callback, flags);
+      addListener(this === undefined || this === null ? global : this, listeners, name, callback, flags);
     }
 
     removeEventListener(type, callback, options) {
@@ -358,7 +361,7 @@
         );
       }
       s.trusted = false;
-      return !drain(dispatching(this, event));
+      return !drain(dispatching(this === undefined || this === null ? global : this, event));
     }
   }
 
@@ -1343,6 +1346,73 @@
     }
   }
 
+  const ANIMATION = 4096;
+  const TRANSITION = 8192;
+  const ANIMATION_INIT = members(EVENT_INIT, [
+    ["animationName", "DOMString", ""],
+    ["elapsedTime", "double", 0],
+    ["pseudoElement", "DOMString", ""],
+  ], "AnimationEventInit");
+  const TRANSITION_INIT = members(EVENT_INIT, [
+    ["elapsedTime", "double", 0],
+    ["propertyName", "DOMString", ""],
+    ["pseudoElement", "DOMString", ""],
+  ], "TransitionEventInit");
+
+  // CSS Animations' and Transitions' events (M26): what an animation or a
+  // transition's change of phase queued (M22.2).
+  class AnimationEvent extends Event {
+    constructor(type, eventInitDict) {
+      const args = eventArgs(
+        arguments.length,
+        type,
+        eventInitDict,
+        ANIMATION_INIT,
+        "AnimationEvent",
+      );
+      super(args[0], args[1]);
+      eventState(this).kinds |= ANIMATION;
+    }
+
+    get animationName() {
+      return fieldsOf(this, ANIMATION).animationName;
+    }
+
+    get elapsedTime() {
+      return fieldsOf(this, ANIMATION).elapsedTime;
+    }
+
+    get pseudoElement() {
+      return fieldsOf(this, ANIMATION).pseudoElement;
+    }
+  }
+
+  class TransitionEvent extends Event {
+    constructor(type, eventInitDict) {
+      const args = eventArgs(
+        arguments.length,
+        type,
+        eventInitDict,
+        TRANSITION_INIT,
+        "TransitionEvent",
+      );
+      super(args[0], args[1]);
+      eventState(this).kinds |= TRANSITION;
+    }
+
+    get propertyName() {
+      return fieldsOf(this, TRANSITION).propertyName;
+    }
+
+    get elapsedTime() {
+      return fieldsOf(this, TRANSITION).elapsedTime;
+    }
+
+    get pseudoElement() {
+      return fieldsOf(this, TRANSITION).pseudoElement;
+    }
+  }
+
   // An interface's constants, on it and its prototype, as Web IDL has
   // them.
   function constants(cls, pairs) {
@@ -1369,6 +1439,8 @@
     ["SubmitEvent", SubmitEvent, SUBMIT_INIT],
     ["ErrorEvent", ErrorEvent, ERROR_INIT],
     ["PageTransitionEvent", PageTransitionEvent, PAGE_TRANSITION_INIT],
+    ["AnimationEvent", AnimationEvent, ANIMATION_INIT],
+    ["TransitionEvent", TransitionEvent, TRANSITION_INIT],
   ];
   for (let i = 0; i < EVENT_INTERFACES.length; i++) {
     const entry = EVENT_INTERFACES[i];
@@ -1428,7 +1500,8 @@
   }
 
   // The DOM's dispatch of `event` at `target` (section 2.9), with no
-  // shadow trees and so no retargeting: a generator that yields after
+  // shadow trees and so no retargeting, its target `override` if given
+  // (HTML's legacy target override): a generator that yields after
   // each listener it calls, so that the realm performs a microtask
   // checkpoint there when the engine dispatches; a script's dispatch is
   // run through at once. It ends with whether the event was canceled.
@@ -1437,10 +1510,10 @@
   // window, but for a `load` event. A click (a MouseEvent) runs the
   // activation behaviour of the target, or of the nearest ancestor that
   // has one when it bubbles, unless a listener canceled it.
-  function* dispatching(target, event) {
+  function* dispatching(target, event, override) {
     const s = eventState(event);
     s.dispatching = true;
-    s.target = target;
+    s.target = override === undefined ? target : override;
     const path = [target];
     let activator = null;
     if (isNode(target)) {
@@ -2814,6 +2887,18 @@
 
     get body() {
       return wrap(childOfHtml(self(this), "body"));
+    }
+
+    // Page visibility (HTML section 6.2): hidden while the window is
+    // minimized or covered.
+    get visibilityState() {
+      self(this);
+      return native.hidden() ? "hidden" : "visible";
+    }
+
+    get hidden() {
+      self(this);
+      return native.hidden();
     }
 
     // The DOM's createEvent (section 4.5): an uninitialized event of the
@@ -5212,10 +5297,72 @@
   expose(Performance, "Performance");
   const performance = new Performance(KEY);
 
+  // ---- Animation frames (HTML section 8.10, M26) ---------------------------
+
+  // The callbacks a page asked to run before the next frame, by handle,
+  // in the order asked; asking tells the host a frame is wanted.
+  const frameCallbacks = new $Map();
+  let lastFrame = 0;
+
+  const frameFunctions = {
+    requestAnimationFrame(callback) {
+      need(arguments.length, 1, "requestAnimationFrame", "Window");
+      if (typeof callback !== "function") {
+        throw new $TypeError(
+          prefix("requestAnimationFrame", "Window") +
+            "The callback provided as parameter 1 is not a function.",
+        );
+      }
+      lastFrame = lastFrame >= 2147483647 ? 1 : lastFrame + 1;
+      MapSet(frameCallbacks, lastFrame, callback);
+      native.wantFrame();
+      return lastFrame;
+    },
+    cancelAnimationFrame(handle) {
+      need(arguments.length, 1, "cancelAnimationFrame", "Window");
+      MapDelete(frameCallbacks, long(handle));
+    },
+  };
+  const frameNames = getOwnPropertyNames(frameFunctions);
+  for (let i = 0; i < frameNames.length; i++) {
+    defineProperty(global, frameNames[i], {
+      value: frameFunctions[frameNames[i]],
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+
+  // HTML's "run the animation frame callbacks" for a frame at `now`: those
+  // asked for before it, in order, each given `now`; those they ask for
+  // wait for the next frame. A generator, as a dispatch is, that yields
+  // after each callback for the realm's microtask checkpoint.
+  function* runFrames(now) {
+    const handles = [];
+    MapForEach(frameCallbacks, (callback, handle) => {
+      ArrayPush(handles, handle);
+    });
+    for (let i = 0; i < handles.length; i++) {
+      const callback = MapGet(frameCallbacks, handles[i]);
+      if (callback === undefined) {
+        continue;
+      }
+      MapDelete(frameCallbacks, handles[i]);
+      try {
+        ReflectApply(callback, undefined, [now]);
+      } catch (error) {
+        reportException(error);
+      }
+      yield;
+    }
+    return false;
+  }
+
   // The entry points the realm calls (M26): a timer's task; an event
   // the engine makes, dispatched at the node `handle` names or, for
   // null, at the window, as a generator `resume` steps through, which
-  // ends with whether the event was canceled; a script's uncaught
+  // ends with whether the event was canceled; the animation frame
+  // callbacks, stepped through the same way; a script's uncaught
   // exception reported; and the bootstrap's own state put back after a
   // run its budget stopped.
   return {
@@ -5230,8 +5377,13 @@
       }
       const event = new known[1](type, dictionary(init, known[2], iface));
       eventState(event).trusted = true;
-      return dispatching(handle === null ? global : wrap(handle), event);
+      if (handle === null) {
+        // The window's `load` names the document its target.
+        return dispatching(global, event, type === "load" ? theDocument() : undefined);
+      }
+      return dispatching(wrap(handle), event);
     },
+    frames: runFrames,
     resume(run) {
       const step = GeneratorNext(run);
       return step.done ? step.value : null;

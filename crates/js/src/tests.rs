@@ -25,6 +25,9 @@ pub(crate) struct Recorder {
     /// shown, by kind and message.
     pub(crate) activated: Vec<u64>,
     pub(crate) dialogs: Vec<(String, String)>,
+    /// How often a frame was wanted, and whether the document is hidden.
+    pub(crate) frames_wanted: usize,
+    pub(crate) hidden: bool,
 }
 
 impl ScriptingHost for Recorder {
@@ -64,6 +67,11 @@ impl ScriptingHost for Recorder {
                 self.dialogs.push((kind, message));
                 Ok(Answer::Nothing)
             }
+            Call::WantFrame => {
+                self.frames_wanted += 1;
+                Ok(Answer::Nothing)
+            }
+            Call::Hidden => Ok(Answer::Bool(self.hidden)),
             call => self.tree.dom(call),
         }
     }

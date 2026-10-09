@@ -253,6 +253,12 @@ pub enum Call {
     /// The element's form owner (HTML section 4.10.18.3), if it is
     /// form-associated and has one: an event handler's scope.
     FormOwner(Handle),
+    /// A page asked for an animation frame callback: a frame is wanted
+    /// (HTML section 8.10).
+    WantFrame,
+    /// Whether the document is hidden (HTML section 6.2): its window is
+    /// minimized or covered.
+    Hidden,
     /// `alert`, `confirm` or `prompt` (`kind`) was called with `message`:
     /// the host shows it; the dialog blocks nothing and is answered as a
     /// browser that suppresses dialogs answers it.

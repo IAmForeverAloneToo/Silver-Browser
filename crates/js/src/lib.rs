@@ -185,6 +185,10 @@ pub enum Task {
     /// (DOM section 2.9), with a microtask checkpoint after each
     /// listener it calls.
     Dispatch { target: Target, event: EventInit },
+    /// Runs the animation frame callbacks (HTML section 8.10) with the
+    /// frame's time, in milliseconds on the document's clock, a
+    /// microtask checkpoint after each.
+    AnimationFrames(f64),
 }
 
 /// Where an event the engine makes is dispatched: a node, the document

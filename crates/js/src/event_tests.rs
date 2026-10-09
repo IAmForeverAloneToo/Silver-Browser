@@ -634,3 +634,96 @@ fn a_run_stopped_inside_the_bootstrap_leaves_it_working() {
         .expect("it runs");
     assert_eq!(seen, Completion::String("1".to_owned()));
 }
+
+#[test]
+fn animation_frame_callbacks_run_in_order_with_the_frames_time() {
+    let mut realm = realm();
+    let mut host = host();
+    realm
+        .run(
+            &script(
+                "var log = []; \
+                 requestAnimationFrame(function (t) { log.push('a' + t); \
+                   requestAnimationFrame(function (t) { log.push('next' + t); }); \
+                   Promise.resolve().then(function () { log.push('micro'); }); }); \
+                 var gone; \
+                 requestAnimationFrame(function () { 'use strict'; \
+                   log.push('b ' + (this === undefined)); cancelAnimationFrame(gone); \
+                   throw new Error('frame'); }); \
+                 gone = requestAnimationFrame(function () { log.push('gone'); }); \
+                 requestAnimationFrame(function () { log.push('c'); });",
+            ),
+            &mut host,
+        )
+        .expect("it runs");
+    assert_eq!(host.frames_wanted, 4);
+    realm
+        .enter(&Task::AnimationFrames(16.5), &mut host)
+        .expect("it runs");
+    assert_eq!(host.frames_wanted, 5);
+    realm
+        .enter(&Task::AnimationFrames(33.0), &mut host)
+        .expect("it runs");
+    let log = realm
+        .run(&script("log.join(' ')"), &mut host)
+        .expect("it runs");
+    // The one cancelled by an earlier callback of the same frame does not
+    // run; one asked for in a frame waits for the next.
+    assert_eq!(
+        log,
+        Completion::String("a16.5 micro b true c next33".to_owned())
+    );
+    assert_eq!(host.reported.len(), 1);
+    let refused = realm
+        .run(&script("requestAnimationFrame(5)"), &mut host)
+        .expect_err("it throws");
+    assert_eq!(
+        refused.message,
+        "TypeError: Failed to execute 'requestAnimationFrame' on 'Window': The callback \
+         provided as parameter 1 is not a function."
+    );
+}
+
+#[test]
+fn css_events_visibility_and_the_windows_load() {
+    for (source, expected) in [
+        (
+            "var e = new AnimationEvent('animationend', {animationName: 'fade', \
+             elapsedTime: 1.5}); [e.animationName, e.elapsedTime, e.pseudoElement, \
+             e instanceof Event].join()",
+            "fade,1.5,,true",
+        ),
+        (
+            "var e = new TransitionEvent('transitionend', {propertyName: 'opacity', \
+             pseudoElement: '::before'}); [e.propertyName, e.elapsedTime, \
+             e.pseudoElement].join()",
+            "opacity,0,::before",
+        ),
+        (
+            "document.visibilityState + ' ' + document.hidden",
+            "visible false",
+        ),
+    ] {
+        assert_eq!(string(source), expected, "{source}");
+    }
+    let mut realm = realm();
+    let mut host = host();
+    host.hidden = true;
+    realm
+        .run(
+            &script(
+                "var seen; addEventListener('load', function (e) { \
+                 seen = [e.target === document, e.currentTarget === window, e.eventPhase, \
+                 document.visibilityState].join(); });",
+            ),
+            &mut host,
+        )
+        .expect("it runs");
+    let load = Task::Dispatch {
+        target: Target::Window,
+        event: EventInit::new("Event", "load"),
+    };
+    realm.enter(&load, &mut host).expect("it runs");
+    let seen = realm.run(&script("seen"), &mut host).expect("it runs");
+    assert_eq!(seen, Completion::String("true,true,2,hidden".to_owned()));
+}

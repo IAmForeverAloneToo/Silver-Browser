@@ -60,6 +60,8 @@ fn markup_handlers_run_in_their_place_with_their_scope() {
             "true",
             "function true",
             "5 null",
+            // The body's onload, the window's, when the load ends (M26.3).
+            "load",
         ]
     );
 }

@@ -271,6 +271,8 @@ const NATIVES: &[(&str, Decode)] = &[
     ("activate", |a| Ok(Call::Activate(a.handle(0)?))),
     ("disabled", |a| Ok(Call::Disabled(a.handle(0)?))),
     ("formOwner", |a| Ok(Call::FormOwner(a.handle(0)?))),
+    ("wantFrame", |_| Ok(Call::WantFrame)),
+    ("hidden", |_| Ok(Call::Hidden)),
     ("dialog", |a| {
         Ok(Call::Dialog {
             kind: a.string(0)?,

@@ -106,6 +106,24 @@ pub(crate) struct Source {
     /// with no insertion point does nothing (HTML's ignore-destructive-
     /// writes counter).
     external: bool,
+    /// Whether its fetch failed (M26): it runs nothing, and its element
+    /// gets an `error` event.
+    failed: bool,
+}
+
+impl Source {
+    /// The script of `element` whose fetch failed.
+    fn failed(element: NodeId) -> Source {
+        Source {
+            text: String::new(),
+            url: String::new(),
+            line: 1,
+            muted: false,
+            element: Some(element),
+            external: true,
+            failed: true,
+        }
+    }
 }
 
 /// `document.readyState` (HTML section 3.1.5).
@@ -150,6 +168,8 @@ pub(crate) struct WindowEnv {
     pub(crate) fonts: Option<text::FontCollection>,
     pub(crate) compat: bool,
     pub(crate) clock: Option<crate::Clock>,
+    /// Whether the window is hidden: minimized or covered (M26).
+    pub(crate) hidden: bool,
 }
 
 /// A document's time origin (High Resolution Time): the engine's clock
@@ -205,6 +225,9 @@ pub(crate) enum Prepared {
     /// another event, a `src` that is empty or does not parse, or a page
     /// that fetches nothing.
     Nothing,
+    /// Started, and nothing runs, its `src` empty or not a URL: the
+    /// element gets an `error` event (M26).
+    Failed,
     /// Started, and refused by the document's policy: the console says
     /// which `what` was refused, and why.
     Refused(&'static str, Violation),
@@ -252,6 +275,7 @@ pub(crate) fn prepare_element(
             muted: false,
             element: Some(element),
             external: false,
+            failed: false,
         });
     };
     // An empty `src`, or one that does not parse, fires `error` (M26) and
@@ -260,7 +284,7 @@ pub(crate) fn prepare_element(
         .filter(|src| !src.is_empty())
         .and_then(|src| page.resolve(document, src))
     else {
-        return Prepared::Nothing;
+        return Prepared::Failed;
     };
     let csp = page.csp(document).clone();
     let Some(request) = script_request(page, url.clone(), csp) else {
@@ -333,6 +357,12 @@ pub(crate) struct Scripts {
     aborted: bool,
     /// The last navigation its scripts asked for, for the engine to start.
     navigation: Option<ScriptNavigation>,
+    /// The events to fire at elements when its scripts next run (M26):
+    /// a script element's `error` for a `src` that cannot be fetched.
+    events: VecDeque<(NodeId, &'static str)>,
+    /// Whether its markup holds an event handler, as of a version of the
+    /// document: one with none makes no realm for an event.
+    handlers: Option<(u64, bool)>,
 }
 
 impl Default for Scripts {
@@ -356,6 +386,8 @@ impl Scripts {
             deferred: VecDeque::new(),
             soon: Vec::new(),
             in_order: VecDeque::new(),
+            events: VecDeque::new(),
+            handlers: None,
             aborted: false,
             navigation: None,
         }
@@ -381,6 +413,7 @@ impl Scripts {
         }
         match prepare_element(lent.page, lent.document, element, line) {
             Prepared::NotYet | Prepared::Nothing => {}
+            Prepared::Failed => self.events.push_back((element, "error")),
             Prepared::Refused(what, violation) => self.refused(what, &violation),
             Prepared::Inline(source) => {
                 if lent.page.blocks_scripts() {
@@ -469,7 +502,7 @@ impl Scripts {
             }
             Err(why) => {
                 let text = format!("Failed to load script {url}: {why}");
-                *pending = Pending::Ready(None);
+                *pending = Pending::Ready(Some(Source::failed(element)));
                 Some(text)
             }
         };
@@ -490,6 +523,13 @@ impl Scripts {
     /// once it is ready and no style sheet blocks scripts. Whether the
     /// parser may go on.
     pub(crate) fn run_ready(&mut self, lent: &mut Lent<'_>, parsed: bool) -> bool {
+        while let Some((element, kind)) = self.events.pop_front() {
+            self.dispatch(
+                lent,
+                js::Target::Node(handle(element)),
+                js::EventInit::new("Event", kind),
+            );
+        }
         let mut ready = Vec::new();
         self.soon.retain_mut(|pending| match pending {
             Pending::Ready(source) => {
@@ -528,6 +568,13 @@ impl Scripts {
         self.blocking.is_none()
     }
 
+    /// Whether the scripts the parse's end waits for have run: the
+    /// parsing-blocking one and the deferred ones, which
+    /// `DOMContentLoaded` follows (M26).
+    pub(crate) fn deferred_settled(&self) -> bool {
+        self.blocking.is_none() && self.deferred.is_empty()
+    }
+
     /// Whether no script is on its way: the load waits for them.
     pub(crate) fn settled(&self) -> bool {
         self.blocking.is_none()
@@ -557,8 +604,20 @@ impl Scripts {
     }
 
     /// Runs `source`, a script element's; `at_insertion_point` for a
-    /// parser-inserted one run where the parser stopped after it.
+    /// parser-inserted one run where the parser stopped after it. An
+    /// external script's element gets a `load` event after it runs, or an
+    /// `error` event for a fetch that failed, which runs nothing (M26).
     fn run_source(&mut self, lent: &mut Lent<'_>, source: &Source, at_insertion_point: bool) {
+        if source.failed {
+            if let Some(element) = source.element {
+                self.dispatch(
+                    lent,
+                    js::Target::Node(handle(element)),
+                    js::EventInit::new("Event", "error"),
+                );
+            }
+            return;
+        }
         let script = Script {
             source: &source.text,
             url: &source.url,
@@ -572,6 +631,71 @@ impl Scripts {
             nesting: 0,
         };
         self.run(lent, &script, how);
+        if source.external
+            && let Some(element) = source.element
+        {
+            self.dispatch(
+                lent,
+                js::Target::Node(handle(element)),
+                js::EventInit::new("Event", "load"),
+            );
+        }
+    }
+
+    /// Makes the realm if there is none: whether there is one now. A
+    /// realm that cannot be made stops the document's scripts.
+    fn ensure_realm(&mut self) -> bool {
+        if self.stopped {
+            return false;
+        }
+        if self.realm.is_none() {
+            match QuickJs.realm::<DocumentHost>(self.limits) {
+                Ok(realm) => self.realm = Some(realm),
+                Err(error) => {
+                    self.report(&error);
+                    self.stop();
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// Dispatches `event` at `target` as a task (M26): whether a listener
+    /// canceled it. A document with no realm yet makes one only if its
+    /// markup holds an event handler, there being no other listener.
+    pub(crate) fn dispatch(
+        &mut self,
+        lent: &mut Lent<'_>,
+        target: js::Target,
+        event: js::EventInit,
+    ) -> bool {
+        if self.realm.is_none()
+            && (!has_handlers(lent.document, &mut self.handlers) || !self.ensure_realm())
+        {
+            return false;
+        }
+        self.enter(lent, &js::Task::Dispatch { target, event }, 0)
+    }
+
+    /// Whether an animation frame callback waits for the next frame.
+    pub(crate) fn wants_frame(&self) -> bool {
+        self.host.frame_wanted && !self.stopped
+    }
+
+    /// Runs the animation frame callbacks (M26) for a frame at `now`, in
+    /// milliseconds on the document's clock.
+    pub(crate) fn run_frames(&mut self, lent: &mut Lent<'_>, now: f64) {
+        if !self.wants_frame() {
+            return;
+        }
+        self.host.frame_wanted = false;
+        self.enter(lent, &js::Task::AnimationFrames(now), 0);
+    }
+
+    /// The document's time origin, if it has one.
+    pub(crate) fn origin(&self) -> Option<TimeOrigin> {
+        self.host.origin
     }
 
     /// Runs `script` in the document's realm, made if it has none, with
@@ -586,18 +710,8 @@ impl Scripts {
         script: &Script<'_>,
         how: How,
     ) -> Option<Completion> {
-        if self.stopped {
+        if !self.ensure_realm() {
             return None;
-        }
-        if self.realm.is_none() {
-            match QuickJs.realm::<DocumentHost>(self.limits) {
-                Ok(realm) => self.realm = Some(realm),
-                Err(error) => {
-                    self.report(&error);
-                    self.stop();
-                    return None;
-                }
-            }
         }
         let realm = self.realm.as_mut()?;
         let host = &mut self.host;
@@ -636,6 +750,7 @@ impl Scripts {
         for wanted in outputs.wanted {
             self.fetch(lent, wanted);
         }
+        self.events.extend(outputs.events);
         if outputs.navigation.is_some() {
             self.navigation = outputs.navigation;
         }
@@ -685,6 +800,7 @@ impl Scripts {
         for wanted in outputs.wanted {
             self.fetch(lent, wanted);
         }
+        self.events.extend(outputs.events);
         if outputs.navigation.is_some() {
             self.navigation = outputs.navigation;
         }
@@ -797,6 +913,29 @@ impl Scripts {
     pub(crate) fn take_just_stopped(&mut self) -> bool {
         std::mem::take(&mut self.just_stopped)
     }
+}
+
+/// The handle a script holds `node` by (M25).
+pub(crate) fn handle(node: NodeId) -> js::Handle {
+    js::Handle(node.to_bits())
+}
+
+/// Whether an element of `document` has an attribute that may be an
+/// event handler, an `on...` one, as of the version `seen` was taken at.
+fn has_handlers(document: &Document, seen: &mut Option<(u64, bool)>) -> bool {
+    let version = document.version();
+    if let Some((at, has)) = *seen
+        && at == version
+    {
+        return has;
+    }
+    let has = document.subtree(document.root()).any(|node| {
+        document
+            .attrs(node)
+            .is_some_and(|attrs| attrs.iter().any(|(name, _)| name.starts_with("on")))
+    });
+    *seen = Some((version, has));
+    has
 }
 
 /// Where a parser-inserted script fetched for `element` waits: by its
@@ -919,6 +1058,7 @@ fn script_source(
         muted,
         element: None,
         external: true,
+        failed: false,
     })
 }
 

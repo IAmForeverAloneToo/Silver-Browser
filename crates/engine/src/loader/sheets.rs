@@ -412,6 +412,25 @@ impl Page {
         self.owners = owners;
     }
 
+    /// Whether the sheet of `owner` at `path` among its imports waits for
+    /// fetch `id` (M26): the result is the one wanted.
+    pub(crate) fn awaits(&self, owner: NodeId, path: &[usize], id: FetchId) -> bool {
+        let Some(entry) = self.owners.iter().find(|o| o.node == owner) else {
+            return false;
+        };
+        let mut slot = &entry.sheet;
+        for &index in path {
+            let Slot::Ready(sheet) = slot else {
+                return false;
+            };
+            let Some(next) = sheet.imports.get(index) else {
+                return false;
+            };
+            slot = &next.sheet;
+        }
+        matches!(slot, Slot::Waiting(waiting) if *waiting == id)
+    }
+
     /// Takes the result of fetch `id` for the sheet of `owner` at
     /// `path` among its imports. A sheet that arrives with an ok status
     /// and the type of a stylesheet is decoded and parsed and its
@@ -596,7 +615,7 @@ impl Context {
 /// `Content-Type` of `text/css`, or none, which is taken as `text/css`
 /// unless `X-Content-Type-Options: nosniff` says otherwise (Fetch's
 /// should response to request be blocked due to nosniff).
-fn is_stylesheet(response: &Response) -> bool {
+pub(crate) fn is_stylesheet(response: &Response) -> bool {
     response.ok()
         && match &response.mime_type {
             Some(mime_type) => mime_type.essence() == "text/css",

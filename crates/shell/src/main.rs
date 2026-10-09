@@ -338,6 +338,11 @@ impl ApplicationHandler<NetworkWake> for Browser {
                 self.read_preferences();
             }
             WindowEvent::Focused(true) => self.read_preferences(),
+            // Covered or minimized: the page is hidden (M26).
+            WindowEvent::Occluded(occluded) => {
+                self.session.set_hidden(occluded);
+                window.request_redraw();
+            }
             WindowEvent::ModifiersChanged(modifiers) => {
                 let state = modifiers.state();
                 self.session.modifiers(Modifiers {

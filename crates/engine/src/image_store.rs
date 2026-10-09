@@ -175,6 +175,26 @@ impl ImageStore {
         self.entries.get(url)
     }
 
+    /// Whether `url`'s image is known broken, `Some(true)`, or ready with
+    /// its size, `Some(false)`, or neither yet (M26: what its `img`
+    /// elements hear).
+    pub(crate) fn outcome(&self, url: &str) -> Option<bool> {
+        match &self.entries.get(url)?.state {
+            ImageState::Ready(ready) => Some(ready.pixels == Pixels::Failed),
+            ImageState::Broken => Some(true),
+            ImageState::Fetching | ImageState::Reading => None,
+        }
+    }
+
+    /// The URLs whose images are known ready or broken (M26).
+    pub(crate) fn known(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .filter(|(_, entry)| matches!(entry.state, ImageState::Ready(_) | ImageState::Broken))
+            .map(|(url, _)| url.clone())
+            .collect()
+    }
+
     /// Whether no image is still being fetched or read: what the load
     /// waits for.
     pub(crate) fn settled(&self) -> bool {

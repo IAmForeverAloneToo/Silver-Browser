@@ -40,6 +40,9 @@ pub(crate) struct Outputs {
     pub(crate) errors: usize,
     pub(crate) wanted: Vec<Wanted>,
     pub(crate) navigation: Option<ScriptNavigation>,
+    /// The events to fire at elements after the run (M26): a script
+    /// element's `error` for a `src` that cannot be fetched.
+    pub(crate) events: Vec<(NodeId, &'static str)>,
 }
 
 /// The document's styles as a run's `getComputedStyle` sees them: the
@@ -186,6 +189,8 @@ pub(crate) struct DocumentHost {
     nesting: u32,
     /// The document's time origin, once it has one.
     pub(crate) origin: Option<TimeOrigin>,
+    /// An animation frame callback waits for the next frame (M26).
+    pub(crate) frame_wanted: bool,
 }
 
 impl ScriptingHost for DocumentHost {
@@ -878,6 +883,11 @@ impl DocumentHost {
                     .flatten();
                 Ok(self.give(owner))
             }
+            Call::WantFrame => {
+                self.frame_wanted = true;
+                Ok(Answer::Nothing)
+            }
+            Call::Hidden => Ok(Answer::Bool(self.window.hidden)),
             Call::Dialog { kind, message } => {
                 self.say(ConsoleLevel::Info, format!("{kind}: {message}"));
                 Ok(Answer::Nothing)
@@ -1032,6 +1042,7 @@ impl DocumentHost {
         };
         match prepare_element(page, &self.document, element, line) {
             Prepared::NotYet | Prepared::Nothing => {}
+            Prepared::Failed => self.outputs.events.push((element, "error")),
             Prepared::Refused(what, violation) => {
                 self.say(ConsoleLevel::Error, refusal_text(what, &violation));
             }
@@ -1100,6 +1111,7 @@ impl DocumentHost {
             self.started.insert(script);
             match prepared {
                 Prepared::NotYet | Prepared::Nothing => {}
+                Prepared::Failed => self.outputs.events.push((script, "error")),
                 Prepared::Refused(what, violation) => {
                     self.say(ConsoleLevel::Error, refusal_text(what, &violation));
                 }

@@ -766,6 +766,23 @@ fn a_pages_timers_run_when_the_window_ticks() {
 }
 
 #[test]
+fn a_covered_window_hides_its_page() {
+    let server = serve(|path| match path {
+        "/" => html(
+            "<title>shown</title><script>document.addEventListener('visibilitychange', \
+             function () { document.title = document.visibilityState; });</script>",
+        ),
+        _ => None,
+    });
+    let mut window = Window::with_scripts(Some(server.url("/")));
+    window.settle();
+    window.session.set_hidden(true);
+    assert!(window.session.title().starts_with("hidden"));
+    window.session.set_hidden(false);
+    assert!(window.session.title().starts_with("visible"));
+}
+
+#[test]
 fn a_page_loaded_before_the_first_frame_reads_the_windows_page_area() {
     // The window's size is known before a frame is drawn: a page that
     // arrives first reads the page's area under the toolbar (M25).
