@@ -7,11 +7,13 @@
 //! and reads responses over any stream, and [`transport`] keeps the
 //! connections they travel on, plain or over TLS. [`fetch`] puts them
 //! together: a [`Client`] fetches a [`Request`] by its scheme, follows
-//! its redirects and returns a [`Response`]. Only `engine` orchestrates
-//! fetching.
+//! its redirects and returns a [`Response`]. [`csp`] parses a document's
+//! Content Security Policy and checks its scripts against it. Only
+//! `engine` orchestrates fetching.
 
 mod address_space;
 mod content_coding;
+pub mod csp;
 pub mod data_url;
 mod error;
 pub mod fetch;

@@ -58,6 +58,9 @@ pub enum NetworkError {
     BadRedirect,
     /// The request was aborted.
     Aborted,
+    /// The document's Content Security Policy does not allow it: the
+    /// directive, as the policy wrote it (M24.6).
+    Csp(String),
 }
 
 /// Why TLS failed.
@@ -110,6 +113,9 @@ impl fmt::Display for NetworkError {
             NetworkError::RedirectLimit => f.write_str("too many redirects"),
             NetworkError::BadRedirect => f.write_str("a redirect to where none may go"),
             NetworkError::Aborted => f.write_str("aborted"),
+            NetworkError::Csp(directive) => {
+                write!(f, "blocked by Content-Security-Policy: {directive}")
+            }
         }
     }
 }

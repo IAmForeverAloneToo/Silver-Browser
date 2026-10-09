@@ -175,6 +175,7 @@ dependencies = [
  "encoding",
  "html",
  "images",
+ "js",
  "layout",
  "net",
  "paint",

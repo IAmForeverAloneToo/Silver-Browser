@@ -10,7 +10,8 @@ use std::collections::HashMap;
 
 use dom::{Change, Document, NodeId};
 use encoding::Encoding;
-use net::{AddressSpace, Destination, Initiator, MimeType, Request, Response, Url};
+use net::csp::Csp;
+use net::{AddressSpace, Destination, Initiator, MimeType, Origin, Request, Response, Url};
 use style::Media;
 
 use super::{FetchId, LoadError, Network, PageId, Target, rules};
@@ -31,6 +32,11 @@ pub(crate) struct Page {
     /// The elements that may own a sheet, `<link>` and `<style>`, in
     /// tree order.
     owners: Vec<Owner>,
+    /// The document's Content Security Policy (M24.6): its response's,
+    /// and its `<meta>` elements' as they come.
+    csp: Csp,
+    /// The `<meta>` elements whose policies are in `csp`.
+    metas: Vec<NodeId>,
 }
 
 /// What a page's fetches are made with.
@@ -144,6 +150,8 @@ impl Page {
             undecodable: None,
             language: None,
             owners: Vec::new(),
+            csp: Csp::none(Origin::new_opaque()),
+            metas: Vec::new(),
         }
     }
 
@@ -157,6 +165,7 @@ impl Page {
         undecodable: Option<Encoding>,
         address_space: AddressSpace,
     ) -> Page {
+        let csp = Csp::none(url.origin());
         Page {
             context: Context {
                 id,
@@ -167,7 +176,44 @@ impl Page {
             undecodable,
             language: None,
             owners: Vec::new(),
+            csp,
+            metas: Vec::new(),
         }
+    }
+
+    /// The page, its document under `csp`, its response's policies.
+    pub(crate) fn with_csp(mut self, csp: Csp) -> Page {
+        self.csp = csp;
+        self
+    }
+
+    /// The document's Content Security Policy as it stands (M24.6): its
+    /// response's, and that of each `<meta http-equiv=
+    /// "Content-Security-Policy">` with a `content` that is a child of
+    /// the head (HTML section 4.2.5.3), taken in once, the first time it
+    /// is seen, as the parser inserts it; it holds for what comes after.
+    pub(crate) fn csp(&mut self, document: &Document) -> &Csp {
+        let head = document.document_element().and_then(|html| {
+            document
+                .element_children(html)
+                .find(|&child| document.tag(child) == Some("head"))
+        });
+        for meta in head
+            .into_iter()
+            .flat_map(|head| document.element_children(head))
+        {
+            if document.tag(meta) == Some("meta")
+                && !self.metas.contains(&meta)
+                && document
+                    .attr(meta, "http-equiv")
+                    .is_some_and(|value| value.eq_ignore_ascii_case("content-security-policy"))
+                && let Some(content) = document.attr(meta, "content")
+            {
+                self.metas.push(meta);
+                self.csp.add_meta(content);
+            }
+        }
+        &self.csp
     }
 
     /// The page, its document in `language` by its response.

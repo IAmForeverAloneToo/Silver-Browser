@@ -1141,6 +1141,44 @@ fn a_javascript_link_runs_its_script_in_the_page_with_scripting_on() {
 }
 
 #[test]
+fn a_javascript_link_runs_only_where_the_pages_policy_allows_inline_script() {
+    let page = |policy: &str| {
+        Reply::with_fields(
+            200,
+            &[
+                ("Content-Type", "text/html"),
+                ("Content-Security-Policy", policy),
+            ],
+            b"<p><a id=run href=\"javascript:console.log('ran')\">run</a></p>",
+        )
+    };
+    let server = serve(move |path| match path {
+        "/strict" => Some(page("script-src 'self'")),
+        "/loose" => Some(page("script-src 'self' 'unsafe-inline'")),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    for (path, said) in [
+        (
+            "/strict",
+            "Content-Security-Policy refused a javascript: URL: script-src 'self'",
+        ),
+        ("/loose", "ran"),
+    ] {
+        tab.load(server.url(path));
+        click(&mut tab, "run");
+        let console: Vec<String> = tab
+            .engine
+            .take_console()
+            .into_iter()
+            .map(|entry| entry.text)
+            .collect();
+        assert_eq!(console, [said], "{path}");
+    }
+}
+
+#[test]
 fn a_file_page_may_open_files_and_the_browsers_page_its_own_pages() {
     let dir = std::env::temp_dir().join(format!("silver-links-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

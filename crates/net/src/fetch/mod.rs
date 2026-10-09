@@ -1,12 +1,14 @@
 //! Fetching (docs/design/net.md, "One way to fetch"): a request's URL
 //! fetched by its scheme, as Fetch's scheme fetch has it, with its
 //! redirects followed. Every check a fetch starts with (the scheme, the
-//! port, mixed content and the address space) is made again on each
-//! hop, so a redirect cannot reach what the first URL could not.
+//! port, mixed content, a script's Content Security Policy and the
+//! address space) is made again on each hop, so a redirect cannot reach
+//! what the first URL could not.
 
 mod file;
 mod ports;
 
+use crate::csp::Csp;
 use crate::data_url;
 use crate::error::{AbortHandle, NetworkError};
 use crate::headers::HeaderList;
@@ -117,6 +119,10 @@ pub struct Request {
     /// The most the response's body may hold, when less than the
     /// client's limit: an image's bound (M23).
     pub body_limit: Option<usize>,
+    /// The policies of the document that asked, for a script: Fetch's
+    /// "should request be blocked by Content Security Policy" at each
+    /// hop (M24.6).
+    pub csp: Option<Csp>,
 }
 
 impl Request {
@@ -136,7 +142,15 @@ impl Request {
             initiator: None,
             abort: AbortHandle::new(),
             body_limit: None,
+            csp: None,
         }
+    }
+
+    /// The request, checked against `csp` at each hop if it is for a
+    /// script.
+    pub fn with_csp(mut self, csp: Csp) -> Request {
+        self.csp = Some(csp);
+        self
     }
 
     /// The request, its response's body held to `limit` bytes.
@@ -247,7 +261,7 @@ impl Client {
                 url = upgraded;
                 *url_list.last_mut().expect("never empty") = url.clone();
             }
-            check(request, &url)?;
+            check(request, &url, url_list.len() - 1)?;
             let mut response = self.scheme_fetch(
                 request,
                 &url,
@@ -401,10 +415,11 @@ impl transport::ResponseStream for Streaming<'_, '_> {
     }
 }
 
-/// The checks a fetch makes before each hop: the scheme the request may
-/// use, the port, and mixed content. The address space is checked by
-/// the transport, on the address it is about to connect to.
-fn check(request: &Request, url: &Url) -> Result<(), NetworkError> {
+/// The checks a fetch makes before each hop, the `redirects`th: the
+/// scheme the request may use, the port, mixed content, and a script's
+/// Content Security Policy. The address space is checked by the
+/// transport, on the address it is about to connect to.
+fn check(request: &Request, url: &Url, redirects: usize) -> Result<(), NetworkError> {
     let scheme = url.scheme();
     let allowed = match &request.initiator {
         // A load the user asked for.
@@ -430,6 +445,12 @@ fn check(request: &Request, url: &Url) -> Result<(), NetworkError> {
         {
             return Err(NetworkError::MixedContent);
         }
+    }
+    if request.destination == Destination::Script
+        && let Some(csp) = &request.csp
+    {
+        csp.check_script_url(url, redirects)
+            .map_err(|violation| NetworkError::Csp(violation.to_string()))?;
     }
     Ok(())
 }

@@ -640,3 +640,76 @@ fn example_com() {
     assert!(String::from_utf8_lossy(&response.body).contains("Example Domain"));
     assert_eq!(response.address_space, Some(AddressSpace::Public));
 }
+
+#[test]
+fn a_scripts_policy_is_checked_before_each_hop() {
+    let other = TestServer::plain(|_| hello());
+    let elsewhere = other.url("/a.js");
+    let away = elsewhere.to_string();
+    let server = TestServer::plain(move |request| match request.target.as_str() {
+        "/redirect" => Reply::with_fields(302, &[("Location", away.as_str())], b""),
+        "/js/away" => Reply::with_fields(302, &[("Location", "/other.js")], b""),
+        _ => hello(),
+    });
+    let page = server.url("/page.html");
+    let request = |url: Url, destination: Destination, policy: &str| {
+        let mut headers = HeaderList::new();
+        headers.append(b"Content-Security-Policy", policy.as_bytes());
+        Request::get(url, destination)
+            .initiated_by(Initiator {
+                url: page.clone(),
+                address_space: AddressSpace::Loopback,
+            })
+            .with_csp(Csp::from_headers(&headers, &page))
+    };
+    let blocked = Err(NetworkError::Csp("script-src 'self'".to_owned()));
+    let fetched = |request: Request| client().fetch(&request).map(|_| ());
+    assert_eq!(
+        fetched(request(
+            server.url("/a.js"),
+            Destination::Script,
+            "script-src 'self'"
+        )),
+        Ok(())
+    );
+    // Not at the first URL, nor at a redirect: never asked.
+    assert_eq!(
+        fetched(request(
+            elsewhere.clone(),
+            Destination::Script,
+            "script-src 'self'"
+        )),
+        blocked
+    );
+    assert_eq!(
+        fetched(request(
+            server.url("/redirect"),
+            Destination::Script,
+            "script-src 'self'"
+        )),
+        blocked
+    );
+    assert!(other.requests().is_empty());
+    // Only a script's fetch is held to it.
+    assert_eq!(
+        fetched(request(elsewhere, Destination::Style, "script-src 'self'")),
+        Ok(())
+    );
+    assert_eq!(other.requests().len(), 1);
+    // A path holds the first URL alone: after a redirect, the host does.
+    let local = |path: &str| url(&format!("http://localhost:{}{path}", server.port()));
+    let policy = format!("script-src http://localhost:{}/js/", server.port());
+    let directive = Err(NetworkError::Csp(policy.clone()));
+    assert_eq!(
+        fetched(request(local("/js/a.js"), Destination::Script, &policy)),
+        Ok(())
+    );
+    assert_eq!(
+        fetched(request(local("/other.js"), Destination::Script, &policy)),
+        directive
+    );
+    assert_eq!(
+        fetched(request(local("/js/away"), Destination::Script, &policy)),
+        Ok(())
+    );
+}

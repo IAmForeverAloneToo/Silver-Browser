@@ -441,6 +441,7 @@ fn parsed_page(id: PageId, head: &net::Response, load: &html::Load) -> Page {
         address_space,
     )
     .with_language(loader::content_language(head))
+    .with_csp(net::csp::Csp::from_headers(&head.headers, head.url()))
 }
 
 /// Whether `document` has a body: HTML's "allows adding render-blocking
@@ -909,6 +910,11 @@ impl Engine {
     /// its own, its errors naming the document. A string it ends with
     /// would replace the document, which waits for M26.6.
     fn run_javascript_url(&mut self, url: &Url) {
+        let csp = self.shown.page.csp(&self.shown.document);
+        if let Err(violation) = csp.check_javascript_url() {
+            self.shown.scripts.refused("a javascript: URL", &violation);
+            return;
+        }
         let encoded = url.as_str().get("javascript:".len()..).unwrap_or_default();
         let source =
             String::from_utf8_lossy(&net::url::percent_decode(encoded.as_bytes())).into_owned();
@@ -1559,17 +1565,7 @@ impl Engine {
             html::Progress::Restarted => {
                 // The sheets found so far go, the document fetch stays.
                 page.rescan(&Document::new(), &mut self.network, None);
-                **page = Page::fetched(
-                    page.id(),
-                    parsing.head.url().clone(),
-                    parsing.load.encoding().unwrap_or(encoding::UTF_8),
-                    parsing.load.undecodable(),
-                    parsing
-                        .head
-                        .address_space
-                        .unwrap_or(net::AddressSpace::Public),
-                )
-                .with_language(loader::content_language(&parsing.head));
+                **page = parsed_page(page.id(), &parsing.head, &parsing.load);
                 **document = Document::new();
                 parsing.scripts.restart();
                 self.wake();
@@ -1634,7 +1630,7 @@ impl Engine {
                     && self.scripting
                 {
                     self.shown.scripts.prepare(
-                        &self.shown.page,
+                        &mut self.shown.page,
                         &mut self.shown.document,
                         &mut self.network,
                         element,

@@ -16,6 +16,7 @@ use js::{
     Completion, ConsoleLevel, ErrorKind, Limits, QuickJs, Realm, Script, ScriptEngine, ScriptError,
     ScriptingHost,
 };
+use net::csp::{Csp, Violation};
 use net::{Destination, Request, Response, Url};
 
 use crate::loader::{FetchId, LoadError, Network, Page, Target};
@@ -166,7 +167,7 @@ impl Scripts {
     /// comes, as its `defer` and `async` say.
     pub(crate) fn prepare(
         &mut self,
-        page: &Page,
+        page: &mut Page,
         document: &mut Document,
         network: &mut Network,
         element: NodeId,
@@ -183,6 +184,10 @@ impl Scripts {
         let Some(src) = document.attr(element, "src") else {
             let text = document.text_content(element);
             if text.is_empty() {
+                return;
+            }
+            if let Err(violation) = page.csp(document).check_inline_script() {
+                self.refused("an inline script", &violation);
                 return;
             }
             let source = Source {
@@ -206,7 +211,8 @@ impl Scripts {
         else {
             return;
         };
-        let Some(request) = script_request(page, url.clone()) else {
+        let csp = page.csp(document).clone();
+        let Some(request) = script_request(page, url.clone(), csp) else {
             return;
         };
         let fallback = document
@@ -319,6 +325,15 @@ impl Scripts {
         self.deferred.clear();
         self.soon.clear();
         self.aborted = true;
+    }
+
+    /// Says on the console that the document's Content Security Policy
+    /// refused `what` to run (M24.6).
+    pub(crate) fn refused(&mut self, what: &str, violation: &Violation) {
+        self.push(ConsoleEntry {
+            level: ConsoleLevel::Error,
+            text: format!("Content-Security-Policy refused {what}: {violation}"),
+        });
     }
 
     fn run_source(&mut self, document: &mut Document, source: &Source) {
@@ -557,13 +572,15 @@ fn for_the_window(document: &Document, element: NodeId) -> bool {
 }
 
 /// The request for a classic script at `url`: no-cors, made by the
-/// page's document, its body held to [`MAX_SCRIPT_BYTES`]; none for a
-/// page with no URL, which fetches nothing.
-fn script_request(page: &Page, url: Url) -> Option<Request> {
+/// page's document, its body held to [`MAX_SCRIPT_BYTES`], checked
+/// against the document's `csp` at each hop; none for a page with no
+/// URL, which fetches nothing.
+fn script_request(page: &Page, url: Url, csp: Csp) -> Option<Request> {
     Some(
         Request::get(url, Destination::Script)
             .initiated_by(page.initiator()?)
-            .with_body_limit(MAX_SCRIPT_BYTES),
+            .with_body_limit(MAX_SCRIPT_BYTES)
+            .with_csp(csp),
     )
 }
 
@@ -846,13 +863,15 @@ mod tests {
             net::AddressSpace::Public,
         );
         let script = Url::parse("https://example.com/a.js").unwrap();
-        let request = script_request(&page, script.clone()).expect("a request");
+        let csp = Csp::none(url.origin());
+        let request = script_request(&page, script.clone(), csp.clone()).expect("a request");
         assert_eq!(request.url, script);
         assert_eq!(request.destination, Destination::Script);
         assert_eq!(request.mode, net::Mode::NoCors);
         assert_eq!(request.body_limit, Some(MAX_SCRIPT_BYTES));
+        assert!(request.csp.is_some());
         assert_eq!(request.initiator.map(|i| i.url), Some(url));
-        assert!(script_request(&Page::given(2), script).is_none());
+        assert!(script_request(&Page::given(2), script, csp).is_none());
     }
 
     #[test]

@@ -648,3 +648,136 @@ fn a_document_whose_realm_died_fetches_no_more_scripts() {
     ));
     assert!(!paths(&server).iter().any(|path| path == "/a.js"));
 }
+
+/// A page `body`, under these `Content-Security-Policy` fields.
+fn under(body: &str, policies: &[&str]) -> Reply {
+    let mut fields = vec![("Content-Type", "text/html")];
+    fields.extend(
+        policies
+            .iter()
+            .map(|policy| ("Content-Security-Policy", *policy)),
+    );
+    Reply::with_fields(200, &fields, body.as_bytes())
+}
+
+#[test]
+fn a_pages_policy_decides_which_of_its_scripts_run() {
+    let other = serve(|path| match path {
+        "/a.js" => Some(javascript("console.log('other')")),
+        _ => None,
+    });
+    let elsewhere = other.url("/a.js").to_string();
+    let page = format!(
+        "<script>console.log('inline')</script><script src=self.js></script>\
+         <script src={elsewhere}></script><script src=redirect.js></script>\
+         <script src=\"data:text/javascript,console.log('data')\"></script>"
+    );
+    let away = elsewhere.clone();
+    let server = serve(move |path| match path {
+        "/page.html" => Some(under(&page, &["script-src 'self'"])),
+        "/self.js" => Some(javascript("console.log('self')")),
+        "/redirect.js" => Some(Reply::with_fields(302, &[("Location", away.as_str())], b"")),
+        _ => None,
+    });
+    let mut tab = scripting();
+    load_all(&mut tab, server.url("/page.html"));
+    let blocked = |url: &str| {
+        format!(
+            "Failed to load script {url}: blocked by Content-Security-Policy: script-src 'self'"
+        )
+    };
+    assert_eq!(
+        lines(&mut tab),
+        [
+            "Content-Security-Policy refused an inline script: script-src 'self'".to_owned(),
+            "self".to_owned(),
+            blocked(&elsewhere),
+            blocked(server.url("/redirect.js").as_str()),
+            blocked("data:text/javascript,console.log('data')"),
+        ]
+    );
+    assert!(
+        other.requests().is_empty(),
+        "nothing asked of another origin"
+    );
+}
+
+#[test]
+fn unsafe_inline_lets_inline_scripts_run_unless_a_nonce_takes_its_place() {
+    for (policy, runs) in [
+        ("script-src 'unsafe-inline'", true),
+        ("img-src 'none'", true),
+        // A nonce takes 'unsafe-inline' away, and matches nothing yet.
+        ("script-src 'unsafe-inline' 'nonce-abc'", false),
+    ] {
+        let server = serve(move |path| match path {
+            "/page.html" => Some(under(
+                "<script nonce=abc>console.log('inline')</script>",
+                &[policy],
+            )),
+            _ => None,
+        });
+        let mut tab = scripting();
+        load_all(&mut tab, server.url("/page.html"));
+        let expected = match runs {
+            true => "inline".to_owned(),
+            false => format!("Content-Security-Policy refused an inline script: {policy}"),
+        };
+        assert_eq!(lines(&mut tab), [expected], "{policy}");
+    }
+}
+
+#[test]
+fn a_meta_policy_in_the_head_holds_for_the_scripts_after_it() {
+    let server = serve(|path| match path {
+        "/head.html" => Some(html(
+            "<head><script>console.log('before')</script>\
+             <meta http-equiv=Content-Security-Policy content=\"script-src 'none'\">\
+             <script>console.log('after')</script><script src=a.js></script></head>",
+        )),
+        "/body.html" => Some(html(
+            "<body><meta http-equiv=content-security-policy content=\"script-src 'none'\">\
+             <script>console.log('runs')</script>",
+        )),
+        "/report.html" => Some(Reply::with_fields(
+            200,
+            &[
+                ("Content-Type", "text/html"),
+                ("Content-Security-Policy-Report-Only", "script-src 'none'"),
+            ],
+            b"<script>console.log('runs')</script>",
+        )),
+        "/a.js" => Some(javascript("console.log('a')")),
+        _ => None,
+    });
+    let mut tab = scripting();
+    load_all(&mut tab, server.url("/head.html"));
+    assert_eq!(
+        lines(&mut tab),
+        [
+            "before".to_owned(),
+            "Content-Security-Policy refused an inline script: script-src 'none'".to_owned(),
+            format!(
+                "Failed to load script {}: blocked by Content-Security-Policy: script-src 'none'",
+                server.url("/a.js")
+            ),
+        ]
+    );
+    // A meta's policy is taken in once, however many scripts follow it.
+    let many = format!(
+        "<meta http-equiv=Content-Security-Policy content=\"script-src 'unsafe-inline'\">{}",
+        "<script>console.log(1)</script>".repeat(net::csp::MAX_POLICIES + 2)
+    );
+    let crowd = serve(move |path| match path {
+        "/many.html" => Some(html(&many)),
+        _ => None,
+    });
+    load_all(&mut tab, crowd.url("/many.html"));
+    assert_eq!(lines(&mut tab), ["1"; net::csp::MAX_POLICIES + 2]);
+    // Outside the head, a meta says nothing; a policy that only reports
+    // blocks nothing.
+    for page in ["/body.html", "/report.html"] {
+        load_all(&mut tab, server.url(page));
+        assert_eq!(lines(&mut tab), ["runs"], "{page}");
+    }
+}
