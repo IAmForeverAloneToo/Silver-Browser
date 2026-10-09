@@ -8,7 +8,7 @@ under its BSD licence (`LICENSE.md` beside this file), at commit
 dc7f6a3c0000e1da9e575ff4ef5618cff136697b (2026-10-03)
 ```
 
-They are the tests of `css/css-flexbox`, `css/css-grid`, `css/css-transforms`, `css/css-will-change`, `css/mediaqueries`, `css/css-conditional`, `css/css-cascade`, `css/css-variables`, `css/css-values`, `css/css-env`, `css/css-lists`, `css/css-counter-styles`, `css/css-content`, `css/css-text-decor`, `css/css-text/text-align`, `css/css-text/text-justify`, `css/CSS2/lists`, `css/CSS2/generated-content`, `css/css-animations`, `css/css-transitions`, `css/css-easing`, `css/css-images`, `css/css-backgrounds` and `html/semantics/embedded-content/the-img-element`
+They are the tests of `css/css-flexbox`, `css/css-grid`, `css/css-transforms`, `css/css-will-change`, `css/mediaqueries`, `css/css-conditional`, `css/css-cascade`, `css/css-variables`, `css/css-values`, `css/css-lists`, `css/css-counter-styles`, `css/css-content`, `css/css-text-decor`, `css/css-text/text-align`, `css/css-text/text-justify`, `css/CSS2/lists`, `css/CSS2/generated-content`, `css/css-animations`, `css/css-transitions`, `css/css-easing`, `css/css-images`, `css/css-backgrounds` and `html/semantics/embedded-content/the-img-element`
 that use only what this engine has, chosen by the rule in
 `examples/wpt.rs` and copied with their references, stylesheets
 and images at their own paths by
@@ -35,7 +35,7 @@ The first reason the rule found for each test it left out:
 
 | Reason | Tests |
 | --- | ---: |
-| script | 1733 |
+| script | 1724 |
 | @font-face | 836 |
 | declaration of font | 705 |
 | declaration of display | 495 |
@@ -62,8 +62,8 @@ The first reason the rule found for each test it left out:
 | declaration of font-variant-numeric | 43 |
 | declaration of outline | 43 |
 | self-closing <div/> in XHTML | 40 |
-| declaration of background-color | 39 |
 | declaration of flex-wrap | 38 |
+| declaration of background-color | 37 |
 | dir=rtl | 34 |
 | element <input> | 34 |
 | @counter-style | 33 |

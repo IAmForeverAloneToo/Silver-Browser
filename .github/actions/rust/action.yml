@@ -4,9 +4,8 @@ description: >
   every verifier builds with the one the release was built with.
 
 # The workflows used to ask for "stable", which overrides the file and
-# floats: two runs a month apart could use different compilers, and the
-# reproducible-build job compares two builds minutes apart, which never
-# notices. This reads the pin instead, so there is one place to bump.
+# floats: two runs a month apart could use different compilers. This
+# reads the pin instead, so there is one place to bump.
 
 inputs:
   targets:

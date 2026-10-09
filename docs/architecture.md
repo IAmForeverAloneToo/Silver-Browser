@@ -80,6 +80,33 @@ shell          (bin "silver-browser": windowing, event loop, input, clipboard)
    through `rustls` in `net`. The unsafe code that leaves, third-party
    and pinned, is M33.5's audit.
 
+## Pixels: where fractions become whole (M8.5)
+
+Layout works in CSS pixels as `f32` and keeps its fractions, one CSS
+pixel to a device pixel: the engine does not draw at a display's scale
+factor yet (G9). The fractions become whole only where something is
+drawn, by these rules, the reference browser's where it has one:
+
+- **Boxes.** Paint snaps each edge of a box to the nearest device
+  pixel on its own, a half rounded up (`paint::snapped`): the border
+  box's edges and the padding box's apart, so that neighbouring boxes
+  meet without a seam and border widths, which the cascade makes whole
+  (M11), stay as they are. A text run's baseline (M17), a decoration
+  line (M21.7) and a scrollbar are snapped the same way.
+- **Text.** A glyph's advance is the font's hinted advance with the
+  shaper's kerning, scaled and rounded to a whole pixel, a half up
+  (M17, `text`), so that glyphs have no subpixel positions; a glyph's
+  mask is put at the whole pixel at or before its origin, both ways,
+  and the glyph cache knows a glyph by its font, its id and its size
+  alone.
+- **Transforms.** What a transform moves is not snapped: a group drawn
+  through a matrix is rasterized in a layer of its own plane and
+  resampled through the matrix, a pixel's colour taken at its centre
+  (M19); a translation by whole pixels copies the layer's pixels.
+- **Images.** An image fills its snapped box; its pixels are sampled at
+  the destination pixels' centres, a nearest sample between two texels
+  taking the lower as the reference browser's does (M23).
+
 ## Why this shape scales toward "Chrome-scale"
 
 - **Crate = component.** Each crate compiles and tests independently,

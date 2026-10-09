@@ -75,6 +75,8 @@ struct Browser {
     window: Option<Arc<Window>>,
     context: Option<softbuffer::Context<Arc<Window>>>,
     surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
+    /// The size the surface was last given.
+    surface_size: SurfaceSize,
     session: Session,
     /// The clock frames are drawn by and clicks counted on: the time
     /// since the browser began.
@@ -86,6 +88,23 @@ struct Browser {
     asked: Asked,
     /// The window's theme, when the system says it.
     theme: Option<Theme>,
+}
+
+/// The size a surface was last given: it is given another only when
+/// the window's changes, since a resize makes its buffers again.
+#[derive(Debug, Default)]
+struct SurfaceSize(Option<(NonZeroU32, NonZeroU32)>);
+
+impl SurfaceSize {
+    /// Whether the surface is to be resized to `size`, which it is
+    /// taken to have from now on.
+    fn wants(&mut self, size: (NonZeroU32, NonZeroU32)) -> bool {
+        if self.0 == Some(size) {
+            return false;
+        }
+        self.0 = Some(size);
+        true
+    }
 }
 
 /// The window's state the session decides.
@@ -103,6 +122,7 @@ impl Browser {
             window: None,
             context: None,
             surface: None,
+            surface_size: SurfaceSize::default(),
             session,
             start: Instant::now(),
             shown: Shown::default(),
@@ -132,8 +152,10 @@ impl Browser {
         let (Some(w), Some(h)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) else {
             return; // Zero-sized window (e.g. minimized).
         };
-        // TODO(M2): only resize on size changes, not every frame.
-        if let Err(e) = surface.resize(w, h) {
+        if self.surface_size.wants((w, h))
+            && let Err(e) = surface.resize(w, h)
+        {
+            self.surface_size = SurfaceSize::default();
             eprintln!("surface resize failed: {e}");
             return;
         }
@@ -246,6 +268,7 @@ impl ApplicationHandler<NetworkWake> for Browser {
                             self.read_preferences();
                             self.context = Some(context);
                             self.surface = Some(surface);
+                            self.surface_size = SurfaceSize::default();
                             self.window = Some(window.clone());
                             self.update(&window);
                             window.request_redraw();
@@ -287,8 +310,10 @@ impl ApplicationHandler<NetworkWake> for Browser {
                 if let (Some(w), Some(h)) =
                     (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
                     && let Some(surface) = self.surface.as_mut()
+                    && self.surface_size.wants((w, h))
                     && let Err(e) = surface.resize(w, h)
                 {
+                    self.surface_size = SurfaceSize::default();
                     eprintln!("surface resize failed: {e}");
                 }
                 self.session.resized(size.width, size.height);
@@ -699,6 +724,20 @@ mod tests {
 
     fn start(args: &[&str]) -> Result<Option<Url>, String> {
         command_line(args.iter().map(OsString::from)).map(|line| line.start)
+    }
+
+    #[test]
+    fn the_surface_is_resized_only_when_the_window_is() {
+        let size = |w, h| (NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap());
+        let mut surface = SurfaceSize::default();
+        assert!(surface.wants(size(800, 600)), "a new surface has no size");
+        assert!(!surface.wants(size(800, 600)));
+        assert!(!surface.wants(size(800, 600)));
+        assert!(surface.wants(size(1024, 600)));
+        assert!(!surface.wants(size(1024, 600)));
+        // After a failed resize the size is forgotten, and tried again.
+        surface = SurfaceSize::default();
+        assert!(surface.wants(size(1024, 600)));
     }
 
     #[test]

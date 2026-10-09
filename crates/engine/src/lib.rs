@@ -3357,6 +3357,14 @@ mod tests {
     }
 
     #[test]
+    fn a_root_with_no_box_leaves_the_canvas_white() {
+        let mut engine = test_engine();
+        engine.load_document("<html style='display: none'><p>hidden</p>");
+        let frame = engine.frame(64, 32);
+        assert!(frame.chunks(4).all(|p| p == [0xff, 0xff, 0xff, 0xff]));
+    }
+
+    #[test]
     fn frame_produces_full_size_buffer() {
         let mut engine = test_engine();
         let buf = engine.frame(64, 32);

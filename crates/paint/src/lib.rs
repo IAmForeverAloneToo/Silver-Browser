@@ -874,19 +874,6 @@ pub fn paint_fragments_with(
         }
     }
 
-    // A document with nothing in it at all (an empty or failed load) is
-    // never a silently blank window. A document whose content merely
-    // lies outside this viewport is blank here, as it should be.
-    if roots.is_empty() {
-        items.push(DisplayItem::Text {
-            text: "Hello from Silver Browser".to_string(),
-            x: 40.0,
-            y: 32.0,
-            size: 16.0,
-            color: Rgba8::rgb(0x33, 0x33, 0x33),
-        });
-    }
-
     DisplayList { items }
 }
 
@@ -3494,16 +3481,30 @@ mod fragment_tests {
     }
 
     #[test]
-    fn empty_document_falls_back_to_hint_text() {
+    fn a_layout_with_no_box_is_the_white_canvas_alone() {
+        // A root of `display: none`, or no element at all: the canvas,
+        // white, as the reference browser draws it, and nothing on it.
         let fonts = test_fonts();
-        let doc = dom::Node::document(vec![]);
-        let layout = laid_out(&doc, &[], VIEWPORT, &fonts);
-        let list = paint_fragments(&layout.roots, Viewport::new(VIEWPORT, 600.0));
-        assert!(
-            list.items
-                .iter()
-                .any(|i| matches!(i, DisplayItem::Text { .. }))
-        );
+        for doc in [
+            dom::Node::document(vec![]),
+            dom::Node::document(vec![
+                Element::new("html").attr("style", "display: none").into(),
+            ]),
+        ] {
+            let layout = laid_out(&doc, &[], VIEWPORT, &fonts);
+            assert!(layout.roots.is_empty());
+            let list = paint_fragments(&layout.roots, Viewport::new(VIEWPORT, 600.0));
+            assert_eq!(
+                list.items,
+                [DisplayItem::Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: VIEWPORT,
+                    h: 600.0,
+                    color: Rgba8::rgb(0xff, 0xff, 0xff),
+                }]
+            );
+        }
     }
 
     /// `(y, h)` of every rect item after the viewport background.

@@ -89,7 +89,7 @@ images, the last item on T0's list, come with M23.
 
 ---
 
-## 2. Current state (M0–M14)
+## 2. Current state (M0-M24)
 
 - **M0 — Scaffold** (done 2026-09-30): 11-crate workspace, layer DAG,
   `docs/architecture.md` contract.
@@ -309,17 +309,70 @@ images, the last item on T0's list, come with M23.
   M38, revocation and Certificate Transparency — M33, the legacy CJK
   encodings — M42).
 
-Verified per the vertical-slice rule at each milestone: 835 tests
-workspace-wide (193 in `style`, 165 in `layout`, 153 in `net` and one
-ignored, the live fetch run by hand, 90 in `engine` with the reference
-harness, 63 in `html`, 39 in `paint`, 37 in `css`, 31 in `text`, 26 in
-`encoding`, 17 in `dom`, 17 in `render`, 4 in `shell`), clippy clean
-(`-D warnings`, every target), fuzz targets clean, smoke run.
-Toolchain: 1.98.1, pinned by `rust-toolchain.toml`.
-Build target dir outside OneDrive (`%LOCALAPPDATA%\silver-browser\target`)
-— currently only by passing `CARGO_TARGET_DIR` manually each session; no
-`.cargo/config.toml` enforces this yet (worth adding before it's
-forgotten once, inside OneDrive).
+- **M15, navigation v1 and the address bar** (done 2026-10-02,
+  designed in `docs/design/navigation.md` and built in its eight
+  steps): the session history with a back-forward cache, HTML's
+  navigate, traverse, reload and stop; the browser's own interface in
+  a new `ui` crate (D9), its address field with its heuristics, the
+  status bubble and the window's title; error pages, `about:silver`,
+  and the page's icon.
+
+- **M16, selectors v2 and pseudo-elements** (done 2026-10-03, designed
+  in `docs/design/selectors-pseudo.md`): `::before` and `::after` with
+  `content`, `::first-line` and `::first-letter`, `::marker`,
+  `::placeholder` and `::selection` recognised, the attribute flags,
+  `:lang()`, the control states, and an ancestor filter for matching.
+
+- **M17, flexbox** (done 2026-10-03, designed in
+  `docs/design/flexbox.md`): css-flexbox-1's layout, the intrinsic size
+  keywords for every box, baselines, and the web-platform-tests
+  harness that M17 started (T1.1).
+
+- **M18, grid** (done 2026-10-05, designed in `docs/design/grid.md`):
+  css-grid-2's placement, track sizing, alignment and named areas;
+  subgrid and masonry are G1 and G2.
+
+- **M19, compositing, transforms and accelerated scroll** (done
+  2026-10-06, designed in `docs/design/compositing.md`): 2D and 3D
+  transforms, opacity groups, layers, composited scrolling, and a GPU
+  backend on wgpu beside the software one (D3, D8).
+
+- **M20, media queries and printing** (done 2026-10-07, designed in
+  `docs/design/media.md`): Media Queries 4 and 5's preferences,
+  `@supports`, cascade layers, and printing to a paginated PDF.
+
+- **M21, custom properties, `calc()`, counters and generated content**
+  (done 2026-10-07, designed in `docs/design/values.md`): `var()`,
+  `calc()` and its relatives, `env()`, counters, `attr()`, list
+  markers and text decoration.
+
+- **M22, transitions and animations** (done 2026-10-08, designed in
+  `docs/design/animations.md`): CSS transitions and animations on the
+  document timeline, composited where they can be, reduced motion.
+
+- **M23, images** (done 2026-10-09, designed in
+  `docs/design/images.md`): a new `images` crate decoding PNG, APNG,
+  JPEG, GIF and WebP, bounded and isolated; `img`, backgrounds,
+  gradients, border images and image markers; SVG images are M32.1's.
+
+- **M24, the JS engine** (done 2026-10-09, designed in
+  `docs/design/scripting.md`): a new `js` crate, QuickJS-ng behind the
+  engine's traits (D1); the HTML parser rewritten to run as bytes
+  arrive; classic scripts, inline and external, with `defer` and
+  `async`; Content Security Policy's `script-src`; scripts off unless
+  `--enable-scripts` asks, until the isolation of M33 and M34 (R2).
+
+Each milestone's fuller writeup and stated gaps are in
+`docs/architecture.md` "Current state", and the gaps no milestone holds
+on the G list (M39+, below).
+
+Verified per the vertical-slice rule at each milestone, by the gate:
+the workspace's tests (1,831 at M24, two ignored), clippy clean (`-D
+warnings`, every target), `cargo deny`, the fuzz targets, and a smoke
+run of the shell. Toolchain: 1.98.1, pinned by `rust-toolchain.toml`.
+The checkout lives outside OneDrive since 2026-10-08
+(`D:\09-Projects\Silver-Suite\Silver-Browser`), its `target` inside it
+and ignored.
 
 ---
 
@@ -676,7 +729,9 @@ since that's the concrete, testable exit criterion.
        `hhea`'s metrics unless the font sets OS/2's USE_TYPO_METRICS,
        rounds each to a whole pixel and places glyphs at hinted,
        whole-pixel advances, and `text` now does too (the flexbox
-       note, "Vertical metrics, found at step 11").
+       note, "Vertical metrics, found at step 11"). The quantization
+       policy is written down since 2026-10-09: `docs/architecture.md`,
+       "Pixels: where fractions become whole".
 - [x] M8.6 Acceptance: a mixed LTR/RTL paragraph with an embedded number
        and punctuation orders correctly. Landed as
        `layout::inline::tests::bidi_reorders_mixed_direction_text_
@@ -1975,8 +2030,15 @@ Deferred from the milestones above, each with what it waits on:
        check-layout tests and crashtests against `expectations.txt`, and
        writes `target/wpt/report.html`, with a failing reftest's render
        beside its reference's.
-- [ ] T1.2 Golden-rendering harness: fixed test pages → frame buffers →
+- [x] T1.2 Golden-rendering harness: fixed test pages -> frame buffers ->
        compare vs reference (Firefox) with tolerance; runs in CI.
+       Done 2026-10-01 (M10.7) as `tests/reference.rs`: pages captured
+       from a headless reference browser, Chrome rather than Firefox
+       (the box model's note), compared byte for byte or within a
+       tolerance a page declares; 118 pages at M24. It is one of the
+       workspace's tests, which CI runs (`cargo test`) and the gate
+       runs on the machine while CI's runs are stopped by the
+       account's billing.
 - [ ] T1.3 Adversarial test-site (built in-repo): every attack pattern
        gets a page; the suite must fail closed. Extended at M27, M33.
 - [ ] T1.4 Top-100 crawl fixture: saved HAR + DOM snapshots of the top
@@ -2021,11 +2083,18 @@ Deferred from the milestones above, each with what it waits on:
        outside `crates/net`.
 
 ## T4 — Performance
-- [ ] T4.1 `docs/perf-budgets.md` exists from M13; every milestone exit
-       includes the numbers.
+- [x] T4.1 `docs/perf-budgets.md` exists from M13; every milestone exit
+       includes the numbers. Done: written at M13, a section of
+       numbers for every milestone since.
 - [ ] T4.2 Criterion benches in-repo (`benches/`), run in CI, tracked.
-- [ ] T4.3 Regression rule: >10% regression on any tracked bench blocks
-       exit (unless a written exception with a follow-up item).
+       Half done: the benches are in-repo, plain binaries
+       (`harness = false`) run by hand, their numbers kept in
+       `docs/perf-budgets.md`; Criterion and CI runs are not.
+- [x] T4.3 Regression rule: >10% regression on any tracked bench blocks
+       exit (unless a written exception with a follow-up item). Done:
+       applied at every milestone's exit since M15, the code before and
+       after it timed by turns (`t43.sh`), each exception written in
+       `docs/perf-budgets.md` with its follow-up.
 
 ## T5 — Documentation
 - [ ] T5.1 architecture.md "Current state" updated every milestone

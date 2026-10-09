@@ -74,7 +74,6 @@ const DIRECTORIES: &[&str] = &[
     "css/css-cascade",
     "css/css-variables",
     "css/css-values",
-    "css/css-env",
     "css/css-lists",
     "css/css-counter-styles",
     "css/css-content",

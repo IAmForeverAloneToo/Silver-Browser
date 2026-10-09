@@ -238,9 +238,12 @@ impl FontStore {
             .and_then(|head| head.get(16..18))
             .is_some_and(|flags| flags[1] & 0x08 != 0);
 
-        // TODO(M2): honor non-zero indices for .ttc collections in ab_glyph.
-        let glyph_font =
-            ab_glyph::FontArc::try_from_vec(data.clone()).map_err(|_| FontError::InvalidFont)?;
+        // The glyphs are drawn from the face `index` names too, the one
+        // the metrics were read from: a collection's (`.ttc`) first is
+        // another font.
+        let glyph_font = ab_glyph::FontVec::try_from_vec_and_index(data.clone(), index)
+            .map(ab_glyph::FontArc::from)
+            .map_err(|_| FontError::InvalidFont)?;
         Ok(FontStore {
             raw: Arc::new(data),
             index,
@@ -963,6 +966,49 @@ mod tests {
 
     fn test_store() -> FontStore {
         FontStore::from_bytes(TEST_FONT.to_vec(), 0).expect("the bundled test font parses")
+    }
+
+    /// A font collection (OpenType's `ttcf`) of `fonts`, each an sfnt
+    /// whose tables are moved to where it lands in the collection.
+    fn collection(fonts: &[&[u8]]) -> Vec<u8> {
+        let mut out = b"ttcf".to_vec();
+        out.extend_from_slice(&[0, 1, 0, 0]);
+        out.extend_from_slice(&(fonts.len() as u32).to_be_bytes());
+        let mut at = 12 + 4 * fonts.len();
+        let mut placed = Vec::new();
+        for font in fonts {
+            out.extend_from_slice(&(at as u32).to_be_bytes());
+            placed.push(at);
+            at += font.len().next_multiple_of(4);
+        }
+        for (font, base) in fonts.iter().zip(placed) {
+            let mut font = font.to_vec();
+            if font.len() >= 12 {
+                let tables = u16::from_be_bytes([font[4], font[5]]) as usize;
+                for t in 0..tables {
+                    let field = 12 + 16 * t + 8;
+                    let offset = u32::from_be_bytes(font[field..field + 4].try_into().unwrap());
+                    font[field..field + 4].copy_from_slice(&(offset + base as u32).to_be_bytes());
+                }
+            }
+            font.resize(font.len().next_multiple_of(4), 0);
+            out.extend_from_slice(&font);
+        }
+        out
+    }
+
+    #[test]
+    fn a_collections_glyphs_come_from_the_font_its_index_names() {
+        // The first is no font at all: drawing from it would fail.
+        let ttc = collection(&[&[0; 12], TEST_FONT]);
+        assert!(FontStore::from_bytes(ttc.clone(), 0).is_err());
+        let store = FontStore::from_bytes(ttc, 1).expect("the second font parses");
+        let face = ttf_parser::Face::parse(TEST_FONT, 0).expect("the bundled font parses");
+        let id = face.glyph_index('m').expect("the glyph");
+        let mask = rasterize_glyph(store.glyph_font(), id.0, 16.0);
+        let alone = rasterize_glyph(test_store().glyph_font(), id.0, 16.0);
+        assert!(mask.width > 0 && mask.height > 0);
+        assert_eq!((mask.width, mask.height), (alone.width, alone.height));
     }
 
     fn test_fonts() -> FontCollection {
