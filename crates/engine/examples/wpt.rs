@@ -2,8 +2,8 @@
 //! tests M18's, its transforms tests M19's, its media queries,
 //! conditional rules and cascade tests M20's, its tests of custom
 //! properties, values, lists, counters, generated content, decoration
-//! and alignment M21's, and its animation, transition and easing tests
-//! M22's).
+//! and alignment M21's, its animation, transition and easing tests
+//! M22's, and its tests with scripts M24's).
 //!
 //! `cargo run -p engine --example wpt -- pull <checkout>` reads a
 //! checkout of web-platform-tests and copies into `tests/wpt/` the tests
@@ -16,8 +16,13 @@
 //! - a reftest, a check-layout test or a crashtest, its references and
 //!   its stylesheets on the same checkout;
 //! - no script but `testharness.js`, `testharnessreport.js` and
-//!   `check-layout-th.js`, and calls to `checkLayout` with a selector,
-//!   in an inline script or `onload`;
+//!   `check-layout-th.js`, calls to `checkLayout` with a selector in an
+//!   inline script or `onload`, and inline scripts that use nothing of
+//!   the platform but `console` and `document.title` (M24); and no event
+//!   handler for an event that fires while a test is drawn (`onload`,
+//!   `onerror`, `onpageshow`, focus, the viewport's size and scroll,
+//!   animations and transitions, M26): the others wait for a user who
+//!   never comes, in the reference browser as here;
 //! - no element that makes no box here: SVG, canvases, frames, media,
 //!   form controls and `br`; an `img` is taken (M23) but one with a
 //!   `srcset` or `sizes`, which this engine does not read (G35), and the
@@ -50,7 +55,7 @@
 //! `!=path` and each fuzziness as `fuzzy=ref:a-b;c-d` (an empty `ref`
 //! applying to every reference), for a check-layout test its selectors.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::env;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -404,7 +409,7 @@ fn element(
         }
         if name == "onload" {
             page.selectors.extend(check_layout_calls(value)?);
-        } else if name.starts_with("on") {
+        } else if fires_by_itself(&name) {
             return Err("script".to_string());
         }
         if name.starts_with("data-")
@@ -457,8 +462,12 @@ fn element(
                 }
             }
             None => {
-                page.selectors
-                    .extend(check_layout_calls(&document.text_content(id))?);
+                let text = document.text_content(id);
+                match check_layout_calls(&text) {
+                    Ok(selectors) => page.selectors.extend(selectors),
+                    Err(_) if uses_only_m24(&text) => {}
+                    Err(error) => return Err(error),
+                }
                 Ok(())
             }
         },
@@ -567,6 +576,284 @@ fn check_layout_calls(script: &str) -> Result<Vec<String>, String> {
         let s = s.trim_start();
         rest = s.strip_prefix(';').unwrap_or(s).to_string();
     }
+}
+
+/// Whether the event handler attribute `name` is for an event that
+/// fires while a test is drawn, with no user: loading and its errors,
+/// `pageshow`, focus that `autofocus` gives, the viewport's size and
+/// scroll, printing, a `details` toggled open, and animations and
+/// transitions. The reference browser runs it; this engine has no events
+/// (M26).
+fn fires_by_itself(name: &str) -> bool {
+    matches!(
+        name,
+        "onload"
+            | "onerror"
+            | "onpageshow"
+            | "onfocus"
+            | "onfocusin"
+            | "onresize"
+            | "onscroll"
+            | "onbeforeprint"
+            | "onafterprint"
+            | "ontoggle"
+    ) || name.starts_with("onanimation")
+        || name.starts_with("ontransition")
+}
+
+/// The names a script may use as M24 runs it: ECMAScript's keywords and
+/// global objects, and `console`.
+const ECMASCRIPT: &[&str] = &[
+    "arguments",
+    "async",
+    "await",
+    "break",
+    "case",
+    "catch",
+    "class",
+    "const",
+    "continue",
+    "debugger",
+    "default",
+    "delete",
+    "do",
+    "else",
+    "extends",
+    "false",
+    "finally",
+    "for",
+    "function",
+    "get",
+    "if",
+    "in",
+    "instanceof",
+    "let",
+    "new",
+    "null",
+    "of",
+    "return",
+    "set",
+    "static",
+    "super",
+    "switch",
+    "this",
+    "throw",
+    "true",
+    "try",
+    "typeof",
+    "var",
+    "void",
+    "while",
+    "with",
+    "yield",
+    "undefined",
+    "NaN",
+    "Infinity",
+    "globalThis",
+    "Math",
+    "JSON",
+    "Object",
+    "Array",
+    "String",
+    "Number",
+    "Boolean",
+    "Symbol",
+    "BigInt",
+    "Promise",
+    "Proxy",
+    "Reflect",
+    "Error",
+    "EvalError",
+    "RangeError",
+    "ReferenceError",
+    "SyntaxError",
+    "TypeError",
+    "URIError",
+    "AggregateError",
+    "Map",
+    "Set",
+    "WeakMap",
+    "WeakSet",
+    "WeakRef",
+    "Date",
+    "RegExp",
+    "ArrayBuffer",
+    "DataView",
+    "Uint8Array",
+    "Int32Array",
+    "Float64Array",
+    "parseInt",
+    "parseFloat",
+    "isNaN",
+    "isFinite",
+    "encodeURIComponent",
+    "decodeURIComponent",
+    "console",
+];
+
+/// Whether `script` uses nothing of the platform but `console` and
+/// `document.title`, all M24 gives a script: each name it uses but after
+/// a dot is ECMAScript's or `console`, one it declares (by `var`, `let`,
+/// `const`, `function` or `class`, or as a function's parameter), or
+/// `document` followed by `.title`. Its comments and strings are passed
+/// over; one with a template substitution, or a string that does not
+/// end, is not read and not taken.
+fn uses_only_m24(script: &str) -> bool {
+    let Some(code) = code_only(script) else {
+        return false;
+    };
+    // Each word: where it starts and ends, and whether a dot is before it.
+    let mut words = Vec::new();
+    let bytes = code.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$';
+        if !word(bytes[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && word(bytes[i]) {
+            i += 1;
+        }
+        if bytes[start].is_ascii_digit() {
+            continue;
+        }
+        let before = code[..start].trim_end();
+        let after_dot = before.ends_with('.') && !before.ends_with("..");
+        words.push((&code[start..i], i, after_dot));
+    }
+    // A name declared follows its keyword with nothing but white space
+    // between: not the first word of an anonymous function's body.
+    let mut declared: HashSet<&str> = HashSet::new();
+    for pair in words.windows(2) {
+        let ((keyword, end, _), (name, name_end, _)) = (pair[0], pair[1]);
+        if matches!(keyword, "var" | "let" | "const" | "function" | "class")
+            && code[end..name_end - name.len()].trim().is_empty()
+        {
+            declared.insert(name);
+        }
+    }
+    // A function's parameters: the words between the parenthesis after
+    // `function` (and its name) or before `=>`, and a word before `=>`.
+    for (open, close) in parameter_lists(&code) {
+        for &(name, end, _) in &words {
+            if end > open && end <= close {
+                declared.insert(name);
+            }
+        }
+    }
+    for &(name, end, _) in &words {
+        if code[end..].trim_start().starts_with("=>") {
+            declared.insert(name);
+        }
+    }
+    words.iter().all(|&(name, end, after_dot)| {
+        after_dot
+            || ECMASCRIPT.contains(&name)
+            || declared.contains(name)
+            || (name == "document" && code[end..].trim_start().starts_with(".title"))
+    })
+}
+
+/// `script`'s code alone: its comments gone and each string blanked, so
+/// that nothing in either reads as a name; `None` for a template with a
+/// substitution, or a string or comment that does not end.
+fn code_only(script: &str) -> Option<String> {
+    let mut out = String::with_capacity(script.len());
+    let mut chars = script.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '/' if chars.peek() == Some(&'/') => {
+                for next in chars.by_ref() {
+                    if next == '\n' {
+                        out.push('\n');
+                        break;
+                    }
+                }
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut star = false;
+                loop {
+                    let next = chars.next()?;
+                    if star && next == '/' {
+                        break;
+                    }
+                    star = next == '*';
+                }
+                out.push(' ');
+            }
+            '\'' | '"' | '`' => {
+                out.push_str("''");
+                let mut escaped = false;
+                loop {
+                    let next = chars.next()?;
+                    if escaped {
+                        escaped = false;
+                    } else if next == '\\' {
+                        escaped = true;
+                    } else if next == c {
+                        break;
+                    } else if c == '`' && next == '$' && chars.peek() == Some(&'{') {
+                        return None;
+                    }
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    Some(out)
+}
+
+/// The byte ranges of `code`'s parameter lists: the parentheses after
+/// `function` and its name, and those just before `=>`.
+fn parameter_lists(code: &str) -> Vec<(usize, usize)> {
+    let mut lists = Vec::new();
+    let matching = |open: usize| {
+        let mut depth = 0;
+        for (i, c) in code[open..].char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(open + i);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    };
+    for (at, _) in code.match_indices("function") {
+        if let Some(open) = code[at..].find('(').map(|o| at + o)
+            && let Some(close) = matching(open)
+        {
+            lists.push((open, close));
+        }
+    }
+    for (at, _) in code.match_indices("=>") {
+        let before = code[..at].trim_end();
+        if before.ends_with(')') {
+            let close = before.len() - 1;
+            let mut depth = 0;
+            for (i, c) in code[..=close].char_indices().rev() {
+                match c {
+                    ')' => depth += 1,
+                    '(' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            lists.push((i, close));
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    lists
 }
 
 /// `script` without its `//` and `/* */` comments.
@@ -1110,7 +1397,8 @@ mod tests {
                 "AVIF image",
             ),
             (reftest("<svg></svg>"), "element <svg>"),
-            (reftest("<div onclick=go()></div>"), "script"),
+            (reftest("<div onanimationend=go()></div>"), "script"),
+            (reftest("<img onerror=go()>"), "script"),
             (reftest("<script>go()</script>"), "script"),
             (reftest("<script src=x.js></script>"), "script"),
             (
@@ -1230,6 +1518,63 @@ mod tests {
             checkout.take("css/x/y.xht").err().as_deref(),
             Some("CDATA section in XHTML")
         );
+    }
+
+    #[test]
+    fn scripts_that_use_only_what_m24_gives_are_taken() {
+        for script in [
+            "function PASS() { return false; }",
+            "document.title = 'a // b'; console.log(\"c\", `d`)",
+            "/* x */ const f = (a, b) => a + b; let n = f(1, 2) * Math.PI; var g = c => c;",
+            "function h(x) { return [x].map(function (y) { return y.toFixed(2) }) }",
+            "// go()\nconsole.log('/* not a comment */ go()')",
+            "console.log('it\\'s', \"a \\\" b\")",
+            "const k = (a, b = (1)) => a + b; function m(c = Math.max(1, 2), d) { return c + d }",
+        ] {
+            assert!(uses_only_m24(script), "{script}");
+        }
+        for script in [
+            "document.body.offsetTop",
+            "go()",
+            "window.x = 1",
+            "let t = `${document.cookie}`",
+            "x.style.color = 'red'",
+            "'unended",
+            "setTimeout(f, 0)",
+            "window.onload = function() { window.scrollTo(0, 100); };",
+            "console.log(...go)",
+        ] {
+            assert!(!uses_only_m24(script), "{script}");
+        }
+        for name in [
+            "onload",
+            "onerror",
+            "onpageshow",
+            "onfocus",
+            "onfocusin",
+            "onresize",
+            "onscroll",
+            "onbeforeprint",
+            "onafterprint",
+            "ontoggle",
+            "onanimationstart",
+            "ontransitionend",
+        ] {
+            assert!(fires_by_itself(name), "{name}");
+        }
+        assert!(!fires_by_itself("onblur") && !fires_by_itself("onclick"));
+        let checkout = Checkout::new(
+            "scripts",
+            &[
+                (
+                    "css/x/a.html",
+                    "<link rel=match href=r.html><a onblur=\"PASS();\"></a>\
+                     <script>function PASS() { return false; }</script>",
+                ),
+                ("css/x/r.html", "<div></div>"),
+            ],
+        );
+        assert!(checkout.take("css/x/a.html").is_ok());
     }
 
     #[test]

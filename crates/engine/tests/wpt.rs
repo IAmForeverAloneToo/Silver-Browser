@@ -7,7 +7,8 @@
 //! 127.0.0.1, so a test and its stylesheets load through the engine's
 //! own loader by their URLs. Each test is loaded in an engine of its
 //! own, with the bundled font, at 800 by 600, on as many threads as
-//! there are cores. A test's animations and transitions are drawn at
+//! there are cores, its scripts run as a browser under `wptrunner` runs
+//! them (M24). A test's animations and transitions are drawn at
 //! their first frame, the document's timeline at zero (M22), as the
 //! reference browser's capture of a test that does not wait shows them:
 //! paused, or at a negative delay, they show the moment they ask for.
@@ -223,6 +224,7 @@ fn load_waking(server: &TestServer, path: &str) -> Result<(Engine, Receiver<()>)
         text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
             .expect("the bundled font parses"),
     );
+    engine.set_scripting(true);
     let (wake, woken) = channel();
     engine.set_waker(move || {
         let _ = wake.send(());

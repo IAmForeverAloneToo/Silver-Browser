@@ -65,8 +65,6 @@ css/css-conditional/at-supports-selector-file-selector-button.html              
 css/css-conditional/at-supports-selector-picker.html                                      `::picker()` is not a pseudo-element this engine knows, with form controls, which have no milestone yet
 css/css-conditional/at-supports-selector-picker-icon.html                                 `::picker-icon` is not a pseudo-element this engine knows, with form controls, which have no milestone yet
 css/css-conditional/at-supports-selector-webkit-slider-thumb.tentative.html               `::-webkit-slider-thumb` is taken only to match nothing (selectors-4 Appendix B), and Conditional 4 makes `selector()` of such a pseudo-element false; the tentative test expects the reference browser's own
-css/mediaqueries/scripting-print-noscript.html                                            the engine runs no script (M24), so `(scripting)` is false and the test's text shows, as it should; but the parser keeps the reference's `noscript` with its text in the head, where HTML's in head noscript mode ends it at the text and puts the text in the body
-css/mediaqueries/scripting-print-script.html                                              the engine runs no script (M24), so `(scripting)` is false and the text stays hidden; the reference shows it, as a browser that runs scripts does
 
 # Not in M21 (docs/design/values.md, section 2): the complex predefined
 # counter styles, colour functions, images, and markers on pseudo-elements.

@@ -26,8 +26,8 @@ them; `expectations.txt` names those expected to fail, and why.
 | --- | ---: |
 | checklayout | 51 |
 | crashtest | 51 |
-| reftest | 2038 |
-| all | 2140 |
+| reftest | 2052 |
+| all | 2154 |
 
 ## Left out
 
@@ -35,7 +35,7 @@ The first reason the rule found for each test it left out:
 
 | Reason | Tests |
 | --- | ---: |
-| script | 1749 |
+| script | 1733 |
 | @font-face | 836 |
 | declaration of font | 705 |
 | declaration of display | 495 |
@@ -89,12 +89,12 @@ The first reason the rule found for each test it left out:
 | declaration of block-size | 13 |
 | declaration of fill | 13 |
 | declaration of object-view-box | 13 |
+| declaration of all | 12 |
 | declaration of height | 12 |
 | declaration of text-decoration-inset | 12 |
 | declaration of align-self | 11 |
 | declaration of columns | 11 |
 | declaration of text-emphasis | 11 |
-| declaration of all | 10 |
 | declaration of column-count | 10 |
 | declaration of overflow-x | 10 |
 | declaration of text-decoration-skip-spaces | 10 |
