@@ -53,6 +53,19 @@ pub const MAX_NODES: usize = 1 << 22;
 /// not grow it without bound.
 pub const MAX_JOURNAL: usize = 1 << 16;
 
+/// The most bytes of text, tag names and attribute names and values a
+/// document may hold in its live nodes through its mutation API: 256
+/// MiB, what a script's heap may hold (M25), so that a script cannot
+/// make the document keep a string many times over that it holds
+/// once. No page parsed from a body within net's limit comes near it.
+pub const MAX_DATA_BYTES: usize = 256 << 20;
+
+/// The generations a slot may have: a slot is retired once this many
+/// nodes have had it, so that an id fits in the 53 bits a script's
+/// number holds exactly ([`NodeId::to_bits`]). A slot reused two
+/// million times is let go of, a few dozen bytes.
+pub const MAX_GENERATION: u32 = 1 << 21;
+
 /// A node's name in its [`Document`]: its slot and the slot's
 /// generation, so that it names this node and no later one in the
 /// same slot.
@@ -75,6 +88,27 @@ impl NodeId {
     #[inline]
     pub fn generation(self) -> u32 {
         self.generation
+    }
+
+    /// The id as one number below 2^53: the index in the low 32 bits,
+    /// the generation above them (M25, a script's handle on a node).
+    #[inline]
+    pub fn to_bits(self) -> u64 {
+        u64::from(self.index) | (u64::from(self.generation) << 32)
+    }
+
+    /// The id [`NodeId::to_bits`] made `bits` from; `None` for a number
+    /// no id makes. Whether it names a live node is the document's to
+    /// say.
+    pub fn from_bits(bits: u64) -> Option<NodeId> {
+        let generation = u32::try_from(bits >> 32).ok()?;
+        if generation >= MAX_GENERATION {
+            return None;
+        }
+        Some(NodeId {
+            index: bits as u32,
+            generation,
+        })
     }
 }
 
@@ -141,6 +175,9 @@ pub enum MutationError {
     TooDeep,
     /// The document already holds [`MAX_NODES`] nodes.
     TooManyNodes,
+    /// The change would take the document's data past
+    /// [`MAX_DATA_BYTES`].
+    TooMuchData,
     /// The operation needs an element, or a text node, and got another
     /// kind of node.
     WrongKind,
@@ -156,6 +193,7 @@ impl fmt::Display for MutationError {
             MutationError::NotAChild => "the reference node is not a child of the parent",
             MutationError::TooDeep => "the insertion would nest elements too deeply",
             MutationError::TooManyNodes => "the document holds too many nodes",
+            MutationError::TooMuchData => "the document holds too much data",
             MutationError::WrongKind => "the node is of the wrong kind",
             MutationError::Attached => "the node is attached or is the document",
         })
@@ -191,8 +229,14 @@ pub struct Document {
     live: usize,
     root: NodeId,
     journal: Vec<Change>,
+    /// How many changes have been made, ever.
+    version: u64,
+    /// The bytes of data the live nodes hold ([`MAX_DATA_BYTES`]).
+    data_bytes: usize,
     /// [`MAX_NODES`], lowered by tests.
     max_nodes: usize,
+    /// [`MAX_DATA_BYTES`], lowered by tests.
+    max_data: usize,
 }
 
 impl Default for Document {
@@ -213,7 +257,10 @@ impl Document {
                 generation: 0,
             },
             journal: Vec::new(),
+            version: 0,
+            data_bytes: 0,
             max_nodes: MAX_NODES,
+            max_data: MAX_DATA_BYTES,
         };
         document.root = document.allocate(NodeData::Document);
         document
@@ -515,6 +562,7 @@ impl Document {
     /// document's `createElement` does.
     pub fn create_element(&mut self, tag: &str) -> Result<NodeId, MutationError> {
         self.check_room()?;
+        self.check_data(tag.len())?;
         Ok(self.allocate(NodeData::Element {
             tag: tag.to_ascii_lowercase(),
             attrs: Vec::new(),
@@ -532,6 +580,7 @@ impl Document {
         attrs: Vec<(String, String)>,
     ) -> Result<NodeId, MutationError> {
         self.check_room()?;
+        self.check_data(tag.len() + attrs.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>())?;
         Ok(self.allocate(NodeData::Element {
             tag: tag.to_ascii_lowercase(),
             attrs,
@@ -541,6 +590,7 @@ impl Document {
     /// A new, detached text node.
     pub fn create_text(&mut self, data: &str) -> Result<NodeId, MutationError> {
         self.check_room()?;
+        self.check_data(data.len())?;
         Ok(self.allocate(NodeData::Text(data.to_string())))
     }
 
@@ -645,9 +695,19 @@ impl Document {
         value: &str,
     ) -> Result<(), MutationError> {
         let name = name.to_ascii_lowercase();
+        let had = match self.attrs_mut(element)?.iter().find(|(k, _)| *k == name) {
+            Some((_, v)) if v == value => return Ok(()),
+            Some((_, v)) => Some(v.len()),
+            None => None,
+        };
+        let (more, less) = match had {
+            Some(old) => (value.len(), old),
+            None => (name.len() + value.len(), 0),
+        };
+        self.check_data(more.saturating_sub(less))?;
+        self.data_bytes = self.data_bytes + more - less;
         let attrs = self.attrs_mut(element)?;
         let old = match attrs.iter_mut().find(|(k, _)| *k == name) {
-            Some((_, v)) if v == value => return Ok(()),
             Some((_, v)) => Some(std::mem::replace(v, value.to_string())),
             None => {
                 attrs.push((name.clone(), value.to_string()));
@@ -667,6 +727,7 @@ impl Document {
             return Ok(());
         };
         let (_, old) = attrs.remove(at);
+        self.data_bytes -= name.len() + old.len();
         self.record_change(Change::AttributeChanged {
             element,
             name,
@@ -677,14 +738,19 @@ impl Document {
 
     /// Replaces a text node's data; the same data changes nothing.
     pub fn set_text(&mut self, node: NodeId, data: &str) -> Result<(), MutationError> {
-        let record = self.record_mut(node).ok_or(MutationError::NoSuchNode)?;
-        let NodeData::Text(text) = &mut record.data else {
+        let record = self.record(node).ok_or(MutationError::NoSuchNode)?;
+        let NodeData::Text(text) = &record.data else {
             return Err(MutationError::WrongKind);
         };
         if text == data {
             return Ok(());
         }
-        data.clone_into(text);
+        let old = text.len();
+        self.check_data(data.len().saturating_sub(old))?;
+        self.data_bytes = self.data_bytes + data.len() - old;
+        if let Some(NodeData::Text(text)) = self.record_mut(node).map(|r| &mut r.data) {
+            data.clone_into(text);
+        }
         self.record_change(Change::TextChanged { node });
         Ok(())
     }
@@ -693,14 +759,18 @@ impl Document {
     /// what a parser does with text that arrives in pieces (M24.8),
     /// without copying what the node has.
     pub fn append_data(&mut self, node: NodeId, data: &str) -> Result<(), MutationError> {
-        let record = self.record_mut(node).ok_or(MutationError::NoSuchNode)?;
-        let NodeData::Text(text) = &mut record.data else {
+        let record = self.record(node).ok_or(MutationError::NoSuchNode)?;
+        if !matches!(record.data, NodeData::Text(_)) {
             return Err(MutationError::WrongKind);
-        };
+        }
         if data.is_empty() {
             return Ok(());
         }
-        text.push_str(data);
+        self.check_data(data.len())?;
+        self.data_bytes += data.len();
+        if let Some(NodeData::Text(text)) = self.record_mut(node).map(|r| &mut r.data) {
+            text.push_str(data);
+        }
         self.record_change(Change::TextChanged { node });
         Ok(())
     }
@@ -717,11 +787,14 @@ impl Document {
         let doomed: Vec<u32> = self.subtree(id).map(|n| n.index).collect();
         for index in doomed {
             let slot = &mut self.slots[index as usize];
-            slot.record = None;
+            if let Some(record) = slot.record.take() {
+                self.data_bytes -= data_size(&record.data);
+            }
             self.live -= 1;
-            // A slot whose generation is spent is retired, never reused,
-            // so no later node can answer to an old id.
-            if let Some(next) = slot.generation.checked_add(1) {
+            // A slot whose generations are spent is retired, never
+            // reused, so no later node can answer to an old id.
+            let next = slot.generation + 1;
+            if next < MAX_GENERATION {
                 slot.generation = next;
                 self.free.push(index);
             }
@@ -737,6 +810,20 @@ impl Document {
     /// Whether anything changed since the journal was last drained.
     pub fn has_changes(&self) -> bool {
         !self.journal.is_empty()
+    }
+
+    /// How many changes have been made to the document, ever: a count
+    /// that a reader keeps to know, by comparing, whether anything
+    /// changed since it last looked (M25's live collections), whoever
+    /// drains the journal meanwhile.
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// The bytes of text, tag names and attribute names and values the
+    /// live nodes hold ([`MAX_DATA_BYTES`]).
+    pub fn data_bytes(&self) -> usize {
+        self.data_bytes
     }
 
     /// Checks the arena's invariants, for tests and fuzz targets:
@@ -805,6 +892,21 @@ impl Document {
             .count();
         if placed + parentless != counted || counted != self.live {
             return Err("a node is in more than one place, or the count is wrong".into());
+        }
+        let data: usize = self
+            .slots
+            .iter()
+            .filter_map(|s| s.record.as_ref())
+            .map(|r| data_size(&r.data))
+            .sum();
+        if data != self.data_bytes {
+            return Err(format!(
+                "{data} bytes of data counted as {}",
+                self.data_bytes
+            ));
+        }
+        if let Some(slot) = self.slots.iter().find(|s| s.generation >= MAX_GENERATION) {
+            return Err(format!("a slot at generation {}", slot.generation));
         }
         let mut seen = std::collections::HashSet::new();
         for &f in &self.free {
@@ -878,7 +980,17 @@ impl Document {
         }
     }
 
+    /// Whether `more` bytes of data fit.
+    fn check_data(&self, more: usize) -> Result<(), MutationError> {
+        if more > self.max_data.saturating_sub(self.data_bytes) {
+            Err(MutationError::TooMuchData)
+        } else {
+            Ok(())
+        }
+    }
+
     fn allocate(&mut self, data: NodeData) -> NodeId {
+        self.data_bytes += data_size(&data);
         let record = Record {
             data,
             parent: None,
@@ -998,6 +1110,7 @@ impl Document {
     }
 
     fn record_change(&mut self, change: Change) {
+        self.version += 1;
         if self.journal.last() == Some(&Change::Everything) {
             return;
         }
@@ -1007,6 +1120,17 @@ impl Document {
             return;
         }
         self.journal.push(change);
+    }
+}
+
+/// The bytes of data a node holds, for [`MAX_DATA_BYTES`].
+fn data_size(data: &NodeData) -> usize {
+    match data {
+        NodeData::Document => 0,
+        NodeData::Element { tag, attrs } => {
+            tag.len() + attrs.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>()
+        }
+        NodeData::Text(text) => text.len(),
     }
 }
 
@@ -1382,6 +1506,126 @@ mod tests {
         );
         let nearer = document.ancestors(parent).nth(1).unwrap();
         document.append_child(nearer, outer).unwrap();
+    }
+
+    #[test]
+    fn the_data_count_follows_every_change_and_the_cap_refuses_past_it() {
+        let mut document = Document::from_node(&sample());
+        // html head title "t" body p class=a "one" " " p "two"
+        let parsed = 4 + 4 + 5 + 1 + 4 + 1 + 6 + 3 + 1 + 1 + 3;
+        assert_eq!(document.data_bytes(), parsed);
+        let p = element(&document, "p");
+        document.set_attribute(p, "class", "abc").unwrap();
+        assert_eq!(document.data_bytes(), parsed + 2);
+        document.set_attribute(p, "id", "x").unwrap();
+        assert_eq!(document.data_bytes(), parsed + 5);
+        document.remove_attribute(p, "class").unwrap();
+        assert_eq!(document.data_bytes(), parsed - 3);
+        let text = document.first_child(p).unwrap();
+        document.set_text(text, "uno!").unwrap();
+        document.append_data(text, "..").unwrap();
+        assert_eq!(document.data_bytes(), parsed);
+        let body = element(&document, "body");
+        let span = document.create_element("span").unwrap();
+        let more = document.create_text("more").unwrap();
+        document.append_child(span, more).unwrap();
+        document.append_child(body, span).unwrap();
+        assert_eq!(document.data_bytes(), parsed + 8);
+        document.remove_child(body, span).unwrap();
+        document.free(span).unwrap();
+        assert_eq!(document.data_bytes(), parsed);
+        document.validate().unwrap();
+
+        // Past the cap, each kind of change is refused and changes nothing.
+        document.max_data = document.data_bytes() + 4;
+        assert_eq!(
+            document.create_text("12345"),
+            Err(MutationError::TooMuchData)
+        );
+        assert_eq!(
+            document.create_element("abcde"),
+            Err(MutationError::TooMuchData)
+        );
+        assert_eq!(
+            document.create_element_with("a", vec![("b".into(), "cde".into())]),
+            Err(MutationError::TooMuchData)
+        );
+        assert_eq!(
+            document.set_attribute(p, "title", "abc"),
+            Err(MutationError::TooMuchData)
+        );
+        assert_eq!(
+            document.set_text(text, "uno!..12345"),
+            Err(MutationError::TooMuchData)
+        );
+        assert_eq!(
+            document.append_data(text, "12345"),
+            Err(MutationError::TooMuchData)
+        );
+        document.validate().unwrap();
+        // What fits goes in, and what shrinks always does.
+        document.append_data(text, "1234").unwrap();
+        assert_eq!(document.create_text("x"), Err(MutationError::TooMuchData));
+        document.set_text(text, "").unwrap();
+        document.create_text("x").unwrap();
+        document.validate().unwrap();
+    }
+
+    #[test]
+    fn the_version_counts_every_change_whoever_drains_the_journal() {
+        let mut document = Document::from_node(&sample());
+        assert_eq!(document.version(), 0, "a tree taken whole is no change");
+        let body = element(&document, "body");
+        let p = document.create_element("p").unwrap();
+        assert_eq!(document.version(), 0, "a detached node is no change");
+        document.append_child(body, p).unwrap();
+        document.set_attribute(p, "a", "b").unwrap();
+        document.set_attribute(p, "a", "b").unwrap();
+        assert_eq!(document.version(), 2, "the same value changes nothing");
+        document.take_changes();
+        document.remove_child(body, p).unwrap();
+        assert_eq!(document.version(), 3);
+        // Past the journal's bound the record is one, the count goes on.
+        let text = document.create_text("").unwrap();
+        for i in 0..MAX_JOURNAL + 10 {
+            document.set_text(text, &i.to_string()).unwrap();
+        }
+        assert_eq!(document.take_changes(), vec![Change::Everything]);
+        assert_eq!(document.version(), 3 + MAX_JOURNAL as u64 + 10);
+    }
+
+    #[test]
+    fn an_id_is_one_number_below_two_to_the_fifty_third() {
+        let mut document = Document::new();
+        let a = document.create_element("a").unwrap();
+        assert_eq!(NodeId::from_bits(a.to_bits()), Some(a));
+        let last = NodeId {
+            index: u32::MAX,
+            generation: MAX_GENERATION - 1,
+        };
+        assert!(last.to_bits() < 1 << 53);
+        assert_eq!(NodeId::from_bits(last.to_bits()), Some(last));
+        assert_eq!(NodeId::from_bits(u64::from(MAX_GENERATION) << 32), None);
+        assert_eq!(NodeId::from_bits(u64::MAX), None);
+    }
+
+    #[test]
+    fn a_slot_is_retired_at_its_last_generation() {
+        let mut document = Document::new();
+        let a = document.create_element("a").unwrap();
+        document.slots[a.index as usize].generation = MAX_GENERATION - 2;
+        let a = NodeId {
+            index: a.index,
+            generation: MAX_GENERATION - 2,
+        };
+        document.free(a).unwrap();
+        let b = document.create_element("b").unwrap();
+        assert_eq!((b.index, b.generation), (a.index, MAX_GENERATION - 1));
+        document.free(b).unwrap();
+        let c = document.create_element("c").unwrap();
+        assert_ne!(c.index, a.index, "the slot is not reused");
+        assert!(!document.contains(a) && !document.contains(b));
+        document.validate().unwrap();
     }
 
     #[test]

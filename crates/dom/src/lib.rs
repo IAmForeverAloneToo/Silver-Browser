@@ -15,8 +15,8 @@ mod document;
 mod microsyntax;
 
 pub use document::{
-    Change, Children, Document, MAX_DEPTH, MAX_JOURNAL, MAX_NODES, MutationError, NodeData, NodeId,
-    Subtree,
+    Change, Children, Document, MAX_DATA_BYTES, MAX_DEPTH, MAX_GENERATION, MAX_JOURNAL, MAX_NODES,
+    MutationError, NodeData, NodeId, Subtree,
 };
 pub use microsyntax::{Dimension, parse_dimension, parse_integer, parse_non_negative_integer};
 

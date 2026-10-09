@@ -2,6 +2,8 @@
 //! loader"): documents and their stylesheets fetched on threads of their
 //! own, their results taken on the engine's thread.
 
+#[cfg(test)]
+mod dom_tests;
 mod pool;
 mod rules;
 #[cfg(test)]

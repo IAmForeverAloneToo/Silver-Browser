@@ -4,13 +4,13 @@
 //! limits set on the runtime.
 
 pub(crate) mod console;
+mod dom;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use rquickjs::context::EvalOptions;
 use rquickjs::function::Rest;
-use rquickjs::object::Accessor;
 use rquickjs::{
     CatchResultExt, CaughtError, Coerced, Context, Ctx, Exception, Function, Object, Persistent,
     Runtime, Value,
@@ -54,6 +54,8 @@ struct QuickJsRealm<H: ScriptingHost> {
     /// Interrupt checks taken in this run, and whether they ran out.
     steps: Rc<Cell<u32>>,
     exhausted: Rc<Cell<bool>>,
+    /// The host's work in this run not yet charged as a whole step.
+    work: Rc<Cell<u64>>,
     /// Whether the run under way reports muted errors.
     muted: Rc<Cell<bool>>,
     limits: Limits,
@@ -107,8 +109,19 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
         )));
         let context = Context::full(&runtime).map_err(failed)?;
         let host: Slot<H> = Rc::default();
+        let budget = dom::Budget {
+            steps: steps.clone(),
+            work: Rc::default(),
+            exhausted: exhausted.clone(),
+            limit: limits.steps,
+        };
+        let work = budget.work.clone();
         context
-            .with(|ctx| install(&ctx, &host).catch(&ctx).map_err(|e| e.to_string()))
+            .with(|ctx| {
+                install(&ctx, &host, &budget)
+                    .catch(&ctx)
+                    .map_err(|e| e.to_string())
+            })
             .map_err(|message| ScriptError {
                 kind: ErrorKind::Exception,
                 message,
@@ -121,6 +134,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
             host,
             steps,
             exhausted,
+            work,
             muted,
             limits,
             dead: None,
@@ -133,6 +147,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
     fn begin(&mut self, host: &mut H, muted: bool) {
         *self.host.borrow_mut() = Some(std::mem::take(host));
         self.steps.set(0);
+        self.work.set(0);
         self.exhausted.set(false);
         self.muted.set(muted);
     }
@@ -392,11 +407,15 @@ fn mute(error: ScriptError, muted: bool) -> ScriptError {
 }
 
 /// Fills in a new realm's global object: `window` and `self`,
-/// `console`, and `document` with its `title`; and takes away what
-/// QuickJS-ng adds that a page of a browser that is not cross-origin
-/// isolated has not: an unrounded `performance` clock and
+/// `console`, and the DOM's interfaces and `document` (M25); and takes
+/// away what QuickJS-ng adds that a page of a browser that is not
+/// cross-origin isolated has not: an unrounded `performance` clock and
 /// `SharedArrayBuffer`.
-fn install<'js, H: ScriptingHost>(ctx: &Ctx<'js>, host: &Slot<H>) -> rquickjs::Result<()> {
+fn install<'js, H: ScriptingHost>(
+    ctx: &Ctx<'js>,
+    host: &Slot<H>,
+    budget: &dom::Budget,
+) -> rquickjs::Result<()> {
     let global = ctx.globals();
     global.remove("performance")?;
     global.remove("SharedArrayBuffer")?;
@@ -426,23 +445,7 @@ fn install<'js, H: ScriptingHost>(ctx: &Ctx<'js>, host: &Slot<H>) -> rquickjs::R
         console.set(name, method)?;
     }
     global.set("console", console)?;
-    let document = Object::new(ctx.clone())?;
-    let (read, write) = (host.clone(), host.clone());
-    document.prop(
-        "title",
-        Accessor::new(
-            move |ctx: Ctx<'js>| -> rquickjs::Result<String> {
-                with_host(&ctx, &read, |host| host.title())
-            },
-            move |ctx: Ctx<'js>, title: Coerced<String>| -> rquickjs::Result<()> {
-                with_host(&ctx, &write, |host| host.set_title(title.0))
-            },
-        )
-        .enumerable()
-        .configurable(),
-    )?;
-    global.set("document", document)?;
-    Ok(())
+    dom::install(ctx, host, budget)
 }
 
 /// Calls `f` with the host, which is there only while a run the engine

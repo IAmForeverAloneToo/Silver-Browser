@@ -7,11 +7,17 @@
 
 #![forbid(unsafe_code)]
 
+mod dom;
 mod quickjs;
 
 #[cfg(test)]
+mod dom_tests;
+#[cfg(test)]
+mod test_tree;
+#[cfg(test)]
 mod tests;
 
+pub use dom::{Answer, Call, DomError, Handle, MAX_HANDLE, WORK_PER_STEP};
 pub use quickjs::QuickJs;
 
 /// The most heap a realm may hold, in bytes. An allocation past it
@@ -127,6 +133,18 @@ pub trait ScriptingHost: Default + 'static {
     fn title(&mut self) -> String;
     /// `document.title`'s setter.
     fn set_title(&mut self, title: String);
+    /// What the bindings ask of the document's nodes (M25): the call's
+    /// answer, or the exception it throws. A host without a document
+    /// answers none.
+    fn dom(&mut self, call: Call) -> Result<Answer, DomError> {
+        let _ = call;
+        Err(DomError::not_supported())
+    }
+    /// The units of work done since this was last asked, which the
+    /// realm charges to the run's budget ([`WORK_PER_STEP`]).
+    fn take_work(&mut self) -> u64 {
+        0
+    }
 }
 
 /// A JavaScript engine (M24.1, roadmap D1): makes realms.

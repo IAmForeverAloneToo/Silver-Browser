@@ -12,13 +12,13 @@ use crate::testing::*;
 use crate::{Engine, LoadState};
 
 /// `body` served and loaded with scripting `on`; the console's lines.
-fn scripted(body: &'static str, on: bool) -> (Tab, Vec<String>) {
+pub(super) fn scripted(body: &'static str, on: bool) -> (Tab, Vec<String>) {
     scripted_bytes(body.as_bytes().to_vec(), on.then(js::Limits::default))
 }
 
 /// `body` served and loaded, with scripts run with `limits` if any; the
 /// console's lines.
-fn scripted_bytes(body: Vec<u8>, limits: Option<js::Limits>) -> (Tab, Vec<String>) {
+pub(super) fn scripted_bytes(body: Vec<u8>, limits: Option<js::Limits>) -> (Tab, Vec<String>) {
     let server = serve(move |path| match path {
         "/page.html" => Some(Reply::ok("text/html", &body)),
         _ => None,

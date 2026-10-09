@@ -1,14 +1,17 @@
+use crate::test_tree::Tree;
 use crate::{
-    Completion, ConsoleLevel, Death, ErrorKind, Limits, QuickJs, Realm, Script, ScriptEngine,
-    ScriptingHost,
+    Answer, Call, Completion, ConsoleLevel, Death, DomError, ErrorKind, Limits, QuickJs, Realm,
+    Script, ScriptEngine, ScriptingHost,
 };
 
-/// A host that records what scripts do to it.
+/// A host that records what scripts do to it, with a small tree for the
+/// bindings to reach.
 #[derive(Debug, Default)]
-struct Recorder {
-    console: Vec<(ConsoleLevel, String)>,
-    title: String,
-    titles_read: usize,
+pub(crate) struct Recorder {
+    pub(crate) console: Vec<(ConsoleLevel, String)>,
+    pub(crate) title: String,
+    pub(crate) titles_read: usize,
+    pub(crate) tree: Tree,
 }
 
 impl ScriptingHost for Recorder {
@@ -24,17 +27,25 @@ impl ScriptingHost for Recorder {
     fn set_title(&mut self, title: String) {
         self.title = title;
     }
+
+    fn dom(&mut self, call: Call) -> Result<Answer, DomError> {
+        self.tree.dom(call)
+    }
+
+    fn take_work(&mut self) -> u64 {
+        self.tree.take_work()
+    }
 }
 
-fn realm_with(limits: Limits) -> Box<dyn Realm<Recorder>> {
+pub(crate) fn realm_with(limits: Limits) -> Box<dyn Realm<Recorder>> {
     QuickJs.realm(limits).expect("a realm")
 }
 
-fn realm() -> Box<dyn Realm<Recorder>> {
+pub(crate) fn realm() -> Box<dyn Realm<Recorder>> {
     realm_with(Limits::default())
 }
 
-fn script(source: &str) -> Script<'_> {
+pub(crate) fn script(source: &str) -> Script<'_> {
     Script {
         source,
         url: "https://example.com/page.html",

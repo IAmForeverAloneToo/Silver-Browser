@@ -7,6 +7,10 @@
 //! journal as any other change does. A realm is made at a document's
 //! first script and kept with the document; one whose heap stays full
 //! after a failed run is dropped, and the document runs no script again.
+//! The host stays with the document between runs (M25), keeping what
+//! scripts hold; after each run the subtrees they let go of are freed.
+
+mod host;
 
 use std::collections::VecDeque;
 
@@ -14,7 +18,6 @@ use dom::{Document, NodeId};
 use encoding::Encoding;
 use js::{
     Completion, ConsoleLevel, ErrorKind, Limits, QuickJs, Realm, Script, ScriptEngine, ScriptError,
-    ScriptingHost,
 };
 use net::csp::{Csp, Violation};
 use net::{Destination, Request, Response, Url};
@@ -50,30 +53,7 @@ pub enum ScriptState {
     Stopped { errors: usize },
 }
 
-/// The host a document's scripts reach it through (M24.4): the document,
-/// moved in for a run, and what they wrote to the console meanwhile.
-#[derive(Default)]
-pub(crate) struct DocumentHost {
-    pub(crate) document: Document,
-    console: Vec<ConsoleEntry>,
-}
-
-impl ScriptingHost for DocumentHost {
-    fn console(&mut self, level: ConsoleLevel, message: String) {
-        self.console.push(ConsoleEntry {
-            level,
-            text: cut(message),
-        });
-    }
-
-    fn title(&mut self) -> String {
-        document_title(&self.document)
-    }
-
-    fn set_title(&mut self, title: String) {
-        set_document_title(&mut self.document, &title);
-    }
-}
+pub(crate) use host::DocumentHost;
 
 /// `text`, cut to [`MAX_CONSOLE_MESSAGE`] bytes at a character boundary.
 fn cut(mut text: String) -> String {
@@ -116,6 +96,9 @@ struct Source {
 /// the scripts on their way.
 pub(crate) struct Scripts {
     realm: Option<Box<dyn Realm<DocumentHost>>>,
+    /// The host the realm's scripts reach the document through, lent
+    /// the document for each run.
+    host: DocumentHost,
     limits: Limits,
     console: VecDeque<ConsoleEntry>,
     errors: usize,
@@ -146,6 +129,7 @@ impl Scripts {
     pub(crate) fn with_limits(limits: Limits) -> Scripts {
         Scripts {
             realm: None,
+            host: DocumentHost::default(),
             limits,
             console: VecDeque::new(),
             errors: 0,
@@ -370,15 +354,14 @@ impl Scripts {
             }
         }
         let realm = self.realm.as_mut()?;
-        let mut host = DocumentHost {
-            document: std::mem::take(document),
-            console: Vec::new(),
-        };
-        let result = realm.run(script, &mut host);
-        let errors = realm.checkpoint(&mut host);
+        let host = &mut self.host;
+        host.document = std::mem::take(document);
+        let result = realm.run(script, host);
+        let errors = realm.checkpoint(host);
         let dead = realm.dead().is_some();
+        host.sweep();
         *document = std::mem::take(&mut host.document);
-        for entry in host.console {
+        for entry in std::mem::take(&mut host.console) {
             self.push(entry);
         }
         let completion = match result {
@@ -428,6 +411,7 @@ impl Scripts {
 
     fn stop(&mut self) {
         self.realm = None;
+        self.host.forget_objects();
         self.stopped = true;
         self.just_stopped = true;
         self.push(ConsoleEntry {
@@ -507,51 +491,6 @@ pub(crate) fn document_title(document: &Document) -> String {
         .filter(|word| !word.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-/// `document.title`'s setter (HTML section 3.1.7): the first `title`
-/// element's children replaced by `value`'s text, a `title` made last in
-/// the head if there is none; nothing without a document element, or
-/// without a head to put a `title` in.
-pub(crate) fn set_document_title(document: &mut Document, value: &str) {
-    let Some(html) = document.document_element() else {
-        return;
-    };
-    let existing = document
-        .subtree(document.root())
-        .find(|&node| document.tag(node) == Some("title"));
-    let title = match existing {
-        Some(title) => title,
-        None => {
-            let Some(head) = document
-                .element_children(html)
-                .find(|&child| document.tag(child) == Some("head"))
-            else {
-                return;
-            };
-            let Ok(title) = document.create_element("title") else {
-                return;
-            };
-            if document.append_child(head, title).is_err() {
-                let _ = document.free(title);
-                return;
-            }
-            title
-        }
-    };
-    // String replace all: the children go, the text comes in their place.
-    let children: Vec<NodeId> = document.children(title).collect();
-    for child in children {
-        if document.remove_child(title, child).is_ok() {
-            let _ = document.free(child);
-        }
-    }
-    if !value.is_empty()
-        && let Ok(text) = document.create_text(value)
-        && document.append_child(title, text).is_err()
-    {
-        let _ = document.free(text);
-    }
 }
 
 /// Whether `element`'s legacy `for` and `event` attributes, when it has
@@ -677,6 +616,16 @@ mod tests {
         }
     }
 
+    /// `document.title` set to `value` in `document`, as a script's host
+    /// sets it.
+    fn set_document_title(document: &mut Document, value: &str) {
+        let mut host = DocumentHost::default();
+        host.document = std::mem::take(document);
+        host.set_document_title(value);
+        host.sweep();
+        *document = std::mem::take(&mut host.document);
+    }
+
     #[test]
     fn the_title_reads_and_writes_as_html_says() {
         let mut document = parsed("<title>  a \n b </title><p>x");
@@ -701,6 +650,12 @@ mod tests {
         let mut empty = Document::new();
         set_document_title(&mut empty, "x");
         assert_eq!(empty.len(), 1);
+        // The text replaced is freed, nothing holding it.
+        let mut document = parsed("<title>old</title>");
+        let before = document.len();
+        set_document_title(&mut document, "new");
+        assert_eq!(document.len(), before);
+        document.validate().unwrap();
     }
 
     #[test]
