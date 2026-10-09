@@ -1,861 +1,1839 @@
-//! WHATWG-style HTML tokenizer (pragmatic subset).
+//! The HTML tokenizer: HTML section 13.2.5's state machine (M24.8,
+//! `docs/design/scripting.md`).
 //!
-//! Splits source text into [`Token`]s: tags with attributes, text runs
-//! with character references decoded, comments, and doctypes. Deviations
-//! from the full specification, on purpose:
+//! Every state of the section is here, the script data states with their
+//! escapes among them, RCDATA, RAWTEXT, PLAINTEXT, CDATA sections,
+//! processing instructions and the full table of named character
+//! references. The input is fed in pieces ([`Tokenizer::feed`], then
+//! [`Tokenizer::end`]), and the tokenizer keeps its state between them:
+//! the tokens are the same whatever the pieces, but that a run of text
+//! may come as more than one [`Token::Text`] where a piece ends. When it
+//! has used all it was given it returns `None` until it is given more.
 //!
-//! * Named character references cover the HTML 4 set (the Latin-1
-//!   range, the Greek letters, the arrows, mathematical and typographic
-//!   symbols) plus `&apos;` and `&euro;`, not the full HTML5 table of
-//!   some two thousand entries. The spec's rule for the Latin-1 and
-//!   `amp`/`lt`/`gt`/`quot` names, which may appear without a `;`, is
-//!   followed, including the exception inside attribute values that
-//!   keeps `?a=1&copy=2` a query string.
-//! * Anything malformed degrades to text or a bogus comment instead of
-//!   producing spec-accurate parse errors.
-//! * CDATA sections and `<script>`/`<style>` raw-text elements are
-//!   tokenized like ordinary elements for now.
+//! The input stream is preprocessed as section 13.2.3.5 says: a carriage
+//! return and a carriage return followed by a line feed become a line
+//! feed, across the end of a piece too. Lines are counted
+//! ([`Tokenizer::line`]), so that an inline script's errors name the
+//! document's line.
 //!
-//! The input is preprocessed as the spec's input stream is: CRLF and a
-//! lone CR become LF before tokenizing, so text nodes never carry `\r`.
+//! What state an element's content is tokenized in is the tree
+//! builder's to say ([`Tokenizer::set_state`]), as are whether a CDATA
+//! section is foreign content's or a bogus comment
+//! ([`Tokenizer::set_cdata_allowed`]). Parse errors are not reported.
 //!
 //! The tokenizer never panics on any input, and its work is linear in
-//! the input: every scan consumes what it looks at.
+//! the input: every step consumes a character, or leaves the state it is
+//! in for one that will, and the longest look ahead, a named character
+//! reference's, is 32 characters.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
+
+use crate::named_references::{LONGEST_NAME, NAMED_REFERENCES};
 
 /// A lexical token.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Token {
     /// A doctype declaration, e.g. `<!DOCTYPE html>`.
-    Doctype(String),
+    Doctype(Doctype),
     /// An opening tag.
     StartTag {
-        /// Lowercased tag name.
+        /// Its name, ASCII lowercased.
         name: String,
-        /// Attributes with lowercased names, order preserved.
+        /// Its attributes, names ASCII lowercased, in order, the first of
+        /// any name kept.
         attrs: Vec<(String, String)>,
-        /// Whether the tag ended with `/>`.
+        /// Whether it ended with `/>`.
         self_closing: bool,
     },
-    /// A closing tag.
+    /// A closing tag; its attributes, an error, are dropped.
     EndTag(String),
-    /// Character data with character references decoded.
+    /// Characters, with character references decoded.
     Text(String),
-    /// A comment (including bogus comments).
+    /// A comment, a bogus one included.
     Comment(String),
+    /// A processing instruction, `<?target data?>`.
+    ProcessingInstruction { target: String, data: String },
 }
 
-/// Splits HTML source into tokens.
+/// A doctype: each part is `None` when it is missing, which is not the
+/// empty string.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Doctype {
+    pub name: Option<String>,
+    pub public_id: Option<String>,
+    pub system_id: Option<String>,
+    pub force_quirks: bool,
+}
+
+/// The states the tree builder, or a test, may start an element's
+/// content in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextState {
+    Data,
+    Rcdata,
+    Rawtext,
+    ScriptData,
+    Plaintext,
+    CdataSection,
+}
+
+/// Every state of section 13.2.5.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum State {
+    Data,
+    Rcdata,
+    Rawtext,
+    ScriptData,
+    Plaintext,
+    TagOpen,
+    EndTagOpen,
+    TagName,
+    RcdataLessThan,
+    RcdataEndTagOpen,
+    RcdataEndTagName,
+    RawtextLessThan,
+    RawtextEndTagOpen,
+    RawtextEndTagName,
+    ScriptDataLessThan,
+    ScriptDataEndTagOpen,
+    ScriptDataEndTagName,
+    ScriptDataEscapeStart,
+    ScriptDataEscapeStartDash,
+    ScriptDataEscaped,
+    ScriptDataEscapedDash,
+    ScriptDataEscapedDashDash,
+    ScriptDataEscapedLessThan,
+    ScriptDataEscapedEndTagOpen,
+    ScriptDataEscapedEndTagName,
+    ScriptDataDoubleEscapeStart,
+    ScriptDataDoubleEscaped,
+    ScriptDataDoubleEscapedDash,
+    ScriptDataDoubleEscapedDashDash,
+    ScriptDataDoubleEscapedLessThan,
+    ScriptDataDoubleEscapeEnd,
+    BeforeAttributeName,
+    AttributeName,
+    AfterAttributeName,
+    BeforeAttributeValue,
+    AttributeValueDoubleQuoted,
+    AttributeValueSingleQuoted,
+    AttributeValueUnquoted,
+    AfterAttributeValueQuoted,
+    SelfClosingStartTag,
+    BogusComment,
+    MarkupDeclarationOpen,
+    CommentStart,
+    CommentStartDash,
+    Comment,
+    CommentLessThan,
+    CommentLessThanBang,
+    CommentLessThanBangDash,
+    CommentLessThanBangDashDash,
+    CommentEndDash,
+    CommentEnd,
+    CommentEndBang,
+    Doctype,
+    BeforeDoctypeName,
+    DoctypeName,
+    AfterDoctypeName,
+    AfterDoctypePublicKeyword,
+    BeforeDoctypePublicIdentifier,
+    DoctypePublicIdentifierDoubleQuoted,
+    DoctypePublicIdentifierSingleQuoted,
+    AfterDoctypePublicIdentifier,
+    BetweenDoctypePublicAndSystemIdentifiers,
+    AfterDoctypeSystemKeyword,
+    BeforeDoctypeSystemIdentifier,
+    DoctypeSystemIdentifierDoubleQuoted,
+    DoctypeSystemIdentifierSingleQuoted,
+    AfterDoctypeSystemIdentifier,
+    BogusDoctype,
+    CdataSection,
+    CdataSectionBracket,
+    CdataSectionEnd,
+    ProcessingInstructionOpen,
+    ProcessingInstructionTarget,
+    AfterProcessingInstructionTarget,
+    ProcessingInstructionData,
+    ProcessingInstructionQuestionable,
+    CharacterReference,
+    NamedCharacterReference,
+    AmbiguousAmpersand,
+    NumericCharacterReference,
+    HexadecimalCharacterReferenceStart,
+    HexadecimalCharacterReference,
+    DecimalCharacterReference,
+    NumericCharacterReferenceEnd,
+}
+
+/// What the next input character is.
+enum Next {
+    Char(char),
+    /// The input has ended.
+    Eof,
+    /// The input so far is used up; more will come.
+    Wait,
+}
+
+/// Whether a step may be followed by another, or must wait for input.
+enum Flow {
+    Go,
+    Wait,
+}
+
+/// The tag being built.
+#[derive(Default)]
+struct Tag {
+    end: bool,
+    name: String,
+    self_closing: bool,
+    attrs: Vec<(String, String)>,
+    /// The attribute being built, if any.
+    attr: Option<(String, String)>,
+    /// The names of `attrs`, once there are enough of them that looking
+    /// through the list for a duplicate would cost more than a set.
+    seen: Option<HashSet<String>>,
+}
+
+/// How many attributes a tag has before their names go in a set.
+const MANY_ATTRIBUTES: usize = 16;
+
+impl Tag {
+    fn new(end: bool) -> Tag {
+        Tag {
+            end,
+            ..Tag::default()
+        }
+    }
+
+    /// Ends the attribute being built: kept unless the tag has one of
+    /// its name already (a duplicate-attribute parse error).
+    fn commit(&mut self) {
+        let Some((name, value)) = self.attr.take() else {
+            return;
+        };
+        let duplicate = match &mut self.seen {
+            Some(seen) => !seen.insert(name.clone()),
+            None => self.attrs.iter().any(|(n, _)| *n == name),
+        };
+        if duplicate {
+            return;
+        }
+        self.attrs.push((name, value));
+        if self.seen.is_none() && self.attrs.len() >= MANY_ATTRIBUTES {
+            self.seen = Some(self.attrs.iter().map(|(n, _)| n.clone()).collect());
+        }
+    }
+
+    fn start_attr(&mut self, name: String) {
+        self.commit();
+        self.attr = Some((name, String::new()));
+    }
+
+    fn attr_name(&mut self) -> &mut String {
+        &mut self.attr.get_or_insert_with(Default::default).0
+    }
+
+    fn attr_value(&mut self) -> &mut String {
+        &mut self.attr.get_or_insert_with(Default::default).1
+    }
+}
+
+/// HTML section 13.2.5's tokenizer over input fed in pieces.
 pub struct Tokenizer {
     input: Vec<char>,
     pos: usize,
-    /// Set by a start tag whose content is text up to its end tag (the
-    /// spec's RAWTEXT, RCDATA and PLAINTEXT states): the next call
-    /// reads that text as one token.
-    raw_text: Option<RawText>,
+    /// The last piece fed ended with a carriage return: a line feed
+    /// opening the next is its pair.
+    after_cr: bool,
+    ended: bool,
+    finished: bool,
+    state: State,
+    return_state: State,
+    tag: Tag,
+    comment: String,
+    doctype: Doctype,
+    pi_target: String,
+    pi_data: String,
+    temp: String,
+    char_ref: u32,
+    last_start_tag: Option<String>,
+    cdata_allowed: bool,
+    /// Characters not yet emitted as a text token.
+    text: String,
+    queue: VecDeque<Token>,
+    line: u32,
 }
 
-/// How an element's content is read as text.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum RawText {
-    /// Up to the end tag, no character references (`style`, `script`,
-    /// `xmp`, `iframe`, `noembed`, `noframes`).
-    Raw(String),
-    /// Up to the end tag, character references decoded (`textarea`,
-    /// `title`).
-    Escapable(String),
-    /// To the end of the input (`plaintext`).
-    ToEnd,
+/// HTML's ASCII white space, as the tokenizer's states list it.
+fn is_space(c: char) -> bool {
+    matches!(c, '\t' | '\n' | '\u{c}' | ' ')
 }
 
-/// The raw-text state `name`'s start tag switches to, if any.
-fn raw_text_for(name: &str) -> Option<RawText> {
-    match name {
-        "style" | "script" | "xmp" | "iframe" | "noembed" | "noframes" => {
-            Some(RawText::Raw(name.to_string()))
+impl Default for Tokenizer {
+    fn default() -> Tokenizer {
+        Tokenizer {
+            input: Vec::new(),
+            pos: 0,
+            after_cr: false,
+            ended: false,
+            finished: false,
+            state: State::Data,
+            return_state: State::Data,
+            tag: Tag::default(),
+            comment: String::new(),
+            doctype: Doctype::default(),
+            pi_target: String::new(),
+            pi_data: String::new(),
+            temp: String::new(),
+            char_ref: 0,
+            last_start_tag: None,
+            cdata_allowed: false,
+            text: String::new(),
+            queue: VecDeque::new(),
+            line: 1,
         }
-        "textarea" | "title" => Some(RawText::Escapable(name.to_string())),
-        "plaintext" => Some(RawText::ToEnd),
-        _ => None,
     }
 }
 
 impl Tokenizer {
-    /// Creates a tokenizer over `source`, normalising newlines the way
-    /// the spec's input-stream preprocessing does (CRLF and CR to LF).
-    pub fn new(source: &str) -> Self {
-        let mut input = Vec::with_capacity(source.len());
-        let mut chars = source.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c == '\r' {
-                if chars.peek() == Some(&'\n') {
-                    chars.next();
-                }
-                input.push('\n');
-            } else {
-                input.push(c);
-            }
+    /// A tokenizer over the whole of `source`.
+    pub fn new(source: &str) -> Tokenizer {
+        let mut tokenizer = Tokenizer::default();
+        tokenizer.feed(source);
+        tokenizer.end();
+        tokenizer
+    }
+
+    /// A tokenizer waiting for its input.
+    pub fn streaming() -> Tokenizer {
+        Tokenizer::default()
+    }
+
+    /// Appends `text` to the input, preprocessed.
+    pub fn feed(&mut self, text: &str) {
+        if self.ended {
+            return;
         }
-        Tokenizer {
-            input,
-            pos: 0,
-            raw_text: None,
+        // What has been consumed is let go of now and then, so the
+        // buffer holds what is left to read.
+        if self.pos > 1 << 16 && self.pos * 2 > self.input.len() {
+            self.input.drain(..self.pos);
+            self.pos = 0;
+        }
+        self.input.reserve(text.len());
+        for c in text.chars() {
+            match c {
+                '\n' if self.after_cr => {}
+                '\r' => self.input.push('\n'),
+                c => self.input.push(c),
+            }
+            self.after_cr = c == '\r';
         }
     }
 
-    /// Returns the next token, or `None` at end of input.
-    ///
-    /// Every call consumes at least one character before returning a
-    /// token, so iteration always terminates.
+    /// Marks the end of the input.
+    pub fn end(&mut self) {
+        self.ended = true;
+    }
+
+    /// Whether the end of the input has been tokenized.
+    pub fn is_finished(&self) -> bool {
+        self.finished && self.queue.is_empty()
+    }
+
+    /// The line the next input character is on, from 1.
+    pub fn line(&self) -> u32 {
+        self.line
+    }
+
+    /// Switches to `state`, as the tree builder does for an element's
+    /// content (section 13.2.6).
+    pub fn set_state(&mut self, state: TextState) {
+        self.state = match state {
+            TextState::Data => State::Data,
+            TextState::Rcdata => State::Rcdata,
+            TextState::Rawtext => State::Rawtext,
+            TextState::ScriptData => State::ScriptData,
+            TextState::Plaintext => State::Plaintext,
+            TextState::CdataSection => State::CdataSection,
+        };
+    }
+
+    /// Sets the name of the last start tag emitted, which an
+    /// appropriate end tag matches; for tests.
+    pub fn set_last_start_tag(&mut self, name: Option<&str>) {
+        self.last_start_tag = name.map(str::to_owned);
+    }
+
+    /// Whether `<![CDATA[` opens a CDATA section: when the adjusted
+    /// current node is not an HTML element.
+    pub fn set_cdata_allowed(&mut self, allowed: bool) {
+        self.cdata_allowed = allowed;
+    }
+
+    /// The next token, or `None` when none can be made from the input so
+    /// far (more may come) or the input is finished.
     pub fn next_token(&mut self) -> Option<Token> {
-        if self.pos >= self.input.len() {
-            return None;
-        }
-        if let Some(mode) = self.raw_text.take() {
-            let text = match &mode {
-                RawText::Raw(name) => self.read_raw_until_end_tag(name),
-                RawText::Escapable(name) => {
-                    decode_entities(&self.read_raw_until_end_tag(name), false)
-                }
-                RawText::ToEnd => {
-                    let rest: String = self.input[self.pos..].iter().collect();
-                    self.pos = self.input.len();
-                    rest
-                }
-            };
-            if !text.is_empty() {
-                return Some(Token::Text(text));
+        loop {
+            if let Some(token) = self.queue.pop_front() {
+                return Some(token);
             }
-            // Empty content: the end tag follows, read as any other.
-            if self.pos >= self.input.len() {
+            if self.finished {
                 return None;
             }
-        }
-        if self.peek() == Some('<')
-            && let Some(token) = self.read_markup_declaration()
-        {
-            if let Token::StartTag { name, .. } = &token {
-                self.raw_text = raw_text_for(name);
-            }
-            return Some(token);
-        }
-        // A '<' that starts nothing markup-ish is read as literal text.
-        Some(self.read_text())
-    }
-
-    /// Reads everything up to `</name` (ASCII case-insensitive) followed
-    /// by white space, `/` or `>`, or to the end of the input, leaving
-    /// the end tag to be read next. The spec's RAWTEXT and RCDATA
-    /// states, less the script-data escape dance for `<!--` inside a
-    /// script, which this engine does not run anyway.
-    fn read_raw_until_end_tag(&mut self, name: &str) -> String {
-        let start = self.pos;
-        let name: Vec<char> = name.chars().collect();
-        while self.pos < self.input.len() {
-            if self.input[self.pos] == '<'
-                && self.input.get(self.pos + 1) == Some(&'/')
-                && name.iter().enumerate().all(|(i, c)| {
-                    self.input
-                        .get(self.pos + 2 + i)
-                        .is_some_and(|d| d.eq_ignore_ascii_case(c))
-                })
-                && matches!(
-                    self.input.get(self.pos + 2 + name.len()),
-                    None | Some('\t' | '\n' | '\u{c}' | ' ' | '/' | '>')
-                )
-            {
-                break;
-            }
-            self.pos += 1;
-        }
-        self.input[start..self.pos].iter().collect()
-    }
-
-    fn peek(&self) -> Option<char> {
-        self.input.get(self.pos).copied()
-    }
-
-    fn take_while(&mut self, pred: impl Fn(char) -> bool) -> String {
-        let start = self.pos;
-        while matches!(self.peek(), Some(c) if pred(c)) {
-            self.pos += 1;
-        }
-        self.input[start..self.pos].iter().collect()
-    }
-
-    fn skip_whitespace(&mut self) {
-        while matches!(self.peek(), Some(c) if c.is_whitespace()) {
-            self.pos += 1;
-        }
-    }
-
-    fn matches_ahead(&self, at: usize, pattern: &str) -> bool {
-        pattern
-            .chars()
-            .enumerate()
-            .all(|(i, c)| self.input.get(at + i) == Some(&c))
-    }
-
-    /// Reads a text run up to the next real tag start, decoding
-    /// character references.
-    fn read_text(&mut self) -> Token {
-        let mut raw = String::new();
-        while let Some(c) = self.peek() {
-            if c == '<' && self.tag_starts_ahead() {
-                break;
-            }
-            self.pos += 1;
-            raw.push(c);
-        }
-        Token::Text(decode_entities(&raw, false))
-    }
-
-    /// True when the '<' at the current position begins something
-    /// markup-like (tag, end tag, comment, doctype, or a `<?` bogus
-    /// comment). Must agree with [`Tokenizer::read_markup_declaration`]
-    /// on every case, or a text run could end on a '<' that then reads
-    /// as text again: an empty token and no progress.
-    fn tag_starts_ahead(&self) -> bool {
-        match self.input.get(self.pos + 1) {
-            Some(c) => c.is_ascii_alphabetic() || *c == '/' || *c == '!' || *c == '?',
-            None => false, // trailing '<' is text
-        }
-    }
-
-    /// Attempts to read a tag, end tag, comment, or doctype at the
-    /// current '<'. Returns `None` when the '<' starts no markup.
-    fn read_markup_declaration(&mut self) -> Option<Token> {
-        let after = self.input.get(self.pos + 1).copied()?;
-        match after {
-            '!' => {
-                if self.matches_ahead(self.pos + 2, "--") {
-                    Some(self.read_comment())
-                } else {
-                    Some(self.read_bang())
+            if let Flow::Wait = self.step() {
+                if self.text.is_empty() {
+                    return None;
                 }
+                return Some(Token::Text(std::mem::take(&mut self.text)));
             }
-            // The spec's tag-open state: `<?` is a bogus comment (an XML
-            // declaration at the top of an XHTML page is the usual one).
-            '?' => Some(self.read_bogus_comment()),
-            '/' => match self.input.get(self.pos + 2).copied() {
-                Some(c) if c.is_ascii_alphabetic() => Some(self.read_end_tag()),
-                // `</` at the very end of the input is text, per the
-                // spec's eof-before-tag-name rule.
-                None => {
-                    self.pos += 2;
-                    Some(Token::Text("</".to_string()))
-                }
-                _ => Some(self.read_bogus_comment()),
-            },
-            c if c.is_ascii_alphabetic() => Some(self.read_start_tag()),
-            _ => None,
         }
     }
 
-    /// Reads a `<!-- ... -->` comment (unterminated comments end at EOF).
-    /// The abrupt forms `<!-->` and `<!--->` are empty comments, and
-    /// `--!>` closes a comment as `-->` does, per the spec's comment
-    /// states; without that, one of them would swallow the rest of the
-    /// page.
-    fn read_comment(&mut self) -> Token {
-        self.pos += 4; // "<!--"
-        if self.peek() == Some('>') {
-            self.pos += 1;
-            return Token::Comment(String::new());
-        }
-        if self.matches_ahead(self.pos, "->") {
-            self.pos += 2;
-            return Token::Comment(String::new());
-        }
-        let mut content = String::new();
-        while self.pos < self.input.len() {
-            if self.matches_ahead(self.pos, "-->") {
-                self.pos += 3;
-                return Token::Comment(content);
-            }
-            if self.matches_ahead(self.pos, "--!>") {
-                self.pos += 4;
-                return Token::Comment(content);
-            }
-            content.push(self.input[self.pos]);
-            self.pos += 1;
-        }
-        Token::Comment(content)
-    }
-
-    /// Reads `<!...>`: a doctype, or a bogus comment when it is not one.
-    fn read_bang(&mut self) -> Token {
-        self.pos += 2; // "<!"
-        let mut content = String::new();
-        while self.pos < self.input.len() {
-            if self.peek() == Some('>') {
+    fn next(&mut self) -> Next {
+        match self.input.get(self.pos) {
+            Some(&c) => {
                 self.pos += 1;
+                if c == '\n' {
+                    self.line += 1;
+                }
+                Next::Char(c)
+            }
+            None if self.ended => Next::Eof,
+            None => Next::Wait,
+        }
+    }
+
+    /// Gives the character just consumed back, to be consumed again in
+    /// `state`.
+    fn reconsume(&mut self, c: char, state: State) {
+        self.pos -= 1;
+        if c == '\n' {
+            self.line -= 1;
+        }
+        self.state = state;
+    }
+
+    /// Consumes the characters from here that `ordinary` takes,
+    /// returning them.
+    fn run(&mut self, ordinary: impl Fn(char) -> bool) -> Option<std::ops::Range<usize>> {
+        let start = self.pos;
+        while let Some(&c) = self.input.get(self.pos) {
+            if !ordinary(c) {
                 break;
             }
-            content.push(self.input[self.pos]);
+            if c == '\n' {
+                self.line += 1;
+            }
             self.pos += 1;
         }
-        if let Some(rest) = content.trim().to_ascii_lowercase().strip_prefix("doctype") {
-            Token::Doctype(rest.trim().to_string())
+        (self.pos > start).then_some(start..self.pos)
+    }
+
+    /// Emits the ordinary characters from here as text.
+    fn text_run(&mut self, ordinary: impl Fn(char) -> bool) -> bool {
+        match self.run(ordinary) {
+            Some(range) => {
+                self.text.extend(&self.input[range]);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn emit(&mut self, token: Token) {
+        if !self.text.is_empty() {
+            self.queue
+                .push_back(Token::Text(std::mem::take(&mut self.text)));
+        }
+        self.queue.push_back(token);
+    }
+
+    fn emit_eof(&mut self) {
+        if !self.text.is_empty() {
+            self.queue
+                .push_back(Token::Text(std::mem::take(&mut self.text)));
+        }
+        self.finished = true;
+    }
+
+    fn emit_tag(&mut self) {
+        let mut tag = std::mem::take(&mut self.tag);
+        tag.commit();
+        let token = if tag.end {
+            Token::EndTag(tag.name)
         } else {
-            Token::Comment(content)
-        }
-    }
-
-    /// Reads a bogus comment: `</` not followed by a letter, or `<?`.
-    fn read_bogus_comment(&mut self) -> Token {
-        self.pos += 2; // "</" or "<?"
-        let mut content = String::new();
-        while self.pos < self.input.len() {
-            if self.peek() == Some('>') {
-                self.pos += 1;
-                break;
+            self.last_start_tag = Some(tag.name.clone());
+            Token::StartTag {
+                name: tag.name,
+                attrs: tag.attrs,
+                self_closing: tag.self_closing,
             }
-            content.push(self.input[self.pos]);
-            self.pos += 1;
-        }
-        Token::Comment(content)
-    }
-
-    /// Reads an end tag; anything after the name is discarded (browsers
-    /// drop attributes on end tags too).
-    fn read_end_tag(&mut self) -> Token {
-        self.pos += 2; // "</"
-        let name = self.take_while(is_tag_name_char).to_ascii_lowercase();
-        while let Some(c) = self.peek() {
-            self.pos += 1;
-            if c == '>' {
-                break;
-            }
-        }
-        Token::EndTag(name)
-    }
-
-    /// Reads a start tag and its attributes. The first of two attributes
-    /// with the same name wins; the names seen so far are kept in a set,
-    /// so a tag with a hundred thousand attributes costs a hundred
-    /// thousand lookups, not a scan of the list for each.
-    fn read_start_tag(&mut self) -> Token {
-        self.pos += 1; // "<"
-        let name = self.take_while(is_tag_name_char).to_ascii_lowercase();
-        let mut attrs: Vec<(String, String)> = Vec::new();
-        let mut seen: HashSet<String> = HashSet::new();
-        let mut self_closing = false;
-        loop {
-            self.skip_whitespace();
-            match self.peek() {
-                None => break, // EOF mid-tag
-                Some('>') => {
-                    self.pos += 1;
-                    break;
-                }
-                Some('/') => {
-                    self.pos += 1;
-                    if self.peek() == Some('>') {
-                        self.pos += 1;
-                        self_closing = true;
-                        break;
-                    }
-                    // Stray '/' — ignore (e.g. `<a / b>`).
-                }
-                _ => {
-                    let (aname, avalue) = self.read_attribute();
-                    if !aname.is_empty() && seen.insert(aname.clone()) {
-                        attrs.push((aname, avalue));
-                    }
-                }
-            }
-        }
-        Token::StartTag {
-            name,
-            attrs,
-            self_closing,
-        }
-    }
-
-    /// Reads one attribute (name, and value when `=` follows).
-    fn read_attribute(&mut self) -> (String, String) {
-        let name = self
-            .take_while(|c| !c.is_whitespace() && c != '=' && c != '>' && c != '/')
-            // HTML lowercases ASCII letters only (§13.2.5.33): Unicode
-            // lowercasing would turn the Kelvin sign into `k`.
-            .to_ascii_lowercase();
-        self.skip_whitespace();
-        if self.peek() != Some('=') {
-            return (name, String::new());
-        }
-        self.pos += 1; // '='
-        self.skip_whitespace();
-        let value = match self.peek() {
-            Some(q @ ('\'' | '"')) => {
-                self.pos += 1;
-                let v = self.take_while(|c| c != q);
-                if self.peek() == Some(q) {
-                    self.pos += 1;
-                }
-                v
-            }
-            _ => self.take_while(|c| !c.is_whitespace() && c != '>'),
         };
-        (name, decode_entities(&value, true))
+        self.emit(token);
+    }
+
+    fn emit_comment(&mut self) {
+        let comment = std::mem::take(&mut self.comment);
+        self.emit(Token::Comment(comment));
+    }
+
+    fn emit_doctype(&mut self) {
+        let doctype = std::mem::take(&mut self.doctype);
+        self.emit(Token::Doctype(doctype));
+    }
+
+    fn emit_pi(&mut self) {
+        let target = std::mem::take(&mut self.pi_target);
+        let data = std::mem::take(&mut self.pi_data);
+        self.emit(Token::ProcessingInstruction { target, data });
+    }
+
+    /// Whether the end tag being built is an appropriate one: named as
+    /// the last start tag emitted.
+    fn appropriate(&self) -> bool {
+        self.last_start_tag.as_deref() == Some(self.tag.name.as_str())
+    }
+
+    fn in_attribute(&self) -> bool {
+        matches!(
+            self.return_state,
+            State::AttributeValueDoubleQuoted
+                | State::AttributeValueSingleQuoted
+                | State::AttributeValueUnquoted
+        )
+    }
+
+    /// Flushes the temporary buffer as a character reference's code
+    /// points: into the attribute's value, or emitted.
+    fn flush_reference(&mut self) {
+        let buffer = std::mem::take(&mut self.temp);
+        if self.in_attribute() {
+            self.tag.attr_value().push_str(&buffer);
+        } else {
+            self.text.push_str(&buffer);
+        }
+    }
+
+    /// Whether the input from here starts with `pattern`, ASCII case
+    /// folded if `fold`: `Some` once it is known, `None` while the input
+    /// so far is too short to tell.
+    fn starts_with(&self, pattern: &str, fold: bool) -> Option<bool> {
+        let rest = &self.input[self.pos..];
+        let same = |a: char, b: char| {
+            if fold {
+                a.eq_ignore_ascii_case(&b)
+            } else {
+                a == b
+            }
+        };
+        let mut length = 0;
+        for (i, p) in pattern.chars().enumerate() {
+            match rest.get(i) {
+                Some(&c) if same(c, p) => length += 1,
+                Some(_) => return Some(false),
+                None if self.ended => return Some(false),
+                None => return None,
+            }
+        }
+        Some(length == pattern.chars().count())
+    }
+
+    /// Consumes `n` characters, none a line feed.
+    fn skip(&mut self, n: usize) {
+        self.pos += n;
+    }
+
+    /// One step of the state machine.
+    fn step(&mut self) -> Flow {
+        use State as S;
+        match self.state {
+            S::Data => {
+                if self.text_run(|c| !matches!(c, '&' | '<' | '\0')) {
+                    return Flow::Go;
+                }
+                match self.next() {
+                    Next::Char('&') => {
+                        self.return_state = S::Data;
+                        self.state = S::CharacterReference;
+                    }
+                    Next::Char('<') => self.state = S::TagOpen,
+                    Next::Char(c) => self.text.push(c),
+                    Next::Eof => self.emit_eof(),
+                    Next::Wait => return Flow::Wait,
+                }
+            }
+            S::Rcdata => {
+                if self.text_run(|c| !matches!(c, '&' | '<' | '\0')) {
+                    return Flow::Go;
+                }
+                match self.next() {
+                    Next::Char('&') => {
+                        self.return_state = S::Rcdata;
+                        self.state = S::CharacterReference;
+                    }
+                    Next::Char('<') => self.state = S::RcdataLessThan,
+                    Next::Char('\0') => self.text.push('\u{fffd}'),
+                    Next::Char(c) => self.text.push(c),
+                    Next::Eof => self.emit_eof(),
+                    Next::Wait => return Flow::Wait,
+                }
+            }
+            S::Rawtext | S::ScriptData | S::Plaintext => {
+                let state = self.state;
+                let stop = state != S::Plaintext;
+                if self.text_run(|c| !(c == '\0' || (stop && c == '<'))) {
+                    return Flow::Go;
+                }
+                match self.next() {
+                    Next::Char('<') if state == S::Rawtext => self.state = S::RawtextLessThan,
+                    Next::Char('<') if state == S::ScriptData => self.state = S::ScriptDataLessThan,
+                    Next::Char('\0') => self.text.push('\u{fffd}'),
+                    Next::Char(c) => self.text.push(c),
+                    Next::Eof => self.emit_eof(),
+                    Next::Wait => return Flow::Wait,
+                }
+            }
+            S::TagOpen => match self.next() {
+                Next::Char('!') => self.state = S::MarkupDeclarationOpen,
+                Next::Char('/') => self.state = S::EndTagOpen,
+                Next::Char(c) if c.is_ascii_alphabetic() => {
+                    self.tag = Tag::new(false);
+                    self.reconsume(c, S::TagName);
+                }
+                Next::Char('?') => {
+                    self.temp.clear();
+                    self.state = S::ProcessingInstructionOpen;
+                }
+                Next::Char(c) => {
+                    self.text.push('<');
+                    self.reconsume(c, S::Data);
+                }
+                Next::Eof => {
+                    self.text.push('<');
+                    self.emit_eof();
+                }
+                Next::Wait => return Flow::Wait,
+            },
+            S::EndTagOpen => match self.next() {
+                Next::Char(c) if c.is_ascii_alphabetic() => {
+                    self.tag = Tag::new(true);
+                    self.reconsume(c, S::TagName);
+                }
+                Next::Char('>') => self.state = S::Data,
+                Next::Char(c) => {
+                    self.comment.clear();
+                    self.reconsume(c, S::BogusComment);
+                }
+                Next::Eof => {
+                    self.text.push_str("</");
+                    self.emit_eof();
+                }
+                Next::Wait => return Flow::Wait,
+            },
+            S::TagName => {
+                if let Some(range) = self.run(|c| {
+                    !(is_space(c) || matches!(c, '/' | '>' | '\0') || c.is_ascii_uppercase())
+                }) {
+                    let run: String = self.input[range].iter().collect();
+                    self.tag.name.push_str(&run);
+                    return Flow::Go;
+                }
+                match self.next() {
+                    Next::Char(c) if is_space(c) => self.state = S::BeforeAttributeName,
+                    Next::Char('/') => self.state = S::SelfClosingStartTag,
+                    Next::Char('>') => {
+                        self.state = S::Data;
+                        self.emit_tag();
+                    }
+                    Next::Char('\0') => self.tag.name.push('\u{fffd}'),
+                    Next::Char(c) => self.tag.name.push(c.to_ascii_lowercase()),
+                    Next::Eof => self.emit_eof(),
+                    Next::Wait => return Flow::Wait,
+                }
+            }
+            S::RcdataLessThan | S::RawtextLessThan => {
+                let back = if self.state == S::RcdataLessThan {
+                    (S::RcdataEndTagOpen, S::Rcdata)
+                } else {
+                    (S::RawtextEndTagOpen, S::Rawtext)
+                };
+                match self.next() {
+                    Next::Char('/') => {
+                        self.temp.clear();
+                        self.state = back.0;
+                    }
+                    Next::Char(c) => {
+                        self.text.push('<');
+                        self.reconsume(c, back.1);
+                    }
+                    Next::Eof => {
+                        self.text.push('<');
+                        self.state = back.1;
+                    }
+                    Next::Wait => return Flow::Wait,
+                }
+            }
+            S::RcdataEndTagOpen
+            | S::RawtextEndTagOpen
+            | S::ScriptDataEndTagOpen
+            | S::ScriptDataEscapedEndTagOpen => {
+                let (name_state, back) = match self.state {
+                    S::RcdataEndTagOpen => (S::RcdataEndTagName, S::Rcdata),
+                    S::RawtextEndTagOpen => (S::RawtextEndTagName, S::Rawtext),
+                    S::ScriptDataEndTagOpen => (S::ScriptDataEndTagName, S::ScriptData),
+                    _ => (S::ScriptDataEscapedEndTagName, S::ScriptDataEscaped),
+                };
+                match self.next() {
+                    Next::Char(c) if c.is_ascii_alphabetic() => {
+                        self.tag = Tag::new(true);
+                        self.reconsume(c, name_state);
+                    }
+                    Next::Char(c) => {
+                        self.text.push_str("</");
+                        self.reconsume(c, back);
+                    }
+                    Next::Eof => {
+                        self.text.push_str("</");
+                        self.state = back;
+                    }
+                    Next::Wait => return Flow::Wait,
+                }
+            }
+            S::RcdataEndTagName
+            | S::RawtextEndTagName
+            | S::ScriptDataEndTagName
+            | S::ScriptDataEscapedEndTagName => {
+                let back = match self.state {
+                    S::RcdataEndTagName => S::Rcdata,
+                    S::RawtextEndTagName => S::Rawtext,
+                    S::ScriptDataEndTagName => S::ScriptData,
+                    _ => S::ScriptDataEscaped,
+                };
+                let next = self.next();
+                match next {
+                    Next::Char(c) if is_space(c) && self.appropriate() => {
+                        self.state = S::BeforeAttributeName;
+                        return Flow::Go;
+                    }
+                    Next::Char('/') if self.appropriate() => {
+                        self.state = S::SelfClosingStartTag;
+                        return Flow::Go;
+                    }
+                    Next::Char('>') if self.appropriate() => {
+                        self.state = S::Data;
+                        self.emit_tag();
+                        return Flow::Go;
+                    }
+                    Next::Char(c) if c.is_ascii_alphabetic() => {
+                        self.tag.name.push(c.to_ascii_lowercase());
+                        self.temp.push(c);
+                        return Flow::Go;
+                    }
+                    Next::Wait => return Flow::Wait,
+                    _ => {}
+                }
+                self.text.push_str("</");
+                let buffer = std::mem::take(&mut self.temp);
+                self.text.push_str(&buffer);
+                match next {
+                    Next::Char(c) => self.reconsume(c, back),
+                    _ => self.state = back,
+                }
+            }
+            S::ScriptDataLessThan => match self.next() {
+                Next::Char('/') => {
+                    self.temp.clear();
+                    self.state = S::ScriptDataEndTagOpen;
+                }
+                Next::Char('!') => {
+                    self.text.push_str("<!");
+                    self.state = S::ScriptDataEscapeStart;
+                }
+                Next::Char(c) => {
+                    self.text.push('<');
+                    self.reconsume(c, S::ScriptData);
+                }
+                Next::Eof => {
+                    self.text.push('<');
+                    self.state = S::ScriptData;
+                }
+                Next::Wait => return Flow::Wait,
+            },
+            S::ScriptDataEscapeStart | S::ScriptDataEscapeStartDash => {
+                let on = if self.state == S::ScriptDataEscapeStart {
+                    S::ScriptDataEscapeStartDash
+                } else {
+                    S::ScriptDataEscapedDashDash
+                };
+                match self.next() {
+                    Next::Char('-') => {
+                        self.text.push('-');
+                        self.state = on;
+                    }
+                    Next::Char(c) => self.reconsume(c, S::ScriptData),
+                    Next::Eof => self.state = S::ScriptData,
+                    Next::Wait => return Flow::Wait,
+                }
+            }
+            S::ScriptDataEscaped => {
+                if self.text_run(|c| !matches!(c, '-' | '<' | '\0')) {
+                    return Flow::Go;
+                }
+                match self.next() {
+                    Next::Char('-') => {
+                        self.text.push('-');
+                        self.state = S::ScriptDataEscapedDash;
+                    }
+                    Next::Char('<') => self.state = S::ScriptDataEscapedLessThan,
+                    Next::Char('\0') => self.text.push('\u{fffd}'),
+                    Next::Char(c) => self.text.push(c),
+                    Next::Eof => self.emit_eof(),
+                    Next::Wait => return Flow::Wait,
+                }
+            }
+            S::ScriptDataEscapedDash | S::ScriptDataEscapedDashDash => {
+                let dash_dash = self.state == S::ScriptDataEscapedDashDash;
+                match self.next() {
+                    Next::Char('-') => {
+                        self.text.push('-');
+                        self.state = S::ScriptDataEscapedDashDash;
+                    }
+                    Next::Char('<') => self.state = S::ScriptDataEscapedLessThan,
+                    Next::Char('>') if dash_dash => {
+                        self.text.push('>');
+                        self.state = S::ScriptData;
+                    }
+                    Next::Char('\0') => {
+                        self.text.push('\u{fffd}');
+                        self.state = S::ScriptDataEscaped;
+                    }
+                    Next::Char(c) => {
+                        self.text.push(c);
+                        self.state = S::ScriptDataEscaped;
+                    }
+                    Next::Eof => self.emit_eof(),
+                    Next::Wait => return Flow::Wait,
+                }
+            }
+            S::ScriptDataEscapedLessThan => match self.next() {
+                Next::Char('/') => {
+                    self.temp.clear();
+                    self.state = S::ScriptDataEscapedEndTagOpen;
+                }
+                Next::Char(c) if c.is_ascii_alphabetic() => {
+                    self.temp.clear();
+                    self.text.push('<');
+                    self.reconsume(c, S::ScriptDataDoubleEscapeStart);
+                }
+                Next::Char(c) => {
+                    self.text.push('<');
+                    self.reconsume(c, S::ScriptDataEscaped);
+                }
+                Next::Eof => {
+                    self.text.push('<');
+                    self.state = S::ScriptDataEscaped;
+                }
+                Next::Wait => return Flow::Wait,
+            },
+            S::ScriptDataDoubleEscapeStart | S::ScriptDataDoubleEscapeEnd => {
+                let starting = self.state == S::ScriptDataDoubleEscapeStart;
+                let (on_script, otherwise) = if starting {
+                    (S::ScriptDataDoubleEscaped, S::ScriptDataEscaped)
+                } else {
+                    (S::ScriptDataEscaped, S::ScriptDataDoubleEscaped)
+                };
+                match self.next() {
+                    Next::Char(c) if is_space(c) || c == '/' || c == '>' => {
+                        self.state = if self.temp == "script" {
+                            on_script
+                        } else {
+                            otherwise
+                        };
+                        self.text.push(c);
+                    }
+                    Next::Char(c) if c.is_ascii_alphabetic() => {
+                        self.temp.push(c.to_ascii_lowercase());
+                        self.text.push(c);
+                    }
+                    Next::Char(c) => {
+                        let back = if starting {
+                            S::ScriptDataEscaped
+                        } else {
+                            S::ScriptDataDoubleEscaped
+                        };
+                        self.reconsume(c, back);
+                    }
+                    Next::Eof => {
+                        self.state = if starting {
+                            S::ScriptDataEscaped
+                        } else {
+                            S::ScriptDataDoubleEscaped
+                        };
+                    }
+                    Next::Wait => return Flow::Wait,
+                }
+            }
+            S::ScriptDataDoubleEscaped => {
+                if self.text_run(|c| !matches!(c, '-' | '<' | '\0')) {
+                    return Flow::Go;
+                }
+                match self.next() {
+                    Next::Char('-') => {
+                        self.text.push('-');
+                        self.state = S::ScriptDataDoubleEscapedDash;
+                    }
+                    Next::Char('<') => {
+                        self.text.push('<');
+                        self.state = S::ScriptDataDoubleEscapedLessThan;
+                    }
+                    Next::Char('\0') => self.text.push('\u{fffd}'),
+                    Next::Char(c) => self.text.push(c),
+                    Next::Eof => self.emit_eof(),
+                    Next::Wait => return Flow::Wait,
+                }
+            }
+            S::ScriptDataDoubleEscapedDash | S::ScriptDataDoubleEscapedDashDash => {
+                let dash_dash = self.state == S::ScriptDataDoubleEscapedDashDash;
+                match self.next() {
+                    Next::Char('-') => {
+                        self.text.push('-');
+                        self.state = S::ScriptDataDoubleEscapedDashDash;
+                    }
+                    Next::Char('<') => {
+                        self.text.push('<');
+                        self.state = S::ScriptDataDoubleEscapedLessThan;
+                    }
+                    Next::Char('>') if dash_dash => {
+                        self.text.push('>');
+                        self.state = S::ScriptData;
+                    }
+                    Next::Char('\0') => {
+                        self.text.push('\u{fffd}');
+                        self.state = S::ScriptDataDoubleEscaped;
+                    }
+                    Next::Char(c) => {
+                        self.text.push(c);
+                        self.state = S::ScriptDataDoubleEscaped;
+                    }
+                    Next::Eof => self.emit_eof(),
+                    Next::Wait => return Flow::Wait,
+                }
+            }
+            S::ScriptDataDoubleEscapedLessThan => match self.next() {
+                Next::Char('/') => {
+                    self.temp.clear();
+                    self.text.push('/');
+                    self.state = S::ScriptDataDoubleEscapeEnd;
+                }
+                Next::Char(c) => self.reconsume(c, S::ScriptDataDoubleEscaped),
+                Next::Eof => self.state = S::ScriptDataDoubleEscaped,
+                Next::Wait => return Flow::Wait,
+            },
+            S::BeforeAttributeName => match self.next() {
+                Next::Char(c) if is_space(c) => {}
+                Next::Char(c @ ('/' | '>')) => self.reconsume(c, S::AfterAttributeName),
+                Next::Char('=') => {
+                    self.tag.start_attr("=".to_owned());
+                    self.state = S::AttributeName;
+                }
+                Next::Char(c) => {
+                    self.tag.start_attr(String::new());
+                    self.reconsume(c, S::AttributeName);
+                }
+                Next::Eof => self.state = S::AfterAttributeName,
+                Next::Wait => return Flow::Wait,
+            },
+            S::AttributeName => {
+                if let Some(range) = self.run(|c| {
+                    !(is_space(c) || matches!(c, '/' | '>' | '=' | '\0') || c.is_ascii_uppercase())
+                }) {
+                    let run: String = self.input[range].iter().collect();
+                    self.tag.attr_name().push_str(&run);
+                    return Flow::Go;
+                }
+                match self.next() {
+                    Next::Char(c) if is_space(c) || c == '/' || c == '>' => {
+                        self.reconsume(c, S::AfterAttributeName)
+                    }
+                    Next::Char('=') => self.state = S::BeforeAttributeValue,
+                    Next::Char('\0') => self.tag.attr_name().push('\u{fffd}'),
+                    Next::Char(c) => self.tag.attr_name().push(c.to_ascii_lowercase()),
+                    Next::Eof => self.state = S::AfterAttributeName,
+                    Next::Wait => return Flow::Wait,
+                }
+            }
+            S::AfterAttributeName => match self.next() {
+                Next::Char(c) if is_space(c) => {}
+                Next::Char('/') => self.state = S::SelfClosingStartTag,
+                Next::Char('=') => self.state = S::BeforeAttributeValue,
+                Next::Char('>') => {
+                    self.state = S::Data;
+                    self.emit_tag();
+                }
+                Next::Char(c) => {
+                    self.tag.start_attr(String::new());
+                    self.reconsume(c, S::AttributeName);
+                }
+                Next::Eof => self.emit_eof(),
+                Next::Wait => return Flow::Wait,
+            },
+            S::BeforeAttributeValue => match self.next() {
+                Next::Char(c) if is_space(c) => {}
+                Next::Char('"') => self.state = S::AttributeValueDoubleQuoted,
+                Next::Char('\'') => self.state = S::AttributeValueSingleQuoted,
+                Next::Char('>') => {
+                    self.state = S::Data;
+                    self.emit_tag();
+                }
+                Next::Char(c) => self.reconsume(c, S::AttributeValueUnquoted),
+                Next::Eof => self.state = S::AttributeValueUnquoted,
+                Next::Wait => return Flow::Wait,
+            },
+            S::AttributeValueDoubleQuoted | S::AttributeValueSingleQuoted => {
+                let quote = if self.state == S::AttributeValueDoubleQuoted {
+                    '"'
+                } else {
+                    '\''
+                };
+                if let Some(range) = self.run(|c| !(c == quote || c == '&' || c == '\0')) {
+                    let run: String = self.input[range].iter().collect();
+                    self.tag.attr_value().push_str(&run);
+                    return Flow::Go;
+                }
+                match self.next() {
+                    Next::Char(c) if c == quote => self.state = S::AfterAttributeValueQuoted,
+                    Next::Char('&') => {
+                        self.return_state = self.state;
+                        self.state = S::CharacterReference;
+                    }
+                    Next::Char('\0') => self.tag.attr_value().push('\u{fffd}'),
+                    Next::Char(c) => self.tag.attr_value().push(c),
+                    Next::Eof => self.emit_eof(),
+                    Next::Wait => return Flow::Wait,
+                }
+            }
+            S::AttributeValueUnquoted => {
+                if let Some(range) = self.run(|c| !(is_space(c) || matches!(c, '&' | '>' | '\0'))) {
+                    let run: String = self.input[range].iter().collect();
+                    self.tag.attr_value().push_str(&run);
+                    return Flow::Go;
+                }
+                match self.next() {
+                    Next::Char(c) if is_space(c) => self.state = S::BeforeAttributeName,
+                    Next::Char('&') => {
+                        self.return_state = S::AttributeValueUnquoted;
+                        self.state = S::CharacterReference;
+                    }
+                    Next::Char('>') => {
+                        self.state = S::Data;
+                        self.emit_tag();
+                    }
+                    Next::Char('\0') => self.tag.attr_value().push('\u{fffd}'),
+                    Next::Char(c) => self.tag.attr_value().push(c),
+                    Next::Eof => self.emit_eof(),
+                    Next::Wait => return Flow::Wait,
+                }
+            }
+            S::AfterAttributeValueQuoted => match self.next() {
+                Next::Char(c) if is_space(c) => self.state = S::BeforeAttributeName,
+                Next::Char('/') => self.state = S::SelfClosingStartTag,
+                Next::Char('>') => {
+                    self.state = S::Data;
+                    self.emit_tag();
+                }
+                Next::Char(c) => self.reconsume(c, S::BeforeAttributeName),
+                Next::Eof => self.emit_eof(),
+                Next::Wait => return Flow::Wait,
+            },
+            S::SelfClosingStartTag => match self.next() {
+                Next::Char('>') => {
+                    self.tag.self_closing = true;
+                    self.state = S::Data;
+                    self.emit_tag();
+                }
+                Next::Char(c) => self.reconsume(c, S::BeforeAttributeName),
+                Next::Eof => self.emit_eof(),
+                Next::Wait => return Flow::Wait,
+            },
+            S::BogusComment => {
+                if let Some(range) = self.run(|c| !matches!(c, '>' | '\0')) {
+                    let run: String = self.input[range].iter().collect();
+                    self.comment.push_str(&run);
+                    return Flow::Go;
+                }
+                match self.next() {
+                    Next::Char('>') => {
+                        self.state = S::Data;
+                        self.emit_comment();
+                    }
+                    Next::Char('\0') => self.comment.push('\u{fffd}'),
+                    Next::Char(c) => self.comment.push(c),
+                    Next::Eof => {
+                        self.emit_comment();
+                        self.emit_eof();
+                    }
+                    Next::Wait => return Flow::Wait,
+                }
+            }
+            S::MarkupDeclarationOpen => {
+                let checks = [
+                    self.starts_with("--", false),
+                    self.starts_with("doctype", true),
+                    self.starts_with("[CDATA[", false),
+                ];
+                if checks.contains(&None) && !checks.contains(&Some(true)) {
+                    return Flow::Wait;
+                }
+                if checks[0] == Some(true) {
+                    self.skip(2);
+                    self.comment.clear();
+                    self.state = S::CommentStart;
+                } else if checks[1] == Some(true) {
+                    self.skip(7);
+                    self.state = S::Doctype;
+                } else if checks[2] == Some(true) {
+                    self.skip(7);
+                    if self.cdata_allowed {
+                        self.state = S::CdataSection;
+                    } else {
+                        self.comment = "[CDATA[".to_owned();
+                        self.state = S::BogusComment;
+                    }
+                } else {
+                    self.comment.clear();
+                    self.state = S::BogusComment;
+                }
+            }
+            S::CommentStart => match self.next() {
+                Next::Char('-') => self.state = S::CommentStartDash,
+                Next::Char('>') => {
+                    self.state = S::Data;
+                    self.emit_comment();
+                }
+                Next::Char(c) => self.reconsume(c, S::Comment),
+                Next::Eof => self.state = S::Comment,
+                Next::Wait => return Flow::Wait,
+            },
+            S::CommentStartDash => match self.next() {
+                Next::Char('-') => self.state = S::CommentEnd,
+                Next::Char('>') => {
+                    self.state = S::Data;
+                    self.emit_comment();
+                }
+                Next::Char(c) => {
+                    self.comment.push('-');
+                    self.reconsume(c, S::Comment);
+                }
+                Next::Eof => {
+                    self.emit_comment();
+                    self.emit_eof();
+                }
+                Next::Wait => return Flow::Wait,
+            },
+            S::Comment => {
+                if let Some(range) = self.run(|c| !matches!(c, '<' | '-' | '\0')) {
+                    let run: String = self.input[range].iter().collect();
+                    self.comment.push_str(&run);
+                    return Flow::Go;
+                }
+                match self.next() {
+                    Next::Char('<') => {
+                        self.comment.push('<');
+                        self.state = S::CommentLessThan;
+                    }
+                    Next::Char('-') => self.state = S::CommentEndDash,
+                    Next::Char('\0') => self.comment.push('\u{fffd}'),
+                    Next::Char(c) => self.comment.push(c),
+                    Next::Eof => {
+                        self.emit_comment();
+                        self.emit_eof();
+                    }
+                    Next::Wait => return Flow::Wait,
+                }
+            }
+            S::CommentLessThan => match self.next() {
+                Next::Char('!') => {
+                    self.comment.push('!');
+                    self.state = S::CommentLessThanBang;
+                }
+                Next::Char('<') => self.comment.push('<'),
+                Next::Char(c) => self.reconsume(c, S::Comment),
+                Next::Eof => self.state = S::Comment,
+                Next::Wait => return Flow::Wait,
+            },
+            S::CommentLessThanBang => match self.next() {
+                Next::Char('-') => self.state = S::CommentLessThanBangDash,
+                Next::Char(c) => self.reconsume(c, S::Comment),
+                Next::Eof => self.state = S::Comment,
+                Next::Wait => return Flow::Wait,
+            },
+            S::CommentLessThanBangDash => match self.next() {
+                Next::Char('-') => self.state = S::CommentLessThanBangDashDash,
+                Next::Char(c) => self.reconsume(c, S::CommentEndDash),
+                Next::Eof => self.state = S::CommentEndDash,
+                Next::Wait => return Flow::Wait,
+            },
+            S::CommentLessThanBangDashDash => match self.next() {
+                Next::Char(c) => self.reconsume(c, S::CommentEnd),
+                Next::Eof => self.state = S::CommentEnd,
+                Next::Wait => return Flow::Wait,
+            },
+            S::CommentEndDash => match self.next() {
+                Next::Char('-') => self.state = S::CommentEnd,
+                Next::Char(c) => {
+                    self.comment.push('-');
+                    self.reconsume(c, S::Comment);
+                }
+                Next::Eof => {
+                    self.emit_comment();
+                    self.emit_eof();
+                }
+                Next::Wait => return Flow::Wait,
+            },
+            S::CommentEnd => match self.next() {
+                Next::Char('>') => {
+                    self.state = S::Data;
+                    self.emit_comment();
+                }
+                Next::Char('!') => self.state = S::CommentEndBang,
+                Next::Char('-') => self.comment.push('-'),
+                Next::Char(c) => {
+                    self.comment.push_str("--");
+                    self.reconsume(c, S::Comment);
+                }
+                Next::Eof => {
+                    self.emit_comment();
+                    self.emit_eof();
+                }
+                Next::Wait => return Flow::Wait,
+            },
+            S::CommentEndBang => match self.next() {
+                Next::Char('-') => {
+                    self.comment.push_str("--!");
+                    self.state = S::CommentEndDash;
+                }
+                Next::Char('>') => {
+                    self.state = S::Data;
+                    self.emit_comment();
+                }
+                Next::Char(c) => {
+                    self.comment.push_str("--!");
+                    self.reconsume(c, S::Comment);
+                }
+                Next::Eof => {
+                    self.emit_comment();
+                    self.emit_eof();
+                }
+                Next::Wait => return Flow::Wait,
+            },
+            S::Doctype => match self.next() {
+                Next::Char(c) if is_space(c) => self.state = S::BeforeDoctypeName,
+                Next::Char(c) => self.reconsume(c, S::BeforeDoctypeName),
+                Next::Eof => {
+                    self.doctype = Doctype {
+                        force_quirks: true,
+                        ..Doctype::default()
+                    };
+                    self.emit_doctype();
+                    self.emit_eof();
+                }
+                Next::Wait => return Flow::Wait,
+            },
+            S::BeforeDoctypeName => match self.next() {
+                Next::Char(c) if is_space(c) => {}
+                Next::Char('>') => {
+                    self.doctype = Doctype {
+                        force_quirks: true,
+                        ..Doctype::default()
+                    };
+                    self.state = S::Data;
+                    self.emit_doctype();
+                }
+                Next::Char(c) => {
+                    let first = if c == '\0' {
+                        '\u{fffd}'
+                    } else {
+                        c.to_ascii_lowercase()
+                    };
+                    self.doctype = Doctype {
+                        name: Some(first.to_string()),
+                        ..Doctype::default()
+                    };
+                    self.state = S::DoctypeName;
+                }
+                Next::Eof => {
+                    self.doctype = Doctype {
+                        force_quirks: true,
+                        ..Doctype::default()
+                    };
+                    self.emit_doctype();
+                    self.emit_eof();
+                }
+                Next::Wait => return Flow::Wait,
+            },
+            S::DoctypeName => match self.next() {
+                Next::Char(c) if is_space(c) => self.state = S::AfterDoctypeName,
+                Next::Char('>') => {
+                    self.state = S::Data;
+                    self.emit_doctype();
+                }
+                Next::Char(c) => {
+                    let c = if c == '\0' {
+                        '\u{fffd}'
+                    } else {
+                        c.to_ascii_lowercase()
+                    };
+                    self.doctype.name.get_or_insert_with(String::new).push(c);
+                }
+                Next::Eof => {
+                    self.doctype.force_quirks = true;
+                    self.emit_doctype();
+                    self.emit_eof();
+                }
+                Next::Wait => return Flow::Wait,
+            },
+            S::AfterDoctypeName => {
+                // The keywords are looked for from the current character,
+                // so it is looked at before it is consumed.
+                match self.input.get(self.pos) {
+                    None if !self.ended => return Flow::Wait,
+                    None => {
+                        self.doctype.force_quirks = true;
+                        self.emit_doctype();
+                        self.emit_eof();
+                        return Flow::Go;
+                    }
+                    Some(&c) if is_space(c) => {
+                        self.next();
+                        return Flow::Go;
+                    }
+                    Some('>') => {
+                        self.next();
+                        self.state = S::Data;
+                        self.emit_doctype();
+                        return Flow::Go;
+                    }
+                    Some(_) => {}
+                }
+                let public = self.starts_with("public", true);
+                let system = self.starts_with("system", true);
+                if public.is_none() || system.is_none() {
+                    return Flow::Wait;
+                }
+                if public == Some(true) {
+                    self.skip(6);
+                    self.state = S::AfterDoctypePublicKeyword;
+                } else if system == Some(true) {
+                    self.skip(6);
+                    self.state = S::AfterDoctypeSystemKeyword;
+                } else {
+                    self.doctype.force_quirks = true;
+                    self.state = S::BogusDoctype;
+                }
+            }
+            S::AfterDoctypePublicKeyword | S::AfterDoctypeSystemKeyword => {
+                let public = self.state == S::AfterDoctypePublicKeyword;
+                match self.next() {
+                    Next::Char(c) if is_space(c) => {
+                        self.state = if public {
+                            S::BeforeDoctypePublicIdentifier
+                        } else {
+                            S::BeforeDoctypeSystemIdentifier
+                        };
+                    }
+                    Next::Char(quote @ ('"' | '\'')) => self.open_identifier(public, quote),
+                    Next::Char('>') => {
+                        self.doctype.force_quirks = true;
+                        self.state = S::Data;
+                        self.emit_doctype();
+                    }
+                    Next::Char(c) => {
+                        self.doctype.force_quirks = true;
+                        self.reconsume(c, S::BogusDoctype);
+                    }
+                    Next::Eof => {
+                        self.doctype.force_quirks = true;
+                        self.emit_doctype();
+                        self.emit_eof();
+                    }
+                    Next::Wait => return Flow::Wait,
+                }
+            }
+            S::BeforeDoctypePublicIdentifier | S::BeforeDoctypeSystemIdentifier => {
+                let public = self.state == S::BeforeDoctypePublicIdentifier;
+                match self.next() {
+                    Next::Char(c) if is_space(c) => {}
+                    Next::Char(quote @ ('"' | '\'')) => self.open_identifier(public, quote),
+                    Next::Char('>') => {
+                        self.doctype.force_quirks = true;
+                        self.state = S::Data;
+                        self.emit_doctype();
+                    }
+                    Next::Char(c) => {
+                        self.doctype.force_quirks = true;
+                        self.reconsume(c, S::BogusDoctype);
+                    }
+                    Next::Eof => {
+                        self.doctype.force_quirks = true;
+                        self.emit_doctype();
+                        self.emit_eof();
+                    }
+                    Next::Wait => return Flow::Wait,
+                }
+            }
+            S::DoctypePublicIdentifierDoubleQuoted
+            | S::DoctypePublicIdentifierSingleQuoted
+            | S::DoctypeSystemIdentifierDoubleQuoted
+            | S::DoctypeSystemIdentifierSingleQuoted => {
+                let public = matches!(
+                    self.state,
+                    S::DoctypePublicIdentifierDoubleQuoted | S::DoctypePublicIdentifierSingleQuoted
+                );
+                let quote = if matches!(
+                    self.state,
+                    S::DoctypePublicIdentifierDoubleQuoted | S::DoctypeSystemIdentifierDoubleQuoted
+                ) {
+                    '"'
+                } else {
+                    '\''
+                };
+                match self.next() {
+                    Next::Char(c) if c == quote => {
+                        self.state = if public {
+                            S::AfterDoctypePublicIdentifier
+                        } else {
+                            S::AfterDoctypeSystemIdentifier
+                        };
+                    }
+                    Next::Char('>') => {
+                        self.doctype.force_quirks = true;
+                        self.state = S::Data;
+                        self.emit_doctype();
+                    }
+                    Next::Char(c) => {
+                        let c = if c == '\0' { '\u{fffd}' } else { c };
+                        let id = if public {
+                            &mut self.doctype.public_id
+                        } else {
+                            &mut self.doctype.system_id
+                        };
+                        id.get_or_insert_with(String::new).push(c);
+                    }
+                    Next::Eof => {
+                        self.doctype.force_quirks = true;
+                        self.emit_doctype();
+                        self.emit_eof();
+                    }
+                    Next::Wait => return Flow::Wait,
+                }
+            }
+            S::AfterDoctypePublicIdentifier | S::BetweenDoctypePublicAndSystemIdentifiers => {
+                match self.next() {
+                    Next::Char(c) if is_space(c) => {
+                        self.state = S::BetweenDoctypePublicAndSystemIdentifiers;
+                    }
+                    Next::Char('>') => {
+                        self.state = S::Data;
+                        self.emit_doctype();
+                    }
+                    Next::Char(quote @ ('"' | '\'')) => self.open_identifier(false, quote),
+                    Next::Char(c) => {
+                        self.doctype.force_quirks = true;
+                        self.reconsume(c, S::BogusDoctype);
+                    }
+                    Next::Eof => {
+                        self.doctype.force_quirks = true;
+                        self.emit_doctype();
+                        self.emit_eof();
+                    }
+                    Next::Wait => return Flow::Wait,
+                }
+            }
+            S::AfterDoctypeSystemIdentifier => match self.next() {
+                Next::Char(c) if is_space(c) => {}
+                Next::Char('>') => {
+                    self.state = S::Data;
+                    self.emit_doctype();
+                }
+                // Not force-quirks, unlike the other states' errors.
+                Next::Char(c) => self.reconsume(c, S::BogusDoctype),
+                Next::Eof => {
+                    self.doctype.force_quirks = true;
+                    self.emit_doctype();
+                    self.emit_eof();
+                }
+                Next::Wait => return Flow::Wait,
+            },
+            S::BogusDoctype => match self.next() {
+                Next::Char('>') => {
+                    self.state = S::Data;
+                    self.emit_doctype();
+                }
+                Next::Char(_) => {}
+                Next::Eof => {
+                    self.emit_doctype();
+                    self.emit_eof();
+                }
+                Next::Wait => return Flow::Wait,
+            },
+            S::CdataSection => {
+                if self.text_run(|c| c != ']') {
+                    return Flow::Go;
+                }
+                match self.next() {
+                    Next::Char(_) => self.state = S::CdataSectionBracket,
+                    Next::Eof => self.emit_eof(),
+                    Next::Wait => return Flow::Wait,
+                }
+            }
+            S::CdataSectionBracket => match self.next() {
+                Next::Char(']') => self.state = S::CdataSectionEnd,
+                Next::Char(c) => {
+                    self.text.push(']');
+                    self.reconsume(c, S::CdataSection);
+                }
+                Next::Eof => {
+                    self.text.push(']');
+                    self.state = S::CdataSection;
+                }
+                Next::Wait => return Flow::Wait,
+            },
+            S::CdataSectionEnd => match self.next() {
+                Next::Char(']') => self.text.push(']'),
+                Next::Char('>') => self.state = S::Data,
+                Next::Char(c) => {
+                    self.text.push_str("]]");
+                    self.reconsume(c, S::CdataSection);
+                }
+                Next::Eof => {
+                    self.text.push_str("]]");
+                    self.state = S::CdataSection;
+                }
+                Next::Wait => return Flow::Wait,
+            },
+            S::ProcessingInstructionOpen => match self.next() {
+                Next::Char(c) if c.is_ascii_alphabetic() || c == '_' => {
+                    self.reconsume(c, S::ProcessingInstructionTarget)
+                }
+                Next::Char(c) => {
+                    self.comment = format!("?{}", self.temp);
+                    self.reconsume(c, S::BogusComment);
+                }
+                Next::Eof => self.emit_eof(),
+                Next::Wait => return Flow::Wait,
+            },
+            S::ProcessingInstructionTarget => match self.next() {
+                Next::Char(c) if is_space(c) || c == '?' || c == '>' => {
+                    if self.temp.eq_ignore_ascii_case("xml")
+                        || self.temp.eq_ignore_ascii_case("xml-stylesheet")
+                    {
+                        self.comment = format!("?{}", self.temp);
+                        self.reconsume(c, S::BogusComment);
+                    } else {
+                        self.pi_target = std::mem::take(&mut self.temp);
+                        self.pi_data.clear();
+                        self.reconsume(c, S::AfterProcessingInstructionTarget);
+                    }
+                }
+                Next::Char(c) if c.is_ascii_alphanumeric() || c == '-' || c == '_' => {
+                    self.temp.push(c)
+                }
+                Next::Char(c) => {
+                    self.comment = format!("?{}", self.temp);
+                    self.reconsume(c, S::BogusComment);
+                }
+                Next::Eof => self.emit_eof(),
+                Next::Wait => return Flow::Wait,
+            },
+            S::AfterProcessingInstructionTarget => match self.next() {
+                Next::Char(c) if is_space(c) => {}
+                Next::Char(c) => self.reconsume(c, S::ProcessingInstructionData),
+                Next::Eof => self.state = S::ProcessingInstructionData,
+                Next::Wait => return Flow::Wait,
+            },
+            S::ProcessingInstructionData => {
+                if let Some(range) = self.run(|c| !matches!(c, '?' | '>')) {
+                    let run: String = self.input[range].iter().collect();
+                    self.pi_data.push_str(&run);
+                    return Flow::Go;
+                }
+                match self.next() {
+                    Next::Char('?') => self.state = S::ProcessingInstructionQuestionable,
+                    Next::Char('>') => {
+                        self.state = S::Data;
+                        self.emit_pi();
+                    }
+                    Next::Char(c) => self.pi_data.push(c),
+                    Next::Eof => self.emit_eof(),
+                    Next::Wait => return Flow::Wait,
+                }
+            }
+            S::ProcessingInstructionQuestionable => match self.next() {
+                Next::Char('>') => {
+                    self.state = S::Data;
+                    self.emit_pi();
+                }
+                Next::Char(c) => {
+                    self.pi_data.push('?');
+                    self.reconsume(c, S::ProcessingInstructionData);
+                }
+                Next::Eof => self.emit_eof(),
+                Next::Wait => return Flow::Wait,
+            },
+            S::CharacterReference => {
+                self.temp.clear();
+                self.temp.push('&');
+                match self.next() {
+                    Next::Char(c) if c.is_ascii_alphanumeric() => {
+                        self.reconsume(c, S::NamedCharacterReference)
+                    }
+                    Next::Char('#') => {
+                        self.temp.push('#');
+                        self.state = S::NumericCharacterReference;
+                    }
+                    Next::Char(c) => {
+                        self.flush_reference();
+                        self.reconsume(c, self.return_state);
+                    }
+                    Next::Eof => {
+                        self.flush_reference();
+                        self.state = self.return_state;
+                    }
+                    Next::Wait => return self.restart_reference(),
+                }
+            }
+            S::NamedCharacterReference => return self.named_reference(),
+            S::AmbiguousAmpersand => match self.next() {
+                Next::Char(c) if c.is_ascii_alphanumeric() => {
+                    if self.in_attribute() {
+                        self.tag.attr_value().push(c);
+                    } else {
+                        self.text.push(c);
+                    }
+                }
+                Next::Char(c) => self.reconsume(c, self.return_state),
+                Next::Eof => self.state = self.return_state,
+                Next::Wait => return Flow::Wait,
+            },
+            S::NumericCharacterReference => {
+                self.char_ref = 0;
+                match self.next() {
+                    Next::Char(c @ ('x' | 'X')) => {
+                        self.temp.push(c);
+                        self.state = S::HexadecimalCharacterReferenceStart;
+                    }
+                    Next::Char(c) if c.is_ascii_digit() => {
+                        self.reconsume(c, S::DecimalCharacterReference)
+                    }
+                    Next::Char(c) => {
+                        self.flush_reference();
+                        self.reconsume(c, self.return_state);
+                    }
+                    Next::Eof => {
+                        self.flush_reference();
+                        self.state = self.return_state;
+                    }
+                    Next::Wait => return self.restart_reference(),
+                }
+            }
+            S::HexadecimalCharacterReferenceStart => match self.next() {
+                Next::Char(c) if c.is_ascii_hexdigit() => {
+                    self.reconsume(c, S::HexadecimalCharacterReference)
+                }
+                Next::Char(c) => {
+                    self.flush_reference();
+                    self.reconsume(c, self.return_state);
+                }
+                Next::Eof => {
+                    self.flush_reference();
+                    self.state = self.return_state;
+                }
+                Next::Wait => return self.restart_reference(),
+            },
+            S::HexadecimalCharacterReference | S::DecimalCharacterReference => {
+                let radix = if self.state == S::HexadecimalCharacterReference {
+                    16
+                } else {
+                    10
+                };
+                match self.next() {
+                    Next::Char(c) if c.is_digit(radix) => {
+                        let digit = c.to_digit(radix).unwrap_or(0);
+                        // Past the last code point the value only needs
+                        // to stay past it.
+                        self.char_ref = self
+                            .char_ref
+                            .saturating_mul(radix)
+                            .saturating_add(digit)
+                            .min(0x11_0000);
+                    }
+                    Next::Char(';') => self.state = S::NumericCharacterReferenceEnd,
+                    Next::Char(c) => self.reconsume(c, S::NumericCharacterReferenceEnd),
+                    Next::Eof => self.state = S::NumericCharacterReferenceEnd,
+                    Next::Wait => return Flow::Wait,
+                }
+            }
+            S::NumericCharacterReferenceEnd => {
+                let c = numeric_reference(self.char_ref);
+                self.temp.clear();
+                self.temp.push(c);
+                self.flush_reference();
+                self.state = self.return_state;
+            }
+        }
+        Flow::Go
+    }
+
+    /// The input ran out before a character reference's start could be
+    /// told: what it has read, all in the temporary buffer and none a
+    /// line feed, is given back, and it is read again from its `&` once
+    /// there is more.
+    fn restart_reference(&mut self) -> Flow {
+        self.pos -= self.temp.chars().count();
+        self.temp.clear();
+        self.state = self.return_state;
+        Flow::Wait
+    }
+
+    /// Opens a doctype's public or system identifier quoted by `quote`.
+    fn open_identifier(&mut self, public: bool, quote: char) {
+        use State as S;
+        let double = quote == '"';
+        if public {
+            self.doctype.public_id = Some(String::new());
+            self.state = if double {
+                S::DoctypePublicIdentifierDoubleQuoted
+            } else {
+                S::DoctypePublicIdentifierSingleQuoted
+            };
+        } else {
+            self.doctype.system_id = Some(String::new());
+            self.state = if double {
+                S::DoctypeSystemIdentifierDoubleQuoted
+            } else {
+                S::DoctypeSystemIdentifierSingleQuoted
+            };
+        }
+    }
+
+    /// The named character reference state (section 13.2.5.78): the
+    /// longest name in the table that the input starts with.
+    fn named_reference(&mut self) -> Flow {
+        let rest = &self.input[self.pos..];
+        // The candidates: a run of ASCII alphanumerics, and the
+        // semicolon after it.
+        let mut length = rest
+            .iter()
+            .take(LONGEST_NAME)
+            .take_while(|c| c.is_ascii_alphanumeric())
+            .count();
+        let complete = length == LONGEST_NAME || length < rest.len() || self.ended;
+        if !complete {
+            // A longer name may come.
+            return self.restart_reference();
+        }
+        if rest.get(length) == Some(&';') {
+            length += 1;
+        }
+        let candidate: String = rest[..length].iter().collect();
+        let found = (1..=candidate.len()).rev().find_map(|n| {
+            let name = &candidate[..n];
+            NAMED_REFERENCES
+                .binary_search_by(|(entry, _)| (*entry).cmp(name))
+                .ok()
+                .map(|i| (n, NAMED_REFERENCES[i].1))
+        });
+        let Some((matched, value)) = found else {
+            self.flush_reference();
+            self.state = State::AmbiguousAmpersand;
+            return Flow::Go;
+        };
+        self.skip(matched);
+        let ends_with_semicolon = candidate[..matched].ends_with(';');
+        let following = self.input.get(self.pos).copied();
+        if self.in_attribute()
+            && !ends_with_semicolon
+            && following.is_some_and(|c| c == '=' || c.is_ascii_alphanumeric())
+        {
+            self.temp.push_str(&candidate[..matched]);
+        } else {
+            self.temp.clear();
+            self.temp.push_str(value);
+        }
+        self.flush_reference();
+        self.state = self.return_state;
+        Flow::Go
     }
 }
 
-/// Characters allowed in a tag name.
-fn is_tag_name_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ':' || c == '.'
+/// The character a numeric reference's `code` stands for (section
+/// 13.2.5.84): U+FFFD for zero, and for a surrogate and past the last
+/// code point, which are no `char`; C1 controls read as Windows-1252, as
+/// the table says.
+fn numeric_reference(code: u32) -> char {
+    match code {
+        0 => '\u{fffd}',
+        0x80 => '\u{20ac}',
+        0x82 => '\u{201a}',
+        0x83 => '\u{0192}',
+        0x84 => '\u{201e}',
+        0x85 => '\u{2026}',
+        0x86 => '\u{2020}',
+        0x87 => '\u{2021}',
+        0x88 => '\u{02c6}',
+        0x89 => '\u{2030}',
+        0x8a => '\u{0160}',
+        0x8b => '\u{2039}',
+        0x8c => '\u{0152}',
+        0x8e => '\u{017d}',
+        0x91 => '\u{2018}',
+        0x92 => '\u{2019}',
+        0x93 => '\u{201c}',
+        0x94 => '\u{201d}',
+        0x95 => '\u{2022}',
+        0x96 => '\u{2013}',
+        0x97 => '\u{2014}',
+        0x98 => '\u{02dc}',
+        0x99 => '\u{2122}',
+        0x9a => '\u{0161}',
+        0x9b => '\u{203a}',
+        0x9c => '\u{0153}',
+        0x9e => '\u{017e}',
+        0x9f => '\u{0178}',
+        code => char::from_u32(code).unwrap_or('\u{fffd}'),
+    }
 }
 
-/// Tokenizes all of `source` (convenience for tests and debugging).
+/// The state an element's content starts in when the tree builder has
+/// no say: what section 13.2.6 gives each element whose content is
+/// text, in HTML content, with scripting disabled.
+pub fn content_state(name: &str) -> Option<TextState> {
+    match name {
+        "title" | "textarea" => Some(TextState::Rcdata),
+        "style" | "xmp" | "iframe" | "noembed" | "noframes" => Some(TextState::Rawtext),
+        "script" => Some(TextState::ScriptData),
+        "plaintext" => Some(TextState::Plaintext),
+        _ => None,
+    }
+}
+
+/// Tokenizes the whole of `source`, each element's content in the state
+/// [`content_state`] gives it.
 pub fn tokenize(source: &str) -> Vec<Token> {
     let mut tokenizer = Tokenizer::new(source);
-    let mut out = Vec::new();
+    let mut tokens = Vec::new();
     while let Some(token) = tokenizer.next_token() {
-        out.push(token);
-    }
-    out
-}
-
-/// Decodes character references (`&amp;`, `&#65;`, `&#x41;`, and the
-/// legacy forms without a `;`) in `s`. Unknown or malformed references
-/// are left as literal text. `in_attribute` selects the spec's
-/// attribute-value exception for the no-`;` forms.
-fn decode_entities(s: &str, in_attribute: bool) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    let mut out = String::with_capacity(s.len());
-    let mut i = 0;
-    while i < chars.len() {
-        if chars[i] == '&'
-            && let Some((ch, consumed)) = decode_reference(&chars[i + 1..], in_attribute)
+        if let Token::StartTag { name, .. } = &token
+            && let Some(state) = content_state(name)
         {
-            out.push(ch);
-            i += 1 + consumed; // '&' plus the reference
-            continue;
+            tokenizer.set_state(state);
         }
-        out.push(chars[i]);
-        i += 1;
+        tokens.push(token);
     }
-    out
+    tokens
 }
-
-/// Tries to decode a reference at the start of `rest` (what follows an
-/// '&'). Returns the decoded char plus how many chars were consumed.
-fn decode_reference(rest: &[char], in_attribute: bool) -> Option<(char, usize)> {
-    match rest.first() {
-        Some('#') => decode_numeric_reference(rest),
-        Some(_) => decode_named_reference(rest, in_attribute),
-        None => None,
-    }
-}
-
-/// The spec's numeric character reference states: digits with or
-/// without a closing `;`, then the code point normalised — zero, a
-/// surrogate, anything past U+10FFFF, or a number too large to hold
-/// becomes U+FFFD, and the C1 control range maps through windows-1252,
-/// which is what `&#146;` on an old page means.
-fn decode_numeric_reference(rest: &[char]) -> Option<(char, usize)> {
-    let (hex, start) = if matches!(rest.get(1), Some('x') | Some('X')) {
-        (true, 2)
-    } else {
-        (false, 1)
-    };
-    let mut i = start;
-    while i < rest.len()
-        && (if hex {
-            rest[i].is_ascii_hexdigit()
-        } else {
-            rest[i].is_ascii_digit()
-        })
-    {
-        i += 1;
-    }
-    if i == start {
-        return None; // `&#` or `&#x` with no digits stays literal
-    }
-    let digits: String = rest[start..i].iter().collect();
-    let radix = if hex { 16 } else { 10 };
-    // An overflowing number is "greater than 0x10FFFF" as far as the
-    // spec cares: U+FFFD, same as any out-of-range value.
-    let code = u32::from_str_radix(&digits, radix).unwrap_or(u32::MAX);
-    let consumed = if matches!(rest.get(i), Some(';')) {
-        i + 1
-    } else {
-        i
-    };
-    Some((normalise_code_point(code), consumed))
-}
-
-/// The replacement a numeric reference's code point gets before it is
-/// inserted (the spec's numeric-character-reference-end state).
-fn normalise_code_point(code: u32) -> char {
-    let mapped = match code {
-        0x80 => 0x20AC,
-        0x82 => 0x201A,
-        0x83 => 0x0192,
-        0x84 => 0x201E,
-        0x85 => 0x2026,
-        0x86 => 0x2020,
-        0x87 => 0x2021,
-        0x88 => 0x02C6,
-        0x89 => 0x2030,
-        0x8A => 0x0160,
-        0x8B => 0x2039,
-        0x8C => 0x0152,
-        0x8E => 0x017D,
-        0x91 => 0x2018,
-        0x92 => 0x2019,
-        0x93 => 0x201C,
-        0x94 => 0x201D,
-        0x95 => 0x2022,
-        0x96 => 0x2013,
-        0x97 => 0x2014,
-        0x98 => 0x02DC,
-        0x99 => 0x2122,
-        0x9A => 0x0161,
-        0x9B => 0x203A,
-        0x9C => 0x0153,
-        0x9E => 0x017E,
-        0x9F => 0x0178,
-        other => other,
-    };
-    match mapped {
-        0 | 0xD800..=0xDFFF => '\u{FFFD}',
-        c => char::from_u32(c).unwrap_or('\u{FFFD}'),
-    }
-}
-
-/// The spec's named character reference state: the longest table entry
-/// that matches wins. With a `;` the whole name must be known; without
-/// one only the legacy names (the Latin-1 range and `amp`/`lt`/`gt`/
-/// `quot`) decode, and inside an attribute value not even those when
-/// an `=` or an alphanumeric follows, so that `?a=1&copy=2` survives.
-fn decode_named_reference(rest: &[char], in_attribute: bool) -> Option<(char, usize)> {
-    let mut i = 0;
-    while i < rest.len() && rest[i].is_ascii_alphanumeric() {
-        i += 1;
-    }
-    if i == 0 {
-        return None;
-    }
-    let run: String = rest[..i].iter().collect();
-    if matches!(rest.get(i), Some(';'))
-        && let Some(ch) = named_reference(&run)
-    {
-        return Some((ch, i + 1)); // include the ';'
-    }
-    // No `;`, or an unknown name before one: the longest legacy prefix.
-    let longest = i.min(LONGEST_LEGACY_NAME);
-    for len in (1..=longest).rev() {
-        let prefix: String = rest[..len].iter().collect();
-        let Some(ch) = legacy_reference(&prefix) else {
-            continue;
-        };
-        if in_attribute
-            && let Some(next) = rest.get(len)
-            && (*next == '=' || next.is_ascii_alphanumeric())
-        {
-            return None;
-        }
-        return Some((ch, len));
-    }
-    None
-}
-
-/// The longest name in [`legacy_reference`]'s set.
-const LONGEST_LEGACY_NAME: usize = 6;
-
-/// A name that the spec's table also carries without a `;`: the
-/// Latin-1 range (the HTML 2 era names) and `amp`/`lt`/`gt`/`quot`,
-/// with their upper-case spellings.
-fn legacy_reference(name: &str) -> Option<char> {
-    match name {
-        "AMP" | "amp" => Some('&'),
-        "LT" | "lt" => Some('<'),
-        "GT" | "gt" => Some('>'),
-        "QUOT" | "quot" => Some('"'),
-        "COPY" => Some('\u{a9}'),
-        "REG" => Some('\u{ae}'),
-        _ => {
-            let ch = named_reference(name)?;
-            (0xa0..=0xff).contains(&(ch as u32)).then_some(ch)
-        }
-    }
-}
-
-/// The named character reference subset this tokenizer understands:
-/// the HTML 4 table (Latin-1, Greek, arrows, mathematical and
-/// typographic symbols), `&apos;` and `&euro;`.
-fn named_reference(name: &str) -> Option<char> {
-    NAMED_REFERENCES
-        .binary_search_by(|(n, _)| n.cmp(&name))
-        .ok()
-        .map(|i| NAMED_REFERENCES[i].1)
-}
-
-/// Sorted by name (ASCII order), for the binary search above; a test
-/// checks the order.
-static NAMED_REFERENCES: &[(&str, char)] = &[
-    ("AElig", '\u{c6}'),
-    ("AMP", '&'),
-    ("Aacute", '\u{c1}'),
-    ("Acirc", '\u{c2}'),
-    ("Agrave", '\u{c0}'),
-    ("Alpha", '\u{391}'),
-    ("Aring", '\u{c5}'),
-    ("Atilde", '\u{c3}'),
-    ("Auml", '\u{c4}'),
-    ("Beta", '\u{392}'),
-    ("COPY", '\u{a9}'),
-    ("Ccedil", '\u{c7}'),
-    ("Chi", '\u{3a7}'),
-    ("Dagger", '\u{2021}'),
-    ("Delta", '\u{394}'),
-    ("ETH", '\u{d0}'),
-    ("Eacute", '\u{c9}'),
-    ("Ecirc", '\u{ca}'),
-    ("Egrave", '\u{c8}'),
-    ("Epsilon", '\u{395}'),
-    ("Eta", '\u{397}'),
-    ("Euml", '\u{cb}'),
-    ("GT", '>'),
-    ("Gamma", '\u{393}'),
-    ("Iacute", '\u{cd}'),
-    ("Icirc", '\u{ce}'),
-    ("Igrave", '\u{cc}'),
-    ("Iota", '\u{399}'),
-    ("Iuml", '\u{cf}'),
-    ("Kappa", '\u{39a}'),
-    ("LT", '<'),
-    ("Lambda", '\u{39b}'),
-    ("Mu", '\u{39c}'),
-    ("Ntilde", '\u{d1}'),
-    ("Nu", '\u{39d}'),
-    ("OElig", '\u{152}'),
-    ("Oacute", '\u{d3}'),
-    ("Ocirc", '\u{d4}'),
-    ("Ograve", '\u{d2}'),
-    ("Omega", '\u{3a9}'),
-    ("Omicron", '\u{39f}'),
-    ("Oslash", '\u{d8}'),
-    ("Otilde", '\u{d5}'),
-    ("Ouml", '\u{d6}'),
-    ("Phi", '\u{3a6}'),
-    ("Pi", '\u{3a0}'),
-    ("Prime", '\u{2033}'),
-    ("Psi", '\u{3a8}'),
-    ("QUOT", '"'),
-    ("REG", '\u{ae}'),
-    ("Rho", '\u{3a1}'),
-    ("Scaron", '\u{160}'),
-    ("Sigma", '\u{3a3}'),
-    ("THORN", '\u{de}'),
-    ("Tau", '\u{3a4}'),
-    ("Theta", '\u{398}'),
-    ("Uacute", '\u{da}'),
-    ("Ucirc", '\u{db}'),
-    ("Ugrave", '\u{d9}'),
-    ("Upsilon", '\u{3a5}'),
-    ("Uuml", '\u{dc}'),
-    ("Xi", '\u{39e}'),
-    ("Yacute", '\u{dd}'),
-    ("Yuml", '\u{178}'),
-    ("Zeta", '\u{396}'),
-    ("aacute", '\u{e1}'),
-    ("acirc", '\u{e2}'),
-    ("acute", '\u{b4}'),
-    ("aelig", '\u{e6}'),
-    ("agrave", '\u{e0}'),
-    ("alefsym", '\u{2135}'),
-    ("alpha", '\u{3b1}'),
-    ("amp", '&'),
-    ("and", '\u{2227}'),
-    ("ang", '\u{2220}'),
-    ("apos", '\''),
-    ("aring", '\u{e5}'),
-    ("asymp", '\u{2248}'),
-    ("atilde", '\u{e3}'),
-    ("auml", '\u{e4}'),
-    ("bdquo", '\u{201e}'),
-    ("beta", '\u{3b2}'),
-    ("brvbar", '\u{a6}'),
-    ("bull", '\u{2022}'),
-    ("cap", '\u{2229}'),
-    ("ccedil", '\u{e7}'),
-    ("cedil", '\u{b8}'),
-    ("cent", '\u{a2}'),
-    ("chi", '\u{3c7}'),
-    ("circ", '\u{2c6}'),
-    ("clubs", '\u{2663}'),
-    ("cong", '\u{2245}'),
-    ("copy", '\u{a9}'),
-    ("crarr", '\u{21b5}'),
-    ("cup", '\u{222a}'),
-    ("curren", '\u{a4}'),
-    ("dArr", '\u{21d3}'),
-    ("dagger", '\u{2020}'),
-    ("darr", '\u{2193}'),
-    ("deg", '\u{b0}'),
-    ("delta", '\u{3b4}'),
-    ("diams", '\u{2666}'),
-    ("divide", '\u{f7}'),
-    ("eacute", '\u{e9}'),
-    ("ecirc", '\u{ea}'),
-    ("egrave", '\u{e8}'),
-    ("empty", '\u{2205}'),
-    ("emsp", '\u{2003}'),
-    ("ensp", '\u{2002}'),
-    ("epsilon", '\u{3b5}'),
-    ("equiv", '\u{2261}'),
-    ("eta", '\u{3b7}'),
-    ("eth", '\u{f0}'),
-    ("euml", '\u{eb}'),
-    ("euro", '\u{20ac}'),
-    ("exist", '\u{2203}'),
-    ("fnof", '\u{192}'),
-    ("forall", '\u{2200}'),
-    ("frac12", '\u{bd}'),
-    ("frac14", '\u{bc}'),
-    ("frac34", '\u{be}'),
-    ("frasl", '\u{2044}'),
-    ("gamma", '\u{3b3}'),
-    ("ge", '\u{2265}'),
-    ("gt", '>'),
-    ("hArr", '\u{21d4}'),
-    ("harr", '\u{2194}'),
-    ("hearts", '\u{2665}'),
-    ("hellip", '\u{2026}'),
-    ("iacute", '\u{ed}'),
-    ("icirc", '\u{ee}'),
-    ("iexcl", '\u{a1}'),
-    ("igrave", '\u{ec}'),
-    ("image", '\u{2111}'),
-    ("infin", '\u{221e}'),
-    ("int", '\u{222b}'),
-    ("iota", '\u{3b9}'),
-    ("iquest", '\u{bf}'),
-    ("isin", '\u{2208}'),
-    ("iuml", '\u{ef}'),
-    ("kappa", '\u{3ba}'),
-    ("lArr", '\u{21d0}'),
-    ("lambda", '\u{3bb}'),
-    ("lang", '\u{27e8}'),
-    ("laquo", '\u{ab}'),
-    ("larr", '\u{2190}'),
-    ("lceil", '\u{2308}'),
-    ("ldquo", '\u{201c}'),
-    ("le", '\u{2264}'),
-    ("lfloor", '\u{230a}'),
-    ("lowast", '\u{2217}'),
-    ("loz", '\u{25ca}'),
-    ("lrm", '\u{200e}'),
-    ("lsaquo", '\u{2039}'),
-    ("lsquo", '\u{2018}'),
-    ("lt", '<'),
-    ("macr", '\u{af}'),
-    ("mdash", '\u{2014}'),
-    ("micro", '\u{b5}'),
-    ("middot", '\u{b7}'),
-    ("minus", '\u{2212}'),
-    ("mu", '\u{3bc}'),
-    ("nabla", '\u{2207}'),
-    ("nbsp", '\u{a0}'),
-    ("ndash", '\u{2013}'),
-    ("ne", '\u{2260}'),
-    ("ni", '\u{220b}'),
-    ("not", '\u{ac}'),
-    ("notin", '\u{2209}'),
-    ("nsub", '\u{2284}'),
-    ("ntilde", '\u{f1}'),
-    ("nu", '\u{3bd}'),
-    ("oacute", '\u{f3}'),
-    ("ocirc", '\u{f4}'),
-    ("oelig", '\u{153}'),
-    ("ograve", '\u{f2}'),
-    ("oline", '\u{203e}'),
-    ("omega", '\u{3c9}'),
-    ("omicron", '\u{3bf}'),
-    ("oplus", '\u{2295}'),
-    ("or", '\u{2228}'),
-    ("ordf", '\u{aa}'),
-    ("ordm", '\u{ba}'),
-    ("oslash", '\u{f8}'),
-    ("otilde", '\u{f5}'),
-    ("otimes", '\u{2297}'),
-    ("ouml", '\u{f6}'),
-    ("para", '\u{b6}'),
-    ("part", '\u{2202}'),
-    ("permil", '\u{2030}'),
-    ("perp", '\u{22a5}'),
-    ("phi", '\u{3c6}'),
-    ("pi", '\u{3c0}'),
-    ("piv", '\u{3d6}'),
-    ("plusmn", '\u{b1}'),
-    ("pound", '\u{a3}'),
-    ("prime", '\u{2032}'),
-    ("prod", '\u{220f}'),
-    ("prop", '\u{221d}'),
-    ("psi", '\u{3c8}'),
-    ("quot", '"'),
-    ("rArr", '\u{21d2}'),
-    ("radic", '\u{221a}'),
-    ("rang", '\u{27e9}'),
-    ("raquo", '\u{bb}'),
-    ("rarr", '\u{2192}'),
-    ("rceil", '\u{2309}'),
-    ("rdquo", '\u{201d}'),
-    ("real", '\u{211c}'),
-    ("reg", '\u{ae}'),
-    ("rfloor", '\u{230b}'),
-    ("rho", '\u{3c1}'),
-    ("rlm", '\u{200f}'),
-    ("rsaquo", '\u{203a}'),
-    ("rsquo", '\u{2019}'),
-    ("sbquo", '\u{201a}'),
-    ("scaron", '\u{161}'),
-    ("sdot", '\u{22c5}'),
-    ("sect", '\u{a7}'),
-    ("shy", '\u{ad}'),
-    ("sigma", '\u{3c3}'),
-    ("sigmaf", '\u{3c2}'),
-    ("sim", '\u{223c}'),
-    ("spades", '\u{2660}'),
-    ("sub", '\u{2282}'),
-    ("sube", '\u{2286}'),
-    ("sum", '\u{2211}'),
-    ("sup", '\u{2283}'),
-    ("sup1", '\u{b9}'),
-    ("sup2", '\u{b2}'),
-    ("sup3", '\u{b3}'),
-    ("supe", '\u{2287}'),
-    ("szlig", '\u{df}'),
-    ("tau", '\u{3c4}'),
-    ("there4", '\u{2234}'),
-    ("theta", '\u{3b8}'),
-    ("thetasym", '\u{3d1}'),
-    ("thinsp", '\u{2009}'),
-    ("thorn", '\u{fe}'),
-    ("tilde", '\u{2dc}'),
-    ("times", '\u{d7}'),
-    ("trade", '\u{2122}'),
-    ("uArr", '\u{21d1}'),
-    ("uacute", '\u{fa}'),
-    ("uarr", '\u{2191}'),
-    ("ucirc", '\u{fb}'),
-    ("ugrave", '\u{f9}'),
-    ("uml", '\u{a8}'),
-    ("upsih", '\u{3d2}'),
-    ("upsilon", '\u{3c5}'),
-    ("uuml", '\u{fc}'),
-    ("weierp", '\u{2118}'),
-    ("xi", '\u{3be}'),
-    ("yacute", '\u{fd}'),
-    ("yen", '\u{a5}'),
-    ("yuml", '\u{ff}'),
-    ("zeta", '\u{3b6}'),
-    ("zwj", '\u{200d}'),
-    ("zwnj", '\u{200c}'),
-];
 
 #[cfg(test)]
 mod tests {
@@ -865,196 +1843,201 @@ mod tests {
         Token::Text(s.to_string())
     }
 
-    #[test]
-    fn plain_text_roundtrips() {
-        assert_eq!(tokenize("hello world"), vec![text("hello world")]);
-    }
-
-    #[test]
-    fn start_tag_with_attributes() {
-        let tokens = tokenize(r#"<p class="intro" data-kind='x' hidden>"#);
-        assert_eq!(
-            tokens,
-            vec![Token::StartTag {
-                name: "p".into(),
-                attrs: vec![
-                    ("class".into(), "intro".into()),
-                    ("data-kind".into(), "x".into()),
-                    ("hidden".into(), String::new()),
-                ],
-                self_closing: false,
-            }]
-        );
-    }
-
-    #[test]
-    fn self_closing_tags() {
-        let expected = vec![Token::StartTag {
-            name: "br".into(),
-            attrs: vec![],
-            self_closing: true,
-        }];
-        assert_eq!(tokenize("<br/>"), expected);
-        assert_eq!(tokenize("<br />"), expected);
-    }
-
-    #[test]
-    fn end_tags_are_lowercased() {
-        assert_eq!(tokenize("</DIV>"), vec![Token::EndTag("div".into())]);
-    }
-
-    #[test]
-    fn attribute_names_are_lowercased_in_ascii_only() {
-        // The selector parser lowercases attribute names the same way,
-        // so `[data-\u{212A}]` finds what the page wrote.
-        assert_eq!(
-            tokenize("<p DATA-\u{212A}=1 ÉTÉ=2>"),
-            vec![Token::StartTag {
-                name: "p".into(),
-                attrs: vec![
-                    ("data-\u{212A}".into(), "1".into()),
-                    ("ÉtÉ".into(), "2".into()),
-                ],
-                self_closing: false,
-            }]
-        );
-    }
-
-    #[test]
-    fn comments_and_doctype() {
-        assert_eq!(tokenize("<!-- hi -->"), vec![Token::Comment(" hi ".into())]);
-        assert_eq!(
-            tokenize("<!DOCTYPE html>"),
-            vec![Token::Doctype("html".into())]
-        );
-    }
-
-    #[test]
-    fn abruptly_closed_comments_do_not_swallow_the_page() {
-        // The spec's abrupt-closing-of-empty-comment and the `--!>` form.
-        for source in ["<!-->after", "<!--->after", "<!-- x --!>after"] {
-            let tokens = tokenize(source);
-            assert_eq!(tokens.len(), 2, "{source:?}: {tokens:?}");
-            assert_eq!(tokens[1], text("after"), "{source:?}");
+    fn start(name: &str, attrs: &[(&str, &str)], self_closing: bool) -> Token {
+        Token::StartTag {
+            name: name.into(),
+            attrs: attrs
+                .iter()
+                .map(|(n, v)| ((*n).to_owned(), (*v).to_owned()))
+                .collect(),
+            self_closing,
         }
-        assert_eq!(tokenize("<!--->"), vec![Token::Comment(String::new())]);
+    }
+
+    /// `source`'s tokens fed in pieces of `size` characters, the text of
+    /// adjacent tokens joined.
+    fn in_pieces(source: &str, size: usize) -> Vec<Token> {
+        let mut tokenizer = Tokenizer::streaming();
+        let chars: Vec<char> = source.chars().collect();
+        let mut tokens: Vec<Token> = Vec::new();
+        let take = |tokenizer: &mut Tokenizer, tokens: &mut Vec<Token>| {
+            while let Some(token) = tokenizer.next_token() {
+                if let Token::StartTag { name, .. } = &token
+                    && let Some(state) = content_state(name)
+                {
+                    tokenizer.set_state(state);
+                }
+                match (tokens.last_mut(), token) {
+                    (Some(Token::Text(last)), Token::Text(more)) => last.push_str(&more),
+                    (_, token) => tokens.push(token),
+                }
+            }
+        };
+        for piece in chars.chunks(size.min(chars.len().max(1))) {
+            tokenizer.feed(&piece.iter().collect::<String>());
+            take(&mut tokenizer, &mut tokens);
+        }
+        tokenizer.end();
+        take(&mut tokenizer, &mut tokens);
+        tokens
     }
 
     #[test]
-    fn question_mark_markup_is_a_dropped_bogus_comment() {
+    fn plain_text_and_a_small_document() {
+        assert_eq!(tokenize("hello world"), vec![text("hello world")]);
         assert_eq!(
-            tokenize(r#"<?xml version="1.0" encoding="UTF-8"?><p>hi"#),
+            tokenize("<h1>Hi</h1>"),
             vec![
-                Token::Comment(r#"xml version="1.0" encoding="UTF-8"?"#.into()),
-                Token::StartTag {
-                    name: "p".into(),
-                    attrs: vec![],
-                    self_closing: false,
-                },
-                text("hi"),
+                start("h1", &[], false),
+                text("Hi"),
+                Token::EndTag("h1".into())
             ]
         );
     }
 
     #[test]
-    fn carriage_returns_are_normalised_to_newlines() {
-        assert_eq!(tokenize("a\r\nb\rc\n"), vec![text("a\nb\nc\n")]);
+    fn start_tags_with_attributes_and_self_closing_ones() {
         assert_eq!(
-            tokenize("<p\r\nclass=x>"),
-            vec![Token::StartTag {
-                name: "p".into(),
-                attrs: vec![("class".into(), "x".into())],
-                self_closing: false,
-            }]
+            tokenize(r#"<p class="intro" data-kind='x' hidden>"#),
+            vec![start(
+                "p",
+                &[("class", "intro"), ("data-kind", "x"), ("hidden", "")],
+                false
+            )]
         );
+        assert_eq!(tokenize("<br/>"), vec![start("br", &[], true)]);
+        assert_eq!(tokenize("<br />"), vec![start("br", &[], true)]);
+        assert_eq!(tokenize("</DIV a=b/>"), vec![Token::EndTag("div".into())]);
     }
 
     #[test]
-    fn stray_lt_is_text() {
-        assert_eq!(tokenize("a < b and 5 < 6"), vec![text("a < b and 5 < 6")]);
-        assert_eq!(tokenize("trailing <"), vec![text("trailing <")]);
-    }
-
-    #[test]
-    fn character_references_decode() {
+    fn names_are_lowercased_in_ascii_only() {
         assert_eq!(
-            tokenize("Fish &amp; Chips &lt;3 &#65;&#x42;&nbsp;!"),
-            vec![text("Fish & Chips <3 AB\u{a0}!")]
-        );
-        // Unknown or malformed references stay literal.
-        assert_eq!(
-            tokenize("&nope; &#; &#x; &"),
-            vec![text("&nope; &#; &#x; &")]
-        );
-    }
-
-    #[test]
-    fn html4_named_references_decode() {
-        assert_eq!(
-            tokenize(
-                "caf&eacute; &rsquo;quoted&rsquo; &euro;5 &bull; &trade; &laquo;x&raquo; &alpha;"
-            ),
-            vec![text(
-                "caf\u{e9} \u{2019}quoted\u{2019} \u{20ac}5 \u{2022} \u{2122} \u{ab}x\u{bb} \u{3b1}"
+            tokenize("<P DATA-\u{212A}=1 \u{c9}T\u{c9}=2>"),
+            vec![start(
+                "p",
+                &[("data-\u{212A}", "1"), ("\u{c9}t\u{c9}", "2")],
+                false
             )]
         );
     }
 
     #[test]
-    fn legacy_references_decode_without_a_semicolon() {
+    fn duplicate_attributes_keep_the_first_and_stay_linear() {
         assert_eq!(
-            tokenize("&amp &lt &gt &copy 2024 &nbsp&reg;&eacute!"),
-            vec![text("& < > \u{a9} 2024 \u{a0}\u{ae}\u{e9}!")]
+            tokenize(r#"<p id="a" id="b">"#),
+            vec![start("p", &[("id", "a")], false)]
         );
-        // Only the legacy names: these need their `;`.
-        assert_eq!(
-            tokenize("&apos &ndash &rsquo &hellip"),
-            vec![text("&apos &ndash &rsquo &hellip")]
-        );
-        // The longest legacy prefix wins, as in the spec's table walk.
-        assert_eq!(tokenize("&copy2024"), vec![text("\u{a9}2024")]);
+        // 60,000 distinct attributes, and a duplicate of the first after
+        // them.
+        let mut source = String::from("<a");
+        for i in 0..60_000 {
+            source.push_str(&format!(" a{i}"));
+        }
+        source.push_str(" a0=again a59999=again>");
+        let tokens = tokenize(&source);
+        let Token::StartTag { attrs, .. } = &tokens[0] else {
+            panic!("a start tag");
+        };
+        assert_eq!(attrs.len(), 60_000);
+        assert_eq!(attrs[0], ("a0".to_owned(), String::new()));
+        assert_eq!(attrs[59_999], ("a59999".to_owned(), String::new()));
     }
 
     #[test]
-    fn numeric_references_decode_without_a_semicolon_and_are_normalised() {
-        assert_eq!(tokenize("&#65 &#x42 &#65;"), vec![text("A B A")]);
-        // windows-1252 for the C1 range: the curly apostrophe of old pages.
+    fn comments_doctypes_and_processing_instructions() {
+        assert_eq!(tokenize("<!-- hi -->"), vec![Token::Comment(" hi ".into())]);
         assert_eq!(
-            tokenize("it&#146;s &#147;q&#148;"),
-            vec![text("it\u{2019}s \u{201c}q\u{201d}")]
+            tokenize("<!DOCTYPE html>"),
+            vec![Token::Doctype(Doctype {
+                name: Some("html".into()),
+                ..Doctype::default()
+            })]
         );
-        // Zero, surrogates, out of range and overflow all become U+FFFD.
         assert_eq!(
-            tokenize("&#0;&#xD800;&#x110000;&#99999999999999999999;"),
-            vec![text("\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}")]
+            tokenize(r#"<!doctype HTML PUBLIC "-//W3C//DTD HTML 4.01//EN" 'x'>"#),
+            vec![Token::Doctype(Doctype {
+                name: Some("html".into()),
+                public_id: Some("-//W3C//DTD HTML 4.01//EN".into()),
+                system_id: Some("x".into()),
+                force_quirks: false,
+            })]
+        );
+        for source in ["<!-->after", "<!--->after", "<!-- x --!>after"] {
+            let tokens = tokenize(source);
+            assert_eq!(tokens.len(), 2, "{source:?}: {tokens:?}");
+            assert_eq!(tokens[1], text("after"), "{source:?}");
+        }
+        // `<?xml ...?>` is a bogus comment; any other target a processing
+        // instruction (HTML section 13.2.5.72).
+        assert_eq!(
+            tokenize(r#"<?xml version="1.0"?><?php echo 1 ?>"#),
+            vec![
+                Token::Comment(r#"?xml version="1.0"?"#.into()),
+                Token::ProcessingInstruction {
+                    target: "php".into(),
+                    data: "echo 1 ".into()
+                },
+            ]
         );
     }
 
     #[test]
-    fn attribute_values_decode_references() {
+    fn carriage_returns_become_line_feeds_across_pieces_too() {
+        assert_eq!(tokenize("a\r\nb\rc\n"), vec![text("a\nb\nc\n")]);
+        let mut tokenizer = Tokenizer::streaming();
+        tokenizer.feed("a\r");
+        tokenizer.feed("\nb\r");
+        tokenizer.feed("\r");
+        tokenizer.end();
+        let mut got = String::new();
+        while let Some(Token::Text(t)) = tokenizer.next_token() {
+            got.push_str(&t);
+        }
+        assert_eq!(got, "a\nb\n\n");
+    }
+
+    #[test]
+    fn stray_less_than_signs_are_text() {
+        assert_eq!(tokenize("a < b and 5 < 6"), vec![text("a < b and 5 < 6")]);
+        assert_eq!(tokenize("trailing <"), vec![text("trailing <")]);
+        assert_eq!(tokenize("a</"), vec![text("a</")]);
+        assert_eq!(tokenize("<!"), vec![Token::Comment(String::new())]);
+        assert_eq!(tokenize("<?"), vec![]);
+    }
+
+    #[test]
+    fn character_references_by_the_full_table() {
         assert_eq!(
-            tokenize(r#"<a title="A &amp; B">"#),
-            vec![Token::StartTag {
-                name: "a".into(),
-                attrs: vec![("title".into(), "A & B".into())],
-                self_closing: false,
-            }]
+            tokenize("Fish &amp; Chips &lt;3 &#65;&#x42;&nbsp;! &NotNestedGreaterGreater; &fjlig;"),
+            vec![text("Fish & Chips <3 AB\u{a0}! \u{2aa2}\u{338} fj")]
+        );
+        assert_eq!(
+            tokenize("&nope; &#; &#x; &"),
+            vec![text("&nope; &#; &#x; &")]
+        );
+        // The legacy names without `;`, the longest prefix winning.
+        assert_eq!(
+            tokenize("&amp &copy2024 &notit; &notin;"),
+            vec![text("& \u{a9}2024 \u{ac}it; \u{2209}")]
+        );
+        // Numeric: C1 as Windows-1252, the invalid as U+FFFD.
+        assert_eq!(
+            tokenize("&#65 it&#146;s &#0;&#xD800;&#x110000;&#99999999999999999999;"),
+            vec![text("A it\u{2019}s \u{fffd}\u{fffd}\u{fffd}\u{fffd}")]
         );
     }
 
     #[test]
-    fn attribute_values_keep_query_strings_intact() {
-        // The spec's exception: a legacy name without `;` followed by
-        // `=` or an alphanumeric is not a reference inside an attribute.
+    fn an_attribute_keeps_a_query_string() {
         assert_eq!(
             tokenize(r#"<a href="?x=1&amp=2&copy=3&notit=4&lt5&amp;y">"#),
-            vec![Token::StartTag {
-                name: "a".into(),
-                attrs: vec![("href".into(), "?x=1&amp=2&copy=3&notit=4&lt5&y".into())],
-                self_closing: false,
-            }]
+            vec![start(
+                "a",
+                &[("href", "?x=1&amp=2&copy=3&notit=4&lt5&y")],
+                false
+            )]
         );
-        // In text the same input does decode.
         assert_eq!(
             tokenize("?x=1&amp=2&copy=3&notit=4"),
             vec![text("?x=1&=2\u{a9}=3\u{ac}it=4")]
@@ -1062,70 +2045,89 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_attributes_keep_first() {
+    fn script_data_escapes_keep_a_script_end_tag_inside_a_comment() {
+        // `</script>` inside `<!--<script>` ... `-->` is the script's
+        // text: the double-escaped state.
+        // After `-->` the escape is over: a `<script>` is text again.
         assert_eq!(
-            tokenize(r#"<p id="a" id="b">"#),
-            vec![Token::StartTag {
-                name: "p".into(),
-                attrs: vec![("id".into(), "a".into())],
-                self_closing: false,
-            }]
-        );
-    }
-
-    #[test]
-    fn a_tag_with_very_many_attributes_tokenizes_in_linear_time() {
-        // 60k distinct attributes on one tag: the duplicate check used to
-        // scan the attribute list for each, which took tens of seconds.
-        let mut source = String::from("<a");
-        for i in 0..60_000 {
-            source.push_str(&format!(" a{i}"));
-        }
-        source.push('>');
-        let tokens = tokenize(&source);
-        let Token::StartTag { attrs, .. } = &tokens[0] else {
-            panic!("expected a start tag");
-        };
-        assert_eq!(attrs.len(), 60_000);
-    }
-
-    #[test]
-    fn eof_edge_cases() {
-        assert_eq!(tokenize(""), Vec::<Token>::new());
-        assert_eq!(tokenize("<"), vec![text("<")]);
-        // The spec's eof-before-tag-name rule: `</` at EOF is text.
-        assert_eq!(tokenize("</"), vec![text("</")]);
-        assert_eq!(tokenize("a</"), vec![text("a"), text("</")]);
-        assert_eq!(tokenize("<!"), vec![Token::Comment(String::new())]);
-        assert_eq!(tokenize("<!--"), vec![Token::Comment(String::new())]);
-        assert_eq!(tokenize("<?"), vec![Token::Comment(String::new())]);
-    }
-
-    #[test]
-    fn named_reference_table_is_sorted_for_the_binary_search() {
-        for pair in NAMED_REFERENCES.windows(2) {
-            assert!(
-                pair[0].0 < pair[1].0,
-                "{} must sort before {}",
-                pair[0].0,
-                pair[1].0
-            );
-        }
-    }
-
-    #[test]
-    fn token_stream_of_a_small_document() {
-        assert_eq!(
-            tokenize("<h1>Hi</h1>"),
+            tokenize("<script><!--a--><script></script>b"),
             vec![
-                Token::StartTag {
-                    name: "h1".into(),
-                    attrs: vec![],
-                    self_closing: false,
-                },
-                text("Hi"),
-                Token::EndTag("h1".into()),
+                start("script", &[], false),
+                text("<!--a--><script>"),
+                Token::EndTag("script".into()),
+                text("b"),
             ]
         );
+        let source = "<script><!--<script>a</script>b--></script>after";
+        assert_eq!(
+            tokenize(source),
+            vec![
+                start("script", &[], false),
+                text("<!--<script>a</script>b-->"),
+                Token::EndTag("script".into()),
+                text("after"),
+            ]
+        );
+        assert_eq!(
+            tokenize("<style>a</p></style>"),
+            vec![
+                start("style", &[], false),
+                text("a</p>"),
+                Token::EndTag("style".into())
+            ]
+        );
+        assert_eq!(
+            tokenize("<title>&amp;<b></title>"),
+            vec![
+                start("title", &[], false),
+                text("&<b>"),
+                Token::EndTag("title".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn the_tokens_are_the_same_whatever_the_pieces() {
+        let source = concat!(
+            "<!DOCTYPE html PUBLIC \"a\" \"b\"><html lang=en><head>\r\n",
+            "<title>T &amp; &notin; &#x41</title><script><!--<script>x</script>--></script>",
+            "<style>p{}</style></head><body><p class='a' id=b>caf&eacute; &copy2024 <!-- c --->",
+            "<?php x ?><textarea>&lt;</textarea><![CDATA[x]]><a href=\"?a=1&amp=2\">l</a>",
+            "</body></html>"
+        );
+        let whole = in_pieces(source, usize::MAX);
+        for size in [1, 2, 3, 5, 7, 13] {
+            assert_eq!(in_pieces(source, size), whole, "pieces of {size}");
+        }
+    }
+
+    #[test]
+    fn lines_are_counted() {
+        let mut tokenizer = Tokenizer::new("a\n<p\nid=x>\r\n<!--\n-->b");
+        assert_eq!(tokenizer.line(), 1);
+        // The text comes out once the tag after it is read.
+        assert_eq!(
+            tokenizer.next_token(),
+            Some(Token::Text(
+                "a
+"
+                .into()
+            ))
+        );
+        assert!(matches!(
+            tokenizer.next_token(),
+            Some(Token::StartTag { .. })
+        ));
+        assert_eq!(tokenizer.line(), 3, "after the start tag");
+        while tokenizer.next_token().is_some() {}
+        assert_eq!(tokenizer.line(), 5);
+    }
+
+    #[test]
+    fn the_named_reference_table_is_sorted() {
+        for pair in NAMED_REFERENCES.windows(2) {
+            assert!(pair[0].0 < pair[1].0, "{} before {}", pair[0].0, pair[1].0);
+        }
+        assert_eq!(NAMED_REFERENCES.len(), 2_231);
     }
 }

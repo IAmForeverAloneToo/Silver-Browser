@@ -50,7 +50,7 @@
 //! is honoured, as the spec does there and nowhere else in HTML.
 
 use crate::encoding_sniffing::extract_from_meta_content;
-use crate::tokenizer::Token;
+use crate::tokenizer::{TextState, Token, content_state};
 use dom::{Element, Node};
 use encoding::Encoding;
 
@@ -185,11 +185,14 @@ impl TreeBuilder {
         self.encoding_declaration
     }
 
-    /// Feeds one token into the builder.
-    pub fn process(&mut self, token: Token) {
+    /// Feeds one token into the builder; the state the tokenizer is to
+    /// read what follows in, when the token opened an element whose
+    /// content is text (section 13.2.6.4.7's generic raw text and RCDATA
+    /// element parsing, and `script` and `plaintext`), in HTML content.
+    pub fn process(&mut self, token: Token) -> Option<TextState> {
         let skip_newline = std::mem::take(&mut self.skip_leading_newline);
         match token {
-            Token::Doctype(_) | Token::Comment(_) => {
+            Token::Doctype(_) | Token::Comment(_) | Token::ProcessingInstruction { .. } => {
                 // Accepted by the tokenizer, not represented in the DOM yet.
                 // A comment between `<pre>` and its newline does not
                 // cancel the newline rule (the spec checks the next
@@ -217,7 +220,7 @@ impl TreeBuilder {
                 name,
                 attrs,
                 self_closing,
-            } => self.start_tag(name, attrs, self_closing),
+            } => return self.start_tag(name, attrs, self_closing),
             Token::EndTag(name) => match name.as_str() {
                 // The skeleton stays open to the end: content after
                 // `</body>` or `</html>` is still body content.
@@ -233,12 +236,18 @@ impl TreeBuilder {
                 _ => self.close_through(&name, &[]),
             },
         }
+        None
     }
 
     /// Places a start tag: the skeleton elements by name, head-only
     /// elements in the head while it is still open, everything else in
     /// the body, implied as needed.
-    fn start_tag(&mut self, name: String, attrs: Vec<(String, String)>, self_closing: bool) {
+    fn start_tag(
+        &mut self,
+        name: String,
+        attrs: Vec<(String, String)>,
+        self_closing: bool,
+    ) -> Option<TextState> {
         if name == "meta" && self.encoding_declaration.is_none() {
             self.encoding_declaration = meta_encoding_declaration(&attrs);
         }
@@ -250,23 +259,23 @@ impl TreeBuilder {
                 } else {
                     merge_attrs(self.open.first_mut(), attrs);
                 }
-                return;
+                return None;
             }
             "head" => {
                 match self.phase {
                     Phase::Initial => self.open_skeleton("html", Vec::new()),
                     Phase::BeforeHead => {}
-                    _ => return, // a second head: ignored
+                    _ => return None, // a second head: ignored
                 }
                 self.open_skeleton("head", attrs);
                 self.phase = Phase::InHead;
-                return;
+                return None;
             }
             "body" => {
                 match self.phase {
                     Phase::InBody => {
                         merge_attrs(self.open.iter_mut().find(|e| e.tag == "body"), attrs);
-                        return;
+                        return None;
                     }
                     Phase::Initial => {
                         self.open_skeleton("html", Vec::new());
@@ -278,7 +287,7 @@ impl TreeBuilder {
                 }
                 self.open_skeleton("body", attrs);
                 self.phase = Phase::InBody;
-                return;
+                return None;
             }
             _ => {}
         }
@@ -313,16 +322,23 @@ impl TreeBuilder {
         // spec ignores it with a parse error): `<div/>` is an open
         // `<div>`. It is honoured in foreign content, where `<path/>`
         // really is empty.
-        let closes_itself = is_void || (self_closing && self.in_foreign_content());
+        let foreign = self.in_foreign_content();
+        let closes_itself = is_void || (self_closing && foreign);
         if closes_itself {
             self.attach(Node::Element(el));
-        } else {
-            self.pop_at_the_cap();
-            if SKIPS_LEADING_NEWLINE.contains(&el.tag.as_str()) {
-                self.skip_leading_newline = true;
-            }
-            self.open.push(el);
+            return None;
         }
+        self.pop_at_the_cap();
+        if SKIPS_LEADING_NEWLINE.contains(&el.tag.as_str()) {
+            self.skip_leading_newline = true;
+        }
+        let state = if foreign {
+            None
+        } else {
+            content_state(&el.tag)
+        };
+        self.open.push(el);
+        state
     }
 
     /// Opens one of the skeleton elements (`html`, `head`, `body`).
@@ -556,7 +572,9 @@ mod tests {
         let mut tokenizer = Tokenizer::new(source);
         let mut builder = TreeBuilder::new();
         while let Some(token) = tokenizer.next_token() {
-            builder.process(token);
+            if let Some(state) = builder.process(token) {
+                tokenizer.set_state(state);
+            }
         }
         builder.encoding_declaration().map(Encoding::name)
     }
@@ -594,7 +612,9 @@ mod tests {
         let mut tokenizer = Tokenizer::new(source);
         let mut builder = TreeBuilder::new();
         while let Some(token) = tokenizer.next_token() {
-            builder.process(token);
+            if let Some(state) = builder.process(token) {
+                tokenizer.set_state(state);
+            }
         }
         builder.finish()
     }
@@ -954,6 +974,16 @@ mod tests {
         let (_, head, body) = skeleton(&root);
         assert!(head.children.is_empty());
         assert_eq!(tags(&body.children), vec!["p", "p"]);
+    }
+
+    #[test]
+    fn an_element_in_svg_has_its_content_parsed_as_markup() {
+        // Foreign content's `style` is not raw text (section 13.2.6.5).
+        let root = build("<svg><style><b>x</b></style></svg>");
+        let (_, _, body) = skeleton(&root);
+        let svg = expect_element(&body.children, 0);
+        let style = expect_element(&svg.children, 0);
+        assert_eq!(tags(&style.children), vec!["b"]);
     }
 
     #[test]

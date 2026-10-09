@@ -1,7 +1,9 @@
 //! HTML parsing: source text or bytes in, DOM tree out.
 //!
-//! [`parse_document`] runs the [`tokenizer`] (a pragmatic WHATWG subset)
-//! into the [`tree_builder`], producing a `dom::Node` tree.
+//! [`parse_document`] runs the [`tokenizer`] (HTML section 13.2.5's
+//! state machine) into the [`tree_builder`], producing a `dom::Node`
+//! tree; the builder says which state each element's content is
+//! tokenized in.
 //! [`parse_document_from_bytes`] first finds the bytes' character
 //! encoding as HTML does ([`encoding_sniffing`]). HTML parsing
 //! is defined to always recover, so the parse never panics and currently
@@ -11,11 +13,12 @@
 //! `engine`'s job.
 
 pub mod encoding_sniffing;
+mod named_references;
 pub mod tokenizer;
 pub mod tree_builder;
 
 pub use encoding_sniffing::Confidence;
-pub use tokenizer::{Token, Tokenizer, tokenize};
+pub use tokenizer::{Doctype, TextState, Token, Tokenizer, content_state, tokenize};
 pub use tree_builder::TreeBuilder;
 
 use dom::Node;
@@ -48,7 +51,9 @@ pub fn parse_document(input: &str) -> Result<Node, ParseError> {
     let mut tokenizer = Tokenizer::new(input);
     let mut builder = TreeBuilder::new();
     while let Some(token) = tokenizer.next_token() {
-        builder.process(token);
+        if let Some(state) = builder.process(token) {
+            tokenizer.set_state(state);
+        }
     }
     Ok(builder.finish())
 }
@@ -85,7 +90,9 @@ pub fn parse_document_from_bytes(bytes: &[u8], transport: Option<Encoding>) -> D
         let mut builder = TreeBuilder::new();
         let mut again = None;
         while let Some(token) = tokenizer.next_token() {
-            builder.process(token);
+            if let Some(state) = builder.process(token) {
+                tokenizer.set_state(state);
+            }
             if confidence == Confidence::Tentative
                 && let Some(declared) = builder.encoding_declaration()
             {
