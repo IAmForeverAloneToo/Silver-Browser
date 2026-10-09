@@ -77,6 +77,10 @@ name = "animation"
 harness = false
 
 [[bench]]
+name = "scripts"
+harness = false
+
+[[bench]]
 name = "images"
 harness = false
 

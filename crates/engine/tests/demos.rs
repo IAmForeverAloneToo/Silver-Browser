@@ -1,5 +1,5 @@
-//! M22.6's and M23.6's acceptance, as far as it holds whatever the
-//! machine: what the frames of the milestones' demos (`tests/demos/`)
+//! M22.6's, M23.6's and M24.7's acceptance, as far as it holds whatever
+//! the machine: what the frames of the milestones' demos (`tests/demos/`)
 //! do; for M23, the photo grid's images drawn and its frames, scrolled
 //! and turning, laying nothing out, `benches/images.rs` timing them. The
 //! spinner's frames lay nothing out and composite its layer without
@@ -11,7 +11,10 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use engine::{ColorScheme, Engine, FRAME_BUDGET, FrameTime, LoadState, Preferences, Url};
+use engine::{
+    ColorScheme, ConsoleLevel, Engine, FRAME_BUDGET, FrameTime, LoadState, Preferences,
+    ScriptState, Url,
+};
 use paint::GroupKey;
 
 const WIDTH: u32 = 1280;
@@ -189,4 +192,55 @@ fn the_photo_grids_images_are_drawn_and_its_frames_lay_nothing_out() {
         draw(&mut engine, i);
     }
     assert_eq!(engine.layout_runs(), runs, "no frame laid anything out");
+}
+
+#[test]
+fn the_scripts_demo_logs_titles_itself_and_notes_its_error() {
+    // M24.7's: an inline script's console.log("hello") and
+    // document.title = "x", a script that throws, one that runs after.
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/demos/scripts.html");
+    let url = Url::from_file_path(&path).expect("a path");
+    for scripting in [true, false] {
+        let mut engine = engine();
+        engine.set_scripting(scripting);
+        let (wake, woken) = std::sync::mpsc::channel();
+        engine.set_waker(move || {
+            let _ = wake.send(());
+        });
+        engine.navigate(url.clone());
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while engine.load_state() != &LoadState::Loaded {
+            let left = deadline
+                .checked_duration_since(Instant::now())
+                .expect("the page loads in time");
+            let _ = woken.recv_timeout(left);
+            engine.poll_network();
+        }
+        let console: Vec<(ConsoleLevel, String)> = engine
+            .take_console()
+            .into_iter()
+            .map(|entry| (entry.level, entry.text))
+            .collect();
+        if !scripting {
+            // Off, as by default: the page as it was written.
+            assert_eq!(engine.title(), "Before");
+            assert!(console.is_empty());
+            assert_eq!(engine.scripts(), ScriptState::Off);
+            continue;
+        }
+        assert_eq!(engine.title(), "x");
+        assert_eq!(
+            console,
+            [
+                (ConsoleLevel::Log, "hello".to_owned()),
+                (
+                    ConsoleLevel::Error,
+                    format!("Uncaught ReferenceError: missing is not defined at {url}:25:3")
+                ),
+                (ConsoleLevel::Info, "after the error 2".to_owned()),
+            ]
+        );
+        assert_eq!(engine.scripts(), ScriptState::Running { errors: 1 });
+        assert!(!draw(&mut engine, 0).is_empty());
+    }
 }

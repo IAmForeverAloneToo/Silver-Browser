@@ -70,9 +70,19 @@ struct Window {
 
 impl Window {
     fn new(start: Option<Url>, platform: Platform) -> Window {
+        Window::running(start, platform, false)
+    }
+
+    /// A window whose pages' scripts run, as `--enable-scripts` asks.
+    fn with_scripts(start: Option<Url>) -> Window {
+        Window::running(start, Platform::Other, true)
+    }
+
+    fn running(start: Option<Url>, platform: Platform, scripts: bool) -> Window {
         let fonts = text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
             .expect("the bundled font parses");
         let mut engine = Engine::with_fonts(fonts);
+        engine.set_scripting(scripts);
         let (wake, woken) = channel();
         engine.set_waker(move || {
             let _ = wake.send(());
@@ -695,4 +705,44 @@ fn a_console_entry_prints_with_its_level() {
     assert_eq!(line(ConsoleLevel::Warn), "console: warn x 1");
     assert_eq!(line(ConsoleLevel::Error), "console: error x 1");
     assert_eq!(line(ConsoleLevel::Debug), "console: debug x 1");
+}
+
+#[test]
+fn a_pages_scripts_title_the_window_and_a_realm_out_of_memory_says_so() {
+    let server = serve(|path| match path {
+        "/" => html(
+            "<title>Before</title><script>console.log('hello'); document.title = 'x'</script>\
+             <script>missing()</script><p>page",
+        ),
+        "/full" => html(
+            "<script>var kept = []; for (let i = 0; ; i++) kept.push('x'.repeat(1 << 20) + i);</script>\
+             <p>still here",
+        ),
+        _ => None,
+    });
+    // M24.7's acceptance, in the window: the title the script set, the
+    // error noted.
+    let mut window = Window::with_scripts(Some(server.url("/")));
+    window.settle();
+    assert!(
+        window.session.title().starts_with("x "),
+        "{}",
+        window.session.title()
+    );
+    assert_eq!(
+        window.session.engine().scripts(),
+        engine::ScriptState::Running { errors: 1 }
+    );
+    // A realm that runs out of memory, at the default limits: the page
+    // stays as drawn, and the bubble says why its scripts stopped.
+    let mut window = Window::with_scripts(Some(server.url("/full")));
+    window.settle();
+    assert!(matches!(
+        window.session.engine().scripts(),
+        engine::ScriptState::Stopped { .. }
+    ));
+    assert_eq!(
+        window.session.bubble_text(),
+        Some("Scripts stopped on this page: out of memory")
+    );
 }
