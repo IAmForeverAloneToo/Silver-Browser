@@ -451,13 +451,15 @@ fn a_style_sheet_on_its_way_holds_the_scripts_after_it() {
         ("<link rel=stylesheet media=print href=slow.css>", false),
     ] {
         // The async script runs as it comes; the inline one waits for the
-        // sheet, unless the sheet is for another medium.
+        // sheet, unless the sheet is for another medium. The sheet comes
+        // well after the script: a test thread kept waiting past both
+        // would take them in one poll, the sheet first.
         let page = format!(
             "{sheet}<script async src=soon.js></script><script>console.log('inline')</script>"
         );
         let server = serve(move |path| match path {
             "/page.html" => Some(html(&page)),
-            "/slow.css" => Some(later("text/css", b"p {}", Duration::from_millis(600))),
+            "/slow.css" => Some(later("text/css", b"p {}", Duration::from_millis(1500))),
             "/soon.js" => Some(later(
                 "text/javascript",
                 b"console.log('soon')",

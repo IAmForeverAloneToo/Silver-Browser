@@ -22,7 +22,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use ab_glyph::{Font as _, Glyph, GlyphId, Point, PxScale, ScaleFont as _};
 // Re-exported: `Script` is already part of this crate's own public API
@@ -730,6 +730,41 @@ fn fallback_families_for(script: Script) -> Option<&'static [&'static str]> {
 pub struct FontCollection {
     primary: FontStore,
     fallbacks: HashMap<Script, FontStore>,
+    /// The widths [`FontCollection::measure`] has given, shared by the
+    /// collection's clones.
+    measures: Arc<Mutex<Measures>>,
+}
+
+/// The most widths a collection keeps: a few megabytes of words. Past
+/// it they are dropped and measured again as they are asked for.
+pub const MAX_MEASURES: usize = 1 << 16;
+
+/// [`FontCollection::measure`]'s widths by font size, then text (M35.8,
+/// measured at M25.3: a word shaped again is about 25us, and a layout
+/// asks for every word it lays out, the same words at every pass).
+#[derive(Default)]
+struct Measures {
+    by_size: HashMap<u32, HashMap<Box<str>, f32>>,
+    count: usize,
+}
+
+impl Measures {
+    fn get(&self, size: u32, text: &str) -> Option<f32> {
+        self.by_size.get(&size)?.get(text).copied()
+    }
+
+    /// Keeps `width`, all dropped first when there are as many as are
+    /// kept.
+    fn keep(&mut self, size: u32, text: &str, width: f32) {
+        if self.count >= MAX_MEASURES {
+            *self = Measures::default();
+        }
+        self.count += 1;
+        self.by_size
+            .entry(size)
+            .or_default()
+            .insert(text.into(), width);
+    }
 }
 
 impl FontCollection {
@@ -741,6 +776,7 @@ impl FontCollection {
         Ok(FontCollection {
             primary: FontStore::from_bytes(data, index)?,
             fallbacks: HashMap::new(),
+            measures: Arc::default(),
         })
     }
 
@@ -764,7 +800,11 @@ impl FontCollection {
                 fallbacks.insert(script, store);
             }
         }
-        Ok(FontCollection { primary, fallbacks })
+        Ok(FontCollection {
+            primary,
+            fallbacks,
+            measures: Arc::default(),
+        })
     }
 
     /// The font every script used before M8.1, and still the font for
@@ -786,14 +826,29 @@ impl FontCollection {
     /// [`FontStore::measure`], and what [`layout`][crate] should call
     /// instead of it so a CJK word's measured width (and therefore
     /// line-wrapping) reflects the font it'll actually be shown in.
+    /// Each width is kept, up to [`MAX_MEASURES`] of them, and given again
+    /// without shaping when the same text is asked for at the same size.
     pub fn measure(&self, text: &str, font_size_px: f32) -> f32 {
-        itemize(text)
+        let size = font_size_px.to_bits();
+        let kept = self
+            .measures
+            .lock()
+            .ok()
+            .and_then(|measures| measures.get(size, text));
+        if let Some(width) = kept {
+            return width;
+        }
+        let width = itemize(text)
             .iter()
             .map(|(range, script)| {
                 self.font_for(*script)
                     .measure(&text[range.clone()], font_size_px)
             })
-            .sum()
+            .sum();
+        if let Ok(mut measures) = self.measures.lock() {
+            measures.keep(size, text, width);
+        }
+        width
     }
 
     /// The primary font's x-height at `font_size_px` (see
@@ -1013,6 +1068,44 @@ mod tests {
 
     fn test_fonts() -> FontCollection {
         FontCollection::from_bytes(TEST_FONT.to_vec(), 0).expect("the bundled test font parses")
+    }
+
+    #[test]
+    fn a_width_kept_is_the_one_measured_for_its_text_and_size() {
+        let fonts = test_fonts();
+        let store = test_store();
+        let words = ["Row", "cell", "Row,", "", "\u{5b57}x", "fi"];
+        for _ in 0..2 {
+            for word in words {
+                for size in [16.0, 32.5] {
+                    assert_eq!(fonts.measure(word, size), store.measure(word, size));
+                }
+            }
+        }
+        // Each text at each size once, shared by the collection's clones.
+        let clone = fonts.clone();
+        assert_eq!(clone.measure("Row", 16.0), store.measure("Row", 16.0));
+        let measures = fonts.measures.lock().expect("not poisoned");
+        assert_eq!(measures.count, words.len() * 2);
+        assert_eq!(
+            measures.get(16.0f32.to_bits(), "cell"),
+            Some(store.measure("cell", 16.0))
+        );
+        assert_eq!(measures.get(15.0f32.to_bits(), "cell"), None);
+    }
+
+    #[test]
+    fn the_widths_kept_are_dropped_when_there_are_as_many_as_are_kept() {
+        let mut measures = Measures::default();
+        for i in 0..MAX_MEASURES {
+            measures.keep(1, &i.to_string(), 1.0);
+        }
+        assert_eq!(measures.count, MAX_MEASURES);
+        assert_eq!(measures.get(1, "0"), Some(1.0));
+        measures.keep(2, "next", 2.0);
+        assert_eq!(measures.count, 1);
+        assert_eq!(measures.get(1, "0"), None);
+        assert_eq!(measures.get(2, "next"), Some(2.0));
     }
 
     /// A glyph is drawn at the size its advance is measured at, the em:

@@ -84,6 +84,10 @@ harness = false
 name = "images"
 harness = false
 
+[[bench]]
+name = "dom"
+harness = false
+
 [dev-dependencies]
 # The scripted server the loader's tests fetch from.
 net = { workspace = true, features = ["test-server"] }
