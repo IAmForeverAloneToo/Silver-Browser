@@ -1584,8 +1584,29 @@ Per css-grid-1 (level 2 subgrid included):
        → new-tab-less v1 (tabs are M37 — queue a note). (M15 follows a
        click on a link from the shell, `docs/design/navigation.md`; this
        item makes the click an event a listener can cancel.)
-- [ ] M26.7 Acceptance: interactive todo-list page (add/remove/style
-       entries) works end-to-end.
+- [ ] M26.7 Form controls v1: what each control shows, a button's label,
+       an `input`'s value or placeholder, a checkbox's and a radio's
+       mark, a `select`'s chosen option and a `textarea`'s text (M10
+       draws them as empty boxes); and how each is edited: focus,
+       typing with a caret and a selection in text fields and
+       textareas, checkboxes and radios toggled, an option chosen;
+       each control's value, dirty flag and checkedness as HTML keeps
+       them. Found at M24, on Google's page without scripts.
+- [ ] M26.8 Form submission (HTML 4.10.21): a submit button, or Enter in
+       a text field (implicit submission), submits its form; the form
+       data set built from its controls, encoded by `enctype`
+       (`application/x-www-form-urlencoded`, `multipart/form-data`,
+       `text/plain`) and sent by `method` to `action`, a GET as the
+       URL's query and a POST as the request's body, through a
+       navigation (net has had `Method::Post` and a request body since
+       M14); `formaction`, `formmethod`, `formenctype` and
+       `formtarget` on the button; constraint validation v1
+       (`required`, `pattern`, `min`, `max`, `minlength`,
+       `maxlength`), skipped under `novalidate`. Found at M24: no
+       milestone held it.
+- [ ] M26.9 Acceptance: interactive todo-list page (add/remove/style
+       entries) works end-to-end; and a search form, a text field and
+       a button, typed into and submitted, its results page loaded.
 
 ---
 
@@ -2017,6 +2038,19 @@ Deferred from the milestones above, each with what it waits on:
        parenting, templates and foreign content beyond self-closing
        elements; comments and doctypes in the tree ("in head noscript" is
        G12's). Found at M24.
+- [ ] G45 HTML's presentational attributes and elements (HTML section
+       15, Rendering), as hints the cascade takes below the author's
+       rules, as M21.6 does for lists and M23 for images: `<center>` and
+       `align` on blocks, headings, tables and cells, with
+       `text-align`'s `-webkit-center` and `match-parent` that they
+       need; `bgcolor`, `background`, `text`, `link`, `vlink` and
+       `alink` on `body`; the table attributes `border`, `cellpadding`,
+       `cellspacing`, `width`, `height`, `bgcolor`, `nowrap` and
+       `valign` (a gap stated at M12); `hspace`, `vspace` and `border`
+       on images; and `<font>`'s `color`, `face` and `size`. Old pages
+       and pages served to browsers without scripts lean on them:
+       Google's basic page is laid out uncentred without them. Found at
+       M24.
 
 ---
 
