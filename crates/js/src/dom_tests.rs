@@ -294,4 +294,10 @@ fn the_hosts_work_is_charged_to_the_budget() {
     // The next run has a budget of its own.
     host.tree.work_per_call = 0;
     assert!(realm.run(&script(source), &mut host).is_ok());
+    // A run that spent its budget is stopped, though the script caught the
+    // refusal and ended before the interrupt handler was asked again.
+    host.tree.work_per_call = 10 * WORK_PER_STEP;
+    let caught = "try { for (;;) document.documentElement.firstChild; } catch (e) {} 'done'";
+    let error = realm.run(&script(caught), &mut host).expect_err("stopped");
+    assert_eq!(error.kind, ErrorKind::Budget);
 }

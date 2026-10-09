@@ -243,6 +243,13 @@ impl Tag {
 pub struct Tokenizer {
     input: Vec<char>,
     pos: usize,
+    /// The input stream's insertion points (HTML section 13.2.3.5), the
+    /// innermost last: positions in `input` where `document.write` puts
+    /// its text, one a script nesting level (M25).
+    points: Vec<usize>,
+    /// Where the input ends for now while a write's text is parsed: the
+    /// innermost insertion point, past which nothing is read.
+    bound: Option<usize>,
     /// The last piece fed ended with a carriage return: a line feed
     /// opening the next is its pair.
     after_cr: bool,
@@ -275,6 +282,8 @@ impl Default for Tokenizer {
         Tokenizer {
             input: Vec::new(),
             pos: 0,
+            points: Vec::new(),
+            bound: None,
             after_cr: false,
             ended: false,
             finished: false,
@@ -319,6 +328,9 @@ impl Tokenizer {
         // buffer holds what is left to read.
         if self.pos > 1 << 16 && self.pos * 2 > self.input.len() {
             self.input.drain(..self.pos);
+            for point in self.points.iter_mut().chain(&mut self.bound) {
+                *point = point.saturating_sub(self.pos);
+            }
             self.pos = 0;
         }
         self.input.reserve(text.len());
@@ -335,6 +347,73 @@ impl Tokenizer {
     /// Marks the end of the input.
     pub fn end(&mut self) {
         self.ended = true;
+    }
+
+    /// Defines an insertion point just before the next input character,
+    /// the innermost (HTML: the parser stops after a script's end tag).
+    pub fn push_insertion_point(&mut self) {
+        self.points.push(self.pos);
+    }
+
+    /// Takes the innermost insertion point away, the one before it
+    /// innermost again.
+    pub fn pop_insertion_point(&mut self) {
+        self.points.pop();
+    }
+
+    /// Whether an insertion point is defined.
+    pub fn has_insertion_point(&self) -> bool {
+        !self.points.is_empty()
+    }
+
+    /// Puts `text`, preprocessed, into the input just before the
+    /// innermost insertion point, which then stands after it, as do the
+    /// ones around it (`document.write`). Nothing without one.
+    pub fn insert(&mut self, text: &str) {
+        let Some(&at) = self.points.last() else {
+            return;
+        };
+        let mut chars = Vec::with_capacity(text.len());
+        let mut after_cr = false;
+        for c in text.chars() {
+            match c {
+                '\n' if after_cr => {}
+                '\r' => chars.push('\n'),
+                c => chars.push(c),
+            }
+            after_cr = c == '\r';
+        }
+        let n = chars.len();
+        self.input.splice(at..at, chars);
+        for point in &mut self.points {
+            if *point >= at {
+                *point += n;
+            }
+        }
+    }
+
+    /// Reads no further than the innermost insertion point while `on`,
+    /// as a write's text is parsed: the input ends there for now, and
+    /// more is to come.
+    pub fn bound_at_insertion_point(&mut self, on: bool) {
+        self.bound = if on {
+            self.points.last().copied()
+        } else {
+            None
+        };
+    }
+
+    /// The input as far as it may be read now.
+    fn available(&self) -> &[char] {
+        match self.bound {
+            Some(bound) => &self.input[..bound.min(self.input.len())],
+            None => &self.input,
+        }
+    }
+
+    /// Whether the end of what is read now is the end of the input.
+    fn at_the_end(&self) -> bool {
+        self.ended && self.bound.is_none()
     }
 
     /// Whether the end of the input has been tokenized.
@@ -392,7 +471,7 @@ impl Tokenizer {
     }
 
     fn next(&mut self) -> Next {
-        match self.input.get(self.pos) {
+        match self.available().get(self.pos) {
             Some(&c) => {
                 self.pos += 1;
                 if c == '\n' {
@@ -400,7 +479,7 @@ impl Tokenizer {
                 }
                 Next::Char(c)
             }
-            None if self.ended => Next::Eof,
+            None if self.at_the_end() => Next::Eof,
             None => Next::Wait,
         }
     }
@@ -419,7 +498,9 @@ impl Tokenizer {
     /// returning them.
     fn run(&mut self, ordinary: impl Fn(char) -> bool) -> Option<std::ops::Range<usize>> {
         let start = self.pos;
-        while let Some(&c) = self.input.get(self.pos) {
+        let end = self.available().len();
+        while self.pos < end {
+            let c = self.input[self.pos];
             if !ordinary(c) {
                 break;
             }
@@ -520,7 +601,7 @@ impl Tokenizer {
     /// folded if `fold`: `Some` once it is known, `None` while the input
     /// so far is too short to tell.
     fn starts_with(&self, pattern: &str, fold: bool) -> Option<bool> {
-        let rest = &self.input[self.pos..];
+        let rest = &self.available()[self.pos..];
         let same = |a: char, b: char| {
             if fold {
                 a.eq_ignore_ascii_case(&b)
@@ -533,7 +614,7 @@ impl Tokenizer {
             match rest.get(i) {
                 Some(&c) if same(c, p) => length += 1,
                 Some(_) => return Some(false),
-                None if self.ended => return Some(false),
+                None if self.at_the_end() => return Some(false),
                 None => return None,
             }
         }
@@ -1297,8 +1378,8 @@ impl Tokenizer {
             S::AfterDoctypeName => {
                 // The keywords are looked for from the current character,
                 // so it is looked at before it is consumed.
-                match self.input.get(self.pos) {
-                    None if !self.ended => return Flow::Wait,
+                match self.available().get(self.pos) {
+                    None if !self.at_the_end() => return Flow::Wait,
                     None => {
                         self.doctype.force_quirks = true;
                         self.emit_doctype();
@@ -1721,7 +1802,7 @@ impl Tokenizer {
     /// The named character reference state (section 13.2.5.78): the
     /// longest name in the table that the input starts with.
     fn named_reference(&mut self) -> Flow {
-        let rest = &self.input[self.pos..];
+        let rest = &self.available()[self.pos..];
         // The candidates: a run of ASCII alphanumerics, and the
         // semicolon after it.
         let mut length = rest
@@ -1729,7 +1810,7 @@ impl Tokenizer {
             .take(LONGEST_NAME)
             .take_while(|c| c.is_ascii_alphanumeric())
             .count();
-        let complete = length == LONGEST_NAME || length < rest.len() || self.ended;
+        let complete = length == LONGEST_NAME || length < rest.len() || self.at_the_end();
         if !complete {
             // A longer name may come.
             return self.restart_reference();
@@ -1752,7 +1833,7 @@ impl Tokenizer {
         };
         self.skip(matched);
         let ends_with_semicolon = candidate[..matched].ends_with(';');
-        let following = self.input.get(self.pos).copied();
+        let following = self.available().get(self.pos).copied();
         if self.in_attribute()
             && !ends_with_semicolon
             && following.is_some_and(|c| c == '=' || c.is_ascii_alphanumeric())

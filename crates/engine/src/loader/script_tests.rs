@@ -781,3 +781,263 @@ fn a_meta_policy_in_the_head_holds_for_the_scripts_after_it() {
         assert_eq!(lines(&mut tab), ["runs"], "{page}");
     }
 }
+
+// ---- Scripts that scripts insert, and document.write (M25) -----------------
+
+#[test]
+fn a_script_a_script_makes_runs_when_connected_and_only_once() {
+    let (_, console) = scripted(
+        "<p>x</p><script>\
+         var s = document.createElement('script'); \
+         s.textContent = 'window.x3 = (window.x3 || 0) + 1'; \
+         console.log('before', window.x3); document.body.appendChild(s); \
+         console.log('after', window.x3); \
+         document.body.appendChild(s); document.body.removeChild(s); document.body.appendChild(s); \
+         var empty = document.createElement('script'); document.body.appendChild(empty); \
+         empty.appendChild(document.createTextNode('console.log(\"late\")')); \
+         var blank = document.createElement('script'); document.body.appendChild(blank); \
+         blank.text = 'console.log(\"by text\")'; console.log('text set'); \
+         var copy = s.cloneNode(true); document.body.appendChild(copy); \
+         var fresh = document.createElement('script'); fresh.text = 'console.log(\"fresh\")'; \
+         var twin = fresh.cloneNode(true); document.body.appendChild(twin); \
+         var d = document.createElement('div'); \
+         d.innerHTML = '<script>console.log(\"fragment\")<\\/script>'; \
+         document.body.appendChild(d.firstChild); \
+         d.innerHTML = '<script>console.log(\"fragment copy\")<\\/script>'; \
+         document.body.appendChild(d.firstChild.cloneNode(true)); \
+         var holder = document.createElement('div'); \
+         var b = document.createElement('script'); b.text = 'console.log(\"second\")'; \
+         var a = document.createElement('script'); a.text = 'console.log(\"first\")'; \
+         holder.append(a, b); \
+         console.log('detached'); document.body.appendChild(holder); \
+         console.log('once', window.x3);\
+         </script>",
+        true,
+    );
+    assert_eq!(
+        console,
+        [
+            "before undefined",
+            "after 1",
+            "late",
+            "by text",
+            "text set",
+            "fresh",
+            "detached",
+            "first",
+            "second",
+            "once 1"
+        ]
+    );
+}
+
+#[test]
+fn current_script_and_ready_state_say_what_runs_and_where_the_load_stands() {
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<script id=head>console.log(document.readyState, document.currentScript.id); \
+             var s = document.createElement('script'); s.id = 'made'; \
+             s.text = 'console.log(document.currentScript.id)'; document.head.appendChild(s); \
+             console.log(document.currentScript.id)</script>\
+             <script defer src=late.js id=deferred></script><p>x</p>",
+        )),
+        "/late.js" => Some(javascript(
+            "console.log(document.readyState, document.currentScript.id)",
+        )),
+        _ => None,
+    });
+    let mut tab = scripting();
+    load_all(&mut tab, server.url("/page.html"));
+    assert_eq!(
+        lines(&mut tab),
+        ["loading head", "made", "head", "interactive deferred"]
+    );
+}
+
+#[test]
+fn written_markup_goes_in_where_the_script_is_and_written_scripts_nest() {
+    // The reference browser's order (scratchpad probe2): a written inline
+    // script runs inside the write, its own writes before the rest of
+    // what wrote it; a written external one holds what is written after
+    // it until it has run; an async script's write is ignored.
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<script>\
+             console.log('A: start');\
+             document.write('<p id=p1>1</p><script>console.log(\"B: nested inline; p1 exists: \" + \
+             !!document.getElementById(\"p1\")); document.write(\"<span id=inner>i</span>\");<\\/script><p id=p2>2</p>');\
+             console.log('C: after first write; p2 exists: ' + !!document.getElementById('p2') + \
+             '; inner exists: ' + !!document.getElementById('inner'));\
+             document.write('<script src=\"ext.js\"><\\/script><p id=p3>3</p>');\
+             console.log('D: after ext write; p3 exists: ' + !!document.getElementById('p3'));\
+             document.write('<p id=p4>4</p>');\
+             console.log('E: p4 exists: ' + !!document.getElementById('p4'));\
+             </script><script>\
+             console.log('F: next script; p3 ' + !!document.getElementById('p3') + ' p4 ' + \
+             !!document.getElementById('p4') + ' fromext ' + !!document.getElementById('fromext'));\
+             var order = []; for (var n = document.body.firstChild; n; n = n.nextSibling) \
+             if (n.id) order.push(n.id); console.log('G: order ' + order.join(','));\
+             </script><script async src=async.js></script>",
+        )),
+        "/ext.js" => Some(javascript(
+            "console.log('ext ran; p2 exists: ' + !!document.getElementById('p2'));\
+             document.write('<i id=fromext>e</i>');",
+        )),
+        "/async.js" => Some(javascript(
+            "console.log('async write attempt'); document.write('<b id=asyncw>A</b>');",
+        )),
+        _ => None,
+    });
+    let mut tab = scripting();
+    load_all(&mut tab, server.url("/page.html"));
+    assert_eq!(
+        lines(&mut tab),
+        [
+            "A: start",
+            "B: nested inline; p1 exists: true",
+            "C: after first write; p2 exists: true; inner exists: true",
+            "D: after ext write; p3 exists: false",
+            "E: p4 exists: false",
+            "ext ran; p2 exists: true",
+            "F: next script; p3 true p4 true fromext true",
+            "G: order p1,inner,p2,fromext,p3,p4",
+            "async write attempt",
+        ]
+    );
+    let document = tab.engine.document();
+    assert!(
+        !document
+            .subtree(document.root())
+            .any(|n| document.attr(n, "id") == Some("asyncw"))
+    );
+    document.validate().unwrap();
+}
+
+#[test]
+fn a_nested_scripts_error_is_the_pages_and_nesting_is_bounded() {
+    let (_, console) = scripted(
+        "<p>x</p><script>document.write('<script>throw new Error(\"w\")<\\/script>'); \
+         console.log('after')</script>",
+        true,
+    );
+    assert_eq!(console.len(), 2, "{console:?}");
+    assert!(
+        console[0].starts_with("Uncaught Error: w at "),
+        "{console:?}"
+    );
+    assert_eq!(console[1], "after");
+    // A nested script past the budget stops the run it is nested in, the
+    // script after it running with a budget of its own.
+    let limits = js::Limits {
+        steps: 50,
+        ..js::Limits::default()
+    };
+    let (_, console) = scripted_bytes(
+        b"<p>x</p><script>try { document.write('<script>for (;;) {}<\\/script>'); } \
+          catch (e) {} console.log('not reached')</script><script>console.log('next')</script>"
+            .to_vec(),
+        Some(limits),
+    );
+    assert_eq!(console.len(), 2, "{console:?}");
+    assert!(console[0].starts_with("Script ran too long"), "{console:?}");
+    assert_eq!(console[1], "next");
+    // A script that writes a script that writes one, forty deep.
+    let (_, console) = scripted(
+        "<p>x</p><script>window.depth = 0; window.deeper = function () { depth++; \
+         document.write('<script>deeper()<\\/script>'); }; deeper(); \
+         console.log('depth', depth)</script>",
+        true,
+    );
+    let most = crate::scripts::MAX_SCRIPT_NESTING;
+    assert_eq!(
+        console,
+        [
+            format!("A script nested more than {most} deep was not run"),
+            format!("depth {most}"),
+        ]
+    );
+}
+
+#[test]
+fn script_elements_text_and_async_read_and_write_as_html_says() {
+    let (_, console) = scripted(
+        "<script id=p>console.log(1)</script><script>\
+         var p = document.getElementById('p'); var s = document.createElement('script'); \
+         console.log(p.text, p.async, s.async); s.async = false; console.log(s.async); \
+         s.async = true; console.log(s.async, s.getAttribute('async')); \
+         s.async = false; console.log(s.async, s.hasAttribute('async')); \
+         s.text = 'a'; s.appendChild(document.createElement('b')).textContent = 'b'; \
+         console.log(s.text, s.textContent)</script>",
+        true,
+    );
+    assert_eq!(
+        console,
+        [
+            "1",
+            "console.log(1) false true",
+            "false",
+            "true ",
+            "false false",
+            "a ab"
+        ]
+    );
+}
+
+#[test]
+fn scripts_inserted_with_async_false_run_in_order_and_the_others_as_they_come() {
+    let script = |name: &str, wait: u64| {
+        later(
+            "text/javascript",
+            format!("console.log('{name}')").as_bytes(),
+            Duration::from_millis(wait),
+        )
+    };
+    let server = serve(move |path| match path {
+        "/page.html" => Some(html(
+            "<p>x</p><script>\
+             ['slow', 'fast'].forEach(function (name) { var s = document.createElement('script'); \
+             s.setAttribute('src', name + '-ordered.js'); s.async = false; \
+             document.body.appendChild(s); });\
+             ['slow', 'fast'].forEach(function (name) { var s = document.createElement('script'); \
+             s.setAttribute('src', name + '-soon.js'); document.body.appendChild(s); });\
+             console.log('inserted')</script>",
+        )),
+        "/slow-ordered.js" => Some(script("slow ordered", 600)),
+        "/fast-ordered.js" => Some(script("fast ordered", 0)),
+        "/slow-soon.js" => Some(script("slow soon", 300)),
+        "/fast-soon.js" => Some(script("fast soon", 0)),
+        _ => None,
+    });
+    let mut tab = scripting();
+    load_all(&mut tab, server.url("/page.html"));
+    let console = lines(&mut tab);
+    assert_eq!(console[0], "inserted");
+    let at = |name: &str| console.iter().position(|line| line == name).expect(name);
+    assert!(at("slow ordered") < at("fast ordered"), "{console:?}");
+    assert!(at("fast soon") < at("slow soon"), "{console:?}");
+    assert_eq!(console.len(), 5, "{console:?}");
+}
+
+#[test]
+fn a_policy_refuses_an_inserted_inline_script() {
+    let server = serve(|path| match path {
+        "/page.html" => Some(under(
+            "<script src=insert.js></script>",
+            &["script-src 'self'"],
+        )),
+        "/insert.js" => Some(javascript(
+            "var s = document.createElement('script'); s.text = 'console.log(1)'; \
+             document.head.appendChild(s); console.log('after');",
+        )),
+        _ => None,
+    });
+    let mut tab = scripting();
+    load_all(&mut tab, server.url("/page.html"));
+    assert_eq!(
+        lines(&mut tab),
+        [
+            "Content-Security-Policy refused an inline script: script-src 'self'",
+            "after"
+        ]
+    );
+}

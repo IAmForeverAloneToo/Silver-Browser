@@ -930,8 +930,32 @@ impl Engine {
             line: 1,
             muted: false,
         };
-        self.shown.scripts.run(&mut self.shown.document, &script);
+        let ready = self.ready_state();
+        let shown = &mut self.shown;
+        let mut lent = scripts::Lent {
+            document: &mut shown.document,
+            page: &mut shown.page,
+            parser: shown.parsing.as_mut().map(|parsing| &mut parsing.load),
+            network: &mut self.network,
+            ready,
+        };
+        shown
+            .scripts
+            .run(&mut lent, &script, scripts::How::default());
         self.scripts_ran();
+    }
+
+    /// The shown document's `readyState` (HTML section 3.1.5): `loading`
+    /// while it is parsed, `interactive` until it has loaded, then
+    /// `complete`.
+    fn ready_state(&self) -> scripts::ReadyState {
+        if self.shown.parsing.is_some() {
+            scripts::ReadyState::Loading
+        } else if self.load_state == LoadState::Loaded {
+            scripts::ReadyState::Complete
+        } else {
+            scripts::ReadyState::Interactive
+        }
     }
 
     /// Fetches `url`'s document, for `handling` once it is shown. The
@@ -1558,7 +1582,15 @@ impl Engine {
         };
         // The parser waits for its pending parsing-blocking script (M24.3).
         // A realm that dies says so once its document is shown.
-        if !parsing.scripts.run_ready(page, document, false) {
+        let loader::Parsing { load, scripts, .. } = &mut **parsing;
+        let mut lent = scripts::Lent {
+            document,
+            page,
+            parser: Some(load),
+            network: &mut self.network,
+            ready: scripts::ReadyState::Loading,
+        };
+        if !scripts.run_ready(&mut lent, false) {
             return;
         }
         match parsing.load.parse(document, PARSE_SLICE) {
@@ -1574,9 +1606,15 @@ impl Engine {
                 if let html::Stop::Script { element, line } = stop
                     && self.scripting
                 {
-                    parsing
-                        .scripts
-                        .prepare(page, document, &mut self.network, element, line);
+                    let loader::Parsing { load, scripts, .. } = &mut **parsing;
+                    let mut lent = scripts::Lent {
+                        document,
+                        page,
+                        parser: Some(load),
+                        network: &mut self.network,
+                        ready: scripts::ReadyState::Loading,
+                    };
+                    scripts.prepare(&mut lent, element, line);
                 }
                 let changes = document.take_changes();
                 if changes
@@ -1597,18 +1635,31 @@ impl Engine {
     /// parser adds is a change like any other, restyled and laid out by
     /// the next frame, its sheets and images fetched (M24.8).
     fn parse_shown(&mut self) {
-        let Some(parsing) = &mut self.shown.parsing else {
+        let Shown {
+            document,
+            page,
+            parsing: Some(parsing),
+            scripts: queue,
+            ..
+        } = &mut self.shown
+        else {
             return;
         };
         // The parser waits for its pending parsing-blocking script (M24.3).
-        if !self
-            .shown
-            .scripts
-            .run_ready(&self.shown.page, &mut self.shown.document, false)
-        {
+        let mut lent = scripts::Lent {
+            document,
+            page,
+            parser: Some(&mut parsing.load),
+            network: &mut self.network,
+            ready: scripts::ReadyState::Loading,
+        };
+        if !queue.run_ready(&mut lent, false) {
             self.scripts_ran();
             return;
         }
+        let Some(parsing) = &mut self.shown.parsing else {
+            return;
+        };
         match parsing.load.parse(&mut self.shown.document, PARSE_SLICE) {
             html::Progress::Restarted => {
                 // Shown already: the document starts again in place.
@@ -1628,14 +1679,22 @@ impl Engine {
             html::Progress::Parsed(stop) => {
                 if let html::Stop::Script { element, line } = stop
                     && self.scripting
+                    && let Shown {
+                        document,
+                        page,
+                        parsing: Some(parsing),
+                        scripts: queue,
+                        ..
+                    } = &mut self.shown
                 {
-                    self.shown.scripts.prepare(
-                        &mut self.shown.page,
-                        &mut self.shown.document,
-                        &mut self.network,
-                        element,
-                        line,
-                    );
+                    let mut lent = scripts::Lent {
+                        document,
+                        page,
+                        parser: Some(&mut parsing.load),
+                        network: &mut self.network,
+                        ready: scripts::ReadyState::Loading,
+                    };
+                    queue.prepare(&mut lent, element, line);
                 }
                 self.scripts_ran();
                 match stop {
@@ -1657,9 +1716,16 @@ impl Engine {
         if self.shown.parsing.is_some() || self.shown.scripts.settled() {
             return;
         }
-        self.shown
-            .scripts
-            .run_ready(&self.shown.page, &mut self.shown.document, true);
+        let ready = self.ready_state();
+        let shown = &mut self.shown;
+        let mut lent = scripts::Lent {
+            document: &mut shown.document,
+            page: &mut shown.page,
+            parser: None,
+            network: &mut self.network,
+            ready,
+        };
+        shown.scripts.run_ready(&mut lent, true);
         self.scripts_ran();
         self.update_load_state();
     }

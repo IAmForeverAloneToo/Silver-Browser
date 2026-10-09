@@ -198,27 +198,27 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
         if let Some(death) = self.dead {
             return Err(dead(death));
         }
-        // Line feeds before the text, so that QuickJS-ng counts the
-        // document's lines.
-        let skip = script.line.saturating_sub(1) as usize;
-        let mut source = String::with_capacity(skip + script.source.len());
-        source.extend(std::iter::repeat_n('\n', skip));
-        source.push_str(script.source);
-        let mut options = EvalOptions::default();
-        options.global = true;
-        options.strict = false;
-        options.filename = Some(script.url.replace('\0', "%00"));
         self.begin(host, script.muted);
-        let result = self.context.with(|ctx| {
-            match ctx
-                .eval_with_options::<Value<'_>, _>(source, options)
-                .catch(&ctx)
-            {
-                Ok(value) => Ok(completion(&value)),
-                Err(caught) => Err(caught_error(&ctx, caught, script.url, script.muted)),
-            }
-        });
+        let result =
+            self.context.with(
+                |ctx| match evaluate(&ctx, script.source, script.url, script.line) {
+                    Ok(value) => Ok(completion(&value)),
+                    Err(caught) => Err(caught_error(&ctx, caught, script.url, script.muted)),
+                },
+            );
         self.end(host);
+        // A run that spent its budget is stopped, though the script caught
+        // a native's refusal and ended before the next interrupt check.
+        let result = match result {
+            Ok(_) if self.exhausted.get() => Err(ScriptError {
+                kind: ErrorKind::Budget,
+                message: String::new(),
+                url: script.url.to_owned(),
+                line: 0,
+                column: 0,
+            }),
+            other => other,
+        };
         result.map_err(|error| self.failure(error))
     }
 
@@ -262,6 +262,27 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
     fn dead(&self) -> Option<Death> {
         self.dead
     }
+}
+
+/// Runs `source` as a classic script: global, not strict, its errors
+/// naming `url`, its first line counted as `line` of its document (line
+/// feeds go before the text, so that QuickJS-ng counts them).
+fn evaluate<'js>(
+    ctx: &Ctx<'js>,
+    source: &str,
+    url: &str,
+    line: u32,
+) -> Result<Value<'js>, CaughtError<'js>> {
+    let skip = line.saturating_sub(1) as usize;
+    let mut text = String::with_capacity(skip + source.len());
+    text.extend(std::iter::repeat_n('\n', skip));
+    text.push_str(source);
+    let mut options = EvalOptions::default();
+    options.global = true;
+    options.strict = false;
+    options.filename = Some(url.replace('\0', "%00"));
+    ctx.eval_with_options::<Value<'_>, _>(text, options)
+        .catch(ctx)
 }
 
 /// The error a dead realm reports for what it was asked to run.

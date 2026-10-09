@@ -7,9 +7,9 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use rquickjs::function::Rest;
-use rquickjs::{Array, Coerced, Ctx, Exception, Function, Object, Value};
+use rquickjs::{Array, CaughtError, Coerced, Ctx, Exception, Function, Object, Value};
 
-use super::{Slot, with_host};
+use super::{Slot, caught_error, evaluate, with_host};
 use crate::{Answer, Call, DomError, Handle, MAX_HANDLE, ScriptingHost, WORK_PER_STEP};
 
 /// The bindings, run in each new realm before any page's script.
@@ -87,6 +87,21 @@ impl<'js> Args<'_, 'js> {
 
 /// A native that makes `call` of the host from its arguments.
 type Decode = fn(&Args<'_, '_>) -> rquickjs::Result<Call>;
+
+/// The natives whose calls may make scripts ready to run at once: those
+/// that insert nodes (a script made by a script runs when it is
+/// connected, or given children) or set attributes (or a `src`), and
+/// `document.write`.
+const RUN_SCRIPTS: &[&str] = &[
+    "insert",
+    "replace",
+    "setTextContent",
+    "setAttribute",
+    "setInnerHTML",
+    "setOuterHTML",
+    "insertAdjacentHTML",
+    "write",
+];
 
 /// The natives, by the name the bootstrap calls them by.
 const NATIVES: &[(&str, Decode)] = &[
@@ -190,6 +205,14 @@ const NATIVES: &[(&str, Decode)] = &[
             markup: a.string(2)?,
         })
     }),
+    ("write", |a| Ok(Call::Write(a.string(0)?))),
+    ("currentScript", |_| Ok(Call::CurrentScript)),
+    ("readyState", |_| Ok(Call::ReadyState)),
+    ("childText", |a| Ok(Call::ChildText(a.handle(0)?))),
+    ("forceAsync", |a| Ok(Call::ForceAsync(a.handle(0)?))),
+    ("setForceAsync", |a| {
+        Ok(Call::SetForceAsync(a.handle(0)?, a.bool(1)))
+    }),
     ("released", |a| Ok(Call::Released(a.handle(0)?))),
 ];
 
@@ -202,6 +225,7 @@ pub(super) fn install<'js, H: ScriptingHost>(
     let natives = Object::new(ctx.clone())?;
     for &(name, decode) in NATIVES {
         let (host, budget) = (host.clone(), budget.clone());
+        let runs_scripts = RUN_SCRIPTS.contains(&name);
         let native = Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, args: Rest<Value<'js>>| -> rquickjs::Result<Value<'js>> {
@@ -217,10 +241,14 @@ pub(super) fn install<'js, H: ScriptingHost>(
                     (answer, host.take_work())
                 })?;
                 budget.charge(work);
-                match answer {
-                    Ok(answer) => value(&ctx, answer),
-                    Err(error) => Err(throw(&ctx, &error)),
+                let answer = match answer {
+                    Ok(answer) => answer,
+                    Err(error) => return Err(throw(&ctx, &error)),
+                };
+                if runs_scripts {
+                    run_nested(&ctx, &host, &budget)?;
                 }
+                value(&ctx, answer)
             },
         )?
         .with_name(name)?;
@@ -249,6 +277,41 @@ pub(super) fn install<'js, H: ScriptingHost>(
     )?;
     let bootstrap: Function<'js> = ctx.eval(BOOTSTRAP)?;
     bootstrap.call::<_, ()>((natives, ctx.globals()))?;
+    Ok(())
+}
+
+/// Runs the scripts the host has ready to run now, each nested in the
+/// running script (HTML: before the call that made it ready returns),
+/// its errors the page's. A run past its budget is stopped whole.
+fn run_nested<'js, H: ScriptingHost>(
+    ctx: &Ctx<'js>,
+    host: &Slot<H>,
+    budget: &Budget,
+) -> rquickjs::Result<()> {
+    while let Some(script) = with_host(ctx, host, |host| host.take_script())? {
+        let result = evaluate(ctx, &script.source, &script.url, script.line);
+        let caught = match result {
+            Ok(_) => None,
+            // A script stopped by the budget is no error of its own: the
+            // stop, uncatchable, goes on up through the script it is
+            // nested in, which is stopped too.
+            Err(caught) if budget.exhausted.get() => {
+                with_host(ctx, host, |host| host.script_ran())?;
+                return Err(match caught {
+                    CaughtError::Exception(exception) => ctx.throw(exception.into_value()),
+                    CaughtError::Value(value) => ctx.throw(value),
+                    CaughtError::Error(error) => error,
+                });
+            }
+            Err(caught) => Some(caught_error(ctx, caught, &script.url, false)),
+        };
+        with_host(ctx, host, |host| {
+            if let Some(error) = caught {
+                host.report(error);
+            }
+            host.script_ran();
+        })?;
+    }
     Ok(())
 }
 

@@ -14,6 +14,13 @@ mod host;
 
 use std::collections::VecDeque;
 
+/// The most scripts that run nested, one inside another's call, the
+/// outermost counted (M25): past it no further one runs, and the console
+/// says so. Each level takes some 25 KiB of a realm's 256 KiB of stack
+/// (`js::MAX_SCRIPT_STACK`), which runs out past about ten, measured: the
+/// cap stops a script that writes a script that writes one before that.
+pub const MAX_SCRIPT_NESTING: usize = 8;
+
 use dom::{Document, NodeId};
 use encoding::Encoding;
 use js::{
@@ -76,6 +83,7 @@ enum Pending {
         id: FetchId,
         url: Url,
         fallback: Encoding,
+        element: NodeId,
     },
     /// Ready to run; `None` when its fetch failed (HTML: its result is
     /// null), which runs nothing.
@@ -83,13 +91,172 @@ enum Pending {
 }
 
 /// A classic script, ready to run.
-struct Source {
+pub(crate) struct Source {
     text: String,
     /// The URL its errors name: the document's for an inline script, the
     /// response's for a fetched one.
     url: String,
     line: u32,
     muted: bool,
+    /// Its element: `document.currentScript` while it runs (M25).
+    element: Option<NodeId>,
+    /// Whether it came from a file: while it runs, a `document.write`
+    /// with no insertion point does nothing (HTML's ignore-destructive-
+    /// writes counter).
+    external: bool,
+}
+
+/// `document.readyState` (HTML section 3.1.5).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum ReadyState {
+    #[default]
+    Loading,
+    Interactive,
+    Complete,
+}
+
+impl ReadyState {
+    fn as_str(self) -> &'static str {
+        match self {
+            ReadyState::Loading => "loading",
+            ReadyState::Interactive => "interactive",
+            ReadyState::Complete => "complete",
+        }
+    }
+}
+
+/// What a document's scripts are lent for a run (M25): the document, its
+/// page, its parser while it parses, the network for the scripts they
+/// fetch, and where its loading stands.
+pub(crate) struct Lent<'a> {
+    pub(crate) document: &'a mut Document,
+    pub(crate) page: &'a mut Page,
+    pub(crate) parser: Option<&'a mut html::Load>,
+    pub(crate) network: &'a mut Network,
+    pub(crate) ready: ReadyState,
+}
+
+/// How a script is run.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct How {
+    /// Its element, `document.currentScript`.
+    pub(crate) element: Option<NodeId>,
+    /// Whether it came from a file.
+    pub(crate) external: bool,
+    /// Whether it is a parser-inserted script run where the parser
+    /// stopped after its end tag: the insertion point is defined there
+    /// while it runs (HTML section 13.2.6.4.8).
+    pub(crate) at_insertion_point: bool,
+}
+
+/// What preparing a script element comes to (HTML section 4.12.1.1,
+/// "prepare the script element").
+pub(crate) enum Prepared {
+    /// Not started, and nothing runs: an inline script with no text, or
+    /// an element whose type is not a script's. It may be prepared again.
+    NotYet,
+    /// Started, and nothing runs: a module, an import map or speculation
+    /// rules (G41), `nomodule`, legacy `for` and `event` attributes for
+    /// another event, a `src` that is empty or does not parse, or a page
+    /// that fetches nothing.
+    Nothing,
+    /// Started, and refused by the document's policy: the console says
+    /// which `what` was refused, and why.
+    Refused(&'static str, Violation),
+    /// An inline classic script.
+    Inline(Source),
+    /// A classic script to fetch.
+    Fetch {
+        request: Box<Request>,
+        url: Url,
+        fallback: Encoding,
+    },
+}
+
+/// Prepares `element` as HTML section 4.12.1.1 does, its text starting
+/// on the document's `line`, whoever inserted it; what runs, and when, is
+/// its caller's to decide.
+pub(crate) fn prepare_element(
+    page: &mut Page,
+    document: &Document,
+    element: NodeId,
+    line: u32,
+) -> Prepared {
+    let Some(kind) = script_type(document, element) else {
+        return Prepared::NotYet;
+    };
+    let src = document.attr(element, "src");
+    let text = document.text_content(element);
+    if src.is_none() && text.is_empty() {
+        return Prepared::NotYet;
+    }
+    if kind != ScriptType::Classic
+        || document.attr(element, "nomodule").is_some()
+        || !for_the_window(document, element)
+    {
+        return Prepared::Nothing;
+    }
+    let Some(src) = src else {
+        if let Err(violation) = page.csp(document).check_inline_script() {
+            return Prepared::Refused("an inline script", violation);
+        }
+        return Prepared::Inline(Source {
+            text,
+            url: page.url().map(Url::to_string).unwrap_or_default(),
+            line,
+            muted: false,
+            element: Some(element),
+            external: false,
+        });
+    };
+    // An empty `src`, or one that does not parse, fires `error` (M26) and
+    // is nothing more.
+    let Some(url) = Some(src)
+        .filter(|src| !src.is_empty())
+        .and_then(|src| page.resolve(document, src))
+    else {
+        return Prepared::Nothing;
+    };
+    let csp = page.csp(document).clone();
+    let Some(request) = script_request(page, url.clone(), csp) else {
+        return Prepared::Nothing;
+    };
+    let fallback = document
+        .attr(element, "charset")
+        .and_then(Encoding::for_label)
+        .unwrap_or(page.encoding());
+    Prepared::Fetch {
+        request: Box::new(request),
+        url,
+        fallback,
+    }
+}
+
+/// Where a script fetched for an element waits to run (HTML section
+/// 4.12.1.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Place {
+    /// The pending parsing-blocking script: a parser-inserted one with
+    /// neither `async` nor `defer`.
+    Blocking,
+    /// Run in order once the document is parsed: parser-inserted `defer`.
+    Deferred,
+    /// Run as soon as it arrives: `async`, or inserted by a script with
+    /// its "force async" flag.
+    Soon,
+    /// Run in order as soon as each and those before it have arrived: one
+    /// a script inserted with `async` false.
+    InOrder,
+}
+
+/// A script's fetch, found during a run, which the engine starts after
+/// it.
+pub(crate) struct Wanted {
+    pub(crate) request: Box<Request>,
+    pub(crate) url: Url,
+    pub(crate) fallback: Encoding,
+    pub(crate) element: NodeId,
+    pub(crate) place: Place,
 }
 
 /// A document's scripts: its realm, once it has one, its console, and
@@ -113,6 +280,9 @@ pub(crate) struct Scripts {
     deferred: VecDeque<Pending>,
     /// The scripts run each as soon as it is ready (`async`).
     soon: Vec<Pending>,
+    /// The scripts run in order as soon as possible: those scripts
+    /// inserted with `async` false (M25).
+    in_order: VecDeque<Pending>,
     /// Its parser was stopped: the scripts on their way are dropped, and
     /// none it meets after runs.
     aborted: bool,
@@ -138,6 +308,7 @@ impl Scripts {
             blocking: None,
             deferred: VecDeque::new(),
             soon: Vec::new(),
+            in_order: VecDeque::new(),
             aborted: false,
         }
     }
@@ -145,72 +316,61 @@ impl Scripts {
     /// Prepares the `script` element the parser has just closed (HTML
     /// section 4.12.1.1, "prepare the script element"), its text starting
     /// on the document's `line`. An inline classic script runs at once,
-    /// or, while a style sheet blocks scripts, is the pending
-    /// parsing-blocking script; one with a `src` is fetched, and is that
-    /// script, or waits for the end of the parse, or runs as soon as it
-    /// comes, as its `defer` and `async` say.
-    pub(crate) fn prepare(
-        &mut self,
-        page: &mut Page,
-        document: &mut Document,
-        network: &mut Network,
-        element: NodeId,
-        line: u32,
-    ) {
-        if self.aborted
-            || self.stopped
-            || script_type(document, element) != Some(ScriptType::Classic)
-            || document.attr(element, "nomodule").is_some()
-            || !for_the_window(document, element)
-        {
+    /// the insertion point after its end tag, or, while a style sheet
+    /// blocks scripts, is the pending parsing-blocking script; one with a
+    /// `src` is fetched, and is that script, or waits for the end of the
+    /// parse, or runs as soon as it comes, as its `defer` and `async`
+    /// say.
+    pub(crate) fn prepare(&mut self, lent: &mut Lent<'_>, element: NodeId, line: u32) {
+        if self.aborted || self.stopped {
             return;
         }
-        let Some(src) = document.attr(element, "src") else {
-            let text = document.text_content(element);
-            if text.is_empty() {
-                return;
+        match prepare_element(lent.page, lent.document, element, line) {
+            Prepared::NotYet | Prepared::Nothing => {}
+            Prepared::Refused(what, violation) => self.refused(what, &violation),
+            Prepared::Inline(source) => {
+                if lent.page.blocks_scripts() {
+                    self.blocking = Some(Pending::Ready(Some(source)));
+                } else {
+                    self.run_source(lent, &source, true);
+                }
             }
-            if let Err(violation) = page.csp(document).check_inline_script() {
-                self.refused("an inline script", &violation);
-                return;
+            Prepared::Fetch {
+                request,
+                url,
+                fallback,
+            } => {
+                let place = parser_place(lent.document, element);
+                self.fetch(
+                    lent,
+                    Wanted {
+                        request,
+                        url,
+                        fallback,
+                        element,
+                        place,
+                    },
+                );
             }
-            let source = Source {
-                text,
-                url: page.url().map(Url::to_string).unwrap_or_default(),
-                line,
-                muted: false,
-            };
-            if page.blocks_scripts() {
-                self.blocking = Some(Pending::Ready(Some(source)));
-            } else {
-                self.run_source(document, &source);
-            }
-            return;
+        }
+    }
+
+    /// Starts `wanted`'s fetch, and puts the script where it waits.
+    fn fetch(&mut self, lent: &mut Lent<'_>, wanted: Wanted) {
+        let id = lent
+            .network
+            .fetch(lent.page.id(), Target::Script, *wanted.request);
+        let pending = Pending::Fetching {
+            id,
+            url: wanted.url,
+            fallback: wanted.fallback,
+            element: wanted.element,
         };
-        // An empty `src`, or one that does not parse, fires `error` (M26)
-        // and is nothing more.
-        let Some(url) = Some(src)
-            .filter(|src| !src.is_empty())
-            .and_then(|src| page.resolve(document, src))
-        else {
-            return;
-        };
-        let csp = page.csp(document).clone();
-        let Some(request) = script_request(page, url.clone(), csp) else {
-            return;
-        };
-        let fallback = document
-            .attr(element, "charset")
-            .and_then(Encoding::for_label)
-            .unwrap_or(page.encoding());
-        let id = network.fetch(page.id(), Target::Script, request);
-        let pending = Pending::Fetching { id, url, fallback };
-        if document.attr(element, "async").is_some() {
-            self.soon.push(pending);
-        } else if document.attr(element, "defer").is_some() {
-            self.deferred.push_back(pending);
-        } else {
-            self.blocking = Some(pending);
+        match wanted.place {
+            Place::Blocking => self.blocking = Some(pending),
+            Place::Deferred => self.deferred.push_back(pending),
+            Place::Soon => self.soon.push(pending),
+            Place::InOrder => self.in_order.push_back(pending),
         }
     }
 
@@ -229,18 +389,27 @@ impl Scripts {
             .iter_mut()
             .chain(&mut self.deferred)
             .chain(&mut self.soon)
+            .chain(&mut self.in_order)
             .find(|pending| matches!(pending, Pending::Fetching { id: fetch, .. } if *fetch == id))
         else {
             return;
         };
-        let Pending::Fetching { url, fallback, .. } = &*pending else {
+        let Pending::Fetching {
+            url,
+            fallback,
+            element,
+            ..
+        } = &*pending
+        else {
             unreachable!("found fetching");
         };
+        let element = *element;
         let failed = match result
             .map_err(|error| error.to_string())
             .and_then(|response| script_source(&response, *fallback, page.url()))
         {
-            Ok(source) => {
+            Ok(mut source) => {
+                source.element = Some(element);
                 *pending = Pending::Ready(Some(source));
                 None
             }
@@ -259,12 +428,14 @@ impl Scripts {
     }
 
     /// Runs what is ready, as HTML's parser and event loop would: each
-    /// script to run as soon as possible that has come; the pending
+    /// script to run as soon as possible that has come; those to run in
+    /// order as soon as possible, as far as they have come; the pending
     /// parsing-blocking script, once it is ready and no style sheet
-    /// blocks scripts; and, the document `parsed`, its deferred scripts
-    /// in order, each once it is ready and no style sheet blocks scripts.
-    /// Whether the parser may go on.
-    pub(crate) fn run_ready(&mut self, page: &Page, document: &mut Document, parsed: bool) -> bool {
+    /// blocks scripts, with the insertion point where the parser stopped;
+    /// and, the document `parsed`, its deferred scripts in order, each
+    /// once it is ready and no style sheet blocks scripts. Whether the
+    /// parser may go on.
+    pub(crate) fn run_ready(&mut self, lent: &mut Lent<'_>, parsed: bool) -> bool {
         let mut ready = Vec::new();
         self.soon.retain_mut(|pending| match pending {
             Pending::Ready(source) => {
@@ -274,23 +445,30 @@ impl Scripts {
             Pending::Fetching { .. } => true,
         });
         for source in ready.into_iter().flatten() {
-            self.run_source(document, &source);
+            self.run_source(lent, &source, false);
         }
-        if page.blocks_scripts() {
+        while let Some(Pending::Ready(source)) = self.in_order.front_mut() {
+            let ready = source.take();
+            self.in_order.pop_front();
+            if let Some(source) = ready {
+                self.run_source(lent, &source, false);
+            }
+        }
+        if lent.page.blocks_scripts() {
             return self.blocking.is_none();
         }
         if let Some(Pending::Ready(source)) = &mut self.blocking {
             let ready = source.take();
             self.blocking = None;
             if let Some(source) = ready {
-                self.run_source(document, &source);
+                self.run_source(lent, &source, true);
             }
         }
         while parsed && let Some(Pending::Ready(source)) = self.deferred.front_mut() {
             let ready = source.take();
             self.deferred.pop_front();
             if let Some(source) = ready {
-                self.run_source(document, &source);
+                self.run_source(lent, &source, false);
             }
         }
         self.blocking.is_none()
@@ -298,7 +476,10 @@ impl Scripts {
 
     /// Whether no script is on its way: the load waits for them.
     pub(crate) fn settled(&self) -> bool {
-        self.blocking.is_none() && self.deferred.is_empty() && self.soon.is_empty()
+        self.blocking.is_none()
+            && self.deferred.is_empty()
+            && self.soon.is_empty()
+            && self.in_order.is_empty()
     }
 
     /// The document's parser was stopped (HTML's "abort a parser"): the
@@ -308,6 +489,7 @@ impl Scripts {
         self.blocking = None;
         self.deferred.clear();
         self.soon.clear();
+        self.in_order.clear();
         self.aborted = true;
     }
 
@@ -316,29 +498,38 @@ impl Scripts {
     pub(crate) fn refused(&mut self, what: &str, violation: &Violation) {
         self.push(ConsoleEntry {
             level: ConsoleLevel::Error,
-            text: format!("Content-Security-Policy refused {what}: {violation}"),
+            text: refusal_text(what, violation),
         });
     }
 
-    fn run_source(&mut self, document: &mut Document, source: &Source) {
+    /// Runs `source`, a script element's; `at_insertion_point` for a
+    /// parser-inserted one run where the parser stopped after it.
+    fn run_source(&mut self, lent: &mut Lent<'_>, source: &Source, at_insertion_point: bool) {
         let script = Script {
             source: &source.text,
             url: &source.url,
             line: source.line,
             muted: source.muted,
         };
-        self.run(document, &script);
+        let how = How {
+            element: source.element,
+            external: source.external,
+            at_insertion_point,
+        };
+        self.run(lent, &script, how);
     }
 
     /// Runs `script` in the document's realm, made if it has none, with
-    /// `document` lent to the host, then the microtask checkpoint that
-    /// follows a script (HTML section 8.1.4.4); its errors and those of
-    /// the jobs the checkpoint runs go to the console. What it ended
-    /// with, unless it failed or the document runs no scripts.
+    /// what the run needs lent to the host, then the microtask checkpoint
+    /// that follows a script (HTML section 8.1.4.4); its errors and those
+    /// of the jobs the checkpoint runs go to the console, and the scripts
+    /// it inserted or wrote that are to be fetched are fetched. What it
+    /// ended with, unless it failed or the document runs no scripts.
     pub(crate) fn run(
         &mut self,
-        document: &mut Document,
+        lent: &mut Lent<'_>,
         script: &Script<'_>,
+        how: How,
     ) -> Option<Completion> {
         if self.stopped {
             return None;
@@ -355,15 +546,28 @@ impl Scripts {
         }
         let realm = self.realm.as_mut()?;
         let host = &mut self.host;
-        host.document = std::mem::take(document);
+        let insertion_point = how.at_insertion_point
+            && lent
+                .parser
+                .as_deref_mut()
+                .and_then(html::Load::parser)
+                .map(html::Parser::push_insertion_point)
+                .is_some();
+        host.lend(lent, how, self.blocking.is_some());
         let result = realm.run(script, host);
         let errors = realm.checkpoint(host);
         let dead = realm.dead().is_some();
         host.sweep();
-        *document = std::mem::take(&mut host.document);
-        for entry in std::mem::take(&mut host.console) {
+        let outputs = host.give_back(lent);
+        if insertion_point
+            && let Some(parser) = lent.parser.as_deref_mut().and_then(html::Load::parser)
+        {
+            parser.pop_insertion_point();
+        }
+        for entry in outputs.console {
             self.push(entry);
         }
+        self.errors += outputs.errors;
         let completion = match result {
             Ok(completion) => Some(completion),
             Err(error) => {
@@ -373,6 +577,9 @@ impl Scripts {
         };
         for error in &errors {
             self.report(error);
+        }
+        for wanted in outputs.wanted {
+            self.fetch(lent, wanted);
         }
         if dead {
             self.stop();
@@ -424,16 +631,8 @@ impl Scripts {
     /// uncaught exception and where it was thrown, or a rejection with no
     /// handler; a dead realm's refusal is not an error of the page's.
     pub(crate) fn report(&mut self, error: &ScriptError) {
-        let text = match error.kind {
-            ErrorKind::Dead => return,
-            ErrorKind::Rejection => format!("Uncaught (in promise) {}", error.message),
-            ErrorKind::Budget => error.message.clone(),
-            ErrorKind::Exception | ErrorKind::Heap => format!("Uncaught {}", error.message),
-        };
-        let text = if error.url.is_empty() {
-            text
-        } else {
-            format!("{text} at {}:{}:{}", error.url, error.line, error.column)
+        let Some(text) = report_text(error) else {
+            return;
         };
         self.errors += 1;
         self.push(ConsoleEntry {
@@ -471,6 +670,39 @@ impl Scripts {
     pub(crate) fn take_just_stopped(&mut self) -> bool {
         std::mem::take(&mut self.just_stopped)
     }
+}
+
+/// Where a parser-inserted script fetched for `element` waits: by its
+/// `async` and `defer` attributes.
+pub(crate) fn parser_place(document: &Document, element: NodeId) -> Place {
+    if document.attr(element, "async").is_some() {
+        Place::Soon
+    } else if document.attr(element, "defer").is_some() {
+        Place::Deferred
+    } else {
+        Place::Blocking
+    }
+}
+
+/// The console's text for `error`, as HTML section 8.1.4.6 reports it;
+/// none for a dead realm's refusal, which is no error of the page's.
+pub(crate) fn report_text(error: &ScriptError) -> Option<String> {
+    let text = match error.kind {
+        ErrorKind::Dead => return None,
+        ErrorKind::Rejection => format!("Uncaught (in promise) {}", error.message),
+        ErrorKind::Budget => error.message.clone(),
+        ErrorKind::Exception | ErrorKind::Heap => format!("Uncaught {}", error.message),
+    };
+    Some(if error.url.is_empty() {
+        text
+    } else {
+        format!("{text} at {}:{}:{}", error.url, error.line, error.column)
+    })
+}
+
+/// The console's text for a policy's refusal of `what`.
+pub(crate) fn refusal_text(what: &str, violation: &Violation) -> String {
+    format!("Content-Security-Policy refused {what}: {violation}")
 }
 
 /// `document.title`'s getter (HTML section 3.1.7): the text of the
@@ -557,6 +789,8 @@ fn script_source(
         url: response.url().to_string(),
         line: 1,
         muted,
+        element: None,
+        external: true,
     })
 }
 
@@ -605,6 +839,25 @@ mod tests {
 
     fn parsed(source: &str) -> Document {
         Document::from_node(&html::parse_document(source).expect("parsing never fails"))
+    }
+
+    /// Runs `script` as the engine runs one, `document` lent, of a page
+    /// given to the engine and parsed whole.
+    fn run(
+        scripts: &mut Scripts,
+        document: &mut Document,
+        script: &Script<'_>,
+    ) -> Option<Completion> {
+        let mut page = Page::given(0);
+        let mut network = Network::new();
+        let mut lent = Lent {
+            document,
+            page: &mut page,
+            parser: None,
+            network: &mut network,
+            ready: ReadyState::Complete,
+        };
+        scripts.run(&mut lent, script, How::default())
     }
 
     fn script(source: &str) -> Script<'_> {
@@ -698,7 +951,8 @@ mod tests {
     fn a_script_reads_and_writes_the_document_and_logs() {
         let mut document = parsed("<title>Before</title>");
         let mut scripts = Scripts::default();
-        let done = scripts.run(
+        let done = run(
+            &mut scripts,
             &mut document,
             &script(
                 "console.log('hello', 1); document.title = document.title + ' and after'; 'ok'",
@@ -723,9 +977,13 @@ mod tests {
             line: 4,
             muted: false,
         };
-        assert_eq!(scripts.run(&mut document, &inline), None);
-        scripts.run(&mut document, &script("Promise.reject(new Error('later'))"));
-        assert!(scripts.run(&mut document, &script("1")).is_some());
+        assert_eq!(run(&mut scripts, &mut document, &inline), None);
+        run(
+            &mut scripts,
+            &mut document,
+            &script("Promise.reject(new Error('later'))"),
+        );
+        assert!(run(&mut scripts, &mut document, &script("1")).is_some());
         let console = scripts.take_console();
         assert_eq!(
             console[0].text,
@@ -747,14 +1005,15 @@ mod tests {
             heap: 8 << 20,
             ..Limits::default()
         });
-        scripts.run(
+        run(
+            &mut scripts,
             &mut document,
             &script("var kept = []; for (let i = 0; ; i++) kept.push('x'.repeat(1000) + i);"),
         );
         assert!(matches!(scripts.state(), ScriptState::Stopped { .. }));
         assert!(scripts.take_just_stopped());
         assert!(!scripts.take_just_stopped());
-        assert_eq!(scripts.run(&mut document, &script("1")), None);
+        assert_eq!(run(&mut scripts, &mut document, &script("1")), None);
         let console = scripts.take_console();
         assert_eq!(
             console.last().unwrap().text,
@@ -768,7 +1027,8 @@ mod tests {
     fn the_console_keeps_its_last_entries_each_cut() {
         let mut document = parsed("<p>x");
         let mut scripts = Scripts::default();
-        scripts.run(
+        run(
+            &mut scripts,
             &mut document,
             &script(
                 "for (let i = 0; i < 1004; i++) console.log(i); \
@@ -790,7 +1050,10 @@ mod tests {
             steps: 10,
             ..Limits::default()
         });
-        assert_eq!(scripts.run(&mut document, &script("for (;;) {}")), None);
+        assert_eq!(
+            run(&mut scripts, &mut document, &script("for (;;) {}")),
+            None
+        );
         let console = scripts.take_console();
         assert!(
             console[0]
@@ -800,7 +1063,7 @@ mod tests {
             console[0].text
         );
         // The realm lives on.
-        assert!(scripts.run(&mut document, &script("1")).is_some());
+        assert!(run(&mut scripts, &mut document, &script("1")).is_some());
         assert_eq!(scripts.state(), ScriptState::Running { errors: 1 });
     }
 
@@ -826,15 +1089,16 @@ mod tests {
             ..Limits::default()
         });
         let source = "console.log(typeof seen); var seen = 1; missing()";
-        scripts.run(&mut document, &script(source));
+        run(&mut scripts, &mut document, &script(source));
         scripts.restart();
         assert_eq!(scripts.state(), ScriptState::Running { errors: 0 });
-        scripts.run(&mut document, &script(source));
+        run(&mut scripts, &mut document, &script(source));
         let console: Vec<String> = scripts.take_console().into_iter().map(|e| e.text).collect();
         assert_eq!(console[0], "undefined");
         assert_eq!(console[2], "undefined");
         // The limits stay.
-        scripts.run(
+        run(
+            &mut scripts,
             &mut document,
             &script(
                 "var kept = []; for (let i = 0; i < 20000; i++) kept.push('x'.repeat(1000) + i);",

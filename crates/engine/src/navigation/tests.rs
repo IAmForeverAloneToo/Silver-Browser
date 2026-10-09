@@ -1739,3 +1739,37 @@ fn a_public_page_may_not_take_its_icon_from_a_local_address_and_others_ask_for_n
     assert_eq!(tab.engine.network.in_flight(), 0);
     assert_eq!(tab.engine.icon(), None);
 }
+
+#[test]
+fn a_javascript_url_is_no_script_elements_and_cannot_write_once_parsed() {
+    let server = serve(|path| match path {
+        "/a" => Some(html(
+            "<p>x</p>\
+             <p><a id=state href=\"javascript:console.log(document.readyState, document.currentScript)\">s</a></p>\
+             <p><a id=write href=\"javascript:document.write('%3Cb%3Egone%3C/b%3E');document.writeln('y')\">w</a></p>",
+        )),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.load(server.url("/a"));
+    tab.engine.frame(200, 100);
+    let console = |tab: &mut Tab| -> Vec<String> {
+        tab.engine
+            .take_console()
+            .into_iter()
+            .map(|entry| entry.text)
+            .collect()
+    };
+    click(&mut tab, "state");
+    assert_eq!(console(&mut tab), ["complete null"]);
+    let before = tab.engine.document().len();
+    click(&mut tab, "write");
+    let lines = console(&mut tab);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(
+        lines[0].starts_with("document.write() outside the parse"),
+        "{lines:?}"
+    );
+    assert_eq!(tab.engine.document().len(), before);
+}

@@ -1203,6 +1203,26 @@
       native.setTitle(str(value));
     }
 
+    get currentScript() {
+      self(this);
+      return wrap(native.currentScript());
+    }
+
+    get readyState() {
+      self(this);
+      return native.readyState();
+    }
+
+    write(...text) {
+      self(this);
+      write(text, "", "write");
+    }
+
+    writeln(...text) {
+      self(this);
+      write(text, "\n", "writeln");
+    }
+
     getElementById(elementId) {
       const handle = self(this);
       need(arguments.length, 1, "getElementById", "Document");
@@ -1229,6 +1249,21 @@
       } catch (error) {
         throw failed(error, "createTextNode", "Document");
       }
+    }
+  }
+
+  // `document.write`'s text, its arguments joined and `end` after them,
+  // put in at the parser's insertion point (HTML section 8.4.3).
+  function write(text, end, method) {
+    let markup = "";
+    for (let i = 0; i < text.length; i++) {
+      markup += str(text[i]);
+    }
+    markup += end;
+    try {
+      native.write(markup);
+    } catch (error) {
+      throw failed(error, method, "Document");
     }
   }
 
@@ -1595,6 +1630,43 @@
     element(ELEMENTS[i][0], ELEMENTS[i][1], ELEMENTS[i][2]);
   }
   const HTMLUnknownElement = element("HTMLUnknownElement", []);
+  // A script element's members (HTML section 4.12.1): its text, and
+  // `async`, which reads its "force async" flag as well as the attribute
+  // and clears the flag when set.
+  include(
+    {
+      get text() {
+        return native.childText(self(this));
+      },
+
+      set text(value) {
+        const handle = self(this);
+        const text = str(value);
+        try {
+          native.setTextContent(handle, text);
+        } catch (error) {
+          throw failedSet(error, "text", "HTMLScriptElement");
+        }
+      },
+
+      get async() {
+        const handle = self(this);
+        return native.forceAsync(handle) || native.attribute(handle, "async") !== null;
+      },
+
+      set async(value) {
+        const handle = self(this);
+        native.setForceAsync(handle, false);
+        if (value) {
+          setAttribute(handle, "async", "", "async");
+        } else {
+          native.removeAttribute(handle, "async");
+        }
+      },
+    },
+    [MapGet(interfaces, "script").prototype],
+  );
+
   // The tags HTML defines whose elements are plain HTMLElements.
   const PLAIN = [
     "abbr", "acronym", "address", "article", "aside", "b", "basefont", "bdi", "bdo", "big",

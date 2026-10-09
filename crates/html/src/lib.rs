@@ -97,6 +97,44 @@ impl Parser {
         self.tokenizer.end();
     }
 
+    /// Defines the input stream's insertion point just before the next
+    /// input character (M25): the caller runs a parser-inserted script
+    /// where the parse stopped at its end tag, and takes it away after.
+    pub fn push_insertion_point(&mut self) {
+        self.tokenizer.push_insertion_point();
+    }
+
+    /// Takes the innermost insertion point away.
+    pub fn pop_insertion_point(&mut self) {
+        self.tokenizer.pop_insertion_point();
+    }
+
+    /// Whether an insertion point is defined: `document.write` writes
+    /// there, and without one would open the document again.
+    pub fn has_insertion_point(&self) -> bool {
+        self.tokenizer.has_insertion_point()
+    }
+
+    /// Puts `text` into the input before the insertion point
+    /// (`document.write`).
+    pub fn write(&mut self, text: &str) {
+        self.tokenizer.insert(text);
+    }
+
+    /// Parses what was written, up to the insertion point (HTML section
+    /// 8.4.3): as [`Parser::parse`], but the input ends there for now,
+    /// so it stops with [`Stop::Input`] once what was written is used
+    /// up, or at a script's end tag in it.
+    pub fn parse_written(&mut self, document: &mut Document, slice: usize) -> Stop {
+        if !self.tokenizer.has_insertion_point() {
+            return Stop::Input;
+        }
+        self.tokenizer.bound_at_insertion_point(true);
+        let stop = self.parse(document, slice);
+        self.tokenizer.bound_at_insertion_point(false);
+        stop
+    }
+
     /// Whether the parse is done.
     pub fn is_done(&self) -> bool {
         self.done
@@ -254,6 +292,84 @@ mod tests {
         );
         document.validate().unwrap();
         serialize_children(&document, container, true)
+    }
+
+    /// The body's markup.
+    fn body_markup(document: &Document) -> String {
+        let body = document
+            .subtree(document.root())
+            .find(|&n| document.tag(n) == Some("body"))
+            .expect("a body");
+        serialize_children(document, body, true)
+    }
+
+    /// Parses until the parser stops at a script's end tag.
+    fn to_script(parser: &mut Parser, document: &mut Document) -> NodeId {
+        loop {
+            match parser.parse(document, usize::MAX) {
+                Stop::Script { element, .. } => return element,
+                Stop::Done => panic!("no script"),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn writes_go_in_at_the_insertion_point_and_nest_with_scripts() {
+        let mut parser = Parser::new(true);
+        parser.feed("<p>a</p><script>x</script><p>b</p>");
+        parser.end();
+        let mut document = Document::new();
+        to_script(&mut parser, &mut document);
+        // A write with no insertion point goes nowhere.
+        parser.write("<b>lost</b>");
+        assert_eq!(parser.parse_written(&mut document, usize::MAX), Stop::Input);
+        // The script at its end tag writes, twice, each after the last.
+        parser.push_insertion_point();
+        parser.write("<i>w</i>");
+        assert_eq!(parser.parse_written(&mut document, usize::MAX), Stop::Input);
+        parser.write("<script>y</script><u>");
+        let Stop::Script { element, .. } = parser.parse_written(&mut document, usize::MAX) else {
+            panic!("the written script's end tag");
+        };
+        assert_eq!(document.text_content(element), "y");
+        // The written script writes just after its own end tag, before
+        // the rest of what was written with it.
+        parser.push_insertion_point();
+        parser.write("<em>n</em>");
+        assert_eq!(parser.parse_written(&mut document, usize::MAX), Stop::Input);
+        parser.pop_insertion_point();
+        assert_eq!(parser.parse_written(&mut document, usize::MAX), Stop::Input);
+        parser.pop_insertion_point();
+        assert!(!parser.has_insertion_point());
+        while parser.parse(&mut document, usize::MAX) != Stop::Done {}
+        assert_eq!(
+            body_markup(&document),
+            "<p>a</p><script>x</script><i>w</i><script>y</script><em>n</em><u><p>b</p></u>"
+        );
+        document.validate().unwrap();
+    }
+
+    #[test]
+    fn a_token_may_span_writes_and_the_rest_of_the_input() {
+        let mut parser = Parser::new(true);
+        parser.feed("<script>x</script>");
+        let mut document = Document::new();
+        to_script(&mut parser, &mut document);
+        parser.push_insertion_point();
+        parser.write("<di");
+        assert_eq!(parser.parse_written(&mut document, usize::MAX), Stop::Input);
+        parser.write("v class=");
+        assert_eq!(parser.parse_written(&mut document, usize::MAX), Stop::Input);
+        parser.write("a>x\r\ny&am");
+        assert_eq!(parser.parse_written(&mut document, usize::MAX), Stop::Input);
+        parser.pop_insertion_point();
+        // The rest of the reference comes from the network.
+        parser.feed("p;z</div>");
+        parser.end();
+        while parser.parse(&mut document, usize::MAX) != Stop::Done {}
+        // (The script is in the head.)
+        assert_eq!(body_markup(&document), "<div class=\"a\">x\ny&amp;z</div>");
     }
 
     #[test]

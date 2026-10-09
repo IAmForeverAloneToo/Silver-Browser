@@ -142,6 +142,13 @@ impl Load {
         }
     }
 
+    /// The parser, once decoding has begun: `document.write` and the
+    /// insertion point are its (M25). An encoding a write's `<meta>`
+    /// declares is acted on at the next [`Load::parse`].
+    pub fn parser(&mut self) -> Option<&mut Parser> {
+        self.decoding.as_mut().map(|decoding| &mut decoding.parser)
+    }
+
     /// Parses at most `slice` tokens into `document`, which must be the
     /// one this load has built into since it began or last restarted.
     pub fn parse(&mut self, document: &mut Document, slice: usize) -> Progress {

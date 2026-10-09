@@ -18,6 +18,18 @@ pub struct Handle(pub u64);
 /// exactly.
 pub const MAX_HANDLE: u64 = (1 << 53) - 1;
 
+/// A script to run nested, inside the native call that made it ready
+/// (HTML: a script a script inserted, or a parser-inserted one in what
+/// `document.write` wrote, runs before the call returns).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NestedScript {
+    pub source: String,
+    /// The URL its errors name.
+    pub url: String,
+    /// The line its text starts on.
+    pub line: u32,
+}
+
 /// A call the bindings make of the host, one per native function.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Call {
@@ -140,6 +152,20 @@ pub enum Call {
         position: String,
         markup: String,
     },
+    /// `document.write`: the text put into the parser's input at its
+    /// insertion point, and parsed there (HTML section 8.4.3).
+    Write(String),
+    /// The script element whose script is running, if any.
+    CurrentScript,
+    /// `document.readyState`: `loading`, `interactive` or `complete`.
+    ReadyState,
+    /// The text of an element's text children alone (HTML's "child text
+    /// content", a script's `text`).
+    ChildText(Handle),
+    /// A script element's "force async" flag.
+    ForceAsync(Handle),
+    /// Sets a script element's "force async" flag (its `async` setter).
+    SetForceAsync(Handle, bool),
     /// The script holds no object for the node any longer.
     Released(Handle),
 }

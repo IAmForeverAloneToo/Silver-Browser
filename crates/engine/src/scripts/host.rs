@@ -3,21 +3,43 @@
 //! what must last between runs: the nodes scripts hold objects for, and
 //! the subtrees they took out of the tree, freed once nothing holds them.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
 use dom::{Document, MutationError, NodeData, NodeId};
-use js::{Answer, Call, ConsoleLevel, DomError, Handle, ScriptingHost};
+use js::{Answer, Call, ConsoleLevel, DomError, Handle, NestedScript, ScriptError, ScriptingHost};
 use style::selector_matching::{Matcher, SelectorList};
 
-use super::{ConsoleEntry, cut, document_title};
+use super::{
+    ConsoleEntry, How, Lent, MAX_SCRIPT_NESTING, Place, Prepared, ReadyState, Source, Wanted, cut,
+    document_title, parser_place, prepare_element, refusal_text, report_text,
+};
+use crate::loader::Page;
+
+/// A script running, innermost last.
+struct Frame {
+    /// Its element: `document.currentScript`.
+    element: Option<NodeId>,
+    /// Whether it came from a file (HTML's ignore-destructive-writes).
+    external: bool,
+    /// Whether it is a script `document.write` wrote, run with the
+    /// insertion point after its end tag, which goes when it ends.
+    written: bool,
+}
+
+/// What a run leaves the engine to do: the console's lines and the count
+/// of errors among them, and the scripts to fetch.
+#[derive(Default)]
+pub(crate) struct Outputs {
+    pub(crate) console: Vec<ConsoleEntry>,
+    pub(crate) errors: usize,
+    pub(crate) wanted: Vec<Wanted>,
+}
 
 /// The host a document's scripts reach it through.
 #[derive(Default)]
 pub(crate) struct DocumentHost {
     /// The document, lent for a run.
     pub(crate) document: Document,
-    /// What scripts wrote to the console in the run.
-    pub(crate) console: Vec<ConsoleEntry>,
     /// The nodes a script holds an object for: handles given out and not
     /// released (M25). None of them is freed.
     exposed: HashSet<NodeId>,
@@ -26,14 +48,38 @@ pub(crate) struct DocumentHost {
     detached: Vec<NodeId>,
     /// The work done since the realm last asked.
     work: u64,
+    /// The document's page and parser, lent for a run; and where its
+    /// loading stands.
+    page: Option<Page>,
+    parser: Option<html::Load>,
+    ready: ReadyState,
+    /// The scripts running, innermost last.
+    frames: Vec<Frame>,
+    /// Scripts to run now, nested, in order.
+    now: VecDeque<Source>,
+    /// A parsing-blocking script is pending: what is written is not
+    /// parsed until it has run.
+    blocked: bool,
+    /// What the run leaves the engine to do.
+    outputs: Outputs,
+    /// A script was not run for nesting too deep, and the console said
+    /// so, in this run.
+    too_deep: bool,
+    /// The `script` elements made by scripts (`createElement`,
+    /// `cloneNode`), which run when connected (HTML section 4.12.1.1),
+    /// and those of them not started yet.
+    made: HashSet<NodeId>,
+    pending: Vec<NodeId>,
+    /// Script elements already started: prepared, or parsed in a
+    /// fragment.
+    started: HashSet<NodeId>,
+    /// Made scripts whose "force async" flag was cleared by `async`.
+    not_forced: HashSet<NodeId>,
 }
 
 impl ScriptingHost for DocumentHost {
     fn console(&mut self, level: ConsoleLevel, message: String) {
-        self.console.push(ConsoleEntry {
-            level,
-            text: cut(message),
-        });
+        self.say(level, message);
     }
 
     fn title(&mut self) -> String {
@@ -46,6 +92,76 @@ impl ScriptingHost for DocumentHost {
 
     fn dom(&mut self, call: Call) -> Result<Answer, DomError> {
         self.work += 1;
+        let inserts = matches!(
+            call,
+            Call::Insert { .. }
+                | Call::Replace { .. }
+                | Call::SetTextContent(..)
+                | Call::SetAttribute(..)
+                | Call::SetInnerHtml(..)
+                | Call::SetOuterHtml(..)
+                | Call::InsertAdjacentHtml { .. }
+        );
+        let answer = self.answer(call)?;
+        if inserts && !self.pending.is_empty() {
+            self.prepare_made();
+        }
+        Ok(answer)
+    }
+
+    fn take_work(&mut self) -> u64 {
+        std::mem::take(&mut self.work)
+    }
+
+    fn take_script(&mut self) -> Option<NestedScript> {
+        loop {
+            if let Some(source) = self.now.pop_front() {
+                let written = source.element.is_some_and(|e| !self.made.contains(&e));
+                self.frames.push(Frame {
+                    element: source.element,
+                    external: false,
+                    written,
+                });
+                return Some(NestedScript {
+                    source: source.text,
+                    url: source.url,
+                    line: source.line,
+                });
+            }
+            if self.blocked {
+                return None;
+            }
+            // What a write put in before the insertion point, parsed.
+            let parser = self.parser.as_mut().and_then(html::Load::parser)?;
+            let html::Stop::Script { element, line } =
+                parser.parse_written(&mut self.document, usize::MAX)
+            else {
+                return None;
+            };
+            self.prepare_written(element, line);
+        }
+    }
+
+    fn script_ran(&mut self) {
+        if let Some(frame) = self.frames.pop()
+            && frame.written
+            && let Some(parser) = self.parser.as_mut().and_then(html::Load::parser)
+        {
+            parser.pop_insertion_point();
+        }
+    }
+
+    fn report(&mut self, error: ScriptError) {
+        if let Some(text) = report_text(&error) {
+            self.outputs.errors += 1;
+            self.say(ConsoleLevel::Error, text);
+        }
+    }
+}
+
+impl DocumentHost {
+    /// Answers `call`.
+    fn answer(&mut self, call: Call) -> Result<Answer, DomError> {
         match call {
             Call::Document => Ok(self.give(Some(self.document.root()))),
             Call::Wrap(node) => {
@@ -196,6 +312,7 @@ impl ScriptingHost for DocumentHost {
                 }
                 let element = self.document.create_element(&name).map_err(refused)?;
                 self.detached.push(element);
+                self.made_by_script(element, false);
                 Ok(self.give(Some(element)))
             }
             Call::CreateText(data) => {
@@ -239,6 +356,18 @@ impl ScriptingHost for DocumentHost {
             Call::Clone { node, deep } => {
                 let node = self.node(node)?;
                 let copy = self.clone_node(node, deep)?;
+                // A copy of a script is a script's made, started if the
+                // original is (HTML's cloning steps); those under it too.
+                let pairs: Vec<(NodeId, NodeId)> = self
+                    .document
+                    .subtree(node)
+                    .zip(self.document.subtree(copy))
+                    .filter(|&(from, _)| self.document.tag(from) == Some("script"))
+                    .collect();
+                for (from, to) in pairs {
+                    let started = self.started.contains(&from);
+                    self.made_by_script(to, started);
+                }
                 Ok(self.give(Some(copy)))
             }
             Call::ElementById(root, id) => {
@@ -403,6 +532,39 @@ impl ScriptingHost for DocumentHost {
                 self.adopt(container, parent, before)?;
                 Ok(Answer::Nothing)
             }
+            Call::Write(text) => {
+                self.write(&text);
+                Ok(Answer::Nothing)
+            }
+            Call::CurrentScript => {
+                let current = self.frames.last().and_then(|frame| frame.element);
+                Ok(self.give(current))
+            }
+            Call::ReadyState => Ok(Answer::String(self.ready.as_str().to_owned())),
+            Call::ChildText(node) => {
+                let node = self.node(node)?;
+                let text: String = self
+                    .document
+                    .children(node)
+                    .filter_map(|child| self.document.text(child))
+                    .collect();
+                Ok(Answer::String(text))
+            }
+            Call::ForceAsync(node) => {
+                let node = self.node(node)?;
+                Ok(Answer::Bool(
+                    self.made.contains(&node) && !self.not_forced.contains(&node),
+                ))
+            }
+            Call::SetForceAsync(node, on) => {
+                let node = self.node(node)?;
+                if on {
+                    self.not_forced.remove(&node);
+                } else {
+                    self.not_forced.insert(node);
+                }
+                Ok(Answer::Nothing)
+            }
             Call::Released(node) => {
                 if let Some(id) = dom::NodeId::from_bits(node.0) {
                     self.exposed.remove(&id);
@@ -412,12 +574,219 @@ impl ScriptingHost for DocumentHost {
         }
     }
 
-    fn take_work(&mut self) -> u64 {
-        std::mem::take(&mut self.work)
+    /// Lends the host what a run needs, `how` the script runs, and
+    /// whether a parsing-blocking script is pending.
+    pub(crate) fn lend(&mut self, lent: &mut Lent<'_>, how: How, blocked: bool) {
+        self.document = std::mem::take(lent.document);
+        let placeholder = Page::given(lent.page.id());
+        self.page = Some(std::mem::replace(lent.page, placeholder));
+        self.parser = lent
+            .parser
+            .as_deref_mut()
+            .map(|load| std::mem::replace(load, html::Load::new(None, false)));
+        self.ready = lent.ready;
+        self.blocked = blocked;
+        self.too_deep = false;
+        self.frames = vec![Frame {
+            element: how.element,
+            external: how.external,
+            written: false,
+        }];
     }
-}
 
-impl DocumentHost {
+    /// Gives back what was lent, and what the run leaves the engine to do.
+    pub(crate) fn give_back(&mut self, lent: &mut Lent<'_>) -> Outputs {
+        *lent.document = std::mem::take(&mut self.document);
+        if let Some(page) = self.page.take() {
+            *lent.page = page;
+        }
+        if let (Some(load), Some(lent)) = (self.parser.take(), lent.parser.as_deref_mut()) {
+            *lent = load;
+        }
+        self.frames.clear();
+        self.now.clear();
+        std::mem::take(&mut self.outputs)
+    }
+
+    /// Whether a script may run nested in those running: not past
+    /// [`MAX_SCRIPT_NESTING`], where the console says, once a run, that
+    /// it was not run.
+    fn may_nest(&mut self) -> bool {
+        if self.frames.len() < MAX_SCRIPT_NESTING {
+            return true;
+        }
+        if !self.too_deep {
+            self.too_deep = true;
+            self.say(
+                ConsoleLevel::Error,
+                format!("A script nested more than {MAX_SCRIPT_NESTING} deep was not run"),
+            );
+        }
+        false
+    }
+
+    /// Writes `message` to the console.
+    fn say(&mut self, level: ConsoleLevel, message: String) {
+        self.outputs.console.push(ConsoleEntry {
+            level,
+            text: cut(message),
+        });
+    }
+
+    /// `document.write` (HTML section 8.4.3): the text put in before the
+    /// insertion point, to be parsed when the call has made it in. With
+    /// none, a script from a file writes nothing, and anything else would
+    /// open the document again, which this version does not do (G48).
+    fn write(&mut self, text: &str) {
+        self.work += text.len() as u64 / 64;
+        let defined = self
+            .parser
+            .as_mut()
+            .and_then(html::Load::parser)
+            .is_some_and(|parser| parser.has_insertion_point());
+        if !defined {
+            if !self.frames.iter().any(|frame| frame.external) {
+                self.say(
+                    ConsoleLevel::Warn,
+                    "document.write() outside the parse would replace the document, which is \
+                     not supported yet: nothing was written"
+                        .to_owned(),
+                );
+            }
+            return;
+        }
+        if let Some(parser) = self.parser.as_mut().and_then(html::Load::parser) {
+            parser.write(text);
+        }
+    }
+
+    /// The parser stopped at the end tag of a script that a write put in
+    /// (HTML section 13.2.6.4.8, the nesting level above zero): prepared
+    /// as the parser's own are; an inline one run now, nested, the
+    /// insertion point after its end tag; an external one fetched, the
+    /// pending parsing-blocking script, which stops what was written from
+    /// being parsed further, or one to run later. No style sheet blocks
+    /// a written script: a script runs only when none blocks scripts, and
+    /// the sheets a write brings are found after the run.
+    fn prepare_written(&mut self, element: NodeId, line: u32) {
+        let Some(page) = self.page.as_mut() else {
+            return;
+        };
+        match prepare_element(page, &self.document, element, line) {
+            Prepared::NotYet | Prepared::Nothing => {}
+            Prepared::Refused(what, violation) => {
+                self.say(ConsoleLevel::Error, refusal_text(what, &violation));
+            }
+            Prepared::Inline(source) => {
+                if self.may_nest()
+                    && let Some(parser) = self.parser.as_mut().and_then(html::Load::parser)
+                {
+                    parser.push_insertion_point();
+                    self.now.push_back(source);
+                }
+            }
+            Prepared::Fetch {
+                request,
+                url,
+                fallback,
+            } => {
+                let place = parser_place(&self.document, element);
+                self.blocked |= place == Place::Blocking;
+                self.outputs.wanted.push(Wanted {
+                    request,
+                    url,
+                    fallback,
+                    element,
+                    place,
+                });
+            }
+        }
+    }
+
+    /// Prepares the scripts scripts made that are now connected and not
+    /// started (HTML section 4.12.1.1: when one becomes connected, or is
+    /// given children, or a `src`), in tree order: an inline one runs
+    /// now, nested; an external one is fetched to run as soon as it comes,
+    /// or in order with the others whose `async` was set false.
+    fn prepare_made(&mut self) {
+        let root = self.document.root();
+        let mut ready: Vec<NodeId> = self
+            .pending
+            .iter()
+            .copied()
+            .filter(|&script| {
+                self.document.contains(script)
+                    && self.document.ancestors(script).last() == Some(root)
+            })
+            .collect();
+        if ready.is_empty() {
+            return;
+        }
+        if ready.len() > 1 {
+            let order: Vec<NodeId> = self
+                .document
+                .subtree(root)
+                .filter(|node| ready.contains(node))
+                .collect();
+            ready = order;
+        }
+        for script in ready {
+            let Some(page) = self.page.as_mut() else {
+                return;
+            };
+            let prepared = prepare_element(page, &self.document, script, 1);
+            if matches!(prepared, Prepared::NotYet) {
+                continue;
+            }
+            self.pending.retain(|&pending| pending != script);
+            self.started.insert(script);
+            match prepared {
+                Prepared::NotYet | Prepared::Nothing => {}
+                Prepared::Refused(what, violation) => {
+                    self.say(ConsoleLevel::Error, refusal_text(what, &violation));
+                }
+                Prepared::Inline(source) => {
+                    if self.may_nest() {
+                        self.now.push_back(source);
+                    }
+                }
+                Prepared::Fetch {
+                    request,
+                    url,
+                    fallback,
+                } => {
+                    let forced = !self.not_forced.contains(&script);
+                    let place = if forced || self.document.attr(script, "async").is_some() {
+                        Place::Soon
+                    } else {
+                        Place::InOrder
+                    };
+                    self.outputs.wanted.push(Wanted {
+                        request,
+                        url,
+                        fallback,
+                        element: script,
+                        place,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Notes that `element`, just made by a script, is a `script`: it
+    /// runs once connected, unless already started.
+    fn made_by_script(&mut self, element: NodeId, started: bool) {
+        if self.document.tag(element) != Some("script") {
+            return;
+        }
+        self.made.insert(element);
+        if started {
+            self.started.insert(element);
+        } else {
+            self.pending.push(element);
+        }
+    }
+
     /// The node `handle` names, which a script holds and so is live.
     fn node(&self, handle: Handle) -> Result<NodeId, DomError> {
         NodeId::from_bits(handle.0)
@@ -456,6 +825,13 @@ impl DocumentHost {
             markup,
         );
         self.work += self.document.len().saturating_sub(before) as u64;
+        // A fragment's scripts are already started: they never run.
+        let scripts: Vec<NodeId> = self
+            .document
+            .subtree(container)
+            .filter(|&node| self.document.tag(node) == Some("script"))
+            .collect();
+        self.started.extend(scripts);
         Ok(container)
     }
 

@@ -17,7 +17,7 @@ mod test_tree;
 #[cfg(test)]
 mod tests;
 
-pub use dom::{Answer, Call, DomError, Handle, MAX_HANDLE, WORK_PER_STEP};
+pub use dom::{Answer, Call, DomError, Handle, MAX_HANDLE, NestedScript, WORK_PER_STEP};
 pub use quickjs::QuickJs;
 
 /// The most heap a realm may hold, in bytes. An allocation past it
@@ -144,6 +144,20 @@ pub trait ScriptingHost: Default + 'static {
     /// realm charges to the run's budget ([`WORK_PER_STEP`]).
     fn take_work(&mut self) -> u64 {
         0
+    }
+    /// The next script to run now, inside the call that made it ready
+    /// (M25): one a script inserted, or one in what `document.write`
+    /// wrote; `None` once there is none. The realm runs it, nested in the
+    /// running script, and says when it has run.
+    fn take_script(&mut self) -> Option<NestedScript> {
+        None
+    }
+    /// The script [`ScriptingHost::take_script`] gave has run.
+    fn script_ran(&mut self) {}
+    /// A script run nested failed: an error of the page's, which the
+    /// script that made it run does not see.
+    fn report(&mut self, error: ScriptError) {
+        let _ = error;
     }
 }
 
