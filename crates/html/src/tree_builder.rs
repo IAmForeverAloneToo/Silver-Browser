@@ -1,22 +1,26 @@
-//! HTML tree construction (pragmatic subset).
+//! HTML tree construction (pragmatic subset), into a `dom::Document`
+//! (M24.8, `docs/design/scripting.md`).
 //!
-//! Consumes [`Token`]s and builds a `dom::Node` tree with WHATWG-flavored
-//! error recovery: unclosed elements are closed at EOF, unmatched end
-//! tags are dropped, and the implied end tags of the spec's "in body"
-//! insertion mode are applied for the elements that matter on real
-//! pages (`p`, `li`, `dd`/`dt`, `option`, the headings, table rows and
-//! cells). Doctypes and comments are accepted and ignored — they are not
-//! represented in the DOM yet. The builder never panics and never fails:
-//! any token stream produces a tree.
+//! Consumes [`Token`]s and builds the document's tree as they come, with
+//! WHATWG-flavored error recovery: unclosed elements are closed at EOF,
+//! unmatched end tags are dropped, and the implied end tags of the spec's
+//! "in body" insertion mode are applied for the elements that matter on
+//! real pages (`p`, `li`, `dd`/`dt`, `option`, the headings, table rows
+//! and cells). An element is in the document from its start tag on, its
+//! open ancestors with it, so a script run at its end tag sees the tree as
+//! it stands there. Doctypes, comments and processing instructions are
+//! accepted and dropped: the DOM has no nodes for them yet. The builder
+//! never panics and never fails: any token stream produces a tree.
 //!
 //! Two bounds keep hostile input linear. The stack of open elements is
 //! capped at [`MAX_DEPTH`] levels (Blink uses the same figure): a start
 //! tag at the cap closes the innermost open element first, so a page of
 //! nothing but `<b>` tags produces a tree 512 deep and a million wide,
 //! not a million deep. That cap is also what keeps the recursive walks
-//! over the finished tree (styling, layout, the derived `Clone`) within
-//! any thread's stack. And every scan of the open stack is bounded by
-//! it, so a start or end tag costs at most 512 comparisons.
+//! over the finished tree within any thread's stack. And every scan of
+//! the open stack is bounded by it, so a start or end tag costs at most
+//! 512 comparisons. A node the document has no room for (`dom`'s cap on
+//! live nodes) is dropped.
 //!
 //! The document always has the spec's skeleton (M10's parser step):
 //! `html`, `head` and `body` are implied when the source does not
@@ -32,27 +36,36 @@
 //! than back into the head (the spec reopens the head); a stylesheet
 //! or script there is collected and hidden all the same.
 //!
+//! The builder says which tokenizer state an element's content starts
+//! in (section 13.2.6.4.7's generic raw text and RCDATA element parsing,
+//! `script`, `plaintext`, and `noscript` when scripting is enabled), in
+//! HTML content alone. With the scripting flag, `noscript`'s content is
+//! text, as the "in head" and "in body" rules have it.
+//!
+//! A `script` element's end tag is noted with the line its text began
+//! on ([`TreeBuilder::take_script`]), for the parser to stop at (section
+//! 13.2.6.4.8). A script the input ends inside is never one: the spec
+//! marks it already started.
+//!
 //! A `<meta>` that declares a character encoding, by `charset` or by
 //! `http-equiv=content-type` and `content`, is noted as it is built:
 //! the first one is [`TreeBuilder::encoding_declaration`], which the
-//! caller decoding the bytes acts on (HTML §13.2.3.4, see
-//! [`crate::parse_document_from_bytes`]). Every insertion mode hands a
-//! `<meta>` to the "in head" rules that do this, but for `select` and
-//! framesets, which ignore it; this builder has neither mode and notes
-//! every `<meta>`.
+//! caller decoding the bytes acts on (HTML section 13.2.3.4, see
+//! [`crate::parse_document_from_bytes`]).
 //!
 //! What the full tree construction algorithm has and this does not:
 //! the table insertion modes (a table's cells are not wrapped in a
 //! `tbody`, a stray `<td>` outside a table is an ordinary element), the
 //! active formatting elements list (misnested `<b><i></b></i>` is not
-//! reconstructed), and foster parenting. Foreign content is recognised
-//! only to the extent that a self-closing tag inside `<svg>` or `<math>`
-//! is honoured, as the spec does there and nowhere else in HTML.
+//! reconstructed), foster parenting, "in head noscript", and foreign
+//! content beyond a self-closing tag inside `<svg>` or `<math>` being
+//! honoured (G44).
+
+use dom::{Document, NodeId};
+use encoding::Encoding;
 
 use crate::encoding_sniffing::extract_from_meta_content;
 use crate::tokenizer::{TextState, Token, content_state};
-use dom::{Element, Node};
-use encoding::Encoding;
 
 /// The most elements that may be open at once.
 pub const MAX_DEPTH: usize = dom::MAX_DEPTH;
@@ -146,11 +159,19 @@ enum Phase {
     InBody,
 }
 
-/// Builds a DOM tree from a token stream.
+/// An element on the stack of open elements: its node, and its tag,
+/// kept to scan the stack without the document.
+#[derive(Debug, Clone)]
+struct Open {
+    id: NodeId,
+    tag: String,
+}
+
+/// Builds a document's tree from a token stream.
+#[derive(Debug)]
 pub struct TreeBuilder {
-    root: Node,
     /// Stack of open elements, outermost first.
-    open: Vec<Element>,
+    open: Vec<Open>,
     /// A `<pre>` (or `<listing>`/`<textarea>`) was just opened: a
     /// newline that immediately follows is not content (the spec's
     /// "in body" rule for those start tags).
@@ -158,23 +179,31 @@ pub struct TreeBuilder {
     phase: Phase,
     /// The encoding the first `<meta>` declaring one names.
     encoding_declaration: Option<Encoding>,
+    /// The scripting flag (section 13.2.4.5).
+    scripting: bool,
+    /// The line the open `script` element's text begins on.
+    script_line: u32,
+    /// A `script` element just closed by its end tag, and its line.
+    script: Option<(NodeId, u32)>,
 }
 
 impl Default for TreeBuilder {
     fn default() -> Self {
-        TreeBuilder::new()
+        TreeBuilder::new(false)
     }
 }
 
 impl TreeBuilder {
-    /// Creates a builder for a fresh document.
-    pub fn new() -> Self {
+    /// A builder for a fresh document, its scripting flag `scripting`.
+    pub fn new(scripting: bool) -> Self {
         TreeBuilder {
-            root: Node::document(Vec::new()),
             open: Vec::new(),
             skip_leading_newline: false,
             phase: Phase::Initial,
             encoding_declaration: None,
+            scripting,
+            script_line: 1,
+            script: None,
         }
     }
 
@@ -185,15 +214,25 @@ impl TreeBuilder {
         self.encoding_declaration
     }
 
-    /// Feeds one token into the builder; the state the tokenizer is to
-    /// read what follows in, when the token opened an element whose
-    /// content is text (section 13.2.6.4.7's generic raw text and RCDATA
-    /// element parsing, and `script` and `plaintext`), in HTML content.
-    pub fn process(&mut self, token: Token) -> Option<TextState> {
+    /// The `script` element the last token closed, by its end tag, and
+    /// the line its text began on; taken once.
+    pub fn take_script(&mut self) -> Option<(NodeId, u32)> {
+        self.script.take()
+    }
+
+    /// Feeds one token into the builder, which builds into `document`;
+    /// `line` is the tokenizer's line once the token was read. Returns
+    /// the state the tokenizer is to read what follows in, when the
+    /// token opened an element whose content is text.
+    pub fn process(
+        &mut self,
+        document: &mut Document,
+        token: Token,
+        line: u32,
+    ) -> Option<TextState> {
         let skip_newline = std::mem::take(&mut self.skip_leading_newline);
         match token {
             Token::Doctype(_) | Token::Comment(_) | Token::ProcessingInstruction { .. } => {
-                // Accepted by the tokenizer, not represented in the DOM yet.
                 // A comment between `<pre>` and its newline does not
                 // cancel the newline rule (the spec checks the next
                 // *token*, but a comment is invisible here either way).
@@ -205,14 +244,14 @@ impl TreeBuilder {
                     _ => text.as_str(),
                 };
                 if self.phase == Phase::InBody || self.inside_a_head_element() {
-                    self.push_text(text);
+                    self.push_text(document, text);
                 } else {
                     // White space between the skeleton's elements is not
                     // content; the first other character is body content.
                     let content = text.trim_start_matches(is_html_whitespace);
                     if !content.is_empty() {
-                        self.ensure_body();
-                        self.push_text(content);
+                        self.ensure_body(document);
+                        self.push_text(document, content);
                     }
                 }
             }
@@ -220,7 +259,13 @@ impl TreeBuilder {
                 name,
                 attrs,
                 self_closing,
-            } => return self.start_tag(name, attrs, self_closing),
+            } => {
+                let state = self.start_tag(document, name, attrs, self_closing);
+                if state.is_some() {
+                    self.script_line = line;
+                }
+                return state;
+            }
             Token::EndTag(name) => match name.as_str() {
                 // The skeleton stays open to the end: content after
                 // `</body>` or `</html>` is still body content.
@@ -229,6 +274,12 @@ impl TreeBuilder {
                     if self.phase == Phase::InHead {
                         self.close_through("head", &[]);
                         self.phase = Phase::AfterHead;
+                    }
+                }
+                // A script's end tag: the parser stops after it.
+                "script" if self.current_is(&["script"]) && !self.in_foreign_content() => {
+                    if let Some(open) = self.open.pop() {
+                        self.script = Some((open.id, self.script_line));
                     }
                 }
                 // Unmatched end tags are dropped (recovery); a matched one
@@ -244,6 +295,7 @@ impl TreeBuilder {
     /// the body, implied as needed.
     fn start_tag(
         &mut self,
+        document: &mut Document,
         name: String,
         attrs: Vec<(String, String)>,
         self_closing: bool,
@@ -254,38 +306,40 @@ impl TreeBuilder {
         match name.as_str() {
             "html" => {
                 if self.phase == Phase::Initial {
-                    self.open_skeleton("html", attrs);
+                    self.open_skeleton(document, "html", attrs);
                     self.phase = Phase::BeforeHead;
-                } else {
-                    merge_attrs(self.open.first_mut(), attrs);
+                } else if let Some(html) = self.open.first() {
+                    merge_attrs(document, html.id, attrs);
                 }
                 return None;
             }
             "head" => {
                 match self.phase {
-                    Phase::Initial => self.open_skeleton("html", Vec::new()),
+                    Phase::Initial => self.open_skeleton(document, "html", Vec::new()),
                     Phase::BeforeHead => {}
                     _ => return None, // a second head: ignored
                 }
-                self.open_skeleton("head", attrs);
+                self.open_skeleton(document, "head", attrs);
                 self.phase = Phase::InHead;
                 return None;
             }
             "body" => {
                 match self.phase {
                     Phase::InBody => {
-                        merge_attrs(self.open.iter_mut().find(|e| e.tag == "body"), attrs);
+                        if let Some(body) = self.open.iter().find(|e| e.tag == "body") {
+                            merge_attrs(document, body.id, attrs);
+                        }
                         return None;
                     }
                     Phase::Initial => {
-                        self.open_skeleton("html", Vec::new());
-                        self.imply_empty_head();
+                        self.open_skeleton(document, "html", Vec::new());
+                        self.imply_empty_head(document);
                     }
-                    Phase::BeforeHead => self.imply_empty_head(),
+                    Phase::BeforeHead => self.imply_empty_head(document),
                     Phase::InHead => self.close_through("head", &[]),
                     Phase::AfterHead => {}
                 }
-                self.open_skeleton("body", attrs);
+                self.open_skeleton(document, "body", attrs);
                 self.phase = Phase::InBody;
                 return None;
             }
@@ -294,83 +348,102 @@ impl TreeBuilder {
         if HEAD_ELEMENTS.contains(&name.as_str()) {
             match self.phase {
                 Phase::Initial => {
-                    self.open_skeleton("html", Vec::new());
-                    self.open_skeleton("head", Vec::new());
+                    self.open_skeleton(document, "html", Vec::new());
+                    self.open_skeleton(document, "head", Vec::new());
                     self.phase = Phase::InHead;
                 }
                 Phase::BeforeHead => {
-                    self.open_skeleton("head", Vec::new());
+                    self.open_skeleton(document, "head", Vec::new());
                     self.phase = Phase::InHead;
                 }
                 Phase::InHead | Phase::InBody => {}
                 // After the head was closed: into the body (the spec
                 // reopens the head; see the module doc).
-                Phase::AfterHead => self.ensure_body(),
+                Phase::AfterHead => self.ensure_body(document),
             }
         } else {
-            self.ensure_body();
+            self.ensure_body(document);
         }
 
         self.imply_end_tags_before(&name);
-        let el = Element {
-            tag: name,
-            attrs,
-            children: Vec::new(),
-        };
-        let is_void = VOID_ELEMENTS.contains(&el.tag.as_str());
+        let is_void = VOID_ELEMENTS.contains(&name.as_str());
         // The self-closing flag means nothing on an HTML element (the
         // spec ignores it with a parse error): `<div/>` is an open
         // `<div>`. It is honoured in foreign content, where `<path/>`
         // really is empty.
         let foreign = self.in_foreign_content();
-        let closes_itself = is_void || (self_closing && foreign);
-        if closes_itself {
-            self.attach(Node::Element(el));
+        if is_void || (self_closing && foreign) {
+            self.insert(document, &name, attrs);
             return None;
         }
         self.pop_at_the_cap();
-        if SKIPS_LEADING_NEWLINE.contains(&el.tag.as_str()) {
+        if SKIPS_LEADING_NEWLINE.contains(&name.as_str()) {
             self.skip_leading_newline = true;
         }
         let state = if foreign {
             None
+        } else if name == "noscript" && self.scripting {
+            Some(TextState::Rawtext)
         } else {
-            content_state(&el.tag)
+            content_state(&name)
         };
-        self.open.push(el);
+        if let Some(id) = self.insert(document, &name, attrs) {
+            self.open.push(Open { id, tag: name });
+        }
         state
     }
 
+    /// Inserts an element at the current place: last under the innermost
+    /// open element, or the document. `None` when the document has no
+    /// room for it.
+    fn insert(
+        &mut self,
+        document: &mut Document,
+        tag: &str,
+        attrs: Vec<(String, String)>,
+    ) -> Option<NodeId> {
+        let parent = self.open.last().map_or(document.root(), |open| open.id);
+        let id = document.create_element_with(tag, attrs).ok()?;
+        match document.append_new(parent, id) {
+            Ok(()) => Some(id),
+            Err(_) => {
+                let _ = document.free(id);
+                None
+            }
+        }
+    }
+
     /// Opens one of the skeleton elements (`html`, `head`, `body`).
-    fn open_skeleton(&mut self, tag: &str, attrs: Vec<(String, String)>) {
+    fn open_skeleton(&mut self, document: &mut Document, tag: &str, attrs: Vec<(String, String)>) {
         self.pop_at_the_cap();
-        self.open.push(Element {
-            tag: tag.to_string(),
-            attrs,
-            children: Vec::new(),
-        });
+        if let Some(id) = self.insert(document, tag, attrs) {
+            self.open.push(Open {
+                id,
+                tag: tag.to_string(),
+            });
+        }
     }
 
     /// An empty `head`, when body content arrives before any head.
-    fn imply_empty_head(&mut self) {
-        self.open_skeleton("head", Vec::new());
+    fn imply_empty_head(&mut self, document: &mut Document) {
+        self.open_skeleton(document, "head", Vec::new());
         self.close_through("head", &[]);
     }
 
     /// Makes sure the body is open, implying whatever of the skeleton
     /// is still missing.
-    fn ensure_body(&mut self) {
+    fn ensure_body(&mut self, document: &mut Document) {
         match self.phase {
             Phase::Initial => {
-                self.open_skeleton("html", Vec::new());
-                self.imply_empty_head();
+                self.open_skeleton(document, "html", Vec::new());
+                self.imply_empty_head(document);
             }
-            Phase::BeforeHead => self.imply_empty_head(),
+            Phase::BeforeHead => self.imply_empty_head(document),
             Phase::InHead => self.close_through("head", &[]),
             Phase::AfterHead => {}
             Phase::InBody => return,
         }
-        self.open_skeleton("body", Vec::new());
+        self.open_skeleton(document, "body", Vec::new());
         self.phase = Phase::InBody;
     }
 
@@ -385,10 +458,8 @@ impl TreeBuilder {
     /// At the depth cap, closes the innermost open element to make
     /// room (see the module doc).
     fn pop_at_the_cap(&mut self) {
-        if self.open.len() >= MAX_DEPTH
-            && let Some(inner) = self.open.pop()
-        {
-            self.attach(Node::Element(inner));
+        if self.open.len() >= MAX_DEPTH {
+            self.open.pop();
         }
     }
 
@@ -401,21 +472,21 @@ impl TreeBuilder {
             "li" => self.close_through("li", &LI_SCOPE_STOPS),
             "dd" | "dt" => {
                 if let Some(idx) = self.rposition_before(&DD_DT, &DD_SCOPE_STOPS) {
-                    self.close_from(idx);
+                    self.open.truncate(idx);
                 }
             }
             "option" | "optgroup" => {
                 if self.current_is(&["option"]) {
-                    self.close_from(self.open.len() - 1);
+                    self.open.pop();
                 }
                 if name == "optgroup" && self.current_is(&["optgroup"]) {
-                    self.close_from(self.open.len() - 1);
+                    self.open.pop();
                 }
             }
             "tr" => self.close_through("tr", &["table"]),
             "td" | "th" => {
                 if let Some(idx) = self.rposition_before(&CELLS, &["tr", "table"]) {
-                    self.close_from(idx);
+                    self.open.truncate(idx);
                 }
             }
             _ => {}
@@ -424,50 +495,34 @@ impl TreeBuilder {
             self.close_through("p", &P_SCOPE_STOPS);
         }
         if HEADINGS.contains(&name) && self.current_is(&HEADINGS) {
-            self.close_from(self.open.len() - 1);
+            self.open.pop();
         }
     }
 
     /// Finishes the document, closing any elements left open. Even an
     /// empty input has the skeleton: `html`, `head`, `body`.
-    pub fn finish(mut self) -> Node {
-        self.ensure_body();
-        while let Some(el) = self.open.pop() {
-            self.attach(Node::Element(el));
-        }
-        self.root
+    pub fn finish(&mut self, document: &mut Document) {
+        self.ensure_body(document);
+        self.open.clear();
     }
 
     /// Appends text to the innermost open element (or the document),
-    /// merging with a preceding text node when possible.
-    fn push_text(&mut self, text: &str) {
+    /// joining a text node that ends it.
+    fn push_text(&mut self, document: &mut Document, text: &str) {
         if text.is_empty() {
             return;
         }
-        let target: &mut Vec<Node> = match self.open.last_mut() {
-            Some(parent) => &mut parent.children,
-            None => match &mut self.root {
-                Node::Document(children) => children,
-                _ => return,
-            },
-        };
-        if let Some(Node::Text(last)) = target.last_mut() {
-            last.data.push_str(text);
-        } else {
-            target.push(Node::text(text));
+        let parent = self.open.last().map_or(document.root(), |open| open.id);
+        if let Some(last) = document.last_child(parent)
+            && document.is_text(last)
+        {
+            let _ = document.append_data(last, text);
+            return;
         }
-    }
-
-    /// Attaches a completed node below the innermost open element (or
-    /// the document).
-    fn attach(&mut self, node: Node) {
-        match self.open.last_mut() {
-            Some(parent) => parent.children.push(node),
-            None => {
-                if let Node::Document(children) = &mut self.root {
-                    children.push(node);
-                }
-            }
+        if let Ok(node) = document.create_text(text)
+            && document.append_new(parent, node).is_err()
+        {
+            let _ = document.free(node);
         }
     }
 
@@ -505,21 +560,7 @@ impl TreeBuilder {
     /// stack, never two.
     fn close_through(&mut self, name: &str, stops: &[&str]) {
         if let Some(idx) = self.rposition_before(&[name], stops) {
-            self.close_from(idx);
-        }
-    }
-
-    /// Closes the open elements from `idx` outwards, attaching each to
-    /// its parent in reverse (innermost first).
-    fn close_from(&mut self, idx: usize) {
-        let mut closed = self.open.split_off(idx); // outermost..innermost
-        while let Some(el) = closed.pop() {
-            let node = Node::Element(el);
-            if let Some(parent) = closed.last_mut() {
-                parent.children.push(node);
-            } else {
-                self.attach(node);
-            }
+            self.open.truncate(idx);
         }
     }
 }
@@ -552,12 +593,10 @@ fn meta_encoding_declaration(attrs: &[(String, String)]) -> Option<Encoding> {
 
 /// A repeated `<html>` or `<body>` start tag adds the attributes the
 /// open element does not have yet (the spec's rule), never replaces.
-fn merge_attrs(target: Option<&mut Element>, attrs: Vec<(String, String)>) {
-    if let Some(el) = target {
-        for (name, value) in attrs {
-            if !el.attrs.iter().any(|(n, _)| *n == name) {
-                el.attrs.push((name, value));
-            }
+fn merge_attrs(document: &mut Document, element: NodeId, attrs: Vec<(String, String)>) {
+    for (name, value) in attrs {
+        if document.attr(element, &name).is_none() {
+            let _ = document.set_attribute(element, &name, &value);
         }
     }
 }
@@ -565,18 +604,22 @@ fn merge_attrs(target: Option<&mut Element>, attrs: Vec<(String, String)>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tokenizer::Tokenizer;
+    use crate::{Parser, Stop};
+    use dom::{Element, Node};
+
+    /// `source` parsed to its end.
+    fn parsed(source: &str) -> (Parser, Document) {
+        let mut parser = Parser::new(false);
+        parser.feed(source);
+        parser.end();
+        let mut document = Document::new();
+        while parser.parse(&mut document, usize::MAX) != Stop::Done {}
+        (parser, document)
+    }
 
     /// The first encoding a `<meta>` in `source` declares.
     fn declared(source: &str) -> Option<&'static str> {
-        let mut tokenizer = Tokenizer::new(source);
-        let mut builder = TreeBuilder::new();
-        while let Some(token) = tokenizer.next_token() {
-            if let Some(state) = builder.process(token) {
-                tokenizer.set_state(state);
-            }
-        }
-        builder.encoding_declaration().map(Encoding::name)
+        parsed(source).0.encoding_declaration().map(Encoding::name)
     }
 
     #[test]
@@ -609,14 +652,7 @@ mod tests {
 
     /// Builds a tree from HTML source (test convenience).
     fn build(source: &str) -> Node {
-        let mut tokenizer = Tokenizer::new(source);
-        let mut builder = TreeBuilder::new();
-        while let Some(token) = tokenizer.next_token() {
-            if let Some(state) = builder.process(token) {
-                tokenizer.set_state(state);
-            }
-        }
-        builder.finish()
+        parsed(source).1.to_node()
     }
 
     fn children_of(node: &Node) -> &[Node] {

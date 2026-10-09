@@ -271,7 +271,7 @@ pub(crate) fn outcome(response: &Response) -> Outcome {
     if computed.is_html() || essence == "application/xhtml+xml" {
         let decoded = html::parse_document_from_bytes(&response.body, transport);
         Outcome::Document(Parsed {
-            document: Document::from_node(&decoded.document),
+            document: decoded.document,
             encoding: decoded.encoding,
             undecodable: decoded.undecodable,
             language: content_language(response),

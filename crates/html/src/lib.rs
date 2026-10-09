@@ -21,8 +21,96 @@ pub use encoding_sniffing::Confidence;
 pub use tokenizer::{Doctype, TextState, Token, Tokenizer, content_state, tokenize};
 pub use tree_builder::TreeBuilder;
 
-use dom::Node;
+use dom::{Document, Node, NodeId};
 use encoding::Encoding;
+
+/// Why [`Parser::parse`] stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stop {
+    /// The input given so far is used up; more is to come.
+    Input,
+    /// It processed the tokens it was allowed.
+    Slice,
+    /// A `script` element's end tag was processed: the caller prepares
+    /// the script before it parses on (HTML section 13.2.6.4.8), and a
+    /// parser-blocking one before it parses at all. `line` is the line
+    /// the script's text began on.
+    Script { element: NodeId, line: u32 },
+    /// The input is parsed to its end and the tree finished.
+    Done,
+}
+
+/// An HTML parser (M24.8): input fed in pieces, as it is decoded, and
+/// tokens processed into a [`dom::Document`] a slice at a time, the tree
+/// growing as they are, the parse stopping at each script's end tag.
+pub struct Parser {
+    tokenizer: Tokenizer,
+    builder: TreeBuilder,
+    done: bool,
+}
+
+impl Parser {
+    /// A parser for a fresh document, with HTML's scripting flag set if
+    /// `scripting` (section 13.2.4.5): then `noscript`'s content is text.
+    pub fn new(scripting: bool) -> Parser {
+        Parser {
+            tokenizer: Tokenizer::streaming(),
+            builder: TreeBuilder::new(scripting),
+            done: false,
+        }
+    }
+
+    /// Appends `text` to the input.
+    pub fn feed(&mut self, text: &str) {
+        self.tokenizer.feed(text);
+    }
+
+    /// Marks the end of the input.
+    pub fn end(&mut self) {
+        self.tokenizer.end();
+    }
+
+    /// Whether the parse is done.
+    pub fn is_done(&self) -> bool {
+        self.done
+    }
+
+    /// The encoding the first `<meta>` parsed declares, if any.
+    pub fn encoding_declaration(&self) -> Option<Encoding> {
+        self.builder.encoding_declaration()
+    }
+
+    /// Processes at most `slice` tokens into `document`, which must be
+    /// the one this parser has built into from the start.
+    pub fn parse(&mut self, document: &mut Document, slice: usize) -> Stop {
+        if self.done {
+            return Stop::Done;
+        }
+        for _ in 0..slice {
+            let Some(token) = self.tokenizer.next_token() else {
+                if !self.tokenizer.is_finished() {
+                    return Stop::Input;
+                }
+                self.builder.finish(document);
+                self.done = true;
+                return Stop::Done;
+            };
+            let line = self.tokenizer.line();
+            if let Some(state) = self.builder.process(document, token, line) {
+                self.tokenizer.set_state(state);
+            }
+            if let Some((element, line)) = self.builder.take_script() {
+                return Stop::Script { element, line };
+            }
+        }
+        Stop::Slice
+    }
+}
+
+/// Parses the whole of `input` into `document`, running no scripts.
+fn parse_whole(parser: &mut Parser, document: &mut Document) {
+    while parser.parse(document, usize::MAX) != Stop::Done {}
+}
 
 /// Errors produced by HTML parsing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,20 +136,18 @@ impl std::error::Error for ParseError {}
 /// end tags are dropped, and malformed markup degrades gracefully (see
 /// the [`tokenizer`] and [`tree_builder`] docs for the exact subset).
 pub fn parse_document(input: &str) -> Result<Node, ParseError> {
-    let mut tokenizer = Tokenizer::new(input);
-    let mut builder = TreeBuilder::new();
-    while let Some(token) = tokenizer.next_token() {
-        if let Some(state) = builder.process(token) {
-            tokenizer.set_state(state);
-        }
-    }
-    Ok(builder.finish())
+    let mut parser = Parser::new(false);
+    parser.feed(input);
+    parser.end();
+    let mut document = Document::new();
+    parse_whole(&mut parser, &mut document);
+    Ok(document.to_node())
 }
 
 /// A document parsed from bytes, and the encoding it was read in.
 #[derive(Debug, Clone)]
 pub struct DecodedDocument {
-    pub document: Node,
+    pub document: Document,
     /// The document's character encoding: the one its bytes were
     /// decoded with.
     pub encoding: Encoding,
@@ -86,28 +172,25 @@ pub fn parse_document_from_bytes(bytes: &[u8], transport: Option<Encoding>) -> D
     let (mut encoding, mut confidence) = encoding_sniffing::sniff(bytes, transport);
     loop {
         let (text, decoded_with) = encoding::decode(bytes, encoding);
-        let mut tokenizer = Tokenizer::new(&text);
-        let mut builder = TreeBuilder::new();
+        let mut parser = Parser::new(false);
+        parser.feed(&text);
+        parser.end();
+        let mut document = Document::new();
+        parse_whole(&mut parser, &mut document);
+        // The first `<meta>` declaring an encoding settles a tentative
+        // one; the parse is the same whenever that is looked at.
         let mut again = None;
-        while let Some(token) = tokenizer.next_token() {
-            if let Some(state) = builder.process(token) {
-                tokenizer.set_state(state);
-            }
-            if confidence == Confidence::Tentative
-                && let Some(declared) = builder.encoding_declaration()
-            {
-                confidence = Confidence::Certain;
-                again = encoding_sniffing::change_the_encoding(encoding, declared);
-                if again.is_some() {
-                    break;
-                }
-            }
+        if confidence == Confidence::Tentative
+            && let Some(declared) = parser.encoding_declaration()
+        {
+            confidence = Confidence::Certain;
+            again = encoding_sniffing::change_the_encoding(encoding, declared);
         }
         match again {
             Some(new) => encoding = new,
             None => {
                 return DecodedDocument {
-                    document: builder.finish(),
+                    document,
                     encoding: decoded_with,
                     confidence,
                     undecodable: (!encoding.can_decode()).then_some(encoding),
@@ -160,7 +243,7 @@ mod tests {
 
     fn summary(decoded: &DecodedDocument) -> (String, Encoding, Confidence, Option<Encoding>) {
         (
-            decoded.document.text_content(),
+            decoded.document.text_content(decoded.document.root()),
             decoded.encoding,
             decoded.confidence,
             decoded.undecodable,
@@ -269,5 +352,113 @@ mod tests {
         let bytes = past_the_prescan(b"<p>a\xC4\xE3b", b"<meta charset=gbk>");
         let decoded = parse_document_from_bytes(&bytes, None);
         assert_eq!(summary(&decoded), expected);
+    }
+
+    /// The tags of `document`'s elements in tree order.
+    fn tags_of(document: &Document) -> Vec<String> {
+        document
+            .subtree(document.root())
+            .filter_map(|n| document.tag(n).map(str::to_owned))
+            .collect()
+    }
+
+    #[test]
+    fn the_parser_stops_after_each_script_with_the_tree_as_it_stands() {
+        let mut parser = Parser::new(false);
+        parser.feed("<p>a</p>\n<script>\nx()\n</script><p>b</p><script></script>");
+        parser.end();
+        let mut document = Document::new();
+        let Stop::Script { element, line } = parser.parse(&mut document, usize::MAX) else {
+            panic!("a script's end tag");
+        };
+        assert_eq!(document.tag(element), Some("script"));
+        assert_eq!(line, 2, "its text starts on the second line");
+        assert_eq!(document.text_content(element), "\nx()\n");
+        // The tree as it stands: the script in the body, nothing after it.
+        assert_eq!(tags_of(&document), ["html", "head", "body", "p", "script"]);
+        let body = document.parent(element).unwrap();
+        assert_eq!(document.tag(body), Some("body"));
+        let Stop::Script {
+            element: second, ..
+        } = parser.parse(&mut document, usize::MAX)
+        else {
+            panic!("the second script");
+        };
+        assert_ne!(second, element);
+        assert_eq!(parser.parse(&mut document, usize::MAX), Stop::Done);
+        assert!(parser.is_done());
+        assert_eq!(
+            tags_of(&document),
+            ["html", "head", "body", "p", "script", "p", "script"]
+        );
+        assert_eq!(parser.parse(&mut document, 5), Stop::Done);
+    }
+
+    #[test]
+    fn a_script_the_input_ends_in_or_in_svg_is_no_stop() {
+        for source in ["<script>never closed", "<svg><script>x</script></svg>"] {
+            let mut parser = Parser::new(false);
+            parser.feed(source);
+            parser.end();
+            let mut document = Document::new();
+            assert_eq!(
+                parser.parse(&mut document, usize::MAX),
+                Stop::Done,
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_parser_takes_its_input_in_pieces_and_a_slice_at_a_time() {
+        let source = "<!DOCTYPE html><title>t &amp; u</title><p class=a>one<b>two</b>three\
+                      <noscript><i>n</i></noscript><textarea>\nx</textarea>";
+        let whole = parse_document(source).unwrap();
+        let mut parser = Parser::new(false);
+        parser.feed(source);
+        let mut document = Document::new();
+        assert_eq!(parser.parse(&mut document, 1), Stop::Slice);
+        assert!(tags_of(&document).is_empty(), "the doctype alone");
+        assert_eq!(parser.parse(&mut document, 1), Stop::Slice);
+        assert_eq!(tags_of(&document), ["html", "head", "title"]);
+        for size in [1, 3, 8] {
+            let mut parser = Parser::new(false);
+            let mut document = Document::new();
+            let chars: Vec<char> = source.chars().collect();
+            for piece in chars.chunks(size) {
+                parser.feed(&piece.iter().collect::<String>());
+                assert_eq!(parser.parse(&mut document, usize::MAX), Stop::Input);
+            }
+            parser.end();
+            // One token a call.
+            let mut slices = 0;
+            while parser.parse(&mut document, 1) == Stop::Slice {
+                slices += 1;
+            }
+            assert!(slices <= 2, "{slices}");
+            assert_eq!(document.to_node(), whole, "pieces of {size}");
+        }
+    }
+
+    #[test]
+    fn with_scripting_noscript_holds_text() {
+        let source = "<noscript><p>shown without scripts</p></noscript>";
+        let without = parse_document(source).unwrap();
+        assert!(format!("{without:?}").contains("tag: \"p\""));
+        let mut parser = Parser::new(true);
+        parser.feed(source);
+        parser.end();
+        let mut document = Document::new();
+        assert_eq!(parser.parse(&mut document, usize::MAX), Stop::Done);
+        let noscript = document
+            .subtree(document.root())
+            .find(|&n| document.tag(n) == Some("noscript"))
+            .unwrap();
+        let children: Vec<_> = document.children(noscript).collect();
+        assert_eq!(children.len(), 1);
+        assert_eq!(
+            document.text(children[0]),
+            Some("<p>shown without scripts</p>")
+        );
     }
 }

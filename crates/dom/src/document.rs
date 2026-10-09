@@ -521,6 +521,23 @@ impl Document {
         }))
     }
 
+    /// A new, detached element with `attrs` as they are given, which
+    /// their maker has lowercased and freed of duplicates: what a parser
+    /// makes of a start tag (M24.8), its attributes not checked one by
+    /// one against the others, which a tag of many would make
+    /// quadratic.
+    pub fn create_element_with(
+        &mut self,
+        tag: &str,
+        attrs: Vec<(String, String)>,
+    ) -> Result<NodeId, MutationError> {
+        self.check_room()?;
+        Ok(self.allocate(NodeData::Element {
+            tag: tag.to_ascii_lowercase(),
+            attrs,
+        }))
+    }
+
     /// A new, detached text node.
     pub fn create_text(&mut self, data: &str) -> Result<NodeId, MutationError> {
         self.check_room()?;
@@ -575,6 +592,33 @@ impl Document {
             Some(r) => self.link_before(parent.index, child.index, r.index),
             None => self.link_last(parent.index, child.index),
         }
+        self.record_change(Change::Inserted { parent, child });
+        Ok(())
+    }
+
+    /// Appends `child`, a node made and never inserted, so detached and
+    /// with nothing under it, as `parent`'s last child: what a parser
+    /// does with each node it makes (M24.8). It is `append_child` without
+    /// the walks up the tree, which a page nested at the parser's depth
+    /// cap would make quadratic: the depth is not checked, the parser
+    /// bounding its own as [`Document::from_node`]'s callers do, and a
+    /// childless node cannot be its parent's ancestor.
+    pub fn append_new(&mut self, parent: NodeId, child: NodeId) -> Result<(), MutationError> {
+        let parent_data = self.data(parent).ok_or(MutationError::NoSuchNode)?;
+        let child_record = self.record(child).ok_or(MutationError::NoSuchNode)?;
+        if child_record.parent.is_some() || child_record.first_child.is_some() || child == parent {
+            return Err(MutationError::HierarchyRequest);
+        }
+        let allowed = !matches!(
+            (parent_data, &child_record.data),
+            (NodeData::Text(_), _)
+                | (_, NodeData::Document)
+                | (NodeData::Document, NodeData::Text(_))
+        );
+        if !allowed || child == self.root {
+            return Err(MutationError::HierarchyRequest);
+        }
+        self.link_last(parent.index, child.index);
         self.record_change(Change::Inserted { parent, child });
         Ok(())
     }
@@ -641,6 +685,22 @@ impl Document {
             return Ok(());
         }
         data.clone_into(text);
+        self.record_change(Change::TextChanged { node });
+        Ok(())
+    }
+
+    /// Appends `data` to a text node's, as the DOM's `appendData` does:
+    /// what a parser does with text that arrives in pieces (M24.8),
+    /// without copying what the node has.
+    pub fn append_data(&mut self, node: NodeId, data: &str) -> Result<(), MutationError> {
+        let record = self.record_mut(node).ok_or(MutationError::NoSuchNode)?;
+        let NodeData::Text(text) = &mut record.data else {
+            return Err(MutationError::WrongKind);
+        };
+        if data.is_empty() {
+            return Ok(());
+        }
+        text.push_str(data);
         self.record_change(Change::TextChanged { node });
         Ok(())
     }
@@ -1407,6 +1467,59 @@ mod tests {
         );
         let snapshot = document.to_node();
         assert_eq!(Document::from_node(&snapshot).to_node(), snapshot);
+    }
+
+    #[test]
+    fn a_parser_makes_elements_with_their_attributes_appends_new_nodes_and_text() {
+        let mut doc = Document::new();
+        let root = doc.root();
+        let html = doc
+            .create_element_with("HTML", vec![("lang".into(), "en".into())])
+            .unwrap();
+        assert_eq!(doc.tag(html), Some("html"));
+        assert_eq!(doc.attr(html, "lang"), Some("en"));
+        doc.append_new(root, html).unwrap();
+        let text = doc.create_text("a").unwrap();
+        doc.append_new(html, text).unwrap();
+        doc.append_data(text, "b").unwrap();
+        assert_eq!(doc.text(text), Some("ab"));
+        assert!(matches!(
+            doc.take_changes().last(),
+            Some(Change::TextChanged { node }) if *node == text
+        ));
+        // Only a node never inserted, under a parent that may hold it.
+        assert_eq!(
+            doc.append_new(root, html),
+            Err(MutationError::HierarchyRequest)
+        );
+        let other = doc.create_element("p").unwrap();
+        let inner = doc.create_element("b").unwrap();
+        doc.append_child(other, inner).unwrap();
+        assert_eq!(
+            doc.append_new(html, other),
+            Err(MutationError::HierarchyRequest)
+        );
+        let leaf = doc.create_element("i").unwrap();
+        doc.append_new(html, leaf).unwrap();
+        assert_eq!(
+            doc.append_new(root, leaf),
+            Err(MutationError::HierarchyRequest)
+        );
+        let loose = doc.create_text("t").unwrap();
+        assert_eq!(
+            doc.append_new(root, loose),
+            Err(MutationError::HierarchyRequest)
+        );
+        assert_eq!(
+            doc.append_new(text, loose),
+            Err(MutationError::HierarchyRequest)
+        );
+        assert_eq!(
+            doc.append_new(root, root),
+            Err(MutationError::HierarchyRequest)
+        );
+        assert_eq!(doc.append_data(html, "x"), Err(MutationError::WrongKind));
+        doc.validate().unwrap();
     }
 
     #[test]

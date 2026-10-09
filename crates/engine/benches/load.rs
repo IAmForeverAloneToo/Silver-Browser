@@ -193,7 +193,7 @@ fn main() {
         fetched.push(ms(start.elapsed()));
         let start = Instant::now();
         let decoded = html::parse_document_from_bytes(&response.body, None);
-        black_box(dom::Document::from_node(&decoded.document));
+        black_box(decoded.document);
         parsed.push(ms(start.elapsed()));
     }
     println!("  the document fetched alone: {}", spread(&mut fetched));

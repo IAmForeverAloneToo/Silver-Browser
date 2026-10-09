@@ -976,6 +976,19 @@ fn load_all(tab: &mut Tab, url: Url) {
 }
 
 #[test]
+fn a_document_arrives_with_no_change_pending() {
+    // Built by the parser into the arena: what it built is the document,
+    // not a change to it.
+    let server = serve(|path| match path {
+        "/page.html" => Some(html("<p>a</p><p>b</p>")),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    load_all(&mut tab, server.url("/page.html"));
+    assert!(!tab.engine.shown.document.has_changes());
+}
+
+#[test]
 fn an_image_is_fetched_once_read_and_waited_for() {
     use crate::image_store::ImageState;
     let server = serve(|path| match path {
