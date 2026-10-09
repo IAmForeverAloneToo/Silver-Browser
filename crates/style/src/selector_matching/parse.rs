@@ -552,6 +552,7 @@ fn parse_pseudo(
                 "only-of-type" => PseudoClass::OnlyOfType,
                 "empty" => PseudoClass::Empty,
                 "root" => PseudoClass::Root,
+                "scope" => PseudoClass::Scope,
                 // Dynamic: parseable, but never matched until M26.
                 "hover" => PseudoClass::Hover,
                 "focus" => PseudoClass::Focus,

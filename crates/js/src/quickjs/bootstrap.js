@@ -536,6 +536,34 @@
       return native.elementChildren(self(this)).length;
     },
 
+    querySelector(selectors) {
+      const handle = self(this);
+      const iface = kindOf(this) === 9 ? "Document" : "Element";
+      need(arguments.length, 1, "querySelector", iface);
+      const text = str(selectors);
+      let found;
+      try {
+        found = native.query(handle, text, false);
+      } catch (error) {
+        throw failed(error, "querySelector", iface);
+      }
+      return found.length === 0 ? null : wrap(found[0]);
+    },
+
+    querySelectorAll(selectors) {
+      const handle = self(this);
+      const iface = kindOf(this) === 9 ? "Document" : "Element";
+      need(arguments.length, 1, "querySelectorAll", iface);
+      const text = str(selectors);
+      let found;
+      try {
+        found = native.query(handle, text, true);
+      } catch (error) {
+        throw failed(error, "querySelectorAll", iface);
+      }
+      return snapshot(NodeList, found);
+    },
+
     prepend(...nodes) {
       const parent = self(this);
       const iface = kindOf(this) === 9 ? "Document" : "Element";
@@ -560,6 +588,34 @@
         child = native.firstChild(parent);
       }
       insertAll(parent, handles, null, "replaceChildren", iface);
+    },
+  };
+
+  // The lookups Document and Element both have: live collections of
+  // the elements under the node with a tag, or with classes.
+  const ElementLookups = {
+    getElementsByTagName(qualifiedName) {
+      const handle = self(this);
+      need(
+        arguments.length,
+        1,
+        "getElementsByTagName",
+        kindOf(this) === 9 ? "Document" : "Element",
+      );
+      const name = str(qualifiedName);
+      return collection(HTMLCollection, this, () => native.byTag(handle, name), true);
+    },
+
+    getElementsByClassName(classNames) {
+      const handle = self(this);
+      need(
+        arguments.length,
+        1,
+        "getElementsByClassName",
+        kindOf(this) === 9 ? "Document" : "Element",
+      );
+      const names = str(classNames);
+      return collection(HTMLCollection, this, () => native.byClass(handle, names), true);
     },
   };
 
@@ -928,6 +984,39 @@
       return true;
     }
 
+    matches(selectors) {
+      const handle = self(this);
+      need(arguments.length, 1, "matches", "Element");
+      const text = str(selectors);
+      try {
+        return native.matches(handle, text);
+      } catch (error) {
+        throw failed(error, "matches", "Element");
+      }
+    }
+
+    webkitMatchesSelector(selectors) {
+      const handle = self(this);
+      need(arguments.length, 1, "webkitMatchesSelector", "Element");
+      const text = str(selectors);
+      try {
+        return native.matches(handle, text);
+      } catch (error) {
+        throw failed(error, "webkitMatchesSelector", "Element");
+      }
+    }
+
+    closest(selectors) {
+      const handle = self(this);
+      need(arguments.length, 1, "closest", "Element");
+      const text = str(selectors);
+      try {
+        return wrap(native.closest(handle, text));
+      } catch (error) {
+        throw failed(error, "closest", "Element");
+      }
+    }
+
     insertAdjacentElement(where, element) {
       const handle = self(this);
       need(arguments.length, 2, "insertAdjacentElement", "Element");
@@ -1061,6 +1150,12 @@
       native.setTitle(str(value));
     }
 
+    getElementById(elementId) {
+      const handle = self(this);
+      need(arguments.length, 1, "getElementById", "Document");
+      return wrap(native.elementById(handle, str(elementId)));
+    }
+
     createElement(localName) {
       self(this);
       need(arguments.length, 1, "createElement", "Document");
@@ -1122,6 +1217,7 @@
   }
 
   include(ParentNode, [Document.prototype, Element.prototype]);
+  include(ElementLookups, [Document.prototype, Element.prototype]);
   include(ChildNode, [Element.prototype, CharacterData.prototype]);
   include(NonDocumentTypeChildNode, [Element.prototype, CharacterData.prototype]);
 

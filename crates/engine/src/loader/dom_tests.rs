@@ -173,12 +173,20 @@ fn the_work_of_native_calls_counts_against_the_budget() {
 /// the reference browser printed it: `ok <JSON>` for a value (a node as
 /// its name), or `<name>: <message>` for an exception.
 fn probed(setup: &str, cases: &[(&str, &str)]) {
-    let mut page = String::from(
-        "<p id=a>x</p><script>\
+    probed_in("<p id=a>x</p>", setup, cases);
+}
+
+/// [`probed`] in a page whose body is `body`.
+fn probed_in(body: &str, setup: &str, cases: &[(&str, &str)]) {
+    let mut page = String::from(body);
+    page.push_str(
+        "<script>\
          function f(g) { try { var r = g(); return 'ok ' + JSON.stringify(r === undefined ? \
          'undefined' : (r && r.nodeName) || r); } catch (e) { return e.name + ': ' + e.message; } } \
          function names(d) { var r = []; for (var n = d.firstChild; n; n = n.nextSibling) \
-         r.push(n.nodeName === '#text' ? n.data : n.nodeName); return r.join(','); }",
+         r.push(n.nodeName === '#text' ? n.data : n.nodeName); return r.join(','); } \
+         function tags(l) { return Array.prototype.map.call(l, function (n) { \
+         return n.nodeName + (n.id ? '#' + n.id : ''); }).join(','); }",
     );
     page.push_str(setup);
     for (expression, _) in cases {
@@ -558,4 +566,168 @@ fn collections_as_the_reference_browser_has_them() {
             ),
         ],
     );
+}
+
+#[test]
+fn selectors_find_what_the_reference_browser_finds() {
+    probed_in(
+        "<div id=d class='a b'><p id=a class=x>x</p><p class='x y'>y</p><span id=a>dup</span>\
+         </div><ul><li>1</li><li class=X>2</li></ul><b id=''></b>",
+        "var d = document.getElementById('d');",
+        &[
+            ("tags([document.getElementById('a')])", "ok \"P#a\""),
+            ("document.getElementById('zz')", "ok null"),
+            ("document.getElementById('')", "ok null"),
+            (
+                "document.querySelector('!!')",
+                "SyntaxError: Failed to execute 'querySelector' on 'Document': '!!' is not a \
+                 valid selector.",
+            ),
+            (
+                "document.querySelector('')",
+                "SyntaxError: Failed to execute 'querySelector' on 'Document': The provided \
+                 selector is empty.",
+            ),
+            (
+                "d.querySelectorAll('p[')",
+                "SyntaxError: Failed to execute 'querySelectorAll' on 'Element': 'p[' is not a \
+                 valid selector.",
+            ),
+            (
+                "d.matches('::')",
+                "SyntaxError: Failed to execute 'matches' on 'Element': '::' is not a valid \
+                 selector.",
+            ),
+            (
+                "d.closest('1')",
+                "SyntaxError: Failed to execute 'closest' on 'Element': '1' is not a valid \
+                 selector.",
+            ),
+            ("document.querySelector('p::before')", "ok null"),
+            ("d.matches('div::before')", "ok false"),
+            (
+                "document.querySelector(':foo')",
+                "SyntaxError: Failed to execute 'querySelector' on 'Document': ':foo' is not a \
+                 valid selector.",
+            ),
+            ("document.querySelector(':hover')", "ok null"),
+            ("tags([document.querySelector(':scope')])", "ok \"HTML\""),
+            (
+                "tags(document.querySelectorAll(':scope > html'))",
+                "ok \"\"",
+            ),
+            ("tags(d.querySelectorAll(':scope > p'))", "ok \"P#a,P\""),
+            ("d.querySelector(':scope')", "ok null"),
+            ("tags(d.querySelectorAll('div p'))", "ok \"P#a,P\""),
+            ("tags(d.querySelectorAll('body div p'))", "ok \"P#a,P\""),
+            (
+                "[d.matches('body > div'), d.matches('.a.b'), d.firstChild.matches(':first-child'), \
+                 d.webkitMatchesSelector('div')]",
+                "ok [true,true,true,true]",
+            ),
+            ("tags([d.firstChild.closest('div')])", "ok \"DIV#d\""),
+            ("tags([d.closest('div')])", "ok \"DIV#d\""),
+            ("d.closest('table')", "ok null"),
+            ("tags(d.getElementsByTagName('*'))", "ok \"P#a,P,SPAN#a\""),
+            ("tags(d.getElementsByTagName('P'))", "ok \"P#a,P\""),
+            (
+                "(function () { var l = document.getElementsByTagName('li'); var n = l.length; \
+                 document.querySelector('ul').appendChild(document.createElement('li')); \
+                 return [n, l.length]; })()",
+                "ok [2,3]",
+            ),
+            ("tags(document.getElementsByClassName('x'))", "ok \"P#a,P\""),
+            (
+                "tags(document.getElementsByClassName('  y   x '))",
+                "ok \"P\"",
+            ),
+            (
+                "document.getElementsByClassName('x').length + \
+                 document.getElementsByClassName('X').length * 10",
+                "ok 12",
+            ),
+            ("tags(document.getElementsByClassName('  '))", "ok \"\""),
+            ("tags(d.getElementsByClassName('a'))", "ok \"\""),
+            (
+                "Object.prototype.toString.call(document.querySelectorAll('p'))",
+                "ok \"[object NodeList]\"",
+            ),
+            (
+                "document.querySelector()",
+                "TypeError: Failed to execute 'querySelector' on 'Document': 1 argument \
+                 required, but only 0 present.",
+            ),
+            ("document.querySelector(undefined)", "ok null"),
+            ("document.querySelector(null)", "ok null"),
+            (
+                "tags(document.querySelectorAll('li, p, span'))",
+                "ok \"P#a,P,SPAN#a,LI,LI,LI\"",
+            ),
+            ("tags(document.querySelectorAll('[class~=y]'))", "ok \"P\""),
+            (
+                "tags(document.querySelectorAll('li:nth-child(2)'))",
+                "ok \"LI\"",
+            ),
+            ("tags(document.querySelectorAll('p:not(.y)'))", "ok \"P#a\""),
+            (
+                "tags(document.querySelectorAll(':is(ul, div) > :first-child'))",
+                "ok \"P#a,LI\"",
+            ),
+            // A static list stays as it was made.
+            (
+                "(function () { var l = document.querySelectorAll('li'); \
+                 document.querySelector('ul').appendChild(document.createElement('li')); \
+                 return [l.length, document.querySelectorAll('li').length]; })()",
+                "ok [3,4]",
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_static_list_holds_its_nodes_and_a_live_one_holds_its_root() {
+    // The nodes a querySelectorAll found are taken out and let go of but
+    // for the list.
+    let (tab, console) = scripted(
+        "<div id=d><i>1</i><i>2</i></div><script>\
+         var d = document.getElementById('d'); \
+         var found = d.querySelectorAll('i'); \
+         d.parentNode.removeChild(d); d = null;\
+         </script><script>console.log(found.length, found[1].textContent)</script>",
+        true,
+    );
+    assert_eq!(console, ["2 2"]);
+    tab.engine.document().validate().unwrap();
+    // A live list keeps the subtree of the node it is of.
+    let (tab, console) = scripted(
+        "<div id=d><i>1</i><i>2</i></div><script>\
+         var d = document.getElementById('d'); \
+         var live = d.getElementsByTagName('i'); \
+         d.parentNode.removeChild(d); d = null;\
+         </script><script>console.log(live.length, live[0].parentNode.id)</script>",
+        true,
+    );
+    assert_eq!(console, ["2 d"]);
+    tab.engine.document().validate().unwrap();
+}
+
+#[test]
+fn query_selector_stops_at_the_first_match() {
+    // Twenty thousand elements, a thousand calls: the first element
+    // matches, so each call visits one; were the whole tree visited, the
+    // work would be past the budget.
+    let mut page = String::from("<div>");
+    for _ in 0..20_000 {
+        page.push_str("<i></i>");
+    }
+    page.push_str(
+        "</div><script>for (var i = 0; i < 1000; i++) document.querySelector('i'); \
+         console.log('finished')</script>",
+    );
+    let limits = js::Limits {
+        steps: 100,
+        ..js::Limits::default()
+    };
+    let (_, console) = scripted_bytes(page.into_bytes(), Some(limits));
+    assert_eq!(console, ["finished"]);
 }

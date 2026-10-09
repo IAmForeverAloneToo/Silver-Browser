@@ -157,6 +157,24 @@ const NATIVES: &[(&str, Decode)] = &[
             deep: a.bool(1),
         })
     }),
+    ("elementById", |a| {
+        Ok(Call::ElementById(a.handle(0)?, a.string(1)?))
+    }),
+    ("query", |a| {
+        Ok(Call::Query {
+            root: a.handle(0)?,
+            selectors: a.string(1)?,
+            all: a.bool(2),
+        })
+    }),
+    ("matches", |a| Ok(Call::Matches(a.handle(0)?, a.string(1)?))),
+    ("closest", |a| Ok(Call::Closest(a.handle(0)?, a.string(1)?))),
+    ("byTag", |a| {
+        Ok(Call::ElementsByTagName(a.handle(0)?, a.string(1)?))
+    }),
+    ("byClass", |a| {
+        Ok(Call::ElementsByClassName(a.handle(0)?, a.string(1)?))
+    }),
     ("released", |a| Ok(Call::Released(a.handle(0)?))),
 ];
 

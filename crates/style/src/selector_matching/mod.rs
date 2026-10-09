@@ -203,6 +203,9 @@ pub enum PseudoClass {
     Empty,
     /// `:root`
     Root,
+    /// `:scope`: the element a query is made of (`querySelector`'s, M25),
+    /// or the root element where there is none, as in a style rule.
+    Scope,
     /// `:nth-child(An+B [of S])`
     NthChild {
         /// The `A` in An+B.

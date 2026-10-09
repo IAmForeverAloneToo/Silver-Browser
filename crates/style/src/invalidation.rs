@@ -167,9 +167,11 @@ impl SelectorFeatures {
                 ]);
             }
             PseudoClass::Required | PseudoClass::Optional => self.read(&["required", "type"]),
-            // `:root` depends on the parent, which an insertion
-            // restyles whole; the dynamic ones never match yet.
+            // `:root` (and `:scope`, which is `:root` in a style rule)
+            // depends on the parent, which an insertion restyles whole;
+            // the dynamic ones never match yet.
             PseudoClass::Root
+            | PseudoClass::Scope
             | PseudoClass::Hover
             | PseudoClass::Focus
             | PseudoClass::FocusVisible

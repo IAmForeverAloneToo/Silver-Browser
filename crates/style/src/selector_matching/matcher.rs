@@ -107,6 +107,9 @@ pub struct Matcher<'a> {
     /// The selected option of each `select` without `multiple` asked
     /// about.
     selected_options: HashMap<NodeId, Option<NodeId>>,
+    /// The element `:scope` is: a query's (M25), or none, which makes it
+    /// the root element.
+    scope: Option<NodeId>,
 }
 
 /// Where an element's language comes from.
@@ -148,7 +151,15 @@ impl<'a> Matcher<'a> {
             ids: None,
             radio_groups: HashMap::new(),
             selected_options: HashMap::new(),
+            scope: None,
         }
+    }
+
+    /// The matcher with `:scope` the element `scope` (DOM's "scope-match a
+    /// selectors string"), or the root element for `None`.
+    pub fn with_scope(mut self, scope: Option<NodeId>) -> Self {
+        self.scope = scope;
+        self
     }
 
     /// Whether any selector in the list matches the element; nothing
@@ -369,6 +380,10 @@ impl<'a> Matcher<'a> {
             // kind of child.
             PseudoClass::Empty => document.first_child(element).is_none(),
             PseudoClass::Root => document.parent(element) == Some(document.root()),
+            PseudoClass::Scope => match self.scope {
+                Some(scope) => element == scope,
+                None => document.parent(element) == Some(document.root()),
+            },
             PseudoClass::NthChild { a, b, of } => match of {
                 None => nth_matches(*a, *b, self.position(element).index),
                 // selectors-4 §4: with an `of S` filter, the element must
@@ -1059,6 +1074,25 @@ mod tests {
     }
 
     // ---- simple selectors -------------------------------------------------
+
+    #[test]
+    fn scope_is_the_querys_element_or_else_the_root() {
+        let doc = p(vec![
+            e("html").push(e("div").push(e("p").push(e("p")))).into(),
+        ]);
+        assert_eq!(matched_tags(&doc, ":scope"), vec!["html"]);
+        assert_eq!(matched_tags(&doc, ":scope > div"), vec!["div"]);
+        let document = Document::from_node(&doc);
+        let list = parse_selector_list(&css::tokenize(":scope > p")).unwrap();
+        let ids = elements(&document);
+        let (div, outer, inner) = (ids[1], ids[2], ids[3]);
+        let mut matcher = Matcher::new(&document).with_scope(Some(div));
+        assert!(matcher.matches_list(outer, &list));
+        assert!(!matcher.matches_list(inner, &list));
+        let mut matcher = Matcher::new(&document).with_scope(Some(outer));
+        assert!(!matcher.matches_list(outer, &list));
+        assert!(matcher.matches_list(inner, &list));
+    }
 
     #[test]
     fn type_matches_that_tag() {

@@ -101,6 +101,27 @@ pub enum Call {
         node: Handle,
         deep: bool,
     },
+    /// The first element in tree order under `root` whose ID is this.
+    ElementById(Handle, String),
+    /// The elements under `root`, in tree order, that a selector list
+    /// matches, `:scope` being `root` if it is an element (the root
+    /// element otherwise); the first alone unless `all`. A list that does
+    /// not parse is a `SyntaxError`.
+    Query {
+        root: Handle,
+        selectors: String,
+        all: bool,
+    },
+    /// Whether a selector list matches the element, `:scope` being it.
+    Matches(Handle, String),
+    /// The element's nearest inclusive ancestor a selector list matches.
+    Closest(Handle, String),
+    /// The elements under the node with this tag (`*` for all), in tree
+    /// order.
+    ElementsByTagName(Handle, String),
+    /// The elements under the node with every one of these classes
+    /// (white-space separated), in tree order.
+    ElementsByClassName(Handle, String),
     /// The script holds no object for the node any longer.
     Released(Handle),
 }

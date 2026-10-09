@@ -7,6 +7,7 @@ use std::collections::HashSet;
 
 use dom::{Document, MutationError, NodeData, NodeId};
 use js::{Answer, Call, ConsoleLevel, DomError, Handle, ScriptingHost};
+use style::selector_matching::{Matcher, SelectorList};
 
 use super::{ConsoleEntry, cut, document_title};
 
@@ -240,6 +241,87 @@ impl ScriptingHost for DocumentHost {
                 let copy = self.clone_node(node, deep)?;
                 Ok(self.give(Some(copy)))
             }
+            Call::ElementById(root, id) => {
+                let root = self.node(root)?;
+                let found = if id.is_empty() {
+                    None
+                } else {
+                    self.elements_under(root)
+                        .into_iter()
+                        .find(|&e| self.document.attr(e, "id") == Some(id.as_str()))
+                };
+                Ok(self.give(found))
+            }
+            Call::Query {
+                root,
+                selectors,
+                all,
+            } => {
+                let root = self.node(root)?;
+                let list = selector_list(&selectors)?;
+                let scope = Some(root).filter(|&root| self.document.is_element(root));
+                let mut matcher = Matcher::new(&self.document).with_scope(scope);
+                let mut found = Vec::new();
+                for element in self.document.subtree(root).skip(1) {
+                    self.work += 1;
+                    if matcher.matches_list(element, &list) {
+                        found.push(handle(element));
+                        if !all {
+                            break;
+                        }
+                    }
+                }
+                Ok(Answer::Nodes(found))
+            }
+            Call::Matches(element, selectors) => {
+                let element = self.node(element)?;
+                let list = selector_list(&selectors)?;
+                let mut matcher = Matcher::new(&self.document).with_scope(Some(element));
+                Ok(Answer::Bool(matcher.matches_list(element, &list)))
+            }
+            Call::Closest(element, selectors) => {
+                let element = self.node(element)?;
+                let list = selector_list(&selectors)?;
+                let mut matcher = Matcher::new(&self.document).with_scope(Some(element));
+                let found = std::iter::once(element)
+                    .chain(self.document.ancestors(element))
+                    .find(|&node| matcher.matches_list(node, &list));
+                Ok(self.give(found))
+            }
+            Call::ElementsByTagName(root, name) => {
+                let root = self.node(root)?;
+                let name = name.to_ascii_lowercase();
+                let found = self
+                    .elements_under(root)
+                    .into_iter()
+                    .filter(|&e| name == "*" || self.document.tag(e) == Some(name.as_str()))
+                    .map(handle)
+                    .collect();
+                Ok(Answer::Nodes(found))
+            }
+            Call::ElementsByClassName(root, names) => {
+                let root = self.node(root)?;
+                let wanted: Vec<&str> = names
+                    .split(is_ascii_space)
+                    .filter(|n| !n.is_empty())
+                    .collect();
+                if wanted.is_empty() {
+                    return Ok(Answer::Nodes(Vec::new()));
+                }
+                let elements = self.elements_under(root);
+                let document = &self.document;
+                let found = elements
+                    .into_iter()
+                    .filter(|&e| {
+                        let classes = document.attr(e, "class").unwrap_or_default();
+                        wanted
+                            .iter()
+                            .all(|w| classes.split(is_ascii_space).any(|c| c == *w))
+                    })
+                    .map(handle)
+                    .collect();
+                Ok(Answer::Nodes(found))
+            }
             Call::Released(node) => {
                 if let Some(id) = dom::NodeId::from_bits(node.0) {
                     self.exposed.remove(&id);
@@ -266,6 +348,19 @@ impl DocumentHost {
     /// it makes an object for it ([`Call::Wrap`]).
     fn give(&mut self, node: Option<NodeId>) -> Answer {
         Answer::Node(node.map(handle))
+    }
+
+    /// The elements under `root`, in tree order, its descendants alone;
+    /// each visited counts as work.
+    fn elements_under(&mut self, root: NodeId) -> Vec<NodeId> {
+        let mut found = Vec::new();
+        for node in self.document.subtree(root).skip(1) {
+            self.work += 1;
+            if self.document.is_element(node) {
+                found.push(node);
+            }
+        }
+        found
     }
 
     /// The DOM's "pre-insert": its checks, in its order, then `node`
@@ -506,6 +601,26 @@ impl DocumentHost {
 /// A node's handle.
 fn handle(node: NodeId) -> Handle {
     Handle(node.to_bits())
+}
+
+/// HTML's ASCII white space, which separates classes.
+fn is_ascii_space(c: char) -> bool {
+    matches!(c, '\t' | '\n' | '\u{c}' | '\r' | ' ')
+}
+
+/// `text` parsed as a selector list, as the style rules' are (M4): one
+/// that does not parse is the `SyntaxError` the reference browser
+/// throws. A selector ending in a pseudo-element matches no element, as
+/// the matcher has it.
+fn selector_list(text: &str) -> Result<SelectorList, DomError> {
+    if text.chars().all(|c| c.is_ascii_whitespace()) {
+        return Err(DomError::new(
+            "SyntaxError",
+            "The provided selector is empty.",
+        ));
+    }
+    style::parse_selector_list(&css::tokenize(text))
+        .map_err(|_| DomError::new("SyntaxError", format!("'{text}' is not a valid selector.")))
 }
 
 /// The DOM's "valid attribute local name": not empty, and no ASCII
