@@ -175,6 +175,21 @@ const NATIVES: &[(&str, Decode)] = &[
     ("byClass", |a| {
         Ok(Call::ElementsByClassName(a.handle(0)?, a.string(1)?))
     }),
+    ("innerHTML", |a| Ok(Call::InnerHtml(a.handle(0)?))),
+    ("outerHTML", |a| Ok(Call::OuterHtml(a.handle(0)?))),
+    ("setInnerHTML", |a| {
+        Ok(Call::SetInnerHtml(a.handle(0)?, a.string(1)?))
+    }),
+    ("setOuterHTML", |a| {
+        Ok(Call::SetOuterHtml(a.handle(0)?, a.string(1)?))
+    }),
+    ("insertAdjacentHTML", |a| {
+        Ok(Call::InsertAdjacentHtml {
+            node: a.handle(0)?,
+            position: a.string(1)?,
+            markup: a.string(2)?,
+        })
+    }),
     ("released", |a| Ok(Call::Released(a.handle(0)?))),
 ];
 

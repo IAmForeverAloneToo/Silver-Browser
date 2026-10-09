@@ -731,3 +731,188 @@ fn query_selector_stops_at_the_first_match() {
     let (_, console) = scripted_bytes(page.into_bytes(), Some(limits));
     assert_eq!(console, ["finished"]);
 }
+
+#[test]
+fn markup_reads_and_writes_as_the_reference_browser_has_it() {
+    probed_in(
+        "<div id=d><p>a</p></div><noscript><b>n</b></noscript>",
+        "var d = document.getElementById('d'); \
+         function kids(d) { var r = []; for (var n = d.firstChild; n; n = n.nextSibling) \
+         r.push(n.nodeName === '#text' ? JSON.stringify(n.data) : n.nodeName); return r.join(','); }",
+        &[
+            ("d.innerHTML", "ok \"<p>a</p>\""),
+            (
+                "(function () { var e = document.createElement('i'); \
+                 e.setAttribute('a', '<&\"\\'>\\u00a0'); e.setAttribute('b', ''); return e.outerHTML; })()",
+                "ok \"<i a=\\\"&lt;&amp;&quot;'&gt;&nbsp;\\\" b=\\\"\\\"></i>\"",
+            ),
+            (
+                "(function () { var e = document.createElement('i'); \
+                 e.textContent = '<&>\"\\'\\u00a0'; return e.innerHTML; })()",
+                "ok \"&lt;&amp;&gt;\\\"'&nbsp;\"",
+            ),
+            (
+                "(function () { var e = document.createElement('div'); \
+                 e.append(document.createElement('br'), document.createElement('img'), \
+                 document.createElement('param'), document.createElement('keygen'), \
+                 document.createElement('image')); return e.innerHTML; })()",
+                "ok \"<br><img><param><keygen><image></image>\"",
+            ),
+            (
+                "(function () { var e = document.createElement('br'); \
+                 e.append('x', document.createElement('i')); return [e.innerHTML, e.outerHTML]; })()",
+                "ok [\"\",\"<br>\"]",
+            ),
+            (
+                "(function () { var e = document.createElement('div'); \
+                 ['style', 'script', 'xmp', 'iframe', 'noembed', 'noframes', 'plaintext', \
+                 'noscript', 'textarea', 'title'].forEach(function (t) { \
+                 var c = document.createElement(t); c.textContent = '<&>'; e.appendChild(c); }); \
+                 return e.innerHTML; })()",
+                "ok \"<style><&></style><script><&></script><xmp><&></xmp><iframe><&></iframe>\
+                 <noembed><&></noembed><noframes><&></noframes><plaintext><&></plaintext>\
+                 <noscript><&></noscript><textarea>&lt;&amp;&gt;</textarea>\
+                 <title>&lt;&amp;&gt;</title>\"",
+            ),
+            (
+                "document.querySelector('noscript').innerHTML",
+                "ok \"<b>n</b>\"",
+            ),
+            (
+                "(function () { var e = document.createElement('div'); \
+                 e.innerHTML = '<p>a<p>b</p><b>c'; return kids(e) + ' / ' + e.innerHTML; })()",
+                "ok \"P,P,B / <p>a</p><p>b</p><b>c</b>\"",
+            ),
+            (
+                "(function () { var e = document.createElement('textarea'); \
+                 e.innerHTML = 'a</textarea>b<i>'; return kids(e); })()",
+                "ok \"\\\"a</textarea>b<i>\\\"\"",
+            ),
+            (
+                "(function () { var e = document.createElement('title'); \
+                 e.innerHTML = '<b>&amp;</b>'; return kids(e); })()",
+                "ok \"\\\"<b>&</b>\\\"\"",
+            ),
+            (
+                "(function () { var e = document.createElement('script'); \
+                 e.innerHTML = 'a<b>&amp;<\\/script>c'; return kids(e); })()",
+                "ok \"\\\"a<b>&amp;</script>c\\\"\"",
+            ),
+            (
+                "(function () { var e = document.createElement('html'); \
+                 e.innerHTML = '<p>x'; return kids(e) + ' / ' + e.innerHTML; })()",
+                "ok \"HEAD,BODY / <head></head><body><p>x</p></body>\"",
+            ),
+            (
+                "(function () { var e = document.createElement('div'); \
+                 e.innerHTML = '<title>t</title><meta charset=x><body class=q><p>x</p></body>\
+                 <html lang=en>'; return kids(e) + ' / ' + e.innerHTML; })()",
+                "ok \"TITLE,META,P / <title>t</title><meta charset=\\\"x\\\"><p>x</p>\"",
+            ),
+            (
+                "(function () { var e = document.createElement('div'); e.innerHTML = '<i></i>'; \
+                 e.innerHTML = null; return e.childNodes.length; })()",
+                "ok 0",
+            ),
+            (
+                "(function () { var e = document.createElement('div'); \
+                 e.outerHTML = '<p>x</p>'; return e.outerHTML; })()",
+                "ok \"<div></div>\"",
+            ),
+            (
+                "(function () { document.documentElement.outerHTML = '<p>'; })()",
+                "NoModificationAllowedError: Failed to set the 'outerHTML' property on 'Element': \
+                 This element's parent is a Document, which may not be modified.",
+            ),
+            (
+                "(function () { var w = document.createElement('div'); \
+                 var e = w.appendChild(document.createElement('i')); w.append('t'); \
+                 e.outerHTML = '<b>1</b><u>2</u>'; return w.innerHTML + ' ' + e.parentNode; })()",
+                "ok \"<b>1</b><u>2</u>t null\"",
+            ),
+            (
+                "document.createElement('div').insertAdjacentHTML('beforebegin', '<p>')",
+                "NoModificationAllowedError: Failed to execute 'insertAdjacentHTML' on 'Element': \
+                 The element has no parent.",
+            ),
+            (
+                "(function () { var e = document.createElement('div'); \
+                 e.insertAdjacentHTML('afterbegin', '<p>1</p>'); \
+                 e.insertAdjacentHTML('beforeend', '<p>2</p>'); return e.innerHTML; })()",
+                "ok \"<p>1</p><p>2</p>\"",
+            ),
+            (
+                "document.body.insertAdjacentHTML('middle', '<p>')",
+                "SyntaxError: Failed to execute 'insertAdjacentHTML' on 'Element': The value \
+                 provided ('middle') is not one of 'beforeBegin', 'afterBegin', 'beforeEnd', or \
+                 'afterEnd'.",
+            ),
+            (
+                "(function () { var h = document.createElement('html'); \
+                 h.insertAdjacentHTML('beforeend', '<p>x'); return h.innerHTML; })()",
+                "ok \"<p>x</p>\"",
+            ),
+            (
+                "(function () { var w = document.createElement('div'); \
+                 var e = w.appendChild(document.createElement('i')); \
+                 e.insertAdjacentHTML('beforebegin', '<b>1</b>'); \
+                 e.insertAdjacentHTML('AfterEnd', '<u>2</u>'); return w.innerHTML; })()",
+                "ok \"<b>1</b><i></i><u>2</u>\"",
+            ),
+            ("typeof document.innerHTML", "ok \"undefined\""),
+            (
+                "document.documentElement.insertAdjacentHTML('beforebegin', '<p>')",
+                "NoModificationAllowedError: Failed to execute 'insertAdjacentHTML' on 'Element': \
+                 The element has no parent.",
+            ),
+            (
+                "(function () { var e = document.createElement('div'); \
+                 e.appendChild(document.createElement('i')); \
+                 e.insertAdjacentHTML('afterbegin', '<p>1</p>'); return e.innerHTML; })()",
+                "ok \"<p>1</p><i></i>\"",
+            ),
+            (
+                "(function () { var e = document.createElement('div'); \
+                 e.innerHTML = '<ul><li>1<li>2</ul>'; return e.innerHTML; })()",
+                "ok \"<ul><li>1</li><li>2</li></ul>\"",
+            ),
+        ],
+    );
+}
+
+#[test]
+fn markup_set_from_a_script_is_the_documents_and_its_scripts_do_not_run() {
+    let (tab, console) = scripted(
+        "<div id=d><p>old</p></div><script>\
+         var d = document.getElementById('d'); var old = d.firstChild; \
+         d.innerHTML = '<b>new</b><script>console.log(\"ran\")<\\/script>'; \
+         var gone = d.firstChild; gone.outerHTML = '<i>new</i>'; \
+         console.log(old.parentNode, gone.parentNode, d.firstChild.nodeName, \
+         d.childNodes.length)</script><script>old = gone = null</script>",
+        true,
+    );
+    assert_eq!(console, ["null null I 2"]);
+    let document = tab.engine.document();
+    document.validate().unwrap();
+    let d = by_id(&tab.engine, "d");
+    assert_eq!(document.text_content(d), "newconsole.log(\"ran\")");
+    // What the markup replaced went with the scripts' last holds on it:
+    // every node left is in the tree.
+    assert_eq!(document.len(), document.subtree(document.root()).count());
+}
+
+#[test]
+fn markup_nested_under_a_deep_element_goes_no_deeper_than_the_cap() {
+    // An element 500 deep, given markup 20 deep: what fits goes in.
+    let mut page = String::from("<body>");
+    page.push_str(&"<div>".repeat(498));
+    page.push_str(
+        "<span id=deep></span><script>var deep = document.getElementById('deep'); \
+         deep.innerHTML = '<b>'.repeat(20) + 'x'; \
+         console.log(deep.textContent, deep.querySelectorAll('b').length)</script>",
+    );
+    let (tab, console) = scripted_bytes(page.into_bytes(), Some(js::Limits::default()));
+    assert_eq!(console.len(), 1);
+    assert!(console[0].starts_with("x "), "{console:?}");
+    tab.engine.document().validate().unwrap();
+}

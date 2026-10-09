@@ -88,6 +88,19 @@
     return error;
   }
 
+  // The exception a native's failure is when a property was set:
+  // "Failed to set the 'p' property on 'I': reason".
+  function failedSet(error, property, iface) {
+    const words = "Failed to set the '" + property + "' property on '" + iface + "': ";
+    if (error instanceof $DOMException) {
+      return new $DOMException(words + error.message, error.name);
+    }
+    if (error instanceof $TypeError || error instanceof $RangeError) {
+      error.message = words + error.message;
+    }
+    return error;
+  }
+
   function domError(name, message, method, iface) {
     return new $DOMException(prefix(method, iface) + message, name);
   }
@@ -982,6 +995,46 @@
         return false;
       }
       return true;
+    }
+
+    get innerHTML() {
+      return native.innerHTML(self(this));
+    }
+
+    set innerHTML(value) {
+      const handle = self(this);
+      const markup = strOrEmpty(value);
+      try {
+        native.setInnerHTML(handle, markup);
+      } catch (error) {
+        throw failedSet(error, "innerHTML", "Element");
+      }
+    }
+
+    get outerHTML() {
+      return native.outerHTML(self(this));
+    }
+
+    set outerHTML(value) {
+      const handle = self(this);
+      const markup = strOrEmpty(value);
+      try {
+        native.setOuterHTML(handle, markup);
+      } catch (error) {
+        throw failedSet(error, "outerHTML", "Element");
+      }
+    }
+
+    insertAdjacentHTML(position, text) {
+      const handle = self(this);
+      need(arguments.length, 2, "insertAdjacentHTML", "Element");
+      const where = checkPosition(str(position), "insertAdjacentHTML");
+      const markup = str(text);
+      try {
+        native.insertAdjacentHTML(handle, where, markup);
+      } catch (error) {
+        throw failed(error, "insertAdjacentHTML", "Element");
+      }
     }
 
     matches(selectors) {

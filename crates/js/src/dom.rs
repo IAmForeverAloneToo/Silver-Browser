@@ -122,6 +122,24 @@ pub enum Call {
     /// The elements under the node with every one of these classes
     /// (white-space separated), in tree order.
     ElementsByClassName(Handle, String),
+    /// The markup of the node's children (HTML's fragment serialization).
+    InnerHtml(Handle),
+    /// The markup of the node and its children.
+    OuterHtml(Handle),
+    /// The element's children replaced by what the markup parses to as a
+    /// fragment in its context.
+    SetInnerHtml(Handle, String),
+    /// The element replaced by what the markup parses to as a fragment in
+    /// its parent's context; nothing without a parent, and a
+    /// `NoModificationAllowedError` for the document's element.
+    SetOuterHtml(Handle, String),
+    /// What the markup parses to inserted at a position by the element
+    /// (`beforebegin`, `afterbegin`, `beforeend` or `afterend`).
+    InsertAdjacentHtml {
+        node: Handle,
+        position: String,
+        markup: String,
+    },
     /// The script holds no object for the node any longer.
     Released(Handle),
 }

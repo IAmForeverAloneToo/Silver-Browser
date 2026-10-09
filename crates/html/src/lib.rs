@@ -15,11 +15,13 @@
 pub mod encoding_sniffing;
 mod load;
 mod named_references;
+mod serialize;
 pub mod tokenizer;
 pub mod tree_builder;
 
 pub use encoding_sniffing::Confidence;
 pub use load::{Load, Progress};
+pub use serialize::{serialize_children, serialize_node};
 pub use tokenizer::{Doctype, TextState, Token, Tokenizer, content_state, tokenize};
 pub use tree_builder::TreeBuilder;
 
@@ -58,6 +60,29 @@ impl Parser {
         Parser {
             tokenizer: Tokenizer::streaming(),
             builder: TreeBuilder::new(scripting),
+            done: false,
+        }
+    }
+
+    /// A parser for a fragment (HTML section 13.4) in the context of an
+    /// element with local name `context`, building into the children of
+    /// `container` (see [`TreeBuilder::fragment`]). The tokenizer starts
+    /// in the state the context's content is read in; no start tag has
+    /// been emitted, so no end tag ends that state (`a</textarea>b` in a
+    /// `textarea` is all text).
+    pub fn fragment(container: NodeId, context: &str, scripting: bool, max_depth: usize) -> Parser {
+        let mut tokenizer = Tokenizer::streaming();
+        let state = if context == "noscript" && scripting {
+            Some(TextState::Rawtext)
+        } else {
+            content_state(context)
+        };
+        if let Some(state) = state {
+            tokenizer.set_state(state);
+        }
+        Parser {
+            tokenizer,
+            builder: TreeBuilder::fragment(container, context, scripting, max_depth),
             done: false,
         }
     }
@@ -112,6 +137,26 @@ impl Parser {
 /// Parses the whole of `input` into `document`, running no scripts.
 fn parse_whole(parser: &mut Parser, document: &mut Document) {
     while parser.parse(document, usize::MAX) != Stop::Done {}
+}
+
+/// Parses `markup` as a fragment (HTML section 13.4, M25's `innerHTML`)
+/// for a context element with local name `context`, into the children
+/// of `container`, a detached element of `document` that its caller
+/// made and moves them out of. At most `max_depth` elements nest, the
+/// container counted. Its scripts are the caller's to mark as already
+/// started: this runs none.
+pub fn parse_fragment(
+    document: &mut Document,
+    container: NodeId,
+    context: &str,
+    scripting: bool,
+    max_depth: usize,
+    markup: &str,
+) {
+    let mut parser = Parser::fragment(container, context, scripting, max_depth);
+    parser.feed(markup);
+    parser.end();
+    parse_whole(&mut parser, document);
 }
 
 /// Errors produced by HTML parsing.
@@ -193,6 +238,85 @@ pub fn parse_document_from_bytes(bytes: &[u8], transport: Option<Encoding>) -> D
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `markup` parsed as a fragment for `context`: the container's
+    /// markup.
+    fn fragment(context: &str, markup: &str) -> String {
+        let mut document = Document::new();
+        let container = document.create_element("html").unwrap();
+        parse_fragment(
+            &mut document,
+            container,
+            context,
+            true,
+            dom::MAX_DEPTH,
+            markup,
+        );
+        document.validate().unwrap();
+        serialize_children(&document, container, true)
+    }
+
+    #[test]
+    fn a_fragment_parses_as_the_reference_browser_parses_it() {
+        assert_eq!(
+            fragment("div", "<p>a<p>b</p><b>c"),
+            "<p>a</p><p>b</p><b>c</b>"
+        );
+        // The context's content state, ended by no end tag.
+        assert_eq!(
+            fragment("textarea", "a</textarea>b<i>"),
+            "a&lt;/textarea&gt;b&lt;i&gt;"
+        );
+        assert_eq!(
+            fragment("title", "<b>&amp;</b>"),
+            "&lt;b&gt;&amp;&lt;/b&gt;"
+        );
+        assert_eq!(
+            fragment("noscript", "<b>&amp;</b>"),
+            "&lt;b&gt;&amp;amp;&lt;/b&gt;"
+        );
+        // The skeleton's tags are dropped in a body context and made for
+        // an `html` one.
+        assert_eq!(
+            fragment(
+                "div",
+                "<title>t</title><meta charset=x><body class=q><p>x</p></body><html lang=en>"
+            ),
+            "<title>t</title><meta charset=\"x\"><p>x</p>"
+        );
+        assert_eq!(
+            fragment("html", "<p>x"),
+            "<head></head><body><p>x</p></body>"
+        );
+        // Scripts are parsed, and not run.
+        assert_eq!(
+            fragment("div", "<script>x()</script><i>y"),
+            "<script>x()</script><i>y</i>"
+        );
+    }
+
+    #[test]
+    fn a_fragment_nests_no_deeper_than_it_is_let() {
+        let mut document = Document::new();
+        let container = document.create_element("html").unwrap();
+        parse_fragment(&mut document, container, "div", false, 4, &"<b>".repeat(10));
+        let depth = document
+            .subtree(container)
+            .map(|n| document.ancestors(n).count())
+            .max()
+            .unwrap();
+        assert_eq!(depth, 3, "the container and three elements down");
+        // Even a budget of one keeps the container open.
+        let container = document.create_element("html").unwrap();
+        parse_fragment(&mut document, container, "div", false, 1, "<b><i>x");
+        assert_eq!(document.children(container).count(), 2);
+        assert!(
+            document
+                .children(container)
+                .all(|c| document.parent(c) == Some(container))
+        );
+        document.validate().unwrap();
+    }
 
     #[test]
     fn parses_a_small_document() {

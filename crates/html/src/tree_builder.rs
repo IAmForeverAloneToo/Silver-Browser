@@ -185,6 +185,9 @@ pub struct TreeBuilder {
     script_line: u32,
     /// A `script` element just closed by its end tag, and its line.
     script: Option<(NodeId, u32)>,
+    /// How many elements may be open at once: [`MAX_DEPTH`], or fewer
+    /// for a fragment that goes under an element already that deep.
+    max_depth: usize,
 }
 
 impl Default for TreeBuilder {
@@ -204,6 +207,34 @@ impl TreeBuilder {
             scripting,
             script_line: 1,
             script: None,
+            max_depth: MAX_DEPTH,
+        }
+    }
+
+    /// A builder for a fragment (HTML section 13.4) that builds into the
+    /// children of `container`, a detached element standing for the
+    /// fragment parser's root `html` element: in the body, or, for the
+    /// context `html`, before the head, so that the head and body are
+    /// made as a document's are. At most `max_depth` elements, the
+    /// container among them, are open at once.
+    pub fn fragment(
+        container: NodeId,
+        context: &str,
+        scripting: bool,
+        max_depth: usize,
+    ) -> TreeBuilder {
+        TreeBuilder {
+            open: vec![Open {
+                id: container,
+                tag: "html".to_owned(),
+            }],
+            phase: if context == "html" {
+                Phase::BeforeHead
+            } else {
+                Phase::InBody
+            },
+            max_depth,
+            ..TreeBuilder::new(scripting)
         }
     }
 
@@ -458,7 +489,10 @@ impl TreeBuilder {
     /// At the depth cap, closes the innermost open element to make
     /// room (see the module doc).
     fn pop_at_the_cap(&mut self) {
-        if self.open.len() >= MAX_DEPTH {
+        // A fragment's container is never closed: what does not fit
+        // under it goes in as its sibling would, and its maker refuses
+        // what is too deep.
+        if self.open.len() >= self.max_depth.max(2) {
             self.open.pop();
         }
     }

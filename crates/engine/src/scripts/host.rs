@@ -322,6 +322,87 @@ impl ScriptingHost for DocumentHost {
                     .collect();
                 Ok(Answer::Nodes(found))
             }
+            Call::InnerHtml(node) => {
+                let node = self.node(node)?;
+                let markup = html::serialize_children(&self.document, node, true);
+                self.work += markup.len() as u64 / 64;
+                Ok(Answer::String(markup))
+            }
+            Call::OuterHtml(node) => {
+                let node = self.node(node)?;
+                let markup = html::serialize_node(&self.document, node, true);
+                self.work += markup.len() as u64 / 64;
+                Ok(Answer::String(markup))
+            }
+            Call::SetInnerHtml(node, markup) => {
+                let node = self.node(node)?;
+                let context = self.document.tag(node).unwrap_or("body").to_owned();
+                let container = self.parse_fragment(&context, node, &markup)?;
+                while let Some(child) = self.document.first_child(node) {
+                    self.work += 1;
+                    if self.document.remove_child(node, child).is_err() {
+                        break;
+                    }
+                    self.detached.push(child);
+                }
+                self.adopt(container, node, None)?;
+                Ok(Answer::Nothing)
+            }
+            Call::SetOuterHtml(node, markup) => {
+                let node = self.node(node)?;
+                let Some(parent) = self.document.parent(node) else {
+                    return Ok(Answer::Nothing);
+                };
+                if parent == self.document.root() {
+                    return Err(DomError::new(
+                        "NoModificationAllowedError",
+                        "This element's parent is a Document, which may not be modified.",
+                    ));
+                }
+                let context = self.document.tag(parent).unwrap_or("body").to_owned();
+                let container = self.parse_fragment(&context, parent, &markup)?;
+                self.adopt(container, parent, Some(node))?;
+                self.document.remove_child(parent, node).map_err(refused)?;
+                self.detached.push(node);
+                Ok(Answer::Nothing)
+            }
+            Call::InsertAdjacentHtml {
+                node,
+                position,
+                markup,
+            } => {
+                let node = self.node(node)?;
+                let (parent, before) = match position.as_str() {
+                    "beforebegin" | "afterend" => {
+                        let parent = self
+                            .document
+                            .parent(node)
+                            .filter(|&parent| parent != self.document.root())
+                            .ok_or_else(|| {
+                                DomError::new(
+                                    "NoModificationAllowedError",
+                                    "The element has no parent.",
+                                )
+                            })?;
+                        let before = if position == "beforebegin" {
+                            Some(node)
+                        } else {
+                            self.document.next_sibling(node)
+                        };
+                        (parent, before)
+                    }
+                    "afterbegin" => (node, self.document.first_child(node)),
+                    _ => (node, None),
+                };
+                // An `html` context is taken for a body (HTML section 8.5.6).
+                let context = match self.document.tag(parent) {
+                    Some("html") | None => "body".to_owned(),
+                    Some(tag) => tag.to_owned(),
+                };
+                let container = self.parse_fragment(&context, parent, &markup)?;
+                self.adopt(container, parent, before)?;
+                Ok(Answer::Nothing)
+            }
             Call::Released(node) => {
                 if let Some(id) = dom::NodeId::from_bits(node.0) {
                     self.exposed.remove(&id);
@@ -348,6 +429,54 @@ impl DocumentHost {
     /// it makes an object for it ([`Call::Wrap`]).
     fn give(&mut self, node: Option<NodeId>) -> Answer {
         Answer::Node(node.map(handle))
+    }
+
+    /// `markup` parsed as a fragment in the context of an element with
+    /// local name `context` (HTML section 13.4) into a new detached
+    /// container, nested no deeper than lets it go under `under`.
+    fn parse_fragment(
+        &mut self,
+        context: &str,
+        under: NodeId,
+        markup: &str,
+    ) -> Result<NodeId, DomError> {
+        self.work += markup.len() as u64 / 64;
+        let container = self.document.create_element("html").map_err(refused)?;
+        let depth = std::iter::once(under)
+            .chain(self.document.ancestors(under))
+            .filter(|&node| self.document.is_element(node))
+            .count();
+        let before = self.document.len();
+        html::parse_fragment(
+            &mut self.document,
+            container,
+            context,
+            true,
+            (dom::MAX_DEPTH + 1).saturating_sub(depth),
+            markup,
+        );
+        self.work += self.document.len().saturating_sub(before) as u64;
+        Ok(container)
+    }
+
+    /// Moves the children of `container`, a fragment's, under `parent`
+    /// before `before`, and frees the container.
+    fn adopt(
+        &mut self,
+        container: NodeId,
+        parent: NodeId,
+        before: Option<NodeId>,
+    ) -> Result<(), DomError> {
+        let mut result = Ok(());
+        while let Some(child) = self.document.first_child(container) {
+            self.work += 1;
+            if let Err(error) = self.document.insert_before(parent, child, before) {
+                result = Err(refused(error));
+                break;
+            }
+        }
+        let _ = self.document.free(container);
+        result
     }
 
     /// The elements under `root`, in tree order, its descendants alone;
