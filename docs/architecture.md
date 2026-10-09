@@ -1487,3 +1487,70 @@ Integrity; the tree builder's missing insertion modes. The DOM's
 interfaces and `document.write` are M25's, events and timers M26's.
 1,831 tests pass workspace-wide, two ignored. Next milestone: DOM
 scripting v1 (M25).
+
+Milestone 25 (DOM scripting v1; `docs/design/dom-scripting.md`): scripts
+get the DOM. Node objects are made in a bootstrap of JavaScript that
+`js` runs when a realm is made (step 1), over handles (a node's slot and
+generation as one number, `dom` retiring a slot after 2^21 generations),
+one object a node held weakly, or strongly while its node is in the
+document, released to the host when collected; its natives, out of a
+page's reach, call the host through one method, `ScriptingHost::dom`, a
+`Call` and its `Answer`, and the host charges its work to the step
+budget, a step for every 10,000 units, refusing once the budget is
+spent. `dom` counts the bytes its nodes hold (256 MiB at most) and gains
+a version for live collections and a journal the host reads. Detached
+subtrees no object reaches are freed after each run. The tree read and
+written (step 2) with the DOM's checks and the reference browser's
+messages, live and static collections; the selectors (step 3), with
+`:scope`; markup (step 4) through an HTML serializer and a fragment
+parser in `html`; scripts that scripts insert, run nested before the
+call that connected them returns, and `document.write` at the parser's
+insertion point, a stack of positions in its input, written scripts
+inline and external, six levels deep at most (step 5); `classList`,
+`style` over the attribute, `dataset`, reflected attributes and
+listeners kept for M26 (step 6); and `window` v1 (step 7): a script's
+navigations with HTML's handling, `navigator` and `screen` by D12 with
+the shell's `--compat-user-agent`, which net's requests follow too,
+`getComputedStyle` over a copy of the cascade restyled by the journal
+and serialized by `style::serialize`, and `noscript` computing `inline`
+and making no box. `benches/dom.rs` (step 8) builds a table, toggles a
+class on it and edits a cell by script, a frame after each: its first
+finding, every word shaped again at every pass, was fixed by a cache of
+widths in `text::FontCollection` (half of M35.8; a 1,000-row table's
+layout from 1,135 ms to 68 ms, the load benchmark's first frame from 812
+ms to 61). The frame after a cell's edit is 4 ms at 100 rows; the others
+are past the budget, as the reference browser's own style and layout are
+for a toggle at 1,000 rows, and what keeps them there is M35.9's and
+M35.11's. A new fuzz target, `dom_api` (step 9, T2.4), writes calls
+drawn from M25's surface out as scripts, some run as the page is parsed
+and the rest after frames through `differential::run_script`, the
+document validated and the frame held to a fresh engine's. The
+web-platform tests' rule (step 10) takes scripts that use M25's surface
+and nothing it leaves to others, with three more directories: 2,234
+tests, 80 new, the 12 of them that fail each a gap outside M25; they
+found `getComputedStyle` lacking `transform-box`. Pages 119 to 122 (step
+11) match the reference browser exactly, and found two things, mended: a
+page loaded before its first frame read a 0 by 0 window
+(`Engine::set_viewport`), and the cascade read no `rgb()` (now `rgb()`
+and `rgba()`, part of G16). The acceptance (step 12): a page that builds
+a table and styles it by a class toggle, in the shell's window and its
+PDF; T4.3 finds every first layout of a page of text 7 to 25 times
+faster, the values cascades back at M23's times and two restyles 18% and
+58% slower, the cascade following its memory as M24's found, and a realm
+40 times slower to make, its bindings compiled each time (M35.12); fuzz
+runs of `dom_api`, `script`, `html_parse` and the targets that lay pages
+out found two things: the `script` target's stack too small for the
+bootstrap, and, in `pipeline`, a page nested 31 levels deep overflowing
+the box tree's recursion under the address sanitizer, which in release
+overflowed Windows' 1 MiB main thread at 160 levels, in M24's tree as
+well: the shell's main thread now has `engine::STACK_SIZE`, 32 MiB, and
+a test draws pages at the parser's cap on a thread of that size;
+building and laying out boxes without recursion is M35.9's. Not in this
+milestone, said rather than hidden and registered (G46 to G55): a style
+and layout flush for scripts; comments, fragments and the other kinds of
+node; `document.open`; `MutationObserver`; CSSOM's serialization and
+style sheets; namespaces; traversal and ranges; custom elements and
+shadow trees; the window's named properties; a viewport for
+`--print-to-pdf`. Events, timers and form controls' state are M26's.
+1,902 tests pass workspace-wide, two ignored. Next milestone: event
+loop, events, input (M26).

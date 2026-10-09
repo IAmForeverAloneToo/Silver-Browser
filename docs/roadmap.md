@@ -362,12 +362,19 @@ images, the last item on T0's list, come with M23.
   `async`; Content Security Policy's `script-src`; scripts off unless
   `--enable-scripts` asks, until the isolation of M33 and M34 (R2).
 
+- **M25, DOM scripting v1** (done 2026-10-10, designed in
+  `docs/design/dom-scripting.md`): the DOM for scripts, node objects
+  over the arena's nodes made in a bootstrap of JavaScript; selectors,
+  markup and `document.write`; `classList`, `style`, `dataset`;
+  `location`, `navigator` by D12, `screen` and `getComputedStyle`; the
+  nodes scripts let go of freed.
+
 Each milestone's fuller writeup and stated gaps are in
 `docs/architecture.md` "Current state", and the gaps no milestone holds
 on the G list (M39+, below).
 
 Verified per the vertical-slice rule at each milestone, by the gate:
-the workspace's tests (1,831 at M24, two ignored), clippy clean (`-D
+the workspace's tests (1,902 at M25, two ignored), clippy clean (`-D
 warnings`, every target), `cargo deny`, the fuzz targets, and a smoke
 run of the shell. Toolchain: 1.98.1, pinned by `rust-toolchain.toml`.
 The checkout lives outside OneDrive since 2026-10-08
@@ -1545,24 +1552,56 @@ Per css-grid-1 (level 2 subgrid included):
 
 ## M25 — DOM scripting v1  ·  `js`/`dom`/`engine`  ·  Effort: XR  ·  Depends: M24
 
-- [ ] M25.1 DOM Core bindings: `document.getElementById/ querySelector(
+- [x] M25.1 DOM Core bindings: `document.getElementById/ querySelector(
        All)` (uses the M4 selector engine!), `createElement`, `createTextNode`,
        `appendChild/removeChild/insertBefore`, `textContent`, `innerHTML`
        (reparse via html crate — the parser is already hostile-input-safe).
        And `document.write`, with the input stream's insertion point,
-       which M24.8's parser leaves to it.
-- [ ] M25.2 Node properties: `parentNode/children/childNodes/firstChild/
+       which M24.8's parser leaves to it. Done 2026-10-10
+       (`docs/design/dom-scripting.md`): node objects made in a bootstrap
+       of JavaScript over handles, one object a node, the host answering
+       one `Call` at a time; the DOM's mutations with its checks and the
+       reference browser's messages; live and static collections; the
+       selectors, `:scope` among them; an HTML serializer and fragment
+       parser in `html` for `innerHTML`, `outerHTML` and
+       `insertAdjacentHTML`; scripts that scripts insert, run nested;
+       `document.write` at the parser's insertion point, written
+       scripts inline and external; the native work charged to the step
+       budget, the DOM's data bounded, and detached nodes freed.
+- [x] M25.2 Node properties: `parentNode/children/childNodes/firstChild/
        nextSibling`, `classList`, `setAttribute/getAttribute`, `style`
-       object (set→restyle).
-- [ ] M25.3 Mutation → engine invalidation: DOM writes trigger M13
+       object (set->restyle). Done 2026-10-10: and `dataset`, the
+       reflected attributes pages read most, and listeners kept for
+       M26 to call; `style` over the attribute, values kept as written
+       (G50).
+- [x] M25.3 Mutation -> engine invalidation: DOM writes trigger M13
        incremental restyle/layout (the whole incremental engine pays off
-       here; benchmark it).
-- [ ] M25.4 `window` v1: `location` (read + navigate), `navigator`
+       here; benchmark it). Done 2026-10-10: a script's changes go
+       through the journal to the next frame, held to a fresh engine's
+       by the `dom_api` fuzz target; `benches/dom.rs` measures a table
+       built, a class toggled and a cell edited by script. Its first
+       finding, text shaped again at every pass, gave half of M35.8: a
+       1,000-row table's layout from 1,135 ms to 68 ms
+       (`docs/perf-budgets.md`).
+- [x] M25.4 `window` v1: `location` (read + navigate), `navigator`
        (fingerprint-minimal: no lies beyond a fixed UA string policy —
-       see D12), `screen`, `getComputedStyle`.
-- [ ] M25.5 Acceptance: a page that builds a table via JS then styles it
+       see D12), `screen`, `getComputedStyle`. Done 2026-10-10: a
+       script's navigations with HTML's handling, one entry for a page
+       that redirects by script; `navigator` and `screen` by D12, with
+       `--compat-user-agent`; `getComputedStyle` over a copy of the
+       cascade, serialized by `style::serialize` (G46 for what needs
+       layout); `noscript` computing `inline` and making no box.
+- [x] M25.5 Acceptance: a page that builds a table via JS then styles it
        via a class toggle renders correctly; DOM-mutation benchmark under
-       frame budget.
+       frame budget. Done 2026-10-10, but for the budget: the table
+       renders in the shell's window and its PDF as the reference
+       browser would, and pages 119 to 122 match it exactly; the frame
+       after a cell's text is edited is 4 ms at 100 rows, within the
+       budget, but 46-58 ms at 1,000 rows, and a class toggle restyling
+       every cell takes 20 ms at 100 rows and 105-116 ms at 1,000, where
+       the reference browser's style and layout alone take 33 ms at
+       1,000. What keeps them over is M35.9's (the box tree, the
+       fragments, and now a table's cells) and M35.11's.
 
 ---
 
@@ -1777,7 +1816,10 @@ process seams.
        shaping face kept rather than rebuilt per call, and a cache of
        word measures in layout (measured at M13: about 25µs a word,
        8µs of it the face, most of a 1,000-paragraph page's 700ms
-       layout).
+       layout). The cache landed at M25, in `text::FontCollection`
+       (`MAX_MEASURES` widths by size and text), when a table built by
+       script spent a second a frame shaping its words again; the face
+       kept is still to do.
 - [ ] M35.9 Layout's work in proportion to the page on every pass
        (measured at M13): the box tree, rebuilt each pass and growing
        faster than the page (1.1ms at 1,000 paragraphs, 80ms at
@@ -1787,6 +1829,16 @@ process seams.
        tree updated in place, and fragments positioned relative to
        their parent that refer to their styles, so that a pass copies
        only what it laid out and a paint-only change only repaints.
+       And a table's cells kept by the layout cache, which lays every
+       cell out again with its table: at M25 a cell's text edited in a
+       table of 1,000 rows cost 32 ms of cells measured and laid out,
+       17 ms of box tree and 12 ms of fragments copied, a 46-58 ms
+       frame.
+       And the box tree and the layout made without recursion: a page
+       nested to the parser's cap needs some 3.6 MiB of stack in
+       release, 17 in a debug build and more under the address
+       sanitizer, which overflowed Windows' 1 MiB main thread at M25; the
+       shell's main thread has 32 MiB since (`engine::STACK_SIZE`).
 - [ ] M35.10 Compositing v2 (found at M19, `docs/design/compositing.md`
        section 2): the document's tiles drawn opaque over the canvas
        colour, so that a frame without them draws the page through at
@@ -1796,6 +1848,17 @@ process seams.
        drawing them again; raster at the device transform for a layer
        that does not animate, and a layer's raster scale kept through
        an animation.
+- [ ] M35.11 A restyle's cost an element and a whole viewport's raster
+       (measured at M25, `benches/dom.rs`): a class toggled on a table
+       restyles its elements at 7-8 us each, more than the whole
+       cascade's 6, and rasters the viewport again in software in about
+       10 ms; a 100-row table's toggle is a 20 ms frame.
+- [ ] M35.12 A realm's bindings loaded compiled: every realm compiles
+       the DOM's bootstrap, 3,300 lines of JavaScript, 4.5 ms of the
+       5 ms a realm now takes to make (0.12 ms before M25). QuickJS
+       writes and reads compiled code, but `rquickjs` reads it only
+       through an `unsafe` function, and `js` writes no `unsafe`: a
+       reviewed exception, or a safe reader, first.
 
 ---
 
@@ -1940,7 +2003,10 @@ Deferred from the milestones above, each with what it waits on:
 - [ ] G16 Colour functions, `rgb()`, `hsl()` and the rest, and
        `currentcolor` outside `text-decoration-color`; the engine takes
        hexadecimal and named colours alone. Found again at M21, and at
-       M22, whose reference pages write theirs in hexadecimal.
+       M22, whose reference pages write theirs in hexadecimal. `rgb()`
+       and `rgba()` landed at M25, which `getComputedStyle` gives a
+       script to write back; `hsl()`, `hwb()`, `lab()`, `color()` and the
+       rest remain.
 - [ ] G17 `@counter-style` and `symbols()`, the complex predefined
        counter styles of Counter Styles 3 §7 (the longhand Chinese,
        Japanese and Korean styles, `ethiopic-numeric`) and `speak-as`.
@@ -2051,6 +2117,37 @@ Deferred from the milestones above, each with what it waits on:
        and pages served to browsers without scripts lean on them:
        Google's basic page is laid out uncentred without them. Found at
        M24.
+- [ ] G46 A style and layout flush for scripts: `getComputedStyle`
+       that starts transitions, shows animations and sees the sheets a
+       running script added; the resolved values of `width`, `height`
+       and the rest, which are the used values; CSSOM View's layout
+       queries (`offsetWidth`, `clientWidth`, `getBoundingClientRect`,
+       `scrollTop`, `scrollTo`, `innerText`). Found at M25.
+- [ ] G47 More kinds of node: `Comment`, `DocumentFragment`,
+       `DocumentType`, `ProcessingInstruction`, `CDATASection`, `Attr`
+       and `attributes`, with `createComment`, `createDocumentFragment`
+       and `template`'s content, which the parser's comments and
+       doctypes (G44) would make too. Found at M25.
+- [ ] G48 `document.open` and `document.close`, and a `document.write`
+       with no insertion point replacing the document (a `javascript:`
+       URL's string result is M26.6's). Found at M25.
+- [ ] G49 `MutationObserver`, which M13 expected of M24 or M25. Found
+       at M25.
+- [ ] G50 CSSOM's serialization of specified values and of shorthands
+       in `style` and `cssText`, which keep the text they were given;
+       `document.styleSheets` and the CSSOM's rule objects. Found at M25.
+- [ ] G51 Namespaces: `createElementNS`, and MathML's elements as their
+       own interfaces (SVG's are M32's). Found at M25.
+- [ ] G52 Traversal and ranges: `TreeWalker`, `NodeIterator`, `Range`,
+       `Selection`, `compareDocumentPosition`, `isEqualNode`,
+       `normalize`. Found at M25.
+- [ ] G53 Custom elements and shadow trees. Found at M25.
+- [ ] G54 The window's named properties (HTML 7.2.2.3): an element by
+       its id as a global (`toggler.className`), which most of the
+       selector invalidation reftests use. Found at M25.
+- [ ] G55 A viewport for `--print-to-pdf`'s load: the page's scripts
+       read a 0 by 0 window, the shell's window giving the engine its
+       size only when one is shown. Found at M25.
 
 ---
 
@@ -2100,8 +2197,12 @@ Deferred from the milestones above, each with what it waits on:
        minute a push and half an hour weekly, the corpus carried in the
        actions cache (`media_query`, left out of the list at M20, and
        `values` joined it at M21, `animations` at M22).
-- [ ] T2.4 Structured fuzzing for the JS boundary (M24+): API call
-       sequences, not just strings.
+- [x] T2.4 Structured fuzzing for the JS boundary (M24+): API call
+       sequences, not just strings. Done 2026-10-10 (M25): the
+       `dom_api` target, calls drawn from M25's surface written out as
+       scripts, run as the page is parsed and after frames, the
+       document validated and the frame held to a fresh engine's; in
+       CI's matrix.
 
 ## T3 — Security cadence
 - [ ] T3.1 Quarterly dependency audit (`cargo audit`), pinned Cargo.lock,
@@ -2161,7 +2262,7 @@ Deferred from the milestones above, each with what it waits on:
 | D9 | Chrome UI toolkit | M15/M37 | in-engine (softbuffer) / egui / native | in-engine (no extra toolkit; the engine is the toolkit); decided at M15: a `ui` crate beside `engine`, under `shell`, drawing with `paint`, `render` and `text`, and touching no OS (see `docs/design/navigation.md`) |
 | D10 | Profile storage engine | M28 | redb / sled / SQLite / custom files | redb (pure Rust, embedded, single-file) |
 | D11 | DevTools protocol | M36 | custom in-engine UI only / CDP-compatible | custom first; CDP-compat only if external tools wanted |
-| D12 | UA string & fingerprint policy | M25 | honest UA / Chrome-mimic | honest minimal UA + minimal API surface (compat escape hatch flag exists but is not default) |
+| D12 | UA string & fingerprint policy | M25 | honest UA / Chrome-mimic | honest minimal UA + minimal API surface (compat escape hatch flag exists but is not default); decided at M25 as written: `Mozilla/5.0 (compatible; SilverBrowser/<version>)` in requests and `navigator.userAgent`, `navigator`'s values HTML's for the Gecko mode or fixed, `screen` the viewport; the shell's `--compat-user-agent` gives the reference browser's string and HTML's Chrome mode (see `docs/design/dom-scripting.md`) |
 | D13 | Process granularity | M34 | per-tab / per-site-instance / hybrid | per-site-instance with LRU cap |
 | D14 | Quirks mode | M40s | full quirks emulation / standards-only + limited quirk stylesheet | limited quirk stylesheet (uqlist-style) driven by T1 data |
 | D15 | HTTP/3 (QUIC) | M47+ | quinn / skip | quinn when HTTP/2 coverage demonstrably costs compat |

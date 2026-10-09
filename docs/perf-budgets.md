@@ -1229,6 +1229,93 @@ falls decides it; why the fast layout is a quarter faster is for a
 change of its own. The streamed parse leaves the loads faster, if
 anything. The process's peak memory is not measured on Windows.
 
+### DOM scripting (M25)
+
+**A script's changes, a frame after each.** `benches/dom.rs`: a page
+served by `net`'s test server, scripts on, whose links run its
+functions as a click does (`javascript:` URLs): one builds a table of
+rows of four cells, one toggles a class on it that changes every cell's
+padding and colour, one edits the text of a cell in its middle row.
+Each is followed by a frame at 1280 by 800; the build five times, each
+change forty. In release, on this laptop, the frames' medians:
+
+| | 100 rows | 1,000 rows |
+| --- | --- | --- |
+| The table built: the script | 7.5ms | 86-98ms |
+| The frame after it | 22.5ms | 117-131ms |
+| Its style, layout and raster | 3.9, 7.1 and 11.2ms | 32-34, 73-84 and 9-11ms |
+| The class toggled: the script | 0.4ms | 2.3ms |
+| The frame after it | 20.5ms, 40 of 40 over | 105-116ms, 40 of 40 over |
+| Its style, layout and raster | 4.0, 6.2 and 10.0ms | 36-43, 58 and 8-9ms |
+| A cell's text edited: the script | 0.4ms | 4-5ms |
+| The frame after it | 4.2ms, 0 of 40 over | 46-58ms, 40 of 40 over |
+| Its layout | 3.5ms | 41-51ms |
+
+The incremental engine does what M13 built it to: no change cascades
+the document whole, the toggle restyles the table's 502 or 5,002
+elements and the edit none, and each lays out three boxes, the table and
+its block ancestors, the rest taken from the cache. Within the budget:
+the edit at 100 rows. Past it, and why:
+
+- *Text shaped again at every pass* was the benchmark's first finding:
+  the 1,000-row table's layout took 1,135ms, its words measured anew
+  each pass. A cache of widths in `text::FontCollection`, by font size
+  and text, up to 65,536 (`MAX_MEASURES`), half of M35.8, brought it to
+  68ms; every page with text gains from it (T4.3 below).
+- *A table laid out whole*: the layout cache keeps no cell, so an edit
+  lays every cell out again, 23ms, and measures them for the table's
+  width, 9ms, at 1,000 rows; the box tree built again, 17ms, and the
+  fragments copied, about 12ms, are the M35.9 costs below. M35.9.
+- *A restyle's cost an element*, 7-8us, more than the whole cascade's
+  6us an element on this page, and a full raster of the viewport in
+  software, about 10ms, when every visible cell changes colour. M35.11.
+
+The reference browser (Chrome 154.0.8037.99) on the same table at
+1,000 rows, style and layout alone forced by `offsetHeight`, no paint:
+the first layout 49-60ms, the toggle 33ms, the edit 2ms. A change that
+restyles and lays out every cell is past 16.7ms there too.
+
+**A realm's bindings.** `benches/scripts.rs`'s realm takes 5.0-5.2ms
+to make where it took 0.12ms: the DOM's bindings are a bootstrap of
+3,300 lines of JavaScript every realm compiles and runs, 4.5ms of it
+the compiling. A page's scripts cost it once, at their first; the page
+of 1,000 paragraphs and 110 scripts now loads 11ms slower with them
+than without, where it was 2ms. Loading the bootstrap compiled, which
+`rquickjs` offers only as `unsafe`, is M35.12's.
+
+**T4.3.** The benchmarks of the code before M25 (1f8d9b5) and of M25,
+by turns, four rounds. Every first layout of a page of text is 7 to 25
+times faster for the cache of widths; the rows past 10%, but those of
+the same first frames on other benchmarks:
+
+| | Before M25 | M25 | |
+| --- | --- | --- | --- |
+| Changing the document: the first frame | 721-739ms, median 726 | 56-58ms, median 57 | x0.08 |
+| An appended paragraph's frames over 16.7ms | 22-34 of 1,000 | 16-22 of 1,000 | x0.70 |
+| 1,000 appended in one frame | 738-833ms, median 781 | 65-70ms, median 67 | x0.09 |
+| Its style | 4.31-4.74ms, median 4.45 | 4.76-7.45ms, median 7.05 | x1.58 |
+| Loading: `load` to the first frame drawn | 782-955ms, median 812 | 59.9-62.0ms, median 60.5 | x0.07 |
+| Going back to the page fetched again | 777-929ms, median 800 | 41.5-44.0ms, median 43.5 | x0.05 |
+| Scrolling: the layout, once | 377-416ms, median 402 | 15.0-15.4ms, median 15.2 | x0.04 |
+| Flex: a grid of 1,000 cards, the first frame | 2.39-2.69s, median 2.54 | 230-236ms, median 234 | x0.09 |
+| Grid: a gallery of 1,000 figures, the first frame | 915-924ms, median 918 | 115-118ms, median 117 | x0.13 |
+| Pseudo-elements, all of them: the first frame | 2.95-3.03s, median 2.97 | 159-162ms, median 161 | x0.05 |
+| Animation: the body's class changed, its style | 8.91-11.13ms, median 9.41 | 10.85-11.46ms, median 11.09 | x1.18 |
+| Values: the cascade of 1,000 paragraphs, written out | 6.12-6.34ms, median 6.19 | 4.50-4.86ms, median 4.81 | x0.78 |
+| Values: 1,000 boxes sized by lengths, cascade | 5.73-5.85ms, median 5.76 | 4.38-4.42ms, median 4.41 | x0.77 |
+| Scripts: a realm made | 0.12-0.13ms | 4.96-5.16ms | x40 |
+| Scripts: the page, its 110 scripts run | 467-477ms, median 472 | 55.4-56.4ms, median 56.1 | x0.12 |
+
+The restyles past 10% and the cascades now faster are the one effect
+M24's T4.3 found: the cascade's speed follows where its memory falls,
+and the user agent sheet lost its `noscript` rule at M25. The values
+cascades are back at M23's times, as they were before that rule came,
+and the two restyles slower by as much; the 1,000 appended at once
+take 4.8ms in one round of four and 7.0-7.5ms in the others. The
+realm is the bindings' compiling, above. The photo grid's rows
+`t43sum.py` flags pair the software backend's section with the GPU
+backend's; each backend's frames are as they were.
+
 ### Over budget, and why
 
 These are known and recorded rather than hidden. Each has the item that
@@ -1256,7 +1343,9 @@ is to take it on.
   M13.2 was measured on, 630–680ms for the mutation benchmark's page,
   and 690–700ms for the load benchmark's, with its sheets. Most of it is text shaping, at about 25µs a word. Caching word
   measures and fonts' faces is M35.8. Laying out 1,000 new paragraphs
-  at once costs the same, for the same reason.
+  at once costs the same, for the same reason. M25 cached the widths
+  (above): the mutation benchmark's first frame is 56-58ms, the load
+  benchmark's 50-54ms, past the budget still; the faces are M35.8's.
 - **Work that grows faster than the page.** The box tree, rebuilt on
   every layout pass, takes 1.1, 2.4, 5.2, 18.7 and 80ms at 1,000,
   2,000, 4,000, 8,000 and 16,000 paragraphs. Its boxes, fragments and
