@@ -75,6 +75,7 @@ nothing that changes what is shown.
   - `cargo bench -p engine --bench values` (M21).
   - `cargo bench -p engine --bench animation` (M22), on both backends.
   - `cargo bench -p engine --bench images` (M23), on both backends.
+  - `cargo bench -p engine --bench scripts` (M24).
   - `cargo bench -p style --bench match` (M4.12; recorded since M16).
   - Criterion-tracked benchmarks run in CI are T4.2, for M35.
 - **Counters** prove work that is not done: `Engine::style_runs`,
@@ -1174,6 +1175,59 @@ not the change. The mutation page's appended paragraphs went over the
 budget 24-37 times in 1,000 against 10-26, their median frame 4%
 longer, frames close to the budget either way. The process's peak
 memory is not measured on Windows.
+
+### Scripts (M24)
+
+**What scripts cost.** `benches/scripts.rs`: a realm made, as a
+document's first script makes it; two million additions in one script
+and a thousand console calls, each run in one realm twenty times; and a
+page of 1,000 paragraphs, 71KB, with an inline script after every tenth
+paragraph and an external one after every hundredth, served by `net`'s
+test server, from `Engine::navigate` to its first frame at 1280 by 800,
+streamed and parsed as it arrives either way. In release, on this
+laptop:
+
+| | Median | Range |
+| --- | --- | --- |
+| A realm made | 0.12ms | 0.11-0.49ms |
+| Two million additions | 83.1ms | 79.7-87.2ms |
+| A thousand console calls | 1.15ms | 1.10-1.17ms |
+| The page, scripts off | 492ms | 465-497ms |
+| The page, its 110 scripts run | 494ms | 490-497ms |
+
+A page's scripts cost what they do: 110 of them, ten fetched, load
+within the page's own spread without them, the first layout's text
+shaping most of either, as on the load benchmark's page.
+
+**T4.3.** The benchmarks of the code before M24 (dc3d768) and of M24, by
+turns, four rounds: every benchmark within 10% but four cascades of the
+values benchmark; the rows past 5%:
+
+| | Before M24 | M24 | |
+| --- | --- | --- | --- |
+| Loading: `load` to the first frame drawn | 807-897ms, median 842 | 769-835ms, median 778 | x0.92 |
+| Going back to the page fetched again | 778-933ms, median 875 | 750-837ms, median 761 | x0.87 |
+| Flex: a grid of 1,000 cards, the first frame | 2.71-2.76s, median 2.73 | 2.43-2.51s, median 2.46 | x0.90 |
+| Grid: a gallery of 1,000 figures, the first frame | 1,029-1,060ms, median 1,043 | 914-924ms, median 915 | x0.88 |
+| Values: the cascade of 1,000 paragraphs, written out | 4.74-5.37ms, median 4.99 | 5.95-6.31ms, median 6.20 | x1.24 |
+| 1,000 boxes sized by lengths: cascade | 4.53-4.68ms, median 4.56 | 5.77-5.84ms, median 5.79 | x1.27 |
+| Sized by math functions: cascade | 10.0-11.3ms, median 11.2 | 12.3-12.6ms, median 12.5 | x1.12 |
+| An ordered list of 1,000 items, as blocks: cascade | 15.3-17.3ms, median 15.5 | 19.6-20.0ms, median 19.8 | x1.28 |
+| The colour fade on the GPU, a frame's median | 2.85-2.94ms, median 2.92 | 2.92-3.39ms, median 3.17 | x1.08 |
+| The photo grid on the GPU, its frames until decoded | 63.1-70.9ms, median 67.9 | 67.9-75.6ms, median 71.4 | x1.05 |
+
+The four cascades are not the change's. Without the UA sheet's new
+`noscript` rule they are back at M23's times, but that rule is never in
+force on those pages (scripts are off), the rules in force and the work
+for each element are the same with it and without, and builds that
+leave the same rules in force are fast or slow by the sheet's contents
+alone: the rule moved to the sheet's end, after an empty rule, with
+another property or another tag, 5.8-6.1ms for the boxes sized by
+lengths; the rule without `!important`, or an unrelated `!important`
+rule in `@media print` instead, 4.5-4.8ms. Where the cascade's memory
+falls decides it; why the fast layout is a quarter faster is for a
+change of its own. The streamed parse leaves the loads faster, if
+anything. The process's peak memory is not measured on Windows.
 
 ### Over budget, and why
 

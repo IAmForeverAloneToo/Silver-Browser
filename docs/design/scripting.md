@@ -1,8 +1,8 @@
 # Design note: scripting
 
 Roadmap M24. Written before the code, as the record of the decisions,
-and corrected to the code when the milestone ends: where they
-disagree, the code wins, and the places are marked *(corrected)*. What
+and corrected to the code when the milestone ended: where they
+disagreed, the code won, and the places are marked *(corrected)*. What
 ships is described in `docs/architecture.md` "Current state".
 
 No page runs a script. The tokenizer reads a `<script>` element's
@@ -182,7 +182,10 @@ the same `dom::Document` methods and journal as any other change.
 
 **What scripts can reach in M24.** The global object is `window`, also
 `self` and `globalThis`, with ECMAScript's built-ins as QuickJS-ng has
-them, which leave out `Intl` and `Temporal`. Of the platform:
+them, which leave out `Intl` and `Temporal`. *(corrected)* QuickJS-ng
+adds `queueMicrotask`, `atob`, `btoa` and `DOMException` of its own;
+its `performance`, an unrounded clock, and `SharedArrayBuffer` are taken
+off the global object. Of the platform:
 `console.log`, `info`, `warn`, `error` and `debug`, with the Console
 Standard's formatter (`%s`, `%d`, `%i`, `%f`, `%o`, `%O`, `%c`, the last
 dropping its styles); and `document`, an object with `title` alone,
@@ -199,7 +202,12 @@ else of the DOM, no events and no timers: those are M25 and M26.
   realm *dead* (`Death::Heap`): what the script held is still held, so
   the next allocations would fail too (measured, with the array a
   global), and the engine drops the realm and runs no further script in
-  that document, which stays as it was drawn.
+  that document, which stays as it was drawn. *(corrected)* Dead only
+  when, after the failed run and a collection, the heap still holds
+  more than three quarters of the limit (`DEAD_HEAP`): a script that
+  caught the error and let go of what it held goes on. A realm that
+  cannot be made at all, its heap too small for one, stops the
+  document's scripts as a dead one does.
 - `MAX_SCRIPT_STEPS`, 10,000: interrupt calls a run may take, each
   about 10,000 of QuickJS-ng's operations; 2 to 5 seconds of running
   code on this machine. Past it the script ends with an uncatchable
@@ -227,7 +235,11 @@ what failed: a syntax error, an uncaught exception, the step budget, the
 heap, with the message, URL, line and column. The engine reports each
 as HTML section 8.1.4.6 says, without the `error` event, which waits
 for events (M26): to the document's console, as an error entry
-beginning `Uncaught`. The errors of a script fetched from another origin
+beginning `Uncaught` *(corrected: but the step budget's, "Script ran too
+long and was stopped" and where)*. A script that could not be loaded is
+a console error too, "Failed to load script <url>: <why>", and so is a
+script a policy refused, "Content-Security-Policy refused <what>:
+<directive>"; neither counts among the page's script errors. The errors of a script fetched from another origin
 are *muted* (section 8.1.4.6): "Script error.", no URL, no position,
 since without CORS (M27) no response is CORS-same-origin. A promise
 rejected with no handler by the end of a checkpoint is reported as
@@ -240,7 +252,9 @@ shell takes (`Engine::take_console`) and prints to its standard error,
 the shown document's scripting: off, running, or stopped (its realm
 dead), with the count of errors reported. A realm that dies posts the
 status bubble's notice, "Scripts stopped on this page: out of memory",
-and the document stays as drawn. A script error does not change
+and the document stays as drawn. *(corrected)* The notice is posted once
+the document whose realm died is shown, not over the page shown while
+it loads. A script error does not change
 `LoadState`: the page loaded; its script failed.
 
 **Scripting is off by default (risk R2).** The roadmap orders phases D
@@ -264,7 +278,9 @@ closed where it is not understood (below).
 - *The tokenizer* becomes HTML section 13.2.5's state machine: every
   state, the script data states with their escapes among them, RCDATA,
   RAWTEXT, PLAINTEXT and CDATA sections, and the full named character
-  reference table (2,231 names; today's has HTML 4's). It is fed text in
+  reference table (2,231 names; today's has HTML 4's) *(corrected: and
+  the processing-instruction states of the Standard of 7 October 2026,
+  whose tokens the tree builder drops)*. It is fed text in
   pieces (`feed`, then `end`), keeps its state between them, and gives
   the same tokens whatever the pieces; carriage returns are normalized
   across a piece's edge. Which state an element's content starts in is
@@ -274,7 +290,11 @@ closed where it is not understood (below).
   document. Parse errors are not reported: the tree is what matters.
 - *The tree builder* writes into a `dom::Document` as it goes: an
   element is inserted into its parent when its start tag is processed,
-  and the stack of open elements holds node ids. Its insertion modes
+  and the stack of open elements holds node ids *(corrected: `dom`
+  gained `create_element_with`, `append_data` and `append_new`, the last
+  appending a fresh node in constant time, its depth the parser's to
+  bound, since `append_child`'s walk of the ancestors made 200,000 nested
+  elements take 9 s)*. Its insertion modes
   stay the subset they are today (section 2 says what is missing); what
   changes is where the tree lives and that the builder can stop. A
   `Parser` holds the tokenizer and the builder: `feed(text)`, `end()`,
@@ -299,7 +319,8 @@ closed where it is not understood (below).
   starts the parse again from the first byte with the new one, the
   document built so far, its realm and its scripts' effects dropped,
   which is HTML's reload in place (section 13.2.3.4); a script may
-  then run twice, as it does in the reference browser.
+  then run twice, as it does in the reference browser. *(corrected)*
+  The console is kept: what ran, ran.
 
 The engine parses a slice (`PARSE_SLICE` tokens, its value measured at
 the step that builds it) each time it is polled with input waiting, and
@@ -341,8 +362,12 @@ until M25):
   the property, M25; the `load` and `error` events for M26.
 - *Render blocking.* A parser-blocking script in the head blocks
   rendering until it has run, as the head's style sheets do now.
+  *(corrected)* That needs no code of its own: the parser waits at the
+  script, before any body, and a document is shown once it has one.
 - *Loaded.* `LoadState::Loaded` waits for the parse to end and the
   deferred and async scripts to have run, as the load event does.
+  *(corrected)* Stopping the load drops the scripts on their way, and
+  the parser runs none it meets after, as HTML's abort does.
 
 **Fetching scripts.** A new `Destination::Script` in `net`, with
 `Accept: */*`, `Request` built as the loader builds a style sheet's
@@ -355,7 +380,9 @@ and under `X-Content-Type-Options: nosniff` only if its type is a
 JavaScript MIME type. It is decoded by BOM, else the `charset` of its
 `Content-Type`, else the element's `charset` attribute, else the
 document's encoding. A script whose final URL's origin is not the
-document's has muted errors. A failed fetch is a script whose result is
+document's has muted errors. *(corrected)* So has one any of whose URLs
+was another origin's, a redirect away and back included, as Fetch's
+response tainting keeps it; a `data:` script has not. A failed fetch is a script whose result is
 an error: nothing runs, and nothing is reported but the console's
 "Failed to load script" line, since the `error` event is M26's.
 
@@ -370,7 +397,9 @@ the loader applies them.
   `<meta http-equiv="Content-Security-Policy">` the parser inserts into
   the head, which applies to what comes after it. The `-Report-Only`
   header is ignored: reports are M33.1's, and a policy that only
-  reports blocks nothing.
+  reports blocks nothing. *(corrected)* A meta's policy is taken in the
+  first time a check looks after the parser inserted it: before the
+  next script, script request or `javascript:` URL.
 - *Directives.* For a script element, `script-src-elem`, else
   `script-src`, else `default-src`; for a `javascript:` URL the same,
   as an inline check. Every policy must allow.
@@ -383,13 +412,17 @@ the loader applies them.
   what is not understood blocks. `'unsafe-eval'` is not enforced:
   QuickJS-ng has no hook for code made from strings, so `eval` and
   `Function` run whatever the policy (M33.1, which needs the hook in the
-  binding).
+  binding). *(corrected)* A document keeps at most 64 policies
+  (`MAX_POLICIES`); one more blocks every script. An IP address matches
+  no host source, as section 6.7.2.10 says.
 - *Where it is checked.* An inline script before it runs; an external
   script's URL before it is fetched and at every redirect (Fetch's
   "should request be blocked by Content Security Policy", in `net`'s
   per-hop checks, from the policies the request carries); a
   `javascript:` URL before it runs. A blocked script does not run, and
-  the console says which directive blocked what.
+  the console says which directive blocked what. *(corrected)* The
+  post-request check is not made: with no service worker, the
+  response's URL is the last hop's, which the pre-request check saw.
 
 **`javascript:` URLs.** With scripting on, following a `javascript:`
 link (or typing one, which the address field already refuses) runs its
@@ -412,7 +445,8 @@ for the tokenizer and the parser in pieces; engine tests for the order
 of scripts, the parser pause, stylesheets blocking scripts, CSP, the
 switch, the console and the error state. html5lib's tokenizer tests,
 copied at a pinned commit with their licence into
-`crates/html/tests/html5lib/` (MIT; a few hundred kilobytes), run as
+`crates/html/tests/html5lib/` (MIT; *(corrected)* 1.7 MB, most of it
+`namedEntities.test`), run as
 `html`'s tests: the tokenizer's conformance suite. Fuzz targets:
 `html_parse` feeds its input in pieces and checks the tree against the
 whole; a new `script` runs any input as a script under small limits,
@@ -489,10 +523,18 @@ run before the next, with its sabotage pass.
    redirect; the `csp` fuzz target. M24.6.
 9. *The web-platform tests.* The subset's rule taking tests whose
    scripts use only what M24 gives, and every failure in
-   `expectations.txt` with its reason.
+   `expectations.txt` with its reason. *(corrected)* No test in the
+   subset's directories uses `document.title`: the rule takes inline
+   scripts that use nothing of the platform but `console` and
+   `document.title`, and event handlers whose events never fire while a
+   test is drawn, which brought in 14 CSS2 generated-content tests; the
+   runner runs scripts, and the two `scripting` tests pass.
 10. *Golden cases.* Pages from 116 with scripts on (`noscript`, the
     `scripting` feature, a script's effect on the title), captured from
-    the reference browser.
+    the reference browser. *(corrected)* Pages 116 to 118, the third the
+    order scripts run in; their titles are drawn as boxes of en dashes,
+    half an em each, so that the widths are whole pixels in both
+    browsers.
 11. *Acceptance.* `console.log("hello")` and `document.title = "x"` from
     an inline script, a script error, a realm out of memory, in the
     shell; a benchmark, `benches/scripts.rs` (a realm, running scripts,

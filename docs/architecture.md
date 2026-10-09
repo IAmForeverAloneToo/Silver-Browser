@@ -1403,3 +1403,60 @@ boxes that are not replaced; Images 4's conic gradients and the rest;
 colour management; progressive display; `background-position-x` and
 `-y`. SVG as an image moves to M32.1. 1,750 tests pass workspace-wide,
 two ignored. Next milestone: JS engine integration (M24).
+
+Milestone 24 (JS engine integration; `docs/design/scripting.md`): a new
+leaf crate, `js` (step 1), holds the `ScriptEngine` and `Realm` traits,
+the plain data that crosses the boundary, the limits and the QuickJS-ng
+backend, 0.16.2 through `rquickjs` pinned at `=0.14.0` (D1), writing no
+`unsafe` itself; a script reaches the document only through
+`ScriptingHost`, moved into a run and back. A realm runs a classic
+script with a step budget of interrupt checks, under a 256 MiB heap and
+a 256 KiB stack, and the microtask checkpoint after it; a realm whose
+heap stays full after a failed run is dead, and the document runs no
+script again. The HTML parser is rewritten to run as bytes arrive: the
+tokenizer (step 2) is HTML 13.2.5's state machine, fed in pieces, with
+the full named reference table, held to html5lib's tokenizer tests; the
+tree builder (step 3) writes into the `dom::Document` as it goes and
+stops at every `</script>`; `net` hands bodies over in pieces as they
+are read (step 4); and the engine (step 5) sniffs, decodes and parses a
+navigation's document a slice a poll as it arrives, starting again for a
+late `<meta>` charset, shows it once it has a body and no blocking
+sheet, and lets it grow as a change like any other. Scripts are off
+unless asked (risk R2): `Engine::set_scripting`, from the shell's
+`--enable-scripts` (step 6), turns on the parser's scripting flag, the
+`scripting` media feature and the UA rule that hides `noscript`; a
+document gets a realm at its first script; inline classic scripts run at
+their end tags, errors and console output going to the document's
+console, which the shell prints to the standard error; a realm out of
+memory posts a notice. External scripts (step 7) are fetched as no-cors
+scripts, held to an ok status and Fetch's type checks, decoded by BOM,
+type, `charset` or the document's encoding, their errors muted unless
+every URL was the document's origin; the parser waits for a plain one
+and for an inline one a loading style sheet holds, deferred ones run in
+order once parsed and async ones as they come, and `Loaded` waits for
+them; `javascript:` links run in the page. `net::csp` (step 8) enforces
+a page's `script-src`, from its header and its head's `<meta>`, on
+script URLs at every hop, inline scripts and `javascript:` URLs, failing
+closed on what it does not understand. The web-platform-tests subset
+(step 9) runs scripts, and takes tests whose scripts use only what M24
+gives: 2,154 tests, the 14 it adds all passing, and the two `scripting`
+media query tests passing now. Reference pages 116 to 118 (step 10) run
+their scripts and match the reference browser exactly. The acceptance
+(step 11): `console.log("hello")` and `document.title = "x"` from an
+inline script, a script error and a realm out of memory, in the shell
+and its window; `benches/scripts.rs` makes a realm in 0.12ms, runs two
+million additions in 83ms, and loads a page of 1,000 paragraphs with 110
+scripts in what it takes with scripts off. T4.3 holds every benchmark
+within 10% but four cascades of the values benchmark, 12-28% slower,
+which follow where memory falls rather than the work: the new UA rule is
+never in force there, and builds that leave the same rules in force are
+fast or slow by the sheet's contents alone; the loads, flex and grid are
+8-13% faster. Fuzz runs of `script`, `csp`, `html_parse` and the targets
+that lay pages out found nothing: the parser 2.7 million inputs, the
+policies 5.6 million, scripts 660,000. Not in this milestone, said
+rather than hidden and registered (G41 to G44): module scripts, import
+maps and speculation rules; `Intl` and `Temporal`; Subresource
+Integrity; the tree builder's missing insertion modes. The DOM's
+interfaces and `document.write` are M25's, events and timers M26's.
+1,831 tests pass workspace-wide, two ignored. Next milestone: DOM
+scripting v1 (M25).

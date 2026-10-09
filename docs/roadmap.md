@@ -1428,27 +1428,63 @@ Per css-grid-1 (level 2 subgrid included):
 > a `ScriptEngine` trait. The trait is the real deliverable: engine swaps
 > (SpiderMonkey later) must not cost a rewrite.
 
-- [ ] M24.1 `js` crate: `ScriptEngine` trait (compile/eval/call,
+- [x] M24.1 `js` crate: `ScriptEngine` trait (compile/eval/call,
        promise/tick integration, GC integration points, error sinks).
-- [ ] M24.2 quickjs-ng bindings (fork or `rquickjs`-style FFI, vendored +
+       Done 2026-10-09: a new leaf crate, `js`
+       (`docs/design/scripting.md`), its `ScriptEngine` making `Realm`s
+       that run a classic script, run the microtask checkpoint, report
+       their heap, collect it and say when they are dead; errors by kind
+       with where they were thrown, muted for another origin's script.
+       Calling a function the page gave comes with M26.
+- [x] M24.2 quickjs-ng bindings (fork or `rquickjs`-style FFI, vendored +
        pinned; security branch: track upstream CVEs quarterly — T1).
-- [ ] M24.3 Script execution pipeline: `<script>` parsing (M2 debt:
+       Done 2026-10-09: QuickJS-ng 0.16.2 through `rquickjs` pinned at
+       `=0.14.0`, its C source vendored by the crate and its checksum,
+       QuickJS's own allocator kept so that the heap limit holds; `js`
+       writes no `unsafe`.
+- [x] M24.3 Script execution pipeline: `<script>` parsing (M2 debt:
        raw-text mode for script/style elements), external scripts via
-       `net`, execution order (sync/defer), `async` v1.
-- [ ] M24.4 Embedding boundary: NO engine object graph references DOM
+       `net`, execution order (sync/defer), `async` v1. Done 2026-10-09:
+       HTML's "prepare the script element" for classic scripts the
+       parser inserts; external ones fetched as scripts, held to Fetch's
+       type checks and decoded as HTML says; parser-blocking, deferred
+       and async in their order, a loading style sheet holding the
+       scripts after it; `Loaded` waiting for them; `javascript:` links.
+- [x] M24.4 Embedding boundary: NO engine object graph references DOM
        internals — a `ScriptingHost` with explicit conversion at the
        boundary (this is the security-critical seam; reviewed by R2 rules).
-- [ ] M24.5 Memory/time limits: instruction budget, heap cap, OOM =
-       script failure not engine failure.
-- [ ] M24.6 CSP `script-src` enforcement at the loader (M33 does full CSP;
-       this blocks the obvious foot-gun from day one).
-- [ ] M24.7 Acceptance: `console.log("hello")`, `document.title = "x"`
-       from an inline script; a script-error page state.
-- [ ] M24.8 Streamed parsing (from M14.6, see `docs/design/net.md`):
+       Done 2026-10-09: `ScriptingHost`'s methods take and give plain
+       data, the host moved into a run and back; `js` depends on no
+       crate of the engine's.
+- [x] M24.5 Memory/time limits: instruction budget, heap cap, OOM =
+       script failure not engine failure. Done 2026-10-09: a step
+       budget of interrupt checks a run, a 256 MiB heap, a 256 KiB
+       stack, 32 MiB a fetched script; a realm whose heap stays full is
+       dropped and the page's scripts stop, the page as drawn.
+- [x] M24.6 CSP `script-src` enforcement at the loader (M33 does full CSP;
+       this blocks the obvious foot-gun from day one). Done 2026-10-09:
+       `net::csp`, from the response's fields and the head's `<meta>`
+       elements; `script-src-elem`, `script-src` and `default-src` for
+       script URLs at every hop, inline scripts and `javascript:` URLs;
+       nonces, hashes and `'strict-dynamic'` match nothing until M33.1.
+- [x] M24.7 Acceptance: `console.log("hello")`, `document.title = "x"`
+       from an inline script; a script-error page state. Done
+       2026-10-09: with `--enable-scripts` (scripts are off otherwise,
+       R2) the shell prints the page's console and its errors to the
+       standard error and takes the title the script set;
+       `Engine::scripts` gives running or stopped with the errors
+       counted, and a realm out of memory says so in the status bubble.
+- [x] M24.8 Streamed parsing (from M14.6, see `docs/design/net.md`):
        the tokenizer as HTML §13.2's state machine, resumable at any
        byte; the tree builder writing into the `dom::Document` as bytes
        arrive, with frames drawn as the document grows; the input
-       stream's insertion point and the parser paused by scripts.
+       stream's insertion point and the parser paused by scripts. Done
+       2026-10-09 but the insertion point, which comes with
+       `document.write` at M25.1: the tokenizer fed in pieces and held
+       to html5lib's tests; bodies handed over as they arrive, decoded
+       and sniffed as a stream; a document parsed a slice a poll, shown
+       once it has a body and no blocking sheet, and growing as a change
+       like any other; the parser pausing at every script.
 
 ---
 
@@ -1458,6 +1494,8 @@ Per css-grid-1 (level 2 subgrid included):
        All)` (uses the M4 selector engine!), `createElement`, `createTextNode`,
        `appendChild/removeChild/insertBefore`, `textContent`, `innerHTML`
        (reparse via html crate — the parser is already hostile-input-safe).
+       And `document.write`, with the input stream's insertion point,
+       which M24.8's parser leaves to it.
 - [ ] M25.2 Node properties: `parentNode/children/childNodes/firstChild/
        nextSibling`, `classList`, `setAttribute/getAttribute`, `style`
        object (set→restyle).
@@ -1913,6 +1951,17 @@ Deferred from the milestones above, each with what it waits on:
        which HTML allows; an image is shown whole or not at all. Found
        at M23.
 - [ ] G40 Backgrounds 4's `background-position-x` and `-y`. Found at M23.
+- [ ] G41 Module scripts, import maps and speculation rules: a `script`
+       of those types is recognized and not run. Found at M24.
+- [ ] G42 `Intl` and `Temporal`, which QuickJS-ng does not implement.
+       Found at M24.
+- [ ] G43 Subresource Integrity: a `script`'s `integrity` is not
+       checked. Found at M24.
+- [ ] G44 The tree builder's missing insertion modes: the table modes,
+       the active formatting elements and the adoption agency, foster
+       parenting, templates and foreign content beyond self-closing
+       elements; comments and doctypes in the tree ("in head noscript" is
+       G12's). Found at M24.
 
 ---
 
@@ -1998,7 +2047,7 @@ Deferred from the milestones above, each with what it waits on:
 
 | ID | Decision | Trigger | Options (working lean) | Default lean |
 |----|----------|---------|------------------------|--------------|
-| D1 | JS engine | M24 | quickjs-ng / SpiderMonkey (mozjs) / V8 (rusty_v8) / Boa | quickjs-ng behind a `ScriptEngine` trait; trait designed for swap |
+| D1 | JS engine | M24 | quickjs-ng / SpiderMonkey (mozjs) / V8 (rusty_v8) / Boa | quickjs-ng behind a `ScriptEngine` trait; trait designed for swap; decided at M24: QuickJS-ng 0.16.2 through `rquickjs` 0.14.0 in a leaf crate, `js`, behind its `ScriptEngine` and `Realm` traits, for its interrupt handler and heap limit, which Boa has not (see `docs/design/scripting.md`) |
 | D2 | Renderer sandbox mechanism | M34 | Win job objects+tokens / AppContainer / others per-OS | Job objects + restricted token v1 |
 | D3 | GPU backend | M19 | wgpu / keep software only | wgpu, software path permanent fallback; decided at M19: `render::gpu` on wgpu behind the `gpu` feature, on by default, the shell drawing on it where there is an adapter and the software backend otherwise or with `--software`, both behind `RenderBackend` (see `docs/design/compositing.md`) |
 | D4 | TLS | M14 | rustls / native-tls | rustls (pure Rust, no OpenSSL linkage); decided at M14: the `aws-lc-rs` provider for X25519MLKEM768, Mozilla's roots from `webpki-roots`, no bypass (see `docs/design/net.md`) |
