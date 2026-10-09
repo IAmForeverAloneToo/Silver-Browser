@@ -100,9 +100,6 @@ impl Tree {
     }
 
     fn give(&mut self, node: Option<usize>) -> Answer {
-        if let Some(node) = node {
-            self.exposed.insert(node as u64);
-        }
         Answer::Node(node.map(|n| Handle(n as u64)))
     }
 
@@ -130,6 +127,22 @@ impl Tree {
         self.work += self.work_per_call;
         Ok(match call {
             Call::Document => self.give(Some(0)),
+            Call::Wrap(h) => {
+                let node = self.node(h)?;
+                self.exposed.insert(node as u64);
+                let n = &self.nodes[node];
+                Answer::String(match n.kind {
+                    1 => n.tag.clone(),
+                    3 => "#text".to_owned(),
+                    _ => "#document".to_owned(),
+                })
+            }
+            Call::Children(h) => {
+                let node = self.node(h)?;
+                let children = self.nodes[node].children.iter();
+                Answer::Nodes(children.map(|&c| Handle(c as u64)).collect())
+            }
+            Call::Version => Answer::Number(0.0),
             Call::Kind(h) => Answer::Number(f64::from(self.nodes[self.node(h)?].kind)),
             Call::Tag(h) => Answer::String(self.nodes[self.node(h)?].tag.clone()),
             Call::Parent(h) => {
@@ -209,6 +222,7 @@ impl Tree {
                 self.released.push(h.0);
                 Answer::Nothing
             }
+            _ => return Err(DomError::not_supported()),
         })
     }
 

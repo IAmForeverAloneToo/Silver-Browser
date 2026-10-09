@@ -23,6 +23,10 @@ pub const MAX_HANDLE: u64 = (1 << 53) - 1;
 pub enum Call {
     /// The document node.
     Document,
+    /// The bindings make an object for the node, which the host then
+    /// holds until it is released: the node's name, its local name for
+    /// an element, `#text` or `#document`.
+    Wrap(Handle),
     /// The node's `nodeType`: 1 for an element, 3 for text, 9 for the
     /// document.
     Kind(Handle),
@@ -34,11 +38,40 @@ pub enum Call {
     LastChild(Handle),
     PreviousSibling(Handle),
     NextSibling(Handle),
+    /// The node's children, in order.
+    Children(Handle),
+    /// The node's element children, in order.
+    ElementChildren(Handle),
+    /// The document's version, a count of its changes, which a live
+    /// collection compares to know whether its items still stand.
+    Version,
+    /// Whether the node is in the document.
+    Connected(Handle),
+    /// Whether `other` is `node` or one of its descendants.
+    Contains {
+        node: Handle,
+        other: Handle,
+    },
     /// A text node's data.
     Data(Handle),
+    /// Sets a text node's data.
+    SetData(Handle, String),
     /// The text of the node's subtree in tree order, or `None` for the
     /// document (the DOM's `textContent`).
     TextContent(Handle),
+    /// The DOM's `textContent` setter: an element's children replaced by
+    /// one text node, or by none for the empty string; a text node's
+    /// data set; nothing for the document.
+    SetTextContent(Handle, String),
+    /// An element's attribute by its name, which the bindings have
+    /// lowercased, or `None`.
+    Attribute(Handle, String),
+    /// Sets an element's attribute, its name checked and lowercased.
+    SetAttribute(Handle, String, String),
+    /// Removes an element's attribute.
+    RemoveAttribute(Handle, String),
+    /// An element's attributes' names, in order.
+    AttributeNames(Handle),
     /// A new element with this local name, which the host checks and
     /// lowercases.
     CreateElement(String),
@@ -55,6 +88,18 @@ pub enum Call {
     Remove {
         parent: Handle,
         node: Handle,
+    },
+    /// Puts `node` in the place of `child`, a child of `parent`: the
+    /// DOM's "replace a child".
+    Replace {
+        parent: Handle,
+        node: Handle,
+        child: Handle,
+    },
+    /// A copy of the node, and of its descendants if `deep`, detached.
+    Clone {
+        node: Handle,
+        deep: bool,
     },
     /// The script holds no object for the node any longer.
     Released(Handle),

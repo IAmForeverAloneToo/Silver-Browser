@@ -659,6 +659,42 @@ mod tests {
     }
 
     #[test]
+    fn the_host_checks_what_the_bindings_check_and_replaces_the_document_element() {
+        use js::{Call, Handle, ScriptingHost};
+        let mut host = DocumentHost::default();
+        host.document = parsed("<p>x");
+        let html = host.document.document_element().unwrap();
+        let handle = |node: NodeId| Handle(node.to_bits());
+        let error = host
+            .dom(Call::SetAttribute(handle(html), "a b".into(), "1".into()))
+            .expect_err("a bad name");
+        assert_eq!(error.name, "InvalidCharacterError");
+        let error = host
+            .dom(Call::CreateElement("1a".into()))
+            .expect_err("a bad name");
+        assert_eq!(error.name, "InvalidCharacterError");
+        // The document's element may be replaced by another element.
+        let made = match host.dom(Call::CreateElement("html".into())) {
+            Ok(js::Answer::Node(Some(made))) => made,
+            other => panic!("{other:?}"),
+        };
+        let root = handle(host.document.root());
+        host.dom(Call::Replace {
+            parent: root,
+            node: made,
+            child: handle(html),
+        })
+        .expect("replaced");
+        assert_eq!(
+            host.document.document_element().map(|e| e.to_bits()),
+            Some(made.0)
+        );
+        host.sweep();
+        assert!(!host.document.contains(html), "the old element is freed");
+        host.document.validate().unwrap();
+    }
+
+    #[test]
     fn a_script_reads_and_writes_the_document_and_logs() {
         let mut document = parsed("<title>Before</title>");
         let mut scripts = Scripts::default();

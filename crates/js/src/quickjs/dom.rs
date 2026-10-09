@@ -72,6 +72,10 @@ impl<'js> Args<'_, 'js> {
         self.handle(i).map(Some)
     }
 
+    fn bool(&self, i: usize) -> bool {
+        self.value(i).as_bool().unwrap_or(false)
+    }
+
     /// A string, which the bootstrap has made well formed.
     fn string(&self, i: usize) -> rquickjs::Result<String> {
         match self.value(i).as_string() {
@@ -87,6 +91,7 @@ type Decode = fn(&Args<'_, '_>) -> rquickjs::Result<Call>;
 /// The natives, by the name the bootstrap calls them by.
 const NATIVES: &[(&str, Decode)] = &[
     ("document", |_| Ok(Call::Document)),
+    ("wrap", |a| Ok(Call::Wrap(a.handle(0)?))),
     ("kind", |a| Ok(Call::Kind(a.handle(0)?))),
     ("tag", |a| Ok(Call::Tag(a.handle(0)?))),
     ("parent", |a| Ok(Call::Parent(a.handle(0)?))),
@@ -96,8 +101,34 @@ const NATIVES: &[(&str, Decode)] = &[
         Ok(Call::PreviousSibling(a.handle(0)?))
     }),
     ("nextSibling", |a| Ok(Call::NextSibling(a.handle(0)?))),
+    ("children", |a| Ok(Call::Children(a.handle(0)?))),
+    ("elementChildren", |a| {
+        Ok(Call::ElementChildren(a.handle(0)?))
+    }),
+    ("version", |_| Ok(Call::Version)),
+    ("connected", |a| Ok(Call::Connected(a.handle(0)?))),
+    ("contains", |a| {
+        Ok(Call::Contains {
+            node: a.handle(0)?,
+            other: a.handle(1)?,
+        })
+    }),
     ("data", |a| Ok(Call::Data(a.handle(0)?))),
+    ("setData", |a| Ok(Call::SetData(a.handle(0)?, a.string(1)?))),
     ("textContent", |a| Ok(Call::TextContent(a.handle(0)?))),
+    ("setTextContent", |a| {
+        Ok(Call::SetTextContent(a.handle(0)?, a.string(1)?))
+    }),
+    ("attribute", |a| {
+        Ok(Call::Attribute(a.handle(0)?, a.string(1)?))
+    }),
+    ("setAttribute", |a| {
+        Ok(Call::SetAttribute(a.handle(0)?, a.string(1)?, a.string(2)?))
+    }),
+    ("removeAttribute", |a| {
+        Ok(Call::RemoveAttribute(a.handle(0)?, a.string(1)?))
+    }),
+    ("attributeNames", |a| Ok(Call::AttributeNames(a.handle(0)?))),
     ("createElement", |a| Ok(Call::CreateElement(a.string(0)?))),
     ("createText", |a| Ok(Call::CreateText(a.string(0)?))),
     ("insert", |a| {
@@ -111,6 +142,19 @@ const NATIVES: &[(&str, Decode)] = &[
         Ok(Call::Remove {
             parent: a.handle(0)?,
             node: a.handle(1)?,
+        })
+    }),
+    ("replace", |a| {
+        Ok(Call::Replace {
+            parent: a.handle(0)?,
+            node: a.handle(1)?,
+            child: a.handle(2)?,
+        })
+    }),
+    ("clone", |a| {
+        Ok(Call::Clone {
+            node: a.handle(0)?,
+            deep: a.bool(1),
         })
     }),
     ("released", |a| Ok(Call::Released(a.handle(0)?))),

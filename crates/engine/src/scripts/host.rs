@@ -47,6 +47,16 @@ impl ScriptingHost for DocumentHost {
         self.work += 1;
         match call {
             Call::Document => Ok(self.give(Some(self.document.root()))),
+            Call::Wrap(node) => {
+                let id = self.node(node)?;
+                self.exposed.insert(id);
+                let name = match self.document.data(id) {
+                    Some(NodeData::Element { tag, .. }) => tag.clone(),
+                    Some(NodeData::Text(_)) => "#text".to_owned(),
+                    _ => "#document".to_owned(),
+                };
+                Ok(Answer::String(name))
+            }
             Call::Kind(node) => {
                 let kind = match self.document.data(self.node(node)?) {
                     Some(NodeData::Element { .. }) => 1.0,
@@ -79,10 +89,46 @@ impl ScriptingHost for DocumentHost {
                 let sibling = self.document.next_sibling(self.node(node)?);
                 Ok(self.give(sibling))
             }
+            Call::Children(node) => {
+                let node = self.node(node)?;
+                let children: Vec<Handle> = self.document.children(node).map(handle).collect();
+                self.work += children.len() as u64;
+                Ok(Answer::Nodes(children))
+            }
+            Call::ElementChildren(node) => {
+                let node = self.node(node)?;
+                let mut children = Vec::new();
+                for child in self.document.children(node) {
+                    self.work += 1;
+                    if self.document.is_element(child) {
+                        children.push(handle(child));
+                    }
+                }
+                Ok(Answer::Nodes(children))
+            }
+            Call::Version => Ok(Answer::Number(self.document.version() as f64)),
+            Call::Connected(node) => {
+                let node = self.node(node)?;
+                let root = self.document.root();
+                let top = self.document.ancestors(node).last().unwrap_or(node);
+                Ok(Answer::Bool(top == root))
+            }
+            Call::Contains { node, other } => {
+                let (node, other) = (self.node(node)?, self.node(other)?);
+                Ok(Answer::Bool(
+                    self.document.is_inclusive_ancestor(node, other),
+                ))
+            }
             Call::Data(node) => {
                 let data = self.document.text(self.node(node)?).unwrap_or_default();
                 self.work += data.len() as u64 / 64;
                 Ok(Answer::String(data.to_owned()))
+            }
+            Call::SetData(node, data) => {
+                let node = self.node(node)?;
+                self.work += data.len() as u64 / 64;
+                self.document.set_text(node, &data).map_err(refused)?;
+                Ok(Answer::Nothing)
             }
             Call::TextContent(node) => {
                 let node = self.node(node)?;
@@ -98,6 +144,47 @@ impl ScriptingHost for DocumentHost {
                 }
                 self.work += text.len() as u64 / 64;
                 Ok(Answer::MaybeString(Some(text)))
+            }
+            Call::SetTextContent(node, text) => {
+                let node = self.node(node)?;
+                self.work += text.len() as u64 / 64;
+                self.set_text_content(node, &text)?;
+                Ok(Answer::Nothing)
+            }
+            Call::Attribute(node, name) => {
+                let value = self.document.attr(self.node(node)?, &name);
+                Ok(Answer::MaybeString(value.map(str::to_owned)))
+            }
+            Call::SetAttribute(node, name, value) => {
+                let node = self.node(node)?;
+                if !valid_attribute_local_name(&name) {
+                    return Err(DomError::new(
+                        "InvalidCharacterError",
+                        format!("'{name}' is not a valid attribute name."),
+                    ));
+                }
+                self.work += (name.len() + value.len()) as u64 / 64;
+                self.document
+                    .set_attribute(node, &name, &value)
+                    .map_err(refused)?;
+                Ok(Answer::Nothing)
+            }
+            Call::RemoveAttribute(node, name) => {
+                let node = self.node(node)?;
+                // Only an element has attributes; another node has none
+                // to remove.
+                if self.document.is_element(node) {
+                    self.document
+                        .remove_attribute(node, &name)
+                        .map_err(refused)?;
+                }
+                Ok(Answer::Nothing)
+            }
+            Call::AttributeNames(node) => {
+                let attrs = self.document.attrs(self.node(node)?).unwrap_or_default();
+                Ok(Answer::Strings(
+                    attrs.iter().map(|(name, _)| name.clone()).collect(),
+                ))
             }
             Call::CreateElement(name) => {
                 if !valid_element_local_name(&name) {
@@ -138,6 +225,21 @@ impl ScriptingHost for DocumentHost {
                 self.detached.push(node);
                 Ok(Answer::Nothing)
             }
+            Call::Replace {
+                parent,
+                node,
+                child,
+            } => {
+                let (parent, node, child) =
+                    (self.node(parent)?, self.node(node)?, self.node(child)?);
+                self.replace(parent, node, child)?;
+                Ok(Answer::Nothing)
+            }
+            Call::Clone { node, deep } => {
+                let node = self.node(node)?;
+                let copy = self.clone_node(node, deep)?;
+                Ok(self.give(Some(copy)))
+            }
             Call::Released(node) => {
                 if let Some(id) = dom::NodeId::from_bits(node.0) {
                     self.exposed.remove(&id);
@@ -160,12 +262,10 @@ impl DocumentHost {
             .ok_or_else(|| DomError::new("NotFoundError", "The node is no longer there."))
     }
 
-    /// `node`'s handle, given to a script, which may then hold it.
+    /// `node`'s handle, given to a script. The script holds the node once
+    /// it makes an object for it ([`Call::Wrap`]).
     fn give(&mut self, node: Option<NodeId>) -> Answer {
-        if let Some(node) = node {
-            self.exposed.insert(node);
-        }
-        Answer::Node(node.map(|node| Handle(node.to_bits())))
+        Answer::Node(node.map(handle))
     }
 
     /// The DOM's "pre-insert": its checks, in its order, then `node`
@@ -204,8 +304,8 @@ impl DocumentHost {
                     "Nodes of type '#text' may not be inserted inside nodes of type '#document'.",
                 );
             }
-            if document.element_children(parent).any(|child| child != node) {
-                return hierarchy("Only one element on Document allowed.");
+            if document.element_children(parent).next().is_some() {
+                return hierarchy("Only one element on document allowed.");
             }
         }
         if document.first_child(node).is_some() {
@@ -214,6 +314,119 @@ impl DocumentHost {
         self.document
             .insert_before(parent, node, before)
             .map_err(refused)
+    }
+
+    /// The DOM's "replace a child": its checks, in its order, then `child`
+    /// taken out and `node` put in its place.
+    fn replace(&mut self, parent: NodeId, node: NodeId, child: NodeId) -> Result<(), DomError> {
+        let document = &self.document;
+        let hierarchy = |reason: &str| Err(DomError::new("HierarchyRequestError", reason));
+        if document.is_text(parent) {
+            return hierarchy("This node type does not support this method.");
+        }
+        if document.is_inclusive_ancestor(node, parent) {
+            return hierarchy("The new child element contains the parent.");
+        }
+        if document.parent(child) != Some(parent) {
+            return Err(DomError::new(
+                "NotFoundError",
+                "The node to be replaced is not a child of this node.",
+            ));
+        }
+        if parent == document.root() {
+            if document.is_text(node) {
+                return hierarchy(
+                    "Nodes of type '#text' may not be inserted inside nodes of type '#document'.",
+                );
+            }
+            if document.is_element(node)
+                && document
+                    .element_children(parent)
+                    .any(|other| other != child)
+            {
+                return hierarchy("Only one element on document allowed.");
+            }
+        }
+        // `dom` takes a reference that is `node` itself for the place after
+        // it, as the DOM's step does by hand.
+        let before = document.next_sibling(child);
+        if document.first_child(node).is_some() {
+            self.work += document.subtree(node).count() as u64;
+        }
+        self.document.remove_child(parent, child).map_err(refused)?;
+        self.detached.push(child);
+        self.document
+            .insert_before(parent, node, before)
+            .map_err(refused)
+    }
+
+    /// The DOM's `textContent` setter: an element's children replaced by
+    /// one text node holding `text`, or by none for the empty string; a
+    /// text node's data set; nothing for the document.
+    fn set_text_content(&mut self, node: NodeId, text: &str) -> Result<(), DomError> {
+        if self.document.is_text(node) {
+            return self.document.set_text(node, text).map_err(refused);
+        }
+        if node == self.document.root() {
+            return Ok(());
+        }
+        let made = if text.is_empty() {
+            None
+        } else {
+            Some(self.document.create_text(text).map_err(refused)?)
+        };
+        while let Some(child) = self.document.first_child(node) {
+            self.work += 1;
+            if self.document.remove_child(node, child).is_err() {
+                break;
+            }
+            self.detached.push(child);
+        }
+        if let Some(made) = made
+            && let Err(error) = self.document.append_child(node, made)
+        {
+            let _ = self.document.free(made);
+            return Err(refused(error));
+        }
+        Ok(())
+    }
+
+    /// A detached copy of `node` (DOM section 4.5, "clone a node"): its
+    /// tag and attributes or its data, and its descendants' if `deep`.
+    fn clone_node(&mut self, node: NodeId, deep: bool) -> Result<NodeId, DomError> {
+        let copy = |document: &mut Document, from: NodeId| -> Result<NodeId, MutationError> {
+            match document.data(from) {
+                Some(NodeData::Element { tag, attrs }) => {
+                    let (tag, attrs) = (tag.clone(), attrs.clone());
+                    document.create_element_with(&tag, attrs)
+                }
+                Some(NodeData::Text(data)) => {
+                    let data = data.clone();
+                    document.create_text(&data)
+                }
+                _ => Err(MutationError::WrongKind),
+            }
+        };
+        let top = copy(&mut self.document, node).map_err(refused)?;
+        self.detached.push(top);
+        if !deep {
+            return Ok(top);
+        }
+        // Each entry: a node whose children are still to copy, and its copy.
+        let mut pending = vec![(node, top)];
+        while let Some((from, to)) = pending.pop() {
+            let children: Vec<NodeId> = self.document.children(from).collect();
+            for child in children {
+                self.work += 1;
+                let made = copy(&mut self.document, child).map_err(refused)?;
+                if let Err(error) = self.document.append_new(to, made) {
+                    let _ = self.document.free(made);
+                    return Err(refused(error));
+                }
+                pending.push((child, made));
+            }
+        }
+        Ok(top)
     }
 
     /// `document.title`'s setter (HTML section 3.1.7): the first `title`
@@ -288,6 +501,20 @@ impl DocumentHost {
     pub(crate) fn forget_objects(&mut self) {
         self.exposed.clear();
     }
+}
+
+/// A node's handle.
+fn handle(node: NodeId) -> Handle {
+    Handle(node.to_bits())
+}
+
+/// The DOM's "valid attribute local name": not empty, and no ASCII
+/// white space, NUL, `/`, `=` or `>`.
+pub(crate) fn valid_attribute_local_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name
+            .chars()
+            .any(|c| c.is_ascii_whitespace() || matches!(c, '\0' | '/' | '=' | '>'))
 }
 
 /// A refusal of `dom`'s as the exception a script gets.

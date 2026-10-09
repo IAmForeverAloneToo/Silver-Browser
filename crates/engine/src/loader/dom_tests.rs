@@ -86,7 +86,7 @@ fn a_failed_call_throws_what_the_reference_browser_throws() {
             "HierarchyRequestError: Failed to execute 'appendChild' on 'Node': Nodes of type \
              '#text' may not be inserted inside nodes of type '#document'.",
             "HierarchyRequestError: Failed to execute 'appendChild' on 'Node': Only one \
-             element on Document allowed.",
+             element on document allowed.",
             "HierarchyRequestError: Failed to execute 'appendChild' on 'Node': The new child \
              element contains the parent.",
             "TypeError: Failed to execute 'appendChild' on 'Node': parameter 1 is not of type \
@@ -167,4 +167,395 @@ fn the_work_of_native_calls_counts_against_the_budget() {
     let small = page.replace("<i>x</i>", "");
     let (_, console) = scripted_bytes(small.into_bytes(), Some(limits));
     assert_eq!(console, ["finished"]);
+}
+
+/// What each expression of `cases` gives in a page with scripts on, as
+/// the reference browser printed it: `ok <JSON>` for a value (a node as
+/// its name), or `<name>: <message>` for an exception.
+fn probed(setup: &str, cases: &[(&str, &str)]) {
+    let mut page = String::from(
+        "<p id=a>x</p><script>\
+         function f(g) { try { var r = g(); return 'ok ' + JSON.stringify(r === undefined ? \
+         'undefined' : (r && r.nodeName) || r); } catch (e) { return e.name + ': ' + e.message; } } \
+         function names(d) { var r = []; for (var n = d.firstChild; n; n = n.nextSibling) \
+         r.push(n.nodeName === '#text' ? n.data : n.nodeName); return r.join(','); }",
+    );
+    page.push_str(setup);
+    for (expression, _) in cases {
+        page.push_str("console.log(f(() => ");
+        page.push_str(expression);
+        page.push_str("));\n");
+    }
+    page.push_str("</script>");
+    let (_, console) = scripted_bytes(page.into_bytes(), Some(js::Limits::default()));
+    let expected: Vec<&str> = cases.iter().map(|(_, result)| *result).collect();
+    for (i, (line, want)) in console.iter().zip(&expected).enumerate() {
+        assert_eq!(line, want, "case {i}: {}", cases[i].0);
+    }
+    assert_eq!(console.len(), expected.len(), "{console:?}");
+}
+
+#[test]
+fn character_data_and_text_as_the_reference_browser_has_them() {
+    probed(
+        "var t = document.createTextNode('abc');",
+        &[
+            (
+                "t.substringData(5, 1)",
+                "IndexSizeError: Failed to execute 'substringData' on 'CharacterData': The offset \
+                 5 is greater than the node's length (3).",
+            ),
+            ("t.substringData(1, 10)", "ok \"bc\""),
+            ("t.substringData(3, 1)", "ok \"\""),
+            (
+                "t.insertData(9, 'z')",
+                "IndexSizeError: Failed to execute 'insertData' on 'CharacterData': The offset 9 \
+                 is greater than the node's length (3).",
+            ),
+            (
+                "t.deleteData(9, 1)",
+                "IndexSizeError: Failed to execute 'deleteData' on 'CharacterData': The offset 9 \
+                 is greater than the node's length (3).",
+            ),
+            (
+                "t.replaceData(9, 1, 'q')",
+                "IndexSizeError: Failed to execute 'replaceData' on 'CharacterData': The offset 9 \
+                 is greater than the node's length (3).",
+            ),
+            (
+                "t.splitText(9)",
+                "IndexSizeError: Failed to execute 'splitText' on 'Text': The offset 9 is larger \
+                 than the Text node's length.",
+            ),
+            ("t.cloneNode().data", "ok \"abc\""),
+            (
+                "(function () { var x = document.createTextNode('q'); x.data = null; return x.data; })()",
+                "ok \"\"",
+            ),
+            (
+                "(function () { var d = document.createElement('div'); d.append('a', 'b', \
+                 document.createElement('i'), 'c'); return d.childNodes[1].wholeText; })()",
+                "ok \"ab\"",
+            ),
+            (
+                "(function () { var d = document.createElement('div'); d.append('hello'); \
+                 var r = d.firstChild.splitText(2); \
+                 return d.childNodes.length + ' ' + d.firstChild.data + ' ' + r.data; })()",
+                "ok \"2 he llo\"",
+            ),
+            (
+                "(function () { var x = document.createTextNode('0123'); x.appendData('45'); \
+                 x.insertData(0, '-'); x.deleteData(1, 2); x.replaceData(1, 1, 'three'); \
+                 return x.data + ' ' + x.length + ' ' + x.nodeValue; })()",
+                "ok \"-three345 9 -three345\"",
+            ),
+            (
+                "(function () { var x = document.createTextNode('a\u{1F600}b'); \
+                 return x.length + ' ' + x.substringData(1, 2); })()",
+                "ok \"4 \u{1F600}\"",
+            ),
+        ],
+    );
+}
+
+#[test]
+fn attributes_as_the_reference_browser_has_them() {
+    probed(
+        "var e = document.createElement('div');",
+        &[
+            (
+                "e.setAttribute('a b', '1')",
+                "InvalidCharacterError: Failed to execute 'setAttribute' on 'Element': 'a b' is \
+                 not a valid attribute name.",
+            ),
+            (
+                "e.setAttribute('', '1')",
+                "InvalidCharacterError: Failed to execute 'setAttribute' on 'Element': '' is not \
+                 a valid attribute name.",
+            ),
+            (
+                "e.toggleAttribute('a=b')",
+                "InvalidCharacterError: Failed to execute 'toggleAttribute' on 'Element': 'a=b' \
+                 is not a valid attribute name.",
+            ),
+            (
+                "(function () { var d = document.createElement('div'); d.className = null; \
+                 return d.getAttribute('class'); })()",
+                "ok \"null\"",
+            ),
+            (
+                "(function () { var d = document.createElement('div'); d.id = undefined; \
+                 return d.id; })()",
+                "ok \"undefined\"",
+            ),
+            (
+                "(function () { var d = document.createElement('div'); d.setAttribute('Foo', '1'); \
+                 return [d.getAttribute('FOO'), d.hasAttribute('fOo'), d.getAttributeNames().join()]; })()",
+                "ok [\"1\",true,\"foo\"]",
+            ),
+            (
+                "(function () { var d = document.createElement('div'); \
+                 return [d.toggleAttribute('x'), d.toggleAttribute('x'), d.toggleAttribute('x', false), \
+                 d.toggleAttribute('x', true), d.toggleAttribute('x', true)]; })()",
+                "ok [true,false,false,true,true]",
+            ),
+            (
+                "(function () { var d = document.createElement('div'); var had = d.hasAttributes(); \
+                 d.setAttribute('a', '1'); d.removeAttribute('A'); d.removeAttribute('nothing'); \
+                 return [had, d.hasAttributes(), d.getAttribute('a'), d.id, d.className]; })()",
+                "ok [false,false,null,\"\",\"\"]",
+            ),
+            ("e.getAttribute('nope')", "ok null"),
+        ],
+    );
+}
+
+#[test]
+fn the_tree_changes_as_the_reference_browser_changes_it() {
+    probed(
+        "var e = document.createElement('div'), t = document.createTextNode('abc'), \
+         p = document.documentElement.lastChild.firstChild;",
+        &[
+            (
+                "e.insertAdjacentElement('middle', document.createElement('i'))",
+                "SyntaxError: Failed to execute 'insertAdjacentElement' on 'Element': The value \
+                 provided ('middle') is not one of 'beforeBegin', 'afterBegin', 'beforeEnd', or \
+                 'afterEnd'.",
+            ),
+            (
+                "e.insertAdjacentElement('beforeend', t)",
+                "TypeError: Failed to execute 'insertAdjacentElement' on 'Element': parameter 2 \
+                 is not of type 'Element'.",
+            ),
+            (
+                "e.insertAdjacentElement('afterend', document.createElement('i'))",
+                "ok null",
+            ),
+            ("e.insertAdjacentText('BeforeEnd', 'q')", "ok \"undefined\""),
+            (
+                "document.body.replaceChild(document.createElement('i'), e)",
+                "NotFoundError: Failed to execute 'replaceChild' on 'Node': The node to be \
+                 replaced is not a child of this node.",
+            ),
+            (
+                "document.replaceChild(document.createTextNode('x'), document.documentElement)",
+                "HierarchyRequestError: Failed to execute 'replaceChild' on 'Node': Nodes of \
+                 type '#text' may not be inserted inside nodes of type '#document'.",
+            ),
+            (
+                "document.body.insertBefore(document.createElement('i'), e)",
+                "NotFoundError: Failed to execute 'insertBefore' on 'Node': The node before which \
+                 the new node is to be inserted is not a child of this node.",
+            ),
+            (
+                "document.body.insertBefore(document.createElement('i'), null)",
+                "ok \"I\"",
+            ),
+            (
+                "document.body.insertBefore(document.createElement('i'))",
+                "TypeError: Failed to execute 'insertBefore' on 'Node': 2 arguments required, but \
+                 only 1 present.",
+            ),
+            ("document.body.contains(null)", "ok false"),
+            (
+                "document.body.contains({})",
+                "TypeError: Failed to execute 'contains' on 'Node': parameter 1 is not of type \
+                 'Node'.",
+            ),
+            (
+                "document.append(document.createElement('x'))",
+                "HierarchyRequestError: Failed to execute 'append' on 'Document': Only one \
+                 element on document allowed.",
+            ),
+            ("e.nodeValue", "ok null"),
+            (
+                "(function () { var d = document.createElement('div'); d.textContent = null; \
+                 return d.childNodes.length; })()",
+                "ok 0",
+            ),
+            (
+                "(function () { var d = document.createElement('div'); \
+                 var a = d.appendChild(document.createElement('a')); d.append('x'); \
+                 a.replaceWith(a, 'y'); return [d.childNodes.length, d.firstChild.nodeName, \
+                 d.textContent]; })()",
+                "ok [3,\"A\",\"yx\"]",
+            ),
+            (
+                "(function () { var d = document.createElement('div'); \
+                 var a = d.appendChild(document.createElement('a')); \
+                 var b = d.appendChild(document.createElement('b')); b.before('t', b, a); \
+                 return [d.childNodes[0].data, d.childNodes[1].nodeName, d.childNodes[2].nodeName]; })()",
+                "ok [\"t\",\"B\",\"A\"]",
+            ),
+            (
+                "document.createElement('div').getRootNode().nodeName + ' ' + p.getRootNode().nodeName",
+                "ok \"DIV #document\"",
+            ),
+            (
+                "document.head.nodeName + document.body.nodeName + (document.defaultView === window)",
+                "ok \"HEADBODYtrue\"",
+            ),
+            ("document.ownerDocument", "ok null"),
+            (
+                "(function () { var d = document.createElement('div'); \
+                 var x = d.appendChild(document.createElement('x')); \
+                 var a = d.appendChild(document.createElement('a')); \
+                 var b = d.appendChild(document.createElement('b')); b.before(a); \
+                 return names(d); })()",
+                "ok \"X,A,B\"",
+            ),
+            (
+                "(function () { var d = document.createElement('div'); \
+                 var x = d.appendChild(document.createElement('x')); \
+                 var a = d.appendChild(document.createElement('a')); \
+                 var b = d.appendChild(document.createElement('b')); b.before(a, 't'); \
+                 return names(d); })()",
+                "ok \"X,A,t,B\"",
+            ),
+            (
+                "(function () { var d = document.createElement('div'); \
+                 var a = d.appendChild(document.createElement('a')); \
+                 d.appendChild(document.createElement('x')); a.replaceWith('y', 'z'); \
+                 return names(d) + ' ' + a.parentNode; })()",
+                "ok \"y,z,X null\"",
+            ),
+            (
+                "(function () { var d = document.createElement('div'); \
+                 d.append('a', 'b', document.createElement('i')); d.textContent = 'x'; \
+                 return names(d); })()",
+                "ok \"x\"",
+            ),
+            (
+                "(function () { var x = p.appendChild(document.createElement('x')); \
+                 try { document.append(x); } catch (e) {} return x.parentNode; })()",
+                "ok \"P\"",
+            ),
+            (
+                "(function () { var x = p.appendChild(document.createElement('x')); \
+                 var y = p.appendChild(document.createElement('y')); \
+                 try { document.append(x, y); } catch (e) {} return [x.parentNode, y.parentNode]; })()",
+                "ok [null,null]",
+            ),
+            (
+                "document.appendChild(document.documentElement)",
+                "HierarchyRequestError: Failed to execute 'appendChild' on 'Node': Only one \
+                 element on document allowed.",
+            ),
+            (
+                "document.replaceChild(document.documentElement, document.documentElement)",
+                "ok \"HTML\"",
+            ),
+            (
+                "(function () { var d = document.createElement('div'); \
+                 var a = d.appendChild(document.createElement('a')); \
+                 var b = d.appendChild(document.createElement('b')); \
+                 d.appendChild(document.createElement('c')); \
+                 var old = d.replaceChild(b, a); \
+                 return [old === a, a.parentNode, d.childNodes.length, d.firstChild === b, \
+                 d.lastChild.nodeName, d.replaceChild(b, b) === b]; })()",
+                "ok [true,null,2,true,\"C\",true]",
+            ),
+            (
+                "(function () { var c = p.cloneNode(true); \
+                 return [c.id, c.textContent, c.parentNode, c === p, p.cloneNode().firstChild]; })()",
+                "ok [\"a\",\"x\",null,false,null]",
+            ),
+            (
+                "(function () { var d = document.createElement('div'); d.append('a'); \
+                 var i = document.createElement('i'), u = document.createElement('u'); \
+                 d.prepend(i, 'b'); d.firstChild.after(u); u.remove(); \
+                 d.replaceChildren(i, 'z'); \
+                 return [d.childNodes.length, d.firstChild === i, d.lastChild.data, \
+                 i.isConnected, p.isConnected, d.contains(i), i.contains(d)]; })()",
+                "ok [2,true,\"z\",false,true,true,false]",
+            ),
+            (
+                "(function () { var d = document.createElement('div'); \
+                 var a = d.appendChild(document.createElement('a')); a.insertAdjacentText('beforebegin', 'q'); \
+                 a.insertAdjacentElement('afterBegin', document.createElement('b')); \
+                 a.insertAdjacentText('afterend', 'z'); \
+                 return [d.childNodes.length, a.firstChild.nodeName, d.textContent, \
+                 a.previousElementSibling, a.nextElementSibling, d.firstElementChild === a, \
+                 d.lastElementChild === a, d.childElementCount, p.parentElement.nodeName, \
+                 document.documentElement.parentElement]; })()",
+                "ok [3,\"B\",\"qz\",null,null,true,true,1,\"BODY\",null]",
+            ),
+        ],
+    );
+}
+
+#[test]
+fn collections_as_the_reference_browser_has_them() {
+    probed(
+        "",
+        &[
+            (
+                "document.body.childNodes === document.body.childNodes",
+                "ok true",
+            ),
+            (
+                "document.body.children === document.body.children",
+                "ok true",
+            ),
+            ("document.body.childNodes[999]", "ok \"undefined\""),
+            (
+                "Object.keys(document.createElement('div').childNodes)",
+                "ok []",
+            ),
+            (
+                "(function () { var d = document.createElement('div'); d.append('a'); \
+                 return ['0' in d.childNodes, '1' in d.childNodes, 'item' in d.childNodes]; })()",
+                "ok [true,false,true]",
+            ),
+            (
+                "(function () { var d = document.createElement('div'); d.append('a'); \
+                 var l = d.childNodes; l[5] = 1; return l[5]; })()",
+                "ok \"undefined\"",
+            ),
+            (
+                "(function () { var d = document.createElement('div'); d.append('a'); \
+                 var l = d.childNodes; l[5] = 1; \
+                 return Object.keys(l).join() + '|' + Object.getOwnPropertyNames(l).join(); })()",
+                "ok \"0|0\"",
+            ),
+            (
+                "(function () { var d = document.createElement('div'); \
+                 d.append(document.createElement('i'), document.createElement('b'), \
+                 document.createElement('a')); d.children[0].id = 'q'; \
+                 d.children[1].setAttribute('name', 'n'); d.children[2].setAttribute('name', 'm'); \
+                 return [d.children.q && d.children.q.nodeName, d.children.namedItem('n').nodeName, \
+                 d.children.m && d.children.m.nodeName, d.children.namedItem('nope')]; })()",
+                "ok [\"I\",\"B\",\"A\",null]",
+            ),
+            (
+                "Object.prototype.toString.call(document.body.childNodes)",
+                "ok \"[object NodeList]\"",
+            ),
+            (
+                "Object.prototype.toString.call(document.body.children)",
+                "ok \"[object HTMLCollection]\"",
+            ),
+            (
+                "typeof NodeList.prototype.forEach + typeof HTMLCollection.prototype.forEach",
+                "ok \"functionundefined\"",
+            ),
+            (
+                "NodeList.prototype[Symbol.iterator] === Array.prototype.values",
+                "ok true",
+            ),
+            (
+                "(function () { var d = document.createElement('div'); var l = d.childNodes, \
+                 c = d.children; var n = [l.length, c.length]; d.append('t', document.createElement('i')); \
+                 n.push(l.length, c.length, l.item(1).nodeName, c.item(0).nodeName, l.item(5)); \
+                 var names = []; for (var x of l) names.push(x.nodeName); \
+                 l.forEach(function (x, i) { names.push(i); }); \
+                 n.push(names.join(), Array.from(c).length, [...l].length); return n; })()",
+                "ok [0,0,2,1,\"I\",\"I\",null,\"#text,I,0,1\",1,2]",
+            ),
+            (
+                "(function () { try { new NodeList() } catch (e) { return e.message } })()",
+                "ok \"Failed to construct 'NodeList': Illegal constructor\"",
+            ),
+        ],
+    );
 }
