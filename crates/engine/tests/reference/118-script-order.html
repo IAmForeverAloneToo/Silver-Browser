@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-scripts" content="on">
+<!-- The order scripts run in, shown by the length of the title they
+     build: an inline script sets it; a deferred one appends to it once
+     the document is parsed; an external one in the parser's way appends
+     before the next inline one doubles it. In order the title is seven
+     en dashes; any other order makes it longer or shorter. The head and
+     the title are drawn as a box of the engine's own font, the text
+     transparent, so that its width is the text's, half an em a dash. -->
+<style>
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f6f2ea; font-family: "Reference Sans"; font-size: 32px; }
+  body { margin: 0; }
+  head { display: block; }
+  title { display: block; float: left; margin: 10px 0 0 10px; background-color: #3f7f2f; color: transparent; }
+</style>
+<script>document.title = '\u2013';</script>
+<script defer src="scripts/118-deferred.js"></script>
+<script src="scripts/118-blocking.js"></script>
+<script>document.title = document.title.repeat(2);</script>
+</head>
+<body>
+</body>
+</html>

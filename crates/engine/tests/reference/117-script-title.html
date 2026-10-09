@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-scripts" content="on">
+<!-- A script's effect on the document's title: set in the head before
+     any title element, which makes one last in the head; a title parsed
+     after it, a second element and not the title; the first read and
+     written again; a script that throws, after which the next still
+     runs. The head and its titles are drawn as boxes of the engine's own
+     font, the text transparent, so that each box's width is its text's:
+     en dashes, half an em each, so that the widths are whole pixels in
+     both browsers. (The page has no title element of its own for its
+     description, which would be drawn.) -->
+<style>
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f6f2ea; font-family: "Reference Sans"; font-size: 32px; }
+  body { margin: 0; }
+  head { display: block; }
+  title { display: block; float: left; clear: left; margin: 10px 0 0 10px; background-color: #2f4f7f; color: transparent; }
+</style>
+<script>document.title = '  \u2013\u2013\u2013\u2013  ';</script>
+<title>&ndash;&ndash;&ndash;</title>
+<script>document.title = document.title + '\u2013\u2013';</script>
+<script>throw new Error('the next script still runs');</script>
+<script>document.title += '\u2013';</script>
+</head>
+<body>
+</body>
+</html>

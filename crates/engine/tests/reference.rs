@@ -43,6 +43,13 @@
 //! loaded from a string fetches nothing, its images beside it under
 //! `images/`, and drawn once what it draws is decoded.
 //!
+//! A page whose scripts run (M24) declares `<meta name="reference-scripts"
+//! content="on">`: the engine runs them, as the reference browser runs
+//! every page's, and the page is loaded by its `file:` URL, since only a
+//! document parsed as it arrives runs scripts, its scripts beside it
+//! under `scripts/`; it is drawn once loaded, its deferred scripts run.
+//! The other pages have none, and the engine runs none there.
+//!
 //! A page may declare `<meta name="reference-tolerance" content="N">`:
 //! a channel may then differ by up to `N`, and the test says how many
 //! pixels did. M11's multi-colour page uses it for the last bit of the
@@ -224,7 +231,9 @@ fn render(
     let mut engine = engine();
     engine.set_media_type(setting.media_type);
     engine.set_preferences(setting.preferences);
-    let by_url = meta(source, "reference-load") == Some("file");
+    let scripts = meta(source, "reference-scripts") == Some("on");
+    engine.set_scripting(scripts);
+    let by_url = scripts || meta(source, "reference-load") == Some("file");
     let (wake, woken) = channel();
     engine.set_waker(move || {
         let _ = wake.send(());
@@ -443,10 +452,10 @@ fn every_reference_page_renders_as_its_capture() {
     let pages = pages();
     assert_eq!(
         pages.len(),
-        115,
+        118,
         "the ten cases of M10's design note, the eleven of M11's, the five of M12's, the three of M16's, \
          the twenty of M17's, the twenty of M18's, the ten of M19's, the eleven of M20's, the nine \
-         of M21's, the ten of M22's and the six of M23's"
+         of M21's, the ten of M22's, the six of M23's and the three of M24's"
     );
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/reference");
     let mut failures = Vec::new();

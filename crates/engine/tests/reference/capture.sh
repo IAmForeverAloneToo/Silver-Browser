@@ -17,6 +17,10 @@
 #   <meta name="reference-reduced-motion" content="reduce">: reduced
 #     motion preferred.
 #
+# A page's scripts run, as they do in any page the browser loads; the
+# pages that have some say <meta name="reference-scripts" content="on">,
+# which tests/reference.rs reads to run them too (M24).
+#
 # A page's animations are captured at their first frame (M22). A page
 # that asks for changes after it, <meta name="reference-change"> and
 # <meta name="reference-time">, makes them itself by loading
