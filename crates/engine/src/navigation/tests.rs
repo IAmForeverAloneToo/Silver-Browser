@@ -1099,6 +1099,48 @@ fn a_page_may_navigate_only_where_the_browsers_let_it() {
 }
 
 #[test]
+fn a_javascript_link_runs_its_script_in_the_page_with_scripting_on() {
+    let server = serve(|path| match path {
+        "/a" => Some(html(
+            "<title>a</title>\
+             <p><a id=run href=\"javascript:document.title='run%20it';console.log('ran')\">run</a></p>\
+             <p><a id=bad href=\"javascript:nope()\">bad</a></p>",
+        )),
+        _ => None,
+    });
+    let page = server.url("/a");
+    let mut tab = Tab::new();
+    tab.load(page.clone());
+    let console = |tab: &mut Tab| -> Vec<String> {
+        tab.engine
+            .take_console()
+            .into_iter()
+            .map(|entry| entry.text)
+            .collect()
+    };
+    // Off, as scripting is by default: nothing.
+    click(&mut tab, "run");
+    assert_eq!(tab.engine.title(), "a");
+    assert!(console(&mut tab).is_empty());
+    // On: its text, percent-decoded, runs in the page, which stays.
+    tab.engine.set_scripting(true);
+    tab.engine.frame(200, 100);
+    click(&mut tab, "run");
+    assert_eq!(tab.engine.title(), "run it");
+    assert!(tab.engine.needs_frame(), "its change is taken");
+    assert_eq!(console(&mut tab), ["ran"]);
+    click(&mut tab, "bad");
+    assert_eq!(
+        console(&mut tab),
+        [format!(
+            "Uncaught ReferenceError: nope is not defined at {page}:1:1"
+        )]
+    );
+    assert_eq!(tab.engine.url(), Some(&page));
+    assert_eq!(tab.engine.history.len(), 1);
+}
+
+#[test]
 fn a_file_page_may_open_files_and_the_browsers_page_its_own_pages() {
     let dir = std::env::temp_dir().join(format!("silver-links-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

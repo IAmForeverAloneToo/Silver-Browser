@@ -360,11 +360,13 @@ fn exception_error(exception: &Exception<'_>, url: &str) -> ScriptError {
 }
 
 /// The URL, line and column of a stack's first frame:
-/// `    at f (url:line:column)` or `    at url:line:column`.
+/// `    at f (url:line:column)` or `    at url:line:column`. The URL may
+/// hold spaces and parentheses, as a `data:` URL's may: the place is
+/// what follows the name's ` (`.
 fn first_frame(stack: &str) -> Option<(String, u32, u32)> {
     let frame = stack.lines().next()?.trim().strip_prefix("at ")?;
     let place = match frame.strip_suffix(')') {
-        Some(called) => &called[called.rfind('(')? + 1..],
+        Some(called) => &called[called.find(" (")? + 2..],
         None => frame,
     };
     let mut parts = place.rsplitn(3, ':');

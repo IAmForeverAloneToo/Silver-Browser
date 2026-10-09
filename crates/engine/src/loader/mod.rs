@@ -4,6 +4,8 @@
 
 mod pool;
 mod rules;
+#[cfg(test)]
+mod script_tests;
 mod sheets;
 #[cfg(test)]
 mod tests;
@@ -77,6 +79,8 @@ pub(crate) enum Target {
     Icon,
     /// An image a page shows, by its URL (M23).
     Image { url: String },
+    /// A script's, from a `script` element's `src` (M24.3).
+    Script,
 }
 
 /// A fetch in flight.

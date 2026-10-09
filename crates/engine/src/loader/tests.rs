@@ -966,7 +966,7 @@ fn image_id(engine: &Engine, url: &Url) -> u64 {
 
 /// Navigates to `url` and takes results until its page is shown and
 /// loaded, images and all.
-fn load_all(tab: &mut Tab, url: Url) {
+pub(super) fn load_all(tab: &mut Tab, url: Url) {
     tab.engine.navigate(url.clone());
     tab.wait_until(|engine| {
         incoming(engine).is_none()
@@ -994,7 +994,7 @@ fn slow_page(first: &'static str, rest: &'static str, wait: Duration) -> TestSer
 
 /// A page's first piece: past the resource header, so that it is known
 /// to be HTML at once, with a body already.
-const FIRST: &str = concat!(
+pub(super) const FIRST: &str = concat!(
     "<!DOCTYPE html><title>Slow</title><body><p>first</p><!--",
     "................................................................................",
     "................................................................................",
@@ -1141,289 +1141,25 @@ fn a_sheet_that_comes_while_the_body_still_arrives_leaves_the_page_loading() {
 
 #[test]
 fn a_document_left_while_it_parses_is_not_kept() {
-    // All of it fetched, but far from parsed: 60,000 tokens.
-    let big = "<p>x</p>".repeat(20_000);
-    let server = serve(move |path| match path {
-        "/big.html" => Some(html(&big)),
-        "/other.html" => Some(html("<p>other</p>")),
-        _ => None,
-    });
+    // All of it fetched, but far from parsed: 60,000 tokens from a
+    // `data:` URL, which asks for no icon, so that nothing is in flight;
+    // left for a page the browser makes at once, before another slice.
+    let big = Url::parse(&format!("data:text/html,{}", "<p>x</p>".repeat(20_000))).unwrap();
+    let silver = Url::parse("about:silver").unwrap();
     let mut tab = Tab::new();
-    tab.engine.navigate(server.url("/big.html"));
+    tab.engine.navigate(big.clone());
     tab.wait_until(|engine| {
         engine.navigation.is_none()
             && engine.shown.parsing.is_some()
             && engine.network.in_flight() == 0
     });
-    load_all(&mut tab, server.url("/other.html"));
+    tab.engine.navigate(silver.clone());
+    assert_eq!(tab.engine.url(), Some(&silver));
     assert_eq!(tab.engine.history.kept_len(), 0, "not in the cache");
-}
-
-/// `body` served and loaded with scripting `on`; the console's lines.
-fn scripted(body: &'static str, on: bool) -> (Tab, Vec<String>) {
-    scripted_bytes(body.as_bytes().to_vec(), on.then(js::Limits::default))
-}
-
-/// `body` served and loaded, with scripts run with `limits` if any; the
-/// console's lines.
-fn scripted_bytes(body: Vec<u8>, limits: Option<js::Limits>) -> (Tab, Vec<String>) {
-    let server = serve(move |path| match path {
-        "/page.html" => Some(Reply::ok("text/html", &body)),
-        _ => None,
-    });
-    let mut tab = Tab::new();
-    tab.engine.set_scripting(limits.is_some());
-    if let Some(limits) = limits {
-        tab.engine.script_limits = limits;
-    }
-    load_all(&mut tab, server.url("/page.html"));
-    let console = tab
-        .engine
-        .take_console()
-        .into_iter()
-        .map(|entry| entry.text)
-        .collect();
-    // The server goes with the test; the page stays.
-    drop(server);
-    (tab, console)
-}
-
-#[test]
-fn inline_scripts_run_with_scripting_on_and_not_otherwise() {
-    // A script in the head, run before the document is shown, and one
-    // after a script that let it be shown.
-    let page = "<title>Before</title><script>console.log('hello')</script><p>x</p>\
-                <script></script><script>document.title = 'After'</script>";
-    let (tab, console) = scripted(page, true);
-    assert_eq!(console, ["hello"]);
-    assert_eq!(tab.engine.title(), "After");
-    assert_eq!(
-        tab.engine.scripts(),
-        crate::ScriptState::Running { errors: 0 }
-    );
-    let (tab, console) = scripted(page, false);
-    assert!(console.is_empty());
-    assert_eq!(tab.engine.title(), "Before");
-    assert_eq!(tab.engine.scripts(), crate::ScriptState::Off);
-}
-
-#[test]
-fn only_classic_scripts_for_the_window_run() {
-    let (_, console) = scripted(
-        "<script type=module>console.log('module')</script>\
-         <script type=text/plain>console.log('plain')</script>\
-         <script nomodule>console.log('nomodule')</script>\
-         <script src=missing.js>console.log('src')</script>\
-         <script for=x event=onload>console.log('for x')</script>\
-         <script for=window event=onclick>console.log('onclick')</script>\
-         <script for=' Window ' event='ONLOAD()'>console.log('window onload')</script>\
-         <script event=onclick>console.log('event alone')</script>\
-         <script language=javascript>console.log('language')</script>",
-        true,
-    );
-    assert_eq!(console, ["window onload", "event alone", "language"]);
-}
-
-#[test]
-fn an_empty_script_makes_no_realm_and_one_that_cannot_be_made_stops_scripts() {
-    // Too little heap for a realm: none is made for nothing to run.
-    let small = js::Limits {
-        heap: 64 << 10,
-        ..js::Limits::default()
-    };
-    let (tab, console) = scripted_bytes(b"<script></script><p>x".to_vec(), Some(small));
-    assert!(console.is_empty());
-    assert_eq!(
-        tab.engine.scripts(),
-        crate::ScriptState::Running { errors: 0 }
-    );
-    let (mut tab, console) = scripted_bytes(b"<script>1</script><p>x".to_vec(), Some(small));
-    assert!(matches!(
-        tab.engine.scripts(),
-        crate::ScriptState::Stopped { .. }
-    ));
-    assert_eq!(
-        console.last().map(String::as_str),
-        Some("Scripts stopped on this page: out of memory")
-    );
-    assert_eq!(
-        tab.engine.take_notice().as_deref(),
-        Some("Scripts stopped on this page: out of memory")
-    );
-}
-
-#[test]
-fn a_document_started_again_runs_its_scripts_in_a_new_realm() {
-    let script = b"<script>console.log(typeof seen); var seen = 1</script>";
-    // Before the body, while the document is the navigation's.
-    let mut early = b"<head>".to_vec();
-    early.extend_from_slice(script);
-    early.extend_from_slice(b"<!--");
-    early.extend(vec![b'.'; 1100]);
-    early.extend_from_slice(b"--><meta charset=windows-1252></head><body><p>x");
-    // After it, the document shown.
-    let mut late = FIRST.as_bytes().to_vec();
-    late.extend_from_slice(script);
-    late.extend_from_slice(b"<meta charset=windows-1252><p>x");
-    for page in [early, late] {
-        let (tab, console) = scripted_bytes(page, Some(js::Limits::default()));
-        assert_eq!(tab.engine.shown.page.encoding(), encoding::WINDOWS_1252);
-        assert_eq!(console, ["undefined", "undefined"]);
-    }
-}
-
-#[test]
-fn a_script_sees_the_tree_as_it_stands_at_its_end_tag() {
-    // As the reference browser has it: a title made by a script in the
-    // head before the parsed one, which comes second and is not the title.
-    let (tab, console) = scripted(
-        "<script>console.log(JSON.stringify(document.title)); document.title = '  a \\n b  '</script>\
-         <title>later</title><script>console.log(document.title)</script>",
-        true,
-    );
-    assert_eq!(console, ["\"\"", "a b"]);
-    assert_eq!(tab.engine.title(), "a b");
-    let document = tab.engine.document();
-    let titles = document
-        .subtree(document.root())
-        .filter(|&n| document.tag(n) == Some("title"))
-        .count();
-    assert_eq!(titles, 2);
-}
-
-#[test]
-fn errors_are_reported_and_promise_jobs_run_after_each_script() {
-    let (tab, console) = scripted(
-        "<script>Promise.resolve().then(() => console.log('job')); console.log('script')</script>\n\
-         <p>x</p>\n\
-         <script>\nthrow new Error('boom')</script>\
-         <script>console.log('after')</script>",
-        true,
-    );
-    let url = tab.engine.url().unwrap().to_string();
-    assert_eq!(
-        console,
-        [
-            "script".to_owned(),
-            "job".to_owned(),
-            format!("Uncaught Error: boom at {url}:4:11"),
-            "after".to_owned(),
-        ]
-    );
-    assert_eq!(
-        tab.engine.scripts(),
-        crate::ScriptState::Running { errors: 1 }
-    );
-}
-
-#[test]
-fn noscript_and_the_scripting_feature_follow_the_switch() {
-    let page = "<style>@media (scripting: enabled) { #t { color: #f00 } }</style>\
-                <body><noscript><p>without scripts</p></noscript><p id=t>x</p>";
-    let display = |engine: &mut Engine| {
-        let noscript = element(engine, "noscript");
-        engine.styles().get(noscript).expect("styled").display
-    };
-    let (mut tab, _) = scripted(page, true);
-    assert_eq!(color(&mut tab.engine, "t"), RED);
-    // The noscript's content is text, and the element draws nothing.
-    let noscript = element(&tab.engine, "noscript");
-    let document = tab.engine.document();
-    let children: Vec<_> = document.children(noscript).collect();
-    assert_eq!(children.len(), 1);
-    assert!(document.is_text(children[0]));
-    assert_eq!(display(&mut tab.engine), style::computed::Display::None);
-    let (mut tab, _) = scripted(page, false);
-    let noscript = element(&tab.engine, "noscript");
-    let document = tab.engine.document();
-    let first = document.first_child(noscript).expect("a child");
-    assert_eq!(document.tag(first), Some("p"));
-    assert_eq!(color(&mut tab.engine, "t"), BLACK);
-    assert_ne!(display(&mut tab.engine), style::computed::Display::None);
-    // Switched on, the feature follows at once; the parse stays as it was.
-    tab.engine.frame(200, 100);
-    tab.engine.set_scripting(true);
-    assert!(tab.engine.needs_frame());
-    assert_eq!(color(&mut tab.engine, "t"), RED);
-    tab.engine.frame(200, 100);
-    tab.engine.set_scripting(true);
-    assert!(!tab.engine.needs_frame());
-}
-
-#[test]
-fn a_document_kept_keeps_its_realm_collected_and_one_whose_realm_died_is_not_kept() {
-    let server = serve(|path| match path {
-        "/a.html" => Some(html(
-            "<script>console.log('a ran'); \
-             { const g = []; for (let i = 0; i < 1000; i++) { const o = {}; o.o = o; g.push(o) } }\
-             </script><p>A</p>",
-        )),
-        "/b.html" => Some(html("<p>B</p>")),
-        "/dead.html" => Some(html(
-            "<script>var kept = []; for (let i = 0; ; i++) kept.push('x'.repeat(1000) + i);</script>",
-        )),
-        _ => None,
-    });
-    let pages = |server: &TestServer| {
-        let requests = server.requests().into_iter();
-        requests.filter(|r| r.target == "/a.html").count()
-    };
-    let mut tab = Tab::new();
-    tab.engine.set_scripting(true);
-    tab.engine.script_limits = js::Limits {
-        heap: 8 << 20,
-        ..js::Limits::default()
-    };
-    let a = server.url("/a.html");
-    load_all(&mut tab, a.clone());
-    assert_eq!(tab.engine.take_console().len(), 1);
-    let heap = tab.engine.shown.scripts.heap();
-    load_all(&mut tab, server.url("/b.html"));
-    tab.settle();
-    tab.engine.go_back();
-    tab.wait_until(|engine| engine.url() == Some(&a));
-    // From the cache: its script not run again, its garbage collected.
-    assert_eq!(pages(&server), 1);
-    assert!(tab.engine.take_console().is_empty());
-    assert!(tab.engine.shown.scripts.heap() < heap);
-    // Its realm dead, a document is not kept.
-    load_all(&mut tab, server.url("/dead.html"));
-    assert!(matches!(
-        tab.engine.scripts(),
-        crate::ScriptState::Stopped { .. }
-    ));
+    // Parsed whole, it is kept.
+    load_all(&mut tab, big);
+    tab.engine.navigate(silver);
     assert_eq!(tab.engine.history.kept_len(), 1);
-    load_all(&mut tab, server.url("/b.html"));
-    tab.settle();
-    assert_eq!(tab.engine.history.kept_len(), 1);
-}
-
-#[test]
-fn a_realm_out_of_memory_stops_the_pages_scripts_with_a_notice() {
-    let fill = "<script>var kept = []; for (let i = 0; ; i++) kept.push('x'.repeat(1000) + i);</script>\
-                <script>console.log('never')</script>";
-    let limits = js::Limits {
-        heap: 8 << 20,
-        ..js::Limits::default()
-    };
-    // In the head, before the document is shown, and in the body after
-    // a script that let it be shown.
-    for page in [
-        format!("{fill}<p>still here</p>"),
-        format!("<p>first</p><script></script>{fill}<p>still here</p>"),
-    ] {
-        let (mut tab, console) = scripted_bytes(page.into_bytes(), Some(limits));
-        assert!(matches!(
-            tab.engine.scripts(),
-            crate::ScriptState::Stopped { .. }
-        ));
-        assert_eq!(
-            tab.engine.take_notice().as_deref(),
-            Some("Scripts stopped on this page: out of memory")
-        );
-        assert!(!console.iter().any(|line| line == "never"));
-        assert!(text(&tab.engine).ends_with("still here"));
-    }
 }
 
 #[test]

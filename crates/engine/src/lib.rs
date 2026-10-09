@@ -112,7 +112,9 @@ pub use js::ConsoleLevel;
 pub use loader::{LoadError, LoadState};
 pub use net::{Client, NetworkError, Url};
 pub use print::{PrintError, PrintOptions, PrintedPage};
-pub use scripts::{ConsoleEntry, MAX_CONSOLE_ENTRIES, MAX_CONSOLE_MESSAGE, ScriptState};
+pub use scripts::{
+    ConsoleEntry, MAX_CONSOLE_ENTRIES, MAX_CONSOLE_MESSAGE, MAX_SCRIPT_BYTES, ScriptState,
+};
 pub use style::animation::{AnimationEvent, EventKind, Running as RunningAnimation};
 pub use style::{ColorScheme, MediaType, Preferences};
 
@@ -421,50 +423,6 @@ pub const MAX_ICON_BYTES: usize = 1 << 20;
 /// The status bubble's notice when a document's realm runs out of
 /// memory (M24.7).
 const SCRIPTS_STOPPED: &str = "Scripts stopped on this page: out of memory";
-
-/// Prepares the `script` element the parser has just closed (HTML
-/// section 4.12.1.1, "prepare the script element") and runs it if it is
-/// an inline classic script, its text starting on the document's `line`;
-/// what `src` names is fetched and run by M24.3's other half.
-fn run_parsed_script(
-    scripts: &mut scripts::Scripts,
-    document: &mut Document,
-    url: &str,
-    element: NodeId,
-    line: u32,
-) {
-    if scripts::script_type(document, element) != Some(scripts::ScriptType::Classic)
-        || document.attr(element, "nomodule").is_some()
-        || document.attr(element, "src").is_some()
-    {
-        return;
-    }
-    // The legacy `for` and `event` attributes: only a script for the
-    // window's load event runs (step 21).
-    if let (Some(event), Some(target)) = (
-        document.attr(element, "event"),
-        document.attr(element, "for"),
-    ) {
-        let trim = |s: &str| {
-            s.trim_matches(|c: char| c.is_ascii_whitespace())
-                .to_ascii_lowercase()
-        };
-        if trim(target) != "window" || !matches!(trim(event).as_str(), "onload" | "onload()") {
-            return;
-        }
-    }
-    let source = document.text_content(element);
-    if source.is_empty() {
-        return;
-    }
-    let script = js::Script {
-        source: &source,
-        url,
-        line,
-        muted: false,
-    };
-    scripts.run(document, &script);
-}
 
 /// The tokens a document is parsed by between polls while its bytes
 /// arrive (M24.8): the window draws between slices.
@@ -899,7 +857,8 @@ impl Engine {
     /// - `file:` only from a `file:` page;
     /// - other `about:` pages only from a page the browser made;
     /// - `data:` from no page, as the browsers refuse it;
-    /// - `javascript:` does nothing until there are scripts;
+    /// - `javascript:` runs its script in the document shown, with
+    ///   scripting on (M24), and does nothing otherwise;
     /// - any other scheme would go to another program, which this
     ///   version cannot do.
     ///
@@ -928,7 +887,12 @@ impl Engine {
                  to open it"
                     .to_owned(),
             ),
-            "javascript" => return,
+            "javascript" => {
+                if self.scripting {
+                    self.run_javascript_url(&url);
+                }
+                return;
+            }
             scheme => Some(format!(
                 "{scheme}: links open in another program, which this version cannot do"
             )),
@@ -937,6 +901,31 @@ impl Engine {
             Some(why) => self.notice = Some(why),
             None => self.navigate(url),
         }
+    }
+
+    /// Runs a `javascript:` URL in the document shown (HTML section 7.4,
+    /// "evaluate a javascript: URL"): what follows the scheme,
+    /// percent-decoded as UTF-8, run as a classic script with a budget of
+    /// its own, its errors naming the document. A string it ends with
+    /// would replace the document, which waits for M26.6.
+    fn run_javascript_url(&mut self, url: &Url) {
+        let encoded = url.as_str().get("javascript:".len()..).unwrap_or_default();
+        let source =
+            String::from_utf8_lossy(&net::url::percent_decode(encoded.as_bytes())).into_owned();
+        let document = self
+            .shown
+            .page
+            .url()
+            .map(Url::to_string)
+            .unwrap_or_default();
+        let script = js::Script {
+            source: &source,
+            url: &document,
+            line: 1,
+            muted: false,
+        };
+        self.shown.scripts.run(&mut self.shown.document, &script);
+        self.scripts_ran();
     }
 
     /// Fetches `url`'s document, for `handling` once it is shown. The
@@ -1160,6 +1149,7 @@ impl Engine {
             parsing.load.end();
             self.wake();
         }
+        self.shown.scripts.abort();
         if self.shown.page.abort(&mut self.network) {
             self.shown.salvageable = false;
             self.sheets_changed();
@@ -1183,6 +1173,7 @@ impl Engine {
         }
         self.parse_incoming();
         self.parse_shown();
+        self.run_scripts();
         while let Some(finished) = self.decoder.take() {
             self.image_read(finished);
         }
@@ -1403,6 +1394,24 @@ impl Engine {
             Target::Document => self.document_arrived(page, result),
             Target::Icon => self.icon_arrived(page, result),
             Target::Image { url } => self.image_arrived(page, &url, result),
+            Target::Script => {
+                // What is ready runs as the poll goes on.
+                if page == self.shown.page.id() {
+                    self.shown.scripts.arrived(&self.shown.page, id, result);
+                } else if let Some(Navigation {
+                    incoming:
+                        Incoming::Parsing {
+                            page: incoming,
+                            parsing,
+                            ..
+                        },
+                    ..
+                }) = &mut self.navigation
+                    && incoming.id() == page
+                {
+                    parsing.scripts.arrived(incoming, id, result);
+                }
+            }
             Target::Sheet { owner, path } => {
                 if page == self.shown.page.id() {
                     if self
@@ -1541,6 +1550,11 @@ impl Engine {
         else {
             return;
         };
+        // The parser waits for its pending parsing-blocking script (M24.3).
+        // A realm that dies says so once its document is shown.
+        if !parsing.scripts.run_ready(page, document, false) {
+            return;
+        }
         match parsing.load.parse(document, PARSE_SLICE) {
             html::Progress::Restarted => {
                 // The sheets found so far go, the document fetch stays.
@@ -1564,11 +1578,9 @@ impl Engine {
                 if let html::Stop::Script { element, line } = stop
                     && self.scripting
                 {
-                    let url = page.url().map(Url::to_string).unwrap_or_default();
-                    run_parsed_script(&mut parsing.scripts, document, &url, element, line);
-                    if parsing.scripts.take_just_stopped() {
-                        self.notice = Some(SCRIPTS_STOPPED.to_owned());
-                    }
+                    parsing
+                        .scripts
+                        .prepare(page, document, &mut self.network, element, line);
                 }
                 let changes = document.take_changes();
                 if changes
@@ -1592,6 +1604,15 @@ impl Engine {
         let Some(parsing) = &mut self.shown.parsing else {
             return;
         };
+        // The parser waits for its pending parsing-blocking script (M24.3).
+        if !self
+            .shown
+            .scripts
+            .run_ready(&self.shown.page, &mut self.shown.document, false)
+        {
+            self.scripts_ran();
+            return;
+        }
         match parsing.load.parse(&mut self.shown.document, PARSE_SLICE) {
             html::Progress::Restarted => {
                 // Shown already: the document starts again in place.
@@ -1612,27 +1633,15 @@ impl Engine {
                 if let html::Stop::Script { element, line } = stop
                     && self.scripting
                 {
-                    let url = self
-                        .shown
-                        .page
-                        .url()
-                        .map(Url::to_string)
-                        .unwrap_or_default();
-                    run_parsed_script(
-                        &mut self.shown.scripts,
+                    self.shown.scripts.prepare(
+                        &self.shown.page,
                         &mut self.shown.document,
-                        &url,
+                        &mut self.network,
                         element,
                         line,
                     );
-                    if self.shown.scripts.take_just_stopped() {
-                        self.notice = Some(SCRIPTS_STOPPED.to_owned());
-                    }
                 }
-                let changes = self.shown.document.take_changes();
-                if !changes.is_empty() {
-                    self.document_changed(changes);
-                }
+                self.scripts_ran();
                 match stop {
                     html::Stop::Done => {
                         self.shown.parsing = None;
@@ -1642,6 +1651,32 @@ impl Engine {
                     html::Stop::Input => {}
                 }
             }
+        }
+    }
+
+    /// Runs the shown document's scripts that are ready once its parse
+    /// is over: those run as soon as possible, and the deferred ones in
+    /// order (M24.3). The load is over once none is left.
+    fn run_scripts(&mut self) {
+        if self.shown.parsing.is_some() || self.shown.scripts.settled() {
+            return;
+        }
+        self.shown
+            .scripts
+            .run_ready(&self.shown.page, &mut self.shown.document, true);
+        self.scripts_ran();
+        self.update_load_state();
+    }
+
+    /// After the shown document's scripts ran: their changes are taken as
+    /// any change is, and a realm that died says so.
+    fn scripts_ran(&mut self) {
+        let changes = self.shown.document.take_changes();
+        if !changes.is_empty() {
+            self.document_changed(changes);
+        }
+        if self.shown.scripts.take_just_stopped() {
+            self.notice = Some(SCRIPTS_STOPPED.to_owned());
         }
     }
 
@@ -1860,12 +1895,14 @@ impl Engine {
         self.settle_load_state();
     }
 
-    /// The load is done once its document is shown and every stylesheet
-    /// it asked for has arrived or failed.
+    /// The load is done once its document is shown and parsed, every
+    /// stylesheet and image it asked for has arrived or failed, and its
+    /// deferred and async scripts have run, as the load event waits.
     fn update_load_state(&mut self) {
         if self.load_state == LoadState::Loading
             && self.navigation.is_none()
             && self.shown.parsing.is_none()
+            && self.shown.scripts.settled()
             && self.shown.page.settled()
             && self.shown.images.settled()
         {

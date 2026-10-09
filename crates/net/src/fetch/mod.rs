@@ -63,6 +63,8 @@ pub enum Destination {
     Style,
     /// An image: a document's icon, for now (M15).
     Image,
+    /// A classic script (M24).
+    Script,
 }
 
 impl Destination {
@@ -74,6 +76,7 @@ impl Destination {
             }
             Destination::Style => b"text/css,*/*;q=0.1",
             Destination::Image => b"image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5",
+            Destination::Script => b"*/*",
         }
     }
 }
@@ -128,7 +131,7 @@ impl Request {
             destination,
             mode: match destination {
                 Destination::Document => Mode::Navigate,
-                Destination::Style | Destination::Image => Mode::NoCors,
+                Destination::Style | Destination::Image | Destination::Script => Mode::NoCors,
             },
             initiator: None,
             abort: AbortHandle::new(),

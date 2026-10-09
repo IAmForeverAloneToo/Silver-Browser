@@ -64,6 +64,10 @@ struct Owner {
     /// failed: the parser made the element before `<body>`, and its
     /// media held then.
     blocking: bool,
+    /// Whether no script runs until the sheet has arrived or failed (HTML
+    /// section 4.2.6, "a style sheet that is blocking scripts"): the
+    /// parser made the element, and its media held then (M24.3).
+    blocks_scripts: bool,
     sheet: Slot,
 }
 
@@ -186,14 +190,13 @@ impl Page {
         self.context.url.as_ref()
     }
 
-    /// The encoding the document is in, when the engine cannot decode
-    /// it yet.
     /// The encoding of the page's document.
-    #[cfg(test)]
     pub(crate) fn encoding(&self) -> Encoding {
         self.context.encoding
     }
 
+    /// The encoding the document is in, when the engine cannot decode
+    /// it yet.
     pub(crate) fn undecodable(&self) -> Option<Encoding> {
         self.undecodable
     }
@@ -340,10 +343,10 @@ impl Page {
                     if kept.is_some() {
                         network.cancel(self.context.id, Some(found.node));
                     }
-                    let blocking = media.is_some_and(|media| {
-                        found.before_body
-                            && rules::media_attribute_holds(found.media.as_deref(), media)
+                    let holds = media.is_some_and(|media| {
+                        rules::media_attribute_holds(found.media.as_deref(), media)
                     });
+                    let blocking = holds && found.before_body;
                     // An element the parser has just made resolves against
                     // the base URL where it put it, as `begin` has it.
                     let base = match media {
@@ -352,6 +355,7 @@ impl Page {
                     };
                     let mut owner = start(&self.context, found, base.as_ref(), network);
                     owner.blocking = blocking;
+                    owner.blocks_scripts = holds;
                     owners.push(owner);
                 }
             }
@@ -438,6 +442,15 @@ impl Page {
             .iter()
             .filter(|owner| owner.blocking)
             .all(|owner| owner.sheet.settled())
+    }
+
+    /// Whether a sheet the parser made, whose media held, has yet to
+    /// arrive or fail, with its imports: HTML's "has a style sheet that is
+    /// blocking scripts" (M24.3).
+    pub(crate) fn blocks_scripts(&self) -> bool {
+        self.owners
+            .iter()
+            .any(|owner| owner.blocks_scripts && !owner.sheet.settled())
     }
 
     /// Whether every sheet, with its imports, has arrived or failed.
@@ -586,6 +599,7 @@ fn start(context: &Context, found: Found, base: Option<&Url>, network: &mut Netw
         media: found.media,
         environment,
         blocking: false,
+        blocks_scripts: false,
         sheet,
     }
 }

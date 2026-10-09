@@ -299,9 +299,65 @@ pub fn determine_nosniff(headers: &HeaderList) -> bool {
         .is_some_and(|first| first.eq_ignore_ascii_case("nosniff"))
 }
 
+/// Whether a response of `mime_type`, with `headers`, may not be a
+/// script: Fetch's "should response to request be blocked due to its MIME
+/// type?" (an audio, image or video type, or `text/csv`) and "... due to
+/// nosniff?" (under `X-Content-Type-Options: nosniff`, no type or one not
+/// JavaScript), for a script-like destination.
+pub fn blocked_as_script(mime_type: Option<&MimeType>, headers: &HeaderList) -> bool {
+    if determine_nosniff(headers) && !mime_type.is_some_and(MimeType::is_javascript) {
+        return true;
+    }
+    mime_type.is_some_and(|mime_type| {
+        let essence = mime_type.essence();
+        ["audio/", "image/", "video/"]
+            .iter()
+            .any(|kind| essence.starts_with(kind))
+            || essence == "text/csv"
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_script_may_have_any_type_but_media_and_csv_or_under_nosniff_javascript() {
+        let blocked = |content_type: Option<&str>, nosniff: bool| {
+            let mut headers = HeaderList::new();
+            if let Some(value) = content_type {
+                headers.append(b"Content-Type", value.as_bytes());
+            }
+            if nosniff {
+                headers.append(b"X-Content-Type-Options", b"NoSniff");
+            }
+            blocked_as_script(extract_mime_type(&headers).as_ref(), &headers)
+        };
+        for allowed in [
+            None,
+            Some("text/plain"),
+            Some("application/json"),
+            Some("text/html"),
+        ] {
+            assert!(!blocked(allowed, false), "{allowed:?}");
+        }
+        for media in [
+            "image/png",
+            "audio/ogg",
+            "video/mp4",
+            "text/csv",
+            "Text/CSV; a=b",
+        ] {
+            assert!(blocked(Some(media), false), "{media}");
+        }
+        assert!(!blocked(Some("text/javascript"), true));
+        assert!(!blocked(
+            Some("application/x-javascript;charset=utf-8"),
+            true
+        ));
+        assert!(blocked(Some("text/plain"), true));
+        assert!(blocked(None, true));
+    }
 
     fn content_types(values: &[&str]) -> HeaderList {
         let mut headers = HeaderList::new();

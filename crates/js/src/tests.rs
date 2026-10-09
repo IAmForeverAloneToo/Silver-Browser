@@ -244,6 +244,22 @@ fn errors_name_their_kind_message_and_place() {
         .run(&script("throw 'just a string'"), &mut host)
         .expect_err("it throws");
     assert_eq!(value.message, "just a string");
+    // A URL with spaces and parentheses in it, as a `data:` URL may have.
+    let data = Script {
+        source: "throw new Error('x')",
+        url: "data:text/javascript,throw new Error('x') (a)",
+        line: 1,
+        muted: false,
+    };
+    let error = realm.run(&data, &mut host).expect_err("it throws");
+    assert_eq!(error.url, data.url);
+    assert_eq!((error.line, error.column), (1, 11));
+    let called = Script {
+        source: "function f() { null.x }\nf()",
+        ..data
+    };
+    let error = realm.run(&called, &mut host).expect_err("it throws");
+    assert_eq!((error.url.as_str(), error.line), (data.url, 1));
     // An error in one script leaves the realm to the next.
     assert!(realm.run(&script("1"), &mut host).is_ok());
 }

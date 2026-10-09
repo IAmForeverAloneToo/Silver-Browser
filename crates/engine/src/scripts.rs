@@ -1,6 +1,6 @@
 //! Scripts (M24, `docs/design/scripting.md`): a document's realm, the
-//! host its scripts reach the document through, its console, and what
-//! a `script` element is (HTML section 4.12.1.1).
+//! host its scripts reach the document through, its console, and its
+//! `script` elements prepared, fetched and run (HTML section 4.12.1.1).
 //!
 //! The host owns the document for the length of a run, moved in and
 //! back: a script's changes go through `dom::Document`'s methods and
@@ -11,10 +11,18 @@
 use std::collections::VecDeque;
 
 use dom::{Document, NodeId};
+use encoding::Encoding;
 use js::{
     Completion, ConsoleLevel, ErrorKind, Limits, QuickJs, Realm, Script, ScriptEngine, ScriptError,
     ScriptingHost,
 };
+use net::{Destination, Request, Response, Url};
+
+use crate::loader::{FetchId, LoadError, Network, Page, Target};
+
+/// The most bytes an external script may hold; past it its fetch fails,
+/// and it is a script that failed (M24.5).
+pub const MAX_SCRIPT_BYTES: usize = 32 << 20;
 
 /// The most entries a document's console keeps, the oldest dropped.
 pub const MAX_CONSOLE_ENTRIES: usize = 1_000;
@@ -78,7 +86,33 @@ fn cut(mut text: String) -> String {
     text
 }
 
-/// A document's scripts: its realm, once it has one, and its console.
+/// A script element's script on its way to being run (HTML section
+/// 4.12.1.1): fetched, or inline and held by a style sheet.
+enum Pending {
+    /// Its fetch from `url` is on its way; `fallback` decodes it when
+    /// neither a BOM nor its type names an encoding.
+    Fetching {
+        id: FetchId,
+        url: Url,
+        fallback: Encoding,
+    },
+    /// Ready to run; `None` when its fetch failed (HTML: its result is
+    /// null), which runs nothing.
+    Ready(Option<Source>),
+}
+
+/// A classic script, ready to run.
+struct Source {
+    text: String,
+    /// The URL its errors name: the document's for an inline script, the
+    /// response's for a fetched one.
+    url: String,
+    line: u32,
+    muted: bool,
+}
+
+/// A document's scripts: its realm, once it has one, its console, and
+/// the scripts on their way.
 pub(crate) struct Scripts {
     realm: Option<Box<dyn Realm<DocumentHost>>>,
     limits: Limits,
@@ -88,6 +122,16 @@ pub(crate) struct Scripts {
     stopped: bool,
     /// It stopped since this was last asked.
     just_stopped: bool,
+    /// The pending parsing-blocking script: the parser waits until it is
+    /// ready and no style sheet blocks scripts.
+    blocking: Option<Pending>,
+    /// The scripts run in order once the document is parsed (`defer`).
+    deferred: VecDeque<Pending>,
+    /// The scripts run each as soon as it is ready (`async`).
+    soon: Vec<Pending>,
+    /// Its parser was stopped: the scripts on their way are dropped, and
+    /// none it meets after runs.
+    aborted: bool,
 }
 
 impl Default for Scripts {
@@ -106,7 +150,185 @@ impl Scripts {
             errors: 0,
             stopped: false,
             just_stopped: false,
+            blocking: None,
+            deferred: VecDeque::new(),
+            soon: Vec::new(),
+            aborted: false,
         }
+    }
+
+    /// Prepares the `script` element the parser has just closed (HTML
+    /// section 4.12.1.1, "prepare the script element"), its text starting
+    /// on the document's `line`. An inline classic script runs at once,
+    /// or, while a style sheet blocks scripts, is the pending
+    /// parsing-blocking script; one with a `src` is fetched, and is that
+    /// script, or waits for the end of the parse, or runs as soon as it
+    /// comes, as its `defer` and `async` say.
+    pub(crate) fn prepare(
+        &mut self,
+        page: &Page,
+        document: &mut Document,
+        network: &mut Network,
+        element: NodeId,
+        line: u32,
+    ) {
+        if self.aborted
+            || self.stopped
+            || script_type(document, element) != Some(ScriptType::Classic)
+            || document.attr(element, "nomodule").is_some()
+            || !for_the_window(document, element)
+        {
+            return;
+        }
+        let Some(src) = document.attr(element, "src") else {
+            let text = document.text_content(element);
+            if text.is_empty() {
+                return;
+            }
+            let source = Source {
+                text,
+                url: page.url().map(Url::to_string).unwrap_or_default(),
+                line,
+                muted: false,
+            };
+            if page.blocks_scripts() {
+                self.blocking = Some(Pending::Ready(Some(source)));
+            } else {
+                self.run_source(document, &source);
+            }
+            return;
+        };
+        // An empty `src`, or one that does not parse, fires `error` (M26)
+        // and is nothing more.
+        let Some(url) = Some(src)
+            .filter(|src| !src.is_empty())
+            .and_then(|src| page.resolve(document, src))
+        else {
+            return;
+        };
+        let Some(request) = script_request(page, url.clone()) else {
+            return;
+        };
+        let fallback = document
+            .attr(element, "charset")
+            .and_then(Encoding::for_label)
+            .unwrap_or(page.encoding());
+        let id = network.fetch(page.id(), Target::Script, request);
+        let pending = Pending::Fetching { id, url, fallback };
+        if document.attr(element, "async").is_some() {
+            self.soon.push(pending);
+        } else if document.attr(element, "defer").is_some() {
+            self.deferred.push_back(pending);
+        } else {
+            self.blocking = Some(pending);
+        }
+    }
+
+    /// Takes the result of fetch `id` for a script (HTML's "fetch a
+    /// classic script"): the script, decoded, if it came with an ok status
+    /// and a type a script may have; else a failure, which the console
+    /// says. A result no script waits for changes nothing.
+    pub(crate) fn arrived(
+        &mut self,
+        page: &Page,
+        id: FetchId,
+        result: Result<Response, LoadError>,
+    ) {
+        let Some(pending) = self
+            .blocking
+            .iter_mut()
+            .chain(&mut self.deferred)
+            .chain(&mut self.soon)
+            .find(|pending| matches!(pending, Pending::Fetching { id: fetch, .. } if *fetch == id))
+        else {
+            return;
+        };
+        let Pending::Fetching { url, fallback, .. } = &*pending else {
+            unreachable!("found fetching");
+        };
+        let failed = match result
+            .map_err(|error| error.to_string())
+            .and_then(|response| script_source(&response, *fallback, page.url()))
+        {
+            Ok(source) => {
+                *pending = Pending::Ready(Some(source));
+                None
+            }
+            Err(why) => {
+                let text = format!("Failed to load script {url}: {why}");
+                *pending = Pending::Ready(None);
+                Some(text)
+            }
+        };
+        if let Some(text) = failed {
+            self.push(ConsoleEntry {
+                level: ConsoleLevel::Error,
+                text,
+            });
+        }
+    }
+
+    /// Runs what is ready, as HTML's parser and event loop would: each
+    /// script to run as soon as possible that has come; the pending
+    /// parsing-blocking script, once it is ready and no style sheet
+    /// blocks scripts; and, the document `parsed`, its deferred scripts
+    /// in order, each once it is ready and no style sheet blocks scripts.
+    /// Whether the parser may go on.
+    pub(crate) fn run_ready(&mut self, page: &Page, document: &mut Document, parsed: bool) -> bool {
+        let mut ready = Vec::new();
+        self.soon.retain_mut(|pending| match pending {
+            Pending::Ready(source) => {
+                ready.push(source.take());
+                false
+            }
+            Pending::Fetching { .. } => true,
+        });
+        for source in ready.into_iter().flatten() {
+            self.run_source(document, &source);
+        }
+        if page.blocks_scripts() {
+            return self.blocking.is_none();
+        }
+        if let Some(Pending::Ready(source)) = &mut self.blocking {
+            let ready = source.take();
+            self.blocking = None;
+            if let Some(source) = ready {
+                self.run_source(document, &source);
+            }
+        }
+        while parsed && let Some(Pending::Ready(source)) = self.deferred.front_mut() {
+            let ready = source.take();
+            self.deferred.pop_front();
+            if let Some(source) = ready {
+                self.run_source(document, &source);
+            }
+        }
+        self.blocking.is_none()
+    }
+
+    /// Whether no script is on its way: the load waits for them.
+    pub(crate) fn settled(&self) -> bool {
+        self.blocking.is_none() && self.deferred.is_empty() && self.soon.is_empty()
+    }
+
+    /// The document's parser was stopped (HTML's "abort a parser"): the
+    /// scripts on their way, whose fetches were aborted, are dropped, and
+    /// none the parser meets from now on runs.
+    pub(crate) fn abort(&mut self) {
+        self.blocking = None;
+        self.deferred.clear();
+        self.soon.clear();
+        self.aborted = true;
+    }
+
+    fn run_source(&mut self, document: &mut Document, source: &Source) {
+        let script = Script {
+            source: &source.text,
+            url: &source.url,
+            line: source.line,
+            muted: source.muted,
+        };
+        self.run(document, &script);
     }
 
     /// Runs `script` in the document's realm, made if it has none, with
@@ -315,6 +537,71 @@ pub(crate) fn set_document_title(document: &mut Document, value: &str) {
     {
         let _ = document.free(text);
     }
+}
+
+/// Whether `element`'s legacy `for` and `event` attributes, when it has
+/// both, name the window's load event; a script with others is not run
+/// ("prepare the script element", step 21).
+fn for_the_window(document: &Document, element: NodeId) -> bool {
+    let (Some(event), Some(target)) = (
+        document.attr(element, "event"),
+        document.attr(element, "for"),
+    ) else {
+        return true;
+    };
+    let trim = |s: &str| {
+        s.trim_matches(|c: char| c.is_ascii_whitespace())
+            .to_ascii_lowercase()
+    };
+    trim(target) == "window" && matches!(trim(event).as_str(), "onload" | "onload()")
+}
+
+/// The request for a classic script at `url`: no-cors, made by the
+/// page's document, its body held to [`MAX_SCRIPT_BYTES`]; none for a
+/// page with no URL, which fetches nothing.
+fn script_request(page: &Page, url: Url) -> Option<Request> {
+    Some(
+        Request::get(url, Destination::Script)
+            .initiated_by(page.initiator()?)
+            .with_body_limit(MAX_SCRIPT_BYTES),
+    )
+}
+
+/// The script a response to a script's fetch is (HTML's "fetch a
+/// classic script"), or why it is none: it needs an ok status and a type
+/// Fetch lets a script have. It is decoded by its BOM, else its type's
+/// `charset`, else `fallback`; its errors are muted unless every URL it
+/// came through is of the `document`'s origin or `data:` (Fetch's
+/// response tainting, with no CORS until M27).
+fn script_source(
+    response: &Response,
+    fallback: Encoding,
+    document: Option<&Url>,
+) -> Result<Source, String> {
+    if !response.ok() {
+        return Err(format!("status {}", response.status));
+    }
+    if net::mime::blocked_as_script(response.mime_type.as_ref(), &response.headers) {
+        return Err(match &response.mime_type {
+            Some(mime_type) => format!("{} is not a script's type", mime_type.essence()),
+            None => "no type, under nosniff".to_owned(),
+        });
+    }
+    let encoding = net::mime::legacy_extract_encoding(response.mime_type.as_ref(), fallback);
+    let (text, _) = encoding::decode(&response.body, encoding);
+    let muted = document.is_none_or(|document| {
+        let origin = document.origin();
+        response
+            .url_list
+            .iter()
+            .any(|url| url.scheme() != "data" && url.origin() != origin)
+    });
+    Ok(Source {
+        text,
+        url: response.url().to_string(),
+        line: 1,
+        muted,
+    })
 }
 
 /// What a `script` element is (HTML section 4.12.1.1, "prepare the
@@ -546,6 +833,62 @@ mod tests {
             ),
         );
         assert!(matches!(scripts.state(), ScriptState::Stopped { .. }));
+    }
+
+    #[test]
+    fn a_scripts_request_is_no_cors_from_the_document_and_bounded() {
+        let url = Url::parse("https://example.com/page.html").unwrap();
+        let page = Page::fetched(
+            1,
+            url.clone(),
+            encoding::UTF_8,
+            None,
+            net::AddressSpace::Public,
+        );
+        let script = Url::parse("https://example.com/a.js").unwrap();
+        let request = script_request(&page, script.clone()).expect("a request");
+        assert_eq!(request.url, script);
+        assert_eq!(request.destination, Destination::Script);
+        assert_eq!(request.mode, net::Mode::NoCors);
+        assert_eq!(request.body_limit, Some(MAX_SCRIPT_BYTES));
+        assert_eq!(request.initiator.map(|i| i.url), Some(url));
+        assert!(script_request(&Page::given(2), script).is_none());
+    }
+
+    #[test]
+    fn a_scripts_errors_are_muted_unless_every_url_is_the_documents() {
+        let url = |s: &str| Url::parse(s).unwrap();
+        let response = |urls: &[&str]| Response {
+            url_list: urls.iter().map(|s| url(s)).collect(),
+            status: 200,
+            status_message: Vec::new(),
+            headers: net::HeaderList::new(),
+            body: b"1".to_vec(),
+            mime_type: None,
+            address_space: None,
+        };
+        let document = url("https://example.com/page.html");
+        let muted = |urls: &[&str]| {
+            script_source(&response(urls), encoding::UTF_8, Some(&document))
+                .unwrap()
+                .muted
+        };
+        assert!(!muted(&["https://example.com/a.js"]));
+        assert!(!muted(&["data:text/javascript,1"]));
+        assert!(muted(&["https://other.example/a.js"]));
+        assert!(muted(&["https://example.com:8443/a.js"]));
+        assert!(muted(&[
+            "https://example.com/r",
+            "https://other.example/a.js"
+        ]));
+        assert!(muted(&[
+            "https://other.example/r",
+            "https://example.com/a.js"
+        ]));
+        // A document of no origin it shares, a file's, mutes them all.
+        let file = url("file:///page.html");
+        let source = script_source(&response(&["file:///a.js"]), encoding::UTF_8, Some(&file));
+        assert!(source.unwrap().muted);
     }
 
     #[test]
