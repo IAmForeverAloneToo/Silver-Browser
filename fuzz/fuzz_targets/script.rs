@@ -31,10 +31,14 @@ impl ScriptingHost for Recorder {
     }
 }
 
+/// Small limits, so the time goes into the runs, but for the stack: the
+/// DOM's bootstrap (M25), compiled when the realm is made, takes more
+/// than 64 KiB of it in a build with the address sanitizer, and the
+/// engine's own, `js::MAX_SCRIPT_STACK`, is what a page has.
 const LIMITS: Limits = Limits {
     heap: 4 << 20,
     steps: 50,
-    stack: 64 << 10,
+    stack: js::MAX_SCRIPT_STACK,
 };
 
 fuzz_target!(|data: &[u8]| {

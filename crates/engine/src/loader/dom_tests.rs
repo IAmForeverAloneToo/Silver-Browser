@@ -1408,3 +1408,37 @@ fn a_script_run_after_a_frame_reaches_the_next_through_invalidation() {
     shown.dedup();
     assert_eq!(shown, ["y"]);
 }
+
+#[test]
+fn a_page_nested_as_deep_as_the_parser_lets_is_drawn_within_the_engines_stack() {
+    // A page of elements nested to the parser's cap, blocks, inline
+    // boxes holding blocks and grids among them, built into boxes, laid
+    // out and drawn on a thread of `STACK_SIZE`, as the shell's main
+    // thread is: a debug build's frames are the largest (M25's fuzz run
+    // overflowed 1 MiB at 31 levels under the address sanitizer).
+    let levels = dom::MAX_DEPTH - 2;
+    let pages = [
+        format!("{}x", "<div>".repeat(levels)),
+        format!("{}x", "<span><div>".repeat(levels / 2)),
+        format!(
+            "<style>.g {{ display: grid }}</style>{}x",
+            "<div class=g>".repeat(levels)
+        ),
+    ];
+    std::thread::Builder::new()
+        .stack_size(crate::STACK_SIZE)
+        .spawn(move || {
+            for page in pages {
+                let mut engine = crate::Engine::with_fonts(
+                    text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
+                        .expect("the bundled font parses"),
+                );
+                engine.load_document(&page);
+                engine.frame(200, 100);
+                assert!(engine.document().len() > levels);
+            }
+        })
+        .expect("a thread")
+        .join()
+        .expect("drawn within the stack");
+}

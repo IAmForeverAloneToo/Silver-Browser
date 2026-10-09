@@ -141,7 +141,11 @@ jobs:
       - name: Fuzz
         env:
           SECONDS_PER_TARGET: ${{ inputs.fuzz_seconds || (github.event_name == 'schedule' && 1800 || 60) }}
+        # A page nested to the parser's cap needs about 17 MiB of stack
+        # under the address sanitizer (engine::STACK_SIZE): more than the
+        # main thread's 8 MiB.
         run: |
+          ulimit -s 65536
           mkdir -p fuzz/corpus/${{ matrix.target }}
           cargo fuzz run --target "$FUZZ_TARGET_TRIPLE" ${{ matrix.target }} \
             -- -max_total_time="$SECONDS_PER_TARGET" -max_len=4096 -rss_limit_mb=2048

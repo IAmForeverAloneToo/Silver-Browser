@@ -783,3 +783,32 @@ fn a_page_loaded_before_the_first_frame_reads_the_windows_page_area() {
         format!("{WIDTH} by {}", HEIGHT - ui::HEIGHT)
     );
 }
+
+#[test]
+fn a_table_a_script_builds_is_styled_by_the_class_it_toggles() {
+    // M25.5's acceptance, in the window: a page whose script builds a
+    // table of five rows of five cells and toggles a class on it that
+    // colours them; drawn as the class says, under the toolbar.
+    let server = serve(|path| match path {
+        "/" => html(
+            "<style>body { margin: 0 } table { border-spacing: 0 } \
+             td { width: 40px; height: 30px; padding: 0; background-color: #2f4f7f } \
+             table.on td { background-color: #7f2f4f }</style><body>\
+             <script>var table = document.createElement('table'); \
+             for (var i = 0; i < 5; i++) { var row = table.appendChild(document.createElement('tr')); \
+             for (var j = 0; j < 5; j++) { row.appendChild(document.createElement('td')); } } \
+             document.body.appendChild(table); table.classList.toggle('on'); \
+             table.classList.toggle('on'); table.classList.toggle('on');</script>",
+        ),
+        _ => None,
+    });
+    let mut window = Window::with_scripts(Some(server.url("/")));
+    window.settle();
+    let out = window.frame();
+    let at = |x: u32, y: u32| out[((ui::HEIGHT + y) * WIDTH + x) as usize] & 0x00ff_ffff;
+    for (x, y) in [(0, 0), (20, 15), (199, 149), (100, 75)] {
+        assert_eq!(at(x, y), 0x7f2f4f, "({x}, {y})");
+    }
+    assert_eq!(at(200, 75), 0xffffff);
+    assert_eq!(at(100, 150), 0xffffff);
+}

@@ -142,6 +142,15 @@ const SCROLL_TICK_FRACTION: f32 = 1.0 / 3.0;
 /// Within this distance of the target, the animation lands on it.
 const SCROLL_SNAP_PX: f32 = 0.5;
 
+/// The stack a thread that runs the engine needs: a page nested as deep
+/// as the parser lets (`dom::MAX_DEPTH`) is built into boxes and laid out
+/// by recursion, about 7 KiB a level in release and 33 KiB in a debug
+/// build. Windows gives a program's main thread 1 MiB, which a page of
+/// 160 nested elements overflowed (found at M25); the shell's main thread
+/// is given this much (its build script), and the engine's tests hold a
+/// page at the cap to it.
+pub const STACK_SIZE: usize = 32 << 20;
+
 /// The time a frame may take: one of sixty a second (M13.4,
 /// `docs/perf-budgets.md`). The scroll animation's rate is given per
 /// such a frame too.
