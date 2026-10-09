@@ -310,11 +310,7 @@ pub(crate) fn outcome(response: &Response) -> Outcome {
         return Outcome::Status;
     }
     let computed = computed_type(response);
-    let transport = response
-        .mime_type
-        .as_ref()
-        .and_then(|mime_type| mime_type.parameter("charset"))
-        .and_then(Encoding::for_label);
+    let transport = transport_encoding(response);
     let essence = computed.essence();
     if computed.is_html() || essence == "application/xhtml+xml" {
         let decoded = html::parse_document_from_bytes(&response.body, transport);
@@ -344,6 +340,44 @@ pub(crate) fn outcome(response: &Response) -> Outcome {
     } else {
         Outcome::Download(essence.to_owned())
     }
+}
+
+/// How many bytes of a body MIME sniffing reads, its resource header
+/// (MIME Sniffing section 7.1): a navigation's response waits for them,
+/// or for its end, before it is known to be HTML and parsed as it comes
+/// (M24.8).
+pub(crate) const RESOURCE_HEADER: usize = 1445;
+
+/// The encoding the response's `Content-Type` names, if one.
+pub(crate) fn transport_encoding(response: &Response) -> Option<Encoding> {
+    response
+        .mime_type
+        .as_ref()
+        .and_then(|mime_type| mime_type.parameter("charset"))
+        .and_then(Encoding::for_label)
+}
+
+/// Whether `response`, its body what has arrived of it, its resource
+/// header at least or the whole, is a document [`outcome`] would parse as
+/// HTML: then it is parsed as it arrives, with the transport's encoding.
+pub(crate) fn streams_as_html(response: &Response) -> Option<Option<Encoding>> {
+    if is_attachment(response)
+        || matches!(response.status, 204 | 205)
+        || (!response.ok() && response.body.is_empty())
+    {
+        return None;
+    }
+    let computed = computed_type(response);
+    (computed.is_html() || computed.essence() == "application/xhtml+xml")
+        .then(|| transport_encoding(response))
+}
+
+/// A document parsed as its body arrives (M24.8): its load, and its
+/// response's head, which a restart in another encoding makes its page
+/// from again.
+pub(crate) struct Parsing {
+    pub(crate) load: html::Load,
+    pub(crate) head: Response,
 }
 
 /// The language the response's `Content-Language` gives its document,
@@ -384,11 +418,22 @@ pub(crate) enum Incoming {
     /// Its document is being fetched.
     Fetching(PageId),
     /// Its document's response has begun: its head, and its body so far
-    /// (M24.8).
+    /// (M24.8), which is not known to be HTML until its resource header
+    /// is in; `sniffed` once it is known not to be, when it is taken
+    /// whole.
     Receiving {
         id: PageId,
         head: Box<Response>,
         body: Vec<u8>,
+        sniffed: bool,
+    },
+    /// Its document is being parsed as its body arrives, and is shown
+    /// once it has a body and its blocking sheets have come, or it is
+    /// parsed whole (M24.8).
+    Parsing {
+        page: Box<Page>,
+        document: Box<Document>,
+        parsing: Box<Parsing>,
     },
     /// Its document has arrived, and waits for its blocking sheets.
     Waiting {
@@ -401,7 +446,7 @@ impl Incoming {
     pub(crate) fn id(&self) -> PageId {
         match self {
             Incoming::Fetching(id) | Incoming::Receiving { id, .. } => *id,
-            Incoming::Waiting { page, .. } => page.id(),
+            Incoming::Waiting { page, .. } | Incoming::Parsing { page, .. } => page.id(),
         }
     }
 }

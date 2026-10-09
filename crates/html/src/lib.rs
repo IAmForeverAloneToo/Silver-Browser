@@ -13,11 +13,13 @@
 //! `engine`'s job.
 
 pub mod encoding_sniffing;
+mod load;
 mod named_references;
 pub mod tokenizer;
 pub mod tree_builder;
 
 pub use encoding_sniffing::Confidence;
+pub use load::{Load, Progress};
 pub use tokenizer::{Doctype, TextState, Token, Tokenizer, content_state, tokenize};
 pub use tree_builder::TreeBuilder;
 
@@ -169,34 +171,22 @@ pub struct DecodedDocument {
 /// it and parsed again from the start, certain (§13.2.3.4). So a
 /// document is parsed at most twice.
 pub fn parse_document_from_bytes(bytes: &[u8], transport: Option<Encoding>) -> DecodedDocument {
-    let (mut encoding, mut confidence) = encoding_sniffing::sniff(bytes, transport);
+    let mut load = Load::new(transport, false);
+    load.push(bytes);
+    load.end();
+    let mut document = Document::new();
     loop {
-        let (text, decoded_with) = encoding::decode(bytes, encoding);
-        let mut parser = Parser::new(false);
-        parser.feed(&text);
-        parser.end();
-        let mut document = Document::new();
-        parse_whole(&mut parser, &mut document);
-        // The first `<meta>` declaring an encoding settles a tentative
-        // one; the parse is the same whenever that is looked at.
-        let mut again = None;
-        if confidence == Confidence::Tentative
-            && let Some(declared) = parser.encoding_declaration()
-        {
-            confidence = Confidence::Certain;
-            again = encoding_sniffing::change_the_encoding(encoding, declared);
+        match load.parse(&mut document, usize::MAX) {
+            Progress::Parsed(Stop::Done) => break,
+            Progress::Parsed(_) => {}
+            Progress::Restarted => document = Document::new(),
         }
-        match again {
-            Some(new) => encoding = new,
-            None => {
-                return DecodedDocument {
-                    document,
-                    encoding: decoded_with,
-                    confidence,
-                    undecodable: (!encoding.can_decode()).then_some(encoding),
-                };
-            }
-        }
+    }
+    DecodedDocument {
+        document,
+        encoding: load.encoding().unwrap_or(encoding::UTF_8),
+        confidence: load.confidence().unwrap_or(Confidence::Certain),
+        undecodable: load.undecodable(),
     }
 }
 

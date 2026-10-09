@@ -208,6 +208,9 @@ pub struct Engine {
     /// way.
     navigation: Option<Navigation>,
     load_state: LoadState,
+    /// The waker the caller gave, kept to wake the caller while a parse
+    /// has more to do (M24.8).
+    waker: Option<loader::Waker>,
     /// What the user should be told of a navigation that showed no page:
     /// a download not saved (M15).
     notice: Option<String>,
@@ -323,6 +326,9 @@ struct Shown {
     /// When on the timeline the next frame of an animated image the last
     /// frame showed in the viewport comes (M23.1).
     next_image_frame: Option<f64>,
+    /// The document's parse, while its body is still arriving or its
+    /// parse has more to do (M24.8).
+    parsing: Option<Box<loader::Parsing>>,
 }
 
 impl Shown {
@@ -353,6 +359,7 @@ impl Shown {
             animated: Vec::new(),
             images: ImageStore::default(),
             next_image_frame: None,
+            parsing: None,
         }
     }
 }
@@ -400,6 +407,35 @@ enum Indicated {
 
 /// The most bytes an icon is kept with: no icon needs more.
 pub const MAX_ICON_BYTES: usize = 1 << 20;
+
+/// The tokens a document is parsed by between polls while its bytes
+/// arrive (M24.8): the window draws between slices.
+const PARSE_SLICE: usize = 4096;
+
+/// The page of a document parsed from `head`'s response with `load`,
+/// its encoding as the load has found it (M24.8).
+fn parsed_page(id: PageId, head: &net::Response, load: &html::Load) -> Page {
+    let address_space = head.address_space.unwrap_or(net::AddressSpace::Public);
+    let encoding = load.encoding().unwrap_or(encoding::UTF_8);
+    Page::fetched(
+        id,
+        head.url().clone(),
+        encoding,
+        load.undecodable(),
+        address_space,
+    )
+    .with_language(loader::content_language(head))
+}
+
+/// Whether `document` has a body: HTML's "allows adding render-blocking
+/// elements" no longer holds (section 3.1.6).
+fn has_body(document: &Document) -> bool {
+    document.document_element().is_some_and(|html| {
+        document
+            .element_children(html)
+            .any(|child| document.tag(child) == Some("body"))
+    })
+}
 
 /// A document's icon (docs/design/navigation.md, "The icon"): fetched
 /// and kept, not shown until images are decoded (M23).
@@ -628,6 +664,7 @@ impl Engine {
             network,
             navigation: None,
             load_state: LoadState::Loaded,
+            waker: None,
             notice: None,
             next_page: 1,
             goal: None,
@@ -708,7 +745,7 @@ impl Engine {
         let aborted = self.network.cancel(left.page.id(), None);
         let decoding = self.decoder.busy(left.page.id());
         self.decoder.forget(left.page.id());
-        if left.salvageable && !aborted && !decoding && !left.initial {
+        if left.salvageable && !aborted && !decoding && !left.initial && left.parsing.is_none() {
             // What the cache lets go is dropped here.
             drop(self.history.keep(state, Box::new(left)));
         }
@@ -1028,6 +1065,10 @@ impl Engine {
     /// fetches were aborted is not kept by the back-forward cache.
     pub fn stop(&mut self) {
         self.cancel_navigation();
+        if let Some(parsing) = &mut self.shown.parsing {
+            parsing.load.end();
+            self.wake();
+        }
         if self.shown.page.abort(&mut self.network) {
             self.shown.salvageable = false;
             self.sheets_changed();
@@ -1049,6 +1090,8 @@ impl Engine {
                 loader::Taken::Body { page, bytes } => self.document_body(page, &bytes),
             }
         }
+        self.parse_incoming();
+        self.parse_shown();
         while let Some(finished) = self.decoder.take() {
             self.image_read(finished);
         }
@@ -1280,7 +1323,9 @@ impl Engine {
                     }
                     self.update_load_state();
                 } else if let Some(Navigation {
-                    incoming: Incoming::Waiting { page: incoming, .. },
+                    incoming:
+                        Incoming::Waiting { page: incoming, .. }
+                        | Incoming::Parsing { page: incoming, .. },
                     ..
                 }) = &mut self.navigation
                     && incoming.id() == page
@@ -1302,19 +1347,177 @@ impl Engine {
                 id: page,
                 head: Box::new(response),
                 body: Vec::new(),
+                sniffed: false,
             };
         }
     }
 
-    /// A piece of the body of the navigation under way's document.
+    /// A piece of the body of a document being fetched: of the navigation
+    /// under way's, kept until it is known to be HTML and then parsed as
+    /// it comes; or of the document shown, still arriving (M24.8).
     fn document_body(&mut self, page: PageId, bytes: &[u8]) {
-        if let Some(Navigation {
-            incoming: Incoming::Receiving { id, body, .. },
+        if self.shown.page.id() == page
+            && let Some(parsing) = &mut self.shown.parsing
+        {
+            parsing.load.push(bytes);
+            return;
+        }
+        let Some(navigation) = &mut self.navigation else {
+            return;
+        };
+        match &mut navigation.incoming {
+            Incoming::Receiving {
+                id, body, sniffed, ..
+            } if *id == page => {
+                body.extend_from_slice(bytes);
+                if !*sniffed && body.len() >= loader::RESOURCE_HEADER {
+                    self.sniff_incoming(false);
+                }
+            }
+            Incoming::Parsing {
+                page: incoming,
+                parsing,
+                ..
+            } if incoming.id() == page => {
+                parsing.load.push(bytes);
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether the navigation under way's response, received so far, or
+    /// whole if `ended`, is HTML: then it is parsed from here on as it
+    /// arrives, into a document that is shown once it has a body and its
+    /// blocking sheets (M24.8). Otherwise it is taken whole when it ends.
+    fn sniff_incoming(&mut self, ended: bool) {
+        let Some(Navigation {
+            incoming:
+                Incoming::Receiving {
+                    id,
+                    head,
+                    body,
+                    sniffed,
+                },
             ..
         }) = &mut self.navigation
-            && *id == page
-        {
-            body.extend_from_slice(bytes);
+        else {
+            return;
+        };
+        let mut response = (**head).clone();
+        response.body = std::mem::take(body);
+        let Some(transport) = loader::streams_as_html(&response) else {
+            *body = response.body;
+            *sniffed = true;
+            return;
+        };
+        let id = *id;
+        let mut load = html::Load::new(transport, false);
+        load.push(&response.body);
+        if ended {
+            load.end();
+        }
+        response.body = Vec::new();
+        let page = parsed_page(id, &response, &load);
+        if let Some(navigation) = &mut self.navigation {
+            navigation.incoming = Incoming::Parsing {
+                page: Box::new(page),
+                document: Box::new(Document::new()),
+                parsing: Box::new(loader::Parsing {
+                    load,
+                    head: response,
+                }),
+            };
+        }
+        self.wake();
+    }
+
+    /// Parses a slice of the navigation under way's document: the sheets
+    /// the parser makes are found and fetched as they come, those before
+    /// `<body>` blocking, and the document is shown once it may be. A
+    /// `<meta>` that changes the encoding starts it again (M24.8).
+    fn parse_incoming(&mut self) {
+        let media = self.media(self.viewport);
+        let Some(Navigation {
+            incoming:
+                Incoming::Parsing {
+                    page,
+                    document,
+                    parsing,
+                },
+            ..
+        }) = &mut self.navigation
+        else {
+            return;
+        };
+        match parsing.load.parse(document, PARSE_SLICE) {
+            html::Progress::Restarted => {
+                // The sheets found so far go, the document fetch stays.
+                page.rescan(&Document::new(), &mut self.network, None);
+                **page = Page::fetched(
+                    page.id(),
+                    parsing.head.url().clone(),
+                    parsing.load.encoding().unwrap_or(encoding::UTF_8),
+                    parsing.load.undecodable(),
+                    parsing
+                        .head
+                        .address_space
+                        .unwrap_or(net::AddressSpace::Public),
+                )
+                .with_language(loader::content_language(&parsing.head));
+                **document = Document::new();
+                self.wake();
+            }
+            html::Progress::Parsed(stop) => {
+                let changes = document.take_changes();
+                if changes
+                    .iter()
+                    .any(|change| loader::may_touch_sheets(document, change))
+                {
+                    page.rescan(document, &mut self.network, Some(&media));
+                }
+                if matches!(stop, html::Stop::Slice | html::Stop::Script { .. }) {
+                    self.wake();
+                }
+            }
+        }
+        self.commit_if_ready();
+    }
+
+    /// Parses a slice of the document shown, still arriving: what the
+    /// parser adds is a change like any other, restyled and laid out by
+    /// the next frame, its sheets and images fetched (M24.8).
+    fn parse_shown(&mut self) {
+        let Some(parsing) = &mut self.shown.parsing else {
+            return;
+        };
+        match parsing.load.parse(&mut self.shown.document, PARSE_SLICE) {
+            html::Progress::Restarted => {
+                // Shown already: the document starts again in place.
+                let head = parsing.head.clone();
+                let page = parsed_page(self.shown.page.id(), &head, &parsing.load);
+                self.shown
+                    .page
+                    .rescan(&Document::new(), &mut self.network, None);
+                let parsing = self.shown.parsing.take();
+                let mut shown = Shown::new(Document::new(), page);
+                shown.parsing = parsing;
+                let _ = self.show(shown);
+                self.wake();
+            }
+            html::Progress::Parsed(stop) => {
+                let changes = self.shown.document.take_changes();
+                if !changes.is_empty() {
+                    self.document_changed(changes);
+                }
+                match stop {
+                    html::Stop::Done => {
+                        self.shown.parsing = None;
+                        self.update_load_state();
+                    }
+                    html::Stop::Slice | html::Stop::Script { .. } => self.wake(),
+                    html::Stop::Input => {}
+                }
+            }
         }
     }
 
@@ -1326,6 +1529,40 @@ impl Engine {
     /// download or a 204 or 205 ends the navigation with the page shown
     /// as it was.
     fn document_arrived(&mut self, page: PageId, result: Result<net::Response, LoadError>) {
+        // A document parsed as it arrives ends with what came, even if the
+        // fetch failed after it began (M24.8).
+        if self.shown.page.id() == page
+            && let Some(parsing) = &mut self.shown.parsing
+        {
+            parsing.load.end();
+            self.wake();
+            return;
+        }
+        if let Some(Navigation {
+            incoming:
+                Incoming::Parsing {
+                    page: incoming,
+                    parsing,
+                    ..
+                },
+            ..
+        }) = &mut self.navigation
+            && incoming.id() == page
+        {
+            parsing.load.end();
+            self.wake();
+            return;
+        }
+        if result.is_ok() {
+            self.sniff_incoming(true);
+            if matches!(
+                &self.navigation,
+                Some(Navigation { incoming: Incoming::Parsing { page: incoming, .. }, .. })
+                    if incoming.id() == page
+            ) {
+                return;
+            }
+        }
         let Some(navigation) = self.navigation.take() else {
             return;
         };
@@ -1396,6 +1633,34 @@ impl Engine {
     /// Shows the incoming document once its blocking stylesheets have
     /// arrived or failed.
     fn commit_if_ready(&mut self) {
+        // A document being parsed is shown once it is no longer
+        // render-blocked (HTML section 3.1.6): it has a body, or is parsed
+        // whole, and its blocking sheets have come.
+        let parsed_ready = matches!(
+            &self.navigation,
+            Some(Navigation { incoming: Incoming::Parsing { page, document, parsing }, .. })
+                if page.blocking_settled() && (has_body(document) || parsing.load.is_done())
+        );
+        if parsed_ready {
+            let Some(Navigation {
+                incoming:
+                    Incoming::Parsing {
+                        page,
+                        document,
+                        parsing,
+                    },
+                handling,
+                ..
+            }) = self.navigation.take()
+            else {
+                unreachable!("checked above");
+            };
+            let url = page.url().cloned();
+            let mut shown = Shown::new(*document, *page);
+            shown.parsing = Some(parsing);
+            self.commit(shown, url, handling);
+            return;
+        }
         let ready = matches!(
             &self.navigation,
             Some(Navigation { incoming: Incoming::Waiting { page, .. }, .. })
@@ -1474,6 +1739,7 @@ impl Engine {
     fn update_load_state(&mut self) {
         if self.load_state == LoadState::Loading
             && self.navigation.is_none()
+            && self.shown.parsing.is_none()
             && self.shown.page.settled()
             && self.shown.images.settled()
         {
@@ -1491,6 +1757,7 @@ impl Engine {
     /// an error page is shown.
     fn settle_load_state(&mut self) {
         self.load_state = if self.navigation.is_some()
+            || self.shown.parsing.is_some()
             || !self.shown.page.settled()
             || !self.shown.images.settled()
         {
@@ -1550,7 +1817,16 @@ impl Engine {
     pub fn set_waker(&mut self, waker: impl Fn() + Send + Sync + 'static) {
         let waker: loader::Waker = std::sync::Arc::new(waker);
         self.network.set_waker(waker.clone());
-        self.decoder.set_waker(waker);
+        self.decoder.set_waker(waker.clone());
+        self.waker = Some(waker);
+    }
+
+    /// Wakes the caller to poll again: a parse has more to do, and the
+    /// window draws between its slices.
+    fn wake(&self) {
+        if let Some(waker) = &self.waker {
+            waker();
+        }
     }
 
     /// Fetches from now on with `client`, in place of the one the
@@ -1620,7 +1896,7 @@ impl Engine {
         {
             self.shown
                 .page
-                .rescan(&self.shown.document, &mut self.network);
+                .rescan(&self.shown.document, &mut self.network, None);
             self.update_load_state();
             sheets = Some(self.shown.page.sheets())
                 .filter(|sheets| sheets != self.shown.stylesheets.sheets());

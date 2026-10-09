@@ -188,6 +188,12 @@ impl Page {
 
     /// The encoding the document is in, when the engine cannot decode
     /// it yet.
+    /// The encoding of the page's document.
+    #[cfg(test)]
+    pub(crate) fn encoding(&self) -> Encoding {
+        self.context.encoding
+    }
+
     pub(crate) fn undecodable(&self) -> Option<Encoding> {
         self.undecodable
     }
@@ -306,7 +312,16 @@ impl Page {
     /// not fetched again for a new base URL, as HTML's base URL change
     /// steps leave `<link>` elements alone. The fetches of the sheets
     /// dropped are aborted.
-    pub(crate) fn rescan(&mut self, document: &Document, network: &mut Network) {
+    ///
+    /// For a document the parser is still building, `media` is given: a
+    /// sheet found before `<body>` whose media holds blocks the document
+    /// being shown, as [`Page::begin`]'s do (M24.8).
+    pub(crate) fn rescan(
+        &mut self,
+        document: &Document,
+        network: &mut Network,
+        media: Option<&Media>,
+    ) {
         let (found, base) = scan(document, &self.context);
         let mut old: HashMap<NodeId, Owner> = self
             .owners
@@ -325,7 +340,19 @@ impl Page {
                     if kept.is_some() {
                         network.cancel(self.context.id, Some(found.node));
                     }
-                    owners.push(start(&self.context, found, base.as_ref(), network));
+                    let blocking = media.is_some_and(|media| {
+                        found.before_body
+                            && rules::media_attribute_holds(found.media.as_deref(), media)
+                    });
+                    // An element the parser has just made resolves against
+                    // the base URL where it put it, as `begin` has it.
+                    let base = match media {
+                        Some(_) => found.base_here.clone(),
+                        None => base.clone(),
+                    };
+                    let mut owner = start(&self.context, found, base.as_ref(), network);
+                    owner.blocking = blocking;
+                    owners.push(owner);
                 }
             }
         }

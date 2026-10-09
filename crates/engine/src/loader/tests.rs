@@ -74,7 +74,7 @@ fn the_page_shown_stays_until_the_sheets_before_body_arrive() {
     let mut tab = Tab::new();
     tab.engine.navigate(server.url("/page.html"));
     tab.wait_until(|engine| {
-        matches!(incoming(engine), Some(Incoming::Waiting { .. }))
+        matches!(incoming(engine), Some(Incoming::Parsing { .. }))
             && engine.network.in_flight() == 1
     });
     // The document and the import are in; the blocking sheet is not, so
@@ -859,7 +859,7 @@ fn no_more_than_thirty_two_fetches_run_at_once_and_the_sheets_keep_their_order()
     };
     let mut tab = Tab::new();
     tab.engine.navigate(server.url("/page.html"));
-    tab.wait_until(|engine| matches!(incoming(engine), Some(Incoming::Waiting { .. })));
+    tab.wait_until(|engine| matches!(incoming(engine), Some(Incoming::Parsing { .. })));
     wait_for(|| tab.engine.network.pool().running() == MAX_FETCH_THREADS);
     thread::sleep(Duration::from_millis(100));
     assert_eq!(tab.engine.network.pool().most_running(), MAX_FETCH_THREADS);
@@ -973,6 +973,190 @@ fn load_all(tab: &mut Tab, url: Url) {
             && engine.url() == Some(&url)
             && engine.load_state() == &LoadState::Loaded
     });
+}
+
+/// A server whose `/page.html` is `first`, then after `wait` the rest:
+/// HTML, its length said up front.
+fn slow_page(first: &'static str, rest: &'static str, wait: Duration) -> TestServer {
+    let head = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{first}",
+        first.len() + rest.len()
+    );
+    serve(move |path| match path {
+        "/page.html" => Some(Reply::Pieces(vec![
+            (Duration::ZERO, head.clone().into_bytes()),
+            (wait, rest.as_bytes().to_vec()),
+        ])),
+        "/other.html" => Some(html("<p>other</p>")),
+        _ => None,
+    })
+}
+
+/// A page's first piece: past the resource header, so that it is known
+/// to be HTML at once, with a body already.
+const FIRST: &str = concat!(
+    "<!DOCTYPE html><title>Slow</title><body><p>first</p><!--",
+    "................................................................................",
+    "................................................................................",
+    "................................................................................",
+    "................................................................................",
+    "................................................................................",
+    "................................................................................",
+    "................................................................................",
+    "................................................................................",
+    "................................................................................",
+    "................................................................................",
+    "................................................................................",
+    "................................................................................",
+    "................................................................................",
+    "................................................................................",
+    "................................................................................",
+    "................................................................................",
+    "................................................................................",
+    "................................................................................",
+    "-->"
+);
+
+#[test]
+fn a_document_is_shown_before_its_body_has_all_arrived_and_grows() {
+    let server = slow_page(FIRST, "<p>after</p>", Duration::from_millis(1500));
+    let page = server.url("/page.html");
+    let mut tab = Tab::new();
+    tab.engine.navigate(page.clone());
+    // Shown with what has come: it has a body and no sheet holds it.
+    tab.wait_until(|engine| engine.navigation.is_none());
+    assert_eq!(tab.engine.url(), Some(&page));
+    assert_eq!(text(&tab.engine), "Slowfirst");
+    assert_eq!(tab.engine.title(), "Slow");
+    assert_eq!(tab.engine.load_state(), &LoadState::Loading);
+    let frame = tab.engine.frame(200, 100);
+    // The rest comes, and the document grows: a change like any other.
+    load_all(&mut tab, page);
+    assert_eq!(text(&tab.engine), "Slowfirstafter");
+    assert!(tab.engine.needs_frame() || tab.engine.frame(200, 100) != frame);
+}
+
+#[test]
+fn a_late_meta_starts_a_streamed_document_again_in_its_encoding() {
+    // Past the prescan, a meta naming windows-1252, arriving after a
+    // wait: the first piece is parsed as UTF-8, then all again.
+    let server = {
+        let first = FIRST.as_bytes().to_vec();
+        let rest = b"<meta charset=windows-1252><p>caf\xE9".to_vec();
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n",
+            first.len() + rest.len()
+        );
+        serve(move |path| match path {
+            "/page.html" => {
+                let mut start = head.clone().into_bytes();
+                start.extend(&first);
+                Some(Reply::Pieces(vec![
+                    (Duration::ZERO, start),
+                    (Duration::from_millis(300), rest.clone()),
+                ]))
+            }
+            _ => None,
+        })
+    };
+    let mut tab = Tab::new();
+    load_all(&mut tab, server.url("/page.html"));
+    assert_eq!(text(&tab.engine), "Slowfirstcaf\u{e9}");
+    assert_eq!(tab.engine.shown.page.encoding(), encoding::WINDOWS_1252);
+}
+
+#[test]
+fn stopping_a_streamed_load_keeps_what_came() {
+    let server = slow_page(FIRST, "<p>after</p>", Duration::from_secs(20));
+    let page = server.url("/page.html");
+    let mut tab = Tab::new();
+    tab.engine.navigate(page.clone());
+    tab.wait_until(|engine| engine.navigation.is_none());
+    tab.engine.stop();
+    tab.wait_until(|engine| engine.shown.parsing.is_none());
+    assert_eq!(text(&tab.engine), "Slowfirst");
+    assert_eq!(tab.engine.load_state(), &LoadState::Loaded);
+}
+
+#[test]
+fn a_late_meta_before_the_body_starts_the_document_again_before_it_is_shown() {
+    // Past the prescan and before any body: the restart is the incoming
+    // document's, which starts empty again.
+    let mut page = b"<head><title>caf\xE9</title><!--".to_vec();
+    page.extend(vec![b'.'; 1100]);
+    page.extend_from_slice(b"--><meta charset=windows-1252></head><body><p>x");
+    let server = serve(move |path| match path {
+        "/page.html" => Some(Reply::ok("text/html", &page)),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    load_all(&mut tab, server.url("/page.html"));
+    assert_eq!(tab.engine.title(), "caf\u{e9}");
+    let document = tab.engine.document();
+    let titles = document
+        .subtree(document.root())
+        .filter(|&n| document.tag(n) == Some("title"))
+        .count();
+    assert_eq!(titles, 1);
+}
+
+#[test]
+fn a_large_document_is_parsed_a_slice_a_poll_and_loads() {
+    // 60,000 tokens arriving in one piece, from a `data:` URL: many
+    // slices, between which only the engine wakes itself.
+    let url = Url::parse(&format!("data:text/html,{}", "<p>x</p>".repeat(20_000))).unwrap();
+    let mut tab = Tab::new();
+    load_all(&mut tab, url);
+    assert_eq!(text(&tab.engine).len(), 20_000);
+    assert!(tab.engine.shown.parsing.is_none());
+}
+
+#[test]
+fn a_sheet_that_comes_while_the_body_still_arrives_leaves_the_page_loading() {
+    let server = {
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{FIRST}<link rel=stylesheet href=late.css>",
+            FIRST.len() + "<link rel=stylesheet href=late.css>".len() + "<p>after</p>".len()
+        );
+        serve(move |path| match path {
+            "/page.html" => Some(Reply::Pieces(vec![
+                (Duration::ZERO, head.clone().into_bytes()),
+                (Duration::from_millis(1500), b"<p>after</p>".to_vec()),
+            ])),
+            "/late.css" => Some(css(".late {}")),
+            _ => None,
+        })
+    };
+    let mut tab = Tab::new();
+    tab.engine.navigate(server.url("/page.html"));
+    tab.wait_until(|engine| engine.navigation.is_none() && engine.shown.page.settled());
+    assert_eq!(tab.names(), ["late"]);
+    assert_eq!(
+        tab.engine.load_state(),
+        &LoadState::Loading,
+        "the body is still coming"
+    );
+    load_all(&mut tab, server.url("/page.html"));
+}
+
+#[test]
+fn a_document_left_while_it_parses_is_not_kept() {
+    // All of it fetched, but far from parsed: 60,000 tokens.
+    let big = "<p>x</p>".repeat(20_000);
+    let server = serve(move |path| match path {
+        "/big.html" => Some(html(&big)),
+        "/other.html" => Some(html("<p>other</p>")),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.navigate(server.url("/big.html"));
+    tab.wait_until(|engine| {
+        engine.navigation.is_none()
+            && engine.shown.parsing.is_some()
+            && engine.network.in_flight() == 0
+    });
+    load_all(&mut tab, server.url("/other.html"));
+    assert_eq!(tab.engine.history.kept_len(), 0, "not in the cache");
 }
 
 #[test]
