@@ -1,6 +1,6 @@
 //! The keys (docs/design/navigation.md, "Keys and the pointer"): what a
 //! key pressed with the modifiers held asks the browser to do, on macOS
-//! and elsewhere. The shell takes winit's keys into these small types,
+//! and elsewhere; the page has the rest (M26.6). The shell takes winit's keys into these small types,
 //! so that the mapping of either OS is tested on every OS.
 
 use ui::Command as Edit;
@@ -22,6 +22,7 @@ pub(crate) enum Key {
     PageUp,
     PageDown,
     Space,
+    Tab,
     F5,
     F6,
     /// A key that stands for a character in the keyboard's layout, as
@@ -78,24 +79,15 @@ pub(crate) enum Shortcut {
     Enter,
     /// Edits the field, or moves in it.
     Edit(Edit),
-    /// Scrolls the page.
-    Scroll(Scroll),
-}
-
-/// How a key scrolls the page (M9.2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Scroll {
-    LineUp,
-    LineDown,
-    PageUp,
-    PageDown,
-    Top,
-    Bottom,
+    /// Gives the page the keyboard, at its first area that takes the
+    /// focus, or with Shift its last (M26.6).
+    ToPage,
 }
 
 /// What `key`, pressed with `mods` held on `platform`, asks for: in the
-/// address field when `in_field`, on the page otherwise. A key that
-/// asks for nothing may type text.
+/// address field when `in_field`, on the page otherwise, where only the
+/// browser's own keys are the browser's and the rest the page's (M26.6).
+/// A key that asks for nothing may type text.
 pub(crate) fn shortcut(
     key: &Key,
     mods: Modifiers,
@@ -135,7 +127,7 @@ pub(crate) fn shortcut(
     if in_field {
         field_key(key, &letter, mods, mac, command)
     } else {
-        page_key(key)
+        None
     }
 }
 
@@ -154,6 +146,7 @@ fn field_key(
     let extend = mods.shift;
     let edit = match key {
         Key::Enter => return Some(Shortcut::Enter),
+        Key::Tab if !mods.ctrl && !mods.alt && !mods.logo => return Some(Shortcut::ToPage),
         Key::Left if ends => Edit::Home { extend },
         Key::Right if ends => Edit::End { extend },
         Key::Left if word => Edit::WordLeft { extend },
@@ -173,20 +166,6 @@ fn field_key(
         _ => return None,
     };
     Some(Shortcut::Edit(edit))
-}
-
-/// What a key asks of the page: the scrolling keys of M9.2.
-fn page_key(key: &Key) -> Option<Shortcut> {
-    let scroll = match key {
-        Key::Up => Scroll::LineUp,
-        Key::Down => Scroll::LineDown,
-        Key::PageUp => Scroll::PageUp,
-        Key::PageDown | Key::Space => Scroll::PageDown,
-        Key::Home => Scroll::Top,
-        Key::End => Scroll::Bottom,
-        _ => return None,
-    };
-    Some(Shortcut::Scroll(scroll))
 }
 
 /// Whether a key pressed with `mods` held types its text in the field:
@@ -361,6 +340,13 @@ mod tests {
             shortcut(&Key::Enter, NONE, Platform::Other, true),
             Some(Shortcut::Enter)
         );
+        for mods in [NONE, SHIFT] {
+            assert_eq!(
+                shortcut(&Key::Tab, mods, Platform::Other, true),
+                Some(Shortcut::ToPage)
+            );
+        }
+        assert_eq!(shortcut(&Key::Tab, CTRL, Platform::Other, true), None);
         // The page's keys do nothing in the field: Space types.
         for key in [Key::Space, Key::Up, Key::PageDown, char("a")] {
             assert_eq!(shortcut(&key, NONE, Platform::Other, true), None, "{key:?}");
@@ -368,25 +354,20 @@ mod tests {
     }
 
     #[test]
-    fn the_pages_keys_scroll() {
-        use Scroll::*;
-        for (key, scroll) in [
-            (Key::Up, LineUp),
-            (Key::Down, LineDown),
-            (Key::PageUp, PageUp),
-            (Key::PageDown, PageDown),
-            (Key::Space, PageDown),
-            (Key::Home, Top),
-            (Key::End, Bottom),
+    fn the_pages_keys_are_the_pages() {
+        for key in [
+            Key::Up,
+            Key::PageDown,
+            Key::Space,
+            Key::End,
+            Key::Tab,
+            Key::Enter,
+            Key::Left,
+            Key::Backspace,
+            char("a"),
         ] {
-            assert_eq!(
-                other(key.clone(), NONE, false),
-                Some(Shortcut::Scroll(scroll))
-            );
-            assert_eq!(mac(key, NONE, false), Some(Shortcut::Scroll(scroll)));
-        }
-        for key in [Key::Enter, Key::Left, Key::Backspace, char("a")] {
             assert_eq!(other(key.clone(), NONE, false), None, "{key:?}");
+            assert_eq!(mac(key.clone(), NONE, false), None, "{key:?}");
         }
     }
 

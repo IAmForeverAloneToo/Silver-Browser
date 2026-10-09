@@ -2889,6 +2889,19 @@
       return wrap(childOfHtml(self(this), "body"));
     }
 
+    // The focused element, or the body when none is (HTML section 6.6.6),
+    // and whether the window has the system's focus.
+    get activeElement() {
+      const handle = self(this);
+      const focused = native.focused();
+      return focused === null ? wrap(childOfHtml(handle, "body")) : wrap(focused);
+    }
+
+    hasFocus() {
+      self(this);
+      return native.hasFocus();
+    }
+
     // Page visibility (HTML section 6.2): hidden while the window is
     // minimized or covered.
     get visibilityState() {
@@ -5180,6 +5193,96 @@
     defineHandlers(MapGet(interfaces, BODIES[i]).prototype, WINDOW_REFLECTING, true);
     defineHandlers(MapGet(interfaces, BODIES[i]).prototype, WINDOW_HANDLERS, true);
   }
+
+  // ---- Focus (HTML section 6.6, M26.6) ------------------------------------
+
+  // Fires a focus event of `type` at `target`, `related` its related
+  // target: `focus` and `blur` do not bubble, `focusin` and `focusout`
+  // do; none can be canceled. Trusted: the focusing steps fire them.
+  function fireFocus(type, target, related) {
+    const bubbles = type === "focusin" || type === "focusout";
+    const event = new FocusEvent(type, made(FOCUS_INIT, [
+      "bubbles", bubbles,
+      "composed", true,
+      "view", global,
+      "relatedTarget", related,
+    ]));
+    eventState(event).trusted = true;
+    drain(dispatching(target, event));
+  }
+
+  // HTML's focusing steps for the element `handle` names, as `focus()`
+  // runs them: the element focused loses it first, with `blur` and
+  // `focusout`, then this one gains it, with `focus` and `focusin`, each
+  // naming the other. Nothing for an element that cannot take the
+  // focus, or has it.
+  function focusElement(handle, preventScroll) {
+    if (!native.focusable(handle)) {
+      return;
+    }
+    const old = native.focused();
+    if (old === handle) {
+      return;
+    }
+    const element = wrap(handle);
+    const before = old === null ? null : wrap(old);
+    if (before !== null) {
+      native.setFocus(null, true);
+      fireFocus("blur", before, element);
+      fireFocus("focusout", before, element);
+    }
+    // A listener may have moved the focus, or the element.
+    if (native.focused() !== null || !native.focusable(handle)) {
+      return;
+    }
+    native.setFocus(handle, preventScroll);
+    fireFocus("focus", element, before);
+    fireFocus("focusin", element, before);
+  }
+
+  // HTML's unfocusing steps: the element loses the focus, to the
+  // viewport.
+  function blurElement(handle) {
+    if (native.focused() !== handle) {
+      return;
+    }
+    native.setFocus(null, true);
+    const element = wrap(handle);
+    fireFocus("blur", element, null);
+    fireFocus("focusout", element, null);
+  }
+
+  include(
+    {
+      focus(options) {
+        const handle = self(this);
+        const prevent = typeof options === "object" && options !== null && !!options.preventScroll;
+        focusElement(handle, prevent);
+      },
+
+      blur() {
+        blurElement(self(this));
+      },
+
+      // `tabIndex` (HTML section 6.6.3): the attribute's integer, else 0
+      // for an element that can take the focus as it is and -1 for one
+      // that cannot.
+      get tabIndex() {
+        const handle = self(this);
+        const value = native.attribute(handle, "tabindex");
+        const n = value === null ? null : parseInteger(value, true);
+        if (n !== null && n >= -2147483648 && n <= 2147483647) {
+          return n;
+        }
+        return native.tabbable(handle) ? 0 : -1;
+      },
+
+      set tabIndex(value) {
+        setAttribute(self(this), "tabindex", $String($Number(value) | 0), "tabIndex");
+      },
+    },
+    [HTMLElement.prototype],
+  );
 
   // ---- Timers (M26, HTML section 8.6) ------------------------------------
 

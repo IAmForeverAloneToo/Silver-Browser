@@ -170,6 +170,10 @@ pub(crate) struct WindowEnv {
     pub(crate) clock: Option<crate::Clock>,
     /// Whether the window is hidden: minimized or covered (M26).
     pub(crate) hidden: bool,
+    /// Whether the window has the system's focus, and whether the last
+    /// input was a key, so that a focus a script gives is shown (M26.6).
+    pub(crate) focused: bool,
+    pub(crate) keyboard: bool,
 }
 
 /// A document's time origin (High Resolution Time): the engine's clock
@@ -357,6 +361,8 @@ pub(crate) struct Scripts {
     aborted: bool,
     /// The last navigation its scripts asked for, for the engine to start.
     navigation: Option<ScriptNavigation>,
+    /// The element a script focused, to be scrolled into view (M26.6).
+    scroll_to: Option<NodeId>,
     /// The events to fire at elements when its scripts next run (M26):
     /// a script element's `error` for a `src` that cannot be fetched.
     events: VecDeque<(NodeId, &'static str)>,
@@ -388,6 +394,7 @@ impl Scripts {
             in_order: VecDeque::new(),
             events: VecDeque::new(),
             handlers: None,
+            scroll_to: None,
             aborted: false,
             navigation: None,
         }
@@ -397,6 +404,12 @@ impl Scripts {
     /// last asked, if any: the last of them.
     pub(crate) fn take_navigation(&mut self) -> Option<ScriptNavigation> {
         self.navigation.take()
+    }
+
+    /// The element a script focused since this was last asked, to be
+    /// scrolled into view (M26.6).
+    pub(crate) fn take_scroll(&mut self) -> Option<NodeId> {
+        self.scroll_to.take()
     }
 
     /// Prepares the `script` element the parser has just closed (HTML
@@ -753,6 +766,9 @@ impl Scripts {
             self.fetch(lent, wanted);
         }
         self.events.extend(outputs.events);
+        if outputs.scroll_to.is_some() {
+            self.scroll_to = outputs.scroll_to;
+        }
         if outputs.navigation.is_some() {
             self.navigation = outputs.navigation;
         }
@@ -803,6 +819,9 @@ impl Scripts {
             self.fetch(lent, wanted);
         }
         self.events.extend(outputs.events);
+        if outputs.scroll_to.is_some() {
+            self.scroll_to = outputs.scroll_to;
+        }
         if outputs.navigation.is_some() {
             self.navigation = outputs.navigation;
         }

@@ -279,6 +279,9 @@ pub struct Document {
     max_nodes: usize,
     /// [`MAX_DATA_BYTES`], lowered by tests.
     max_data: usize,
+    /// The focused element (M26.6): it has the focus flags, and it and
+    /// its ancestors `focus-within`.
+    focused: Option<NodeId>,
 }
 
 impl Default for Document {
@@ -303,6 +306,7 @@ impl Document {
             data_bytes: 0,
             max_nodes: MAX_NODES,
             max_data: MAX_DATA_BYTES,
+            focused: None,
         };
         document.root = document.allocate(NodeData::Document);
         document
@@ -466,6 +470,44 @@ impl Document {
     pub fn state(&self, id: NodeId) -> ElementState {
         self.record(id)
             .map_or(ElementState::NONE, |record| record.state)
+    }
+
+    /// The focused element, if any (M26.6).
+    pub fn focused(&self) -> Option<NodeId> {
+        self.focused.filter(|&element| self.contains(element))
+    }
+
+    /// Focuses `element`, or nothing (M26.6): the `focus` flag, and
+    /// `focus-visible` when `visible`, move to it, and `focus-within` to
+    /// it and its ancestors, journaled as state changes. A node that is
+    /// not a live element takes no focus.
+    pub fn set_focus(&mut self, element: Option<NodeId>, visible: bool) {
+        let focus = ElementState::FOCUS.with(ElementState::FOCUS_VISIBLE, true);
+        if let Some(old) = self.focused.take().filter(|&old| self.contains(old)) {
+            let _ = self.set_state(old, self.state(old).with(focus, false));
+            let chain: Vec<NodeId> = std::iter::once(old).chain(self.ancestors(old)).collect();
+            for node in chain {
+                if self.is_element(node) {
+                    let state = self.state(node).with(ElementState::FOCUS_WITHIN, false);
+                    let _ = self.set_state(node, state);
+                }
+            }
+        }
+        let Some(element) = element.filter(|&element| self.is_element(element)) else {
+            return;
+        };
+        let flags = ElementState::FOCUS.with(ElementState::FOCUS_VISIBLE, visible);
+        let _ = self.set_state(element, self.state(element).with(flags, true));
+        let chain: Vec<NodeId> = std::iter::once(element)
+            .chain(self.ancestors(element))
+            .collect();
+        for node in chain {
+            if self.is_element(node) {
+                let state = self.state(node).with(ElementState::FOCUS_WITHIN, true);
+                let _ = self.set_state(node, state);
+            }
+        }
+        self.focused = Some(element);
     }
 
     /// Sets an element's state flags to `state` (M26), journaled when
@@ -1116,8 +1158,16 @@ impl Document {
     }
 
     /// Takes `child` out of its parent's children, recording the change;
-    /// nothing for a detached node.
+    /// nothing for a detached node. The focus goes with an element taken
+    /// out that has it or holds what has, at once (M26.6, HTML's focus
+    /// fixup).
     fn detach(&mut self, child: NodeId) {
+        if let Some(focused) = self.focused()
+            && self.is_inclusive_ancestor(child, focused)
+            && self.parent(child).is_some()
+        {
+            self.set_focus(None, false);
+        }
         let Some(record) = self.record(child) else {
             return;
         };

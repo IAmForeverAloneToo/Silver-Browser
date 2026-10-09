@@ -272,6 +272,16 @@ const NATIVES: &[(&str, Decode)] = &[
     ("disabled", |a| Ok(Call::Disabled(a.handle(0)?))),
     ("formOwner", |a| Ok(Call::FormOwner(a.handle(0)?))),
     ("wantFrame", |_| Ok(Call::WantFrame)),
+    ("focusable", |a| Ok(Call::Focusable(a.handle(0)?))),
+    ("tabbable", |a| Ok(Call::Tabbable(a.handle(0)?))),
+    ("focused", |_| Ok(Call::Focused)),
+    ("setFocus", |a| {
+        Ok(Call::SetFocus {
+            node: a.maybe_handle(0)?,
+            prevent_scroll: a.bool(1),
+        })
+    }),
+    ("hasFocus", |_| Ok(Call::HasFocus)),
     ("hidden", |_| Ok(Call::Hidden)),
     ("dialog", |a| {
         Ok(Call::Dialog {

@@ -339,7 +339,12 @@ impl ApplicationHandler<NetworkWake> for Browser {
                 self.theme = Some(theme);
                 self.read_preferences();
             }
-            WindowEvent::Focused(true) => self.read_preferences(),
+            WindowEvent::Focused(focused) => {
+                self.session.set_window_focus(focused);
+                if focused {
+                    self.read_preferences();
+                }
+            }
             // Covered or minimized: the page is hidden (M26).
             WindowEvent::Occluded(occluded) => {
                 self.session.set_hidden(occluded);
@@ -354,18 +359,13 @@ impl ApplicationHandler<NetworkWake> for Browser {
                     logo: state.super_key(),
                 });
             }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key,
-                        text,
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } => {
-                if let Some(key) = key_of(&logical_key) {
-                    self.session.key(key, text.as_deref());
+            WindowEvent::KeyboardInput { event, .. } => {
+                let page = page_key(&event);
+                match event.state {
+                    ElementState::Pressed => {
+                        self.session.key_down(key_of(&event.logical_key), page);
+                    }
+                    ElementState::Released => self.session.key_up(page),
                 }
             }
             WindowEvent::Ime(ime) => match ime {
@@ -554,6 +554,7 @@ fn key_of(key: &winit::keyboard::Key) -> Option<Key> {
             NamedKey::PageUp => Key::PageUp,
             NamedKey::PageDown => Key::PageDown,
             NamedKey::Space => Key::Space,
+            NamedKey::Tab => Key::Tab,
             NamedKey::F5 => Key::F5,
             NamedKey::F6 => Key::F6,
             NamedKey::Shift
@@ -575,6 +576,42 @@ fn key_of(key: &winit::keyboard::Key) -> Option<Key> {
         Winit::Character(text) => Key::Char(text.to_string()),
         Winit::Unidentified(_) | Winit::Dead(_) => Key::Other,
     })
+}
+
+/// The page's key for winit's (M26.6): UI Events' `key` value, a named
+/// key's name or a character's text, and its `code`, the physical key's
+/// name, which winit gives as UI Events does but the logo key's.
+fn page_key(event: &KeyEvent) -> engine::Key {
+    use winit::keyboard::{Key as Winit, KeyLocation, PhysicalKey};
+    let key = match &event.logical_key {
+        Winit::Character(text) => text.to_string(),
+        Winit::Named(NamedKey::Space) => " ".to_owned(),
+        Winit::Named(NamedKey::Super) => "Meta".to_owned(),
+        Winit::Named(named) => format!("{named:?}"),
+        Winit::Dead(_) => "Dead".to_owned(),
+        Winit::Unidentified(_) => "Unidentified".to_owned(),
+    };
+    let code = match event.physical_key {
+        PhysicalKey::Code(code) => match format!("{code:?}").as_str() {
+            "SuperLeft" => "MetaLeft".to_owned(),
+            "SuperRight" => "MetaRight".to_owned(),
+            name => name.to_owned(),
+        },
+        PhysicalKey::Unidentified(_) => String::new(),
+    };
+    let location = match event.location {
+        KeyLocation::Standard => 0,
+        KeyLocation::Left => 1,
+        KeyLocation::Right => 2,
+        KeyLocation::Numpad => 3,
+    };
+    engine::Key {
+        key,
+        code,
+        location,
+        repeat: event.repeat,
+        text: event.text.as_ref().map(|text| text.to_string()),
+    }
 }
 
 /// The OS's clipboard, through `arboard`, opened when first used and

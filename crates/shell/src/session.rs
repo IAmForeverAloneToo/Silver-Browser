@@ -13,7 +13,7 @@ use engine::address::{self, Address};
 use engine::{Engine, FrameTime, Link, LoadState, Preferences, Url};
 use ui::{Action, PageState, StatusBubble, TooLong, Toolbar};
 
-use crate::keys::{self, Key, Modifiers, Platform, Scroll, Shortcut};
+use crate::keys::{self, Key, Modifiers, Platform, Shortcut};
 
 /// The toolbar's height: the page starts below it.
 const TOP: f32 = ui::HEIGHT as f32;
@@ -106,6 +106,8 @@ pub(crate) struct Session {
     notice: Option<String>,
     /// Whether an input method is composing text.
     composing: bool,
+    /// Whether the window has the system's focus (M26.6).
+    window_focused: bool,
     /// The URL the command line asked for, until the first result of
     /// its load: a failure, or an encoding that cannot be decoded, is
     /// reported on standard error.
@@ -144,6 +146,7 @@ impl Session {
             cursor: engine::Cursor::Default,
             notice: None,
             composing: false,
+            window_focused: true,
             start: start.clone(),
             reports: Vec::new(),
             title: String::new(),
@@ -153,6 +156,7 @@ impl Session {
         if start.is_none() {
             session.toolbar.focus();
         }
+        session.sync_window_focus();
         session
     }
 
@@ -284,25 +288,79 @@ impl Session {
         });
     }
 
-    /// A key pressed, with the text it types, if any: a shortcut, or
-    /// text typed into the field.
+    /// A key pressed, with the text it types, as the tests press them:
+    /// the page hears of it by its name.
+    #[cfg(test)]
     pub(crate) fn key(&mut self, key: Key, text: Option<&str>) {
+        let name = match &key {
+            Key::Enter => "Enter",
+            Key::Escape => "Escape",
+            Key::Backspace => "Backspace",
+            Key::Delete => "Delete",
+            Key::Insert => "Insert",
+            Key::Left => "ArrowLeft",
+            Key::Right => "ArrowRight",
+            Key::Up => "ArrowUp",
+            Key::Down => "ArrowDown",
+            Key::Home => "Home",
+            Key::End => "End",
+            Key::PageUp => "PageUp",
+            Key::PageDown => "PageDown",
+            Key::Space => " ",
+            Key::Tab => "Tab",
+            Key::F5 => "F5",
+            Key::F6 => "F6",
+            Key::Char(c) => c.as_str(),
+            Key::Other => "Unidentified",
+        };
+        let mut page = engine::Key::new(name, "");
+        page.text = text.map(str::to_owned);
+        self.key_down(Some(key), page);
+    }
+
+    /// A key pressed: `key` as the browser's keys have it, none for a
+    /// modifier key, and `page` as the page hears of it (M26.6). The
+    /// browser's shortcuts come first; then the field's keys, or the
+    /// page's, which may hand the keyboard back to the field.
+    pub(crate) fn key_down(&mut self, key: Option<Key>, page: engine::Key) {
         if self.composing {
             return;
         }
         self.notice = None;
         let in_field = self.focus() == Focus::Field;
-        match keys::shortcut(&key, self.mods, self.platform, in_field) {
+        let shortcut = key
+            .as_ref()
+            .and_then(|key| keys::shortcut(key, self.mods, self.platform, in_field));
+        match shortcut {
             Some(shortcut) => self.shortcut(shortcut),
-            None => {
-                if in_field
-                    && keys::types_text(self.mods, self.platform)
-                    && let Some(text) = text
+            None if in_field => {
+                if keys::types_text(self.mods, self.platform)
+                    && let Some(text) = page.text.as_deref()
                 {
                     self.insert(text);
                 }
             }
+            None => {
+                if self.engine.key_down(&page) == engine::KeyOutcome::FocusLeft {
+                    self.toolbar.focus();
+                }
+            }
         }
+        self.sync();
+    }
+
+    /// A key released: the page's, while it has the keyboard (M26.6).
+    pub(crate) fn key_up(&mut self, page: engine::Key) {
+        if self.composing || self.focus() == Focus::Field {
+            return;
+        }
+        self.engine.key_up(&page);
+        self.sync();
+    }
+
+    /// The window gained the system's focus, or lost it (M26.6).
+    pub(crate) fn set_window_focus(&mut self, focused: bool) {
+        self.window_focused = focused;
         self.sync();
     }
 
@@ -514,7 +572,11 @@ impl Session {
                 }
             }
             Shortcut::Edit(edit) => self.toolbar.command(edit),
-            Shortcut::Scroll(scroll) => self.scroll(scroll),
+            Shortcut::ToPage => {
+                self.toolbar.blur();
+                self.sync_window_focus();
+                self.engine.focus_next(self.mods.shift);
+            }
         }
     }
 
@@ -557,18 +619,6 @@ impl Session {
         }
     }
 
-    fn scroll(&mut self, scroll: Scroll) {
-        let page = self.page_step();
-        match scroll {
-            Scroll::LineUp => self.engine.scroll_by(-LINE_PX),
-            Scroll::LineDown => self.engine.scroll_by(LINE_PX),
-            Scroll::PageUp => self.engine.scroll_by(-page),
-            Scroll::PageDown => self.engine.scroll_by(page),
-            Scroll::Top => self.engine.scroll_to(0.0),
-            Scroll::Bottom => self.engine.scroll_to(f32::INFINITY),
-        }
-    }
-
     /// A page's scroll: the page's height less a line, so a line of
     /// context stays.
     fn page_step(&self) -> f32 {
@@ -598,6 +648,7 @@ impl Session {
             return;
         }
         self.toolbar.blur();
+        self.sync_window_focus();
         let y = y - TOP;
         let page = self.page_step();
         if let Some(bar) = self.engine.scrollbar()
@@ -654,9 +705,10 @@ impl Session {
         self.engine.pointer_leave();
     }
 
-    /// Brings what the window shows of the engine up to date: the
-    /// toolbar, the title, and a notice the engine has.
+    /// Brings the engine and what the window shows of it up to date: the
+    /// page's focus, the toolbar, the title, and a notice the engine has.
     fn sync(&mut self) {
+        self.sync_window_focus();
         if let Some(notice) = self.engine.take_notice() {
             self.notice = Some(notice);
         }
@@ -668,6 +720,13 @@ impl Session {
             loading: *self.engine.load_state() == LoadState::Loading,
         });
         self.title = ui::window_title(&self.engine.title(), url.as_deref());
+    }
+
+    /// The page has the system's focus while the window has it and the
+    /// field does not (M26.6).
+    fn sync_window_focus(&mut self) {
+        let page = self.window_focused && self.focus() == Focus::Page;
+        self.engine.set_window_focus(page);
     }
 }
 

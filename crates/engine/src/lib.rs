@@ -94,7 +94,9 @@
 
 pub mod address;
 pub mod differential;
+mod focus;
 mod image_store;
+mod keys;
 mod loader;
 mod navigation;
 mod pages;
@@ -111,6 +113,7 @@ use std::time::{Duration, Instant, SystemTime};
 pub use dom::ElementState;
 pub use image_store::MAX_DECODE_THREADS;
 pub use js::ConsoleLevel;
+pub use keys::{Key, KeyOutcome};
 pub use loader::{LoadError, LoadState};
 pub use net::{Client, NetworkError, Url};
 pub use print::{PrintError, PrintOptions, PrintedPage};
@@ -370,6 +373,10 @@ pub struct Engine {
     /// (M26.5).
     buttons: u16,
     modifiers: Modifiers,
+    /// Whether the window has the system's focus, and whether the last
+    /// input was a key rather than the pointer (M26.6).
+    window_focused: bool,
+    keyboard: bool,
 }
 
 /// A document and everything the engine made from it (M15): what the
@@ -460,6 +467,14 @@ struct Shown {
     pressed: [Option<NodeId>; 5],
     active: Vec<NodeId>,
     no_mouse: bool,
+    /// The element a Space press is to click when it comes up (M26.6);
+    /// whether an `autofocus` element has had the focus, and the version
+    /// of the document the styles were last brought up to, and was when
+    /// one was last looked for.
+    space: Option<NodeId>,
+    autofocused: bool,
+    styled_at: u64,
+    autofocus_seen: Option<u64>,
 }
 
 /// The lifecycle events a document has had (HTML section 8.4.6, "the
@@ -518,6 +533,10 @@ impl Shown {
             pressed: [None; 5],
             active: Vec::new(),
             no_mouse: false,
+            space: None,
+            autofocused: false,
+            styled_at: 0,
+            autofocus_seen: None,
         }
     }
 
@@ -883,6 +902,8 @@ impl Engine {
             pointer: None,
             buttons: 0,
             modifiers: Modifiers::default(),
+            window_focused: true,
+            keyboard: false,
         }
     }
 
@@ -1259,6 +1280,8 @@ impl Engine {
             compat: self.compat_user_agent,
             clock: Some(self.clock.clone()),
             hidden: self.hidden,
+            focused: self.window_focused,
+            keyboard: self.keyboard,
         }
     }
 
@@ -1316,6 +1339,7 @@ impl Engine {
     /// one is held, with scripts on or off; with scripts on, `pointerdown`
     /// and, unless it was canceled, `mousedown`.
     pub fn pointer_down(&mut self, x: f32, y: f32, button: Button, count: u32) {
+        self.keyboard = false;
         let target = self.pointer_at(x, y);
         self.buttons |= button.bit();
         self.shown.pressed[button.number() as usize] = target;
@@ -1324,6 +1348,10 @@ impl Engine {
             self.set_flag(ElementState::ACTIVE, chain);
         }
         let Some(target) = target else {
+            // Past the root's box: the viewport takes the focus.
+            if matches!(button, Button::Primary | Button::Secondary) {
+                self.focus(None, false, false);
+            }
             return;
         };
         let event = self.mouse_event(
@@ -1337,6 +1365,7 @@ impl Engine {
         if self.fire(js::Target::Node(scripts::handle(target)), event) == Some(true) {
             self.shown.no_mouse = true;
         }
+        let mut canceled = None;
         if !self.shown.no_mouse && self.shown.document.contains(target) {
             let event = self.mouse_event(
                 "MouseEvent",
@@ -1346,7 +1375,320 @@ impl Engine {
                 count,
                 None,
             );
+            canceled = self.fire(js::Target::Node(scripts::handle(target)), event);
+        }
+        // mousedown's default action (HTML section 6.6.4): the nearest
+        // focusable area around the target takes the focus, a text
+        // control's shown; with none, the viewport takes it.
+        if canceled != Some(true)
+            && matches!(button, Button::Primary | Button::Secondary)
+            && self.shown.document.contains(target)
+        {
+            self.cached_styles();
+            let styles = self.shown.styled.as_ref().map(|styled| &styled.styles);
+            let area = focus::click_focus_target(&self.shown.document, styles, target);
+            let visible =
+                area.is_some_and(|area| dom::forms::is_text_control(&self.shown.document, area));
+            self.focus(area, visible, false);
+        }
+    }
+
+    /// The element focused in the document shown, if any (M26.6).
+    pub fn focused(&self) -> Option<NodeId> {
+        self.shown.document.focused()
+    }
+
+    /// HTML's focusing steps (section 6.6.4) for `area`, or its
+    /// unfocusing steps for none (M26.6): the element focused loses it,
+    /// with `blur` and `focusout` naming the new one, then `area` gains
+    /// it, with `focus` and `focusin` naming the old, shown when
+    /// `visible`, and scrolled into view when `scroll`. Nothing when it
+    /// has the focus already; a listener that moves the focus meanwhile
+    /// has the last word.
+    fn focus(&mut self, area: Option<NodeId>, visible: bool, scroll: bool) {
+        let old = self.shown.document.focused();
+        if old == area {
+            return;
+        }
+        if let Some(old) = old {
+            self.shown.document.set_focus(None, false);
+            self.state_changed();
+            for (kind, bubbles) in [("blur", false), ("focusout", true)] {
+                if self.shown.document.contains(old) {
+                    let event = focus_event(kind, bubbles, area);
+                    self.fire(js::Target::Node(scripts::handle(old)), event);
+                }
+            }
+        }
+        let Some(area) = area.filter(|&area| self.shown.document.contains(area)) else {
+            return;
+        };
+        if self.shown.document.focused().is_some() {
+            return;
+        }
+        self.shown.document.set_focus(Some(area), visible);
+        self.state_changed();
+        if scroll {
+            self.scroll_focus_into_view(area);
+        }
+        for (kind, bubbles) in [("focus", false), ("focusin", true)] {
+            if self.shown.document.contains(area) {
+                let event = focus_event(kind, bubbles, old);
+                self.fire(js::Target::Node(scripts::handle(area)), event);
+            }
+        }
+    }
+
+    /// Scrolls an element given the focus into view (M26.6), unless the
+    /// top of its first box is in the viewport already and no scroll
+    /// container holds it, as the reference browser's focus does.
+    fn scroll_focus_into_view(&mut self, node: NodeId) {
+        let height = self.viewport.1 as f32;
+        let at = self.shown.scroll_target;
+        if let Some((top, chain)) = self.locate(node)
+            && chain.is_empty()
+            && (at..at + height).contains(&top)
+        {
+            return;
+        }
+        self.scroll_into_view(node);
+    }
+
+    /// The document's state changes are taken, restyling what they reach.
+    fn state_changed(&mut self) {
+        let changes = self.shown.document.take_changes();
+        if !changes.is_empty() {
+            self.document_changed(changes);
+        }
+    }
+
+    /// Moves the focus to the next area of the sequential focus order
+    /// (HTML section 6.6.3), or the previous for `backward`: Tab and
+    /// Shift+Tab. From nothing focused, the first or the last. Past the
+    /// end, the page gives up the focus, and the answer is false: the
+    /// browser's own interface is to take it.
+    pub fn focus_next(&mut self, backward: bool) -> bool {
+        self.keyboard = true;
+        self.cached_styles();
+        let styles = self.shown.styled.as_ref().map(|styled| &styled.styles);
+        let order = focus::sequential_order(&self.shown.document, styles);
+        let current = self.shown.document.focused();
+        let at = current.and_then(|current| order.iter().position(|&node| node == current));
+        let next = match (at, backward) {
+            (Some(i), false) => order.get(i + 1).copied(),
+            (Some(i), true) => i.checked_sub(1).map(|i| order[i]),
+            (None, false) => order.first().copied(),
+            (None, true) => order.last().copied(),
+        };
+        match next {
+            Some(next) => {
+                self.focus(Some(next), true, true);
+                true
+            }
+            None => {
+                self.focus(None, false, false);
+                false
+            }
+        }
+    }
+
+    /// Whether the window has the system's focus (M26.6): when it loses it,
+    /// the element focused hears `blur`, then the window; when it comes
+    /// back, the window hears `focus`, then the element.
+    pub fn set_window_focus(&mut self, focused: bool) {
+        if self.window_focused == focused {
+            return;
+        }
+        self.window_focused = focused;
+        let element = self.shown.document.focused();
+        let kind = if focused { "focus" } else { "blur" };
+        let at_element = |engine: &mut Engine| {
+            if let Some(element) = element {
+                let event = focus_event(kind, false, None);
+                engine.fire(js::Target::Node(scripts::handle(element)), event);
+            }
+        };
+        if !focused {
+            at_element(self);
+        }
+        self.fire(js::Target::Window, focus_event(kind, false, None));
+        if focused {
+            at_element(self);
+        }
+    }
+
+    /// A key went down (M26.6): `keydown` at the element focused, or the
+    /// body; then, unless a listener canceled it, its default action: Tab
+    /// moves the focus, Enter activates a link or a button, Space arms a
+    /// button for its release, and the scrolling keys scroll the page when
+    /// no text control has the focus.
+    pub fn key_down(&mut self, key: &Key) -> KeyOutcome {
+        self.keyboard = true;
+        if let Some(target) = self.key_target() {
+            let event = self.key_event("keydown", key, None);
+            if self.fire(js::Target::Node(scripts::handle(target)), event) == Some(true) {
+                return KeyOutcome::Taken;
+            }
+        }
+        let outcome = self.key_default(key);
+        self.key_press(key);
+        outcome
+    }
+
+    /// A key's default action, after its `keydown` (M26.6).
+    fn key_default(&mut self, key: &Key) -> KeyOutcome {
+        let m = self.modifiers;
+        let plain = !m.ctrl && !m.alt && !m.meta;
+        let focused = self.shown.document.focused();
+        let document = &self.shown.document;
+        let text_control = focused.is_some_and(|node| dom::forms::is_text_control(document, node));
+        let clicks = |space| focused.filter(|&node| key_clicks(document, node, space));
+        match key.key.as_str() {
+            "Tab" if plain => {
+                if self.focus_next(m.shift) {
+                    KeyOutcome::Taken
+                } else {
+                    KeyOutcome::FocusLeft
+                }
+            }
+            "Enter" if plain && clicks(false).is_some() => {
+                if let Some(element) = clicks(false) {
+                    self.key_click(element);
+                }
+                KeyOutcome::Taken
+            }
+            " " if plain && clicks(true).is_some() => {
+                self.shown.space = clicks(true);
+                KeyOutcome::Taken
+            }
+            _ if text_control => KeyOutcome::Ignored,
+            "ArrowDown" | "ArrowUp" | "PageDown" | "PageUp" | " " | "Home" | "End"
+                if plain || m.shift =>
+            {
+                let page = self.page_step();
+                match key.key.as_str() {
+                    "ArrowDown" => self.scroll_by(SCROLL_STEP),
+                    "ArrowUp" => self.scroll_by(-SCROLL_STEP),
+                    "PageDown" => self.scroll_by(page),
+                    "PageUp" => self.scroll_by(-page),
+                    " " if m.shift => self.scroll_by(-page),
+                    " " => self.scroll_by(page),
+                    "Home" => self.scroll_to(0.0),
+                    _ => self.scroll_to(f32::INFINITY),
+                }
+                KeyOutcome::Taken
+            }
+            _ => KeyOutcome::Ignored,
+        }
+    }
+
+    /// A page's scroll by a key: the viewport's height less a line, so a
+    /// line of context stays.
+    fn page_step(&self) -> f32 {
+        (self.viewport.1 as f32 - SCROLL_STEP).max(SCROLL_STEP)
+    }
+
+    /// The `keypress` for each character a key types (UI Events section
+    /// 5.6.4, the reference browser's legacy event): none for a control
+    /// character but Enter's, nor with Ctrl or Meta held but as AltGr;
+    /// its `charCode` and `keyCode` the character's.
+    fn key_press(&mut self, key: &Key) {
+        let m = self.modifiers;
+        if (m.ctrl && !m.alt) || m.meta {
+            return;
+        }
+        let Some(text) = key.text.clone() else {
+            return;
+        };
+        for c in text.chars() {
+            if c.is_control() && c != '\r' {
+                continue;
+            }
+            let Some(target) = self.key_target() else {
+                return;
+            };
+            let press = Key {
+                key: if c == '\r' {
+                    "Enter".to_owned()
+                } else {
+                    c.to_string()
+                },
+                text: None,
+                ..key.clone()
+            };
+            let event = self.key_event("keypress", &press, Some(c as u32));
             self.fire(js::Target::Node(scripts::handle(target)), event);
+        }
+    }
+
+    /// A key came up (M26.6): `keyup`; Space's release clicks the button
+    /// its press armed.
+    pub fn key_up(&mut self, key: &Key) {
+        if let Some(target) = self.key_target() {
+            let event = self.key_event("keyup", key, None);
+            self.fire(js::Target::Node(scripts::handle(target)), event);
+        }
+        if key.key == " "
+            && let Some(armed) = self.shown.space.take()
+            && self.shown.document.focused() == Some(armed)
+        {
+            self.key_click(armed);
+        }
+    }
+
+    /// Where a key's events go: the element focused, or the body, or the
+    /// document's element.
+    fn key_target(&self) -> Option<NodeId> {
+        let document = &self.shown.document;
+        document.focused().or_else(|| {
+            let html = document.element_children(document.root()).next()?;
+            document
+                .element_children(html)
+                .find(|&child| matches!(document.tag(child), Some("body" | "frameset")))
+                .or(Some(html))
+        })
+    }
+
+    /// A `KeyboardEvent` of `kind` for `key` (UI Events section 5.6):
+    /// bubbling, cancelable and composed, its legacy `keyCode` the
+    /// reference browser's, or for a `keypress` its `charCode`'s.
+    fn key_event(&self, kind: &str, key: &Key, char_code: Option<u32>) -> js::EventInit {
+        use js::Field::{Bool, Number, String as Text, Window};
+        let m = self.modifiers;
+        let key_code = char_code.unwrap_or_else(|| keys::key_code(key));
+        js::EventInit::new("KeyboardEvent", kind)
+            .with("bubbles", Bool(true))
+            .with("cancelable", Bool(true))
+            .with("composed", Bool(true))
+            .with("view", Window)
+            .with("key", Text(key.key.clone()))
+            .with("code", Text(key.code.clone()))
+            .with("location", Number(f64::from(key.location)))
+            .with("repeat", Bool(key.repeat))
+            .with("keyCode", Number(f64::from(key_code)))
+            .with("charCode", Number(f64::from(char_code.unwrap_or(0))))
+            .with("shiftKey", Bool(m.shift))
+            .with("ctrlKey", Bool(m.ctrl))
+            .with("altKey", Bool(m.alt))
+            .with("metaKey", Bool(m.meta))
+    }
+
+    /// The click a key gives an element (Enter on a link or a button,
+    /// Space's release on a button): a trusted `click`, at no point, its
+    /// detail 0, as the reference browser's; with no listener, the
+    /// activation behaviour itself.
+    fn key_click(&mut self, element: NodeId) {
+        let event = js::EventInit::new("PointerEvent", "click")
+            .with("bubbles", js::Field::Bool(true))
+            .with("cancelable", js::Field::Bool(true))
+            .with("composed", js::Field::Bool(true))
+            .with("view", js::Field::Window)
+            .with("pointerId", js::Field::Number(-1.0));
+        if self
+            .fire(js::Target::Node(scripts::handle(element)), event)
+            .is_none()
+        {
+            self.activate(element);
         }
     }
 
@@ -1741,6 +2083,54 @@ impl Engine {
         }
     }
 
+    /// HTML's focus fixup (section 6.6.4) at a rendering (M26.6): an
+    /// element focused that can no longer take the focus, disabled or no
+    /// longer rendered by the last frame's styles, loses it, with `blur`.
+    /// The styles are not brought up to date here, so that the frame's
+    /// own style stage makes its animations.
+    fn focus_fixup(&mut self) {
+        let Some(focused) = self.shown.document.focused() else {
+            return;
+        };
+        let Some(styled) = &self.shown.styled else {
+            return;
+        };
+        if !focus::focusable(&self.shown.document, Some(&styled.styles), focused) {
+            self.focus(None, false, false);
+        }
+    }
+
+    /// HTML's autofocus (section 6.6.5) at a rendering (M26.6): the first
+    /// element with `autofocus` that the last frame's styles render and
+    /// that can take the focus takes it, shown, once a document, unless
+    /// something has had it first. Looked for again only when the styles
+    /// have been brought up to a new version of the document.
+    fn autofocus(&mut self) {
+        if self.shown.autofocused {
+            return;
+        }
+        if self.shown.document.focused().is_some() {
+            self.shown.autofocused = true;
+            return;
+        }
+        let Some(styled) = &self.shown.styled else {
+            return;
+        };
+        if self.shown.autofocus_seen == Some(self.shown.styled_at) {
+            return;
+        }
+        self.shown.autofocus_seen = Some(self.shown.styled_at);
+        let document = &self.shown.document;
+        let candidate = document.subtree(document.root()).find(|&node| {
+            document.attr(node, "autofocus").is_some()
+                && focus::focusable(document, Some(&styled.styles), node)
+        });
+        if let Some(candidate) = candidate {
+            self.shown.autofocused = true;
+            self.focus(Some(candidate), true, true);
+        }
+    }
+
     /// The document node as an event's target.
     fn document_target(&self) -> js::Target {
         js::Target::Node(scripts::handle(self.shown.document.root()))
@@ -1812,6 +2202,8 @@ impl Engine {
         // The window's size is the frame's from now on.
         self.viewport = (width, height);
         let events = std::mem::take(&mut self.pending_events);
+        self.focus_fixup();
+        self.autofocus();
         if !self.scripting || self.shown.made {
             return;
         }
@@ -2989,6 +3381,9 @@ impl Engine {
         if !changes.is_empty() {
             self.document_changed(changes);
         }
+        if let Some(node) = self.shown.scripts.take_scroll() {
+            self.scroll_focus_into_view(node);
+        }
         if let Some(navigation) = self.shown.scripts.take_navigation() {
             self.script_navigation(navigation);
         }
@@ -3678,6 +4073,7 @@ impl Engine {
             }
             self.request_css_images();
         }
+        self.shown.styled_at = self.shown.document.version();
         &self.shown.styled.as_ref().expect("just computed").styles
     }
 
@@ -4668,6 +5064,44 @@ impl Drop for Engine {
     fn drop(&mut self) {
         self.network.cancel_all();
     }
+}
+
+/// How far an arrow key scrolls the page (M26.6): 40px, as the shell's
+/// keys did.
+const SCROLL_STEP: f32 = 40.0;
+
+/// Whether a key clicks the element focused (M26.6), as the reference
+/// browser's keys do: Enter a link, a button or a button-like `input`;
+/// Space, on its release, a button, a button-like `input`, a checkbox or
+/// a radio button.
+fn key_clicks(document: &Document, element: NodeId, space: bool) -> bool {
+    let kind = document
+        .attr(element, "type")
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match document.tag(element) {
+        Some("a" | "area") => !space && document.attr(element, "href").is_some(),
+        Some("button") => true,
+        Some("input") => match kind.as_str() {
+            "button" | "submit" | "reset" | "image" => true,
+            "checkbox" | "radio" => space,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// A `FocusEvent` of `kind` (M26.6): bubbling for `focusin` and
+/// `focusout`, never cancelable, `related` its related target.
+fn focus_event(kind: &str, bubbles: bool, related: Option<NodeId>) -> js::EventInit {
+    js::EventInit::new("FocusEvent", kind)
+        .with("bubbles", js::Field::Bool(bubbles))
+        .with("composed", js::Field::Bool(true))
+        .with("view", js::Field::Window)
+        .with(
+            "relatedTarget",
+            js::Field::Node(related.map(scripts::handle)),
+        )
 }
 
 /// The event an animation's or a transition's change of phase queued,

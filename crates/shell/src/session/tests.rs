@@ -873,3 +873,45 @@ fn a_table_a_script_builds_is_styled_by_the_class_it_toggles() {
     assert_eq!(at(200, 75), 0xffffff);
     assert_eq!(at(100, 150), 0xffffff);
 }
+
+#[test]
+fn tab_moves_the_keyboard_between_the_field_and_the_page() {
+    let server = serve(|path| match path {
+        "/" => html(
+            "<a id=a href=/x>a</a><a id=b href=/y>b</a><script>\
+             addEventListener('blur', function (e) { \
+               if (e.target === window) document.title += ' away'; });\
+             addEventListener('keydown', function (e) { document.title = e.key; });</script>",
+        ),
+        _ => None,
+    });
+    let mut window = Window::with_scripts(Some(server.url("/")));
+    window.settle();
+    let focused = |window: &Window| {
+        let engine = window.session.engine();
+        engine
+            .focused()
+            .and_then(|node| engine.document().attr(node, "id"))
+            .map(str::to_owned)
+    };
+    window.chord("l", CTRL);
+    assert_eq!(window.session.focus(), Focus::Field);
+    // From the field, Tab gives the page its first link, Shift+Tab its
+    // last; past the last, the field has the keyboard back.
+    window.press_key(Key::Tab, NONE);
+    assert_eq!(window.session.focus(), Focus::Page);
+    assert_eq!(focused(&window).as_deref(), Some("a"));
+    window.press_key(Key::Tab, NONE);
+    assert_eq!(focused(&window).as_deref(), Some("b"));
+    window.press_key(Key::Tab, NONE);
+    assert_eq!(window.session.focus(), Focus::Field);
+    assert_eq!(focused(&window), None);
+    assert!(window.session.title().starts_with("Tab away"));
+    window.press_key(Key::Tab, SHIFT);
+    assert_eq!(focused(&window).as_deref(), Some("b"));
+    // The page hears its keys, not the browser's.
+    window.press_key(Key::Down, NONE);
+    assert!(window.session.title().starts_with("ArrowDown"));
+    window.press_key(Key::F5, NONE);
+    assert!(window.session.title().starts_with("ArrowDown"));
+}

@@ -256,6 +256,23 @@ pub enum Call {
     /// A page asked for an animation frame callback: a frame is wanted
     /// (HTML section 8.10).
     WantFrame,
+    /// Whether the element is a focusable area (HTML section 6.6.2, M26):
+    /// it can take the focus, and is being rendered.
+    Focusable(Handle),
+    /// Whether the element can take the focus as it is, with no
+    /// `tabindex`: `tabIndex`'s default.
+    Tabbable(Handle),
+    /// The focused element, if any.
+    Focused,
+    /// Focuses the element, or nothing; the host decides whether the
+    /// focus is to be shown, and scrolls the element into view after the
+    /// run unless `prevent_scroll`. The bindings fire the events.
+    SetFocus {
+        node: Option<Handle>,
+        prevent_scroll: bool,
+    },
+    /// `document.hasFocus()`: whether the window has the system's focus.
+    HasFocus,
     /// Whether the document is hidden (HTML section 6.2): its window is
     /// minimized or covered.
     Hidden,

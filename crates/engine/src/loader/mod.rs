@@ -7,6 +7,8 @@ mod dom_tests;
 #[cfg(test)]
 mod event_tests;
 #[cfg(test)]
+mod focus_tests;
+#[cfg(test)]
 mod lifecycle_tests;
 #[cfg(test)]
 mod pointer_tests;

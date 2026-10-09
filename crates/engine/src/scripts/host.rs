@@ -43,6 +43,8 @@ pub(crate) struct Outputs {
     /// The events to fire at elements after the run (M26): a script
     /// element's `error` for a `src` that cannot be fetched.
     pub(crate) events: Vec<(NodeId, &'static str)>,
+    /// The element a script focused, to be scrolled into view (M26.6).
+    pub(crate) scroll_to: Option<NodeId>,
 }
 
 /// The document's styles as a run's `getComputedStyle` sees them: the
@@ -888,6 +890,40 @@ impl DocumentHost {
                 Ok(Answer::Nothing)
             }
             Call::Hidden => Ok(Answer::Bool(self.window.hidden)),
+            Call::Focusable(node) => {
+                let node = self.node(node)?;
+                self.styles_now();
+                let styles = self.computed.as_ref().map(|computed| &computed.styles);
+                Ok(Answer::Bool(crate::focus::focusable(
+                    &self.document,
+                    styles,
+                    node,
+                )))
+            }
+            Call::Tabbable(node) => {
+                let node = self.node(node)?;
+                Ok(Answer::Bool(crate::focus::natively_focusable(
+                    &self.document,
+                    node,
+                )))
+            }
+            Call::Focused => Ok(self.give(self.document.focused())),
+            Call::SetFocus {
+                node,
+                prevent_scroll,
+            } => {
+                let node = node.map(|node| self.node(node)).transpose()?;
+                // A focus a script gives is shown after a key, and in a
+                // text control always, as the reference browser decides.
+                let visible = self.window.keyboard
+                    || node.is_some_and(|node| forms::is_text_control(&self.document, node));
+                self.document.set_focus(node, visible);
+                if !prevent_scroll && node.is_some() {
+                    self.outputs.scroll_to = node;
+                }
+                Ok(Answer::Nothing)
+            }
+            Call::HasFocus => Ok(Answer::Bool(self.window.focused)),
             Call::Dialog { kind, message } => {
                 self.say(ConsoleLevel::Info, format!("{kind}: {message}"));
                 Ok(Answer::Nothing)
