@@ -165,6 +165,56 @@ pub type Clock = Arc<dyn Fn() -> Duration + Send + Sync>;
 /// from drawing.
 pub const TASK_SLICE: Duration = Duration::from_millis(50);
 
+/// A mouse button (M26.5), by UI Events' `button` numbers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Button {
+    /// The main button, usually the left.
+    Primary,
+    /// The middle button, or the wheel's.
+    Auxiliary,
+    /// The context menu's, usually the right.
+    Secondary,
+    Back,
+    Forward,
+}
+
+impl Button {
+    /// Its `button` number.
+    fn number(self) -> i16 {
+        match self {
+            Button::Primary => 0,
+            Button::Auxiliary => 1,
+            Button::Secondary => 2,
+            Button::Back => 3,
+            Button::Forward => 4,
+        }
+    }
+
+    /// Its bit in `buttons`.
+    fn bit(self) -> u16 {
+        match self {
+            Button::Primary => 1,
+            Button::Secondary => 2,
+            Button::Auxiliary => 4,
+            Button::Back => 8,
+            Button::Forward => 16,
+        }
+    }
+}
+
+/// The modifier keys held (M26.5), which the pointer's and the keys'
+/// events say.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Modifiers {
+    pub shift: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub meta: bool,
+}
+
+/// What a middle click on a link says: tabs are M37's.
+pub const NO_NEW_TAB: &str = "Links open in this tab: there are no other tabs yet";
+
 /// The least time between two timers of a hidden document (M26): its
 /// timers run once a second at most, as the reference browser throttles
 /// a hidden page's.
@@ -316,6 +366,10 @@ pub struct Engine {
     /// Where the pointer is over the page, in its coordinates, while it
     /// is (M26.4).
     pointer: Option<(f32, f32)>,
+    /// The buttons held, as `buttons` has them, and the modifier keys
+    /// (M26.5).
+    buttons: u16,
+    modifiers: Modifiers,
 }
 
 /// A document and everything the engine made from it (M15): what the
@@ -399,6 +453,13 @@ struct Shown {
     /// (M26.4), and the one the URL's fragment indicates.
     hovered: Vec<NodeId>,
     target: Option<NodeId>,
+    /// The element each button went down on, by its number (M26.5); the
+    /// elements active while the primary one is held; and whether the
+    /// mouse events stand down, a `pointerdown` having been canceled,
+    /// until the buttons are all up.
+    pressed: [Option<NodeId>; 5],
+    active: Vec<NodeId>,
+    no_mouse: bool,
 }
 
 /// The lifecycle events a document has had (HTML section 8.4.6, "the
@@ -454,6 +515,9 @@ impl Shown {
             told: HashMap::new(),
             hovered: Vec::new(),
             target: None,
+            pressed: [None; 5],
+            active: Vec::new(),
+            no_mouse: false,
         }
     }
 
@@ -466,7 +530,7 @@ impl Shown {
         ready: scripts::ReadyState,
         target: js::Target,
         event: js::EventInit,
-    ) -> bool {
+    ) -> Option<bool> {
         let mut lent = scripts::Lent {
             document: &mut self.document,
             page: &mut self.page,
@@ -817,6 +881,8 @@ impl Engine {
             pending_events: Vec::new(),
             departed: Vec::new(),
             pointer: None,
+            buttons: 0,
+            modifiers: Modifiers::default(),
         }
     }
 
@@ -1110,14 +1176,50 @@ impl Engine {
         let encoded = url.as_str().get("javascript:".len()..).unwrap_or_default();
         let source =
             String::from_utf8_lossy(&net::url::percent_decode(encoded.as_bytes())).into_owned();
-        self.run_classic(&source);
+        if let Some(js::Completion::String(html)) = self.run_classic(&source) {
+            self.show_javascript_result(html);
+        }
+    }
+
+    /// A `javascript:` URL's result (HTML section 7.4.2.3.2, M26.5): a
+    /// string it ended with is a new document of that HTML at the same
+    /// URL, in the current entry's place, as a response with that body
+    /// would be, its scripts run.
+    fn show_javascript_result(&mut self, html: String) {
+        let Some(url) = self.shown.page.url().cloned() else {
+            return;
+        };
+        self.cancel_navigation();
+        let response = net::Response {
+            url_list: vec![url.clone()],
+            status: 200,
+            status_message: b"OK".to_vec(),
+            headers: net::HeaderList::default(),
+            body: Vec::new(),
+            mime_type: net::MimeType::parse("text/html;charset=utf-8"),
+            address_space: None,
+        };
+        let id = self.new_page_id();
+        self.navigation = Some(Navigation {
+            url,
+            incoming: Incoming::Receiving {
+                id,
+                head: Box::new(response),
+                body: html.into_bytes(),
+                sniffed: false,
+            },
+            handling: Handling::Replace,
+            started: self.time_origin(),
+        });
+        self.load_state = LoadState::Loading;
+        self.sniff_incoming(true);
     }
 
     /// Runs `source` in the document shown as a classic script with a
     /// budget of its own, its errors naming the document, and takes what
     /// it changed: what a `javascript:` URL runs, and a script
     /// [`differential::run_script`] is given.
-    fn run_classic(&mut self, source: &str) {
+    fn run_classic(&mut self, source: &str) -> Option<js::Completion> {
         let document = self
             .shown
             .page
@@ -1141,10 +1243,11 @@ impl Engine {
             ready,
             window: window.clone(),
         };
-        shown
+        let completion = shown
             .scripts
             .run(&mut lent, &script, scripts::How::default());
         self.scripts_ran();
+        completion
     }
 
     /// What the window reports to a run's scripts (M25.4).
@@ -1161,10 +1264,11 @@ impl Engine {
 
     /// Dispatches `event` at `target` in the document shown, with scripts
     /// on (M26), as a task: its changes are taken after. Whether a
-    /// listener canceled it.
-    fn fire(&mut self, target: js::Target, event: js::EventInit) -> bool {
-        if !self.scripting {
-            return false;
+    /// listener canceled it; `None` when nothing was dispatched, scripts
+    /// being off or the document having no listener at all.
+    fn fire(&mut self, target: js::Target, event: js::EventInit) -> Option<bool> {
+        if !self.scripting || self.shown.made {
+            return None;
         }
         let ready = self.ready_state();
         let window = self.window_env();
@@ -1175,18 +1279,386 @@ impl Engine {
         canceled
     }
 
-    /// The pointer moved to `(x, y)` in the page's coordinates, CSS
-    /// pixels from the viewport's top left (M26.4): the element there and
-    /// its ancestors are hovered, with scripts on or off.
-    pub fn pointer_move(&mut self, x: f32, y: f32) {
-        self.pointer = Some((x, y));
-        self.update_hover();
+    /// The modifier keys held from now on (M26.5), which the pointer's
+    /// events say.
+    pub fn set_modifiers(&mut self, modifiers: Modifiers) {
+        self.modifiers = modifiers;
     }
 
-    /// The pointer left the page: nothing is hovered.
+    /// The pointer moved to `(x, y)` in the page's coordinates, CSS
+    /// pixels from the viewport's top left (M26.4, M26.5): the element
+    /// there and its ancestors are hovered, with scripts on or off; with
+    /// scripts on, the boundary events of the elements left and entered
+    /// come first, then `pointermove` and `mousemove`.
+    pub fn pointer_move(&mut self, x: f32, y: f32) {
+        let target = self.pointer_at(x, y);
+        if let Some(target) = target {
+            let event = self.mouse_event("PointerEvent", "pointermove", target, -1, 0, None);
+            self.fire(js::Target::Node(scripts::handle(target)), event);
+            if !self.shown.no_mouse && self.shown.document.contains(target) {
+                let event = self.mouse_event("MouseEvent", "mousemove", target, 0, 0, None);
+                self.fire(js::Target::Node(scripts::handle(target)), event);
+            }
+        }
+    }
+
+    /// The pointer left the page: nothing is hovered, and the elements it
+    /// was over hear it leave.
     pub fn pointer_leave(&mut self) {
-        self.pointer = None;
+        let left = self.shown.hovered.clone();
         self.set_hovered(Vec::new());
+        self.boundary(&left, &[]);
+        self.pointer = None;
+    }
+
+    /// A button went down at `(x, y)` (M26.5), the `count`th press of a
+    /// run of quick ones: the element there is active while the primary
+    /// one is held, with scripts on or off; with scripts on, `pointerdown`
+    /// and, unless it was canceled, `mousedown`.
+    pub fn pointer_down(&mut self, x: f32, y: f32, button: Button, count: u32) {
+        let target = self.pointer_at(x, y);
+        self.buttons |= button.bit();
+        self.shown.pressed[button.number() as usize] = target;
+        if button == Button::Primary {
+            let chain = target.map(|node| self.chain(node)).unwrap_or_default();
+            self.set_flag(ElementState::ACTIVE, chain);
+        }
+        let Some(target) = target else {
+            return;
+        };
+        let event = self.mouse_event(
+            "PointerEvent",
+            "pointerdown",
+            target,
+            button.number(),
+            0,
+            None,
+        );
+        if self.fire(js::Target::Node(scripts::handle(target)), event) == Some(true) {
+            self.shown.no_mouse = true;
+        }
+        if !self.shown.no_mouse && self.shown.document.contains(target) {
+            let event = self.mouse_event(
+                "MouseEvent",
+                "mousedown",
+                target,
+                button.number(),
+                count,
+                None,
+            );
+            self.fire(js::Target::Node(scripts::handle(target)), event);
+        }
+    }
+
+    /// A button came up at `(x, y)` (M26.5): `pointerup` and `mouseup`;
+    /// then, at the nearest element over both the press and the release,
+    /// `click` for the primary button, its activation behaviour run unless
+    /// it was canceled (a link is followed), and `dblclick` after a second
+    /// press; `auxclick` for another, and `contextmenu` after it for the
+    /// secondary one. With scripts off, the activation alone.
+    pub fn pointer_up(&mut self, x: f32, y: f32, button: Button, count: u32) {
+        let target = self.pointer_at(x, y);
+        self.buttons &= !button.bit();
+        let pressed = self.shown.pressed[button.number() as usize].take();
+        if button == Button::Primary {
+            self.set_flag(ElementState::ACTIVE, Vec::new());
+        }
+        let no_mouse = self.shown.no_mouse;
+        if self.buttons == 0 {
+            self.shown.no_mouse = false;
+        }
+        let Some(target) = target else {
+            return;
+        };
+        let event = self.mouse_event(
+            "PointerEvent",
+            "pointerup",
+            target,
+            button.number(),
+            0,
+            None,
+        );
+        self.fire(js::Target::Node(scripts::handle(target)), event);
+        if !no_mouse && self.shown.document.contains(target) {
+            let event = self.mouse_event(
+                "MouseEvent",
+                "mouseup",
+                target,
+                button.number(),
+                count,
+                None,
+            );
+            self.fire(js::Target::Node(scripts::handle(target)), event);
+        }
+        let Some(clicked) = pressed.and_then(|pressed| self.common_ancestor(pressed, target))
+        else {
+            return;
+        };
+        let at = js::Target::Node(scripts::handle(clicked));
+        match button {
+            Button::Primary => {
+                let event = self.mouse_event("PointerEvent", "click", clicked, 0, count, None);
+                if self.fire(at, event).is_none() {
+                    // Nothing listens: the activation behaviour, as the
+                    // dispatch would run it.
+                    self.activate(clicked);
+                }
+                if count == 2 && self.shown.document.contains(clicked) {
+                    let event = self.mouse_event("MouseEvent", "dblclick", clicked, 0, 2, None);
+                    self.fire(at, event);
+                }
+            }
+            Button::Auxiliary | Button::Secondary => {
+                let event = self.mouse_event(
+                    "PointerEvent",
+                    "auxclick",
+                    clicked,
+                    button.number(),
+                    count,
+                    None,
+                );
+                let canceled = self.fire(at, event) == Some(true);
+                if button == Button::Auxiliary && !canceled && self.link_around(clicked).is_some() {
+                    self.notice = Some(NO_NEW_TAB.to_owned());
+                }
+                if button == Button::Secondary && self.shown.document.contains(clicked) {
+                    let event =
+                        self.mouse_event("PointerEvent", "contextmenu", clicked, 2, 0, None);
+                    self.fire(at, event);
+                }
+            }
+            Button::Back | Button::Forward => {}
+        }
+    }
+
+    /// The element under `(x, y)`, the pointer moved there: the hovered
+    /// elements are those under it now, and, with scripts on, the
+    /// elements left and entered hear it (UI Events section 4.3.4,
+    /// Pointer Events section 4.1, in the reference browser's order).
+    fn pointer_at(&mut self, x: f32, y: f32) -> Option<NodeId> {
+        self.pointer = Some((x, y));
+        let before = self.shown.hovered.clone();
+        self.update_hover();
+        let after = self.shown.hovered.clone();
+        if before.first() != after.first() {
+            self.boundary(&before, &after);
+        }
+        self.shown
+            .hovered
+            .first()
+            .copied()
+            .filter(|&node| self.shown.document.contains(node))
+    }
+
+    /// The boundary events of the pointer moving from the element first in
+    /// `before` to the one first in `after`, each list it and its
+    /// ancestors: `pointerout` at the one left, `pointerleave` at each
+    /// left, innermost first, `pointerover` at the one entered,
+    /// `pointerenter` at each entered, outermost first; then the mouse
+    /// events of the same.
+    fn boundary(&mut self, before: &[NodeId], after: &[NodeId]) {
+        if !self.scripting {
+            return;
+        }
+        let (old, new) = (before.first().copied(), after.first().copied());
+        for (interface, prefix) in [("PointerEvent", "pointer"), ("MouseEvent", "mouse")] {
+            if let Some(old) = old.filter(|&node| self.shown.document.contains(node)) {
+                let event = self.mouse_event(interface, &format!("{prefix}out"), old, -1, 0, new);
+                self.fire(js::Target::Node(scripts::handle(old)), event);
+            }
+            for &node in before.iter().filter(|node| !after.contains(node)) {
+                if self.shown.document.contains(node) {
+                    let event =
+                        self.mouse_event(interface, &format!("{prefix}leave"), node, -1, 0, new);
+                    self.fire(js::Target::Node(scripts::handle(node)), event);
+                }
+            }
+            if let Some(new) = new.filter(|&node| self.shown.document.contains(node)) {
+                let event = self.mouse_event(interface, &format!("{prefix}over"), new, -1, 0, old);
+                self.fire(js::Target::Node(scripts::handle(new)), event);
+            }
+            for &node in after.iter().rev().filter(|node| !before.contains(node)) {
+                if self.shown.document.contains(node) {
+                    let event =
+                        self.mouse_event(interface, &format!("{prefix}enter"), node, -1, 0, old);
+                    self.fire(js::Target::Node(scripts::handle(node)), event);
+                }
+            }
+        }
+    }
+
+    /// A pointer or mouse event of `kind` at `target` (M26.5): bubbling,
+    /// cancelable and composed but for the enter and leave events; at the
+    /// pointer's point, on the page and from the target's padding edge;
+    /// with the buttons held, the modifier keys and `button`, which a
+    /// mouse event's move makes 0 and a pointer event's -1; `detail` the
+    /// press's count; the mouse's pointer, id 1 and primary, its pressure
+    /// a half while a button is held.
+    fn mouse_event(
+        &mut self,
+        interface: &'static str,
+        kind: &str,
+        target: NodeId,
+        button: i16,
+        detail: u32,
+        related: Option<NodeId>,
+    ) -> js::EventInit {
+        use js::Field::{Bool, Node, Number, String as Text, Window};
+        let (x, y) = self.pointer.unwrap_or_default();
+        let (ox, oy) = self.padding_offset(target, x, y);
+        let edge = kind.ends_with("enter") || kind.ends_with("leave");
+        let pointer = interface == "PointerEvent";
+        let button = if !pointer && button < 0 { 0 } else { button };
+        let m = self.modifiers;
+        let mut event = js::EventInit::new(interface, kind)
+            .with("bubbles", Bool(!edge))
+            .with("cancelable", Bool(!edge))
+            .with("composed", Bool(!edge))
+            .with("view", Window)
+            .with("detail", Number(f64::from(detail)))
+            .with("clientX", Number(f64::from(x)))
+            .with("clientY", Number(f64::from(y)))
+            .with("screenX", Number(f64::from(x)))
+            .with("screenY", Number(f64::from(y)))
+            .with("pageX", Number(f64::from(x)))
+            .with("pageY", Number(f64::from(y + self.shown.scroll_y)))
+            .with("offsetX", Number(f64::from(ox)))
+            .with("offsetY", Number(f64::from(oy)))
+            .with("button", Number(f64::from(button)))
+            .with("buttons", Number(f64::from(self.buttons)))
+            .with("shiftKey", Bool(m.shift))
+            .with("ctrlKey", Bool(m.ctrl))
+            .with("altKey", Bool(m.alt))
+            .with("metaKey", Bool(m.meta))
+            .with("relatedTarget", Node(related.map(scripts::handle)));
+        if pointer {
+            event = event
+                .with("pointerId", Number(1.0))
+                .with("pointerType", Text("mouse".to_owned()))
+                .with("isPrimary", Bool(true))
+                .with(
+                    "pressure",
+                    Number(if self.buttons != 0 { 0.5 } else { 0.0 }),
+                );
+        }
+        event
+    }
+
+    /// The point `(x, y)` from `node`'s padding edge: from its first box's,
+    /// in that box's coordinates, as the paint order places it; the
+    /// point itself when it has none.
+    fn padding_offset(&mut self, node: NodeId, x: f32, y: f32) -> (f32, f32) {
+        let (width, height) = self.viewport;
+        if width == 0 {
+            return (x, y);
+        }
+        let (scroll_y, offsets) = self.drawn_offsets();
+        let viewport = Viewport {
+            width: width as f32,
+            height: height as f32,
+            scroll_y,
+        };
+        let layout = self.layout(width as f32);
+        let mut points: Vec<(f32, f32)> = vec![(x, y)];
+        let mut passed = 0u32;
+        for step in paint_order(&layout.roots, viewport, &offsets) {
+            if passed > 0 {
+                match step {
+                    Step::PushGroup { .. } => passed += 1,
+                    Step::PopGroup => passed -= 1,
+                    _ => {}
+                }
+                continue;
+            }
+            match step {
+                Step::Box { fragment, rect, .. }
+                    if fragment.node == node && fragment.generated.is_none() =>
+                {
+                    let (px, py) = points[points.len() - 1];
+                    let padding = padding_box(fragment, rect);
+                    return (px - padding.x, py - padding.y);
+                }
+                Step::PushGroup { matrix, .. } => {
+                    let (px, py) = points[points.len() - 1];
+                    match matrix.inverse().and_then(|inverse| inverse.project(px, py)) {
+                        Some(inside) => points.push(inside),
+                        None => passed = 1,
+                    }
+                }
+                Step::PopGroup if points.len() > 1 => {
+                    points.pop();
+                }
+                _ => {}
+            }
+        }
+        (x, y)
+    }
+
+    /// The element and its element ancestors.
+    fn chain(&self, node: NodeId) -> Vec<NodeId> {
+        let document = &self.shown.document;
+        std::iter::once(node)
+            .chain(document.ancestors(node))
+            .filter(|&node| document.is_element(node))
+            .collect()
+    }
+
+    /// The nearest element that is an inclusive ancestor of both, where a
+    /// click goes (UI Events section 4.3.3).
+    fn common_ancestor(&self, a: NodeId, b: NodeId) -> Option<NodeId> {
+        let document = &self.shown.document;
+        if !document.contains(a) || !document.contains(b) {
+            return None;
+        }
+        let around_b = self.chain(b);
+        self.chain(a)
+            .into_iter()
+            .find(|node| around_b.contains(node))
+    }
+
+    /// Sets `flag` on the elements of `chain`, clearing it from those
+    /// that had it in the chain before: the active elements, the only
+    /// ones kept so.
+    fn set_flag(&mut self, flag: ElementState, chain: Vec<NodeId>) {
+        let old = std::mem::replace(&mut self.shown.active, chain);
+        let document = &mut self.shown.document;
+        for &node in old.iter().filter(|node| !self.shown.active.contains(node)) {
+            let _ = document.set_state(node, document.state(node).with(flag, false));
+        }
+        for &node in &self.shown.active {
+            let _ = document.set_state(node, document.state(node).with(flag, true));
+        }
+        let changes = self.shown.document.take_changes();
+        if !changes.is_empty() {
+            self.document_changed(changes);
+        }
+    }
+
+    /// The link `node` is in: the nearest `a` or `area` with an `href` at
+    /// or above it, and where it goes.
+    fn link_around(&self, node: NodeId) -> Option<Link> {
+        let document = &self.shown.document;
+        let (node, href) = std::iter::once(node)
+            .chain(document.ancestors(node))
+            .find_map(|node| {
+                matches!(document.tag(node), Some("a" | "area"))
+                    .then(|| document.attr(node, "href").map(|href| (node, href)))
+                    .flatten()
+            })?;
+        let url = self.shown.page.resolve(document, href)?;
+        Some(Link {
+            page: self.shown.page.id(),
+            node,
+            url,
+        })
+    }
+
+    /// A click's activation behaviour (HTML section 6.5) when no script
+    /// runs it: the link it is in is followed.
+    fn activate(&mut self, node: NodeId) {
+        if let Some(link) = self.link_around(node) {
+            self.follow_link(&link);
+        }
     }
 
     /// The hovered elements as the pointer and the page now stand: the
@@ -3789,6 +4261,15 @@ impl Engine {
     pub fn wheel(&mut self, x: f32, y: f32, dy: f32) {
         if !dy.is_finite() || dy == 0.0 {
             return;
+        }
+        // A `wheel` event first (M26.5): canceled, nothing scrolls.
+        if let Some(target) = self.pointer_at(x, y) {
+            let event = self
+                .mouse_event("WheelEvent", "wheel", target, 0, 0, None)
+                .with("deltaY", js::Field::Number(f64::from(dy)));
+            if self.fire(js::Target::Node(scripts::handle(target)), event) == Some(true) {
+                return;
+            }
         }
         for node in self.scroll_chain_at(x, y).into_iter().rev() {
             let max = self.element_max_scroll(node);

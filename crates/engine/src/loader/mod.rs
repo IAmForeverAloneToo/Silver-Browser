@@ -8,6 +8,8 @@ mod dom_tests;
 mod event_tests;
 #[cfg(test)]
 mod lifecycle_tests;
+#[cfg(test)]
+mod pointer_tests;
 mod pool;
 mod rules;
 #[cfg(test)]

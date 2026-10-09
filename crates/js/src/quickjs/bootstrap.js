@@ -5376,7 +5376,16 @@
         init.submitter = wrap(init.submitter);
       }
       const event = new known[1](type, dictionary(init, known[2], iface));
-      eventState(event).trusted = true;
+      const s = eventState(event);
+      s.trusted = true;
+      // A mouse event the engine makes knows its point on the page and
+      // from its target's padding edge (M26.5).
+      if (typeof init.pageX === "number") {
+        s.page = [init.pageX, init.pageY];
+      }
+      if (typeof init.offsetX === "number") {
+        s.offset = [init.offsetX, init.offsetY];
+      }
       if (handle === null) {
         // The window's `load` names the document its target.
         return dispatching(global, event, type === "load" ? theDocument() : undefined);

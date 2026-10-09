@@ -1780,7 +1780,7 @@ fn a_script_navigates_as_html_says_with_its_handling() {
         "/a" => Some(html("<p>a</p>")),
         "/b" => Some(html("<script>location.href = 'c';</script><p>b</p>")),
         "/c" => Some(html(
-            "<p>c</p><p><a id=hash href=\"javascript:location.hash = 'x'\">h</a></p>\
+            "<p>c</p><p><a id=hash href=\"javascript:void(location.hash = 'x')\">h</a></p>\
              <p><a id=replace href=\"javascript:location.replace('d')\">r</a></p>\
              <p><a id=bad href=\"javascript:try { location.href = 'http://[bad' } catch (e) \
              { console.log(e.name + ': ' + e.message) }\">b</a></p>\

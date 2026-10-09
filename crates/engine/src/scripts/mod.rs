@@ -662,20 +662,22 @@ impl Scripts {
     }
 
     /// Dispatches `event` at `target` as a task (M26): whether a listener
-    /// canceled it. A document with no realm yet makes one only if its
-    /// markup holds an event handler, there being no other listener.
+    /// canceled it, or `None` when nothing was dispatched, the document
+    /// having no realm: one makes a realm only if its markup holds an
+    /// event handler, there being no other listener. The caller does the
+    /// event's default actions then, as a click's activation.
     pub(crate) fn dispatch(
         &mut self,
         lent: &mut Lent<'_>,
         target: js::Target,
         event: js::EventInit,
-    ) -> bool {
+    ) -> Option<bool> {
         if self.realm.is_none()
             && (!has_handlers(lent.document, &mut self.handlers) || !self.ensure_realm())
         {
-            return false;
+            return None;
         }
-        self.enter(lent, &js::Task::Dispatch { target, event }, 0)
+        Some(self.enter(lent, &js::Task::Dispatch { target, event }, 0))
     }
 
     /// Whether an animation frame callback waits for the next frame.

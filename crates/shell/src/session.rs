@@ -42,6 +42,9 @@ pub(crate) enum Focus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Button {
     Left,
+    /// The middle button, or the wheel's.
+    Middle,
+    Right,
     Back,
     Forward,
     Other,
@@ -64,8 +67,9 @@ enum Held {
     Toolbar,
     /// The scrollbar's thumb, grabbed this far below its top.
     Thumb(f32),
-    /// A link: released on the same one, the press is a click.
-    Link(Box<Link>),
+    /// The scrollbar's track, which the press scrolled by a page.
+    Track,
+    /// The page, which was given the press (M26.5).
     Page,
 }
 
@@ -272,6 +276,12 @@ impl Session {
     /// The modifier keys held changed.
     pub(crate) fn modifiers(&mut self, mods: Modifiers) {
         self.mods = mods;
+        self.engine.set_modifiers(engine::Modifiers {
+            shift: mods.shift,
+            ctrl: mods.ctrl,
+            alt: mods.alt,
+            meta: mods.logo,
+        });
     }
 
     /// A key pressed, with the text it types, if any: a shortcut, or
@@ -336,6 +346,8 @@ impl Session {
         self.notice = None;
         match button {
             Button::Left => self.press_left(at),
+            Button::Middle => self.press_page(engine::Button::Auxiliary, 1),
+            Button::Right => self.press_page(engine::Button::Secondary, 1),
             Button::Back => self.engine.go_back(),
             Button::Forward => self.engine.go_forward(),
             Button::Other => {}
@@ -344,31 +356,46 @@ impl Session {
     }
 
     /// A mouse button released: a press and a release of the left
-    /// button on the same button of the toolbar, or the same link, are
-    /// a click.
+    /// button on the same button of the toolbar are a click; one on the
+    /// page is the page's (M26.5), which follows a link clicked.
     pub(crate) fn release(&mut self, button: Button) {
-        if button != Button::Left {
-            return;
-        }
         let (x, y) = self.pointer;
+        match button {
+            Button::Left => {}
+            Button::Middle => return self.release_page(engine::Button::Auxiliary, 1),
+            Button::Right => return self.release_page(engine::Button::Secondary, 1),
+            Button::Back | Button::Forward | Button::Other => return,
+        }
         match self.held.take() {
             Some(Held::Toolbar) => {
                 if let Some(action) = self.toolbar.release(x, y) {
                     self.act(action);
                 }
             }
-            Some(Held::Link(link)) => {
-                if y >= TOP
-                    && self
-                        .engine
-                        .link_at(x, y - TOP)
-                        .is_some_and(|under| under.node() == link.node())
-                {
-                    self.engine.follow_link(&link);
-                }
+            Some(Held::Page) => {
+                let count = self.last_press.as_ref().map_or(1, |press| press.count);
+                self.release_page(engine::Button::Primary, count);
+                return;
             }
-            Some(Held::Thumb(_) | Held::Page) | None => {}
+            Some(Held::Thumb(_) | Held::Track) | None => {}
         }
+        self.sync();
+        self.refresh_hover();
+    }
+
+    /// A button other than the left pressed over the page: the page's.
+    fn press_page(&mut self, button: engine::Button, count: u32) {
+        let (x, y) = self.pointer;
+        if self.inside && y >= TOP {
+            self.engine.pointer_down(x, y - TOP, button, count);
+        }
+    }
+
+    /// A button released over the page, or after a press on it: the
+    /// page's, its click followed by what it did.
+    fn release_page(&mut self, button: engine::Button, count: u32) {
+        let (x, y) = self.pointer;
+        self.engine.pointer_up(x, (y - TOP).max(0.0), button, count);
         self.sync();
         self.refresh_hover();
     }
@@ -581,15 +608,14 @@ impl Session {
             } else {
                 self.engine
                     .scroll_by(if y < bar.thumb_y { -page } else { page });
-                Held::Page
+                Held::Track
             });
             return;
         }
-        self.held = Some(
-            self.engine
-                .link_at(x, y)
-                .map_or(Held::Page, |link| Held::Link(Box::new(link))),
-        );
+        // The page takes the press (M26.5).
+        self.engine
+            .pointer_down(x, y, engine::Button::Primary, count);
+        self.held = Some(Held::Page);
     }
 
     /// The pointer moved with the thumb held: the thumb follows it.

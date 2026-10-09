@@ -390,6 +390,8 @@ impl ApplicationHandler<NetworkWake> for Browser {
             WindowEvent::MouseInput { state, button, .. } => {
                 let button = match button {
                     MouseButton::Left => Button::Left,
+                    MouseButton::Middle => Button::Middle,
+                    MouseButton::Right => Button::Right,
                     MouseButton::Back => Button::Back,
                     MouseButton::Forward => Button::Forward,
                     _ => Button::Other,

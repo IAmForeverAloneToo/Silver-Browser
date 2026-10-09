@@ -202,7 +202,8 @@ pub enum Target {
 /// An event the engine makes, as data: the interface it is an object of
 /// (`Event`, `MouseEvent`, ...), its type, and the members of that
 /// interface's dictionary it does not leave at their defaults, by name
-/// (`bubbles`, `cancelable`, `clientX`, ...).
+/// (`bubbles`, `cancelable`, `clientX`, ...); a mouse event's `pageX`,
+/// `pageY`, `offsetX` and `offsetY` too, which no dictionary has.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EventInit {
     pub interface: &'static str,
