@@ -24,6 +24,7 @@
   const $WeakRef = WeakRef;
   const $Proxy = Proxy;
   const $FinalizationRegistry = FinalizationRegistry;
+  const ReflectApply = Reflect.apply;
   const ReflectGet = Reflect.get;
   const ReflectSet = Reflect.set;
   const ReflectHas = Reflect.has;
@@ -31,6 +32,9 @@
   const ReflectDefineProperty = Reflect.defineProperty;
   const ReflectDeleteProperty = Reflect.deleteProperty;
   const ReflectGetOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
+  const ArraySplice = uncurry(Array.prototype.splice);
+  const StringIndexOf = uncurry(String.prototype.indexOf);
+  const FromCharCode = String.fromCharCode;
   const MapGet = uncurry(Map.prototype.get);
   const MapSet = uncurry(Map.prototype.set);
   const MapDelete = uncurry(Map.prototype.delete);
@@ -163,18 +167,59 @@
   // ---- Nodes and their objects --------------------------------------
 
   // One object per node while it lives: handle to a weak reference to
-  // it. When one is collected and no newer one has been made since,
-  // the host hears the handle is released, and may free the node once
-  // it is out of the tree.
+  // it, and to the object itself while the node is in the document, which
+  // holds it as the document holds its nodes (so that what a script set
+  // on it, its listeners and expandos, stays). When one out of the
+  // document is collected and no newer one has been made since, the host
+  // hears the handle is released, and may free the node once it is out
+  // of the tree.
   const objects = new $Map();
   const registry = new $FinalizationRegistry((handle) => {
-    const ref = MapGet(objects, handle);
-    if (ref !== undefined && WeakRefDeref(ref) !== undefined) {
+    const entry = MapGet(objects, handle);
+    if (entry !== undefined && WeakRefDeref(entry.ref) !== undefined) {
       return;
     }
     MapDelete(objects, handle);
     native.released(handle);
   });
+
+  // Holds or lets go of the objects of the nodes that came into the
+  // document or left it, as the host says.
+  function applyPins() {
+    const pins = native.takePins();
+    for (let i = 0; i < pins.length; i += 2) {
+      const entry = MapGet(objects, pins[i]);
+      if (entry === undefined) {
+        continue;
+      }
+      const object = WeakRefDeref(entry.ref);
+      entry.strong = pins[i + 1] && object !== undefined ? object : null;
+    }
+  }
+
+  // The natives that may move nodes into or out of the document: each
+  // call is followed by the pins it made.
+  const MOVING = [
+    "insert",
+    "remove",
+    "replace",
+    "setTextContent",
+    "setInnerHTML",
+    "setOuterHTML",
+    "insertAdjacentHTML",
+    "setTitle",
+    "write",
+  ];
+  for (let i = 0; i < MOVING.length; i++) {
+    const call = native[MOVING[i]];
+    native[MOVING[i]] = function (...args) {
+      try {
+        return ReflectApply(call, undefined, args);
+      } finally {
+        applyPins();
+      }
+    };
+  }
 
   // The object for the node `handle` names, made if it has none; null
   // for null.
@@ -182,23 +227,26 @@
     if (handle === null) {
       return null;
     }
-    const ref = MapGet(objects, handle);
-    if (ref !== undefined) {
-      const object = WeakRefDeref(ref);
+    const entry = MapGet(objects, handle);
+    if (entry !== undefined) {
+      const object = WeakRefDeref(entry.ref);
       if (object !== undefined) {
         return object;
       }
     }
-    const object = make(handle);
-    MapSet(objects, handle, new $WeakRef(object));
+    const answer = native.wrap(handle);
+    const object = make(handle, answer[0]);
+    MapSet(objects, handle, {
+      ref: new $WeakRef(object),
+      strong: answer[1] === "" ? null : object,
+    });
     Register(registry, object, handle);
     return object;
   }
 
   // A new object for a node, of the interface its name says. The host
   // hears it from `wrap`, and holds the node until it is released.
-  function make(handle) {
-    const name = native.wrap(handle);
+  function make(handle, name) {
     if (name === "#text") {
       return new Text(KEY, handle, 3, name);
     }
@@ -208,7 +256,68 @@
     return new (elementInterface(name))(KEY, handle, 1, name);
   }
 
-  class EventTarget {}
+  // An EventTarget keeps its listeners (DOM section 2.7), each a type,
+  // a callback and a capture flag, none twice; nothing calls them until
+  // events are dispatched (M26). The window's are kept apart: the global
+  // object is no EventTarget made by a constructor.
+  const windowListeners = [];
+  let listenersOf;
+
+  class EventTarget {
+    #listeners = [];
+
+    static {
+      listenersOf = (target) => {
+        if (typeof target === "object" && target !== null && #listeners in target) {
+          return target.#listeners;
+        }
+        if (target === global) {
+          return windowListeners;
+        }
+        throw illegalInvocation();
+      };
+    }
+
+    addEventListener(type, callback, options) {
+      const listeners = listenersOf(this);
+      need(arguments.length, 2, "addEventListener", "EventTarget");
+      if (callback === null || callback === undefined) {
+        return;
+      }
+      const name = str(type);
+      const capture = captureOf(options);
+      for (let i = 0; i < listeners.length; i++) {
+        const l = listeners[i];
+        if (l.type === name && l.callback === callback && l.capture === capture) {
+          return;
+        }
+      }
+      ArrayPush(listeners, { type: name, callback, capture });
+    }
+
+    removeEventListener(type, callback, options) {
+      const listeners = listenersOf(this);
+      need(arguments.length, 2, "removeEventListener", "EventTarget");
+      const name = str(type);
+      const capture = captureOf(options);
+      for (let i = 0; i < listeners.length; i++) {
+        const l = listeners[i];
+        if (l.type === name && l.callback === callback && l.capture === capture) {
+          ArraySplice(listeners, i, 1);
+          return;
+        }
+      }
+    }
+  }
+
+  // A listener's capture flag, from its options: a boolean, or an
+  // object's `capture`.
+  function captureOf(options) {
+    if (typeof options === "boolean") {
+      return options;
+    }
+    return typeof options === "object" && options !== null && !!options.capture;
+  }
 
   // The handle of `node`, which must be a Node; whether a value is one;
   // and a node's kind and name. Set from inside Node's body, where its
@@ -219,6 +328,9 @@
   let nameOf;
   let childList;
   let elementList;
+  let tokensOf;
+  let styleOf;
+  let datasetOf;
 
   class Node extends EventTarget {
     #handle;
@@ -226,9 +338,13 @@
     // which never change.
     #kind;
     #name;
-    // The `childNodes` and `children` collections, each made once.
+    // The `childNodes` and `children` collections, each made once; an
+    // element's `classList`, `style` and `dataset`, the same.
     #childNodes = null;
     #children = null;
+    #tokens = null;
+    #style = null;
+    #dataset = null;
 
     constructor(key, handle, kind, name) {
       if (key !== KEY) {
@@ -251,6 +367,24 @@
           node.#childNodes = collection(NodeList, node, () => native.children(handle), true);
         }
         return node.#childNodes;
+      };
+      tokensOf = (node) => {
+        if (node.#tokens === null) {
+          node.#tokens = tokenList(node, node.#handle, "class");
+        }
+        return node.#tokens;
+      };
+      styleOf = (node) => {
+        if (node.#style === null) {
+          node.#style = styleDeclaration(node, node.#handle);
+        }
+        return node.#style;
+      };
+      datasetOf = (node) => {
+        if (node.#dataset === null) {
+          node.#dataset = stringMap(node, node.#handle);
+        }
+        return node.#dataset;
       };
       elementList = (node) => {
         if (node.#children === null) {
@@ -939,6 +1073,31 @@
       setAttribute(self(this), "class", str(value), "className");
     }
 
+    get classList() {
+      self(this);
+      return tokensOf(this);
+    }
+
+    set classList(value) {
+      self(this);
+      tokensOf(this).value = value;
+    }
+
+    get style() {
+      self(this);
+      return styleOf(this);
+    }
+
+    set style(value) {
+      self(this);
+      styleOf(this).cssText = value;
+    }
+
+    get dataset() {
+      self(this);
+      return datasetOf(this);
+    }
+
     getAttribute(name) {
       const handle = self(this);
       need(arguments.length, 1, "getAttribute", "Element");
@@ -1534,6 +1693,675 @@
     configurable: true,
   });
 
+  // ---- DOMTokenList (DOM section 7.1) ---------------------------------
+
+  // Whether `c`, a code unit, is ASCII white space.
+  function isSpace(c) {
+    return c === 9 || c === 10 || c === 12 || c === 13 || c === 32;
+  }
+
+  // The DOM's ordered set parser: the tokens of `text` between ASCII
+  // white space, each once, in order.
+  function orderedSet(text) {
+    const tokens = [];
+    let token = "";
+    for (let i = 0; i <= text.length; i++) {
+      const c = i < text.length ? CharCodeAt(text, i) : 32;
+      if (isSpace(c)) {
+        if (token !== "" && !includesString(tokens, token)) {
+          ArrayPush(tokens, token);
+        }
+        token = "";
+      } else {
+        token += text[i];
+      }
+    }
+    return tokens;
+  }
+
+  function includesString(list, value) {
+    for (let i = 0; i < list.length; i++) {
+      if (list[i] === value) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // A token list's state: its element and attribute.
+  const tokenLists = new $WeakMap();
+
+  function tokenList(owner, handle, attribute) {
+    const target = new DOMTokenList(KEY);
+    const state = { owner, handle, attribute };
+    const proxy = new $Proxy(target, tokenHandlers);
+    WeakMapSet(tokenLists, proxy, state);
+    WeakMapSet(tokenLists, target, state);
+    return proxy;
+  }
+
+  function tokenState(list) {
+    const state = WeakMapGet(tokenLists, list);
+    if (state === undefined) {
+      throw illegalInvocation();
+    }
+    return state;
+  }
+
+  function tokensIn(state) {
+    const value = native.attribute(state.handle, state.attribute);
+    return value === null ? [] : orderedSet(value);
+  }
+
+  // The DOM's update steps: the attribute set to the tokens, unless it
+  // is absent and there are none.
+  function updateTokens(state, tokens, method) {
+    if (tokens.length === 0 && native.attribute(state.handle, state.attribute) === null) {
+      return;
+    }
+    let text = "";
+    for (let i = 0; i < tokens.length; i++) {
+      text += (i === 0 ? "" : " ") + tokens[i];
+    }
+    setAttribute(state.handle, state.attribute, text, method);
+  }
+
+  // A token given to add, remove, toggle or replace: not empty, and
+  // without white space.
+  function checkToken(value, method) {
+    const token = str(value);
+    if (token === "") {
+      throw domError("SyntaxError", "The token provided must not be empty.", method, "DOMTokenList");
+    }
+    for (let i = 0; i < token.length; i++) {
+      if (isSpace(CharCodeAt(token, i))) {
+        throw domError(
+          "InvalidCharacterError",
+          "The token provided ('" + token + "') contains HTML space characters, which are not " +
+            "valid in tokens.",
+          method,
+          "DOMTokenList",
+        );
+      }
+    }
+    return token;
+  }
+
+  class DOMTokenList {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("DOMTokenList");
+      }
+    }
+
+    get length() {
+      return tokensIn(tokenState(this)).length;
+    }
+
+    item(index) {
+      const state = tokenState(this);
+      need(arguments.length, 1, "item", "DOMTokenList");
+      const tokens = tokensIn(state);
+      const i = unsigned(index);
+      return i < tokens.length ? tokens[i] : null;
+    }
+
+    contains(token) {
+      const state = tokenState(this);
+      need(arguments.length, 1, "contains", "DOMTokenList");
+      return includesString(tokensIn(state), str(token));
+    }
+
+    add(...tokens) {
+      const state = tokenState(this);
+      const checked = [];
+      for (let i = 0; i < tokens.length; i++) {
+        ArrayPush(checked, checkToken(tokens[i], "add"));
+      }
+      const set = tokensIn(state);
+      for (let i = 0; i < checked.length; i++) {
+        if (!includesString(set, checked[i])) {
+          ArrayPush(set, checked[i]);
+        }
+      }
+      updateTokens(state, set, "add");
+    }
+
+    remove(...tokens) {
+      const state = tokenState(this);
+      const checked = [];
+      for (let i = 0; i < tokens.length; i++) {
+        ArrayPush(checked, checkToken(tokens[i], "remove"));
+      }
+      const set = tokensIn(state);
+      const kept = [];
+      for (let i = 0; i < set.length; i++) {
+        if (!includesString(checked, set[i])) {
+          ArrayPush(kept, set[i]);
+        }
+      }
+      updateTokens(state, kept, "remove");
+    }
+
+    toggle(token, force) {
+      const state = tokenState(this);
+      need(arguments.length, 1, "toggle", "DOMTokenList");
+      const name = checkToken(token, "toggle");
+      const set = tokensIn(state);
+      if (includesString(set, name)) {
+        if (force === undefined || !force) {
+          const kept = [];
+          for (let i = 0; i < set.length; i++) {
+            if (set[i] !== name) {
+              ArrayPush(kept, set[i]);
+            }
+          }
+          updateTokens(state, kept, "toggle");
+          return false;
+        }
+        return true;
+      }
+      if (force === undefined || force) {
+        ArrayPush(set, name);
+        updateTokens(state, set, "toggle");
+        return true;
+      }
+      return false;
+    }
+
+    replace(token, newToken) {
+      const state = tokenState(this);
+      need(arguments.length, 2, "replace", "DOMTokenList");
+      const old = checkToken(token, "replace");
+      const made = checkToken(newToken, "replace");
+      const set = tokensIn(state);
+      if (!includesString(set, old)) {
+        return false;
+      }
+      const result = [];
+      for (let i = 0; i < set.length; i++) {
+        const t = set[i] === old ? made : set[i];
+        if (!includesString(result, t)) {
+          ArrayPush(result, t);
+        }
+      }
+      updateTokens(state, result, "replace");
+      return true;
+    }
+
+    supports(token) {
+      tokenState(this);
+      throw new $TypeError(
+        prefix("supports", "DOMTokenList") + "DOMTokenList has no supported tokens.",
+      );
+    }
+
+    get value() {
+      const state = tokenState(this);
+      const value = native.attribute(state.handle, state.attribute);
+      return value === null ? "" : value;
+    }
+
+    set value(text) {
+      const state = tokenState(this);
+      setAttribute(state.handle, state.attribute, str(text), "value");
+    }
+
+    toString() {
+      return this.value;
+    }
+  }
+  DOMTokenList.prototype.forEach = ArrayForEach;
+  DOMTokenList.prototype.entries = ArrayEntries;
+  DOMTokenList.prototype.keys = ArrayKeys;
+  DOMTokenList.prototype.values = ArrayValues;
+  expose(DOMTokenList, "DOMTokenList");
+  defineProperty(DOMTokenList.prototype, iteratorSymbol, {
+    value: ArrayValues,
+    writable: true,
+    configurable: true,
+  });
+
+  // A token list's indexed properties, read through each access.
+  const tokenHandlers = indexedHandlers(
+    (target) => tokensIn(WeakMapGet(tokenLists, target)),
+  );
+
+  // Proxy handlers for an object of `target`'s with indexed properties,
+  // the items `items(target)` gives, read-only.
+  function indexedHandlers(items) {
+    return {
+      get(target, key, receiver) {
+        const i = arrayIndex(key);
+        if (i >= 0) {
+          const list = items(target);
+          return i < list.length ? list[i] : undefined;
+        }
+        return ReflectGet(target, key, receiver);
+      },
+      has(target, key) {
+        const i = arrayIndex(key);
+        return i >= 0 ? i < items(target).length : ReflectHas(target, key);
+      },
+      ownKeys(target) {
+        const keys = [];
+        const count = items(target).length;
+        for (let i = 0; i < count; i++) {
+          ArrayPush(keys, $String(i));
+        }
+        const own = ReflectOwnKeys(target);
+        for (let i = 0; i < own.length; i++) {
+          ArrayPush(keys, own[i]);
+        }
+        return keys;
+      },
+      getOwnPropertyDescriptor(target, key) {
+        const i = arrayIndex(key);
+        if (i >= 0) {
+          const list = items(target);
+          if (i >= list.length) {
+            return undefined;
+          }
+          return { value: list[i], writable: false, enumerable: true, configurable: true };
+        }
+        return ReflectGetOwnPropertyDescriptor(target, key);
+      },
+      set(target, key, value) {
+        return arrayIndex(key) >= 0 ? false : ReflectSet(target, key, value);
+      },
+      defineProperty(target, key, desc) {
+        return arrayIndex(key) >= 0 ? false : ReflectDefineProperty(target, key, desc);
+      },
+      deleteProperty(target, key) {
+        const i = arrayIndex(key);
+        return i >= 0 ? i >= items(target).length : ReflectDeleteProperty(target, key);
+      },
+    };
+  }
+
+  // ---- CSSStyleDeclaration (CSSOM section 6.6) -------------------------
+
+  // A declaration block's state: the element whose `style` attribute it
+  // reads and writes.
+  const declarationBlocks = new $WeakMap();
+
+  function styleDeclaration(owner, handle) {
+    const target = new CSSStyleDeclaration(KEY);
+    const state = { owner, handle };
+    const proxy = new $Proxy(target, styleHandlers);
+    WeakMapSet(declarationBlocks, proxy, state);
+    WeakMapSet(declarationBlocks, target, state);
+    return proxy;
+  }
+
+  function blockState(block) {
+    const state = WeakMapGet(declarationBlocks, block);
+    if (state === undefined) {
+      throw illegalInvocation();
+    }
+    return state;
+  }
+
+  // The block's declarations: name, value, priority, three in a row.
+  function declarationsOf(state) {
+    const text = native.attribute(state.handle, "style");
+    return text === null ? [] : native.parseDeclarations(text);
+  }
+
+  function writeDeclarations(state, flat, method) {
+    let text = "";
+    for (let i = 0; i < flat.length; i += 3) {
+      text += (i === 0 ? "" : " ") + flat[i] + ": " + flat[i + 1];
+      text += (flat[i + 2] === "" ? "" : " !important") + ";";
+    }
+    setAttribute(state.handle, "style", text, method);
+  }
+
+  // A property's name as a block keeps it: lowercase, but a custom one.
+  function propertyName(name) {
+    return name.length > 1 && name[0] === "-" && name[1] === "-" ? name : ToLowerCase(name);
+  }
+
+  function findDeclaration(flat, name) {
+    for (let i = 0; i < flat.length; i += 3) {
+      if (flat[i] === name) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  class CSSStyleDeclaration {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("CSSStyleDeclaration");
+      }
+    }
+
+    get cssText() {
+      const flat = declarationsOf(blockState(this));
+      let text = "";
+      for (let i = 0; i < flat.length; i += 3) {
+        text += (i === 0 ? "" : " ") + flat[i] + ": " + flat[i + 1];
+        text += (flat[i + 2] === "" ? "" : " !important") + ";";
+      }
+      return text;
+    }
+
+    set cssText(value) {
+      const state = blockState(this);
+      writeDeclarations(state, native.parseDeclarations(strOrEmpty(value)), "cssText");
+    }
+
+    get length() {
+      return declarationsOf(blockState(this)).length / 3;
+    }
+
+    item(index) {
+      const state = blockState(this);
+      need(arguments.length, 1, "item", "CSSStyleDeclaration");
+      const flat = declarationsOf(state);
+      const i = unsigned(index) * 3;
+      return i < flat.length ? flat[i] : "";
+    }
+
+    getPropertyValue(property) {
+      const state = blockState(this);
+      need(arguments.length, 1, "getPropertyValue", "CSSStyleDeclaration");
+      const flat = declarationsOf(state);
+      const at = findDeclaration(flat, lookupName(str(property)));
+      return at < 0 ? "" : flat[at + 1];
+    }
+
+    getPropertyPriority(property) {
+      const state = blockState(this);
+      need(arguments.length, 1, "getPropertyPriority", "CSSStyleDeclaration");
+      const flat = declarationsOf(state);
+      const at = findDeclaration(flat, lookupName(str(property)));
+      return at < 0 ? "" : flat[at + 2];
+    }
+
+    setProperty(property, value, priority) {
+      const state = blockState(this);
+      need(arguments.length, 2, "setProperty", "CSSStyleDeclaration");
+      setProperty(state, str(property), strOrEmpty(value), priority, "setProperty");
+    }
+
+    removeProperty(property) {
+      const state = blockState(this);
+      need(arguments.length, 1, "removeProperty", "CSSStyleDeclaration");
+      return removeProperty(state, lookupName(str(property)));
+    }
+
+    get cssFloat() {
+      return this.getPropertyValue("float");
+    }
+
+    set cssFloat(value) {
+      setProperty(blockState(this), "float", strOrEmpty(value), "", "cssFloat");
+    }
+  }
+  expose(CSSStyleDeclaration, "CSSStyleDeclaration");
+
+  // CSSOM's setProperty: an unknown property, a bad priority or an
+  // invalid value changes nothing; the empty value removes it.
+  function setProperty(state, property, value, priority, method) {
+    const name = canonicalProperty(property);
+    if (name === null) {
+      return;
+    }
+    if (value === "") {
+      removeProperty(state, name);
+      return;
+    }
+    const wanted = priority === undefined ? "" : ToLowerCase(str(priority));
+    if (wanted !== "" && wanted !== "important") {
+      return;
+    }
+    if (!native.cssValid(name, value)) {
+      return;
+    }
+    const flat = declarationsOf(state);
+    const at = findDeclaration(flat, name);
+    const trimmed = trimSpace(value);
+    if (at < 0) {
+      ArrayPush(flat, name, trimmed, wanted);
+    } else {
+      flat[at + 1] = trimmed;
+      flat[at + 2] = wanted;
+    }
+    writeDeclarations(state, flat, method);
+  }
+
+  function removeProperty(state, name) {
+    const flat = declarationsOf(state);
+    const at = findDeclaration(flat, name);
+    if (at < 0) {
+      return "";
+    }
+    const old = flat[at + 1];
+    ArraySplice(flat, at, 3);
+    writeDeclarations(state, flat, "removeProperty");
+    return old;
+  }
+
+  function trimSpace(text) {
+    let start = 0;
+    let end = text.length;
+    while (start < end && isSpace(CharCodeAt(text, start))) {
+      start++;
+    }
+    while (end > start && isSpace(CharCodeAt(text, end - 1))) {
+      end--;
+    }
+    return StringSlice(text, start, end);
+  }
+
+  // The name the cascade knows a property by, or null, asked once a
+  // name.
+  const canonicalNames = new $Map();
+  function canonicalProperty(name) {
+    let canonical = MapGet(canonicalNames, name);
+    if (canonical === undefined) {
+      canonical = native.cssCanonical(name);
+      MapSet(canonicalNames, name, canonical);
+    }
+    return canonical;
+  }
+
+  // A name a block's declarations are looked up by: the canonical one,
+  // or, for a property the cascade does not know, the name lowercased,
+  // which matches none.
+  function lookupName(name) {
+    const canonical = canonicalProperty(name);
+    return canonical === null ? propertyName(name) : canonical;
+  }
+
+  // The property a name in camel case stands for (CSSOM's IDL
+  // attributes): `backgroundColor` for `background-color`, `webkitFoo`
+  // and `WebkitFoo` for `-webkit-foo`; a dashed name for itself.
+  function dashed(key) {
+    if (StringIndexOf(key, "-") >= 0) {
+      return ToLowerCase(key);
+    }
+    let name = "";
+    for (let i = 0; i < key.length; i++) {
+      const c = CharCodeAt(key, i);
+      if (c >= 65 && c <= 90) {
+        name += "-" + FromCharCode(c + 32);
+      } else {
+        name += key[i];
+      }
+    }
+    if (StringIndexOf(name, "webkit-") === 0) {
+      return "-" + name;
+    }
+    return name;
+  }
+
+  // The indexed, camel-cased and dashed properties of a declaration
+  // block: its properties' names by index, and each property the cascade
+  // knows by name.
+  const styleHandlers = {
+    get(target, key, receiver) {
+      const state = WeakMapGet(declarationBlocks, target);
+      const i = arrayIndex(key);
+      if (i >= 0) {
+        const flat = declarationsOf(state);
+        return i * 3 < flat.length ? flat[i * 3] : undefined;
+      }
+      if (typeof key !== "string" || ReflectHas(target, key)) {
+        return ReflectGet(target, key, receiver);
+      }
+      const name = canonicalProperty(dashed(key));
+      if (name === null) {
+        return ReflectGet(target, key, receiver);
+      }
+      const flat = declarationsOf(state);
+      const at = findDeclaration(flat, name);
+      return at < 0 ? "" : flat[at + 1];
+    },
+    set(target, key, value, receiver) {
+      if (typeof key === "string" && !ReflectHas(target, key) && arrayIndex(key) < 0) {
+        const name = dashed(key);
+        if (canonicalProperty(name) !== null) {
+          setProperty(WeakMapGet(declarationBlocks, target), name, strOrEmpty(value), "", key);
+          return true;
+        }
+      }
+      return ReflectSet(target, key, value, receiver);
+    },
+    has(target, key) {
+      if (typeof key === "string" && !ReflectHas(target, key) && arrayIndex(key) < 0) {
+        return canonicalProperty(dashed(key)) !== null;
+      }
+      return ReflectHas(target, key);
+    },
+  };
+
+  // ---- DOMStringMap (HTML section 3.2.6.6) ------------------------------
+
+  const stringMaps = new $WeakMap();
+
+  // A map holds its element, as long as it lives.
+  const mapOwners = new $WeakMap();
+
+  function stringMap(owner, handle) {
+    const target = new DOMStringMap(KEY);
+    WeakMapSet(stringMaps, target, handle);
+    WeakMapSet(mapOwners, target, owner);
+    return new $Proxy(target, stringMapHandlers);
+  }
+
+  class DOMStringMap {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("DOMStringMap");
+      }
+    }
+  }
+  expose(DOMStringMap, "DOMStringMap");
+
+  // The `data-` attribute a name stands for: each ASCII capital made a
+  // hyphen and its lowercase.
+  function dataAttribute(name) {
+    let attribute = "data-";
+    for (let i = 0; i < name.length; i++) {
+      const c = CharCodeAt(name, i);
+      attribute += c >= 65 && c <= 90 ? "-" + FromCharCode(c + 32) : name[i];
+    }
+    return attribute;
+  }
+
+  // The name a `data-` attribute stands for, or null for one with an
+  // ASCII capital: each hyphen before a lowercase letter dropped and the
+  // letter made capital.
+  function dataName(attribute) {
+    if (StringIndexOf(attribute, "data-") !== 0) {
+      return null;
+    }
+    let name = "";
+    for (let i = 5; i < attribute.length; i++) {
+      const c = CharCodeAt(attribute, i);
+      if (c >= 65 && c <= 90) {
+        return null;
+      }
+      const next = i + 1 < attribute.length ? CharCodeAt(attribute, i + 1) : 0;
+      if (c === 45 && next >= 97 && next <= 122) {
+        name += FromCharCode(next - 32);
+        i++;
+      } else {
+        name += attribute[i];
+      }
+    }
+    return name;
+  }
+
+  const stringMapHandlers = {
+    get(target, key, receiver) {
+      if (typeof key !== "string" || ReflectHas(target, key)) {
+        return ReflectGet(target, key, receiver);
+      }
+      const value = native.attribute(WeakMapGet(stringMaps, target), dataAttribute(key));
+      return value === null ? undefined : value;
+    },
+    set(target, key, value, receiver) {
+      if (typeof key !== "string") {
+        return ReflectSet(target, key, value, receiver);
+      }
+      for (let i = 0; i + 1 < key.length; i++) {
+        const next = CharCodeAt(key, i + 1);
+        if (key[i] === "-" && next >= 97 && next <= 122) {
+          throw new $DOMException(
+            "Failed to set a named property '" + key + "' on 'DOMStringMap': '" + key +
+              "' is not a valid property name.",
+            "SyntaxError",
+          );
+        }
+      }
+      const attribute = dataAttribute(key);
+      if (!validAttributeName(attribute)) {
+        throw badAttributeName(attribute, "setAttribute");
+      }
+      setAttribute(WeakMapGet(stringMaps, target), attribute, str(value), "setAttribute");
+      return true;
+    },
+    deleteProperty(target, key) {
+      if (typeof key !== "string") {
+        return ReflectDeleteProperty(target, key);
+      }
+      native.removeAttribute(WeakMapGet(stringMaps, target), dataAttribute(key));
+      return true;
+    },
+    has(target, key) {
+      if (typeof key !== "string") {
+        return ReflectHas(target, key);
+      }
+      return native.attribute(WeakMapGet(stringMaps, target), dataAttribute(key)) !== null;
+    },
+    ownKeys(target) {
+      const names = native.attributeNames(WeakMapGet(stringMaps, target));
+      const keys = [];
+      for (let i = 0; i < names.length; i++) {
+        const name = dataName(names[i]);
+        if (name !== null) {
+          ArrayPush(keys, name);
+        }
+      }
+      return keys;
+    },
+    getOwnPropertyDescriptor(target, key) {
+      if (typeof key !== "string") {
+        return ReflectGetOwnPropertyDescriptor(target, key);
+      }
+      const value = native.attribute(WeakMapGet(stringMaps, target), dataAttribute(key));
+      if (value === null) {
+        return undefined;
+      }
+      return { value, writable: true, enumerable: true, configurable: true };
+    },
+  };
+
   // HTML's element interfaces (HTML section 3.2.2 and each element's
   // definition): the interface each tag's elements are objects of.
   const interfaces = new $Map();
@@ -1666,6 +2494,260 @@
     },
     [MapGet(interfaces, "script").prototype],
   );
+
+  // ---- Reflected attributes (HTML section 2.6.1) ------------------------
+
+  // HTML's rules for parsing integers: leading white space, a sign, and
+  // the digits; null when there are none.
+  function parseInteger(text, signed) {
+    let i = 0;
+    while (i < text.length && isSpace(CharCodeAt(text, i))) {
+      i++;
+    }
+    let sign = 1;
+    if (i < text.length && (text[i] === "-" || text[i] === "+")) {
+      if (text[i] === "-") {
+        if (!signed) {
+          return null;
+        }
+        sign = -1;
+      }
+      i++;
+    }
+    let value = 0;
+    let digits = 0;
+    while (i < text.length) {
+      const c = CharCodeAt(text, i);
+      if (c < 48 || c > 57) {
+        break;
+      }
+      value = value * 10 + (c - 48);
+      digits++;
+      i++;
+    }
+    return digits === 0 ? null : sign * value;
+  }
+
+  // Defines `property` on `prototype` reflecting the content attribute
+  // `attribute`, of `kind`: a string, a URL resolved against the base
+  // URL, a boolean, an unsigned or signed number with `fallback`, or the
+  // enumerated `dir`.
+  function reflect(prototype, property, attribute, kind, fallback) {
+    defineProperty(prototype, property, {
+      get() {
+        const value = native.attribute(self(this), attribute);
+        switch (kind) {
+          case "boolean":
+            return value !== null;
+          case "url": {
+            if (value === null) {
+              if (fallback === "document") {
+                const url = native.documentUrl();
+                return url === null ? "" : url;
+              }
+              return "";
+            }
+            const url = native.resolveUrl(value);
+            return url === null ? value : url;
+          }
+          case "unsigned":
+          case "long": {
+            const n = value === null ? null : parseInteger(value, kind === "long");
+            if (n === null || n > 2147483647 || n < -2147483648) {
+              return fallback;
+            }
+            return n;
+          }
+          case "dir": {
+            const lower = value === null ? "" : ToLowerCase(value);
+            return lower === "ltr" || lower === "rtl" || lower === "auto" ? lower : "";
+          }
+          default:
+            return value === null ? "" : value;
+        }
+      },
+      set(value) {
+        const handle = self(this);
+        switch (kind) {
+          case "boolean":
+            if (value) {
+              setAttribute(handle, attribute, "", property);
+            } else {
+              native.removeAttribute(handle, attribute);
+            }
+            return;
+          case "unsigned": {
+            const n = value >>> 0;
+            setAttribute(handle, attribute, $String(n <= 2147483647 ? n : fallback), property);
+            return;
+          }
+          case "long":
+            setAttribute(handle, attribute, $String(value | 0), property);
+            return;
+          default:
+            setAttribute(handle, attribute, str(value), property);
+        }
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  }
+
+  // What each interface reflects: [property, attribute, kind, fallback].
+  const REFLECTED = [
+    ["HTMLElement", [
+      ["title", "title", "string"],
+      ["lang", "lang", "string"],
+      ["dir", "dir", "dir"],
+      ["hidden", "hidden", "boolean"],
+      ["inert", "inert", "boolean"],
+      ["accessKey", "accesskey", "string"],
+    ]],
+    ["HTMLAnchorElement", [
+      ["href", "href", "url"],
+      ["target", "target", "string"],
+      ["download", "download", "string"],
+      ["rel", "rel", "string"],
+      ["hreflang", "hreflang", "string"],
+      ["type", "type", "string"],
+    ]],
+    ["HTMLAreaElement", [
+      ["href", "href", "url"],
+      ["alt", "alt", "string"],
+      ["target", "target", "string"],
+      ["rel", "rel", "string"],
+      ["coords", "coords", "string"],
+      ["shape", "shape", "string"],
+    ]],
+    ["HTMLLinkElement", [
+      ["href", "href", "url"],
+      ["rel", "rel", "string"],
+      ["media", "media", "string"],
+      ["type", "type", "string"],
+      ["hreflang", "hreflang", "string"],
+      ["disabled", "disabled", "boolean"],
+    ]],
+    ["HTMLImageElement", [
+      ["src", "src", "url"],
+      ["alt", "alt", "string"],
+      ["srcset", "srcset", "string"],
+      ["sizes", "sizes", "string"],
+      ["useMap", "usemap", "string"],
+      ["isMap", "ismap", "boolean"],
+      ["width", "width", "unsigned", 0],
+      ["height", "height", "unsigned", 0],
+    ]],
+    ["HTMLScriptElement", [
+      ["src", "src", "url"],
+      ["type", "type", "string"],
+      ["charset", "charset", "string"],
+      ["defer", "defer", "boolean"],
+      ["noModule", "nomodule", "boolean"],
+    ]],
+    ["HTMLIFrameElement", [
+      ["src", "src", "url"],
+      ["name", "name", "string"],
+      ["width", "width", "string"],
+      ["height", "height", "string"],
+    ]],
+    ["HTMLMediaElement", [
+      ["src", "src", "url"],
+      ["autoplay", "autoplay", "boolean"],
+      ["loop", "loop", "boolean"],
+      ["controls", "controls", "boolean"],
+    ]],
+    ["HTMLVideoElement", [
+      ["poster", "poster", "url"],
+      ["width", "width", "unsigned", 0],
+      ["height", "height", "unsigned", 0],
+    ]],
+    ["HTMLCanvasElement", [
+      ["width", "width", "unsigned", 300],
+      ["height", "height", "unsigned", 150],
+    ]],
+    ["HTMLFormElement", [
+      ["action", "action", "url", "document"],
+      ["name", "name", "string"],
+      ["target", "target", "string"],
+      ["noValidate", "novalidate", "boolean"],
+    ]],
+    ["HTMLInputElement", [
+      ["name", "name", "string"],
+      ["placeholder", "placeholder", "string"],
+      ["defaultValue", "value", "string"],
+      ["disabled", "disabled", "boolean"],
+      ["required", "required", "boolean"],
+      ["readOnly", "readonly", "boolean"],
+      ["multiple", "multiple", "boolean"],
+      ["autofocus", "autofocus", "boolean"],
+    ]],
+    ["HTMLButtonElement", [
+      ["name", "name", "string"],
+      ["value", "value", "string"],
+      ["disabled", "disabled", "boolean"],
+    ]],
+    ["HTMLSelectElement", [
+      ["name", "name", "string"],
+      ["disabled", "disabled", "boolean"],
+      ["required", "required", "boolean"],
+      ["multiple", "multiple", "boolean"],
+    ]],
+    ["HTMLTextAreaElement", [
+      ["name", "name", "string"],
+      ["placeholder", "placeholder", "string"],
+      ["disabled", "disabled", "boolean"],
+      ["required", "required", "boolean"],
+      ["readOnly", "readonly", "boolean"],
+    ]],
+    ["HTMLOptionElement", [
+      ["disabled", "disabled", "boolean"],
+      ["label", "label", "string"],
+    ]],
+    ["HTMLMetaElement", [
+      ["name", "name", "string"],
+      ["content", "content", "string"],
+      ["httpEquiv", "http-equiv", "string"],
+    ]],
+    ["HTMLStyleElement", [
+      ["media", "media", "string"],
+    ]],
+    ["HTMLLabelElement", [
+      ["htmlFor", "for", "string"],
+    ]],
+    ["HTMLOListElement", [
+      ["start", "start", "long", 1],
+      ["reversed", "reversed", "boolean"],
+      ["type", "type", "string"],
+    ]],
+    ["HTMLLIElement", [
+      ["value", "value", "long", 0],
+    ]],
+    ["HTMLTableCellElement", [
+      ["colSpan", "colspan", "unsigned", 1],
+      ["rowSpan", "rowspan", "unsigned", 1],
+    ]],
+    ["HTMLTimeElement", [
+      ["dateTime", "datetime", "string"],
+    ]],
+    ["HTMLDataElement", [
+      ["value", "value", "string"],
+    ]],
+    ["HTMLQuoteElement", [
+      ["cite", "cite", "url"],
+    ]],
+    ["HTMLModElement", [
+      ["cite", "cite", "url"],
+      ["dateTime", "datetime", "string"],
+    ]],
+  ];
+  for (let i = 0; i < REFLECTED.length; i++) {
+    const iface = global[REFLECTED[i][0]];
+    const members = REFLECTED[i][1];
+    for (let j = 0; j < members.length; j++) {
+      const m = members[j];
+      reflect(iface.prototype, m[0], m[1], m[2], m[3]);
+    }
+  }
 
   // The tags HTML defines whose elements are plain HTMLElements.
   const PLAIN = [

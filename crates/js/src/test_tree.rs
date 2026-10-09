@@ -131,11 +131,13 @@ impl Tree {
                 let node = self.node(h)?;
                 self.exposed.insert(node as u64);
                 let n = &self.nodes[node];
-                Answer::String(match n.kind {
+                let name = match n.kind {
                     1 => n.tag.clone(),
                     3 => "#text".to_owned(),
                     _ => "#document".to_owned(),
-                })
+                };
+                // The tests' tree holds no node's object: each is weak.
+                Answer::Strings(vec![name, String::new()])
             }
             Call::Children(h) => {
                 let node = self.node(h)?;
@@ -143,6 +145,7 @@ impl Tree {
                 Answer::Nodes(children.map(|&c| Handle(c as u64)).collect())
             }
             Call::Version => Answer::Number(0.0),
+            Call::TakePins => Answer::Pins(Vec::new()),
             Call::Kind(h) => Answer::Number(f64::from(self.nodes[self.node(h)?].kind)),
             Call::Tag(h) => Answer::String(self.nodes[self.node(h)?].tag.clone()),
             Call::Parent(h) => {

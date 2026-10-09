@@ -37,8 +37,14 @@ pub enum Call {
     Document,
     /// The bindings make an object for the node, which the host then
     /// holds until it is released: the node's name, its local name for
-    /// an element, `#text` or `#document`.
+    /// an element, `#text` or `#document`, and `connected` or empty, as
+    /// two strings.
     Wrap(Handle),
+    /// The nodes scripts hold whose place in the document changed since
+    /// this was last asked, each with whether it is now in the document:
+    /// the bindings hold the object of a node in the document as the
+    /// document does, and let go of it when it leaves.
+    TakePins,
     /// The node's `nodeType`: 1 for an element, 3 for text, 9 for the
     /// document.
     Kind(Handle),
@@ -166,6 +172,21 @@ pub enum Call {
     ForceAsync(Handle),
     /// Sets a script element's "force async" flag (its `async` setter).
     SetForceAsync(Handle, bool),
+    /// The declarations of a declaration block's text that the cascade
+    /// would take, as name, value and `important` or empty, each three in
+    /// a row: what a `style` object reads.
+    ParseDeclarations(String),
+    /// The name the cascade knows a property by: an alias's property, a
+    /// name in any case lowercased, a custom property's as it is; `None`
+    /// for one it does not know.
+    CssCanonical(String),
+    /// Whether a value is valid for a property.
+    CssValid(String, String),
+    /// A URL parsed against the document's base URL, or `None` when it
+    /// does not parse (a URL-reflecting attribute's getter).
+    ResolveUrl(String),
+    /// The document's URL, if it has one.
+    DocumentUrl,
     /// The script holds no object for the node any longer.
     Released(Handle),
 }
@@ -184,6 +205,8 @@ pub enum Answer {
     /// A string, or `null`.
     MaybeString(Option<String>),
     Strings(Vec<String>),
+    /// Nodes, each with a flag.
+    Pins(Vec<(Handle, bool)>),
 }
 
 /// Why a call failed: the exception the script gets, a `DOMException`

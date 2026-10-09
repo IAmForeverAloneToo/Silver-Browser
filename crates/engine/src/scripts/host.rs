@@ -9,6 +9,7 @@ use dom::{Document, MutationError, NodeData, NodeId};
 use js::{Answer, Call, ConsoleLevel, DomError, Handle, NestedScript, ScriptError, ScriptingHost};
 use style::selector_matching::{Matcher, SelectorList};
 
+use super::cssom;
 use super::{
     ConsoleEntry, How, Lent, MAX_SCRIPT_NESTING, Place, Prepared, ReadyState, Source, Wanted, cut,
     document_title, parser_place, prepare_element, refusal_text, report_text,
@@ -75,6 +76,9 @@ pub(crate) struct DocumentHost {
     started: HashSet<NodeId>,
     /// Made scripts whose "force async" flag was cleared by `async`.
     not_forced: HashSet<NodeId>,
+    /// The nodes scripts hold that came into the document or left it,
+    /// in order, for the bindings to hold their objects or let them go.
+    pins: Vec<(NodeId, bool)>,
 }
 
 impl ScriptingHost for DocumentHost {
@@ -172,7 +176,16 @@ impl DocumentHost {
                     Some(NodeData::Text(_)) => "#text".to_owned(),
                     _ => "#document".to_owned(),
                 };
-                Ok(Answer::String(name))
+                let connected = if self.connected(id) { "connected" } else { "" };
+                Ok(Answer::Strings(vec![name, connected.to_owned()]))
+            }
+            Call::TakePins => {
+                let pins = std::mem::take(&mut self.pins);
+                Ok(Answer::Pins(
+                    pins.into_iter()
+                        .map(|(node, connected)| (handle(node), connected))
+                        .collect(),
+                ))
             }
             Call::Kind(node) => {
                 let kind = match self.document.data(self.node(node)?) {
@@ -340,7 +353,7 @@ impl DocumentHost {
                     ));
                 }
                 self.document.remove_child(parent, node).map_err(refused)?;
-                self.detached.push(node);
+                self.taken_out(node);
                 Ok(Answer::Nothing)
             }
             Call::Replace {
@@ -472,7 +485,7 @@ impl DocumentHost {
                     if self.document.remove_child(node, child).is_err() {
                         break;
                     }
-                    self.detached.push(child);
+                    self.taken_out(child);
                 }
                 self.adopt(container, node, None)?;
                 Ok(Answer::Nothing)
@@ -492,7 +505,7 @@ impl DocumentHost {
                 let container = self.parse_fragment(&context, parent, &markup)?;
                 self.adopt(container, parent, Some(node))?;
                 self.document.remove_child(parent, node).map_err(refused)?;
-                self.detached.push(node);
+                self.taken_out(node);
                 Ok(Answer::Nothing)
             }
             Call::InsertAdjacentHtml {
@@ -564,6 +577,34 @@ impl DocumentHost {
                     self.not_forced.insert(node);
                 }
                 Ok(Answer::Nothing)
+            }
+            Call::ParseDeclarations(text) => {
+                self.work += text.len() as u64 / 64 + 1;
+                let mut flat = Vec::new();
+                for declared in cssom::declarations(&text) {
+                    flat.push(declared.name);
+                    flat.push(declared.value);
+                    flat.push(if declared.important { "important" } else { "" }.to_owned());
+                }
+                Ok(Answer::Strings(flat))
+            }
+            Call::CssCanonical(name) => {
+                let name = cssom::canonical(&name);
+                Ok(Answer::MaybeString(cssom::known(&name).then_some(name)))
+            }
+            Call::CssValid(name, value) => {
+                Ok(Answer::Bool(cssom::valid(&cssom::canonical(&name), &value)))
+            }
+            Call::ResolveUrl(text) => {
+                let url = self
+                    .page
+                    .as_ref()
+                    .and_then(|page| page.resolve(&self.document, &text));
+                Ok(Answer::MaybeString(url.map(|url| url.to_string())))
+            }
+            Call::DocumentUrl => {
+                let url = self.page.as_ref().and_then(|page| page.url());
+                Ok(Answer::MaybeString(url.map(ToString::to_string)))
             }
             Call::Released(node) => {
                 if let Some(id) = dom::NodeId::from_bits(node.0) {
@@ -913,7 +954,9 @@ impl DocumentHost {
         }
         self.document
             .insert_before(parent, node, before)
-            .map_err(refused)
+            .map_err(refused)?;
+        self.put_in(node);
+        Ok(())
     }
 
     /// The DOM's "replace a child": its checks, in its order, then `child`
@@ -954,10 +997,48 @@ impl DocumentHost {
             self.work += document.subtree(node).count() as u64;
         }
         self.document.remove_child(parent, child).map_err(refused)?;
-        self.detached.push(child);
+        self.taken_out(child);
         self.document
             .insert_before(parent, node, before)
-            .map_err(refused)
+            .map_err(refused)?;
+        self.put_in(node);
+        Ok(())
+    }
+
+    /// Whether `node` is in the document.
+    fn connected(&self, node: NodeId) -> bool {
+        let root = self.document.root();
+        node == root || self.document.ancestors(node).last() == Some(root)
+    }
+
+    /// `node` was taken out of its parent by a script: its subtree may be
+    /// freed once let go of, and the bindings let go of the objects of the
+    /// nodes in it they hold for the document.
+    fn taken_out(&mut self, node: NodeId) {
+        self.detached.push(node);
+        self.pin(node, false);
+    }
+
+    /// `node` was put somewhere by a script: the bindings hold the objects
+    /// of the nodes in its subtree if it is now in the document, and let
+    /// them go if it is not.
+    fn put_in(&mut self, node: NodeId) {
+        let connected = self.connected(node);
+        self.pin(node, connected);
+    }
+
+    /// Notes that the nodes scripts hold in `root`'s subtree are, or are
+    /// not, in the document.
+    fn pin(&mut self, root: NodeId, connected: bool) {
+        if self.exposed.is_empty() {
+            return;
+        }
+        for node in self.document.subtree(root) {
+            self.work += 1;
+            if self.exposed.contains(&node) {
+                self.pins.push((node, connected));
+            }
+        }
     }
 
     /// The DOM's `textContent` setter: an element's children replaced by
@@ -980,7 +1061,7 @@ impl DocumentHost {
             if self.document.remove_child(node, child).is_err() {
                 break;
             }
-            self.detached.push(child);
+            self.taken_out(child);
         }
         if let Some(made) = made
             && let Err(error) = self.document.append_child(node, made)
@@ -1063,9 +1144,10 @@ impl DocumentHost {
         };
         // String replace all: the children go, the text comes in their place.
         let children: Vec<NodeId> = document.children(title).collect();
+        let mut removed = Vec::new();
         for child in children {
             if document.remove_child(title, child).is_ok() {
-                self.detached.push(child);
+                removed.push(child);
             }
         }
         if !value.is_empty()
@@ -1073,6 +1155,9 @@ impl DocumentHost {
             && document.append_child(title, text).is_err()
         {
             let _ = document.free(text);
+        }
+        for child in removed {
+            self.taken_out(child);
         }
     }
 

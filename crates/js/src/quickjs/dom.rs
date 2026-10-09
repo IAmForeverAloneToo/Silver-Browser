@@ -107,6 +107,7 @@ const RUN_SCRIPTS: &[&str] = &[
 const NATIVES: &[(&str, Decode)] = &[
     ("document", |_| Ok(Call::Document)),
     ("wrap", |a| Ok(Call::Wrap(a.handle(0)?))),
+    ("takePins", |_| Ok(Call::TakePins)),
     ("kind", |a| Ok(Call::Kind(a.handle(0)?))),
     ("tag", |a| Ok(Call::Tag(a.handle(0)?))),
     ("parent", |a| Ok(Call::Parent(a.handle(0)?))),
@@ -213,6 +214,15 @@ const NATIVES: &[(&str, Decode)] = &[
     ("setForceAsync", |a| {
         Ok(Call::SetForceAsync(a.handle(0)?, a.bool(1)))
     }),
+    ("parseDeclarations", |a| {
+        Ok(Call::ParseDeclarations(a.string(0)?))
+    }),
+    ("cssCanonical", |a| Ok(Call::CssCanonical(a.string(0)?))),
+    ("cssValid", |a| {
+        Ok(Call::CssValid(a.string(0)?, a.string(1)?))
+    }),
+    ("resolveUrl", |a| Ok(Call::ResolveUrl(a.string(0)?))),
+    ("documentUrl", |_| Ok(Call::DocumentUrl)),
     ("released", |a| Ok(Call::Released(a.handle(0)?))),
 ];
 
@@ -333,6 +343,14 @@ fn value<'js>(ctx: &Ctx<'js>, answer: Answer) -> rquickjs::Result<Value<'js>> {
         }
         Answer::String(text) | Answer::MaybeString(Some(text)) => {
             rquickjs::String::from_str(ctx.clone(), &text)?.into_value()
+        }
+        Answer::Pins(pins) => {
+            let array = Array::new(ctx.clone())?;
+            for (i, (node, connected)) in pins.into_iter().enumerate() {
+                array.set(2 * i, handle(node))?;
+                array.set(2 * i + 1, connected)?;
+            }
+            array.into_value()
         }
         Answer::Strings(texts) => {
             let array = Array::new(ctx.clone())?;

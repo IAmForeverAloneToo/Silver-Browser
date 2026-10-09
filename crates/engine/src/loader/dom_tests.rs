@@ -638,7 +638,8 @@ fn selectors_find_what_the_reference_browser_finds() {
             ),
             ("tags(document.getElementsByClassName('x'))", "ok \"P#a,P\""),
             (
-                "tags(document.getElementsByClassName('  y   x '))",
+                "tags(document.getElementsByClassName('  y \
+                 x '))",
                 "ok \"P\"",
             ),
             (
@@ -915,4 +916,317 @@ fn markup_nested_under_a_deep_element_goes_no_deeper_than_the_cap() {
     assert_eq!(console.len(), 1);
     assert!(console[0].starts_with("x "), "{console:?}");
     tab.engine.document().validate().unwrap();
+}
+
+#[test]
+fn class_list_and_dataset_as_the_reference_browser_has_them() {
+    probed(
+        "var e = document.createElement('div');",
+        &[
+            (
+                "[e.classList.length, e.classList.value, e.hasAttribute('class')]",
+                "ok [0,\"\",false]",
+            ),
+            (
+                "(function () { e.classList.remove('x'); return e.hasAttribute('class'); })()",
+                "ok false",
+            ),
+            (
+                "(function () { e.classList.add('a', 'b', 'a'); return [e.className, \
+                 e.classList.length, e.classList[1], e.classList.item(5), e.classList[5]]; })()",
+                "ok [\"a b\",2,\"b\",null,null]",
+            ),
+            (
+                "e.classList.add('')",
+                "SyntaxError: Failed to execute 'add' on 'DOMTokenList': The token provided must \
+                 not be empty.",
+            ),
+            (
+                "e.classList.add('a b')",
+                "InvalidCharacterError: Failed to execute 'add' on 'DOMTokenList': The token \
+                 provided ('a b') contains HTML space characters, which are not valid in tokens.",
+            ),
+            (
+                "e.classList.remove('a b')",
+                "InvalidCharacterError: Failed to execute 'remove' on 'DOMTokenList': The token \
+                 provided ('a b') contains HTML space characters, which are not valid in tokens.",
+            ),
+            (
+                "e.classList.toggle('')",
+                "SyntaxError: Failed to execute 'toggle' on 'DOMTokenList': The token provided \
+                 must not be empty.",
+            ),
+            (
+                "[e.classList.replace('a', 'c'), e.className, e.classList.replace('zz', 'y'), \
+                 e.className]",
+                "ok [true,\"c b\",false,\"c b\"]",
+            ),
+            (
+                "e.classList.replace('', 'y')",
+                "SyntaxError: Failed to execute 'replace' on 'DOMTokenList': The token provided \
+                 must not be empty.",
+            ),
+            (
+                "[e.classList.contains('b'), e.classList.contains(' b'), e.classList.contains('')]",
+                "ok [true,false,false]",
+            ),
+            (
+                "e.classList.supports('a')",
+                "TypeError: Failed to execute 'supports' on 'DOMTokenList': DOMTokenList has no \
+                 supported tokens.",
+            ),
+            (
+                "(function () { e.classList.value = '  q  r q '; \
+                 return [e.className, e.classList.length, String(e.classList)]; })()",
+                "ok [\"  q  r q \",2,\"  q  r q \"]",
+            ),
+            ("e.classList === e.classList", "ok true"),
+            (
+                "[...e.classList].join('|') + ' ' + Object.keys(e.classList).join()",
+                "ok \"q|r 0,1\"",
+            ),
+            (
+                "Object.prototype.toString.call(e.classList)",
+                "ok \"[object DOMTokenList]\"",
+            ),
+            (
+                "(function () { var x = document.createElement('i'); x.className = '  a  b a '; \
+                 x.classList.remove('zz'); return JSON.stringify(x.className); })()",
+                "ok \"\\\"a b\\\"\"",
+            ),
+            (
+                "(function () { var x = document.createElement('i'); \
+                 return [x.classList.toggle('a', false), x.hasAttribute('class'), \
+                 x.classList.toggle('a', true), x.classList.toggle('a', true), x.className, \
+                 x.classList.toggle('a', false), x.className]; })()",
+                "ok [false,false,true,true,\"a\",false,\"\"]",
+            ),
+            (
+                "(function () { var x = document.createElement('i'); x.className = 'a b c'; \
+                 return [x.classList.replace('a', 'c'), x.className]; })()",
+                "ok [true,\"c b\"]",
+            ),
+            (
+                "(function () { var x = document.createElement('i'); \
+                 x.setAttribute('data-foo-bar', '1'); x.setAttribute('data-x', '2'); \
+                 x.setAttribute('data-', '3'); x.setAttribute('data-Up', '4'); \
+                 return [x.dataset.fooBar, x.dataset.x, Object.keys(x.dataset).join(','), \
+                 x.dataset.up, 'fooBar' in x.dataset]; })()",
+                "ok [\"1\",\"2\",\"fooBar,x,,up\",\"4\",true]",
+            ),
+            (
+                "(function () { var x = document.createElement('i'); x.dataset.helloWorld = 5; \
+                 x.dataset.a1 = 'z'; \
+                 return x.getAttributeNames().join(',') + ' ' + x.getAttribute('data-hello-world'); })()",
+                "ok \"data-hello-world,data-a1 5\"",
+            ),
+            (
+                "(function () { var x = document.createElement('i'); x.dataset['a-b'] = 1; })()",
+                "SyntaxError: Failed to set a named property 'a-b' on 'DOMStringMap': 'a-b' is not \
+                 a valid property name.",
+            ),
+            (
+                "(function () { var x = document.createElement('i'); x.dataset.q = 1; \
+                 delete x.dataset.q; return x.hasAttribute('data-q'); })()",
+                "ok false",
+            ),
+            (
+                "Object.prototype.toString.call(document.body.dataset)",
+                "ok \"[object DOMStringMap]\"",
+            ),
+        ],
+    );
+}
+
+#[test]
+fn style_reads_and_writes_the_style_attribute() {
+    probed(
+        "",
+        &[
+            (
+                "Object.prototype.toString.call(document.body.style)",
+                "ok \"[object CSSStyleDeclaration]\"",
+            ),
+            ("typeof document.body.style.fooBar", "ok \"undefined\""),
+            (
+                "(function () { var x = document.createElement('i'); x.style.cssFloat = 'left'; \
+                 return [x.style.float, x.getAttribute('style')]; })()",
+                "ok [\"left\",\"float: left;\"]",
+            ),
+            (
+                "(function () { var x = document.createElement('i'); \
+                 x.style.setProperty('color', 'red', 'important'); \
+                 return [x.getAttribute('style'), x.style.getPropertyPriority('color'), \
+                 x.style.color]; })()",
+                "ok [\"color: red !important;\",\"important\",\"red\"]",
+            ),
+            (
+                "(function () { var x = document.createElement('i'); \
+                 x.style.setProperty('--My-Var', ' 10px '); \
+                 return [x.getAttribute('style'), x.style.getPropertyValue('--My-Var'), \
+                 x.style.getPropertyValue('--my-var')]; })()",
+                "ok [\"--My-Var: 10px;\",\"10px\",\"\"]",
+            ),
+            (
+                "(function () { var x = document.createElement('i'); x.style.color = 'red'; \
+                 x.style.width = '1px'; return [x.style.removeProperty('color'), \
+                 x.getAttribute('style'), x.style.length, x.style[0], x.style.item(0)]; })()",
+                "ok [\"red\",\"width: 1px;\",1,\"width\",\"width\"]",
+            ),
+            (
+                "(function () { var x = document.createElement('i'); x.style.color = 'red'; \
+                 x.style.color = ''; return [x.getAttribute('style'), x.style.length]; })()",
+                "ok [\"\",0]",
+            ),
+            (
+                "(function () { var x = document.createElement('i'); \
+                 x.style.cssText = 'color: red; bogus: 1; width: 2px !important'; \
+                 return [x.style.cssText, x.style.length, x.getAttribute('style')]; })()",
+                "ok [\"color: red; width: 2px !important;\",2,\"color: red; width: 2px !important;\"]",
+            ),
+            (
+                "(function () { var x = document.createElement('i'); \
+                 x.setAttribute('style', 'color:blue;;margin-top:3px'); \
+                 return [x.style.color, x.style.marginTop, x.style.length, x.style.cssText]; })()",
+                "ok [\"blue\",\"3px\",2,\"color: blue; margin-top: 3px;\"]",
+            ),
+            (
+                "(function () { var x = document.createElement('i'); \
+                 x.style.webkitTransform = 'none'; \
+                 return [x.style.transform, x.getAttribute('style'), typeof x.style.WebkitTransform]; })()",
+                "ok [\"none\",\"transform: none;\",\"string\"]",
+            ),
+            (
+                "(function () { var x = document.createElement('i'); \
+                 x.style['background-color'] = 'red'; return x.style.backgroundColor; })()",
+                "ok \"red\"",
+            ),
+            (
+                "(function () { var x = document.createElement('i'); \
+                 x.style.setProperty('COLOR', 'red'); \
+                 return [x.getAttribute('style'), x.style.getPropertyValue('Color')]; })()",
+                "ok [\"color: red;\",\"red\"]",
+            ),
+            ("document.body.style === document.body.style", "ok true"),
+            // Kept as written, and a shorthand unexpanded (G50).
+            (
+                "(function () { var x = document.createElement('i'); x.style.color = 'RED'; \
+                 x.style.margin = '1px'; x.style.width = 'banana'; \
+                 return [x.style.color, x.style.length, x.style[1], x.style.marginTop, \
+                 x.style.cssText, x.getAttribute('style')]; })()",
+                "ok [\"RED\",2,\"margin\",\"\",\"color: RED; margin: 1px;\",\
+                 \"color: RED; margin: 1px;\"]",
+            ),
+            (
+                "(function () { var x = document.createElement('i'); x.style = 'width: 3px'; \
+                 return x.getAttribute('style'); })()",
+                "ok \"width: 3px;\"",
+            ),
+        ],
+    );
+}
+
+#[test]
+fn attributes_are_reflected_as_html_says() {
+    probed_in(
+        "<base href='http://example.com/dir/page.html'><p id=a>x</p>",
+        "",
+        &[
+            (
+                "(function () { var a = document.createElement('a'); \
+                 a.setAttribute('href', 'x?y#z'); \
+                 var i = document.createElement('img'); i.src = '/i.png'; \
+                 var b = document.createElement('a'); b.href = 'http://[bad'; \
+                 return [a.href, i.src, i.getAttribute('src'), document.createElement('a').href, \
+                 b.href]; })()",
+                "ok [\"http://example.com/dir/x?y#z\",\"http://example.com/i.png\",\"/i.png\",\
+                 \"\",\"http://[bad\"]",
+            ),
+            (
+                "(function () { var x = document.createElement('div'); x.hidden = true; \
+                 var s = document.createElement('script'); s.defer = 1; \
+                 return [x.getAttribute('hidden'), x.hidden, s.getAttribute('defer'), s.defer, \
+                 document.createElement('input').disabled]; })()",
+                "ok [\"\",true,\"\",true,false]",
+            ),
+            (
+                "(function () { var x = document.createElement('div'); x.dir = 'RTL'; \
+                 var y = document.createElement('div'); y.setAttribute('dir', 'bogus'); \
+                 return [x.dir, x.getAttribute('dir'), y.dir]; })()",
+                "ok [\"rtl\",\"RTL\",\"\"]",
+            ),
+            (
+                "(function () { var x = document.createElement('img'); x.alt = 'a'; \
+                 x.title = 't'; x.lang = 'en'; \
+                 return [x.alt, x.title, x.lang, x.getAttributeNames().join()]; })()",
+                "ok [\"a\",\"t\",\"en\",\"alt,title,lang\"]",
+            ),
+            (
+                "(function () { var x = document.createElement('img'); \
+                 x.setAttribute('width', '12px'); var c = document.createElement('canvas'); \
+                 var set = function (v) { x.width = v; return x.getAttribute('width'); }; \
+                 return [x.width, c.width, c.height, set(5), set(-1)]; })()",
+                "ok [12,300,150,\"5\",\"0\"]",
+            ),
+            (
+                "[document.createElement('form').action.endsWith('/page.html'), \
+                 document.createElement('td').colSpan, document.createElement('ol').start]",
+                "ok [true,1,1]",
+            ),
+            (
+                "(function () { var t = new EventTarget(); var g = function () {}; \
+                 t.addEventListener('x', g); t.addEventListener('x', g); \
+                 t.removeEventListener('x', g); \
+                 return [typeof window.addEventListener, typeof document.addEventListener]; })()",
+                "ok [\"function\",\"function\"]",
+            ),
+            (
+                "document.addEventListener('x')",
+                "TypeError: Failed to execute 'addEventListener' on 'EventTarget': 2 arguments required, but only 1 present.",
+            ),
+            ("document.addEventListener('x', null)", "ok \"undefined\""),
+        ],
+    );
+}
+
+#[test]
+fn a_nodes_object_lasts_while_the_node_is_in_the_document() {
+    // What a script set on a node's object is there when another reaches
+    // the node again; once a node has left the document and been let go
+    // of, it is freed (one whose object holds its `style` or `classList`
+    // is in a cycle with it, freed when the realm's garbage is next
+    // collected).
+    let (tab, console) = scripted(
+        "<p id=a>x</p><p id=b>y</p><script>document.getElementById('a').mark = 1; \
+         document.body.firstChild.listened = 2; document.getElementById('b').mark = 3;</script> \
+         <script>var p = document.getElementById('a'); \
+         console.log(p.mark, p.listened, p.style === document.getElementById('a').style, \
+         p.classList === document.body.firstChild.classList); \
+         var b = document.getElementById('b'); console.log(b.mark); b.remove(); b = null; \
+         </script><script>console.log('after')</script>",
+        true,
+    );
+    assert_eq!(console, ["1 2 true true", "3", "after"]);
+    let document = tab.engine.document();
+    assert_eq!(document.len(), document.subtree(document.root()).count());
+}
+
+#[test]
+fn an_object_held_for_the_document_or_by_what_it_made_stays() {
+    // An element made and then put in is held from then on; a classList
+    // keeps its element as long as it lives, though nothing else does.
+    let (_, console) = scripted(
+        "<p>x</p><script>var d = document.createElement('div'); d.mark = 7; d.id = 'made'; \
+         document.body.appendChild(d); d = null; \
+         var tokens = document.createElement('i').classList; \
+         var styled = document.createElement('i').style; \
+         var data = document.createElement('i').dataset;</script>\
+         <script>console.log(document.getElementById('made').mark); tokens.add('a'); \
+         styled.color = 'red'; data.x = 'y'; \
+         console.log(tokens.value, styled.cssText, data.x); \
+         var s = document.createElement('i').style; s.setProperty('color', 'red', 'bogus'); \
+         console.log(s.length)</script>",
+        true,
+    );
+    assert_eq!(console, ["7", "a color: red; y", "0"]);
 }

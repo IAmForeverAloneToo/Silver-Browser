@@ -10,16 +10,17 @@
 //! The host stays with the document between runs (M25), keeping what
 //! scripts hold; after each run the subtrees they let go of are freed.
 
+mod cssom;
 mod host;
 
 use std::collections::VecDeque;
 
 /// The most scripts that run nested, one inside another's call, the
 /// outermost counted (M25): past it no further one runs, and the console
-/// says so. Each level takes some 25 KiB of a realm's 256 KiB of stack
-/// (`js::MAX_SCRIPT_STACK`), which runs out past about ten, measured: the
+/// says so. Each level takes some 30 KiB of a realm's 256 KiB of stack
+/// (`js::MAX_SCRIPT_STACK`), which runs out at about eight, measured: the
 /// cap stops a script that writes a script that writes one before that.
-pub const MAX_SCRIPT_NESTING: usize = 8;
+pub const MAX_SCRIPT_NESTING: usize = 6;
 
 use dom::{Document, NodeId};
 use encoding::Encoding;

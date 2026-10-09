@@ -4884,6 +4884,12 @@ fn parse_gap_shorthand(
     }
 }
 
+/// The name a property `name` (lowercase) is known by: an alias's
+/// property, every other name as it is (M25, a script's `style`).
+pub fn property_name(name: &str) -> &str {
+    canonical_name(name)
+}
+
 /// The name a property is known by here: a `-webkit-` alias the
 /// Compatibility Standard requires (§3.4.1), or a legacy gap name
 /// css-align-3 §8.3 requires (M18), as the property itself, every other
