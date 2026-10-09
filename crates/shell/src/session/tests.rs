@@ -680,3 +680,19 @@ fn a_failed_start_is_reported() {
         window.session.title()
     );
 }
+
+#[test]
+fn a_console_entry_prints_with_its_level() {
+    use engine::{ConsoleEntry, ConsoleLevel};
+    let line = |level| {
+        console_line(&ConsoleEntry {
+            level,
+            text: "x 1".to_owned(),
+        })
+    };
+    assert_eq!(line(ConsoleLevel::Log), "console: log x 1");
+    assert_eq!(line(ConsoleLevel::Info), "console: info x 1");
+    assert_eq!(line(ConsoleLevel::Warn), "console: warn x 1");
+    assert_eq!(line(ConsoleLevel::Error), "console: error x 1");
+    assert_eq!(line(ConsoleLevel::Debug), "console: debug x 1");
+}

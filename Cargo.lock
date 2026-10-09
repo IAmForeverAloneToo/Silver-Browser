@@ -626,6 +626,7 @@ dependencies = [
  "flate2",
  "html",
  "images",
+ "js",
  "layout",
  "net",
  "paint",

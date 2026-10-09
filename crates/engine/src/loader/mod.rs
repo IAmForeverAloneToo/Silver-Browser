@@ -378,6 +378,9 @@ pub(crate) fn streams_as_html(response: &Response) -> Option<Option<Encoding>> {
 pub(crate) struct Parsing {
     pub(crate) load: html::Load,
     pub(crate) head: Response,
+    /// The document's scripts until it is shown, when they go with it
+    /// (M24).
+    pub(crate) scripts: crate::scripts::Scripts,
 }
 
 /// The language the response's `Content-Language` gives its document,

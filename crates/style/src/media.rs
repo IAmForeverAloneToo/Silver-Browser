@@ -71,6 +71,9 @@ pub struct Media {
     pub device_height: f32,
     /// Dots per CSS pixel.
     pub resolution: f32,
+    /// Whether scripts run (M24): the `scripting` feature's `enabled`,
+    /// else `none`.
+    pub scripting: bool,
     /// The user's preferences.
     pub preferences: Preferences,
 }
@@ -93,6 +96,7 @@ impl Media {
             device_height: height,
             resolution: 1.0,
             preferences: Preferences::default(),
+            scripting: false,
         }
     }
 }
@@ -1088,7 +1092,8 @@ impl Name {
                 "no-preference"
             }),
             Name::PrefersContrast | Name::PrefersReducedTransparency => keyword("no-preference"),
-            Name::ForcedColors | Name::InvertedColors | Name::Scripting => keyword("none"),
+            Name::ForcedColors | Name::InvertedColors => keyword("none"),
+            Name::Scripting => keyword(if media.scripting { "enabled" } else { "none" }),
             Name::DynamicRange | Name::VideoDynamicRange => keyword("standard"),
             Name::DisplayMode => keyword("browser"),
         }

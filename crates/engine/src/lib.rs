@@ -99,6 +99,7 @@ mod loader;
 mod navigation;
 mod pages;
 mod print;
+mod scripts;
 #[cfg(test)]
 mod testing;
 
@@ -107,9 +108,11 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 pub use image_store::MAX_DECODE_THREADS;
+pub use js::ConsoleLevel;
 pub use loader::{LoadError, LoadState};
 pub use net::{Client, NetworkError, Url};
 pub use print::{PrintError, PrintOptions, PrintedPage};
+pub use scripts::{ConsoleEntry, MAX_CONSOLE_ENTRIES, MAX_CONSOLE_MESSAGE, ScriptState};
 pub use style::animation::{AnimationEvent, EventKind, Running as RunningAnimation};
 pub use style::{ColorScheme, MediaType, Preferences};
 
@@ -211,6 +214,10 @@ pub struct Engine {
     /// The waker the caller gave, kept to wake the caller while a parse
     /// has more to do (M24.8).
     waker: Option<loader::Waker>,
+    /// Whether scripts run: off unless asked (M24, risk R2).
+    scripting: bool,
+    /// What a document's realm may use, the defaults but in tests.
+    script_limits: js::Limits,
     /// What the user should be told of a navigation that showed no page:
     /// a download not saved (M15).
     notice: Option<String>,
@@ -329,6 +336,8 @@ struct Shown {
     /// The document's parse, while its body is still arriving or its
     /// parse has more to do (M24.8).
     parsing: Option<Box<loader::Parsing>>,
+    /// The document's scripts (M24).
+    scripts: scripts::Scripts,
 }
 
 impl Shown {
@@ -360,6 +369,7 @@ impl Shown {
             images: ImageStore::default(),
             next_image_frame: None,
             parsing: None,
+            scripts: scripts::Scripts::default(),
         }
     }
 }
@@ -407,6 +417,54 @@ enum Indicated {
 
 /// The most bytes an icon is kept with: no icon needs more.
 pub const MAX_ICON_BYTES: usize = 1 << 20;
+
+/// The status bubble's notice when a document's realm runs out of
+/// memory (M24.7).
+const SCRIPTS_STOPPED: &str = "Scripts stopped on this page: out of memory";
+
+/// Prepares the `script` element the parser has just closed (HTML
+/// section 4.12.1.1, "prepare the script element") and runs it if it is
+/// an inline classic script, its text starting on the document's `line`;
+/// what `src` names is fetched and run by M24.3's other half.
+fn run_parsed_script(
+    scripts: &mut scripts::Scripts,
+    document: &mut Document,
+    url: &str,
+    element: NodeId,
+    line: u32,
+) {
+    if scripts::script_type(document, element) != Some(scripts::ScriptType::Classic)
+        || document.attr(element, "nomodule").is_some()
+        || document.attr(element, "src").is_some()
+    {
+        return;
+    }
+    // The legacy `for` and `event` attributes: only a script for the
+    // window's load event runs (step 21).
+    if let (Some(event), Some(target)) = (
+        document.attr(element, "event"),
+        document.attr(element, "for"),
+    ) {
+        let trim = |s: &str| {
+            s.trim_matches(|c: char| c.is_ascii_whitespace())
+                .to_ascii_lowercase()
+        };
+        if trim(target) != "window" || !matches!(trim(event).as_str(), "onload" | "onload()") {
+            return;
+        }
+    }
+    let source = document.text_content(element);
+    if source.is_empty() {
+        return;
+    }
+    let script = js::Script {
+        source: &source,
+        url,
+        line,
+        muted: false,
+    };
+    scripts.run(document, &script);
+}
 
 /// The tokens a document is parsed by between polls while its bytes
 /// arrive (M24.8): the window draws between slices.
@@ -665,6 +723,8 @@ impl Engine {
             navigation: None,
             load_state: LoadState::Loaded,
             waker: None,
+            scripting: false,
+            script_limits: js::Limits::default(),
             notice: None,
             next_page: 1,
             goal: None,
@@ -740,12 +800,20 @@ impl Engine {
     /// Leaves `left`, the document of document state `state`: its
     /// fetches are aborted, and the back-forward cache keeps it if it is
     /// salvageable — no fetch was aborted for it, now or by a stop — and
-    /// an entry still has its state.
-    fn leave(&mut self, left: Shown, state: StateId) {
+    /// an entry still has its state. Its realm goes with it, its garbage
+    /// collected, unless the realm died (M24).
+    fn leave(&mut self, mut left: Shown, state: StateId) {
         let aborted = self.network.cancel(left.page.id(), None);
         let decoding = self.decoder.busy(left.page.id());
         self.decoder.forget(left.page.id());
-        if left.salvageable && !aborted && !decoding && !left.initial && left.parsing.is_none() {
+        if left.salvageable
+            && !aborted
+            && !decoding
+            && !left.initial
+            && left.parsing.is_none()
+            && left.scripts.keepable()
+        {
+            left.scripts.collect();
             // What the cache lets go is dropped here.
             drop(self.history.keep(state, Box::new(left)));
         }
@@ -959,21 +1027,44 @@ impl Engine {
     /// joined, with ASCII whitespace stripped from its ends and each run
     /// of it inside collapsed to one space. Empty when there is none.
     pub fn title(&self) -> String {
-        let document = &self.shown.document;
-        let Some(title) = document
-            .subtree(document.root())
-            .find(|&node| document.tag(node) == Some("title"))
-        else {
-            return String::new();
-        };
-        let text: String = document
-            .children(title)
-            .filter_map(|child| document.text(child))
-            .collect();
-        text.split(|c: char| c.is_ascii_whitespace())
-            .filter(|word| !word.is_empty())
-            .collect::<Vec<_>>()
-            .join(" ")
+        scripts::document_title(&self.shown.document)
+    }
+
+    /// Runs scripts from now on, or not (M24): they are off unless asked
+    /// for, since no untrusted script is to run before the isolation of
+    /// M33 and M34 (roadmap risk R2). A document already loaded keeps how
+    /// it was parsed; the `scripting` media feature follows at once.
+    pub fn set_scripting(&mut self, on: bool) {
+        self.scripting = on;
+        let media = self.media(self.viewport);
+        if self
+            .shown
+            .styled
+            .as_ref()
+            .is_some_and(|cached| self.shown.stylesheets.media_changed(&cached.styles, &media))
+        {
+            self.changed = true;
+        }
+    }
+
+    /// Whether scripts run.
+    pub fn scripting(&self) -> bool {
+        self.scripting
+    }
+
+    /// The shown document's console since it was last taken (M24.7):
+    /// what its scripts wrote, and the errors they reported.
+    pub fn take_console(&mut self) -> Vec<ConsoleEntry> {
+        self.shown.scripts.take_console()
+    }
+
+    /// Where the shown document's scripting stands (M24.7).
+    pub fn scripts(&self) -> ScriptState {
+        if self.scripting {
+            self.shown.scripts.state()
+        } else {
+            ScriptState::Off
+        }
     }
 
     /// What the user should be told of the latest navigation that
@@ -1411,7 +1502,7 @@ impl Engine {
             return;
         };
         let id = *id;
-        let mut load = html::Load::new(transport, false);
+        let mut load = html::Load::new(transport, self.scripting);
         load.push(&response.body);
         if ended {
             load.end();
@@ -1425,6 +1516,7 @@ impl Engine {
                 parsing: Box::new(loader::Parsing {
                     load,
                     head: response,
+                    scripts: scripts::Scripts::with_limits(self.script_limits),
                 }),
             };
         }
@@ -1465,9 +1557,19 @@ impl Engine {
                 )
                 .with_language(loader::content_language(&parsing.head));
                 **document = Document::new();
+                parsing.scripts.restart();
                 self.wake();
             }
             html::Progress::Parsed(stop) => {
+                if let html::Stop::Script { element, line } = stop
+                    && self.scripting
+                {
+                    let url = page.url().map(Url::to_string).unwrap_or_default();
+                    run_parsed_script(&mut parsing.scripts, document, &url, element, line);
+                    if parsing.scripts.take_just_stopped() {
+                        self.notice = Some(SCRIPTS_STOPPED.to_owned());
+                    }
+                }
                 let changes = document.take_changes();
                 if changes
                     .iter()
@@ -1501,10 +1603,32 @@ impl Engine {
                 let parsing = self.shown.parsing.take();
                 let mut shown = Shown::new(Document::new(), page);
                 shown.parsing = parsing;
+                shown.scripts = std::mem::take(&mut self.shown.scripts);
+                shown.scripts.restart();
                 let _ = self.show(shown);
                 self.wake();
             }
             html::Progress::Parsed(stop) => {
+                if let html::Stop::Script { element, line } = stop
+                    && self.scripting
+                {
+                    let url = self
+                        .shown
+                        .page
+                        .url()
+                        .map(Url::to_string)
+                        .unwrap_or_default();
+                    run_parsed_script(
+                        &mut self.shown.scripts,
+                        &mut self.shown.document,
+                        &url,
+                        element,
+                        line,
+                    );
+                    if self.shown.scripts.take_just_stopped() {
+                        self.notice = Some(SCRIPTS_STOPPED.to_owned());
+                    }
+                }
                 let changes = self.shown.document.take_changes();
                 if !changes.is_empty() {
                     self.document_changed(changes);
@@ -1656,7 +1780,9 @@ impl Engine {
                 unreachable!("checked above");
             };
             let url = page.url().cloned();
+            let mut parsing = parsing;
             let mut shown = Shown::new(*document, *page);
+            shown.scripts = std::mem::take(&mut parsing.scripts);
             shown.parsing = Some(parsing);
             self.commit(shown, url, handling);
             return;
@@ -2021,6 +2147,7 @@ impl Engine {
         Media {
             media_type: self.media_type,
             preferences: self.preferences,
+            scripting: self.scripting,
             ..Media::screen(viewport.0 as f32, viewport.1 as f32)
         }
     }

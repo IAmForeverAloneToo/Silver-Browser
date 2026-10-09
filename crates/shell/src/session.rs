@@ -347,9 +347,11 @@ impl Session {
         self.refresh_hover();
     }
 
-    /// A fetch finished: the engine takes what arrived.
+    /// A fetch finished: the engine takes what arrived, and what the
+    /// page's scripts wrote to its console is printed.
     pub(crate) fn network(&mut self) {
         self.engine.poll_network();
+        print_console(&mut self.engine);
         if let Some(start) = self.start.take() {
             if let LoadState::Failed(error) = self.engine.load_state() {
                 self.reports.push(format!("{start}: {error}"));
@@ -610,6 +612,27 @@ fn put(rgba: &[u8], out: &mut [u32]) {
     for (dst, [r, g, b, _]) in out.iter_mut().zip(pixels) {
         *dst = (*r as u32) << 16 | (*g as u32) << 8 | *b as u32;
     }
+}
+
+/// Prints what the shown page's scripts wrote to its console, and the
+/// errors they reported, to the standard error (M24.7): the console a
+/// developer would read until the browser has its own (M36).
+pub(crate) fn print_console(engine: &mut Engine) {
+    for entry in engine.take_console() {
+        eprintln!("{}", console_line(&entry));
+    }
+}
+
+/// A console entry as printed: its level's name, then its text.
+fn console_line(entry: &engine::ConsoleEntry) -> String {
+    let level = match entry.level {
+        engine::ConsoleLevel::Log => "log",
+        engine::ConsoleLevel::Info => "info",
+        engine::ConsoleLevel::Warn => "warn",
+        engine::ConsoleLevel::Error => "error",
+        engine::ConsoleLevel::Debug => "debug",
+    };
+    format!("console: {level} {}", entry.text)
 }
 
 #[cfg(test)]

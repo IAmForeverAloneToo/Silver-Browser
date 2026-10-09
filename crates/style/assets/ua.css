@@ -33,6 +33,16 @@ head, style, script, title, meta, link {
   display: none;
 }
 
+/* With scripts on, `noscript`'s content is text (the parser's scripting
+ * flag) and the element draws nothing (M24). The reference browser makes
+ * no box for it and leaves its computed `display` as it is; here it is
+ * `none`, which only a script reading computed styles can tell (M25). */
+@media (scripting: enabled) {
+  noscript {
+    display: none !important;
+  }
+}
+
 html, body {
   display: block;
   margin: 0;
