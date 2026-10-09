@@ -1,0 +1,42 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-scripts" content="on">
+<title>Markup from scripts: document.write while the page is parsed, innerHTML, insertAdjacentHTML at each position, outerHTML, and innerHTML read back and written into another element; the text transparent, in the engine's own font, so that only the boxes are compared</title>
+<style>
+  /* The reference browser is given the engine's own font: en dashes,
+     half an em each, whole pixels at 32px. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f6f2ea; font-family: "Reference Sans"; font-size: 32px; color: transparent; }
+  body { margin: 10px; }
+  .box { float: left; clear: left; min-width: 16px; margin: 0 0 6px; padding: 0 4px; background-color: #2f4f7f; }
+  .a { background-color: #7f2f4f; }
+  .c { background-color: #3f7f2f; }
+  .d { background-color: #7f6f2f; }
+  #host, #copy { clear: left; float: left; margin: 0 0 6px; padding: 4px; background-color: #d8d0c0; }
+  .chip { display: inline-block; margin-right: 4px; background-color: #4f2f7f; }
+  .c2 { background-color: #2f6f7f; }
+  .c3 { background-color: #7f4f2f; }
+  .c4 { background-color: #2f7f5f; }
+</style>
+</head>
+<body>
+<script>
+  document.write('<div class="box a">\u2013</div><div class="box b">\u2013\u2013</div>');
+</script>
+<div id="host"></div>
+<script>
+  var host = document.getElementById('host');
+  host.innerHTML = '<span class="chip">\u2013</span><span class="chip c2">\u2013\u2013</span>';
+  host.insertAdjacentHTML('afterbegin', '<span class="chip c3">\u2013\u2013\u2013</span>');
+  host.insertAdjacentHTML('beforeend', '<span class="chip c4">\u2013</span>');
+  host.insertAdjacentHTML('beforebegin', '<div class="box c">\u2013\u2013\u2013\u2013</div>');
+  host.insertAdjacentHTML('afterend', '<div class="box">\u2013</div>');
+  document.querySelector('.box.b').outerHTML = '<div class="box d">\u2013\u2013\u2013</div>';
+  var copy = document.createElement('div');
+  copy.id = 'copy';
+  copy.innerHTML = host.innerHTML.replace('c2', 'c4');
+  document.body.appendChild(copy);
+</script>
+</body>
+</html>

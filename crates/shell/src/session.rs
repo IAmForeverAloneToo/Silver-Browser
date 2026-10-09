@@ -223,9 +223,12 @@ impl Session {
         self.engine.next_frame_at()
     }
 
-    /// The window has a new size.
+    /// The window has a new size: the page's viewport, under the toolbar,
+    /// has too, as a page loading before the next frame reads it (M25).
     pub(crate) fn resized(&mut self, width: u32, height: u32) {
         self.size = (width, height);
+        self.engine
+            .set_viewport(width, height - ui::HEIGHT.min(height));
     }
 
     /// The user's preferences, as the shell now reads them (M20.3).

@@ -1,0 +1,47 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-scripts" content="on">
+<title>What a script reads of the window and the cascade, written back as sizes: innerWidth and innerHeight, getComputedStyle's lengths, colour and display, a pseudo-element's computed style, noscript's display, and location's parts, each giving a box its width, height or colour</title>
+<!-- The capture's browser draws a viewport a little narrower and
+     shorter than the window it is asked for, so the viewport's size is
+     read only as being about the page's; and a width the cascade leaves
+     a percentage is read as the reference browser lays it out, in
+     pixels, and here as computed (G46): either gives the same box. -->
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 10px; }
+  div { height: 20px; margin-bottom: 6px; background-color: #a8a090; }
+  #source { width: 50%; margin-left: 24px; padding: 3px 0; background-color: #2f4f7f; }
+  #source::before { content: ""; display: block; height: 7px; background-color: #7f2f4f; }
+</style>
+</head>
+<body>
+<div id="source"></div>
+<div id="a"></div>
+<div id="b"></div>
+<div id="c"></div>
+<div id="d"></div>
+<div id="e"></div>
+<noscript><div id="f"></div></noscript>
+<script>
+  var source = getComputedStyle(document.getElementById('source'));
+  var before = getComputedStyle(document.getElementById('source'), '::before');
+  var a = document.getElementById('a').style;
+  a.width = parseFloat(source.marginLeft) * 4 + 'px';
+  a.backgroundColor = source.backgroundColor;
+  var b = document.getElementById('b').style;
+  b.width = innerWidth > 700 && innerWidth <= 800 ? '100px' : '10px';
+  b.height = innerHeight > 400 && innerHeight <= 600 ? '30px' : '3px';
+  var c = document.getElementById('c').style;
+  c.width = /^(50%|[0-9.]+px)$/.test(source.width) ? '120px' : '10px';
+  c.height = parseFloat(source.paddingTop) * 10 + 'px';
+  var d = document.getElementById('d').style;
+  d.width = parseFloat(before.height) * 20 + 'px';
+  d.backgroundColor = before.backgroundColor;
+  var e = document.getElementById('e').style;
+  e.width = (location.protocol === 'file:' ? 150 : 15) + (source.display === 'block' ? 50 : 5) + 'px';
+  e.height = getComputedStyle(document.querySelector('noscript')).display === 'none' ? '40px' : '4px';
+</script>
+</body>
+</html>

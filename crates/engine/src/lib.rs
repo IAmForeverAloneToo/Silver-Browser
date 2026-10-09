@@ -2777,6 +2777,13 @@ impl Engine {
         self.draw(width, height, FRAME_BUDGET).to_vec()
     }
 
+    /// The viewport's size before a frame is drawn at it (M25): the
+    /// window's size a page's scripts read, and its media queries match,
+    /// while it loads. Each frame sets it to the size it is drawn at.
+    pub fn set_viewport(&mut self, width: u32, height: u32) {
+        self.viewport = (width, height);
+    }
+
     /// What the last frame took, stage by stage (M13.4).
     pub fn frame_stats(&self) -> FrameStats {
         self.stats

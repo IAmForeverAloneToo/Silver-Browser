@@ -1,0 +1,50 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-scripts" content="on">
+<title>A table built by a script: rows and cells made, filled and put in the document, classes and a column span set, a cell taken out and one put before another; the cells' text transparent, in the engine's own font, so that only the boxes are compared</title>
+<style>
+  /* The reference browser is given the engine's own font, whose
+     metrics size the cells: en dashes, half an em each, whole pixels at
+     32px, and lines as tall as its metrics make them. */
+  @font-face { font-family: "Reference Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f6f2ea; font-family: "Reference Sans"; font-size: 32px; color: transparent; }
+  body { margin: 10px; }
+  table { border-spacing: 4px; background-color: #d8d0c0; }
+  td { padding: 0 6px; background-color: #2f4f7f; }
+  tr.odd td { background-color: #7f2f4f; }
+  td.wide { padding-left: 24px; background-color: #3f7f2f; }
+  td.tall { height: 60px; vertical-align: top; }
+</style>
+</head>
+<body>
+<script>
+  var table = document.createElement('table');
+  var body = table.appendChild(document.createElement('tbody'));
+  for (var i = 0; i < 6; i++) {
+    var row = body.appendChild(document.createElement('tr'));
+    if (i % 2) {
+      row.className = 'odd';
+    }
+    for (var j = 0; j < 4; j++) {
+      var cell = row.appendChild(document.createElement('td'));
+      cell.textContent = '\u2013'.repeat(1 + (i + j) % 3);
+      if (j === 3 && i % 3 === 0) {
+        cell.classList.add('wide');
+      }
+    }
+  }
+  document.body.appendChild(table);
+  var rows = table.querySelectorAll('tr');
+  // A cell spanning two columns in place of two.
+  rows[2].firstElementChild.setAttribute('colspan', '2');
+  rows[2].children[1].remove();
+  // A cell put before the first of its row, which grows a column.
+  var made = document.createElement('td');
+  made.className = 'tall';
+  made.appendChild(document.createTextNode('\u2013\u2013\u2013\u2013\u2013'));
+  rows[4].insertBefore(made, rows[4].firstChild);
+  rows[4].lastElementChild.remove();
+</script>
+</body>
+</html>

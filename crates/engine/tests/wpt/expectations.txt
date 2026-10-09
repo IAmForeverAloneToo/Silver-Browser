@@ -128,8 +128,6 @@ css/css-counter-styles/trad-chinese-informal/css3-counter-styles-083.html       
 css/css-counter-styles/trad-chinese-informal/css3-counter-styles-084.html                 `trad-chinese-informal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
 css/css-counter-styles/trad-chinese-informal/css3-counter-styles-085.html                 `trad-chinese-informal` is one of the longhand Chinese, Japanese and Korean styles (Counter Styles 3 §7), which behave as `decimal` here
 css/css-counter-styles/ethiopic-numeric/counter-ethiopic-numeric.html                     `ethiopic-numeric` (Counter Styles 3 §7) behaves as `decimal` here
-css/css-variables/variable-declaration-19.html                                            the substituted value is an `rgb()` colour, a function the engine does not parse, so `color` is invalid at computed-value time and the text inherits black
-css/css-variables/variable-declaration-21.html                                            the substituted value is an `rgb()` colour, a function the engine does not parse, so `color` is invalid at computed-value time and the text inherits black
 css/css-lists/nested-marker.html                                                          a `::before` or `::after` with `display: list-item` is no list item here: it has no marker and does not count in `list-item`
 
 # Where the reference browser, the draft and the web-platform-tests do not

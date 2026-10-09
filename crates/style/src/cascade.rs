@@ -5121,11 +5121,92 @@ fn parse_font_family(tokens: &[Token]) -> Option<String> {
 }
 
 fn parse_color(tokens: &[Token]) -> Option<Color> {
+    if let [Token::Function(name), arguments @ .., Token::CloseParen] = trim(tokens)
+        && matches!(name.to_ascii_lowercase().as_str(), "rgb" | "rgba")
+    {
+        return parse_rgb(arguments);
+    }
     match single_token(tokens)? {
         Token::Hash { value, .. } => parse_hex_color(value),
         Token::Ident(name) => named_color(name),
         _ => None,
     }
+}
+
+/// The arguments of `rgb()` or `rgba()`, the same function (css-color-4
+/// section 5.1): the legacy syntax, three numbers or three percentages and
+/// an optional alpha separated by commas, or the modern one, three
+/// numbers or percentages, mixed, and an optional alpha after `/`,
+/// separated by white space, `none` as zero. A number is out of 255, a
+/// percentage out of 100, each clamped; an alpha a number out of 1 or a
+/// percentage. M25: what `getComputedStyle` gives a script to write back.
+fn parse_rgb(arguments: &[Token]) -> Option<Color> {
+    let legacy = arguments.iter().any(|token| matches!(token, Token::Comma));
+    let mut channels: Vec<&Token> = Vec::new();
+    let mut alpha = None;
+    if legacy {
+        for (i, part) in arguments
+            .split(|token| matches!(token, Token::Comma))
+            .enumerate()
+        {
+            let value = single_token(part)?;
+            match i {
+                0..=2 => channels.push(value),
+                3 => alpha = Some(value),
+                _ => return None,
+            }
+        }
+        // The legacy syntax takes no `none`, and its channels all of one
+        // kind.
+        let percent = matches!(channels.first(), Some(Token::Percentage { .. }));
+        if channels.iter().any(|token| {
+            !matches!(
+                (percent, token),
+                (true, Token::Percentage { .. }) | (false, Token::Number { .. })
+            )
+        }) || alpha.is_some_and(|token| matches!(token, Token::Ident(_)))
+        {
+            return None;
+        }
+    } else {
+        let words: Vec<&Token> = arguments
+            .iter()
+            .filter(|token| !matches!(token, Token::Whitespace))
+            .collect();
+        match words.as_slice() {
+            [r, g, b] => channels.extend([*r, *g, *b]),
+            [r, g, b, Token::Delim('/'), a] => {
+                channels.extend([*r, *g, *b]);
+                alpha = Some(*a);
+            }
+            _ => return None,
+        }
+    }
+    if channels.len() != 3 {
+        return None;
+    }
+    let channel = |token: &Token| -> Option<f32> {
+        let value = match token {
+            Token::Number { value, .. } => value / 255.0,
+            Token::Percentage { value } => value / 100.0,
+            Token::Ident(none) if none.eq_ignore_ascii_case("none") => 0.0,
+            _ => return None,
+        };
+        Some(value.clamp(0.0, 1.0) as f32)
+    };
+    let a = match alpha {
+        None => 1.0,
+        Some(Token::Number { value, .. }) => value.clamp(0.0, 1.0) as f32,
+        Some(Token::Percentage { value }) => (value / 100.0).clamp(0.0, 1.0) as f32,
+        Some(Token::Ident(none)) if none.eq_ignore_ascii_case("none") => 0.0,
+        Some(_) => return None,
+    };
+    Some(Color {
+        r: channel(channels[0])?,
+        g: channel(channels[1])?,
+        b: channel(channels[2])?,
+        a,
+    })
 }
 
 /// `content` (CSS 2.2 §12.2, M16): `normal`, `none`, or one or more
@@ -5629,6 +5710,7 @@ mod tests {
         };
         for (name, value) in [
             ("display", "flex"),
+            ("color", "rgb(0 0 0 / 50%)"),
             ("display", "-webkit-inline-flex"),
             ("width", "10px"),
             ("width", "fit-content"),
@@ -5748,7 +5830,7 @@ mod tests {
             ("width", "-5px"),
             ("width", "calc(10px + 1s)"),
             ("width", "sin(1deg)"),
-            ("color", "rgb(0, 0, 0)"),
+            ("color", "hsl(0 0% 0%)"),
             ("writing-mode", "vertical-rl"),
             ("bogus", "inherit"),
             ("font-size", "-1px"),
@@ -8311,6 +8393,51 @@ mod tests {
         );
         assert_eq!(parse_color(&css::tokenize("#ggg")), None);
         assert_eq!(parse_color(&css::tokenize("#ff")), None); // invalid length
+    }
+
+    #[test]
+    fn rgb_and_rgba_are_read_in_both_syntaxes() {
+        let color = |text: &str| parse_color(&css::tokenize(text));
+        let half = Color {
+            a: 0.5,
+            ..Color::rgb8(255, 0, 51)
+        };
+        for text in [
+            "rgb(255, 0, 51)",
+            "RGB(255,0,51)",
+            "rgba(255, 0, 51)",
+            "rgb(100%, 0%, 20%)",
+            "rgb(255 0 51)",
+            "rgb(100% 0 51)",
+            "rgb(255 none 51)",
+            "rgb(300, -5, 51)",
+        ] {
+            assert_eq!(color(text), Some(Color::rgb8(255, 0, 51)), "{text}");
+        }
+        for text in [
+            "rgba(255, 0, 51, 0.5)",
+            "rgb(255, 0, 51, 50%)",
+            "rgb(255 0 51 / 0.5)",
+            "rgba(255 0 51 / 50%)",
+        ] {
+            assert_eq!(color(text), Some(half), "{text}");
+        }
+        assert_eq!(color("rgb(0 0 0 / 2)").map(|c| c.a), Some(1.0));
+        for text in [
+            "rgb(255, 0%, 51)",
+            "rgb(255, none, 51)",
+            "rgb(255, 0, 51, none)",
+            "rgb(255, 0)",
+            "rgb(255 0 51 0.5)",
+            "rgb(255 0 51 x 0.5)",
+            "rgb(255, 0, 51, 1, 1)",
+            "rgb(255 0 51 / 0.5 / 1)",
+            "rgb(1px 0 0)",
+            "rgb(255 0 51",
+            "hsl(0 0% 0%)",
+        ] {
+            assert_eq!(color(text), None, "{text}");
+        }
     }
 
     #[test]

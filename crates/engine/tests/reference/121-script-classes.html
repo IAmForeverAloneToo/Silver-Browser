@@ -1,0 +1,45 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-scripts" content="on">
+<title>Classes, attributes and inline styles changed by a script: classList's add, toggle and replace, className, dataset, setAttribute, style.setProperty and cssText, an element put in and one taken out, each reaching the selectors that read it (a class, an attribute, a sibling combinator, nth-child) and an ancestor's class reaching its descendants</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 10px; }
+  .row { overflow: hidden; margin-bottom: 10px; padding: 4px; background-color: #d8d0c0; }
+  .cell { float: left; width: 40px; height: 40px; margin: 4px; background-color: #a8a090; }
+  .on { background-color: #2f7f4f; }
+  .big { width: 70px; }
+  .cell:nth-child(4n) { height: 60px; }
+  .cell.on + .cell { margin-top: 20px; }
+  [data-state="x"] { background-color: #7f2f4f; }
+  .dense .cell { margin: 1px; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<div class="row" id="first"><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell"></div></div>
+<div class="row" id="second"><div class="cell"></div><div class="cell on"></div><div class="cell"></div><div class="cell"></div><div class="cell"></div></div>
+<script>
+  var cells = document.querySelectorAll('#first .cell');
+  cells[0].classList.add('on');
+  cells[1].classList.toggle('big');
+  cells[2].className += ' on';
+  cells[3].dataset.state = 'x';
+  cells[4].classList.toggle('on');
+  cells[4].classList.toggle('on');
+  cells[5].classList.add('big', 'on');
+  cells[5].classList.replace('big', 'hidden');
+  cells[6].setAttribute('class', 'cell big');
+  cells[7].style.setProperty('background-color', '#4f2f7f');
+  cells[7].style.cssText += 'width: 24px';
+  var made = document.createElement('div');
+  made.className = 'cell on';
+  cells[2].parentNode.insertBefore(made, cells[2]);
+  cells[1].remove();
+  document.getElementById('second').classList.toggle('dense');
+  document.querySelector('#second .on').classList.remove('on');
+  document.querySelector('#second .cell:last-child').classList.add('on');
+</script>
+</body>
+</html>

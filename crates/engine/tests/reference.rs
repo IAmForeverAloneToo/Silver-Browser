@@ -48,7 +48,9 @@
 //! every page's, and the page is loaded by its `file:` URL, since only a
 //! document parsed as it arrives runs scripts, its scripts beside it
 //! under `scripts/`; it is drawn once loaded, its deferred scripts run.
-//! The other pages have none, and the engine runs none there.
+//! The other pages have none, and the engine runs none there. The
+//! engine is given the viewport's size before the load, which a page's
+//! scripts read (M25).
 //!
 //! A page may declare `<meta name="reference-tolerance" content="N">`:
 //! a channel may then differ by up to `N`, and the test says how many
@@ -231,6 +233,8 @@ fn render(
     let mut engine = engine();
     engine.set_media_type(setting.media_type);
     engine.set_preferences(setting.preferences);
+    // The page's scripts read the window's size as it loads (M25).
+    engine.set_viewport(setting.width, setting.height);
     let scripts = meta(source, "reference-scripts") == Some("on");
     engine.set_scripting(scripts);
     let by_url = scripts || meta(source, "reference-load") == Some("file");
@@ -452,10 +456,10 @@ fn every_reference_page_renders_as_its_capture() {
     let pages = pages();
     assert_eq!(
         pages.len(),
-        118,
+        122,
         "the ten cases of M10's design note, the eleven of M11's, the five of M12's, the three of M16's, \
          the twenty of M17's, the twenty of M18's, the ten of M19's, the eleven of M20's, the nine \
-         of M21's, the ten of M22's, the six of M23's and the three of M24's"
+         of M21's, the ten of M22's, the six of M23's, the three of M24's and the four of M25's"
     );
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/reference");
     let mut failures = Vec::new();

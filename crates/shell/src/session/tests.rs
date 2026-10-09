@@ -746,3 +746,40 @@ fn a_pages_scripts_title_the_window_and_a_realm_out_of_memory_says_so() {
         Some("Scripts stopped on this page: out of memory")
     );
 }
+
+#[test]
+fn a_page_loaded_before_the_first_frame_reads_the_windows_page_area() {
+    // The window's size is known before a frame is drawn: a page that
+    // arrives first reads the page's area under the toolbar (M25).
+    let server = serve(|path| match path {
+        "/" => html("<script>document.title = innerWidth + ' by ' + innerHeight</script>"),
+        _ => None,
+    });
+    let fonts = text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
+        .expect("the bundled font parses");
+    let mut engine = Engine::with_fonts(fonts);
+    engine.set_scripting(true);
+    let (wake, woken) = channel();
+    engine.set_waker(move || {
+        let _ = wake.send(());
+    });
+    let mut session = Session::new(
+        engine,
+        Box::new(Board::default()),
+        Platform::Other,
+        Some(server.url("/")),
+    );
+    session.resized(WIDTH, HEIGHT);
+    let deadline = Instant::now() + WAIT;
+    while *session.engine().load_state() == LoadState::Loading {
+        let left = deadline
+            .checked_duration_since(Instant::now())
+            .expect("the page loads in time");
+        woken.recv_timeout(left).expect("a fetch finishes in time");
+        session.network();
+    }
+    assert_eq!(
+        session.engine().title(),
+        format!("{WIDTH} by {}", HEIGHT - ui::HEIGHT)
+    );
+}
