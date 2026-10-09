@@ -27,6 +27,9 @@ shell          (bin "silver-browser": windowing, event loop, input, clipboard)
     ├ text    (font loading, shaping, glyph rasterization)
     | images  (image decoding, animation frames, decode bounds: a leaf
     |          crate, since M23, below layout, paint and render)
+    | js      (scripts: the script engine behind traits of the engine's,
+    |          the boundary scripts reach the document through, and
+    |          their limits: a leaf crate, since M24, below engine)
     ├ net     (URL parsing, resource fetching)
     ├ html    (bytes → DOM)
     ├ css     (stylesheet bytes → CSSOM)
@@ -68,6 +71,14 @@ shell          (bin "silver-browser": windowing, event loop, input, clipboard)
    behind the same trait, and the shell draws on it where the machine
    has an adapter (D3, D8). Both hand the shell a frame it presents
    through softbuffer (D9).
+8. **`unsafe` only at the edges (since M24).** No crate of the
+   workspace writes `unsafe` but `shell`, for the platform calls its
+   windowing crates do not make, each block with a `// SAFETY:`
+   argument. Code in another language is reached through a
+   third-party crate's safe interface: QuickJS-ng through `rquickjs` in
+   `js`, which says so with `#![forbid(unsafe_code)]`, and aws-lc
+   through `rustls` in `net`. The unsafe code that leaves, third-party
+   and pinned, is M33.5's audit.
 
 ## Why this shape scales toward "Chrome-scale"
 

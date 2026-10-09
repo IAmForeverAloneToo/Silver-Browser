@@ -3,7 +3,8 @@
 # the HTTP/1.1 response reader, the HTML parser, the CSS tokenizer and
 # parser, the selector parser, the cascade, and the whole pipeline
 # through to a raster; for the image decoders; and for the engine whose
-# document changes in place, held to a full pass over it.
+# document changes in place, held to a full pass over it; and for
+# scripts, which run under their limits.
 # Not a workspace member: libfuzzer needs nightly, and the normal build
 # must not.
 # `cargo +nightly fuzz run <target>` from the repository root; CI runs
@@ -29,6 +30,7 @@ encoding = { path = "../crates/encoding" }
 engine = { path = "../crates/engine", default-features = false }
 html = { path = "../crates/html" }
 images = { path = "../crates/images" }
+js = { path = "../crates/js" }
 layout = { path = "../crates/layout" }
 net = { path = "../crates/net" }
 paint = { path = "../crates/paint" }
@@ -132,3 +134,10 @@ name = "image_decode"
 path = "fuzz_targets/image_decode.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "script"
+path = "fuzz_targets/script.rs"
+test = false
+doc = false
+bench = false

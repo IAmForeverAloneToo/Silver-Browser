@@ -14,6 +14,7 @@ license = "AGPL-3.0-only"
 #   engine -> { render, paint, layout, style, text, net, html, css } -> { dom, encoding }
 #   ui -> { render, paint, text }
 #   layout, paint, render -> images (a leaf: decoders, M23)
+#   engine -> js (a leaf: scripts, M24)
 # See docs/architecture.md — the layering contract is binding.
 [workspace.dependencies]
 # Internal crates
@@ -32,6 +33,7 @@ images = { path = "crates/images" }
 render = { path = "crates/render", default-features = false }
 engine = { path = "crates/engine", default-features = false }
 ui = { path = "crates/ui" }
+js = { path = "crates/js" }
 
 # External crates
 winit = "0.30"
@@ -92,6 +94,12 @@ pdf-writer = "0.15"
 # need alone.
 windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSAccessibility", "NSWorkspace"] }
+
+# The JavaScript engine (M24, roadmap D1, docs/design/scripting.md):
+# QuickJS-ng, which rquickjs-sys builds from its C source with `cc`,
+# pinned to the version the design note measured. Without the allocator
+# features, under which the heap limit would do nothing.
+rquickjs = { version = "=0.14.0", default-features = false, features = ["std"] }
 
 # Dependencies are optimised even in the dev profile: the rasterizer,
 # the shaper and the font parser are not what a debug build is for
