@@ -56,7 +56,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use dom::{Change, Document, NodeId};
+use dom::{Change, Document, ElementState, NodeId};
 
 use crate::selector_matching::{Combinator, PseudoClass, SelectorList, SimpleSelector};
 
@@ -92,6 +92,23 @@ pub struct SelectorFeatures {
     /// An `attr()` whose name is substituted (M21.5): every attribute
     /// counts.
     any_attribute: bool,
+    /// The element state flags the state pseudo-classes read (M26.4), by
+    /// where they stand: in a selector's subject compound, which a change
+    /// restyles the element for; in a compound a child or descendant
+    /// combinator follows, its subtree; one a sibling combinator follows,
+    /// its later siblings.
+    states_subject: u8,
+    states_ancestor: u8,
+    states_sibling: u8,
+}
+
+/// Where in a selector a simple selector stands, for the state
+/// pseudo-classes' invalidation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum At {
+    Subject,
+    Ancestor,
+    Sibling,
 }
 
 impl SelectorFeatures {
@@ -106,17 +123,54 @@ impl SelectorFeatures {
                     self.sibling_combinators = true;
                 }
             }
-            // The pseudo-classes after a pseudo-element are user-action
-            // ones, which read nothing a change records (M26.4).
-            for compound in &selector.compounds {
+            let last = selector.compounds.len().saturating_sub(1);
+            for (i, compound) in selector.compounds.iter().enumerate() {
+                let at = if i == last {
+                    At::Subject
+                } else if matches!(
+                    selector.combinators.get(i),
+                    Some(Combinator::NextSibling | Combinator::LaterSibling)
+                ) {
+                    At::Sibling
+                } else {
+                    At::Ancestor
+                };
                 for simple in &compound.simple {
-                    self.add_simple(simple);
+                    self.add_simple(simple, at);
+                }
+            }
+            // The pseudo-classes after a pseudo-element read the
+            // originating element's state (M26.4).
+            if let Some(ending) = &selector.pseudo_element {
+                for state in &ending.states {
+                    self.add_pseudo_class(state, At::Subject);
                 }
             }
         }
     }
 
-    fn add_simple(&mut self, simple: &SimpleSelector) {
+    /// Adds what `list`'s selectors depend on, each standing at `at` in
+    /// the selector around them: the state pseudo-classes in a nested
+    /// list count where it stands.
+    fn add_nested(&mut self, list: &SelectorList, at: At) {
+        for selector in &list.0 {
+            for compound in &selector.compounds {
+                for simple in &compound.simple {
+                    self.add_simple(simple, at);
+                }
+            }
+            for combinator in &selector.combinators {
+                if matches!(
+                    combinator,
+                    Combinator::NextSibling | Combinator::LaterSibling
+                ) {
+                    self.sibling_combinators = true;
+                }
+            }
+        }
+    }
+
+    fn add_simple(&mut self, simple: &SimpleSelector, at: At) {
         match simple {
             SimpleSelector::Type(_) | SimpleSelector::Universal => {}
             SimpleSelector::Id(id) => {
@@ -128,11 +182,11 @@ impl SelectorFeatures {
             SimpleSelector::Attribute { name, .. } => {
                 self.attributes.insert(name.clone());
             }
-            SimpleSelector::PseudoClass(pc) => self.add_pseudo_class(pc),
+            SimpleSelector::PseudoClass(pc) => self.add_pseudo_class(pc, at),
         }
     }
 
-    fn add_pseudo_class(&mut self, pc: &PseudoClass) {
+    fn add_pseudo_class(&mut self, pc: &PseudoClass, at: At) {
         match pc {
             PseudoClass::FirstChild | PseudoClass::FirstOfType | PseudoClass::NthOfType { .. } => {
                 self.counts_from_start = true;
@@ -140,7 +194,7 @@ impl SelectorFeatures {
             PseudoClass::NthChild { of: None, .. } => self.counts_from_start = true,
             PseudoClass::NthChild { of: Some(list), .. } => {
                 self.every_sibling = true;
-                self.add(list);
+                self.add_nested(list, At::Sibling);
             }
             PseudoClass::LastChild
             | PseudoClass::LastOfType
@@ -149,7 +203,7 @@ impl SelectorFeatures {
             PseudoClass::OnlyChild | PseudoClass::OnlyOfType => self.every_sibling = true,
             PseudoClass::Empty => self.empty = true,
             PseudoClass::Not(list) | PseudoClass::Is(list) | PseudoClass::Where(list) => {
-                self.add(list);
+                self.add_nested(list, at);
             }
             PseudoClass::Link | PseudoClass::AnyLink => self.read(&["href"]),
             PseudoClass::Lang(_) => {
@@ -167,18 +221,25 @@ impl SelectorFeatures {
                 ]);
             }
             PseudoClass::Required | PseudoClass::Optional => self.read(&["required", "type"]),
+            PseudoClass::Hover => self.read_state(ElementState::HOVER, at),
+            PseudoClass::Focus => self.read_state(ElementState::FOCUS, at),
+            PseudoClass::FocusVisible => self.read_state(ElementState::FOCUS_VISIBLE, at),
+            PseudoClass::FocusWithin => self.read_state(ElementState::FOCUS_WITHIN, at),
+            PseudoClass::Active => self.read_state(ElementState::ACTIVE, at),
+            PseudoClass::Target => self.read_state(ElementState::TARGET, at),
             // `:root` (and `:scope`, which is `:root` in a style rule)
             // depends on the parent, which an insertion restyles whole;
-            // the dynamic ones never match yet.
-            PseudoClass::Root
-            | PseudoClass::Scope
-            | PseudoClass::Hover
-            | PseudoClass::Focus
-            | PseudoClass::FocusVisible
-            | PseudoClass::FocusWithin
-            | PseudoClass::Active
-            | PseudoClass::Visited
-            | PseudoClass::Target => {}
+            // `:visited` never matches.
+            PseudoClass::Root | PseudoClass::Scope | PseudoClass::Visited => {}
+        }
+    }
+
+    /// Counts the state flag `flag` as read at `at`.
+    fn read_state(&mut self, flag: ElementState, at: At) {
+        match at {
+            At::Subject => self.states_subject |= flag.0,
+            At::Ancestor => self.states_ancestor |= flag.0,
+            At::Sibling => self.states_sibling |= flag.0,
         }
     }
 
@@ -310,6 +371,8 @@ pub(crate) fn invalidate(
     let mut out = Invalidation::default();
     // Each attribute's value before the first of its changes.
     let mut attributes: HashMap<(NodeId, &str), Option<&str>> = HashMap::new();
+    // Each element's state before the first of its changes.
+    let mut states: HashMap<NodeId, ElementState> = HashMap::new();
     // Whether every radio button is to be restyled (`:checked`).
     let mut radios = false;
     for change in changes {
@@ -338,7 +401,9 @@ pub(crate) fn invalidate(
                     }
                 }
             }
-            Change::AttributeChanged { .. } | Change::TextChanged { .. } => {}
+            Change::AttributeChanged { .. }
+            | Change::TextChanged { .. }
+            | Change::StateChanged { .. } => {}
         }
         match change {
             Change::Everything => {}
@@ -404,6 +469,34 @@ pub(crate) fn invalidate(
                     .or_insert(old.as_deref());
             }
             Change::TextChanged { .. } => {}
+            Change::StateChanged { element, old } => {
+                states.entry(*element).or_insert(*old);
+            }
+        }
+    }
+    // A state flag's change restyles as far as the selectors that read
+    // it reach (M26.4): the element, its subtree, its later siblings.
+    for (element, old) in states {
+        let changed = old.0 ^ document.state(element).0;
+        if changed & features.states_ancestor != 0 {
+            out.mark(document, element, Reach::Subtree);
+        } else if changed & features.states_subject != 0 {
+            out.mark(document, element, Reach::Element);
+        }
+        if changed & features.states_sibling != 0 {
+            if let Some(parent) = document.parent(element)
+                && features.every_sibling
+            {
+                for sibling in document.element_children(parent) {
+                    out.mark(document, sibling, Reach::Subtree);
+                }
+            } else {
+                let mut at = document.next_element_sibling(element);
+                while let Some(sibling) = at {
+                    out.mark(document, sibling, Reach::Subtree);
+                    at = document.next_element_sibling(sibling);
+                }
+            }
         }
     }
     for ((element, name), old) in attributes {
@@ -736,6 +829,52 @@ mod tests {
         let r = change(&mut d, &sheets, &mut styles, |d| {
             d.set_attribute(x, "class", "b").unwrap();
             d.set_attribute(x, "class", "c").unwrap();
+        });
+        assert_eq!(r.computed, 0);
+    }
+
+    #[test]
+    fn a_state_restyles_as_far_as_the_selectors_that_read_it_reach() {
+        let (mut d, sheets, mut styles) = setup(
+            "<div id=a><p id=b>x</p><p id=c>y</p></div>\
+             <div id=d><span id=e>z</span></div><p id=f>w</p>",
+            "#b:hover { color: #f00 } :is(#d:hover) span { color: #00f } \
+             #b:focus + p { color: #0f0 } p::before:focus-within { content: 'x' }              #c:target { color: #0ff }",
+        );
+        let set = |d: &mut Document, id: &str, state: ElementState| {
+            let node = by_id(d, id);
+            d.set_state(node, state).unwrap();
+        };
+        // In the subject: the element alone, and its children only when
+        // its style changes, which #a's does not.
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            set(d, "a", ElementState::TARGET)
+        });
+        assert_eq!((r.computed, r.changed.len()), (1, 0));
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            set(d, "b", ElementState::HOVER)
+        });
+        assert_eq!((r.computed, r.changed.len()), (1, 1));
+        // Before a descendant combinator: the subtree.
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            set(d, "d", ElementState::HOVER)
+        });
+        assert_eq!((r.computed, r.changed.len()), (2, 1));
+        // Before a sibling combinator: the later siblings, the element
+        // itself not, since no subject reads that flag.
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            set(d, "b", ElementState::HOVER.with(ElementState::FOCUS, true))
+        });
+        assert_eq!((r.computed, r.changed.len()), (1, 1));
+        // After a pseudo-element: its element.
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            set(d, "f", ElementState::FOCUS_WITHIN)
+        });
+        assert_eq!(r.computed, 1);
+        // A flag no selector reads restyles nothing.
+        let (mut d, sheets, mut styles) = setup("<div id=a><p>x</p></div>", "p { color: #f00 }");
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            set(d, "a", ElementState::HOVER.with(ElementState::TARGET, true))
         });
         assert_eq!(r.computed, 0);
     }

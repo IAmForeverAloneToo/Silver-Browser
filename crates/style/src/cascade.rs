@@ -115,11 +115,11 @@ use crate::animation::{Animations, Phase, Property, Timing, Transitioning, Value
 use crate::calc::{self, LengthUnit, Want};
 use crate::computed::{
     AlignPosition, BOTTOM, BaselinePosition, BorderCollapse, BorderSpacing, BorderStyle, BoxSizing,
-    CaptionSide, Clear, Color, ComputedStyle, Content, ContentAlignment, ContentItem, Direction,
-    Display, Edges, EmptyCells, FlexBasis, FlexDirection, FlexWrap, Float, LEFT, LengthPercentage,
-    LengthPercentageAuto, MarginEdges, MaxSize, Overflow, OverflowAlign, PaddingEdges, Position,
-    Quotes, RIGHT, SelfAlignment, Size, TOP, TableLayout, TextAlign, TextAlignLast, TextJustify,
-    TextTransform, VerticalAlign, WhiteSpace,
+    CaptionSide, Clear, Color, ComputedStyle, Content, ContentAlignment, ContentItem, Cursor,
+    Direction, Display, Edges, EmptyCells, FlexBasis, FlexDirection, FlexWrap, Float, LEFT,
+    LengthPercentage, LengthPercentageAuto, MarginEdges, MaxSize, Outline, OutlineStyle, Overflow,
+    OverflowAlign, PaddingEdges, Position, Quotes, RIGHT, SelfAlignment, Size, TOP, TableLayout,
+    TextAlign, TextAlignLast, TextJustify, TextTransform, VerticalAlign, WhiteSpace,
 };
 use crate::computed::{
     AnimationPlayState, Backgrounds, BorderImage, Calc, Decoration, Effects, Fragmentation,
@@ -2746,6 +2746,12 @@ fn apply_declaration(
             parse_border_spacing(value, bases),
         ),
         "caption-side" => set(&mut style.caption_side, parse_caption_side(value)),
+        "outline" => apply_outline_shorthand(style, value, bases),
+        "outline-style" => set_outline(style, parse_outline_style(value), |o, v| o.style = v),
+        "outline-width" => set_outline(style, parse_border_width(value, bases), |o, v| o.width = v),
+        "outline-color" => set_outline(style, parse_outline_color(value), |o, v| o.color = v),
+        "outline-offset" => set_outline(style, parse_length_px(value, bases), |o, v| o.offset = v),
+        "cursor" => set(&mut style.cursor, parse_cursor(value)),
         "empty-cells" => set(&mut style.empty_cells, parse_empty_cells(value)),
         "vertical-align" => set(
             &mut style.vertical_align,
@@ -3372,6 +3378,30 @@ fn copy_image(
 }
 
 /// [`copy_grid`] for the effects properties.
+/// [`set`] for the outline properties (M26.4), which live behind
+/// [`ComputedStyle::outline`].
+fn set_outline<T>(
+    style: &mut ComputedStyle,
+    v: Option<T>,
+    update: impl FnOnce(&mut Outline, T),
+) -> bool {
+    v.map(|v| update(style.outline_mut(), v)).is_some()
+}
+
+/// Copies an outline property from `src`, leaving the group unmade when
+/// neither has one.
+fn copy_outline(
+    style: &mut ComputedStyle,
+    src: &ComputedStyle,
+    copy: impl FnOnce(&mut Outline, &Outline),
+) {
+    if style.outline.is_none() && src.outline.is_none() {
+        return;
+    }
+    let src = src.outline().clone();
+    copy(style.outline_mut(), &src);
+}
+
 fn copy_effects(
     style: &mut ComputedStyle,
     src: &ComputedStyle,
@@ -3494,6 +3524,7 @@ fn is_inherited(name: &str) -> bool {
             | "border-collapse"
             | "border-spacing"
             | "caption-side"
+            | "cursor"
             | "empty-cells"
             | "quotes"
             | "orphans"
@@ -3639,6 +3670,16 @@ fn apply_css_wide(
         "border-collapse" => style.border_collapse = src.border_collapse,
         "border-spacing" => style.border_spacing = src.border_spacing,
         "caption-side" => style.caption_side = src.caption_side,
+        "outline" => copy_outline(style, src, |o, s| {
+            o.style = s.style;
+            o.width = s.width;
+            o.color = s.color;
+        }),
+        "outline-style" => copy_outline(style, src, |o, s| o.style = s.style),
+        "outline-width" => copy_outline(style, src, |o, s| o.width = s.width),
+        "outline-color" => copy_outline(style, src, |o, s| o.color = s.color),
+        "outline-offset" => copy_outline(style, src, |o, s| o.offset = s.offset),
+        "cursor" => style.cursor = src.cursor,
         "empty-cells" => style.empty_cells = src.empty_cells,
         "vertical-align" => style.vertical_align = src.vertical_align.clone(),
         "content" => style.content = src.content.clone(),
@@ -4380,6 +4421,82 @@ fn parse_border_spacing(tokens: &[Token], bases: &LengthBases<'_>) -> Option<Bor
         horizontal,
         vertical,
     })
+}
+
+/// `outline-style` (CSS UI 4 section 5.3).
+fn parse_outline_style(tokens: &[Token]) -> Option<OutlineStyle> {
+    OutlineStyle::from_keyword(single_ident(tokens)?)
+}
+
+/// `outline-color`: a colour, or `auto` or `currentcolor`, `None` (CSS
+/// UI 4 section 5.4); the reference browser's focus ring colour is
+/// `-webkit-focus-ring-color`.
+fn parse_outline_color(tokens: &[Token]) -> Option<Option<Color>> {
+    match single_ident(tokens) {
+        Some(ident)
+            if ident.eq_ignore_ascii_case("auto") || ident.eq_ignore_ascii_case("currentcolor") =>
+        {
+            Some(None)
+        }
+        _ => parse_color(tokens).map(Some),
+    }
+}
+
+/// The `outline` shorthand (CSS UI 4 section 5.1): a colour, a style and
+/// a width, each at most once, in any order; those left out are reset.
+fn apply_outline_shorthand(
+    style: &mut ComputedStyle,
+    tokens: &[Token],
+    bases: &LengthBases<'_>,
+) -> bool {
+    let groups = split_components(tokens);
+    if groups.is_empty() {
+        return false;
+    }
+    let mut width = None;
+    let mut outline_style = None;
+    let mut color = None;
+    for g in groups {
+        if width.is_none()
+            && let Some(w) = parse_border_width(&g, bases)
+        {
+            width = Some(w);
+        } else if outline_style.is_none()
+            && let Some(s) = parse_outline_style(&g)
+        {
+            outline_style = Some(s);
+        } else if color.is_none()
+            && let Some(c) = parse_outline_color(&g)
+        {
+            color = Some(c);
+        } else {
+            return false;
+        }
+    }
+    let initial = Outline::default();
+    let outline = style.outline_mut();
+    outline.width = width.unwrap_or(initial.width);
+    outline.style = outline_style.unwrap_or(initial.style);
+    outline.color = color.flatten();
+    true
+}
+
+/// `cursor` (CSS UI 4 section 4.1): `[ <url> [<x> <y>]? , ]*` and a
+/// keyword; the images are not shown, so the keyword is the value.
+fn parse_cursor(tokens: &[Token]) -> Option<Cursor> {
+    let mut parts = tokens.split(|token| matches!(token, Token::Comma));
+    let last = parts.next_back()?;
+    for image in parts {
+        let is_url = match trim(image).first() {
+            Some(Token::Url { .. }) => true,
+            Some(Token::Function(name)) => name.eq_ignore_ascii_case("url"),
+            _ => false,
+        };
+        if !is_url {
+            return None;
+        }
+    }
+    Cursor::from_keyword(single_ident(last)?)
 }
 
 /// `caption-side` (M12): `top` or `bottom`; css-logical's `inline-start`
@@ -5527,6 +5644,10 @@ fn named_color(name: &str) -> Option<Color> {
     let name = name.to_ascii_lowercase();
     if name == "transparent" {
         return Some(Color::TRANSPARENT);
+    }
+    // The reference browser's focus ring (M26.4).
+    if name == "-webkit-focus-ring-color" {
+        return Some(Color::rgb8(16, 16, 16));
     }
     let at = NAMED_COLORS
         .binary_search_by(|(known, _)| known.cmp(&name.as_str()))
@@ -8122,6 +8243,64 @@ mod tests {
             "p",
         );
         assert_eq!(s.order, 0);
+    }
+
+    #[test]
+    fn outline_and_cursor_compute_as_css_ui_says() {
+        use crate::computed::{Cursor, OutlineStyle};
+        let html = "<div><p>x</p></div>";
+        let pair = |css: &str| {
+            let sheets = [sheet(css)];
+            (style_of(html, &sheets, "div"), style_of(html, &sheets, "p"))
+        };
+        let red = Color::rgb8(255, 0, 0);
+        let blue = Color::rgb8(0, 0, 255);
+        // The outline is not inherited; the cursor is, and its images'
+        // fallback keyword is what it is.
+        let (div, p) = pair(
+            "div { outline: 2px dashed red; outline-offset: -1px; \
+             cursor: url(a.png) 1 2, url(b.cur), help; color: blue }",
+        );
+        assert_eq!(div.outline().style, OutlineStyle::Dashed);
+        assert_eq!(div.outline().width, 2.0);
+        assert_eq!(div.outline_color(), red);
+        assert_eq!(div.outline().offset, -1.0);
+        assert_eq!((div.cursor, p.cursor), (Cursor::Help, Cursor::Help));
+        assert_eq!(p.outline().style, OutlineStyle::None);
+        assert_eq!(p.used_outline_width(), 0.0);
+        // A colour left out is `currentcolor`; a width left out medium;
+        // the shorthand resets what it leaves out.
+        let (div, _) = pair("div { outline-color: red; outline: solid; color: blue }");
+        assert_eq!((div.outline_color(), div.used_outline_width()), (blue, 3.0));
+        let (div, _) = pair("div { outline: thick solid; color: #00f }");
+        assert_eq!(div.used_outline_width(), 5.0);
+        let (div, _) = pair("div { outline-style: auto; outline-color: -webkit-focus-ring-color }");
+        assert_eq!(div.outline().style, OutlineStyle::Auto);
+        assert_eq!(div.outline_color(), Color::rgb8(16, 16, 16));
+        // What does not parse is dropped.
+        for bad in [
+            "cursor: url(a.png)",
+            "cursor: hand",
+            "cursor: help, pointer",
+            "outline: red blue",
+            "outline-style: hidden",
+            "outline-width: -1px",
+        ] {
+            let (div, _) = pair(&format!(
+                "div {{ cursor: move; outline: 1px dotted red; {bad} }}"
+            ));
+            assert_eq!(div.cursor, Cursor::Move, "{bad}");
+            assert_eq!(div.outline().style, OutlineStyle::Dotted, "{bad}");
+            assert_eq!(div.used_outline_width(), 1.0, "{bad}");
+        }
+        // As a script reads them.
+        let (div, _) = pair("div { outline: 2.7px groove; color: #ff0000; cursor: NOT-allowed }");
+        let value = |name| crate::serialize::computed_value(&div, name);
+        assert_eq!(value("outline-style").as_deref(), Some("groove"));
+        assert_eq!(value("outline-width").as_deref(), Some("2px"));
+        assert_eq!(value("outline-color").as_deref(), Some("rgb(255, 0, 0)"));
+        assert_eq!(value("outline-offset").as_deref(), Some("0px"));
+        assert_eq!(value("cursor").as_deref(), Some("not-allowed"));
     }
 
     #[test]

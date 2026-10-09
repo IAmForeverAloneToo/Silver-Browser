@@ -155,6 +155,9 @@ pub enum Change {
     },
     /// A text node's data changed.
     TextChanged { node: NodeId },
+    /// The state flags the user's actions set on `element` changed
+    /// (M26); `old` is what they were.
+    StateChanged { element: NodeId, old: ElementState },
     /// More changed than the journal keeps ([`MAX_JOURNAL`]): treat the
     /// whole document as changed.
     Everything,
@@ -202,11 +205,50 @@ impl fmt::Display for MutationError {
 
 impl std::error::Error for MutationError {}
 
+/// The flags the user's actions set on an element (M26,
+/// `docs/design/events.md`): what the dynamic pseudo-classes match. A
+/// set of [`ElementState`]'s constants.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ElementState(pub u8);
+
+impl ElementState {
+    pub const NONE: ElementState = ElementState(0);
+    /// Under the pointer, or an ancestor of what is: `:hover`.
+    pub const HOVER: ElementState = ElementState(1);
+    /// Being activated, a primary button held down on it or one of its
+    /// descendants: `:active`.
+    pub const ACTIVE: ElementState = ElementState(2);
+    /// Focused: `:focus`.
+    pub const FOCUS: ElementState = ElementState(4);
+    /// Focused, the focus to be shown: `:focus-visible`.
+    pub const FOCUS_VISIBLE: ElementState = ElementState(8);
+    /// Focused, or an ancestor of what is: `:focus-within`.
+    pub const FOCUS_WITHIN: ElementState = ElementState(16);
+    /// The element the document's URL's fragment indicates: `:target`.
+    pub const TARGET: ElementState = ElementState(32);
+
+    /// Whether every flag of `flags` is set.
+    pub fn contains(self, flags: ElementState) -> bool {
+        self.0 & flags.0 == flags.0
+    }
+
+    /// These flags with `flags` set, or cleared when not `on`.
+    pub fn with(self, flags: ElementState, on: bool) -> ElementState {
+        if on {
+            ElementState(self.0 | flags.0)
+        } else {
+            ElementState(self.0 & !flags.0)
+        }
+    }
+}
+
 /// A live node: what it is and where it is. Links are slot indices of
 /// live nodes, so their generations are the slots' current ones.
 #[derive(Debug, Clone)]
 struct Record {
     data: NodeData,
+    /// An element's state flags (M26).
+    state: ElementState,
     parent: Option<u32>,
     first_child: Option<u32>,
     last_child: Option<u32>,
@@ -416,6 +458,30 @@ impl Document {
             NodeData::Element { tag, .. } => Some(tag),
             _ => None,
         }
+    }
+
+    /// An element's state flags (M26); none for another node or a stale
+    /// id.
+    #[inline]
+    pub fn state(&self, id: NodeId) -> ElementState {
+        self.record(id)
+            .map_or(ElementState::NONE, |record| record.state)
+    }
+
+    /// Sets an element's state flags to `state` (M26), journaled when
+    /// they change. A node that is not an element has none.
+    pub fn set_state(&mut self, element: NodeId, state: ElementState) -> Result<(), MutationError> {
+        let record = self.record_mut(element).ok_or(MutationError::NoSuchNode)?;
+        if !matches!(record.data, NodeData::Element { .. }) {
+            return Err(MutationError::WrongKind);
+        }
+        let old = record.state;
+        if old == state {
+            return Ok(());
+        }
+        record.state = state;
+        self.record_change(Change::StateChanged { element, old });
+        Ok(())
     }
 
     /// An element's attributes, in order.
@@ -1000,6 +1066,7 @@ impl Document {
         self.data_bytes += data_size(&data);
         let record = Record {
             data,
+            state: ElementState::NONE,
             parent: None,
             first_child: None,
             last_child: None,

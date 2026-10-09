@@ -187,10 +187,12 @@ impl Browser {
         let shape = self.session.shape();
         if self.shown.shape != Some(shape) {
             self.shown.shape = Some(shape);
+            window.set_cursor_visible(shape != Shape::Page(engine::Cursor::None));
             window.set_cursor(match shape {
                 Shape::Arrow => CursorIcon::Default,
                 Shape::Hand => CursorIcon::Pointer,
                 Shape::Text => CursorIcon::Text,
+                Shape::Page(cursor) => cursor_icon(cursor),
             });
         }
         let ime = self.session.ime_area().map(|(x, y, w, h)| {
@@ -400,6 +402,47 @@ impl ApplicationHandler<NetworkWake> for Browser {
             _ => return,
         }
         self.update(&window);
+    }
+}
+
+/// The OS's cursor for a page's `cursor` (M26.4); `none` hides it.
+fn cursor_icon(cursor: engine::Cursor) -> CursorIcon {
+    use engine::Cursor;
+    match cursor {
+        Cursor::Auto | Cursor::Default | Cursor::None => CursorIcon::Default,
+        Cursor::ContextMenu => CursorIcon::ContextMenu,
+        Cursor::Help => CursorIcon::Help,
+        Cursor::Pointer => CursorIcon::Pointer,
+        Cursor::Progress => CursorIcon::Progress,
+        Cursor::Wait => CursorIcon::Wait,
+        Cursor::Cell => CursorIcon::Cell,
+        Cursor::Crosshair => CursorIcon::Crosshair,
+        Cursor::Text => CursorIcon::Text,
+        Cursor::VerticalText => CursorIcon::VerticalText,
+        Cursor::Alias => CursorIcon::Alias,
+        Cursor::Copy => CursorIcon::Copy,
+        Cursor::Move => CursorIcon::Move,
+        Cursor::NoDrop => CursorIcon::NoDrop,
+        Cursor::NotAllowed => CursorIcon::NotAllowed,
+        Cursor::Grab => CursorIcon::Grab,
+        Cursor::Grabbing => CursorIcon::Grabbing,
+        Cursor::EResize => CursorIcon::EResize,
+        Cursor::NResize => CursorIcon::NResize,
+        Cursor::NeResize => CursorIcon::NeResize,
+        Cursor::NwResize => CursorIcon::NwResize,
+        Cursor::SResize => CursorIcon::SResize,
+        Cursor::SeResize => CursorIcon::SeResize,
+        Cursor::SwResize => CursorIcon::SwResize,
+        Cursor::WResize => CursorIcon::WResize,
+        Cursor::EwResize => CursorIcon::EwResize,
+        Cursor::NsResize => CursorIcon::NsResize,
+        Cursor::NeswResize => CursorIcon::NeswResize,
+        Cursor::NwseResize => CursorIcon::NwseResize,
+        Cursor::ColResize => CursorIcon::ColResize,
+        Cursor::RowResize => CursorIcon::RowResize,
+        Cursor::AllScroll => CursorIcon::AllScroll,
+        Cursor::ZoomIn => CursorIcon::ZoomIn,
+        Cursor::ZoomOut => CursorIcon::ZoomOut,
     }
 }
 

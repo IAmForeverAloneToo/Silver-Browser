@@ -53,8 +53,10 @@ pub(crate) enum Shape {
     Arrow,
     /// Over a link.
     Hand,
-    /// An I-beam, over the address field.
+    /// An I-beam, over the address field or a text control.
     Text,
+    /// Another the page's `cursor` names (M26.4).
+    Page(engine::Cursor),
 }
 
 /// What the left button was pressed on, while it is held.
@@ -94,6 +96,8 @@ pub(crate) struct Session {
     last_press: Option<Press>,
     /// The link under the pointer.
     hover: Option<Link>,
+    /// The cursor the page gives the point under the pointer (M26.4).
+    cursor: engine::Cursor,
     /// The latest notice, shown until the next input.
     notice: Option<String>,
     /// Whether an input method is composing text.
@@ -133,6 +137,7 @@ impl Session {
             held: None,
             last_press: None,
             hover: None,
+            cursor: engine::Cursor::Default,
             notice: None,
             composing: false,
             start: start.clone(),
@@ -190,10 +195,13 @@ impl Session {
                 ui::Cursor::Text => Shape::Text,
                 ui::Cursor::Arrow => Shape::Arrow,
             }
-        } else if self.hover.is_some() {
-            Shape::Hand
         } else {
-            Shape::Arrow
+            match self.cursor {
+                engine::Cursor::Default => Shape::Arrow,
+                engine::Cursor::Pointer => Shape::Hand,
+                engine::Cursor::Text => Shape::Text,
+                other => Shape::Page(other),
+            }
         }
     }
 
@@ -320,6 +328,7 @@ impl Session {
         self.inside = false;
         self.toolbar.pointer_left();
         self.hover = None;
+        self.engine.pointer_leave();
     }
 
     /// A mouse button pressed, at `at` on the shell's clock.
@@ -600,6 +609,7 @@ impl Session {
         let (x, y) = self.pointer;
         let free = !matches!(self.held, Some(Held::Toolbar | Held::Thumb(_)));
         self.hover = None;
+        self.cursor = engine::Cursor::Default;
         if self.inside && free && y >= TOP {
             let y = y - TOP;
             let on_bar = self
@@ -607,9 +617,15 @@ impl Session {
                 .scrollbar()
                 .is_some_and(|bar| bar.contains(x, y));
             if !on_bar {
+                // The page hovers what is under the pointer and says
+                // what cursor it is over (M26.4).
+                self.engine.pointer_move(x, y);
                 self.hover = self.engine.link_at(x, y);
+                self.cursor = self.engine.cursor_at(x, y);
+                return;
             }
         }
+        self.engine.pointer_leave();
     }
 
     /// Brings what the window shows of the engine up to date: the

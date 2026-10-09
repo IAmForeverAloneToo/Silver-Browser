@@ -36,7 +36,7 @@ use style::Styles;
 use style::computed::{
     Attachment, BOTTOM, BackgroundBox, BackgroundSize, BorderImageRepeat, BorderImageWidth,
     BorderStyle, Color, Display, Image, ImageOrientation, LEFT, LengthPercentage, ObjectFit,
-    Outset, RIGHT, Repeat, SliceSide, TOP,
+    OutlineStyle, Outset, RIGHT, Repeat, SliceSide, TOP,
 };
 use style::transform::Matrix;
 
@@ -1279,6 +1279,66 @@ fn push_box(
         && f.style.border_style.iter().any(|s| s.paints())
     {
         push_border(items, f, outer, widths);
+    }
+    push_outline(items, f, outer);
+}
+
+/// A box's outline (CSS UI 4 section 5, M26.4): a band of its width
+/// outside the border box, `outline-offset` away from it, in its colour;
+/// `auto`, the focus ring, two pixels wide whatever the width says, as
+/// the reference browser draws it. It takes no room and is drawn with
+/// the box, over what came before. `double` draws its outer and inner
+/// thirds; the other styles are drawn solid, an approximation.
+fn push_outline(items: &mut Vec<DisplayItem>, f: &Fragment, border: Rect) {
+    let outline = f.style.outline();
+    let width = match outline.style {
+        OutlineStyle::None => return,
+        OutlineStyle::Auto => 2.0,
+        _ => f.style.used_outline_width(),
+    };
+    if width <= 0.0 {
+        return;
+    }
+    let color = to_rgba8(f.style.outline_color());
+    if color.a == 0 {
+        return;
+    }
+    let offset = outline.offset.round();
+    let x = border.x - offset - width;
+    let y = border.y - offset - width;
+    let w = border.w + 2.0 * (offset + width);
+    let h = border.h + 2.0 * (offset + width);
+    if w <= 0.0 || h <= 0.0 {
+        return;
+    }
+    let mut ring = |inset: f32, thickness: f32| {
+        let (x, y, w, h) = (x + inset, y + inset, w - 2.0 * inset, h - 2.0 * inset);
+        if thickness <= 0.0 || w <= 0.0 || h <= 0.0 {
+            return;
+        }
+        let bands = [
+            (x, y, w, thickness),
+            (x, y + h - thickness, w, thickness),
+            (x, y + thickness, thickness, h - 2.0 * thickness),
+            (
+                x + w - thickness,
+                y + thickness,
+                thickness,
+                h - 2.0 * thickness,
+            ),
+        ];
+        for (x, y, w, h) in bands {
+            if w > 0.0 && h > 0.0 {
+                items.push(DisplayItem::Rect { x, y, w, h, color });
+            }
+        }
+    };
+    if outline.style == OutlineStyle::Double && width >= 3.0 {
+        let third = (width / 3.0).round().max(1.0);
+        ring(0.0, third);
+        ring(width - third, third);
+    } else {
+        ring(0.0, width);
     }
 }
 
@@ -3059,6 +3119,55 @@ mod fragment_tests {
             )]
         );
         assert_eq!(rects(&list).len(), 1); // just the viewport background
+    }
+
+    /// The rectangles of a list but the viewport's background, as
+    /// `(x, y, w, h, color)`.
+    fn outline_rects(list: &DisplayList) -> Vec<(f32, f32, f32, f32, Rgba8)> {
+        rects(list)
+            .into_iter()
+            .skip(1)
+            .filter_map(|i| match i {
+                DisplayItem::Rect { x, y, w, h, color } => Some((*x, *y, *w, *h, *color)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_outline_is_a_band_outside_the_border_box_at_its_offset() {
+        let list = display_list_of(
+            Element::new("div"),
+            "div { display: block; width: 100px; height: 50px; margin: 20px;
+                   outline: 2px solid #ff0000; outline-offset: 3px; }",
+        );
+        // The border box is at (20, 20), 100 by 50: the band starts 5px
+        // out, 2px wide.
+        let red = Rgba8::rgb(255, 0, 0);
+        assert_eq!(
+            outline_rects(&list),
+            [
+                (15.0, 15.0, 110.0, 2.0, red),
+                (15.0, 73.0, 110.0, 2.0, red),
+                (15.0, 17.0, 2.0, 56.0, red),
+                (123.0, 17.0, 2.0, 56.0, red),
+            ]
+        );
+        // None, or no width, draws nothing; `auto` is a 2px ring in the
+        // colour, which is `currentcolor` unless set.
+        for css in [
+            "div { display: block; width: 10px; height: 10px; outline: 5px none red; }",
+            "div { display: block; width: 10px; height: 10px; outline: 0 solid red; }",
+        ] {
+            assert!(outline_rects(&display_list_of(Element::new("div"), css)).is_empty());
+        }
+        let list = display_list_of(
+            Element::new("div"),
+            "div { display: block; width: 10px; height: 10px; margin: 10px; color: #0000ff;
+                   outline: auto 1px; }",
+        );
+        let blue = Rgba8::rgb(0, 0, 255);
+        assert_eq!(outline_rects(&list)[0], (8.0, 8.0, 14.0, 2.0, blue));
     }
 
     #[test]

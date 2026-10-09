@@ -287,6 +287,188 @@ impl BorderStyle {
     }
 }
 
+/// `outline-style` (CSS UI 4 section 5.3, M26.4): `none`, `auto`, the
+/// focus ring a browser draws, or one of the border styles but `hidden`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutlineStyle {
+    /// No outline: the initial value.
+    None,
+    Auto,
+    Solid,
+    Double,
+    Dashed,
+    Dotted,
+    Groove,
+    Ridge,
+    Inset,
+    Outset,
+}
+
+impl OutlineStyle {
+    /// Its keyword.
+    pub fn keyword(self) -> &'static str {
+        match self {
+            OutlineStyle::None => "none",
+            OutlineStyle::Auto => "auto",
+            OutlineStyle::Solid => "solid",
+            OutlineStyle::Double => "double",
+            OutlineStyle::Dashed => "dashed",
+            OutlineStyle::Dotted => "dotted",
+            OutlineStyle::Groove => "groove",
+            OutlineStyle::Ridge => "ridge",
+            OutlineStyle::Inset => "inset",
+            OutlineStyle::Outset => "outset",
+        }
+    }
+
+    /// The style of the keyword, ASCII case-insensitively.
+    pub fn from_keyword(keyword: &str) -> Option<OutlineStyle> {
+        [
+            OutlineStyle::None,
+            OutlineStyle::Auto,
+            OutlineStyle::Solid,
+            OutlineStyle::Double,
+            OutlineStyle::Dashed,
+            OutlineStyle::Dotted,
+            OutlineStyle::Groove,
+            OutlineStyle::Ridge,
+            OutlineStyle::Inset,
+            OutlineStyle::Outset,
+        ]
+        .into_iter()
+        .find(|style| keyword.eq_ignore_ascii_case(style.keyword()))
+    }
+}
+
+/// `cursor` (CSS UI 4 section 4.1, M26.4): its keyword. A URL's image is
+/// not shown: the keyword after it, which the syntax requires, is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cursor {
+    /// The browser's choice by what is under the pointer: the initial
+    /// value.
+    Auto,
+    Default,
+    None,
+    ContextMenu,
+    Help,
+    Pointer,
+    Progress,
+    Wait,
+    Cell,
+    Crosshair,
+    Text,
+    VerticalText,
+    Alias,
+    Copy,
+    Move,
+    NoDrop,
+    NotAllowed,
+    Grab,
+    Grabbing,
+    EResize,
+    NResize,
+    NeResize,
+    NwResize,
+    SResize,
+    SeResize,
+    SwResize,
+    WResize,
+    EwResize,
+    NsResize,
+    NeswResize,
+    NwseResize,
+    ColResize,
+    RowResize,
+    AllScroll,
+    ZoomIn,
+    ZoomOut,
+}
+
+/// The cursors and their keywords.
+const CURSORS: [(Cursor, &str); 36] = [
+    (Cursor::Auto, "auto"),
+    (Cursor::Default, "default"),
+    (Cursor::None, "none"),
+    (Cursor::ContextMenu, "context-menu"),
+    (Cursor::Help, "help"),
+    (Cursor::Pointer, "pointer"),
+    (Cursor::Progress, "progress"),
+    (Cursor::Wait, "wait"),
+    (Cursor::Cell, "cell"),
+    (Cursor::Crosshair, "crosshair"),
+    (Cursor::Text, "text"),
+    (Cursor::VerticalText, "vertical-text"),
+    (Cursor::Alias, "alias"),
+    (Cursor::Copy, "copy"),
+    (Cursor::Move, "move"),
+    (Cursor::NoDrop, "no-drop"),
+    (Cursor::NotAllowed, "not-allowed"),
+    (Cursor::Grab, "grab"),
+    (Cursor::Grabbing, "grabbing"),
+    (Cursor::EResize, "e-resize"),
+    (Cursor::NResize, "n-resize"),
+    (Cursor::NeResize, "ne-resize"),
+    (Cursor::NwResize, "nw-resize"),
+    (Cursor::SResize, "s-resize"),
+    (Cursor::SeResize, "se-resize"),
+    (Cursor::SwResize, "sw-resize"),
+    (Cursor::WResize, "w-resize"),
+    (Cursor::EwResize, "ew-resize"),
+    (Cursor::NsResize, "ns-resize"),
+    (Cursor::NeswResize, "nesw-resize"),
+    (Cursor::NwseResize, "nwse-resize"),
+    (Cursor::ColResize, "col-resize"),
+    (Cursor::RowResize, "row-resize"),
+    (Cursor::AllScroll, "all-scroll"),
+    (Cursor::ZoomIn, "zoom-in"),
+    (Cursor::ZoomOut, "zoom-out"),
+];
+
+impl Cursor {
+    /// Its keyword.
+    pub fn keyword(self) -> &'static str {
+        CURSORS
+            .iter()
+            .find(|(cursor, _)| *cursor == self)
+            .map_or("auto", |(_, keyword)| keyword)
+    }
+
+    /// The cursor of the keyword, ASCII case-insensitively.
+    pub fn from_keyword(keyword: &str) -> Option<Cursor> {
+        CURSORS
+            .iter()
+            .find(|(_, name)| keyword.eq_ignore_ascii_case(name))
+            .map(|(cursor, _)| *cursor)
+    }
+}
+
+/// The outline properties (CSS UI 4 section 5, M26.4), which few
+/// elements set, behind one pointer in the style: drawn outside the
+/// border box, taking no room.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Outline {
+    pub style: OutlineStyle,
+    /// `outline-width` as declared; [`ComputedStyle::used_outline_width`]
+    /// is what is drawn.
+    pub width: f32,
+    /// `outline-color`; `None` for `currentcolor`, its initial value.
+    pub color: Option<Color>,
+    pub offset: f32,
+}
+
+impl Default for Outline {
+    fn default() -> Outline {
+        Outline {
+            style: OutlineStyle::None,
+            width: 3.0,
+            color: None,
+            offset: 0.0,
+        }
+    }
+}
+
+static INITIAL_OUTLINE: LazyLock<Outline> = LazyLock::new(Outline::default);
+
 /// `text-align-all`'s computed value, which `text-align` sets (css-text-3
 /// §7.1, M7.5, M21.7): `match-parent` computes to the parent's value with
 /// `start` and `end` made `left` or `right` by the parent's direction.
@@ -2683,6 +2865,11 @@ pub struct ComputedStyle {
     /// one pointer likewise; `None` is every initial value. Read through
     /// [`ComputedStyle::effects`].
     pub effects: Option<Arc<Effects>>,
+    /// The outline properties (M26.4), behind one pointer likewise. Read
+    /// through [`ComputedStyle::outline`].
+    pub outline: Option<Arc<Outline>>,
+    /// `cursor` (M26.4), inherited.
+    pub cursor: Cursor,
     /// The break properties, `orphans`, `widows` and
     /// `print-color-adjust` (M20), behind one pointer likewise; `None` is
     /// every initial value. Read through [`ComputedStyle::fragmentation`].
@@ -2787,6 +2974,8 @@ impl Default for ComputedStyle {
             column_gap: None,
             grid: None,
             effects: None,
+            outline: None,
+            cursor: Cursor::Auto,
             fragmentation: None,
             custom: None,
             lists: None,
@@ -2861,6 +3050,33 @@ impl ComputedStyle {
     /// first if it shares them or has none.
     pub fn effects_mut(&mut self) -> &mut Effects {
         Arc::make_mut(self.effects.get_or_insert_with(Default::default))
+    }
+
+    /// The outline properties (M26.4): this style's, or their initial
+    /// values.
+    pub fn outline(&self) -> &Outline {
+        self.outline.as_deref().unwrap_or(&INITIAL_OUTLINE)
+    }
+
+    /// The outline properties to change, this style's own copy made first
+    /// if it shares them or has none.
+    pub fn outline_mut(&mut self) -> &mut Outline {
+        Arc::make_mut(self.outline.get_or_insert_with(Default::default))
+    }
+
+    /// The outline's colour, `currentcolor` resolved.
+    pub fn outline_color(&self) -> Color {
+        self.outline().color.unwrap_or(self.color)
+    }
+
+    /// The outline's width the box uses (M26.4): none for an outline
+    /// style of `none`, else rounded as a border's is.
+    pub fn used_outline_width(&self) -> f32 {
+        let outline = self.outline();
+        if outline.style == OutlineStyle::None || outline.width <= 0.0 {
+            return 0.0;
+        }
+        outline.width.floor().max(1.0)
     }
 
     /// The break properties, `orphans`, `widows` and
@@ -3009,6 +3225,7 @@ impl ComputedStyle {
             border_collapse: from.border_collapse,
             border_spacing: from.border_spacing,
             caption_side: from.caption_side,
+            cursor: from.cursor,
             empty_cells: from.empty_cells,
             quotes: from.quotes.clone(),
             fragmentation: inherited_fragmentation(from),
@@ -3157,9 +3374,10 @@ mod tests {
         // transition and animation properties (M22) another, 648 before
         // them. `aspect-ratio` and the image properties (M23.2) another,
         // 656 before them, and the background properties (M23.3) another,
-        // 664 before them. Growing this is a decision, not an accident;
-        // say why where the number changes.
-        assert_eq!(std::mem::size_of::<ComputedStyle>(), 680);
+        // 664 before them. The outline properties (M26.4) another, and
+        // `cursor` a byte in the padding, 680 before them. Growing this is
+        // a decision, not an accident; say why where the number changes.
+        assert_eq!(std::mem::size_of::<ComputedStyle>(), 688);
         assert_eq!(ComputedStyle::default().grid, None);
         assert_eq!(*ComputedStyle::default().grid(), GridStyle::default());
         assert_eq!(ComputedStyle::default().effects, None);

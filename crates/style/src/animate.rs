@@ -143,6 +143,11 @@ longhands! {
     BorderCollapse = "border-collapse": Discrete,
     BorderSpacing = "border-spacing": ByComputedValue,
     CaptionSide = "caption-side": Discrete,
+    OutlineColor = "outline-color": ByComputedValue,
+    OutlineStyle = "outline-style": Discrete,
+    OutlineWidth = "outline-width": ByComputedValue,
+    OutlineOffset = "outline-offset": ByComputedValue,
+    Cursor = "cursor": Discrete,
     EmptyCells = "empty-cells": Discrete,
     VerticalAlign = "vertical-align": ByComputedValue,
     Content = "content": Discrete,
@@ -308,6 +313,7 @@ pub fn longhands_of(name: &str) -> Vec<Longhand> {
             BorderImageRepeat,
         ],
         "border-top" => &[BorderTopWidth, BorderTopStyle, BorderTopColor],
+        "outline" => &[OutlineColor, OutlineStyle, OutlineWidth],
         "border-right" => &[BorderRightWidth, BorderRightStyle, BorderRightColor],
         "border-bottom" => &[BorderBottomWidth, BorderBottomStyle, BorderBottomColor],
         "border-left" => &[BorderLeftWidth, BorderLeftStyle, BorderLeftColor],
@@ -429,6 +435,11 @@ pub fn copy(property: Longhand, from: &ComputedStyle, to: &mut ComputedStyle) {
         BorderCollapse => to.border_collapse = from.border_collapse,
         BorderSpacing => to.border_spacing = from.border_spacing,
         CaptionSide => to.caption_side = from.caption_side,
+        OutlineColor => to.outline_mut().color = from.outline().color,
+        OutlineStyle => to.outline_mut().style = from.outline().style,
+        OutlineWidth => to.outline_mut().width = from.outline().width,
+        OutlineOffset => to.outline_mut().offset = from.outline().offset,
+        Cursor => to.cursor = from.cursor,
         EmptyCells => to.empty_cells = from.empty_cells,
         VerticalAlign => to.vertical_align = from.vertical_align.clone(),
         Content => to.content = from.content.clone(),
@@ -741,6 +752,11 @@ pub fn same(property: Longhand, a: &ComputedStyle, b: &ComputedStyle) -> bool {
         BorderCollapse => a.border_collapse == b.border_collapse,
         BorderSpacing => a.border_spacing == b.border_spacing,
         CaptionSide => a.caption_side == b.caption_side,
+        OutlineColor => a.outline().color == b.outline().color,
+        OutlineStyle => a.outline().style == b.outline().style,
+        OutlineWidth => a.outline().width == b.outline().width,
+        OutlineOffset => a.outline().offset == b.outline().offset,
+        Cursor => a.cursor == b.cursor,
         EmptyCells => a.empty_cells == b.empty_cells,
         VerticalAlign => a.vertical_align == b.vertical_align,
         Content => a.content == b.content,
@@ -1322,6 +1338,18 @@ pub fn interpolate(
             to.border_width[s] = length(a.border_width[s], b.border_width[s], p, true);
             true
         }
+        OutlineColor => {
+            to.outline_mut().color = Some(color(a.outline_color(), b.outline_color(), p));
+            true
+        }
+        OutlineWidth => {
+            to.outline_mut().width = length(a.outline().width, b.outline().width, p, true);
+            true
+        }
+        OutlineOffset => {
+            to.outline_mut().offset = length(a.outline().offset, b.outline().offset, p, false);
+            true
+        }
         BorderTopColor | BorderRightColor | BorderBottomColor | BorderLeftColor => {
             let s = match property {
                 BorderTopColor => TOP,
@@ -1800,6 +1828,28 @@ mod tests {
         assert!(!interpolate(Longhand::BackgroundSize, &a, &c, 0.5, &mut to));
         let d = style("background-size: auto 10px");
         assert!(!interpolate(Longhand::BackgroundSize, &a, &d, 0.5, &mut to));
+    }
+
+    #[test]
+    fn an_outlines_colour_width_and_offset_interpolate() {
+        let (a, b) = (
+            style("outline: 1px solid rgb(0, 0, 0); outline-offset: 0"),
+            style("outline: 5px solid rgb(200, 100, 0); outline-offset: -4px"),
+        );
+        let mut to = a.clone();
+        assert!(interpolate(Longhand::OutlineColor, &a, &b, 0.5, &mut to));
+        assert!(interpolate(Longhand::OutlineWidth, &a, &b, 0.5, &mut to));
+        assert!(interpolate(Longhand::OutlineOffset, &a, &b, 0.5, &mut to));
+        assert_eq!(to.outline().color, Some(computed::Color::rgb8(100, 50, 0)));
+        assert_eq!(to.outline().width, 3.0);
+        assert_eq!(to.outline().offset, -2.0);
+        // `currentcolor` interpolates as the element's colour.
+        let c = style("outline: solid; color: rgb(0, 0, 200)");
+        assert!(interpolate(Longhand::OutlineColor, &c, &b, 0.5, &mut to));
+        assert_eq!(
+            to.outline().color,
+            Some(computed::Color::rgb8(100, 50, 100))
+        );
     }
 
     #[test]

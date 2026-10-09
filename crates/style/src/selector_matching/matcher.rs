@@ -44,7 +44,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use dom::{Document, NodeId, forms};
+use dom::{Document, ElementState, NodeId, forms};
 
 use super::language::{extended_filter, is_well_formed_tag, pragma_language};
 use super::{
@@ -190,7 +190,10 @@ impl<'a> Matcher<'a> {
         };
         ending.element == pseudo
             && pseudo != PseudoElement::WebkitPrefixed
-            && ending.states.iter().all(state_matches)
+            && ending
+                .states
+                .iter()
+                .all(|state| state_matches(state, self.document.state(element)))
             && self.document.is_element(element)
             && self.matches_compounds(element, selector)
     }
@@ -411,16 +414,16 @@ impl<'a> Matcher<'a> {
             PseudoClass::Is(list) | PseudoClass::Where(list) => {
                 self.matches_element_list(element, list)
             }
-            // The user-action pseudo-classes never match until input
-            // state exists (M26); `:visited` never does, there being no
-            // history, nor `:target` yet.
+            // The user-action pseudo-classes and `:target` read the
+            // element's state (M26.4); `:visited` never matches, there
+            // being no history of visited links to answer it.
             PseudoClass::Hover
             | PseudoClass::Focus
             | PseudoClass::FocusVisible
             | PseudoClass::FocusWithin
             | PseudoClass::Active
-            | PseudoClass::Visited
-            | PseudoClass::Target => false,
+            | PseudoClass::Target => state_matches(pc, document.state(element)),
+            PseudoClass::Visited => false,
             // HTML §4.16.3: `a` and `area` elements with an `href`.
             PseudoClass::Link | PseudoClass::AnyLink => {
                 matches!(document.tag(element), Some("a" | "area"))
@@ -705,22 +708,29 @@ fn required(document: &Document, element: NodeId) -> Option<bool> {
     applies.then(|| document.attr(element, "required").is_some())
 }
 
-/// Whether the pseudo-classes after a pseudo-element hold: no
-/// pseudo-element is hovered, focused or active until M26.4, so each
-/// user-action one is false, and `:is()`, `:where()` and `:not()` of
-/// them follow from that.
-fn state_matches(state: &PseudoClass) -> bool {
+/// Whether a state pseudo-class holds for an element in state `flags`
+/// (M26.4): `:hover`, `:active`, `:focus`, `:focus-visible`,
+/// `:focus-within` and `:target` read them. After a pseudo-element, its
+/// user-action states are its originating element's, and `:is()`,
+/// `:where()` and `:not()` of them follow from that.
+fn state_matches(state: &PseudoClass, flags: ElementState) -> bool {
     let any = |list: &SelectorList| {
         list.0.iter().any(|selector| {
             selector.compounds.iter().all(|compound| {
                 compound.simple.iter().all(|simple| match simple {
-                    SimpleSelector::PseudoClass(state) => state_matches(state),
+                    SimpleSelector::PseudoClass(state) => state_matches(state, flags),
                     _ => false,
                 })
             })
         })
     };
     match state {
+        PseudoClass::Hover => flags.contains(ElementState::HOVER),
+        PseudoClass::Active => flags.contains(ElementState::ACTIVE),
+        PseudoClass::Focus => flags.contains(ElementState::FOCUS),
+        PseudoClass::FocusVisible => flags.contains(ElementState::FOCUS_VISIBLE),
+        PseudoClass::FocusWithin => flags.contains(ElementState::FOCUS_WITHIN),
+        PseudoClass::Target => flags.contains(ElementState::TARGET),
         PseudoClass::Not(list) => !any(list),
         PseudoClass::Is(list) | PseudoClass::Where(list) => any(list),
         _ => false,
@@ -1895,6 +1905,47 @@ mod tests {
     }
 
     const NONE: [&str; 0] = [];
+
+    #[test]
+    fn the_state_pseudo_classes_read_the_element_state() {
+        let mut document = Document::from_node(
+            &html::parse_document("<div id=a><p id=b>x</p></div><p id=c>y</p>")
+                .expect("never fails"),
+        );
+        let id = |document: &Document, id: &str| {
+            document
+                .subtree(document.root())
+                .find(|&n| document.attr(n, "id") == Some(id))
+                .expect("the element")
+        };
+        let (a, b, c) = (id(&document, "a"), id(&document, "b"), id(&document, "c"));
+        let hover = ElementState::HOVER;
+        document.set_state(a, hover).unwrap();
+        document
+            .set_state(b, hover.with(ElementState::FOCUS, true))
+            .unwrap();
+        document
+            .set_state(c, ElementState::TARGET.with(ElementState::ACTIVE, true))
+            .unwrap();
+        for (selector, expected) in [
+            (":hover", vec!["a", "b"]),
+            ("div:hover > p", vec!["b"]),
+            (":focus", vec!["b"]),
+            (":focus-visible, :focus-within", vec![]),
+            (":active:target", vec!["c"]),
+            (":not(:hover)", vec!["c"]),
+            (":is(:focus, :active)", vec!["b", "c"]),
+            (":visited", vec![]),
+        ] {
+            assert_eq!(ids_of(&document, selector, None), expected, "{selector}");
+        }
+        // A pseudo-element's user-action states are its originating
+        // element's.
+        let list = parse_selector_list(&css::tokenize("p::before:hover")).expect("valid");
+        let mut matcher = Matcher::new(&document);
+        assert!(matcher.matches_pseudo_element(b, &list.0[0], PseudoElement::Before));
+        assert!(!matcher.matches_pseudo_element(c, &list.0[0], PseudoElement::Before));
+    }
 
     #[test]
     fn lang_reads_the_nearest_lang_attribute() {

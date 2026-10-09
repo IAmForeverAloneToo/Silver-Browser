@@ -16,8 +16,8 @@ pub mod forms;
 mod microsyntax;
 
 pub use document::{
-    Change, Children, Document, MAX_DATA_BYTES, MAX_DEPTH, MAX_GENERATION, MAX_JOURNAL, MAX_NODES,
-    MutationError, NodeData, NodeId, Subtree,
+    Change, Children, Document, ElementState, MAX_DATA_BYTES, MAX_DEPTH, MAX_GENERATION,
+    MAX_JOURNAL, MAX_NODES, MutationError, NodeData, NodeId, Subtree,
 };
 pub use microsyntax::{Dimension, parse_dimension, parse_integer, parse_non_negative_integer};
 
@@ -205,6 +205,37 @@ mod tests {
             .text("A hobby browser engine in Rust.");
         let body = Element::new("body").push(h1).push(p);
         Node::document(vec![Element::new("html").push(body).into()])
+    }
+
+    #[test]
+    fn an_elements_state_is_journaled_when_it_changes() {
+        let mut d = Document::from_node(&Element::new("p").text("x").into());
+        let p = d.first_child(d.root()).expect("the p");
+        let text = d.first_child(p).expect("its text");
+        d.take_changes();
+        assert_eq!(d.state(p), ElementState::NONE);
+        let state = ElementState::HOVER.with(ElementState::FOCUS, true);
+        d.set_state(p, state).unwrap();
+        // Set to what it is, nothing changes.
+        d.set_state(p, state).unwrap();
+        assert_eq!(
+            d.take_changes(),
+            [Change::StateChanged {
+                element: p,
+                old: ElementState::NONE
+            }]
+        );
+        assert!(d.state(p).contains(ElementState::FOCUS));
+        assert!(!d.state(p).contains(ElementState::ACTIVE));
+        assert_eq!(
+            d.state(p).with(ElementState::HOVER, false),
+            ElementState::FOCUS
+        );
+        // Only an element has state.
+        assert_eq!(d.set_state(text, state), Err(MutationError::WrongKind));
+        let root = d.root();
+        assert_eq!(d.set_state(root, state), Err(MutationError::WrongKind));
+        assert_eq!(d.state(text), ElementState::NONE);
     }
 
     #[test]

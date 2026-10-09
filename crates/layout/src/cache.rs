@@ -179,6 +179,9 @@ impl LayoutCache {
                         forget(parent);
                     }
                 }
+                // A state's change lays out what it restyles, which the
+                // restyled list holds (M26.4).
+                Change::StateChanged { .. } => {}
                 Change::AttributeChanged { element, name, .. } => {
                     let img = document.tag(*element) == Some("img");
                     if matches!(name.as_str(), "colspan" | "rowspan" | "span")

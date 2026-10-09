@@ -108,6 +108,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
+pub use dom::ElementState;
 pub use image_store::MAX_DECODE_THREADS;
 pub use js::ConsoleLevel;
 pub use loader::{LoadError, LoadState};
@@ -117,6 +118,7 @@ pub use scripts::{
     ConsoleEntry, MAX_CONSOLE_ENTRIES, MAX_CONSOLE_MESSAGE, MAX_SCRIPT_BYTES, ScriptState,
 };
 pub use style::animation::{AnimationEvent, EventKind, Running as RunningAnimation};
+pub use style::computed::Cursor;
 pub use style::{ColorScheme, MediaType, Preferences};
 
 use dom::{Change, Document, NodeId};
@@ -311,6 +313,9 @@ pub struct Engine {
     /// What a document wrote to its console as it was left (M26), for
     /// the next [`Engine::take_console`].
     departed: Vec<ConsoleEntry>,
+    /// Where the pointer is over the page, in its coordinates, while it
+    /// is (M26.4).
+    pointer: Option<(f32, f32)>,
 }
 
 /// A document and everything the engine made from it (M15): what the
@@ -390,6 +395,10 @@ struct Shown {
     /// The `img` elements told whether their image came, each with the
     /// URL it was told of (M26).
     told: HashMap<NodeId, String>,
+    /// The elements hovered, the one under the pointer and its ancestors
+    /// (M26.4), and the one the URL's fragment indicates.
+    hovered: Vec<NodeId>,
+    target: Option<NodeId>,
 }
 
 /// The lifecycle events a document has had (HTML section 8.4.6, "the
@@ -443,6 +452,8 @@ impl Shown {
             lifecycle: Lifecycle::default(),
             rendered: None,
             told: HashMap::new(),
+            hovered: Vec::new(),
+            target: None,
         }
     }
 
@@ -634,7 +645,7 @@ fn may_touch_images(change: &Change) -> bool {
     match change {
         Change::Inserted { .. } | Change::Removed { .. } | Change::Everything => true,
         Change::AttributeChanged { name, .. } => matches!(name.as_str(), "src" | "href"),
-        Change::TextChanged { .. } => false,
+        Change::TextChanged { .. } | Change::StateChanged { .. } => false,
     }
 }
 
@@ -805,6 +816,7 @@ impl Engine {
             hidden_ran: None,
             pending_events: Vec::new(),
             departed: Vec::new(),
+            pointer: None,
         }
     }
 
@@ -992,6 +1004,7 @@ impl Engine {
         self.shown.page.set_url(url);
         self.goal = Some(ScrollGoal::Fragment(fragment));
         self.changed = true;
+        self.update_target();
     }
 
     /// Follows `link`, a click on it having activated it (HTML's "follow
@@ -1160,6 +1173,100 @@ impl Engine {
             .fire(&mut self.network, window, ready, target, event);
         self.scripts_ran();
         canceled
+    }
+
+    /// The pointer moved to `(x, y)` in the page's coordinates, CSS
+    /// pixels from the viewport's top left (M26.4): the element there and
+    /// its ancestors are hovered, with scripts on or off.
+    pub fn pointer_move(&mut self, x: f32, y: f32) {
+        self.pointer = Some((x, y));
+        self.update_hover();
+    }
+
+    /// The pointer left the page: nothing is hovered.
+    pub fn pointer_leave(&mut self) {
+        self.pointer = None;
+        self.set_hovered(Vec::new());
+    }
+
+    /// The hovered elements as the pointer and the page now stand: the
+    /// element under the pointer and its ancestors.
+    fn update_hover(&mut self) {
+        let hit = self.pointer.and_then(|(x, y)| self.hit_test(x, y));
+        let document = &self.shown.document;
+        let chain: Vec<NodeId> = hit
+            .into_iter()
+            .flat_map(|node| std::iter::once(node).chain(document.ancestors(node)))
+            .filter(|&node| document.is_element(node))
+            .collect();
+        self.set_hovered(chain);
+    }
+
+    /// Hovers `chain`, unhovering the elements hovered before that are
+    /// not in it; the restyle follows from the state's changes.
+    fn set_hovered(&mut self, chain: Vec<NodeId>) {
+        if chain == self.shown.hovered {
+            return;
+        }
+        let old = std::mem::replace(&mut self.shown.hovered, chain);
+        let document = &mut self.shown.document;
+        for &node in old.iter().filter(|node| !self.shown.hovered.contains(node)) {
+            let state = document.state(node).with(ElementState::HOVER, false);
+            let _ = document.set_state(node, state);
+        }
+        for &node in &self.shown.hovered {
+            let state = document.state(node).with(ElementState::HOVER, true);
+            let _ = document.set_state(node, state);
+        }
+        let changes = self.shown.document.take_changes();
+        if !changes.is_empty() {
+            self.document_changed(changes);
+        }
+    }
+
+    /// `:target` (M26.4): the element the document's URL's fragment
+    /// indicates, as it now stands.
+    fn update_target(&mut self) {
+        let target =
+            self.shown.page.url().and_then(Url::fragment).and_then(
+                |fragment| match indicated_part(&self.shown.document, fragment) {
+                    Some(Indicated::Element(element)) => Some(element),
+                    _ => None,
+                },
+            );
+        if target == self.shown.target {
+            return;
+        }
+        let document = &mut self.shown.document;
+        if let Some(old) = self.shown.target {
+            let _ = document.set_state(old, document.state(old).with(ElementState::TARGET, false));
+        }
+        if let Some(new) = target {
+            let _ = document.set_state(new, document.state(new).with(ElementState::TARGET, true));
+        }
+        self.shown.target = target;
+        let changes = self.shown.document.take_changes();
+        if !changes.is_empty() {
+            self.document_changed(changes);
+        }
+    }
+
+    /// The cursor over the viewport point (CSS UI 4 section 4.1, M26.4):
+    /// the `cursor` of the element there; `auto` an I-beam over a text
+    /// control, the arrow elsewhere and off the page.
+    pub fn cursor_at(&mut self, x: f32, y: f32) -> Cursor {
+        let Some(node) = self.hit_test(x, y) else {
+            return Cursor::Default;
+        };
+        let cursor = self
+            .cached_styles()
+            .get(node)
+            .map_or(Cursor::Auto, |style| style.cursor);
+        match cursor {
+            Cursor::Auto if dom::forms::is_text_control(&self.shown.document, node) => Cursor::Text,
+            Cursor::Auto => Cursor::Default,
+            other => other,
+        }
     }
 
     /// The document node as an event's target.
@@ -1686,6 +1793,7 @@ impl Engine {
             self.goal = Some(ScrollGoal::Offset(scroll));
             self.changed = true;
             self.settle_load_state();
+            self.update_target();
         } else if let Some(kept) = self.history.take_kept(state) {
             self.history.go_to(index);
             let left = self.show(*kept);
@@ -2658,6 +2766,7 @@ impl Engine {
                 self.load_state = LoadState::Loaded;
             }
         }
+        self.update_target();
         self.lifecycle();
     }
 
@@ -3322,6 +3431,9 @@ impl Engine {
     /// it took. What it shows is a function of the document, the
     /// viewport, the scroll inputs and the times passed in.
     pub fn frame_at(&mut self, width: u32, height: u32, time: FrameTime) -> &[u8] {
+        if self.pointer.is_some() && (self.changed || self.animating()) {
+            self.update_hover();
+        }
         self.update_the_rendering(width, height, time.now);
         if self.animating() {
             let elapsed = self

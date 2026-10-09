@@ -94,12 +94,17 @@ q::before { content: open-quote; }
 q::after { content: close-quote; }
 
 /* Links (HTML §15.3.4, M16): only an `a` or `area` with an `href` is
- * one. Every link is unvisited, there being no history, and none is
- * active until input events land (M26); `cursor` is not a property
- * here yet. */
+ * one. Every link is unvisited, there being no history; one held down
+ * is active, and the pointer over one is a hand (M26.4), as in the
+ * reference browser. */
 :link { color: #0000EE; }
 :visited { color: #551A8B; }
 :link:active, :visited:active { color: #FF0000; }
+:any-link { cursor: pointer; }
+
+/* The focus ring (M26.4): the reference browser's, around what has the
+ * focus when it is to be shown. */
+:focus-visible { outline: auto 1px -webkit-focus-ring-color; }
 
 /* Text decoration (HTML §15.3.4, M21.7). */
 :link, :visited { text-decoration: underline; }

@@ -152,6 +152,24 @@ pub fn selected_option(document: &Document, select: NodeId) -> Option<NodeId> {
         .find(|&option| !option_disabled(document, option))
 }
 
+/// Whether the element is a text control (M26): a `textarea`, or an
+/// `input` that is none of the types with no text to edit, the types
+/// that need a picker being text fields until they have one (G61).
+pub fn is_text_control(document: &Document, element: NodeId) -> bool {
+    match document.tag(element) {
+        Some("textarea") => true,
+        Some("input") => {
+            let kind = document.attr(element, "type").unwrap_or("text");
+            ![
+                "checkbox", "radio", "submit", "reset", "button", "image", "hidden",
+            ]
+            .iter()
+            .any(|other| kind.eq_ignore_ascii_case(other))
+        }
+        _ => false,
+    }
+}
+
 /// Whether the element is form-associated (HTML section 4.10.2): it can
 /// have a form owner.
 pub fn form_associated(document: &Document, element: NodeId) -> bool {

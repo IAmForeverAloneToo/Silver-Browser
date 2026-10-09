@@ -766,6 +766,32 @@ fn a_pages_timers_run_when_the_window_ticks() {
 }
 
 #[test]
+fn the_page_hovers_and_sets_the_cursor_under_the_pointer() {
+    let server = serve(|path| match path {
+        "/" => html(
+            "<style>body { margin: 0 } div { height: 40px } #m { cursor: move }              #m:hover { cursor: wait }</style><div id=m>m</div><div>x</div>",
+        ),
+        _ => None,
+    });
+    let mut window = Window::new(Some(server.url("/")), Platform::Other);
+    window.settle();
+    window.frame();
+    let top = ui::HEIGHT as f32;
+    // Hovered, the element takes its :hover style, whose cursor shows.
+    window.session.pointer_moved(10.0, top + 10.0);
+    assert_eq!(window.session.shape(), Shape::Page(engine::Cursor::Wait));
+    window.session.pointer_moved(10.0, top + 50.0);
+    assert_eq!(window.session.shape(), Shape::Arrow);
+    window.session.pointer_left();
+    let document = window.session.engine().document();
+    assert!(
+        document
+            .subtree(document.root())
+            .all(|node| !document.state(node).contains(engine::ElementState::HOVER))
+    );
+}
+
+#[test]
 fn a_covered_window_hides_its_page() {
     let server = serve(|path| match path {
         "/" => html(
