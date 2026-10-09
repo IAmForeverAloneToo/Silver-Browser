@@ -958,6 +958,14 @@ impl Engine {
         let encoded = url.as_str().get("javascript:".len()..).unwrap_or_default();
         let source =
             String::from_utf8_lossy(&net::url::percent_decode(encoded.as_bytes())).into_owned();
+        self.run_classic(&source);
+    }
+
+    /// Runs `source` in the document shown as a classic script with a
+    /// budget of its own, its errors naming the document, and takes what
+    /// it changed: what a `javascript:` URL runs, and a script
+    /// [`differential::run_script`] is given.
+    fn run_classic(&mut self, source: &str) {
         let document = self
             .shown
             .page
@@ -965,7 +973,7 @@ impl Engine {
             .map(Url::to_string)
             .unwrap_or_default();
         let script = js::Script {
-            source: &source,
+            source,
             url: &document,
             line: 1,
             muted: false,

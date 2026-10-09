@@ -1358,3 +1358,53 @@ fn computed_style_reads_the_cascade_as_it_stands() {
         ]
     );
 }
+
+#[test]
+fn a_script_run_after_a_frame_reaches_the_next_through_invalidation() {
+    // What the dom_api fuzz target holds the engine to (M25.3): a script
+    // run in the document shown after a frame, as a `javascript:` URL's
+    // is, and the next frame what a fresh engine computes for the
+    // document as it then stands: the class added restyles its element,
+    // the paragraph taken out shows the one after it again.
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<title>t</title><style>.on { margin-left: 7px } p + p { display: none }</style>\
+             <p id=a>x</p><p>y</p><p>z</p>",
+        )),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    load_all(&mut tab, server.url("/page.html"));
+    tab.engine.frame(200, 100);
+    crate::differential::run_script(
+        &mut tab.engine,
+        "console.log(document.title); var a = document.getElementById('a'); \
+         a.nextElementSibling.classList.add('on'); a.remove(); \
+         console.log(getComputedStyle(document.querySelector('p')).marginLeft);",
+    );
+    let console: Vec<String> = tab
+        .engine
+        .take_console()
+        .into_iter()
+        .map(|entry| entry.text)
+        .collect();
+    assert_eq!(console, ["t", "7px"]);
+    let mut fresh = crate::Engine::with_fonts(
+        text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
+            .expect("the bundled font parses"),
+    );
+    fresh.set_scripting(true);
+    crate::differential::compare_with_fresh(&mut tab.engine, &mut fresh, 200, 100)
+        .expect("the frame after the run is a fresh engine's");
+    let document = tab.engine.document();
+    let mut shown: Vec<String> = tab
+        .engine
+        .fragments(200.0)
+        .iter()
+        .filter(|fragment| document.tag(fragment.node) == Some("p"))
+        .map(|fragment| document.text_content(fragment.node))
+        .collect();
+    shown.dedup();
+    assert_eq!(shown, ["y"]);
+}

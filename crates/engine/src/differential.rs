@@ -10,7 +10,8 @@
 //! that: the computed style of every element, every fragment and every
 //! pixel. [`Mutator`] turns bytes into mutations, so that the engine's
 //! tests drive it from seeded random bytes and the `mutation` fuzz
-//! target from the fuzzer's.
+//! target from the fuzzer's; [`run_script`] lets a script make them, as
+//! the `dom_api` target's do (M25).
 
 use std::collections::HashMap;
 
@@ -212,6 +213,14 @@ impl Mutator {
     fn pick(&self, byte: usize) -> NodeId {
         self.nodes[byte % self.nodes.len()]
     }
+}
+
+/// Runs `source` in the document `engine` shows as a classic script, as
+/// a `javascript:` URL's runs (M24), the page's policy aside, and takes
+/// what it changed for the next frame: a script's changes after a frame
+/// has been drawn, which the events of M26 will run.
+pub fn run_script(engine: &mut Engine, source: &str) {
+    engine.run_classic(source);
 }
 
 /// Draws a `width` by `height` frame with `engine` and compares what it

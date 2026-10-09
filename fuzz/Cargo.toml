@@ -5,7 +5,7 @@
 # through to a raster; for the image decoders; and for the engine whose
 # document changes in place, held to a full pass over it; and for
 # scripts, which run under their limits, and the policies that say which
-# may run.
+# may run; and for sequences of DOM calls a page's script makes.
 # Not a workspace member: libfuzzer needs nightly, and the normal build
 # must not.
 # `cargo +nightly fuzz run <target>` from the repository root; CI runs
@@ -146,6 +146,13 @@ doc = false
 [[bin]]
 name = "script"
 path = "fuzz_targets/script.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dom_api"
+path = "fuzz_targets/dom_api.rs"
 test = false
 doc = false
 bench = false
