@@ -173,6 +173,9 @@ pub(crate) struct ScriptNavigation {
     pub(crate) url: Option<Url>,
     pub(crate) replace: bool,
     pub(crate) reload: bool,
+    /// A link was followed (M26): its activation behaviour, which
+    /// navigates as a click on it does, rather than as `location` does.
+    pub(crate) link: bool,
 }
 
 /// How a script is run.
@@ -645,13 +648,14 @@ impl Scripts {
     /// Runs `task` in the document's realm (M26) as [`Scripts::run`]
     /// runs a script, `nesting` the timer nesting level of the task it
     /// is, then the microtask checkpoint; nothing if the document has no
-    /// realm or runs no scripts.
-    pub(crate) fn enter(&mut self, lent: &mut Lent<'_>, task: &js::Task, nesting: u32) {
+    /// realm or runs no scripts. Whether the event it dispatched was
+    /// canceled.
+    pub(crate) fn enter(&mut self, lent: &mut Lent<'_>, task: &js::Task, nesting: u32) -> bool {
         if self.stopped {
-            return;
+            return false;
         }
         let Some(realm) = self.realm.as_mut() else {
-            return;
+            return false;
         };
         let host = &mut self.host;
         let how = How {
@@ -668,9 +672,13 @@ impl Scripts {
             self.push(entry);
         }
         self.errors += outputs.errors;
-        if let Err(error) = result {
-            self.report(&error);
-        }
+        let canceled = match result {
+            Ok(canceled) => canceled,
+            Err(error) => {
+                self.report(&error);
+                false
+            }
+        };
         for error in &errors {
             self.report(error);
         }
@@ -683,6 +691,7 @@ impl Scripts {
         if dead {
             self.stop();
         }
+        canceled
     }
 
     /// Gives the document its time origin, unless it has one.
@@ -803,10 +812,11 @@ pub(crate) fn parser_place(document: &Document, element: NodeId) -> Place {
 }
 
 /// The console's text for `error`, as HTML section 8.1.4.6 reports it;
-/// none for a dead realm's refusal, which is no error of the page's.
+/// none for a dead realm's refusal, which is no error of the page's, nor
+/// for an exception a listener of the `error` event canceled (M26).
 pub(crate) fn report_text(error: &ScriptError) -> Option<String> {
     let text = match error.kind {
-        ErrorKind::Dead => return None,
+        ErrorKind::Dead | ErrorKind::Handled => return None,
         ErrorKind::Rejection => format!("Uncaught (in promise) {}", error.message),
         ErrorKind::Budget => error.message.clone(),
         ErrorKind::Exception | ErrorKind::Heap => format!("Uncaught {}", error.message),

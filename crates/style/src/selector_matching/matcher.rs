@@ -44,7 +44,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use dom::{Document, NodeId};
+use dom::{Document, NodeId, forms};
 
 use super::language::{extended_filter, is_well_formed_tag, pragma_language};
 use super::{
@@ -427,9 +427,10 @@ impl<'a> Matcher<'a> {
                     && document.attr(element, "href").is_some()
             }
             PseudoClass::Lang(ranges) => self.matches_lang(element, ranges),
-            PseudoClass::Disabled => actually_disabled(document, element),
+            PseudoClass::Disabled => forms::actually_disabled(document, element),
             PseudoClass::Enabled => {
-                can_be_disabled(document, element) && !actually_disabled(document, element)
+                forms::can_be_disabled(document, element)
+                    && !forms::actually_disabled(document, element)
             }
             PseudoClass::Checked => self.checked(element),
             PseudoClass::Required => required(document, element) == Some(true),
@@ -605,12 +606,12 @@ impl<'a> Matcher<'a> {
     /// whether it has a `selected` attribute.
     fn option_selected(&mut self, option: NodeId) -> bool {
         let document = self.document;
-        match owner_select(document, option) {
+        match forms::owner_select(document, option) {
             Some(select) if document.attr(select, "multiple").is_none() => {
                 *self
                     .selected_options
                     .entry(select)
-                    .or_insert_with(|| selected_option(document, select))
+                    .or_insert_with(|| forms::selected_option(document, select))
                     == Some(option)
             }
             _ => document.attr(option, "selected").is_some(),
@@ -646,150 +647,6 @@ impl<'a> Matcher<'a> {
         let position = self.position(element).index as usize;
         self.nth_ranks[&key].get(position).copied().flatten()
     }
-}
-
-/// The elements `:enabled` and `:disabled` apply to (HTML §4.16.3).
-fn can_be_disabled(document: &Document, element: NodeId) -> bool {
-    matches!(
-        document.tag(element),
-        Some("button" | "input" | "select" | "textarea" | "optgroup" | "option" | "fieldset")
-    )
-}
-
-/// Whether the element is actually disabled (HTML §4.16.3): a
-/// `button`, `input`, `select`, `textarea` or `fieldset` with a
-/// `disabled` attribute or in a `fieldset` that disables it
-/// (§4.10.19.5, §4.10.15); an `optgroup` with one; an option that is
-/// disabled.
-fn actually_disabled(document: &Document, element: NodeId) -> bool {
-    match document.tag(element) {
-        Some("button" | "input" | "select" | "textarea" | "fieldset") => {
-            document.attr(element, "disabled").is_some() || disabled_by_fieldset(document, element)
-        }
-        Some("optgroup") => document.attr(element, "disabled").is_some(),
-        Some("option") => option_disabled(document, element),
-        _ => false,
-    }
-}
-
-/// Whether a `fieldset` with a `disabled` attribute around the element
-/// disables it: one it is not inside the first `legend` child of.
-fn disabled_by_fieldset(document: &Document, element: NodeId) -> bool {
-    let mut child = element;
-    for ancestor in document.ancestors(element) {
-        if document.tag(ancestor) == Some("fieldset")
-            && document.attr(ancestor, "disabled").is_some()
-            && !(document.tag(child) == Some("legend")
-                && document
-                    .element_children(ancestor)
-                    .find(|&c| document.tag(c) == Some("legend"))
-                    == Some(child))
-        {
-            return true;
-        }
-        child = ancestor;
-    }
-    false
-}
-
-/// Whether an option is disabled (HTML §4.10.10): it has a `disabled`
-/// attribute, or the nearest of its ancestors that is an `optgroup`,
-/// `select`, `hr`, `datalist` or `option` is an `optgroup` with one.
-fn option_disabled(document: &Document, option: NodeId) -> bool {
-    if document.attr(option, "disabled").is_some() {
-        return true;
-    }
-    for ancestor in document.ancestors(option) {
-        match document.tag(ancestor) {
-            Some("select" | "hr" | "datalist" | "option") => return false,
-            Some("optgroup") => return document.attr(ancestor, "disabled").is_some(),
-            _ => {}
-        }
-    }
-    false
-}
-
-/// The `select` whose list of options holds `option` (HTML §4.10.7):
-/// its nearest `select` ancestor, unless an `hr`, a `datalist` or an
-/// `option` comes before it, or two `optgroup`s do.
-fn owner_select(document: &Document, option: NodeId) -> Option<NodeId> {
-    let mut optgroups = 0;
-    for ancestor in document.ancestors(option) {
-        match document.tag(ancestor) {
-            Some("select") => return Some(ancestor),
-            Some("hr" | "datalist" | "option") => return None,
-            Some("optgroup") => {
-                optgroups += 1;
-                if optgroups == 2 {
-                    return None;
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-/// A `select`'s list of options (HTML §4.10.7), in tree order: its
-/// `option` descendants, not looking inside a `select`, `hr`, `option`
-/// or `datalist`, nor an `optgroup` inside another.
-fn list_of_options(document: &Document, select: NodeId) -> Vec<NodeId> {
-    let mut options = Vec::new();
-    let mut node = document.first_child(select);
-    while let Some(at) = node {
-        let tag = document.tag(at);
-        if tag == Some("option") {
-            options.push(at);
-        }
-        let closed = matches!(tag, Some("select" | "hr" | "option" | "datalist"))
-            || (tag == Some("optgroup")
-                && document
-                    .ancestors(at)
-                    .take_while(|&ancestor| ancestor != select)
-                    .any(|ancestor| document.tag(ancestor) == Some("optgroup")));
-        node = match document.first_child(at) {
-            Some(child) if !closed => Some(child),
-            _ => next_within(document, at, select),
-        };
-    }
-    options
-}
-
-/// The node after `node` and its subtree in tree order, within `root`.
-fn next_within(document: &Document, mut node: NodeId, root: NodeId) -> Option<NodeId> {
-    while node != root {
-        if let Some(next) = document.next_sibling(node) {
-            return Some(next);
-        }
-        node = document.parent(node)?;
-    }
-    None
-}
-
-/// The option a `select` without `multiple` leaves selected, by the
-/// selectedness setting algorithm (HTML §4.10.7) over its options'
-/// `selected` attributes: the last with one; with none, and a display
-/// size of 1, the first that is not disabled. Its display size is its
-/// `size`, a non-negative integer, else 1.
-fn selected_option(document: &Document, select: NodeId) -> Option<NodeId> {
-    let options = list_of_options(document, select);
-    if let Some(&last) = options
-        .iter()
-        .rev()
-        .find(|&&option| document.attr(option, "selected").is_some())
-    {
-        return Some(last);
-    }
-    let size = document
-        .attr(select, "size")
-        .and_then(dom::parse_non_negative_integer)
-        .unwrap_or(1);
-    if size != 1 {
-        return None;
-    }
-    options
-        .into_iter()
-        .find(|&option| !option_disabled(document, option))
 }
 
 /// The keywords of an `input` element's `type` (HTML §4.10.5.1).

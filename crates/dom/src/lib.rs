@@ -12,6 +12,7 @@
 use std::fmt;
 
 mod document;
+pub mod forms;
 mod microsyntax;
 
 pub use document::{

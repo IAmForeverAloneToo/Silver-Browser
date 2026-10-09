@@ -13,6 +13,8 @@ mod quickjs;
 #[cfg(test)]
 mod dom_tests;
 #[cfg(test)]
+mod event_tests;
+#[cfg(test)]
 mod test_tree;
 #[cfg(test)]
 mod tests;
@@ -91,6 +93,10 @@ pub enum ErrorKind {
     Rejection,
     /// The realm is dead and ran nothing.
     Dead,
+    /// An uncaught exception a listener of the window's `error` event
+    /// canceled (HTML section 8.1.4.6, M26): reported to the page, not to
+    /// the console.
+    Handled,
 }
 
 /// An error a script reported: what failed, its message as the
@@ -175,6 +181,58 @@ pub enum Task {
     /// Runs timer `id`'s callback (HTML section 8.6), which sets it
     /// again if it repeats.
     Timer(u32),
+    /// Dispatches an event the engine makes, a trusted one, at `target`
+    /// (DOM section 2.9), with a microtask checkpoint after each
+    /// listener it calls.
+    Dispatch { target: Target, event: EventInit },
+}
+
+/// Where an event the engine makes is dispatched: a node, the document
+/// being one, or the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    Node(Handle),
+    Window,
+}
+
+/// An event the engine makes, as data: the interface it is an object of
+/// (`Event`, `MouseEvent`, ...), its type, and the members of that
+/// interface's dictionary it does not leave at their defaults, by name
+/// (`bubbles`, `cancelable`, `clientX`, ...).
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventInit {
+    pub interface: &'static str,
+    pub kind: String,
+    pub fields: Vec<(&'static str, Field)>,
+}
+
+impl EventInit {
+    /// An event of `interface` and type `kind` with its defaults.
+    pub fn new(interface: &'static str, kind: impl Into<String>) -> EventInit {
+        EventInit {
+            interface,
+            kind: kind.into(),
+            fields: Vec::new(),
+        }
+    }
+
+    /// The event with member `name` set to `value`.
+    pub fn with(mut self, name: &'static str, value: Field) -> EventInit {
+        self.fields.push((name, value));
+        self
+    }
+}
+
+/// A member's value in an [`EventInit`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum Field {
+    Bool(bool),
+    Number(f64),
+    String(String),
+    /// A node (a `relatedTarget`, a `submitter`), or `null`.
+    Node(Option<Handle>),
+    /// The window (a `view`).
+    Window,
 }
 
 /// A realm: a global object and the heap its scripts share.
@@ -184,9 +242,10 @@ pub trait Realm<H: ScriptingHost> {
     /// performs the microtask checkpoint that follows.
     fn run(&mut self, script: &Script<'_>, host: &mut H) -> Result<Completion, ScriptError>;
     /// Runs `task` with `host` and a step budget of its own, as
-    /// [`Realm::run`] runs a script; why it failed, if it did. The caller
-    /// performs the microtask checkpoint that follows.
-    fn enter(&mut self, task: &Task, host: &mut H) -> Result<(), ScriptError>;
+    /// [`Realm::run`] runs a script: whether the event it dispatched was
+    /// canceled (false for a task with no event), or why it failed. The
+    /// caller performs the microtask checkpoint that follows.
+    fn enter(&mut self, task: &Task, host: &mut H) -> Result<bool, ScriptError>;
     /// Runs the promise jobs queued (HTML section 8.1.7.3), with a step
     /// budget of its own, and reports the rejections left unhandled.
     fn checkpoint(&mut self, host: &mut H) -> Vec<ScriptError>;

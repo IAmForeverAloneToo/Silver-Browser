@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::time::Duration;
 
-use dom::{Document, MutationError, NodeData, NodeId};
+use dom::{Document, MutationError, NodeData, NodeId, forms};
 use js::{Answer, Call, ConsoleLevel, DomError, Handle, NestedScript, ScriptError, ScriptingHost};
 use style::animation::Animations;
 use style::selector_matching::{Matcher, PseudoElement, SelectorList};
@@ -284,7 +284,17 @@ impl DocumentHost {
                     _ => "#document".to_owned(),
                 };
                 let connected = if self.connected(id) { "connected" } else { "" };
-                Ok(Answer::Strings(vec![name, connected.to_owned()]))
+                let mut answer = vec![name, connected.to_owned()];
+                // The attributes that may be event handlers (M26).
+                answer.extend(
+                    self.document
+                        .attrs(id)
+                        .unwrap_or_default()
+                        .iter()
+                        .filter(|(name, _)| name.starts_with("on"))
+                        .map(|(name, _)| name.clone()),
+                );
+                Ok(Answer::Strings(answer))
             }
             Call::TakePins => {
                 let pins = std::mem::take(&mut self.pins);
@@ -729,6 +739,7 @@ impl DocumentHost {
                     url: Some(parsed),
                     replace,
                     reload: false,
+                    link: false,
                 });
                 Ok(Answer::Nothing)
             }
@@ -737,6 +748,7 @@ impl DocumentHost {
                     url: None,
                     replace: true,
                     reload: true,
+                    link: false,
                 });
                 Ok(Answer::Nothing)
             }
@@ -837,7 +849,74 @@ impl DocumentHost {
                     .map(|origin| origin.epoch_ms)
                     .unwrap_or_default(),
             )),
+            Call::Ancestors(node) => {
+                let node = self.node(node)?;
+                let ancestors: Vec<Handle> = self.document.ancestors(node).map(handle).collect();
+                self.work += ancestors.len() as u64;
+                Ok(Answer::Nodes(ancestors))
+            }
+            Call::Activator(node) => {
+                let node = self.node(node)?;
+                let found = std::iter::once(node)
+                    .chain(self.document.ancestors(node))
+                    .find(|&n| has_activation_behaviour(&self.document, n));
+                Ok(self.give(found))
+            }
+            Call::Activate(node) => {
+                let node = self.node(node)?;
+                self.activate(node);
+                Ok(Answer::Nothing)
+            }
+            Call::Disabled(node) => {
+                let node = self.node(node)?;
+                Ok(Answer::Bool(forms::actually_disabled(&self.document, node)))
+            }
+            Call::FormOwner(node) => {
+                let node = self.node(node)?;
+                let owner = forms::form_associated(&self.document, node)
+                    .then(|| forms::form_owner(&self.document, node))
+                    .flatten();
+                Ok(self.give(owner))
+            }
+            Call::Dialog { kind, message } => {
+                self.say(ConsoleLevel::Info, format!("{kind}: {message}"));
+                Ok(Answer::Nothing)
+            }
         }
+    }
+
+    /// Runs the activation behaviour of `element` (HTML section 6.5), a
+    /// click at it not canceled: a link is followed.
+    fn activate(&mut self, element: NodeId) {
+        if matches!(self.document.tag(element), Some("a" | "area")) {
+            self.follow_hyperlink(element);
+        }
+    }
+
+    /// HTML's "follow the hyperlink" (section 4.6.4), as a link's
+    /// activation behaviour: its `href` parsed now against the document's
+    /// base URL, and the navigation a followed link's, after the run;
+    /// nothing for a link without one, or out of the document.
+    fn follow_hyperlink(&mut self, element: NodeId) {
+        if !self.connected(element) {
+            return;
+        }
+        let Some(href) = self.document.attr(element, "href") else {
+            return;
+        };
+        let Some(url) = self
+            .page
+            .as_ref()
+            .and_then(|page| page.resolve(&self.document, href))
+        else {
+            return;
+        };
+        self.outputs.navigation = Some(ScriptNavigation {
+            url: Some(url),
+            replace: false,
+            reload: false,
+            link: true,
+        });
     }
 
     /// The window's clock now.
@@ -1480,6 +1559,12 @@ impl DocumentHost {
 /// A node's handle.
 fn handle(node: NodeId) -> Handle {
     Handle(node.to_bits())
+}
+
+/// Whether `node` is an element with an activation behaviour (HTML
+/// section 6.5): a link, `a` or `area`.
+fn has_activation_behaviour(document: &Document, node: NodeId) -> bool {
+    matches!(document.tag(node), Some("a" | "area"))
 }
 
 /// `navigator.platform` (HTML section 8.10.1.1): the value every browser

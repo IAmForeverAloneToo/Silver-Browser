@@ -225,6 +225,35 @@ impl Tree {
                 self.released.push(h.0);
                 Answer::Nothing
             }
+            Call::Ancestors(h) => {
+                let mut ancestors = Vec::new();
+                let mut at = self.nodes[self.node(h)?].parent;
+                while let Some(node) = at {
+                    ancestors.push(Handle(node as u64));
+                    at = self.nodes[node].parent;
+                }
+                Answer::Nodes(ancestors)
+            }
+            // A link, the tests' only element with an activation
+            // behaviour (M26).
+            Call::Activator(h) => {
+                let mut at = Some(self.node(h)?);
+                while let Some(node) = at {
+                    if self.nodes[node].tag == "a" {
+                        break;
+                    }
+                    at = self.nodes[node].parent;
+                }
+                self.give(at)
+            }
+            Call::Disabled(h) => {
+                self.node(h)?;
+                Answer::Bool(false)
+            }
+            Call::FormOwner(h) => {
+                self.node(h)?;
+                Answer::Node(None)
+            }
             _ => return Err(DomError::not_supported()),
         })
     }

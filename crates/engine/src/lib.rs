@@ -945,6 +945,8 @@ impl Engine {
         let source = self.shown.page.url().map(Url::scheme);
         match refusal(&url, source, self.shown.made) {
             Some(why) => self.notice = Some(why),
+            // A followed link navigates as a click on it does (M26).
+            None if navigation.link => self.navigate(url),
             None => {
                 let replace = navigation.replace || self.load_state != LoadState::Loaded;
                 self.navigate_replacing(url, replace);

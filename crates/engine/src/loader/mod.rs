@@ -4,6 +4,8 @@
 
 #[cfg(test)]
 mod dom_tests;
+#[cfg(test)]
+mod event_tests;
 mod pool;
 mod rules;
 #[cfg(test)]

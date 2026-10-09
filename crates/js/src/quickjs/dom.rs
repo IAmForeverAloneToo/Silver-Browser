@@ -9,8 +9,11 @@ use std::rc::Rc;
 use rquickjs::function::Rest;
 use rquickjs::{Array, CaughtError, Coerced, Ctx, Exception, Function, Object, Value};
 
-use super::{Slot, caught_error, evaluate, with_host};
-use crate::{Answer, Call, DomError, Handle, MAX_HANDLE, ScriptingHost, WORK_PER_STEP};
+use super::{Entries, Slot, evaluate, report, thrown, with_host};
+use crate::{
+    Answer, Call, DomError, ErrorKind, Handle, MAX_HANDLE, ScriptError, ScriptingHost,
+    WORK_PER_STEP,
+};
 
 /// The bindings, run in each new realm before any page's script.
 const BOOTSTRAP: &str = include_str!("bootstrap.js");
@@ -263,18 +266,31 @@ const NATIVES: &[(&str, Decode)] = &[
     ("clearTimer", |a| Ok(Call::ClearTimer(a.integer(0) as u32))),
     ("now", |_| Ok(Call::Now)),
     ("timeOrigin", |_| Ok(Call::TimeOrigin)),
+    ("ancestors", |a| Ok(Call::Ancestors(a.handle(0)?))),
+    ("activator", |a| Ok(Call::Activator(a.handle(0)?))),
+    ("activate", |a| Ok(Call::Activate(a.handle(0)?))),
+    ("disabled", |a| Ok(Call::Disabled(a.handle(0)?))),
+    ("formOwner", |a| Ok(Call::FormOwner(a.handle(0)?))),
+    ("dialog", |a| {
+        Ok(Call::Dialog {
+            kind: a.string(0)?,
+            message: a.string(1)?,
+        })
+    }),
 ];
 
 /// Runs the bootstrap with the natives, which nothing else then holds;
-/// gives its entry points, the functions the realm's tasks call (M26).
+/// gives its entry points, the functions the realm's tasks call (M26),
+/// which a nested script's error reaches through `entries`.
 pub(super) fn install<'js, H: ScriptingHost>(
     ctx: &Ctx<'js>,
     host: &Slot<H>,
     budget: &Budget,
+    entries: &Entries,
 ) -> rquickjs::Result<Object<'js>> {
     let natives = Object::new(ctx.clone())?;
     for &(name, decode) in NATIVES {
-        let (host, budget) = (host.clone(), budget.clone());
+        let (host, budget, entries) = (host.clone(), budget.clone(), entries.clone());
         let runs_scripts = RUN_SCRIPTS.contains(&name);
         let native = Function::new(
             ctx.clone(),
@@ -296,7 +312,7 @@ pub(super) fn install<'js, H: ScriptingHost>(
                     Err(error) => return Err(throw(&ctx, &error)),
                 };
                 if runs_scripts {
-                    run_nested(&ctx, &host, &budget)?;
+                    run_nested(&ctx, &host, &budget, &entries)?;
                 }
                 value(&ctx, answer)
             },
@@ -325,17 +341,91 @@ pub(super) fn install<'js, H: ScriptingHost>(
             },
         )?,
     )?;
+    install_errors(ctx, host, &natives)?;
     let bootstrap: Function<'js> = ctx.eval(BOOTSTRAP)?;
     bootstrap.call::<_, Object<'js>>((natives, ctx.globals()))
 }
 
+/// The natives the bootstrap reports exceptions and compiles code with
+/// (M26): `describe`, a thrown value's report as the console words it
+/// (its message, URL, line and column); `reportError`, such a report
+/// given to the host; and `evaluate`, a string run as a classic script
+/// naming a URL, what it throws thrown on (a timer's string, an event
+/// handler's text).
+fn install_errors<'js, H: ScriptingHost>(
+    ctx: &Ctx<'js>,
+    host: &Slot<H>,
+    natives: &Object<'js>,
+) -> rquickjs::Result<()> {
+    natives.set(
+        "describe",
+        Function::new(
+            ctx.clone(),
+            |ctx: Ctx<'js>, value: Value<'js>| -> rquickjs::Result<Array<'js>> {
+                let error = thrown(&ctx, value, "", false);
+                let report = Array::new(ctx.clone())?;
+                report.set(0, error.message)?;
+                report.set(1, error.url)?;
+                report.set(2, error.line)?;
+                report.set(3, error.column)?;
+                Ok(report)
+            },
+        )?,
+    )?;
+    let reporting = host.clone();
+    natives.set(
+        "reportError",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>,
+                  message: String,
+                  url: String,
+                  line: f64,
+                  column: f64|
+                  -> rquickjs::Result<()> {
+                with_host(&ctx, &reporting, |host| {
+                    host.report(ScriptError {
+                        kind: ErrorKind::Exception,
+                        message,
+                        url,
+                        line: line as u32,
+                        column: column as u32,
+                    });
+                })
+            },
+        )?,
+    )?;
+    natives.set(
+        "evaluate",
+        Function::new(
+            ctx.clone(),
+            |ctx: Ctx<'js>, source: String, url: String| -> rquickjs::Result<Value<'js>> {
+                evaluate(&ctx, &source, &url, 1).map_err(|caught| rethrow(&ctx, caught))
+            },
+        )?,
+    )?;
+    Ok(())
+}
+
+/// Throws again what was caught, as it was: an exception the budget's
+/// stop made goes on uncatchable.
+fn rethrow<'js>(ctx: &Ctx<'js>, caught: CaughtError<'js>) -> rquickjs::Error {
+    match caught {
+        CaughtError::Exception(exception) => ctx.throw(exception.into_value()),
+        CaughtError::Value(value) => ctx.throw(value),
+        CaughtError::Error(error) => error,
+    }
+}
+
 /// Runs the scripts the host has ready to run now, each nested in the
 /// running script (HTML: before the call that made it ready returns),
-/// its errors the page's. A run past its budget is stopped whole.
+/// its errors the page's, reported as a script's are (M26). A run past
+/// its budget is stopped whole.
 fn run_nested<'js, H: ScriptingHost>(
     ctx: &Ctx<'js>,
     host: &Slot<H>,
     budget: &Budget,
+    entries: &Entries,
 ) -> rquickjs::Result<()> {
     while let Some(script) = with_host(ctx, host, |host| host.take_script())? {
         let result = evaluate(ctx, &script.source, &script.url, script.line);
@@ -346,13 +436,16 @@ fn run_nested<'js, H: ScriptingHost>(
             // nested in, which is stopped too.
             Err(caught) if budget.exhausted.get() => {
                 with_host(ctx, host, |host| host.script_ran())?;
-                return Err(match caught {
-                    CaughtError::Exception(exception) => ctx.throw(exception.into_value()),
-                    CaughtError::Value(value) => ctx.throw(value),
-                    CaughtError::Error(error) => error,
-                });
+                return Err(rethrow(ctx, caught));
             }
-            Err(caught) => Some(caught_error(ctx, caught, &script.url, false)),
+            Err(caught) => Some(report(
+                ctx,
+                entries,
+                &budget.exhausted,
+                caught,
+                &script.url,
+                false,
+            )),
         };
         with_host(ctx, host, |host| {
             if let Some(error) = caught {

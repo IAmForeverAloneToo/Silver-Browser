@@ -37,8 +37,9 @@ pub enum Call {
     Document,
     /// The bindings make an object for the node, which the host then
     /// holds until it is released: the node's name, its local name for
-    /// an element, `#text` or `#document`, and `connected` or empty, as
-    /// two strings.
+    /// an element, `#text` or `#document`; `connected` or empty; then the
+    /// names of its attributes that start with `on`, which may be event
+    /// handlers (M26), as strings.
     Wrap(Handle),
     /// The nodes scripts hold whose place in the document changed since
     /// this was last asked, each with whether it is now in the document:
@@ -238,6 +239,27 @@ pub enum Call {
     /// `performance.timeOrigin`: the time origin, in milliseconds since
     /// the Unix epoch.
     TimeOrigin,
+    /// The node's ancestors, its parent first (M26): an event's path.
+    Ancestors(Handle),
+    /// The nearest inclusive ancestor of the node with an activation
+    /// behaviour (DOM section 2.9, HTML section 6.5), if any.
+    Activator(Handle),
+    /// Runs the element's activation behaviour, a click at it not
+    /// canceled: a link is followed after the run.
+    Activate(Handle),
+    /// Whether the element is a form control that is disabled (HTML
+    /// section 4.16.3), which `click()` does nothing for.
+    Disabled(Handle),
+    /// The element's form owner (HTML section 4.10.18.3), if it is
+    /// form-associated and has one: an event handler's scope.
+    FormOwner(Handle),
+    /// `alert`, `confirm` or `prompt` (`kind`) was called with `message`:
+    /// the host shows it; the dialog blocks nothing and is answered as a
+    /// browser that suppresses dialogs answers it.
+    Dialog {
+        kind: String,
+        message: String,
+    },
 }
 
 /// What the host answers a [`Call`] with.

@@ -17,8 +17,8 @@ use rquickjs::{
 };
 
 use crate::{
-    Completion, ConsoleLevel, Death, ErrorKind, Limits, Realm, Script, ScriptEngine, ScriptError,
-    ScriptingHost, Task,
+    Completion, ConsoleLevel, Death, ErrorKind, EventInit, Field, Limits, Realm, Script,
+    ScriptEngine, ScriptError, ScriptingHost, Target, Task,
 };
 
 /// QuickJS-ng 0.16, which `rquickjs` builds from its source.
@@ -46,12 +46,23 @@ struct Rejection {
 /// The slot a run moves the host into.
 type Slot<H> = Rc<RefCell<Option<H>>>;
 
+/// The bootstrap's entry points (M26), which the realm's tasks and the
+/// error reports of scripts run nested call; emptied before the
+/// context goes.
+type Entries = Rc<RefCell<Option<Persistent<Object<'static>>>>>;
+
 struct QuickJsRealm<H: ScriptingHost> {
     /// Saved values must go before the context and runtime they belong
     /// to; `Drop` empties this first.
     rejections: Rc<RefCell<Vec<Rejection>>>,
     /// The bootstrap's entry points, which [`Realm::enter`] calls (M26).
-    entries: Option<Persistent<Object<'static>>>,
+    entries: Entries,
+    /// The errors of the jobs run between an engine dispatch's
+    /// listeners, which the next checkpoint reports.
+    deferred: Vec<ScriptError>,
+    /// The last run spent its budget, perhaps inside the bootstrap: the
+    /// next one first puts the bootstrap's own state back.
+    unwind: bool,
     host: Slot<H>,
     /// Interrupt checks taken in this run, and whether they ran out.
     steps: Rc<Cell<u32>>,
@@ -118,9 +129,10 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
             limit: limits.steps,
         };
         let work = budget.work.clone();
-        let entries = context
+        let entries: Entries = Rc::default();
+        let saved = context
             .with(|ctx| {
-                install(&ctx, &host, &budget)
+                install(&ctx, &host, &budget, &entries)
                     .map(|entries| Persistent::save(&ctx, entries))
                     .catch(&ctx)
                     .map_err(|e| e.to_string())
@@ -132,9 +144,12 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
                 line: 0,
                 column: 0,
             })?;
+        *entries.borrow_mut() = Some(saved);
         Ok(QuickJsRealm {
             rejections,
-            entries: Some(entries),
+            entries,
+            deferred: Vec::new(),
+            unwind: false,
             host,
             steps,
             exhausted,
@@ -147,13 +162,26 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
         })
     }
 
-    /// Moves `host` in and renews the budget.
+    /// Moves `host` in and renews the budget; after a run its budget
+    /// stopped, the bootstrap's own state is put back first (M26).
     fn begin(&mut self, host: &mut H, muted: bool) {
         *self.host.borrow_mut() = Some(std::mem::take(host));
         self.steps.set(0);
         self.work.set(0);
         self.exhausted.set(false);
         self.muted.set(muted);
+        if std::mem::take(&mut self.unwind)
+            && let Some(entries) = self.entries.borrow().clone()
+        {
+            self.context.with(|ctx| {
+                let reset = entries.restore(&ctx).and_then(|entries| {
+                    entries
+                        .get::<_, Function<'_>>("reset")?
+                        .call::<_, Value<'_>>(())
+                });
+                let _ = reset.catch(&ctx);
+            });
+        }
     }
 
     /// Moves the host back out.
@@ -162,6 +190,72 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
             *host = back;
         }
         self.muted.set(false);
+        if self.exhausted.get() {
+            self.unwind = true;
+        }
+    }
+
+    /// Runs the promise jobs queued while the budget lasts; the errors
+    /// of those that threw.
+    fn jobs(&mut self) -> Vec<ScriptError> {
+        let mut errors = Vec::new();
+        while self.runtime.is_job_pending() && !self.exhausted.get() {
+            if let Err(job) = self.runtime.execute_pending_job() {
+                let error = job.0.with(|ctx| {
+                    let thrown = ctx.catch();
+                    thrown_or_error(&ctx, thrown)
+                });
+                errors.push(error);
+            }
+        }
+        errors
+    }
+
+    /// Dispatches `event` at `target` (M26): the bootstrap's dispatch is
+    /// a generator, resumed until it ends, the microtask checkpoint run
+    /// between its steps, which are the listeners it calls. One budget
+    /// covers it all. Whether the event was canceled.
+    fn dispatch(
+        &mut self,
+        entries: &Persistent<Object<'static>>,
+        target: Target,
+        event: &EventInit,
+    ) -> Result<bool, ScriptError> {
+        let run = self.context.with(|ctx| {
+            let started = entries.clone().restore(&ctx).and_then(|entries| {
+                let at = match target {
+                    Target::Node(handle) => Value::new_float(ctx.clone(), handle.0 as f64),
+                    Target::Window => Value::new_null(ctx.clone()),
+                };
+                let init = init_object(&ctx, &event.fields)?;
+                entries
+                    .get::<_, Function<'_>>("dispatch")?
+                    .call::<_, Value<'_>>((at, event.interface, event.kind.as_str(), init))
+            });
+            started
+                .catch(&ctx)
+                .map(|run| Persistent::save(&ctx, run))
+                .map_err(|caught| caught_error(&ctx, caught, "", false))
+        })?;
+        loop {
+            let step = self.context.with(|ctx| {
+                let resumed = entries.clone().restore(&ctx).and_then(|entries| {
+                    let run = run.clone().restore(&ctx)?;
+                    entries
+                        .get::<_, Function<'_>>("resume")?
+                        .call::<_, Value<'_>>((run,))
+                });
+                resumed
+                    .catch(&ctx)
+                    .map(|value| value.as_bool())
+                    .map_err(|caught| caught_error(&ctx, caught, "", false))
+            })?;
+            if let Some(canceled) = step {
+                return Ok(canceled);
+            }
+            let errors = self.jobs();
+            self.deferred.extend(errors);
+        }
     }
 
     /// Whether the heap, collected, is still nearly full: then the realm
@@ -194,7 +288,7 @@ impl<H: ScriptingHost> Drop for QuickJsRealm<H> {
     fn drop(&mut self) {
         self.runtime.set_host_promise_rejection_tracker(None);
         self.rejections.borrow_mut().clear();
-        self.entries = None;
+        *self.entries.borrow_mut() = None;
     }
 }
 
@@ -204,11 +298,19 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
             return Err(dead(death));
         }
         self.begin(host, script.muted);
+        let (entries, exhausted) = (self.entries.clone(), self.exhausted.clone());
         let result =
             self.context.with(
                 |ctx| match evaluate(&ctx, script.source, script.url, script.line) {
                     Ok(value) => Ok(completion(&value)),
-                    Err(caught) => Err(caught_error(&ctx, caught, script.url, script.muted)),
+                    Err(caught) => Err(report(
+                        &ctx,
+                        &entries,
+                        &exhausted,
+                        caught,
+                        script.url,
+                        script.muted,
+                    )),
                 },
             );
         self.end(host);
@@ -227,28 +329,31 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
         result.map_err(|error| self.failure(error))
     }
 
-    fn enter(&mut self, task: &Task, host: &mut H) -> Result<(), ScriptError> {
+    fn enter(&mut self, task: &Task, host: &mut H) -> Result<bool, ScriptError> {
         if let Some(death) = self.dead {
             return Err(dead(death));
         }
-        let Some(entries) = self.entries.clone() else {
-            return Ok(());
+        let Some(entries) = self.entries.borrow().clone() else {
+            return Ok(false);
         };
         self.begin(host, false);
-        let result = self.context.with(|ctx| {
-            let called = entries.restore(&ctx).and_then(|entries| match task {
-                Task::Timer(id) => entries
-                    .get::<_, Function<'_>>("timer")?
-                    .call::<_, Value<'_>>((*id,)),
-            });
-            called
-                .catch(&ctx)
-                .map(|_| ())
-                .map_err(|caught| caught_error(&ctx, caught, "", false))
-        });
+        let result = match task {
+            Task::Timer(id) => self.context.with(|ctx| {
+                let called = entries.clone().restore(&ctx).and_then(|entries| {
+                    entries
+                        .get::<_, Function<'_>>("timer")?
+                        .call::<_, Value<'_>>((*id,))
+                });
+                called
+                    .catch(&ctx)
+                    .map(|_| false)
+                    .map_err(|caught| caught_error(&ctx, caught, "", false))
+            }),
+            Task::Dispatch { target, event } => self.dispatch(&entries, *target, event),
+        };
         self.end(host);
         let result = match result {
-            Ok(()) if self.exhausted.get() => Err(ScriptError {
+            Ok(_) if self.exhausted.get() => Err(ScriptError {
                 kind: ErrorKind::Budget,
                 message: String::new(),
                 url: String::new(),
@@ -265,19 +370,8 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
             return vec![dead(death)];
         }
         self.begin(host, false);
-        let mut errors = Vec::new();
-        while self.runtime.is_job_pending() && !self.exhausted.get() {
-            match self.runtime.execute_pending_job() {
-                Ok(_) => {}
-                Err(job) => {
-                    let error = job.0.with(|ctx| {
-                        let thrown = ctx.catch();
-                        thrown_or_error(&ctx, thrown)
-                    });
-                    errors.push(error);
-                }
-            }
-        }
+        let mut errors = std::mem::take(&mut self.deferred);
+        errors.extend(self.jobs());
         self.end(host);
         let errors: Vec<ScriptError> = errors.into_iter().map(|e| self.failure(e)).collect();
         let mut reported: Vec<ScriptError> = errors;
@@ -374,6 +468,70 @@ fn caught_error<'js>(
             muted,
         ),
     }
+}
+
+/// Reports a script's uncaught exception as HTML section 8.1.4.6 does
+/// (M26): an `error` event at the window, which the bootstrap fires,
+/// and, unless a listener canceled it, the error the caller gives the
+/// console, which is [`ErrorKind::Handled`] otherwise. A run its budget
+/// stopped fires nothing.
+fn report<'js>(
+    ctx: &Ctx<'js>,
+    entries: &Entries,
+    exhausted: &Cell<bool>,
+    caught: CaughtError<'js>,
+    url: &str,
+    muted: bool,
+) -> ScriptError {
+    let value = match &caught {
+        CaughtError::Exception(exception) => exception.clone().into_value(),
+        CaughtError::Value(value) => value.clone(),
+        CaughtError::Error(_) => Value::new_undefined(ctx.clone()),
+    };
+    let mut error = caught_error(ctx, caught, url, muted);
+    if exhausted.get() || error.kind != ErrorKind::Exception {
+        return error;
+    }
+    let Some(entries) = entries.borrow().clone() else {
+        return error;
+    };
+    let canceled = entries.restore(ctx).and_then(|entries| {
+        entries.get::<_, Function<'_>>("report")?.call::<_, bool>((
+            value,
+            error.message.as_str(),
+            error.url.as_str(),
+            error.line,
+            error.column,
+            muted,
+        ))
+    });
+    if let Ok(true) = canceled.catch(ctx) {
+        error.kind = ErrorKind::Handled;
+    }
+    error
+}
+
+/// An event's dictionary as the bootstrap's constructors read it: an
+/// object with no prototype, so that no getter a page put on
+/// `Object.prototype` answers for a member it leaves out.
+fn init_object<'js>(
+    ctx: &Ctx<'js>,
+    fields: &[(&'static str, Field)],
+) -> rquickjs::Result<Object<'js>> {
+    let object = Object::new(ctx.clone())?;
+    object.set_prototype(None)?;
+    for (name, field) in fields {
+        let value = match field {
+            Field::Bool(value) => Value::new_bool(ctx.clone(), *value),
+            Field::Number(value) => Value::new_number(ctx.clone(), *value),
+            Field::String(text) => rquickjs::String::from_str(ctx.clone(), text)?.into_value(),
+            Field::Node(Some(handle)) => Value::new_float(ctx.clone(), handle.0 as f64),
+            Field::Node(None) => Value::new_null(ctx.clone()),
+            Field::Window => ctx.globals().into_value(),
+        };
+        object.set(*name, value)?;
+    }
+    Ok(object)
 }
 
 /// The error a thrown value, or a failure with none, reports.
@@ -474,6 +632,7 @@ fn install<'js, H: ScriptingHost>(
     ctx: &Ctx<'js>,
     host: &Slot<H>,
     budget: &dom::Budget,
+    entries: &Entries,
 ) -> rquickjs::Result<Object<'js>> {
     let global = ctx.globals();
     global.remove("performance")?;
@@ -504,7 +663,7 @@ fn install<'js, H: ScriptingHost>(
         console.set(name, method)?;
     }
     global.set("console", console)?;
-    dom::install(ctx, host, budget)
+    dom::install(ctx, host, budget, entries)
 }
 
 /// Calls `f` with the host, which is there only while a run the engine

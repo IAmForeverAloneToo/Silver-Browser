@@ -1,7 +1,7 @@
 use crate::test_tree::Tree;
 use crate::{
     Answer, Call, Completion, ConsoleLevel, Death, DomError, ErrorKind, Limits, QuickJs, Realm,
-    Script, ScriptEngine, ScriptingHost, Task,
+    Script, ScriptEngine, ScriptError, ScriptingHost, Task,
 };
 
 /// A host that records what scripts do to it, with a small tree for the
@@ -18,6 +18,13 @@ pub(crate) struct Recorder {
     pub(crate) cleared: Vec<u32>,
     /// What `performance.now()` answers.
     pub(crate) now: f64,
+    /// The errors reported to the host (M26): those of listeners,
+    /// handlers and timers, which the bootstrap reports.
+    pub(crate) reported: Vec<ScriptError>,
+    /// The elements whose activation behaviour ran, and the dialogs
+    /// shown, by kind and message.
+    pub(crate) activated: Vec<u64>,
+    pub(crate) dialogs: Vec<(String, String)>,
 }
 
 impl ScriptingHost for Recorder {
@@ -46,12 +53,27 @@ impl ScriptingHost for Recorder {
             }
             Call::Now => Ok(Answer::Number(self.now)),
             Call::TimeOrigin => Ok(Answer::Number(1_700_000_000_000.5)),
+            Call::DocumentUrl => Ok(Answer::MaybeString(Some(
+                "https://example.com/page.html".to_owned(),
+            ))),
+            Call::Activate(handle) => {
+                self.activated.push(handle.0);
+                Ok(Answer::Nothing)
+            }
+            Call::Dialog { kind, message } => {
+                self.dialogs.push((kind, message));
+                Ok(Answer::Nothing)
+            }
             call => self.tree.dom(call),
         }
     }
 
     fn take_work(&mut self) -> u64 {
         self.tree.take_work()
+    }
+
+    fn report(&mut self, error: ScriptError) {
+        self.reported.push(error);
     }
 }
 
@@ -494,6 +516,7 @@ fn timers_keep_their_callbacks_and_the_host_their_times() {
     enter(3, &mut host);
     enter(2, &mut host);
     enter(2, &mut host);
+    assert_eq!(host.reported, []);
     assert_eq!(host.timers, [(1, 10), (2, 0), (3, -5), (2, 0)]);
     assert_eq!(host.cleared, [2]);
     enter(2, &mut host);
@@ -528,9 +551,10 @@ fn a_timer_that_throws_or_runs_too_long_fails_alone() {
             &mut host,
         )
         .expect("it runs");
-    let thrown = realm
-        .enter(&Task::Timer(1), &mut host)
-        .expect_err("it throws");
+    // What a timer's callback throws is reported, as an uncaught
+    // exception is, and the task goes on.
+    realm.enter(&Task::Timer(1), &mut host).expect("it runs");
+    let thrown = host.reported.pop().expect("it was reported");
     assert_eq!(thrown.kind, ErrorKind::Exception);
     assert_eq!(thrown.message, "Error: boom");
     assert_eq!(
