@@ -748,6 +748,24 @@ fn a_pages_scripts_title_the_window_and_a_realm_out_of_memory_says_so() {
 }
 
 #[test]
+fn a_pages_timers_run_when_the_window_ticks() {
+    let server = serve(|path| match path {
+        "/" => html(
+            "<title>Before</title><script>setTimeout(function () { \
+             document.title = 'After'; console.log('ran'); });</script>",
+        ),
+        _ => None,
+    });
+    let mut window = Window::with_scripts(Some(server.url("/")));
+    window.settle();
+    assert!(window.session.title().starts_with("Before"));
+    assert!(window.session.next_task_at().is_some());
+    window.session.tick();
+    assert!(window.session.title().starts_with("After"));
+    assert_eq!(window.session.next_task_at(), None);
+}
+
+#[test]
 fn a_page_loaded_before_the_first_frame_reads_the_windows_page_area() {
     // The window's size is known before a frame is drawn: a page that
     // arrives first reads the page's area under the toolbar (M25).

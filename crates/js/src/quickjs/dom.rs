@@ -76,6 +76,17 @@ impl<'js> Args<'_, 'js> {
         self.value(i).as_bool().unwrap_or(false)
     }
 
+    /// A whole number the bootstrap has already converted as Web IDL
+    /// says (a `long`, or a timer's id); anything else is 0.
+    fn integer(&self, i: usize) -> f64 {
+        let number = self.value(i).as_number().unwrap_or(0.0);
+        if number.is_finite() {
+            number.trunc()
+        } else {
+            0.0
+        }
+    }
+
     /// A string, which the bootstrap has made well formed.
     fn string(&self, i: usize) -> rquickjs::Result<String> {
         match self.value(i).as_string() {
@@ -243,14 +254,24 @@ const NATIVES: &[(&str, Decode)] = &[
     }),
     ("computedProperties", |_| Ok(Call::ComputedProperties)),
     ("released", |a| Ok(Call::Released(a.handle(0)?))),
+    ("setTimer", |a| {
+        Ok(Call::SetTimer {
+            id: a.integer(0) as u32,
+            delay: a.integer(1) as i32,
+        })
+    }),
+    ("clearTimer", |a| Ok(Call::ClearTimer(a.integer(0) as u32))),
+    ("now", |_| Ok(Call::Now)),
+    ("timeOrigin", |_| Ok(Call::TimeOrigin)),
 ];
 
-/// Runs the bootstrap with the natives, which nothing else then holds.
+/// Runs the bootstrap with the natives, which nothing else then holds;
+/// gives its entry points, the functions the realm's tasks call (M26).
 pub(super) fn install<'js, H: ScriptingHost>(
     ctx: &Ctx<'js>,
     host: &Slot<H>,
     budget: &Budget,
-) -> rquickjs::Result<()> {
+) -> rquickjs::Result<Object<'js>> {
     let natives = Object::new(ctx.clone())?;
     for &(name, decode) in NATIVES {
         let (host, budget) = (host.clone(), budget.clone());
@@ -305,8 +326,7 @@ pub(super) fn install<'js, H: ScriptingHost>(
         )?,
     )?;
     let bootstrap: Function<'js> = ctx.eval(BOOTSTRAP)?;
-    bootstrap.call::<_, ()>((natives, ctx.globals()))?;
-    Ok(())
+    bootstrap.call::<_, Object<'js>>((natives, ctx.globals()))
 }
 
 /// Runs the scripts the host has ready to run now, each nested in the

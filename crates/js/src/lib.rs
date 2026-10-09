@@ -167,12 +167,26 @@ pub trait ScriptEngine {
     fn realm<H: ScriptingHost>(&self, limits: Limits) -> Result<Box<dyn Realm<H>>, ScriptError>;
 }
 
+/// What the engine asks a realm to do besides running a script (M26,
+/// `docs/design/events.md`): run the callbacks a page gave, which stay
+/// in the realm, named here by plain data.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Task {
+    /// Runs timer `id`'s callback (HTML section 8.6), which sets it
+    /// again if it repeats.
+    Timer(u32),
+}
+
 /// A realm: a global object and the heap its scripts share.
 pub trait Realm<H: ScriptingHost> {
     /// Parses and runs a classic script with `host` and a step budget
     /// of its own; what it ended with, or why it failed. The caller
     /// performs the microtask checkpoint that follows.
     fn run(&mut self, script: &Script<'_>, host: &mut H) -> Result<Completion, ScriptError>;
+    /// Runs `task` with `host` and a step budget of its own, as
+    /// [`Realm::run`] runs a script; why it failed, if it did. The caller
+    /// performs the microtask checkpoint that follows.
+    fn enter(&mut self, task: &Task, host: &mut H) -> Result<(), ScriptError>;
     /// Runs the promise jobs queued (HTML section 8.1.7.3), with a step
     /// budget of its own, and reports the rejections left unhandled.
     fn checkpoint(&mut self, host: &mut H) -> Vec<ScriptError>;

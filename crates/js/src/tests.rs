@@ -1,7 +1,7 @@
 use crate::test_tree::Tree;
 use crate::{
     Answer, Call, Completion, ConsoleLevel, Death, DomError, ErrorKind, Limits, QuickJs, Realm,
-    Script, ScriptEngine, ScriptingHost,
+    Script, ScriptEngine, ScriptingHost, Task,
 };
 
 /// A host that records what scripts do to it, with a small tree for the
@@ -12,6 +12,12 @@ pub(crate) struct Recorder {
     pub(crate) title: String,
     pub(crate) titles_read: usize,
     pub(crate) tree: Tree,
+    /// The timers set, by id and delay, in order (M26), and those
+    /// cleared.
+    pub(crate) timers: Vec<(u32, i32)>,
+    pub(crate) cleared: Vec<u32>,
+    /// What `performance.now()` answers.
+    pub(crate) now: f64,
 }
 
 impl ScriptingHost for Recorder {
@@ -29,7 +35,19 @@ impl ScriptingHost for Recorder {
     }
 
     fn dom(&mut self, call: Call) -> Result<Answer, DomError> {
-        self.tree.dom(call)
+        match call {
+            Call::SetTimer { id, delay } => {
+                self.timers.push((id, delay));
+                Ok(Answer::Nothing)
+            }
+            Call::ClearTimer(id) => {
+                self.cleared.push(id);
+                Ok(Answer::Nothing)
+            }
+            Call::Now => Ok(Answer::Number(self.now)),
+            Call::TimeOrigin => Ok(Answer::Number(1_700_000_000_000.5)),
+            call => self.tree.dom(call),
+        }
     }
 
     fn take_work(&mut self) -> u64 {
@@ -422,13 +440,116 @@ fn deep_recursion_throws_a_catchable_range_error() {
 fn a_realm_has_no_unrounded_clock_and_no_shared_memory() {
     let done = realm()
         .run(
-            &script("[typeof performance, typeof SharedArrayBuffer, typeof Atomics].join()"),
-            &mut Recorder::default(),
+            &script(
+                "[typeof SharedArrayBuffer, typeof Atomics, \
+                 Object.prototype.toString.call(performance), performance.now(), \
+                 performance.timeOrigin, JSON.stringify(performance), \
+                 performance instanceof EventTarget].join()",
+            ),
+            &mut Recorder {
+                now: 12.3,
+                ..Recorder::default()
+            },
         )
         .expect("it runs");
+    // `performance` is the host's clock (M26), not QuickJS-ng's unrounded
+    // one.
     assert_eq!(
         done,
-        Completion::String("undefined,undefined,object".to_owned())
+        Completion::String(
+            "undefined,object,[object Performance],12.3,1700000000000.5,\
+             {\"timeOrigin\":1700000000000.5},true"
+                .to_owned()
+        )
+    );
+}
+
+#[test]
+fn timers_keep_their_callbacks_and_the_host_their_times() {
+    let mut realm = realm();
+    let mut host = Recorder::default();
+    let done = realm
+        .run(
+            &script(
+                "var log = []; \
+                 var a = setTimeout(function (x, y) { 'use strict'; log.push('a' + x + y + (this === window)); }, 10, 1, 2); \
+                 var b = setInterval(function () { log.push('b'); if (log.length > 3) clearInterval(b); }); \
+                 var c = setTimeout(\"log.push('c' + typeof b)\", -5.7); \
+                 clearTimeout(99); \
+                 [a, b, c, setTimeout.length, typeof window.setInterval].join()",
+            ),
+            &mut host,
+        )
+        .expect("it runs");
+    assert_eq!(done, Completion::String("1,2,3,1,function".to_owned()));
+    assert_eq!(host.timers, [(1, 10), (2, 0), (3, -5)]);
+    assert!(host.cleared.is_empty());
+    let mut enter = |id: u32, host: &mut Recorder| {
+        realm.enter(&Task::Timer(id), host).expect("it runs");
+    };
+    // A timeout runs once; a string is a classic script; an interval is
+    // set again after each run until its callback clears it.
+    enter(1, &mut host);
+    enter(1, &mut host);
+    enter(3, &mut host);
+    enter(2, &mut host);
+    enter(2, &mut host);
+    assert_eq!(host.timers, [(1, 10), (2, 0), (3, -5), (2, 0)]);
+    assert_eq!(host.cleared, [2]);
+    enter(2, &mut host);
+    let log = realm
+        .run(&script("log.join()"), &mut host)
+        .expect("it runs");
+    assert_eq!(log, Completion::String("a12true,cnumber,b,b".to_owned()));
+    // Ids are not given twice while their timers are set.
+    let ids = realm
+        .run(
+            &script("[setTimeout(function () {}), setTimeout(function () {})].join()"),
+            &mut host,
+        )
+        .expect("it runs");
+    assert_eq!(ids, Completion::String("4,5".to_owned()));
+}
+
+#[test]
+fn a_timer_that_throws_or_runs_too_long_fails_alone() {
+    let mut realm = realm_with(Limits {
+        steps: 20,
+        ..Limits::default()
+    });
+    let mut host = Recorder::default();
+    realm
+        .run(
+            &script(
+                "setTimeout(function () {\n  throw new Error('boom');\n}); \
+                 setTimeout(function () { for (;;) {} }); \
+                 setInterval(function () { document.title = 'ran'; }, 5);",
+            ),
+            &mut host,
+        )
+        .expect("it runs");
+    let thrown = realm
+        .enter(&Task::Timer(1), &mut host)
+        .expect_err("it throws");
+    assert_eq!(thrown.kind, ErrorKind::Exception);
+    assert_eq!(thrown.message, "Error: boom");
+    assert_eq!(
+        (thrown.url.as_str(), thrown.line),
+        ("https://example.com/page.html", 2)
+    );
+    let stopped = realm
+        .enter(&Task::Timer(2), &mut host)
+        .expect_err("it is stopped");
+    assert_eq!(stopped.kind, ErrorKind::Budget);
+    realm.enter(&Task::Timer(3), &mut host).expect("it runs");
+    assert_eq!(host.title, "ran");
+    assert_eq!(host.timers.last(), Some(&(3, 5)));
+    let none = realm
+        .run(&script("setTimeout()"), &mut host)
+        .expect_err("it throws");
+    assert_eq!(
+        none.message,
+        "TypeError: Failed to execute 'setTimeout' on 'Window': 1 argument required, but only 0 present."
     );
 }
 

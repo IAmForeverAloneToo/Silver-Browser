@@ -105,7 +105,8 @@ mod testing;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime};
 
 pub use image_store::MAX_DECODE_THREADS;
 pub use js::ConsoleLevel;
@@ -150,6 +151,17 @@ const SCROLL_SNAP_PX: f32 = 0.5;
 /// is given this much (its build script), and the engine's tests hold a
 /// page at the cap to it.
 pub const STACK_SIZE: usize = 32 << 20;
+
+/// The clock the engine's tasks, timers and scripts read (M26,
+/// `docs/design/events.md`): the time since a start of the caller's. The
+/// shell gives the one its frames' times come from; tests give one they
+/// move by hand.
+pub type Clock = Arc<dyn Fn() -> Duration + Send + Sync>;
+
+/// How long [`Engine::run_tasks`] runs tasks before it leaves the rest
+/// for its next call, so that a page's timers cannot keep the window
+/// from drawing.
+pub const TASK_SLICE: Duration = Duration::from_millis(50);
 
 /// The time a frame may take: one of sixty a second (M13.4,
 /// `docs/perf-budgets.md`). The scroll animation's rate is given per
@@ -282,6 +294,8 @@ pub struct Engine {
     decoder: Decoder,
     /// The number the next image is given.
     next_image: u64,
+    /// The clock tasks, timers and scripts read (M26).
+    clock: Clock,
 }
 
 /// A document and everything the engine made from it (M15): what the
@@ -394,6 +408,8 @@ struct Navigation {
     url: Url,
     incoming: Incoming,
     handling: Handling,
+    /// When it started: its document's time origin (M26).
+    started: scripts::TimeOrigin,
 }
 
 /// What a navigation's document does to the session history when it is
@@ -715,6 +731,10 @@ impl Engine {
             events: Vec::new(),
             decoder: Decoder::new(),
             next_image: 0,
+            clock: {
+                let made = Instant::now();
+                Arc::new(move || made.elapsed())
+            },
         }
     }
 
@@ -761,6 +781,8 @@ impl Engine {
     /// animation's clock.
     fn show(&mut self, shown: Shown) -> Shown {
         let left = std::mem::replace(&mut self.shown, shown);
+        let origin = self.time_origin();
+        self.shown.scripts.set_time_origin(origin);
         self.backend.clear_glyph_cache();
         self.backend.forget_frame();
         self.animation_clock = None;
@@ -1011,6 +1033,150 @@ impl Engine {
             media: self.media(self.viewport),
             fonts: Some(self.layout_fonts.clone()),
             compat: self.compat_user_agent,
+            clock: Some(self.clock.clone()),
+        }
+    }
+
+    /// Gives the engine the clock its tasks, timers and scripts read
+    /// (M26): the shell's, which its frames' times come from too.
+    pub fn set_clock(&mut self, clock: Clock) {
+        self.clock = clock;
+    }
+
+    /// The clock now.
+    fn now(&self) -> Duration {
+        (self.clock)()
+    }
+
+    /// A time origin for a document made now: the clock, and the time
+    /// since the Unix epoch.
+    fn time_origin(&self) -> scripts::TimeOrigin {
+        let epoch = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default();
+        scripts::TimeOrigin {
+            at: self.now(),
+            epoch_ms: epoch.as_secs_f64() * 1000.0,
+        }
+    }
+
+    /// Runs the tasks that are due (HTML's event loop, M26.1): the timers
+    /// of the document shown and of the one on its way, the soonest due
+    /// first, each followed by its microtask checkpoint and by what the
+    /// engine does after any run, until none is due or [`TASK_SLICE`] has
+    /// passed, the rest being left for the next call. Whether a frame is
+    /// wanted.
+    pub fn run_tasks(&mut self) -> bool {
+        let start = self.now();
+        loop {
+            let now = self.now();
+            if now.saturating_sub(start) >= TASK_SLICE {
+                self.wake();
+                break;
+            }
+            let shown = self.shown.scripts.next_task_at().filter(|due| *due <= now);
+            let incoming = self
+                .incoming_scripts()
+                .and_then(scripts::Scripts::next_task_at)
+                .filter(|due| *due <= now);
+            match (shown, incoming) {
+                (None, None) => break,
+                (Some(shown), Some(incoming)) if shown <= incoming => self.run_shown_timer(),
+                (Some(_), None) => self.run_shown_timer(),
+                (_, Some(_)) => self.run_incoming_timer(),
+            }
+        }
+        self.needs_frame()
+    }
+
+    /// When the next task is due (M26): the soonest timer of the
+    /// document shown or of the one on its way, for the caller to wake
+    /// at and call [`Engine::run_tasks`].
+    pub fn next_task_at(&self) -> Option<Duration> {
+        let shown = self.shown.scripts.next_task_at();
+        let incoming = self
+            .incoming_scripts()
+            .and_then(scripts::Scripts::next_task_at);
+        match (shown, incoming) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// The scripts of the document on its way, while it is parsed.
+    fn incoming_scripts(&self) -> Option<&scripts::Scripts> {
+        match &self.navigation {
+            Some(Navigation {
+                incoming: Incoming::Parsing { parsing, .. },
+                ..
+            }) => Some(&parsing.scripts),
+            _ => None,
+        }
+    }
+
+    /// Runs the shown document's timer due first as a task.
+    fn run_shown_timer(&mut self) {
+        let Some((id, nesting)) = self.shown.scripts.take_next_timer() else {
+            return;
+        };
+        let ready = self.ready_state();
+        let window = self.window_env();
+        let shown = &mut self.shown;
+        let mut lent = scripts::Lent {
+            document: &mut shown.document,
+            page: &mut shown.page,
+            parser: shown.parsing.as_mut().map(|parsing| &mut parsing.load),
+            network: &mut self.network,
+            ready,
+            window,
+        };
+        shown
+            .scripts
+            .enter(&mut lent, &js::Task::Timer(id), nesting);
+        self.scripts_ran();
+    }
+
+    /// Runs the timer due first of the document on its way as
+    /// a task, as its parse runs its scripts: a navigation it asks for
+    /// takes the navigation's place, and the sheets it makes are found.
+    fn run_incoming_timer(&mut self) {
+        let media = self.media(self.viewport);
+        let window = self.window_env();
+        let Some(Navigation {
+            incoming:
+                Incoming::Parsing {
+                    page,
+                    document,
+                    parsing,
+                },
+            ..
+        }) = &mut self.navigation
+        else {
+            return;
+        };
+        let loader::Parsing { load, scripts, .. } = &mut **parsing;
+        let Some((id, nesting)) = scripts.take_next_timer() else {
+            return;
+        };
+        let mut lent = scripts::Lent {
+            document,
+            page,
+            parser: Some(load),
+            network: &mut self.network,
+            ready: scripts::ReadyState::Loading,
+            window,
+        };
+        scripts.enter(&mut lent, &js::Task::Timer(id), nesting);
+        let asked = scripts.take_navigation();
+        let changes = document.take_changes();
+        if changes
+            .iter()
+            .any(|change| loader::may_touch_sheets(document, change))
+        {
+            page.rescan(document, &mut self.network, Some(&media));
+        }
+        if let Some(navigation) = asked {
+            self.incoming_navigation(navigation);
         }
     }
 
@@ -1063,6 +1229,7 @@ impl Engine {
             url,
             incoming: Incoming::Fetching(id),
             handling,
+            started: self.time_origin(),
         });
         self.load_state = LoadState::Loading;
     }
@@ -1633,13 +1800,15 @@ impl Engine {
         response.body = Vec::new();
         let page = parsed_page(id, &response, &load);
         if let Some(navigation) = &mut self.navigation {
+            let mut scripts = scripts::Scripts::with_limits(self.script_limits);
+            scripts.set_time_origin(navigation.started);
             navigation.incoming = Incoming::Parsing {
                 page: Box::new(page),
                 document: Box::new(Document::new()),
                 parsing: Box::new(loader::Parsing {
                     load,
                     head: response,
-                    scripts: scripts::Scripts::with_limits(self.script_limits),
+                    scripts,
                 }),
             };
         }
@@ -1926,7 +2095,12 @@ impl Engine {
             self.navigation = Some(navigation);
             return;
         }
-        let Navigation { url, handling, .. } = navigation;
+        let Navigation {
+            url,
+            handling,
+            started,
+            ..
+        } = navigation;
         let response = match result {
             Ok(response) => response,
             Err(error) => {
@@ -1951,6 +2125,7 @@ impl Engine {
                         document: Box::new(parsed.document),
                     },
                     handling,
+                    started,
                 });
                 self.commit_if_ready();
             }

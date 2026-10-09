@@ -4,7 +4,8 @@
 //! the subtrees they took out of the tree, freed once nothing holds them.
 
 use std::cell::RefCell;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::time::Duration;
 
 use dom::{Document, MutationError, NodeData, NodeId};
 use js::{Answer, Call, ConsoleLevel, DomError, Handle, NestedScript, ScriptError, ScriptingHost};
@@ -14,9 +15,9 @@ use style::{CascadeContext, FontMeasure, Styles, Stylesheets};
 
 use super::cssom;
 use super::{
-    ConsoleEntry, How, Lent, MAX_SCRIPT_NESTING, Place, Prepared, ReadyState, ScriptNavigation,
-    Source, Wanted, WindowEnv, cut, document_title, parser_place, prepare_element, refusal_text,
-    report_text,
+    ConsoleEntry, How, Lent, MAX_SCRIPT_NESTING, MAX_TIMERS, Place, Prepared, ReadyState,
+    ScriptNavigation, Source, TimeOrigin, Wanted, WindowEnv, cut, document_title, parser_place,
+    prepare_element, refusal_text, report_text,
 };
 use crate::loader::Page;
 
@@ -49,6 +50,73 @@ struct ComputedStyles {
     styles: Styles,
     version: u64,
     mark: usize,
+}
+
+/// A document's timers (M26, HTML section 8.6): each set timer by when
+/// it is due, then by the order it was set in, with the nesting level
+/// the task that runs it has. The callbacks are the realm's.
+#[derive(Default)]
+pub(crate) struct Timers {
+    queue: BTreeMap<(Duration, u64), (u32, u32)>,
+    /// Each timer's place in `queue`, by its id.
+    by_id: HashMap<u32, (Duration, u64)>,
+    /// The order of the next timer set.
+    next: u64,
+}
+
+impl Timers {
+    /// Sets timer `id` (or sets it again) to be due `delay` milliseconds
+    /// after `now`, from a task at nesting level `level`: a delay below
+    /// 0 is 0, and below 4 is 4 past the fifth level, as HTML clamps it.
+    /// A new timer past [`MAX_TIMERS`] is refused.
+    fn set(&mut self, id: u32, delay: i32, level: u32, now: Duration) -> Result<(), DomError> {
+        let mut delay = u64::try_from(delay).unwrap_or(0);
+        if level > 5 && delay < 4 {
+            delay = 4;
+        }
+        match self.by_id.remove(&id) {
+            Some(key) => {
+                self.queue.remove(&key);
+            }
+            None if self.by_id.len() >= MAX_TIMERS => {
+                return Err(DomError::new(
+                    "RangeError",
+                    format!("No more than {MAX_TIMERS} timers may be set."),
+                ));
+            }
+            None => {}
+        }
+        let key = (now + Duration::from_millis(delay), self.next);
+        self.next += 1;
+        self.queue.insert(key, (id, level.saturating_add(1)));
+        self.by_id.insert(id, key);
+        Ok(())
+    }
+
+    /// Clears timer `id`, if it is set.
+    fn clear(&mut self, id: u32) {
+        if let Some(key) = self.by_id.remove(&id) {
+            self.queue.remove(&key);
+        }
+    }
+
+    /// When the next timer is due.
+    pub(crate) fn next_due(&self) -> Option<Duration> {
+        self.queue.keys().next().map(|(due, _)| *due)
+    }
+
+    /// The timer due first, taken: its id and the nesting level of the
+    /// task that runs it.
+    pub(crate) fn take_next(&mut self) -> Option<(u32, u32)> {
+        let (_, (id, level)) = self.queue.pop_first()?;
+        self.by_id.remove(&id);
+        Some((id, level))
+    }
+
+    /// Clears every timer.
+    pub(crate) fn clear_all(&mut self) {
+        *self = Timers::default();
+    }
 }
 
 /// The window's fonts, measuring for the cascade (`ex` and `ch`).
@@ -111,6 +179,13 @@ pub(crate) struct DocumentHost {
     window: WindowEnv,
     /// The styles a run's `getComputedStyle` computed, kept for the run.
     computed: Option<ComputedStyles>,
+    /// The document's timers (M26).
+    pub(crate) timers: Timers,
+    /// The timer nesting level of the task the run is (HTML section
+    /// 8.6): 0 but for a timer's.
+    nesting: u32,
+    /// The document's time origin, once it has one.
+    pub(crate) origin: Option<TimeOrigin>,
 }
 
 impl ScriptingHost for DocumentHost {
@@ -739,7 +814,39 @@ impl DocumentHost {
                 }
                 Ok(Answer::Nothing)
             }
+            Call::SetTimer { id, delay } => {
+                let now = self.now();
+                self.timers.set(id, delay, self.nesting, now)?;
+                Ok(Answer::Nothing)
+            }
+            Call::ClearTimer(id) => {
+                self.timers.clear(id);
+                Ok(Answer::Nothing)
+            }
+            Call::Now => {
+                let since = self
+                    .now()
+                    .saturating_sub(self.origin.map(|origin| origin.at).unwrap_or_default());
+                // A tenth of a millisecond, as the reference browser
+                // coarsens a page that is not cross-origin isolated.
+                let tenths = since.as_micros() / 100;
+                Ok(Answer::Number(tenths as f64 / 10.0))
+            }
+            Call::TimeOrigin => Ok(Answer::Number(
+                self.origin
+                    .map(|origin| origin.epoch_ms)
+                    .unwrap_or_default(),
+            )),
         }
+    }
+
+    /// The window's clock now.
+    fn now(&self) -> Duration {
+        self.window
+            .clock
+            .as_ref()
+            .map(|clock| clock())
+            .unwrap_or_default()
     }
 
     /// Lends the host what a run needs, `how` the script runs, and
@@ -757,6 +864,7 @@ impl DocumentHost {
         self.too_deep = false;
         self.window = std::mem::take(&mut lent.window);
         self.computed = None;
+        self.nesting = how.nesting;
         self.frames = vec![Frame {
             element: how.element,
             external: how.external,

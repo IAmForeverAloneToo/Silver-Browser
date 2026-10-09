@@ -2,6 +2,7 @@
 //! its waker, a scripted server on 127.0.0.1, and ways to wait for both
 //! and to look at what was shown.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread;
@@ -53,6 +54,13 @@ impl Tab {
         }
     }
 
+    /// Gives the engine a clock the test moves by hand (M26), at 0.
+    pub(crate) fn hand_clock(&mut self) -> HandClock {
+        let clock = HandClock::default();
+        self.engine.set_clock(clock.clock());
+        clock
+    }
+
     /// Takes results until no fetch is in flight.
     pub(crate) fn settle(&mut self) {
         self.wait_until(|engine| engine.network.in_flight() == 0);
@@ -68,6 +76,24 @@ impl Tab {
     /// first identifier, `a` for `.a {}`.
     pub(crate) fn names(&self) -> Vec<String> {
         names(&self.engine)
+    }
+}
+
+/// A clock a test moves by hand (M26): the engine's tasks, timers and
+/// scripts read it, so that no test waits for time to pass.
+#[derive(Clone, Default)]
+pub(crate) struct HandClock(Arc<AtomicU64>);
+
+impl HandClock {
+    /// Moves the clock on by `ms` milliseconds.
+    pub(crate) fn advance(&self, ms: u64) {
+        self.0.fetch_add(ms * 1_000_000, Ordering::SeqCst);
+    }
+
+    /// The clock as the engine reads it.
+    pub(crate) fn clock(&self) -> crate::Clock {
+        let nanos = self.0.clone();
+        Arc::new(move || Duration::from_nanos(nanos.load(Ordering::SeqCst)))
     }
 }
 

@@ -14,6 +14,7 @@ mod cssom;
 mod host;
 
 use std::collections::VecDeque;
+use std::time::Duration;
 
 /// The most scripts that run nested, one inside another's call, the
 /// outermost counted (M25): past it no further one runs, and the console
@@ -139,15 +140,30 @@ pub(crate) struct Lent<'a> {
 }
 
 /// What the window reports to a run's scripts (M25.4): the viewport, the
-/// medium styles are computed for and the fonts they measure with, and
-/// whether the user asked for D12's compatibility user agent string.
+/// medium styles are computed for and the fonts they measure with,
+/// whether the user asked for D12's compatibility user agent string, and
+/// the engine's clock (M26).
 #[derive(Clone, Default)]
 pub(crate) struct WindowEnv {
     pub(crate) viewport: (u32, u32),
     pub(crate) media: style::Media,
     pub(crate) fonts: Option<text::FontCollection>,
     pub(crate) compat: bool,
+    pub(crate) clock: Option<crate::Clock>,
 }
+
+/// A document's time origin (High Resolution Time): the engine's clock
+/// when its navigation started, and that time in milliseconds since the
+/// Unix epoch.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TimeOrigin {
+    pub(crate) at: Duration,
+    pub(crate) epoch_ms: f64,
+}
+
+/// The most timers a document may have set at once (M26): past them
+/// `setTimeout` throws a `RangeError`.
+pub(crate) const MAX_TIMERS: usize = 100_000;
 
 /// A navigation a script asked for (`location`), which the engine starts
 /// after the run: to `url`, in the current entry's place if `replace`;
@@ -170,6 +186,9 @@ pub(crate) struct How {
     /// stopped after its end tag: the insertion point is defined there
     /// while it runs (HTML section 13.2.6.4.8).
     pub(crate) at_insertion_point: bool,
+    /// The timer nesting level of the task it is (M26): 0 but for a
+    /// timer's.
+    pub(crate) nesting: u32,
 }
 
 /// What preparing a script element comes to (HTML section 4.12.1.1,
@@ -547,6 +566,7 @@ impl Scripts {
             element: source.element,
             external: source.external,
             at_insertion_point,
+            nesting: 0,
         };
         self.run(lent, &script, how);
     }
@@ -622,6 +642,68 @@ impl Scripts {
         completion
     }
 
+    /// Runs `task` in the document's realm (M26) as [`Scripts::run`]
+    /// runs a script, `nesting` the timer nesting level of the task it
+    /// is, then the microtask checkpoint; nothing if the document has no
+    /// realm or runs no scripts.
+    pub(crate) fn enter(&mut self, lent: &mut Lent<'_>, task: &js::Task, nesting: u32) {
+        if self.stopped {
+            return;
+        }
+        let Some(realm) = self.realm.as_mut() else {
+            return;
+        };
+        let host = &mut self.host;
+        let how = How {
+            nesting,
+            ..How::default()
+        };
+        host.lend(lent, how, self.blocking.is_some());
+        let result = realm.enter(task, host);
+        let errors = realm.checkpoint(host);
+        let dead = realm.dead().is_some();
+        host.sweep();
+        let outputs = host.give_back(lent);
+        for entry in outputs.console {
+            self.push(entry);
+        }
+        self.errors += outputs.errors;
+        if let Err(error) = result {
+            self.report(&error);
+        }
+        for error in &errors {
+            self.report(error);
+        }
+        for wanted in outputs.wanted {
+            self.fetch(lent, wanted);
+        }
+        if outputs.navigation.is_some() {
+            self.navigation = outputs.navigation;
+        }
+        if dead {
+            self.stop();
+        }
+    }
+
+    /// Gives the document its time origin, unless it has one.
+    pub(crate) fn set_time_origin(&mut self, origin: TimeOrigin) {
+        self.host.origin.get_or_insert(origin);
+    }
+
+    /// When the document's next timer is due (M26).
+    pub(crate) fn next_task_at(&self) -> Option<Duration> {
+        if self.stopped {
+            return None;
+        }
+        self.host.timers.next_due()
+    }
+
+    /// The document's timer due first, taken: its id and the nesting
+    /// level of the task that runs it.
+    pub(crate) fn take_next_timer(&mut self) -> Option<(u32, u32)> {
+        self.host.timers.take_next()
+    }
+
     /// Whether the back-forward cache may keep the document: not when
     /// its realm died.
     pub(crate) fn keepable(&self) -> bool {
@@ -654,6 +736,7 @@ impl Scripts {
     fn stop(&mut self) {
         self.realm = None;
         self.host.forget_objects();
+        self.host.timers.clear_all();
         self.stopped = true;
         self.just_stopped = true;
         self.push(ConsoleEntry {

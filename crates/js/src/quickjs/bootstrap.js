@@ -16,6 +16,7 @@
   const getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
   const setPrototypeOf = Object.setPrototypeOf;
   const $String = String;
+  const $Number = Number;
   const $TypeError = TypeError;
   const $RangeError = RangeError;
   const $DOMException = DOMException;
@@ -38,6 +39,9 @@
   const MapGet = uncurry(Map.prototype.get);
   const MapSet = uncurry(Map.prototype.set);
   const MapDelete = uncurry(Map.prototype.delete);
+  const MapHas = uncurry(Map.prototype.has);
+  const ArraySlice = uncurry(Array.prototype.slice);
+  const $eval = eval;
   const WeakMapGet = uncurry(WeakMap.prototype.get);
   const WeakMapSet = uncurry(WeakMap.prototype.set);
   const WeakRefDeref = uncurry(WeakRef.prototype.deref);
@@ -3287,6 +3291,10 @@
       return false;
     }
 
+    get performance() {
+      return performance;
+    }
+
     getComputedStyle(element, pseudoElement) {
       need(arguments.length, 1, "getComputedStyle", "Window");
       if (!isNode(element) || kindOf(element) !== 1) {
@@ -3314,4 +3322,122 @@
     enumerable: true,
     configurable: false,
   });
+
+  // ---- Timers (M26, HTML section 8.6) ------------------------------------
+
+  // Each timer's callback (a function, or a string compiled when it
+  // runs), its arguments and its delay, by id; the host keeps when each
+  // is due, and runs it as a task through `runTimer`. Timeouts and
+  // intervals share the ids.
+  const timers = new $Map();
+  let lastTimer = 0;
+
+  // A Web IDL `long`.
+  function long(value) {
+    return $Number(value) | 0;
+  }
+
+  function startTimer(handler, timeout, args, repeat) {
+    const callback = typeof handler === "function" ? handler : str(handler);
+    let id = lastTimer;
+    do {
+      id = id >= 2147483647 ? 1 : id + 1;
+    } while (MapHas(timers, id));
+    lastTimer = id;
+    const delay = long(timeout);
+    native.setTimer(id, delay);
+    MapSet(timers, id, { callback, args, repeat, delay });
+    return id;
+  }
+
+  function stopTimer(handle) {
+    const id = long(handle);
+    if (MapHas(timers, id)) {
+      MapDelete(timers, id);
+      native.clearTimer(id);
+    }
+  }
+
+  // Runs timer `id` (the task the host queued when it was due): its
+  // callback with `this` the window and its arguments, or its string as
+  // a classic script; an interval is set again once its callback has
+  // run, unless the callback cleared it.
+  function runTimer(id) {
+    const timer = MapGet(timers, id);
+    if (timer === undefined) {
+      return;
+    }
+    if (!timer.repeat) {
+      MapDelete(timers, id);
+    }
+    try {
+      if (typeof timer.callback === "function") {
+        ReflectApply(timer.callback, global, timer.args);
+      } else {
+        $eval(timer.callback);
+      }
+    } finally {
+      if (timer.repeat && MapGet(timers, id) === timer) {
+        native.setTimer(id, timer.delay);
+      }
+    }
+  }
+
+  const timerFunctions = {
+    setTimeout(handler, timeout = 0) {
+      need(arguments.length, 1, "setTimeout", "Window");
+      return startTimer(handler, timeout, ArraySlice(arguments, 2), false);
+    },
+    setInterval(handler, timeout = 0) {
+      need(arguments.length, 1, "setInterval", "Window");
+      return startTimer(handler, timeout, ArraySlice(arguments, 2), true);
+    },
+    clearTimeout(id = 0) {
+      stopTimer(id);
+    },
+    clearInterval(id = 0) {
+      stopTimer(id);
+    },
+  };
+  const timerNames = getOwnPropertyNames(timerFunctions);
+  for (let i = 0; i < timerNames.length; i++) {
+    defineProperty(global, timerNames[i], {
+      value: timerFunctions[timerNames[i]],
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+
+  // ---- performance (High Resolution Time) --------------------------------
+
+  // The document's clock: milliseconds since its time origin, rounded
+  // by the host to a tenth of one.
+  class Performance extends EventTarget {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("Performance");
+      }
+      super();
+    }
+
+    now() {
+      return native.now();
+    }
+
+    get timeOrigin() {
+      return native.timeOrigin();
+    }
+
+    toJSON() {
+      return { timeOrigin: native.timeOrigin() };
+    }
+  }
+  expose(Performance, "Performance");
+  const performance = new Performance(KEY);
+
+  // The entry points the realm's tasks call (M26).
+  return {
+    timer: runTimer,
+  };
 });

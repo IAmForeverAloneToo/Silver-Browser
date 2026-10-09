@@ -117,14 +117,14 @@ struct Shown {
 }
 
 impl Browser {
-    fn new(session: Session, asked: Asked) -> Self {
+    fn new(session: Session, asked: Asked, start: Instant) -> Self {
         Browser {
             window: None,
             context: None,
             surface: None,
             surface_size: SurfaceSize::default(),
             session,
-            start: Instant::now(),
+            start,
             shown: Shown::default(),
             asked,
             theme: None,
@@ -227,13 +227,27 @@ impl ApplicationHandler<NetworkWake> for Browser {
         }
     }
 
-    /// Waits for the next event, or, when the session wants no frame now
-    /// but will at a time, until then: an animation waiting out its
-    /// delay draws no frame before it ends.
+    /// Runs the page's tasks that are due (M26), then waits for the next
+    /// event, or, when the session wants no frame now but will at a time,
+    /// or has a task due later, until then: an animation waiting out its
+    /// delay draws no frame before it ends, and a timer runs when it is
+    /// due.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let flow = match self.session.next_frame_at() {
-            Some(at) if !self.session.needs_frame() => ControlFlow::WaitUntil(self.start + at),
-            _ => ControlFlow::Wait,
+        self.session.tick();
+        if let Some(window) = self.window.clone() {
+            self.update(&window);
+        }
+        let frame = self
+            .session
+            .next_frame_at()
+            .filter(|_| !self.session.needs_frame());
+        let at = match (frame, self.session.next_task_at()) {
+            (Some(frame), Some(task)) => Some(frame.min(task)),
+            (frame, task) => frame.or(task),
+        };
+        let flow = match at {
+            Some(at) => ControlFlow::WaitUntil(self.start + at),
+            None => ControlFlow::Wait,
         };
         event_loop.set_control_flow(flow);
     }
@@ -448,6 +462,7 @@ fn print_to_pdf(start: Option<Url>, asked: Asked, scripts: bool, compat: bool, p
         }
         let _ = woken.recv_timeout(left.min(Duration::from_millis(100)));
         engine.poll_network();
+        engine.run_tasks();
         session::print_console(&mut engine);
     }
     if let LoadState::Failed(error) = engine.load_state() {
@@ -724,10 +739,13 @@ fn main() {
         // An event loop gone has no one to wake.
         let _ = proxy.send_event(NetworkWake);
     });
+    // The engine's tasks and the frames read one clock (M26).
+    let began = Instant::now();
+    engine.set_clock(Arc::new(move || began.elapsed()));
     let clipboard = Box::new(SystemClipboard::default());
     let session = Session::new(engine, clipboard, Platform::current(), start);
 
-    let mut browser = Browser::new(session, asked);
+    let mut browser = Browser::new(session, asked, began);
     if event_loop.run_app(&mut browser).is_err() {
         std::process::exit(1);
     }

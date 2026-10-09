@@ -18,7 +18,7 @@ use rquickjs::{
 
 use crate::{
     Completion, ConsoleLevel, Death, ErrorKind, Limits, Realm, Script, ScriptEngine, ScriptError,
-    ScriptingHost,
+    ScriptingHost, Task,
 };
 
 /// QuickJS-ng 0.16, which `rquickjs` builds from its source.
@@ -50,6 +50,8 @@ struct QuickJsRealm<H: ScriptingHost> {
     /// Saved values must go before the context and runtime they belong
     /// to; `Drop` empties this first.
     rejections: Rc<RefCell<Vec<Rejection>>>,
+    /// The bootstrap's entry points, which [`Realm::enter`] calls (M26).
+    entries: Option<Persistent<Object<'static>>>,
     host: Slot<H>,
     /// Interrupt checks taken in this run, and whether they ran out.
     steps: Rc<Cell<u32>>,
@@ -116,9 +118,10 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
             limit: limits.steps,
         };
         let work = budget.work.clone();
-        context
+        let entries = context
             .with(|ctx| {
                 install(&ctx, &host, &budget)
+                    .map(|entries| Persistent::save(&ctx, entries))
                     .catch(&ctx)
                     .map_err(|e| e.to_string())
             })
@@ -131,6 +134,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
             })?;
         Ok(QuickJsRealm {
             rejections,
+            entries: Some(entries),
             host,
             steps,
             exhausted,
@@ -190,6 +194,7 @@ impl<H: ScriptingHost> Drop for QuickJsRealm<H> {
     fn drop(&mut self) {
         self.runtime.set_host_promise_rejection_tracker(None);
         self.rejections.borrow_mut().clear();
+        self.entries = None;
     }
 }
 
@@ -214,6 +219,39 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                 kind: ErrorKind::Budget,
                 message: String::new(),
                 url: script.url.to_owned(),
+                line: 0,
+                column: 0,
+            }),
+            other => other,
+        };
+        result.map_err(|error| self.failure(error))
+    }
+
+    fn enter(&mut self, task: &Task, host: &mut H) -> Result<(), ScriptError> {
+        if let Some(death) = self.dead {
+            return Err(dead(death));
+        }
+        let Some(entries) = self.entries.clone() else {
+            return Ok(());
+        };
+        self.begin(host, false);
+        let result = self.context.with(|ctx| {
+            let called = entries.restore(&ctx).and_then(|entries| match task {
+                Task::Timer(id) => entries
+                    .get::<_, Function<'_>>("timer")?
+                    .call::<_, Value<'_>>((*id,)),
+            });
+            called
+                .catch(&ctx)
+                .map(|_| ())
+                .map_err(|caught| caught_error(&ctx, caught, "", false))
+        });
+        self.end(host);
+        let result = match result {
+            Ok(()) if self.exhausted.get() => Err(ScriptError {
+                kind: ErrorKind::Budget,
+                message: String::new(),
+                url: String::new(),
                 line: 0,
                 column: 0,
             }),
@@ -436,7 +474,7 @@ fn install<'js, H: ScriptingHost>(
     ctx: &Ctx<'js>,
     host: &Slot<H>,
     budget: &dom::Budget,
-) -> rquickjs::Result<()> {
+) -> rquickjs::Result<Object<'js>> {
     let global = ctx.globals();
     global.remove("performance")?;
     global.remove("SharedArrayBuffer")?;

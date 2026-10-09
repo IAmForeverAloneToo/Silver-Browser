@@ -222,6 +222,22 @@ pub enum Call {
     ComputedProperties,
     /// The script holds no object for the node any longer.
     Released(Handle),
+    /// Timer `id` is set (M26, HTML section 8.6): its callback is to
+    /// run as a task once `delay` milliseconds have passed, the host
+    /// clamping the delay as HTML says. A timer set again with its id
+    /// replaces itself.
+    SetTimer {
+        id: u32,
+        delay: i32,
+    },
+    /// Timer `id` is cleared, if it is set.
+    ClearTimer(u32),
+    /// `performance.now()`: the milliseconds since the document's time
+    /// origin.
+    Now,
+    /// `performance.timeOrigin`: the time origin, in milliseconds since
+    /// the Unix epoch.
+    TimeOrigin,
 }
 
 /// What the host answers a [`Call`] with.

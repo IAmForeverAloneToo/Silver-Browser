@@ -223,6 +223,23 @@ impl Session {
         self.engine.next_frame_at()
     }
 
+    /// When the page's next task is due, on the same clock (M26): its
+    /// next timer.
+    pub(crate) fn next_task_at(&self) -> Option<Duration> {
+        self.engine.next_task_at()
+    }
+
+    /// The page's tasks that are due run (M26): what its scripts wrote
+    /// to the console is printed, and what they changed shows.
+    pub(crate) fn tick(&mut self) {
+        if self.engine.next_task_at().is_none() {
+            return;
+        }
+        self.engine.run_tasks();
+        print_console(&mut self.engine);
+        self.sync();
+    }
+
     /// The window has a new size: the page's viewport, under the toolbar,
     /// has too, as a page loading before the next frame reads it (M25).
     pub(crate) fn resized(&mut self, width: u32, height: u32) {
