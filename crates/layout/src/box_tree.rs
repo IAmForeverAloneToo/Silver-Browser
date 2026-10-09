@@ -741,6 +741,13 @@ impl<'a> Styled<'a> {
     /// an element the cascade did not style.
     fn style(&self, item: Item) -> Option<&'a ComputedStyle> {
         match item {
+            // While scripts run, a `noscript` makes no box (HTML section
+            // 15.3.1): as an element with none.
+            Item::Node(node)
+                if self.styles.scripting && self.document.tag(node) == Some("noscript") =>
+            {
+                None
+            }
             Item::Node(node) => self.styles.get(node),
             Item::Generated(element, side) => self.styles.pseudo(element, side.pseudo_element()),
             Item::GeneratedText(..) => None,

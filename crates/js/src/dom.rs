@@ -187,6 +187,39 @@ pub enum Call {
     ResolveUrl(String),
     /// The document's URL, if it has one.
     DocumentUrl,
+    /// The document's URL in parts, as `Location` gives them: `href`,
+    /// `origin`, `protocol`, `host`, `hostname`, `port`, `pathname`,
+    /// `search`, `hash`.
+    Location,
+    /// A navigation to a URL parsed against the document's base URL,
+    /// which the engine starts after the run; a `SyntaxError` for one that
+    /// does not parse.
+    Navigate {
+        url: String,
+        replace: bool,
+    },
+    /// The document fetched again, after the run.
+    Reload,
+    /// What `navigator` reports (D12): its user agent string, its
+    /// platform, and its compatibility mode, `gecko` or `chrome`.
+    NavigatorInfo,
+    /// The viewport's width and height in CSS pixels, and the device
+    /// pixel ratio.
+    Viewport,
+    /// The document's URL, character encoding, content type and
+    /// compatibility mode.
+    DocumentInfo,
+    /// An element's, or its pseudo-element's (`before`, `after`,
+    /// `first-letter`, `first-line`, `marker`; empty for the element),
+    /// computed value of a property, serialized; `None` when there is
+    /// none to give.
+    ComputedValue {
+        node: Handle,
+        pseudo: String,
+        property: String,
+    },
+    /// The properties a computed style lists.
+    ComputedProperties,
     /// The script holds no object for the node any longer.
     Released(Handle),
 }
@@ -207,6 +240,7 @@ pub enum Answer {
     Strings(Vec<String>),
     /// Nodes, each with a flag.
     Pins(Vec<(Handle, bool)>),
+    Numbers(Vec<f64>),
 }
 
 /// Why a call failed: the exception the script gets, a `DOMException`

@@ -223,6 +223,25 @@ const NATIVES: &[(&str, Decode)] = &[
     }),
     ("resolveUrl", |a| Ok(Call::ResolveUrl(a.string(0)?))),
     ("documentUrl", |_| Ok(Call::DocumentUrl)),
+    ("location", |_| Ok(Call::Location)),
+    ("navigate", |a| {
+        Ok(Call::Navigate {
+            url: a.string(0)?,
+            replace: a.bool(1),
+        })
+    }),
+    ("reload", |_| Ok(Call::Reload)),
+    ("navigator", |_| Ok(Call::NavigatorInfo)),
+    ("viewport", |_| Ok(Call::Viewport)),
+    ("documentInfo", |_| Ok(Call::DocumentInfo)),
+    ("computedValue", |a| {
+        Ok(Call::ComputedValue {
+            node: a.handle(0)?,
+            pseudo: a.string(1)?,
+            property: a.string(2)?,
+        })
+    }),
+    ("computedProperties", |_| Ok(Call::ComputedProperties)),
     ("released", |a| Ok(Call::Released(a.handle(0)?))),
 ];
 
@@ -343,6 +362,13 @@ fn value<'js>(ctx: &Ctx<'js>, answer: Answer) -> rquickjs::Result<Value<'js>> {
         }
         Answer::String(text) | Answer::MaybeString(Some(text)) => {
             rquickjs::String::from_str(ctx.clone(), &text)?.into_value()
+        }
+        Answer::Numbers(numbers) => {
+            let array = Array::new(ctx.clone())?;
+            for (i, number) in numbers.into_iter().enumerate() {
+                array.set(i, number)?;
+            }
+            array.into_value()
         }
         Answer::Pins(pins) => {
             let array = Array::new(ctx.clone())?;

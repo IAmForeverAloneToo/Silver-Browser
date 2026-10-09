@@ -96,6 +96,10 @@ mod rule_set;
 /// grammar and its documented omissions.
 pub mod selector_matching;
 
+/// Computed values as text (M25): what a script's `getComputedStyle`
+/// reads, for the properties this engine computes.
+pub mod serialize;
+
 /// The transformation matrix (M19): a four-by-four matrix, the matrix of
 /// each transform function, and the arithmetic over it that layout,
 /// paint and hit testing share.

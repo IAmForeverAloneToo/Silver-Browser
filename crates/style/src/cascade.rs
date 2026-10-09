@@ -175,6 +175,11 @@ pub struct Styles {
     /// The answer each `@media` list gave, the UA sheet's then the
     /// author sheets', which decided the rules in force (M20).
     media: Vec<bool>,
+    /// Whether the document was cascaded with scripts running (M24):
+    /// then a `noscript` element, whose content is text, makes no box,
+    /// its computed `display` left as it is, as the reference browser
+    /// leaves it (M25).
+    pub scripting: bool,
 }
 
 impl Styles {
@@ -1617,6 +1622,7 @@ impl<'a> Cascader<'a> {
         let mut styles = Styles {
             rem: ComputedStyle::default().font_size_px,
             media: self.media.clone(),
+            scripting: self.context.media.scripting,
             ..Styles::default()
         };
         styles.set(document.root(), Computed::default());

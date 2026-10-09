@@ -1367,6 +1367,51 @@
       return wrap(native.currentScript());
     }
 
+    get URL() {
+      self(this);
+      return native.documentInfo()[0];
+    }
+
+    get documentURI() {
+      self(this);
+      return native.documentInfo()[0];
+    }
+
+    get characterSet() {
+      self(this);
+      return native.documentInfo()[1];
+    }
+
+    get charset() {
+      self(this);
+      return native.documentInfo()[1];
+    }
+
+    get inputEncoding() {
+      self(this);
+      return native.documentInfo()[1];
+    }
+
+    get contentType() {
+      self(this);
+      return native.documentInfo()[2];
+    }
+
+    get compatMode() {
+      self(this);
+      return native.documentInfo()[3];
+    }
+
+    get location() {
+      self(this);
+      return location;
+    }
+
+    set location(value) {
+      self(this);
+      location.href = value;
+    }
+
     get readyState() {
       self(this);
       return native.readyState();
@@ -2039,7 +2084,11 @@
     }
 
     get cssText() {
-      const flat = declarationsOf(blockState(this));
+      const state = blockState(this);
+      if (state.computed) {
+        return "";
+      }
+      const flat = declarationsOf(state);
       let text = "";
       for (let i = 0; i < flat.length; i += 3) {
         text += (i === 0 ? "" : " ") + flat[i] + ": " + flat[i + 1];
@@ -2050,16 +2099,32 @@
 
     set cssText(value) {
       const state = blockState(this);
+      if (state.computed) {
+        throw new $DOMException(
+          "Failed to set the 'cssText' property on 'CSSStyleDeclaration': These styles are " +
+            "computed, and therefore read-only.",
+          "NoModificationAllowedError",
+        );
+      }
       writeDeclarations(state, native.parseDeclarations(strOrEmpty(value)), "cssText");
     }
 
     get length() {
-      return declarationsOf(blockState(this)).length / 3;
+      const state = blockState(this);
+      if (state.computed) {
+        return computedProperties().length;
+      }
+      return declarationsOf(state).length / 3;
     }
 
     item(index) {
       const state = blockState(this);
       need(arguments.length, 1, "item", "CSSStyleDeclaration");
+      if (state.computed) {
+        const names = computedProperties();
+        const i = unsigned(index);
+        return i < names.length ? names[i] : "";
+      }
       const flat = declarationsOf(state);
       const i = unsigned(index) * 3;
       return i < flat.length ? flat[i] : "";
@@ -2068,6 +2133,9 @@
     getPropertyValue(property) {
       const state = blockState(this);
       need(arguments.length, 1, "getPropertyValue", "CSSStyleDeclaration");
+      if (state.computed) {
+        return computedValue(state, lookupName(str(property)));
+      }
       const flat = declarationsOf(state);
       const at = findDeclaration(flat, lookupName(str(property)));
       return at < 0 ? "" : flat[at + 1];
@@ -2076,6 +2144,9 @@
     getPropertyPriority(property) {
       const state = blockState(this);
       need(arguments.length, 1, "getPropertyPriority", "CSSStyleDeclaration");
+      if (state.computed) {
+        return "";
+      }
       const flat = declarationsOf(state);
       const at = findDeclaration(flat, lookupName(str(property)));
       return at < 0 ? "" : flat[at + 2];
@@ -2084,13 +2155,17 @@
     setProperty(property, value, priority) {
       const state = blockState(this);
       need(arguments.length, 2, "setProperty", "CSSStyleDeclaration");
-      setProperty(state, str(property), strOrEmpty(value), priority, "setProperty");
+      const name = str(property);
+      refuseComputed(state, "setProperty", name);
+      setProperty(state, name, strOrEmpty(value), priority, "setProperty");
     }
 
     removeProperty(property) {
       const state = blockState(this);
       need(arguments.length, 1, "removeProperty", "CSSStyleDeclaration");
-      return removeProperty(state, lookupName(str(property)));
+      const name = str(property);
+      refuseComputed(state, "removeProperty", name);
+      return removeProperty(state, lookupName(name));
     }
 
     get cssFloat() {
@@ -2098,10 +2173,48 @@
     }
 
     set cssFloat(value) {
-      setProperty(blockState(this), "float", strOrEmpty(value), "", "cssFloat");
+      const state = blockState(this);
+      refuseComputed(state, "cssFloat", "float");
+      setProperty(state, "float", strOrEmpty(value), "", "cssFloat");
     }
   }
   expose(CSSStyleDeclaration, "CSSStyleDeclaration");
+
+  // A computed style (CSSOM's getComputedStyle): the element's values
+  // read through the host as they stand when asked, nothing written.
+  function computedStyle(owner, handle, pseudo) {
+    const target = new CSSStyleDeclaration(KEY);
+    const state = { owner, handle, pseudo, computed: true };
+    const proxy = new $Proxy(target, styleHandlers);
+    WeakMapSet(declarationBlocks, proxy, state);
+    WeakMapSet(declarationBlocks, target, state);
+    return proxy;
+  }
+
+  function computedValue(state, name) {
+    const value = native.computedValue(state.handle, state.pseudo, name);
+    return value === null ? "" : value;
+  }
+
+  // The properties a computed style lists, asked once.
+  let computedNames = null;
+  function computedProperties() {
+    if (computedNames === null) {
+      computedNames = native.computedProperties();
+    }
+    return computedNames;
+  }
+
+  // The NoModificationAllowedError a computed style's writes throw.
+  function refuseComputed(state, method, name) {
+    if (state.computed) {
+      throw new $DOMException(
+        "Failed to execute '" + method + "' on 'CSSStyleDeclaration': These styles are " +
+          "computed, and therefore the '" + name + "' property is read-only.",
+        "NoModificationAllowedError",
+      );
+    }
+  }
 
   // CSSOM's setProperty: an unknown property, a bad priority or an
   // invalid value changes nothing; the empty value removes it.
@@ -2207,6 +2320,10 @@
       const state = WeakMapGet(declarationBlocks, target);
       const i = arrayIndex(key);
       if (i >= 0) {
+        if (state.computed) {
+          const names = computedProperties();
+          return i < names.length ? names[i] : undefined;
+        }
         const flat = declarationsOf(state);
         return i * 3 < flat.length ? flat[i * 3] : undefined;
       }
@@ -2217,6 +2334,9 @@
       if (name === null) {
         return ReflectGet(target, key, receiver);
       }
+      if (state.computed) {
+        return computedValue(state, name);
+      }
       const flat = declarationsOf(state);
       const at = findDeclaration(flat, name);
       return at < 0 ? "" : flat[at + 1];
@@ -2225,7 +2345,15 @@
       if (typeof key === "string" && !ReflectHas(target, key) && arrayIndex(key) < 0) {
         const name = dashed(key);
         if (canonicalProperty(name) !== null) {
-          setProperty(WeakMapGet(declarationBlocks, target), name, strOrEmpty(value), "", key);
+          const state = WeakMapGet(declarationBlocks, target);
+          if (state.computed) {
+            throw new $DOMException(
+              "Failed to set the '" + key + "' property on 'CSSStyleDeclaration': These " +
+                "styles are computed, and therefore the '" + name + "' property is read-only.",
+              "NoModificationAllowedError",
+            );
+          }
+          setProperty(state, name, strOrEmpty(value), "", key);
           return true;
         }
       }
@@ -2772,11 +2900,401 @@
     return StringIncludes(tag, "-") ? HTMLElement : HTMLUnknownElement;
   }
 
+  // ---- Location (HTML section 7.2.4) ---------------------------------
+
+  // A URL to navigate to, after the run; or the SyntaxError for one that
+  // does not parse, in the reference browser's words.
+  function navigate(url, replace, member, setter) {
+    try {
+      native.navigate(url, replace);
+    } catch (error) {
+      throw setter ? failedSet(error, member, "Location") : failed(error, member, "Location");
+    }
+  }
+
+  // The current entry's URL in parts: href, origin, protocol, host,
+  // hostname, port, pathname, search, hash.
+  function locationPart(i) {
+    return native.location()[i];
+  }
+
+  class Location {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("Location");
+      }
+    }
+
+    get href() {
+      return locationPart(0);
+    }
+
+    set href(value) {
+      navigate(str(value), false, "href", true);
+    }
+
+    get origin() {
+      return locationPart(1);
+    }
+
+    get protocol() {
+      return locationPart(2);
+    }
+
+    get host() {
+      return locationPart(3);
+    }
+
+    get hostname() {
+      return locationPart(4);
+    }
+
+    get port() {
+      return locationPart(5);
+    }
+
+    get pathname() {
+      return locationPart(6);
+    }
+
+    get search() {
+      return locationPart(7);
+    }
+
+    get hash() {
+      return locationPart(8);
+    }
+
+    set hash(value) {
+      let fragment = str(value);
+      if (fragment !== "" && fragment[0] === "#") {
+        fragment = StringSlice(fragment, 1);
+      }
+      const href = locationPart(0);
+      const at = StringIndexOf(href, "#");
+      const base = at < 0 ? href : StringSlice(href, 0, at);
+      navigate(base + "#" + fragment, false, "hash", true);
+    }
+
+    assign(url) {
+      need(arguments.length, 1, "assign", "Location");
+      navigate(str(url), false, "assign", false);
+    }
+
+    replace(url) {
+      need(arguments.length, 1, "replace", "Location");
+      navigate(str(url), true, "replace", false);
+    }
+
+    reload() {
+      native.reload();
+    }
+
+    toString() {
+      return locationPart(0);
+    }
+  }
+  expose(Location, "Location");
+  const location = new Location(KEY);
+
+  // ---- Navigator (HTML section 8.10.1), by D12 -------------------------
+
+  // What the host says of the user agent: its string, the platform and
+  // the compatibility mode, asked once.
+  let agent = null;
+  function agentInfo() {
+    if (agent === null) {
+      agent = native.navigator();
+    }
+    return agent;
+  }
+
+  class PluginArray {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("PluginArray");
+      }
+    }
+
+    get length() {
+      return 0;
+    }
+
+    item(index) {
+      return null;
+    }
+
+    namedItem(name) {
+      return null;
+    }
+
+    refresh() {}
+  }
+  expose(PluginArray, "PluginArray");
+  defineProperty(PluginArray.prototype, iteratorSymbol, {
+    value: ArrayValues,
+    writable: true,
+    configurable: true,
+  });
+
+  class MimeTypeArray {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("MimeTypeArray");
+      }
+    }
+
+    get length() {
+      return 0;
+    }
+
+    item(index) {
+      return null;
+    }
+
+    namedItem(name) {
+      return null;
+    }
+  }
+  expose(MimeTypeArray, "MimeTypeArray");
+  defineProperty(MimeTypeArray.prototype, iteratorSymbol, {
+    value: ArrayValues,
+    writable: true,
+    configurable: true,
+  });
+
+  const plugins = new PluginArray(KEY);
+  const mimeTypes = new MimeTypeArray(KEY);
+  const languages = Object.freeze(["en-US", "en"]);
+
+  class Navigator {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("Navigator");
+      }
+    }
+
+    get userAgent() {
+      return agentInfo()[0];
+    }
+
+    get appCodeName() {
+      return "Mozilla";
+    }
+
+    get appName() {
+      return "Netscape";
+    }
+
+    // HTML's appVersion: what follows "Mozilla/", whole in Chrome's mode;
+    // in Gecko's, its first part closed.
+    get appVersion() {
+      const ua = agentInfo()[0];
+      if (StringIndexOf(ua, "Mozilla/5.0 (") !== 0) {
+        return "";
+      }
+      const trail = StringSlice(ua, 8);
+      if (agentInfo()[2] === "chrome") {
+        return trail;
+      }
+      if (StringIndexOf(trail, "5.0 (Windows") === 0) {
+        return "5.0 (Windows)";
+      }
+      const semicolon = StringIndexOf(trail, ";");
+      return semicolon < 0 ? trail : StringSlice(trail, 0, semicolon) + ")";
+    }
+
+    get platform() {
+      return agentInfo()[1];
+    }
+
+    get product() {
+      return "Gecko";
+    }
+
+    get productSub() {
+      return agentInfo()[2] === "chrome" ? "20030107" : "20100101";
+    }
+
+    get vendor() {
+      return agentInfo()[2] === "chrome" ? "Google Inc." : "";
+    }
+
+    get vendorSub() {
+      return "";
+    }
+
+    get language() {
+      return "en-US";
+    }
+
+    get languages() {
+      return languages;
+    }
+
+    get onLine() {
+      return true;
+    }
+
+    get cookieEnabled() {
+      return false;
+    }
+
+    get webdriver() {
+      return false;
+    }
+
+    get pdfViewerEnabled() {
+      return false;
+    }
+
+    get plugins() {
+      return plugins;
+    }
+
+    get mimeTypes() {
+      return mimeTypes;
+    }
+
+    javaEnabled() {
+      return false;
+    }
+  }
+  expose(Navigator, "Navigator");
+  const navigator = new Navigator(KEY);
+
+  // ---- Screen (CSSOM View section 4.3) -----------------------------------
+
+  // The screen is reported as the window (D12): its real size tells one
+  // machine from another and helps no page.
+  class Screen {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("Screen");
+      }
+    }
+
+    get width() {
+      return native.viewport()[0];
+    }
+
+    get height() {
+      return native.viewport()[1];
+    }
+
+    get availWidth() {
+      return native.viewport()[0];
+    }
+
+    get availHeight() {
+      return native.viewport()[1];
+    }
+
+    get colorDepth() {
+      return 24;
+    }
+
+    get pixelDepth() {
+      return 24;
+    }
+  }
+  expose(Screen, "Screen");
+  const screen = new Screen(KEY);
+
+  // A pseudo-element named as getComputedStyle takes it: `::before`,
+  // `:before` (the older one-colon names), or nothing.
+  function pseudoName(value) {
+    if (value === undefined || value === null) {
+      return "";
+    }
+    const text = ToLowerCase(str(value));
+    if (text === "") {
+      return "";
+    }
+    const name = StringIndexOf(text, "::") === 0 ? StringSlice(text, 2) :
+      StringIndexOf(text, ":") === 0 ? StringSlice(text, 1) : null;
+    if (name === null) {
+      return "invalid";
+    }
+    return name;
+  }
+
   // ---- The window ----------------------------------------------------
 
   class Window extends EventTarget {
     constructor() {
       throw illegalConstructor("Window");
+    }
+
+    get location() {
+      return location;
+    }
+
+    set location(value) {
+      location.href = value;
+    }
+
+    get navigator() {
+      return navigator;
+    }
+
+    get screen() {
+      return screen;
+    }
+
+    get innerWidth() {
+      return native.viewport()[0];
+    }
+
+    get innerHeight() {
+      return native.viewport()[1];
+    }
+
+    get outerWidth() {
+      return native.viewport()[0];
+    }
+
+    get outerHeight() {
+      return native.viewport()[1];
+    }
+
+    get devicePixelRatio() {
+      return native.viewport()[2];
+    }
+
+    // No frames yet: the window is its own top and parent.
+    get top() {
+      return global;
+    }
+
+    get parent() {
+      return global;
+    }
+
+    get frames() {
+      return global;
+    }
+
+    get length() {
+      return 0;
+    }
+
+    get opener() {
+      return null;
+    }
+
+    get closed() {
+      return false;
+    }
+
+    getComputedStyle(element, pseudoElement) {
+      need(arguments.length, 1, "getComputedStyle", "Window");
+      if (!isNode(element) || kindOf(element) !== 1) {
+        throw new $TypeError(
+          prefix("getComputedStyle", "Window") + "parameter 1 is not of type 'Element'.",
+        );
+      }
+      return computedStyle(element, handleOf(element), pseudoName(pseudoElement));
     }
   }
   expose(Window, "Window");

@@ -3,16 +3,20 @@
 //! what must last between runs: the nodes scripts hold objects for, and
 //! the subtrees they took out of the tree, freed once nothing holds them.
 
+use std::cell::RefCell;
 use std::collections::{HashSet, VecDeque};
 
 use dom::{Document, MutationError, NodeData, NodeId};
 use js::{Answer, Call, ConsoleLevel, DomError, Handle, NestedScript, ScriptError, ScriptingHost};
-use style::selector_matching::{Matcher, SelectorList};
+use style::animation::Animations;
+use style::selector_matching::{Matcher, PseudoElement, SelectorList};
+use style::{CascadeContext, FontMeasure, Styles, Stylesheets};
 
 use super::cssom;
 use super::{
-    ConsoleEntry, How, Lent, MAX_SCRIPT_NESTING, Place, Prepared, ReadyState, Source, Wanted, cut,
-    document_title, parser_place, prepare_element, refusal_text, report_text,
+    ConsoleEntry, How, Lent, MAX_SCRIPT_NESTING, Place, Prepared, ReadyState, ScriptNavigation,
+    Source, Wanted, WindowEnv, cut, document_title, parser_place, prepare_element, refusal_text,
+    report_text,
 };
 use crate::loader::Page;
 
@@ -34,6 +38,30 @@ pub(crate) struct Outputs {
     pub(crate) console: Vec<ConsoleEntry>,
     pub(crate) errors: usize,
     pub(crate) wanted: Vec<Wanted>,
+    pub(crate) navigation: Option<ScriptNavigation>,
+}
+
+/// The document's styles as a run's `getComputedStyle` sees them: the
+/// page's sheets, prepared once a run, and the styles, as of `version`,
+/// and of the journal's first `mark` changes.
+struct ComputedStyles {
+    sheets: Stylesheets,
+    styles: Styles,
+    version: u64,
+    mark: usize,
+}
+
+/// The window's fonts, measuring for the cascade (`ex` and `ch`).
+struct Measure<'a>(&'a text::FontCollection);
+
+impl FontMeasure for Measure<'_> {
+    fn x_height(&self, font_size_px: f32) -> f32 {
+        self.0.x_height(font_size_px)
+    }
+
+    fn zero_advance(&self, font_size_px: f32) -> f32 {
+        self.0.zero_advance(font_size_px)
+    }
 }
 
 /// The host a document's scripts reach it through.
@@ -79,6 +107,10 @@ pub(crate) struct DocumentHost {
     /// The nodes scripts hold that came into the document or left it,
     /// in order, for the bindings to hold their objects or let them go.
     pins: Vec<(NodeId, bool)>,
+    /// What the window reports, lent for a run.
+    window: WindowEnv,
+    /// The styles a run's `getComputedStyle` computed, kept for the run.
+    computed: Option<ComputedStyles>,
 }
 
 impl ScriptingHost for DocumentHost {
@@ -606,6 +638,101 @@ impl DocumentHost {
                 let url = self.page.as_ref().and_then(|page| page.url());
                 Ok(Answer::MaybeString(url.map(ToString::to_string)))
             }
+            Call::Location => {
+                let url = self.page.as_ref().and_then(|page| page.url());
+                Ok(Answer::Strings(location_parts(url)))
+            }
+            Call::Navigate { url, replace } => {
+                let parsed = self
+                    .page
+                    .as_ref()
+                    .and_then(|page| page.resolve(&self.document, &url))
+                    .ok_or_else(|| {
+                        DomError::new("SyntaxError", format!("'{url}' is not a valid URL."))
+                    })?;
+                self.outputs.navigation = Some(ScriptNavigation {
+                    url: Some(parsed),
+                    replace,
+                    reload: false,
+                });
+                Ok(Answer::Nothing)
+            }
+            Call::Reload => {
+                self.outputs.navigation = Some(ScriptNavigation {
+                    url: None,
+                    replace: true,
+                    reload: true,
+                });
+                Ok(Answer::Nothing)
+            }
+            Call::NavigatorInfo => {
+                let (agent, mode) = if self.window.compat {
+                    (net::COMPAT_USER_AGENT, "chrome")
+                } else {
+                    (net::USER_AGENT, "gecko")
+                };
+                Ok(Answer::Strings(vec![
+                    agent.to_owned(),
+                    PLATFORM.to_owned(),
+                    mode.to_owned(),
+                ]))
+            }
+            Call::Viewport => {
+                let (width, height) = self.window.viewport;
+                Ok(Answer::Numbers(vec![
+                    f64::from(width),
+                    f64::from(height),
+                    1.0,
+                ]))
+            }
+            Call::DocumentInfo => {
+                let page = self.page.as_ref();
+                let url = page
+                    .and_then(|page| page.url())
+                    .map_or_else(|| "about:blank".to_owned(), ToString::to_string);
+                let encoding = page.map_or(encoding::UTF_8, |page| page.encoding());
+                Ok(Answer::Strings(vec![
+                    url,
+                    encoding.name().to_owned(),
+                    "text/html".to_owned(),
+                    "CSS1Compat".to_owned(),
+                ]))
+            }
+            Call::ComputedValue {
+                node,
+                pseudo,
+                property,
+            } => {
+                let node = self.node(node)?;
+                // Out of the document there is no style; the cascade
+                // would say so too, but need not be run to.
+                if !self.connected(node) {
+                    return Ok(Answer::MaybeString(None));
+                }
+                let pseudo = match pseudo.as_str() {
+                    "" => None,
+                    "before" => Some(PseudoElement::Before),
+                    "after" => Some(PseudoElement::After),
+                    "first-letter" => Some(PseudoElement::FirstLetter),
+                    "first-line" => Some(PseudoElement::FirstLine),
+                    "marker" => Some(PseudoElement::Marker),
+                    _ => return Ok(Answer::MaybeString(None)),
+                };
+                let styles = self.styles_now();
+                let style = match pseudo {
+                    None => styles.and_then(|styles| styles.get(node)),
+                    Some(pseudo) => styles.and_then(|styles| styles.pseudo(node, pseudo)),
+                };
+                let value =
+                    style.and_then(|style| style::serialize::computed_value(style, &property));
+                Ok(Answer::MaybeString(value))
+            }
+            Call::ComputedProperties => Ok(Answer::Strings(
+                style::serialize::COMPUTED_PROPERTIES
+                    .iter()
+                    .map(|name| (*name).to_owned())
+                    .collect(),
+            )),
             Call::Released(node) => {
                 if let Some(id) = dom::NodeId::from_bits(node.0) {
                     self.exposed.remove(&id);
@@ -628,6 +755,8 @@ impl DocumentHost {
         self.ready = lent.ready;
         self.blocked = blocked;
         self.too_deep = false;
+        self.window = std::mem::take(&mut lent.window);
+        self.computed = None;
         self.frames = vec![Frame {
             element: how.element,
             external: how.external,
@@ -646,6 +775,7 @@ impl DocumentHost {
         }
         self.frames.clear();
         self.now.clear();
+        self.computed = None;
         std::mem::take(&mut self.outputs)
     }
 
@@ -1005,6 +1135,57 @@ impl DocumentHost {
         Ok(())
     }
 
+    /// The document's styles as they stand, for `getComputedStyle`
+    /// (M25.4): cascaded whole at a run's first ask, from the page's
+    /// sheets as they were when the run began, and at later asks
+    /// restyled by the journal's changes since (M13.1), or cascaded whole
+    /// again when it was cut short. A copy of the engine's: transitions
+    /// and animations neither start nor show (G46).
+    fn styles_now(&mut self) -> Option<&Styles> {
+        let page = self.page.as_ref()?;
+        let measure = self.window.fonts.as_ref().map(Measure);
+        let animations = RefCell::new(Animations::new());
+        let context = CascadeContext {
+            viewport_width: self.window.viewport.0 as f32,
+            viewport_height: self.window.viewport.1 as f32,
+            fonts: measure.as_ref().map(|measure| measure as &dyn FontMeasure),
+            language: page.language(),
+            media: self.window.media,
+            animations: Some(&animations),
+        };
+        let version = self.document.version();
+        let changes = self.document.changes();
+        let whole = changes.first() == Some(&dom::Change::Everything);
+        match &mut self.computed {
+            Some(cached) if cached.version == version => {}
+            Some(cached) if !whole && cached.mark <= changes.len() => {
+                let since = changes[cached.mark..].to_vec();
+                self.work += since.len() as u64;
+                cached.sheets.restyle_animated(
+                    &self.document,
+                    &context,
+                    &mut cached.styles,
+                    &since,
+                    &[],
+                );
+                cached.mark = changes.len();
+                cached.version = version;
+            }
+            _ => {
+                self.work += self.document.len() as u64;
+                let sheets = Stylesheets::new(page.sheets());
+                let styles = sheets.cascade(&self.document, &context);
+                self.computed = Some(ComputedStyles {
+                    sheets,
+                    styles,
+                    version,
+                    mark: changes.len(),
+                });
+            }
+        }
+        self.computed.as_ref().map(|computed| &computed.styles)
+    }
+
     /// Whether `node` is in the document.
     fn connected(&self, node: NodeId) -> bool {
         let root = self.document.root();
@@ -1191,6 +1372,53 @@ impl DocumentHost {
 /// A node's handle.
 fn handle(node: NodeId) -> Handle {
     Handle(node.to_bits())
+}
+
+/// `navigator.platform` (HTML section 8.10.1.1): the value every browser
+/// on this system gives.
+#[cfg(target_os = "windows")]
+const PLATFORM: &str = "Win32";
+#[cfg(target_os = "macos")]
+const PLATFORM: &str = "MacIntel";
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+const PLATFORM: &str = "Linux x86_64";
+
+/// The parts of `url` as `Location` gives them; `about:blank`'s for a
+/// document with none.
+fn location_parts(url: Option<&net::Url>) -> Vec<String> {
+    let Some(url) = url else {
+        return ["about:blank", "null", "about:", "", "", "", "blank", "", ""]
+            .map(str::to_owned)
+            .to_vec();
+    };
+    let host = url.host().map(ToString::to_string).unwrap_or_default();
+    let port = url.port().map(|port| port.to_string()).unwrap_or_default();
+    let host_and_port = if port.is_empty() {
+        host.clone()
+    } else {
+        format!("{host}:{port}")
+    };
+    let search = url
+        .query()
+        .filter(|query| !query.is_empty())
+        .map(|query| format!("?{query}"))
+        .unwrap_or_default();
+    let hash = url
+        .fragment()
+        .filter(|fragment| !fragment.is_empty())
+        .map(|fragment| format!("#{fragment}"))
+        .unwrap_or_default();
+    vec![
+        url.to_string(),
+        url.origin().serialization(),
+        format!("{}:", url.scheme()),
+        host_and_port,
+        host,
+        port,
+        url.path_str(),
+        search,
+        hash,
+    ]
 }
 
 /// HTML's ASCII white space, which separates classes.

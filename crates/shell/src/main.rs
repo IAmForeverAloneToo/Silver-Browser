@@ -416,7 +416,7 @@ const PRINT_LOAD_LIMIT: Duration = Duration::from_secs(60);
 /// prints it to `path` by the default print options; gives the exit
 /// status, zero when the file is written. A page that failed to load
 /// prints as the error page the window would show.
-fn print_to_pdf(start: Option<Url>, asked: Asked, scripts: bool, path: &Path) -> i32 {
+fn print_to_pdf(start: Option<Url>, asked: Asked, scripts: bool, compat: bool, path: &Path) -> i32 {
     let mut engine = match Engine::new() {
         Ok(engine) => engine,
         Err(e) => {
@@ -426,6 +426,9 @@ fn print_to_pdf(start: Option<Url>, asked: Asked, scripts: bool, path: &Path) ->
     };
     engine.set_preferences(preferences(asked, None, platform::reduced_motion()));
     engine.set_scripting(scripts);
+    if compat {
+        engine.set_compat_user_agent(true);
+    }
     let (wake, woken) = mpsc::channel();
     engine.set_waker(move || {
         // A receiver gone has nothing to wake.
@@ -555,6 +558,9 @@ struct CommandLine {
     /// `--enable-scripts`: run pages' scripts (M24), which are off
     /// otherwise until the isolation of M33 and M34 (roadmap risk R2).
     scripts: bool,
+    /// `--compat-user-agent`: send the reference browser's user agent
+    /// string, this browser named after it (D12's escape hatch, M25).
+    compat: bool,
 }
 
 /// The command line parsed: at most one URL or path, and the options
@@ -571,6 +577,7 @@ fn command_line(args: impl Iterator<Item = OsString>) -> Result<CommandLine, Str
         asked: Asked::default(),
         print_to: None,
         scripts: false,
+        compat: false,
     };
     let mut page: Option<OsString> = None;
     let mut args = args.peekable();
@@ -581,6 +588,10 @@ fn command_line(args: impl Iterator<Item = OsString>) -> Result<CommandLine, Str
         }
         if arg == "--enable-scripts" {
             line.scripts = true;
+            continue;
+        }
+        if arg == "--compat-user-agent" {
+            line.compat = true;
             continue;
         }
         if arg == "--print-to-pdf" {
@@ -660,7 +671,8 @@ fn main() {
             eprintln!(
                 "usage: silver-browser [--software] [--layer-budget <MiB>] \
                  [--prefers-color-scheme light|dark] [--prefers-reduced-motion] \
-                 [--enable-scripts] [--print-to-pdf <path>] [URL or path]"
+                 [--enable-scripts] [--compat-user-agent] [--print-to-pdf <path>] \
+                 [URL or path]"
             );
             std::process::exit(2);
         }
@@ -668,7 +680,7 @@ fn main() {
     let start = line.start;
     let asked = line.asked;
     if let Some(path) = &line.print_to {
-        std::process::exit(print_to_pdf(start, asked, line.scripts, path));
+        std::process::exit(print_to_pdf(start, asked, line.scripts, line.compat, path));
     }
 
     let wanted = if line.software {
@@ -692,6 +704,9 @@ fn main() {
     // The window's theme is known once there is a window.
     engine.set_preferences(preferences(asked, None, platform::reduced_motion()));
     engine.set_scripting(line.scripts);
+    if line.compat {
+        engine.set_compat_user_agent(true);
+    }
 
     let event_loop = match EventLoop::<NetworkWake>::with_user_event().build() {
         Ok(event_loop) => event_loop,
@@ -741,6 +756,14 @@ mod tests {
     }
 
     #[test]
+    fn the_compatibility_user_agent_is_sent_only_when_asked() {
+        let compat =
+            |args: &[&str]| command_line(args.iter().map(OsString::from)).map(|l| l.compat);
+        assert_eq!(compat(&[]), Ok(false));
+        assert_eq!(compat(&["--compat-user-agent", "example.com"]), Ok(true));
+    }
+
+    #[test]
     fn scripts_run_only_when_the_command_line_asks() {
         let scripts =
             |args: &[&str]| command_line(args.iter().map(OsString::from)).map(|l| l.scripts);
@@ -761,6 +784,7 @@ mod tests {
                 asked: Asked::default(),
                 print_to: None,
                 scripts: false,
+                compat: false,
             })
         );
         assert_eq!(
@@ -772,6 +796,7 @@ mod tests {
                 asked: Asked::default(),
                 print_to: None,
                 scripts: false,
+                compat: false,
             })
         );
         assert_eq!(
@@ -862,7 +887,10 @@ mod tests {
         std::fs::write(&page, "<style>@page { margin: 0 }</style><p>Printed</p>").unwrap();
         let url = Url::from_file_path(&std::fs::canonicalize(&page).unwrap()).unwrap();
         let out = dir.join("page.pdf");
-        assert_eq!(print_to_pdf(Some(url), Asked::default(), false, &out), 0);
+        assert_eq!(
+            print_to_pdf(Some(url), Asked::default(), false, false, &out),
+            0
+        );
         let pdf = std::fs::read(&out).unwrap();
         assert!(pdf.starts_with(b"%PDF-"));
         let letter = b"/MediaBox [0 0 612 792]";
@@ -873,6 +901,7 @@ mod tests {
             print_to_pdf(
                 Some(url),
                 Asked::default(),
+                false,
                 false,
                 &dir.join("no/such/dir/x.pdf")
             ),

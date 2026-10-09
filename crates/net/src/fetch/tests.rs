@@ -203,6 +203,24 @@ fn a_request_sends_its_fields() {
     );
     assert_eq!(sent.header("User-Agent"), Some(USER_AGENT));
     assert!(USER_AGENT.starts_with("Mozilla/5.0 (compatible; SilverBrowser/"));
+    // D12's escape hatch sends the reference browser's string, this
+    // browser named after it, when a client is made to.
+    let compat = client().with_user_agent(super::COMPAT_USER_AGENT);
+    compat
+        .fetch(&Request::get(server.url("/style.css"), Destination::Style))
+        .unwrap();
+    let agent = server
+        .requests()
+        .last()
+        .unwrap()
+        .header("User-Agent")
+        .map(str::to_owned);
+    let agent = agent.unwrap();
+    assert!(
+        agent.starts_with("Mozilla/5.0 (") && agent.contains(" Chrome/"),
+        "{agent}"
+    );
+    assert!(agent.ends_with(concat!(" SilverBrowser/", env!("CARGO_PKG_VERSION"))));
     assert_eq!(
         sent.header("Accept"),
         Some("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")

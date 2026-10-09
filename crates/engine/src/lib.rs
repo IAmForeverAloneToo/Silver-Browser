@@ -216,6 +216,9 @@ pub struct Engine {
     /// The waker the caller gave, kept to wake the caller while a parse
     /// has more to do (M24.8).
     waker: Option<loader::Waker>,
+    /// Whether requests and `navigator` give D12's compatibility user
+    /// agent string (M25).
+    compat_user_agent: bool,
     /// Whether scripts run: off unless asked (M24, risk R2).
     scripting: bool,
     /// What a document's realm may use, the defaults but in tests.
@@ -682,6 +685,7 @@ impl Engine {
             navigation: None,
             load_state: LoadState::Loaded,
             waker: None,
+            compat_user_agent: false,
             scripting: false,
             script_limits: js::Limits::default(),
             notice: None,
@@ -796,8 +800,14 @@ impl Engine {
     /// failed. [`Engine::poll_network`] takes the results, and
     /// [`Engine::load_state`] says where the navigation stands.
     pub fn navigate(&mut self, url: Url) {
+        self.navigate_replacing(url, false);
+    }
+
+    /// [`Engine::navigate`], the new entry in the current one's place when
+    /// `replace`, as `location.replace` asks (M25).
+    fn navigate_replacing(&mut self, url: Url, replace: bool) {
         let current = self.history.current().url.clone();
-        let handling = if self.shown.initial || current.as_ref() == Some(&url) {
+        let handling = if replace || self.shown.initial || current.as_ref() == Some(&url) {
             Handling::Replace
         } else {
             Handling::Push
@@ -875,32 +885,62 @@ impl Engine {
         let Some(url) = self.shown.page.resolve(document, href) else {
             return;
         };
-        let source = self.shown.page.url().map(Url::scheme);
-        let refusal = match url.scheme() {
-            "http" | "https" => None,
-            "about" if url.path_str() == "blank" => None,
-            "about" if self.shown.made => None,
-            "about" => Some("This page may not open the browser's own pages".to_owned()),
-            "file" if source == Some("file") => None,
-            "file" => Some("This page may not open files on this computer".to_owned()),
-            "data" => Some(
-                "This page may not open a data: address; type it into the address field \
-                 to open it"
-                    .to_owned(),
-            ),
-            "javascript" => {
-                if self.scripting {
-                    self.run_javascript_url(&url);
-                }
-                return;
+        if url.scheme() == "javascript" {
+            if self.scripting {
+                self.run_javascript_url(&url);
             }
-            scheme => Some(format!(
-                "{scheme}: links open in another program, which this version cannot do"
-            )),
-        };
-        match refusal {
+            return;
+        }
+        let source = self.shown.page.url().map(Url::scheme);
+        match refusal(&url, source, self.shown.made) {
             Some(why) => self.notice = Some(why),
             None => self.navigate(url),
+        }
+    }
+
+    /// Starts the navigation the shown document's scripts asked for
+    /// (`location`, M25.4), as a followed link's is, with HTML's handling:
+    /// in the current entry's place for `replace`, and while the document
+    /// has not loaded completely; a reload fetches it again.
+    fn script_navigation(&mut self, navigation: scripts::ScriptNavigation) {
+        let Some(url) = navigation.url.filter(|_| !navigation.reload) else {
+            self.reload();
+            return;
+        };
+        if url.scheme() == "javascript" {
+            self.run_javascript_url(&url);
+            return;
+        }
+        let source = self.shown.page.url().map(Url::scheme);
+        match refusal(&url, source, self.shown.made) {
+            Some(why) => self.notice = Some(why),
+            None => {
+                let replace = navigation.replace || self.load_state != LoadState::Loaded;
+                self.navigate_replacing(url, replace);
+            }
+        }
+    }
+
+    /// Starts the navigation the scripts of the document on its way asked
+    /// for: in place of the navigation that brought it, with its handling,
+    /// so that a page that sends its reader on by script leaves one entry.
+    /// Its `javascript:` URLs and reloads wait for it to be shown: they do
+    /// nothing.
+    fn incoming_navigation(&mut self, navigation: scripts::ScriptNavigation) {
+        let Some(url) = navigation.url.filter(|_| !navigation.reload) else {
+            return;
+        };
+        let Some(current) = &self.navigation else {
+            return;
+        };
+        let handling = current.handling;
+        let source = current.url.scheme().to_owned();
+        if url.scheme() == "javascript" {
+            return;
+        }
+        match refusal(&url, Some(&source), false) {
+            Some(why) => self.notice = Some(why),
+            None => self.start_navigation(url, handling),
         }
     }
 
@@ -931,6 +971,7 @@ impl Engine {
             muted: false,
         };
         let ready = self.ready_state();
+        let window = self.window_env();
         let shown = &mut self.shown;
         let mut lent = scripts::Lent {
             document: &mut shown.document,
@@ -938,11 +979,22 @@ impl Engine {
             parser: shown.parsing.as_mut().map(|parsing| &mut parsing.load),
             network: &mut self.network,
             ready,
+            window: window.clone(),
         };
         shown
             .scripts
             .run(&mut lent, &script, scripts::How::default());
         self.scripts_ran();
+    }
+
+    /// What the window reports to a run's scripts (M25.4).
+    fn window_env(&self) -> scripts::WindowEnv {
+        scripts::WindowEnv {
+            viewport: self.viewport,
+            media: self.media(self.viewport),
+            fonts: Some(self.layout_fonts.clone()),
+            compat: self.compat_user_agent,
+        }
     }
 
     /// The shown document's `readyState` (HTML section 3.1.5): `loading`
@@ -1069,6 +1121,21 @@ impl Engine {
     /// Whether scripts run.
     pub fn scripting(&self) -> bool {
         self.scripting
+    }
+
+    /// Sends D12's compatibility user agent string in requests and
+    /// `navigator`, for a page that refuses an engine it does not know
+    /// (the shell's `--compat-user-agent`); never the default. Takes the
+    /// place of the client: a test's own goes.
+    pub fn set_compat_user_agent(&mut self, on: bool) {
+        self.compat_user_agent = on;
+        let agent = if on {
+            net::COMPAT_USER_AGENT
+        } else {
+            net::USER_AGENT
+        };
+        self.network
+            .set_client(net::Client::default().with_user_agent(agent));
     }
 
     /// The shown document's console since it was last taken (M24.7):
@@ -1568,6 +1635,7 @@ impl Engine {
     /// `<meta>` that changes the encoding starts it again (M24.8).
     fn parse_incoming(&mut self) {
         let media = self.media(self.viewport);
+        let window = self.window_env();
         let Some(Navigation {
             incoming:
                 Incoming::Parsing {
@@ -1589,10 +1657,17 @@ impl Engine {
             parser: Some(load),
             network: &mut self.network,
             ready: scripts::ReadyState::Loading,
+            window: window.clone(),
         };
-        if !scripts.run_ready(&mut lent, false) {
+        let go_on = scripts.run_ready(&mut lent, false);
+        if let Some(navigation) = scripts.take_navigation() {
+            self.incoming_navigation(navigation);
             return;
         }
+        if !go_on {
+            return;
+        }
+        let mut asked = None;
         match parsing.load.parse(document, PARSE_SLICE) {
             html::Progress::Restarted => {
                 // The sheets found so far go, the document fetch stays.
@@ -1606,6 +1681,16 @@ impl Engine {
                 if let html::Stop::Script { element, line } = stop
                     && self.scripting
                 {
+                    // The sheets the parser made before the script are
+                    // found first: one on its way blocks it, and its
+                    // `getComputedStyle` reads them (M25).
+                    let changes = document.take_changes();
+                    if changes
+                        .iter()
+                        .any(|change| loader::may_touch_sheets(document, change))
+                    {
+                        page.rescan(document, &mut self.network, Some(&media));
+                    }
                     let loader::Parsing { load, scripts, .. } = &mut **parsing;
                     let mut lent = scripts::Lent {
                         document,
@@ -1613,8 +1698,10 @@ impl Engine {
                         parser: Some(load),
                         network: &mut self.network,
                         ready: scripts::ReadyState::Loading,
+                        window: window.clone(),
                     };
                     scripts.prepare(&mut lent, element, line);
+                    asked = scripts.take_navigation();
                 }
                 let changes = document.take_changes();
                 if changes
@@ -1628,6 +1715,10 @@ impl Engine {
                 }
             }
         }
+        if let Some(navigation) = asked {
+            self.incoming_navigation(navigation);
+            return;
+        }
         self.commit_if_ready();
     }
 
@@ -1635,6 +1726,7 @@ impl Engine {
     /// parser adds is a change like any other, restyled and laid out by
     /// the next frame, its sheets and images fetched (M24.8).
     fn parse_shown(&mut self) {
+        let window = self.window_env();
         let Shown {
             document,
             page,
@@ -1652,6 +1744,7 @@ impl Engine {
             parser: Some(&mut parsing.load),
             network: &mut self.network,
             ready: scripts::ReadyState::Loading,
+            window: window.clone(),
         };
         if !queue.run_ready(&mut lent, false) {
             self.scripts_ran();
@@ -1677,6 +1770,12 @@ impl Engine {
                 self.wake();
             }
             html::Progress::Parsed(stop) => {
+                if matches!(stop, html::Stop::Script { .. }) && self.scripting {
+                    // The parser's changes are taken before the script is
+                    // prepared: the sheets it made may block it, and its
+                    // `getComputedStyle` reads them (M25).
+                    self.scripts_ran();
+                }
                 if let html::Stop::Script { element, line } = stop
                     && self.scripting
                     && let Shown {
@@ -1693,6 +1792,7 @@ impl Engine {
                         parser: Some(&mut parsing.load),
                         network: &mut self.network,
                         ready: scripts::ReadyState::Loading,
+                        window: window.clone(),
                     };
                     queue.prepare(&mut lent, element, line);
                 }
@@ -1717,6 +1817,7 @@ impl Engine {
             return;
         }
         let ready = self.ready_state();
+        let window = self.window_env();
         let shown = &mut self.shown;
         let mut lent = scripts::Lent {
             document: &mut shown.document,
@@ -1724,6 +1825,7 @@ impl Engine {
             parser: None,
             network: &mut self.network,
             ready,
+            window: window.clone(),
         };
         shown.scripts.run_ready(&mut lent, true);
         self.scripts_ran();
@@ -1736,6 +1838,9 @@ impl Engine {
         let changes = self.shown.document.take_changes();
         if !changes.is_empty() {
             self.document_changed(changes);
+        }
+        if let Some(navigation) = self.shown.scripts.take_navigation() {
+            self.script_navigation(navigation);
         }
         if self.shown.scripts.take_just_stopped() {
             self.notice = Some(SCRIPTS_STOPPED.to_owned());
@@ -3312,6 +3417,30 @@ fn potential_indicated_element(document: &Document, fragment: &str) -> Option<No
                 document.tag(node) == Some("a") && document.attr(node, "name") == Some(fragment)
             })
         })
+}
+
+/// Why a page whose URL's scheme is `source` may not navigate to `url`
+/// (docs/design/navigation.md, "Links"; M25 for scripts): `http:`,
+/// `https:` and `about:blank` from any page, `file:` from a `file:` page,
+/// other `about:` pages from a page the browser `made`, `data:` from
+/// none, and no scheme another program would open; `None` when it may.
+/// `javascript:` is its caller's.
+fn refusal(url: &Url, source: Option<&str>, made: bool) -> Option<String> {
+    match url.scheme() {
+        "http" | "https" => None,
+        "about" if url.path_str() == "blank" => None,
+        "about" if made => None,
+        "about" => Some("This page may not open the browser's own pages".to_owned()),
+        "file" if source == Some("file") => None,
+        "file" => Some("This page may not open files on this computer".to_owned()),
+        "data" => Some(
+            "This page may not open a data: address; type it into the address field to open it"
+                .to_owned(),
+        ),
+        scheme => Some(format!(
+            "{scheme}: links open in another program, which this version cannot do"
+        )),
+    }
 }
 
 /// The document HTML `source` parses to, or an empty one if the parser

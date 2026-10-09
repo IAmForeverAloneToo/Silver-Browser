@@ -1773,3 +1773,85 @@ fn a_javascript_url_is_no_script_elements_and_cannot_write_once_parsed() {
     );
     assert_eq!(tab.engine.document().len(), before);
 }
+
+#[test]
+fn a_script_navigates_as_html_says_with_its_handling() {
+    let server = serve(|path| match path {
+        "/a" => Some(html("<p>a</p>")),
+        "/b" => Some(html("<script>location.href = 'c';</script><p>b</p>")),
+        "/c" => Some(html(
+            "<p>c</p><p><a id=hash href=\"javascript:location.hash = 'x'\">h</a></p>\
+             <p><a id=replace href=\"javascript:location.replace('d')\">r</a></p>\
+             <p><a id=bad href=\"javascript:try { location.href = 'http://[bad' } catch (e) \
+             { console.log(e.name + ': ' + e.message) }\">b</a></p>\
+             <p><a id=data href=\"javascript:location.assign('data:text/html,x')\">d</a></p>",
+        )),
+        "/d" => Some(html("<p>d</p>")),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.load(server.url("/a"));
+    // A page that sends its reader on while it loads takes its own entry's
+    // place: one entry for b and c.
+    tab.load(server.url("/b"));
+    tab.wait_until(|engine| engine.url() == Some(&server.url("/c")));
+    tab.settle();
+    assert_eq!(tab.engine.history.len(), 2);
+    tab.engine.frame(400, 200);
+    // A fragment: the same document, a new entry.
+    click(&mut tab, "hash");
+    assert_eq!(tab.engine.url(), Some(&server.url("/c#x")));
+    assert_eq!(tab.engine.history.len(), 3);
+    // An invalid URL throws, and goes nowhere.
+    click(&mut tab, "bad");
+    let lines: Vec<String> = tab
+        .engine
+        .take_console()
+        .into_iter()
+        .map(|entry| entry.text)
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            "SyntaxError: Failed to set the 'href' property on 'Location': 'http://[bad' is not a \
+          valid URL."
+        ]
+    );
+    // A data: URL is refused as a link's is.
+    click(&mut tab, "data");
+    assert!(
+        tab.engine
+            .take_notice()
+            .is_some_and(|notice| notice.contains("data:"))
+    );
+    // replace: the current entry's place.
+    click(&mut tab, "replace");
+    tab.wait_until(|engine| engine.url() == Some(&server.url("/d")));
+    assert_eq!(tab.engine.history.len(), 3);
+}
+
+#[test]
+fn a_document_on_its_way_that_sends_its_reader_on_keeps_its_navigations_handling() {
+    // From a, location.replace('b'): b takes a's place; b, while it
+    // loads, sends its reader to c, which takes b's navigation's place:
+    // a's. One entry.
+    let server = serve(|path| match path {
+        "/a" => Some(html(
+            "<p>a</p><p><a id=replace href=\"javascript:location.replace('b')\">r</a></p>",
+        )),
+        "/b" => Some(html("<script>location.href = 'c';</script><p>b</p>")),
+        "/c" => Some(html("<p>c</p>")),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.load(server.url("/a"));
+    tab.load(server.url("/a"));
+    tab.engine.frame(400, 200);
+    assert_eq!(tab.engine.history.len(), 1);
+    click(&mut tab, "replace");
+    tab.wait_until(|engine| engine.url() == Some(&server.url("/c")));
+    tab.settle();
+    assert_eq!(tab.engine.history.len(), 1);
+}

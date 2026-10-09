@@ -4,6 +4,7 @@
 //! let go of freed.
 
 use super::script_tests::{scripted, scripted_bytes};
+use super::tests::load_all;
 use crate::testing::*;
 
 /// The console's lines of `page` loaded with scripts on.
@@ -1229,4 +1230,131 @@ fn an_object_held_for_the_document_or_by_what_it_made_stays() {
         true,
     );
     assert_eq!(console, ["7", "a color: red; y", "0"]);
+}
+
+#[test]
+fn location_navigator_and_screen_say_what_d12_lets_them() {
+    let server = serve(|path| match path {
+        "/dir/page.html" | "/dir/page.html?q=1" => Some(html(
+            "<p>x</p><script>var l = location; \
+             console.log(l.href === document.URL, l === document.location, l === window.location, \
+             String(l) === l.href, document.documentURI === l.href); \
+             console.log([l.protocol, l.hostname, l.pathname, l.search, l.hash].join('|')); \
+             console.log(l.origin === l.protocol + '//' + l.host, l.host === l.hostname + ':' + l.port); \
+             console.log(document.characterSet, document.contentType, document.compatMode); \
+             var n = navigator; \
+             console.log(n.appCodeName, n.appName, n.appVersion, n.product, n.productSub, \
+             JSON.stringify(n.vendor), JSON.stringify(n.vendorSub), n.language, n.languages.join(), \
+             n.onLine, n.cookieEnabled, n.webdriver, n.pdfViewerEnabled, n.plugins.length, \
+             n.mimeTypes.length, n.javaEnabled(), n.languages === n.languages, \
+             typeof n.hardwareConcurrency, typeof n.userAgentData); \
+             console.log(n.userAgent.indexOf('Mozilla/5.0 (compatible; SilverBrowser/') === 0, \
+             ['Win32', 'MacIntel', 'Linux x86_64'].indexOf(n.platform) >= 0); \
+             console.log(innerWidth, innerHeight); \
+             console.log(screen.width === innerWidth, screen.height === innerHeight, \
+             screen.availWidth === innerWidth, screen.colorDepth, screen.pixelDepth, \
+             devicePixelRatio, outerWidth === innerWidth, top === window, parent === window, \
+             frames === window, window.length, window.opener, \
+             Object.prototype.toString.call(navigator), Object.prototype.toString.call(screen), \
+             Object.prototype.toString.call(location));\
+             </script>",
+        )),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.frame(400, 200);
+    load_all(&mut tab, server.url("/dir/page.html?q=1#frag"));
+    let console: Vec<String> = tab
+        .engine
+        .take_console()
+        .into_iter()
+        .map(|entry| entry.text)
+        .collect();
+    assert_eq!(
+        console,
+        [
+            "true true true true true",
+            "http:|127.0.0.1|/dir/page.html|?q=1|#frag",
+            "true true",
+            "UTF-8 text/html CSS1Compat",
+            "Mozilla Netscape 5.0 (compatible) Gecko 20100101 \"\" \"\" en-US en-US,en true false \
+             false false 0 0 false true undefined undefined",
+            "true true",
+            "400 200",
+            "true true true 24 24 1 true true true true 0 null [object Navigator] [object Screen] \
+             [object Location]",
+        ]
+    );
+    // D12's escape hatch: what the reference browser says, by Chrome's
+    // compatibility mode.
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.set_compat_user_agent(true);
+    load_all(&mut tab, server.url("/dir/page.html"));
+    let console: Vec<String> = tab
+        .engine
+        .take_console()
+        .into_iter()
+        .map(|entry| entry.text)
+        .collect();
+    assert!(
+        console[4].starts_with("Mozilla Netscape 5.0 (")
+            && console[4].contains(" Gecko 20030107 \"Google Inc.\""),
+        "{console:?}"
+    );
+}
+
+#[test]
+fn computed_style_reads_the_cascade_as_it_stands() {
+    let (_, console) = scripted(
+        "<style>#s { color: #0a141e; margin-left: 1.5em; width: 50%; opacity: 0.25; \
+         font-family: Arial, sans-serif; --x: 1px  2px; } #s::before { content: 'b'; color: red } \
+         .on { background-color: #00f }</style>\
+         <noscript id=n>x</noscript><div id=s>s</div><script>\
+         var s = document.getElementById('s'), cs = getComputedStyle(s); \
+         console.log(cs.color, cs.marginLeft, cs.width, cs.opacity, cs.fontFamily, cs.fontSize, \
+         cs.display, cs.backgroundColor, cs.borderTopStyle, cs.borderTopWidth, cs.position, \
+         cs.zIndex, cs.top, JSON.stringify(cs.getPropertyValue('--x')), \
+         JSON.stringify(cs.cssText), cs.length === cs.length && cs.length > 60, cs[0], \
+         cs.item(1), typeof cs.fontWeight, cs.getPropertyValue('COLOR')); \
+         console.log(getComputedStyle(document.getElementById('n')).display, \
+         getComputedStyle(s, '::before').color, getComputedStyle(s, ':before').color, \
+         JSON.stringify(getComputedStyle(s, 'bogus').color), \
+         JSON.stringify(getComputedStyle(document.createElement('div')).color)); \
+         var gone = document.createElement('div'); gone.innerHTML = '<p>in</p>'; \
+         document.body.appendChild(gone); \
+         var goneStyle = getComputedStyle(gone.firstChild); var before = goneStyle.display; \
+         gone.remove(); console.log(before, JSON.stringify(goneStyle.display)); \
+         s.style.color = 'red'; s.className = 'on'; \
+         console.log(cs.color, cs.backgroundColor, cs === getComputedStyle(s)); \
+         function f(g) { try { g(); return 'no error' } catch (e) { return e.name + ': ' + e.message } } \
+         console.log(f(() => { cs.color = 'blue' })); \
+         console.log(f(() => cs.setProperty('color', 'blue'))); \
+         console.log(f(() => { cs.cssText = '' })); \
+         console.log(f(() => getComputedStyle(document.createTextNode('x'))));\
+         </script>",
+        true,
+    );
+    assert_eq!(
+        console,
+        [
+            "rgb(10, 20, 30) 24px 50% 0.25 Arial, sans-serif 16px block rgba(0, 0, 0, 0) none 0px \
+             static auto auto \"1px 2px\" \"\" true align-content align-items undefined \
+             rgb(10, 20, 30)",
+            "inline rgb(255, 0, 0) rgb(255, 0, 0) \"\" \"\"",
+            "block \"\"",
+            "rgb(255, 0, 0) rgb(0, 0, 255) false",
+            "NoModificationAllowedError: Failed to set the 'color' property on \
+             'CSSStyleDeclaration': These styles are computed, and therefore the 'color' \
+             property is read-only.",
+            "NoModificationAllowedError: Failed to execute 'setProperty' on \
+             'CSSStyleDeclaration': These styles are computed, and therefore the 'color' \
+             property is read-only.",
+            "NoModificationAllowedError: Failed to set the 'cssText' property on \
+             'CSSStyleDeclaration': These styles are computed, and therefore read-only.",
+            "TypeError: Failed to execute 'getComputedStyle' on 'Window': parameter 1 is not of \
+             type 'Element'.",
+        ]
+    );
 }

@@ -128,13 +128,35 @@ impl ReadyState {
 
 /// What a document's scripts are lent for a run (M25): the document, its
 /// page, its parser while it parses, the network for the scripts they
-/// fetch, and where its loading stands.
+/// fetch, where its loading stands, and what the window reports.
 pub(crate) struct Lent<'a> {
     pub(crate) document: &'a mut Document,
     pub(crate) page: &'a mut Page,
     pub(crate) parser: Option<&'a mut html::Load>,
     pub(crate) network: &'a mut Network,
     pub(crate) ready: ReadyState,
+    pub(crate) window: WindowEnv,
+}
+
+/// What the window reports to a run's scripts (M25.4): the viewport, the
+/// medium styles are computed for and the fonts they measure with, and
+/// whether the user asked for D12's compatibility user agent string.
+#[derive(Clone, Default)]
+pub(crate) struct WindowEnv {
+    pub(crate) viewport: (u32, u32),
+    pub(crate) media: style::Media,
+    pub(crate) fonts: Option<text::FontCollection>,
+    pub(crate) compat: bool,
+}
+
+/// A navigation a script asked for (`location`), which the engine starts
+/// after the run: to `url`, in the current entry's place if `replace`;
+/// or the document fetched again if `reload`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ScriptNavigation {
+    pub(crate) url: Option<Url>,
+    pub(crate) replace: bool,
+    pub(crate) reload: bool,
 }
 
 /// How a script is run.
@@ -287,6 +309,8 @@ pub(crate) struct Scripts {
     /// Its parser was stopped: the scripts on their way are dropped, and
     /// none it meets after runs.
     aborted: bool,
+    /// The last navigation its scripts asked for, for the engine to start.
+    navigation: Option<ScriptNavigation>,
 }
 
 impl Default for Scripts {
@@ -311,7 +335,14 @@ impl Scripts {
             soon: Vec::new(),
             in_order: VecDeque::new(),
             aborted: false,
+            navigation: None,
         }
+    }
+
+    /// The navigation the document's scripts asked for since this was
+    /// last asked, if any: the last of them.
+    pub(crate) fn take_navigation(&mut self) -> Option<ScriptNavigation> {
+        self.navigation.take()
     }
 
     /// Prepares the `script` element the parser has just closed (HTML
@@ -581,6 +612,9 @@ impl Scripts {
         }
         for wanted in outputs.wanted {
             self.fetch(lent, wanted);
+        }
+        if outputs.navigation.is_some() {
+            self.navigation = outputs.navigation;
         }
         if dead {
             self.stop();
@@ -857,6 +891,7 @@ mod tests {
             parser: None,
             network: &mut network,
             ready: ReadyState::Complete,
+            window: WindowEnv::default(),
         };
         scripts.run(&mut lent, script, How::default())
     }

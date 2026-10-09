@@ -184,7 +184,18 @@ fn noscript_and_the_scripting_feature_follow_the_switch() {
     let children: Vec<_> = document.children(noscript).collect();
     assert_eq!(children.len(), 1);
     assert!(document.is_text(children[0]));
-    assert_eq!(display(&mut tab.engine), style::computed::Display::None);
+    // Its computed `display` stays `inline`, as the reference browser's
+    // does, and it makes no box (M25).
+    assert_eq!(display(&mut tab.engine), style::computed::Display::Inline);
+    assert!(
+        !text(&tab.engine).is_empty()
+            && !tab
+                .engine
+                .fragments(200.0)
+                .iter()
+                .any(|f| f.node == noscript),
+        "no box"
+    );
     let (mut tab, _) = scripted(page, false);
     let noscript = element(&tab.engine, "noscript");
     let document = tab.engine.document();
@@ -1040,4 +1051,27 @@ fn a_policy_refuses_an_inserted_inline_script() {
             "after"
         ]
     );
+}
+
+#[test]
+fn a_sheet_just_before_a_script_holds_it_and_the_script_reads_it() {
+    // The sheet and the script come in one slice of the parse: the sheet
+    // is found before the script is prepared, so it holds the script,
+    // which then reads its rules (M25).
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<link rel=stylesheet href=slow.css><style>p { margin-left: 3px }</style>\
+             <script>console.log(getComputedStyle(document.documentElement).backgroundColor, \
+             getComputedStyle(document.querySelector('style')).display)</script><p>x</p>",
+        )),
+        "/slow.css" => Some(later(
+            "text/css",
+            b"html { background-color: #f00 }",
+            Duration::from_millis(300),
+        )),
+        _ => None,
+    });
+    let mut tab = scripting();
+    load_all(&mut tab, server.url("/page.html"));
+    assert_eq!(lines(&mut tab), ["rgb(255, 0, 0) none"]);
 }

@@ -22,12 +22,45 @@ pub use ports::{BAD_PORTS, is_bad as is_bad_port};
 /// twenty-first is an error.
 pub const MAX_REDIRECTS: usize = 20;
 
-/// The `User-Agent` every request sends. It begins as Fetch encourages
-/// and names nothing but the browser; D12 settles the policy at M25.
+/// The platform the reference browser names in its user agent string on
+/// the system this is built for.
+#[cfg(target_os = "windows")]
+macro_rules! compat_platform {
+    () => {
+        "Windows NT 10.0; Win64; x64"
+    };
+}
+#[cfg(target_os = "macos")]
+macro_rules! compat_platform {
+    () => {
+        "Macintosh; Intel Mac OS X 10_15_7"
+    };
+}
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+macro_rules! compat_platform {
+    () => {
+        "X11; Linux x86_64"
+    };
+}
+
+/// The `User-Agent` requests send unless the user asks otherwise. It
+/// begins as Fetch encourages and names nothing but the browser: D12,
+/// decided at M25, is an honest, minimal string.
 pub const USER_AGENT: &str = concat!(
     "Mozilla/5.0 (compatible; SilverBrowser/",
     env!("CARGO_PKG_VERSION"),
     ")"
+);
+
+/// The `User-Agent` of D12's compatibility escape hatch, for a page that
+/// refuses an engine it does not recognize: what the reference browser
+/// on the same system sends, with this browser named after it. Never the
+/// default.
+pub const COMPAT_USER_AGENT: &str = concat!(
+    "Mozilla/5.0 (",
+    compat_platform!(),
+    ") AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 SilverBrowser/",
+    env!("CARGO_PKG_VERSION")
 );
 
 /// The `Accept-Language` every request sends, until settings choose
@@ -209,6 +242,8 @@ impl Response {
 pub struct Client {
     transport: Transport,
     body_limit: usize,
+    /// The `User-Agent` its requests send.
+    user_agent: &'static str,
 }
 
 impl Default for Client {
@@ -222,7 +257,15 @@ impl Client {
         Client {
             body_limit: config.limits.body_bytes,
             transport: Transport::new(config),
+            user_agent: USER_AGENT,
         }
+    }
+
+    /// The client, its requests sending `user_agent`: [`USER_AGENT`] or
+    /// [`COMPAT_USER_AGENT`].
+    pub fn with_user_agent(mut self, user_agent: &'static str) -> Client {
+        self.user_agent = user_agent;
+        self
     }
 
     /// Fetches `request`, blocking until the response is whole or the
@@ -311,7 +354,7 @@ impl Client {
             "data" => whole(data(url, request.limit(self.body_limit)), deliver),
             "file" => whole(file::fetch(url, request.limit(self.body_limit)), deliver),
             "http" | "https" => {
-                let headers = request_headers(request.destination);
+                let headers = request_headers(request.destination, self.user_agent);
                 let exchange = Exchange {
                     method: method.as_str(),
                     url,
@@ -487,9 +530,9 @@ fn is_potentially_trustworthy_host(url: &Url) -> bool {
 /// The fields every HTTP request sends besides `Host`, which the
 /// message writer adds. Not sent: `Referer` (M33.3), `Cookie` (M27.4),
 /// `Origin` (M27) and the `Sec-Fetch-*` fields (M27).
-fn request_headers(destination: Destination) -> HeaderList {
+fn request_headers(destination: Destination, user_agent: &str) -> HeaderList {
     let mut headers = HeaderList::new();
-    headers.append(b"User-Agent", USER_AGENT.as_bytes());
+    headers.append(b"User-Agent", user_agent.as_bytes());
     headers.append(b"Accept", destination.accept());
     headers.append(b"Accept-Language", ACCEPT_LANGUAGE);
     headers.append(b"Accept-Encoding", ACCEPT_ENCODING);

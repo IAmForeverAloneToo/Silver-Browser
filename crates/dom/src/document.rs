@@ -807,6 +807,13 @@ impl Document {
         std::mem::take(&mut self.journal)
     }
 
+    /// The changes since the journal was last drained, oldest first,
+    /// left in it: what a script's `getComputedStyle` restyles by during
+    /// the run that made them, before the engine drains them (M25).
+    pub fn changes(&self) -> &[Change] {
+        &self.journal
+    }
+
     /// Whether anything changed since the journal was last drained.
     pub fn has_changes(&self) -> bool {
         !self.journal.is_empty()
