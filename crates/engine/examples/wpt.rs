@@ -3,7 +3,7 @@
 //! conditional rules and cascade tests M20's, its tests of custom
 //! properties, values, lists, counters, generated content, decoration
 //! and alignment M21's, its animation, transition and easing tests
-//! M22's, and its tests with scripts M24's).
+//! M22's, and its tests with scripts M24's and M25's).
 //!
 //! `cargo run -p engine --example wpt -- pull <checkout>` reads a
 //! checkout of web-platform-tests and copies into `tests/wpt/` the tests
@@ -18,7 +18,11 @@
 //! - no script but `testharness.js`, `testharnessreport.js` and
 //!   `check-layout-th.js`, calls to `checkLayout` with a selector in an
 //!   inline script or `onload`, and inline scripts that use nothing of
-//!   the platform but `console` and `document.title` (M24); and no event
+//!   the platform but `console` (M24) and the DOM, `window` and the
+//!   interfaces M25 gives, none of the members its design note leaves to
+//!   other milestones, and no `data-*` name the runner does not check
+//!   and no `style` property the cascade does not take named in them
+//!   (M25); and no event
 //!   handler for an event that fires while a test is drawn (`onload`,
 //!   `onerror`, `onpageshow`, focus, the viewport's size and scroll,
 //!   animations and transitions, M26): the others wait for a user who
@@ -88,6 +92,9 @@ const DIRECTORIES: &[&str] = &[
     "css/css-images",
     "css/css-backgrounds",
     "html/semantics/embedded-content/the-img-element",
+    "css/selectors/invalidation",
+    "dom/nodes",
+    "html/dom",
 ];
 
 /// How deep `@import`s may go; the engine fetches no deeper.
@@ -464,7 +471,7 @@ fn element(
                 let text = document.text_content(id);
                 match check_layout_calls(&text) {
                     Ok(selectors) => page.selectors.extend(selectors),
-                    Err(_) if uses_only_m24(&text) => {}
+                    Err(_) if uses_only_m25(&text) => writes_supported(&text)?,
                     Err(error) => return Err(error),
                 }
                 Ok(())
@@ -600,7 +607,7 @@ fn fires_by_itself(name: &str) -> bool {
         || name.starts_with("ontransition")
 }
 
-/// The names a script may use as M24 runs it: ECMAScript's keywords and
+/// The names a script may use as M24 ran it: ECMAScript's keywords and
 /// global objects, and `console`.
 const ECMASCRIPT: &[&str] = &[
     "arguments",
@@ -690,14 +697,161 @@ const ECMASCRIPT: &[&str] = &[
     "console",
 ];
 
-/// Whether `script` uses nothing of the platform but `console` and
-/// `document.title`, all M24 gives a script: each name it uses but after
-/// a dot is ECMAScript's or `console`, one it declares (by `var`, `let`,
-/// `const`, `function` or `class`, or as a function's parameter), or
-/// `document` followed by `.title`. Its comments and strings are passed
-/// over; one with a template substitution, or a string that does not
-/// end, is not read and not taken.
-fn uses_only_m24(script: &str) -> bool {
+/// The names of the platform a script may use as M25 runs it, beside
+/// ECMAScript's: the document, the window and what it reports, and the
+/// interfaces the bindings expose (docs/design/dom-scripting.md, section
+/// 1), each element interface among them by its `HTML...Element` name.
+const M25_GLOBALS: &[&str] = &[
+    "document",
+    "window",
+    "self",
+    "location",
+    "navigator",
+    "screen",
+    "getComputedStyle",
+    "innerWidth",
+    "innerHeight",
+    "outerWidth",
+    "outerHeight",
+    "devicePixelRatio",
+    "DOMException",
+    "EventTarget",
+    "Node",
+    "CharacterData",
+    "Text",
+    "Element",
+    "Document",
+    "HTMLDocument",
+    "NodeList",
+    "HTMLCollection",
+    "DOMTokenList",
+    "CSSStyleDeclaration",
+    "DOMStringMap",
+    "Location",
+    "Navigator",
+    "Screen",
+    "Window",
+];
+
+/// The members a script may not use as M25 runs it, by the names a test
+/// reaches them by after a dot: those its design note leaves to other
+/// milestones (section 2): events and timers (M26), a layout flush and
+/// CSSOM View's layout queries (G46), more kinds of node (G47),
+/// `document.open` and `close` (G48), the CSSOM's sheets (G50),
+/// namespaces (G51), traversal and ranges (G52), form controls' state
+/// (M26.7), shadow trees (G53); and those of what it has no part of:
+/// animations' objects, fonts, media, canvases, frames and editing. Event
+/// handler properties (`on...`) are left out by their prefix.
+const NOT_M25: &[&str] = &[
+    "addEventListener",
+    "removeEventListener",
+    "dispatchEvent",
+    "setTimeout",
+    "setInterval",
+    "requestAnimationFrame",
+    "offsetWidth",
+    "offsetHeight",
+    "offsetTop",
+    "offsetLeft",
+    "offsetParent",
+    "clientWidth",
+    "clientHeight",
+    "clientTop",
+    "clientLeft",
+    "scrollWidth",
+    "scrollHeight",
+    "scrollTop",
+    "scrollLeft",
+    "scrollX",
+    "scrollY",
+    "pageXOffset",
+    "pageYOffset",
+    "getBoundingClientRect",
+    "getClientRects",
+    "scrollIntoView",
+    "scrollTo",
+    "scrollBy",
+    "scroll",
+    "innerText",
+    "outerText",
+    "focus",
+    "blur",
+    "click",
+    "createComment",
+    "createDocumentFragment",
+    "createProcessingInstruction",
+    "createCDATASection",
+    "createAttribute",
+    "importNode",
+    "adoptNode",
+    "attributes",
+    "getAttributeNode",
+    "setAttributeNode",
+    "content",
+    "doctype",
+    "open",
+    "close",
+    "styleSheets",
+    "sheet",
+    "cssRules",
+    "insertRule",
+    "deleteRule",
+    "adoptedStyleSheets",
+    "replaceSync",
+    "createElementNS",
+    "getElementsByTagNameNS",
+    "setAttributeNS",
+    "getAttributeNS",
+    "namespaceURI",
+    "createTreeWalker",
+    "createNodeIterator",
+    "createRange",
+    "getSelection",
+    "compareDocumentPosition",
+    "isEqualNode",
+    "normalize",
+    "value",
+    "checked",
+    "selectedIndex",
+    "attachShadow",
+    "shadowRoot",
+    "animate",
+    "getAnimations",
+    "timeline",
+    "fonts",
+    "computedStyleMap",
+    "attributeStyleMap",
+    "matchMedia",
+    "naturalWidth",
+    "naturalHeight",
+    "complete",
+    "decode",
+    "play",
+    "getContext",
+    "contentDocument",
+    "contentWindow",
+    "elementFromPoint",
+    "elementsFromPoint",
+    "createEvent",
+    "showModal",
+    "showPopover",
+    "hidePopover",
+    "togglePopover",
+    "checkVisibility",
+    "requestFullscreen",
+    "execCommand",
+];
+
+/// Whether `script` uses nothing of the platform but `console` and what
+/// M25 gives a script: each name it uses but after a dot is ECMAScript's,
+/// `console`, one of [`M25_GLOBALS`] or an element interface's, or one it
+/// declares (by `var`, `let`, `const`, `function` or `class`, or as a
+/// function's parameter); and none after a dot is one of [`NOT_M25`] or
+/// an event handler's, but for a layout query read as a statement of its
+/// own ([`flushes`]). Its comments and strings are passed over; one with
+/// a template substitution, or a string that does not end, is not read
+/// and not taken.
+fn uses_only_m25(script: &str) -> bool {
     let Some(code) = code_only(script) else {
         return false;
     };
@@ -748,11 +902,150 @@ fn uses_only_m24(script: &str) -> bool {
         }
     }
     words.iter().all(|&(name, end, after_dot)| {
-        after_dot
-            || ECMASCRIPT.contains(&name)
-            || declared.contains(name)
-            || (name == "document" && code[end..].trim_start().starts_with(".title"))
+        if after_dot {
+            (!NOT_M25.contains(&name) && !is_handler(name)) || flushes(&code, name, end)
+        } else {
+            ECMASCRIPT.contains(&name)
+                || M25_GLOBALS.contains(&name)
+                || is_element_interface(name)
+                || declared.contains(name)
+        }
     })
+}
+
+/// The layout queries a test reads to have the reference browser bring
+/// its style and layout up to date before what it changes next, as
+/// `document.body.offsetTop;`: here a script's changes all reach the
+/// first frame, and the value, which M25 does not give (G46), is not
+/// used.
+const FLUSHES: &[&str] = &[
+    "offsetTop",
+    "offsetLeft",
+    "offsetWidth",
+    "offsetHeight",
+    "clientTop",
+    "clientLeft",
+    "clientWidth",
+    "clientHeight",
+    "scrollTop",
+    "scrollLeft",
+    "scrollWidth",
+    "scrollHeight",
+];
+
+/// Whether `name`, a member of [`FLUSHES`] ending at `end` in `code`, is
+/// read as a statement of its own: the chain of names and dots before it
+/// starts the statement, and the statement ends after it.
+fn flushes(code: &str, name: &str, end: usize) -> bool {
+    if !FLUSHES.contains(&name) {
+        return false;
+    }
+    let chain = code[..end]
+        .trim_end_matches(|c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '$' | '.'));
+    let before = chain.trim_end_matches([' ', '\t']);
+    let after = code[end..].trim_start_matches([' ', '\t']);
+    (before.is_empty() || before.ends_with([';', '{', '}', '\n', '\r']))
+        && (after.is_empty() || after.starts_with([';', '}', '\n', '\r']))
+}
+
+/// Whether what `script` names for its writes is held to the rule as
+/// the page's own markup is: each `data-*` attribute it names, by its
+/// name or through `dataset`, one the runner checks, and each property
+/// it sets through `style`, by its IDL name or `setProperty`, one the
+/// cascade takes. The values, which may be computed, are not read.
+fn writes_supported(script: &str) -> Result<(), String> {
+    let name_char = |c: char| c.is_ascii_alphanumeric() || c == '-';
+    let mut attributes: Vec<String> = script
+        .match_indices("data-")
+        .map(|(at, _)| {
+            let rest = &script[at + "data-".len()..];
+            let end = rest.find(|c| !name_char(c)).unwrap_or(rest.len());
+            format!("data-{}", &rest[..end])
+        })
+        .collect();
+    let mut properties: Vec<String> = Vec::new();
+    for (at, _) in script.match_indices("setProperty(") {
+        let rest = script[at + "setProperty(".len()..].trim_start();
+        if let Some(rest) = rest.strip_prefix(['\'', '"']) {
+            let end = rest.find(|c| !name_char(c)).unwrap_or(rest.len());
+            properties.push(rest[..end].to_ascii_lowercase());
+        }
+    }
+    let code = code_only(script).unwrap_or_default();
+    for (prefix, into_attribute) in [(".dataset.", true), (".style.", false)] {
+        for (at, _) in code.match_indices(prefix) {
+            let rest = &code[at + prefix.len()..];
+            let end = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '$'))
+                .unwrap_or(rest.len());
+            let name = kebab(&rest[..end]);
+            if into_attribute {
+                attributes.push(format!("data-{name}"));
+            } else if !matches!(
+                name.as_str(),
+                "css-text"
+                    | "set-property"
+                    | "remove-property"
+                    | "get-property-value"
+                    | "length"
+                    | "item"
+                    | "css-float"
+                    | ""
+            ) {
+                properties.push(name);
+            }
+        }
+    }
+    for name in attributes {
+        if name != "data-" && !name.starts_with("data-test") && !CHECKED.contains(&name.as_str()) {
+            return Err(format!("unchecked attribute {name}"));
+        }
+    }
+    for name in properties {
+        if name.starts_with("--") {
+            continue;
+        }
+        let declarations =
+            css::parse_style_attribute(&format!("{name}: initial")).unwrap_or_default();
+        if declarations.is_empty() {
+            return Err(format!("declaration of {name}"));
+        }
+        declarations_supported(&declarations)?;
+    }
+    Ok(())
+}
+
+/// A camel-cased IDL name as the hyphenated name it stands for:
+/// `writingMode` as `writing-mode`, `webkitFoo` as `-webkit-foo`.
+fn kebab(name: &str) -> String {
+    let mut out = String::new();
+    if name.starts_with("webkit") {
+        out.push('-');
+    }
+    for c in name.chars() {
+        if c.is_ascii_uppercase() {
+            out.push('-');
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Whether `name` is an event handler property's: `on` and a lowercase
+/// event name.
+fn is_handler(name: &str) -> bool {
+    name.strip_prefix("on")
+        .is_some_and(|event| event.bytes().next().is_some_and(|b| b.is_ascii_lowercase()))
+}
+
+/// Whether `name` is an HTML element interface's, `HTMLElement` and
+/// `HTMLDivElement` among them.
+fn is_element_interface(name: &str) -> bool {
+    name.strip_prefix("HTML")
+        .and_then(|rest| rest.strip_suffix("Element"))
+        .is_some_and(|middle| middle.bytes().all(|b| b.is_ascii_alphabetic()))
 }
 
 /// `script`'s code alone: its comments gone and each string blanked, so
@@ -1520,7 +1813,7 @@ mod tests {
     }
 
     #[test]
-    fn scripts_that_use_only_what_m24_gives_are_taken() {
+    fn scripts_that_use_only_what_m25_gives_are_taken() {
         for script in [
             "function PASS() { return false; }",
             "document.title = 'a // b'; console.log(\"c\", `d`)",
@@ -1529,22 +1822,84 @@ mod tests {
             "// go()\nconsole.log('/* not a comment */ go()')",
             "console.log('it\\'s', \"a \\\" b\")",
             "const k = (a, b = (1)) => a + b; function m(c = Math.max(1, 2), d) { return c + d }",
+            "var d = document.createElement('div'); d.className = 'a'; document.body.appendChild(d);",
+            "document.getElementById('t').style.color = 'red'; window.x = 1;",
+            "getComputedStyle(document.body).display; innerWidth; HTMLDivElement; Node.ELEMENT_NODE",
+            "document.querySelector('p').classList.toggle('b'); document.write('<p>x</p>')",
         ] {
-            assert!(uses_only_m24(script), "{script}");
+            assert!(uses_only_m25(script), "{script}");
         }
         for script in [
-            "document.body.offsetTop",
+            "console.log(document.body.offsetTop)",
             "go()",
-            "window.x = 1",
             "let t = `${document.cookie}`",
             "x.style.color = 'red'",
             "'unended",
             "setTimeout(f, 0)",
             "window.onload = function() { window.scrollTo(0, 100); };",
             "console.log(...go)",
+            "document.body.addEventListener('load', f)",
+            "requestAnimationFrame(f)",
+            "document.createDocumentFragment()",
+            "document.styleSheets[0].insertRule('p {}')",
+            "document.fonts.ready.then(f)",
+            "e.getBoundingClientRect()",
+            "HTMLElement2",
+            "window.onload = function () {}",
+            "document.body.focus;",
+            "var h = document.body.offsetTop;",
+            "f(document.body.offsetTop);",
+            "document.body.offsetTop + 1;",
+            "document.body.offsetTop = 1;",
         ] {
-            assert!(!uses_only_m24(script), "{script}");
+            assert!(!uses_only_m25(script), "{script}");
         }
+        for script in [
+            "document.documentElement.offsetTop;",
+            "var d = document.body;\n  d.offsetHeight\n  d.className = 'b';",
+            "if (true) { document.body.scrollTop }",
+        ] {
+            assert!(uses_only_m25(script), "{script}");
+        }
+        assert!(
+            is_element_interface("HTMLElement") && is_element_interface("HTMLTableCellElement")
+        );
+        assert!(!is_element_interface("HTMLCollection") && !is_element_interface("SVGElement"));
+        assert!(!is_element_interface("HTML2Element"));
+        assert_eq!(
+            writes_supported("e.style.writingMode = m;")
+                .err()
+                .as_deref(),
+            Some("declaration of writing-mode")
+        );
+        assert_eq!(
+            writes_supported("e.style.setProperty('writing-mode', m);")
+                .err()
+                .as_deref(),
+            Some("declaration of writing-mode")
+        );
+        assert_eq!(
+            writes_supported("e.setAttribute('data-expected-scroll-width', 1)")
+                .err()
+                .as_deref(),
+            Some("unchecked attribute data-expected-scroll-width")
+        );
+        assert_eq!(
+            writes_supported("e.dataset.expectedScrollWidth = 1")
+                .err()
+                .as_deref(),
+            Some("unchecked attribute data-expected-scroll-width")
+        );
+        assert!(
+            writes_supported(
+                "e.style.height = '1px'; e.style.cssText = ''; e.style.setProperty('--x', 1); \
+                 e.setAttribute('data-expected-width', 1); e.dataset.testName = 'a'"
+            )
+            .is_ok()
+        );
+        assert_eq!(kebab("webkitBoxFlex"), "-webkit-box-flex");
+        assert!(is_handler("onload") && is_handler("onclick"));
+        assert!(!is_handler("onLoad") && !is_handler("on") && !is_handler("other"));
         for name in [
             "onload",
             "onerror",
@@ -1570,10 +1925,20 @@ mod tests {
                     "<link rel=match href=r.html><a onblur=\"PASS();\"></a>\
                      <script>function PASS() { return false; }</script>",
                 ),
+                (
+                    "css/x/b.html",
+                    "<link rel=match href=r.html><div id=d></div><script>\
+                     document.getElementById('d').setAttribute('data-expected-scroll-width', 1)\
+                     </script>",
+                ),
                 ("css/x/r.html", "<div></div>"),
             ],
         );
         assert!(checkout.take("css/x/a.html").is_ok());
+        assert_eq!(
+            checkout.take("css/x/b.html").err().as_deref(),
+            Some("unchecked attribute data-expected-scroll-width")
+        );
     }
 
     #[test]

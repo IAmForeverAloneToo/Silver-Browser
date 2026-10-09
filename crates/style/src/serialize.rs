@@ -14,7 +14,7 @@ use crate::computed::{
     Color, ComputedStyle, ContentAlignment, Direction, Display, EmptyCells, FlexBasis,
     FlexDirection, FlexWrap, Float, LengthPercentage, LengthPercentageAuto, MaxSize, Overflow,
     OverflowAlign, Position, SelfAlignment, Size, TableLayout, TextAlign, TextTransform,
-    VerticalAlign, WhiteSpace,
+    TransformBox, VerticalAlign, WhiteSpace,
 };
 
 /// The properties [`computed_value`] gives, in the order a computed
@@ -82,6 +82,7 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "text-align",
     "text-transform",
     "top",
+    "transform-box",
     "vertical-align",
     "white-space",
     "width",
@@ -251,6 +252,14 @@ pub fn computed_value(style: &ComputedStyle, name: &str) -> Option<String> {
         "row-gap" => gap(&style.row_gap)?,
         "column-gap" => gap(&style.column_gap)?,
         "opacity" => number(style.effects().opacity),
+        "transform-box" => match style.effects().transform_box {
+            TransformBox::ContentBox => "content-box",
+            TransformBox::BorderBox => "border-box",
+            TransformBox::FillBox => "fill-box",
+            TransformBox::StrokeBox => "stroke-box",
+            TransformBox::ViewBox => "view-box",
+        }
+        .to_owned(),
         _ => return None,
     })
 }
@@ -521,6 +530,13 @@ mod tests {
         assert_eq!(value("margin-top").as_deref(), Some("0px"));
         assert_eq!(value("width").as_deref(), Some("50%"));
         assert_eq!(value("opacity").as_deref(), Some("0.25"));
+        assert_eq!(value("transform-box").as_deref(), Some("view-box"));
+        let mut fill = ComputedStyle::default();
+        fill.effects_mut().transform_box = TransformBox::FillBox;
+        assert_eq!(
+            computed_value(&fill, "transform-box").as_deref(),
+            Some("fill-box")
+        );
         assert_eq!(value("font-size").as_deref(), Some("16px"));
         assert_eq!(value("display").as_deref(), Some("inline"));
         assert_eq!(

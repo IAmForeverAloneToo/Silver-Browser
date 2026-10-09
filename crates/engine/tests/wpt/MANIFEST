@@ -35,9 +35,15 @@ reftest	css/css-flexbox/anonymous-block.html	==css/css-flexbox/reference/anonymo
 reftest	css/css-flexbox/anonymous-flex-item-002.html	==css/reference/pass_if_two_words.html
 crashtest	css/css-flexbox/anonymous-flex-item-document-white-space-crash.html
 reftest	css/css-flexbox/aspect-ratio-intrinsic-size-003.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-flexbox/aspect-ratio-intrinsic-size-004.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-flexbox/aspect-ratio-intrinsic-size-005.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-flexbox/aspect-ratio-intrinsic-size-006.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-flexbox/aspect-ratio-intrinsic-size-008.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-flexbox/aspect-ratio-intrinsic-size-010.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-flexbox/aspect-ratio-intrinsic-size-011.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-flexbox/aspect-ratio-intrinsic-size-012.html	==css/css-flexbox/aspect-ratio-intrinsic-size-012-ref.html
+reftest	css/css-flexbox/aspect-ratio-intrinsic-size-013.html	==css/css-flexbox/aspect-ratio-intrinsic-size-013-ref.html
+reftest	css/css-flexbox/aspect-ratio-intrinsic-size-014.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-flexbox/aspect-ratio-transferred-max-size.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-flexbox/auto-height-column-with-border-and-padding.html	==css/css-flexbox/reference/auto-height-column-with-border-and-padding-ref.html
 checklayout	css/css-flexbox/box-sizing-min-max-sizes-001.html	.flexbox
@@ -46,9 +52,11 @@ crashtest	css/css-flexbox/column-intrinsic-size-aspect-ratio-crash.html
 checklayout	css/css-flexbox/column-reverse-gap.html	.flexbox
 checklayout	css/css-flexbox/columns-height-set-via-top-bottom.html	.flexbox
 reftest	css/css-flexbox/content-height-with-scrollbars.html	==css/css-flexbox/reference/content-height-with-scrollbars-ref.html
+crashtest	css/css-flexbox/crashtests/anonymous-block-merge.html
 reftest	css/css-flexbox/css-flexbox-height-animation-stretch.html	==css/css-flexbox/css-flexbox-height-animation-stretch-ref.html
 reftest	css/css-flexbox/css-flexbox-img-expand-evenly.html	==css/css-flexbox/reference/css-flexbox-img-expand-evenly-ref.html
 reftest	css/css-flexbox/display-flex-001.htm	==css/css-flexbox/reference/align-content-001-ref.html
+reftest	css/css-flexbox/dynamic-stretch-change.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-flexbox/empty-flex-box-and-margin-collapsing.html	==css/css-flexbox/empty-flex-box-and-margin-collapsing-ref.html
 reftest	css/css-flexbox/fixed-table-layout-with-percentage-width-in-flex-item.html	==css/css-flexbox/fixed-table-layout-with-percentage-width-in-flex-item-ref.html
 reftest	css/css-flexbox/flex-001.htm	==css/css-flexbox/reference/justify-content-001-ref.html
@@ -363,7 +371,9 @@ reftest	css/css-flexbox/flexbox_wrap.html	==css/css-flexbox/flexbox_wrap-ref.htm
 reftest	css/css-flexbox/flexible-box-float.html	==css/css-flexbox/reference/flex-box-float-ref.html
 checklayout	css/css-flexbox/flexitem-no-margin-collapsing.html	.flexbox
 checklayout	css/css-flexbox/flexitem-stretch-image.html	.flexbox
+crashtest	css/css-flexbox/frame-flex-item-crash.html
 reftest	css/css-flexbox/grid-flex-item-002.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-flexbox/grid-flex-item-005.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-flexbox/inline-flex-min-content-height.html	==css/reference/ref-filled-green-100px-square-only.html
 checklayout	css/css-flexbox/intrinsic-size/col-wrap-010.html	body > div
 reftest	css/css-flexbox/item-with-max-height-and-scrollbar.html	==css/css-flexbox/reference/item-with-max-height-and-scrollbar-ref.html
@@ -388,6 +398,7 @@ crashtest	css/css-flexbox/negative-flex-margins-crash.html
 crashtest	css/css-flexbox/negative-item-margins-002-crash.html
 crashtest	css/css-flexbox/negative-item-margins-crash.html
 reftest	css/css-flexbox/nested-flex-image-loading-invalidates-intrinsic-sizes.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-flexbox/nested-orthogonal-flexbox-relayout.html	==css/css-flexbox/reference/nested-orthogonal-flexbox-relayout-ref.html
 reftest	css/css-flexbox/order/order-abs-children-painting-order-different-container.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-flexbox/order/order-abs-children-painting-order.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-flexbox/order/order-with-column-reverse.html	==css/css-flexbox/order/order-with-column-reverse-ref.html
@@ -413,6 +424,7 @@ reftest	css/css-flexbox/percentage-widths-001.html	==css/css-flexbox/percentage-
 reftest	css/css-flexbox/position-fixed-001.html	==css/css-flexbox/reference/position-fixed-001-ref.html
 crashtest	css/css-flexbox/position-relative-with-scrollable-with-abspos-crash.html
 checklayout	css/css-flexbox/quirks-auto-block-size-with-percentage-item.html	#container
+crashtest	css/css-flexbox/remove-out-of-flow-child-crash.html
 reftest	css/css-flexbox/stretched-child-in-nested-flexbox-003.html	==css/reference/ref-filled-green-200px-square.html
 checklayout	css/css-flexbox/table-as-item-cross-size.html	.test
 reftest	css/css-flexbox/table-as-item-inflexible-in-column-1.html	==css/reference/ref-filled-green-100px-square-only.html
@@ -458,6 +470,7 @@ reftest	css/css-grid/abspos/grid-abspos-staticpos-justify-self-img-last-baseline
 reftest	css/css-grid/abspos/grid-abspos-staticpos-justify-self-last-baseline-001.html	==css/css-grid/abspos/grid-abspos-staticpos-justify-self-last-baseline-001-ref.html
 reftest	css/css-grid/abspos/grid-abspos-staticpos-justify-self-last-baseline-002.html	==css/css-grid/abspos/grid-abspos-staticpos-justify-self-last-baseline-002-ref.html
 reftest	css/css-grid/abspos/grid-fixedpos-static-position-not-containing-block.html	==css/css-grid/abspos/grid-fixedpos-static-position-not-containing-block-ref.html
+reftest	css/css-grid/abspos/grid-positioned-item-dynamic-change-006.html	==css/css-grid/abspos/grid-positioned-item-dynamic-change-006-ref.html
 reftest	css/css-grid/abspos/positioned-grid-descendant-containing-block-001.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/abspos/positioned-grid-descendant-containing-block-002.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/abspos/positioned-grid-descendant-containing-block-003.html	==css/reference/ref-filled-green-100px-square-only.html
@@ -496,6 +509,7 @@ reftest	css/css-grid/alignment/grid-align-content-end-001.html	==css/css-grid/al
 reftest	css/css-grid/alignment/grid-align-content-space-between-001.html	==css/css-grid/alignment/grid-align-content-space-between-001-ref.html
 reftest	css/css-grid/alignment/grid-block-axis-alignment-auto-margins-explicit-row.html	==css/css-grid/reference/grid-block-axis-alignment-auto-margins-explicit-row-ref.html
 reftest	css/css-grid/alignment/grid-calc-margins-explicit-row.html	==css/css-grid/reference/grid-calc-margins-explicit-row-ref.html
+reftest	css/css-grid/alignment/grid-container-auto-margins-scrollbars-001.html	==css/css-grid/reference/grid-container-auto-margins-scrollbars-001-ref.html
 reftest	css/css-grid/alignment/grid-content-distribution-001.html	==css/reference/ref-filled-green-200px-square.html
 reftest	css/css-grid/alignment/grid-content-distribution-002.html	==css/reference/ref-filled-green-200px-square.html
 reftest	css/css-grid/alignment/grid-content-distribution-003.html	==css/reference/ref-filled-green-200px-square.html
@@ -571,6 +585,9 @@ reftest	css/css-grid/anonymous-grid-items-001.html	==css/css-grid/reference/anon
 reftest	css/css-grid/child-border-box-and-max-content-001.html	==css/css-grid/child-border-box-and-max-content-001-ref.html
 reftest	css/css-grid/child-border-box-and-max-content-002.html	==css/css-grid/child-border-box-and-max-content-002-ref.html
 crashtest	css/css-grid/chrome-521184744-crash.html
+reftest	css/css-grid/chrome-bug-001.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-grid/dynamic-grid-with-auto-fill.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-grid/dynamic-grid-within-flexbox.html	==css/reference/ref-filled-green-100px-square-only.html
 crashtest	css/css-grid/firefox-bug-1958131-crash.html
 crashtest	css/css-grid/firefox-bug-2058181-crash.html
 reftest	css/css-grid/grid-calc-margin.html	==css/css-grid/grid-calc-margin-ref.html
@@ -579,9 +596,14 @@ reftest	css/css-grid/grid-definition/flex-item-grid-container-auto-repeat-001.ht
 reftest	css/css-grid/grid-definition/flex-item-grid-container-auto-repeat-002.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/grid-definition/fr-unit-with-percentage.html	==css/css-grid/reference/fr-unit-with-percentage-ref.html
 reftest	css/css-grid/grid-definition/fr-unit.html	==css/css-grid/reference/fr-unit-ref.html
+crashtest	css/css-grid/grid-definition/grid-add-item-with-positioned-items-crash.html
+crashtest	css/css-grid/grid-definition/grid-add-positioned-block-item-after-inline-item-crash.html
 reftest	css/css-grid/grid-definition/grid-auto-fit-with-calc.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/grid-definition/grid-auto-repeat-aspect-ratio-001.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/grid-definition/grid-auto-repeat-aspect-ratio-002.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-grid/grid-definition/grid-auto-repeat-dynamic-001.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-grid/grid-definition/grid-auto-repeat-dynamic-002.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-grid/grid-definition/grid-auto-repeat-dynamic-003.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/grid-definition/grid-auto-repeat-minmax.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/grid-definition/grid-auto-repeat-multiple-values-001.html	==css/css-grid/reference/grid-auto-repeat-multiple-values-001-ref.html
 reftest	css/css-grid/grid-definition/grid-auto-repeat-multiple-values-002.html	==css/css-grid/grid-definition/grid-auto-repeat-multiple-values-002-ref.html
@@ -592,6 +614,7 @@ reftest	css/css-grid/grid-definition/grid-item-grid-container-percentage-rows-00
 reftest	css/css-grid/grid-definition/grid-layout-auto-tracks.html	==css/css-grid/reference/grid-layout-auto-tracks-ref.html
 reftest	css/css-grid/grid-definition/grid-layout-basic.html	==css/css-grid/reference/grid-layout-basic-ref.html
 reftest	css/css-grid/grid-definition/grid-layout-repeat-notation.html	==css/css-grid/reference/grid-layout-repeat-notation-ref.html
+crashtest	css/css-grid/grid-definition/grid-minimum-contribution-fixed-size-crash.html
 reftest	css/css-grid/grid-definition/grid-repeat-integer-001.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/grid-definition/grid-repeat-integer-002.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/grid-definition/grid-repeat-integer-003.html	==css/reference/ref-filled-green-100px-square-only.html
@@ -601,6 +624,7 @@ crashtest	css/css-grid/grid-definition/grid-repeat-out-of-bounds-crash.html
 reftest	css/css-grid/grid-flex-spanning-items-001.html	==css/css-grid/grid-flex-spanning-items-001-ref.html
 reftest	css/css-grid/grid-flexible-track-fractional-flex-factor.html	==css/css-grid/grid-flexible-track-fractional-flex-factor-ref.html
 reftest	css/css-grid/grid-flexible-track-free-space-distribution.html	==css/css-grid/grid-flexible-track-free-space-distribution-ref.html
+crashtest	css/css-grid/grid-formatting-context-fallback-crash.html
 reftest	css/css-grid/grid-in-table-cell-with-img.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/grid-item-non-auto-height-stretch-001.html	==css/css-grid/grid-item-non-auto-height-stretch-ref.html
 reftest	css/css-grid/grid-item-non-auto-height-stretch-003.html	==css/css-grid/grid-item-non-auto-height-stretch-ref.html
@@ -610,6 +634,7 @@ reftest	css/css-grid/grid-items/aspect-ratio-002.html	==css/reference/ref-filled
 reftest	css/css-grid/grid-items/aspect-ratio-003.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/grid-items/aspect-ratio-004.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/grid-items/aspect-ratio-005.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-grid/grid-items/aspect-ratio-grid-item-dynamic-container-shrink-001.html	==css/css-grid/grid-items/aspect-ratio-grid-item-dynamic-container-shrink-001-ref.html
 reftest	css/css-grid/grid-items/explicitly-sized-grid-item-as-table.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/grid-items/grid-img-item-percent-max-height-001.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/grid-items/grid-item-border-padding-001.html	==css/css-grid/grid-items/grid-item-border-padding-001-ref.html
@@ -619,6 +644,8 @@ reftest	css/css-grid/grid-items/grid-item-border-padding-005.html	==css/css-grid
 reftest	css/css-grid/grid-items/grid-item-min-size-auto-overflow-001.html	==css/css-grid/grid-items/grid-item-min-size-auto-overflow-001-ref.html
 reftest	css/css-grid/grid-items/grid-item-minmax-img-002.html	==css/css-grid/grid-items/grid-item-minmax-img-002-ref.html
 reftest	css/css-grid/grid-items/grid-item-percentage-size-in-positioned-grid-001.html	==css/css-grid/grid-items/grid-item-percentage-size-in-positioned-grid-001-ref.html
+reftest	css/css-grid/grid-items/grid-item-rel-pos-001.html	==css/css-grid/grid-items/grid-item-rel-pos-001-ref.html
+reftest	css/css-grid/grid-items/grid-item-rel-pos-002.html	==css/css-grid/grid-items/grid-item-rel-pos-002-ref.html
 reftest	css/css-grid/grid-items/grid-items-calc-paddings-001.html	==css/css-grid/grid-items/grid-items-calc-paddings-001-ref.html
 reftest	css/css-grid/grid-items/grid-items-em-paddings-001.html	==css/css-grid/grid-items/grid-items-em-paddings-001-ref.html
 reftest	css/css-grid/grid-items/grid-items-fixed-paddings-001.html	==css/css-grid/grid-items/grid-items-fixed-paddings-001-ref.html
@@ -633,6 +660,7 @@ reftest	css/css-grid/grid-items/grid-minimum-size-grid-items-007.html	==css/css-
 reftest	css/css-grid/grid-items/grid-minimum-size-grid-items-008.html	==css/css-grid/grid-items/ref-filled-green-100px-square-image.html
 reftest	css/css-grid/grid-items/grid-minimum-size-grid-items-009.html	==css/css-grid/grid-items/ref-filled-green-100px-square-image.html
 reftest	css/css-grid/grid-items/item-with-table-with-infinite-max-intrinsic-width.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-grid/grid-items/percentage-margin-dynamic.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/grid-items/percentage-size-subitems-002.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/grid-items/table-with-infinite-max-intrinsic-width.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/grid-model/display-grid.html	==css/css-grid/reference/display-grid-ref.html
@@ -659,8 +687,13 @@ reftest	css/css-grid/grid-overflowing-item-in-both-axes-is-painted.html	==css/cs
 reftest	css/css-grid/grid-overflowing-item-in-nonstart-cell-is-painted.html	==css/css-grid/grid-overflowing-item-in-nonstart-cell-is-painted-ref.html
 reftest	css/css-grid/grid-overflowing-item-right-of-container-is-painted.html	==css/css-grid/grid-overflowing-item-right-of-container-is-painted-ref.html
 reftest	css/css-grid/grid-overflowing-multiple-items-are-painted.html	==css/css-grid/grid-overflowing-multiple-items-are-painted-ref.html
+crashtest	css/css-grid/grid-stale-layoutbox-crash.html
+reftest	css/css-grid/grid-with-content-dynamic-display-001.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-grid/grid-with-content-dynamic-display-002.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-grid/grid-with-dynamic-img.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/grid-within-flexbox-definite-change.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/grid-within-flexbox-indefinite.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-grid/img-src-changes.html	==css/reference/ref-filled-green-100px-square-only.html
 checklayout	css/css-grid/implicit-grids/grid-item-placed-in-trailing-implicit-column-001.html	.grid
 reftest	css/css-grid/implicit-grids/grid-support-grid-auto-columns-rows-001.html	==css/css-grid/reference/grid-support-grid-auto-columns-rows-001-ref.html
 reftest	css/css-grid/implicit-grids/grid-support-grid-auto-columns-rows-002.html	==css/css-grid/reference/grid-support-grid-auto-columns-rows-002-ref.html
@@ -681,6 +714,7 @@ reftest	css/css-grid/placement/grid-layout-lines-shorthands.html	==css/css-grid/
 reftest	css/css-grid/placement/grid-layout-lines.html	==css/css-grid/reference/grid-layout-basic-ref.html
 reftest	css/css-grid/placement/grid-layout-placement-shorthands.html	==css/css-grid/reference/grid-layout-basic-ref.html
 checklayout	css/css-grid/placement/grid-negative-line-placement-001.html	.grid
+reftest	css/css-grid/placement/grid-placement-using-named-grid-lines-007.html	==css/reference/ref-filled-green-300px-square.html
 reftest	css/css-grid/placement/grid-template-areas-media-query-001.html	==css/css-grid/placement/grid-template-areas-media-query-001-ref.html
 reftest	css/css-grid/placement/grid-template-areas-must-keep-named-columns-order-001.html	==css/css-grid/reference/grid-template-areas-must-keep-named-columns-order-001-ref.html
 reftest	css/css-grid/replaced-element-percentage-height-in-grid-nested-in-flex-001.html	==css/reference/ref-filled-green-100px-square-only.html
@@ -704,6 +738,7 @@ reftest	css/css-transforms/composited-under-rotateY-180deg-clip.html	==css/css-t
 reftest	css/css-transforms/composited-under-rotateY-180deg-perspective.html	==css/css-transforms/composited-under-rotateY-180deg-ref.html
 reftest	css/css-transforms/composited-under-rotateY-180deg-preserve-3d.html	==css/css-transforms/composited-under-rotateY-180deg-ref.html
 reftest	css/css-transforms/composited-under-rotateY-180deg.html	==css/css-transforms/composited-under-rotateY-180deg-ref.html
+crashtest	css/css-transforms/crashtests/large-scale3d-001.html
 crashtest	css/css-transforms/crashtests/preserve3d-containing-block-inline-002.html
 crashtest	css/css-transforms/crashtests/w-crossing-zero-001.html
 reftest	css/css-transforms/css-rotate-2d-3d-001.html	==css/css-transforms/css-rotate-2d-3d-001-ref.html
@@ -791,7 +826,13 @@ reftest	css/css-transforms/transform-abspos-004.html	==css/css-transforms/transf
 reftest	css/css-transforms/transform-abspos-005.html	!=css/css-transforms/transform-abspos-ref.html
 reftest	css/css-transforms/transform-abspos-006.html	==css/css-transforms/transform-abspos-ref.html
 reftest	css/css-transforms/transform-abspos-007.html	==css/css-transforms/transform-abspos-ref.html
+reftest	css/css-transforms/transform-box/cssbox-border-box.html	==css/css-transforms/transform-box/reference/cssbox-ref.html
+reftest	css/css-transforms/transform-box/cssbox-content-box-001.html	==css/css-transforms/transform-box/reference/cssbox-ref.html
 reftest	css/css-transforms/transform-box/cssbox-content-box-002.html	==css/css-transforms/transform-box/reference/cssbox-ref.html
+reftest	css/css-transforms/transform-box/cssbox-fill-box.html	==css/css-transforms/transform-box/reference/cssbox-ref.html
+reftest	css/css-transforms/transform-box/cssbox-initial.html	==css/css-transforms/transform-box/reference/cssbox-ref.html
+reftest	css/css-transforms/transform-box/cssbox-stroke-box.html	==css/css-transforms/transform-box/reference/cssbox-ref.html
+reftest	css/css-transforms/transform-box/cssbox-view-box.html	==css/css-transforms/transform-box/reference/cssbox-ref.html
 reftest	css/css-transforms/transform-compound-001.html	==css/css-transforms/transform-compound-ref.html	!=css/css-transforms/transform-compound-notref-1.html	!=css/css-transforms/transform-compound-notref-2.html	fuzzy=:0-30;0-500
 reftest	css/css-transforms/transform-descendant-001.html	==css/css-transforms/transform-descendant-ref.html
 reftest	css/css-transforms/transform-display-001.html	==css/css-transforms/transform-display-ref.html	!=css/css-transforms/transform-display-notref.html
@@ -1024,6 +1065,10 @@ reftest	css/css-will-change/will-change-stacking-context-z-index-1.html	==css/cs
 reftest	css/css-will-change/will-change-transform-image.html	==css/css-will-change/will-change-transform-image-ref.html
 reftest	css/css-will-change/will-change-transform-inline.html	==css/css-will-change/will-change-transform-inline-ref.html
 crashtest	css/mediaqueries/duplicate-media-stylesheet-crash.html
+reftest	css/mediaqueries/relative-units-001.html	==css/mediaqueries/reference/ref-green-body.xht
+reftest	css/mediaqueries/relative-units-002.html	==css/mediaqueries/reference/ref-green-body.xht
+reftest	css/mediaqueries/relative-units-003.html	==css/mediaqueries/reference/ref-green-body.xht
+reftest	css/mediaqueries/relative-units-004.html	==css/mediaqueries/reference/ref-green-body.xht
 reftest	css/mediaqueries/scripting-print-noscript.html	==css/mediaqueries/scripting-print-noscript-ref.html
 reftest	css/mediaqueries/scripting-print-script.html	==css/mediaqueries/scripting-print-script-ref.html
 reftest	css/css-conditional/at-media-001.html	==css/css-conditional/at-supports-001-ref.html
@@ -1095,6 +1140,8 @@ crashtest	css/css-conditional/crashtests/supports-malformed.html
 reftest	css/css-cascade/important-prop.html	==css/css-cascade/important-prop-ref.html
 reftest	css/css-cascade/initial-background-color.html	==css/css-cascade/reference/all-green.html
 reftest	css/css-cascade/initial-color-background-001.html	==css/css-cascade/initial-color-background-001-ref.html
+crashtest	css/css-cascade/inline-style-revert-layer-crash.html
+reftest	css/css-cascade/scope-featureless.html	==css/css-cascade/scope-featureless-ref.html
 checklayout	css/css-variables/variable-animation-guaranteed-invalid.html	.test
 reftest	css/css-variables/variable-declaration-01.html	==css/css-variables/support/color-green-ref.html
 reftest	css/css-variables/variable-declaration-02.html	==css/css-variables/support/color-green-ref.html
@@ -1289,6 +1336,7 @@ reftest	css/css-values/calc-width-block-intrinsic-1.html	==css/css-values/calc-w
 reftest	css/css-values/calc-width-table-auto-1.html	==css/css-values/calc-width-table-auto-1-ref.html
 reftest	css/css-values/calc-width-table-fixed-1.html	==css/css-values/calc-width-table-fixed-1-ref.html
 crashtest	css/css-values/chrome-typed-arithmetic-crash.html
+crashtest	css/css-values/crashtests/chrome-bug-492735384.html
 reftest	css/css-values/ex-calc-expression-001.html	==css/css-values/ex-calc-expression-001-ref.html
 reftest	css/css-values/html-attr-case-insensitivity.html	==css/css-values/html-attr-case-insensitivity-ref.html
 reftest	css/css-values/max-20-arguments.html	==css/css-values/reference/all-green.html
@@ -1296,7 +1344,9 @@ reftest	css/css-values/max-length-percent-001.html	==css/css-values/reference/20
 reftest	css/css-values/min-length-percent-001.html	==css/css-values/reference/200-200-green.html
 reftest	css/css-values/min-max-percentage-length-interpolation.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-values/percentage-rem-low.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-values/rem-root-font-size-restyle-1.html	==css/css-values/rem-root-font-size-restyle-1-ref.html
 reftest	css/css-values/resolution-with-percentage-without-context.html	==css/reference/ref-filled-green-100px-square-only.html
+crashtest	css/css-values/typed-arithmetic-mixed-units-crash.html
 reftest	css/css-values/vh-calc-support-pct.html	==css/css-values/reference/all-green.html
 reftest	css/css-values/vh-calc-support.html	==css/css-values/reference/all-green.html
 reftest	css/css-values/vh-em-inherit.html	==css/css-values/reference/all-green.html
@@ -1309,9 +1359,18 @@ reftest	css/css-values/vh-support.html	==css/css-values/reference/all-green.html
 reftest	css/css-values/vh-zero-support.html	==css/css-values/reference/all-green.html
 reftest	css/css-values/viewport-unit-011.html	==css/css-values/reference/viewport-unit-011-ref.html
 reftest	css/css-values/viewport-units-scrollbars-auto-vhw-001.html	==css/css-values/viewport-units-scrollbars-auto-ltr-001-ref.html
+crashtest	css/css-values/viewport-units-scrollbars-crash.html
+reftest	css/css-values/viewport-units-scrollbars-dynamic-001.html	==css/css-values/viewport-units-scrollbars-scroll-vw-001-ref.html
 reftest	css/css-values/viewport-units-scrollbars-scroll-vhw-001.html	==css/css-values/viewport-units-scrollbars-scroll-ltr-001-ref.html
 reftest	css/css-values/viewport-units-scrollbars-scroll-vw-001.html	==css/css-values/viewport-units-scrollbars-scroll-vw-001-ref.html
+reftest	css/css-lists/add-inline-child-after-marker-001.html	==css/css-lists/add-inline-child-after-marker-001-ref.html
+reftest	css/css-lists/add-inline-child-after-marker-002.html	==css/css-lists/add-inline-child-after-marker-002-ref.html
 crashtest	css/css-lists/before-after-selectors-on-code-element-crash.html
+reftest	css/css-lists/change-list-style-position-001.html	==css/css-lists/change-list-style-position-001-ref.html
+reftest	css/css-lists/change-list-style-position-002.html	==css/css-lists/change-list-style-position-002-ref.html
+reftest	css/css-lists/change-list-style-position-003.html	==css/css-lists/change-list-style-position-003-ref.html
+reftest	css/css-lists/change-list-style-type-001.html	==css/css-lists/change-list-style-type-001-ref.html
+reftest	css/css-lists/change-list-style-type-002.html	==css/css-lists/change-list-style-type-002-ref.html
 reftest	css/css-lists/content-property/marker-text-matches-armenian.html	==css/css-lists/content-property/marker-text-matches-armenian-ref.html
 reftest	css/css-lists/content-property/marker-text-matches-decimal-leading-zero.html	==css/css-lists/content-property/marker-text-matches-decimal-leading-zero-ref.html
 reftest	css/css-lists/content-property/marker-text-matches-decimal.html	==css/css-lists/content-property/marker-text-matches-decimal-ref.html
@@ -1351,6 +1410,7 @@ reftest	css/css-lists/li-list-item-counter-002.html	==css/css-lists/li-list-item
 reftest	css/css-lists/li-list-item-counter-003.html	==css/css-lists/li-list-item-counter-003-ref.html
 reftest	css/css-lists/li-list-item-counter-004.html	==css/css-lists/li-list-item-counter-004-ref.html
 reftest	css/css-lists/li-list-item-counter-005.html	==css/css-lists/li-list-item-counter-005-ref.html
+reftest	css/css-lists/li-value-counter-reset-002.html	==css/css-lists/li-value-counter-reset-002-ref.html
 reftest	css/css-lists/li-value-reversed-001.html	==css/css-lists/li-value-reversed-001-ref.html
 reftest	css/css-lists/li-value-reversed-002.html	==css/css-lists/li-value-reversed-002-ref.html
 reftest	css/css-lists/li-value-reversed-003.html	==css/css-lists/li-value-reversed-002-ref.html
@@ -1377,12 +1437,16 @@ reftest	css/css-lists/li-value-reversed-027.html	==css/css-lists/li-value-revers
 reftest	css/css-lists/li-value-reversed-028.html	==css/css-lists/li-value-reversed-011-ref.html
 reftest	css/css-lists/li-value-reversed-029.html	==css/css-lists/li-value-reversed-024-ref.html
 reftest	css/css-lists/li-value-reversed-030.html	==css/css-lists/li-value-reversed-025-ref.html
+reftest	css/css-lists/li-with-height-001.html	==css/css-lists/li-with-height-001-ref.html
+reftest	css/css-lists/li-with-overflow-hidden-change-list-style-position-001.html	==css/css-lists/li-with-overflow-hidden-change-list-style-position-001-ref.html
 crashtest	css/css-lists/li-without-ul-counter-crash.html
 reftest	css/css-lists/list-and-grid-001.html	==css/css-lists/list-and-grid-001-ref.html	fuzzy=:0-8;0-10
 reftest	css/css-lists/list-type-none-style-image.html	==css/css-lists/list-type-none-style-image-ref.html
+reftest	css/css-lists/list-with-image-display-changed-001.html	==css/css-lists/list-with-image-display-changed-001-ref.html
 reftest	css/css-lists/marker-counter.html	==css/css-lists/marker-counter-ref.html
 reftest	css/css-lists/marker-quotes.html	==css/css-lists/marker-quotes-ref.html
 reftest	css/css-lists/nested-marker.html	==css/css-lists/nested-marker-ref.html
+reftest	css/css-lists/ol-change-display-type.html	==css/css-lists/ol-change-display-type-ref.html
 reftest	css/css-counter-styles/arabic-indic/css3-counter-styles-101.html	==css/css-counter-styles/arabic-indic/css3-counter-styles-101-ref.html
 reftest	css/css-counter-styles/arabic-indic/css3-counter-styles-102.html	==css/css-counter-styles/arabic-indic/css3-counter-styles-102-ref.html
 reftest	css/css-counter-styles/arabic-indic/css3-counter-styles-103.html	==css/css-counter-styles/arabic-indic/css3-counter-styles-103-ref.html
@@ -1555,6 +1619,9 @@ reftest	css/css-counter-styles/upper-roman/css3-counter-styles-024a.html	==css/c
 reftest	css/css-counter-styles/upper-roman/css3-counter-styles-025.html	==css/css-counter-styles/upper-roman/css3-counter-styles-025-ref.html
 reftest	css/css-counter-styles/upper-roman/css3-counter-styles-026.html	==css/css-counter-styles/upper-roman/css3-counter-styles-026-ref.html
 reftest	css/css-content/attr-case-sensitivity-001.html	==css/css-content/attr-case-sensitivity-ref-001.html
+crashtest	css/css-content/crashtests/generated-counter.html
+crashtest	css/css-content/crashtests/generated-quote.html
+crashtest	css/css-content/crashtests/generated-text.html
 reftest	css/css-content/element-replacement-alt.html	==css/css-content/element-replacement-alt-ref.html
 reftest	css/css-content/element-replacement-display-none.html	==css/reference/blank.html
 reftest	css/css-content/element-replacement-gradient.html	==css/css-content/element-replacement-gradient-ref.html
@@ -1569,6 +1636,7 @@ reftest	css/css-text-decor/text-decoration-propagation-02.html	==css/css-text-de
 reftest	css/css-text-decor/text-decoration-propagation-03.html	==css/css-text-decor/reference/text-decoration-propagation-03-ref.html
 reftest	css/css-text-decor/text-decoration-propagation-04.html	==css/css-text-decor/reference/text-decoration-propagation-04-ref.html
 reftest	css/css-text-decor/text-decoration-propagation-05.html	==css/css-text-decor/reference/text-decoration-propagation-05-ref.html
+reftest	css/css-text-decor/text-decoration-propagation-dynamic-001.html	==css/css-text-decor/reference/text-decoration-propagation-dynamic-001-ref.html
 reftest	css/css-text-decor/text-decoration-shorthands-001.html	==css/css-text-decor/reference/text-decoration-shorthands-001-ref.html
 reftest	css/css-text-decor/text-decoration-shorthands-002.html	==css/css-text-decor/reference/text-decoration-shorthands-002-ref.html
 reftest	css/css-text-decor/text-decoration-style-multiple.html	==css/css-text-decor/reference/text-decoration-style-multiple-ref.html
@@ -1883,6 +1951,8 @@ crashtest	css/css-animations/neutral-var-keyframe-cycle-crash.html
 reftest	css/css-animations/transform-animation-under-large-scale.html	==css/css-animations/transform-animation-under-large-scale-ref.html
 reftest	css/css-animations/translation-animation-on-important-property.html	==css/css-animations/translation-animation-on-important-property-ref.html
 reftest	css/css-animations/translation-animation-subpixel-offset.html	==css/css-animations/translation-animation-subpixel-offset-ref.html
+crashtest	css/css-transitions/crashtests/transition-large-word-spacing-001.html
+crashtest	css/css-transitions/crashtests/transition-transform-translate-calculated-length-crash.html
 reftest	css/css-transitions/render-blocking/no-transition-from-ua-to-blocking-stylesheet.html	==css/css-transitions/render-blocking/no-transition-from-ua-to-blocking-stylesheet-ref.html
 checklayout	css/css-easing/step-jump-both.html	.test
 checklayout	css/css-easing/step-jump-end.html	.test
@@ -2006,6 +2076,7 @@ reftest	css/css-backgrounds/background-clip-padding-box-001.html	==css/reference
 reftest	css/css-backgrounds/background-clip_padding-box.html	==css/css-backgrounds/reference/background_clip_padding-box.html
 reftest	css/css-backgrounds/background-color-body-propagation-001.html	==css/css-backgrounds/background-color-body-propagation-ref.html
 reftest	css/css-backgrounds/background-color-body-propagation-002.html	==css/css-backgrounds/background-color-body-propagation-ref.html
+reftest	css/css-backgrounds/background-color-body-propagation-003.html	==css/css-backgrounds/background-color-body-propagation-ref.html
 reftest	css/css-backgrounds/background-color-body-propagation-004.html	==css/reference/blank.html
 reftest	css/css-backgrounds/background-color-body-propagation-005.html	==css/reference/blank.html
 reftest	css/css-backgrounds/background-color-body-propagation-010.html	==css/css-backgrounds/background-color-no-body-propagation-ref.html
@@ -2138,6 +2209,8 @@ reftest	css/css-backgrounds/border-width-small-values-001-b.html	!=css/css-backg
 reftest	css/css-backgrounds/border-width-small-values-001-c.html	!=css/css-backgrounds/reference/border-width-small-values-001-ref.html
 reftest	css/css-backgrounds/border-width-small-values-001-d.html	!=css/css-backgrounds/reference/border-width-small-values-001-ref.html
 reftest	css/css-backgrounds/border-width-small-values-001-e.html	!=css/css-backgrounds/reference/border-width-small-values-001-ref.html
+crashtest	css/css-backgrounds/crashtests/background-norepeat.html
+crashtest	css/css-backgrounds/crashtests/parse-border-image-repeat-null.html
 reftest	css/css-backgrounds/css3-background-clip-border-box.html	==css/css-backgrounds/reference/css3-background-clip-border-box-ref.html
 reftest	css/css-backgrounds/css3-background-clip-content-box.html	==css/css-backgrounds/reference/css3-background-clip-content-box-ref.html
 reftest	css/css-backgrounds/css3-background-clip-padding-box.html	==css/css-backgrounds/reference/css3-background-clip-padding-box-ref.html
@@ -2155,3 +2228,10 @@ reftest	css/css-backgrounds/first-letter-space-not-selected.html	==css/css-backg
 crashtest	css/css-backgrounds/linear-gradient-calc-crash.html
 reftest	css/css-backgrounds/order-of-images.htm	==css/css-backgrounds/reference/order-of-images-ref.html
 reftest	html/semantics/embedded-content/the-img-element/document-base-url.html	==html/semantics/embedded-content/the-img-element/document-base-url-ref.html
+crashtest	dom/nodes/crashtests/childNodes-last_visited-unwrap-crash.html
+crashtest	dom/nodes/crashtests/document-replaceChild-input-documentElement.html
+crashtest	dom/nodes/crashtests/documentElement-remove-descendant-query.html
+crashtest	dom/nodes/moveBefore/moveBefore-subframe-count-crash.html
+crashtest	dom/nodes/replaceWith-document-element-crash.html
+reftest	html/dom/directionality/bdi-element-invalid-dir.html	==html/dom/directionality/bdi-element-invalid-dir-ref.html
+reftest	html/dom/elements/global-attributes/lang-xyzzy.html	==html/dom/elements/global-attributes/lang-xyzzy-ref.html

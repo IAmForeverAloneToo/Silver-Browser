@@ -5,7 +5,7 @@
 # note's section 3: docs/design/flexbox.md for M17, docs/design/grid.md
 # for M18, docs/design/compositing.md for M19, docs/design/media.md for
 # M20, docs/design/values.md for M21, docs/design/animations.md for M22,
-# docs/design/images.md for M23.
+# docs/design/images.md for M23, docs/design/dom-scripting.md for M25.
 
 # Not in either milestone (docs/design/flexbox.md and docs/design/grid.md,
 # section 2).
@@ -186,3 +186,19 @@ css/css-images/gradient/gradient-single-stop-longer-hue-hsl-002.html     `in hsl
 css/css-images/image-orientation/image-orientation-exif-png.html         the first image's orientation is in a zTXt chunk, "Raw profile type exif", a convention outside the PNG specification that this engine and the reference browser (Chrome 154) both leave unread, drawing it upright; the late eXIf chunk is ignored, as asked
 css/css-text/text-justify/text-justify-inter-character-cursive.html      inter-character justification spreads the letters of a cursive script, Arabic, apart, where the reference keeps a word's letters joined and spaces between words (css-text-3 7.3, G21)
 css/CSS2/generated-content/content-attr-case-002.xht                     read with the HTML parser (M15), the page is an HTML document, whose attribute names are matched without regard to case, so `attr(Title)` names `title`; in XHTML it names nothing and the pseudo-element is empty
+
+# Tests with scripts, taken at M25 (docs/design/dom-scripting.md, step
+# 10): their scripts' changes render as the same markup does, and these
+# fail as it would, by gaps outside M25 named at their milestones.
+css/css-flexbox/aspect-ratio-intrinsic-size-004.html                              `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
+css/css-flexbox/aspect-ratio-intrinsic-size-005.html                              `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
+css/css-flexbox/aspect-ratio-intrinsic-size-011.html                              `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
+css/css-flexbox/aspect-ratio-intrinsic-size-012.html                              `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
+css/css-flexbox/aspect-ratio-intrinsic-size-013.html                              `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
+css/css-flexbox/aspect-ratio-intrinsic-size-014.html                              `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
+css/css-grid/grid-items/aspect-ratio-grid-item-dynamic-container-shrink-001.html  `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
+css/css-grid/grid-definition/grid-auto-repeat-dynamic-001.html                    `repeat(auto-fill)` in a container with a minimum width and no width repeats as few tracks as fill the minimum (css-grid-2 7.2.3.2), two here; this engine repeats one and the container is its minimum wide
+css/css-grid/grid-definition/grid-auto-repeat-dynamic-003.html                    as grid-auto-repeat-dynamic-001.html, with the container's width from `aspect-ratio` on a box that is not replaced (G36)
+css/css-grid/grid-with-dynamic-img.html                                           the script gives the image an SVG source, and SVG images are M23.4's
+css/css-backgrounds/background-color-body-propagation-003.html                    the script makes the body `display: inline` with a green background, which this engine does not carry to the canvas as the reference browser does (css-backgrounds-3 2.11.2); the same declarations in the markup render the same here
+html/dom/directionality/bdi-element-invalid-dir.html                              an invalid `dir` on a `bdi` is `auto` (HTML 3.2.6.4), right to left by its Hebrew letter; this engine has no `dir=auto` and lays the `bdi` out left to right
