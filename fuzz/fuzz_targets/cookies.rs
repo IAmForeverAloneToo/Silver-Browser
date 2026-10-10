@@ -7,7 +7,9 @@
 //! holds two cookies of one name, domain and path, and keeps nothing
 //! expired as of its last store or read (it takes them out then); and
 //! the header it sends is exactly the cookies that go to its URL,
-//! serialized.
+//! serialized. The jar written as the profile keeps it (M28.3) and read
+//! back is its cookies with an expiry, as they were; records of any
+//! bytes read with them give a jar that keeps the same rules.
 
 #![no_main]
 
@@ -267,6 +269,34 @@ fuzz_target!(|data: &[u8]| {
                 }
                 assert_eq!(pieces, expected(&jar, &url, api, context));
                 looked = now;
+            }
+            // Written to the profile and read back, with records of the
+            // input's bytes, and with one of them damaged.
+            5 => {
+                let records = jar.export();
+                let mut restored = Jar::new();
+                restored.restore(&records, looked);
+                let persistent: Vec<Kept> = jar
+                    .cookies()
+                    .iter()
+                    .filter(|cookie| cookie.expires.is_some())
+                    .map(kept)
+                    .collect();
+                let back: Vec<Kept> = restored.cookies().iter().map(kept).collect();
+                assert_eq!(back, persistent, "the cookies with an expiry, read back");
+                check_jar(&restored, looked);
+                let mut raw = records;
+                raw.push(input.bytes().to_vec());
+                let at = usize::from(input.byte());
+                if let Some(record) = raw.first_mut()
+                    && !record.is_empty()
+                {
+                    let at = at % record.len();
+                    record[at] ^= input.byte();
+                }
+                let mut other = Jar::new();
+                other.restore(&raw, looked);
+                check_jar(&other, looked);
             }
             // Many cookies at once, for the limits.
             4 => {

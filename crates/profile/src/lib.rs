@@ -19,8 +19,9 @@
 
 use std::fmt;
 use std::io;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use redb::{Database, ReadableDatabase, ReadableTable, StorageBackend, TableDefinition};
 
@@ -51,7 +52,14 @@ const COOKIES: TableDefinition<u64, &[u8]> = TableDefinition::new("cookies");
 
 /// A profile open: one database, one writer.
 pub struct Profile {
-    db: Database,
+    /// `None` once the store was found damaged: never used again, nor
+    /// dropped, what it holds being past trusting.
+    db: Mutex<Option<Database>>,
+}
+
+/// The error of a profile whose store panicked.
+fn damaged() -> Error {
+    Error("the profile is damaged".to_owned())
 }
 
 impl fmt::Debug for Profile {
@@ -186,27 +194,69 @@ impl Profile {
     /// and the file if they are not there.
     pub fn open(dir: &Path) -> Result<Profile, OpenError> {
         std::fs::create_dir_all(dir).map_err(|e| OpenError::Unreadable(e.to_string()))?;
-        let db = Database::builder()
-            .set_cache_size(CACHE_BYTES)
-            .create(dir.join(FILE))
-            .map_err(refused)?;
-        Profile::prepare(db)
+        let path = dir.join(FILE);
+        Profile::opened(|| {
+            Database::builder()
+                .set_cache_size(CACHE_BYTES)
+                .create(&path)
+        })
     }
 
     /// Opens the profile in `memory`, empty or as an earlier profile
     /// left it. The profile before must have been dropped: memory has
     /// no lock to say it is open.
     pub fn in_memory(memory: &Memory) -> Result<Profile, OpenError> {
-        let db = Database::builder()
-            .set_cache_size(CACHE_BYTES)
-            .create_with_backend(memory.clone())
+        let memory = memory.clone();
+        Profile::opened(move || {
+            Database::builder()
+                .set_cache_size(CACHE_BYTES)
+                .create_with_backend(memory)
+        })
+    }
+
+    /// The profile `open` opens, its schema checked: refused as damaged
+    /// when `redb` panics, as it does on damage its checksums do not
+    /// reach (it unwraps some of what it reads).
+    fn opened(
+        open: impl FnOnce() -> Result<Database, redb::DatabaseError>,
+    ) -> Result<Profile, OpenError> {
+        let damaged = || OpenError::Unreadable("it is damaged".to_owned());
+        let db = catch_unwind(AssertUnwindSafe(open))
+            .map_err(|_| damaged())?
             .map_err(refused)?;
-        Profile::prepare(db)
+        match catch_unwind(AssertUnwindSafe(|| Profile::prepare(&db))) {
+            Ok(Ok(())) => Ok(Profile {
+                db: Mutex::new(Some(db)),
+            }),
+            Ok(Err(error)) => Err(error),
+            Err(_) => {
+                std::mem::forget(db);
+                Err(damaged())
+            }
+        }
+    }
+
+    /// `f` of the store, its panic the profile's error: the store is
+    /// then not used again, nor dropped.
+    fn guarded<T>(&self, f: impl FnOnce(&Database) -> Result<T, Error>) -> Result<T, Error> {
+        let mut db = self.db.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(store) = db.as_ref() else {
+            return Err(damaged());
+        };
+        match catch_unwind(AssertUnwindSafe(|| f(store))) {
+            Ok(result) => result,
+            Err(_) => {
+                if let Some(store) = db.take() {
+                    std::mem::forget(store);
+                }
+                Err(damaged())
+            }
+        }
     }
 
     /// Checks the schema of a profile just opened, writes it into a
     /// new one, and makes the tables, so that a reader finds them.
-    fn prepare(db: Database) -> Result<Profile, OpenError> {
+    fn prepare(db: &Database) -> Result<(), OpenError> {
         let unreadable = |error: Error| OpenError::Unreadable(error.0);
         let txn = db.begin_write().map_err(|e| unreadable(failed(e)))?;
         {
@@ -228,12 +278,16 @@ impl Profile {
             txn.open_table(COOKIES).map_err(|e| unreadable(failed(e)))?;
         }
         txn.commit().map_err(|e| unreadable(failed(e)))?;
-        Ok(Profile { db })
+        Ok(())
     }
 
     /// The `localStorage` items of `origin`, in their order.
     pub fn local_storage(&self, origin: &str) -> Result<Vec<Item>, Error> {
-        let txn = self.db.begin_read().map_err(failed)?;
+        self.guarded(|db| Profile::read_local(db, origin))
+    }
+
+    fn read_local(db: &Database, origin: &str) -> Result<Vec<Item>, Error> {
+        let txn = db.begin_read().map_err(failed)?;
         let table = txn.open_table(LOCAL_STORAGE).map_err(failed)?;
         let mut items = Vec::new();
         for entry in table.range((origin, "")..).map_err(failed)? {
@@ -255,7 +309,11 @@ impl Profile {
 
     /// The cookies kept, records of `net`'s encoding, in their order.
     pub fn cookies(&self) -> Result<Vec<Vec<u8>>, Error> {
-        let txn = self.db.begin_read().map_err(failed)?;
+        self.guarded(Profile::read_cookies)
+    }
+
+    fn read_cookies(db: &Database) -> Result<Vec<Vec<u8>>, Error> {
+        let txn = db.begin_read().map_err(failed)?;
         let table = txn.open_table(COOKIES).map_err(failed)?;
         let mut cookies = Vec::new();
         for entry in table.iter().map_err(failed)? {
@@ -270,7 +328,11 @@ impl Profile {
         if changes.is_empty() {
             return Ok(());
         }
-        let txn = self.db.begin_write().map_err(failed)?;
+        self.guarded(|db| Profile::write(db, changes))
+    }
+
+    fn write(db: &Database, changes: &Changes) -> Result<(), Error> {
+        let txn = db.begin_write().map_err(failed)?;
         {
             let mut table = txn.open_table(LOCAL_STORAGE).map_err(failed)?;
             for change in &changes.local {
@@ -346,6 +408,15 @@ impl Memory {
     pub fn snapshot(&self) -> Memory {
         let bytes = self.0.read().unwrap_or_else(PoisonError::into_inner);
         Memory(Arc::new(RwLock::new(bytes.clone())))
+    }
+
+    /// Changes the byte at `at`, if it holds one, by `mask`, as a
+    /// damaged disk might: for tests and fuzzing.
+    pub fn flip(&self, at: usize, mask: u8) {
+        let mut bytes = self.0.write().unwrap_or_else(PoisonError::into_inner);
+        if let Some(byte) = bytes.get_mut(at) {
+            *byte ^= mask;
+        }
     }
 
     /// How many bytes it holds.

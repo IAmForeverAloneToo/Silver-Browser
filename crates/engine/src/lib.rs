@@ -125,7 +125,7 @@ pub use profile::Profile;
 pub use scripts::{
     ConsoleEntry, MAX_CONSOLE_ENTRIES, MAX_CONSOLE_MESSAGE, MAX_SCRIPT_BYTES, ScriptState,
 };
-pub use storage::{FLUSH_INTERVAL, STORAGE_QUOTA};
+pub use storage::{FLUSH_INTERVAL, STORAGE_QUOTA, StorageDriver};
 pub use style::animation::{AnimationEvent, EventKind, Running as RunningAnimation};
 pub use style::computed::Cursor;
 pub use style::{ColorScheme, MediaType, Preferences};

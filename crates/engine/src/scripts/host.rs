@@ -321,13 +321,12 @@ impl DocumentHost {
         "Access is denied for this document.".to_owned()
     }
 
-    /// `f` of the document's `localStorage` area if `local`, else its
-    /// `sessionStorage` area; a `SecurityError` when its scripts may not
-    /// reach them.
-    fn with_area<T>(
+    /// `f` of the engine's storage and the document's origin, by its
+    /// serialization; a `SecurityError` when its scripts may not reach
+    /// the origin's areas.
+    fn with_storage<T>(
         &self,
-        local: bool,
-        f: impl FnOnce(&mut storage::Area) -> T,
+        f: impl FnOnce(&mut storage::Storage, &str) -> T,
     ) -> Result<T, DomError> {
         let refused = self.storage_refused();
         if !refused.is_empty() {
@@ -338,12 +337,22 @@ impl DocumentHost {
         };
         let origin = page.origin().serialization();
         let mut storage = storage.lock().unwrap_or_else(PoisonError::into_inner);
-        Ok(f(storage.area(local, &origin)))
+        Ok(f(&mut storage, &origin))
     }
 
-    /// Notes a change of an area (M28): for the profile, and, when
-    /// another document alive shares the origin, for its `storage` event.
-    fn storage_changed(
+    /// `f` of the document's `localStorage` area if `local`, else its
+    /// `sessionStorage` area, as [`DocumentHost::with_storage`].
+    fn with_area<T>(
+        &self,
+        local: bool,
+        f: impl FnOnce(&mut storage::Area) -> T,
+    ) -> Result<T, DomError> {
+        self.with_storage(|storage, origin| f(storage.area(local, origin)))
+    }
+
+    /// Tells a change of an area (M28) to another document alive of the
+    /// origin, if there is one, in a `storage` event.
+    fn broadcast(
         &self,
         local: bool,
         key: Option<String>,
@@ -355,7 +364,6 @@ impl DocumentHost {
         };
         let origin = page.origin().serialization();
         let mut storage = storage.lock().unwrap_or_else(PoisonError::into_inner);
-        storage.changed(local, &origin, key.as_deref());
         if self.window.storage_peer {
             storage.broadcast(storage::Change {
                 local,
@@ -994,28 +1002,28 @@ impl DocumentHost {
                 Answer::MaybeString(area.get(&key).map(str::to_owned))
             }),
             Call::StorageSet(local, key, value) => {
-                let changed = self.with_area(local, |area| match area.set(&key, &value) {
-                    Ok(old) => Ok(old),
-                    Err(storage::OverQuota) => Err(()),
-                })?;
-                match changed {
-                    Err(()) => Ok(Answer::Bool(false)),
+                match self
+                    .with_storage(|storage, origin| storage.set_item(local, origin, &key, &value))?
+                {
+                    Err(storage::OverQuota) => Ok(Answer::Bool(false)),
                     Ok(None) => Ok(Answer::Bool(true)),
                     Ok(Some(old)) => {
-                        self.storage_changed(local, Some(key), old, Some(value));
+                        self.broadcast(local, Some(key), old, Some(value));
                         Ok(Answer::Bool(true))
                     }
                 }
             }
             Call::StorageRemove(local, key) => {
-                if let Some(old) = self.with_area(local, |area| area.remove(&key))? {
-                    self.storage_changed(local, Some(key), Some(old), None);
+                let old =
+                    self.with_storage(|storage, origin| storage.remove_item(local, origin, &key))?;
+                if let Some(old) = old {
+                    self.broadcast(local, Some(key), Some(old), None);
                 }
                 Ok(Answer::Nothing)
             }
             Call::StorageClear(local) => {
-                if self.with_area(local, |area| area.clear())? {
-                    self.storage_changed(local, None, None, None);
+                if self.with_storage(|storage, origin| storage.clear_area(local, origin))? {
+                    self.broadcast(local, None, None, None);
                 }
                 Ok(Answer::Nothing)
             }

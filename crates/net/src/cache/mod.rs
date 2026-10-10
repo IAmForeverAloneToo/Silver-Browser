@@ -163,12 +163,12 @@ fn heuristic(status: u16) -> bool {
 
 /// The part of a response the cache keeps.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Stored {
-    pub(crate) status: u16,
-    pub(crate) status_message: Vec<u8>,
-    pub(crate) headers: HeaderList,
-    pub(crate) body: Vec<u8>,
-    pub(crate) address_space: Option<AddressSpace>,
+pub struct Stored {
+    pub status: u16,
+    pub status_message: Vec<u8>,
+    pub headers: HeaderList,
+    pub body: Vec<u8>,
+    pub address_space: Option<AddressSpace>,
 }
 
 #[derive(Debug)]
@@ -244,7 +244,7 @@ impl Cache {
     /// fields `request` (RFC 9111 4): one whose `Vary` fields the
     /// request has the same, fresh at `now` or, if `stale`, any; the
     /// latest stored of those.
-    pub(crate) fn lookup(
+    pub fn lookup(
         &self,
         site: &Site,
         url: &Url,
@@ -275,7 +275,7 @@ impl Cache {
     /// [`MAX_CACHE_ENTRY_BYTES`]. It replaces a variant with the same
     /// `Vary` values; the least recently used go when the cache is
     /// past its bounds.
-    pub(crate) fn store(
+    pub fn store(
         &self,
         site: &Site,
         url: &Url,
@@ -369,7 +369,7 @@ impl Cache {
 
     /// Removes what is stored for `url` for `site` (RFC 9111 4.4): an
     /// unsafe method's response that is not an error came.
-    pub(crate) fn invalidate(&self, site: &Site, url: &Url) {
+    pub fn invalidate(&self, site: &Site, url: &Url) {
         let mut inner = self.lock();
         if let Some(variants) = inner.entries.remove(&key(site, url)) {
             inner.count -= variants.len();

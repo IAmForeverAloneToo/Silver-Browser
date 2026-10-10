@@ -8,3 +8,7 @@ Thumbs.db
 fuzz/target
 fuzz/artifacts
 fuzz/corpus
+
+# Sabotage passes: what a break left, removed when it ends
+fuzz/sabotage-artifacts
+*.bak

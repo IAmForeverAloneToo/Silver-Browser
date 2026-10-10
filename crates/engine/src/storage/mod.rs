@@ -98,6 +98,67 @@ pub(crate) struct Change {
     pub(crate) page: PageId,
 }
 
+/// The engine's Web Storage as a page's scripts reach it, but without
+/// a page (M28): for the `storage` fuzz target and the benchmarks. An
+/// origin is named by its serialization; `local` names the
+/// `localStorage` areas, and not the `sessionStorage` ones.
+pub struct StorageDriver {
+    storage: Storage,
+    jar: Mutex<Jar>,
+}
+
+impl StorageDriver {
+    /// Storage keeping what it keeps in `profile`, or nothing; fails as
+    /// [`crate::Engine::set_profile`] does.
+    pub fn new(profile: Option<Profile>) -> Result<StorageDriver, profile::Error> {
+        let mut driver = StorageDriver {
+            storage: Storage::new(),
+            jar: Mutex::default(),
+        };
+        if let Some(profile) = profile {
+            driver.storage.set_profile(profile, &driver.jar)?;
+        }
+        Ok(driver)
+    }
+
+    /// `setItem`: false when the area cannot hold it.
+    pub fn set(&mut self, local: bool, origin: &str, key: &str, value: &str) -> bool {
+        self.storage.set_item(local, origin, key, value).is_ok()
+    }
+
+    /// `removeItem`: the value the item had.
+    pub fn remove(&mut self, local: bool, origin: &str, key: &str) -> Option<String> {
+        self.storage.remove_item(local, origin, key)
+    }
+
+    /// `clear()`: whether the area had an item.
+    pub fn clear(&mut self, local: bool, origin: &str) -> bool {
+        self.storage.clear_area(local, origin)
+    }
+
+    /// `getItem`.
+    pub fn get(&mut self, local: bool, origin: &str, key: &str) -> Option<String> {
+        self.storage.area(local, origin).get(key).map(str::to_owned)
+    }
+
+    /// The area's keys and values, in their order.
+    pub fn items(&mut self, local: bool, origin: &str) -> Vec<(String, String)> {
+        let area = self.storage.area(local, origin);
+        let keys = area.keys().to_vec();
+        keys.into_iter()
+            .map(|key| {
+                let value = area.get(&key).unwrap_or_default().to_owned();
+                (key, value)
+            })
+            .collect()
+    }
+
+    /// Writes to the profile what changed since it was last written.
+    pub fn flush(&mut self) -> Result<(), profile::Error> {
+        self.storage.flush(&self.jar, Duration::ZERO)
+    }
+}
+
 /// A `setItem` that would take an area past [`STORAGE_QUOTA`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct OverQuota;
@@ -267,9 +328,45 @@ impl Storage {
         })
     }
 
+    /// `setItem` of `origin`'s area (HTML 12.2.1), as [`Area::set`]
+    /// answers, a change noted to be written.
+    pub(crate) fn set_item(
+        &mut self,
+        local: bool,
+        origin: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<Option<Option<String>>, OverQuota> {
+        let changed = self.area(local, origin).set(key, value)?;
+        if changed.is_some() {
+            self.changed(local, origin, Some(key));
+        }
+        Ok(changed)
+    }
+
+    /// `removeItem` of `origin`'s area: the value it had, the change
+    /// noted to be written.
+    pub(crate) fn remove_item(&mut self, local: bool, origin: &str, key: &str) -> Option<String> {
+        let old = self.area(local, origin).remove(key);
+        if old.is_some() {
+            self.changed(local, origin, Some(key));
+        }
+        old
+    }
+
+    /// `clear()` of `origin`'s area: whether it had an item, the change
+    /// noted to be written.
+    pub(crate) fn clear_area(&mut self, local: bool, origin: &str) -> bool {
+        let had = self.area(local, origin).clear();
+        if had {
+            self.changed(local, origin, None);
+        }
+        had
+    }
+
     /// Notes that `key` of `origin`'s `localStorage` changed, or, for
     /// `None`, that it was cleared, to be written.
-    pub(crate) fn changed(&mut self, local: bool, origin: &str, key: Option<&str>) {
+    fn changed(&mut self, local: bool, origin: &str, key: Option<&str>) {
         if !local || self.profile.is_none() {
             return;
         }

@@ -6,7 +6,8 @@
 # document changes in place, held to a full pass over it; and for
 # scripts, which run under their limits, and the policies that say which
 # may run; and for the cookie jar; and for sequences of DOM calls a page's script makes, and of
-# the input a page's controls are used through.
+# the input a page's controls are used through; and for Web Storage over
+# the profile, and the HTTP cache.
 # Not a workspace member: libfuzzer needs nightly, and the normal build
 # must not.
 # `cargo +nightly fuzz run <target>` from the repository root; CI runs
@@ -36,6 +37,7 @@ js = { path = "../crates/js" }
 layout = { path = "../crates/layout" }
 net = { path = "../crates/net" }
 paint = { path = "../crates/paint" }
+profile = { path = "../crates/profile" }
 render = { path = "../crates/render", default-features = false }
 style = { path = "../crates/style" }
 text = { path = "../crates/text" }
@@ -50,6 +52,20 @@ bench = false
 [[bin]]
 name = "cookies"
 path = "fuzz_targets/cookies.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "storage"
+path = "fuzz_targets/storage.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_cache"
+path = "fuzz_targets/http_cache.rs"
 test = false
 doc = false
 bench = false

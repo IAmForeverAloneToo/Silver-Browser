@@ -600,6 +600,13 @@ impl Jar {
             .iter()
             .filter_map(|record| Cookie::decode(record))
             .filter(|cookie| cookie.expires.is_some_and(|expires| expires > now))
+            .map(|cookie| Cookie {
+                // No longer than a cookie stored now may live.
+                expires: cookie
+                    .expires
+                    .map(|expires| expires.min(now + MAX_COOKIE_AGE)),
+                ..cookie
+            })
             .collect();
         other |= restored.len() != records.len();
         let mut order: Vec<usize> = (0..restored.len()).collect();
@@ -727,16 +734,10 @@ impl Cookie {
         let nanos = u32::from_le_bytes(split(&mut rest, 4)?.try_into().ok()?);
         let created = number(&mut rest)?;
         let accessed = number(&mut rest)?;
-        if !rest.is_empty()
-            || flags > 7
-            || nanos >= 1_000_000_000
-            || name.len() + value.len() > MAX_COOKIE_SIZE
-            || domain.is_empty()
-            || !path.starts_with('/')
-        {
+        if !rest.is_empty() || flags > 7 || nanos >= 1_000_000_000 {
             return None;
         }
-        Some(Cookie {
+        let cookie = Cookie {
             name,
             value,
             domain,
@@ -748,7 +749,40 @@ impl Cookie {
             same_site,
             created,
             accessed,
-        })
+        };
+        cookie.sound().then_some(cookie)
+    }
+
+    /// Whether the cookie is one the storage model could have kept: its
+    /// size within the limit, a name or a value, neither with a control
+    /// character, a `;` or a space at an edge, no `=` in its name, a
+    /// domain, a path from the root, and what `SameSite=None` and the
+    /// prefixes ask of it. What a record holds is held to this, the
+    /// profile being a file anything may have written.
+    fn sound(&self) -> bool {
+        let control = |b: &u8| (*b < 0x20 && *b != b'\t') || *b == 0x7F || *b == b';';
+        let edge = |bytes: &[u8]| {
+            bytes.first().is_some_and(|b| matches!(b, b' ' | b'\t'))
+                || bytes.last().is_some_and(|b| matches!(b, b' ' | b'\t'))
+        };
+        let prefixed = |bytes: &[u8], prefix: &[u8]| {
+            bytes.len() >= prefix.len() && bytes[..prefix.len()].eq_ignore_ascii_case(prefix)
+        };
+        let secure_prefix =
+            |bytes: &[u8]| prefixed(bytes, b"__Secure-") || prefixed(bytes, b"__Host-");
+        self.name.len() + self.value.len() <= MAX_COOKIE_SIZE
+            && !(self.name.is_empty() && self.value.is_empty())
+            && [&self.name, &self.value]
+                .iter()
+                .all(|part| !part.iter().any(control) && !edge(part))
+            && !self.name.contains(&b'=')
+            && !self.domain.is_empty()
+            && self.path.starts_with('/')
+            && (self.same_site != SameSite::None || self.secure)
+            && (!prefixed(&self.name, b"__Secure-") || self.secure)
+            && (!prefixed(&self.name, b"__Host-")
+                || (self.secure && self.host_only && self.path == "/"))
+            && (!self.name.is_empty() || !secure_prefix(&self.value))
     }
 }
 
@@ -1269,6 +1303,56 @@ mod tests {
             .map(|cookie| cookie.name.as_slice())
             .collect();
         assert_eq!(names, [b"later".as_slice()]);
+    }
+
+    #[test]
+    fn a_restore_holds_records_to_the_storage_models_rules() {
+        let good = jar("https://a.example/", &["n=v; Max-Age=3600; Secure"]).cookies()[0].clone();
+        let record = |change: fn(&mut Cookie)| {
+            let mut cookie = good.clone();
+            change(&mut cookie);
+            cookie.encode().unwrap()
+        };
+        let records = vec![
+            record(|c| c.value = b"a;b".to_vec()),
+            record(|c| c.name = b"a=b".to_vec()),
+            record(|c| c.value = b" v".to_vec()),
+            record(|c| c.name = vec![b'x', 1]),
+            record(|c| {
+                c.name.clear();
+                c.value.clear();
+            }),
+            record(|c| c.path = "p".to_owned()),
+            record(|c| c.domain.clear()),
+            record(|c| {
+                c.same_site = SameSite::None;
+                c.secure = false;
+            }),
+            record(|c| {
+                c.name = b"__Host-n".to_vec();
+                c.path = "/p".to_owned();
+            }),
+            record(|c| {
+                c.name = b"__Secure-n".to_vec();
+                c.secure = false;
+            }),
+            record(|c| {
+                c.name.clear();
+                c.value = b"__Host-v".to_vec();
+            }),
+            record(|c| c.value = vec![b'x'; MAX_COOKIE_SIZE]),
+        ];
+        let mut restored = Jar::new();
+        assert!(restored.restore(&records, now()));
+        assert!(restored.cookies().is_empty());
+        assert!(!restored.restore(&[record(|_| {})], now()));
+        // One that would live past the limit lives to it.
+        let mut restored = Jar::new();
+        restored.restore(
+            &[record(|c| c.expires = Some(now() + MAX_COOKIE_AGE * 3))],
+            now(),
+        );
+        assert_eq!(restored.cookies()[0].expires, Some(now() + MAX_COOKIE_AGE));
     }
 
     #[test]

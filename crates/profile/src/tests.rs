@@ -265,3 +265,57 @@ fn reasons_read_as_sentences() {
         "it cannot be read: why"
     );
 }
+
+#[test]
+fn a_damaged_profile_is_refused_or_read_without_a_panic() {
+    let memory = Memory::new();
+    {
+        let profile = Profile::in_memory(&memory).unwrap();
+        let mut changes = Changes::new();
+        changes.set_item("o", "k", "v", 0);
+        changes.cookies(vec![b"c".to_vec()]);
+        profile.commit(&changes).unwrap();
+    }
+    let length = memory.len();
+    for at in (0..length).step_by(length / 64 + 1) {
+        let damaged = memory.snapshot();
+        damaged.flip(at, 0xff);
+        if let Ok(profile) = Profile::in_memory(&damaged) {
+            let _ = profile.local_storage("o");
+            let _ = profile.cookies();
+        }
+    }
+    // Damaged under a profile open: its reads and writes fail, or
+    // succeed, and do not panic.
+    for at in (0..length).step_by(length / 256 + 1) {
+        let copy = memory.snapshot();
+        let Ok(profile) = Profile::in_memory(&copy) else {
+            continue;
+        };
+        copy.flip(at, 0xff);
+        let mut changes = Changes::new();
+        changes.set_item("o", "k2", "v2", 1);
+        let _ = (
+            profile.local_storage("o"),
+            profile.cookies(),
+            profile.commit(&changes),
+        );
+    }
+    // Past the end, nothing changes.
+    let copy = memory.snapshot();
+    copy.flip(length, 0xff);
+    assert_eq!(copy.len(), length);
+}
+
+#[test]
+fn a_store_that_panics_is_the_profiles_error_and_used_no_more() {
+    let profile = Profile::in_memory(&Memory::new()).unwrap();
+    let panicked: Result<(), Error> = profile.guarded(|_| panic!("a damaged page"));
+    assert_eq!(panicked, Err(damaged()));
+    assert_eq!(profile.cookies(), Err(damaged()));
+    assert_eq!(profile.local_storage("o"), Err(damaged()));
+    assert_eq!(profile.commit(&Changes::new()), Ok(()));
+    let mut changes = Changes::new();
+    changes.clear("o");
+    assert_eq!(profile.commit(&changes), Err(damaged()));
+}

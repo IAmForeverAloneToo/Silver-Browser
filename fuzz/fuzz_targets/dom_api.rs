@@ -26,6 +26,9 @@
 //! hand's clock; `Headers`, `FormData`, `URLSearchParams`, `Blob` and
 //! `Response` bodies, and `document.cookie`, which a `data:` document
 //! does not have.
+//!
+//! M28's: `localStorage` and `sessionStorage`, which a `data:` document
+//! is refused, and `StorageEvent`, made, initialized and dispatched.
 
 #![no_main]
 
@@ -371,7 +374,7 @@ fn body(input: &mut Input, nested: bool) -> String {
 /// One call, read from `input`, as a statement; `nested` in a
 /// listener's or a callback's body.
 fn call(input: &mut Input, nested: bool) -> String {
-    let op = input.byte() % 62;
+    let op = input.byte() % 64;
     let a = input.node();
     match op {
         0 => format!("p(document.createElement({}))", input.pick(TAGS)),
@@ -624,6 +627,24 @@ fn call(input: &mut Input, nested: bool) -> String {
         ),
         61 => format!(
             "document.cookie = {}; {a}.title = document.cookie + navigator.cookieEnabled",
+            input.text(VALUES)
+        ),
+        62 => format!(
+            "{a}.title = [localStorage, sessionStorage][{}].getItem({})",
+            input.byte() % 2,
+            input.text(VALUES)
+        ),
+        63 => format!(
+            "{a}.dispatchEvent(new StorageEvent({}, {{key: {}, newValue: {}, url: {}, \
+             bubbles: true}})); const s = document.createEvent('StorageEvent'); \
+             s.initStorageEvent({}, true, true, {}, null, null, {}, null); \
+             {a}.title = s.key + s.url + s.type",
+            input.text(VALUES),
+            input.text(VALUES),
+            input.text(VALUES),
+            input.text(VALUES),
+            input.text(VALUES),
+            input.text(VALUES),
             input.text(VALUES)
         ),
         _ => {
