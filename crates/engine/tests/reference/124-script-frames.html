@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-scripts" content="on">
+<meta name="reference-wait" content="300">
+<title>A document's lifecycle and its animation frames (M26): readystatechange, DOMContentLoaded, load and pageshow each put a box in a row in the order they come; a chain of animation frame callbacks grows a box over three frames, two callbacks of one frame run in the order asked, a callback cancelled before its frame never runs, and one asked for by a timer runs in a frame after it</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 10px; }
+  .row { overflow: hidden; margin-bottom: 10px; padding: 4px; background-color: #d8d0c0; height: 48px; }
+  .b { float: left; height: 40px; margin: 4px; background-color: #2f7f4f; }
+  #grow { float: left; width: 10px; height: 40px; margin: 4px; background-color: #4f2f7f; }
+</style>
+</head>
+<body>
+<div class="row" id="life"></div>
+<div class="row" id="frames"><div id="grow"></div></div>
+<div class="row" id="pair"></div>
+<script>
+  var put = function (row, width) {
+    var b = document.createElement('div');
+    b.className = 'b';
+    b.style.width = width + 'px';
+    document.getElementById(row).appendChild(b);
+  };
+  // The lifecycle: interactive, DOMContentLoaded, complete, load,
+  // pageshow, each its own width.
+  document.addEventListener('readystatechange', function () {
+    put('life', document.readyState === 'interactive' ? 10 : 30);
+  });
+  document.addEventListener('DOMContentLoaded', function () { put('life', 20); });
+  window.addEventListener('load', function () { put('life', 40); });
+  window.addEventListener('pageshow', function () { put('life', 50); });
+  // Three frames, the box wider at each.
+  var grow = document.getElementById('grow');
+  var frames = 0;
+  var step = function () {
+    frames++;
+    grow.style.width = (10 + frames * 30) + 'px';
+    if (frames < 3) {
+      requestAnimationFrame(step);
+    }
+  };
+  requestAnimationFrame(step);
+  // Two of one frame in the order asked; one cancelled; one asked for
+  // by a timer.
+  requestAnimationFrame(function () { put('pair', 12); });
+  requestAnimationFrame(function () { put('pair', 24); });
+  var cancelled = requestAnimationFrame(function () { put('pair', 60); });
+  cancelAnimationFrame(cancelled);
+  setTimeout(function () {
+    requestAnimationFrame(function () { put('pair', 36); });
+  }, 100);
+</script>
+</body>
+</html>

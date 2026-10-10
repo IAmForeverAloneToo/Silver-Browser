@@ -163,10 +163,11 @@ thead, tbody, tfoot, tr { border-color: inherit; }
  * its probe read them. What a control shows is the box tree's (a field's
  * value or placeholder, a button input's label, a drop-down's chosen
  * option and its arrow) and paint's (a checkbox's and a radio button's
- * marks); a list box shows its options as rows. A field's `size`, a
- * textarea's `cols` and `rows` and a list box's rows are presentational
- * hints; these are their defaults, in ems of the reference browser's
- * 13.33px font. Controls are drawn as their computed style says, not in
+ * marks); a list box shows its options as rows. A text field's, a
+ * textarea's and a select's own sizes, by their `size`, `cols` and
+ * `rows` and their font, are the box tree's (M26.11): their `width` and
+ * `height` are `auto`, as in the reference browser, so that a flex or
+ * grid item stretches. Controls are drawn as their computed style says, not in
  * the reference browser's native look; so a button's border is the
  * fields' grey, where the reference browser computes black and draws
  * its own. */
@@ -185,8 +186,6 @@ input {
   padding: 1px 2px;
   border: 2px inset rgb(118, 118, 118);
   background-color: white;
-  width: 12.675em;
-  height: 1.125em;
   overflow: clip;
   cursor: text;
 }
@@ -195,8 +194,6 @@ textarea {
   border: 1px solid rgb(118, 118, 118);
   background-color: white;
   font-family: monospace;
-  width: 12.15em;
-  height: 2.25em;
   white-space: pre-wrap;
   overflow: auto;
   cursor: text;
@@ -206,7 +203,6 @@ select {
   padding: 0;
   border: 1px solid rgb(118, 118, 118);
   background-color: white;
-  height: 1.425em;
   white-space: pre;
   overflow: clip;
   cursor: default;

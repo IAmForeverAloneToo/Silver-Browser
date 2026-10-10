@@ -1,0 +1,59 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-scripts" content="on">
+<meta name="reference-wait" content="500">
+<title>Timers (M26): timeouts run by their delays and, at one delay, in the order they were set; a timeout set by a timeout, a microtask queued by one before the next, a timeout cleared before it is due, an interval cleared after its third run and one cleared inside its own callback; each run puts a box in a row, its width saying which it is and its place when it ran</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 10px; }
+  .row { overflow: hidden; margin-bottom: 10px; padding: 4px; background-color: #d8d0c0; height: 48px; }
+  .b { float: left; height: 40px; margin: 4px; background-color: #2f5f7f; }
+  .late { background-color: #7f5f2f; }
+</style>
+</head>
+<body>
+<div class="row" id="order"></div>
+<div class="row" id="interval"></div>
+<div class="row" id="self"></div>
+<script>
+  var put = function (row, width, late) {
+    var b = document.createElement('div');
+    b.className = late ? 'b late' : 'b';
+    b.style.width = width + 'px';
+    document.getElementById(row).appendChild(b);
+  };
+  // By delay, then by the order set: 10, 14, 18, 22, then 30 (set by
+  // the 14, 5ms after it), then 40; the cleared 26 never.
+  setTimeout(function () { put('order', 40); }, 50);
+  setTimeout(function () { put('order', 10); }, 0);
+  setTimeout(function () {
+    put('order', 14);
+    setTimeout(function () { put('order', 30, true); }, 5);
+    Promise.resolve().then(function () { put('order', 18); });
+  }, 20);
+  setTimeout(function () { put('order', 22); }, 20);
+  var gone = setTimeout(function () { put('order', 26); }, 30);
+  setTimeout(function () { clearTimeout(gone); }, 25);
+  // Three runs, then cleared from a timeout.
+  var runs = 0;
+  var every = setInterval(function () {
+    runs++;
+    put('interval', 10 + runs * 10);
+    if (runs === 3) {
+      setTimeout(function () { clearInterval(every); }, 0);
+    }
+  }, 40);
+  // Cleared inside its own callback after two runs; the arguments a
+  // timer passes on.
+  var count = 0;
+  var own = setInterval(function (width, late) {
+    count++;
+    put('self', width * count, late);
+    if (count === 2) {
+      clearInterval(own);
+    }
+  }, 60, 16, true);
+</script>
+</body>
+</html>

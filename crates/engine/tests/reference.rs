@@ -50,7 +50,13 @@
 //! under `scripts/`; it is drawn once loaded, its deferred scripts run.
 //! The other pages have none, and the engine runs none there. The
 //! engine is given the viewport's size before the load, which a page's
-//! scripts read (M25).
+//! scripts read (M25). A page whose scripts go on after the load, by
+//! timers, animation frames and events (M26), declares
+//! `<meta name="reference-wait" content="MS">`: the capture's browser
+//! runs it on its virtual time for that long before the screenshot, and
+//! the engine, on a clock of its own moved by hand from zero, runs its
+//! tasks and draws a frame every sixtieth of a second, its rendering
+//! steps with it, for as long.
 //!
 //! A page may declare `<meta name="reference-tolerance" content="N">`:
 //! a channel may then differ by up to `N`, and the test says how many
@@ -78,6 +84,8 @@
 
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
@@ -237,6 +245,15 @@ fn render(
     engine.set_viewport(setting.width, setting.height);
     let scripts = meta(source, "reference-scripts") == Some("on");
     engine.set_scripting(scripts);
+    // A page that runs on after its load runs on a clock moved by hand.
+    let waits: Option<u64> = meta(source, "reference-wait").and_then(|ms| ms.parse().ok());
+    let clock = Arc::new(AtomicU64::new(0));
+    if waits.is_some() {
+        let hand = Arc::clone(&clock);
+        engine.set_clock(Arc::new(move || {
+            Duration::from_micros(hand.load(Ordering::Relaxed))
+        }));
+    }
     let by_url = scripts || meta(source, "reference-load") == Some("file");
     let (wake, woken) = channel();
     engine.set_waker(move || {
@@ -250,6 +267,20 @@ fn render(
         });
     } else {
         engine.load_document(source);
+    }
+    if let Some(ms) = waits {
+        let mut at = 0;
+        while at <= ms * 1000 {
+            clock.store(at, Ordering::Relaxed);
+            engine.poll_network();
+            engine.run_tasks();
+            engine.frame_at(
+                setting.width,
+                setting.height,
+                FrameTime::at(Duration::from_micros(at)),
+            );
+            at += 16_667;
+        }
     }
     change(&mut engine);
     let frame = loop {
@@ -456,10 +487,11 @@ fn every_reference_page_renders_as_its_capture() {
     let pages = pages();
     assert_eq!(
         pages.len(),
-        122,
+        125,
         "the ten cases of M10's design note, the eleven of M11's, the five of M12's, the three of M16's, \
          the twenty of M17's, the twenty of M18's, the ten of M19's, the eleven of M20's, the nine \
-         of M21's, the ten of M22's, the six of M23's, the three of M24's and the four of M25's"
+         of M21's, the ten of M22's, the six of M23's, the three of M24's, the four of M25's and \
+         the three of M26's"
     );
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/reference");
     let mut failures = Vec::new();

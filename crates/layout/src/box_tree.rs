@@ -166,6 +166,20 @@ pub struct LayoutBox {
     /// positioned box, its `style.display` the used one,
     /// `inline-block` or `block`. `None` for every other box.
     pub replaced: Option<Replaced>,
+    /// A form control's own size (M26.11, [`ControlSize`]): its content
+    /// box's width and height when they are `auto`, as the reference
+    /// browser sizes a text field, a textarea and a select by their
+    /// attributes and font rather than by CSS. `None` for every other
+    /// box.
+    pub control_size: Option<ControlSize>,
+}
+
+/// A form control's own content size (M26.11), each side `None` where
+/// its content sizes it (a drop-down's width, its widest option's).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ControlSize {
+    pub width: Option<f32>,
+    pub height: Option<f32>,
 }
 
 /// What a replaced box shows (M23.2, `docs/design/images.md`), as HTML
@@ -1040,6 +1054,69 @@ impl<'a> Styled<'a> {
             parent: None,
             in_3d: false,
             replaced: None,
+            control_size: self.control_size(item, style),
+        }
+    }
+
+    /// A form control's own content size (M26.11), as the reference
+    /// browser sizes it at its default 13.33px Arial, taken as ems of the
+    /// control's font so that it scales with it: a text field 0.525em a
+    /// character of its `size` (20 when it has none, and for the types
+    /// that take none) and 2.175em more, by a line of 1.125em; a textarea
+    /// 0.5475em a column of its `cols` (20) and 1.2em more, by 1.125em a
+    /// row of its `rows` (2); a select 1.275em a row, one for a drop-down
+    /// and its display size for a list box, as wide as what it holds.
+    /// Each a positive integer, else the default. `None` for any other
+    /// box, and for a checkbox, a radio button, a button and an image
+    /// input, which size otherwise.
+    fn control_size(&self, item: Item, style: &ComputedStyle) -> Option<ControlSize> {
+        let Item::Node(node) = item else {
+            return None;
+        };
+        let document = self.document;
+        let em = style.font_size_px;
+        let positive = |name: &str| {
+            document
+                .attr(node, name)
+                .and_then(dom::parse_non_negative_integer)
+                .filter(|&n| n > 0)
+        };
+        match document.tag(node)? {
+            "input" => {
+                let kind = dom::forms::input_type(document, node);
+                if matches!(
+                    kind,
+                    "checkbox" | "radio" | "hidden" | "submit" | "reset" | "button" | "image"
+                ) {
+                    return None;
+                }
+                let sized = matches!(
+                    kind,
+                    "text" | "search" | "tel" | "url" | "email" | "password"
+                );
+                let size = positive("size").filter(|_| sized).unwrap_or(20);
+                Some(ControlSize {
+                    width: Some((size as f32 * 0.525 + 2.175) * em),
+                    height: Some(1.125 * em),
+                })
+            }
+            "textarea" => {
+                let cols = positive("cols").unwrap_or(20);
+                let rows = positive("rows").unwrap_or(2);
+                Some(ControlSize {
+                    width: Some((cols as f32 * 0.5475 + 1.2) * em),
+                    height: Some(rows as f32 * 1.125 * em),
+                })
+            }
+            "select" => {
+                let multiple = document.attr(node, "multiple").is_some();
+                let rows = positive("size").unwrap_or(if multiple { 4 } else { 1 });
+                Some(ControlSize {
+                    width: None,
+                    height: Some(rows as f32 * 1.275 * em),
+                })
+            }
+            _ => None,
         }
     }
 
@@ -1243,6 +1320,7 @@ impl<'a> Styled<'a> {
             parent: None,
             in_3d: false,
             replaced: None,
+            control_size: None,
         };
         vec![icon, text]
     }
@@ -1277,6 +1355,7 @@ impl<'a> Styled<'a> {
             parent: None,
             in_3d: false,
             replaced: None,
+            control_size: None,
         }
     }
 }
@@ -1569,6 +1648,7 @@ impl BlockContainer<'_> {
                 parent: None,
                 in_3d: false,
                 replaced: None,
+                control_size: None,
             });
         }
         self.flush_misplaced(parent, &mut misplaced);
@@ -1632,6 +1712,7 @@ impl BlockContainer<'_> {
             parent: None,
             in_3d: false,
             replaced: None,
+            control_size: None,
         });
     }
 
@@ -1829,6 +1910,7 @@ impl BlockContainer<'_> {
                 parent: None,
                 in_3d: false,
                 replaced: None,
+                control_size: None,
             });
         }
     }
@@ -1913,6 +1995,7 @@ impl BlockContainer<'_> {
                     parent: None,
                     in_3d: false,
                     replaced: None,
+                    control_size: None,
                 }),
             _ => None,
         };
@@ -2020,6 +2103,7 @@ impl BlockContainer<'_> {
                 parent: None,
                 in_3d: false,
                 replaced: None,
+                control_size: None,
             })
             .collect();
         while let Some(inline) = self.open.pop() {
@@ -2059,6 +2143,7 @@ impl BlockContainer<'_> {
             parent: None,
             in_3d: false,
             replaced: None,
+            control_size: None,
         });
     }
 

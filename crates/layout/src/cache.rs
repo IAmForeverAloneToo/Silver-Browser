@@ -426,7 +426,8 @@ fn childless(fragment: &Fragment) -> Fragment {
 /// Whether an attribute named `name` may change what a form control
 /// shows (M26.7): its value, placeholder or type, a checkbox's or a
 /// radio button's state and group, being disabled, a select's kind, an
-/// option's label or selectedness.
+/// option's label or selectedness; or its own size (M26.11), a text
+/// field's `size`, a textarea's `cols` and `rows`.
 pub fn shown_by_controls(name: &str) -> bool {
     matches!(
         name,
@@ -440,6 +441,8 @@ pub fn shown_by_controls(name: &str) -> bool {
             | "disabled"
             | "multiple"
             | "size"
+            | "cols"
+            | "rows"
             | "label"
             | "selected"
     )

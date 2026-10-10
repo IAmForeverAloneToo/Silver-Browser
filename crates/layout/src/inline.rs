@@ -2198,6 +2198,7 @@ mod tests {
             parent: None,
             in_3d: false,
             replaced: None,
+            control_size: None,
         }
     }
 
@@ -2218,6 +2219,7 @@ mod tests {
             parent: None,
             in_3d: false,
             replaced: None,
+            control_size: None,
         }
     }
 
@@ -2578,6 +2580,7 @@ mod tests {
             parent: None,
             in_3d: false,
             replaced: None,
+            control_size: None,
         }
     }
 

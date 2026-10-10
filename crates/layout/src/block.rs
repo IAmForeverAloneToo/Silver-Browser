@@ -1861,8 +1861,13 @@ pub(crate) fn layout_block_contents<'a>(
     };
     // CSS2 §10.7: the tentative height clamped to `max-height`, then
     // `min-height`.
+    // A form control's `auto` height is its own (M26.11), not its
+    // content's, which it scrolls or clips.
+    let natural_height = b.control_size.and_then(|size| size.height);
     let content_height = clamp_height(
-        specified_height.unwrap_or(auto_content_height),
+        specified_height
+            .or(natural_height)
+            .unwrap_or(auto_content_height),
         bounds(Some(auto_content_height)),
     );
 
@@ -2020,7 +2025,8 @@ pub(crate) fn layout_block_contents<'a>(
             .map(|(top, height)| (content_y + top, height)),
         inline_block_baseline: children.inline_block_baseline.map(|y| content_y + y),
         absolutes,
-        auto_content_height,
+        // What the box is with an `auto` height: a control's own (M26.11).
+        auto_content_height: natural_height.unwrap_or(auto_content_height),
         held: children.held,
     }
 }
@@ -4099,6 +4105,7 @@ mod tests {
             parent: None,
             in_3d: false,
             replaced: None,
+            control_size: None,
         };
         let block = LayoutBox {
             style: ComputedStyle {
@@ -4119,6 +4126,7 @@ mod tests {
             parent: None,
             in_3d: false,
             replaced: None,
+            control_size: None,
         };
         let layout = layout_document(&[block], VIEWPORT, &fonts);
         let m = fonts.primary().metrics(16.0);

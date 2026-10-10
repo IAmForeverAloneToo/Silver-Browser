@@ -1095,11 +1095,11 @@ fn the_acceptance_layouts_lay_out_as_the_reference_browser_lays_them_out() {
     pages.sort();
     assert_eq!(
         pages.len(),
-        18,
+        19,
         "M17's navigation bar, card grid, holy grail, media objects and application shell, \
          M18's grid garden, dashboard, photo gallery, form grid, page of named areas and calendar, \
          M19's carousel, rotated panels, modal and fixed header in a transform, \
-         and M20's responsive page at three widths"
+         M20's responsive page at three widths and M26's form controls"
     );
     let server = serve(dir.clone());
     let mut failures = Vec::new();

@@ -19,7 +19,10 @@
 #
 # A page's scripts run, as they do in any page the browser loads; the
 # pages that have some say <meta name="reference-scripts" content="on">,
-# which tests/reference.rs reads to run them too (M24).
+# which tests/reference.rs reads to run them too (M24). A page whose
+# scripts go on after its load (M26) says how long, in milliseconds,
+# with <meta name="reference-wait" content="MS">: the browser runs it on
+# its virtual time for that long before the screenshot.
 #
 # A page's animations are captured at their first frame (M22). A page
 # that asks for changes after it, <meta name="reference-change"> and
@@ -56,8 +59,10 @@ for page in "$@"; do
   case $(meta "$page" reference-reduced-motion) in
     reduce) motion=--force-prefers-reduced-motion ;;
   esac
+  wait=$(meta "$page" reference-wait)
   "$browser" --disable-gpu --hide-scrollbars --force-device-scale-factor=1 \
     --force-color-profile=srgb --window-size="${size%x*},${size#*x}" \
-    ${settings:+--blink-settings=$settings} $motion ${BROWSER_FLAGS:-} \
+    ${settings:+--blink-settings=$settings} $motion ${wait:+--virtual-time-budget=$wait} \
+    ${BROWSER_FLAGS:-} \
     --screenshot="$PWD/${page%.html}.png" "file://$PWD/$page"
 done

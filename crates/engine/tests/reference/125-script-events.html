@@ -1,0 +1,71 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-scripts" content="on">
+<meta name="reference-wait" content="200">
+<title>Events dispatched by scripts (M26): the capture and bubble phases in their order from the window to the target and back, a listener added once, stopPropagation and stopImmediatePropagation, a handler attribute and a handler property, preventDefault and what dispatchEvent answers, a CustomEvent's detail, an AbortSignal that removes a listener, and click() on an element; each listener puts a box in a row, its width saying which it is</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 10px; }
+  .row { overflow: hidden; margin-bottom: 10px; padding: 4px; background-color: #d8d0c0; height: 48px; }
+  .b { float: left; height: 40px; margin: 4px; background-color: #7f2f4f; }
+  .no { background-color: #2f4f7f; }
+</style>
+</head>
+<body>
+<div id="outer"><div id="inner"><div id="target"></div></div></div>
+<div class="row" id="phases"></div>
+<div class="row" id="stops"></div>
+<div class="row" id="handlers" onchange="put('handlers', 10)"></div>
+<div class="row" id="misc"></div>
+<script>
+  var put = function (row, width, no) {
+    var b = document.createElement('div');
+    b.className = no ? 'b no' : 'b';
+    b.style.width = width + 'px';
+    document.getElementById(row).appendChild(b);
+  };
+  var $ = function (id) { return document.getElementById(id); };
+  // Capture down from the window, the target's in the order added,
+  // bubble back up; the once listener only the first time.
+  window.addEventListener('p', function () { put('phases', 8); }, true);
+  document.addEventListener('p', function () { put('phases', 12); }, true);
+  $('outer').addEventListener('p', function () { put('phases', 16); }, true);
+  $('outer').addEventListener('p', function () { put('phases', 40); });
+  $('target').addEventListener('p', function () { put('phases', 20); });
+  $('target').addEventListener('p', function () { put('phases', 24); }, { capture: true, once: true });
+  $('inner').addEventListener('p', function () { put('phases', 32); });
+  window.addEventListener('p', function () { put('phases', 48); });
+  $('target').dispatchEvent(new Event('p', { bubbles: true }));
+  $('target').dispatchEvent(new Event('p'));
+  // stopPropagation lets the node's other listeners run;
+  // stopImmediatePropagation does not.
+  $('inner').addEventListener('s', function (e) { put('stops', 10); e.stopPropagation(); });
+  $('inner').addEventListener('s', function () { put('stops', 20); });
+  $('outer').addEventListener('s', function () { put('stops', 60, true); });
+  $('target').dispatchEvent(new Event('s', { bubbles: true }));
+  $('inner').addEventListener('t', function (e) { put('stops', 30); e.stopImmediatePropagation(); });
+  $('inner').addEventListener('t', function () { put('stops', 60, true); });
+  $('inner').dispatchEvent(new Event('t'));
+  // A handler attribute, then a property that replaces it; a handler
+  // returning false cancels.
+  $('handlers').dispatchEvent(new Event('change'));
+  $('handlers').onchange = function () { put('handlers', 20); return false; };
+  $('handlers').dispatchEvent(new Event('change'));
+  var cancelable = new Event('change', { cancelable: true });
+  put('handlers', $('handlers').dispatchEvent(cancelable) ? 60 : 30, true);
+  // detail, a signal, click().
+  $('misc').addEventListener('c', function (e) { put('misc', e.detail.width); });
+  $('misc').dispatchEvent(new CustomEvent('c', { detail: { width: 14 } }));
+  var controller = new AbortController();
+  $('misc').addEventListener('a', function () { put('misc', 60, true); }, { signal: controller.signal });
+  controller.abort();
+  $('misc').dispatchEvent(new Event('a'));
+  $('misc').addEventListener('click', function (e) {
+    put('misc', e.isTrusted ? 60 : 28, e.isTrusted);
+  });
+  $('misc').click();
+  setTimeout(function () { put('misc', 42); }, 50);
+</script>
+</body>
+</html>

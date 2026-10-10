@@ -242,12 +242,37 @@ fn size_of(source: &str) -> Result<(u32, u32), String> {
     parsed.ok_or_else(|| format!("the page's size {size:?} is not WxH"))
 }
 
+/// `page`, a canonical path, as a `file:` URL: on Windows its verbatim
+/// prefix (`\\?\`) dropped and its separators made slashes,
+/// `file:///D:/...`.
+fn file_url(page: &Path) -> String {
+    let path = page.display().to_string();
+    let path = path
+        .strip_prefix(r"\\?\")
+        .unwrap_or(&path)
+        .replace('\\', "/");
+    if path.starts_with('/') {
+        format!("file://{path}")
+    } else {
+        format!("file:///{path}")
+    }
+}
+
 /// The DOM the browser serializes for `page` once its layout is done, in
-/// a viewport `size`.
+/// a viewport `size`. A browser whose window holds a frame around its
+/// viewport (Chrome's own headless mode, on Windows) is given a window
+/// that much larger, as measured first; its lines' ends are taken as
+/// they come, `\r\n` on Windows.
 fn run_browser(page: &Path, size: (u32, u32)) -> Result<String, String> {
+    let page = fs::canonicalize(page).map_err(|e| e.to_string())?;
+    let (extra_w, extra_h) = frame_size()?;
+    dump(&file_url(&page), (size.0 + extra_w, size.1 + extra_h))
+}
+
+/// The DOM the browser serializes for `url` in a window `size`.
+fn dump(url: &str, size: (u32, u32)) -> Result<String, String> {
     let browser = env::var("BROWSER").unwrap_or_else(|_| "chrome-headless-shell".into());
     let flags = env::var("BROWSER_FLAGS").unwrap_or_default();
-    let page = fs::canonicalize(page).map_err(|e| e.to_string())?;
     let output = Command::new(&browser)
         .args([
             "--disable-gpu",
@@ -259,13 +284,42 @@ fn run_browser(page: &Path, size: (u32, u32)) -> Result<String, String> {
         .arg(format!("--window-size={},{}", size.0, size.1))
         .args(flags.split_whitespace())
         .arg("--dump-dom")
-        .arg(format!("file://{}", page.display()))
+        .arg(url)
         .output()
         .map_err(|e| format!("{browser}: {e}"))?;
     if !output.status.success() {
         return Err(format!("{browser} exited with {}", output.status));
     }
-    String::from_utf8(output.stdout).map_err(|e| e.to_string())
+    String::from_utf8(output.stdout)
+        .map(|dom| dom.replace("\r\n", "\n"))
+        .map_err(|e| e.to_string())
+}
+
+/// How much larger than its viewport the browser's window is, measured
+/// once by a page that reports its viewport's size in an 800 by 600
+/// window.
+fn frame_size() -> Result<(u32, u32), String> {
+    static FRAME: std::sync::OnceLock<Result<(u32, u32), String>> = std::sync::OnceLock::new();
+    FRAME
+        .get_or_init(|| {
+            let dom = dump(
+                "data:text/html,<pre id=v></pre><script>\
+                 document.getElementById('v').textContent = 'VIEWPORT ' + innerWidth + ' ' + innerHeight\
+                 </script>",
+                (800, 600),
+            )?;
+            let at = dom.find("VIEWPORT ").ok_or("the browser reported no viewport")?;
+            let mut numbers = dom[at + "VIEWPORT ".len()..]
+                .split(|c: char| !c.is_ascii_digit())
+                .filter(|n| !n.is_empty())
+                .map(|n| n.parse::<u32>().unwrap_or(0));
+            let (w, h) = (numbers.next().unwrap_or(0), numbers.next().unwrap_or(0));
+            if w == 0 || h == 0 || w > 800 || h > 600 {
+                return Err(format!("the browser reported a viewport of {w} by {h}"));
+            }
+            Ok((800 - w, 600 - h))
+        })
+        .clone()
 }
 
 /// A start tag of the page: its element's name, and where its

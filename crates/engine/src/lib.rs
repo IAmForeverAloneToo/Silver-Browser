@@ -6744,6 +6744,83 @@ mod tests {
     }
 
     #[test]
+    fn form_controls_have_sizes_of_their_own_and_stretch_as_items() {
+        // M26.11: a text field's, a textarea's and a select's sizes are
+        // their own, by their attributes and font, their CSS sizes
+        // `auto`, as in the reference browser: a grid's `normal` and a
+        // flex container's `stretch` stretch them, a column flex
+        // container takes their own heights, and a float shrinks to them.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0 } input, textarea, select { margin: 0 }</style>\
+             <div style='display: grid; grid-template-columns: 300px'><input id=g></div>\
+             <div style='display: flex; height: 40px'>\
+             <input id=f><textarea id=ta cols=10 rows=3></textarea></div>\
+             <div style='display: flex; flex-direction: column; width: 200px'>\
+             <input id=c><select id=s><option>x</select></div>\
+             <select id=l size=3><option>a<option>b<option>c</select>\
+             <textarea id=rows cols=10 rows=3></textarea>\
+             <input id=n type=number size=5><select id=m multiple><option>a</select>\
+             <div style='float: left'><input id=fl size=5></div>",
+        );
+        engine.frame(800, 400);
+        let frags = engine.fragments(800.0);
+        let size = |id: &str| {
+            let node = node_by_id(&engine, id);
+            frags
+                .iter()
+                .find(|f| matches!(f.kind, layout::FragmentKind::Box) && f.node == node)
+                .map(|f| (f.w, f.h))
+                .expect("a box")
+        };
+        let near = |(w, h): (f32, f32), (ew, eh): (f32, f32)| {
+            (w - ew).abs() < 0.02 && (h - eh).abs() < 0.02
+        };
+        for (id, expected) in [
+            ("g", (300.0, 21.0)),
+            ("f", (177.0, 40.0)),
+            ("ta", (95.0, 40.0)),
+            ("c", (200.0, 21.0)),
+            ("s", (200.0, 19.0)),
+            ("l", (size("l").0, 53.0)),
+            ("rows", (95.0, 51.0)),
+            // `size` is a text field's alone; `multiple` shows four rows.
+            ("n", (177.0, 21.0)),
+            ("m", (size("m").0, 70.0)),
+        ] {
+            assert!(near(size(id), expected), "{id}: {:?}", size(id));
+        }
+        let float = engine
+            .document()
+            .subtree(engine.document().root())
+            .find(|&n| engine.document().attr(n, "style") == Some("float: left"))
+            .expect("the float");
+        let float = frags
+            .iter()
+            .find(|f| matches!(f.kind, layout::FragmentKind::Box) && f.node == float)
+            .expect("its box");
+        assert!(
+            (float.w - 72.0).abs() < 0.02,
+            "a float around a field of 5: {}",
+            float.w
+        );
+        // A change of `rows` lays the textarea out again: the layout
+        // kept, not one made afresh.
+        let rows = node_by_id(&engine, "rows");
+        engine
+            .mutate(|document| document.set_attribute(rows, "rows", "1"))
+            .expect("an element");
+        engine.frame(800, 400);
+        let height = engine
+            .layout(800.0)
+            .iter()
+            .find(|f| matches!(f.kind, layout::FragmentKind::Box) && f.node == rows)
+            .map(|f| f.h)
+            .expect("its box");
+        assert!((height - 21.0).abs() < 0.02, "{height}");
+    }
+
+    #[test]
     fn hit_test_follows_the_scroll_offset_and_respects_clipping() {
         let mut engine = test_engine();
         engine.load_document(

@@ -612,9 +612,7 @@ pub(crate) fn invalidate(
         } else if name == "style"
             || name == "dir"
             || tag.is_some_and(|tag| {
-                crate::cascade::is_list_hint(tag, name)
-                    || crate::cascade::is_img_hint(tag, name)
-                    || crate::cascade::is_control_hint(tag, name)
+                crate::cascade::is_list_hint(tag, name) || crate::cascade::is_img_hint(tag, name)
             })
             || inline_reads_attributes(document, element)
         {

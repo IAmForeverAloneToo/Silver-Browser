@@ -1,0 +1,47 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Layout: form controls at their own sizes</title>
+<style>
+  @font-face { font-family: "Layout Test Sans"; src: url(../../../text/fonts/DejaVuSans.ttf); }
+  html { background-color: #f5f6f8; color: #20242a; }
+  body { margin: 0; font-family: "Layout Test Sans"; font-size: 14px; }
+  .page { width: 600px; margin: 20px; padding: 16px; background-color: #ffffff; border: 1px solid #d3d8de; }
+  .fields { display: grid; grid-template-columns: 120px max-content; align-items: start; gap: 10px 12px; }
+  .row { display: flex; align-items: flex-start; gap: 8px; margin-top: 14px; }
+  .stretch { display: flex; height: 40px; margin-top: 14px; }
+  .column { display: flex; flex-direction: column; width: 220px; margin-top: 14px; }
+  button, select, input[type=submit], input[type=reset] { font-family: "Layout Test Sans"; }
+  /* The buttons' widths are set: a label's width is the platform's text
+     measuring, not the controls' own. */
+  button, input[type=submit], input[type=reset] { width: 90px; }
+  p { margin: 0; }
+</style>
+</head>
+<body data-expected-width="800" data-expected-height="621">
+  <div class="page" data-expected-width="634" data-expected-height="621" data-offset-x="20" data-offset-y="20">
+    <div class="fields" data-expected-width="600" data-expected-height="393" data-offset-x="37" data-offset-y="37">
+      <p data-expected-width="120" data-expected-height="16" data-offset-x="37" data-offset-y="37">Name</p><input data-expected-width="241" data-expected-height="21" data-offset-x="169" data-offset-y="37">
+      <p data-expected-width="120" data-expected-height="16" data-offset-x="37" data-offset-y="68">Short</p><input size="8" data-expected-width="241" data-expected-height="21" data-offset-x="169" data-offset-y="68">
+      <p data-expected-width="120" data-expected-height="16" data-offset-x="37" data-offset-y="99">Search</p><input type="search" data-expected-width="241" data-expected-height="21" data-offset-x="169" data-offset-y="99">
+      <p data-expected-width="120" data-expected-height="16" data-offset-x="37" data-offset-y="130">Number</p><input type="number" data-expected-width="241" data-expected-height="21" data-offset-x="169" data-offset-y="130">
+      <p data-expected-width="120" data-expected-height="16" data-offset-x="37" data-offset-y="161">Notes</p><textarea data-expected-width="241" data-expected-height="36" data-offset-x="169" data-offset-y="161"></textarea>
+      <p data-expected-width="120" data-expected-height="16" data-offset-x="37" data-offset-y="207">Wide notes</p><textarea cols="30" rows="3" data-expected-width="241" data-expected-height="51" data-offset-x="169" data-offset-y="207"></textarea>
+      <p data-expected-width="120" data-expected-height="16" data-offset-x="37" data-offset-y="268">Choice</p><select data-expected-width="241" data-expected-height="19" data-offset-x="169" data-offset-y="268"><option data-expected-width="0" data-expected-height="0" data-offset-x="0" data-offset-y="0">One</option><option data-expected-width="0" data-expected-height="0" data-offset-x="0" data-offset-y="0">Another one</option></select>
+      <p data-expected-width="120" data-expected-height="16" data-offset-x="37" data-offset-y="297">List</p><select size="3" data-expected-width="241" data-expected-height="53" data-offset-x="169" data-offset-y="297"><option data-expected-width="239" data-expected-height="17" data-offset-x="170" data-offset-y="298">One</option><option data-expected-width="239" data-expected-height="17" data-offset-x="170" data-offset-y="315">Two</option><option data-expected-width="239" data-expected-height="17" data-offset-x="170" data-offset-y="332">Three</option></select>
+      <p data-expected-width="120" data-expected-height="16" data-offset-x="37" data-offset-y="360">Several</p><select multiple data-expected-width="241" data-expected-height="70" data-offset-x="169" data-offset-y="360"><option data-expected-width="239" data-expected-height="17" data-offset-x="170" data-offset-y="361">One</option><option data-expected-width="239" data-expected-height="17" data-offset-x="170" data-offset-y="378">Two</option></select>
+    </div>
+    <div class="row" data-expected-width="600" data-expected-height="36" data-offset-x="37" data-offset-y="444">
+      <input type="checkbox" data-expected-width="13" data-expected-height="13" data-offset-x="41" data-offset-y="447"><input type="checkbox" checked data-expected-width="13" data-expected-height="13" data-offset-x="69" data-offset-y="447"><input type="radio" data-expected-width="13" data-expected-height="13" data-offset-x="98" data-offset-y="447"><input type="radio" checked data-expected-width="13" data-expected-height="13" data-offset-x="127" data-offset-y="447">
+      <button data-expected-width="90" data-expected-height="21" data-offset-x="151" data-offset-y="444">Go</button><button data-expected-width="90" data-expected-height="36" data-offset-x="249" data-offset-y="444">A longer button</button><input type="submit" value="Send" data-expected-width="90" data-expected-height="21" data-offset-x="347" data-offset-y="444"><input type="reset" data-expected-width="90" data-expected-height="21" data-offset-x="445" data-offset-y="444">
+    </div>
+    <div class="stretch" data-expected-width="600" data-expected-height="40" data-offset-x="37" data-offset-y="494">
+      <input type="checkbox" data-expected-width="13" data-expected-height="34" data-offset-x="41" data-offset-y="497"><button data-expected-width="90" data-expected-height="40" data-offset-x="57" data-offset-y="494">Stretched</button><input data-expected-width="177" data-expected-height="40" data-offset-x="147" data-offset-y="494">
+    </div>
+    <div class="column" data-expected-width="220" data-expected-height="76" data-offset-x="37" data-offset-y="548">
+      <input data-expected-width="220" data-expected-height="21" data-offset-x="37" data-offset-y="548"><select data-expected-width="220" data-expected-height="19" data-offset-x="37" data-offset-y="569"><option data-expected-width="0" data-expected-height="0" data-offset-x="0" data-offset-y="0">Column</option></select><button data-expected-width="90" data-expected-height="36" data-offset-x="37" data-offset-y="588">Column button</button>
+    </div>
+  </div>
+</body>
+</html>

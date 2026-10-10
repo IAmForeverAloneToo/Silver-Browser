@@ -135,7 +135,6 @@ use crate::selector_matching::{Matcher, PseudoElement, SelectorList, Specificity
 mod animated;
 mod backgrounds;
 mod border_image;
-mod controls;
 mod decoration;
 mod effects;
 mod fragmentation;
@@ -147,7 +146,6 @@ mod motion;
 mod page;
 
 use animated::Animated;
-pub(crate) use controls::is_control_hint;
 pub(crate) use images::is_img_hint;
 pub(crate) use lists::is_list_hint;
 
@@ -1900,9 +1898,7 @@ fn declarations_for<'a>(
     // overrides them.
     let hints = document.tag(element).map_or_else(String::new, |tag| {
         let attr = |name: &str| document.attr(element, name).map(str::to_string);
-        lists::list_hints(tag, attr)
-            + &images::img_hints(tag, attr)
-            + &controls::control_hints(tag, attr)
+        lists::list_hints(tag, attr) + &images::img_hints(tag, attr)
     });
     if !hints.is_empty()
         && let Ok(decls) = css::parse_style_attribute(&hints)
@@ -8510,11 +8506,12 @@ mod tests {
     #[test]
     fn the_ua_sheet_styles_form_controls_as_boxes() {
         // M26.7: the reference browser's computed values. A text field
-        // 169px by 15 at 13.33px inside a 2px inset border, a textarea
-        // 162px by 30 in monospace and a scroll container, a select 19px
-        // tall, its options and their groups blocks (which a drop-down
-        // does not lay out), a datalist and a hidden input nothing, a
-        // checkbox no border, its 13px the mark's natural size.
+        // at 13.33px inside a 2px inset border, a textarea in monospace
+        // and a scroll container, a select, all their sizes `auto`, their
+        // own the box tree's (M26.11); options and their groups blocks
+        // (which a drop-down does not lay out), a datalist and a hidden
+        // input nothing, a checkbox no border, its 13px the mark's natural
+        // size.
         let html = "<form><input><input type=HIDDEN><input type=checkbox>\
                     <button>Go</button><select><optgroup><option>a</option></optgroup></select>\
                     <datalist></datalist><textarea>t</textarea></form>";
@@ -8522,12 +8519,10 @@ mod tests {
         let input = control("input:first-child");
         assert_eq!(input.display, Display::InlineBlock);
         assert_eq!(input.font_size_px, 13.3333);
-        let near = |size: &Size, px: f32| match *size {
-            Size::Px(at) => (at - px).abs() < 0.01,
-            _ => false,
-        };
-        assert!(near(&input.width, 169.0), "{:?}", input.width);
-        assert!(near(&input.height, 15.0), "{:?}", input.height);
+        assert_eq!(
+            (input.width.clone(), input.height.clone()),
+            (Size::Auto, Size::Auto)
+        );
         assert_eq!(input.used_border_width(), [2.0; 4]);
         assert_eq!(input.border_style[TOP], BorderStyle::Inset);
         assert_eq!(input.padding[TOP], LengthPercentage::Px(1.0));
@@ -8547,8 +8542,10 @@ mod tests {
         assert_eq!(button.text_align, TextAlign::Center);
         assert_eq!(button.background_color, Color::rgb8(240, 240, 240));
         let select = control("select");
-        assert_eq!(select.width, Size::Auto);
-        assert!(near(&select.height, 19.0), "{:?}", select.height);
+        assert_eq!(
+            (select.width.clone(), select.height.clone()),
+            (Size::Auto, Size::Auto)
+        );
         let option = control("option");
         assert_eq!(
             option.display,
@@ -8559,8 +8556,10 @@ mod tests {
         assert_eq!(control("datalist").display, Display::None);
         assert_eq!(control("optgroup").display, Display::Block);
         let textarea = control("textarea");
-        assert!(near(&textarea.width, 162.0), "{:?}", textarea.width);
-        assert!(near(&textarea.height, 30.0), "{:?}", textarea.height);
+        assert_eq!(
+            (textarea.width.clone(), textarea.height.clone()),
+            (Size::Auto, Size::Auto)
+        );
         assert_eq!(&*textarea.font_family, "monospace");
         assert_eq!(textarea.white_space, WhiteSpace::PreWrap);
         assert_eq!(textarea.overflow, Overflow::Auto);
