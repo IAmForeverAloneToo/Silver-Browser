@@ -12,6 +12,7 @@
 //! `engine` orchestrates fetching.
 
 mod address_space;
+pub mod cache;
 mod content_coding;
 pub mod cookies;
 pub mod csp;
@@ -28,6 +29,7 @@ pub mod transport;
 pub mod url;
 
 pub use address_space::AddressSpace;
+pub use cache::{Cache, CacheMode};
 pub use error::{AbortHandle, NetworkError, TlsFailure};
 pub use fetch::{
     COMPAT_USER_AGENT, Client, Credentials, Delivery, Destination, Exposed, Initiator, Method,

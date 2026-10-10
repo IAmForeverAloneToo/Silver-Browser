@@ -120,6 +120,10 @@ fn network_error(url: &Url, place: &str, error: &NetworkError) -> (String, Strin
             "The page redirected to somewhere a redirect may not go.".to_owned(),
         ),
         NetworkError::Aborted => (reach, "The load was stopped.".to_owned()),
+        NetworkError::NotCached => (
+            reach,
+            "It was asked for from the cache alone, which does not have it.".to_owned(),
+        ),
         NetworkError::Csp(_) => (
             reach,
             "The page's Content-Security-Policy does not allow it.".to_owned(),

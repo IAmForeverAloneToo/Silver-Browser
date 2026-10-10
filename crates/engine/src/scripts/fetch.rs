@@ -65,6 +65,13 @@ pub(crate) fn request(page: &Page, call: &FetchCall) -> Result<net::Request, Dom
         "include" => Credentials::Include,
         other => return Err(type_error(format!("'{other}' is not a credentials mode."))),
     };
+    let cache = net::CacheMode::parse(&call.cache)
+        .ok_or_else(|| type_error(format!("'{}' is not a cache mode.", call.cache)))?;
+    if cache == net::CacheMode::OnlyIfCached && mode != Mode::SameOrigin {
+        return Err(type_error(
+            "'only-if-cached' can be set only with 'same-origin' mode",
+        ));
+    }
     let redirect = match call.redirect.as_str() {
         "follow" => Redirect::Follow,
         "error" => Redirect::Error,
@@ -117,6 +124,7 @@ pub(crate) fn request(page: &Page, call: &FetchCall) -> Result<net::Request, Dom
     request.credentials = credentials;
     request.redirect = redirect;
     request.preflight = call.preflight;
+    request.cache = cache;
     Ok(request)
 }
 
@@ -167,6 +175,7 @@ mod tests {
             credentials: "same-origin".to_owned(),
             redirect: "follow".to_owned(),
             preflight: false,
+            cache: "default".to_owned(),
         };
         change(&mut call);
         call

@@ -15,6 +15,7 @@ use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+use crate::cache::{Cache, CacheMode, Stored};
 use crate::cookies::{self, Jar};
 use crate::csp::Csp;
 use crate::data_url;
@@ -273,6 +274,8 @@ pub struct Request {
     /// "should request be blocked by Content Security Policy" at each
     /// hop (M24.6).
     pub csp: Option<Csp>,
+    /// How it uses the HTTP cache (M28.4).
+    pub cache: CacheMode,
 }
 
 impl Request {
@@ -305,6 +308,7 @@ impl Request {
             abort: AbortHandle::new(),
             body_limit: None,
             csp: None,
+            cache: CacheMode::Default,
         }
     }
 
@@ -483,7 +487,14 @@ pub struct Client {
     /// The cookies every fetch reads and writes (M27.4), which an engine
     /// shares with `document.cookie`.
     cookies: Arc<Mutex<Jar>>,
+    /// The HTTP cache (M28.4), which an engine's clients share.
+    cache: Arc<Cache>,
+    /// The time, by which the cache reckons ages.
+    clock: WallClock,
 }
+
+/// A clock of the time of day, the system's unless a test gives its own.
+pub type WallClock = Arc<dyn Fn() -> SystemTime + Send + Sync>;
 
 impl Default for Client {
     fn default() -> Client {
@@ -499,6 +510,8 @@ impl Client {
             user_agent: USER_AGENT,
             preflights: cors::PreflightCache::default(),
             cookies: Arc::default(),
+            cache: Arc::default(),
+            clock: Arc::new(SystemTime::now),
         }
     }
 
@@ -519,6 +532,24 @@ impl Client {
     /// The client's cookie jar.
     pub fn cookies(&self) -> &Arc<Mutex<Jar>> {
         &self.cookies
+    }
+
+    /// The client, its fetches keeping their responses in `cache`
+    /// (M28.4): an engine's, which outlives the clients it is given.
+    pub fn with_cache(mut self, cache: Arc<Cache>) -> Client {
+        self.cache = cache;
+        self
+    }
+
+    /// The client's HTTP cache.
+    pub fn cache(&self) -> &Arc<Cache> {
+        &self.cache
+    }
+
+    /// The client, its cache reckoning ages by `clock`.
+    pub fn with_clock(mut self, clock: WallClock) -> Client {
+        self.clock = clock;
+        self
     }
 
     /// Fetches `request`, blocking until the response is whole or the
@@ -622,6 +653,34 @@ impl Client {
             ),
             "http" | "https" => {
                 let headers = self.request_headers(request, url, hop);
+                // The HTTP cache (M28.4): for a GET fetched whole, by the
+                // site the request is for.
+                let mode = cache_mode(request, hop);
+                let cached = hop.method.as_str() == "GET" && deliver.is_none();
+                let site = request
+                    .origin
+                    .as_ref()
+                    .map_or_else(|| url.origin().site(), Origin::site);
+                if cached && let Some(stale) = mode.reads() {
+                    let now = (self.clock)();
+                    if let Some(stored) = self.cache.lookup(&site, url, &headers, now, stale) {
+                        return Ok(Response {
+                            url_list: vec![url.clone()],
+                            status: stored.status,
+                            status_message: stored.status_message,
+                            mime_type: mime::extract_mime_type(&stored.headers),
+                            headers: stored.headers,
+                            body: stored.body,
+                            address_space: stored.address_space,
+                            response_type: ResponseType::Basic,
+                            cors_exposed: Vec::new(),
+                        });
+                    }
+                    if mode == CacheMode::OnlyIfCached {
+                        return Err(NetworkError::NotCached);
+                    }
+                }
+                let request_time = (self.clock)();
                 // A POST or a PUT without a body says its length is 0.
                 let body = match (&hop.body, hop.method.as_str()) {
                     (Some(body), _) => Some(body.as_slice()),
@@ -661,6 +720,25 @@ impl Client {
                     }
                 };
                 let response = received.response;
+                if cached && mode != CacheMode::NoStore {
+                    let stored = Stored {
+                        status: response.status,
+                        status_message: response.reason.clone(),
+                        headers: response.headers.clone(),
+                        body: response.body.clone(),
+                        address_space: Some(received.address_space),
+                    };
+                    let now = (self.clock)();
+                    self.cache
+                        .store(&site, url, &headers, stored, request_time, now);
+                }
+                // A change of what is there makes what is stored for it
+                // stale (RFC 9111 4.4).
+                if !matches!(hop.method.as_str(), "GET" | "HEAD" | "OPTIONS" | "TRACE")
+                    && (200..400).contains(&response.status)
+                {
+                    self.cache.invalidate(&site, url);
+                }
                 Ok(Response {
                     url_list: vec![url.clone()],
                     status: response.status,
@@ -822,6 +900,21 @@ impl Client {
         if let Some(origin) = origin_field(request, url, hop) {
             headers.append(b"Origin", origin.as_bytes());
         }
+        // What a cache mode asks of the caches on the way (Fetch 4.6).
+        match cache_mode(request, hop) {
+            CacheMode::NoStore | CacheMode::Reload => {
+                if !author.contains(b"Pragma") {
+                    headers.append(b"Pragma", b"no-cache");
+                }
+                if !author.contains(b"Cache-Control") {
+                    headers.append(b"Cache-Control", b"no-cache");
+                }
+            }
+            CacheMode::NoCache if !author.contains(b"Cache-Control") => {
+                headers.append(b"Cache-Control", b"max-age=0");
+            }
+            _ => {}
+        }
         // Fetch Metadata: to potentially trustworthy URLs alone.
         if url.is_potentially_trustworthy() {
             headers.append(b"Sec-Fetch-Dest", request.destination.name().as_bytes());
@@ -842,6 +935,26 @@ impl Client {
             }
         }
         headers
+    }
+}
+
+/// The cache mode a hop goes by (Fetch 4.6): the request's, but
+/// `no-store` for a `default` one with a conditional field its author
+/// set, whose answer is for the author alone.
+fn cache_mode(request: &Request, hop: &Hop) -> CacheMode {
+    let conditional = [
+        &b"If-Modified-Since"[..],
+        b"If-None-Match",
+        b"If-Unmodified-Since",
+        b"If-Match",
+        b"If-Range",
+    ];
+    if request.cache == CacheMode::Default
+        && conditional.iter().any(|name| hop.author.contains(name))
+    {
+        CacheMode::NoStore
+    } else {
+        request.cache
     }
 }
 

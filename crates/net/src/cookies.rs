@@ -218,7 +218,7 @@ fn parse(line: &[u8], now: SystemTime) -> Option<Parsed> {
 /// A cookie date (5.1.1): its tokens read for a time, a day of the
 /// month, a month and a year, in any order, the first of each found;
 /// `None` when one is missing or out of range.
-fn parse_date(value: &[u8]) -> Option<SystemTime> {
+pub(crate) fn parse_date(value: &[u8]) -> Option<SystemTime> {
     let delimiter =
         |b: u8| matches!(b, 0x09 | 0x20..=0x2F | 0x3B..=0x40 | 0x5B..=0x60 | 0x7B..=0x7E);
     let (mut time, mut day, mut month, mut year) = (None, None, None, None);

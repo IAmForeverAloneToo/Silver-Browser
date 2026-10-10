@@ -46,6 +46,8 @@ pub struct FetchCall {
     pub redirect: String,
     /// Fetch's use-CORS-preflight flag.
     pub preflight: bool,
+    /// The request's cache mode (M28.4): `default`, `no-store`, ...
+    pub cache: String,
 }
 
 /// A call the bindings make of the host, one per native function.

@@ -71,6 +71,8 @@ pub enum NetworkError {
     /// The document's Content Security Policy does not allow it: the
     /// directive, as the policy wrote it (M24.6).
     Csp(String),
+    /// An `only-if-cached` request with nothing cached for it (M28.4).
+    NotCached,
 }
 
 /// Why TLS failed.
@@ -128,6 +130,7 @@ impl fmt::Display for NetworkError {
                 f.write_str("refused by its Cross-Origin-Resource-Policy")
             }
             NetworkError::Redirected => f.write_str("a redirect, which the request refuses"),
+            NetworkError::NotCached => f.write_str("nothing cached, and only the cache asked"),
             NetworkError::Refused(why) => write!(f, "refused: {why}"),
             NetworkError::Csp(directive) => {
                 write!(f, "blocked by Content-Security-Policy: {directive}")

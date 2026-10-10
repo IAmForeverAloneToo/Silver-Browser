@@ -5,6 +5,8 @@
 #[cfg(test)]
 mod body_tests;
 #[cfg(test)]
+mod cache_tests;
+#[cfg(test)]
 mod control_tests;
 #[cfg(test)]
 mod cookie_tests;
@@ -192,6 +194,8 @@ pub(crate) struct Network {
     /// The cookies every client of the engine keeps (M27.4), and
     /// `document.cookie` reads and writes.
     cookies: Arc<Mutex<net::cookies::Jar>>,
+    /// The HTTP cache every client of the engine keeps (M28.4).
+    cache: Arc<net::Cache>,
     flights: HashMap<FetchId, Flight>,
     next: FetchId,
 }
@@ -202,6 +206,7 @@ impl Network {
             pool: Pool::new(MAX_FETCH_THREADS),
             client: None,
             cookies: Arc::default(),
+            cache: Arc::default(),
             flights: HashMap::new(),
             next: 0,
         }
@@ -210,14 +215,22 @@ impl Network {
     /// Fetches from now on with `client`; fetches in flight finish with
     /// the client they began with.
     pub(crate) fn set_client(&mut self, client: Client) {
-        self.client = Some(Arc::new(client.with_cookies(self.cookies.clone())));
+        self.client = Some(Arc::new(self.shared(client)));
+    }
+
+    /// `client` keeping the engine's cookies and cache.
+    fn shared(&self, client: Client) -> Client {
+        client
+            .with_cookies(self.cookies.clone())
+            .with_cache(self.cache.clone())
     }
 
     /// The client fetches are made with, made now if none is yet.
     pub(crate) fn client(&mut self) -> Arc<Client> {
-        self.client
-            .get_or_insert_with(|| Arc::new(Client::default().with_cookies(self.cookies.clone())))
-            .clone()
+        if self.client.is_none() {
+            self.client = Some(Arc::new(self.shared(Client::default())));
+        }
+        self.client.clone().expect("made")
     }
 
     /// The engine's cookie jar.
@@ -233,10 +246,7 @@ impl Network {
     /// response comes in pieces as it arrives.
     pub(crate) fn fetch(&mut self, page: PageId, target: Target, request: Request) -> FetchId {
         let streamed = target == Target::Document;
-        let client = self
-            .client
-            .get_or_insert_with(|| Arc::new(Client::default().with_cookies(self.cookies.clone())))
-            .clone();
+        let client = self.client();
         let id = self.next;
         self.next += 1;
         self.flights.insert(

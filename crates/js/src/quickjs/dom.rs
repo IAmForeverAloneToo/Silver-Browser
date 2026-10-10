@@ -276,6 +276,7 @@ const NATIVES: &[(&str, Decode)] = &[
             credentials: a.string(6)?,
             redirect: a.string(7)?,
             preflight: a.bool(8),
+            cache: a.string(9)?,
         })))
     }),
     ("fetchNow", |a| {
@@ -289,6 +290,7 @@ const NATIVES: &[(&str, Decode)] = &[
             credentials: a.string(5)?,
             redirect: a.string(6)?,
             preflight: a.bool(7),
+            cache: "default".to_owned(),
         })))
     }),
     ("decode", |a| {

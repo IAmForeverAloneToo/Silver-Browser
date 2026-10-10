@@ -4093,7 +4093,7 @@
         native.fetch(
           id, state.method, state.url, flatten(headersState(state.headers).list),
           body === null ? null : binaryString(body),
-          state.mode, state.credentials, state.redirect, false,
+          state.mode, state.credentials, state.redirect, false, state.cache,
         );
       } catch (e) {
         reject(failed(e, "fetch", "Window"));
@@ -4406,7 +4406,7 @@
         native.fetch(
           id, this.#method, this.#url, flatten(this.#headers),
           bytes === null ? null : binaryString(bytes), "cors", credentials, "follow",
-          this.#uploadListened,
+          this.#uploadListened, "default",
         );
       } catch (e) {
         this.#fetch = 0;
