@@ -7,6 +7,7 @@
 //! request has Fetch's modes, credentials and redirect mode, and its
 //! response a tainting: [`Response::exposed`] is all a script may see.
 
+mod cors;
 mod file;
 mod ports;
 
@@ -20,6 +21,7 @@ use crate::mime::{self, MimeType};
 use crate::transport::{self, Exchange, Transport};
 use crate::{AddressSpace, Host, Origin, Url};
 
+pub use cors::{DEFAULT_PREFLIGHT_AGE, MAX_PREFLIGHT_AGE, MAX_PREFLIGHT_ENTRIES};
 pub use ports::{BAD_PORTS, is_bad as is_bad_port};
 
 /// How many redirects a fetch follows (Fetch's HTTP-redirect fetch): the
@@ -342,21 +344,20 @@ impl Request {
         self.body_limit.map_or(limit, |own| own.min(limit))
     }
 
+    /// The request in CORS mode with `credentials`, as a CORS settings
+    /// attribute asks (HTML 2.5.4, M27.3).
+    pub fn with_cors(mut self, credentials: Credentials) -> Request {
+        self.mode = Mode::Cors;
+        self.credentials = credentials;
+        self
+    }
+
     /// The request, made by `initiator`'s document, of its origin.
     pub fn initiated_by(mut self, initiator: Initiator) -> Request {
         self.origin = Some(initiator.origin.clone());
         self.user_activated = false;
         self.initiator = Some(initiator);
         self
-    }
-
-    /// Whether it is a CORS request that needs a preflight (Fetch 4.1):
-    /// one asking for it, or of a method or with headers a form could
-    /// not send.
-    fn needs_preflight(&self, method: &Method, author: &HeaderList) -> bool {
-        self.preflight
-            || !method.is_cors_safelisted()
-            || !headers::cors_unsafe_request_header_names(author).is_empty()
     }
 }
 
@@ -474,6 +475,8 @@ pub struct Client {
     body_limit: usize,
     /// The `User-Agent` its requests send.
     user_agent: &'static str,
+    /// What preflights allowed (M27.3).
+    preflights: cors::PreflightCache,
 }
 
 impl Default for Client {
@@ -488,6 +491,7 @@ impl Client {
             body_limit: config.limits.body_bytes,
             transport: Transport::new(config),
             user_agent: USER_AGENT,
+            preflights: cors::PreflightCache::default(),
         }
     }
 
@@ -541,12 +545,8 @@ impl Client {
             }
             check(request, &url, hop.url_list.len() - 1)?;
             hop.tainting = tainting(request, &url, hop.tainting)?;
-            if hop.tainting == ResponseType::Cors
-                && request.needs_preflight(&hop.method, &hop.author)
-            {
-                return Err(NetworkError::Cors(
-                    "a preflight, which arrives with M27.3".to_owned(),
-                ));
+            if hop.tainting == ResponseType::Cors && self.wants_preflight(request, &url, &hop) {
+                self.preflight(request, &url, &hop)?;
             }
             let mut response = self.scheme_fetch(request, &url, &hop, deliver.as_deref_mut())?;
             match hop.tainting {
@@ -641,6 +641,105 @@ impl Client {
             }
             other => Err(NetworkError::BadScheme(other.to_owned())),
         }
+    }
+
+    /// Whether a hop of a CORS request to `url` waits for a preflight
+    /// (Fetch 4.4): its method is not safelisted, or the request asks
+    /// for one, and no cached preflight allowed the method; or one of
+    /// its CORS-unsafe header names none allowed.
+    fn wants_preflight(&self, request: &Request, url: &Url, hop: &Hop) -> bool {
+        let origin = serialized_origin(request, hop.tainted_origin);
+        let asking = cors::Asking {
+            origin: &origin,
+            url,
+            credentials: request.credentials == Credentials::Include,
+        };
+        self.preflights.wants(
+            &asking,
+            hop.method.as_str().as_bytes(),
+            hop.method.is_cors_safelisted(),
+            request.preflight,
+            &headers::cors_unsafe_request_header_names(&hop.author),
+        )
+    }
+
+    /// The CORS-preflight fetch (Fetch 4.8) of a hop to `url`: an
+    /// `OPTIONS` request naming the method and the CORS-unsafe header
+    /// names, without credentials, whose answer must pass the CORS check
+    /// with an ok status and allow the method (exactly, or by `*`
+    /// without credentials; a safelisted one always) and every name (in
+    /// any case, or by `*` without credentials, never `Authorization`).
+    /// What it allowed is cached for its `Access-Control-Max-Age`.
+    fn preflight(&self, request: &Request, url: &Url, hop: &Hop) -> Result<(), NetworkError> {
+        let refused = |why: &str| NetworkError::Cors(format!("the preflight {why}"));
+        let names = headers::cors_unsafe_request_header_names(&hop.author);
+        let mut author = HeaderList::new();
+        author.append(b"Accept", b"*/*");
+        author.append(
+            b"Access-Control-Request-Method",
+            hop.method.as_str().as_bytes(),
+        );
+        if !names.is_empty() {
+            author.append(b"Access-Control-Request-Headers", &names.join(&b","[..]));
+        }
+        // Its method, fields and body are the hop's; it has no
+        // credentials.
+        let preflight = Request {
+            credentials: Credentials::Omit,
+            ..request.clone()
+        };
+        let preflight_hop = Hop {
+            method: Method::OPTIONS,
+            author,
+            body: None,
+            url_list: hop.url_list.clone(),
+            tainting: ResponseType::Cors,
+            tainted_origin: hop.tainted_origin,
+        };
+        let response = self.scheme_fetch(&preflight, url, &preflight_hop, None)?;
+        cors_check(request, &response.headers, hop.tainted_origin)?;
+        if !response.ok() {
+            return Err(refused(&format!("was answered {}", response.status)));
+        }
+        let list = |name: &[u8]| match headers::token_list(&response.headers, name) {
+            Some(Err(())) => Err(refused("answered a list that is not one")),
+            found => Ok(found.and_then(Result::ok)),
+        };
+        let methods = match list(b"Access-Control-Allow-Methods")? {
+            None if request.preflight => vec![hop.method.as_str().as_bytes().to_vec()],
+            found => found.unwrap_or_default(),
+        };
+        let allowed_names = list(b"Access-Control-Allow-Headers")?.unwrap_or_default();
+        let include = request.credentials == Credentials::Include;
+        let method = hop.method.as_str().as_bytes();
+        let star = |list: &[Vec<u8>]| !include && list.iter().any(|item| item == b"*");
+        if !hop.method.is_cors_safelisted()
+            && !methods.iter().any(|allowed| allowed == method)
+            && !star(&methods)
+        {
+            return Err(refused(&format!("does not allow {}", hop.method.as_str())));
+        }
+        for name in &names {
+            let named = allowed_names
+                .iter()
+                .any(|allowed| allowed.eq_ignore_ascii_case(name));
+            if !named && (name == b"authorization" || !star(&allowed_names)) {
+                return Err(refused(&format!(
+                    "does not allow {}",
+                    String::from_utf8_lossy(name)
+                )));
+            }
+        }
+        let origin = serialized_origin(request, hop.tainted_origin);
+        let asking = cors::Asking {
+            origin: &origin,
+            url,
+            credentials: include,
+        };
+        let age = cors::max_age(response.headers.get(b"Access-Control-Max-Age").as_deref());
+        self.preflights
+            .store(&asking, age, &methods, &allowed_names);
+        Ok(())
     }
 
     /// The fields a hop to `url` sends besides `Host`, which the message

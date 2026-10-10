@@ -259,29 +259,271 @@ fn a_cors_response_passes_the_cors_check_and_shows_what_it_exposes() {
     }
 }
 
+/// A server whose answers carry the `|`-separated fields of the query
+/// (`Name:value`), `Access-Control-Allow-Origin: *` unless they name
+/// one; `status:404` fails a preflight; `/r` answers its requests but
+/// preflights with a 307 to `/c` and the same query.
+fn preflighted() -> TestServer {
+    TestServer::plain(|request: &ServerRequest| {
+        let (path, query) = request
+            .target
+            .split_once('?')
+            .unwrap_or((&request.target, ""));
+        let mut fields: Vec<(&str, &str)> = query
+            .split('|')
+            .filter_map(|field| field.split_once(':'))
+            .filter(|(name, _)| *name != "status")
+            .collect();
+        // `bare`: the preflight's answer has no CORS of its own.
+        let bare = request.method == "OPTIONS" && query.split('|').any(|field| field == "bare");
+        if !bare
+            && !fields
+                .iter()
+                .any(|(name, _)| *name == "Access-Control-Allow-Origin")
+        {
+            fields.push(("Access-Control-Allow-Origin", "*"));
+        }
+        if request.method == "OPTIONS" {
+            let status = if query.contains("status:404") {
+                404
+            } else {
+                204
+            };
+            return Reply::with_fields(status, &fields, b"");
+        }
+        if path == "/r" {
+            let to = format!("/c?{query}");
+            fields.push(("Location", &to));
+            return Reply::with_fields(307, &fields, b"");
+        }
+        Reply::with_fields(200, &fields, b"done")
+    })
+}
+
+/// A CORS request from `http://a.localhost` for `path` on `server`.
+fn cross(server: &TestServer, path: &str) -> Request {
+    from(
+        &url("http://a.localhost/page"),
+        server.url(path),
+        Mode::Cors,
+    )
+}
+
+fn methods(server: &TestServer) -> Vec<String> {
+    server
+        .requests()
+        .iter()
+        .map(|request| request.method.clone())
+        .collect()
+}
+
 #[test]
-fn a_cors_request_a_form_could_not_send_waits_for_its_preflight() {
-    let server = answering(&[("Access-Control-Allow-Origin", "*")]);
-    let document = url("http://a.localhost/page");
-    let mut put = from(&document, server.url("/x"), Mode::Cors);
+fn a_cors_request_a_form_could_not_send_is_preflighted() {
+    let server = preflighted();
+    let client = Client::default();
+    let mut put = cross(
+        &server,
+        "/x?Access-Control-Allow-Origin:*|Access-Control-Allow-Methods:PUT",
+    );
     put.method = Method::parse("PUT").unwrap();
-    assert!(matches!(
-        Client::default().fetch(&put),
-        Err(NetworkError::Cors(_))
+    put.headers.append(b"X-B", b"1");
+    put.headers.append(b"x-a", b"2");
+    put.headers.append(b"Content-Type", b"application/json");
+    assert!(matches!(client.fetch(&put), Err(NetworkError::Cors(_))));
+    let options = server.requests()[0].clone();
+    assert_eq!(options.method, "OPTIONS");
+    assert_eq!(options.header("Access-Control-Request-Method"), Some("PUT"));
+    assert_eq!(
+        options.header("Access-Control-Request-Headers"),
+        Some("content-type,x-a,x-b")
+    );
+    assert_eq!(options.header("Origin"), Some("http://a.localhost"));
+    assert_eq!(options.header("Accept"), Some("*/*"));
+    assert_eq!(
+        (options.header("X-A"), options.body.is_empty()),
+        (None, true)
+    );
+    // Allowed, it goes, and its answer is kept: the same request again
+    // goes at once.
+    let mut put = cross(
+        &server,
+        "/y?Access-Control-Allow-Origin:*|Access-Control-Allow-Methods:PUT|Access-Control-Allow-Headers:X-A,x-b,content-type",
+    );
+    put.method = Method::parse("PUT").unwrap();
+    put.headers.append(b"X-B", b"1");
+    put.headers.append(b"x-a", b"2");
+    put.headers.append(b"Content-Type", b"application/json");
+    assert_eq!(client.fetch(&put).unwrap().body, b"done");
+    client.fetch(&put).unwrap();
+    assert_eq!(methods(&server), ["OPTIONS", "OPTIONS", "PUT", "PUT"]);
+    // A method a form could send, with safelisted fields, is not.
+    let get = cross(&server, "/z");
+    client.fetch(&get).unwrap();
+    assert_eq!(methods(&server).last().map(String::as_str), Some("GET"));
+}
+
+#[test]
+fn what_a_preflight_must_allow() {
+    let attempt = |query: &str, method: &str, header: Option<&str>, credentials: Credentials| {
+        let server = preflighted();
+        let mut request = cross(&server, &format!("/x?{query}"));
+        request.method = Method::parse(method).unwrap();
+        request.credentials = credentials;
+        if let Some(header) = header {
+            request.headers.append(header.as_bytes(), b"1");
+        }
+        Client::default().fetch(&request).is_ok()
+    };
+    let star = "Access-Control-Allow-Origin:*";
+    let named =
+        "Access-Control-Allow-Origin:http://a.localhost|Access-Control-Allow-Credentials:true";
+    let omit = Credentials::SameOrigin;
+    let include = Credentials::Include;
+    // Methods match exactly: `patch` allows `patch`, not `PATCH`.
+    assert!(attempt(
+        &format!("{star}|Access-Control-Allow-Methods:patch"),
+        "patch",
+        None,
+        omit
     ));
-    let mut header = from(&document, server.url("/x"), Mode::Cors);
-    header.headers.append(b"X-A", b"1");
-    assert!(matches!(
-        Client::default().fetch(&header),
-        Err(NetworkError::Cors(_))
+    assert!(!attempt(
+        &format!("{star}|Access-Control-Allow-Methods:patch"),
+        "PATCH",
+        None,
+        omit
     ));
-    let mut flagged = from(&document, server.url("/x"), Mode::Cors);
+    assert!(!attempt(
+        &format!("{star}|Access-Control-Allow-Methods:put"),
+        "PUT",
+        None,
+        omit
+    ));
+    assert!(!attempt(star, "DELETE", None, omit));
+    assert!(attempt(
+        &format!("{star}|Access-Control-Allow-Methods:*"),
+        "DELETE",
+        None,
+        omit
+    ));
+    assert!(!attempt(
+        &format!("{named}|Access-Control-Allow-Methods:*"),
+        "DELETE",
+        None,
+        include
+    ));
+    assert!(attempt(
+        &format!("{named}|Access-Control-Allow-Methods:DELETE"),
+        "DELETE",
+        None,
+        include
+    ));
+    // A safelisted method needs no allowing, but its fields do.
+    assert!(attempt(
+        &format!("{star}|Access-Control-Allow-Headers:x-a"),
+        "GET",
+        Some("X-A"),
+        omit
+    ));
+    assert!(!attempt(star, "GET", Some("X-A"), omit));
+    assert!(attempt(
+        &format!("{star}|Access-Control-Allow-Headers:*"),
+        "GET",
+        Some("X-A"),
+        omit
+    ));
+    assert!(!attempt(
+        &format!("{named}|Access-Control-Allow-Headers:*"),
+        "GET",
+        Some("X-A"),
+        include
+    ));
+    assert!(!attempt(
+        &format!("{star}|Access-Control-Allow-Headers:*"),
+        "GET",
+        Some("Authorization"),
+        omit
+    ));
+    assert!(attempt(
+        &format!("{star}|Access-Control-Allow-Headers:Authorization"),
+        "GET",
+        Some("Authorization"),
+        omit
+    ));
+    // A preflight answered without CORS, with another status, or with a
+    // list that is not one, refuses.
+    assert!(!attempt(
+        "Access-Control-Allow-Origin:http://elsewhere|Access-Control-Allow-Methods:PUT",
+        "PUT",
+        None,
+        omit
+    ));
+    // The request's own answer would pass; its preflight's does not.
+    assert!(!attempt(
+        "bare|Access-Control-Allow-Methods:PUT",
+        "PUT",
+        None,
+        omit
+    ));
+    assert!(attempt(
+        "Access-Control-Allow-Methods:PUT",
+        "PUT",
+        None,
+        omit
+    ));
+    // A header list that is not one refuses, though no header asks it.
+    assert!(!attempt(
+        &format!("{star}|Access-Control-Allow-Methods:PUT|Access-Control-Allow-Headers:x(y"),
+        "PUT",
+        None,
+        omit
+    ));
+    assert!(!attempt(
+        &format!("{star}|Access-Control-Allow-Methods:PUT|status:404"),
+        "PUT",
+        None,
+        omit
+    ));
+    assert!(!attempt(
+        &format!("{star}|Access-Control-Allow-Methods:P U T"),
+        "PUT",
+        None,
+        omit
+    ));
+}
+
+#[test]
+fn a_preflights_answer_is_kept_for_its_age_and_the_flag_asks_for_one() {
+    let server = preflighted();
+    let client = Client::default();
+    let put = |path: &str| {
+        let mut request = cross(&server, path);
+        request.method = Method::parse("PUT").unwrap();
+        request
+    };
+    let kept = put(
+        "/a?Access-Control-Allow-Origin:*|Access-Control-Allow-Methods:PUT|Access-Control-Max-Age:0",
+    );
+    client.fetch(&kept).unwrap();
+    client.fetch(&kept).unwrap();
+    assert_eq!(methods(&server), ["OPTIONS", "PUT", "OPTIONS", "PUT"]);
+    // The flag (an XHR's upload listened to) asks even for a GET; with
+    // no Access-Control-Allow-Methods, its own method is allowed.
+    let mut flagged = cross(&server, "/b?Access-Control-Allow-Origin:*");
     flagged.preflight = true;
-    assert!(matches!(
-        Client::default().fetch(&flagged),
-        Err(NetworkError::Cors(_))
-    ));
-    assert!(server.requests().is_empty());
+    client.fetch(&flagged).unwrap();
+    assert_eq!(methods(&server)[4..], ["OPTIONS", "GET"]);
+    let mut flagged_put = cross(&server, "/b2?Access-Control-Allow-Origin:*");
+    flagged_put.preflight = true;
+    flagged_put.method = Method::parse("PUT").unwrap();
+    client.fetch(&flagged_put).unwrap();
+    let mut unflagged = cross(&server, "/b3?Access-Control-Allow-Origin:*");
+    unflagged.method = Method::parse("PUT").unwrap();
+    assert!(client.fetch(&unflagged).is_err());
+    assert_eq!(methods(&server)[6..], ["OPTIONS", "PUT", "OPTIONS"]);
+    // Each hop of a redirect is preflighted at its own URL.
+    let redirected = put("/r?Access-Control-Allow-Methods:PUT");
+    client.fetch(&redirected).unwrap();
+    assert_eq!(methods(&server)[9..], ["OPTIONS", "PUT", "OPTIONS", "PUT"]);
 }
 
 #[test]

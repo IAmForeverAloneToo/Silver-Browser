@@ -90,6 +90,8 @@ enum Key {
         rel: Option<String>,
         kind: Option<String>,
         disabled: bool,
+        /// Its CORS settings attribute (M27.3).
+        crossorigin: Option<String>,
     },
     Style {
         text: String,
@@ -659,11 +661,14 @@ fn start(context: &Context, found: Found, base: Option<&Url>, network: &mut Netw
         .and_then(Encoding::for_label)
         .unwrap_or(context.encoding);
     let sheet = match &found.key {
-        key @ Key::Link { href, .. } if link_wants_sheet(key) => href
+        key @ Key::Link {
+            href, crossorigin, ..
+        } if link_wants_sheet(key) => href
             .as_deref()
             .zip(base)
             .and_then(|(href, base)| Url::parse_with(href, Some(base), context.encoding).ok())
             .and_then(|url| context.request(url))
+            .map(|request| super::with_cors_settings(request, crossorigin.as_deref()))
             .map_or(Slot::None, |request| {
                 let target = Target::Sheet {
                     owner: found.node,
@@ -750,6 +755,7 @@ fn link_wants_sheet(key: &Key) -> bool {
         rel,
         kind,
         disabled,
+        ..
     } = key
     else {
         return false;
@@ -815,6 +821,7 @@ fn scan(document: &Document, context: &Context) -> (Vec<Found>, Option<Url>) {
                     rel: attr("rel"),
                     kind: attr("type"),
                     disabled: document.attr(node, "disabled").is_some(),
+                    crossorigin: attr("crossorigin"),
                 },
                 title: title(),
                 media: attr("media"),

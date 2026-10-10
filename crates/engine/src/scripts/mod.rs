@@ -296,6 +296,7 @@ pub(crate) fn prepare_element(
     let Some(request) = script_request(page, url.clone(), csp) else {
         return Prepared::Nothing;
     };
+    let request = crate::loader::with_cors_settings(request, document.attr(element, "crossorigin"));
     let fallback = document
         .attr(element, "charset")
         .and_then(Encoding::for_label)

@@ -37,6 +37,25 @@ mod tests;
 mod validity_tests;
 
 use std::collections::HashMap;
+
+/// The state of a CORS settings attribute (HTML 2.5.4, M27.3): no CORS
+/// when it is absent; credentials for `use-credentials`, in any case;
+/// same-origin ones for `anonymous`, the empty value and any other.
+pub(crate) fn cors_settings(value: Option<&str>) -> Option<net::Credentials> {
+    Some(match value? {
+        value if value.eq_ignore_ascii_case("use-credentials") => net::Credentials::Include,
+        _ => net::Credentials::SameOrigin,
+    })
+}
+
+/// `request` in CORS mode when a CORS settings attribute of `value` says
+/// so, as it is otherwise.
+pub(crate) fn with_cors_settings(request: net::Request, value: Option<&str>) -> net::Request {
+    match cors_settings(value) {
+        Some(credentials) => request.with_cors(credentials),
+        None => request,
+    }
+}
 use std::fmt;
 use std::sync::Arc;
 

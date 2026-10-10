@@ -1,7 +1,8 @@
 //! What the engine's requests carry since M27 (docs/design/fetch.md):
 //! the document's origin on its subresources and on the navigations it
 //! starts, so that `Origin` and the `Sec-Fetch-*` fields say who asked;
-//! and a response's `Cross-Origin-Resource-Policy` honoured.
+//! a response's `Cross-Origin-Resource-Policy` honoured; and the CORS
+//! settings attribute of scripts and stylesheets (M27.3).
 
 use net::Url;
 use net::test_server::{Reply, ServerRequest, TestServer};
@@ -189,4 +190,115 @@ fn a_sheet_whose_resource_policy_refuses_the_page_is_not_applied() {
     let mut tab = Tab::new();
     tab.load(server.url("/page.html"));
     assert_eq!(tab.names(), ["ss", "co"]);
+}
+
+/// A reply of `content_type` and `body` that CORS allows to any origin.
+fn shared(content_type: &str, body: &[u8]) -> Reply {
+    Reply::with_fields(
+        200,
+        &[
+            ("Content-Type", content_type),
+            ("Access-Control-Allow-Origin", "*"),
+        ],
+        body,
+    )
+}
+
+#[test]
+fn a_crossorigin_script_runs_by_cors_and_its_errors_are_unmuted() {
+    let other = serve(|path| match path {
+        "/shared.js" => Some(shared("text/javascript", b"throw new Error('open')")),
+        "/bare.js" => Some(Reply::ok("text/javascript", b"throw new Error('closed')")),
+        _ => None,
+    });
+    let (shared_js, bare_js) = (other.url("/shared.js"), other.url("/bare.js"));
+    let page = format!(
+        "<script src={shared_js} crossorigin></script>\
+         <script src={bare_js} crossorigin onerror=\"console.log('refused')\"></script>\
+         <script src={bare_js}></script>\
+         <script src={shared_js} crossorigin=use-credentials \
+         onerror=\"console.log('no credentials')\"></script>"
+    );
+    let server = serve(move |path| (path == "/page.html").then(|| html(&page)));
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    load_all(&mut tab, server.url("/page.html"));
+    let lines: Vec<String> = tab
+        .engine
+        .take_console()
+        .into_iter()
+        .map(|entry| entry.text)
+        .filter(|text| !text.starts_with("Failed to load"))
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            format!("Uncaught Error: open at {shared_js}:1:11"),
+            "refused".to_owned(),
+            "Uncaught Script error.".to_owned(),
+            "no credentials".to_owned(),
+        ]
+    );
+    assert_eq!(
+        sent(&other, "/shared.js")
+            .header("Origin")
+            .map(str::to_owned),
+        Some(server.url("/").origin().serialization())
+    );
+    assert_eq!(
+        sent(&other, "/shared.js").header("Sec-Fetch-Mode"),
+        Some("cors")
+    );
+}
+
+#[test]
+fn a_crossorigin_sheet_applies_only_when_cors_allows_it() {
+    let other = serve(|path| match path {
+        "/a.css" => Some(shared("text/css", b".a {}")),
+        "/b.css" => Some(css(".b {}")),
+        _ => None,
+    });
+    let (a, b) = (other.url("/a.css"), other.url("/b.css"));
+    let page = format!(
+        "<link rel=stylesheet href={a} crossorigin=anonymous>\
+         <link rel=stylesheet href={b} crossorigin>\
+         <link rel=stylesheet href={b}>"
+    );
+    let server = serve(move |path| (path == "/page.html").then(|| html(&page)));
+    let mut tab = Tab::new();
+    tab.load(server.url("/page.html"));
+    assert_eq!(tab.names(), ["a", "b"]);
+    let modes: Vec<Option<String>> = other
+        .requests()
+        .iter()
+        .map(|request| request.header("Sec-Fetch-Mode").map(str::to_owned))
+        .collect();
+    assert_eq!(
+        modes
+            .iter()
+            .filter(|mode| mode.as_deref() == Some("cors"))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn a_cors_settings_attribute_says_credentials_for_use_credentials_alone() {
+    use super::cors_settings;
+    use net::Credentials;
+    assert_eq!(cors_settings(None), None);
+    for value in ["", "anonymous", "Anonymous", "nonsense"] {
+        assert_eq!(
+            cors_settings(Some(value)),
+            Some(Credentials::SameOrigin),
+            "{value}"
+        );
+    }
+    for value in ["use-credentials", "USE-Credentials"] {
+        assert_eq!(
+            cors_settings(Some(value)),
+            Some(Credentials::Include),
+            "{value}"
+        );
+    }
 }
