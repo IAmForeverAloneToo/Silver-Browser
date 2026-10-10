@@ -582,3 +582,19 @@ FileAPI/blob/Blob-textStream.any.html	Blob.textStream() ignores type charset (UT
 FileAPI/blob/Blob-textStream.any.html	Blob.textStream() ignores invalid type charset (invalid-charset)	no Blob.stream() or textStream(): no streams (G67)
 FileAPI/blob/Blob-textStream.any.html	Blob.textStream() ignores type charset (iso-8859-1)	no Blob.stream() or textStream(): no streams (G67)
 FileAPI/blob/Blob-textStream.any.html	Blob.textStream() can be called multiple times	no Blob.stream() or textStream(): no streams (G67)
+
+# Tests taken at M28 (docs/design/storage.md, step 7): the testharness.js
+# tests of webstorage but those that need a frame. A lone surrogate set
+# in an area is U+FFFD here, the engine's strings holding none (G78).
+webstorage/storage_setitem.window.html	localStorage[] = "U+d800"	a lone surrogate is stored as U+FFFD (G78)
+webstorage/storage_setitem.window.html	localStorage[] = "U+dbff"	a lone surrogate is stored as U+FFFD (G78)
+webstorage/storage_setitem.window.html	localStorage[] = "U+dc00"	a lone surrogate is stored as U+FFFD (G78)
+webstorage/storage_setitem.window.html	localStorage[] = "U+dfff"	a lone surrogate is stored as U+FFFD (G78)
+webstorage/storage_setitem.window.html	localStorage[] = "U+d83ca"	a lone surrogate is stored as U+FFFD (G78)
+webstorage/storage_setitem.window.html	localStorage[] = "aU+df4d"	a lone surrogate is stored as U+FFFD (G78)
+webstorage/storage_setitem.window.html	sessionStorage[] = "U+d800"	a lone surrogate is stored as U+FFFD (G78)
+webstorage/storage_setitem.window.html	sessionStorage[] = "U+dbff"	a lone surrogate is stored as U+FFFD (G78)
+webstorage/storage_setitem.window.html	sessionStorage[] = "U+dc00"	a lone surrogate is stored as U+FFFD (G78)
+webstorage/storage_setitem.window.html	sessionStorage[] = "U+dfff"	a lone surrogate is stored as U+FFFD (G78)
+webstorage/storage_setitem.window.html	sessionStorage[] = "U+d83ca"	a lone surrogate is stored as U+FFFD (G78)
+webstorage/storage_setitem.window.html	sessionStorage[] = "aU+df4d"	a lone surrogate is stored as U+FFFD (G78)

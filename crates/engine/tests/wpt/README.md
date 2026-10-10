@@ -20,7 +20,7 @@ cargo run -p engine --example wpt -- pull <checkout>
 which rewrites them, `MANIFEST` and this file. `tests/wpt.rs` runs
 them; `expectations.txt` names those expected to fail, and why.
 
-With them are the testharness.js tests of `fetch/api/headers`, `fetch/api/request`, `fetch/api/response`, `fetch/api/basic`, `xhr`, `url` (the `urlsearchparams-*` tests), `FileAPI/blob` (M27) that
+With them are the testharness.js tests of `fetch/api/headers`, `fetch/api/request`, `fetch/api/response`, `fetch/api/basic`, `xhr`, `url` (the `urlsearchparams-*` tests), `FileAPI/blob`, `webstorage` (M27) that
 the runner's one server can serve: no Python handler, no `.sub`
 template, no other host, nothing over `https:` and no worker's
 global. `resources/testharness.js` is the real one; the runner
@@ -35,8 +35,8 @@ fail is named in `expectations.txt`, and why.
 | checklayout | 66 |
 | crashtest | 94 |
 | reftest | 2272 |
-| testharness | 156 |
-| all | 2588 |
+| testharness | 181 |
+| all | 2613 |
 
 ## Left out
 
@@ -59,7 +59,7 @@ The first reason the rule found for each test it left out:
 | element <br> | 146 |
 | dir=rtl | 113 |
 | element <iframe> | 101 |
-| wptserve substitution (.sub) | 91 |
+| wptserve substitution (.sub) | 93 |
 | declaration of direction | 90 |
 | declaration of border-radius | 85 |
 | declaration of white-space | 81 |
@@ -68,6 +68,7 @@ The first reason the rule found for each test it left out:
 | declaration of font-weight | 54 |
 | element <object> | 54 |
 | element <canvas> | 52 |
+| a frame | 49 |
 | self-closing <div/> in XHTML | 48 |
 | element <video> | 47 |
 | element <embed> | 46 |
@@ -89,7 +90,6 @@ The first reason the rule found for each test it left out:
 | declaration of grid-template-rows | 26 |
 | declaration of overflow-y | 25 |
 | @container | 23 |
-| a frame | 23 |
 | declaration of grid-template-columns | 21 |
 | declaration of text-shadow | 21 |
 | element <fieldset> | 21 |
@@ -112,9 +112,9 @@ The first reason the rule found for each test it left out:
 | declaration of align-self | 11 |
 | declaration of column-count | 11 |
 | declaration of text-emphasis | 11 |
+| https: | 11 |
 | a worker's global | 10 |
 | declaration of text-decoration-skip-spaces | 10 |
-| https: | 10 |
 | declaration of filter | 9 |
 | declaration of text-decoration-skip-ink | 9 |
 | unchecked attribute data-expected | 9 |

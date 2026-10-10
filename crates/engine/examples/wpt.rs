@@ -123,6 +123,7 @@ const TESTHARNESS_DIRECTORIES: &[(&str, &str)] = &[
     ("xhr", ""),
     ("url", "urlsearchparams-"),
     ("FileAPI/blob", ""),
+    ("webstorage", ""),
 ];
 
 /// The directories of files the testharness tests read, copied whole
@@ -133,6 +134,7 @@ const SUPPORT_DIRECTORIES: &[&str] = &[
     "fetch/api/request/resources",
     "xhr/resources",
     "FileAPI/support",
+    "webstorage/resources",
 ];
 
 /// How deep `@import`s may go; the engine fetches no deeper.
@@ -478,14 +480,16 @@ fn served_here(text: &str) -> Result<(), String> {
     {
         return Err("a worker's global".to_string());
     }
+    // In any case: a tag name is (`createElement("IFRAME")`, M28).
+    let lower = text.to_ascii_lowercase();
     if [
-        "createElement(\"iframe\")",
-        "createElement('iframe')",
+        "createelement(\"iframe\")",
+        "createelement('iframe')",
         "window.open(",
-        ".contentWindow",
+        ".contentwindow",
     ]
     .iter()
-    .any(|frame| text.contains(frame))
+    .any(|frame| lower.contains(frame))
     {
         return Err("a frame".to_string());
     }
@@ -2127,6 +2131,10 @@ mod tests {
                 ("fetch/a/made.any.js", "new Worker('w.js');"),
                 ("fetch/a/frame.any.js", "document.createElement('iframe');"),
                 (
+                    "fetch/a/upper.any.js",
+                    "document.createElement(\"IFRAME\");",
+                ),
+                (
                     "fetch/a/f.html",
                     &format!("{harness}<iframe src=x.html></iframe>"),
                 ),
@@ -2164,6 +2172,7 @@ mod tests {
             ("fetch/a/pipe.any.js", "wptserve pipe"),
             ("fetch/a/made.any.js", "a worker's global"),
             ("fetch/a/frame.any.js", "a frame"),
+            ("fetch/a/upper.any.js", "a frame"),
             ("fetch/a/f.html", "a frame"),
             ("fetch/a/s.https.any.js", "https:"),
             ("fetch/a/t.sub.any.js", "wptserve substitution (.sub)"),
