@@ -510,3 +510,220 @@ fn a_run_stopped_inside_a_scripts_import_leaves_the_module_working() {
         .expect("it runs");
     assert_eq!(after, crate::Completion::String("5".to_owned()));
 }
+
+const MEMORY: &str = r#"(module
+  (memory (export "mem") 1 3)
+  (func (export "load") (param i32) (result i32) local.get 0 i32.load)
+  (func (export "store") (param i32 i32) local.get 0 local.get 1 i32.store)
+  (func (export "grow") (param i32) (result i32) local.get 0 memory.grow)
+  (func (export "size") (result i32) memory.size))"#;
+
+#[test]
+fn a_memory_is_shared_with_scripts_through_its_buffer() {
+    let memory = module(MEMORY);
+    let peek = module(
+        r#"(module (import "env" "peek" (func $peek))
+  (memory (export "mem") 1)
+  (func (export "run") (result i32)
+    i32.const 0 i32.const 11 i32.store
+    call $peek
+    i32.const 4 i32.load))"#,
+    );
+    let lines = steps(&format!(
+        r#"
+const e = new WebAssembly.Instance(new WebAssembly.Module({memory})).exports;
+step("shared", () => {{ const view = new Int32Array(e.mem.buffer); view[1] = 77; const a = e.load(4); e.store(8, 99);
+  return [a, view[2], e.mem instanceof WebAssembly.Memory, e.mem.buffer.byteLength, e.mem === e.mem]; }});
+step("far", () => {{ e.store(65532, 123456); const view = new Int32Array(e.mem.buffer);
+  view[100] = 5; return [view[16383], e.load(400)]; }});
+step("grown", () => {{ const b = e.mem.buffer; const before = e.grow(1);
+  return [before, b.byteLength, e.mem.buffer.byteLength, e.mem.buffer === b, e.size(), e.load(4)]; }});
+step("after", () => {{ new Uint8Array(e.mem.buffer)[70000] = 5; return [e.load(70000) & 255, e.grow(5)]; }});
+let p;
+const v = () => new Int32Array(p.mem.buffer);
+p = new WebAssembly.Instance(new WebAssembly.Module({peek}), {{ env: {{ peek() {{ seen = v()[0]; v()[1] = 22; }} }} }}).exports;
+let seen;
+step("midCall", () => {{ const r = p.run(); return [seen, r]; }});
+"#
+    ));
+    assert_eq!(
+        lines,
+        [
+            "shared=[77,99,true,65536,true]",
+            "far=[123456,5]",
+            "grown=[1,0,131072,false,2,77]",
+            "after=[5,-1]",
+            "midCall=[11,22]",
+        ]
+    );
+}
+
+#[test]
+fn memory_objects_answer_as_the_reference_browsers() {
+    let imported = module(
+        r#"(module (import "env" "mem" (memory 1))
+  (data (i32.const 0) "hi")
+  (export "mem" (memory 0))
+  (func (export "load8") (param i32) (result i32) local.get 0 i32.load8_u))"#,
+    );
+    let larger = module(r#"(module (import "env" "mem" (memory 2)))"#);
+    let owner = module(
+        r#"(module (memory (export "mem") 1) (table (export "t") 1 funcref)
+  (global (export "g") (mut i32) (i32.const 3)))"#,
+    );
+    let again = module(
+        r#"(module (import "env" "mem" (memory 1)) (import "env" "t" (table 1 funcref))
+  (import "env" "g" (global (mut i32)))
+  (export "mem" (memory 0)) (export "t" (table 0)) (export "g" (global 0)))"#,
+    );
+    let lines = steps(&format!(
+        r#"
+step("memory", () => {{
+  const m = new WebAssembly.Memory({{ initial: 1, maximum: 3 }});
+  const b1 = m.buffer;
+  const r = [b1.byteLength, m.buffer === b1, m.grow(1), b1.byteLength, m.buffer.byteLength, m.buffer === b1];
+  try {{ m.grow(5); }} catch (e) {{ r.push(e.constructor.name + ": " + e.message); }}
+  return r;
+}});
+step("memoryTooBig", () => new WebAssembly.Memory({{ initial: 70000 }}));
+step("none", () => new WebAssembly.Memory());
+step("noInitial", () => new WebAssembly.Memory({{}}));
+step("nan", () => new WebAssembly.Memory({{ initial: NaN }}));
+step("below", () => new WebAssembly.Memory({{ initial: 2, maximum: 1 }}));
+step("shared", () => new WebAssembly.Memory({{ initial: 1, maximum: 1, shared: true }}));
+step("negative", () => new WebAssembly.Memory({{ initial: 1 }}).grow(-1));
+step("growZero", () => {{ const m = new WebAssembly.Memory({{ initial: 1 }}); const b = m.buffer; const r = m.grow(0);
+  return [r, b.byteLength, m.buffer.byteLength]; }});
+step("imported", () => {{ const m = new WebAssembly.Memory({{ initial: 1 }}); const before = new Uint8Array(m.buffer);
+  before[10] = 42; const e = new WebAssembly.Instance(new WebAssembly.Module({imported}), {{ env: {{ mem: m }} }}).exports;
+  return [e.mem === m, before[0], before[1], e.load8(10)]; }});
+step("reexported", () => {{ const a = new WebAssembly.Instance(new WebAssembly.Module({owner})).exports;
+  const b = new WebAssembly.Instance(new WebAssembly.Module({again}), {{ env: a }}).exports;
+  return [b.mem === a.mem, b.t === a.t, b.g === a.g, a.mem instanceof WebAssembly.Memory]; }});
+step("tooSmall", () => {{ try {{ new WebAssembly.Instance(new WebAssembly.Module({larger}),
+  {{ env: {{ mem: new WebAssembly.Memory({{ initial: 1 }}) }} }}); }} catch (e) {{ return e.constructor.name; }} }});
+step("receiver", () => Object.getOwnPropertyDescriptor(WebAssembly.Memory.prototype, "buffer").get.call({{}}));
+step("tags", () => ["Module", "Instance", "Memory", "Table", "Global", "CompileError", "LinkError", "RuntimeError"]
+  .map((n) => Object.prototype.toString.call(WebAssembly[n].prototype)));
+"#
+    ));
+    assert_eq!(
+        lines,
+        [
+            r#"memory=[65536,true,1,0,131072,false,"RangeError: WebAssembly.Memory.grow(): Maximum memory size exceeded"]"#,
+            "memoryTooBig=threw RangeError: WebAssembly.Memory(): Property 'initial': value 70000 is above the upper bound 65536",
+            "none=threw TypeError: WebAssembly.Memory(): Argument 0 must be a memory descriptor",
+            "noInitial=threw TypeError: WebAssembly.Memory(): Property 'initial' is required",
+            "nan=threw TypeError: WebAssembly.Memory(): Property 'initial' must be convertible to a valid number",
+            "below=threw RangeError: WebAssembly.Memory(): Property 'maximum': value 1 is below the lower bound 2",
+            "shared=threw TypeError: WebAssembly.Memory(): shared memories are not supported",
+            "negative=threw TypeError: WebAssembly.Memory.grow(): Argument 0 must be in the unsigned long range",
+            "growZero=[1,0,65536]",
+            "imported=[true,104,105,42]",
+            "reexported=[true,true,true,true]",
+            r#"tooSmall="LinkError""#,
+            "receiver=threw TypeError: WebAssembly.Memory.buffer: Receiver is not a WebAssembly.Memory",
+            r#"tags=["[object WebAssembly.Module]","[object WebAssembly.Instance]","[object WebAssembly.Memory]","[object WebAssembly.Table]","[object WebAssembly.Global]","[object Object]","[object Object]","[object Object]"]"#,
+        ]
+    );
+}
+
+#[test]
+fn globals_hold_values_shared_with_modules() {
+    let add = module(ADD);
+    let shared = module(
+        r#"(module (import "env" "g" (global $g (mut i32)))
+  (global (export "own") (mut f64) (f64.const 1.5))
+  (export "g" (global $g))
+  (func (export "bump") global.get $g i32.const 1 i32.add global.set $g)
+  (func (export "read") (result i32) global.get $g))"#,
+    );
+    let lines = steps(&format!(
+        r#"
+step("global", () => {{
+  const g = new WebAssembly.Global({{ value: "i32", mutable: true }}, 42);
+  const r = [g.value, g.valueOf()];
+  g.value = 7.9;
+  r.push(g.value);
+  const c = new WebAssembly.Global({{ value: "i32" }}, 1);
+  try {{ c.value = 2; }} catch (e) {{ r.push(e.constructor.name + ": " + e.message); }}
+  const l = new WebAssembly.Global({{ value: "i64" }}, 5n);
+  r.push(typeof l.value, String(new WebAssembly.Global({{ value: "f32" }}, 0.1).value));
+  return r;
+}});
+const m = new WebAssembly.Module({shared});
+step("shared", () => {{ const g = new WebAssembly.Global({{ value: "i32", mutable: true }}, 5);
+  const e = new WebAssembly.Instance(m, {{ env: {{ g }} }}).exports; e.bump(); const a = g.value; g.value = 40; e.bump();
+  return [a, e.read(), e.g === g, e.own instanceof WebAssembly.Global, e.own.value, String(e.own), e.own === e.own]; }});
+step("constant", () => {{ try {{ new WebAssembly.Instance(m, {{ env: {{ g: new WebAssembly.Global({{ value: "i32" }}, 1) }} }}); }}
+  catch (e) {{ return e.constructor.name; }} }});
+step("wrongType", () => {{ try {{ new WebAssembly.Instance(m, {{ env: {{ g: new WebAssembly.Global({{ value: "i64", mutable: true }}) }} }}); }}
+  catch (e) {{ return e.constructor.name; }} }});
+const add = new WebAssembly.Instance(new WebAssembly.Module({add})).exports.add;
+step("defaults", () => [String(new WebAssembly.Global({{ value: "i64" }}).value), new WebAssembly.Global({{ value: "f64" }}).value,
+  String(new WebAssembly.Global({{ value: "externref" }}).value), new WebAssembly.Global({{ value: "anyfunc" }}).value,
+  new WebAssembly.Global({{ value: "anyfunc" }}, add).value === add]);
+step("v128", () => new WebAssembly.Global({{ value: "v128" }}));
+step("i64Number", () => new WebAssembly.Global({{ value: "i64" }}, 5));
+step("notFunction", () => new WebAssembly.Global({{ value: "anyfunc" }}, () => 1));
+"#
+    ));
+    assert_eq!(
+        lines,
+        [
+            r#"global=[42,42,7,"TypeError: set WebAssembly.Global.value): Can't set the value of an immutable global.","bigint","0.10000000149011612"]"#,
+            r#"shared=[6,41,true,true,1.5,"[object WebAssembly.Global]",true]"#,
+            r#"constant="LinkError""#,
+            r#"wrongType="LinkError""#,
+            r#"defaults=["0",0,"undefined",null,true]"#,
+            "v128=threw TypeError: WebAssembly.Global(): Descriptor property 'value' must be a WebAssembly type",
+            "i64Number=threw TypeError: Cannot convert 5 to a BigInt",
+            "notFunction=threw TypeError: type incompatibility when transforming from/to JS",
+        ]
+    );
+}
+
+#[test]
+fn tables_hold_references_shared_with_modules() {
+    let add = module(ADD);
+    let indirect = module(
+        r#"(module (import "env" "t" (table 2 funcref))
+  (type $r (func (result i32)))
+  (table $own (export "tbl") 1 externref)
+  (func (export "call") (param i32) (result i32) local.get 0 call_indirect (type $r)))"#,
+    );
+    let answer = module(r#"(module (func (export "f") (result i32) i32.const 42))"#);
+    let lines = steps(&format!(
+        r#"
+const add = new WebAssembly.Instance(new WebAssembly.Module({add})).exports.add;
+step("table", () => {{
+  const t = new WebAssembly.Table({{ element: "anyfunc", initial: 2 }});
+  const r = [t.length, t.get(0), t.set(0, add), t.get(0) === add, t.grow(2), t.length];
+  try {{ t.get(9); }} catch (e) {{ r.push(e.constructor.name + ": " + e.message); }}
+  try {{ t.set(0, () => 1); }} catch (e) {{ r.push(e.constructor.name + ": " + e.message); }}
+  return r;
+}});
+const f = new WebAssembly.Instance(new WebAssembly.Module({answer})).exports.f;
+step("indirect", () => {{ const t = new WebAssembly.Table({{ element: "anyfunc", initial: 2 }}); t.set(1, f);
+  const e = new WebAssembly.Instance(new WebAssembly.Module({indirect}), {{ env: {{ t }} }}).exports;
+  let trapped; try {{ e.call(0); }} catch (error) {{ trapped = error.message; }}
+  return [e.call(1), trapped, e.tbl === e.tbl, e.tbl instanceof WebAssembly.Table, e.tbl.length]; }});
+step("externs", () => {{ const o = {{}}; const t = new WebAssembly.Table({{ element: "externref", initial: 2 }}, "x");
+  const r = [t.get(0), t.get(1)]; t.set(0, o); r.push(t.get(0) === o, t.grow(1), String(t.get(2))); return r; }});
+step("full", () => new WebAssembly.Table({{ element: "anyfunc", initial: 1, maximum: 1 }}).grow(1));
+step("element", () => new WebAssembly.Table({{ element: "i32", initial: 1 }}));
+step("large", () => new WebAssembly.Table({{ element: "anyfunc", initial: 10000001 }}));
+"#
+    ));
+    assert_eq!(
+        lines,
+        [
+            r#"table=[2,null,null,true,2,4,"RangeError: WebAssembly.Table.get(): invalid address 9 in funcref table of size 4","TypeError: WebAssembly.Table.set(): Argument 1 is invalid for table: function-typed object must be null (if nullable) or a Wasm function object"]"#,
+            r#"indirect=[42,"null function",true,true,1]"#,
+            r#"externs=["x","x",true,2,"undefined"]"#,
+            "full=threw RangeError: WebAssembly.Table.grow(): failed to grow table by 1",
+            "element=threw TypeError: WebAssembly.Table(): Descriptor property 'element' must be a WebAssembly reference type",
+            "large=threw RangeError: WebAssembly.Table(): Property 'initial': value 10000001 is above the upper bound 10000000",
+        ]
+    );
+}

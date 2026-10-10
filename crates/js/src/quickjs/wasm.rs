@@ -14,6 +14,11 @@
 //! answer to the bootstrap is an array: `[0, results...]` when it
 //! returned, `[1, id, slot, arguments...]` when it stopped at a script's
 //! function, `[2, class, message]` when it failed.
+//!
+//! A memory's bytes are the store's, and a script's `buffer` of it a
+//! copy, its mirror: what scripts wrote in it goes into the memory when
+//! a call enters the store, and what modules wrote goes out into it,
+//! in runs of [`MIRROR_CHUNK`] bytes that differ, when a call leaves.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -25,14 +30,17 @@ use rquickjs::{Array, ArrayBuffer, Ctx, Exception, Function, Object, Value};
 use wasmi::errors::{ErrorKind, HostError, InstantiationError};
 use wasmi::{
     CompilationMode, Config, Engine, Error, Extern, ExternRef, ExternType, F32, F64, Func,
-    FuncType, Global, Instance, Module, Mutability, Nullable, ResumableCall, ResumableCallHostTrap,
-    Store, TrapCode, Val, ValType,
+    FuncType, Global, Instance, Memory, MemoryType, Module, Mutability, Nullable, Ref, RefType,
+    ResumableCall, ResumableCallHostTrap, Store, Table, TableType, TrapCode, Val, ValType,
 };
 
 use super::dom::Budget;
 
 /// The largest module a realm compiles.
 pub(crate) const MAX_WASM_MODULE_BYTES: usize = 64 << 20;
+
+/// A memory's bytes and its buffer's are compared in runs of this many.
+const MIRROR_CHUNK: usize = 4096;
 
 /// What a realm's modules are made in.
 pub(super) struct Wasm {
@@ -55,6 +63,14 @@ pub(super) struct Wasm {
     externs: Vec<ExternRef>,
     /// The calls stopped at a script's function, by their ids.
     pending: Vec<Option<Pending>>,
+    /// The memories, tables and globals a script has been given, by
+    /// their keys.
+    memories: HashMap<u32, Memory>,
+    tables: HashMap<u32, Table>,
+    globals: HashMap<u32, Global>,
+    /// What the buffer a script has of a memory holds, by the memory's
+    /// key: the memory as the last call into the store left it.
+    mirrors: HashMap<u32, Vec<u8>>,
 }
 
 /// A call stopped at a script's function, and where its results go.
@@ -339,6 +355,65 @@ fn key(item: &impl fmt::Debug) -> Option<u32> {
     digits[..end].parse().ok()
 }
 
+/// `bytes` as base64, which `setFromBase64` reads.
+fn to_base64(bytes: &[u8]) -> String {
+    const LETTERS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let byte = |i: usize| u32::from(chunk.get(i).copied().unwrap_or(0));
+        let word = byte(0) << 16 | byte(1) << 8 | byte(2);
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(char::from(LETTERS[(word >> (18 - 6 * i) & 63) as usize]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+/// The value type the bootstrap names by `letter`.
+fn value_type(letter: &str) -> Option<ValType> {
+    Some(match letter {
+        "i" => ValType::I32,
+        "I" => ValType::I64,
+        "f" => ValType::F32,
+        "F" => ValType::F64,
+        "r" => ValType::FuncRef,
+        "e" => ValType::ExternRef,
+        _ => return None,
+    })
+}
+
+/// A reference value as a table holds it.
+fn reference(val: Val) -> Ref {
+    match val {
+        Val::ExternRef(held) => Ref::Extern(held),
+        Val::FuncRef(func) => Ref::Func(func),
+        _ => Ref::Func(Nullable::Null),
+    }
+}
+
+/// A table's element type: as a value's, and as the reference browser
+/// names it.
+fn element(ty: RefType) -> (ValType, &'static str) {
+    match ty {
+        RefType::Func => (ValType::FuncRef, "funcref"),
+        RefType::Extern => (ValType::ExternRef, "externref"),
+    }
+}
+
+/// `[0, values...]`: what the bootstrap reads of a native that may fail.
+fn answer<'js>(ctx: &Ctx<'js>, values: &[Value<'js>]) -> rquickjs::Result<Array<'js>> {
+    let out = Array::new(ctx.clone())?;
+    out.set(0, 0)?;
+    for (i, value) in values.iter().enumerate() {
+        out.set(i + 1, value.clone())?;
+    }
+    Ok(out)
+}
+
 /// A value type as the bootstrap names it.
 fn letter(ty: ValType) -> char {
     match ty {
@@ -463,6 +538,31 @@ impl Wasm {
             defined: Vec::new(),
             externs: Vec::new(),
             pending: Vec::new(),
+            memories: HashMap::new(),
+            tables: HashMap::new(),
+            globals: HashMap::new(),
+            mirrors: HashMap::new(),
+        }
+    }
+
+    /// `item`'s key, the item kept in `map` for the scripts that have it.
+    fn keep<T: Copy + fmt::Debug>(map: &mut HashMap<u32, T>, item: T) -> Option<u32> {
+        let key = key(&item)?;
+        map.entry(key).or_insert(item);
+        Some(key)
+    }
+
+    /// What a script's handle names in `map`.
+    fn kept<T: Copy>(
+        map: &HashMap<u32, T>,
+        ctx: &Ctx<'_>,
+        handle: f64,
+        what: &str,
+    ) -> rquickjs::Result<T> {
+        let key = index(handle).and_then(|key| u32::try_from(key).ok());
+        match key.and_then(|key| map.get(&key)) {
+            Some(item) => Ok(*item),
+            None => unknown(ctx, what),
         }
     }
 
@@ -472,18 +572,12 @@ impl Wasm {
 
     /// `func`'s key, the function kept for the scripts that have it.
     fn func(&mut self, func: Func) -> Option<u32> {
-        let key = key(&func)?;
-        self.funcs.entry(key).or_insert(func);
-        Some(key)
+        Wasm::keep(&mut self.funcs, func)
     }
 
     /// The function a script's handle names.
     fn func_of(&self, ctx: &Ctx<'_>, handle: f64) -> rquickjs::Result<Func> {
-        let key = index(handle).and_then(|key| u32::try_from(key).ok());
-        match key.and_then(|key| self.funcs.get(&key)) {
-            Some(func) => Ok(*func),
-            None => unknown(ctx, "a function of the store"),
-        }
+        Wasm::kept(&self.funcs, ctx, handle, "a function of the store")
     }
 
     /// The name of the function `key`: its index in its module, as the
@@ -661,8 +755,9 @@ impl Wasm {
     /// An instance of the module `handle`, its imports `given` as the
     /// bootstrap resolved them in the module's order, a tag and a value
     /// each: `"f"` and a function's key, `"h"` and the slot of a script's
-    /// callable, `"g"` and a global's value. `[0, instance, start]`, the
-    /// key of the start function or -1; or why it failed.
+    /// callable, `"g"` and a global's value, `"m"`, `"t"` and `"G"` and
+    /// a memory's, a table's and a global's key. `[0, instance, start]`,
+    /// the key of the start function or -1; or why it failed.
     fn instantiate<'js>(
         &mut self,
         ctx: &Ctx<'js>,
@@ -718,6 +813,18 @@ impl Wasm {
                     let val = self.val(ctx, &value, ty.content())?;
                     Extern::Global(Global::new(&mut self.store, val, Mutability::Const))
                 }
+                (ExternType::Memory(_), "m") => {
+                    let handle = value.as_number().unwrap_or(-1.0);
+                    Extern::Memory(Wasm::kept(&self.memories, ctx, handle, "a memory")?)
+                }
+                (ExternType::Table(_), "t") => {
+                    let handle = value.as_number().unwrap_or(-1.0);
+                    Extern::Table(Wasm::kept(&self.tables, ctx, handle, "a table")?)
+                }
+                (ExternType::Global(_), "G") => {
+                    let handle = value.as_number().unwrap_or(-1.0);
+                    Extern::Global(Wasm::kept(&self.globals, ctx, handle, "a global")?)
+                }
                 _ => return unknown(ctx, "an import of its kind"),
             });
         }
@@ -747,7 +854,7 @@ impl Wasm {
     }
 
     /// The instance `handle`'s exports in its module's order: each one's
-    /// name, kind and function's key.
+    /// name, kind and key.
     fn exports<'js>(&mut self, ctx: &Ctx<'js>, handle: f64) -> rquickjs::Result<Array<'js>> {
         let Some(&(instance, at)) = index(handle).and_then(|at| self.instances.get(at)) else {
             return unknown(ctx, "an instance");
@@ -756,11 +863,15 @@ impl Wasm {
         let out = Array::new(ctx.clone())?;
         let mut n = 0;
         for (name, kind) in exports {
-            let Some(func) = instance.get_func(&self.store, &name) else {
-                continue;
+            let key = match instance.get_export(&self.store, &name) {
+                Some(Extern::Func(func)) => self.func(func),
+                Some(Extern::Memory(memory)) => Wasm::keep(&mut self.memories, memory),
+                Some(Extern::Table(table)) => Wasm::keep(&mut self.tables, table),
+                Some(Extern::Global(global)) => Wasm::keep(&mut self.globals, global),
+                None => continue,
             };
-            let Some(key) = self.func(func) else {
-                return unknown(ctx, "a function with a key");
+            let Some(key) = key else {
+                return unknown(ctx, "an export with a key");
             };
             out.set(n, name)?;
             out.set(n + 1, kind)?;
@@ -768,6 +879,252 @@ impl Wasm {
             n += 3;
         }
         Ok(out)
+    }
+
+    /// A memory of `initial` pages, at most `maximum` (none when
+    /// negative): `[0, key]`, or why there is none.
+    fn memory_new<'js>(
+        &mut self,
+        ctx: &Ctx<'js>,
+        initial: f64,
+        maximum: f64,
+    ) -> rquickjs::Result<Array<'js>> {
+        // The builder refuses limits that do not fit, where `new` panics.
+        let mut ty = MemoryType::builder();
+        ty.min(initial as u64)
+            .max((maximum >= 0.0).then_some(maximum as u64));
+        let made = ty
+            .build()
+            .ok()
+            .and_then(|ty| Memory::new(&mut self.store, ty).ok())
+            .and_then(|memory| Wasm::keep(&mut self.memories, memory));
+        match made {
+            Some(key) => answer(ctx, &[Value::new_number(ctx.clone(), f64::from(key))]),
+            None => failed(ctx, "RangeError", "could not allocate memory"),
+        }
+    }
+
+    /// The memory `handle` grown by `delta` pages: `[0, its pages
+    /// before]`, or why it did not grow. Its buffer is the script's to
+    /// detach.
+    fn memory_grow<'js>(
+        &mut self,
+        ctx: &Ctx<'js>,
+        handle: f64,
+        delta: f64,
+    ) -> rquickjs::Result<Array<'js>> {
+        let memory = Wasm::kept(&self.memories, ctx, handle, "a memory")?;
+        match memory.grow(&mut self.store, delta as u64) {
+            Ok(before) => {
+                self.mirrors.remove(&(handle as u32));
+                answer(ctx, &[Value::new_number(ctx.clone(), before as f64)])
+            }
+            Err(_) => failed(ctx, "RangeError", "Maximum memory size exceeded"),
+        }
+    }
+
+    /// A new buffer of the memory `handle`, its mirror.
+    fn memory_buffer<'js>(
+        &mut self,
+        ctx: &Ctx<'js>,
+        handle: f64,
+    ) -> rquickjs::Result<ArrayBuffer<'js>> {
+        let memory = Wasm::kept(&self.memories, ctx, handle, "a memory")?;
+        let bytes = memory.data(&self.store).to_vec();
+        self.mirrors.insert(handle as u32, bytes.clone());
+        ArrayBuffer::new(ctx.clone(), bytes)
+    }
+
+    /// What scripts wrote in their buffers, into the memories: `list` a
+    /// memory's key and its buffer's bytes as base64, in turn.
+    fn sync_in(&mut self, ctx: &Ctx<'_>, list: &Array<'_>) -> rquickjs::Result<()> {
+        for i in (0..list.len()).step_by(2) {
+            let handle: f64 = list.get(i)?;
+            let text: String = list.get(i + 1)?;
+            let memory = Wasm::kept(&self.memories, ctx, handle, "a memory")?;
+            let data = memory.data_mut(&mut self.store);
+            if let Some(bytes) = from_base64(&text).filter(|bytes| bytes.len() == data.len()) {
+                data.copy_from_slice(&bytes);
+                self.mirrors.insert(handle as u32, bytes);
+            }
+        }
+        Ok(())
+    }
+
+    /// What modules wrote, for the buffers: each memory whose buffer
+    /// differs, its key and each run of bytes that differs, its offset
+    /// and its bytes as base64; a memory grown, its key alone, its
+    /// buffer to be detached.
+    fn sync_out<'js>(&mut self, ctx: &Ctx<'js>) -> rquickjs::Result<Array<'js>> {
+        let out = Array::new(ctx.clone())?;
+        let mut grown = Vec::new();
+        for (&key, mirror) in &mut self.mirrors {
+            let Some(memory) = self.memories.get(&key) else {
+                continue;
+            };
+            let data = memory.data(&self.store);
+            let change = Array::new(ctx.clone())?;
+            change.set(0, key)?;
+            if data.len() != mirror.len() {
+                grown.push(key);
+            } else {
+                let end = |at: usize| (at + MIRROR_CHUNK).min(data.len());
+                let mut at = 0;
+                while at < data.len() {
+                    let start = at;
+                    while at < data.len() && data[at..end(at)] != mirror[at..end(at)] {
+                        at = end(at);
+                    }
+                    if at > start {
+                        mirror[start..at].copy_from_slice(&data[start..at]);
+                        change.set(change.len(), start)?;
+                        change.set(change.len(), to_base64(&data[start..at]))?;
+                    } else {
+                        at = end(at);
+                    }
+                }
+                if change.len() == 1 {
+                    continue;
+                }
+            }
+            out.set(out.len(), change)?;
+        }
+        for key in grown {
+            self.mirrors.remove(&key);
+        }
+        Ok(out)
+    }
+
+    /// A table of `letter`'s references, `initial` long, at most
+    /// `maximum` (none when negative), each element `init`: `[0, key]`,
+    /// or why there is none.
+    fn table_new<'js>(
+        &mut self,
+        ctx: &Ctx<'js>,
+        letter: &str,
+        limits: (f64, f64),
+        init: &Value<'js>,
+    ) -> rquickjs::Result<Array<'js>> {
+        let ty = match letter {
+            "e" => RefType::Extern,
+            _ => RefType::Func,
+        };
+        let init = reference(self.val(ctx, init, element(ty).0)?);
+        let (initial, maximum) = (
+            limits.0 as u32,
+            (limits.1 >= 0.0).then_some(limits.1 as u32),
+        );
+        // `TableType::new` panics at limits that do not fit.
+        if maximum.is_some_and(|maximum| maximum < initial) {
+            return failed(ctx, "RangeError", "could not allocate table");
+        }
+        let ty = TableType::new(ty, initial, maximum);
+        let made = Table::new(&mut self.store, ty, init)
+            .ok()
+            .and_then(|table| Wasm::keep(&mut self.tables, table));
+        match made {
+            Some(key) => answer(ctx, &[Value::new_number(ctx.clone(), f64::from(key))]),
+            None => failed(ctx, "RangeError", "could not allocate table"),
+        }
+    }
+
+    /// Why `index` is past the table's end, in the reference browser's
+    /// words.
+    fn past_end<'js>(
+        &self,
+        ctx: &Ctx<'js>,
+        table: Table,
+        index: f64,
+    ) -> rquickjs::Result<Array<'js>> {
+        let message = format!(
+            "invalid address {index} in {} table of size {}",
+            element(table.ty(&self.store).element()).1,
+            table.size(&self.store)
+        );
+        failed(ctx, "RangeError", &message)
+    }
+
+    /// The element `index` of the table `handle`: `[0, value]`, or why
+    /// there is none.
+    fn table_get<'js>(
+        &mut self,
+        ctx: &Ctx<'js>,
+        handle: f64,
+        index: f64,
+    ) -> rquickjs::Result<Array<'js>> {
+        let table = Wasm::kept(&self.tables, ctx, handle, "a table")?;
+        match table.get(&self.store, index as u64) {
+            Some(held) => {
+                let value = self.raw(ctx, &Val::from(held))?;
+                answer(ctx, &[value])
+            }
+            None => self.past_end(ctx, table, index),
+        }
+    }
+
+    /// The element `index` of the table `handle` set to `value`: `[0]`,
+    /// or why it is not.
+    fn table_set<'js>(
+        &mut self,
+        ctx: &Ctx<'js>,
+        handle: f64,
+        index: f64,
+        value: &Value<'js>,
+    ) -> rquickjs::Result<Array<'js>> {
+        let table = Wasm::kept(&self.tables, ctx, handle, "a table")?;
+        let ty = element(table.ty(&self.store).element()).0;
+        let held = reference(self.val(ctx, value, ty)?);
+        match table.set(&mut self.store, index as u64, held) {
+            Ok(()) => answer(ctx, &[]),
+            Err(_) => self.past_end(ctx, table, index),
+        }
+    }
+
+    /// The table `handle` grown by `delta` elements of `value`: `[0, its
+    /// length before]`, or why it did not grow.
+    fn table_grow<'js>(
+        &mut self,
+        ctx: &Ctx<'js>,
+        handle: f64,
+        delta: f64,
+        value: &Value<'js>,
+    ) -> rquickjs::Result<Array<'js>> {
+        let table = Wasm::kept(&self.tables, ctx, handle, "a table")?;
+        let ty = element(table.ty(&self.store).element()).0;
+        let held = reference(self.val(ctx, value, ty)?);
+        match table.grow(&mut self.store, delta as u64, held) {
+            Ok(before) => answer(ctx, &[Value::new_number(ctx.clone(), before as f64)]),
+            Err(_) => failed(
+                ctx,
+                "RangeError",
+                &format!("failed to grow table by {delta}"),
+            ),
+        }
+    }
+
+    /// A global of `letter`'s values, mutable or not, holding `value`:
+    /// its key.
+    fn global_new(
+        &mut self,
+        ctx: &Ctx<'_>,
+        letter: &str,
+        mutable: bool,
+        value: &Value<'_>,
+    ) -> rquickjs::Result<f64> {
+        let Some(ty) = value_type(letter) else {
+            return unknown(ctx, "a value type");
+        };
+        let val = self.val(ctx, value, ty)?;
+        let mutability = if mutable {
+            Mutability::Var
+        } else {
+            Mutability::Const
+        };
+        let global = Global::new(&mut self.store, val, mutability);
+        match Wasm::keep(&mut self.globals, global) {
+            Some(key) => Ok(f64::from(key)),
+            None => unknown(ctx, "a global with a key"),
+        }
     }
 }
 
@@ -1063,6 +1420,7 @@ pub(super) fn install<'js>(
             });
         })?,
     )?;
+    install_objects(ctx, natives, &wasm)?;
     let shared = wasm;
     natives.set(
         "wasmReset",
@@ -1071,6 +1429,226 @@ pub(super) fn install<'js>(
                 wasm.pending.clear();
             }
         })?,
+    )?;
+    Ok(())
+}
+
+/// The natives of the `Memory`, `Table` and `Global` classes and of the
+/// memories' mirrors: `wasmMemoryNew(initial, maximum)`,
+/// `wasmMemoryGrow(key, delta)`, `wasmMemoryBuffer(key)`,
+/// `wasmSyncIn(list)`, `wasmSyncOut()`, `wasmDetach(buffer)`;
+/// `wasmTableNew(letter, initial, maximum, init)`, `wasmTableLength`,
+/// `wasmTableGet`, `wasmTableSet`, `wasmTableGrow`, `wasmTableType`;
+/// `wasmGlobalNew(letter, mutable, value)`, `wasmGlobalGet`,
+/// `wasmGlobalSet`, `wasmGlobalType`.
+fn install_objects<'js>(
+    ctx: &Ctx<'js>,
+    natives: &Object<'js>,
+    wasm: &Shared,
+) -> rquickjs::Result<()> {
+    let shared = wasm.clone();
+    natives.set(
+        "wasmMemoryNew",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>, initial: f64, maximum: f64| -> rquickjs::Result<Array<'js>> {
+                with(&shared, |wasm| wasm.memory_new(&ctx, initial, maximum))
+            },
+        )?,
+    )?;
+    let shared = wasm.clone();
+    natives.set(
+        "wasmMemoryGrow",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>, handle: f64, delta: f64| -> rquickjs::Result<Array<'js>> {
+                with(&shared, |wasm| wasm.memory_grow(&ctx, handle, delta))
+            },
+        )?,
+    )?;
+    let shared = wasm.clone();
+    natives.set(
+        "wasmMemoryBuffer",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>, handle: f64| -> rquickjs::Result<ArrayBuffer<'js>> {
+                with(&shared, |wasm| wasm.memory_buffer(&ctx, handle))
+            },
+        )?,
+    )?;
+    let shared = wasm.clone();
+    natives.set(
+        "wasmSyncIn",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>, list: Array<'js>| -> rquickjs::Result<()> {
+                with(&shared, |wasm| wasm.sync_in(&ctx, &list))
+            },
+        )?,
+    )?;
+    let shared = wasm.clone();
+    natives.set(
+        "wasmSyncOut",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>| -> rquickjs::Result<Array<'js>> {
+                with(&shared, |wasm| wasm.sync_out(&ctx))
+            },
+        )?,
+    )?;
+    natives.set(
+        "wasmDetach",
+        Function::new(ctx.clone(), |buffer: Value<'js>| {
+            if let Some(mut buffer) = ArrayBuffer::from_value(buffer) {
+                buffer.detach();
+            }
+        })?,
+    )?;
+    let shared = wasm.clone();
+    natives.set(
+        "wasmTableNew",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>,
+                  letter: String,
+                  initial: f64,
+                  maximum: f64,
+                  init: Value<'js>|
+                  -> rquickjs::Result<Array<'js>> {
+                with(&shared, |wasm| {
+                    wasm.table_new(&ctx, &letter, (initial, maximum), &init)
+                })
+            },
+        )?,
+    )?;
+    let shared = wasm.clone();
+    natives.set(
+        "wasmTableLength",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>, handle: f64| -> rquickjs::Result<f64> {
+                with(&shared, |wasm| {
+                    let table = Wasm::kept(&wasm.tables, &ctx, handle, "a table")?;
+                    Ok(table.size(&wasm.store) as f64)
+                })
+            },
+        )?,
+    )?;
+    let shared = wasm.clone();
+    natives.set(
+        "wasmTableType",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>, handle: f64| -> rquickjs::Result<String> {
+                with(&shared, |wasm| {
+                    let table = Wasm::kept(&wasm.tables, &ctx, handle, "a table")?;
+                    Ok(letter(element(table.ty(&wasm.store).element()).0).to_string())
+                })
+            },
+        )?,
+    )?;
+    let shared = wasm.clone();
+    natives.set(
+        "wasmTableGet",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>, handle: f64, index: f64| -> rquickjs::Result<Array<'js>> {
+                with(&shared, |wasm| wasm.table_get(&ctx, handle, index))
+            },
+        )?,
+    )?;
+    let shared = wasm.clone();
+    natives.set(
+        "wasmTableSet",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>,
+                  handle: f64,
+                  index: f64,
+                  value: Value<'js>|
+                  -> rquickjs::Result<Array<'js>> {
+                with(&shared, |wasm| wasm.table_set(&ctx, handle, index, &value))
+            },
+        )?,
+    )?;
+    let shared = wasm.clone();
+    natives.set(
+        "wasmTableGrow",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>,
+                  handle: f64,
+                  delta: f64,
+                  value: Value<'js>|
+                  -> rquickjs::Result<Array<'js>> {
+                with(&shared, |wasm| wasm.table_grow(&ctx, handle, delta, &value))
+            },
+        )?,
+    )?;
+    let shared = wasm.clone();
+    natives.set(
+        "wasmGlobalNew",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>,
+                  letter: String,
+                  mutable: bool,
+                  value: Value<'js>|
+                  -> rquickjs::Result<f64> {
+                with(&shared, |wasm| {
+                    wasm.global_new(&ctx, &letter, mutable, &value)
+                })
+            },
+        )?,
+    )?;
+    let shared = wasm.clone();
+    natives.set(
+        "wasmGlobalType",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>, handle: f64| -> rquickjs::Result<String> {
+                with(&shared, |wasm| {
+                    let global = Wasm::kept(&wasm.globals, &ctx, handle, "a global")?;
+                    let ty = global.ty(&wasm.store);
+                    let mutable = matches!(ty.mutability(), Mutability::Var);
+                    Ok(format!(
+                        "{}{}",
+                        letter(ty.content()),
+                        if mutable { 'm' } else { 'c' }
+                    ))
+                })
+            },
+        )?,
+    )?;
+    let shared = wasm.clone();
+    natives.set(
+        "wasmGlobalGet",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>, handle: f64| -> rquickjs::Result<Value<'js>> {
+                with(&shared, |wasm| {
+                    let global = Wasm::kept(&wasm.globals, &ctx, handle, "a global")?;
+                    let val = global.get(&wasm.store);
+                    wasm.raw(&ctx, &val)
+                })
+            },
+        )?,
+    )?;
+    let shared = wasm.clone();
+    natives.set(
+        "wasmGlobalSet",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>, handle: f64, value: Value<'js>| -> rquickjs::Result<()> {
+                with(&shared, |wasm| {
+                    let global = Wasm::kept(&wasm.globals, &ctx, handle, "a global")?;
+                    let val = wasm.val(&ctx, &value, global.ty(&wasm.store).content())?;
+                    global
+                        .set(&mut wasm.store, val)
+                        .map_err(|_| Exception::throw_type(&ctx, "an immutable global"))
+                })
+            },
+        )?,
     )?;
     Ok(())
 }

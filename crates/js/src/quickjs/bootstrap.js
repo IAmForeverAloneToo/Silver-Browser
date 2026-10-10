@@ -24,6 +24,7 @@
   const ObjectFreeze = Object.freeze;
   const FunctionBind = uncurry(Function.prototype.bind);
   const BigIntAsIntN = BigInt.asIntN;
+  const SetFromBase64 = uncurry(Uint8Array.prototype.setFromBase64);
   const $DOMException = DOMException;
   const $Map = Map;
   const $WeakMap = WeakMap;
@@ -9727,6 +9728,7 @@
   // on, the same value.
   function drive(answer) {
     for (;;) {
+      leave();
       const status = answer[0];
       if (status === 0) {
         return answer;
@@ -9742,6 +9744,7 @@
         native.wasmAbandon(id);
         throw error;
       }
+      enter();
       answer = native.wasmResume(id, results);
     }
   }
@@ -9777,6 +9780,7 @@
           // a module would call it.
           return resultsToJS(callHost(slot, raw, 0), results, 0);
         }
+        enter();
         return resultsToJS(drive(native.wasmCall(key, raw)), results, 1);
       },
     }.run;
@@ -9831,6 +9835,8 @@
             results: StringSlice(type, colon + 1),
           });
         }
+      } else if (kind === "global" && WeakMapGet(globalInfo, value) !== undefined) {
+        ArrayPush(given, "G", WeakMapGet(globalInfo, value).key);
       } else if (kind === "global") {
         const letter = type[0];
         const fits =
@@ -9847,14 +9853,24 @@
         }
         ArrayPush(given, "g", toWasm(value, letter));
       } else if (kind === "memory") {
-        throw new LinkError(named + "memory import must be a WebAssembly.Memory object");
+        const key = isObject(value) ? WeakMapGet(memoryKeys, value) : undefined;
+        if (key === undefined) {
+          throw new LinkError(named + "memory import must be a WebAssembly.Memory object");
+        }
+        ArrayPush(given, "m", key);
       } else if (kind === "table") {
-        throw new LinkError(named + "table import requires a WebAssembly.Table");
+        const info = isObject(value) ? WeakMapGet(tableInfo, value) : undefined;
+        if (info === undefined) {
+          throw new LinkError(named + "table import requires a WebAssembly.Table");
+        }
+        ArrayPush(given, "t", info.key);
       } else {
         throw new LinkError(named + "tag import requires a WebAssembly.Tag");
       }
     }
+    enter();
     const made = native.wasmInstantiate(handle, given);
+    leave();
     if (made[0] === 2) {
       throw wasmFailure(made[1], where + ": " + made[2]);
     }
@@ -9865,8 +9881,17 @@
     const exports = ObjectCreate(null);
     const named = native.wasmInstanceExports(made[1]);
     for (let i = 0; i < named.length; i += 3) {
+      const kind = named[i + 1];
+      const key = named[i + 2];
       defineProperty(exports, named[i], {
-        value: exportedFunction(named[i + 2]),
+        value:
+          kind === "function"
+            ? exportedFunction(key)
+            : kind === "memory"
+              ? memoryObject(key)
+              : kind === "table"
+                ? tableObject(key)
+                : globalObject(key),
         writable: true,
         enumerable: true,
         configurable: true,
@@ -9894,6 +9919,371 @@
     }
   }
   exposeWasm(Instance, "Instance");
+
+  // ---- Memory, Table and Global --------------------------------------------
+
+  // A descriptor's property as Web IDL's [EnforceRange] unsigned long.
+  function rangeProperty(value, where, property) {
+    const number = +value;
+    if (number !== number || number === Infinity || number === -Infinity) {
+      throw new $TypeError(where + ": Property '" + property + "' must be convertible to a valid number");
+    }
+    const whole = MathTrunc(number);
+    if (whole < 0 || whole > 4294967295) {
+      throw new $TypeError(
+        where + ": Property '" + property + "': value " + whole + " is outside the unsigned long range",
+      );
+    }
+    return whole;
+  }
+
+  // An argument as Web IDL's [EnforceRange] unsigned long.
+  function rangeArgument(value, where, n) {
+    const number = +value;
+    if (number !== number || number === Infinity || number === -Infinity) {
+      throw new $TypeError(where + ": Argument " + n + " must be convertible to a valid number");
+    }
+    const whole = MathTrunc(number);
+    if (whole < 0 || whole > 4294967295) {
+      throw new $TypeError(where + ": Argument " + n + " must be in the unsigned long range");
+    }
+    return whole + 0;
+  }
+
+  // A descriptor's limits: its initial and its maximum (-1 for none),
+  // within `bound`.
+  function limits(descriptor, where, bound) {
+    const initialValue = descriptor.initial;
+    if (initialValue === undefined) {
+      throw new $TypeError(where + ": Property 'initial' is required");
+    }
+    const initial = rangeProperty(initialValue, where, "initial");
+    const maximumValue = descriptor.maximum;
+    const maximum = maximumValue === undefined ? -1 : rangeProperty(maximumValue, where, "maximum");
+    if (initial > bound) {
+      throw new $RangeError(
+        where + ": Property 'initial': value " + initial + " is above the upper bound " + bound,
+      );
+    }
+    if (maximum > bound) {
+      throw new $RangeError(
+        where + ": Property 'maximum': value " + maximum + " is above the upper bound " + bound,
+      );
+    }
+    if (maximum !== -1 && maximum < initial) {
+      throw new $RangeError(
+        where + ": Property 'maximum': value " + maximum + " is below the lower bound " + initial,
+      );
+    }
+    return [initial, maximum];
+  }
+
+  // The memories a script has the buffer of, by their keys: each one's
+  // buffer, a copy kept the same as the memory at the calls' edges.
+  const mirrors = new $Map();
+
+  // Before a call enters the store: what scripts wrote in the buffers,
+  // into the memories.
+  function enter() {
+    if (mirrors.size === 0) {
+      return;
+    }
+    const list = [];
+    MapForEach(mirrors, (buffer, key) => {
+      ArrayPush(list, key, ToBase64(new $Uint8Array(buffer)));
+    });
+    native.wasmSyncIn(list);
+  }
+
+  // After it leaves: what the modules wrote, into the buffers; a memory
+  // that grew, its buffer detached.
+  function leave() {
+    if (mirrors.size === 0) {
+      return;
+    }
+    const changes = native.wasmSyncOut();
+    for (let i = 0; i < changes.length; i++) {
+      const change = changes[i];
+      const buffer = MapGet(mirrors, change[0]);
+      if (change.length === 1) {
+        MapDelete(mirrors, change[0]);
+        native.wasmDetach(buffer);
+        continue;
+      }
+      for (let j = 1; j < change.length; j += 2) {
+        SetFromBase64(new $Uint8Array(buffer, change[j]), change[j + 1]);
+      }
+    }
+  }
+
+  // A memory's buffer detached and forgotten, as the memory grew.
+  function refresh(key) {
+    const buffer = MapGet(mirrors, key);
+    if (buffer !== undefined) {
+      MapDelete(mirrors, key);
+      native.wasmDetach(buffer);
+    }
+  }
+
+  // Each memory object's key, and each key's object (the interface's
+  // cache of memory objects); the same for tables and globals, with each
+  // one's type.
+  const memoryKeys = new $WeakMap();
+  const memoryByKey = new $Map();
+  const tableInfo = new $WeakMap();
+  const tableByKey = new $Map();
+  const globalInfo = new $WeakMap();
+  const globalByKey = new $Map();
+
+  function memoryOf(value, where) {
+    const key = isObject(value) ? WeakMapGet(memoryKeys, value) : undefined;
+    if (key === undefined) {
+      throw new $TypeError(where + ": Receiver is not a WebAssembly.Memory");
+    }
+    return key;
+  }
+
+  function memoryObject(key) {
+    let memory = MapGet(memoryByKey, key);
+    if (memory === undefined) {
+      memory = ObjectCreate(Memory.prototype);
+      WeakMapSet(memoryKeys, memory, key);
+      MapSet(memoryByKey, key, memory);
+    }
+    return memory;
+  }
+
+  class Memory {
+    constructor(descriptor) {
+      const where = "WebAssembly.Memory()";
+      if (!isObject(descriptor)) {
+        throw new $TypeError(where + ": Argument 0 must be a memory descriptor");
+      }
+      const range = limits(descriptor, where, 65536);
+      if (descriptor.shared) {
+        throw new $TypeError(where + ": shared memories are not supported");
+      }
+      const made = native.wasmMemoryNew(range[0], range[1]);
+      if (made[0] === 2) {
+        throw wasmFailure(made[1], where + ": " + made[2]);
+      }
+      WeakMapSet(memoryKeys, this, made[1]);
+      MapSet(memoryByKey, made[1], this);
+    }
+
+    grow(delta) {
+      const where = "WebAssembly.Memory.grow()";
+      const key = memoryOf(this, where);
+      const pages = rangeArgument(delta, where, 0);
+      enter();
+      const made = native.wasmMemoryGrow(key, pages);
+      leave();
+      if (made[0] === 2) {
+        throw wasmFailure(made[1], where + ": " + made[2]);
+      }
+      refresh(key);
+      return made[1];
+    }
+
+    get buffer() {
+      const key = memoryOf(this, "WebAssembly.Memory.buffer");
+      let buffer = MapGet(mirrors, key);
+      if (buffer === undefined) {
+        buffer = native.wasmMemoryBuffer(key);
+        MapSet(mirrors, key, buffer);
+      }
+      return buffer;
+    }
+  }
+  exposeWasm(Memory, "Memory");
+
+  // A reference type's letter, as a table's element names it.
+  function elementLetter(element, where) {
+    const name = toString(element);
+    if (name === "anyfunc" || name === "funcref") {
+      return "r";
+    }
+    if (name === "externref") {
+      return "e";
+    }
+    throw new $TypeError(where + ": Descriptor property 'element' must be a WebAssembly reference type");
+  }
+
+  // The value a table's or a global's missing value is (DefaultValue).
+  function defaultValue(letter) {
+    switch (letter) {
+      case "I":
+        return 0n;
+      case "r":
+        return null;
+      case "e":
+        return externIndex(undefined);
+    }
+    return 0;
+  }
+
+  // A script's value for a table of `letter`'s references, raw.
+  function tableValue(value, letter, where, n) {
+    if (value === undefined) {
+      return defaultValue(letter);
+    }
+    if (letter === "r" && value !== null && WeakMapGet(exportedKeys, value) === undefined) {
+      throw new $TypeError(
+        where +
+          ": Argument " +
+          n +
+          " is invalid for table: function-typed object must be null (if nullable) or a Wasm function object",
+      );
+    }
+    return toWasm(value, letter);
+  }
+
+  function tableOf(value, where) {
+    const info = isObject(value) ? WeakMapGet(tableInfo, value) : undefined;
+    if (info === undefined) {
+      throw new $TypeError(where + ": Receiver is not a WebAssembly.Table");
+    }
+    return info;
+  }
+
+  function tableObject(key) {
+    let table = MapGet(tableByKey, key);
+    if (table === undefined) {
+      table = ObjectCreate(Table.prototype);
+      WeakMapSet(tableInfo, table, { key, letter: native.wasmTableType(key) });
+      MapSet(tableByKey, key, table);
+    }
+    return table;
+  }
+
+  class Table {
+    constructor(descriptor, value) {
+      const where = "WebAssembly.Table()";
+      if (!isObject(descriptor)) {
+        throw new $TypeError(where + ": Argument 0 must be a table descriptor");
+      }
+      const letter = elementLetter(descriptor.element, where);
+      const range = limits(descriptor, where, 10000000);
+      const made = native.wasmTableNew(letter, range[0], range[1], tableValue(value, letter, where, 1));
+      if (made[0] === 2) {
+        throw wasmFailure(made[1], where + ": " + made[2]);
+      }
+      WeakMapSet(tableInfo, this, { key: made[1], letter });
+      MapSet(tableByKey, made[1], this);
+    }
+
+    get length() {
+      return native.wasmTableLength(tableOf(this, "WebAssembly.Table.length").key);
+    }
+
+    get(index) {
+      const where = "WebAssembly.Table.get()";
+      const info = tableOf(this, where);
+      const made = native.wasmTableGet(info.key, rangeArgument(index, where, 0));
+      if (made[0] === 2) {
+        throw wasmFailure(made[1], where + ": " + made[2]);
+      }
+      return fromWasm(made[1], info.letter);
+    }
+
+    set(index, value) {
+      const where = "WebAssembly.Table.set()";
+      const info = tableOf(this, where);
+      const at = rangeArgument(index, where, 0);
+      const made = native.wasmTableSet(info.key, at, tableValue(value, info.letter, where, 1));
+      if (made[0] === 2) {
+        throw wasmFailure(made[1], where + ": " + made[2]);
+      }
+    }
+
+    grow(delta, value) {
+      const where = "WebAssembly.Table.grow()";
+      const info = tableOf(this, where);
+      const by = rangeArgument(delta, where, 0);
+      const made = native.wasmTableGrow(info.key, by, tableValue(value, info.letter, where, 1));
+      if (made[0] === 2) {
+        throw wasmFailure(made[1], where + ": " + made[2]);
+      }
+      return made[1];
+    }
+  }
+  exposeWasm(Table, "Table");
+
+  // A value type's letter, as a global's descriptor names it.
+  function valueLetter(value, where) {
+    switch (toString(value)) {
+      case "i32":
+        return "i";
+      case "i64":
+        return "I";
+      case "f32":
+        return "f";
+      case "f64":
+        return "F";
+      case "anyfunc":
+      case "funcref":
+        return "r";
+      case "externref":
+        return "e";
+    }
+    throw new $TypeError(where + ": Descriptor property 'value' must be a WebAssembly type");
+  }
+
+  function globalOf(value, where) {
+    const info = isObject(value) ? WeakMapGet(globalInfo, value) : undefined;
+    if (info === undefined) {
+      throw new $TypeError(where + ": Receiver is not a WebAssembly.Global");
+    }
+    return info;
+  }
+
+  function globalObject(key) {
+    let global = MapGet(globalByKey, key);
+    if (global === undefined) {
+      global = ObjectCreate(Global.prototype);
+      const type = native.wasmGlobalType(key);
+      WeakMapSet(globalInfo, global, { key, letter: type[0], mutable: type[1] === "m" });
+      MapSet(globalByKey, key, global);
+    }
+    return global;
+  }
+
+  function globalValue(global, where) {
+    const info = globalOf(global, where);
+    return fromWasm(native.wasmGlobalGet(info.key), info.letter);
+  }
+
+  class Global {
+    constructor(descriptor, value) {
+      const where = "WebAssembly.Global()";
+      if (!isObject(descriptor)) {
+        throw new $TypeError(where + ": Argument 0 must be a global descriptor");
+      }
+      const mutable = !!descriptor.mutable;
+      const letter = valueLetter(descriptor.value, where);
+      const raw = value === undefined ? defaultValue(letter) : toWasm(value, letter);
+      const key = native.wasmGlobalNew(letter, mutable, raw);
+      WeakMapSet(globalInfo, this, { key, letter, mutable });
+      MapSet(globalByKey, key, this);
+    }
+
+    get value() {
+      return globalValue(this, "get WebAssembly.Global.value");
+    }
+
+    set value(value) {
+      const info = globalOf(this, "set WebAssembly.Global.value");
+      if (!info.mutable) {
+        throw new $TypeError("set WebAssembly.Global.value): Can't set the value of an immutable global.");
+      }
+      native.wasmGlobalSet(info.key, toWasm(value, info.letter));
+    }
+
+    valueOf() {
+      return globalValue(this, "WebAssembly.Global.valueOf()");
+    }
+  }
+  exposeWasm(Global, "Global");
 
   // The entry points the realm calls (M26): a timer's task; an event
   // the engine makes, dispatched at the node `handle` names or, for
