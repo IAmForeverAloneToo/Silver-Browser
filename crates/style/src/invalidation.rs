@@ -230,6 +230,36 @@ impl SelectorFeatures {
                 self.checked = true;
                 self.read(&["placeholder", "value", "type"]);
             }
+            PseudoClass::Valid
+            | PseudoClass::Invalid
+            | PseudoClass::UserValid
+            | PseudoClass::UserInvalid
+            | PseudoClass::InRange
+            | PseudoClass::OutOfRange
+            | PseudoClass::ReadOnly
+            | PseudoClass::ReadWrite
+            | PseudoClass::Default => {
+                self.checked = true;
+                self.fieldsets = true;
+                self.read(&[
+                    "required",
+                    "pattern",
+                    "min",
+                    "max",
+                    "step",
+                    "minlength",
+                    "maxlength",
+                    "type",
+                    "multiple",
+                    "disabled",
+                    "readonly",
+                    "value",
+                    "checked",
+                    "selected",
+                    "name",
+                    "form",
+                ]);
+            }
             PseudoClass::Required | PseudoClass::Optional => self.read(&["required", "type"]),
             PseudoClass::Hover => self.read_state(ElementState::HOVER, at),
             PseudoClass::Focus => self.read_state(ElementState::FOCUS, at),
@@ -492,6 +522,18 @@ pub(crate) fn invalidate(
     // far as an attribute's change would, and an option's select.
     if features.checked {
         for element in controls {
+            // A radio button's change is its group's; a control's is its
+            // form's and fieldsets' (M26.9b).
+            radios |= document.tag(element) == Some("input")
+                && dom::forms::input_type(document, element) == "radio";
+            for ancestor in document.ancestors(element) {
+                if matches!(document.tag(ancestor), Some("form" | "fieldset")) {
+                    out.mark(document, ancestor, Reach::Element);
+                }
+            }
+            if let Some(form) = dom::forms::form_owner(document, element) {
+                out.mark(document, form, Reach::Element);
+            }
             out.mark(document, element, Reach::Subtree);
             if document.tag(element) == Some("option")
                 && let Some(select) = select_around(document, element)

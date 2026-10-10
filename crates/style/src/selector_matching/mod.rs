@@ -280,6 +280,25 @@ pub enum PseudoClass {
     /// `:placeholder-shown`: a text field or textarea showing its
     /// placeholder (M26.7).
     PlaceholderShown,
+    /// `:valid` and `:invalid` (M26.9b): a control that is a candidate
+    /// for constraint validation and passes or fails its constraints, a
+    /// form or fieldset by its controls.
+    Valid,
+    Invalid,
+    /// `:user-valid` and `:user-invalid`: the same, once the user has
+    /// committed a change to the control or tried to submit its form.
+    UserValid,
+    UserInvalid,
+    /// `:in-range` and `:out-of-range`: a number or range input with
+    /// range limitations, within them or not.
+    InRange,
+    OutOfRange,
+    /// `:read-only` and `:read-write`: whether the user can edit it.
+    ReadOnly,
+    ReadWrite,
+    /// `:default`: a checkbox or radio button checked by its attribute,
+    /// an option selected by its, a form's default button.
+    Default,
     /// `:required`: an `input`, `select` or `textarea` that is required.
     Required,
     /// `:optional`: one of those that could be and is not.

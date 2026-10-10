@@ -870,6 +870,11 @@ impl Engine {
     /// `fonts`, drawing on `backend`, which must be over the same
     /// fonts.
     pub fn with_backend(fonts: text::FontCollection, backend: Box<dyn RenderBackend>) -> Self {
+        // The checks constraint validation needs from above dom (M26.9b).
+        dom::validity::install(dom::validity::Checks {
+            pattern: js::pattern_matches,
+            url: |text| Url::parse(text).is_ok(),
+        });
         let mut network = Network::new();
         let mut page = Page::given(0);
         let document = parsed_or_empty("");
@@ -1517,6 +1522,9 @@ impl Engine {
     /// at it when the user changed its value since it took the focus.
     pub(crate) fn commit_change(&mut self, control: NodeId) {
         if dom::forms::commit_edit(&mut self.shown.document, control) {
+            // The user's change committed: `:user-invalid` may show
+            // (M26.9b).
+            let _ = dom::validity::set_user_validity(&mut self.shown.document, control, true);
             self.state_changed();
             let event =
                 js::EventInit::new("Event", "change").with("bubbles", js::Field::Bool(true));
@@ -2153,6 +2161,7 @@ impl Engine {
                 let document = &mut self.shown.document;
                 let _ = dom::forms::set_checkedness(document, activator, radio || !checked, true);
                 let _ = dom::forms::set_indeterminate(document, activator, false);
+                let _ = dom::validity::set_user_validity(document, activator, true);
                 self.state_changed();
             }
             Some("label") => {
@@ -3589,6 +3598,9 @@ impl Engine {
         }
         if let Some(node) = self.shown.scripts.take_scroll() {
             self.scroll_focus_into_view(node);
+        }
+        if let Some(notice) = self.shown.scripts.take_notice() {
+            self.notice = Some(notice);
         }
         if let Some(navigation) = self.shown.scripts.take_navigation() {
             self.script_navigation(navigation);

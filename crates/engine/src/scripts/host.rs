@@ -45,6 +45,8 @@ pub(crate) struct Outputs {
     pub(crate) events: Vec<(NodeId, &'static str)>,
     /// The element a script focused, to be scrolled into view (M26.6).
     pub(crate) scroll_to: Option<NodeId>,
+    /// A validation message reported, for the notice (M26.9b).
+    pub(crate) notice: Option<String>,
 }
 
 /// The document's styles as a run's `getComputedStyle` sees them: the
@@ -1089,6 +1091,52 @@ impl DocumentHost {
                 forms::reset_form(&mut self.document, form);
                 Ok(Answer::Nothing)
             }
+            Call::Validity(node) => {
+                let node = self.node(node)?;
+                let bits = dom::validity::validity(&self.document, node).bits();
+                Ok(Answer::Number(f64::from(bits)))
+            }
+            Call::WillValidate(node) => {
+                let node = self.node(node)?;
+                Ok(Answer::Bool(dom::validity::will_validate(
+                    &self.document,
+                    node,
+                )))
+            }
+            Call::ValidationMessage(node) => {
+                let node = self.node(node)?;
+                Ok(Answer::String(dom::validity::validation_message(
+                    &self.document,
+                    node,
+                )))
+            }
+            Call::SetCustomValidity { node, message } => {
+                let node = self.node(node)?;
+                dom::validity::set_custom_validity(&mut self.document, node, &message)
+                    .map_err(refused)?;
+                Ok(Answer::Nothing)
+            }
+            Call::InvalidControls(form) => {
+                let form = self.node(form)?;
+                let invalid = dom::validity::invalid_controls(&self.document, form);
+                Ok(Answer::Nodes(invalid.into_iter().map(handle).collect()))
+            }
+            Call::MarkSubmitted(form) => {
+                let form = self.node(form)?;
+                dom::validity::mark_submitted(&mut self.document, form);
+                Ok(Answer::Nothing)
+            }
+            Call::SetUserValidity(node) => {
+                let node = self.node(node)?;
+                dom::validity::set_user_validity(&mut self.document, node, true)
+                    .map_err(refused)?;
+                Ok(Answer::Nothing)
+            }
+            Call::ReportInvalid(node) => {
+                let node = self.node(node)?;
+                self.outputs.notice = Some(dom::validity::validation_message(&self.document, node));
+                Ok(Answer::Nothing)
+            }
             Call::CommitEdit(node) => {
                 let node = self.node(node)?;
                 Ok(Answer::Bool(forms::commit_edit(&mut self.document, node)))
@@ -1679,6 +1727,8 @@ impl DocumentHost {
                             indeterminate: false,
                             edited_from: None,
                             scroll: 0,
+                            custom_error: None,
+                            user_validity: false,
                             ..state.clone()
                         };
                         if let Err(error) = document.set_control(made, state) {

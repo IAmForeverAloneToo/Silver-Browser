@@ -346,6 +346,26 @@ pub enum Call {
     },
     /// Resets a form's controls, its `reset` event the bindings'.
     ResetForm(Handle),
+    /// A control's validity states as bits, `valueMissing` the lowest
+    /// (M26.9b).
+    Validity(Handle),
+    /// Whether a control is a candidate for constraint validation.
+    WillValidate(Handle),
+    /// The reference browser's message for a control's first failure.
+    ValidationMessage(Handle),
+    /// Sets a control's custom validity message.
+    SetCustomValidity {
+        node: Handle,
+        message: String,
+    },
+    /// A form's controls that fail their constraints, in tree order.
+    InvalidControls(Handle),
+    /// A form's submission tried: each control's user validity set.
+    MarkSubmitted(Handle),
+    /// A control's user validity set: the user changed it.
+    SetUserValidity(Handle),
+    /// A control's validation message given as the browser's notice.
+    ReportInvalid(Handle),
     /// Whether the document is hidden (HTML section 6.2): its window is
     /// minimized or covered.
     Hidden,

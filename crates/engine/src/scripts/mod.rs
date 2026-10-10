@@ -365,6 +365,8 @@ pub(crate) struct Scripts {
     navigation: Option<ScriptNavigation>,
     /// The element a script focused, to be scrolled into view (M26.6).
     scroll_to: Option<NodeId>,
+    /// What a script's validation reported, for the notice (M26.9b).
+    notice: Option<String>,
     /// The events to fire at elements when its scripts next run (M26):
     /// a script element's `error` for a `src` that cannot be fetched.
     events: VecDeque<(NodeId, &'static str)>,
@@ -397,6 +399,7 @@ impl Scripts {
             events: VecDeque::new(),
             handlers: None,
             scroll_to: None,
+            notice: None,
             aborted: false,
             navigation: None,
         }
@@ -412,6 +415,12 @@ impl Scripts {
     /// scrolled into view (M26.6).
     pub(crate) fn take_scroll(&mut self) -> Option<NodeId> {
         self.scroll_to.take()
+    }
+
+    /// What a script's `reportValidity()` or a form's interactive
+    /// validation said since this was last asked (M26.9b).
+    pub(crate) fn take_notice(&mut self) -> Option<String> {
+        self.notice.take()
     }
 
     /// Prepares the `script` element the parser has just closed (HTML
@@ -771,6 +780,9 @@ impl Scripts {
         if outputs.scroll_to.is_some() {
             self.scroll_to = outputs.scroll_to;
         }
+        if outputs.notice.is_some() {
+            self.notice = outputs.notice;
+        }
         if outputs.navigation.is_some() {
             self.navigation = outputs.navigation;
         }
@@ -823,6 +835,9 @@ impl Scripts {
         self.events.extend(outputs.events);
         if outputs.scroll_to.is_some() {
             self.scroll_to = outputs.scroll_to;
+        }
+        if outputs.notice.is_some() {
+            self.notice = outputs.notice;
         }
         if outputs.navigation.is_some() {
             self.navigation = outputs.navigation;

@@ -140,6 +140,9 @@ impl crate::Engine {
         submitter: Option<NodeId>,
         from_method: bool,
     ) {
+        if !from_method && !self.validate_interactively(form, submitter) {
+            return;
+        }
         if !from_method {
             let event = js::EventInit::new("SubmitEvent", "submit")
                 .with("bubbles", js::Field::Bool(true))
@@ -161,6 +164,44 @@ impl crate::Engine {
             return;
         };
         self.follow_submission(submission);
+    }
+
+    /// HTML's interactive validation of a form about to be submitted
+    /// (section 4.10.20.2, M26.9b), unless it or its submitter says
+    /// `novalidate`: every control's user validity set; an `invalid` at
+    /// each that fails; the first whose `invalid` was not canceled
+    /// focused, scrolled to and its message given as the notice. Whether
+    /// the submission goes on.
+    fn validate_interactively(&mut self, form: NodeId, submitter: Option<NodeId>) -> bool {
+        let document = &self.shown.document;
+        if document.attr(form, "novalidate").is_some()
+            || submitter
+                .is_some_and(|submitter| document.attr(submitter, "formnovalidate").is_some())
+        {
+            return true;
+        }
+        dom::validity::mark_submitted(&mut self.shown.document, form);
+        self.state_changed();
+        let invalid = dom::validity::invalid_controls(&self.shown.document, form);
+        if invalid.is_empty() {
+            return true;
+        }
+        let mut first = None;
+        for control in invalid {
+            let event =
+                js::EventInit::new("Event", "invalid").with("cancelable", js::Field::Bool(true));
+            let canceled = self.fire(js::Target::Node(crate::scripts::handle(control)), event);
+            if canceled != Some(true) && first.is_none() && self.shown.document.contains(control) {
+                first = Some(control);
+            }
+        }
+        if let Some(first) = first {
+            let message = dom::validity::validation_message(&self.shown.document, first);
+            let visible = forms::is_text_control(&self.shown.document, first);
+            self.focus(Some(first), visible, true);
+            self.notice = Some(message);
+        }
+        false
     }
 
     /// Goes where a submission says, as a link would.

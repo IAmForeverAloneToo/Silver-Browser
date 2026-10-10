@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 mod dom;
+mod pattern;
 mod quickjs;
 
 #[cfg(test)]
@@ -20,6 +21,7 @@ mod test_tree;
 mod tests;
 
 pub use dom::{Answer, Call, DomError, Handle, MAX_HANDLE, NestedScript, WORK_PER_STEP};
+pub use pattern::pattern_matches;
 pub use quickjs::QuickJs;
 
 /// The most heap a realm may hold, in bytes. An allocation past it

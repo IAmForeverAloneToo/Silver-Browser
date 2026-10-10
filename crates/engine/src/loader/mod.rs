@@ -29,6 +29,8 @@ mod submit_tests;
 mod task_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod validity_tests;
 
 use std::collections::HashMap;
 use std::fmt;

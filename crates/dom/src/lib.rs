@@ -14,6 +14,7 @@ use std::fmt;
 mod document;
 pub mod forms;
 mod microsyntax;
+pub mod validity;
 
 pub use document::{
     Change, Children, Document, ElementState, MAX_DATA_BYTES, MAX_DEPTH, MAX_GENERATION,

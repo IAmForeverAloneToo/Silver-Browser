@@ -1653,6 +1653,7 @@
         return;
       }
       const element = wrap(handle);
+      native.setUserValidity(handle);
       yield* fireTrusted(element, "input", true);
       yield* fireTrusted(element, "change", false);
       return;
@@ -1715,6 +1716,18 @@
   // M26.9): unless `submit()` asked, a cancelable `submit` naming the
   // submitter; then the host's navigation, after the run.
   function* submitForm(form, submitter, fromMethod) {
+    // Interactive validation first (M26.9b), unless the form or its
+    // submitter says `novalidate`.
+    if (
+      !fromMethod &&
+      native.attribute(form, "novalidate") === null &&
+      (submitter === null || native.attribute(submitter, "formnovalidate") === null)
+    ) {
+      native.markSubmitted(form);
+      if (!(yield* validateInteractively(form))) {
+        return;
+      }
+    }
     if (!fromMethod) {
       const event = new SubmitEvent("submit", made(SUBMIT_INIT, [
         "bubbles", true,
@@ -4569,11 +4582,13 @@
       ["src", "src", "url"],
       ["accept", "accept", "string"],
       ["autocomplete", "autocomplete", "string"],
+      ["formNoValidate", "formnovalidate", "boolean"],
     ]],
     ["HTMLButtonElement", [
       ["name", "name", "string"],
       ["value", "value", "string"],
       ["disabled", "disabled", "boolean"],
+      ["formNoValidate", "formnovalidate", "boolean"],
     ]],
     ["HTMLSelectElement", [
       ["name", "name", "string"],
@@ -6008,6 +6023,148 @@
       },
     },
     [HTMLButtonElement.prototype],
+  );
+
+  // ---- Constraint validation (HTML section 4.10.20, M26.9b) ---------------
+
+  // A control's validity, live (HTML section 4.10.20.3): each state read
+  // from the host when asked.
+  const validityHandles = new $WeakMap();
+
+  class ValidityState {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("ValidityState");
+      }
+    }
+  }
+  const VALIDITY_STATES = [
+    "valueMissing", "typeMismatch", "patternMismatch", "tooLong", "tooShort",
+    "rangeUnderflow", "rangeOverflow", "stepMismatch", "badInput", "customError",
+  ];
+  function validityBits(state) {
+    const handle = WeakMapGet(validityHandles, state);
+    if (handle === undefined) {
+      throw illegalInvocation();
+    }
+    return native.validity(handle);
+  }
+  for (let i = 0; i < VALIDITY_STATES.length; i++) {
+    const bit = 1 << i;
+    defineProperty(ValidityState.prototype, VALIDITY_STATES[i], {
+      get() {
+        return (validityBits(this) & bit) !== 0;
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  defineProperty(ValidityState.prototype, "valid", {
+    get() {
+      return validityBits(this) === 0;
+    },
+    enumerable: true,
+    configurable: true,
+  });
+  expose(ValidityState, "ValidityState");
+
+  // Fires a trusted, cancelable `invalid` at `handle`: whether it was
+  // canceled.
+  function* fireInvalid(handle) {
+    const event = new Event("invalid", made(EVENT_INIT, ["cancelable", true]));
+    eventState(event).trusted = true;
+    return yield* dispatching(wrap(handle), event);
+  }
+
+  // HTML's interactive validation of `form` (section 4.10.20.2): an
+  // `invalid` at each control that fails; the first not canceled focused
+  // and its message given as the browser's notice. Whether all pass.
+  function* validateInteractively(form) {
+    const invalid = native.invalidControls(form);
+    let first = null;
+    for (let i = 0; i < invalid.length; i++) {
+      const canceled = yield* fireInvalid(invalid[i]);
+      if (!canceled && first === null && native.connected(invalid[i])) {
+        first = invalid[i];
+      }
+    }
+    if (first !== null) {
+      focusElement(first, false);
+      native.reportInvalid(first);
+    }
+    return invalid.length === 0;
+  }
+
+  include(
+    {
+      get validity() {
+        const element = this;
+        const handle = self(this);
+        return controlList(element, "validity", () => {
+          const state = new ValidityState(KEY);
+          WeakMapSet(validityHandles, state, handle);
+          return state;
+        });
+      },
+
+      get willValidate() {
+        return native.willValidate(self(this));
+      },
+
+      get validationMessage() {
+        return native.validationMessage(self(this));
+      },
+
+      setCustomValidity(message) {
+        const handle = self(this);
+        need(arguments.length, 1, "setCustomValidity", "HTMLElement");
+        native.setCustomValidity(handle, str(message));
+      },
+
+      checkValidity() {
+        const handle = self(this);
+        if (!native.willValidate(handle) || native.validity(handle) === 0) {
+          return true;
+        }
+        drain(fireInvalid(handle));
+        return false;
+      },
+
+      reportValidity() {
+        const handle = self(this);
+        if (!native.willValidate(handle) || native.validity(handle) === 0) {
+          return true;
+        }
+        if (!drain(fireInvalid(handle)) && native.connected(handle)) {
+          focusElement(handle, false);
+          native.reportInvalid(handle);
+        }
+        return false;
+      },
+    },
+    [
+      HTMLInputElement.prototype,
+      HTMLSelectElement.prototype,
+      HTMLTextAreaElement.prototype,
+      HTMLButtonElement.prototype,
+    ],
+  );
+
+  include(
+    {
+      checkValidity() {
+        const invalid = native.invalidControls(self(this));
+        for (let i = 0; i < invalid.length; i++) {
+          drain(fireInvalid(invalid[i]));
+        }
+        return invalid.length === 0;
+      },
+
+      reportValidity() {
+        return drain(validateInteractively(self(this)));
+      },
+    },
+    [HTMLFormElement.prototype],
   );
 
   // ---- Focus (HTML section 6.6, M26.6) ------------------------------------

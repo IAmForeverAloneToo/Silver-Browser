@@ -215,8 +215,10 @@ impl Engine {
         self.choice_changed(select);
     }
 
-    /// `input` and `change` at a select whose choice the user changed.
+    /// `input` and `change` at a select whose choice the user changed,
+    /// its user validity set (M26.9b).
     fn choice_changed(&mut self, select: NodeId) {
+        let _ = dom::validity::set_user_validity(&mut self.shown.document, select, true);
         for (kind, composed) in [("input", true), ("change", false)] {
             if !self.shown.document.contains(select) {
                 return;

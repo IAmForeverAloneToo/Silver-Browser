@@ -338,6 +338,25 @@ const NATIVES: &[(&str, Decode)] = &[
         })
     }),
     ("resetForm", |a| Ok(Call::ResetForm(a.handle(0)?))),
+    ("validity", |a| Ok(Call::Validity(a.handle(0)?))),
+    ("willValidate", |a| Ok(Call::WillValidate(a.handle(0)?))),
+    ("validationMessage", |a| {
+        Ok(Call::ValidationMessage(a.handle(0)?))
+    }),
+    ("setCustomValidity", |a| {
+        Ok(Call::SetCustomValidity {
+            node: a.handle(0)?,
+            message: a.string(1)?,
+        })
+    }),
+    ("invalidControls", |a| {
+        Ok(Call::InvalidControls(a.handle(0)?))
+    }),
+    ("markSubmitted", |a| Ok(Call::MarkSubmitted(a.handle(0)?))),
+    ("setUserValidity", |a| {
+        Ok(Call::SetUserValidity(a.handle(0)?))
+    }),
+    ("reportInvalid", |a| Ok(Call::ReportInvalid(a.handle(0)?))),
     ("hidden", |_| Ok(Call::Hidden)),
     ("dialog", |a| {
         Ok(Call::Dialog {

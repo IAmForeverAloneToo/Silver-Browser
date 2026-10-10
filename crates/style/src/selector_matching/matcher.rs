@@ -438,6 +438,28 @@ impl<'a> Matcher<'a> {
             PseudoClass::Checked => self.checked(element),
             PseudoClass::Indeterminate => self.indeterminate(element),
             PseudoClass::PlaceholderShown => forms::placeholder_shown(document, element),
+            PseudoClass::Valid => dom::validity::valid(document, element),
+            PseudoClass::Invalid => dom::validity::invalid(document, element),
+            PseudoClass::UserValid => {
+                dom::validity::user_validity(document, element)
+                    && dom::validity::will_validate(document, element)
+                    && dom::validity::validity(document, element).valid()
+            }
+            PseudoClass::UserInvalid => {
+                dom::validity::user_validity(document, element)
+                    && dom::validity::will_validate(document, element)
+                    && !dom::validity::validity(document, element).valid()
+            }
+            PseudoClass::InRange | PseudoClass::OutOfRange => {
+                dom::validity::has_range(document, element) && {
+                    let v = dom::validity::validity(document, element);
+                    let out = v.range_underflow || v.range_overflow;
+                    out == matches!(pc, PseudoClass::OutOfRange)
+                }
+            }
+            PseudoClass::ReadWrite => dom::validity::read_write(document, element),
+            PseudoClass::ReadOnly => !dom::validity::read_write(document, element),
+            PseudoClass::Default => dom::validity::is_default(document, element),
             PseudoClass::Required => required(document, element) == Some(true),
             PseudoClass::Optional => required(document, element) == Some(false),
         }

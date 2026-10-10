@@ -206,6 +206,13 @@ pub struct ControlState {
     /// How far a single-line text control's text is scrolled left to
     /// keep the caret in view, in whole px (M26.8).
     pub scroll: u32,
+    /// Its custom validity message, `setCustomValidity`'s (M26.9b).
+    pub custom_error: Option<String>,
+    /// Its user validity, `:user-valid`'s and `:user-invalid`'s.
+    pub user_validity: bool,
+    /// Whether the user's edit, rather than a script, last changed its
+    /// value: `tooLong` and `tooShort` ask.
+    pub user_edited: bool,
 }
 
 impl ControlState {
@@ -213,6 +220,7 @@ impl ControlState {
     pub(crate) fn bytes(&self) -> usize {
         self.value.as_ref().map_or(0, String::len)
             + self.edited_from.as_ref().map_or(0, String::len)
+            + self.custom_error.as_ref().map_or(0, String::len)
     }
 }
 
@@ -383,6 +391,7 @@ pub fn set_value(
     state.value = Some(value);
     // A script's value is no edit of the user's to commit.
     state.edited_from = None;
+    state.user_edited = false;
     document.set_control(element, state)
 }
 
@@ -407,6 +416,7 @@ pub fn user_edit(
     }
     state.value = Some(value);
     state.selection = selection;
+    state.user_edited = true;
     document.set_control(control, state)
 }
 
@@ -1257,7 +1267,7 @@ pub fn entry_list(
 /// to its defaults, a field's value and a checkbox's checkedness their
 /// attributes' and clean, a select's options their `selected`
 /// attributes' with the selectedness setting algorithm after. A custom
-/// validity stays (M26.9b).
+/// validity stays (M26.9b); the user validity goes.
 pub fn reset_form(document: &mut Document, form: NodeId) {
     let controls = owned_by(document, form, |node| {
         matches!(document.tag(node), Some("input" | "select" | "textarea"))
@@ -1269,8 +1279,12 @@ pub fn reset_form(document: &mut Document, form: NodeId) {
             vec![control]
         };
         for element in resettable {
-            if document.control(element).is_some() {
-                let _ = document.set_control(element, ControlState::default());
+            if let Some(state) = document.control(element) {
+                let state = ControlState {
+                    custom_error: state.custom_error.clone(),
+                    ..ControlState::default()
+                };
+                let _ = document.set_control(element, state);
             }
         }
     }
