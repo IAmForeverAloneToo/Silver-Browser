@@ -16,6 +16,8 @@ use profile::{Changes, Profile};
 use crate::loader::PageId;
 
 #[cfg(test)]
+mod isolation_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod web_tests;
