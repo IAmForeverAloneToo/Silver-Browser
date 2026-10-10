@@ -20,7 +20,7 @@ mod test_tree;
 #[cfg(test)]
 mod tests;
 
-pub use dom::{Answer, Call, DomError, Handle, MAX_HANDLE, NestedScript, WORK_PER_STEP};
+pub use dom::{Answer, Call, DomError, FetchCall, Handle, MAX_HANDLE, NestedScript, WORK_PER_STEP};
 pub use pattern::pattern_matches;
 pub use quickjs::QuickJs;
 
@@ -191,6 +191,27 @@ pub enum Task {
     /// frame's time, in milliseconds on the document's clock, a
     /// microtask checkpoint after each.
     AnimationFrames(f64),
+    /// Settles `fetch()` `id`'s promise (M27.1) with the response a
+    /// script may see, or rejects it with a network error for `None`.
+    Fetched {
+        id: u32,
+        answer: Option<Box<FetchAnswer>>,
+    },
+}
+
+/// What a script may see of a response (M27.1): `net`'s exposed view,
+/// as data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchAnswer {
+    /// `basic`, `cors`, `opaque` or `opaqueredirect`.
+    pub response_type: &'static str,
+    pub url_list: Vec<String>,
+    pub status: u16,
+    pub status_text: String,
+    /// Each field's name and value, as Latin-1 decodes their bytes.
+    pub headers: Vec<(String, String)>,
+    /// None for an opaque or opaque-redirect response.
+    pub body: Option<Vec<u8>>,
 }
 
 /// Where an event the engine makes is dispatched: a node, the document

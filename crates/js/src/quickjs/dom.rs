@@ -90,6 +90,28 @@ impl<'js> Args<'_, 'js> {
         }
     }
 
+    /// A list of strings, as an array of them.
+    fn strings(&self, i: usize) -> rquickjs::Result<Vec<String>> {
+        let Some(array) = self.value(i).into_array() else {
+            return Err(Exception::throw_type(self.ctx, "not an array"));
+        };
+        array.iter::<String>().collect()
+    }
+
+    /// Bytes, as the bindings pass them: a string of code units 0 to 255
+    /// (no byte crosses as a buffer, which `rquickjs` reads only through
+    /// `unsafe`); `None` for `null`.
+    fn bytes(&self, i: usize) -> rquickjs::Result<Option<Vec<u8>>> {
+        if self.value(i).is_null() {
+            return Ok(None);
+        }
+        let text = self.string(i)?;
+        text.chars()
+            .map(|c| u8::try_from(c).map_err(|_| Exception::throw_type(self.ctx, "not bytes")))
+            .collect::<rquickjs::Result<Vec<u8>>>()
+            .map(Some)
+    }
+
     /// A string, which the bootstrap has made well formed.
     fn string(&self, i: usize) -> rquickjs::Result<String> {
         match self.value(i).as_string() {
@@ -240,6 +262,24 @@ const NATIVES: &[(&str, Decode)] = &[
     ("location", |_| Ok(Call::Location)),
     ("origin", |_| Ok(Call::Origin)),
     ("secureContext", |_| Ok(Call::SecureContext)),
+    ("fetch", |a| {
+        Ok(Call::Fetch(Box::new(crate::dom::FetchCall {
+            id: a.integer(0) as u32,
+            method: a.string(1)?,
+            url: a.string(2)?,
+            headers: a.strings(3)?,
+            body: a.bytes(4)?,
+            mode: a.string(5)?,
+            credentials: a.string(6)?,
+            redirect: a.string(7)?,
+            preflight: a.bool(8),
+        })))
+    }),
+    ("abortFetch", |a| Ok(Call::AbortFetch(a.integer(0) as u32))),
+    ("urlHasCredentials", |a| {
+        Ok(Call::UrlHasCredentials(a.string(0)?))
+    }),
+    ("sameOriginUrl", |a| Ok(Call::SameOriginUrl(a.string(0)?))),
     ("formEntries", |a| {
         Ok(Call::FormEntries {
             form: a.handle(0)?,

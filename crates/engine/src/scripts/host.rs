@@ -49,6 +49,10 @@ pub(crate) struct Outputs {
     pub(crate) scroll_to: Option<NodeId>,
     /// A validation message reported, for the notice (M26.9b).
     pub(crate) notice: Option<String>,
+    /// The fetches scripts asked for (M27.1), by their numbers.
+    pub(crate) fetches: Vec<(u32, net::Request)>,
+    /// The fetches their signals aborted.
+    pub(crate) aborted: Vec<u32>,
 }
 
 /// The document's styles as a run's `getComputedStyle` sees them: the
@@ -154,6 +158,8 @@ pub(crate) struct DocumentHost {
     detached: Vec<NodeId>,
     /// The work done since the realm last asked.
     work: u64,
+    /// How many fetches the document has in flight (M27.1).
+    pub(crate) in_flight: usize,
     /// The engine's cookie jar, lent for a run (M27.4).
     cookies: Option<Arc<Mutex<net::cookies::Jar>>>,
     /// The document's page and parser, lent for a run; and where its
@@ -759,6 +765,31 @@ impl DocumentHost {
             Call::SecureContext => Ok(Answer::Bool(
                 self.page.as_ref().is_none_or(Page::is_secure_context),
             )),
+            Call::Fetch(call) => {
+                let page = self
+                    .page
+                    .as_ref()
+                    .ok_or_else(|| DomError::new("TypeError", "Failed to fetch"))?;
+                let request = super::fetch::request(page, &call)?;
+                if self.in_flight >= super::fetch::MAX_SCRIPT_FETCHES {
+                    return Err(DomError::new("TypeError", "Too many requests in flight."));
+                }
+                self.in_flight += 1;
+                self.outputs.fetches.push((call.id, request));
+                Ok(Answer::Nothing)
+            }
+            Call::AbortFetch(id) => {
+                self.outputs.aborted.push(id);
+                Ok(Answer::Nothing)
+            }
+            Call::UrlHasCredentials(url) => Ok(Answer::Bool(
+                net::Url::parse(&url).is_ok_and(|url| url.includes_credentials()),
+            )),
+            Call::SameOriginUrl(url) => Ok(Answer::Bool(net::Url::parse(&url).is_ok_and(|url| {
+                self.page
+                    .as_ref()
+                    .is_some_and(|page| *page.origin() == url.origin())
+            }))),
             Call::FormEntries { form, submitter } => {
                 let form = self.node(form)?;
                 if self.document.tag(form) != Some("form") {

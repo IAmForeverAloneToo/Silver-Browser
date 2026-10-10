@@ -15,6 +15,8 @@ mod editing_tests;
 #[cfg(test)]
 mod event_tests;
 #[cfg(test)]
+mod fetch_tests;
+#[cfg(test)]
 mod focus_tests;
 #[cfg(test)]
 mod lifecycle_tests;
@@ -131,6 +133,8 @@ pub(crate) enum Target {
     Image { url: String },
     /// A script's, from a `script` element's `src` (M24.3).
     Script,
+    /// A script's `fetch()` (M27.1).
+    Fetch,
 }
 
 /// A fetch in flight.
@@ -260,6 +264,13 @@ impl Network {
             !cancelled
         });
         self.flights.len() != before
+    }
+
+    /// Aborts and forgets fetch `id`, if it is in flight.
+    pub(crate) fn abort(&mut self, id: FetchId) {
+        if let Some(flight) = self.flights.remove(&id) {
+            flight.abort.abort();
+        }
     }
 
     /// Aborts and forgets every fetch.

@@ -2588,7 +2588,7 @@ impl Engine {
 
     /// Runs the shown document's timer due first as a task.
     fn run_shown_timer(&mut self) {
-        let Some((id, nesting)) = self.shown.scripts.take_next_timer() else {
+        let Some((task, nesting)) = self.shown.scripts.take_next_task() else {
             return;
         };
         if self.hidden {
@@ -2605,9 +2605,7 @@ impl Engine {
             ready,
             window,
         };
-        shown
-            .scripts
-            .enter(&mut lent, &js::Task::Timer(id), nesting);
+        shown.scripts.enter(&mut lent, &task, nesting);
         self.scripts_ran();
     }
 
@@ -2630,7 +2628,7 @@ impl Engine {
             return;
         };
         let loader::Parsing { load, scripts, .. } = &mut **parsing;
-        let Some((id, nesting)) = scripts.take_next_timer() else {
+        let Some((task, nesting)) = scripts.take_next_task() else {
             return;
         };
         let mut lent = scripts::Lent {
@@ -2641,7 +2639,7 @@ impl Engine {
             ready: scripts::ReadyState::Loading,
             window,
         };
-        scripts.enter(&mut lent, &js::Task::Timer(id), nesting);
+        scripts.enter(&mut lent, &task, nesting);
         let asked = scripts.take_navigation();
         let changes = document.take_changes();
         if changes
@@ -3233,6 +3231,25 @@ impl Engine {
             Target::Document => self.document_arrived(page, result),
             Target::Icon => self.icon_arrived(page, result),
             Target::Image { url } => self.image_arrived(page, &url, result),
+            Target::Fetch => {
+                // A task, run when tasks are (M27.1).
+                let now = self.now();
+                if page == self.shown.page.id() {
+                    self.shown.scripts.fetch_arrived(id, result, now);
+                } else if let Some(Navigation {
+                    incoming:
+                        Incoming::Parsing {
+                            page: incoming,
+                            parsing,
+                            ..
+                        },
+                    ..
+                }) = &mut self.navigation
+                    && incoming.id() == page
+                {
+                    parsing.scripts.fetch_arrived(id, result, now);
+                }
+            }
             Target::Script => {
                 // What is ready runs as the poll goes on.
                 if page == self.shown.page.id() {

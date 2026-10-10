@@ -11,9 +11,13 @@
 //! scripts hold; after each run the subtrees they let go of are freed.
 
 mod cssom;
+mod fetch;
 mod host;
 
-use std::collections::VecDeque;
+#[cfg(test)]
+pub(crate) use fetch::MAX_SCRIPT_FETCHES;
+
+use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
 /// The most scripts that run nested, one inside another's call, the
@@ -374,6 +378,12 @@ pub(crate) struct Scripts {
     /// Whether its markup holds an event handler, as of a version of the
     /// document: one with none makes no realm for an event.
     handlers: Option<(u64, bool)>,
+    /// Its scripts' fetches in flight (M27.1): the script's number of
+    /// each, by the engine's.
+    fetching: HashMap<FetchId, u32>,
+    /// The answers that came, each a task from when it came (the
+    /// networking task source), in that order.
+    answers: VecDeque<(Duration, u32, Option<js::FetchAnswer>)>,
 }
 
 impl Default for Scripts {
@@ -403,6 +413,8 @@ impl Scripts {
             notice: None,
             aborted: false,
             navigation: None,
+            fetching: HashMap::new(),
+            answers: VecDeque::new(),
         }
     }
 
@@ -744,6 +756,7 @@ impl Scripts {
                 .and_then(html::Load::parser)
                 .map(html::Parser::push_insertion_point)
                 .is_some();
+        host.in_flight = self.fetching.len();
         host.lend(lent, how, self.blocking.is_some());
         let result = realm.run(script, host);
         let errors = realm.checkpoint(host);
@@ -772,6 +785,7 @@ impl Scripts {
         for wanted in outputs.wanted {
             self.fetch(lent, wanted);
         }
+        self.start_fetches(lent, outputs.fetches, outputs.aborted);
         self.events.extend(outputs.events);
         if outputs.scroll_to.is_some() {
             self.scroll_to = outputs.scroll_to;
@@ -805,6 +819,7 @@ impl Scripts {
             nesting,
             ..How::default()
         };
+        host.in_flight = self.fetching.len();
         host.lend(lent, how, self.blocking.is_some());
         let result = realm.enter(task, host);
         let errors = realm.checkpoint(host);
@@ -828,6 +843,7 @@ impl Scripts {
         for wanted in outputs.wanted {
             self.fetch(lent, wanted);
         }
+        self.start_fetches(lent, outputs.fetches, outputs.aborted);
         self.events.extend(outputs.events);
         if outputs.scroll_to.is_some() {
             self.scroll_to = outputs.scroll_to;
@@ -849,18 +865,76 @@ impl Scripts {
         self.host.origin.get_or_insert(origin);
     }
 
-    /// When the document's next timer is due (M26).
+    /// When the document's next task is due (M26): its next timer, or a
+    /// fetch's answer (M27.1), which is due from when it came.
     pub(crate) fn next_task_at(&self) -> Option<Duration> {
         if self.stopped {
             return None;
         }
-        self.host.timers.next_due()
+        let answer = self.answers.front().map(|(came, ..)| *came);
+        match (self.host.timers.next_due(), answer) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
-    /// The document's timer due first, taken: its id and the nesting
-    /// level of the task that runs it.
-    pub(crate) fn take_next_timer(&mut self) -> Option<(u32, u32)> {
-        self.host.timers.take_next()
+    /// Starts the fetches a run asked for, on the document's page, and
+    /// aborts those whose signals did (M27.1).
+    fn start_fetches(
+        &mut self,
+        lent: &mut Lent<'_>,
+        fetches: Vec<(u32, Request)>,
+        aborted: Vec<u32>,
+    ) {
+        for (id, request) in fetches {
+            let fetch = lent.network.fetch(lent.page.id(), Target::Fetch, request);
+            self.fetching.insert(fetch, id);
+        }
+        for id in aborted {
+            if let Some(fetch) = self
+                .fetching
+                .iter()
+                .find(|(_, of)| **of == id)
+                .map(|(fetch, _)| *fetch)
+            {
+                self.fetching.remove(&fetch);
+                lent.network.abort(fetch);
+            }
+        }
+    }
+
+    /// Takes the result of fetch `id` for a script's `fetch()`, which
+    /// came at `now`: what the script may see of it, or a network error,
+    /// queued as a task.
+    pub(crate) fn fetch_arrived(
+        &mut self,
+        id: FetchId,
+        result: Result<Response, LoadError>,
+        now: Duration,
+    ) {
+        if let Some(script) = self.fetching.remove(&id) {
+            let answer = result.ok().map(|response| fetch::answer(&response));
+            self.answers.push_back((now, script, answer));
+        }
+    }
+
+    /// The task due first, taken: a timer's, with the nesting level of
+    /// the task that runs it, or a fetch's answer, at level 0.
+    pub(crate) fn take_next_task(&mut self) -> Option<(js::Task, u32)> {
+        let timer = self.host.timers.next_due();
+        let answer = self.answers.front().map(|(came, ..)| *came);
+        if answer.is_some_and(|came| timer.is_none_or(|due| came <= due)) {
+            let (_, id, answer) = self.answers.pop_front()?;
+            return Some((
+                js::Task::Fetched {
+                    id,
+                    answer: answer.map(Box::new),
+                },
+                0,
+            ));
+        }
+        let (id, nesting) = self.host.timers.take_next()?;
+        Some((js::Task::Timer(id), nesting))
     }
 
     /// Whether the back-forward cache may keep the document: not when

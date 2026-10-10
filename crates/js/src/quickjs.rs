@@ -17,8 +17,8 @@ use rquickjs::{
 };
 
 use crate::{
-    Completion, ConsoleLevel, Death, ErrorKind, Field, Limits, Realm, Script, ScriptEngine,
-    ScriptError, ScriptingHost, Target, Task,
+    Completion, ConsoleLevel, Death, ErrorKind, FetchAnswer, Field, Limits, Realm, Script,
+    ScriptEngine, ScriptError, ScriptingHost, Target, Task,
 };
 
 /// QuickJS-ng 0.16, which `rquickjs` builds from its source.
@@ -361,6 +361,21 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                     .get::<_, Function<'_>>("frames")?
                     .call::<_, Value<'_>>((*now,))
             }),
+            Task::Fetched { id, answer } => self.context.with(|ctx| {
+                let called = entries.clone().restore(&ctx).and_then(|entries| {
+                    let answer = match answer {
+                        None => Value::new_null(ctx.clone()),
+                        Some(answer) => answer_object(&ctx, answer)?.into_value(),
+                    };
+                    entries
+                        .get::<_, Function<'_>>("fetched")?
+                        .call::<_, Value<'_>>((*id, answer))
+                });
+                called
+                    .catch(&ctx)
+                    .map(|_| false)
+                    .map_err(|caught| caught_error(&ctx, caught, "", false))
+            }),
         };
         self.end(host);
         let result = match result {
@@ -541,6 +556,32 @@ fn init_object<'js>(
             Field::Window => ctx.globals().into_value(),
         };
         object.set(*name, value)?;
+    }
+    Ok(object)
+}
+
+/// A fetch's answer as the bootstrap's `fetched` takes it (M27.1): its
+/// type, URL list, status, status text, fields as names and values one
+/// after the other, and body, a buffer or `null`.
+fn answer_object<'js>(ctx: &Ctx<'js>, answer: &FetchAnswer) -> rquickjs::Result<Object<'js>> {
+    let object = Object::new(ctx.clone())?;
+    object.set("type", answer.response_type)?;
+    let urls = rquickjs::Array::new(ctx.clone())?;
+    for (i, url) in answer.url_list.iter().enumerate() {
+        urls.set(i, url.as_str())?;
+    }
+    object.set("urlList", urls)?;
+    object.set("status", answer.status)?;
+    object.set("statusText", answer.status_text.as_str())?;
+    let headers = rquickjs::Array::new(ctx.clone())?;
+    for (i, (name, value)) in answer.headers.iter().enumerate() {
+        headers.set(2 * i, name.as_str())?;
+        headers.set(2 * i + 1, value.as_str())?;
+    }
+    object.set("headers", headers)?;
+    match &answer.body {
+        Some(body) => object.set("body", rquickjs::ArrayBuffer::new_copy(ctx.clone(), body)?)?,
+        None => object.set("body", Value::new_null(ctx.clone()))?,
     }
     Ok(object)
 }

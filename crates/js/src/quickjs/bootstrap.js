@@ -2903,6 +2903,1120 @@
   });
   expose(URLSearchParams, "URLSearchParams");
 
+  // ---- Fetch: Headers, Request, Response, fetch() (M27.1) ----
+
+  const JSONParse = JSON.parse;
+  const JSONStringify = JSON.stringify;
+  const MathRandom = Math.random;
+
+  // A signal that aborts when `signal` does (a request's, which follows
+  // the one it was given, as AbortSignal.any's would).
+  function followingSignal(signal) {
+    const result = new AbortSignal(KEY);
+    const source = signalOf(signal);
+    if (source.aborted) {
+      const own = signalOf(result);
+      own.aborted = true;
+      own.reason = source.reason;
+      return result;
+    }
+    ArrayPush(source.dependents, result);
+    return result;
+  }
+
+  // A ByteString (Web IDL): a string of code points up to U+00FF.
+  function byteString(value, method, iface) {
+    const text = $String(value);
+    for (let i = 0; i < text.length; i++) {
+      if (CharCodeAt(text, i) > 0xff) {
+        throw new $TypeError(
+          prefix(method, iface) + "String contains non ISO-8859-1 code point.",
+        );
+      }
+    }
+    return text;
+  }
+
+  // An HTTP token code point.
+  function isTokenCode(c) {
+    return (
+      (c >= 0x30 && c <= 0x39) || (c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a) ||
+      c === 0x21 || (c >= 0x23 && c <= 0x27) || c === 0x2a || c === 0x2b || c === 0x2d ||
+      c === 0x2e || c === 0x5e || c === 0x5f || c === 0x60 || c === 0x7c || c === 0x7e
+    );
+  }
+
+  function isToken(text) {
+    if (text.length === 0) return false;
+    for (let i = 0; i < text.length; i++) {
+      if (!isTokenCode(CharCodeAt(text, i))) return false;
+    }
+    return true;
+  }
+
+  // A header value normalized (Fetch 2.2.2): HTTP whitespace off both ends.
+  function normalizeValue(value) {
+    const space = (c) => c === 0x09 || c === 0x0a || c === 0x0d || c === 0x20;
+    let start = 0;
+    let end = value.length;
+    while (start < end && space(CharCodeAt(value, start))) start++;
+    while (end > start && space(CharCodeAt(value, end - 1))) end--;
+    return StringSlice(value, start, end);
+  }
+
+  function isHeaderValue(value) {
+    for (let i = 0; i < value.length; i++) {
+      const c = CharCodeAt(value, i);
+      if (c === 0 || c === 0x0a || c === 0x0d) return false;
+    }
+    return true;
+  }
+
+  const FORBIDDEN_REQUEST = [
+    "accept-charset", "accept-encoding", "access-control-request-headers",
+    "access-control-request-method", "connection", "content-length", "cookie", "cookie2",
+    "date", "dnt", "expect", "host", "keep-alive", "origin", "referer", "set-cookie", "te",
+    "trailer", "transfer-encoding", "upgrade", "via",
+  ];
+
+  function within(list, value) {
+    for (let i = 0; i < list.length; i++) {
+      if (list[i] === value) return true;
+    }
+    return false;
+  }
+
+  function isForbiddenMethod(method) {
+    const upper = ToUpperCase(method);
+    return upper === "CONNECT" || upper === "TRACE" || upper === "TRACK";
+  }
+
+  // Fetch 2.2.2's forbidden request-header; the engine checks again.
+  function isForbiddenRequestHeader(name, value) {
+    const lower = ToLowerCase(name);
+    if (within(FORBIDDEN_REQUEST, lower) || StringSlice(lower, 0, 6) === "proxy-" || StringSlice(lower, 0, 4) === "sec-") {
+      return true;
+    }
+    if (lower === "x-http-method" || lower === "x-http-method-override" || lower === "x-method-override") {
+      const methods = splitList(value);
+      for (let i = 0; i < methods.length; i++) {
+        if (isForbiddenMethod(methods[i])) return true;
+      }
+    }
+    return false;
+  }
+
+  // A header value split at its commas, each piece trimmed of spaces and
+  // tabs (Fetch's get, decode, and split, quotes aside).
+  function splitList(value) {
+    const out = [];
+    let start = 0;
+    for (let i = 0; i <= value.length; i++) {
+      if (i === value.length || CharCodeAt(value, i) === 0x2c) {
+        let piece = StringSlice(value, start, i);
+        let a = 0;
+        let b = piece.length;
+        while (a < b && (CharCodeAt(piece, a) === 0x20 || CharCodeAt(piece, a) === 0x09)) a++;
+        while (b > a && (CharCodeAt(piece, b - 1) === 0x20 || CharCodeAt(piece, b - 1) === 0x09)) b--;
+        ArrayPush(out, StringSlice(piece, a, b));
+        start = i + 1;
+      }
+    }
+    return out;
+  }
+
+  function isCorsUnsafeCode(c) {
+    return (
+      (c < 0x20 && c !== 0x09) || c === 0x22 || c === 0x28 || c === 0x29 || c === 0x3a ||
+      c === 0x3c || c === 0x3e || c === 0x3f || c === 0x40 || c === 0x5b || c === 0x5c ||
+      c === 0x5d || c === 0x7b || c === 0x7d || c === 0x7f
+    );
+  }
+
+  // A MIME type's essence, as far as safelisting reads it: what comes
+  // before its parameters, trimmed and lower case.
+  function essenceOf(value) {
+    const semicolon = StringIndexOf(value, ";");
+    return ToLowerCase(normalizeValue(semicolon < 0 ? value : StringSlice(value, 0, semicolon)));
+  }
+
+  // Fetch 2.2.2's no-CORS-safelisted request-header.
+  function isNoCorsSafelisted(name, value) {
+    if (value.length > 128) return false;
+    const lower = ToLowerCase(name);
+    if (lower === "accept") {
+      for (let i = 0; i < value.length; i++) {
+        if (isCorsUnsafeCode(CharCodeAt(value, i))) return false;
+      }
+      return true;
+    }
+    if (lower === "accept-language" || lower === "content-language") {
+      for (let i = 0; i < value.length; i++) {
+        const c = CharCodeAt(value, i);
+        const ok =
+          (c >= 0x30 && c <= 0x39) || (c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a) ||
+          c === 0x20 || c === 0x2a || c === 0x2c || c === 0x2d || c === 0x2e || c === 0x3b || c === 0x3d;
+        if (!ok) return false;
+      }
+      return true;
+    }
+    if (lower === "content-type") {
+      for (let i = 0; i < value.length; i++) {
+        if (isCorsUnsafeCode(CharCodeAt(value, i))) return false;
+      }
+      const essence = essenceOf(value);
+      return (
+        essence === "application/x-www-form-urlencoded" || essence === "multipart/form-data" ||
+        essence === "text/plain"
+      );
+    }
+    return false;
+  }
+
+  // Headers (Fetch 5.1): a header list and its guard.
+  let headersState;
+  let isHeaders;
+  class Headers {
+    #list = [];
+    #guard = "none";
+
+    constructor(init) {
+      if (init === KEY) {
+        return;
+      }
+      if (init !== undefined) {
+        fillHeaders(this, init, "Headers", true);
+      }
+    }
+
+    static {
+      headersState = (headers) => ({
+        get list() {
+          return headers.#list;
+        },
+        set list(value) {
+          headers.#list = value;
+        },
+        get guard() {
+          return headers.#guard;
+        },
+        set guard(value) {
+          headers.#guard = value;
+        },
+      });
+      isHeaders = (value) => typeof value === "object" && value !== null && #list in value;
+    }
+
+    append(name, value) {
+      need(arguments.length, 2, "append", "Headers");
+      appendHeader(this, byteString(name, "append", "Headers"), byteString(value, "append", "Headers"), "append");
+    }
+
+    delete(name) {
+      need(arguments.length, 1, "delete", "Headers");
+      const key = byteString(name, "delete", "Headers");
+      if (!validHeader(this, key, "", "delete")) return;
+      const lower = ToLowerCase(key);
+      if (this.#guard === "request-no-cors" && !isNoCorsSafelisted(key, "") &&
+        lower !== "accept" && lower !== "accept-language" && lower !== "content-language" &&
+        lower !== "content-type" && lower !== "range") {
+        return;
+      }
+      const kept = [];
+      for (let i = 0; i < this.#list.length; i++) {
+        if (ToLowerCase(this.#list[i][0]) !== lower) ArrayPush(kept, this.#list[i]);
+      }
+      this.#list = kept;
+      if (this.#guard === "request-no-cors") removePrivileged(this);
+    }
+
+    get(name) {
+      need(arguments.length, 1, "get", "Headers");
+      const key = byteString(name, "get", "Headers");
+      if (!isToken(key)) {
+        throw new $TypeError(prefix("get", "Headers") + "Invalid name");
+      }
+      return combined(this.#list, ToLowerCase(key));
+    }
+
+    getSetCookie() {
+      const out = [];
+      for (let i = 0; i < this.#list.length; i++) {
+        if (ToLowerCase(this.#list[i][0]) === "set-cookie") ArrayPush(out, this.#list[i][1]);
+      }
+      return out;
+    }
+
+    has(name) {
+      need(arguments.length, 1, "has", "Headers");
+      const key = byteString(name, "has", "Headers");
+      if (!isToken(key)) {
+        throw new $TypeError(prefix("has", "Headers") + "Invalid name");
+      }
+      return combined(this.#list, ToLowerCase(key)) !== null;
+    }
+
+    set(name, value) {
+      need(arguments.length, 2, "set", "Headers");
+      const key = byteString(name, "set", "Headers");
+      const normal = normalizeValue(byteString(value, "set", "Headers"));
+      if (!validHeader(this, key, normal, "set")) return;
+      if (this.#guard === "request-no-cors" && !isNoCorsSafelisted(key, normal)) return;
+      const lower = ToLowerCase(key);
+      const kept = [];
+      let placed = false;
+      for (let i = 0; i < this.#list.length; i++) {
+        if (ToLowerCase(this.#list[i][0]) !== lower) {
+          ArrayPush(kept, this.#list[i]);
+        } else if (!placed) {
+          ArrayPush(kept, [this.#list[i][0], normal]);
+          placed = true;
+        }
+      }
+      if (!placed) ArrayPush(kept, [key, normal]);
+      this.#list = kept;
+      if (this.#guard === "request-no-cors") removePrivileged(this);
+    }
+  }
+
+  // A header list's combined value of `lower`, or null.
+  function combined(list, lower) {
+    let out = null;
+    for (let i = 0; i < list.length; i++) {
+      if (ToLowerCase(list[i][0]) === lower) {
+        out = out === null ? list[i][1] : out + ", " + list[i][1];
+      }
+    }
+    return out;
+  }
+
+  // Fetch's "validate" of a header for `headers`: a TypeError for a name
+  // or value that is not one, or immutable headers; false for one the
+  // guard leaves out.
+  function validHeader(headers, name, value, method) {
+    if (!isToken(name)) {
+      throw new $TypeError(prefix(method, "Headers") + "Invalid name");
+    }
+    if (!isHeaderValue(value)) {
+      throw new $TypeError(prefix(method, "Headers") + "Invalid value");
+    }
+    const state = headersState(headers);
+    if (state.guard === "immutable") {
+      throw new $TypeError(prefix(method, "Headers") + "Headers are immutable");
+    }
+    if (state.guard === "request" && isForbiddenRequestHeader(name, value)) return false;
+    if (state.guard === "response") {
+      const lower = ToLowerCase(name);
+      if (lower === "set-cookie" || lower === "set-cookie2") return false;
+    }
+    return true;
+  }
+
+  // Fetch's "append" to a Headers.
+  function appendHeader(headers, name, value, method) {
+    const normal = normalizeValue(value);
+    if (!validHeader(headers, name, normal, method)) return;
+    const state = headersState(headers);
+    if (state.guard === "request-no-cors") {
+      const before = combined(state.list, ToLowerCase(name));
+      const temporary = before === null ? normal : before + ", " + normal;
+      if (!isNoCorsSafelisted(name, temporary)) return;
+    }
+    ArrayPush(state.list, [name, normal]);
+    if (state.guard === "request-no-cors") removePrivileged(headers);
+  }
+
+  function removePrivileged(headers) {
+    const state = headersState(headers);
+    const kept = [];
+    for (let i = 0; i < state.list.length; i++) {
+      if (ToLowerCase(state.list[i][0]) !== "range") ArrayPush(kept, state.list[i]);
+    }
+    state.list = kept;
+  }
+
+  // Fetch's "fill" of a Headers from a HeadersInit: pairs, a record, or
+  // another Headers.
+  function fillHeaders(headers, init, iface, constructing) {
+    const fail = (message) =>
+      new $TypeError(
+        (constructing ? "Failed to construct '" + iface + "': " : "") + message,
+      );
+    if (typeof init !== "object" && typeof init !== "function") {
+      throw fail("The provided value is not of type '(record<ByteString, ByteString> or sequence<sequence<ByteString>>)'.");
+    }
+    if (init === null) {
+      throw fail("The provided value is not of type '(record<ByteString, ByteString> or sequence<sequence<ByteString>>)'.");
+    }
+    if (isHeaders(init)) {
+      const list = headersState(init).list;
+      const copy = [];
+      for (let i = 0; i < list.length; i++) ArrayPush(copy, [list[i][0], list[i][1]]);
+      for (let i = 0; i < copy.length; i++) appendHeader(headers, copy[i][0], copy[i][1], "append");
+      return;
+    }
+    const iterate = init[iteratorSymbol];
+    if (iterate !== undefined && iterate !== null) {
+      const items = sequence(init, "", "");
+      for (let i = 0; i < items.length; i++) {
+        let pair;
+        try {
+          pair = sequence(items[i], "", "");
+        } catch (e) {
+          throw fail("The provided value cannot be converted to a sequence.");
+        }
+        if (pair.length !== 2) {
+          throw fail("Invalid value");
+        }
+        appendHeader(headers, byteString(pair[0], "append", "Headers"), byteString(pair[1], "append", "Headers"), "append");
+      }
+      return;
+    }
+    const keys = ReflectOwnKeys(init);
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      if (typeof key !== "string") continue;
+      const desc = ReflectGetOwnPropertyDescriptor(init, key);
+      if (desc === undefined || !desc.enumerable) continue;
+      appendHeader(headers, byteString(key, "append", "Headers"), byteString(init[key], "append", "Headers"), "append");
+    }
+  }
+
+  // Headers made by the bindings, with `guard`.
+  function makeHeaders(guard, list) {
+    const headers = new Headers(KEY);
+    const state = headersState(headers);
+    state.guard = guard;
+    if (list !== undefined) state.list = list;
+    return headers;
+  }
+
+  // Fetch 2.2.2's sort and combine, what Headers iterates.
+  function sortAndCombine(list) {
+    const names = [];
+    for (let i = 0; i < list.length; i++) {
+      const lower = ToLowerCase(list[i][0]);
+      if (!within(names, lower)) ArrayPush(names, lower);
+    }
+    ArraySort(names, (a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    const out = [];
+    for (let i = 0; i < names.length; i++) {
+      if (names[i] === "set-cookie") {
+        for (let j = 0; j < list.length; j++) {
+          if (ToLowerCase(list[j][0]) === "set-cookie") ArrayPush(out, ["set-cookie", list[j][1]]);
+        }
+      } else {
+        ArrayPush(out, [names[i], combined(list, names[i])]);
+      }
+    }
+    return out;
+  }
+  pairIterator("Headers", (headers) => sortAndCombine(headersState(headers).list)).install(Headers, (value) => {
+    if (!isHeaders(value)) throw illegalInvocation();
+  });
+  expose(Headers, "Headers");
+
+  // The body of a Request or a Response: its bytes, or null for none,
+  // and whether it was read.
+  function bodyFrom(bytes) {
+    return { bytes, used: false };
+  }
+
+  // Fetch's "extract" of a BodyInit (5.2): its bytes and the type it
+  // gives, null for a buffer or a Blob of none.
+  function extract(value, iface) {
+    if (isBlob(value)) {
+      const type = value.type;
+      return { bytes: TypedArraySlice(blobBytes(value)), type: type === "" ? null : type };
+    }
+    const bytes = bufferBytes(value);
+    if (bytes !== undefined) {
+      return { bytes, type: null };
+    }
+    if (isFormData(value)) {
+      const encoded = multipartEncode(entriesOf(value));
+      return { bytes: encoded.bytes, type: "multipart/form-data; boundary=" + encoded.boundary };
+    }
+    if (isParams(value)) {
+      return {
+        bytes: utf8Encode(formSerialize(paramsOf(value))),
+        type: "application/x-www-form-urlencoded;charset=UTF-8",
+      };
+    }
+    return { bytes: utf8Encode(str(value)), type: "text/plain;charset=UTF-8" };
+  }
+
+  // multipart/form-data (HTML 4.10.22.8): each entry a part, names and
+  // file names escaped as HTML says, a boundary of the bindings.
+  function multipartEncode(entries) {
+    let boundary = "----SilverFormBoundary";
+    const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    for (let i = 0; i < 16; i++) {
+      boundary += letters[MathFloor(MathRandom() * letters.length)];
+    }
+    const escape = (text) => {
+      let out = "";
+      for (let i = 0; i < text.length; i++) {
+        const c = CharCodeAt(text, i);
+        out += c === 0x0a ? "%0A" : c === 0x0d ? "%0D" : c === 0x22 ? "%22" : FromCharCode(c);
+      }
+      return out;
+    };
+    const parts = [];
+    for (let i = 0; i < entries.length; i++) {
+      const name = entries[i][0];
+      const value = entries[i][1];
+      let head = "--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + escape(name) + "\"";
+      if (typeof value === "string") {
+        ArrayPush(parts, utf8Encode(head + "\r\n\r\n" + value + "\r\n"));
+      } else {
+        const type = value.type === "" ? "application/octet-stream" : value.type;
+        head += "; filename=\"" + escape(value.name) + "\"\r\nContent-Type: " + type + "\r\n\r\n";
+        ArrayPush(parts, utf8Encode(head), blobBytes(value), utf8Encode("\r\n"));
+      }
+    }
+    ArrayPush(parts, utf8Encode("--" + boundary + "--\r\n"));
+    return { bytes: concat(parts), boundary };
+  }
+
+  // A multipart/form-data body parsed (RFC 7578) into entries, or null
+  // when it is not one.
+  function multipartParse(bytes, boundary) {
+    const delimiter = utf8Encode("--" + boundary);
+    const n = viewLength(bytes);
+    const at = (i, pattern) => {
+      if (i + viewLength(pattern) > n) return false;
+      for (let j = 0; j < viewLength(pattern); j++) {
+        if (bytes[i + j] !== pattern[j]) return false;
+      }
+      return true;
+    };
+    const find = (from, pattern) => {
+      for (let i = from; i + viewLength(pattern) <= n; i++) {
+        if (at(i, pattern)) return i;
+      }
+      return -1;
+    };
+    const crlf = utf8Encode("\r\n");
+    const next = utf8Encode("\r\n--" + boundary);
+    const entries = [];
+    if (!at(0, delimiter)) return null;
+    let i = viewLength(delimiter);
+    for (;;) {
+      if (at(i, utf8Encode("--"))) return entries;
+      if (!at(i, crlf)) return null;
+      i += 2;
+      const headEnd = find(i, utf8Encode("\r\n\r\n"));
+      if (headEnd < 0) return null;
+      const head = utf8Decode(TypedArraySlice(bytes, i, headEnd), false);
+      const bodyEnd = find(headEnd + 4, next);
+      if (bodyEnd < 0) return null;
+      const body = TypedArraySlice(bytes, headEnd + 4, bodyEnd);
+      let name = null;
+      let filename = null;
+      let type = "text/plain";
+      const lines = splitLines(head);
+      for (let k = 0; k < lines.length; k++) {
+        const colon = StringIndexOf(lines[k], ":");
+        if (colon < 0) continue;
+        const field = ToLowerCase(normalizeValue(StringSlice(lines[k], 0, colon)));
+        const value = normalizeValue(StringSlice(lines[k], colon + 1));
+        if (field === "content-disposition") {
+          name = parameter(value, "name");
+          filename = parameter(value, "filename");
+        } else if (field === "content-type") {
+          type = value;
+        }
+      }
+      if (name === null) return null;
+      if (filename === null) {
+        ArrayPush(entries, [name, utf8Decode(body, false)]);
+      } else {
+        ArrayPush(entries, [name, fileOf(new Blob(KEY, { bytes: body, type: blobType(type) }), filename)]);
+      }
+      i = bodyEnd + viewLength(next);
+    }
+  }
+
+  function splitLines(text) {
+    const out = [];
+    let start = 0;
+    for (let i = 0; i + 1 <= text.length; i++) {
+      if (CharCodeAt(text, i) === 0x0d && CharCodeAt(text, i + 1) === 0x0a) {
+        ArrayPush(out, StringSlice(text, start, i));
+        start = i + 2;
+        i++;
+      }
+    }
+    ArrayPush(out, StringSlice(text, start));
+    return out;
+  }
+
+  // A parameter's value in a Content-Disposition, quoted or not.
+  function parameter(value, wanted) {
+    const pieces = splitParameters(value);
+    for (let i = 1; i < pieces.length; i++) {
+      const equals = StringIndexOf(pieces[i], "=");
+      if (equals < 0) continue;
+      if (ToLowerCase(normalizeValue(StringSlice(pieces[i], 0, equals))) !== wanted) continue;
+      let v = normalizeValue(StringSlice(pieces[i], equals + 1));
+      if (v.length >= 2 && CharCodeAt(v, 0) === 0x22 && CharCodeAt(v, v.length - 1) === 0x22) {
+        v = StringSlice(v, 1, v.length - 1);
+      }
+      return v;
+    }
+    return null;
+  }
+
+  function splitParameters(value) {
+    const out = [];
+    let start = 0;
+    let quoted = false;
+    for (let i = 0; i <= value.length; i++) {
+      const c = i < value.length ? CharCodeAt(value, i) : -1;
+      if (c === 0x22) quoted = !quoted;
+      if (c === -1 || (c === 0x3b && !quoted)) {
+        ArrayPush(out, StringSlice(value, start, i));
+        start = i + 1;
+      }
+    }
+    return out;
+  }
+
+  // The Body mixin (Fetch 5.3) on `cls`, whose bodies `bodyState` gives
+  // and whose headers `headersOf` gives.
+  function installBody(cls, iface, brand, bodyState, headersOf) {
+    const consume = (object, method, convert) => {
+      if (!brand(object)) return rejected(illegalInvocation());
+      const body = bodyState(object);
+      if (body !== null && body.used) {
+        return rejected(new $TypeError(prefix(method, iface) + "body stream already read"));
+      }
+      let bytes = new $Uint8Array(0);
+      if (body !== null) {
+        body.used = true;
+        if (body.bytes !== null) bytes = body.bytes;
+      }
+      try {
+        return resolved(convert(bytes, object));
+      } catch (e) {
+        return rejected(e);
+      }
+    };
+    const members = {
+      get bodyUsed() {
+        if (!brand(this)) throw illegalInvocation();
+        const body = bodyState(this);
+        return body !== null && body.bytes !== null && body.used;
+      },
+      arrayBuffer() {
+        return consume(this, "arrayBuffer", (bytes) => viewBuffer(TypedArraySlice(bytes)));
+      },
+      blob() {
+        return consume(this, "blob", (bytes, object) => {
+          const type = combined(headersState(headersOf(object)).list, "content-type");
+          return new Blob(KEY, { bytes: TypedArraySlice(bytes), type: type === null ? "" : blobType(type) });
+        });
+      },
+      bytes() {
+        return consume(this, "bytes", (bytes) => TypedArraySlice(bytes));
+      },
+      formData() {
+        return consume(this, "formData", (bytes, object) => {
+          const type = combined(headersState(headersOf(object)).list, "content-type") || "";
+          const essence = essenceOf(type);
+          const data = new FormData();
+          let entries = null;
+          if (essence === "multipart/form-data") {
+            const boundary = parameter(";" + StringSlice(type, StringIndexOf(type, ";") + 1), "boundary");
+            entries = boundary === null ? null : multipartParse(bytes, boundary);
+          } else if (essence === "application/x-www-form-urlencoded") {
+            entries = formParseBytes(bytes);
+          }
+          if (entries === null) {
+            throw new $TypeError(prefix("formData", iface) + "Failed to parse body as FormData.");
+          }
+          for (let i = 0; i < entries.length; i++) ArrayPush(entriesOf(data), entries[i]);
+          return data;
+        });
+      },
+      json() {
+        return consume(this, "json", (bytes) => JSONParse(utf8Decode(bytes, true)));
+      },
+      text() {
+        return consume(this, "text", (bytes) => utf8Decode(bytes, true));
+      },
+    };
+    const names = getOwnPropertyNames(members);
+    for (let i = 0; i < names.length; i++) {
+      defineProperty(cls.prototype, names[i], getOwnPropertyDescriptor(members, names[i]));
+    }
+  }
+
+  const REQUEST_MODES = ["same-origin", "no-cors", "cors", "navigate"];
+  const REQUEST_CREDENTIALS = ["omit", "same-origin", "include"];
+  const REQUEST_CACHES = ["default", "no-store", "reload", "no-cache", "force-cache", "only-if-cached"];
+  const REQUEST_REDIRECTS = ["follow", "error", "manual"];
+  const REFERRER_POLICIES = [
+    "", "no-referrer", "no-referrer-when-downgrade", "same-origin", "origin",
+    "strict-origin", "origin-when-cross-origin", "strict-origin-when-cross-origin", "unsafe-url",
+  ];
+
+  // An enum member of `init`, checked.
+  function enumMember(init, name, values, type) {
+    const value = init[name];
+    if (value === undefined) return undefined;
+    const text = str(value);
+    if (!within(values, text)) {
+      throw new $TypeError(
+        "Failed to construct 'Request': Failed to read the '" + name + "' property from 'RequestInit': The provided value '" +
+          text + "' is not a valid enum value of type " + type + ".",
+      );
+    }
+    return text;
+  }
+
+  // Request (Fetch 5.4).
+  let requestState;
+  let isRequest;
+  class Request {
+    #state;
+
+    constructor(input, init) {
+      if (input === KEY) {
+        this.#state = init;
+        return;
+      }
+      needToConstruct(arguments.length, 1, "Request");
+      const fail = (message) => new $TypeError("Failed to construct 'Request': " + message);
+      if (init !== undefined && init !== null && typeof init !== "object" && typeof init !== "function") {
+        throw fail("The provided value is not of type 'RequestInit'.");
+      }
+      const given = init === undefined || init === null ? {} : init;
+      let state;
+      let fallbackMode = null;
+      let signal = null;
+      const inputIsRequest = isRequest(input);
+      if (!inputIsRequest) {
+        const text = str(input);
+        const url = native.resolveUrl(text);
+        if (url === null) {
+          throw fail("Failed to parse URL from " + text);
+        }
+        if (native.urlHasCredentials(url)) {
+          throw fail("Request cannot be constructed from a URL that includes credentials: " + text);
+        }
+        state = {
+          method: "GET", url, headers: null, body: null, mode: "cors", credentials: "same-origin",
+          cache: "default", redirect: "follow", referrer: "about:client", referrerPolicy: "",
+          integrity: "", keepalive: false, duplex: "half",
+        };
+        fallbackMode = "cors";
+      } else {
+        const from = input.#state;
+        state = {
+          method: from.method, url: from.url, headers: null, body: from.body, mode: from.mode,
+          credentials: from.credentials, cache: from.cache, redirect: from.redirect,
+          referrer: from.referrer, referrerPolicy: from.referrerPolicy, integrity: from.integrity,
+          keepalive: from.keepalive, duplex: "half",
+        };
+        signal = from.signal;
+      }
+      const has = (name) => given[name] !== undefined;
+      const any = has("body") || has("cache") || has("credentials") || has("headers") ||
+        has("integrity") || has("keepalive") || has("method") || has("mode") || has("priority") ||
+        has("redirect") || has("referrer") || has("referrerPolicy") || has("signal") || has("window");
+      if (given.window !== undefined && given.window !== null) {
+        throw fail("'window' must be null.");
+      }
+      if (any) {
+        if (state.mode === "navigate") state.mode = "same-origin";
+        state.referrer = "about:client";
+        state.referrerPolicy = "";
+      }
+      if (has("referrer")) {
+        const referrer = str(given.referrer);
+        if (referrer === "") {
+          state.referrer = "no-referrer";
+        } else {
+          const url = native.resolveUrl(referrer);
+          if (url === null) throw fail("The referrer URL " + referrer + " is invalid.");
+          state.referrer = url === "about:client" || native.sameOriginUrl(url) === false ? "about:client" : url;
+        }
+      }
+      const policy = enumMember(given, "referrerPolicy", REFERRER_POLICIES, "ReferrerPolicy");
+      if (policy !== undefined) state.referrerPolicy = policy;
+      const mode = enumMember(given, "mode", REQUEST_MODES, "RequestMode");
+      if (mode === "navigate") {
+        throw fail("Cannot construct a Request with a RequestInit whose mode member is set as 'navigate'.");
+      }
+      if (mode !== undefined) state.mode = mode;
+      else if (fallbackMode !== null) state.mode = fallbackMode;
+      const credentials = enumMember(given, "credentials", REQUEST_CREDENTIALS, "RequestCredentials");
+      if (credentials !== undefined) state.credentials = credentials;
+      const cache = enumMember(given, "cache", REQUEST_CACHES, "RequestCache");
+      if (cache !== undefined) state.cache = cache;
+      if (state.cache === "only-if-cached" && state.mode !== "same-origin") {
+        throw fail("'only-if-cached' can be set only with 'same-origin' mode");
+      }
+      const redirect = enumMember(given, "redirect", REQUEST_REDIRECTS, "RequestRedirect");
+      if (redirect !== undefined) state.redirect = redirect;
+      if (has("integrity")) state.integrity = str(given.integrity);
+      if (has("keepalive")) state.keepalive = !!given.keepalive;
+      if (has("method")) {
+        const method = byteString(given.method, "", "");
+        if (!isToken(method)) throw fail("'" + method + "' is not a valid HTTP method.");
+        if (isForbiddenMethod(method)) throw fail("'" + method + "' HTTP method is unsupported.");
+        const upper = ToUpperCase(method);
+        state.method =
+          upper === "DELETE" || upper === "GET" || upper === "HEAD" || upper === "OPTIONS" ||
+          upper === "POST" || upper === "PUT" ? upper : method;
+      }
+      if (has("signal")) {
+        const given_signal = given.signal;
+        if (given_signal !== null && !isSignal(given_signal)) {
+          throw fail("Failed to read the 'signal' property from 'RequestInit': Failed to convert value to 'AbortSignal'.");
+        }
+        signal = given_signal;
+      }
+      // The request's own signal follows the one given.
+      state.signal = signal === null ? new AbortSignal(KEY) : followingSignal(signal);
+      // Headers.
+      const headers = makeHeaders("request");
+      state.headers = headers;
+      if (state.mode === "no-cors") {
+        if (state.method !== "GET" && state.method !== "HEAD" && state.method !== "POST") {
+          throw fail("'" + state.method + "' is unsupported in no-cors mode.");
+        }
+        headersState(headers).guard = "request-no-cors";
+      }
+      if (has("headers")) {
+        fillHeaders(headers, given.headers, "Request", true);
+      } else if (inputIsRequest) {
+        fillHeaders(headers, input.#state.headers, "Request", true);
+      }
+      // The body.
+      const inputBody = inputIsRequest ? input.#state.body : null;
+      const initBody = given.body !== undefined && given.body !== null ? given.body : null;
+      if ((initBody !== null || (inputBody !== null && inputBody.bytes !== null)) &&
+        (state.method === "GET" || state.method === "HEAD")) {
+        throw fail("Request with GET/HEAD method cannot have body.");
+      }
+      if (initBody !== null) {
+        const extracted = extract(initBody, "Request");
+        state.body = bodyFrom(extracted.bytes);
+        if (extracted.type !== null && combined(headersState(headers).list, "content-type") === null) {
+          appendHeader(headers, "Content-Type", extracted.type, "append");
+        }
+      } else if (inputBody !== null && inputBody.bytes !== null) {
+        if (inputBody.used) {
+          throw fail("Cannot construct a Request with a Request object that has already been used.");
+        }
+        state.body = bodyFrom(inputBody.bytes);
+        inputBody.used = true;
+      } else {
+        state.body = bodyFrom(null);
+      }
+      this.#state = state;
+    }
+
+    static {
+      requestState = (request) => request.#state;
+      isRequest = (value) => typeof value === "object" && value !== null && #state in value;
+    }
+
+    get method() { return this.#state.method; }
+    get url() { return this.#state.url; }
+    get headers() { return this.#state.headers; }
+    get destination() { this.#state; return ""; }
+    get referrer() {
+      const referrer = this.#state.referrer;
+      return referrer === "no-referrer" ? "" : referrer;
+    }
+    get referrerPolicy() { return this.#state.referrerPolicy; }
+    get mode() { return this.#state.mode; }
+    get credentials() { return this.#state.credentials; }
+    get cache() { return this.#state.cache; }
+    get redirect() { return this.#state.redirect; }
+    get integrity() { return this.#state.integrity; }
+    get keepalive() { return this.#state.keepalive; }
+    get isReloadNavigation() { this.#state; return false; }
+    get isHistoryNavigation() { this.#state; return false; }
+    get signal() { return this.#state.signal; }
+    get duplex() { this.#state; return "half"; }
+
+    clone() {
+      const from = this.#state;
+      if (from.body.bytes !== null && from.body.used) {
+        throw new $TypeError(prefix("clone", "Request") + "Request body is already used");
+      }
+      const headers = makeHeaders(headersState(from.headers).guard, cloneList(headersState(from.headers).list));
+      const state = {
+        method: from.method, url: from.url, headers,
+        body: bodyFrom(from.body.bytes === null ? null : TypedArraySlice(from.body.bytes)),
+        mode: from.mode, credentials: from.credentials, cache: from.cache, redirect: from.redirect,
+        referrer: from.referrer, referrerPolicy: from.referrerPolicy, integrity: from.integrity,
+        keepalive: from.keepalive, duplex: "half", signal: followingSignal(from.signal),
+      };
+      return new Request(KEY, state);
+    }
+  }
+  installBody(Request, "Request", (value) => isRequest(value), (request) => requestState(request).body, (request) => requestState(request).headers);
+  expose(Request, "Request");
+
+  function cloneList(list) {
+    const out = [];
+    for (let i = 0; i < list.length; i++) ArrayPush(out, [list[i][0], list[i][1]]);
+    return out;
+  }
+
+  // A status text: HTAB, SP, VCHAR or obs-text, as reason-phrase is.
+  function isReasonPhrase(text) {
+    for (let i = 0; i < text.length; i++) {
+      const c = CharCodeAt(text, i);
+      if (!(c === 0x09 || (c >= 0x20 && c <= 0x7e) || (c >= 0x80 && c <= 0xff))) return false;
+    }
+    return true;
+  }
+
+  function isNullBodyStatus(status) {
+    return status === 101 || status === 103 || status === 204 || status === 205 || status === 304;
+  }
+
+  // Response (Fetch 5.5).
+  let responseState;
+  let isResponse;
+  class Response {
+    #state;
+
+    constructor(body, init) {
+      if (body === KEY) {
+        this.#state = init;
+        return;
+      }
+      const fail = (message, Error) => new (Error || $TypeError)("Failed to construct 'Response': " + message);
+      if (init !== undefined && init !== null && typeof init !== "object" && typeof init !== "function") {
+        throw fail("The provided value is not of type 'ResponseInit'.");
+      }
+      const given = init === undefined || init === null ? {} : init;
+      const status = given.status === undefined ? 200 : unsignedShort(given.status);
+      if (status < 200 || status > 599) {
+        throw fail("The status provided (" + status + ") is outside the range [200, 599].", $RangeError);
+      }
+      const statusText = given.statusText === undefined ? "" : byteString(given.statusText, "", "");
+      if (!isReasonPhrase(statusText)) {
+        throw fail("Invalid statusText");
+      }
+      const headers = makeHeaders("response");
+      if (given.headers !== undefined) {
+        fillHeaders(headers, given.headers, "Response", true);
+      }
+      let bytes = null;
+      if (body !== undefined && body !== null) {
+        if (isNullBodyStatus(status)) {
+          throw fail("Response with null body status cannot have body");
+        }
+        const extracted = extract(body, "Response");
+        bytes = extracted.bytes;
+        if (extracted.type !== null && combined(headersState(headers).list, "content-type") === null) {
+          appendHeader(headers, "Content-Type", extracted.type, "append");
+        }
+      }
+      this.#state = {
+        type: "default", urlList: [], status, statusText, headers, body: bodyFrom(bytes),
+      };
+    }
+
+    static {
+      responseState = (response) => response.#state;
+      isResponse = (value) => typeof value === "object" && value !== null && #state in value;
+    }
+
+    static error() {
+      return new Response(KEY, {
+        type: "error", urlList: [], status: 0, statusText: "", headers: makeHeaders("immutable"),
+        body: bodyFrom(null),
+      });
+    }
+
+    static redirect(url, status) {
+      need(arguments.length, 1, "redirect", "Response");
+      const text = str(url);
+      const parsed = native.resolveUrl(text);
+      if (parsed === null) {
+        throw new $TypeError(prefix("redirect", "Response") + "Failed to parse URL from " + text);
+      }
+      const code = status === undefined ? 302 : unsignedShort(status);
+      if (code !== 301 && code !== 302 && code !== 303 && code !== 307 && code !== 308) {
+        throw new $RangeError(prefix("redirect", "Response") + "Invalid status code");
+      }
+      return new Response(KEY, {
+        type: "default", urlList: [], status: code, statusText: "",
+        headers: makeHeaders("immutable", [["Location", parsed]]), body: bodyFrom(null),
+      });
+    }
+
+    static json(data, init) {
+      const text = JSONStringify(data);
+      if (text === undefined) {
+        throw new $TypeError(prefix("json", "Response") + "The data is not JSON serializable");
+      }
+      const response = new Response(null, init);
+      const state = response.#state;
+      if (isNullBodyStatus(state.status)) {
+        throw new $TypeError(prefix("json", "Response") + "Response with null body status cannot have body");
+      }
+      state.body = bodyFrom(utf8Encode(text));
+      if (combined(headersState(state.headers).list, "content-type") === null) {
+        appendHeader(state.headers, "Content-Type", "application/json", "append");
+      }
+      return response;
+    }
+
+    get type() { return this.#state.type; }
+    get url() {
+      const list = this.#state.urlList;
+      if (list.length === 0) return "";
+      const url = list[list.length - 1];
+      const hash = StringIndexOf(url, "#");
+      return hash < 0 ? url : StringSlice(url, 0, hash);
+    }
+    get redirected() { return this.#state.urlList.length > 1; }
+    get status() { return this.#state.status; }
+    get ok() { return this.#state.status >= 200 && this.#state.status <= 299; }
+    get statusText() { return this.#state.statusText; }
+    get headers() { return this.#state.headers; }
+
+    clone() {
+      const from = this.#state;
+      if (from.body.bytes !== null && from.body.used) {
+        throw new $TypeError(prefix("clone", "Response") + "Response body is already used");
+      }
+      return new Response(KEY, {
+        type: from.type, urlList: ArraySlice(from.urlList), status: from.status,
+        statusText: from.statusText,
+        headers: makeHeaders(headersState(from.headers).guard, cloneList(headersState(from.headers).list)),
+        body: bodyFrom(from.body.bytes === null ? null : TypedArraySlice(from.body.bytes)),
+      });
+    }
+  }
+  installBody(Response, "Response", (value) => isResponse(value), (response) => responseState(response).body, (response) => responseState(response).headers);
+  expose(Response, "Response");
+
+  // An `unsigned short` (Web IDL's conversion).
+  function unsignedShort(value) {
+    const n = $Number(value);
+    if (n !== n || n === Infinity || n === -Infinity) return 0;
+    const t = n < 0 ? -MathFloor(-n) : MathFloor(n);
+    return ((t % 65536) + 65536) % 65536;
+  }
+
+  // The fetches under way, by number: their promises' settlers and their
+  // signals' abort steps.
+  const fetches = new $Map();
+  let nextFetch = 1;
+
+  // fetch() (Fetch 5.6).
+  function fetch(input, init) {
+    let request;
+    try {
+      request = new Request(input, init);
+    } catch (e) {
+      if (e instanceof $TypeError || e instanceof $RangeError) {
+        const was = "Failed to construct 'Request': ";
+        if (StringSlice(e.message, 0, was.length) === was) {
+          e.message = "Failed to execute 'fetch' on 'Window': " + StringSlice(e.message, was.length);
+        }
+      }
+      return rejected(e);
+    }
+    const state = requestState(request);
+    const signal = state.signal;
+    if (signal.aborted) {
+      return rejected(signal.reason);
+    }
+    const id = nextFetch++;
+    return new $Promise((resolve, reject) => {
+      const body = state.body.bytes;
+      if (body !== null) state.body.used = true;
+      try {
+        native.fetch(
+          id, state.method, state.url, flatten(headersState(state.headers).list),
+          body === null ? null : binaryString(body),
+          state.mode, state.credentials, state.redirect, false,
+        );
+      } catch (e) {
+        reject(failed(e, "fetch", "Window"));
+        return;
+      }
+      const abort = () => {
+        if (!MapHas(fetches, id)) return;
+        MapDelete(fetches, id);
+        native.abortFetch(id);
+        reject(signal.reason);
+      };
+      ArrayPush(signalOf(signal).algorithms, abort);
+      MapSet(fetches, id, { resolve, reject, signal, abort });
+    });
+  }
+
+  // Bytes as a string of code units 0 to 255, as the natives take them.
+  function binaryString(bytes) {
+    let out = "";
+    const n = viewLength(bytes);
+    for (let i = 0; i < n; i += 4096) {
+      const chunk = [];
+      const end = MathMin(n, i + 4096);
+      for (let j = i; j < end; j++) ArrayPush(chunk, bytes[j]);
+      out += ReflectApply(FromCharCode, null, chunk);
+    }
+    return out;
+  }
+
+  // A header list as the natives take it: name, value, name, value...
+  function flatten(list) {
+    const out = [];
+    for (let i = 0; i < list.length; i++) ArrayPush(out, list[i][0], list[i][1]);
+    return out;
+  }
+
+  // A fetch's answer, from the engine: a response, or null for a network
+  // error.
+  function fetched(id, answer) {
+    const pending = MapGet(fetches, id);
+    if (pending === undefined) return;
+    MapDelete(fetches, id);
+    const algorithms = signalOf(pending.signal).algorithms;
+    for (let i = 0; i < algorithms.length; i++) {
+      if (algorithms[i] === pending.abort) {
+        ArraySplice(algorithms, i, 1);
+        break;
+      }
+    }
+    if (answer === null) {
+      pending.reject(new $TypeError("Failed to fetch"));
+      return;
+    }
+    const list = [];
+    for (let i = 0; i < answer.headers.length; i += 2) {
+      ArrayPush(list, [answer.headers[i], answer.headers[i + 1]]);
+    }
+    pending.resolve(
+      new Response(KEY, {
+        type: answer.type, urlList: answer.urlList, status: answer.status,
+        statusText: answer.statusText, headers: makeHeaders("immutable", list),
+        body: bodyFrom(answer.body === null ? null : new $Uint8Array(answer.body)),
+      }),
+    );
+  }
+
+  defineProperty(global, "fetch", {
+    value: fetch,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+
   // The handle of `node`, which must be a Node; whether a value is one;
   // and a node's kind and name. Set from inside Node's body, where its
   // private fields are seen.
@@ -7451,6 +8565,7 @@
       return dispatching(wrap(handle), event);
     },
     frames: runFrames,
+    fetched,
     resume(run) {
       const step = GeneratorNext(run);
       return step.done ? step.value : null;

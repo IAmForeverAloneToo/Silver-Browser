@@ -30,6 +30,24 @@ pub struct NestedScript {
     pub line: u32,
 }
 
+/// A request a script's `fetch()` asks for (M27.1), as the bindings
+/// made it: the engine trusts none of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchCall {
+    pub id: u32,
+    pub method: String,
+    /// Already parsed against the document's base URL.
+    pub url: String,
+    /// Names and values, one after the other.
+    pub headers: Vec<String>,
+    pub body: Option<Vec<u8>>,
+    pub mode: String,
+    pub credentials: String,
+    pub redirect: String,
+    /// Fetch's use-CORS-preflight flag.
+    pub preflight: bool,
+}
+
 /// A call the bindings make of the host, one per native function.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Call {
@@ -193,6 +211,16 @@ pub enum Call {
     Origin,
     /// Whether the document is a secure context (`isSecureContext`).
     SecureContext,
+    /// `fetch()` (M27.1): the request a script asks for, which the
+    /// engine checks again and starts once the run ends; its answer is a
+    /// `Task::Fetched` of the same `id`. A `TypeError` for one it refuses.
+    Fetch(Box<FetchCall>),
+    /// Fetch `id` aborted by its signal: the engine stops it.
+    AbortFetch(u32),
+    /// Whether a URL includes credentials, which a Request refuses.
+    UrlHasCredentials(String),
+    /// Whether a URL is of the document's origin (a Request's referrer).
+    SameOriginUrl(String),
     /// A form's entry list, as `FormData`'s constructor makes it
     /// (M27): each entry's name, `text` or `file`, and value; a
     /// `TypeError` for an element that is not a form or a submitter that
