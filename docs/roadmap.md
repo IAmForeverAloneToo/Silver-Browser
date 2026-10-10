@@ -382,13 +382,19 @@ images, the last item on T0's list, come with M23.
   6265bis; mixed content for what scripts fetch; `XMLHttpRequest`; an
   adversarial page that learns nothing across origins, kept as a test;
   the web-platform tests' testharness.js tests run.
+- **M28, storage** (done 2026-10-11, designed in
+  `docs/design/storage.md`): a profile on disk over `redb` (D10);
+  `localStorage` and `sessionStorage` with their quota and the
+  `storage` event; the cookies with an expiry kept; an HTTP cache in
+  memory by RFC 9111's freshness, kept apart by site; what one origin
+  keeps no other reads, before and after the profile is opened again.
 
 Each milestone's fuller writeup and stated gaps are in
 `docs/architecture.md` "Current state", and the gaps no milestone holds
 on the G list (M39+, below).
 
 Verified per the vertical-slice rule at each milestone, by the gate:
-the workspace's tests (2,155 at M27, two ignored), clippy clean (`-D
+the workspace's tests (2,221 at M28, two ignored), clippy clean (`-D
 warnings`, every target), `cargo deny`, the fuzz targets, and a smoke
 run of the shell. Toolchain: 1.98.1, pinned by `rust-toolchain.toml`.
 The checkout lives outside OneDrive since 2026-10-08
@@ -1767,14 +1773,43 @@ Per css-grid-1 (level 2 subgrid included):
 
 ## M28 — Storage v1  ·  `net`/`engine`  ·  Effort: M  ·  Depends: M27
 
-- [ ] M28.1 Profile/persistence layer (decision D10): on-disk layout,
+- [x] M28.1 Profile/persistence layer (decision D10): on-disk layout,
        atomic writes, per-origin namespacing.
-- [ ] M28.2 `localStorage`/`sessionStorage` bindings.
-- [ ] M28.3 Cookie persistence in the profile.
-- [ ] M28.4 Cache v0: in-memory subresource cache with TTL + `Cache-Control`
+       Done 2026-10-11 (`docs/design/storage.md`): a leaf crate,
+       `profile`, over `redb` 4.3.0: one file, `profile.redb`, in the
+       platform's place or `--profile`'s; each origin's items keyed by
+       its serialization and read as one range; every write one
+       transaction, durable when it returns; a profile in use, of a
+       newer schema, or damaged refused, `redb`'s own panics on damage
+       caught; the engine writes what changed at most once a second,
+       when dropped and when the window closes.
+- [x] M28.2 `localStorage`/`sessionStorage` bindings.
+       Done 2026-10-11: areas in the engine, local ones from the
+       profile and written by the item, a tab's session ones in memory,
+       a quota of 5,242,880 UTF-16 code units each; `Storage` with Web
+       IDL's named properties, `QuotaExceededError`, `StorageEvent` and
+       the `storage` event between the document shown and the one on
+       its way; opaque origins, `file:` included, refused.
+- [x] M28.3 Cookie persistence in the profile.
+       Done 2026-10-11: the cookies with an expiry written as records
+       of `net`'s encoding and restored at startup, held to the storage
+       model's rules, the jar's orders and limits kept.
+- [x] M28.4 Cache v0: in-memory subresource cache with TTL + `Cache-Control`
        basics (full conditional caching in M38).
-- [ ] M28.5 Storage isolation tests (origin A can't read origin B, incl.
+       Done 2026-10-11: `net::cache`, RFC 9111's private cache for the
+       `GET`s fetched whole, by site and URL with `Vary`'s variants,
+       fresh by `max-age`, `Expires`, `Age`, `Date` and the 10%
+       heuristic; Fetch's cache modes and `Request.cache`; unsafe
+       methods invalidate; 64 MiB, least recently used first.
+- [x] M28.5 Storage isolation tests (origin A can't read origin B, incl.
        after profile reload).
+       Done 2026-10-11: `storage/isolation_tests.rs`, four origins in
+       memory and on disk, before and after the profile is opened
+       again; the cache kept apart by site. The web-platform tests of
+       `webstorage`, 1,239 of 1,251 subtests passing; page 128 matches
+       the reference browser; a page counts its visits across windows
+       and in the real shell. `benches/storage.rs` and T4.3 in
+       `docs/perf-budgets.md`.
 
 ---
 
@@ -2300,6 +2335,10 @@ Deferred from the milestones above, each with what it waits on:
        close, without its empty line, read as the reference browser
        reads it (`net` takes it as truncated). Found at M27, by XHR's
        `.asis` tests.
+- [ ] G78 Lone surrogates kept in `localStorage` and `sessionStorage`
+       keys and values, as the reference browser keeps them: here every
+       string a script hands the engine is well formed, a lone
+       surrogate U+FFFD. Named at M28, 12 web-platform subtests.
 
 ---
 
@@ -2318,12 +2357,12 @@ Deferred from the milestones above, each with what it waits on:
        Done 2026-10-01 (M10.7) as `tests/reference.rs`: pages captured
        from a headless reference browser, Chrome rather than Firefox
        (the box model's note), compared byte for byte or within a
-       tolerance a page declares; 127 pages at M27, the last five
-       run on the reference browser's virtual time, M27's two waiting
-       for their fetches. It is one of the
-       workspace's tests, which CI runs (`cargo test`) and the gate
-       runs on the machine while CI's runs are stopped by the
-       account's billing.
+       tolerance a page declares; 128 pages at M28, 123 to 127 run
+       on the reference browser's virtual time, M27's two waiting for
+       their fetches, and M28's served over `http:` for its storage.
+       It is one of the workspace's tests, which CI runs (`cargo
+       test`) and the gate runs on the machine while CI's runs are
+       stopped by the account's billing.
 - [ ] T1.3 Adversarial test-site (built in-repo): every attack pattern
        gets a page; the suite must fail closed. Extended at M27, M33.
        Started 2026-10-11 (M27.7): `tests/security/cross-origin.html`,
@@ -2427,7 +2466,7 @@ Deferred from the milestones above, each with what it waits on:
 | D7 | Text/i18n | M8/M42 | rustybuzz+unicode crates / harfbuzz FFI / ICU4X | rustybuzz now, ICU4X at M42 |
 | D8 | 2D rasterizer | M19 | tiny-skia forever / vello (wgpu-native) / both | both behind the existing `RenderBackend` trait; decided at M19: tiny-skia for the software backend and four wgpu pipelines of our own for the GPU backend, not vello: the two share their glyph masks and polygon coverage, so that text and mitres come out the same in both and the equivalence suite can hold them within two levels inside a shape (see `docs/design/compositing.md`) |
 | D9 | Chrome UI toolkit | M15/M37 | in-engine (softbuffer) / egui / native | in-engine (no extra toolkit; the engine is the toolkit); decided at M15: a `ui` crate beside `engine`, under `shell`, drawing with `paint`, `render` and `text`, and touching no OS (see `docs/design/navigation.md`) |
-| D10 | Profile storage engine | M28 | redb / sled / SQLite / custom files | redb (pure Rust, embedded, single-file) |
+| D10 | Profile storage engine | M28 | redb / sled / SQLite / custom files | redb (pure Rust, embedded, single-file); decided at M28 as written: `redb` 4.3.0 behind a leaf crate of its own, `profile`, which forbids `unsafe`, each origin's `localStorage` items and the cookies with an expiry in one file, every write one transaction (see `docs/design/storage.md`) |
 | D11 | DevTools protocol | M36 | custom in-engine UI only / CDP-compatible | custom first; CDP-compat only if external tools wanted |
 | D12 | UA string & fingerprint policy | M25 | honest UA / Chrome-mimic | honest minimal UA + minimal API surface (compat escape hatch flag exists but is not default); decided at M25 as written: `Mozilla/5.0 (compatible; SilverBrowser/<version>)` in requests and `navigator.userAgent`, `navigator`'s values HTML's for the Gecko mode or fixed, `screen` the viewport; the shell's `--compat-user-agent` gives the reference browser's string and HTML's Chrome mode (see `docs/design/dom-scripting.md`) |
 | D13 | Process granularity | M34 | per-tab / per-site-instance / hybrid | per-site-instance with LRU cap |

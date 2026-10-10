@@ -1,8 +1,8 @@
 # Design note: storage, the profile and the HTTP cache
 
 Roadmap M28. Written before the code, as the record of the decisions,
-and corrected to the code when the milestone ends: where they
-disagree, the code wins, and the places are marked *(corrected)*. What
+and corrected to the code when the milestone ended: where they
+disagreed, the code won, and the places are marked *(corrected)*. What
 ships is described in `docs/architecture.md` "Current state".
 
 The browser forgets everything when it closes. Its cookie jar lives in
@@ -143,7 +143,16 @@ takes; our code over it writes none.
   cookies read whole and written whole, each write one transaction.
   Its types are its own (an item a pair of `String`s, a cookie a plain
   record), so that neither `net` nor `engine` depends on `redb`, and
-  `profile` depends on neither.
+  `profile` depends on neither. *(corrected)* An origin's items are
+  read whole but written by the item: a commit's `Changes` set, remove
+  and clear an origin's items in the order given, so that a change
+  writes what changed. The profile has no cookie type: a cookie is a
+  record of `net`'s encoding, which `profile` keeps without reading,
+  the cookie being `net`'s type (rule 3); the records are replaced
+  whole at each commit that has them. A `Memory`, bytes that outlive
+  the profile on them, stands in for the file in tests and fuzzing: a
+  profile dropped and opened again, a copy taken as a crash would leave
+  it, a byte damaged.
 - *Where it lives.* The shell chooses the directory, the only crate
   that may know the platform's places (rule 6): `--profile <dir>`, or
   by default `%LOCALAPPDATA%\SilverBrowser\Profile` on Windows,
@@ -153,14 +162,22 @@ takes; our code over it writes none.
   `profile.redb`. `--temporary-profile` keeps nothing on disk. The
   engine by itself has no profile, an in-memory one, so that no test
   and no tool touches the user's: `Engine::set_profile` gives it one,
-  as `set_network` gives it a client.
+  as `set_network` gives it a client. *(corrected)* With none, the
+  engine keeps its areas in memory and writes nothing: there is no
+  in-memory profile under it. `--print-to-pdf` keeps nothing unless
+  `--profile` names one, as the reference browser's headless mode
+  starts on a new profile; `--profile` and `--temporary-profile` are
+  one at most.
 - *Its tables.* `meta` (the schema's version, 1), `local_storage`
   (keyed by the origin's serialization and the item's key, so that an
   origin's items are one range), `cookies` (keyed by a cookie's domain,
   path and name and whether it is host-only). Strings as UTF-8 bytes; a
   cookie as a record of our own encoding, its fields in order, its
   version first. An origin's namespace is its key's prefix: nothing
-  reads across origins but a range scan of one.
+  reads across origins but a range scan of one. *(corrected)*
+  `local_storage` holds each item's order of first setting with its
+  value, so that an area comes back in its order; `cookies` is keyed by
+  the record's place in the jar's order.
 - *Opening.* A profile that cannot be opened (another process holds
   it, a newer schema, a file `redb` cannot repair) is not used: the
   shell says why and runs on an in-memory profile, which loses nothing
@@ -174,6 +191,11 @@ takes; our code over it writes none.
   window closes and before `--print-to-pdf` exits. A crash loses at
   most the last second, as the reference browser's batched commits do.
   Each transaction is durable when it returns (`redb`'s `Immediate`).
+  *(corrected)* The write is made from `run_tasks`, which runs a
+  second after the last write at the soonest, `next_task_at` saying
+  when, so that the shell wakes for it; a write that fails is tried
+  again an interval on, and `flush_profile` says why. The shell writes
+  after its event loop ends, the window closed.
 
 **Cookies kept (M28.3).** RFC 6265bis's persistent-flag is a cookie
 with an expiry (`Expires` or `Max-Age`): those are written to the
@@ -184,6 +206,17 @@ them back at startup, drops what has expired, keeps the order and the
 limits, and sets the jar's counter past them. The engine loads them
 when it is given a profile, and writes the jar when it changed, a
 cookie set, replaced, deleted or evicted, on the batches above.
+*(corrected)* `Jar::export` gives the cookies with an expiry as records
+of `net`'s own encoding (a version, then the name, value, domain and
+path each after its length, the flags, `SameSite`, the expiry and the
+two orders) and `Jar::restore` takes them back, renumbering both orders
+after the jar's own, replacing namesakes, keeping the limits, and
+saying whether the profile must be written again. `Jar::kept_changes`
+counts the changes to the cookies with an expiry, a cookie sent not
+being one. A record is held to the storage model's rules before it is
+kept (no control character or `;`, no `=` in a name, what `SameSite`
+and the prefixes ask), its expiry to 400 days from now: the profile is
+a file anything may have written.
 
 **Web Storage (M28.2).** HTML 12.2, as the bootstrap's `Storage` over
 natives, the engine keeping the items:
@@ -196,12 +229,20 @@ natives, the engine keeping the items:
   them and nothing else sees them. Both are reached by scripts through
   the host, as `document.cookie` reaches the jar, keyed by the
   document's origin (`Page::origin`), never by what a script says.
+  *(corrected)* The engine's storage is shared with a run's host as the
+  jar is, through what the window lends (`WindowEnv`); `setItem`,
+  `removeItem` and `clear()` note the change for the profile in one
+  place (`Storage::set_item`, `remove_item`, `clear_area`), which the
+  host and `engine::StorageDriver`, the fuzz target's and the
+  benchmark's way in, both call.
 - *Opaque origins* have no storage: reading `localStorage` or
   `sessionStorage` on a document whose origin is opaque throws
   `SecurityError`, `data:` pages with the reference browser's words.
   That takes in `file:` pages, which the reference browser gives one
   storage between them all: any local file a user opens could read
   what any other wrote, so they are refused here as HTML's rule says.
+  *(corrected)* Their message is the reference browser's for a refusal
+  of another kind, "Access is denied for this document."
 - *Order.* `key(n)` counts in the order items were first set; an item
   replaced keeps its place, one removed and set again goes last. The
   reference browser's order is its hash map's; the standard lets each
@@ -228,7 +269,11 @@ natives, the engine keeping the items:
   property's value and refuses an accessor; `[[Delete]]` removes a
   visible item; `[[OwnPropertyKeys]]` lists the visible items, in
   order, then the target's own keys; `[[PreventExtensions]]` refuses.
-  Symbols are ordinary properties of the target.
+  Symbols are ordinary properties of the target. *(corrected)* The
+  members are in the reference browser's order (`length`, then the
+  operations by name), so that `for`-`in` lists them as it does; the
+  named setter's quota message is "Failed to set a named property 'q'
+  on 'Storage': ...".
 - *Members*: `length`, `key`, `getItem`, `setItem`, `removeItem`,
   `clear`, with Web IDL's conversions (`unsigned long` for `key`,
   `DOMString` for the rest, the argument counts) and the reference
@@ -241,7 +286,15 @@ natives, the engine keeping the items:
   documents at most, the one shown and one on its way; tabs (M37)
   bring the rest. `clear` fires one with every field `null`; a change
   that changes nothing fires none. `StorageEvent` and its
-  `initStorageEvent` join the event classes.
+  `initStorageEvent` join the event classes. *(corrected)* A change is
+  recorded for its event only while the document shown and the one on
+  its way share an origin; the engine queues the events and fires them
+  from `run_tasks`, one a turn of its loop, at the other document if it
+  is still alive, `next_task_at` saying they are due. The engine gives
+  the realm the area by a field of its own (`js::Field::Storage`),
+  which the bootstrap makes the window's object; `js::Field::Null` is
+  a `key` a `clear()` leaves `null`. `clear()` of an empty area fires
+  none.
 
 **The HTTP cache (M28.4).** In `net`, a `Cache` the `Client` keeps,
 in memory, as RFC 9111 has a private cache, version 0 of it: freshness
@@ -257,7 +310,14 @@ only, no revalidation.
   private cache; `s-maxage` is a shared cache's and not read.
   Navigations' documents are not stored: version 0 is the roadmap's
   subresource cache, and a document reloaded or gone back to is
-  fetched again, as now.
+  fetched again, as now. *(corrected)* The cache is read and written
+  in `scheme_fetch` for a `GET` fetched whole: a document, which
+  streams, neither reads nor writes, nor does a `HEAD`. Storable means
+  `public`, `private`, `max-age`, an `Expires` or a heuristically
+  cacheable status (RFC 9110 15.1), whatever its `Last-Modified`; one
+  with nothing to give it a lifetime is stored stale, for
+  `force-cache`. The cache is one `Arc` an engine's clients share, as
+  they share the jar, so that a client given by `set_network` keeps it.
 - *Freshness* (RFC 9111 4.2): the lifetime from `max-age`, else
   `Expires` minus `Date`, else 10% of `Date` minus `Last-Modified`, as
   the reference browser's heuristic is; the current age from `Age`,
@@ -272,7 +332,16 @@ only, no revalidation.
   site, the URL's own for a request the user made), so that one site
   cannot tell what another's pages fetched by timing a fetch of its
   own: the cache is partitioned by site, as the reference browser's
-  has been since 2020.
+  has been since 2020. *(corrected)* The site is the request origin's,
+  the document's that asked, which with no frames is the top level;
+  an opaque origin's site is itself. `max-age` is the first, its
+  delta-seconds held to 2^31; an `Expires` that is not a date is in the
+  past. The client's clock (`Client::with_clock`) is what ages are
+  reckoned by, a hand's in tests. Fetch 4.6's fields are sent:
+  `Pragma` and `Cache-Control: no-cache` for `no-store` and `reload`,
+  `Cache-Control: max-age=0` for `no-cache`, where the author set none;
+  a `default` request with an author's conditional field is
+  `no-store`.
 - *Cache modes* (Fetch 4.6): `default` uses what is fresh and stores
   what may be; `no-store` neither reads nor writes; `reload` does not
   read, and writes; `no-cache` does not read (revalidation being
@@ -280,14 +349,18 @@ only, no revalidation.
   fresh or not, and writes; `only-if-cached` uses what is stored and
   is a network error otherwise, in `same-origin` mode only, as the
   `Request` constructor already checks. `Request.cache` sets it now;
-  the engine's own subresource fetches take `default`.
+  the engine's own subresource fetches take `default`. *(corrected)*
+  `only-if-cached` with nothing stored is `NetworkError::NotCached`;
+  XHR's requests are `default`; the engine checks `only-if-cached`'s
+  mode again as it checks the rest of a script's request.
 - *A hit* is delivered as `data:` and `file:` responses are, whole,
   with the hop's URL list; the CORS check, `Cross-Origin-Resource-
   Policy` and the tainting run on it as on a response from the network;
   its `Set-Cookie` is not stored again. `Age` is not rewritten.
 - *Invalidation* (RFC 9111 4.4): a response to a request with an
   unsafe method (`POST`, `PUT`, `DELETE`, `PATCH`) that is not an
-  error removes what is stored for its URL.
+  error removes what is stored for its URL. *(corrected)* In the
+  request's partition alone; a 2xx or 3xx answer is not an error.
 - *Bounds.* `MAX_CACHE_BYTES` (64 MiB of bodies in all) and
   `MAX_CACHE_ENTRY_BYTES` (8 MiB, larger responses not stored), the
   least recently used going first; `MAX_CACHE_ENTRIES` (10,000).
@@ -300,7 +373,12 @@ it from both sides: two origins (two ports of `127.0.0.1`, and
 `localStorage`, `sessionStorage` and cookies, and none of the other's,
 in the session and after the profile is closed and opened again; an
 opaque origin refused; the cache, a resource fetched from one site and
-then from another, reaching the server again.
+then from another, reaching the server again. *(corrected)* Four
+origins, the two hosts and two ports of `127.0.0.1`, on a profile in
+memory and on one on disk; cookies are a host's, not an origin's, so
+the two ports share theirs, as the reference browser's do, and the
+test says so. A tab's `sessionStorage` is its own; `a.localhost` and
+`www.a.localhost`, one site, share a cache entry.
 
 **Limits (the bounds a hostile page cannot pass).**
 
@@ -324,7 +402,11 @@ over the test servers, write, reload and read, and give a second
 engine the same profile directory. `net`'s cache tests count what
 reaches the server, on a hand clock the cache is given (its times read
 through the client's clock, not the system's, so that ages and
-lifetimes are tested to the second).
+lifetimes are tested to the second). *(corrected)* The profile's tests
+run on `Memory` rather than `redb`'s own in-memory backend, which
+cannot be opened again; Web Storage's are held to the reference
+browser's answers to the probe's page, line by line, where Web IDL
+does not say otherwise.
 
 **Fuzzing.** A new target, `storage`: operations on a `localStorage`
 area and on the profile under it (sets, removals, clears, flushes and
@@ -334,17 +416,34 @@ was flushed. Another, `http_cache`: a response's fields, a request's
 and a series of times fed to the cache, which must never reuse what
 its freshness says is stale, checked independently, never store
 `no-store`, and stay within its bounds. `dom_api` gains `localStorage`
-and `sessionStorage` calls.
+and `sessionStorage` calls. *(corrected)* `storage` drives the
+engine's own areas through `engine::StorageDriver` over a profile in
+`Memory`, against a model of the areas written again in the target,
+with the profile written, opened again, copied as a crash leaves it,
+and damaged a byte at a time (refused, or read without a panic).
+`dom_api`'s pages are `data:` ones, refused storage: its new calls are
+that refusal and `StorageEvent` made, initialized and dispatched. The
+`cookies` target gains the jar written as records and read back, with
+records of the input's bytes among them. Seeds for sequences a fuzzer
+takes long to find are written by `fuzz-seeds/seeds-m28.py`.
 
 **The web-platform tests.** M27's testharness.js support takes
 `webstorage`: its `.window.js` tests and the pages that use no frame or
 second window (the `storage` event's tests open one, and are left
 out). Fetch's `http-cache` tests need Python handlers and are left out
-by the rule.
+by the rule. *(corrected)* 25 tests: two of the `storage` event's,
+whose harness makes its frame by `createElement("IFRAME")`, came in
+past the rule's frame check, which read the name in lower case alone;
+it reads any case now. 1,239 of their 1,251 subtests pass; the 12
+others set a lone surrogate (G78).
 
 **Golden cases** continue from 128: a page whose boxes are built from
 what it stored in `localStorage` and `sessionStorage` and read back,
-captured from the reference browser on a new profile.
+captured from the reference browser on a new profile. *(corrected)*
+Served over `http:` (`<meta name="reference-load" content="http">`),
+by the reference test's server and by Python's for the capture, since
+a `file:` page has no storage here; the page reads its items by name,
+the two browsers' orders of `key()` differing.
 
 **Acceptance.** The roadmap's isolation tests, before and after the
 profile is opened again. A page that counts its visits in
@@ -354,7 +453,15 @@ twice on one profile directory, showing two the second time, and its
 `setItem`s and `getItem`s, the flush of 1,000 changed items, a profile
 opened with 3,000 cookies and 100 origins' items; and a page of 100
 cacheable images and stylesheets loaded twice, the second time from
-the cache.
+the cache. *(corrected)* The page's 100 resources are stylesheets. The
+visit counter runs through the shell's window in a session test, two
+windows in turn on one profile, and in the real shell, two
+`--print-to-pdf` runs on one `--profile` directory, then a window
+killed outright, whose visit the once-a-second write had kept. The
+benchmark found `Jar::restore` quadratic, a search of the jar for each
+cookie's namesake and an eviction after each: an index and one trim to
+the limits by sorting took the profile's open from 25ms to 11.5ms.
+Numbers in `docs/perf-budgets.md`.
 
 ## 2. Not in this milestone, said rather than hidden
 
@@ -405,3 +512,7 @@ gate.
 11. *Acceptance*: the visit counter in the real shell, the benchmark,
     T4.3, fuzz runs.
 12. *The documents*.
+
+*(corrected)* Steps 2 and 3 were one, cookies being the first thing
+kept, and steps 4 and 5 one, the areas having no test without their
+bindings: the milestone took ten steps, the fuzzing its sixth.

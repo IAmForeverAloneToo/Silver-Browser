@@ -1431,6 +1431,57 @@ scripts, within it, is shown for what the first costs it:
   slow and two faster than any of the base's: the machine's bimodal
   variance, which T4.3 has met before.
 
+### Storage and the HTTP cache (M28)
+
+`benches/storage.rs` (`cargo bench -p engine --bench storage`), on the
+Windows machine, release, medians of ten runs:
+
+| | Median | Range |
+| --- | --- | --- |
+| A page, navigate to its title set by its script | 16.1ms | 15.6-18.7ms |
+| The same page setting 1,000 `localStorage` items and reading them back | 21.8ms | 20.9-22.5ms |
+| The profile's write of 1,000 items changed, in memory | 1.59ms | 1.55-1.66ms |
+| The same on disk, durable when it returns | 3.11ms | 3.05-3.29ms |
+| A profile of 3,000 cookies and 100 origins' items opened, its cookies taken | 11.5ms | 10.5-12.4ms |
+| Then an origin's items read from it | 0.02ms | 0.02-0.03ms |
+| A page of 100 stylesheets that may be kept, navigate to its load | 3.92ms | 3.47-5.93ms |
+| The page again, its sheets from the HTTP cache | 3.23ms | 2.62-3.96ms |
+
+- *An item.* About 3us a `setItem` or `getItem` beyond the page's own
+  time: the call into the host, the area's map, the change noted for
+  the profile.
+- *A write.* A thousand items in one transaction in 3ms on disk, made
+  at most once a second, from the engine's tasks: a page cannot make
+  the profile write more often by writing more.
+- *A profile opened.* At startup, before the first page. The benchmark
+  found it at 25ms, `Jar::restore` searching the jar for each cookie's
+  namesake and evicting after each: an index of the cookies kept and
+  one trim to the limits made it 11.5ms, the rest `redb`'s open and the
+  records' decoding.
+- *The cache.* The page again without its 100 fetches over loopback:
+  0.7ms saved here, where the server answers at once; a real server's
+  round trips are what it saves.
+
+**T4.3.** The benchmarks of the code before M28 (6431dce) and of M28,
+by turns, four rounds, the fourteen of M26's list and M27's `fetch`.
+Within 10% by their medians, but for three rows of code M28 does not
+change:
+
+| | Before M28 | M28 | |
+| --- | --- | --- | --- |
+| Flex: a chain of 64 nested containers, its layout | 6.53-7.82ms, median 7.04 | 6.61-9.38ms, median 7.86 | x1.11 |
+| Compositing: a card moved, a frame, median | 0.29-0.32ms, median 0.29 | 0.30-0.33ms, median 0.32 | x1.10 |
+| An appended paragraph's paint, median | 0.88-1.14ms, median 0.90 | 0.87-1.05ms, median 0.98 | x1.10 |
+
+- *The three rows.* M28 changes nothing in layout, paint or
+  compositing; their ranges overlap the base's, and the nested chain
+  is the bimodal one T4.3 met at M27. A realm is made in 16.6ms
+  against 16.0 (x1.04), the bootstrap's `Storage`, `StorageEvent` and
+  `QuotaExceededError` its share; the fetch page and its thousand
+  fetches x1.07 and x1.05, each now looked up in the cache and its
+  response stored there, stale (it has no lifetime) but kept for a
+  `force-cache` request, as RFC 9111 lets a 200 be.
+
 ### Over budget, and why
 
 These are known and recorded rather than hidden. Each has the item that

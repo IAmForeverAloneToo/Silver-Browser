@@ -30,6 +30,8 @@ shell          (bin "silver-browser": windowing, event loop, input, clipboard)
     | js      (scripts: the script engine behind traits of the engine's,
     |          the boundary scripts reach the document through, and
     |          their limits: a leaf crate, since M24, below engine)
+    | profile (what the browsing keeps on disk, over redb: a leaf
+    |          crate, since M28, below engine)
     ├ net     (URL parsing, resource fetching)
     ├ html    (bytes → DOM)
     ├ css     (stylesheet bytes → CSSOM)
@@ -50,7 +52,9 @@ shell          (bin "silver-browser": windowing, event loop, input, clipboard)
    orchestrates but owns no platform state. Only `net` opens network
    connections and reads resources by URL (since M14): CI fails the
    build when `TcpStream`, `UdpSocket`, `ToSocketAddrs` or `rustls`
-   appears in any other crate or in `fuzz/` (T3.4).
+   appears in any other crate or in `fuzz/` (T3.4). Only `profile`
+   keeps what the browsing keeps on disk (since M28), in the directory
+   the shell chooses: it alone knows `redb`.
 3. **Types are owned by their producer.** The display list lives in
    `paint`, the box tree in `layout`, the DOM in `dom`. No shared
    "common types" crate — if two layers need a type, it belongs to the
@@ -77,8 +81,10 @@ shell          (bin "silver-browser": windowing, event loop, input, clipboard)
    argument. Code in another language is reached through a
    third-party crate's safe interface: QuickJS-ng through `rquickjs` in
    `js`, which says so with `#![forbid(unsafe_code)]`, and aws-lc
-   through `rustls` in `net`. The unsafe code that leaves, third-party
-   and pinned, is M33.5's audit.
+   through `rustls` in `net`. `profile` forbids it too, over `redb`,
+   whose own (its file reads, locks and hashing) is third-party (M28).
+   The unsafe code that leaves, third-party and pinned, is M33.5's
+   audit.
 
 ## Pixels: where fractions become whole (M8.5)
 
@@ -1688,3 +1694,56 @@ documents; HTTP authentication; the Cookie Store API; requests that
 outlive their page; WebSockets; `FileReader`; the `formdata` event; a
 header section ended by the connection's close. 2,155 tests pass
 workspace-wide, two ignored. Next milestone: storage (M28).
+
+Milestone 28 (storage; `docs/design/storage.md`): the browser keeps
+what browsing keeps. A new leaf crate, `profile` (D10: `redb` 4.3.0,
+pure Rust, one file), holds each origin's `localStorage` items, keyed
+by the origin's serialization so that an origin reads one range, and
+the cookies' records, every write one transaction, and refuses a
+profile in use, of a newer schema, or damaged (step 1). The shell opens
+the platform's profile directory, `--profile`'s, or none with
+`--temporary-profile`, and writes it when its window closes; the engine
+takes the cookies with an expiry back into its jar, records of `net`'s
+own encoding (`Jar::export`, `Jar::restore`), and writes what changed
+at most once a second from its tasks and when dropped (step 2).
+`localStorage` and `sessionStorage` (step 3): areas in the engine,
+lent to a run as the jar is, local ones read from the profile at their
+first use and written by the item, a tab's session ones in memory, a
+quota of 5,242,880 UTF-16 code units each; `Storage` a legacy platform
+object, a proxy with Web IDL's named-property traps;
+`QuotaExceededError`; `StorageEvent` and the `storage` event between
+the document shown and the one on its way; opaque origins, `file:`
+included, refused. The
+HTTP cache, version 0 (step 4): `net::cache`, RFC 9111's private cache
+in memory for the `GET`s fetched whole, by site and URL with `Vary`'s
+variants, fresh by `max-age`, `Expires`, `Age`, `Date` and the 10%
+heuristic, read and written by Fetch's cache modes (`Request.cache`
+real now), invalidated by unsafe methods, within 64 MiB. Isolation
+(step 5): four origins read their own storage and cookies and none of
+the others', in the session and after the profile is opened again, in
+memory and on disk; the cache kept apart by site. Fuzzing (step 6):
+`storage`, the engine's areas over a profile written, opened again,
+copied as a crash leaves it and damaged, against a model
+(`engine::StorageDriver`), and `http_cache`, freshness checked
+independently; the `cookies` target's records, `dom_api`'s storage
+calls; they and their tests found `redb` panicking on a damaged file,
+now a profile refused, and records to hold to the storage model's
+rules. The web-platform tests (step 7): 25 tests of `webstorage`,
+1,239 of 1,251 subtests passing, the rest lone surrogates (G78); the
+pull rule's frame check now reads any case. Page 128 (step 8), served
+over `http:` so that it has an origin, matches the reference browser
+exactly. The acceptance (step 9): a page counts its visits in
+`localStorage` and a cookie across windows on one profile, and in the
+real shell across runs, a window killed outright included;
+`benches/storage.rs`, which found the jar's restore quadratic (now
+11.5 ms for 3,000 cookies and 100 origins); T4.3 within 10% but for
+three rows of code M28 does not change, their ranges the base's; fuzz
+runs of `storage`, `http_cache`, `cookies`, `dom_api`, `script` and
+`pipeline`, fifteen minutes each on six workers, found nothing. Not
+in this milestone, said rather than hidden: IndexedDB (M36); the
+cache on disk, revalidation and documents cached (M38); the Cache API
+(M39); a user's view of what is kept (M36); session restore and the
+`storage` event across tabs (M37); partitioned cookies and the
+profile's encryption (M33); a profile a browser process owns (M34);
+lone surrogates kept (G78). 2,221 tests pass workspace-wide, two
+ignored. Next milestone: WebAssembly (M29).
