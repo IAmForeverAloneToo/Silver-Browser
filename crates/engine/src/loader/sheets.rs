@@ -50,6 +50,10 @@ struct Context {
     encoding: Encoding,
     /// The address space of the server the document came from.
     address_space: AddressSpace,
+    /// The document's origin (M27.2), fixed when the page is made: its
+    /// URL's for a network URL, else an opaque origin of its own, so
+    /// that it is same origin with itself and with nothing else.
+    origin: Origin,
 }
 
 /// An element that may own a sheet.
@@ -140,17 +144,19 @@ impl Page {
     /// The page of a document given to the engine: its `<style>`
     /// elements make sheets, and nothing is fetched.
     pub(crate) fn given(id: PageId) -> Page {
+        let origin = Origin::new_opaque();
         Page {
             context: Context {
                 id,
                 url: None,
                 encoding: encoding::UTF_8,
                 address_space: AddressSpace::Public,
+                origin: origin.clone(),
             },
             undecodable: None,
             language: None,
             owners: Vec::new(),
-            csp: Csp::none(Origin::new_opaque()),
+            csp: Csp::none(origin),
             metas: Vec::new(),
         }
     }
@@ -165,13 +171,15 @@ impl Page {
         undecodable: Option<Encoding>,
         address_space: AddressSpace,
     ) -> Page {
-        let csp = Csp::none(url.origin());
+        let origin = url.origin();
+        let csp = Csp::none(origin.clone());
         Page {
             context: Context {
                 id,
                 url: Some(url),
                 encoding,
                 address_space,
+                origin,
             },
             undecodable,
             language: None,
@@ -234,6 +242,21 @@ impl Page {
     /// The document's URL.
     pub(crate) fn url(&self) -> Option<&Url> {
         self.context.url.as_ref()
+    }
+
+    /// The document's origin (M27.2).
+    pub(crate) fn origin(&self) -> &Origin {
+        &self.context.origin
+    }
+
+    /// Whether the document is a secure context (HTML 8.1.3.5): its URL
+    /// potentially trustworthy, as a document with none, an
+    /// `about:blank`, is.
+    pub(crate) fn is_secure_context(&self) -> bool {
+        self.context
+            .url
+            .as_ref()
+            .is_none_or(Url::is_potentially_trustworthy)
     }
 
     /// The encoding of the page's document.

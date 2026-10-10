@@ -238,6 +238,12 @@ const NATIVES: &[(&str, Decode)] = &[
     ("resolveUrl", |a| Ok(Call::ResolveUrl(a.string(0)?))),
     ("documentUrl", |_| Ok(Call::DocumentUrl)),
     ("location", |_| Ok(Call::Location)),
+    ("origin", |_| Ok(Call::Origin)),
+    ("secureContext", |_| Ok(Call::SecureContext)),
+    ("documentDomain", |_| Ok(Call::DocumentDomain)),
+    ("setDocumentDomain", |a| {
+        Ok(Call::SetDocumentDomain(a.string(0)?))
+    }),
     ("navigate", |a| {
         Ok(Call::Navigate {
             url: a.string(0)?,

@@ -736,6 +736,33 @@ impl DocumentHost {
                 let url = self.page.as_ref().and_then(|page| page.url());
                 Ok(Answer::Strings(location_parts(url)))
             }
+            Call::Origin => Ok(Answer::String(
+                self.page
+                    .as_ref()
+                    .map_or_else(|| "null".to_owned(), |page| page.origin().serialization()),
+            )),
+            Call::SecureContext => Ok(Answer::Bool(
+                self.page.as_ref().is_none_or(Page::is_secure_context),
+            )),
+            Call::DocumentDomain => {
+                Ok(Answer::String(match self.page.as_ref().map(Page::origin) {
+                    Some(net::Origin::Tuple { host, .. }) => host.to_string(),
+                    _ => String::new(),
+                }))
+            }
+            Call::SetDocumentDomain(value) => match self.page.as_ref().map(Page::origin) {
+                Some(net::Origin::Tuple { host, .. }) if host.has_registrable_suffix(&value) => {
+                    Ok(Answer::Nothing)
+                }
+                Some(net::Origin::Tuple { host, .. }) => Err(DomError::new(
+                    "SecurityError",
+                    format!("'{value}' is not a suffix of '{host}'."),
+                )),
+                _ => Err(DomError::new(
+                    "SecurityError",
+                    "The document's origin is opaque.",
+                )),
+            },
             Call::Navigate { url, replace } => {
                 let parsed = self
                     .page

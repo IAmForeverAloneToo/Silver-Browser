@@ -275,6 +275,30 @@ impl Url {
         Url::from_record(record)
     }
 
+    /// Whether the URL is potentially trustworthy (Secure Contexts 3.2):
+    /// `about:blank`, `about:srcdoc` and `data:`; `https:`, `wss:` and
+    /// `file:`; a loopback address; `localhost` and the names under it.
+    /// What a secure context, a `Secure` cookie and mixed content ask.
+    pub fn is_potentially_trustworthy(&self) -> bool {
+        if matches!(self.as_str(), "about:blank" | "about:srcdoc") {
+            return true;
+        }
+        match self.scheme() {
+            "data" | "https" | "wss" | "file" => true,
+            _ => match self.host() {
+                Some(Host::Ipv4(address)) => address.is_loopback(),
+                Some(Host::Ipv6(address)) => address.is_loopback(),
+                Some(Host::Domain(name)) => {
+                    name == "localhost"
+                        || name == "localhost."
+                        || name.ends_with(".localhost")
+                        || name.ends_with(".localhost.")
+                }
+                _ => false,
+            },
+        }
+    }
+
     /// The URL's origin (URL Standard §4.7). `file:` URLs and schemes
     /// other than the network ones get a new opaque origin each time, as
     /// the standard says: such a URL is not same origin with itself.
@@ -415,6 +439,44 @@ impl Origin {
             Origin::Opaque(_) => "null".to_owned(),
         }
     }
+}
+
+impl Origin {
+    /// The origin's site (HTML 7.1.1.1): an opaque origin itself, else
+    /// its scheme and its host's registrable domain, or the host when it
+    /// has none (an address, or a domain that is a public suffix).
+    pub fn site(&self) -> Site {
+        match self {
+            Origin::Opaque(id) => Site::Opaque(*id),
+            Origin::Tuple { scheme, host, .. } => Site::Schemeful {
+                scheme: scheme.clone(),
+                host: host
+                    .registrable_domain()
+                    .map_or_else(|| host.to_string(), str::to_owned),
+            },
+        }
+    }
+
+    /// Whether the two origins are same site (HTML 7.1.1.1): their
+    /// sites equal, scheme and all.
+    pub fn same_site(&self, other: &Origin) -> bool {
+        self.site() == other.site()
+    }
+}
+
+/// A site (HTML 7.1.1.1): an opaque origin, or a scheme and a host's
+/// registrable domain (or the host, serialized, when it has none).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Site {
+    /// An opaque origin's site, itself.
+    Opaque(u64),
+    /// A scheme and a registrable domain or host.
+    Schemeful {
+        /// The scheme.
+        scheme: String,
+        /// The registrable domain, or the host's serialization.
+        host: String,
+    },
 }
 
 impl PartialEq for Origin {
@@ -575,6 +637,133 @@ mod tests {
         let opaque = Origin::new_opaque();
         assert_eq!(opaque.clone(), opaque);
         assert_eq!(opaque.serialization(), "null");
+    }
+
+    #[test]
+    fn potentially_trustworthy_urls_are_secure_contexts_sources() {
+        let trustworthy = |input: &str| Url::parse(input).unwrap().is_potentially_trustworthy();
+        for input in [
+            "about:blank",
+            "about:srcdoc",
+            "data:,x",
+            "https://example.com/",
+            "wss://example.com/",
+            "file:///x",
+            "http://127.0.0.1/",
+            "http://127.200.0.1:8080/",
+            "http://[::1]/",
+            "http://localhost/",
+            "http://localhost./",
+            "http://a.localhost/",
+            "ws://b.a.localhost./",
+        ] {
+            assert!(trustworthy(input), "{input}");
+        }
+        for input in [
+            "http://example.com/",
+            "http://10.0.0.1/",
+            "http://[::2]/",
+            "http://localhost.example/",
+            "http://notlocalhost/",
+            "about:silver",
+            "ftp://localhost.example/",
+        ] {
+            assert!(!trustworthy(input), "{input}");
+        }
+    }
+
+    #[test]
+    fn hosts_have_public_suffixes_and_registrable_domains() {
+        let host = |input: &str| {
+            Url::parse(&format!("http://{input}/"))
+                .unwrap()
+                .host()
+                .cloned()
+                .unwrap()
+        };
+        let both = |input: &str| {
+            let host = host(input);
+            (
+                host.public_suffix().map(str::to_owned),
+                host.registrable_domain().map(str::to_owned),
+            )
+        };
+        let some = |a: &str, b: &str| (Some(a.to_owned()), Some(b.to_owned()));
+        assert_eq!(both("www.example.com"), some("com", "example.com"));
+        assert_eq!(both("a.b.example.co.uk"), some("co.uk", "example.co.uk"));
+        assert_eq!(both("co.uk"), (Some("co.uk".to_owned()), None));
+        // The list's private section: each project its own site.
+        assert_eq!(both("a.b.github.io"), some("github.io", "b.github.io"));
+        // A name the list does not know: its last label, by the rule `*`.
+        assert_eq!(both("a.localhost"), some("localhost", "a.localhost"));
+        assert_eq!(both("localhost"), (Some("localhost".to_owned()), None));
+        assert_eq!(both("example.com."), some("com.", "example.com."));
+        assert_eq!(both("127.0.0.1"), (None, None));
+        assert_eq!(both("[::1]"), (None, None));
+    }
+
+    #[test]
+    fn sites_are_schemes_and_registrable_domains() {
+        let origin = |input: &str| Url::parse(input).unwrap().origin();
+        let same = |a: &str, b: &str| origin(a).same_site(&origin(b));
+        assert!(same("http://a.example.com:8080/", "http://b.example.com/"));
+        assert!(same("http://127.0.0.1:1/", "http://127.0.0.1:2/"));
+        assert!(same("http://example.co.uk/", "http://www.example.co.uk/"));
+        assert!(!same("http://example.com/", "https://example.com/"));
+        assert!(!same("http://a.localhost/", "http://b.localhost/"));
+        assert!(!same("http://127.0.0.1/", "http://localhost/"));
+        assert!(!same("http://a.github.io/", "http://b.github.io/"));
+        assert!(!same("http://a.co.uk/", "http://b.co.uk/"));
+        assert_eq!(
+            origin("https://www.example.com/").site(),
+            Site::Schemeful {
+                scheme: "https".to_owned(),
+                host: "example.com".to_owned()
+            }
+        );
+        // A public suffix as a host is its own site.
+        assert!(!same("http://co.uk/", "http://a.co.uk/"));
+        let opaque = Origin::new_opaque();
+        assert!(opaque.same_site(&opaque.clone()));
+        assert!(!opaque.same_site(&Origin::new_opaque()));
+    }
+
+    #[test]
+    fn a_registrable_suffix_is_the_host_or_a_domain_it_ends_in() {
+        let host = |input: &str| {
+            Url::parse(&format!("http://{input}/"))
+                .unwrap()
+                .host()
+                .cloned()
+                .unwrap()
+        };
+        let www = host("www.example.com");
+        for suffix in ["example.com", "www.example.com", "EXAMPLE.com"] {
+            assert!(www.has_registrable_suffix(suffix), "{suffix}");
+        }
+        for suffix in [
+            "com",
+            "ample.com",
+            "",
+            "example.com.",
+            "other.com",
+            "x.www.example.com",
+        ] {
+            assert!(!www.has_registrable_suffix(suffix), "{suffix}");
+        }
+        assert!(!host("a.github.io").has_registrable_suffix("github.io"));
+        // Under a wildcard rule, `*.kawasaki.jp`: a domain whose public
+        // suffix the host's ends in is refused, though it is no public
+        // suffix itself; the exception `!city.kawasaki.jp` is a domain.
+        let wild = host("a.b.kawasaki.jp");
+        assert!(!wild.has_registrable_suffix("kawasaki.jp"));
+        assert!(!wild.has_registrable_suffix("b.kawasaki.jp"));
+        assert!(host("www.city.kawasaki.jp").has_registrable_suffix("city.kawasaki.jp"));
+        assert!(host("a.b.github.io").has_registrable_suffix("b.github.io"));
+        let ip = host("127.0.0.1");
+        assert!(ip.has_registrable_suffix("127.0.0.1"));
+        assert!(!ip.has_registrable_suffix("0.0.1"));
+        assert!(!ip.has_registrable_suffix("1"));
     }
 
     #[test]

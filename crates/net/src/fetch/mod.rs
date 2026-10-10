@@ -501,7 +501,7 @@ fn check(request: &Request, url: &Url, redirects: usize) -> Result<(), NetworkEr
         if let Some(initiator) = &request.initiator
             && initiator.url.scheme() == "https"
             && scheme == "http"
-            && !is_potentially_trustworthy_host(url)
+            && !url.is_potentially_trustworthy()
         {
             return Err(NetworkError::MixedContent);
         }
@@ -523,25 +523,13 @@ fn upgrade_mixed_content(request: &Request, url: &Url) -> Option<Url> {
     if request.destination != Destination::Image
         || initiator.url.scheme() != "https"
         || url.scheme() != "http"
-        || is_potentially_trustworthy_host(url)
+        || url.is_potentially_trustworthy()
         || matches!(url.host(), Some(Host::Ipv4(_) | Host::Ipv6(_)))
     {
         return None;
     }
     // The default port goes with the scheme; another is kept.
     Url::parse(&format!("https{}", &url.as_str()["http".len()..])).ok()
-}
-
-/// Whether an `http:` URL's host is one Secure Contexts counts as
-/// potentially trustworthy all the same: a loopback address, or
-/// `localhost` and the names under it.
-fn is_potentially_trustworthy_host(url: &Url) -> bool {
-    match url.host() {
-        Some(Host::Ipv4(address)) => address.is_loopback(),
-        Some(Host::Ipv6(address)) => address.is_loopback(),
-        Some(Host::Domain(name)) => name == "localhost" || name.ends_with(".localhost"),
-        _ => false,
-    }
 }
 
 /// The fields every HTTP request sends besides `Host`, which the

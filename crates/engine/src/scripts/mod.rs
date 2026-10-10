@@ -29,7 +29,7 @@ use js::{
     Completion, ConsoleLevel, ErrorKind, Limits, QuickJs, Realm, Script, ScriptEngine, ScriptError,
 };
 use net::csp::{Csp, Violation};
-use net::{Destination, Request, Response, Url};
+use net::{Destination, Origin, Request, Response, Url};
 
 use crate::loader::{FetchId, LoadError, Network, Page, Target};
 
@@ -517,7 +517,7 @@ impl Scripts {
         let element = *element;
         let failed = match result
             .map_err(|error| error.to_string())
-            .and_then(|response| script_source(&response, *fallback, page.url()))
+            .and_then(|response| script_source(&response, *fallback, page.origin()))
         {
             Ok(mut source) => {
                 source.element = Some(element);
@@ -1064,12 +1064,12 @@ fn script_request(page: &Page, url: Url, csp: Csp) -> Option<Request> {
 /// classic script"), or why it is none: it needs an ok status and a type
 /// Fetch lets a script have. It is decoded by its BOM, else its type's
 /// `charset`, else `fallback`; its errors are muted unless every URL it
-/// came through is of the `document`'s origin or `data:` (Fetch's
+/// came through is of the document's `origin` or `data:` (Fetch's
 /// response tainting, with no CORS until M27).
 fn script_source(
     response: &Response,
     fallback: Encoding,
-    document: Option<&Url>,
+    origin: &Origin,
 ) -> Result<Source, String> {
     if !response.ok() {
         return Err(format!("status {}", response.status));
@@ -1082,13 +1082,10 @@ fn script_source(
     }
     let encoding = net::mime::legacy_extract_encoding(response.mime_type.as_ref(), fallback);
     let (text, _) = encoding::decode(&response.body, encoding);
-    let muted = document.is_none_or(|document| {
-        let origin = document.origin();
-        response
-            .url_list
-            .iter()
-            .any(|url| url.scheme() != "data" && url.origin() != origin)
-    });
+    let muted = response
+        .url_list
+        .iter()
+        .any(|url| url.scheme() != "data" && url.origin() != *origin);
     Ok(Source {
         text,
         url: response.url().to_string(),
@@ -1450,7 +1447,7 @@ mod tests {
         };
         let document = url("https://example.com/page.html");
         let muted = |urls: &[&str]| {
-            script_source(&response(urls), encoding::UTF_8, Some(&document))
+            script_source(&response(urls), encoding::UTF_8, &document.origin())
                 .unwrap()
                 .muted
         };
@@ -1468,7 +1465,11 @@ mod tests {
         ]));
         // A document of no origin it shares, a file's, mutes them all.
         let file = url("file:///page.html");
-        let source = script_source(&response(&["file:///a.js"]), encoding::UTF_8, Some(&file));
+        let source = script_source(
+            &response(&["file:///a.js"]),
+            encoding::UTF_8,
+            &file.origin(),
+        );
         assert!(source.unwrap().muted);
     }
 

@@ -3166,6 +3166,16 @@
       return native.documentInfo()[3];
     }
 
+    get domain() {
+      self(this);
+      return native.documentDomain();
+    }
+
+    set domain(value) {
+      self(this);
+      native.setDocumentDomain(str(value));
+    }
+
     get location() {
       self(this);
       return location;
@@ -5058,6 +5068,14 @@
 
     set location(value) {
       location.href = value;
+    }
+
+    get origin() {
+      return native.origin();
+    }
+
+    get isSecureContext() {
+      return native.secureContext();
     }
 
     get navigator() {

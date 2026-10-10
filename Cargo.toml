@@ -59,6 +59,10 @@ unicode-script = "0.5"
 unicode-properties = { version = "0.1", default-features = false, features = ["general-category"] }
 # UTS #46 for the URL parser's domains (D17; docs/design/net.md).
 idna = "1.1"
+# The Public Suffix List (D20; docs/design/fetch.md): a matcher
+# generated from the list, for sites, cookies' domains and
+# Sec-Fetch-Site.
+psl = "2.1.241"
 # TLS for https: (D4; docs/design/net.md): rustls over the aws-lc-rs
 # provider, which has the X25519MLKEM768 key exchange, and Mozilla's
 # root program compiled in.

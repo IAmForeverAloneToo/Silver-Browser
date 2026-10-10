@@ -22,6 +22,51 @@ pub enum Host {
     Empty,
 }
 
+impl Host {
+    /// The host's public suffix (URL Standard 3.2), by the Public Suffix
+    /// List (D20), its trailing dot kept: `None` for a host that is not
+    /// a domain. A domain the list does not know has its last label.
+    pub fn public_suffix(&self) -> Option<&str> {
+        let Host::Domain(name) = self else {
+            return None;
+        };
+        std::str::from_utf8(psl::suffix(name.as_bytes())?.as_bytes()).ok()
+    }
+
+    /// The host's registrable domain (URL Standard 3.2): its public
+    /// suffix and the label before it; `None` for a host that is not a
+    /// domain or that is a public suffix itself.
+    pub fn registrable_domain(&self) -> Option<&str> {
+        let Host::Domain(name) = self else {
+            return None;
+        };
+        std::str::from_utf8(psl::domain(name.as_bytes())?.as_bytes()).ok()
+    }
+
+    /// Whether `suffix` is a registrable domain suffix of, or equal to,
+    /// the host (HTML 7.1.1.2), as `document.domain`'s setter asks: the
+    /// host itself, or a domain the host ends in, label by label, that
+    /// is not a public suffix.
+    pub fn has_registrable_suffix(&self, suffix: &str) -> bool {
+        // The empty string, which HTML refuses first, fails to parse.
+        let Ok(parsed) = parse_host(suffix, false) else {
+            return false;
+        };
+        if parsed == *self {
+            return true;
+        }
+        let (Host::Domain(name), Host::Domain(wanted)) = (self, &parsed) else {
+            return false;
+        };
+        let dotted = format!(".{wanted}");
+        if !name.ends_with(&dotted) {
+            return false;
+        }
+        let public = self.public_suffix().unwrap_or_default();
+        parsed.public_suffix() != Some(wanted.as_str()) && !public.ends_with(&dotted)
+    }
+}
+
 impl fmt::Display for Host {
     /// The host serializer (URL Standard §3.6).
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

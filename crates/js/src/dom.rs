@@ -188,6 +188,18 @@ pub enum Call {
     ResolveUrl(String),
     /// The document's URL, if it has one.
     DocumentUrl,
+    /// The serialization of the document's origin (M27.2), what
+    /// `self.origin` gives.
+    Origin,
+    /// Whether the document is a secure context (`isSecureContext`).
+    SecureContext,
+    /// `document.domain`: the origin's host, or the empty string for an
+    /// opaque origin.
+    DocumentDomain,
+    /// `document.domain` set: a `SecurityError` unless the value is the
+    /// host or a registrable suffix of it, and then nothing, as in an
+    /// origin-keyed agent cluster (HTML 7.1.1.2).
+    SetDocumentDomain(String),
     /// The document's URL in parts, as `Location` gives them: `href`,
     /// `origin`, `protocol`, `host`, `hostname`, `port`, `pathname`,
     /// `search`, `hash`.

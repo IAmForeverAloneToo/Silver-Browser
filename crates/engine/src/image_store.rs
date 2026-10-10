@@ -101,11 +101,9 @@ pub(crate) struct ImageEntry {
 }
 
 /// Whether `url` is same origin with the document `page` shows: never
-/// for a page with no URL, nor for a `file:` one, whose origin is
-/// opaque.
+/// for a page whose origin is opaque, as a `file:` one's is.
 fn same_origin(page: &Page, url: &net::Url) -> bool {
-    page.url()
-        .is_some_and(|document| document.origin() == url.origin())
+    *page.origin() == url.origin()
 }
 
 impl ImageEntry {
