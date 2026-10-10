@@ -25,6 +25,7 @@
   const FunctionBind = uncurry(Function.prototype.bind);
   const BigIntAsIntN = BigInt.asIntN;
   const SetFromBase64 = uncurry(Uint8Array.prototype.setFromBase64);
+  const PromiseThen = uncurry(Promise.prototype.then);
   const $DOMException = DOMException;
   const $Map = Map;
   const $WeakMap = WeakMap;
@@ -9514,7 +9515,12 @@
 
   // A module compiled from `bytes`: its handle, or a CompileError.
   function compileModule(bytes, where) {
-    const handle = native.wasmCompile(moduleBytes(bytes, where), where);
+    return compileText(moduleBytes(bytes, where), where);
+  }
+
+  // A module compiled from its bytes as base64.
+  function compileText(text, where) {
+    const handle = native.wasmCompile(text, where);
     if (typeof handle === "string") {
       throw new CompileError(where + ": " + handle);
     }
@@ -9810,6 +9816,12 @@
   // instance made, its start function called; its exports object,
   // frozen, with no prototype.
   function instantiateModule(handle, importObject, where) {
+    return makeInstance(handle, readImports(handle, importObject, where), where);
+  }
+
+  // The imports of the module `handle` read from `importObject`, in the
+  // module's order: a tag and a value each, for the natives.
+  function readImports(handle, importObject, where) {
     if (importObject !== undefined && !isObject(importObject)) {
       throw new $TypeError(where + ": Argument 1 must be an object");
     }
@@ -9877,6 +9889,12 @@
         throw new LinkError(named + "tag import requires a WebAssembly.Tag");
       }
     }
+    return given;
+  }
+
+  // An instance of the module `handle` with the imports `given`, its
+  // start function called: its exports object.
+  function makeInstance(handle, given, where) {
     enter();
     const made = native.wasmInstantiate(handle, given);
     leave();
@@ -9912,8 +9930,15 @@
   // Each instance object's exports.
   const instanceExports = new $WeakMap();
 
+  function instanceObject(exports) {
+    const instance = ObjectCreate(Instance.prototype);
+    WeakMapSet(instanceExports, instance, exports);
+    return instance;
+  }
+
   class Instance {
-    constructor(module, importObject) {
+    constructor(module) {
+      const importObject = arguments[1];
       const where = "WebAssembly.Instance()";
       const handle = moduleOf(module, where);
       WeakMapSet(instanceExports, this, instantiateModule(handle, importObject, where));
@@ -9928,6 +9953,113 @@
     }
   }
   exposeWasm(Instance, "Instance");
+
+  // ---- The asynchronous interface --------------------------------------------
+
+  // `work` run in a promise job, the promise settled by what it returns
+  // or throws: the interface's "in parallel", here on the realm's own
+  // thread (a worker's is M31's).
+  function later(work) {
+    return PromiseThen(resolved(undefined), work);
+  }
+
+  // The interface's operations return promises: what they would throw
+  // rejects them.
+  function promising(work) {
+    try {
+      return work();
+    } catch (error) {
+      return rejected(error);
+    }
+  }
+
+  // A promise of the result of instantiating the module `handle` with
+  // the imports read from `importObject` now.
+  function instantiateLater(handle, importObject, where) {
+    const given = readImports(handle, importObject, where);
+    return later(() => instanceObject(makeInstance(handle, given, where)));
+  }
+
+  // The module of bytes as base64 and its instance, as `instantiate`
+  // resolves them.
+  function moduleAndInstance(text, importObject, where) {
+    const handle = compileText(text, where);
+    const module = moduleObject(handle);
+    const instance = instanceObject(instantiateModule(handle, importObject, where));
+    return { module, instance };
+  }
+
+  wasmOperation("compile", function compile(bytes) {
+    return promising(() => {
+      const text = moduleBytes(bytes, "WebAssembly.compile()");
+      return later(() => moduleObject(compileText(text, "WebAssembly.compile()")));
+    });
+  });
+
+  wasmOperation("instantiate", function instantiate(source) {
+    const importObject = arguments[1];
+    const where = "WebAssembly.instantiate()";
+    return promising(() => {
+      const handle = isObject(source) ? WeakMapGet(modules, source) : undefined;
+      if (handle !== undefined) {
+        return instantiateLater(handle, importObject, where);
+      }
+      if (bufferBytes(source) === undefined) {
+        throw new $TypeError(where + ": Argument 0 must be a buffer source or a WebAssembly.Module object");
+      }
+      const text = moduleBytes(source, where);
+      return later(() => moduleAndInstance(text, importObject, where));
+    });
+  });
+
+  const ResponseArrayBuffer = Response.prototype.arrayBuffer;
+
+  // The bytes of a response, or of the promise of one, as base64: its
+  // MIME type, its origin and its status checked as the WebAssembly Web
+  // API says, in the reference browser's words.
+  function responseText(source) {
+    return PromiseThen(resolved(source), (response) => {
+      const fail = (message) => new $TypeError("Failed to execute 'compile' on 'WebAssembly': " + message);
+      if (!isResponse(response)) {
+        throw fail("An argument must be provided, which must be a Response or Promise<Response> object");
+      }
+      const state = responseState(response);
+      const type = combined(headersState(state.headers).list, "content-type");
+      if (type === null || ToLowerCase(type) !== "application/wasm") {
+        throw fail("Incorrect response MIME type. Expected 'application/wasm'.");
+      }
+      if (state.type === "opaque" || state.type === "opaqueredirect") {
+        throw fail("Response is not CORS-same-origin");
+      }
+      if (state.status < 200 || state.status > 299) {
+        throw fail("HTTP status code is not ok");
+      }
+      return PromiseThen(ReflectApply(ResponseArrayBuffer, response, []), (buffer) => {
+        if (bufferLength(buffer) > native.wasmModuleLimit) {
+          throw new $RangeError(
+            "WebAssembly.compileStreaming(): the module is larger than " + native.wasmModuleLimit / 1048576 + " MiB",
+          );
+        }
+        return ToBase64(new $Uint8Array(buffer));
+      });
+    });
+  }
+
+  wasmOperation("compileStreaming", function compileStreaming(source) {
+    return promising(() =>
+      PromiseThen(responseText(source), (text) =>
+        moduleObject(compileText(text, "WebAssembly.compileStreaming()")),
+      ),
+    );
+  });
+
+  wasmOperation("instantiateStreaming", function instantiateStreaming(source) {
+    const importObject = arguments[1];
+    const where = "WebAssembly.instantiateStreaming()";
+    return promising(() =>
+      PromiseThen(responseText(source), (text) => moduleAndInstance(text, importObject, where)),
+    );
+  });
 
   // ---- Memory, Table and Global --------------------------------------------
 
@@ -10166,7 +10298,8 @@
   }
 
   class Table {
-    constructor(descriptor, value) {
+    constructor(descriptor) {
+      const value = arguments[1];
       const where = "WebAssembly.Table()";
       if (!isObject(descriptor)) {
         throw new $TypeError(where + ": Argument 0 must be a table descriptor");
@@ -10195,7 +10328,8 @@
       return fromWasm(made[1], info.letter);
     }
 
-    set(index, value) {
+    set(index) {
+      const value = arguments[1];
       const where = "WebAssembly.Table.set()";
       const info = tableOf(this, where);
       const at = rangeArgument(index, where, 0);
@@ -10205,7 +10339,8 @@
       }
     }
 
-    grow(delta, value) {
+    grow(delta) {
+      const value = arguments[1];
       const where = "WebAssembly.Table.grow()";
       const info = tableOf(this, where);
       const by = rangeArgument(delta, where, 0);
@@ -10263,7 +10398,8 @@
   }
 
   class Global {
-    constructor(descriptor, value) {
+    constructor(descriptor) {
+      const value = arguments[1];
       const where = "WebAssembly.Global()";
       if (!isObject(descriptor)) {
         throw new $TypeError(where + ": Argument 0 must be a global descriptor");

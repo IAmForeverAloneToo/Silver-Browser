@@ -856,3 +856,116 @@ step("tooDeep", () => d.deep(20000));
         ]
     );
 }
+
+/// What the promises `astep(name, promise)` collected settle to, each
+/// logged as `name=` and its value in JSON, or what it was rejected
+/// with, in the order they were made.
+const ASYNC_STEPS: &str = r#"
+const settling = [];
+const astep = (name, p) => settling.push(p.then((v) => name + "=" + JSON.stringify(v),
+  (e) => name + "=threw " + (e && e.constructor && e.constructor.name) + ": " + (e && e.message)));
+const report = () => Promise.all(settling).then((lines) => lines.forEach((line) => console.log(line)));
+"#;
+
+#[test]
+fn compile_and_instantiate_settle_in_promise_jobs() {
+    let add = module(ADD);
+    let imports = module(IMPORTS);
+    let lines = steps(&format!(
+        r#"{ASYNC_STEPS}
+const add = {add};
+let settled = false;
+WebAssembly.compile(add).then(() => {{ settled = true; }});
+step("deferred", () => settled);
+step("lengths", () => [WebAssembly.compile.length, WebAssembly.instantiate.length,
+  WebAssembly.compileStreaming.length, WebAssembly.instantiateStreaming.length, WebAssembly.validate.length,
+  WebAssembly.Instance.length, WebAssembly.Table.length, WebAssembly.Global.length, WebAssembly.Memory.length,
+  WebAssembly.Table.prototype.set.length, WebAssembly.Table.prototype.grow.length]);
+astep("compile", WebAssembly.compile(add).then((m) => [m instanceof WebAssembly.Module, WebAssembly.Module.exports(m)[0].name]));
+astep("compileBad", WebAssembly.compile(new Uint8Array([1])).then(() => "no",
+  (e) => [e instanceof WebAssembly.CompileError, e.message.startsWith("WebAssembly.compile(): ")]));
+astep("compileArg", WebAssembly.compile(42));
+const copy = new Uint8Array(add);
+const copied = WebAssembly.compile(copy);
+copy.fill(0);
+astep("copied", copied.then((m) => WebAssembly.Module.exports(m).length));
+astep("instantiateBytes", WebAssembly.instantiate(add).then((r) => [Object.keys(r).join(),
+  r.module instanceof WebAssembly.Module, r.instance.exports.add(1, 1)]));
+astep("instantiateModule", WebAssembly.instantiate(new WebAssembly.Module(add)).then((r) =>
+  [r instanceof WebAssembly.Instance, r.exports.add(2, 2)]));
+astep("instantiateArg", WebAssembly.instantiate(42));
+const m = new WebAssembly.Module({imports});
+const order = [];
+const read = WebAssembly.instantiate(m, {{ get env() {{ order.push("read"); return {{ f: (x) => x }}; }} }});
+order.push("returned");
+astep("readNow", read.then((i) => [order, i.exports.g(3)]));
+const later = [];
+const compiled = WebAssembly.instantiate({imports}, {{ get env() {{ later.push("read"); return {{ f: (x) => x }}; }} }});
+later.push("returned");
+astep("readLater", compiled.then((r) => [later, r.instance.exports.g(4)]));
+astep("missing", WebAssembly.instantiate(m));
+astep("linkLater", WebAssembly.instantiate({imports}, {{ env: {{ f: 1 }} }}));
+report();
+"#
+    ));
+    assert_eq!(
+        lines,
+        [
+            "deferred=false",
+            "lengths=[1,1,1,1,1,1,1,1,1,1,1]",
+            r#"compile=[true,"add"]"#,
+            "compileBad=[true,true]",
+            "compileArg=threw TypeError: WebAssembly.compile(): Argument 0 must be a buffer source",
+            "copied=1",
+            r#"instantiateBytes=["module,instance",true,2]"#,
+            "instantiateModule=[true,4]",
+            "instantiateArg=threw TypeError: WebAssembly.instantiate(): Argument 0 must be a buffer source or a WebAssembly.Module object",
+            r#"readNow=[["read","returned"],3]"#,
+            r#"readLater=[["returned","read"],4]"#,
+            "missing=threw TypeError: WebAssembly.instantiate(): Imports argument must be present and must be an object",
+            r#"linkLater=threw LinkError: WebAssembly.instantiate(): Import #0 "env" "f": function import requires a callable"#,
+        ]
+    );
+}
+
+#[test]
+fn a_response_is_compiled_once_its_type_and_status_are_checked() {
+    let add = module(ADD);
+    let lines = steps(&format!(
+        r#"{ASYNC_STEPS}
+const add = {add};
+const wasm = (bytes, init) => new Response(bytes, init || {{ headers: {{ "Content-Type": "application/wasm" }} }});
+astep("streaming", WebAssembly.compileStreaming(wasm(add)).then((m) => m instanceof WebAssembly.Module));
+astep("promised", WebAssembly.compileStreaming(Promise.resolve(wasm(add))).then((m) => m instanceof WebAssembly.Module));
+astep("instantiate", WebAssembly.instantiateStreaming(wasm(add)).then((r) => [Object.keys(r).join(),
+  r.instance.exports.add(20, 22)]));
+astep("type", WebAssembly.instantiateStreaming(new Response(add)));
+astep("parameters", WebAssembly.compileStreaming(wasm(add, {{ headers: {{ "Content-Type": "application/wasm; x=y" }} }})));
+astep("case", WebAssembly.compileStreaming(wasm(add, {{ headers: {{ "Content-Type": " Application/WASM " }} }}))
+  .then((m) => m instanceof WebAssembly.Module));
+astep("status", WebAssembly.compileStreaming(wasm(add, {{ status: 404, headers: {{ "Content-Type": "application/wasm" }} }})));
+astep("notResponse", WebAssembly.compileStreaming(add));
+const used = wasm(add);
+used.arrayBuffer();
+astep("used", WebAssembly.compileStreaming(used));
+astep("bad", WebAssembly.compileStreaming(wasm(new Uint8Array([0, 97, 115, 109]))).then(() => "no",
+  (e) => [e.constructor.name, e.message.startsWith("WebAssembly.compileStreaming(): ")]));
+report();
+"#
+    ));
+    assert_eq!(
+        lines,
+        [
+            "streaming=true",
+            "promised=true",
+            r#"instantiate=["module,instance",42]"#,
+            "type=threw TypeError: Failed to execute 'compile' on 'WebAssembly': Incorrect response MIME type. Expected 'application/wasm'.",
+            "parameters=threw TypeError: Failed to execute 'compile' on 'WebAssembly': Incorrect response MIME type. Expected 'application/wasm'.",
+            "case=true",
+            "status=threw TypeError: Failed to execute 'compile' on 'WebAssembly': HTTP status code is not ok",
+            "notResponse=threw TypeError: Failed to execute 'compile' on 'WebAssembly': An argument must be provided, which must be a Response or Promise<Response> object",
+            "used=threw TypeError: Failed to execute 'arrayBuffer' on 'Response': body stream already read",
+            r#"bad=["CompileError",true]"#,
+        ]
+    );
+}
