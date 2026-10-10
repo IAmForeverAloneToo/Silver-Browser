@@ -1378,6 +1378,59 @@ outline group for every element restyled, though neither style had an
 outline: a copy between two styles with none now makes none. The
 transitions' row was the same after it.
 
+### Fetch, CORS and cookies (M27)
+
+`benches/fetch.rs` (`cargo bench -p engine --bench fetch`), on the
+Windows machine, release, medians of ten runs after one to warm the
+test server's connections:
+
+| | Median | Range |
+| --- | --- | --- |
+| A page, navigate to its title set by its script | 16.7ms | 15.6-17.0ms |
+| The same page making 1,000 `fetch()`es of a small JSON body, to the last promise | 80.6ms | 79.7-83.9ms |
+| One `XMLHttpRequest` of the body, to its `load` | 17.0ms | 15.9-17.7ms |
+| One synchronous `XMLHttpRequest` | 16.6ms | 15.6-17.4ms |
+
+| The jar, 3,000 cookies over 20 domains | Median of 1,000 |
+| --- | --- |
+| A `Cookie` header for one URL | 15.4us |
+| A store | 22.2us |
+
+- *The fetches.* About 64us a fetch beyond the page's own time, the
+  thousand going through the engine's 32 fetch threads and the
+  client's six connections to the origin, their answers run as tasks
+  in the order they came. Well inside the network stage's budget.
+- *The jar.* A header reads all 3,000 cookies (no index by domain): at
+  15us a request it is not worth one yet; M28's cookies on disk will
+  say again.
+- *The page's own 16ms* is the time from `navigate` to its script's
+  title, an empty page's load on this machine, the same for the four.
+
+**T4.3.** The benchmarks of the code before M27 (f099439) and of M27,
+by turns, four rounds, the fourteen of M26's list. Within 10% by their
+medians, but for a realm made and the nested flex chain; the page of
+scripts, within it, is shown for what the first costs it:
+
+| | Before M27 | M27 | |
+| --- | --- | --- | --- |
+| Scripts: a realm made | 10.6-10.8ms, median 10.6 | 15.6-15.7ms, median 15.6 | x1.47 |
+| Scripts: the page of 1,000 paragraphs and 110 scripts, scripts on | 62.5-64.9ms, median 62.8 | 67.4-69.2ms, median 68.6 | x1.09 |
+| Flex: a chain of 64 nested containers, its layout | 7.10-7.37ms, median 7.17 | 6.85-8.98ms, median 7.89 | x1.10 |
+
+- *A realm's bindings.* The bootstrap every realm compiles and runs
+  grew from 6,539 lines (194 KB) to 9,158 (285 KB): `Headers`,
+  `Request`, `Response` and the `Body` mixin, `Blob`, `File`,
+  `FormData`, `URLSearchParams`, the XHR family and `ProgressEvent`. A
+  page pays it once, at its first script: the page of 110 scripts
+  loads 6ms slower with them on. Loading the bootstrap compiled is
+  M35.12's, as M25 found; QuickJS compiles a function's body when it
+  compiles the script, so defining the classes on first use would
+  save their running, not their compiling.
+- *The nested flex chain.* M27 changes nothing in layout. The base's
+  four rounds were 7.10-7.37ms; M27's 8.82, 6.97, 8.98 and 6.85ms, two
+  slow and two faster than any of the base's: the machine's bimodal
+  variance, which T4.3 has met before.
+
 ### Over budget, and why
 
 These are known and recorded rather than hidden. Each has the item that
@@ -1457,3 +1510,7 @@ is to take it on.
   `:nth-last-child` in a stylesheet, inserting an element restyles every
   sibling before it: 20,015 elements and 42ms at 10,000 paragraphs. That
   is the conservative rule of M13.1.
+- **A realm made.** A page's first script waits for its realm, which
+  compiles and runs the bindings' bootstrap: 5ms at M25, 10.6ms at
+  M26 and 15.6ms at M27, 9,158 lines, near a frame's budget alone.
+  Loading it compiled is M35.12's.

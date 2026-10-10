@@ -2,7 +2,7 @@
 
 Roadmap M27. Written before the code, as the record of the decisions,
 and corrected to the code when the milestone ended: where they
-disagree, the code wins, and the places are marked *(corrected)*. What
+disagreed, the code won, and the places are marked *(corrected)*. What
 ships is described in `docs/architecture.md` "Current state".
 
 A page's scripts can change the page but cannot talk to a server. There
@@ -214,9 +214,17 @@ Fetch's request in the parts this milestone needs. Its new fields:
   and `Sec-Fetch-Site`, which navigations now carry too: a link or a
   form's navigation is initiated by its document even though it is not
   subject to the subresource checks `initiator` triggers.
+  *(corrected)* No field of its own: with no frames a document is its
+  own top level, so the request's `origin` gives the site for cookies
+  and `Sec-Fetch-Site`; a navigation a document starts carries its
+  origin (`Request::from_document`) without an initiator.
 - `destination` gains `Empty`, a `fetch`'s and an XHR's, whose `Accept`
   is `*/*`.
-- `user_activated`, for `Sec-Fetch-User`.
+- `user_activated`, for `Sec-Fetch-User`. *(corrected)* Set for a
+  navigation the user started: typed, a link clicked, a submit
+  button's activation; a script's `form.submit()` or `location` is
+  none, the engine telling no script inside a user's click from one
+  that is not.
 - `preflight`: Fetch's use-CORS-preflight flag, which XHR sets when its
   upload has listeners.
 
@@ -286,7 +294,9 @@ stored.
   equal to the serialized origin, or `*` without credentials; with
   credentials, `Access-Control-Allow-Credentials: true`.
 - *Errors* say nothing to the page: every failure is the same network
-  error, whatever the server answered.
+  error, whatever the server answered. *(corrected)* The console says
+  why (`Failed to fetch URL: why`, for `fetch` and XHR, step 8), where
+  only the user reads it.
 
 **What a script sees of a response.** `net::fetch::Response` keeps the
 whole response (the engine needs an opaque image's or script's body)
@@ -298,7 +308,9 @@ engine gives a realm, Fetch's filtered response:
   `Access-Control-Expose-Headers` names (`*` for all, without
   credentials), the body;
 - `opaque` and `opaqueredirect`: type, status 0, no status text, no
-  headers, no URL, no body.
+  headers, no URL, no body. *(corrected)* An `opaqueredirect` keeps its
+  URL list, as Fetch's filtered response does: its `url` is the
+  request's, never where the redirect points.
 
 The body of an opaque response never enters a realm: the conversion is
 one function, in `net`, tested there, and the engine's fetch path calls
@@ -314,10 +326,19 @@ fetched that way has its errors unmuted when the CORS check passed: the
 muting reads the response's tainting, no longer whether every URL was
 same-origin. An image with `crossorigin` from an `https:` page to
 `http:` is blocked rather than upgraded (Mixed Content 3).
+*(corrected)* An `img`'s `crossorigin` is left for canvas (M30), the
+only reader its CORS mode changes: the image store keys images by URL
+alone. `net` blocks a CORS-mode image's `http:` request from an
+`https:` page rather than upgrading it (step 8), though no image asks
+so until then.
 
 **Cookies (M27.4).** RFC 6265bis-22's user agent, in a new module,
 `net::cookies`, with the jar inside `Client`, so that every fetch, its
-redirects included, reads and writes the same one:
+redirects included, reads and writes the same one. *(corrected)* The
+jar is the engine's (`Network` keeps it) and every client it makes is
+given it (`Client::with_cookies`), so that a client made again, D12's
+switch, keeps the cookies; a document's own `Set-Cookie` is stored
+when its head arrives, so its first script reads it:
 
 - *One jar per client.* The roadmap's "jar per-origin" reads as the
   RFC's storage: cookies are kept by domain and path, and a host's
@@ -379,7 +400,9 @@ redirects included, reads and writes the same one:
   otherwise the jar's cookies for the URL by the non-HTTP API, as a
   same-site request (the document is its own top level), and setting
   stores one cookie by that API. `navigator.cookieEnabled` becomes
-  `true`.
+  `true`. *(corrected)* A `data:` document is cookie-averse too, and
+  the `SecurityError` needs a sandboxed frame, which this engine has
+  not: no document meets it.
 - *Third-party cookies* are as the reference browser has them by
   default: `SameSite=None; Secure` cookies are sent across sites. A
   policy of blocking or partitioning them is M33's, with privacy.
@@ -391,7 +414,8 @@ the check already applies to anything with an initiator; this milestone
 makes `fetch` and XHR requests carry the document as initiator, so
 they are blocked as blockable content, with a network error the page
 sees as `TypeError` or an XHR `error`. A CORS-mode image is blocked,
-not upgraded. A navigation is not mixed content. The form submission
+not upgraded *(corrected: in `net`; no image asks so until M30)*. A
+navigation is not mixed content. The form submission
 from an `https:` page to `http:` that the reference browser interrupts
 with a warning is M33's, with Upgrade-Insecure-Requests.
 
@@ -406,6 +430,8 @@ has them:
   `credentials`, `redirect`, `signal`, and the members that only
   report, `cache`, `destination`, `referrer` (`about:client`),
   `referrerPolicy`, `integrity`, `keepalive`, `duplex`), `clone`;
+  *(corrected)* `priority` is checked (`high`, `low`, `auto`) and kept
+  by nothing;
 - `Response` (constructor, `error()`, `redirect()`, `json()`, `type`,
   `url`, `redirected`, `status`, `ok`, `statusText`, `headers`,
   `clone`);
@@ -428,6 +454,8 @@ stream. Streams are G67.
 even from a `file:` page, as in the reference browser, since a local
 page reading other local files is the oldest of these attacks
 (stylesheets and images from a `file:` page keep loading, M14).
+*(corrected)* A response to `HEAD` has no body, whatever its scheme
+gave (Fetch's main fetch; a `data:` URL's did, step 11).
 
 **Bodies scripts make.** `Blob` and `File` (constructor from strings,
 buffers, views and blobs, with `type` and line endings `transparent` or
@@ -443,7 +471,14 @@ gains). As bodies: a string is `text/plain;charset=UTF-8`,
 `FormData` `multipart/form-data` with M26's encoder and a boundary of
 ours, a `Blob` its type when it has one, a buffer or view nothing.
 `URL` itself, with its setters, is G68; `TextEncoder` and
-`TextDecoder` are G69.
+`TextDecoder` are G69. *(corrected)* Web IDL's conversions are taken
+in its order (found by the web-platform tests, step 11): a sequence's
+values converted as the iteration reaches them, its iterator read
+once; a record's keys by their own property keys, a `Symbol` failing,
+a repeated key's later value kept; `Blob`'s arguments in order, its
+`slice` bounds rounded as `[Clamp]` has them. HTML's `formdata` event
+is not fired, as M26 did not, and with it the constructing entry list's
+`InvalidStateError` (G76). `FileReader` is not given (G75).
 
 **The realm asks, the engine decides.** A script's request crosses
 into Rust as plain data (`Call::Fetch`: an id, the method, URL,
@@ -454,7 +489,10 @@ forbidden names dropped, `no-cors` restricted, the origin, client and
 initiator the document's own. A page that rewrites the bootstrap's
 classes reaches the same checks. The engine starts the fetch on its
 pool like any subresource (`Target::Fetch { id }`), keyed to the
-document so that leaving the page aborts it.
+document so that leaving the page aborts it. *(corrected)*
+`Target::Fetch` holds no id: the network's id of the fetch is kept
+with the script's number in `Scripts::fetching`; the client is the
+request's origin, as above.
 
 - *Answers are tasks.* When a fetch completes, its exposed response
   becomes a task in the document's queue (the networking task source),
@@ -463,10 +501,17 @@ document so that leaving the page aborts it.
   checkpoint; `next_task_at` reports it. The realm gets it through a new
   `js::Task::Fetched { id, response }`, whose entry resolves or rejects
   the promise the bootstrap keeps by id, as it keeps timers.
+  *(corrected)* Answers that came at one time, as a hand's clock gives,
+  run in the order they were asked for (step 10); a document on its
+  way hears its answers as it does its timers.
 - *Bytes cross the boundary* as `ArrayBuffer`s both ways: a native
   argument decoder for buffers and views, and the task's body made an
   `ArrayBuffer` in the realm. Strings in the bodies are UTF-8 encoded
   by the bootstrap's own encoder (no `TextEncoder` is exposed).
+  *(corrected)* From the realm to the engine as a string of code units
+  0 to 255: `rquickjs` reads a buffer's bytes only through `unsafe`,
+  which `js` does not write. From the engine as an `ArrayBuffer`
+  (`ArrayBuffer::new_copy`).
 - *A document kept by the back-forward cache* keeps nothing in flight:
   as now, a page left with a fetch running is not kept.
 
@@ -491,6 +536,14 @@ with `XMLHttpRequestEventTarget`, `XMLHttpRequestUpload` and
   which the host answers by fetching on the engine's thread through the
   client it is now lent, blocking the page as the reference browser
   does; `net`'s connect and read timeouts bound it.
+
+*(corrected)* The upload's events follow the standard, fired only when
+the upload had listeners at `send()`; the reference browser also fires
+the upload's `loadend` for an aborted `GET`. `ProgressEvent`'s `loaded`
+and `total` are doubles, as XHR has had them since 2024, and every
+event constructor's length is 1. `open()` converts its user and
+password but uses neither (G71); a URL with credentials ends in a
+network error.
 
 **Limits (the bounds a hostile page cannot pass).**
 
@@ -523,7 +576,12 @@ in a body, a header, a status, a redirect's location, an `HttpOnly`
 cookie and a `Lax` cookie, and writes what it learned; the test
 asserts it learned nothing, and that the same reads succeed once the
 second origin opts in through CORS, so that the page cannot pass by
-failing at everything.
+failing at everything. *(corrected)* Served from `a.localhost`
+against `b.localhost`, it makes 26 reads (`fetch` in its modes, XHR,
+script errors, a stylesheet read back, `document.cookie`); against an
+origin that allows it, it learns by exactly the 11 CORS reads, and an
+unexposed field stays hidden. The reference browser, given the same
+page and servers, learned the same.
 
 **Fuzzing.** A new target, `cookies`: a `Set-Cookie` value, a URL pair
 and a script's string fed to the jar, which must never keep a cookie
@@ -531,7 +589,11 @@ the rules refuse (checked independently on what it returns), never
 exceed its limits, and serialize what it keeps to a `Cookie` header
 that parses back to the same pairs. `dom_api` gains `fetch`, XHR,
 `Headers`, `FormData`, `URLSearchParams`, `Blob` and `document.cookie`
-calls, against `data:` URLs on its hand clock.
+calls, against `data:` URLs on its hand clock. *(corrected)* The
+header is compared as serialized: a nameless cookie whose value holds
+`=` serializes as a named pair, which no reading tells apart.
+`dom_api`'s answers are taken after each run once no fetch is in
+flight (`differential::settle_network`).
 
 **The web-platform tests.** The harness runs reftests, check-layout
 tests and crashtests; Fetch's and XHR's tests are testharness.js tests,
@@ -545,17 +607,26 @@ rule takes a testharness test when it uses no Python handler, no
 `.sub` substitution and no host but its own. Directories added:
 `fetch/api/headers`, `fetch/api/request`, `fetch/api/response`,
 `fetch/api/basic`, `xhr`, `url` (the `urlsearchparams-*` tests) and
-`FileAPI/blob`.
+`FileAPI/blob`. *(corrected)* The rule also leaves out what has no
+global here or needs wptserve's own timing: tests over `https:`,
+workers, frames in the markup or made by a script, and pipes; a file's
+`.headers` and an `.asis` file are served as wptserve serves them. The
+page's clock waits for the network while a fetch is in flight. 156
+tests, 1,124 of 1,469 subtests passing; an expectation names a subtest
+by its path, a tab, its name, a tab and the reason.
 
 **Golden cases** continue from 126: a page whose boxes are built from a
 `fetch` of a `data:` URL, and one from an XHR's, both captured from
-the reference browser on its virtual time.
+the reference browser on its virtual time. *(corrected)* The
+reference runner waits for the network before each step of its
+clock.
 
 **Acceptance.** Beyond the adversarial page: a page served by `net`'s
 test server that signs in by a `fetch` `POST` (the server answering
 with a `Lax`, `HttpOnly` session cookie), shows the signed-in state
 from a second request that the cookie authorizes, and loads data from
 a second origin by CORS with credentials, through the shell's window.
+*(corrected)* And in the real shell, the page signing in on load.
 A benchmark, `benches/fetch.rs`: a thousand `fetch`es of a small JSON
 body from the test server and the time to the last promise, an XHR's,
 and the jar's retrieval with 3,000 cookies kept.
@@ -589,6 +660,10 @@ and the jar's retrieval with 3,000 cookies kept.
 - *Fetch in workers*, which have none yet. M31. Service workers, M39.
 - *Frames*, and with them `document.domain`'s effect and
   `postMessage`. M33.2 and M31.
+- *(corrected)* Found while working, and registered: `FileReader`
+  (G75); HTML's `formdata` event (G76); a response whose header section
+  ends at the connection's close, which `net` takes as truncated and
+  the reference browser reads (G77).
 
 ## 3. Order of work
 
@@ -606,7 +681,8 @@ gate.
    `Response::exposed`, `Cross-Origin-Resource-Policy`.
 3. *CORS*: the check, the preflight and its cache, CORS on redirects;
    the CORS settings attribute for `script`, `link` and `img`, a
-   script's errors unmuted by tainting.
+   script's errors unmuted by tainting. *(corrected)* The check came
+   with step 2's tainting; `img`'s attribute waits for M30.
 4. *Cookies*: `net::cookies`, the jar in `Client`, `Set-Cookie` on
    every hop, `Cookie` by credentials and same-site, navigations'
    client; `document.cookie`, `navigator.cookieEnabled`.
@@ -618,6 +694,7 @@ gate.
 7. *`XMLHttpRequest`*: the object, its events and `ProgressEvent`, the
    upload, timeouts, synchronous requests.
 8. *Mixed content* for what scripts fetch, and the CORS-mode image.
+   *(corrected)* And why a script's fetch failed, on the console.
 9. *The adversarial page* (M27.7).
 10. *Fuzzing*: the `cookies` target, `dom_api`'s new calls.
 11. *The web-platform tests*: testharness.js in the harness, the

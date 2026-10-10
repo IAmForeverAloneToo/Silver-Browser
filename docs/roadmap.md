@@ -375,13 +375,20 @@ images, the last item on T0's list, come with M23.
   keyboard delivered to the page, the dynamic pseudo-classes; form
   controls shown and edited, their submission in every encoding and
   their constraint validation.
+- **M27, fetch, the same-origin policy, CORS and cookies** (done
+  2026-10-11, designed in `docs/design/fetch.md`): origins kept and
+  sites by the Public Suffix List; `fetch()`, its classes and the
+  bodies scripts make; CORS with its preflight; cookies by RFC
+  6265bis; mixed content for what scripts fetch; `XMLHttpRequest`; an
+  adversarial page that learns nothing across origins, kept as a test;
+  the web-platform tests' testharness.js tests run.
 
 Each milestone's fuller writeup and stated gaps are in
 `docs/architecture.md` "Current state", and the gaps no milestone holds
 on the G list (M39+, below).
 
 Verified per the vertical-slice rule at each milestone, by the gate:
-the workspace's tests (2,063 at M26, two ignored), clippy clean (`-D
+the workspace's tests (2,155 at M27, two ignored), clippy clean (`-D
 warnings`, every target), `cargo deny`, the fuzz targets, and a smoke
 run of the shell. Toolchain: 1.98.1, pinned by `rust-toolchain.toml`.
 The checkout lives outside OneDrive since 2026-10-08
@@ -1697,22 +1704,64 @@ Per css-grid-1 (level 2 subgrid included):
 
 ## M27 — fetch, SOP, CORS, cookies  ·  `net`/`js`  ·  Effort: XL  ·  Depends: M25, M14
 
-- [ ] M27.1 `fetch()` API: promises, Request/Response/Headers objects,
+- [x] M27.1 `fetch()` API: promises, Request/Response/Headers objects,
        streaming body v1 (full-buffer first), `FormData` basic.
-- [ ] M27.2 URL same-origin computation; SOP enforcement matrix (document
+       Done 2026-10-11 (`docs/design/fetch.md`): `Headers`, `Request`,
+       `Response` and the `Body` mixin in the bootstrap; `Blob`,
+       `File`, `FormData` and `URLSearchParams`; a script's request
+       checked again by the engine (`scripts::fetch::request`),
+       fetched on its pool (`Target::Fetch`) and answered as a task
+       (`js::Task::Fetched`); aborts by signal; bodies whole (streams
+       are G67); why a fetch failed said on the console only.
+- [x] M27.2 URL same-origin computation; SOP enforcement matrix (document
        → script, DOM access, network reads vs writes).
-- [ ] M27.3 CORS: preflight (OPTIONS), `Access-Control-*` handling, error
+       Done 2026-10-11: a document keeps its origin, opaque ones once;
+       sites by the Public Suffix List (D20, the `psl` crate);
+       `self.origin`, `isSecureContext`, `document.domain`; the matrix
+       stated vector by vector in the design note, each enforced in
+       `net` (tainting, the CORS check, `Response::exposed`, CORP) or
+       closed by construction (no frames).
+- [x] M27.3 CORS: preflight (OPTIONS), `Access-Control-*` handling, error
        events, credentialed vs bare requests (fetch-cors spec).
-- [ ] M27.4 Cookies v1: RFC6265bis parse/store/send, `HttpOnly`,
+       Done 2026-10-11: the CORS check on every hop, the preflight and
+       its cache (5 s by default, 7,200 at most), `Origin` and its
+       tainting across redirects, exposed headers, the `crossorigin`
+       attribute for scripts and stylesheets (an image's waits for
+       canvas, M30), a script's errors unmuted by its response's type.
+- [x] M27.4 Cookies v1: RFC6265bis parse/store/send, `HttpOnly`,
        `SameSite=Lax|Strict|None` (default Lax), `Secure`, jar per-origin
        in-memory (persistence in M28).
-- [ ] M27.5 Mixed content: block active http subresources on https pages.
+       Done 2026-10-11: `net::cookies`, RFC 6265bis-22's user agent
+       (parsing, storage, the prefixes, the limits of 180 a domain and
+       3,000 in all, retrieval, same-site by site); one jar for the
+       engine, its clients sharing it; `document.cookie` and
+       `navigator.cookieEnabled`; a `cookies` fuzz target.
+- [x] M27.5 Mixed content: block active http subresources on https pages.
        (Stylesheets are blocked since M14, `docs/design/net.md`; this
        item covers the rest.)
-- [ ] M27.6 `XMLHttpRequest` (legacy, minimal but correct).
-- [ ] M27.7 Security tests: an adversarial test page attempting
+       Done 2026-10-11: `fetch()` and XHR from an `https:` page to
+       `http:` blocked on every hop, tested over TLS; a CORS-mode image
+       is not upgraded but blocked (in `net`; no image asks so until
+       M30).
+- [x] M27.6 `XMLHttpRequest` (legacy, minimal but correct).
+       Done 2026-10-11: on `fetch()`'s path, its states and events in
+       the standard's order, the upload's, timeouts, aborts, the
+       response types but `document` (G70), synchronous requests that
+       block the page; `ProgressEvent`.
+- [x] M27.7 Security tests: an adversarial test page attempting
        cross-origin reads must fail in every documented vector (this test
        page becomes a permanent regression artifact).
+       Done 2026-10-11: `tests/security/cross-origin.html` makes 26
+       reads of another site holding a secret and learns nothing, and
+       by exactly the 11 CORS reads once that site allows it, as the
+       reference browser does (`loader/security_tests.rs`). The
+       web-platform tests of Fetch, XHR, `URLSearchParams` and `Blob`
+       run under the real testharness.js, 1,124 of 1,469 subtests
+       passing, each failure named; pages 126-127 match the reference
+       browser; a page signs in by `fetch` through the shell's window
+       and reads another origin by CORS with credentials (session
+       test, and in the real shell). T4.3 and `benches/fetch.rs` in
+       `docs/perf-budgets.md`.
 
 ---
 
@@ -1904,10 +1953,11 @@ process seams.
        10 ms; a 100-row table's toggle is a 20 ms frame.
 - [ ] M35.12 A realm's bindings loaded compiled: every realm compiles
        the DOM's bootstrap, 3,300 lines of JavaScript, 4.5 ms of the
-       5 ms a realm now takes to make (0.12 ms before M25). QuickJS
-       writes and reads compiled code, but `rquickjs` reads it only
-       through an `unsafe` function, and `js` writes no `unsafe`: a
-       reviewed exception, or a safe reader, first.
+       5 ms a realm now takes to make (0.12 ms before M25); 9,158 lines
+       and 15.6 ms at M27, whose `fetch`, XHR and bodies added 5 ms.
+       QuickJS writes and reads compiled code, but `rquickjs` reads it
+       only through an `unsafe` function, and `js` writes no `unsafe`:
+       a reviewed exception, or a safe reader, first.
 
 ---
 
@@ -2224,6 +2274,32 @@ Deferred from the milestones above, each with what it waits on:
        G49's); a `dialog` form's method. Found at M26.
 - [ ] G66 DOM's `moveBefore`, a move that keeps a node's state. Found at
        M26, by a crashtest that threw on it.
+- [ ] G67 Streams: `ReadableStream` and the rest of the Streams Standard,
+       `Response.body` and `Request.body`, a request body streamed,
+       `Blob.stream()`, progress events as bytes arrive. Named at M27
+       (`docs/design/fetch.md`), 111 web-platform subtests.
+- [ ] G68 The `URL` class and its setters, `URL.createObjectURL` and
+       `blob:` URLs. Named at M27, 134 web-platform subtests.
+- [ ] G69 `TextEncoder` and `TextDecoder`. Named at M27.
+- [ ] G70 XHR's `document` response type and `responseXML`, a `Document`
+       sent as a body, `DOMParser`: an XML parser and a second
+       document. Named at M27.
+- [ ] G71 HTTP authentication: a 401 or 407 answered with credentials,
+       and a URL's credentials (refused by `fetch` and XHR until then).
+       Named at M27.
+- [ ] G72 The Cookie Store API (`cookieStore`). Named at M27.
+- [ ] G73 Requests that outlive their page: `keepalive`,
+       `navigator.sendBeacon`, `fetchLater`. Named at M27.
+- [ ] G74 WebSockets and server-sent events (`EventSource`). Named at
+       M27.
+- [ ] G75 `FileReader`. Found at M27, by the web-platform tests of
+       `FileAPI/blob` (39 subtests).
+- [ ] G76 HTML's `formdata` event, and the constructing entry list's
+       `InvalidStateError`. Found at M27.
+- [ ] G77 A response whose header section ends at the connection's
+       close, without its empty line, read as the reference browser
+       reads it (`net` takes it as truncated). Found at M27, by XHR's
+       `.asis` tests.
 
 ---
 
@@ -2242,13 +2318,18 @@ Deferred from the milestones above, each with what it waits on:
        Done 2026-10-01 (M10.7) as `tests/reference.rs`: pages captured
        from a headless reference browser, Chrome rather than Firefox
        (the box model's note), compared byte for byte or within a
-       tolerance a page declares; 125 pages at M26, the last three
-       run on the reference browser's virtual time. It is one of the
+       tolerance a page declares; 127 pages at M27, the last five
+       run on the reference browser's virtual time, M27's two waiting
+       for their fetches. It is one of the
        workspace's tests, which CI runs (`cargo test`) and the gate
        runs on the machine while CI's runs are stopped by the
        account's billing.
 - [ ] T1.3 Adversarial test-site (built in-repo): every attack pattern
        gets a page; the suite must fail closed. Extended at M27, M33.
+       Started 2026-10-11 (M27.7): `tests/security/cross-origin.html`,
+       26 cross-origin reads that must learn nothing, run against a
+       victim that allows nothing and one that allows the page by
+       CORS (`loader/security_tests.rs`).
 - [ ] T1.4 Top-100 crawl fixture: saved HAR + DOM snapshots of the top
        sites (refreshed quarterly), render-diff reports.
 - [ ] T1.5 CI matrix: Windows/macOS/Linux, debug + release, single-
@@ -2270,7 +2351,9 @@ Deferred from the milestones above, each with what it waits on:
        series of times to theirs; `dom_api` since M25 (T2.4), and
        `input` since M26, which uses pages of controls through the
        engine's input, the engine's clock moved by hand, both compared
-       with a fresh engine given the state no markup holds;
+       with a fresh engine given the state no markup holds; `cookies`
+       since M27, which holds every cookie a store keeps to the rules,
+       the jar to its limits and the header to the cookies that match;
        `font_data` waits for its milestone.
 - [ ] T2.2 Seed corpora from WPT + real-site captures; corpus committed.
 - [ ] T2.3 Coverage-guided runs in CI nightly; crash → reproducer test
@@ -2284,7 +2367,9 @@ Deferred from the milestones above, each with what it waits on:
        scripts, run as the page is parsed and after frames, the
        document validated and the frame held to a fresh engine's; in
        CI's matrix. M26 gave it events, listeners, timers, animation
-       frames and the controls' state among its calls.
+       frames and the controls' state among its calls; M27 `fetch()`
+       and XHR of `data:` URLs, settled after each run, the bodies and
+       `document.cookie`.
 
 ## T3 — Security cadence
 - [ ] T3.1 Quarterly dependency audit (`cargo audit`), pinned Cargo.lock,

@@ -1626,3 +1626,65 @@ drag and drop; editing hosts; composition; pickers; undo; `dirname`; a
 validation bubble; observers; `moveBefore`. 2,063 tests pass
 workspace-wide, two ignored. Next milestone: fetch, SOP, CORS, cookies
 (M27).
+
+Milestone 27 (fetch, the same-origin policy, CORS and cookies;
+`docs/design/fetch.md`): a page's scripts reach the network, inside
+walls. A document keeps its origin (step 1), an opaque one made once,
+and sites come from the Public Suffix List (D20, the `psl` crate):
+`self.origin`, `isSecureContext` and `document.domain`. `net`'s request
+becomes Fetch's in the parts this milestone needs (step 2): any method
+token, the author's headers by Fetch's lists (`net::headers`), the
+modes, the credentials, the redirect modes, `Origin` and its tainting
+across redirects, `Sec-Fetch-*`, the response's tainting and
+`Response::exposed`, the only view a realm is given, and
+`Cross-Origin-Resource-Policy` on opaque responses. CORS (step 3): the
+check on every hop, the preflight and its cache, the `crossorigin`
+attribute for scripts and stylesheets, a script's errors unmuted by its
+response's type. Cookies (step 4): `net::cookies`, RFC 6265bis-22's
+user agent, one jar for the engine that every client it makes shares,
+`Set-Cookie` stored on every hop and a document's own before its first
+script, `Cookie` by the credentials mode and same-site,
+`document.cookie`. The bodies scripts make (step 5): `Blob`, `File`,
+`FormData` and `URLSearchParams`. `fetch()` (step 6): `Headers`,
+`Request`, `Response` and the `Body` mixin; the realm describes a
+request (`Call::Fetch`), the engine checks it all again
+(`scripts::fetch::request`), fetches it on its pool and answers it as
+a task (`js::Task::Fetched`) due when it came, in the order asked among
+those that came at once; aborts by signal; bodies whole, cross the
+boundary as binary strings one way and `ArrayBuffer`s the other.
+`XMLHttpRequest` (step 7) on the same path, a synchronous request a
+call that blocks the page, its events in the standard's order. Mixed
+content (step 8): a script's `http:` fetch from an `https:` page
+blocked on every hop, tested over TLS; why a script's fetch failed goes
+to the console, never to the page. The adversarial page (step 9),
+`tests/security/cross-origin.html`, makes 26 reads of another site
+holding a secret and learns nothing, and by exactly the 11 CORS reads
+once that site allows it, as the reference browser does. Fuzzing (step
+10): a `cookies` target holds every kept cookie to the rules and the
+header to the cookies that match; `dom_api` gains `fetch()`, XHR, the
+bodies and `document.cookie`, its network settled after each run. The
+web-platform tests (step 11) gain testharness.js: the real harness
+under a report of the runner's, the page wptserve makes of an `.any.js`
+test, a clock that waits for the network, expectations by subtest;
+156 tests of Fetch, XHR, `URLSearchParams` and `Blob`, 1,124 of 1,469
+subtests passing, the rest named, and on the way they found Web IDL's
+conversions taken in the wrong order, `Blob.slice`'s rounding,
+`base.href` unreflected, multipart padding and `HEAD`'s body. Pages 126
+and 127 (step 12) match the reference browser with their fetches and
+XHRs on its virtual time. The acceptance (step 13): a page signs in by a
+`fetch` `POST` through the shell's window, reads its user with the
+`HttpOnly` session cookie and another site by CORS with credentials,
+and does the same in the real shell; `benches/fetch.rs` times a
+thousand fetches at 80.6 ms from navigate to the last promise (the page
+alone 16.7) and the jar of 3,000 cookies at 15 us a header; T4.3
+finds a realm 5 ms slower to make, the bootstrap 40% larger for M27's
+classes (loading it compiled is M35.12's); fuzz runs of `cookies`,
+`dom_api`, `script`, `pipeline`, `http_response` and `url_parse`
+found one thing, the `cookies` target's own check of expiry, which
+now reads the jar as of its last store or read (step 13b). Not in
+this milestone, said rather than hidden and registered (G67 to G77):
+streams; the `URL` class and `blob:` URLs; `TextEncoder`; XHR's
+documents; HTTP authentication; the Cookie Store API; requests that
+outlive their page; WebSockets; `FileReader`; the `formdata` event; a
+header section ended by the connection's close. 2,155 tests pass
+workspace-wide, two ignored. Next milestone: storage (M28).
