@@ -115,6 +115,9 @@ step("custom", () => WebAssembly.Module.customSections(m, "hello").map(b => [b i
 step("customNone", () => WebAssembly.Module.customSections(m, "none").length);
 step("notModule", () => WebAssembly.Module.exports({{}}));
 step("noName", () => WebAssembly.Module.customSections(m));
+step("surrogate", () => WebAssembly.Module.customSections(m, "hel\uDC01lo").length);
+step("statics", () => ["exports", "imports", "customSections"].map((n) =>
+  Object.getOwnPropertyDescriptor(WebAssembly.Module, n).enumerable));
 "#
     ));
     assert_eq!(
@@ -126,6 +129,8 @@ step("noName", () => WebAssembly.Module.customSections(m));
             "customNone=0",
             "notModule=threw TypeError: WebAssembly.Module.exports(): Argument 0 must be a WebAssembly.Module",
             "noName=threw TypeError: WebAssembly.Module.customSections(): Argument 1 is required",
+            "surrogate=0",
+            "statics=[true,true,true]",
         ]
     );
 }
@@ -474,6 +479,10 @@ step("array", () => sum(() => [3, 4]));
 step("iterable", () => sum(() => new Set([5, 6])));
 step("short", () => sum(() => [1]));
 step("notIterable", () => sum(() => 5));
+step("nextOnce", () => {{ let reads = 0; const values = [8, 9];
+  const iterable = {{ [Symbol.iterator]() {{ let i = 0; return {{ get next() {{ reads++;
+    return () => ({{ done: i === 2, value: values[i++] }}); }} }}; }} }};
+  return [sum(() => iterable), reads]; }});
 "#
     ));
     assert_eq!(
@@ -484,6 +493,7 @@ step("notIterable", () => sum(() => 5));
             "iterable=11",
             "short=threw TypeError: multi-return length mismatch",
             "notIterable=threw TypeError: multi-return value must be iterable",
+            "nextOnce=[17,1]",
         ]
     );
 }
@@ -711,6 +721,8 @@ step("indirect", () => {{ const t = new WebAssembly.Table({{ element: "anyfunc",
 step("externs", () => {{ const o = {{}}; const t = new WebAssembly.Table({{ element: "externref", initial: 2 }}, "x");
   const r = [t.get(0), t.get(1)]; t.set(0, o); r.push(t.get(0) === o, t.grow(1), String(t.get(2))); return r; }});
 step("full", () => new WebAssembly.Table({{ element: "anyfunc", initial: 1, maximum: 1 }}).grow(1));
+step("undefined", () => {{ const t = new WebAssembly.Table({{ element: "anyfunc", initial: 1 }});
+  try {{ t.set(0, undefined); }} catch (e) {{ return [e.constructor.name, t.get(0)]; }} }});
 step("element", () => new WebAssembly.Table({{ element: "i32", initial: 1 }}));
 step("large", () => new WebAssembly.Table({{ element: "anyfunc", initial: 10000001 }}));
 "#
@@ -722,6 +734,7 @@ step("large", () => new WebAssembly.Table({{ element: "anyfunc", initial: 100000
             r#"indirect=[42,"null function",true,true,1]"#,
             r#"externs=["x","x",true,2,"undefined"]"#,
             "full=threw RangeError: WebAssembly.Table.grow(): failed to grow table by 1",
+            r#"undefined=["TypeError",null]"#,
             "element=threw TypeError: WebAssembly.Table(): Descriptor property 'element' must be a WebAssembly reference type",
             "large=threw RangeError: WebAssembly.Table(): Property 'initial': value 10000001 is above the upper bound 10000000",
         ]

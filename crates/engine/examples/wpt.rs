@@ -124,6 +124,19 @@ const TESTHARNESS_DIRECTORIES: &[(&str, &str)] = &[
     ("url", "urlsearchparams-"),
     ("FileAPI/blob", ""),
     ("webstorage", ""),
+    // The WebAssembly JavaScript interface (M29): the namespace, its
+    // classes and their methods. Not `wasm/core`, Wasm 3.0's own suite:
+    // its harness makes a 64-bit table before any test, and its wrappers
+    // compare values through GC types, neither of which the interpreter
+    // has (docs/design/wasm.md, section 2).
+    ("wasm/jsapi", "interface."),
+    ("wasm/jsapi", "prototypes."),
+    ("wasm/jsapi/constructor", ""),
+    ("wasm/jsapi/global", ""),
+    ("wasm/jsapi/instance", ""),
+    ("wasm/jsapi/memory", ""),
+    ("wasm/jsapi/module", ""),
+    ("wasm/jsapi/table", ""),
 ];
 
 /// The directories of files the testharness tests read, copied whole
@@ -1905,7 +1918,7 @@ fn readme(
          ```\n\n\
          which rewrites them, `MANIFEST` and this file. `tests/wpt.rs` runs\n\
          them; `expectations.txt` names those expected to fail, and why.\n\n\
-         With them are the testharness.js tests of {testharness} (M27) that\n\
+         With them are the testharness.js tests of {testharness} (M27, M29) that\n\
          the runner's one server can serve: no Python handler, no `.sub`\n\
          template, no other host, nothing over `https:` and no worker's\n\
          global. `resources/testharness.js` is the real one; the runner\n\

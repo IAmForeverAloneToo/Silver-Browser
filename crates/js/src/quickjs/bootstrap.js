@@ -9449,17 +9449,21 @@
   });
 
   // An interface of the namespace: as `expose` makes one, its class
-  // string `WebAssembly.` and its name.
+  // string `WebAssembly.` and its name, its operations and attributes,
+  // static ones too, enumerable.
   function exposeWasm(cls, name) {
     const proto = cls.prototype;
-    const keys = getOwnPropertyNames(proto);
-    for (let i = 0; i < keys.length; i++) {
-      if (keys[i] === "constructor") {
-        continue;
+    const own = [proto, cls];
+    for (let j = 0; j < own.length; j++) {
+      const keys = getOwnPropertyNames(own[j]);
+      for (let i = 0; i < keys.length; i++) {
+        if (j === 0 ? keys[i] === "constructor" : keys[i] === "length" || keys[i] === "name" || keys[i] === "prototype") {
+          continue;
+        }
+        const desc = getOwnPropertyDescriptor(own[j], keys[i]);
+        desc.enumerable = true;
+        defineProperty(own[j], keys[i], desc);
       }
-      const desc = getOwnPropertyDescriptor(proto, keys[i]);
-      desc.enumerable = true;
-      defineProperty(proto, keys[i], desc);
     }
     defineProperty(proto, toStringTag, { value: "WebAssembly." + name, configurable: true });
     defineProperty(WebAssemblyNamespace, name, {
@@ -9579,7 +9583,10 @@
           "WebAssembly.Module.customSections(): Argument 1 is required",
         );
       }
-      return native.wasmModuleCustomSections(handle, ToWellFormed(toString(sectionName)));
+      // A DOMString: a lone surrogate names no section, whose names are
+      // UTF-8.
+      const name = toString(sectionName);
+      return ToWellFormed(name) === name ? native.wasmModuleCustomSections(handle, name) : [];
     }
   }
   exposeWasm(Module, "Module");
@@ -9695,9 +9702,10 @@
         throw new $TypeError("multi-return value must be iterable");
       }
       const iterator = ReflectApply(method, value, []);
+      const next = iterator.next;
       const values = [];
       for (;;) {
-        const step = iterator.next();
+        const step = ReflectApply(next, iterator, []);
         if (step.done) {
           break;
         }
@@ -10264,8 +10272,9 @@
   }
 
   // A script's value for a table of `letter`'s references, raw.
-  function tableValue(value, letter, where, n) {
-    if (value === undefined) {
+  // `present` when the argument was given, undefined or not.
+  function tableValue(present, value, letter, where, n) {
+    if (!present) {
       return defaultValue(letter);
     }
     if (letter === "r" && value !== null && WeakMapGet(exportedKeys, value) === undefined) {
@@ -10306,7 +10315,7 @@
       }
       const letter = elementLetter(descriptor.element, where);
       const range = limits(descriptor, where, 10000000);
-      const made = native.wasmTableNew(letter, range[0], range[1], tableValue(value, letter, where, 1));
+      const made = native.wasmTableNew(letter, range[0], range[1], tableValue(value !== undefined, value, letter, where, 1));
       if (made[0] === 2) {
         throw wasmFailure(made[1], where + ": " + made[2]);
       }
@@ -10333,7 +10342,7 @@
       const where = "WebAssembly.Table.set()";
       const info = tableOf(this, where);
       const at = rangeArgument(index, where, 0);
-      const made = native.wasmTableSet(info.key, at, tableValue(value, info.letter, where, 1));
+      const made = native.wasmTableSet(info.key, at, tableValue(arguments.length > 1, value, info.letter, where, 1));
       if (made[0] === 2) {
         throw wasmFailure(made[1], where + ": " + made[2]);
       }
@@ -10344,7 +10353,7 @@
       const where = "WebAssembly.Table.grow()";
       const info = tableOf(this, where);
       const by = rangeArgument(delta, where, 0);
-      const made = native.wasmTableGrow(info.key, by, tableValue(value, info.letter, where, 1));
+      const made = native.wasmTableGrow(info.key, by, tableValue(value !== undefined, value, info.letter, where, 1));
       if (made[0] === 2) {
         throw wasmFailure(made[1], where + ": " + made[2]);
       }

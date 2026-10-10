@@ -20,7 +20,7 @@ cargo run -p engine --example wpt -- pull <checkout>
 which rewrites them, `MANIFEST` and this file. `tests/wpt.rs` runs
 them; `expectations.txt` names those expected to fail, and why.
 
-With them are the testharness.js tests of `fetch/api/headers`, `fetch/api/request`, `fetch/api/response`, `fetch/api/basic`, `xhr`, `url` (the `urlsearchparams-*` tests), `FileAPI/blob`, `webstorage` (M27) that
+With them are the testharness.js tests of `fetch/api/headers`, `fetch/api/request`, `fetch/api/response`, `fetch/api/basic`, `xhr`, `url` (the `urlsearchparams-*` tests), `FileAPI/blob`, `webstorage`, `wasm/jsapi` (the `interface.*` tests), `wasm/jsapi` (the `prototypes.*` tests), `wasm/jsapi/constructor`, `wasm/jsapi/global`, `wasm/jsapi/instance`, `wasm/jsapi/memory`, `wasm/jsapi/module`, `wasm/jsapi/table` (M27, M29) that
 the runner's one server can serve: no Python handler, no `.sub`
 template, no other host, nothing over `https:` and no worker's
 global. `resources/testharness.js` is the real one; the runner
@@ -35,8 +35,8 @@ fail is named in `expectations.txt`, and why.
 | checklayout | 66 |
 | crashtest | 94 |
 | reftest | 2272 |
-| testharness | 181 |
-| all | 2613 |
+| testharness | 223 |
+| all | 2655 |
 
 ## Left out
 
