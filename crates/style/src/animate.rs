@@ -435,10 +435,10 @@ pub fn copy(property: Longhand, from: &ComputedStyle, to: &mut ComputedStyle) {
         BorderCollapse => to.border_collapse = from.border_collapse,
         BorderSpacing => to.border_spacing = from.border_spacing,
         CaptionSide => to.caption_side = from.caption_side,
-        OutlineColor => to.outline_mut().color = from.outline().color,
-        OutlineStyle => to.outline_mut().style = from.outline().style,
-        OutlineWidth => to.outline_mut().width = from.outline().width,
-        OutlineOffset => to.outline_mut().offset = from.outline().offset,
+        OutlineColor => copy_group!(to, from, outline, outline, outline_mut, color),
+        OutlineStyle => copy_group!(to, from, outline, outline, outline_mut, style),
+        OutlineWidth => copy_group!(to, from, outline, outline, outline_mut, width),
+        OutlineOffset => copy_group!(to, from, outline, outline, outline_mut, offset),
         Cursor => to.cursor = from.cursor,
         EmptyCells => to.empty_cells = from.empty_cells,
         VerticalAlign => to.vertical_align = from.vertical_align.clone(),
@@ -1850,6 +1850,21 @@ mod tests {
             to.outline().color,
             Some(computed::Color::rgb8(100, 50, 100))
         );
+        // Copied between two styles with no outline, it makes none: a
+        // restyle under `transition: all` copies every property, and
+        // made a group for each element (found by M26's T4.3).
+        let (plain, mut copy_to) = (style("color: red"), style("color: blue"));
+        for longhand in [
+            Longhand::OutlineColor,
+            Longhand::OutlineStyle,
+            Longhand::OutlineWidth,
+            Longhand::OutlineOffset,
+        ] {
+            super::copy(longhand, &plain, &mut copy_to);
+        }
+        assert!(copy_to.outline.is_none());
+        super::copy(Longhand::OutlineWidth, &b, &mut copy_to);
+        assert_eq!(copy_to.outline().width, 5.0);
     }
 
     #[test]

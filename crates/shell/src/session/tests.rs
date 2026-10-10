@@ -962,3 +962,135 @@ fn a_pages_field_takes_typing_the_clipboard_and_an_input_methods_text() {
     assert_eq!(window.board.text(), "hellohello!");
     assert_eq!(value(&window), "");
 }
+
+/// M26's to-do list (the design note's acceptance): a field, a button
+/// and a list, a script adding an entry from the field on Enter or on
+/// the button's click, marking an entry done by a click on it, and
+/// taking it out by its own button. Laid out at known places, below
+/// the toolbar.
+const TODO: &str = "<style>body { margin: 0 } \
+     #new { position: absolute; left: 0; top: 0; width: 200px; height: 24px; margin: 0 } \
+     #add { position: absolute; left: 210px; top: 0; width: 60px; height: 24px; margin: 0 } \
+     ul { position: absolute; left: 0; top: 40px; width: 300px; margin: 0; padding: 0; list-style: none } \
+     li { height: 20px; margin-bottom: 4px; background-color: #2f4f7f } \
+     li.done { background-color: #7f2f4f } \
+     li button { float: right; width: 20px; height: 20px; margin: 0; padding: 0; border: 0; \
+       background-color: #202020 }</style>\
+     <input id=new><button id=add>Add</button><ul id=list></ul><script>\
+     var list = document.getElementById('list'), field = document.getElementById('new');\
+     function add() { if (!field.value) return; var li = document.createElement('li');\
+       li.dataset.text = field.value; var x = document.createElement('button');\
+       x.addEventListener('click', function (e) { e.stopPropagation(); li.remove(); });\
+       li.appendChild(x); li.addEventListener('click', function () { li.classList.toggle('done'); });\
+       list.appendChild(li); field.value = ''; document.title = list.children.length + ' to do'; }\
+     document.getElementById('add').addEventListener('click', add);\
+     field.addEventListener('keydown', function (e) { if (e.key === 'Enter') add(); });</script>";
+
+#[test]
+fn the_to_do_list_takes_entries_marks_them_done_and_lets_them_go() {
+    let server = serve(|path| match path {
+        "/" => html(TODO),
+        _ => None,
+    });
+    let mut window = Window::with_scripts(Some(server.url("/")));
+    window.settle();
+    let top = ui::HEIGHT as f32;
+    let entries = |window: &Window| {
+        let engine = window.session.engine();
+        let document = engine.document();
+        document
+            .subtree(document.root())
+            .filter(|&node| document.tag(node) == Some("li"))
+            .map(|node| {
+                let done = document
+                    .attr(node, "class")
+                    .is_some_and(|class| class.contains("done"));
+                format!(
+                    "{}{}",
+                    document.attr(node, "data-text").unwrap_or(""),
+                    if done { " done" } else { "" }
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    // Typed and entered with the keyboard.
+    window.click(100.0, top + 12.0);
+    window.type_text("milk");
+    window.press_key(Key::Enter, NONE);
+    // Typed and added with the button.
+    window.type_text("eggs");
+    window.click(240.0, top + 12.0);
+    assert_eq!(entries(&window), ["milk", "eggs"]);
+    assert!(window.session.title().starts_with("2 to do"));
+    // The first marked done by a click, drawn in its colour.
+    window.click(100.0, top + 50.0);
+    assert_eq!(entries(&window), ["milk done", "eggs"]);
+    let out = window.frame();
+    let at = |x: u32, y: u32| out[((ui::HEIGHT + y) * WIDTH + x) as usize] & 0x00ff_ffff;
+    assert_eq!(at(100, 50), 0x7f2f4f, "done");
+    assert_eq!(at(100, 74), 0x2f4f7f, "not done");
+    // The second taken out by its button: the click reaches the
+    // button, not the entry.
+    window.click(290.0, top + 74.0);
+    assert_eq!(entries(&window), ["milk done"]);
+    let out = window.frame();
+    let at = |x: u32, y: u32| out[((ui::HEIGHT + y) * WIDTH + x) as usize] & 0x00ff_ffff;
+    assert_eq!(at(100, 74), 0xffffff, "gone");
+}
+
+/// A search form and its results page, from the server: the query the
+/// results page was asked for in its title.
+fn search_server() -> TestServer {
+    serve(|path| {
+        if path == "/" {
+            return html(
+                "<style>body { margin: 0 } input { position: absolute; left: 0; top: 0; \
+                 width: 200px; height: 24px; margin: 0 } button { position: absolute; \
+                 left: 210px; top: 0; width: 60px; height: 24px; margin: 0 }</style>\
+                 <form action=/search><input name=q><input type=hidden name=from value=page>\
+                 <button>Search</button></form><script>\
+                 document.forms[0].addEventListener('submit', function () { \
+                   document.forms[0].elements.from.value = 'script'; });</script>",
+            );
+        }
+        let query = path.strip_prefix("/search?")?;
+        html(&format!("<title>results for {query}</title>"))
+    })
+}
+
+#[test]
+fn the_search_form_is_sent_with_enter_and_with_its_button_scripts_on_and_off() {
+    for scripts in [false, true] {
+        let server = search_server();
+        let mut window = Window::running(Some(server.url("/")), Platform::Other, scripts);
+        window.settle();
+        let top = ui::HEIGHT as f32;
+        let from = if scripts { "script" } else { "page" };
+        // Typed, then Enter: implicit submission.
+        window.click(100.0, top + 12.0);
+        window.type_text("silver browser");
+        window.press_key(Key::Enter, NONE);
+        window.settle();
+        assert_eq!(
+            window.session.engine().title(),
+            format!("results for q=silver+browser&from={from}"),
+            "scripts {scripts}"
+        );
+        // Back, then the button.
+        window.press_key(Key::Left, ALT);
+        window.settle();
+        window.click(100.0, top + 12.0);
+        window.type_text("again");
+        window.click(240.0, top + 12.0);
+        window.settle();
+        assert!(
+            window
+                .session
+                .engine()
+                .title()
+                .starts_with("results for q="),
+            "scripts {scripts}: {}",
+            window.session.engine().title()
+        );
+    }
+}

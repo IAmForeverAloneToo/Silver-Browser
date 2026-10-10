@@ -420,3 +420,30 @@ fn a_canceled_invalid_is_not_reported_and_novalidate_holds_with_scripts_off() {
     let q = by_id(&tab.engine, "q");
     assert!(dom::validity::user_validity(tab.engine.document(), q));
 }
+
+#[test]
+fn a_forms_validity_is_restyled_by_whatever_changes_its_controls() {
+    // Found by the dom_api fuzz target (M26.13): a form's `:invalid`
+    // left as it was when its control's attribute changed. In one run,
+    // so that each read is the journal's restyle.
+    let mut tab = page(
+        "<style>form:invalid, fieldset:invalid { margin-left: 7px }</style>\
+         <form id=f><fieldset id=fs><input id=q required></fieldset></form>\
+         <form id=g></form>",
+    );
+    assert_eq!(
+        run(
+            &mut tab,
+            "function m(id) { return getComputedStyle(document.getElementById(id)).marginLeft; } \
+             var q = document.getElementById('q'), out = [m('f') + m('fs')]; \
+             q.removeAttribute('required'); out.push(m('f') + m('fs')); \
+             q.setAttribute('pattern', '[0-9]+'); q.value = 'x'; out.push(m('f') + m('fs')); \
+             q.disabled = true; out.push(m('f') + m('fs')); \
+             q.disabled = false; document.getElementById('g').appendChild(q); \
+             out.push(m('f') + m('fs') + m('g')); \
+             q.remove(); out.push(m('g')); \
+             console.log(out.join(' '));"
+        ),
+        ["7px7px 0px0px 7px7px 0px0px 0px0px7px 0px"]
+    );
+}

@@ -3276,9 +3276,17 @@
   include(ElementLookups, [Document.prototype, Element.prototype]);
 
   // `getElementsByName` (HTML section 3.1.5, M26.11): a live NodeList
-  // of the document's elements whose `name` is `elementName`.
+  // of the document's elements whose `name` is `elementName`; `forms`
+  // (M26.13), a live HTMLCollection of its forms.
   include(
     {
+      get forms() {
+        const handle = self(this);
+        return controlList(this, "forms", () =>
+          collection(HTMLCollection, this, () => native.byTag(handle, "form"), true),
+        );
+      },
+
       getElementsByName(elementName) {
         const handle = self(this);
         need(arguments.length, 1, "getElementsByName", "Document");

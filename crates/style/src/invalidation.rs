@@ -91,6 +91,10 @@ pub struct SelectorFeatures {
     /// options and radio button groups count, and the controls' state
     /// (M26.7).
     checked: bool,
+    /// `:valid` or `:invalid`, which a form and a fieldset match by their
+    /// controls (M26.9b): whatever changes a control's validity counts
+    /// for every form and fieldset (M26.13).
+    validity: bool,
     /// An `attr()` whose name is substituted (M21.5): every attribute
     /// counts.
     any_attribute: bool,
@@ -241,24 +245,8 @@ impl SelectorFeatures {
             | PseudoClass::Default => {
                 self.checked = true;
                 self.fieldsets = true;
-                self.read(&[
-                    "required",
-                    "pattern",
-                    "min",
-                    "max",
-                    "step",
-                    "minlength",
-                    "maxlength",
-                    "type",
-                    "multiple",
-                    "disabled",
-                    "readonly",
-                    "value",
-                    "checked",
-                    "selected",
-                    "name",
-                    "form",
-                ]);
+                self.validity |= matches!(pc, PseudoClass::Valid | PseudoClass::Invalid);
+                self.read(VALIDITY_ATTRIBUTES);
             }
             PseudoClass::Required | PseudoClass::Optional => self.read(&["required", "type"]),
             PseudoClass::Hover => self.read_state(ElementState::HOVER, at),
@@ -395,6 +383,27 @@ impl Invalidation {
     }
 }
 
+/// The attributes a control's validity and the form pseudo-classes read
+/// (M26.9b).
+const VALIDITY_ATTRIBUTES: &[&str] = &[
+    "required",
+    "pattern",
+    "min",
+    "max",
+    "step",
+    "minlength",
+    "maxlength",
+    "type",
+    "multiple",
+    "disabled",
+    "readonly",
+    "value",
+    "checked",
+    "selected",
+    "name",
+    "form",
+];
+
 /// Whether `node` is in `document`'s tree.
 pub(crate) fn attached(document: &Document, node: NodeId) -> bool {
     node == document.root() || document.ancestors(node).last() == Some(document.root())
@@ -415,6 +424,9 @@ pub(crate) fn invalidate(
     let mut states: HashMap<NodeId, ElementState> = HashMap::new();
     // Whether every radio button is to be restyled (`:checked`).
     let mut radios = false;
+    // Whether every form and fieldset is to be restyled (`:valid` and
+    // `:invalid`, M26.13): a control's validity may have changed.
+    let mut forms = false;
     // The controls whose state changed (M26.7).
     let mut controls: Vec<NodeId> = Vec::new();
     for change in changes {
@@ -433,6 +445,7 @@ pub(crate) fn invalidate(
                 }
                 around_child(document, features, *parent, &mut out);
                 radios |= features.checked && !document.is_text(*child);
+                forms |= features.validity && !document.is_text(*child);
                 // Which element is the root can change with the
                 // document node's children, and the root's `display`
                 // is blockified (M16): each of them, the root that was
@@ -522,18 +535,11 @@ pub(crate) fn invalidate(
     // far as an attribute's change would, and an option's select.
     if features.checked {
         for element in controls {
-            // A radio button's change is its group's; a control's is its
-            // form's and fieldsets' (M26.9b).
+            // A radio button's change is its group's; a control's is
+            // every form's and fieldset's (M26.9b, below).
             radios |= document.tag(element) == Some("input")
                 && dom::forms::input_type(document, element) == "radio";
-            for ancestor in document.ancestors(element) {
-                if matches!(document.tag(ancestor), Some("form" | "fieldset")) {
-                    out.mark(document, ancestor, Reach::Element);
-                }
-            }
-            if let Some(form) = dom::forms::form_owner(document, element) {
-                out.mark(document, form, Reach::Element);
-            }
+            forms |= features.validity;
             out.mark(document, element, Reach::Subtree);
             if document.tag(element) == Some("option")
                 && let Some(select) = select_around(document, element)
@@ -594,6 +600,7 @@ pub(crate) fn invalidate(
             radios |= name == "id"
                 || (tag == Some("input") && matches!(name, "checked" | "name" | "type" | "form"));
         }
+        forms |= features.validity && (name == "id" || VALIDITY_ATTRIBUTES.contains(&name));
         if features.mentions(name, old, new) {
             out.mark(document, element, Reach::Subtree);
             if features.every_sibling {
@@ -617,6 +624,15 @@ pub(crate) fn invalidate(
             || inline_reads_attributes(document, element)
         {
             out.mark(document, element, Reach::Element);
+        }
+    }
+    if forms {
+        let groups: Vec<NodeId> = document
+            .subtree(document.root())
+            .filter(|&node| matches!(document.tag(node), Some("form" | "fieldset")))
+            .collect();
+        for group in groups {
+            out.mark(document, group, Reach::Element);
         }
     }
     if radios {

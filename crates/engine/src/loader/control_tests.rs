@@ -495,3 +495,17 @@ fn an_option_standing_alone_is_a_block_and_a_datalist_shows_nothing() {
     );
     assert_eq!(texts(&mut tab), ["L", "plain"]);
 }
+
+#[test]
+fn document_forms_is_a_live_collection_of_the_forms() {
+    let mut tab = page("<form id=a></form><div><form id=b></form></div>");
+    assert_eq!(
+        run(
+            &mut tab,
+            "var f = document.forms; \
+             console.log(f.length, f[1].id, f === document.forms, f instanceof HTMLCollection); \
+             document.body.appendChild(document.createElement('form')); console.log(f.length);"
+        ),
+        ["2 b true true", "3"]
+    );
+}
