@@ -573,6 +573,10 @@ pub enum Overflow {
     Hidden,
     Scroll,
     Auto,
+    /// Content is clipped, but the box is no scroll container
+    /// (css-overflow-3 section 3, M26.7): nothing scrolls it, and an
+    /// inline-block keeps its line's baseline. A form control's.
+    Clip,
 }
 
 impl Overflow {
@@ -580,6 +584,12 @@ impl Overflow {
     /// box (every value but `visible`).
     pub fn clips(self) -> bool {
         self != Overflow::Visible
+    }
+
+    /// Whether this value makes the box a scroll container: every value
+    /// but `visible` and `clip`.
+    pub fn scrolls(self) -> bool {
+        !matches!(self, Overflow::Visible | Overflow::Clip)
     }
 }
 

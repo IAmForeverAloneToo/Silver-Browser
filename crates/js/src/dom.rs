@@ -273,6 +273,65 @@ pub enum Call {
     },
     /// `document.hasFocus()`: whether the window has the system's focus.
     HasFocus,
+    /// A form control's `value` (HTML section 4.10, M26.7): an
+    /// `input`'s by its value mode, a `textarea`'s API value, a
+    /// `select`'s first selected option's, an option's.
+    ControlValue(Handle),
+    /// An `input`'s value mode: `value`, `default`, `default/on` or
+    /// `filename`; `value` for a `textarea`, empty for anything else.
+    ValueMode(Handle),
+    /// Sets an `input`'s value in the value mode, sanitized, or a
+    /// `textarea`'s, as a script's `value` does.
+    SetControlValue {
+        node: Handle,
+        value: String,
+    },
+    /// An `input`'s type, its keyword in lowercase.
+    InputType(Handle),
+    /// Whether an `input` is checked.
+    Checkedness(Handle),
+    /// Checks or unchecks an `input` as a script does: dirty, a radio
+    /// button checked unchecking its group.
+    SetCheckedness {
+        node: Handle,
+        checked: bool,
+    },
+    Indeterminate(Handle),
+    SetIndeterminate {
+        node: Handle,
+        indeterminate: bool,
+    },
+    /// Whether an option is selected.
+    Selectedness(Handle),
+    /// Selects an option or not, as a script does.
+    SetSelectedness {
+        node: Handle,
+        selected: bool,
+    },
+    /// A `select`'s list of options.
+    Options(Handle),
+    /// The `select` an option is in the list of, if any.
+    OwnerSelect(Handle),
+    /// A `select`'s first selected option's index, or -1.
+    SelectedIndex(Handle),
+    /// An option's text: its descendant text, stripped and collapsed.
+    OptionText(Handle),
+    /// A text control's selection, in UTF-16 code units: its start, its
+    /// end and its direction (0 none, 1 forward, 2 backward).
+    TextSelection(Handle),
+    /// Sets a text control's selection, in UTF-16 code units.
+    SetTextSelection {
+        node: Handle,
+        start: u32,
+        end: u32,
+        direction: u8,
+    },
+    /// A form's listed controls (HTML section 4.10.3), in tree order.
+    FormControls(Handle),
+    /// The control a `label` labels, if any.
+    LabeledControl(Handle),
+    /// The labels of a labelable element, in tree order.
+    Labels(Handle),
     /// Whether the document is hidden (HTML section 6.2): its window is
     /// minimized or covered.
     Hidden,

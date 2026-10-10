@@ -566,6 +566,8 @@ fn parse_pseudo(
                 "disabled" => PseudoClass::Disabled,
                 "enabled" => PseudoClass::Enabled,
                 "checked" => PseudoClass::Checked,
+                "indeterminate" => PseudoClass::Indeterminate,
+                "placeholder-shown" => PseudoClass::PlaceholderShown,
                 "required" => PseudoClass::Required,
                 "optional" => PseudoClass::Optional,
                 _ => return None,

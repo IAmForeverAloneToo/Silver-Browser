@@ -87,7 +87,9 @@ pub struct SelectorFeatures {
     lang: bool,
     /// `:disabled` or `:enabled`: a fieldset's first legend counts.
     fieldsets: bool,
-    /// `:checked`: a select's options and radio button groups count.
+    /// `:checked`, `:indeterminate` or `:placeholder-shown`: a select's
+    /// options and radio button groups count, and the controls' state
+    /// (M26.7).
     checked: bool,
     /// An `attr()` whose name is substituted (M21.5): every attribute
     /// counts.
@@ -219,6 +221,14 @@ impl SelectorFeatures {
                 self.read(&[
                     "checked", "selected", "type", "multiple", "size", "disabled",
                 ]);
+            }
+            PseudoClass::Indeterminate => {
+                self.checked = true;
+                self.read(&["checked", "type", "name", "form", "value"]);
+            }
+            PseudoClass::PlaceholderShown => {
+                self.checked = true;
+                self.read(&["placeholder", "value", "type"]);
             }
             PseudoClass::Required | PseudoClass::Optional => self.read(&["required", "type"]),
             PseudoClass::Hover => self.read_state(ElementState::HOVER, at),
@@ -375,6 +385,8 @@ pub(crate) fn invalidate(
     let mut states: HashMap<NodeId, ElementState> = HashMap::new();
     // Whether every radio button is to be restyled (`:checked`).
     let mut radios = false;
+    // The controls whose state changed (M26.7).
+    let mut controls: Vec<NodeId> = Vec::new();
     for change in changes {
         match change {
             Change::Everything => {
@@ -403,7 +415,8 @@ pub(crate) fn invalidate(
             }
             Change::AttributeChanged { .. }
             | Change::TextChanged { .. }
-            | Change::StateChanged { .. } => {}
+            | Change::StateChanged { .. }
+            | Change::ControlChanged { .. } => {}
         }
         match change {
             Change::Everything => {}
@@ -472,6 +485,26 @@ pub(crate) fn invalidate(
             Change::StateChanged { element, old } => {
                 states.entry(*element).or_insert(*old);
             }
+            Change::ControlChanged { element } => controls.push(*element),
+        }
+    }
+    // A control's state restyles what reads it (M26.7): the element, as
+    // far as an attribute's change would, and an option's select.
+    if features.checked {
+        for element in controls {
+            out.mark(document, element, Reach::Subtree);
+            if document.tag(element) == Some("option")
+                && let Some(select) = select_around(document, element)
+            {
+                out.mark(document, select, Reach::Subtree);
+            }
+            if let Some(parent) = document.parent(element)
+                && (features.every_sibling || features.sibling_combinators)
+            {
+                for sibling in document.element_children(parent) {
+                    out.mark(document, sibling, Reach::Subtree);
+                }
+            }
         }
     }
     // A state flag's change restyles as far as the selectors that read
@@ -537,7 +570,9 @@ pub(crate) fn invalidate(
         } else if name == "style"
             || name == "dir"
             || tag.is_some_and(|tag| {
-                crate::cascade::is_list_hint(tag, name) || crate::cascade::is_img_hint(tag, name)
+                crate::cascade::is_list_hint(tag, name)
+                    || crate::cascade::is_img_hint(tag, name)
+                    || crate::cascade::is_control_hint(tag, name)
             })
             || inline_reads_attributes(document, element)
         {
@@ -1074,11 +1109,14 @@ mod tests {
         ] {
             assert!(f.attributes.contains(name), "{name}");
         }
-        // The UA sheet's `:link` reads `href` without the rest.
+        // The UA sheet's `:link` reads `href`, and its form controls'
+        // `:disabled` and a list box's `:checked` theirs (M26.7), without
+        // the rest.
         let plain = Stylesheets::new(Vec::new());
         let f = plain.features();
         assert!(f.attributes.contains("href"));
-        assert!(!f.lang && !f.fieldsets && !f.checked);
+        assert!(f.fieldsets && f.checked);
+        assert!(!f.lang);
     }
 
     #[test]
@@ -1222,10 +1260,20 @@ mod tests {
             d.set_attribute(b, "checked", "").unwrap();
         });
         assert_eq!(set(&r.changed), set(&[a, b]), "b checked, a unchecked");
+        // HTML's checkedness (M26.7): b's checking unchecked a, and b
+        // leaving the group gives a nothing back.
         let r = change(&mut d, &sheets, &mut styles, |d| {
             d.set_attribute(b, "name", "other").unwrap();
         });
-        assert_eq!(r.changed, [a], "a checked again");
+        assert!(r.changed.is_empty(), "a stays unchecked");
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(b, "name", "r").unwrap();
+            d.remove_attribute(b, "checked").unwrap();
+            // Added again: a has had it all along.
+            d.remove_attribute(a, "checked").unwrap();
+            d.set_attribute(a, "checked", "").unwrap();
+        });
+        assert_eq!(set(&r.changed), set(&[a, b]), "a checked again, b not");
         // `c` names form `g`, which is none: alone, and checked. The form
         // taking that ID takes `c` into `a`'s group, after it.
         let r = change(&mut d, &sheets, &mut styles, |d| {

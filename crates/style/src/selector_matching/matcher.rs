@@ -436,6 +436,8 @@ impl<'a> Matcher<'a> {
                     && !forms::actually_disabled(document, element)
             }
             PseudoClass::Checked => self.checked(element),
+            PseudoClass::Indeterminate => self.indeterminate(element),
+            PseudoClass::PlaceholderShown => forms::placeholder_shown(document, element),
             PseudoClass::Required => required(document, element) == Some(true),
             PseudoClass::Optional => required(document, element) == Some(false),
         }
@@ -522,8 +524,8 @@ impl<'a> Matcher<'a> {
     fn checked(&mut self, element: NodeId) -> bool {
         let document = self.document;
         match document.tag(element) {
-            Some("input") if document.attr(element, "checked").is_some() => {
-                match input_type(document, element) {
+            Some("input") if forms::own_checkedness(document, element) => {
+                match forms::input_type(document, element) {
                     "checkbox" => true,
                     "radio" => self.radio_checked(element),
                     _ => false,
@@ -534,11 +536,41 @@ impl<'a> Matcher<'a> {
         }
     }
 
-    /// Whether a radio button with a `checked` attribute is checked:
-    /// whether it is the last with one in its radio button group
-    /// (HTML §4.10.5.1.16), since each checks itself and unchecks the
-    /// rest of the group when it is parsed. One without a name is alone
-    /// in its group.
+    /// Whether the element is indeterminate (HTML section 4.16.3, M26.7):
+    /// a checkbox by its flag, a radio button when none of its group is
+    /// checked, a `progress` without a `value`.
+    fn indeterminate(&mut self, element: NodeId) -> bool {
+        let document = self.document;
+        match document.tag(element) {
+            Some("input") => match forms::input_type(document, element) {
+                "checkbox" => forms::indeterminate(document, element),
+                "radio" => !self.radio_group_checked(element),
+                _ => false,
+            },
+            Some("progress") => document.attr(element, "value").is_none(),
+            _ => false,
+        }
+    }
+
+    /// Whether any of a radio button's group is checked.
+    fn radio_group_checked(&mut self, radio: NodeId) -> bool {
+        let document = self.document;
+        match document.attr(radio, "name").filter(|name| !name.is_empty()) {
+            None => forms::own_checkedness(document, radio),
+            Some(name) => {
+                let root = document.ancestors(radio).last().unwrap_or(radio);
+                self.radio_checked(radio);
+                let owner = self.form_owner(radio);
+                self.radio_groups[&root].contains_key(&(owner, name))
+            }
+        }
+    }
+
+    /// Whether a radio button whose own checkedness is set is checked:
+    /// whether it is the last such in its radio button group (HTML
+    /// section 4.10.5.1.16), since each checks itself and unchecks the
+    /// rest of the group when it is parsed or set (`forms::checkedness`,
+    /// M26.7). One without a name is alone in its group.
     fn radio_checked(&mut self, radio: NodeId) -> bool {
         let document = self.document;
         let Some(name) = document.attr(radio, "name").filter(|name| !name.is_empty()) else {
@@ -550,8 +582,8 @@ impl<'a> Matcher<'a> {
                 .subtree(root)
                 .filter(|&node| {
                     document.tag(node) == Some("input")
-                        && document.attr(node, "checked").is_some()
-                        && input_type(document, node) == "radio"
+                        && forms::own_checkedness(document, node)
+                        && forms::input_type(document, node) == "radio"
                 })
                 .filter_map(|node| {
                     let name = document
@@ -617,7 +649,7 @@ impl<'a> Matcher<'a> {
                     .or_insert_with(|| forms::selected_option(document, select))
                     == Some(option)
             }
-            _ => document.attr(option, "selected").is_some(),
+            _ => forms::own_selectedness(document, option),
         }
     }
 
@@ -652,45 +684,6 @@ impl<'a> Matcher<'a> {
     }
 }
 
-/// The keywords of an `input` element's `type` (HTML §4.10.5.1).
-const INPUT_TYPES: [&str; 22] = [
-    "hidden",
-    "text",
-    "search",
-    "tel",
-    "url",
-    "email",
-    "password",
-    "date",
-    "month",
-    "week",
-    "time",
-    "datetime-local",
-    "number",
-    "range",
-    "color",
-    "checkbox",
-    "radio",
-    "file",
-    "submit",
-    "image",
-    "reset",
-    "button",
-];
-
-/// An `input` element's type: the keyword its `type` names, ASCII
-/// case-insensitively, or `text`, the missing and the invalid value's.
-fn input_type(document: &Document, input: NodeId) -> &'static str {
-    document
-        .attr(input, "type")
-        .and_then(|value| {
-            INPUT_TYPES
-                .into_iter()
-                .find(|t| t.eq_ignore_ascii_case(value))
-        })
-        .unwrap_or("text")
-}
-
 /// For an element `:required` and `:optional` apply to, whether it is
 /// required (HTML §4.16.3, §4.10.5.3.4): an `input` of a type the
 /// `required` attribute applies to — all but `hidden`, `range`,
@@ -699,7 +692,7 @@ fn input_type(document: &Document, input: NodeId) -> &'static str {
 fn required(document: &Document, element: NodeId) -> Option<bool> {
     let applies = match document.tag(element) {
         Some("input") => !matches!(
-            input_type(document, element),
+            forms::input_type(document, element),
             "hidden" | "range" | "color" | "submit" | "image" | "reset" | "button"
         ),
         Some("select" | "textarea") => true,

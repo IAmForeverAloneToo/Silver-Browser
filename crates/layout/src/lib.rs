@@ -41,10 +41,10 @@ pub use block::{
     layout_document, layout_document_cached, layout_document_in, preorder,
 };
 pub use box_tree::{
-    BoxKind, FirstLine, ImageState, Images, LayoutBox, MAX_GENERATED_TEXT, MarkerShape, Replaced,
-    RowGroupKind, build_box_tree, build_box_tree_showing,
+    BoxKind, FirstLine, ImageState, Images, LayoutBox, MAX_GENERATED_TEXT, Mark, MarkerShape,
+    Replaced, RowGroupKind, build_box_tree, build_box_tree_showing,
 };
-pub use cache::LayoutCache;
+pub use cache::{LayoutCache, shown_by_controls};
 pub use composite::{Composited, EffectsChange};
 pub use paginate::{MAX_PAGES, PageSlice, Paginated, paginate};
 pub use replaced::ICON_SIZE;

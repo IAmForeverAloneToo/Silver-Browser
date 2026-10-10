@@ -31,7 +31,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use dom::{Document, Node, NodeData, NodeId};
-use layout::{Fragment, FragmentKind, MarkerShape, Replaced};
+use layout::{Fragment, FragmentKind, Mark, MarkerShape, Replaced};
 use style::Styles;
 use style::computed::{
     Attachment, BOTTOM, BackgroundBox, BackgroundSize, BorderImageRepeat, BorderImageWidth,
@@ -1069,6 +1069,7 @@ fn push_replaced(
 ) {
     match replaced {
         Replaced::Empty => {}
+        Replaced::Mark(mark) => push_mark(items, *mark, rect, to_rgba8(fragment.style.color)),
         // A gradient (M23.3) fills the box, rendered for its size.
         Replaced::Gradient(gradient) => {
             if rect.w > 0.0 && rect.h > 0.0 {
@@ -1175,6 +1176,139 @@ fn push_icon(items: &mut Vec<DisplayItem>, rect: Rect) {
             ],
             color: ICON_COLOUR,
         });
+    }
+}
+
+/// The accent colour a checked checkbox or radio button is drawn in
+/// (M26.7), the reference browser's.
+const ACCENT: Rgba8 = Rgba8 {
+    r: 0,
+    g: 117,
+    b: 255,
+    a: 255,
+};
+/// The grey of an unchecked one's edge.
+const MARK_EDGE: Rgba8 = Rgba8 {
+    r: 118,
+    g: 118,
+    b: 118,
+    a: 255,
+};
+const WHITE: Rgba8 = Rgba8 {
+    r: 255,
+    g: 255,
+    b: 255,
+    a: 255,
+};
+
+/// A control's mark in `rect` (M26.7), as the reference browser draws
+/// one: a checkbox a white box with a grey edge, filled with the accent
+/// colour and a white tick when checked or a white bar when
+/// indeterminate; a radio button a white ring with a grey edge, the
+/// edge and a dot in the accent colour when checked; a drop-down's
+/// arrow a chevron in the text's `color`, in the middle of its box. A
+/// disabled one is faded, and grey where it would be the accent.
+fn push_mark(items: &mut Vec<DisplayItem>, mark: Mark, rect: Rect, color: Rgba8) {
+    let r = snapped(rect);
+    let fade = |c: Rgba8, disabled: bool| Rgba8 {
+        a: if disabled { c.a / 3 + 10 } else { c.a },
+        ..c
+    };
+    let circle = |cx: f32, cy: f32, radius: f32| -> Vec<(f32, f32)> {
+        (0..32)
+            .map(|i| {
+                let angle = i as f32 * std::f32::consts::TAU / 32.0;
+                (cx + radius * angle.cos(), cy + radius * angle.sin())
+            })
+            .collect()
+    };
+    match mark {
+        Mark::Checkbox {
+            checked,
+            indeterminate,
+            disabled,
+        } => {
+            let on = checked || indeterminate;
+            let fill = match (on, disabled) {
+                (true, false) => ACCENT,
+                (true, true) => MARK_EDGE,
+                (false, _) => WHITE,
+            };
+            items.push(DisplayItem::Rect {
+                x: r.x,
+                y: r.y,
+                w: r.w,
+                h: r.h,
+                color: fade(fill, disabled),
+            });
+            if !on {
+                items.push(DisplayItem::Border {
+                    x: r.x,
+                    y: r.y,
+                    w: r.w,
+                    h: r.h,
+                    widths: [1.0; 4],
+                    color: fade(MARK_EDGE, disabled),
+                });
+                return;
+            }
+            // In a 13 by 13 box, scaled to the box.
+            let (sx, sy) = (r.w / 13.0, r.h / 13.0);
+            let at = |x: f32, y: f32| (r.x + x * sx, r.y + y * sy);
+            let points = if indeterminate {
+                vec![at(3.0, 5.5), at(10.0, 5.5), at(10.0, 7.5), at(3.0, 7.5)]
+            } else {
+                vec![
+                    at(2.3, 7.2),
+                    at(5.5, 10.4),
+                    at(10.7, 4.7),
+                    at(9.3, 3.3),
+                    at(5.5, 7.6),
+                    at(3.7, 5.8),
+                ]
+            };
+            items.push(DisplayItem::Polygon {
+                points,
+                color: fade(WHITE, disabled),
+            });
+        }
+        Mark::Radio { checked, disabled } => {
+            let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+            let radius = r.w.min(r.h) / 2.0;
+            let edge = if checked && !disabled {
+                ACCENT
+            } else {
+                MARK_EDGE
+            };
+            items.push(DisplayItem::Polygon {
+                points: circle(cx, cy, radius),
+                color: fade(edge, disabled),
+            });
+            items.push(DisplayItem::Polygon {
+                points: circle(cx, cy, (radius - 1.0).max(0.0)),
+                color: fade(WHITE, disabled),
+            });
+            if checked {
+                items.push(DisplayItem::Polygon {
+                    points: circle(cx, cy, (radius - 3.0).max(0.0)),
+                    color: fade(edge, disabled),
+                });
+            }
+        }
+        Mark::Arrow => {
+            let (cx, cy) = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
+            items.push(DisplayItem::Polygon {
+                points: vec![
+                    (cx - 4.0, cy - 2.5),
+                    (cx, cy + 1.5),
+                    (cx + 4.0, cy - 2.5),
+                    (cx + 4.0, cy - 1.0),
+                    (cx, cy + 3.0),
+                    (cx - 4.0, cy - 1.0),
+                ],
+                color,
+            });
+        }
     }
 }
 

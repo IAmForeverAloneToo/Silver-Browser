@@ -31,6 +31,7 @@
 
 use std::fmt;
 
+use crate::forms::ControlState;
 use crate::{Element, Node, Text};
 
 /// The deepest elements may nest: 512, the HTML parser's cap on its
@@ -158,6 +159,9 @@ pub enum Change {
     /// The state flags the user's actions set on `element` changed
     /// (M26); `old` is what they were.
     StateChanged { element: NodeId, old: ElementState },
+    /// A form control's state changed (M26.7): its value, checkedness,
+    /// selectedness, indeterminate flag or selection.
+    ControlChanged { element: NodeId },
     /// More changed than the journal keeps ([`MAX_JOURNAL`]): treat the
     /// whole document as changed.
     Everything,
@@ -249,6 +253,8 @@ struct Record {
     data: NodeData,
     /// An element's state flags (M26).
     state: ElementState,
+    /// A form control's state, once it has one (M26.7).
+    control: Option<Box<ControlState>>,
     parent: Option<u32>,
     first_child: Option<u32>,
     last_child: Option<u32>,
@@ -523,6 +529,37 @@ impl Document {
         }
         record.state = state;
         self.record_change(Change::StateChanged { element, old });
+        Ok(())
+    }
+
+    /// A form control's state, if it has had a change (M26.7); the
+    /// `forms` functions read it with the attributes.
+    pub fn control(&self, element: NodeId) -> Option<&ControlState> {
+        self.record(element)?.control.as_deref()
+    }
+
+    /// Sets an element's control state (M26.7), journaled when it
+    /// changes; its value counts against the data limit.
+    pub fn set_control(
+        &mut self,
+        element: NodeId,
+        state: ControlState,
+    ) -> Result<(), MutationError> {
+        let record = self.record(element).ok_or(MutationError::NoSuchNode)?;
+        if !matches!(record.data, NodeData::Element { .. }) {
+            return Err(MutationError::WrongKind);
+        }
+        if record.control.as_deref() == Some(&state) {
+            return Ok(());
+        }
+        let old = record.control.as_ref().map_or(0, |c| c.bytes());
+        let new = state.bytes();
+        self.check_data(new.saturating_sub(old))?;
+        self.data_bytes = self.data_bytes + new - old;
+        if let Some(record) = self.record_mut(element) {
+            record.control = Some(Box::new(state));
+        }
+        self.record_change(Change::ControlChanged { element });
         Ok(())
     }
 
@@ -822,7 +859,11 @@ impl Document {
                 None
             }
         };
+        let default = matches!(name.as_str(), "checked" | "selected").then(|| name.clone());
         self.record_change(Change::AttributeChanged { element, name, old });
+        if let Some(name) = default {
+            crate::forms::default_changed(self, element, &name);
+        }
         Ok(())
     }
 
@@ -836,11 +877,15 @@ impl Document {
         };
         let (_, old) = attrs.remove(at);
         self.data_bytes -= name.len() + old.len();
+        let default = matches!(name.as_str(), "checked" | "selected").then(|| name.clone());
         self.record_change(Change::AttributeChanged {
             element,
             name,
             old: Some(old),
         });
+        if let Some(name) = default {
+            crate::forms::default_changed(self, element, &name);
+        }
         Ok(())
     }
 
@@ -896,7 +941,8 @@ impl Document {
         for index in doomed {
             let slot = &mut self.slots[index as usize];
             if let Some(record) = slot.record.take() {
-                self.data_bytes -= data_size(&record.data);
+                self.data_bytes -=
+                    data_size(&record.data) + record.control.map_or(0, |c| c.bytes());
             }
             self.live -= 1;
             // A slot whose generations are spent is retired, never
@@ -1012,7 +1058,7 @@ impl Document {
             .slots
             .iter()
             .filter_map(|s| s.record.as_ref())
-            .map(|r| data_size(&r.data))
+            .map(|r| data_size(&r.data) + r.control.as_ref().map_or(0, |c| c.bytes()))
             .sum();
         if data != self.data_bytes {
             return Err(format!(
@@ -1109,6 +1155,7 @@ impl Document {
         let record = Record {
             data,
             state: ElementState::NONE,
+            control: None,
             parent: None,
             first_child: None,
             last_child: None,

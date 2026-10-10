@@ -166,6 +166,7 @@ pub fn computed_value(style: &ComputedStyle, name: &str) -> Option<String> {
             Overflow::Hidden => "hidden",
             Overflow::Scroll => "scroll",
             Overflow::Auto => "auto",
+            Overflow::Clip => "clip",
         }
         .to_owned(),
         "box-sizing" => match style.box_sizing {

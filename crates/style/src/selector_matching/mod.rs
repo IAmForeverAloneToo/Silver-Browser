@@ -273,6 +273,13 @@ pub enum PseudoClass {
     /// `:checked`: a checked checkbox or radio button, or a selected
     /// option.
     Checked,
+    /// `:indeterminate`: a checkbox whose indeterminate flag is set, a
+    /// radio button none of whose group is checked, a `progress` with no
+    /// value (M26.7).
+    Indeterminate,
+    /// `:placeholder-shown`: a text field or textarea showing its
+    /// placeholder (M26.7).
+    PlaceholderShown,
     /// `:required`: an `input`, `select` or `textarea` that is required.
     Required,
     /// `:optional`: one of those that could be and is not.

@@ -3218,7 +3218,7 @@
       if (
         typeof key === "string" && target instanceof HTMLCollection && !ReflectHas(target, key)
       ) {
-        const item = namedItem(state, key);
+        const item = state.named ? state.named(state, key) : namedItem(state, key);
         if (item !== null) {
           return item;
         }
@@ -4399,11 +4399,21 @@
       ["name", "name", "string"],
       ["placeholder", "placeholder", "string"],
       ["defaultValue", "value", "string"],
+      ["defaultChecked", "checked", "boolean"],
       ["disabled", "disabled", "boolean"],
       ["required", "required", "boolean"],
       ["readOnly", "readonly", "boolean"],
       ["multiple", "multiple", "boolean"],
       ["autofocus", "autofocus", "boolean"],
+      ["size", "size", "unsigned", 20],
+      ["min", "min", "string"],
+      ["max", "max", "string"],
+      ["step", "step", "string"],
+      ["pattern", "pattern", "string"],
+      ["alt", "alt", "string"],
+      ["src", "src", "url"],
+      ["accept", "accept", "string"],
+      ["autocomplete", "autocomplete", "string"],
     ]],
     ["HTMLButtonElement", [
       ["name", "name", "string"],
@@ -4415,6 +4425,8 @@
       ["disabled", "disabled", "boolean"],
       ["required", "required", "boolean"],
       ["multiple", "multiple", "boolean"],
+      ["size", "size", "unsigned", 0],
+      ["autofocus", "autofocus", "boolean"],
     ]],
     ["HTMLTextAreaElement", [
       ["name", "name", "string"],
@@ -4422,10 +4434,22 @@
       ["disabled", "disabled", "boolean"],
       ["required", "required", "boolean"],
       ["readOnly", "readonly", "boolean"],
+      ["cols", "cols", "unsigned", 20],
+      ["rows", "rows", "unsigned", 2],
+      ["wrap", "wrap", "string"],
+      ["autofocus", "autofocus", "boolean"],
     ]],
     ["HTMLOptionElement", [
       ["disabled", "disabled", "boolean"],
+      ["defaultSelected", "selected", "boolean"],
+    ]],
+    ["HTMLOptGroupElement", [
+      ["disabled", "disabled", "boolean"],
       ["label", "label", "string"],
+    ]],
+    ["HTMLFieldSetElement", [
+      ["disabled", "disabled", "boolean"],
+      ["name", "name", "string"],
     ]],
     ["HTMLMetaElement", [
       ["name", "name", "string"],
@@ -5193,6 +5217,612 @@
     defineHandlers(MapGet(interfaces, BODIES[i]).prototype, WINDOW_REFLECTING, true);
     defineHandlers(MapGet(interfaces, BODIES[i]).prototype, WINDOW_HANDLERS, true);
   }
+
+  // ---- Form controls (HTML section 4.10, M26.7) ---------------------------
+
+  // The collections a control or a form keeps, made at the first ask:
+  // the same object each time.
+  const controlLists = new $WeakMap();
+
+  function controlList(element, name, make) {
+    let lists = WeakMapGet(controlLists, element);
+    if (lists === undefined) {
+      lists = ObjectCreate(null);
+      WeakMapSet(controlLists, element, lists);
+    }
+    if (lists[name] === undefined) {
+      lists[name] = make();
+    }
+    return lists[name];
+  }
+
+  // A `select`'s options, live (HTML section 4.10.7): a collection that
+  // also adds, removes and selects.
+  class HTMLOptionsCollection extends HTMLCollection {
+    get length() {
+      return items(stateOf(this)).length;
+    }
+
+    set length(value) {
+      const state = stateOf(this);
+      setOptionsLength(state.owner, unsigned(value));
+    }
+
+    get selectedIndex() {
+      return native.selectedIndex(self(stateOf(this).owner));
+    }
+
+    set selectedIndex(value) {
+      setSelectedIndex(self(stateOf(this).owner), value | 0);
+    }
+
+    add(element, before) {
+      need(arguments.length, 1, "add", "HTMLOptionsCollection");
+      addOption(stateOf(this).owner, element, before, "HTMLOptionsCollection");
+    }
+
+    remove(index) {
+      need(arguments.length, 1, "remove", "HTMLOptionsCollection");
+      removeOption(stateOf(this).owner, index | 0);
+    }
+  }
+  expose(HTMLOptionsCollection, "HTMLOptionsCollection");
+
+  // A form's listed controls, live (HTML section 4.10.3): by index, and
+  // by name, a RadioNodeList where more than one has it.
+  class HTMLFormControlsCollection extends HTMLCollection {
+    namedItem(name) {
+      const state = stateOf(this);
+      need(arguments.length, 1, "namedItem", "HTMLFormControlsCollection");
+      return formNamedItem(state, str(name));
+    }
+  }
+  expose(HTMLFormControlsCollection, "HTMLFormControlsCollection");
+
+  // The controls of a form named `name`, by ID or `name`: none, one, or
+  // a RadioNodeList of them all, live.
+  function formNamedItem(state, name) {
+    if (name === "") {
+      return null;
+    }
+    const named = () => {
+      const all = items(state);
+      const found = [];
+      for (let i = 0; i < all.length; i++) {
+        if (native.attribute(all[i], "id") === name || native.attribute(all[i], "name") === name) {
+          ArrayPush(found, all[i]);
+        }
+      }
+      return found;
+    };
+    const found = named();
+    if (found.length === 0) {
+      return null;
+    }
+    if (found.length === 1) {
+      return wrap(found[0]);
+    }
+    return collection(RadioNodeList, state.owner, named, true);
+  }
+
+  // A form's controls of one name (HTML section 2.7.3): its `value` is
+  // the checked radio button's.
+  class RadioNodeList extends NodeList {
+    get value() {
+      const handles = items(stateOf(this));
+      for (let i = 0; i < handles.length; i++) {
+        const h = handles[i];
+        if (isRadio(h) && native.checkedness(h)) {
+          return native.controlValue(h);
+        }
+      }
+      return "";
+    }
+
+    set value(value) {
+      const text = str(value);
+      const handles = items(stateOf(this));
+      for (let i = 0; i < handles.length; i++) {
+        const h = handles[i];
+        if (isRadio(h) && native.controlValue(h) === text) {
+          native.setCheckedness(h, true);
+          return;
+        }
+      }
+    }
+  }
+  expose(RadioNodeList, "RadioNodeList");
+
+  function isRadio(handle) {
+    return native.tag(handle) === "input" && native.inputType(handle) === "radio";
+  }
+
+  // Sets a select's selected index (HTML section 4.10.7): that option
+  // selected, the rest not; one out of range selects none.
+  function setSelectedIndex(handle, index) {
+    const options = native.options(handle);
+    for (let i = 0; i < options.length; i++) {
+      if (i !== index && native.selectedness(options[i])) {
+        native.setSelectedness(options[i], false);
+      }
+    }
+    if (index >= 0 && index < options.length) {
+      native.setSelectedness(options[index], true);
+    }
+  }
+
+  // HTMLOptionsCollection's length setter: options added at the end, or
+  // the last ones removed.
+  function setOptionsLength(select, length) {
+    const handle = self(select);
+    let options = native.options(handle);
+    if (length > 100000) {
+      return;
+    }
+    while (options.length < length) {
+      select.appendChild(select.ownerDocument.createElement("option"));
+      options = native.options(handle);
+    }
+    for (let i = options.length - 1; i >= length; i--) {
+      wrap(options[i]).remove();
+    }
+  }
+
+  // `add(element, before)` of a select or its options (HTML section
+  // 4.10.7): an option or an optgroup, before an element or the option
+  // at an index, else at the end.
+  function addOption(select, element, before, iface) {
+    const tag = isNode(element) ? native.tag(self(element)) : "";
+    if (tag !== "option" && tag !== "optgroup") {
+      throw new $TypeError(
+        prefix("add", iface) +
+          "The provided value is not of type '(HTMLOptGroupElement or HTMLOptionElement)'.",
+      );
+    }
+    let reference = null;
+    if (typeof before === "number") {
+      const options = native.options(self(select));
+      reference = before >= 0 && before < options.length ? wrap(options[before]) : null;
+    } else if (before !== null && before !== undefined) {
+      reference = before;
+    }
+    const parent = reference === null ? select : reference.parentNode;
+    if (reference !== null && !select.contains(reference)) {
+      throw domError(
+        "NotFoundError",
+        "The node before which the new node is to be inserted is not a child of this node.",
+        "add",
+        iface,
+      );
+    }
+    parent.insertBefore(element, reference);
+  }
+
+  function removeOption(select, index) {
+    const options = native.options(self(select));
+    if (index >= 0 && index < options.length) {
+      wrap(options[index]).remove();
+    }
+  }
+
+  // An `input`'s, a `textarea`'s, a `select`'s or an `option`'s `value`.
+  function valueSetter(handle, value, iface) {
+    switch (native.valueMode(handle)) {
+      case "value":
+        native.setControlValue(handle, value);
+        return;
+      case "default":
+      case "default/on":
+        setAttribute(handle, "value", value, "value");
+        return;
+      case "filename":
+        if (value !== "") {
+          throw new $DOMException(
+            "Failed to set the 'value' property on '" + iface +
+              "': This input element accepts a filename, which may only be programmatically set to the empty string.",
+            "InvalidStateError",
+          );
+        }
+        return;
+      default:
+        setAttribute(handle, "value", value, "value");
+    }
+  }
+
+  // The selection API of a text control (HTML section 4.10.20), in
+  // UTF-16 code units: `null` where it does not apply.
+  function selectionApplies(handle) {
+    if (native.tag(handle) === "textarea") {
+      return true;
+    }
+    const kind = native.inputType(handle);
+    return kind === "text" || kind === "search" || kind === "url" || kind === "tel" ||
+      kind === "password";
+  }
+
+  function noSelection(handle, property) {
+    return new $DOMException(
+      "Failed to set the '" + property + "' property on 'HTMLInputElement': The input " +
+        "element's type ('" + native.inputType(handle) + "') does not support selection.",
+      "InvalidStateError",
+    );
+  }
+
+  const DIRECTIONS = ["none", "forward", "backward"];
+
+  // The host clamps both ends to the value.
+  function setSelection(handle, start, end, direction) {
+    start = start > end ? end : start;
+    const d = direction === "forward" ? 1 : direction === "backward" ? 2 : 0;
+    native.setTextSelection(handle, start, end, d);
+  }
+
+  const textControlMembers = {
+    get value() {
+      const handle = self(this);
+      return native.controlValue(handle);
+    },
+
+    set value(value) {
+      const handle = self(this);
+      const iface = native.tag(handle) === "textarea" ? "HTMLTextAreaElement" : "HTMLInputElement";
+      valueSetter(handle, strOrEmpty(value), iface);
+    },
+
+    get form() {
+      return wrap(native.formOwner(self(this)));
+    },
+
+    get selectionStart() {
+      const handle = self(this);
+      return selectionApplies(handle) ? native.textSelection(handle)[0] : null;
+    },
+
+    set selectionStart(value) {
+      const handle = self(this);
+      if (!selectionApplies(handle)) {
+        throw noSelection(handle, "selectionStart");
+      }
+      const s = native.textSelection(handle);
+      const start = unsigned(value);
+      setSelection(handle, start, s[1] < start ? start : s[1], DIRECTIONS[s[2]]);
+    },
+
+    get selectionEnd() {
+      const handle = self(this);
+      return selectionApplies(handle) ? native.textSelection(handle)[1] : null;
+    },
+
+    set selectionEnd(value) {
+      const handle = self(this);
+      if (!selectionApplies(handle)) {
+        throw noSelection(handle, "selectionEnd");
+      }
+      const s = native.textSelection(handle);
+      setSelection(handle, s[0], unsigned(value), DIRECTIONS[s[2]]);
+    },
+
+    get selectionDirection() {
+      const handle = self(this);
+      return selectionApplies(handle) ? DIRECTIONS[native.textSelection(handle)[2]] : null;
+    },
+
+    set selectionDirection(value) {
+      const handle = self(this);
+      if (!selectionApplies(handle)) {
+        throw noSelection(handle, "selectionDirection");
+      }
+      const s = native.textSelection(handle);
+      setSelection(handle, s[0], s[1], str(value));
+    },
+
+    setSelectionRange(start, end, direction) {
+      const handle = self(this);
+      need(arguments.length, 2, "setSelectionRange", "HTMLInputElement");
+      if (!selectionApplies(handle)) {
+        throw domError(
+          "InvalidStateError",
+          "The input element's type ('" + native.inputType(handle) +
+            "') does not support selection.",
+          "setSelectionRange",
+          "HTMLInputElement",
+        );
+      }
+      setSelection(handle, unsigned(start), unsigned(end),
+        direction === undefined ? "none" : str(direction));
+    },
+
+    select() {
+      const handle = self(this);
+      if (!selectionApplies(handle)) {
+        return;
+      }
+      setSelection(handle, 0, native.controlValue(handle).length, "none");
+    },
+
+    get labels() {
+      const element = this;
+      const handle = self(this);
+      return controlList(element, "labels", () =>
+        collection(NodeList, element, () => native.labels(handle), true));
+    },
+  };
+  include(textControlMembers, [HTMLInputElement.prototype, HTMLTextAreaElement.prototype]);
+
+  include(
+    {
+      get type() {
+        return native.inputType(self(this));
+      },
+
+      set type(value) {
+        setAttribute(self(this), "type", str(value), "type");
+      },
+
+      get checked() {
+        return native.checkedness(self(this));
+      },
+
+      set checked(value) {
+        native.setCheckedness(self(this), !!value);
+      },
+
+      get indeterminate() {
+        return native.indeterminate(self(this));
+      },
+
+      set indeterminate(value) {
+        native.setIndeterminate(self(this), !!value);
+      },
+    },
+    [HTMLInputElement.prototype],
+  );
+
+  include(
+    {
+      get type() {
+        self(this);
+        return "textarea";
+      },
+
+      get defaultValue() {
+        return this.textContent;
+      },
+
+      set defaultValue(value) {
+        this.textContent = strOrEmpty(value);
+      },
+
+      get textLength() {
+        return native.controlValue(self(this)).length;
+      },
+    },
+    [HTMLTextAreaElement.prototype],
+  );
+
+  include(
+    {
+      get type() {
+        return this.multiple ? "select-multiple" : "select-one";
+      },
+
+      get options() {
+        const element = this;
+        const handle = self(this);
+        return controlList(element, "options", () =>
+          collection(HTMLOptionsCollection, element, () => native.options(handle), true));
+      },
+
+      get selectedOptions() {
+        const element = this;
+        const handle = self(this);
+        return controlList(element, "selectedOptions", () =>
+          collection(HTMLCollection, element, () => {
+            const all = native.options(handle);
+            const chosen = [];
+            for (let i = 0; i < all.length; i++) {
+              if (native.selectedness(all[i])) {
+                ArrayPush(chosen, all[i]);
+              }
+            }
+            return chosen;
+          }, true));
+      },
+
+      get length() {
+        return native.options(self(this)).length;
+      },
+
+      set length(value) {
+        setOptionsLength(this, unsigned(value));
+      },
+
+      get selectedIndex() {
+        return native.selectedIndex(self(this));
+      },
+
+      set selectedIndex(value) {
+        setSelectedIndex(self(this), value | 0);
+      },
+
+      get value() {
+        return native.controlValue(self(this));
+      },
+
+      set value(value) {
+        const handle = self(this);
+        const text = str(value);
+        const options = native.options(handle);
+        let found = -1;
+        for (let i = 0; i < options.length; i++) {
+          if (found < 0 && native.controlValue(options[i]) === text) {
+            found = i;
+          }
+        }
+        setSelectedIndex(handle, found);
+      },
+
+      get form() {
+        return wrap(native.formOwner(self(this)));
+      },
+
+      get labels() {
+        const element = this;
+        const handle = self(this);
+        return controlList(element, "labels", () =>
+          collection(NodeList, element, () => native.labels(handle), true));
+      },
+
+      item(index) {
+        const options = native.options(self(this));
+        const i = unsigned(index);
+        return i < options.length ? wrap(options[i]) : null;
+      },
+
+      namedItem(name) {
+        return this.options.namedItem(name);
+      },
+
+      add(element, before) {
+        self(this);
+        need(arguments.length, 1, "add", "HTMLSelectElement");
+        addOption(this, element, before, "HTMLSelectElement");
+      },
+
+      remove(index) {
+        self(this);
+        if (arguments.length === 0) {
+          // ChildNode's remove(), which the select's own overloads.
+          const parent = this.parentNode;
+          if (parent !== null) {
+            parent.removeChild(this);
+          }
+          return;
+        }
+        removeOption(this, index | 0);
+      },
+    },
+    [HTMLSelectElement.prototype],
+  );
+
+  include(
+    {
+      get selected() {
+        return native.selectedness(self(this));
+      },
+
+      set selected(value) {
+        native.setSelectedness(self(this), !!value);
+      },
+
+      get index() {
+        const handle = self(this);
+        const select = native.ownerSelect(handle);
+        if (select === null) {
+          return 0;
+        }
+        const options = native.options(select);
+        for (let i = 0; i < options.length; i++) {
+          if (options[i] === handle) {
+            return i;
+          }
+        }
+        return 0;
+      },
+
+      get text() {
+        return native.optionText(self(this));
+      },
+
+      set text(value) {
+        this.textContent = str(value);
+      },
+
+      get label() {
+        const handle = self(this);
+        const label = native.attribute(handle, "label");
+        return label === null || label === "" ? native.optionText(handle) : label;
+      },
+
+      set label(value) {
+        setAttribute(self(this), "label", str(value), "label");
+      },
+
+      get value() {
+        return native.controlValue(self(this));
+      },
+
+      set value(value) {
+        setAttribute(self(this), "value", str(value), "value");
+      },
+
+      get form() {
+        const select = native.ownerSelect(self(this));
+        return select === null ? null : wrap(native.formOwner(select));
+      },
+    },
+    [HTMLOptionElement.prototype],
+  );
+
+  include(
+    {
+      get elements() {
+        const element = this;
+        const handle = self(this);
+        return controlList(element, "elements", () => {
+          const list = collection(HTMLFormControlsCollection, element,
+            () => native.formControls(handle), true);
+          stateOf(list).named = (state, name) => formNamedItem(state, name);
+          return list;
+        });
+      },
+
+      get length() {
+        return native.formControls(self(this)).length;
+      },
+    },
+    [HTMLFormElement.prototype],
+  );
+
+  include(
+    {
+      get control() {
+        return wrap(native.labeledControl(self(this)));
+      },
+
+      get form() {
+        const control = native.labeledControl(self(this));
+        return control === null ? null : wrap(native.formOwner(control));
+      },
+    },
+    [HTMLLabelElement.prototype],
+  );
+
+  include(
+    {
+      get type() {
+        const value = native.attribute(self(this), "type");
+        const lower = value === null ? "" : ToLowerCase(value);
+        return lower === "reset" || lower === "button" ? lower : "submit";
+      },
+
+      set type(value) {
+        setAttribute(self(this), "type", str(value), "type");
+      },
+
+      get form() {
+        return wrap(native.formOwner(self(this)));
+      },
+
+      get labels() {
+        const element = this;
+        const handle = self(this);
+        return controlList(element, "labels", () =>
+          collection(NodeList, element, () => native.labels(handle), true));
+      },
+    },
+    [HTMLButtonElement.prototype],
+  );
 
   // ---- Focus (HTML section 6.6, M26.6) ------------------------------------
 

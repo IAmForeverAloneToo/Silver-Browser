@@ -3,6 +3,8 @@
 //! own, their results taken on the engine's thread.
 
 #[cfg(test)]
+mod control_tests;
+#[cfg(test)]
 mod dom_tests;
 #[cfg(test)]
 mod event_tests;

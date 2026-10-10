@@ -728,19 +728,22 @@ fn may_touch_images(change: &Change) -> bool {
     match change {
         Change::Inserted { .. } | Change::Removed { .. } | Change::Everything => true,
         Change::AttributeChanged { name, .. } => matches!(name.as_str(), "src" | "href"),
-        Change::TextChanged { .. } | Change::StateChanged { .. } => false,
+        Change::TextChanged { .. }
+        | Change::StateChanged { .. }
+        | Change::ControlChanged { .. } => false,
     }
 }
 
 /// Whether layout reads `change` whatever the styles: a change of the
-/// document's structure or text, or of a table's spans (M22.4).
+/// document's structure or text, of a table's spans (M22.4), or of what
+/// a form control shows (M26.7).
 fn read_by_layout(change: &Change) -> bool {
     match change {
         Change::AttributeChanged { name, .. } => {
             matches!(
                 name.as_str(),
                 "colspan" | "rowspan" | "span" | "src" | "alt"
-            )
+            ) || layout::shown_by_controls(name)
         }
         _ => true,
     }
@@ -6374,14 +6377,15 @@ mod tests {
 
     #[test]
     fn form_controls_lay_out_as_sized_boxes_through_the_ua_sheet() {
-        // M10.6: no author CSS at all. A row of controls on one line,
-        // each the size the UA sheet gives it, with the engine's font
-        // measuring the `ch` and the text.
+        // M26.7: no author CSS at all. A row of controls on one line,
+        // each the reference browser's size at its default font, showing
+        // its value, label or chosen option.
         let mut engine = test_engine();
         engine.load_document(
             "<style>body { margin: 0 }</style>\
-             <form><input id=i><input type=hidden id=h><input type=checkbox id=c>\
-             <button id=b>Go</button><select id=s><option>a</option></select>\
+             <form><input id=i value=hi><input id=i10 size=10><input type=hidden id=h>\
+             <input type=checkbox id=c><button id=b>Go</button>\
+             <select id=s><option>a</option><option selected>bee</option></select>\
              <textarea id=t>one\ntwo</textarea></form>",
         );
         engine.frame(800, 100);
@@ -6393,73 +6397,71 @@ mod tests {
                 .find(|f| matches!(f.kind, layout::FragmentKind::Box) && f.node == node)
                 .cloned()
         };
-        let near = |a: f32, b: f32| (a - b).abs() < 0.01;
+        let text = |t: &str| {
+            frags
+                .iter()
+                .find(|f| matches!(&f.kind, layout::FragmentKind::Text(x) if x == t))
+                .cloned()
+        };
+        let near = |a: f32, b: f32| (a - b).abs() < 0.02;
         let fonts = &engine.layout_fonts;
         let size = 13.3333;
-        // The input: 20 zeros wide inside 2px of padding and 1px of
-        // border each side; 1.2em tall inside 1px and 1px.
+        // A text field: 169px by 15 inside 2px and 1px of padding and a
+        // 2px border; 99px wide at size 10. Its value is in it.
         let input = fragment("i").expect("the input's box");
-        assert!(
-            near(input.w, 20.0 * fonts.zero_advance(size) + 6.0),
-            "{}",
-            input.w
-        );
-        assert!(near(input.h, 1.2 * size + 4.0), "{}", input.h);
+        assert!(near(input.w, 177.0), "{}", input.w);
+        assert!(near(input.h, 21.0), "{}", input.h);
+        assert!(near(fragment("i10").expect("the small one").w, 107.0));
+        let value = text("hi").expect("the value is shown");
+        assert!(value.x >= input.x + 4.0 && value.x + value.w < input.x + input.w);
         assert!(fragment("h").is_none(), "a hidden input makes no box");
         let checkbox = fragment("c").expect("the checkbox's box");
         assert_eq!((checkbox.w, checkbox.h), (13.0, 13.0));
-        // The button fits its label: 6px of padding and 1px of border
+        assert!(frags.iter().any(|f| f.node == checkbox.node
+            && matches!(
+                f.kind,
+                layout::FragmentKind::Replaced(layout::Replaced::Mark(layout::Mark::Checkbox {
+                    checked: false,
+                    ..
+                }))
+            )));
+        // The button fits its label: 6px of padding and a 2px border
         // each side of the word, one line tall.
         let button = fragment("b").expect("the button's box");
         assert!(
-            near(button.w, fonts.measure("Go", size) + 14.0),
+            near(button.w, fonts.measure("Go", size) + 16.0),
             "{}",
             button.w
         );
         assert!(near(
             button.h,
-            fonts.primary().metrics(size).line_height() + 4.0
+            fonts.primary().metrics(size).line_height() + 6.0
         ));
-        let label = frags
-            .iter()
-            .find(|f| matches!(&f.kind, layout::FragmentKind::Text(t) if t == "Go"))
-            .expect("the label is laid out");
+        let label = text("Go").expect("the label is laid out");
         assert!(label.x > button.x && label.x + label.w < button.x + button.w);
-        // The select is an input's size and shows none of its options.
+        // The select is 19px tall and shows its chosen option alone, with
+        // its arrow at the end.
         let select = fragment("s").expect("the select's box");
-        assert_eq!((select.w, select.h), (input.w, input.h));
-        assert!(
-            !frags
-                .iter()
-                .any(|f| matches!(&f.kind, layout::FragmentKind::Text(t) if t == "a"))
-        );
+        assert!(near(select.h, 19.0), "{}", select.h);
+        assert!(text("bee").is_some() && text("a").is_none());
+        let arrow = frags
+            .iter()
+            .find(|f| {
+                matches!(
+                    f.kind,
+                    layout::FragmentKind::Replaced(layout::Replaced::Mark(layout::Mark::Arrow))
+                )
+            })
+            .expect("the arrow");
+        assert!(arrow.x > text("bee").unwrap().x && arrow.x + arrow.w <= select.x + select.w);
         // The textarea is two lines tall and keeps its line break.
         let textarea = fragment("t").expect("the textarea's box");
-        assert!(near(textarea.h, 2.4 * size + 4.0), "{}", textarea.h);
-        let line = |t: &str| {
-            frags
-                .iter()
-                .find(|f| matches!(&f.kind, layout::FragmentKind::Text(x) if x == t))
-                .expect("the line")
-                .y
-        };
-        assert!(line("two") > line("one"));
-        // All on one line: every control's bottom is on the baseline.
-        let bottoms: Vec<f32> = ["i", "c", "b", "s", "t"]
-            .iter()
-            .map(|id| {
-                let f = fragment(id).unwrap();
-                f.y + f.h
-            })
-            .collect();
-        assert!(
-            near(bottoms[0], bottoms[3]),
-            "input and select: {bottoms:?}"
-        );
-        assert!(
-            bottoms[1] < bottoms[0],
-            "the checkbox has a bottom margin: {bottoms:?}"
-        );
+        assert!(near(textarea.h, 36.0), "{}", textarea.h);
+        assert!(near(textarea.w, 168.0), "{}", textarea.w);
+        assert!(text("two").unwrap().y > text("one").unwrap().y);
+        // The checkbox's bottom margin keeps it above the baseline the
+        // field's text sits on.
+        assert!(checkbox.y + checkbox.h < input.y + input.h);
     }
 
     #[test]

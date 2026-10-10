@@ -282,6 +282,53 @@ const NATIVES: &[(&str, Decode)] = &[
         })
     }),
     ("hasFocus", |_| Ok(Call::HasFocus)),
+    ("controlValue", |a| Ok(Call::ControlValue(a.handle(0)?))),
+    ("valueMode", |a| Ok(Call::ValueMode(a.handle(0)?))),
+    ("setControlValue", |a| {
+        Ok(Call::SetControlValue {
+            node: a.handle(0)?,
+            value: a.string(1)?,
+        })
+    }),
+    ("inputType", |a| Ok(Call::InputType(a.handle(0)?))),
+    ("checkedness", |a| Ok(Call::Checkedness(a.handle(0)?))),
+    ("setCheckedness", |a| {
+        Ok(Call::SetCheckedness {
+            node: a.handle(0)?,
+            checked: a.bool(1),
+        })
+    }),
+    ("indeterminate", |a| Ok(Call::Indeterminate(a.handle(0)?))),
+    ("setIndeterminate", |a| {
+        Ok(Call::SetIndeterminate {
+            node: a.handle(0)?,
+            indeterminate: a.bool(1),
+        })
+    }),
+    ("selectedness", |a| Ok(Call::Selectedness(a.handle(0)?))),
+    ("setSelectedness", |a| {
+        Ok(Call::SetSelectedness {
+            node: a.handle(0)?,
+            selected: a.bool(1),
+        })
+    }),
+    ("options", |a| Ok(Call::Options(a.handle(0)?))),
+    ("ownerSelect", |a| Ok(Call::OwnerSelect(a.handle(0)?))),
+    ("selectedIndex", |a| Ok(Call::SelectedIndex(a.handle(0)?))),
+    ("optionText", |a| Ok(Call::OptionText(a.handle(0)?))),
+    ("textSelection", |a| Ok(Call::TextSelection(a.handle(0)?))),
+    ("setTextSelection", |a| {
+        let unit = |n: f64| n.clamp(0.0, f64::from(u32::MAX)) as u32;
+        Ok(Call::SetTextSelection {
+            node: a.handle(0)?,
+            start: unit(a.integer(1)),
+            end: unit(a.integer(2)),
+            direction: a.integer(3).clamp(0.0, 2.0) as u8,
+        })
+    }),
+    ("formControls", |a| Ok(Call::FormControls(a.handle(0)?))),
+    ("labeledControl", |a| Ok(Call::LabeledControl(a.handle(0)?))),
+    ("labels", |a| Ok(Call::Labels(a.handle(0)?))),
     ("hidden", |_| Ok(Call::Hidden)),
     ("dialog", |a| {
         Ok(Call::Dialog {

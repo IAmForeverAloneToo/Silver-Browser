@@ -167,13 +167,24 @@ impl LayoutCache {
                 entries.remove(&ancestor);
             }
         };
+        let mut controls = false;
         for change in changes {
             match change {
                 Change::Everything => {
                     entries.clear();
                     return;
                 }
-                Change::Inserted { parent, .. } | Change::Removed { parent, .. } => forget(*parent),
+                Change::Inserted { parent, child } | Change::Removed { parent, child, .. } => {
+                    forget(*parent);
+                    // Controls moved change their groups and fieldsets.
+                    controls |= document.contains(*child)
+                        && document.subtree(*child).any(|node| {
+                            matches!(
+                                document.tag(node),
+                                Some("input" | "select" | "textarea" | "option" | "legend")
+                            )
+                        });
+                }
                 Change::TextChanged { node } => {
                     if let Some(parent) = document.parent(*node) {
                         forget(parent);
@@ -182,6 +193,14 @@ impl LayoutCache {
                 // A state's change lays out what it restyles, which the
                 // restyled list holds (M26.4).
                 Change::StateChanged { .. } => {}
+                // A control's state changes what it shows (M26.7), and
+                // an option's what its select shows.
+                Change::ControlChanged { element } => {
+                    forget(*element);
+                    if let Some(select) = dom::forms::owner_select(document, *element) {
+                        forget(select);
+                    }
+                }
                 Change::AttributeChanged { element, name, .. } => {
                     let img = document.tag(*element) == Some("img");
                     if matches!(name.as_str(), "colspan" | "rowspan" | "span")
@@ -189,7 +208,26 @@ impl LayoutCache {
                     {
                         forget(*element);
                     }
+                    controls |= shown_by_controls(name);
                 }
+            }
+        }
+        // What a control shows reads attributes and nodes far from it
+        // (M26.7): a fieldset's `disabled`, a radio group's `name`s and
+        // members, an option's `label`. One of those changed, every
+        // control is laid out again.
+        if controls {
+            let all: Vec<NodeId> = document
+                .subtree(document.root())
+                .filter(|&node| {
+                    matches!(
+                        document.tag(node),
+                        Some("input" | "select" | "textarea" | "option")
+                    )
+                })
+                .collect();
+            for node in all {
+                forget(node);
             }
         }
         for &node in restyled {
@@ -383,6 +421,28 @@ fn childless(fragment: &Fragment) -> Fragment {
         in_3d: fragment.in_3d,
         decorated: fragment.decorated.clone(),
     }
+}
+
+/// Whether an attribute named `name` may change what a form control
+/// shows (M26.7): its value, placeholder or type, a checkbox's or a
+/// radio button's state and group, being disabled, a select's kind, an
+/// option's label or selectedness.
+pub fn shown_by_controls(name: &str) -> bool {
+    matches!(
+        name,
+        "value"
+            | "placeholder"
+            | "type"
+            | "checked"
+            | "name"
+            | "form"
+            | "id"
+            | "disabled"
+            | "multiple"
+            | "size"
+            | "label"
+            | "selected"
+    )
 }
 
 #[cfg(test)]

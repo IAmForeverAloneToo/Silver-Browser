@@ -1572,7 +1572,7 @@ pub(crate) fn layout_inline_block<'a>(
     } else {
         layout
             .inline_block_baseline
-            .filter(|_| !b.style.overflow.clips())
+            .filter(|_| !b.style.overflow.scrolls())
     };
     let ascent = match baseline {
         Some(baseline) => margin_top + baseline,
@@ -3912,6 +3912,23 @@ mod tests {
                 .unwrap_or_else(|| panic!("text {t}"))
         };
         assert_eq!(text("one").y, text("x").y - m.descent - m.line_gap);
+        // `overflow: clip` clips with no scroll container (M26.7): its
+        // line's baseline stands, as a form control's does.
+        let root = Element::new("p")
+            .text("x")
+            .push(Element::new("span").text("one"));
+        let layout = document_of(
+            root,
+            "p { margin: 0; } span { display: inline-block; overflow: clip; }",
+        );
+        let text = |t: &str| {
+            layout
+                .iter()
+                .find(|f| matches!(&f.kind, FragmentKind::Text(x) if x == t))
+                .unwrap_or_else(|| panic!("text {t}"))
+        };
+        assert_eq!(text("one").y, text("x").y);
+        assert!(layout.roots[0].children[1].clips());
     }
 
     #[test]

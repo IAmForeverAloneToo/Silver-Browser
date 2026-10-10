@@ -922,7 +922,9 @@ impl<'a> Walk<'a, '_> {
             None => padding_box,
         };
         let mark = self.steps.len();
-        let node = f.generated.is_none().then_some(f.node);
+        // A clip that is no scroll container (`overflow: clip`, M26.7)
+        // names no node: nothing scrolls it, as a generated box's.
+        let node = (f.generated.is_none() && f.style.overflow.scrolls()).then_some(f.node);
         if emit != Emit::Nothing {
             self.steps.push(Step::PushClip {
                 node,
@@ -1548,7 +1550,7 @@ fn shows_scrollbar(f: &Fragment) -> bool {
     match f.style.overflow {
         Overflow::Scroll => true,
         Overflow::Auto => f.max_scroll() > 0.0,
-        Overflow::Hidden | Overflow::Visible => false,
+        Overflow::Hidden | Overflow::Visible | Overflow::Clip => false,
     }
 }
 

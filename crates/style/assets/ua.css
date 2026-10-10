@@ -159,43 +159,117 @@ tr, td, th { vertical-align: inherit; }
 
 thead, tbody, tfoot, tr { border-color: inherit; }
 
-/* Form controls, v0 (M10.6): each is an inline-block with a border,
- * padding and a background, so a form lays out as a row of boxes, and
- * nothing more — no value shown, no behaviour, no focus (M26). The
- * sizes follow the common browsers' defaults: a control's text is
- * 13.33px; an input is twenty characters wide (`ch`, the zero's
- * advance) and one line tall, 1.2em standing in for the line height
- * until `line-height` lands; a textarea is twenty characters by two
- * lines and a scroll container; a button is as wide as its label; a
- * select is the size of an input and shows nothing, its options being
- * hidden. The `size`, `rows` and `cols` attributes are not read. */
+/* Form controls (M26.7): the reference browser's computed values, as
+ * its probe read them. What a control shows is the box tree's (a field's
+ * value or placeholder, a button input's label, a drop-down's chosen
+ * option and its arrow) and paint's (a checkbox's and a radio button's
+ * marks); a list box shows its options as rows. A field's `size`, a
+ * textarea's `cols` and `rows` and a list box's rows are presentational
+ * hints; these are their defaults, in ems of the reference browser's
+ * 13.33px font. Controls are drawn as their computed style says, not in
+ * the reference browser's native look; so a button's border is the
+ * fields' grey, where the reference browser computes black and draws
+ * its own. */
 input, button, select, textarea {
   display: inline-block;
   font-size: 13.3333px;
+  font-family: sans-serif;
   color: black;
   letter-spacing: normal;
   word-spacing: normal;
   text-transform: none;
+  text-align: start;
   margin: 0;
-  padding: 1px 2px;
-  border: 1px solid #767676;
-  background-color: #ffffff;
 }
-input, select { width: 20ch; height: 1.2em; }
-textarea { width: 20ch; height: 2.4em; white-space: pre-wrap; overflow: auto; }
+input {
+  padding: 1px 2px;
+  border: 2px inset rgb(118, 118, 118);
+  background-color: white;
+  width: 12.675em;
+  height: 1.125em;
+  overflow: clip;
+  cursor: text;
+}
+textarea {
+  padding: 2px;
+  border: 1px solid rgb(118, 118, 118);
+  background-color: white;
+  font-family: monospace;
+  width: 12.15em;
+  height: 2.25em;
+  white-space: pre-wrap;
+  overflow: auto;
+  cursor: text;
+}
+select {
+  box-sizing: border-box;
+  padding: 0;
+  border: 1px solid rgb(118, 118, 118);
+  background-color: white;
+  height: 1.425em;
+  white-space: pre;
+  overflow: clip;
+  cursor: default;
+}
+select[multiple], select[size] { white-space: nowrap; overflow: auto; vertical-align: text-bottom; }
 button, input[type=submit i], input[type=button i], input[type=reset i] {
+  box-sizing: border-box;
   width: auto;
   height: auto;
   padding: 1px 6px;
-  background-color: #efefef;
+  border: 2px outset rgb(118, 118, 118);
+  background-color: rgb(240, 240, 240);
   text-align: center;
+  cursor: default;
 }
+input[type=submit i], input[type=button i], input[type=reset i] { white-space: pre; }
 input[type=checkbox i], input[type=radio i] {
   box-sizing: border-box;
   width: 13px;
   height: 13px;
   padding: 0;
+  border: none;
+  background-color: transparent;
   margin: 3px 3px 3px 4px;
+  overflow: visible;
+  cursor: default;
+}
+input[type=radio i] { margin: 3px 3px 0 5px; }
+input[type=image i] {
+  width: auto;
+  height: auto;
+  padding: 0;
+  border: none;
+  background-color: transparent;
+  cursor: pointer;
+}
+input:disabled, textarea:disabled, select:disabled {
+  color: rgb(84, 84, 84);
+  border-color: rgba(118, 118, 118, 0.3);
+  background-color: rgba(239, 239, 239, 0.3);
+  cursor: default;
+}
+button:disabled, input[type=submit i]:disabled, input[type=button i]:disabled,
+input[type=reset i]:disabled {
+  color: rgba(16, 16, 16, 0.3);
+  border-color: rgba(118, 118, 118, 0.3);
+  background-color: rgba(239, 239, 239, 0.3);
+}
+input[type=checkbox i]:disabled, input[type=radio i]:disabled {
+  border: none;
+  background-color: transparent;
 }
 input[type=hidden i] { display: none; }
 optgroup, option { display: none; }
+select[multiple] option, select[size] option, select[multiple] optgroup, select[size] optgroup {
+  display: block;
+}
+select[multiple] option, select[size] option {
+  padding: 0 2px 1px;
+  min-height: 1.2em;
+  white-space: nowrap;
+}
+select[multiple] option:checked, select[size] option:checked {
+  background-color: rgb(206, 206, 206);
+  color: rgb(16, 16, 16);
+}

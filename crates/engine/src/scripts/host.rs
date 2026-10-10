@@ -924,6 +924,143 @@ impl DocumentHost {
                 Ok(Answer::Nothing)
             }
             Call::HasFocus => Ok(Answer::Bool(self.window.focused)),
+            Call::ControlValue(node) => {
+                let node = self.node(node)?;
+                Ok(Answer::String(forms::value(&self.document, node)))
+            }
+            Call::ValueMode(node) => {
+                let node = self.node(node)?;
+                let mode = match self.document.tag(node) {
+                    Some("input") => match forms::value_mode(&self.document, node) {
+                        forms::ValueMode::Value => "value",
+                        forms::ValueMode::Default => "default",
+                        forms::ValueMode::DefaultOn => "default/on",
+                        forms::ValueMode::Filename => "filename",
+                    },
+                    Some("textarea") => "value",
+                    _ => "",
+                };
+                Ok(Answer::String(mode.to_owned()))
+            }
+            Call::SetControlValue { node, value } => {
+                let node = self.node(node)?;
+                forms::set_value(&mut self.document, node, &value).map_err(refused)?;
+                Ok(Answer::Nothing)
+            }
+            Call::InputType(node) => {
+                let node = self.node(node)?;
+                Ok(Answer::String(
+                    forms::input_type(&self.document, node).to_owned(),
+                ))
+            }
+            Call::Checkedness(node) => {
+                let node = self.node(node)?;
+                Ok(Answer::Bool(forms::checkedness(&self.document, node)))
+            }
+            Call::SetCheckedness { node, checked } => {
+                let node = self.node(node)?;
+                forms::set_checkedness(&mut self.document, node, checked, true).map_err(refused)?;
+                Ok(Answer::Nothing)
+            }
+            Call::Indeterminate(node) => {
+                let node = self.node(node)?;
+                Ok(Answer::Bool(forms::indeterminate(&self.document, node)))
+            }
+            Call::SetIndeterminate {
+                node,
+                indeterminate,
+            } => {
+                let node = self.node(node)?;
+                forms::set_indeterminate(&mut self.document, node, indeterminate)
+                    .map_err(refused)?;
+                Ok(Answer::Nothing)
+            }
+            Call::Selectedness(node) => {
+                let node = self.node(node)?;
+                Ok(Answer::Bool(forms::selectedness(&self.document, node)))
+            }
+            Call::SetSelectedness { node, selected } => {
+                let node = self.node(node)?;
+                forms::set_selectedness(&mut self.document, node, selected, true)
+                    .map_err(refused)?;
+                Ok(Answer::Nothing)
+            }
+            Call::Options(node) => {
+                let node = self.node(node)?;
+                let options = forms::list_of_options(&self.document, node);
+                Ok(Answer::Nodes(options.into_iter().map(handle).collect()))
+            }
+            Call::OwnerSelect(node) => {
+                let node = self.node(node)?;
+                let select = forms::owner_select(&self.document, node);
+                Ok(self.give(select))
+            }
+            Call::SelectedIndex(node) => {
+                let node = self.node(node)?;
+                let index = forms::selected_index(&self.document, node);
+                Ok(Answer::Number(index.map_or(-1.0, |i| i as f64)))
+            }
+            Call::OptionText(node) => {
+                let node = self.node(node)?;
+                Ok(Answer::String(forms::option_text(&self.document, node)))
+            }
+            Call::TextSelection(node) => {
+                let node = self.node(node)?;
+                let value = forms::value(&self.document, node);
+                let selection = forms::selection(&self.document, node);
+                let direction = match selection.direction {
+                    forms::Direction::None => 0.0,
+                    forms::Direction::Forward => 1.0,
+                    forms::Direction::Backward => 2.0,
+                };
+                Ok(Answer::Numbers(vec![
+                    utf16_units(&value, selection.start) as f64,
+                    utf16_units(&value, selection.end) as f64,
+                    direction,
+                ]))
+            }
+            Call::SetTextSelection {
+                node,
+                start,
+                end,
+                direction,
+            } => {
+                let node = self.node(node)?;
+                let value = forms::value(&self.document, node);
+                let selection = forms::Selection {
+                    start: byte_at_units(&value, start as usize),
+                    end: byte_at_units(&value, end as usize),
+                    direction: match direction {
+                        1 => forms::Direction::Forward,
+                        2 => forms::Direction::Backward,
+                        _ => forms::Direction::None,
+                    },
+                };
+                forms::set_selection(&mut self.document, node, selection).map_err(refused)?;
+                Ok(Answer::Nothing)
+            }
+            Call::FormControls(node) => {
+                let form = self.node(node)?;
+                let document = &self.document;
+                let root = document.ancestors(form).last().unwrap_or(form);
+                let controls = document
+                    .subtree(root)
+                    .filter(|&node| forms::is_listed(document, node))
+                    .filter(|&node| forms::form_owner(document, node) == Some(form))
+                    .map(handle)
+                    .collect();
+                Ok(Answer::Nodes(controls))
+            }
+            Call::LabeledControl(node) => {
+                let node = self.node(node)?;
+                let control = forms::labeled_control(&self.document, node);
+                Ok(self.give(control))
+            }
+            Call::Labels(node) => {
+                let node = self.node(node)?;
+                let labels = forms::labels(&self.document, node);
+                Ok(Answer::Nodes(labels.into_iter().map(handle).collect()))
+            }
             Call::Dialog { kind, message } => {
                 self.say(ConsoleLevel::Info, format!("{kind}: {message}"));
                 Ok(Answer::Nothing)
@@ -1489,13 +1626,27 @@ impl DocumentHost {
     }
 
     /// A detached copy of `node` (DOM section 4.5, "clone a node"): its
-    /// tag and attributes or its data, and its descendants' if `deep`.
+    /// tag and attributes or its data, and its descendants' if `deep`; a
+    /// control's state too, by HTML's cloning steps (M26.7): its value,
+    /// checkedness and selectedness, with their dirty flags.
     fn clone_node(&mut self, node: NodeId, deep: bool) -> Result<NodeId, DomError> {
         let copy = |document: &mut Document, from: NodeId| -> Result<NodeId, MutationError> {
             match document.data(from) {
                 Some(NodeData::Element { tag, attrs }) => {
                     let (tag, attrs) = (tag.clone(), attrs.clone());
-                    document.create_element_with(&tag, attrs)
+                    let made = document.create_element_with(&tag, attrs)?;
+                    if let Some(state) = document.control(from) {
+                        let state = forms::ControlState {
+                            selection: forms::Selection::default(),
+                            indeterminate: false,
+                            ..state.clone()
+                        };
+                        if let Err(error) = document.set_control(made, state) {
+                            let _ = document.free(made);
+                            return Err(error);
+                        }
+                    }
+                    Ok(made)
                 }
                 Some(NodeData::Text(data)) => {
                     let data = data.clone();
@@ -1736,4 +1887,23 @@ pub(crate) fn valid_element_local_name(name: &str) -> bool {
         return false;
     }
     chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | ':' | '_') || c >= '\u{80}')
+}
+
+/// The UTF-16 code units of `text` before its byte `at` (M26.7): a text
+/// control's selection as scripts count it.
+fn utf16_units(text: &str, at: usize) -> usize {
+    text.get(..at).map_or(0, |head| head.encode_utf16().count())
+}
+
+/// The byte of `text` `units` UTF-16 code units in, at a character's
+/// start; its end when it is shorter.
+fn byte_at_units(text: &str, units: usize) -> usize {
+    let mut count = 0;
+    for (at, c) in text.char_indices() {
+        if count >= units {
+            return at;
+        }
+        count += c.len_utf16();
+    }
+    text.len()
 }

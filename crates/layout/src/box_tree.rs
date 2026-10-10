@@ -184,7 +184,44 @@ pub enum Replaced {
     /// Nothing: an image still coming, or one that stands for nothing.
     /// It is 0 by 0, with no ratio, unless its style sizes it.
     Empty,
+    /// A control's mark (M26.7), which paint draws: a checkbox or a
+    /// radio button, 13 by 13 by nature, or a drop-down's arrow.
+    Mark(Mark),
 }
+
+/// What a control's mark shows (M26.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mark {
+    /// A checkbox: its box, with a tick when checked or a bar when
+    /// indeterminate.
+    Checkbox {
+        checked: bool,
+        indeterminate: bool,
+        disabled: bool,
+    },
+    /// A radio button: its ring, with a dot when checked.
+    Radio { checked: bool, disabled: bool },
+    /// A drop-down select's arrow.
+    Arrow,
+}
+
+/// The colour a placeholder is shown in (M26.7): the reference
+/// browser's `#757575`.
+const PLACEHOLDER_COLOUR: style::computed::Color = style::computed::Color {
+    r: 117.0 / 255.0,
+    g: 117.0 / 255.0,
+    b: 117.0 / 255.0,
+    a: 1.0,
+};
+
+/// The width of a drop-down select's arrow, in ems of its font (M26.7):
+/// with the text's 4px before it, the reference browser's 20px at its
+/// default size.
+const ARROW_EMS: f32 = 1.2;
+
+/// The space before a drop-down select's text, as the reference
+/// browser leaves it, in px.
+const SELECT_INDENT: f32 = 4.0;
 
 /// What the engine knows of an `img` element's image (M23.1): what the
 /// box tree builder asks of it.
@@ -676,6 +713,11 @@ enum Item {
     Node(NodeId),
     Generated(NodeId, Side),
     GeneratedText(NodeId, Side),
+    /// The text a control shows (M26.7): a field's value or placeholder,
+    /// a button input's label, a drop-down's chosen option.
+    ControlText(NodeId),
+    /// A drop-down select's arrow (M26.7).
+    ControlArrow(NodeId),
 }
 
 /// Which of an element's generated boxes an [`Item`] is: a list item's
@@ -702,14 +744,18 @@ impl Item {
     /// box's originating element.
     fn node(self) -> NodeId {
         match self {
-            Item::Node(node) | Item::Generated(node, _) | Item::GeneratedText(node, _) => node,
+            Item::Node(node)
+            | Item::Generated(node, _)
+            | Item::GeneratedText(node, _)
+            | Item::ControlText(node)
+            | Item::ControlArrow(node) => node,
         }
     }
 
     /// The pseudo-element whose box the item is, or is the text in.
     fn generated(self) -> Option<PseudoElement> {
         match self {
-            Item::Node(_) => None,
+            Item::Node(_) | Item::ControlText(_) | Item::ControlArrow(_) => None,
             Item::Generated(_, side) | Item::GeneratedText(_, side) => Some(side.pseudo_element()),
         }
     }
@@ -750,7 +796,7 @@ impl<'a> Styled<'a> {
             }
             Item::Node(node) => self.styles.get(node),
             Item::Generated(element, side) => self.styles.pseudo(element, side.pseudo_element()),
-            Item::GeneratedText(..) => None,
+            Item::GeneratedText(..) | Item::ControlText(_) | Item::ControlArrow(_) => None,
         }
     }
 
@@ -773,8 +819,8 @@ impl<'a> Styled<'a> {
     fn is_element(&self, item: Item) -> bool {
         match item {
             Item::Node(node) => self.document.is_element(node),
-            Item::Generated(..) => true,
-            Item::GeneratedText(..) => false,
+            Item::Generated(..) | Item::ControlArrow(_) => true,
+            Item::GeneratedText(..) | Item::ControlText(_) => false,
         }
     }
 
@@ -783,6 +829,11 @@ impl<'a> Styled<'a> {
     /// and before the one its `::after` does, when they do; a generated
     /// box's text; nothing in a text.
     fn children(&self, item: Item) -> Vec<Item> {
+        if let Item::Node(node) = item
+            && let Some(items) = self.control_children(node)
+        {
+            return items;
+        }
         match item {
             // A node none of whose pseudo-elements is styled, as most
             // are not, generates none.
@@ -802,8 +853,39 @@ impl<'a> Styled<'a> {
                     .collect()
             }
             Item::Generated(element, side) => vec![Item::GeneratedText(element, side)],
-            Item::GeneratedText(..) => Vec::new(),
+            Item::GeneratedText(..) | Item::ControlText(_) | Item::ControlArrow(_) => Vec::new(),
         }
+    }
+
+    /// What a control has inside its box in place of its children (M26.7,
+    /// `dom::forms::shown_text`): a text field, a textarea, a button
+    /// input or an option with a `label`, the text it shows; a drop-down
+    /// select, its arrow and its chosen option's label. `None` for any
+    /// other element, whose children are its own: a list box's options,
+    /// a `button`'s content.
+    fn control_children(&self, node: NodeId) -> Option<Vec<Item>> {
+        let document = self.document;
+        match document.tag(node)? {
+            "select" if !dom::forms::is_list_box(document, node) => {
+                Some(vec![Item::ControlArrow(node), Item::ControlText(node)])
+            }
+            "input" | "textarea" => {
+                dom::forms::shown_text(document, node).map(|_| vec![Item::ControlText(node)])
+            }
+            "option" => document
+                .attr(node, "label")
+                .filter(|label| !label.is_empty())
+                .map(|_| vec![Item::ControlText(node)]),
+            _ => None,
+        }
+    }
+
+    /// The text a control shows, and whether it is its placeholder.
+    fn control_text(&self, node: NodeId) -> (String, bool) {
+        if self.document.tag(node) == Some("option") {
+            return (dom::forms::option_label(self.document, node), false);
+        }
+        dom::forms::shown_text(self.document, node).unwrap_or_default()
     }
 
     /// Whether the element `node` has a `side` item (Pseudo-Elements 4
@@ -882,6 +964,8 @@ impl<'a> Styled<'a> {
                     .get(element, side)
                     .unwrap_or_default(),
             )),
+            Item::ControlText(node) => Some(Cow::Owned(self.control_text(node).0)),
+            Item::ControlArrow(_) => None,
         }
     }
 
@@ -890,7 +974,9 @@ impl<'a> Styled<'a> {
     /// none in a marker.
     fn decorations(&self, item: Item) -> Option<Arc<[Decorating]>> {
         match item {
-            Item::Node(node) => self.element_decorations(node),
+            Item::Node(node) | Item::ControlText(node) | Item::ControlArrow(node) => {
+                self.element_decorations(node)
+            }
             Item::Generated(_, Side::Marker) | Item::GeneratedText(_, Side::Marker) => None,
             Item::Generated(node, side) | Item::GeneratedText(node, side) => {
                 let style = self.styles.pseudo(node, side.pseudo_element());
@@ -939,7 +1025,7 @@ impl<'a> Styled<'a> {
         build: impl FnOnce() -> Vec<LayoutBox>,
     ) -> LayoutBox {
         LayoutBox {
-            style: style.clone(),
+            style: self.control_style(item, style),
             kind,
             children: build(),
             node: item.node(),
@@ -955,6 +1041,23 @@ impl<'a> Styled<'a> {
             in_3d: false,
             replaced: None,
         }
+    }
+
+    /// The style a control's own box is laid out in (M26.7): a
+    /// drop-down's text starting [`SELECT_INDENT`] in, as the reference
+    /// browser's does whatever its padding; the computed style scripts
+    /// read is not changed. Any other box's style as it is.
+    fn control_style(&self, item: Item, style: &ComputedStyle) -> ComputedStyle {
+        let mut used = style.clone();
+        if let Item::Node(node) = item
+            && self.document.tag(node) == Some("select")
+            && !dom::forms::is_list_box(self.document, node)
+            && let style::computed::LengthPercentage::Px(left) = used.padding[style::computed::LEFT]
+        {
+            used.padding[style::computed::LEFT] =
+                style::computed::LengthPercentage::Px(left + SELECT_INDENT);
+        }
+        used
     }
 
     /// The box the `img` element `node`, `item`, generates with the
@@ -1066,6 +1169,9 @@ impl<'a> Styled<'a> {
         let Item::Node(node) = item else {
             return None;
         };
+        if let Some(mark) = self.mark_of(node) {
+            return Some(self.replaced_box(item, style, Replaced::Mark(mark)));
+        }
         let img = self.document.tag(node) == Some("img");
         if let Some(image) = self.content_image(style) {
             let broken = match image {
@@ -1079,6 +1185,26 @@ impl<'a> Styled<'a> {
             }
         }
         img.then(|| self.img_box(item, node, style))
+    }
+
+    /// The mark a checkbox or a radio button shows (M26.7), as its state
+    /// is; `None` for any other element.
+    fn mark_of(&self, node: NodeId) -> Option<Mark> {
+        let document = self.document;
+        if document.tag(node) != Some("input") {
+            return None;
+        }
+        let checked = dom::forms::checkedness(document, node);
+        let disabled = dom::forms::actually_disabled(document, node);
+        match dom::forms::input_type(document, node) {
+            "checkbox" => Some(Mark::Checkbox {
+                checked,
+                indeterminate: dom::forms::indeterminate(document, node),
+                disabled,
+            }),
+            "radio" => Some(Mark::Radio { checked, disabled }),
+            _ => None,
+        }
     }
 
     /// The box of the element `item`, styled `style`, whose `content` is
@@ -1416,6 +1542,10 @@ impl BlockContainer<'_> {
             if text.is_empty() || (white_space && self.open.is_empty() && self.run.is_empty()) {
                 continue;
             }
+            if let Item::ControlText(node) = child {
+                self.add_control_text(parent, node, text.into_owned());
+                continue;
+            }
             let decorations = styled.decorations(parent);
             if text.contains(OBJECT)
                 && let Item::GeneratedText(element, side) = child
@@ -1444,11 +1574,70 @@ impl BlockContainer<'_> {
         self.flush_misplaced(parent, &mut misplaced);
     }
 
+    /// Adds the text box of the text the control `node` shows (M26.7):
+    /// in its style, but kept on one line in a single-line control, and
+    /// in the placeholder's colour, the reference browser's, when it is
+    /// the placeholder.
+    fn add_control_text(&mut self, parent: Item, node: NodeId, text: String) {
+        let styled = self.styled;
+        let mut style = styled.style_or_initial(parent);
+        if styled.document.tag(node) != Some("textarea") {
+            style.white_space = style::computed::WhiteSpace::Pre;
+        }
+        if styled.control_text(node).1 {
+            style.color = PLACEHOLDER_COLOUR;
+        }
+        self.add_inline_level(LayoutBox {
+            style,
+            kind: BoxKind::Text(text),
+            children: Vec::new(),
+            node,
+            anonymous: true,
+            generated: None,
+            generated_text: 0,
+            decorations: styled.decorations(parent),
+            styled_by_ancestor: false,
+            first_line: None,
+            tree_order: 0,
+            item: false,
+            parent: None,
+            in_3d: false,
+            replaced: None,
+        });
+    }
+
+    /// Adds a drop-down select's arrow (M26.7): a float at the right of
+    /// its content, as wide as [`ARROW_EMS`] and as tall as a line,
+    /// showing the arrow.
+    fn add_control_arrow(&mut self, select: NodeId) {
+        let styled = self.styled;
+        let Some(style) = styled.styles.get(select) else {
+            return;
+        };
+        let mut used = ComputedStyle::inherited_from(style);
+        used.display = Display::Block;
+        used.float = Float::Right;
+        used.width = style::computed::Size::Px(style.font_size_px * ARROW_EMS);
+        used.height = style::computed::Size::Px(style.font_size_px * 1.15);
+        let mut arrow = styled.own_box(Item::ControlArrow(select), &used, BoxKind::Float, Vec::new);
+        arrow.anonymous = true;
+        arrow.replaced = Some(Replaced::Mark(Mark::Arrow));
+        if self.open.is_empty() && self.run.is_empty() {
+            self.out.push(arrow);
+        } else {
+            self.add_inline_level(arrow);
+        }
+    }
+
     /// Adds the boxes of `child`, an element or a generated box among
     /// the children of `parent`, collecting it into `misplaced` when it
     /// is a table part out of place.
     fn add_element(&mut self, parent: Item, child: Item, misplaced: &mut Vec<Misplaced>) {
         let styled = self.styled;
+        if let Item::ControlArrow(select) = child {
+            self.add_control_arrow(select);
+            return;
+        }
         // No style, which the cascade gives every element in the tree,
         // or `display: none`: the element AND its subtree generate no
         // box at all.
