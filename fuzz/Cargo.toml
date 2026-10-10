@@ -7,7 +7,8 @@
 # scripts, which run under their limits, and the policies that say which
 # may run; and for the cookie jar; and for sequences of DOM calls a page's script makes, and of
 # the input a page's controls are used through; and for Web Storage over
-# the profile, and the HTTP cache.
+# the profile, and the HTTP cache; and for WebAssembly modules, valid
+# ones made by wasm-smith and any bytes besides.
 # Not a workspace member: libfuzzer needs nightly, and the normal build
 # must not.
 # `cargo +nightly fuzz run <target>` from the repository root; CI runs
@@ -25,6 +26,8 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+arbitrary = "1"
+wasm-smith = "0.228"
 css = { path = "../crates/css" }
 dom = { path = "../crates/dom" }
 encoding = { path = "../crates/encoding" }
@@ -52,6 +55,13 @@ bench = false
 [[bin]]
 name = "cookies"
 path = "fuzz_targets/cookies.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wasm"
+path = "fuzz_targets/wasm.rs"
 test = false
 doc = false
 bench = false

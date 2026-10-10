@@ -29,6 +29,10 @@
 //!
 //! M28's: `localStorage` and `sessionStorage`, which a `data:` document
 //! is refused, and `StorageEvent`, made, initialized and dispatched.
+//!
+//! M29's: WebAssembly, a small module ([`MODULE`]) compiled and
+//! instantiated with an import that changes the document, its exports
+//! used, and `instantiate`'s promise settled with the run's microtasks.
 
 #![no_main]
 
@@ -51,6 +55,12 @@ const RUN: usize = 8;
 /// The frame: small, so the time goes into the engine.
 const WIDTH: u32 = 64;
 const HEIGHT: u32 = 48;
+
+/// A module (M29) that imports `env.f` and exports a memory `mem` of one
+/// to four pages, a table `t`, a mutable global `g` and `run`, which
+/// stores its argument at 0, calls `f` with it, adds `g` and grows the
+/// memory by a page.
+const MODULE: &str = "0,97,115,109,1,0,0,0,1,6,1,96,1,127,1,127,2,9,1,3,101,110,118,1,102,0,0,3,2,1,0,4,4,1,112,0,2,5,4,1,1,1,4,6,6,1,127,1,65,7,11,7,21,4,3,109,101,109,2,0,1,116,1,0,1,103,3,0,3,114,117,110,0,1,9,7,1,0,65,0,11,1,1,10,23,1,21,0,65,0,32,0,54,2,0,32,0,16,0,35,0,106,65,1,64,0,26,11,0,16,4,110,97,109,101,1,9,2,0,1,102,1,3,114,117,110";
 
 /// The pages a sequence starts in.
 const PAGES: &[&str] = &[
@@ -374,7 +384,7 @@ fn body(input: &mut Input, nested: bool) -> String {
 /// One call, read from `input`, as a statement; `nested` in a
 /// listener's or a callback's body.
 fn call(input: &mut Input, nested: bool) -> String {
-    let op = input.byte() % 64;
+    let op = input.byte() % 66;
     let a = input.node();
     match op {
         0 => format!("p(document.createElement({}))", input.pick(TAGS)),
@@ -646,6 +656,21 @@ fn call(input: &mut Input, nested: bool) -> String {
             input.text(VALUES),
             input.text(VALUES),
             input.text(VALUES)
+        ),
+        64 => format!(
+            "var wi = new WebAssembly.Instance(new WebAssembly.Module(new Uint8Array([{MODULE}])), \
+             {{env: {{f: (x) => {{ {a}.title = x; return x; }}}}}}).exports; \
+             {a}.title = wi.run({}) + new Int32Array(wi.mem.buffer)[0] + wi.t.length + wi.g.value",
+            input.byte()
+        ),
+        65 => format!(
+            "WebAssembly.instantiate(new Uint8Array([{MODULE}]), {{env: {{f: (x) => x}}}}).then((r) => \
+             {{ {a}.dataset.w = r.instance.exports.run({}); r.instance.exports.mem.grow(1); }}); \
+             {a}.title = WebAssembly.validate(new Uint8Array([{}, {}, {}]))",
+            input.byte(),
+            input.byte(),
+            input.byte(),
+            input.byte()
         ),
         _ => {
             let property = ["disabled", "required", "readOnly", "multiple", "noValidate"]
