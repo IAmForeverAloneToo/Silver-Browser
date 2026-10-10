@@ -159,3 +159,354 @@ step("module", () => new WebAssembly.Module(new Uint8Array(64 * 1024 * 1024 + 1)
         ]
     );
 }
+
+#[test]
+fn an_instances_functions_convert_as_the_interface_says() {
+    let add = module(ADD);
+    let echo = module(
+        r#"(module
+  (func (export "i64") (param i64) (result i64) local.get 0)
+  (func (export "f32") (param f32) (result f32) local.get 0)
+  (func (export "f64") (param f64) (result f64) local.get 0)
+  (func (export "pair") (param i32) (result i32 i64) local.get 0 i64.const 7))"#,
+    );
+    let lines = steps(&format!(
+        r#"
+const instance = new WebAssembly.Instance(new WebAssembly.Module({add}));
+const add = instance.exports.add;
+step("calls", () => [add(2, 3), add(2.7, "4"), add(2 ** 31, 1), add(), add({{ valueOf() {{ return 9; }} }}, 1)]);
+step("shape", () => [add.name, add.length, typeof add, Object.getPrototypeOf(add) === Function.prototype,
+  add.hasOwnProperty("prototype"), Object.getOwnPropertyNames(add).sort().join()]);
+step("string", () => String(add));
+step("noNew", () => new add(1, 2));
+step("same", () => [instance.exports.add === add, Object.isFrozen(instance.exports),
+  Object.getPrototypeOf(instance.exports), Object.keys(instance.exports),
+  Object.prototype.toString.call(instance)]);
+step("frozen", () => {{ "use strict"; instance.exports.add = 1; }});
+step("symbol", () => add(Symbol()));
+step("bigint", () => add(1n));
+const e = new WebAssembly.Instance(new WebAssembly.Module({echo})).exports;
+step("i64", () => [String(e.i64(5n)), String(e.i64(2n ** 64n + 3n)), String(e.i64(-1n)), typeof e.i64(1n),
+  String(e.i64("12")), String(e.i64(true))]);
+step("i64Number", () => e.i64(5));
+step("floats", () => [e.f32(0.1), e.f32(1e40), String(e.f32(NaN)), e.f64(0.1), e.f64("2.5")]);
+step("pair", () => {{ const r = e.pair(3); return [Array.isArray(r), r[0], String(r[1])]; }});
+step("receiver", () => Object.getOwnPropertyDescriptor(WebAssembly.Instance.prototype, "exports").get.call({{}}));
+"#
+    ));
+    assert_eq!(
+        lines,
+        [
+            "calls=[5,6,-2147483647,0,10]",
+            r#"shape=["0",2,"function",true,false,"length,name"]"#,
+            r#"string="function 0() {\n    [native code]\n}""#,
+            "noNew=threw TypeError: not a constructor",
+            r#"same=[true,true,null,["add"],"[object WebAssembly.Instance]"]"#,
+            "frozen=threw TypeError: 'add' is read-only",
+            "symbol=threw TypeError: cannot convert symbol to number",
+            "bigint=threw TypeError: Cannot convert a BigInt value to a number",
+            r#"i64=["5","3","-1","bigint","12","1"]"#,
+            "i64Number=threw TypeError: Cannot convert 5 to a BigInt",
+            r#"floats=[0.10000000149011612,null,"NaN",0.1,2.5]"#,
+            r#"pair=[true,3,"7"]"#,
+            "receiver=threw TypeError: Receiver is not a WebAssembly.Instance",
+        ]
+    );
+}
+
+#[test]
+fn a_trap_is_a_runtime_error_in_the_reference_browsers_words() {
+    let traps = module(
+        r#"(module
+  (memory 1 1)
+  (table 2 funcref)
+  (type $v (func))
+  (func (export "unreachable") unreachable)
+  (func (export "divZero") (result i32) i32.const 1 i32.const 0 i32.div_s)
+  (func (export "divOverflow") (result i32) i32.const -2147483648 i32.const -1 i32.div_s)
+  (func (export "memOOB") (result i32) i32.const 65536 i32.load)
+  (func (export "truncNaN") (result i32) f32.const nan i32.trunc_f32_s)
+  (func (export "callNull") i32.const 0 call_indirect (type $v))
+  (func (export "tableOOB") i32.const 9 call_indirect (type $v))
+  (func $deep (export "deep") call $deep)
+  (func (export "fine") (result i32) i32.const 42))"#,
+    );
+    let lines = steps(&format!(
+        r#"
+const e = new WebAssembly.Instance(new WebAssembly.Module({traps})).exports;
+for (const name of ["unreachable", "divZero", "divOverflow", "memOOB", "truncNaN", "callNull", "tableOOB"]) {{
+  step(name, () => {{ try {{ e[name](); }} catch (error) {{
+    return [error instanceof WebAssembly.RuntimeError, error.message]; }} }});
+}}
+step("deep", () => e.deep());
+step("after", () => e.fine());
+"#
+    ));
+    assert_eq!(
+        lines,
+        [
+            r#"unreachable=[true,"unreachable"]"#,
+            r#"divZero=[true,"divide by zero"]"#,
+            r#"divOverflow=[true,"divide result unrepresentable"]"#,
+            r#"memOOB=[true,"memory access out of bounds"]"#,
+            r#"truncNaN=[true,"float unrepresentable in integer range"]"#,
+            r#"callNull=[true,"null function"]"#,
+            r#"tableOOB=[true,"table index is out of bounds"]"#,
+            "deep=threw RangeError: Maximum call stack size exceeded",
+            "after=42",
+        ]
+    );
+}
+
+const IMPORTS: &str = r#"(module
+  (import "env" "f" (func $f (param i32) (result i32)))
+  (func (export "g") (param i32) (result i32) local.get 0 call $f))"#;
+
+#[test]
+fn imports_are_read_in_the_modules_order_with_the_reference_browsers_words() {
+    let imports = module(IMPORTS);
+    let globals = module(
+        r#"(module
+  (import "env" "c" (global $c i32))
+  (import "env" "big" (global $big i64))
+  (import "env" "m" (global (mut i32)))
+  (func (export "c") (result i32) global.get $c)
+  (func (export "big") (result i64) global.get $big))"#,
+    );
+    let constants = module(
+        r#"(module
+  (import "env" "c" (global $c i32))
+  (import "env" "big" (global $big i64))
+  (import "env" "x" (global $x externref))
+  (func (export "c") (result i32) global.get $c)
+  (func (export "big") (result i64) global.get $big)
+  (func (export "x") (result externref) global.get $x))"#,
+    );
+    let memory = module(r#"(module (import "env" "mem" (memory 1)))"#);
+    let lines = steps(&format!(
+        r#"
+const m = new WebAssembly.Module({imports});
+step("missingModule", () => new WebAssembly.Instance(m, {{}}));
+step("missingImportsArg", () => new WebAssembly.Instance(m));
+step("notObject", () => new WebAssembly.Instance(m, 5));
+step("notCallable", () => {{ try {{ new WebAssembly.Instance(m, {{ env: {{ f: 1 }} }}); }}
+  catch (e) {{ return [e instanceof WebAssembly.LinkError, e.message]; }} }});
+step("call", () => new WebAssembly.Instance(m, {{ env: {{ f: (x) => x * 2 + 0.5 }} }}).exports.g(20));
+step("throws", () => {{ const e = new Error("mine"); try {{
+  new WebAssembly.Instance(m, {{ env: {{ f: () => {{ throw e; }} }} }}).exports.g(1); }} catch (c) {{ return c === e; }} }});
+step("args", () => {{ let seen; new WebAssembly.Instance(m, {{ env: {{ f: function (...a) {{ seen = [this === globalThis, a]; return 0; }} }} }})
+  .exports.g(7); return seen; }});
+step("getter", () => {{ const order = []; const env = {{ get f() {{ order.push("f"); return () => 1; }} }};
+  new WebAssembly.Instance(m, {{ get env() {{ order.push("env"); return env; }} }}); return order; }});
+const g = new WebAssembly.Module({globals});
+step("mutable", () => new WebAssembly.Instance(g, {{ env: {{ c: 1, big: 5n, m: 1 }} }}));
+step("bigNumber", () => new WebAssembly.Instance(g, {{ env: {{ c: 1, big: 5 }} }}));
+step("constants", () => {{ const x = {{}}; const e = new WebAssembly.Instance(new WebAssembly.Module({constants}),
+  {{ env: {{ c: 41.9, big: 2n ** 63n, x }} }}).exports; return [e.c(), String(e.big()), e.x() === x]; }});
+step("memory", () => new WebAssembly.Instance(new WebAssembly.Module({memory}), {{ env: {{ mem: {{}} }} }}));
+"#
+    ));
+    assert_eq!(
+        lines,
+        [
+            r#"missingModule=threw TypeError: WebAssembly.Instance(): Import #0 "env": module is not an object or function"#,
+            "missingImportsArg=threw TypeError: WebAssembly.Instance(): Imports argument must be present and must be an object",
+            "notObject=threw TypeError: WebAssembly.Instance(): Argument 1 must be an object",
+            r#"notCallable=[true,"WebAssembly.Instance(): Import #0 \"env\" \"f\": function import requires a callable"]"#,
+            "call=40",
+            "throws=true",
+            "args=[true,[7]]",
+            r#"getter=["env","f"]"#,
+            r#"mutable=threw LinkError: WebAssembly.Instance(): Import #2 "env" "m": imported mutable global must be a WebAssembly.Global object"#,
+            r#"bigNumber=threw LinkError: WebAssembly.Instance(): Import #1 "env" "big": global import must be a number, valid Wasm reference, or WebAssembly.Global object"#,
+            r#"constants=[41,"-9223372036854775808",true]"#,
+            r#"memory=threw LinkError: WebAssembly.Instance(): Import #0 "env" "mem": memory import must be a WebAssembly.Memory object"#,
+        ]
+    );
+}
+
+#[test]
+fn the_start_function_runs_at_instantiation_and_may_call_the_page() {
+    let started = module(
+        r#"(module
+  (import "env" "log" (func $log (param i32)))
+  (global $g (mut i32) (i32.const 0))
+  (func $start i32.const 7 call $log i32.const 1 global.set $g)
+  (start $start)
+  (func (export "started") (result i32) global.get $g))"#,
+    );
+    let traps = module(r#"(module (func $s unreachable) (start $s))"#);
+    let thrower = module(r#"(module (import "env" "f" (func $f)) (start $f))"#);
+    let bad = module(r#"(module (func $s (param i32)) (start $s))"#);
+    let named = module(
+        r#"(module (func $s) (start $s)
+  (func (export "silver.start") (result i32) i32.const 5)
+  (func (export "silver.first") (result i32) i32.const 6))"#,
+    );
+    let lines = steps(&format!(
+        r#"
+const m = new WebAssembly.Module({started});
+step("runs", () => {{ const seen = []; const e = new WebAssembly.Instance(m, {{ env: {{ log: (x) => seen.push(x) }} }}).exports;
+  return [seen, e.started(), Object.keys(e), WebAssembly.Module.exports(m).map((x) => x.name)]; }});
+step("traps", () => {{ try {{ new WebAssembly.Instance(new WebAssembly.Module({traps})); }} catch (e) {{
+  return [e instanceof WebAssembly.RuntimeError, e.message]; }} }});
+step("throws", () => {{ const mine = new Error("mine"); try {{ new WebAssembly.Instance(new WebAssembly.Module({thrower}),
+  {{ env: {{ f() {{ throw mine; }} }} }}); }} catch (e) {{ return e === mine; }} }});
+step("bad", () => {{ try {{ new WebAssembly.Module({bad}); }} catch (e) {{
+  return [e instanceof WebAssembly.CompileError, e.message.startsWith("WebAssembly.Module(): ")]; }} }});
+step("named", () => {{ const e = new WebAssembly.Instance(new WebAssembly.Module({named})).exports;
+  return [Object.keys(e), e["silver.start"](), e["silver.first"]()]; }});
+"#
+    ));
+    assert_eq!(
+        lines,
+        [
+            r#"runs=[[7],1,["started"],["started"]]"#,
+            r#"traps=[true,"unreachable"]"#,
+            "throws=true",
+            "bad=[true,true]",
+            r#"named=[["silver.start","silver.first"],5,6]"#,
+        ]
+    );
+}
+
+#[test]
+fn a_function_is_the_same_object_wherever_it_comes_from_and_named_by_its_index() {
+    let tabled = module(
+        r#"(module
+  (import "env" "f" (func $f (param i32) (result i32)))
+  (table $t 4 funcref)
+  (elem (i32.const 0) func $a $b $c $f)
+  (func $a (result i32) i32.const 1)
+  (func $b (result i32) i32.const 2)
+  (func $c (export "c") (result i32) i32.const 3)
+  (func (export "get") (param i32) (result funcref) local.get 0 table.get $t)
+  (func (export "id") (param funcref) (result funcref) local.get 0)
+  (export "f" (func $f)))"#,
+    );
+    let add = module(ADD);
+    let reimport = module(
+        r#"(module
+  (import "env" "f" (func $f (param i32 i32) (result i32)))
+  (export "f" (func $f))
+  (func (export "call") (param i32 i32) (result i32) local.get 0 local.get 1 call $f))"#,
+    );
+    let lines = steps(&format!(
+        r#"
+const e = new WebAssembly.Instance(new WebAssembly.Module({tabled}), {{ env: {{ f: (x) => x + 0.5 }} }}).exports;
+step("names", () => [e.get(0).name, e.get(1).name, e.c.name, e.get.name, e.f.name]);
+step("same", () => [e.get(2) === e.c, e.get(0) === e.get(0), e.get(3) === e.f, e.get(0)(), e.id(e.c) === e.c, e.id(null)]);
+step("notExported", () => e.id(() => 1));
+step("hostAgain", () => [e.f(5.9), e.f.length]);
+const add = new WebAssembly.Instance(new WebAssembly.Module({add})).exports.add;
+step("reimported", () => {{ const r = new WebAssembly.Instance(new WebAssembly.Module({reimport}), {{ env: {{ f: add }} }}).exports;
+  return [r.f === add, r.call(2, 3)]; }});
+step("mismatch", () => new WebAssembly.Instance(new WebAssembly.Module({imports}), {{ env: {{ f: add }} }}));
+"#,
+        imports = module(IMPORTS),
+    ));
+    assert_eq!(
+        lines,
+        [
+            r#"names=["1","2","3","4","0"]"#,
+            "same=[true,true,true,1,true,null]",
+            "notExported=threw TypeError: type incompatibility when transforming from/to JS",
+            "hostAgain=[5,1]",
+            "reimported=[true,5]",
+            r#"mismatch=threw LinkError: WebAssembly.Instance(): Import #0 "env" "f": imported function does not match the expected type"#,
+        ]
+    );
+}
+
+#[test]
+fn calls_between_modules_and_scripts_nest() {
+    let nested = module(
+        r#"(module
+  (import "env" "back" (func $back (param i32) (result i32)))
+  (func (export "outer") (param i32) (result i32) local.get 0 call $back i32.const 1 i32.add)
+  (func (export "inner") (param i32) (result i32) local.get 0 i32.const 10 i32.mul)
+  (func (export "trap") (param i32) (result i32) unreachable))"#,
+    );
+    let lines = steps(&format!(
+        r#"
+const m = new WebAssembly.Module({nested});
+let e;
+let back = (x) => e.inner(x) + 100;
+e = new WebAssembly.Instance(m, {{ env: {{ back: (x) => back(x) }} }}).exports;
+step("once", () => e.outer(2));
+step("deeper", () => {{ back = (x) => (x > 0 ? e.outer(x - 1) : 0); return e.outer(3); }});
+step("trapInside", () => {{ back = (x) => e.trap(x); try {{ e.outer(1); }} catch (error) {{
+  return [error instanceof WebAssembly.RuntimeError, error.message]; }} }});
+step("after", () => {{ back = (x) => x; return e.outer(41); }});
+"#
+    ));
+    assert_eq!(
+        lines,
+        [
+            "once=121",
+            "deeper=4",
+            r#"trapInside=[true,"unreachable"]"#,
+            "after=42",
+        ]
+    );
+}
+
+#[test]
+fn external_references_and_several_results_cross_both_ways() {
+    let refs = module(
+        r#"(module
+  (func (export "id") (param externref) (result externref) local.get 0)
+  (func (export "isNull") (param externref) (result i32) local.get 0 ref.is_null))"#,
+    );
+    let two = module(
+        r#"(module (import "env" "two" (func $two (result i32 i32)))
+  (func (export "sum") (result i32) call $two i32.add))"#,
+    );
+    let lines = steps(&format!(
+        r#"
+const e = new WebAssembly.Instance(new WebAssembly.Module({refs})).exports;
+const o = {{}};
+step("refs", () => [e.id(o) === o, String(e.id(undefined)), e.id(null), e.id(5), e.id("s"), e.isNull(null),
+  e.isNull(undefined), Number.isNaN(e.id(NaN)), e.id(o) === o]);
+const m = new WebAssembly.Module({two});
+const sum = (two) => new WebAssembly.Instance(m, {{ env: {{ two }} }}).exports.sum();
+step("array", () => sum(() => [3, 4]));
+step("iterable", () => sum(() => new Set([5, 6])));
+step("short", () => sum(() => [1]));
+step("notIterable", () => sum(() => 5));
+"#
+    ));
+    assert_eq!(
+        lines,
+        [
+            r#"refs=[true,"undefined",null,5,"s",1,0,true,true]"#,
+            "array=7",
+            "iterable=11",
+            "short=threw TypeError: multi-return length mismatch",
+            "notIterable=threw TypeError: multi-return value must be iterable",
+        ]
+    );
+}
+
+#[test]
+fn a_run_stopped_inside_a_scripts_import_leaves_the_module_working() {
+    let mut realm = crate::tests::realm_with(crate::Limits {
+        steps: 200,
+        ..crate::Limits::default()
+    });
+    let mut host = Recorder::default();
+    let source = format!(
+        "var spin = true; var m = new WebAssembly.Module({}); \
+         var e = new WebAssembly.Instance(m, {{ env: {{ f: function (x) {{ while (spin) {{}} return x; }} }} }}).exports;",
+        module(IMPORTS)
+    );
+    realm.run(&script(&source), &mut host).expect("it runs");
+    let stopped = realm
+        .run(&script("e.g(1)"), &mut host)
+        .expect_err("it is stopped");
+    assert_eq!(stopped.kind, crate::ErrorKind::Budget);
+    let after = realm
+        .run(&script("spin = false; String(e.g(5))"), &mut host)
+        .expect("it runs");
+    assert_eq!(after, crate::Completion::String("5".to_owned()));
+}

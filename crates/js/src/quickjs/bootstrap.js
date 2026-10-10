@@ -21,6 +21,9 @@
   const $RangeError = RangeError;
   const $Error = Error;
   const ToBase64 = uncurry(Uint8Array.prototype.toBase64);
+  const ObjectFreeze = Object.freeze;
+  const FunctionBind = uncurry(Function.prototype.bind);
+  const BigIntAsIntN = BigInt.asIntN;
   const $DOMException = DOMException;
   const $Map = Map;
   const $WeakMap = WeakMap;
@@ -9556,7 +9559,7 @@
     static imports(module) {
       const list = native.wasmModuleImports(moduleOf(module, "WebAssembly.Module.imports()"));
       const out = [];
-      for (let i = 0; i < list.length; i += 3) {
+      for (let i = 0; i < list.length; i += 4) {
         ArrayPush(out, { module: list[i], name: list[i + 1], kind: list[i + 2] });
       }
       return out;
@@ -9573,6 +9576,324 @@
     }
   }
   exposeWasm(Module, "Module");
+
+  // What the natives say failed, as the interface's error.
+  function wasmFailure(name, message) {
+    switch (name) {
+      case "LinkError":
+        return new LinkError(message);
+      case "RuntimeError":
+        return new RuntimeError(message);
+      case "CompileError":
+        return new CompileError(message);
+      case "RangeError":
+        return new $RangeError(message);
+    }
+    return new $TypeError(message);
+  }
+
+  function incompatible() {
+    return new $TypeError("type incompatibility when transforming from/to JS");
+  }
+
+  // The values a module's external references hold, by their indices.
+  const externValues = new $Map();
+  const externIndices = new $Map();
+
+  function externIndex(value) {
+    let index = MapGet(externIndices, value);
+    if (index === undefined) {
+      index = externValues.size;
+      MapSet(externValues, index, value);
+      MapSet(externIndices, value, index);
+    }
+    return index;
+  }
+
+  // A script's value as a WebAssembly value of the type `letter`, raw for
+  // the natives (the interface's ToWebAssemblyValue): an `i32` by
+  // ToInt32, an `i64` by ToBigInt64, a float by ToNumber, a function
+  // reference an exported function's key, an external one any value's
+  // index.
+  function toWasm(value, letter) {
+    if (typeof value === "bigint" && letter !== "I" && letter !== "e") {
+      throw new $TypeError("Cannot convert a BigInt value to a number");
+    }
+    switch (letter) {
+      case "i":
+        return +value | 0;
+      case "I":
+        if (typeof value === "number") {
+          throw new $TypeError("Cannot convert " + value + " to a BigInt");
+        }
+        return BigIntAsIntN(64, value);
+      case "f":
+      case "F":
+        return +value;
+      case "r": {
+        if (value === null) {
+          return null;
+        }
+        const key = typeof value === "function" ? WeakMapGet(exportedKeys, value) : undefined;
+        if (key === undefined) {
+          throw incompatible();
+        }
+        return key;
+      }
+      case "e":
+        return value === null ? null : externIndex(value);
+    }
+    throw incompatible();
+  }
+
+  // A raw WebAssembly value as a script's (ToJSValue).
+  function fromWasm(raw, letter) {
+    if (raw === null) {
+      return null;
+    }
+    if (letter === "r") {
+      return exportedFunction(raw);
+    }
+    if (letter === "e") {
+      return MapGet(externValues, raw);
+    }
+    return raw;
+  }
+
+  // A function's results, raw, as a script's: none undefined, one its
+  // value, several an array.
+  function resultsToJS(raw, letters, from) {
+    if (letters.length === 0) {
+      return undefined;
+    }
+    if (letters.length === 1) {
+      return fromWasm(raw[from], letters[0]);
+    }
+    const out = [];
+    for (let i = 0; i < letters.length; i++) {
+      ArrayPush(out, fromWasm(raw[from + i], letters[i]));
+    }
+    return out;
+  }
+
+  // A script's function's return value as the results `letters`, raw:
+  // several taken from an iterable of as many.
+  function resultsFromJS(value, letters) {
+    const out = [];
+    if (letters.length === 1) {
+      ArrayPush(out, toWasm(value, letters[0]));
+    } else if (letters.length > 1) {
+      const method = value === null || value === undefined ? undefined : value[iteratorSymbol];
+      if (typeof method !== "function") {
+        throw new $TypeError("multi-return value must be iterable");
+      }
+      const iterator = ReflectApply(method, value, []);
+      const values = [];
+      for (;;) {
+        const step = iterator.next();
+        if (step.done) {
+          break;
+        }
+        ArrayPush(values, step.value);
+      }
+      if (values.length !== letters.length) {
+        throw new $TypeError("multi-return length mismatch");
+      }
+      for (let i = 0; i < letters.length; i++) {
+        ArrayPush(out, toWasm(values[i], letters[i]));
+      }
+    }
+    return out;
+  }
+
+  // The scripts' callables imported, by their slots: each one with its
+  // import's parameters and results.
+  const hostFunctions = [];
+
+  // A script's function called as a module's import, with raw arguments:
+  // its results, raw.
+  function callHost(slot, raw, from) {
+    const host = hostFunctions[slot];
+    const args = [];
+    for (let i = 0; i < host.params.length; i++) {
+      ArrayPush(args, fromWasm(raw[from + i], host.params[i]));
+    }
+    return resultsFromJS(ReflectApply(host.callable, undefined, args), host.results);
+  }
+
+  // A call into the store driven to its end: each time it stops at a
+  // script's function, the function called and the call resumed with
+  // what it returned; what the function throws ends the call and goes
+  // on, the same value.
+  function drive(answer) {
+    for (;;) {
+      const status = answer[0];
+      if (status === 0) {
+        return answer;
+      }
+      if (status === 2) {
+        throw wasmFailure(answer[1], answer[2]);
+      }
+      const id = answer[1];
+      let results;
+      try {
+        results = callHost(answer[2], answer, 3);
+      } catch (error) {
+        native.wasmAbandon(id);
+        throw error;
+      }
+      answer = native.wasmResume(id, results);
+    }
+  }
+
+  // Each function of the store a script has, by its key, and each one's
+  // key: the same function object each time (the interface's cache of
+  // exported functions).
+  const exportedByKey = new $Map();
+  const exportedKeys = new $WeakMap();
+
+  // The exported function of the store's function `key`: a built-in as
+  // the interface makes one, named by its index in its module, its
+  // length its parameters', with no prototype and no [[Construct]].
+  function exportedFunction(key) {
+    let f = MapGet(exportedByKey, key);
+    if (f !== undefined) {
+      return f;
+    }
+    const info = native.wasmFuncInfo(key);
+    const signature = info[0];
+    const colon = StringIndexOf(signature, ":");
+    const params = StringSlice(signature, 0, colon);
+    const results = StringSlice(signature, colon + 1);
+    const slot = info[2];
+    const target = {
+      run() {
+        const raw = [];
+        for (let i = 0; i < params.length; i++) {
+          ArrayPush(raw, toWasm(arguments[i], params[i]));
+        }
+        if (slot >= 0) {
+          // A script's function imported and exported again: called as
+          // a module would call it.
+          return resultsToJS(callHost(slot, raw, 0), results, 0);
+        }
+        return resultsToJS(drive(native.wasmCall(key, raw)), results, 1);
+      },
+    }.run;
+    f = FunctionBind(target, undefined);
+    defineProperty(f, "length", { value: params.length, configurable: true });
+    defineProperty(f, "name", { value: info[1], configurable: true });
+    MapSet(exportedByKey, key, f);
+    WeakMapSet(exportedKeys, f, key);
+    return f;
+  }
+
+  function isObject(value) {
+    return value !== null && (typeof value === "object" || typeof value === "function");
+  }
+
+  // The interface's instantiation of the module `handle` with the import
+  // object `importObject`: the imports read in the module's order, the
+  // instance made, its start function called; its exports object,
+  // frozen, with no prototype.
+  function instantiateModule(handle, importObject, where) {
+    if (importObject !== undefined && !isObject(importObject)) {
+      throw new $TypeError(where + ": Argument 1 must be an object");
+    }
+    const list = native.wasmModuleImports(handle);
+    if (list.length > 0 && importObject === undefined) {
+      throw new $TypeError(where + ": Imports argument must be present and must be an object");
+    }
+    const given = [];
+    for (let i = 0; i < list.length; i += 4) {
+      const label = "Import #" + i / 4 + ' "' + list[i] + '"';
+      const from = importObject[list[i]];
+      if (!isObject(from)) {
+        throw new $TypeError(where + ": " + label + ": module is not an object or function");
+      }
+      const value = from[list[i + 1]];
+      const named = where + ": " + label + ' "' + list[i + 1] + '": ';
+      const kind = list[i + 2];
+      const type = list[i + 3];
+      if (kind === "function") {
+        if (typeof value !== "function") {
+          throw new LinkError(named + "function import requires a callable");
+        }
+        const key = WeakMapGet(exportedKeys, value);
+        if (key !== undefined) {
+          ArrayPush(given, "f", key);
+        } else {
+          const colon = StringIndexOf(type, ":");
+          ArrayPush(given, "h", hostFunctions.length);
+          ArrayPush(hostFunctions, {
+            callable: value,
+            params: StringSlice(type, 0, colon),
+            results: StringSlice(type, colon + 1),
+          });
+        }
+      } else if (kind === "global") {
+        const letter = type[0];
+        const fits =
+          letter === "I"
+            ? typeof value === "bigint"
+            : letter === "r" || letter === "e" || typeof value === "number";
+        if (!fits) {
+          throw new LinkError(
+            named + "global import must be a number, valid Wasm reference, or WebAssembly.Global object",
+          );
+        }
+        if (type[1] === "m") {
+          throw new LinkError(named + "imported mutable global must be a WebAssembly.Global object");
+        }
+        ArrayPush(given, "g", toWasm(value, letter));
+      } else if (kind === "memory") {
+        throw new LinkError(named + "memory import must be a WebAssembly.Memory object");
+      } else if (kind === "table") {
+        throw new LinkError(named + "table import requires a WebAssembly.Table");
+      } else {
+        throw new LinkError(named + "tag import requires a WebAssembly.Tag");
+      }
+    }
+    const made = native.wasmInstantiate(handle, given);
+    if (made[0] === 2) {
+      throw wasmFailure(made[1], where + ": " + made[2]);
+    }
+    if (made[2] >= 0) {
+      // The start function, which may be a script's function imported.
+      ReflectApply(exportedFunction(made[2]), undefined, []);
+    }
+    const exports = ObjectCreate(null);
+    const named = native.wasmInstanceExports(made[1]);
+    for (let i = 0; i < named.length; i += 3) {
+      defineProperty(exports, named[i], {
+        value: exportedFunction(named[i + 2]),
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    }
+    return ObjectFreeze(exports);
+  }
+
+  // Each instance object's exports.
+  const instanceExports = new $WeakMap();
+
+  class Instance {
+    constructor(module, importObject) {
+      const where = "WebAssembly.Instance()";
+      const handle = moduleOf(module, where);
+      WeakMapSet(instanceExports, this, instantiateModule(handle, importObject, where));
+    }
+
+    get exports() {
+      const exports = isObject(this) ? WeakMapGet(instanceExports, this) : undefined;
+      if (exports === undefined) {
+        throw new $TypeError("Receiver is not a WebAssembly.Instance");
+      }
+      return exports;
+    }
+  }
+  exposeWasm(Instance, "Instance");
 
   // The entry points the realm calls (M26): a timer's task; an event
   // the engine makes, dispatched at the node `handle` names or, for
@@ -9620,6 +9941,7 @@
     },
     report: fireError,
     reset() {
+      native.wasmReset();
       reporting = false;
       currentEvent = undefined;
       MapClear(clicking);
