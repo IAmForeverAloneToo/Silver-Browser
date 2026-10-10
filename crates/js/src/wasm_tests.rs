@@ -727,3 +727,132 @@ step("large", () => new WebAssembly.Table({{ element: "anyfunc", initial: 100000
         ]
     );
 }
+
+#[test]
+fn a_module_that_loops_is_stopped_as_a_script_that_loops_is() {
+    let mut realm = crate::tests::realm_with(crate::Limits {
+        steps: 200,
+        ..crate::Limits::default()
+    });
+    let mut host = Recorder::default();
+    let looping = module(
+        r#"(module
+  (func (export "spin") (loop br 0))
+  (func (export "count") (param i32) (result i32) (local i32)
+    (loop
+      local.get 1 i32.const 1 i32.add local.set 1
+      local.get 1 local.get 0 i32.lt_u br_if 0)
+    local.get 1))"#,
+    );
+    let starting = module(r#"(module (func $s (loop br 0)) (start $s))"#);
+    let source = format!(
+        "var e = new WebAssembly.Instance(new WebAssembly.Module({looping})).exports; \
+         var starting = new WebAssembly.Module({starting});"
+    );
+    realm.run(&script(&source), &mut host).expect("it runs");
+    let counted = realm
+        .run(&script("String(e.count(100000))"), &mut host)
+        .expect("it runs");
+    assert_eq!(counted, crate::Completion::String("100000".to_owned()));
+    for source in [
+        "e.spin()",
+        "try { e.spin(); } catch (error) {} 'caught'",
+        "e.count(2000000000)",
+        // Each call within the budget, together past it.
+        "for (let i = 0; i < 1000; i++) { e.count(1000000); }",
+        "new WebAssembly.Instance(starting)",
+    ] {
+        let stopped = realm
+            .run(&script(source), &mut host)
+            .expect_err("it is stopped");
+        assert_eq!(stopped.kind, crate::ErrorKind::Budget, "{source}");
+    }
+    let after = realm
+        .run(&script("String(e.count(3))"), &mut host)
+        .expect("it runs");
+    assert_eq!(after, crate::Completion::String("3".to_owned()));
+}
+
+#[test]
+fn what_modules_allocate_is_bounded() {
+    let big = module(r#"(module (memory 4096))"#);
+    let grower = module(MEMORY);
+    let empty = module(r#"(module)"#);
+    let lines = steps(&format!(
+        r#"
+step("tooMuch", () => new WebAssembly.Memory({{ initial: 4097 }}));
+const mem = new WebAssembly.Memory({{ initial: 1 }});
+step("total", () => {{ try {{ new WebAssembly.Instance(new WebAssembly.Module({big})); }} catch (e) {{ return e.constructor.name; }} }});
+const g = new WebAssembly.Instance(new WebAssembly.Module({grower})).exports;
+step("grow", () => [g.grow(1), g.grow(4096), g.size()]);
+step("jsGrow", () => mem.grow(4095));
+step("table", () => new WebAssembly.Table({{ element: "anyfunc", initial: 1 }}).grow(10000000));
+const e = new WebAssembly.Module({empty});
+step("instances", () => {{ let n = 0; try {{ for (;;) {{ new WebAssembly.Instance(e); n++; }} }}
+  catch (error) {{ return [n > 990, n < 1000, error.constructor.name]; }} }});
+step("still", () => g.size());
+"#
+    ));
+    assert_eq!(
+        lines,
+        [
+            "tooMuch=threw RangeError: WebAssembly.Memory(): could not allocate memory",
+            r#"total="RangeError""#,
+            "grow=[1,-1,2]",
+            "jsGrow=threw RangeError: WebAssembly.Memory.grow(): Maximum memory size exceeded",
+            "table=threw RangeError: WebAssembly.Table.grow(): failed to grow table by 10000000",
+            r#"instances=[true,true,"RangeError"]"#,
+            "still=2",
+        ]
+    );
+}
+
+#[test]
+fn calls_nest_only_so_deep() {
+    let nested = module(
+        r#"(module
+  (import "env" "back" (func $back (param i32) (result i32)))
+  (func (export "outer") (param i32) (result i32) local.get 0 call $back i32.const 1 i32.add))"#,
+    );
+    let deep = module(
+        r#"(module (func $deep (export "deep") (param i32) (result i32)
+  local.get 0 i32.eqz
+  if (result i32) i32.const 0
+  else local.get 0 i32.const 1 i32.sub call $deep i32.const 1 i32.add end))"#,
+    );
+    let lines = steps(&format!(
+        r#"
+let e;
+let back;
+e = new WebAssembly.Instance(new WebAssembly.Module({nested}), {{ env: {{ back: (x) => back(x) }} }}).exports;
+step("nested", () => {{ back = (x) => e.outer(x); try {{ e.outer(1); }} catch (error) {{
+  return [error.constructor.name, error.message]; }} }});
+step("after", () => {{ back = (x) => x; return e.outer(41); }});
+step("abandoned", () => {{ back = () => {{ throw new Error("x"); }};
+  for (let i = 0; i < 100; i++) {{ try {{ e.outer(1); }} catch (error) {{}} }}
+  back = (x) => (x > 0 ? e.outer(x - 1) : 0); return e.outer(4); }});
+step("overflows", () => {{ back = (x) => e.outer(x);
+  for (let i = 0; i < 100; i++) {{ try {{ e.outer(1); }} catch (error) {{}} }}
+  back = (x) => (x > 0 ? e.outer(x - 1) : 0); return e.outer(4); }});
+step("dives", () => {{ back = (x) => e.outer(x);
+  const dive = (n) => {{ try {{ e.outer(1); }} catch (error) {{}} try {{ dive(n + 1); }} catch (error) {{}} }};
+  for (let i = 0; i < 3; i++) {{ dive(0); }}
+  back = (x) => (x > 0 ? e.outer(x - 1) : 0); return e.outer(4); }});
+const d = new WebAssembly.Instance(new WebAssembly.Module({deep})).exports;
+step("recursion", () => d.deep(5000));
+step("tooDeep", () => d.deep(20000));
+"#
+    ));
+    assert_eq!(
+        lines,
+        [
+            r#"nested=["RangeError","Maximum call stack size exceeded"]"#,
+            "after=42",
+            "abandoned=5",
+            "overflows=5",
+            "dives=5",
+            "recursion=5000",
+            "tooDeep=threw RangeError: Maximum call stack size exceeded",
+        ]
+    );
+}

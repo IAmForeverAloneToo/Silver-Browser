@@ -9749,6 +9749,9 @@
     }
   }
 
+  // The calls into the store under way, nested.
+  let wasmCalls = 0;
+
   // Each function of the store a script has, by its key, and each one's
   // key: the same function object each time (the interface's cache of
   // exported functions).
@@ -9780,8 +9783,14 @@
           // a module would call it.
           return resultsToJS(callHost(slot, raw, 0), results, 0);
         }
-        enter();
-        return resultsToJS(drive(native.wasmCall(key, raw)), results, 1);
+        const top = wasmCalls === 0;
+        wasmCalls++;
+        try {
+          enter();
+          return resultsToJS(drive(native.wasmCall(key, raw, top)), results, 1);
+        } finally {
+          wasmCalls--;
+        }
       },
     }.run;
     f = FunctionBind(target, undefined);
@@ -10332,6 +10341,7 @@
     report: fireError,
     reset() {
       native.wasmReset();
+      wasmCalls = 0;
       reporting = false;
       currentEvent = undefined;
       MapClear(clicking);

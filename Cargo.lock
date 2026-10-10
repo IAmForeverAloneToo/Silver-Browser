@@ -1122,6 +1122,7 @@ version = "0.0.1"
 dependencies = [
  "rquickjs",
  "wasmi",
+ "wasmi_core",
  "wasmparser 0.228.0",
  "wat",
 ]

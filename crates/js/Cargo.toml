@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 rquickjs.workspace = true
 wasmi.workspace = true
+wasmi_core.workspace = true
 wasmparser.workspace = true
 
 [dev-dependencies]

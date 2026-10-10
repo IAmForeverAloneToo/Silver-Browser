@@ -23,6 +23,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 
 use rquickjs::function::Rest;
@@ -31,13 +32,113 @@ use wasmi::errors::{ErrorKind, HostError, InstantiationError};
 use wasmi::{
     CompilationMode, Config, Engine, Error, Extern, ExternRef, ExternType, F32, F64, Func,
     FuncType, Global, Instance, Memory, MemoryType, Module, Mutability, Nullable, Ref, RefType,
-    ResumableCall, ResumableCallHostTrap, Store, Table, TableType, TrapCode, Val, ValType,
+    ResourceLimiter, ResumableCall, ResumableCallHostTrap, Store, Table, TableType, TrapCode, Val,
+    ValType,
 };
+use wasmi_core::LimiterError;
 
 use super::dom::Budget;
+use crate::WORK_PER_STEP;
 
 /// The largest module a realm compiles.
 pub(crate) const MAX_WASM_MODULE_BYTES: usize = 64 << 20;
+
+/// A module's work a step of the run's budget buys, in `wasmi`'s fuel.
+pub(crate) const WASM_FUEL_PER_STEP: u64 = 100_000;
+
+/// What a realm's memories and tables hold, in all.
+pub(crate) const MAX_WASM_MEMORY: usize = 256 << 20;
+
+/// A realm's instances; its memories and tables, ten times as many each.
+pub(crate) const MAX_WASM_INSTANCES: usize = 1_000;
+
+/// A table's length.
+pub(crate) const MAX_WASM_TABLE_ELEMENTS: usize = 10_000_000;
+
+/// Calls between modules and scripts, nested.
+pub(crate) const MAX_WASM_NESTING: usize = 64;
+
+/// A module's calls, nested; deeper is a stack overflow (`RangeError`),
+/// as the reference browser's is.
+const MAX_WASM_RECURSION: usize = 10_000;
+
+const _: () = assert!(WASM_FUEL_PER_STEP.is_multiple_of(WORK_PER_STEP));
+
+/// What a realm's store may hold ([`MAX_WASM_MEMORY`] in all, a table's
+/// element counted as 8 bytes): `wasmi` asks before it allocates.
+#[derive(Default)]
+struct Limiter {
+    /// The bytes taken, and those the last growth took, given back if
+    /// it failed after all.
+    taken: usize,
+    last: usize,
+}
+
+impl Limiter {
+    fn take(&mut self, bytes: usize) -> bool {
+        match self.taken.checked_add(bytes) {
+            Some(taken) if taken <= MAX_WASM_MEMORY => {
+                self.taken = taken;
+                self.last = bytes;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn give_back(&mut self) {
+        self.taken -= std::mem::take(&mut self.last);
+    }
+}
+
+impl ResourceLimiter for Limiter {
+    fn memory_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        _maximum: Option<usize>,
+    ) -> Result<bool, LimiterError> {
+        Ok(self.take(desired.saturating_sub(current)))
+    }
+
+    fn table_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        _maximum: Option<usize>,
+    ) -> Result<bool, LimiterError> {
+        let bytes = desired.saturating_sub(current).saturating_mul(8);
+        Ok(desired <= MAX_WASM_TABLE_ELEMENTS && self.take(bytes))
+    }
+
+    fn memory_grow_failed(
+        &mut self,
+        _error: &wasmi::errors::MemoryError,
+    ) -> Result<(), LimiterError> {
+        self.give_back();
+        Ok(())
+    }
+
+    fn table_grow_failed(
+        &mut self,
+        _error: &wasmi::errors::TableError,
+    ) -> Result<(), LimiterError> {
+        self.give_back();
+        Ok(())
+    }
+
+    fn instances(&self) -> usize {
+        MAX_WASM_INSTANCES
+    }
+
+    fn tables(&self) -> usize {
+        10 * MAX_WASM_INSTANCES
+    }
+
+    fn memories(&self) -> usize {
+        10 * MAX_WASM_INSTANCES
+    }
+}
 
 /// A memory's bytes and its buffer's are compared in runs of this many.
 const MIRROR_CHUNK: usize = 4096;
@@ -45,7 +146,11 @@ const MIRROR_CHUNK: usize = 4096;
 /// What a realm's modules are made in.
 pub(super) struct Wasm {
     engine: Engine,
-    store: Store<()>,
+    store: Store<Limiter>,
+    /// The run's budget, which a module's work is charged to, and the
+    /// fuel the call under way was given.
+    budget: Budget,
+    given: u64,
     /// The modules compiled, by their handles.
     modules: Vec<Compiled>,
     /// The instances made, by their handles, each with its module's.
@@ -517,7 +622,7 @@ fn unknown<T>(ctx: &Ctx<'_>, what: &str) -> rquickjs::Result<T> {
 }
 
 impl Wasm {
-    fn new() -> Wasm {
+    fn new(budget: Budget) -> Wasm {
         let mut config = Config::default();
         // The core 2.0 features, and 3.0's tail calls, extended
         // constant expressions and multiple memories, as `wasmi` has
@@ -525,12 +630,17 @@ impl Wasm {
         config
             .wasm_custom_page_sizes(false)
             .wasm_wide_arithmetic(false)
-            .compilation_mode(CompilationMode::LazyTranslation);
+            .compilation_mode(CompilationMode::LazyTranslation)
+            .consume_fuel(true)
+            .set_max_recursion_depth(MAX_WASM_RECURSION);
         let engine = Engine::new(&config);
-        let store = Store::new(&engine, ());
+        let mut store = Store::new(&engine, Limiter::default());
+        store.limiter(|limiter| limiter as &mut dyn ResourceLimiter);
         Wasm {
             engine,
             store,
+            budget,
+            given: 0,
             modules: Vec::new(),
             instances: Vec::new(),
             funcs: HashMap::new(),
@@ -660,6 +770,25 @@ impl Wasm {
         })
     }
 
+    /// The fuel the run's budget has left given to a call into the store.
+    fn fuel(&mut self) {
+        let steps = self.budget.limit.saturating_sub(self.budget.steps.get());
+        self.given = if self.budget.exhausted.get() {
+            0
+        } else {
+            u64::from(steps) * WASM_FUEL_PER_STEP
+        };
+        let _ = self.store.set_fuel(self.given);
+    }
+
+    /// The fuel the call burned, charged to the run.
+    fn burned(&mut self) {
+        let left = self.store.get_fuel().unwrap_or(0);
+        let units = self.given.saturating_sub(left) / (WASM_FUEL_PER_STEP / WORK_PER_STEP);
+        self.budget.charge(units);
+        self.given = 0;
+    }
+
     /// A call's answer to the bootstrap: its results, the script's
     /// function it stopped at, or its failure.
     fn outcome<'js>(
@@ -690,7 +819,12 @@ impl Wasm {
                     out.set(i + 3, self.raw(ctx, val)?)?;
                 }
             }
-            Ok(ResumableCall::OutOfFuel(_)) => return failed(ctx, "RuntimeError", "out of fuel"),
+            // The run's budget is spent: the realm's interrupt ends the
+            // run at its next check, as a script that loops is ended.
+            Ok(ResumableCall::OutOfFuel(_)) => {
+                self.budget.exhausted.set(true);
+                return failed(ctx, "RangeError", "the script ran too long");
+            }
             Err(error) => {
                 let (class, message) = failure(&error);
                 return failed(ctx, class, &message);
@@ -699,14 +833,23 @@ impl Wasm {
         Ok(out)
     }
 
-    /// A call of the function `handle` with the raw arguments `args`.
+    /// A call of the function `handle` with the raw arguments `args`;
+    /// `top` when no other call is under way, so that any call still
+    /// stopped is one a script's error left behind.
     fn call<'js>(
         &mut self,
         ctx: &Ctx<'js>,
         handle: f64,
         args: &Array<'js>,
+        top: bool,
     ) -> rquickjs::Result<Array<'js>> {
         let func = self.func_of(ctx, handle)?;
+        if top {
+            self.pending.clear();
+        }
+        if self.pending.iter().flatten().count() >= MAX_WASM_NESTING {
+            return failed(ctx, "RangeError", "Maximum call stack size exceeded");
+        }
         let ty = func.ty(&self.store);
         let mut inputs = Vec::with_capacity(ty.params().len());
         for (i, &t) in ty.params().iter().enumerate() {
@@ -717,7 +860,9 @@ impl Wasm {
             .iter()
             .map(|&t| Val::default_for_ty(t))
             .collect();
+        self.fuel();
         let result = func.call_resumable(&mut self.store, &inputs, &mut outputs);
+        self.burned();
         self.outcome(ctx, result, outputs)
     }
 
@@ -729,9 +874,11 @@ impl Wasm {
         id: f64,
         results: &Array<'js>,
     ) -> rquickjs::Result<Array<'js>> {
-        let Some(Pending { call, mut outputs }) = index(id)
-            .and_then(|id| self.pending.get_mut(id))
-            .and_then(Option::take)
+        // The calls stopped above it are over: a script's error left
+        // them, its bootstrap unable to say so (its stack spent).
+        let at = index(id).unwrap_or(usize::MAX);
+        self.pending.truncate(at.saturating_add(1));
+        let Some(Pending { call, mut outputs }) = self.pending.get_mut(at).and_then(Option::take)
         else {
             return unknown(ctx, "a call stopped");
         };
@@ -741,7 +888,9 @@ impl Wasm {
         for (i, &t) in ty.results().iter().enumerate() {
             inputs.push(self.val(ctx, &results.get(i)?, t)?);
         }
+        self.fuel();
         let result = call.resume(&mut self.store, &inputs, &mut outputs);
+        self.burned();
         self.outcome(ctx, result, outputs)
     }
 
@@ -1133,14 +1282,47 @@ fn index(handle: f64) -> Option<usize> {
     (handle.fract() == 0.0 && handle >= 0.0 && handle < u32::MAX as f64).then_some(handle as usize)
 }
 
-/// `f` of the realm's WebAssembly, made if this is its first use.
-fn with<R>(wasm: &Shared, f: impl FnOnce(&mut Wasm) -> R) -> R {
-    let mut wasm = wasm.borrow_mut();
-    f(wasm.get_or_insert_with(Wasm::new))
+/// `f` of the realm's WebAssembly, made if this is its first use. A
+/// panic of `wasmi`'s, which a valid module should never cause, is
+/// caught here: the call throws, and the realm's WebAssembly is given
+/// up, every later call throwing too.
+fn with<R>(
+    shared: &Shared,
+    ctx: &Ctx<'_>,
+    f: impl FnOnce(&mut Wasm) -> rquickjs::Result<R>,
+) -> rquickjs::Result<R> {
+    let mut state = shared.state.borrow_mut();
+    if matches!(*state, State::Unmade) {
+        *state = State::Live(Box::new(Wasm::new(shared.budget.clone())));
+    }
+    let State::Live(wasm) = &mut *state else {
+        return Err(Exception::throw_internal(ctx, GIVEN_UP));
+    };
+    match catch_unwind(AssertUnwindSafe(|| f(wasm))) {
+        Ok(result) => result,
+        Err(_) => {
+            *state = State::Dead;
+            Err(Exception::throw_internal(ctx, GIVEN_UP))
+        }
+    }
 }
 
-/// A realm's WebAssembly, made at its first use.
-type Shared = Rc<RefCell<Option<Wasm>>>;
+const GIVEN_UP: &str = "WebAssembly failed in this page and is no longer available";
+
+/// A realm's WebAssembly: made at its first use, given up after a panic.
+enum State {
+    Unmade,
+    Live(Box<Wasm>),
+    Dead,
+}
+
+/// What the natives share: the realm's WebAssembly and the run's budget.
+struct Bridge {
+    budget: Budget,
+    state: RefCell<State>,
+}
+
+type Shared = Rc<Bridge>;
 
 /// The bytes `text`, base64 as `toBase64` writes it, encode; `None` for
 /// text that is not.
@@ -1214,7 +1396,10 @@ pub(super) fn install<'js>(
     natives: &Object<'js>,
     budget: &Budget,
 ) -> rquickjs::Result<()> {
-    let wasm: Shared = Rc::default();
+    let wasm: Shared = Rc::new(Bridge {
+        budget: budget.clone(),
+        state: RefCell::new(State::Unmade),
+    });
     natives.set("wasmModuleLimit", MAX_WASM_MODULE_BYTES as f64)?;
     let (shared, charge) = (wasm.clone(), budget.clone());
     natives.set(
@@ -1223,9 +1408,9 @@ pub(super) fn install<'js>(
             ctx.clone(),
             move |ctx: Ctx<'js>, bytes: String| -> rquickjs::Result<bool> {
                 let bytes = module_bytes(&ctx, &charge, &bytes, "WebAssembly.validate()")?;
-                Ok(with(&shared, |wasm| {
-                    Module::validate(&wasm.engine, &bytes).is_ok()
-                }))
+                with(&shared, &ctx, |wasm| {
+                    Ok(Module::validate(&wasm.engine, &bytes).is_ok())
+                })
             },
         )?,
     )?;
@@ -1236,7 +1421,7 @@ pub(super) fn install<'js>(
             ctx.clone(),
             move |ctx: Ctx<'js>, bytes: String, method: String| -> rquickjs::Result<Value<'js>> {
                 let bytes = module_bytes(&ctx, &charge, &bytes, &method)?;
-                with(&shared, |wasm| match compile(&wasm.engine, &bytes) {
+                with(&shared, &ctx, |wasm| match compile(&wasm.engine, &bytes) {
                     Ok(compiled) => {
                         wasm.modules.push(compiled);
                         Ok(Value::new_number(
@@ -1258,7 +1443,7 @@ pub(super) fn install<'js>(
             ctx.clone(),
             move |ctx: Ctx<'js>, handle: f64| -> rquickjs::Result<Array<'js>> {
                 let out = Array::new(ctx.clone())?;
-                with(&shared, |wasm| {
+                with(&shared, &ctx, |wasm| {
                     let module = wasm
                         .module(handle)
                         .ok_or_else(|| Exception::throw_type(&ctx, "not a module"))?;
@@ -1279,7 +1464,7 @@ pub(super) fn install<'js>(
             ctx.clone(),
             move |ctx: Ctx<'js>, handle: f64| -> rquickjs::Result<Array<'js>> {
                 let out = Array::new(ctx.clone())?;
-                with(&shared, |wasm| {
+                with(&shared, &ctx, |wasm| {
                     let module = wasm
                         .module(handle)
                         .ok_or_else(|| Exception::throw_type(&ctx, "not a module"))?;
@@ -1328,7 +1513,7 @@ pub(super) fn install<'js>(
                     None => return Err(Exception::throw_type(&ctx, "not a name")),
                 };
                 let out = Array::new(ctx.clone())?;
-                with(&shared, |wasm| {
+                with(&shared, &ctx, |wasm| {
                     let module = wasm
                         .module(handle)
                         .ok_or_else(|| Exception::throw_type(&ctx, "not a module"))?;
@@ -1351,7 +1536,7 @@ pub(super) fn install<'js>(
         Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, handle: f64, given: Array<'js>| -> rquickjs::Result<Array<'js>> {
-                with(&shared, |wasm| wasm.instantiate(&ctx, handle, &given))
+                with(&shared, &ctx, |wasm| wasm.instantiate(&ctx, handle, &given))
             },
         )?,
     )?;
@@ -1361,7 +1546,7 @@ pub(super) fn install<'js>(
         Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, handle: f64| -> rquickjs::Result<Array<'js>> {
-                with(&shared, |wasm| wasm.exports(&ctx, handle))
+                with(&shared, &ctx, |wasm| wasm.exports(&ctx, handle))
             },
         )?,
     )?;
@@ -1371,7 +1556,7 @@ pub(super) fn install<'js>(
         Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, handle: f64| -> rquickjs::Result<Array<'js>> {
-                with(&shared, |wasm| {
+                with(&shared, &ctx, |wasm| {
                     let func = wasm.func_of(&ctx, handle)?;
                     let key = handle as u32;
                     let out = Array::new(ctx.clone())?;
@@ -1393,8 +1578,12 @@ pub(super) fn install<'js>(
         "wasmCall",
         Function::new(
             ctx.clone(),
-            move |ctx: Ctx<'js>, handle: f64, args: Array<'js>| -> rquickjs::Result<Array<'js>> {
-                with(&shared, |wasm| wasm.call(&ctx, handle, &args))
+            move |ctx: Ctx<'js>,
+                  handle: f64,
+                  args: Array<'js>,
+                  top: bool|
+                  -> rquickjs::Result<Array<'js>> {
+                with(&shared, &ctx, |wasm| wasm.call(&ctx, handle, &args, top))
             },
         )?,
     )?;
@@ -1404,20 +1593,19 @@ pub(super) fn install<'js>(
         Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, id: f64, results: Array<'js>| -> rquickjs::Result<Array<'js>> {
-                with(&shared, |wasm| wasm.resume(&ctx, id, &results))
+                with(&shared, &ctx, |wasm| wasm.resume(&ctx, id, &results))
             },
         )?,
     )?;
     let shared = wasm.clone();
     natives.set(
         "wasmAbandon",
-        Function::new(ctx.clone(), move |id: f64| {
-            with(&shared, |wasm| {
-                if let Some(call) = index(id).and_then(|id| wasm.pending.get_mut(id)) {
-                    *call = None;
-                }
+        Function::new(ctx.clone(), move |ctx: Ctx<'js>, id: f64| {
+            with(&shared, &ctx, |wasm| {
+                wasm.pending.truncate(index(id).unwrap_or(usize::MAX));
                 wasm.trim();
-            });
+                Ok(())
+            })
         })?,
     )?;
     install_objects(ctx, natives, &wasm)?;
@@ -1425,7 +1613,7 @@ pub(super) fn install<'js>(
     natives.set(
         "wasmReset",
         Function::new(ctx.clone(), move || {
-            if let Some(wasm) = shared.borrow_mut().as_mut() {
+            if let State::Live(wasm) = &mut *shared.state.borrow_mut() {
                 wasm.pending.clear();
             }
         })?,
@@ -1452,7 +1640,9 @@ fn install_objects<'js>(
         Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, initial: f64, maximum: f64| -> rquickjs::Result<Array<'js>> {
-                with(&shared, |wasm| wasm.memory_new(&ctx, initial, maximum))
+                with(&shared, &ctx, |wasm| {
+                    wasm.memory_new(&ctx, initial, maximum)
+                })
             },
         )?,
     )?;
@@ -1462,7 +1652,7 @@ fn install_objects<'js>(
         Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, handle: f64, delta: f64| -> rquickjs::Result<Array<'js>> {
-                with(&shared, |wasm| wasm.memory_grow(&ctx, handle, delta))
+                with(&shared, &ctx, |wasm| wasm.memory_grow(&ctx, handle, delta))
             },
         )?,
     )?;
@@ -1472,7 +1662,7 @@ fn install_objects<'js>(
         Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, handle: f64| -> rquickjs::Result<ArrayBuffer<'js>> {
-                with(&shared, |wasm| wasm.memory_buffer(&ctx, handle))
+                with(&shared, &ctx, |wasm| wasm.memory_buffer(&ctx, handle))
             },
         )?,
     )?;
@@ -1482,7 +1672,7 @@ fn install_objects<'js>(
         Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, list: Array<'js>| -> rquickjs::Result<()> {
-                with(&shared, |wasm| wasm.sync_in(&ctx, &list))
+                with(&shared, &ctx, |wasm| wasm.sync_in(&ctx, &list))
             },
         )?,
     )?;
@@ -1492,7 +1682,7 @@ fn install_objects<'js>(
         Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>| -> rquickjs::Result<Array<'js>> {
-                with(&shared, |wasm| wasm.sync_out(&ctx))
+                with(&shared, &ctx, |wasm| wasm.sync_out(&ctx))
             },
         )?,
     )?;
@@ -1515,7 +1705,7 @@ fn install_objects<'js>(
                   maximum: f64,
                   init: Value<'js>|
                   -> rquickjs::Result<Array<'js>> {
-                with(&shared, |wasm| {
+                with(&shared, &ctx, |wasm| {
                     wasm.table_new(&ctx, &letter, (initial, maximum), &init)
                 })
             },
@@ -1527,7 +1717,7 @@ fn install_objects<'js>(
         Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, handle: f64| -> rquickjs::Result<f64> {
-                with(&shared, |wasm| {
+                with(&shared, &ctx, |wasm| {
                     let table = Wasm::kept(&wasm.tables, &ctx, handle, "a table")?;
                     Ok(table.size(&wasm.store) as f64)
                 })
@@ -1540,7 +1730,7 @@ fn install_objects<'js>(
         Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, handle: f64| -> rquickjs::Result<String> {
-                with(&shared, |wasm| {
+                with(&shared, &ctx, |wasm| {
                     let table = Wasm::kept(&wasm.tables, &ctx, handle, "a table")?;
                     Ok(letter(element(table.ty(&wasm.store).element()).0).to_string())
                 })
@@ -1553,7 +1743,7 @@ fn install_objects<'js>(
         Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, handle: f64, index: f64| -> rquickjs::Result<Array<'js>> {
-                with(&shared, |wasm| wasm.table_get(&ctx, handle, index))
+                with(&shared, &ctx, |wasm| wasm.table_get(&ctx, handle, index))
             },
         )?,
     )?;
@@ -1567,7 +1757,9 @@ fn install_objects<'js>(
                   index: f64,
                   value: Value<'js>|
                   -> rquickjs::Result<Array<'js>> {
-                with(&shared, |wasm| wasm.table_set(&ctx, handle, index, &value))
+                with(&shared, &ctx, |wasm| {
+                    wasm.table_set(&ctx, handle, index, &value)
+                })
             },
         )?,
     )?;
@@ -1581,7 +1773,9 @@ fn install_objects<'js>(
                   delta: f64,
                   value: Value<'js>|
                   -> rquickjs::Result<Array<'js>> {
-                with(&shared, |wasm| wasm.table_grow(&ctx, handle, delta, &value))
+                with(&shared, &ctx, |wasm| {
+                    wasm.table_grow(&ctx, handle, delta, &value)
+                })
             },
         )?,
     )?;
@@ -1595,7 +1789,7 @@ fn install_objects<'js>(
                   mutable: bool,
                   value: Value<'js>|
                   -> rquickjs::Result<f64> {
-                with(&shared, |wasm| {
+                with(&shared, &ctx, |wasm| {
                     wasm.global_new(&ctx, &letter, mutable, &value)
                 })
             },
@@ -1607,7 +1801,7 @@ fn install_objects<'js>(
         Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, handle: f64| -> rquickjs::Result<String> {
-                with(&shared, |wasm| {
+                with(&shared, &ctx, |wasm| {
                     let global = Wasm::kept(&wasm.globals, &ctx, handle, "a global")?;
                     let ty = global.ty(&wasm.store);
                     let mutable = matches!(ty.mutability(), Mutability::Var);
@@ -1626,7 +1820,7 @@ fn install_objects<'js>(
         Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, handle: f64| -> rquickjs::Result<Value<'js>> {
-                with(&shared, |wasm| {
+                with(&shared, &ctx, |wasm| {
                     let global = Wasm::kept(&wasm.globals, &ctx, handle, "a global")?;
                     let val = global.get(&wasm.store);
                     wasm.raw(&ctx, &val)
@@ -1640,7 +1834,7 @@ fn install_objects<'js>(
         Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, handle: f64, value: Value<'js>| -> rquickjs::Result<()> {
-                with(&shared, |wasm| {
+                with(&shared, &ctx, |wasm| {
                     let global = Wasm::kept(&wasm.globals, &ctx, handle, "a global")?;
                     let val = wasm.val(&ctx, &value, global.ty(&wasm.store).content())?;
                     global
@@ -1651,4 +1845,97 @@ fn install_objects<'js>(
         )?,
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn budget() -> Budget {
+        Budget {
+            steps: Rc::default(),
+            work: Rc::default(),
+            exhausted: Rc::default(),
+            limit: 1_000,
+        }
+    }
+
+    #[test]
+    fn a_panic_in_the_engine_gives_up_the_realms_webassembly() {
+        let runtime = rquickjs::Runtime::new().expect("a runtime");
+        let context = rquickjs::Context::full(&runtime).expect("a context");
+        context.with(|ctx| {
+            let shared = Rc::new(Bridge {
+                budget: budget(),
+                state: RefCell::new(State::Unmade),
+            });
+            let made = with(&shared, &ctx, |wasm| Ok(wasm.modules.len()));
+            assert_eq!(made.ok(), Some(0));
+            let panicked = with(&shared, &ctx, |_| -> rquickjs::Result<()> {
+                panic!("a fault of the engine's")
+            });
+            assert!(panicked.is_err());
+            assert!(matches!(*shared.state.borrow(), State::Dead));
+            assert!(with(&shared, &ctx, |_| Ok(())).is_err());
+        });
+    }
+
+    #[test]
+    fn the_limiter_counts_what_the_store_holds() {
+        let mut limiter = Limiter::default();
+        assert_eq!(
+            limiter.memory_growing(0, MAX_WASM_MEMORY, None).ok(),
+            Some(true)
+        );
+        assert_eq!(limiter.memory_growing(0, 1, None).ok(), Some(false));
+        let failed = wasmi::errors::MemoryError::OutOfBoundsGrowth;
+        limiter
+            .memory_grow_failed(&failed)
+            .expect("it is given back");
+        assert_eq!(limiter.table_growing(0, 1000, None).ok(), Some(true));
+        assert_eq!(limiter.taken, 8000);
+        let past = MAX_WASM_TABLE_ELEMENTS + 1;
+        assert_eq!(limiter.table_growing(0, past, None).ok(), Some(false));
+    }
+
+    /// The realm's stack ends a page's nesting long before the bound
+    /// (M29 step 4), which holds all the same.
+    #[test]
+    fn calls_nest_no_deeper_than_the_bound() -> rquickjs::Result<()> {
+        let runtime = rquickjs::Runtime::new().expect("a runtime");
+        let context = rquickjs::Context::full(&runtime).expect("a context");
+        context.with(|ctx| {
+            let mut wasm = Wasm::new(budget());
+            let text = r#"(module (import "env" "f" (func $f)) (func (export "g") call $f))"#;
+            let bytes = wat::parse_str(text).expect("it parses");
+            let compiled = compile(&wasm.engine, &bytes).expect("it compiles");
+            wasm.modules.push(compiled);
+            let given = Array::new(ctx.clone())?;
+            given.set(0, "h")?;
+            given.set(1, 0)?;
+            let made = wasm.instantiate(&ctx, 0.0, &given)?;
+            let exports = wasm.exports(&ctx, made.get(1)?)?;
+            let g: f64 = exports.get(2)?;
+            let none = Array::new(ctx.clone())?;
+            for depth in 0..MAX_WASM_NESTING {
+                let stopped = wasm.call(&ctx, g, &none, depth == 0)?;
+                assert_eq!(stopped.get::<i32>(0)?, 1, "{depth}");
+            }
+            let refused = wasm.call(&ctx, g, &none, false)?;
+            assert_eq!(
+                refused.get::<String>(2)?,
+                "Maximum call stack size exceeded"
+            );
+            // The outermost call resumed: those above it are dropped.
+            let done = wasm.resume(&ctx, 0.0, &none)?;
+            assert_eq!(done.get::<i32>(0)?, 0);
+            assert!(wasm.pending.is_empty());
+            // A call with none under way drops what an error left.
+            wasm.call(&ctx, g, &none, true)?;
+            wasm.call(&ctx, g, &none, false)?;
+            wasm.call(&ctx, g, &none, true)?;
+            assert_eq!(wasm.pending.len(), 1);
+            Ok(())
+        })
+    }
 }

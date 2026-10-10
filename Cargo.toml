@@ -111,8 +111,13 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 # features, under which the heap limit would do nothing.
 rquickjs = { version = "=0.14.0", default-features = false, features = ["std"] }
 # WebAssembly (M29, D21; docs/design/wasm.md): an interpreter in Rust,
-# validating every module; without its text format and memory64.
-wasmi = { version = "2.0", default-features = false, features = ["std", "validate", "auto-dispatch"] }
+# validating every module; without its text format and memory64. Its
+# portable dispatch, a loop: the tail-call dispatch counts on sibling
+# calls LLVM does not always make, and a long loop then overflows the
+# native stack.
+wasmi = { version = "2.0", default-features = false, features = ["std", "validate", "portable-dispatch"] }
+# wasmi's own core, for the one type of its limiter's it does not export.
+wasmi_core = { version = "2.0", default-features = false }
 # A module's sections in their order, which wasmi keeps not: the
 # version wasmi reads modules with.
 wasmparser = { version = "0.228", default-features = false, features = ["std"] }
