@@ -3,9 +3,11 @@
 //! jar, in contexts and at times the input says, with the `Cookie`
 //! header read between. Nothing panics; every cookie a store keeps is
 //! one the rules allow that store, checked here on what was kept rather
-//! than on how the jar decided; the jar stays within its limits and
-//! never holds two cookies of one name, domain and path; and the header
-//! it sends is exactly the cookies that go to its URL, serialized.
+//! than on how the jar decided; the jar stays within its limits, never
+//! holds two cookies of one name, domain and path, and keeps nothing
+//! expired as of its last store or read (it takes them out then); and
+//! the header it sends is exactly the cookies that go to its URL,
+//! serialized.
 
 #![no_main]
 
@@ -229,6 +231,9 @@ fuzz_target!(|data: &[u8]| {
     let mut input = Input(data);
     let mut jar = Jar::new();
     let mut now = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+    // The jar takes out what has expired when it is next looked at, by
+    // a store or a read: nothing it keeps is expired as of then.
+    let mut looked = now;
     let mut steps = 0;
     while !input.0.is_empty() && steps < 64 {
         steps += 1;
@@ -261,6 +266,7 @@ fuzz_target!(|data: &[u8]| {
                     assert!(!header.is_empty());
                 }
                 assert_eq!(pieces, expected(&jar, &url, api, context));
+                looked = now;
             }
             // Many cookies at once, for the limits.
             4 => {
@@ -268,6 +274,9 @@ fuzz_target!(|data: &[u8]| {
                 for n in 0..count {
                     let line = format!("c{n}=v; Path=/{}", n % 3);
                     jar.store(line.as_bytes(), &url, Api::Http, Context::SAME_SITE, now);
+                }
+                if count > 0 {
+                    looked = now;
                 }
             }
             // A Set-Cookie value, or a script's string.
@@ -280,8 +289,9 @@ fuzz_target!(|data: &[u8]| {
                         check_made(cookie, &url, api, context);
                     }
                 }
+                looked = now;
             }
         }
-        check_jar(&jar, now);
+        check_jar(&jar, looked);
     }
 });
