@@ -12,3 +12,6 @@ fuzz/corpus
 # Sabotage passes: what a break left, removed when it ends
 fuzz/sabotage-artifacts
 *.bak
+
+# The acceptance module of M29 built in place
+crates/engine/tests/wasm/numbers/target

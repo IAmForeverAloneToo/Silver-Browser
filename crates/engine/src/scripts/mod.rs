@@ -13,6 +13,8 @@
 mod cssom;
 mod fetch;
 mod host;
+#[cfg(test)]
+mod wasm_tests;
 
 #[cfg(test)]
 pub(crate) use fetch::MAX_SCRIPT_FETCHES;

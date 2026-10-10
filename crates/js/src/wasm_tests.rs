@@ -143,7 +143,9 @@ fn base64_from_the_realm_is_read_as_it_writes_it() {
     assert_eq!(from_base64("AAE="), Some(vec![0, 1]));
     assert_eq!(from_base64("AAEC"), Some(vec![0, 1, 2]));
     assert_eq!(from_base64("/+8A"), Some(vec![0xff, 0xef, 0]));
-    for bad in ["A", "AA=", "A===", "AA*=", "AAAA AAA"] {
+    for bad in [
+        "A", "AA=", "A===", "AA*=", "AAAA AAA", "A*AAAAAA", "AA=AAAAA",
+    ] {
         assert_eq!(from_base64(bad), None, "{bad}");
     }
 }

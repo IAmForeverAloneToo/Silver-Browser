@@ -1,0 +1,25 @@
+# The acceptance module of M29 (docs/design/wasm.md): Rust functions
+# compiled to WebAssembly, which a page's script gives numbers and gets
+# numbers back from. Built apart from the workspace, for a target the
+# workspace never builds:
+#   cargo build --release --target wasm32-unknown-unknown
+# and the module copied beside this file as numbers.wasm.
+[package]
+name = "numbers"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "AGPL-3.0-only"
+
+[lib]
+crate-type = ["cdylib"]
+path = "lib.rs"
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+strip = true
+codegen-units = 1
+
+[workspace]

@@ -1092,10 +1092,13 @@ impl Wasm {
             let text: String = list.get(i + 1)?;
             let memory = Wasm::kept(&self.memories, ctx, handle, "a memory")?;
             let data = memory.data_mut(&mut self.store);
-            if let Some(bytes) = from_base64(&text).filter(|bytes| bytes.len() == data.len()) {
-                data.copy_from_slice(&bytes);
-                self.mirrors.insert(handle as u32, bytes);
+            // Decoded into the copy kept of the buffer, in place; one of
+            // another length is the next leaving's to report.
+            let mut mirror = self.mirrors.remove(&(handle as u32)).unwrap_or_default();
+            if decode_into(text.as_bytes(), &mut mirror) && mirror.len() == data.len() {
+                data.copy_from_slice(&mirror);
             }
+            self.mirrors.insert(handle as u32, mirror);
         }
         Ok(())
     }
@@ -1327,35 +1330,64 @@ type Shared = Rc<Bridge>;
 /// The bytes `text`, base64 as `toBase64` writes it, encode; `None` for
 /// text that is not.
 pub(crate) fn from_base64(text: &str) -> Option<Vec<u8>> {
-    fn value(c: u8) -> Option<u32> {
-        Some(u32::from(match c {
-            b'A'..=b'Z' => c - b'A',
-            b'a'..=b'z' => c - b'a' + 26,
-            b'0'..=b'9' => c - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            _ => return None,
-        }))
+    let mut out = Vec::new();
+    decode_into(text.as_bytes(), &mut out).then_some(out)
+}
+
+/// Each base64 letter's value, and 64 for any other byte.
+const BASE64: [u8; 256] = {
+    let mut table = [64u8; 256];
+    let letters = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut i = 0;
+    while i < 64 {
+        table[letters[i] as usize] = i as u8;
+        i += 1;
     }
-    let text = text.as_bytes();
+    table
+};
+
+/// The bytes base64 `text` encodes, into `out` in place of what it held
+/// (a memory's mirror is a megabyte and more, read at every call into
+/// the store): whether `text` is base64 as `toBase64` writes it.
+fn decode_into(text: &[u8], out: &mut Vec<u8>) -> bool {
+    out.clear();
     if !text.len().is_multiple_of(4) {
-        return None;
+        return false;
     }
-    let mut out = Vec::with_capacity(text.len() / 4 * 3);
-    for chunk in text.chunks(4) {
-        let pad = chunk.iter().rev().take_while(|&&c| c == b'=').count();
-        if pad > 2 {
-            return None;
+    let last = text.len().saturating_sub(4);
+    let (body, tail) = text.split_at(last);
+    out.resize(body.len() / 4 * 3, 0);
+    for (group, bytes) in body
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(out.as_chunks_mut::<3>().0)
+    {
+        let [a, b, c, d] = group.map(|c| BASE64[usize::from(c)]);
+        if (a | b | c | d) & 64 != 0 {
+            return false;
         }
-        let mut word = 0u32;
-        for &c in &chunk[..4 - pad] {
-            word = word << 6 | value(c)?;
-        }
-        word <<= 6 * pad as u32;
-        let bytes = [(word >> 16) as u8, (word >> 8) as u8, word as u8];
-        out.extend_from_slice(&bytes[..3 - pad]);
+        let word = u32::from(a) << 18 | u32::from(b) << 12 | u32::from(c) << 6 | u32::from(d);
+        bytes.copy_from_slice(&[(word >> 16) as u8, (word >> 8) as u8, word as u8]);
     }
-    Some(out)
+    if tail.is_empty() {
+        return true;
+    }
+    let pad = tail.iter().rev().take_while(|&&c| c == b'=').count();
+    if pad > 2 {
+        return false;
+    }
+    let mut word = 0u32;
+    for &c in &tail[..4 - pad] {
+        let value = BASE64[usize::from(c)];
+        if value & 64 != 0 {
+            return false;
+        }
+        word = word << 6 | u32::from(value);
+    }
+    word <<= 6 * pad as u32;
+    out.extend_from_slice(&[(word >> 16) as u8, (word >> 8) as u8, word as u8][..3 - pad]);
+    true
 }
 
 /// A module's bytes from the realm, within [`MAX_WASM_MODULE_BYTES`],

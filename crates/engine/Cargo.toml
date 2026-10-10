@@ -86,6 +86,10 @@ name = "storage"
 harness = false
 
 [[bench]]
+name = "wasm"
+harness = false
+
+[[bench]]
 name = "scripts"
 harness = false
 
