@@ -19,6 +19,13 @@
 //! of its own. After each run the engine's clock, a hand's, moves on as
 //! the input says, the tasks then due run, and a frame's rendering
 //! steps with them, so that what a script left for later happens.
+//!
+//! M27's: `fetch()` and `XMLHttpRequest`, synchronous too, of `data:`
+//! URLs and of URLs they refuse, their answers settled after each run
+//! (`engine::differential::settle_network`) and run as tasks on the
+//! hand's clock; `Headers`, `FormData`, `URLSearchParams`, `Blob` and
+//! `Response` bodies, and `document.cookie`, which a `data:` document
+//! does not have.
 
 #![no_main]
 
@@ -28,7 +35,7 @@ use std::sync::mpsc::channel;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use engine::differential::{compare_with_fresh, run_script};
+use engine::differential::{compare_with_fresh, run_script, settle_network};
 use engine::{Engine, FrameTime, LoadState};
 use libfuzzer_sys::fuzz_target;
 use net::url::Url;
@@ -243,6 +250,62 @@ const HANDLER_CODE: &[&str] = &[
     "x(",
 ];
 
+/// What scripts fetch (M27): `data:` URLs of each kind a body comes
+/// in, and URLs a fetch refuses or cannot parse.
+const URLS: &[&str] = &[
+    "data:text/plain,hello",
+    "data:text/html,%3Cp%3Ex%3C/p%3E",
+    "data:application/json,%7B%22a%22:[1,2]%7D",
+    "data:,",
+    "data:text/plain;base64,aGk=",
+    "data:text/plain;charset=utf-16le;base64,aABpAA==",
+    "data:image/png;base64,AA==",
+    "data:text/plain,a%00b%FF",
+    "about:blank",
+    "http://[",
+    "javascript:1",
+    "x",
+];
+const METHODS: &[&str] = &[
+    "GET", "POST", "PUT", "HEAD", "delete", "patch", "TRACE", "x y",
+];
+/// A fetch's init.
+const INITS: &[&str] = &[
+    "{}",
+    "{method: 'POST', body: 'b'}",
+    "{mode: 'no-cors'}",
+    "{mode: 'same-origin'}",
+    "{redirect: 'manual'}",
+    "{redirect: 'error'}",
+    "{credentials: 'include'}",
+    "{headers: {'X-A': '1', 'Content-Type': 'text/plain'}}",
+    "{signal: ac.signal}",
+    "{method: 'POST', body: new URLSearchParams('a=1&b=2')}",
+    "{method: 'POST', body: new Blob(['x'], {type: 'text/x'})}",
+    "{method: 'POST', body: new FormData()}",
+    "{cache: 'no-store', keepalive: true}",
+];
+/// What an XHR sends.
+const BODIES: &[&str] = &[
+    "null",
+    "'b'",
+    "new Blob(['x'])",
+    "new URLSearchParams('a=1')",
+    "new FormData()",
+    "new Uint8Array([1, 2])",
+    "new ArrayBuffer(3)",
+];
+const RESPONSE_TYPES: &[&str] = &["", "text", "json", "arraybuffer", "blob", "document", "x"];
+/// What a `Headers` is made from.
+const HEADER_INITS: &[&str] = &[
+    "undefined",
+    "[['a', '1'], ['B', '2'], ['a', '3']]",
+    "{'Set-Cookie': 'x', c: 'd'}",
+    "[['a']]",
+    "new Headers([['c', '3']])",
+    "[['a b', '1']]",
+];
+
 /// The input, read a byte at a time; past its end, zeros.
 struct Input<'a>(&'a [u8]);
 
@@ -308,7 +371,7 @@ fn body(input: &mut Input, nested: bool) -> String {
 /// One call, read from `input`, as a statement; `nested` in a
 /// listener's or a callback's body.
 fn call(input: &mut Input, nested: bool) -> String {
-    let op = input.byte() % 54;
+    let op = input.byte() % 62;
     let a = input.node();
     match op {
         0 => format!("p(document.createElement({}))", input.pick(TAGS)),
@@ -507,6 +570,62 @@ fn call(input: &mut Input, nested: bool) -> String {
             1 => format!("({a}.form || {a}).requestSubmit()"),
             _ => format!("p({a}.elements[{}]); p({a}.labels[0])", input.byte() % 4),
         },
+        54 => format!(
+            "fetch({}, {}).then(r => r.text()).then(t => {{ {a}.textContent = t }}, e => {{ {a}.title = e.name }})",
+            input.text(URLS),
+            INITS[usize::from(input.byte()) % INITS.len()]
+        ),
+        55 => {
+            let method = input.text(METHODS);
+            let url = input.text(URLS);
+            let response_type = input.pick(RESPONSE_TYPES);
+            let timeout = input.byte() % 4 * 10;
+            let body = BODIES[usize::from(input.byte()) % BODIES.len()];
+            format!(
+                "var x = new XMLHttpRequest(); x.open({method}, {url}); x.responseType = {response_type}; \
+                 x.timeout = {timeout}; x.onloadend = function () {{ {a}.textContent = x.status + ' ' + \
+                 (x.responseType === '' || x.responseType === 'text' ? x.responseText : typeof x.response) }}; \
+                 x.send({body})"
+            )
+        }
+        56 => format!(
+            "var y = new XMLHttpRequest(); y.open('GET', {}, false); y.send(); \
+             {a}.textContent = y.responseText + y.getAllResponseHeaders()",
+            input.text(URLS)
+        ),
+        57 => format!(
+            "var hd = new Headers({}); hd.append({}, {}); hd.delete({}); {a}.title = [...hd].join() + hd.get('a')",
+            HEADER_INITS[usize::from(input.byte()) % HEADER_INITS.len()],
+            input.text(VALUES),
+            input.text(VALUES),
+            input.text(VALUES)
+        ),
+        58 => format!(
+            "var fd = new FormData({a} instanceof HTMLFormElement ? {a} : undefined); fd.append({}, {}); \
+             fd.set('f', new Blob(['x']), 'n'); {a}.title = [...fd.keys()].join()",
+            input.text(VALUES),
+            input.text(VALUES)
+        ),
+        59 => format!(
+            "var u = new URLSearchParams({}); u.append({}, {}); u.sort(); {a}.title = u.toString() + u.size",
+            input.text(VALUES),
+            input.text(VALUES),
+            input.text(VALUES)
+        ),
+        60 => format!(
+            "new Blob([{}, {}], {{type: {}}}).slice({}, {}).text().then(t => {{ {a}.title = t }}); \
+             new Response({}).arrayBuffer().then(b => {{ {a}.dataset.n = b.byteLength }})",
+            input.text(VALUES),
+            input.text(MARKUP),
+            input.text(VALUES),
+            input.byte() % 8,
+            input.byte() % 8,
+            input.text(VALUES)
+        ),
+        61 => format!(
+            "document.cookie = {}; {a}.title = document.cookie + navigator.cookieEnabled",
+            input.text(VALUES)
+        ),
         _ => {
             let property = ["disabled", "required", "readOnly", "multiple", "noValidate"]
                 [usize::from(input.byte()) % 5];
@@ -596,6 +715,7 @@ fuzz_target!(|data: &[u8]| {
             .recv_timeout(Duration::from_secs(60))
             .expect("the page loads");
     }
+    settle_network(&mut engine);
     let mut fresh = scripting();
     let mut made = 0;
     for run in 1.. {
@@ -613,11 +733,13 @@ fuzz_target!(|data: &[u8]| {
             engine.frame(WIDTH, HEIGHT);
         }
         run_script(&mut engine, &calls(&mut input, RUN));
+        settle_network(&mut engine);
         made += RUN;
         // Time passes, up to a second: the timers then due run, then a
         // frame's rendering steps, its animation frame callbacks.
         NOW.fetch_add(u64::from(input.byte()) * 4, Ordering::Relaxed);
         engine.run_tasks();
+        settle_network(&mut engine);
         engine.frame_at(WIDTH, HEIGHT, FrameTime::at(now()));
     }
     if let Err(difference) = compare_with_fresh(&mut engine, &mut fresh, WIDTH, HEIGHT) {

@@ -335,7 +335,6 @@ impl Network {
     }
 
     /// How many fetches are in flight.
-    #[cfg(test)]
     pub(crate) fn in_flight(&self) -> usize {
         self.flights.len()
     }

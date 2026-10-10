@@ -5,7 +5,7 @@
 # through to a raster; for the image decoders; and for the engine whose
 # document changes in place, held to a full pass over it; and for
 # scripts, which run under their limits, and the policies that say which
-# may run; and for sequences of DOM calls a page's script makes, and of
+# may run; and for the cookie jar; and for sequences of DOM calls a page's script makes, and of
 # the input a page's controls are used through.
 # Not a workspace member: libfuzzer needs nightly, and the normal build
 # must not.
@@ -43,6 +43,13 @@ text = { path = "../crates/text" }
 [[bin]]
 name = "csp"
 path = "fuzz_targets/csp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cookies"
+path = "fuzz_targets/cookies.rs"
 test = false
 doc = false
 bench = false

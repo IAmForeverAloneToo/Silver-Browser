@@ -388,3 +388,30 @@ fn a_document_on_its_way_hears_its_fetches_answer_before_it_is_shown() {
         .collect();
     assert_eq!(lines, ["fetched early", "rest"]);
 }
+
+#[test]
+fn answers_that_came_at_one_time_run_in_the_order_they_were_asked_for() {
+    let (mut tab, _server) = page_with("", |request| match request.target.as_str() {
+        "/slow" => Some(Reply::After(
+            Duration::from_millis(300),
+            Box::new(Reply::ok("text/plain", b"slow")),
+        )),
+        _ => Some(Reply::ok("text/plain", b"fast")),
+    });
+    // A hand's clock, which does not move while both come.
+    tab.engine
+        .set_clock(std::sync::Arc::new(|| Duration::from_secs(1)));
+    tab.engine.run_classic(
+        "for (const path of ['/slow', '/fast']) fetch(path).then(r => r.text()).then(t => console.log(t));",
+    );
+    crate::differential::settle_network(&mut tab.engine);
+    assert!(tab.engine.take_console().is_empty());
+    tab.engine.run_tasks();
+    let lines: Vec<String> = tab
+        .engine
+        .take_console()
+        .into_iter()
+        .map(|e| e.text)
+        .collect();
+    assert_eq!(lines, ["slow", "fast"]);
+}

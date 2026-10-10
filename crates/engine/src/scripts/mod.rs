@@ -924,7 +924,12 @@ impl Scripts {
                     None
                 }
             };
-            self.answers.push_back((now, script, answer));
+            // In the order they came; those that came at one time, as
+            // a hand's clock gives, in the order they were asked for.
+            let at = self
+                .answers
+                .partition_point(|(came, of, _)| (*came, *of) <= (now, script));
+            self.answers.insert(at, (now, script, answer));
         }
     }
 

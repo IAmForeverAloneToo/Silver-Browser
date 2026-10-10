@@ -223,6 +223,23 @@ pub fn run_script(engine: &mut Engine, source: &str) {
     engine.run_classic(source);
 }
 
+/// Takes the result of every fetch `engine` has in flight, waiting for
+/// those still on their way (M27): what a script's `fetch()` or XHR
+/// asked of a `data:` URL then waits as a task, due when the engine's
+/// clock says it came, so that a target's run does not depend on how
+/// fast the network's threads were. It yields between looks rather
+/// than sleeping, which on Windows is never shorter than a tick of the
+/// system's timer, some 15 ms.
+pub fn settle_network(engine: &mut Engine) {
+    loop {
+        engine.poll_network();
+        if engine.network.in_flight() == 0 {
+            return;
+        }
+        std::thread::yield_now();
+    }
+}
+
 /// Draws a `width` by `height` frame with `engine` and compares what it
 /// keeps with what `fresh` computes for a snapshot of its document,
 /// scrolled as `engine` is: the computed style of every element, every
