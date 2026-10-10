@@ -1094,3 +1094,136 @@ fn the_search_form_is_sent_with_enter_and_with_its_button_scripts_on_and_off() {
         );
     }
 }
+
+/// M27's acceptance page (docs/design/fetch.md, "Acceptance"): a button
+/// that signs in by a `fetch` POST, the server answering with a Lax,
+/// HttpOnly session cookie; a second request, which the cookie
+/// authorizes, naming the user; then data from a second origin by CORS
+/// with credentials, twice, its own cookie set by the first answer and
+/// sent with the second. The title says what came, and a box as wide as
+/// fifty pixels a visit shows it.
+const SIGN_IN: &str = "<style>body { margin: 0 } button { position: absolute; left: 0; top: 0; \
+     width: 120px; height: 30px; margin: 0 } #box { position: absolute; left: 0; top: 40px; \
+     height: 20px; background-color: #2f6f4f }</style>\
+     <button id=go>Sign in</button><div id=box></div><script>\
+     document.getElementById('go').addEventListener('click', async function () {\
+       const body = new URLSearchParams({user: 'ada', password: 'lovelace'});\
+       const signed = await fetch('/login', {method: 'POST', body: body});\
+       if (!signed.ok) { document.title = 'refused'; return; }\
+       const me = await (await fetch('/me')).json();\
+       const visits = [];\
+       for (let i = 0; i < 2; i++) {\
+         const r = await fetch(OTHER + '/data', {credentials: 'include'});\
+         visits.push((await r.json()).visits);\
+       }\
+       document.getElementById('box').style.width = (visits[1] * 50) + 'px';\
+       document.title = 'Signed in as ' + me.name + ', visits ' + visits.join(' then ') +\
+         ', cookie ' + JSON.stringify(document.cookie);\
+     });</script>";
+
+#[test]
+fn a_page_signs_in_by_fetch_and_reads_another_origin_by_cors_with_credentials() {
+    // The other origin, of another site: it allows the page's origin,
+    // with credentials, and counts a visitor by its own cookie.
+    let other = TestServer::plain(|request| {
+        let origin = request.header("Origin").unwrap_or("").to_owned();
+        let seen = request
+            .header("Cookie")
+            .is_some_and(|c| c.contains("seen=1"));
+        let mut fields = vec![
+            ("Content-Type", "application/json".to_owned()),
+            ("Access-Control-Allow-Origin", origin),
+            ("Access-Control-Allow-Credentials", "true".to_owned()),
+        ];
+        if !seen {
+            fields.push((
+                "Set-Cookie",
+                "seen=1; SameSite=None; Secure; Path=/".to_owned(),
+            ));
+        }
+        let fields: Vec<(&str, &str)> = fields.iter().map(|(n, v)| (*n, v.as_str())).collect();
+        let body = if seen {
+            "{\"visits\":2}"
+        } else {
+            "{\"visits\":1}"
+        };
+        Reply::with_fields(200, &fields, body.as_bytes())
+    });
+    let page = SIGN_IN.replace("OTHER", &format!("'http://localhost:{}'", other.port()));
+    let server = TestServer::plain(move |request| {
+        let cookie = request.header("Cookie").unwrap_or("");
+        match (request.method.as_str(), request.target.as_str()) {
+            ("GET", "/") => Reply::ok("text/html", page.as_bytes()),
+            ("POST", "/login") if request.body == b"user=ada&password=lovelace" => {
+                Reply::with_fields(
+                    200,
+                    &[(
+                        "Set-Cookie",
+                        "session=s3cret; HttpOnly; SameSite=Lax; Path=/",
+                    )],
+                    b"",
+                )
+            }
+            ("GET", "/me") if cookie.contains("session=s3cret") => {
+                Reply::ok("application/json", b"{\"name\":\"ada\"}")
+            }
+            _ => Reply::with_fields(403, &[], b""),
+        }
+    });
+    let mut window = Window::with_scripts(Some(server.url("/")));
+    window.settle();
+    let top = ui::HEIGHT as f32;
+    window.click(60.0, top + 15.0);
+    // The answers come as the network brings them, each a task the
+    // window's tick runs.
+    let deadline = Instant::now() + WAIT;
+    while !window.session.title().starts_with("Signed in") {
+        assert!(
+            Instant::now() < deadline,
+            "not signed in: {}",
+            window.session.title()
+        );
+        let _ = window.woken.recv_timeout(Duration::from_millis(20));
+        window.session.network();
+        window.session.tick();
+        window.frame();
+    }
+    assert!(
+        window
+            .session
+            .title()
+            .starts_with("Signed in as ada, visits 1 then 2, cookie \"\""),
+        "{}",
+        window.session.title()
+    );
+    let out = window.frame();
+    let at = |x: u32, y: u32| out[((ui::HEIGHT + y) * WIDTH + x) as usize] & 0x00ff_ffff;
+    assert_eq!(at(90, 50), 0x2f6f4f, "two visits wide");
+    assert_eq!(at(110, 50), 0xffffff, "and no wider");
+    // The session cookie went with the second request only; the other
+    // origin's own went with its second answer's request, both asked
+    // from the page's origin.
+    let asked = server.requests();
+    let me = asked.iter().find(|r| r.target == "/me").expect("/me asked");
+    assert!(
+        me.header("Cookie")
+            .is_some_and(|c| c.contains("session=s3cret"))
+    );
+    let login = asked
+        .iter()
+        .find(|r| r.target == "/login")
+        .expect("/login asked");
+    assert_eq!(
+        login.header("Content-Type"),
+        Some("application/x-www-form-urlencoded;charset=UTF-8")
+    );
+    let data: Vec<_> = other.requests();
+    assert_eq!(data.len(), 2);
+    assert_eq!(data[0].header("Cookie"), None);
+    assert_eq!(data[1].header("Cookie"), Some("seen=1"));
+    let origin = format!("http://127.0.0.1:{}", server.port());
+    assert!(
+        data.iter()
+            .all(|r| r.header("Origin") == Some(origin.as_str()))
+    );
+}
