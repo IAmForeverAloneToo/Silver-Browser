@@ -368,13 +368,20 @@ images, the last item on T0's list, come with M23.
   markup and `document.write`; `classList`, `style`, `dataset`;
   `location`, `navigator` by D12, `screen` and `getComputedStyle`; the
   nodes scripts let go of freed.
+- **M26, events and input** (done 2026-10-10, designed in
+  `docs/design/events.md`): HTML's event loop in the engine, timers,
+  animation frames and the rendering steps; the DOM's events and
+  handlers; the document's lifecycle; the pointer, focus and the
+  keyboard delivered to the page, the dynamic pseudo-classes; form
+  controls shown and edited, their submission in every encoding and
+  their constraint validation.
 
 Each milestone's fuller writeup and stated gaps are in
 `docs/architecture.md` "Current state", and the gaps no milestone holds
 on the G list (M39+, below).
 
 Verified per the vertical-slice rule at each milestone, by the gate:
-the workspace's tests (1,902 at M25, two ignored), clippy clean (`-D
+the workspace's tests (2,063 at M26, two ignored), clippy clean (`-D
 warnings`, every target), `cargo deny`, the fuzz targets, and a smoke
 run of the shell. Toolchain: 1.98.1, pinned by `rust-toolchain.toml`.
 The checkout lives outside OneDrive since 2026-10-08
@@ -1607,31 +1614,60 @@ Per css-grid-1 (level 2 subgrid included):
 
 ## M26 — Event loop, events, input  ·  `engine`  ·  Effort: L  ·  Depends: M25
 
-- [ ] M26.1 HTML event loop: task queue, microtask checkpoint, rendering
-       steps (rAF callbacks → style → layout → paint), per spec ordering.
-- [ ] M26.2 Event dispatch: capture/bubble/target phases, listeners,
+- [x] M26.1 HTML event loop: task queue, microtask checkpoint, rendering
+       steps (rAF callbacks -> style -> layout -> paint), per spec
+       ordering.
+       Done 2026-10-10: `Engine::run_tasks` and `next_task_at` over
+       tasks kept per document, on a clock the engine is given (the
+       shell's, a hand's in tests); the realm entered by `js::Task`, a
+       microtask checkpoint after each task and after each listener of
+       the engine's dispatches; `frame_at`'s rendering steps (`resize`,
+       `scroll`, the animation events, the callbacks); the document's
+       lifecycle events and a hidden page's throttling.
+- [x] M26.2 Event dispatch: capture/bubble/target phases, listeners,
        `stopPropagation/preventDefault`, synthetic event creation from
-       JS (`dispatchEvent`).
-- [ ] M26.3 User input: mouse (click/dblclick/mousedown/up/move),
+       JS (`dispatchEvent`). Done 2026-10-10: the event classes,
+       `AbortController`, listeners' options, the dispatch as a
+       generator the realm steps, handlers as IDL and content
+       attributes, the `error` event and `reportError`, activation
+       hooks.
+- [x] M26.3 User input: mouse (click/dblclick/mousedown/up/move),
        keyboard (keydown/up/keypress), focus chain (focus/blur, tab order
-       v1), wheel, `change`/`input` on form controls.
-- [ ] M26.4 Now-dynamic pseudo-classes: `:hover`, `:active`, `:focus`
-       (M4.7 debt paid).
-- [ ] M26.5 Timers: `setTimeout/setInterval` (clamped, background
-       throttling policy), `Promise` + microtask ordering.
-- [ ] M26.6 Link handling: `<a href>` click → navigation; middle-click
-       → new-tab-less v1 (tabs are M37 — queue a note). (M15 follows a
+       v1), wheel, `change`/`input` on form controls. Done 2026-10-10:
+       pointer and mouse events in the reference browser's order, clicks
+       and their counts; focus, sequential navigation and the address
+       field, the window's focus, `autofocus`; keys with their default
+       actions, the scrolling keys and the wheel moved into the engine;
+       editing with `beforeinput`, `input` and `change`.
+- [x] M26.4 Now-dynamic pseudo-classes: `:hover`, `:active`, `:focus`
+       (M4.7 debt paid). Done 2026-10-10: `dom`'s state flags journaled
+       and restyled by where the selectors read them; `:focus-visible`,
+       `:focus-within`, `:target`; `outline` and `cursor`.
+- [x] M26.5 Timers: `setTimeout/setInterval` (clamped, background
+       throttling policy), `Promise` + microtask ordering. Done
+       2026-10-10: nesting clamped to 4ms past five, `MAX_TIMERS`, a
+       hidden document's at most once a second; checked against the
+       reference browser by M26.12's golden page.
+- [x] M26.6 Link handling: `<a href>` click -> navigation; middle-click
+       -> new-tab-less v1 (tabs are M37: queue a note). (M15 follows a
        click on a link from the shell, `docs/design/navigation.md`; this
-       item makes the click an event a listener can cancel.)
-- [ ] M26.7 Form controls v1: what each control shows, a button's label,
+       item makes the click an event a listener can cancel.) Done
+       2026-10-10: a link followed as its click's activation behaviour,
+       by the engine with scripts off; a middle click's notice; a
+       `javascript:` URL's string result made the document.
+- [x] M26.7 Form controls v1: what each control shows, a button's label,
        an `input`'s value or placeholder, a checkbox's and a radio's
        mark, a `select`'s chosen option and a `textarea`'s text (M10
        draws them as empty boxes); and how each is edited: focus,
        typing with a caret and a selection in text fields and
        textareas, checkboxes and radios toggled, an option chosen;
        each control's value, dirty flag and checkedness as HTML keeps
-       them. Found at M24, on Google's page without scripts.
-- [ ] M26.8 Form submission (HTML 4.10.21): a submit button, or Enter in
+       them. Found at M24, on Google's page without scripts. Done
+       2026-10-10: `dom`'s control records and the IDL; the boxes, marks
+       and list boxes, sized by the reference browser's figures and
+       stretching as its do; editing with a caret and a selection, the
+       clipboard and an input method's commits; the select's list.
+- [x] M26.8 Form submission (HTML 4.10.21): a submit button, or Enter in
        a text field (implicit submission), submits its form; the form
        data set built from its controls, encoded by `enctype`
        (`application/x-www-form-urlencoded`, `multipart/form-data`,
@@ -1642,10 +1678,20 @@ Per css-grid-1 (level 2 subgrid included):
        `formtarget` on the button; constraint validation v1
        (`required`, `pattern`, `min`, `max`, `minlength`,
        `maxlength`), skipped under `novalidate`. Found at M24: no
-       milestone held it.
-- [ ] M26.9 Acceptance: interactive todo-list page (add/remove/style
+       milestone held it. Done 2026-10-10: the entry list and the three
+       encodings in `net`, POST navigations with their history and the
+       resubmission page, implicit submission, reset; validation with
+       `js::pattern_matches`, the `invalid` event and the form
+       pseudo-classes. `formtarget` navigates this tab (M37).
+- [x] M26.9 Acceptance: interactive todo-list page (add/remove/style
        entries) works end-to-end; and a search form, a text field and
        a button, typed into and submitted, its results page loaded.
+       Done 2026-10-10: both through the shell's window (session
+       tests), the search form with scripts on and off, by Enter and by
+       its button; the to-do page in the real shell; pages 123-125 and
+       a page of controls' boxes against the reference browser. T4.3 in
+       `docs/perf-budgets.md`; the fuzz runs found a form's `:invalid`
+       left stale, mended.
 
 ---
 
@@ -1802,6 +1848,9 @@ process seams.
        milestone from now on (T4 track formalized).
 - [ ] M35.2 Style: rule hash bucketing (rightmost compound), style
        sharing cache (sibling style reuse), state-bounded invalidation.
+       At M26 the user agent sheet's 73 rules, 13 more for controls,
+       `:any-link` and `:focus-visible`, are each tried on every
+       element restyled: T4.3's restyles 9-16% slower.
 - [ ] M35.3 Layout: parallel block layout (rayon subtrees where
        independent — the DAG shape from architecture.md pays off here).
 - [ ] M35.4 Paint/raster: parallel raster tiles, display-list retention.
@@ -2148,6 +2197,33 @@ Deferred from the milestones above, each with what it waits on:
 - [ ] G55 A viewport for `--print-to-pdf`'s load: the page's scripts
        read a 0 by 0 window, the shell's window giving the engine its
        size only when one is shown. Found at M25.
+- [ ] G56 Dialogs the user answers: `alert`, `confirm` and `prompt`,
+       which log and answer as suppressed dialogs do. Found at M26.
+- [ ] G57 Leaving a page: `beforeunload`'s prompt, and asking before a
+       form is sent again (the resubmission page stands in). Found at
+       M26.
+- [ ] G58 Pointer capture (`setPointerCapture` and its events); touch
+       and pen input; drag and drop. Found at M26.
+- [ ] G59 Editing hosts: `contenteditable`, `designMode`,
+       `document.execCommand`, and selecting and copying a page's own
+       text. Found at M26.
+- [ ] G60 Input methods: composition events, and the text an input
+       method composes shown before it commits, in the page as in the
+       address field. Found at M26.
+- [ ] G61 Pickers: the `file` control (choosing a file, the files in a
+       form's body), `color`, `range`, the date and time types, and an
+       image button's picture and the point clicked; text fields until
+       then. Found at M26.
+- [ ] G62 Undo and redo in text controls. Found at M26.
+- [ ] G63 `dirname`, and the direction of a control's text. Found at
+       M26.
+- [ ] G64 A validation message beside its control, as the reference
+       browser draws it; the status bubble says it now. Found at M26.
+- [ ] G65 Observers and idle callbacks: `IntersectionObserver`,
+       `ResizeObserver`, `requestIdleCallback` (`MutationObserver` is
+       G49's); a `dialog` form's method. Found at M26.
+- [ ] G66 DOM's `moveBefore`, a move that keeps a node's state. Found at
+       M26, by a crashtest that threw on it.
 
 ---
 
@@ -2166,7 +2242,8 @@ Deferred from the milestones above, each with what it waits on:
        Done 2026-10-01 (M10.7) as `tests/reference.rs`: pages captured
        from a headless reference browser, Chrome rather than Firefox
        (the box model's note), compared byte for byte or within a
-       tolerance a page declares; 118 pages at M24. It is one of the
+       tolerance a page declares; 125 pages at M26, the last three
+       run on the reference browser's virtual time. It is one of the
        workspace's tests, which CI runs (`cargo test`) and the gate
        runs on the machine while CI's runs are stopped by the
        account's billing.
@@ -2190,7 +2267,11 @@ Deferred from the milestones above, each with what it waits on:
        functions, substitution, typed `attr()`, counters and generated
        text to their bounds, and `animations` since M22, which holds
        easing functions, timing, interpolation and frames drawn at a
-       series of times to theirs; `font_data` waits for its milestone.
+       series of times to theirs; `dom_api` since M25 (T2.4), and
+       `input` since M26, which uses pages of controls through the
+       engine's input, the engine's clock moved by hand, both compared
+       with a fresh engine given the state no markup holds;
+       `font_data` waits for its milestone.
 - [ ] T2.2 Seed corpora from WPT + real-site captures; corpus committed.
 - [ ] T2.3 Coverage-guided runs in CI nightly; crash → reproducer test
        before anything else. Since 2026-10-01 CI runs every target for a
@@ -2202,7 +2283,8 @@ Deferred from the milestones above, each with what it waits on:
        `dom_api` target, calls drawn from M25's surface written out as
        scripts, run as the page is parsed and after frames, the
        document validated and the frame held to a fresh engine's; in
-       CI's matrix.
+       CI's matrix. M26 gave it events, listeners, timers, animation
+       frames and the controls' state among its calls.
 
 ## T3 — Security cadence
 - [ ] T3.1 Quarterly dependency audit (`cargo audit`), pinned Cargo.lock,

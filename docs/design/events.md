@@ -1,9 +1,9 @@
 # Design note: the event loop, events and input
 
 Roadmap M26. Written before the code, as the record of the decisions,
-and corrected to the code when the milestone ends: where they disagree,
-the code wins, and the places are marked *(corrected)*. What ships is
-described in `docs/architecture.md` "Current state".
+and corrected to the code when the milestone ended: where they
+disagreed, the code won, and the places are marked *(corrected)*. What
+ships is described in `docs/architecture.md` "Current state".
 
 A page can be read but not used. M25 gave scripts the DOM, but nothing
 calls a script after its document has been parsed: listeners are kept
@@ -132,7 +132,11 @@ and sleeps until the sooner of `next_frame_at` and `next_task_at`.
   is running, as HTML's "clean up after running a callback" says: so a
   promise resolved in a click listener settles before the next
   listener of a user's click runs, and after the listener in
-  `el.click()`'s.
+  `el.click()`'s. *(corrected)* Only the engine's dispatches
+  (`Task::Dispatch`) take a checkpoint after each listener: a script's
+  own `dispatchEvent` and `click()` run their listeners through at
+  once, the microtasks after them, as the reference browser does (its
+  listeners L1 and L2 log before the microtask M1).
 
 **Calling into the realm (M24 left it to M26).** The engine never calls
 a function a page gave it: the functions stay in the realm, where the
@@ -171,7 +175,13 @@ with the same id, after its callback runs. A due timer becomes a task.
 Two timers due at once run in the order they were set. The engine
 keeps at most `MAX_TIMERS` (100,000) a document; past it `setTimeout`
 throws a `RangeError`, where the reference browser has no limit but its
-memory. `queueMicrotask` is QuickJS-ng's and stays.
+memory. `queueMicrotask` is QuickJS-ng's and stays. *(corrected)* A
+string's timer runs through a native `evaluate` that names the
+document's URL in its errors. At one due time, the reference browser
+runs a zero-delay timeout that a running timer set before an older
+timeout due then (it posts a zero delay as an immediate task): HTML
+leaves that order open, and this engine keeps the order set (M26.12's
+page gives its nested timer 5ms rather than depend on it).
 
 **Animation frames (M26.1).** `requestAnimationFrame` and
 `cancelAnimationFrame`, their callbacks in the realm, and a frame wanted
@@ -186,6 +196,14 @@ rest), then the animation frame callbacks, each given the frame's time
 on the document's clock, and those registered by a callback waiting for
 the next frame. A callback's changes reach the same frame. `frame` (with
 no time) runs no callbacks: it is the tests' and the printer's.
+*(corrected)* A callback's `this` is undefined, the window for a
+sloppy one. The animation and transition events are sampled once more
+after a frame's own restyle, so that a timing a callback changed, or an
+animation the restyle made, gives its events with that frame's, and a
+frame is wanted while any wait for the next rendering steps: the
+reference browser's next update of its animations finds them so, and
+without that wanted frame an `animationend` after the last animating
+frame waited for some other (both found at M26.11).
 
 **Events (M26.2).** The DOM's events, in the bootstrap:
 
@@ -195,7 +213,9 @@ no time) runs no callbacks: it is the tests' and the printer's.
   with their constructors and dictionaries as the specifications give
   them, and `AbortController` and `AbortSignal` (`abort()`, `aborted`,
   `reason`, `throwIfAborted`, an `abort` event), which
-  `addEventListener`'s `signal` needs.
+  `addEventListener`'s `signal` needs. *(corrected)* `AnimationEvent`
+  and `TransitionEvent` too, M22's events, and `document.createEvent`
+  for the names of these.
 - *Listeners* gain `once`, `passive`, `signal` and the removed flag the
   DOM's dispatch reads, and a callback that is an object is called
   through its `handleEvent`. As in the reference browser, a `wheel`
@@ -210,7 +230,11 @@ no time) runs no callbacks: it is the tests' and the printer's.
   `composedPath`, `eventPhase`, `currentTarget`, `timeStamp` and
   `isTrusted`, true only for the events the engine makes. The path is
   read from the host once, at the dispatch's start. There is no shadow
-  DOM, so no retargeting.
+  DOM, so no retargeting. *(corrected)* At the target, the capture
+  listeners run before the others, as the DOM has it now and the
+  reference browser does. A method of `EventTarget` called with no
+  `this` (a bare `addEventListener` at the top level) acts on the
+  window, as Web IDL says for the global object.
 - *Activation behaviour.* A `click` dispatched at an element whose
   ancestor (or itself) has an activation behaviour (a link, a submit
   or reset button, a checkbox, a radio, a label, a `summary` aside)
@@ -241,7 +265,13 @@ no time) runs no callbacks: it is the tests' and the printer's.
   the reference browser does. An element whose object the bootstrap
   makes for the first time activates the handlers its attributes
   already hold, so that a page's markup handlers run though no script
-  ever touched the element.
+  ever touched the element. *(corrected)* A handler compiles at line 1
+  of the document's URL: the attribute's line is not kept. The window's
+  handlers, and `alert`, `confirm` and `prompt`, are on
+  `Window.prototype`, where M25 put the window's members; the reference
+  browser has them own on the window, so a top-level `var onload`
+  shadows them here. A document with no script makes a realm for an
+  event only when its markup has an `on...` attribute.
 - `window.alert`, `confirm` and `prompt` exist and block nothing: the
   message goes to the console, `confirm` answers `false` and `prompt`
   `null`, as a browser does when it suppresses dialogs. A dialog the
@@ -264,7 +294,10 @@ failed. `document.visibilityState` and `hidden` follow the window: the
 shell says when it is hidden (minimized or covered, winit's
 `Occluded`), the document gets `visibilitychange`, its animation frame
 callbacks wait, and its timers are run no more than once a second, as
-the reference browser throttles a hidden page's.
+the reference browser throttles a hidden page's. *(corrected)* An
+element's `load` and `error` fire at the arrival, in the same task, not
+queued as HTML's element tasks; an image's `load` when its size is
+known, before its pixels are decoded.
 
 **Element state and the dynamic pseudo-classes (M26.4).** State is the
 DOM's: `dom` keeps, for each element, the flags the user's actions set
@@ -305,7 +338,15 @@ taking no room, its `auto` style drawn as a 2px ring of the focus colour
 reference browser's); and `cursor`'s keywords, which the engine reports
 for the point under the pointer (`Engine::cursor_at`) and the shell
 shows as the OS's cursor, `auto` being a hand over a link and an I-beam
-over text that can be edited.
+over text that can be edited. *(corrected)* The hand is the UA sheet's
+`:any-link { cursor: pointer }`, as in the reference browser's; `auto`
+is the I-beam over a text control and the arrow elsewhere. The outline
+is drawn with its box, after its border: CSS2 Appendix E draws outlines
+last in their stacking context, so a later sibling can cover one here.
+`:focus-within` stays on the ancestors the old and the new focus share
+while `blur` and `focusout` are dispatched (`Document::blur_toward`),
+as the reference browser keeps it, so that an element its ancestor's
+`:focus-within` shows can take the focus from it (found at M26.11).
 
 **The pointer (M26.3).** The engine is given the pointer's input in the
 page's coordinates (CSS pixels from the viewport's top left):
@@ -315,7 +356,9 @@ y, dx, dy, modifiers)`, `count` being the press's place in a run of
 quick presses, which the shell counts as it does now. Each call is a
 task: the engine hit-tests the point, updates the hover and active
 state, dispatches the events and does their default actions, all
-before it returns.
+before it returns. *(corrected)* The modifiers are the engine's state
+(`set_modifiers`), not each call's: `pointer_down(x, y, button,
+count)`, `pointer_up` the same, `wheel(x, y, dy)`.
 
 - *The events and their order* are Pointer Events' and UI Events',
   checked with the reference browser: moving onto an element,
@@ -335,7 +378,14 @@ before it returns.
   `offsetY` from the target's padding edge, `button`, `buttons` and the
   modifier keys; the pointer events' `pointerId` 1, `pointerType`
   `mouse`, `isPrimary` true, a pressure of 0.5 while a button is down.
-  Pointer capture is G58.
+  Pointer capture is G58. *(corrected)* The boundary events come
+  pointer first, then mouse: `pointerout`, `pointerleave` (innermost
+  first), `pointerover`, `pointerenter` (outermost first), then the
+  same four mouse events, as the reference browser's real input showed;
+  this note had the mouse events between. A press or a release at a new
+  point fires the boundary events first, with no move event. A canceled
+  `pointerdown` holds back `mousedown`, `mousemove` and `mouseup` until
+  the buttons are all up; the click still comes.
 - *Default actions.* A `mousedown` not canceled focuses the nearest
   focusable ancestor of its target, or takes the focus from the element
   that has it; in a text control it places the caret, and a drag
@@ -346,7 +396,9 @@ before it returns.
   link's activation behaviour, as M26.6 asks, a listener able to cancel
   it. A middle-button click on a link opens nothing: tabs are M37's, and
   the status bubble says so. A `wheel` not canceled scrolls, as M19's
-  scroll chaining does now.
+  scroll chaining does now. *(corrected)* A `wheel` is always
+  cancelable, where the reference browser makes it so only when a
+  blocking listener is on its path.
 - *A `javascript:` URL's result* (HTML 7.4), left by M25: a string it
   ends with becomes the document, as a new document of that HTML at the
   same URL, replacing the entry.
@@ -372,7 +424,14 @@ document:
   unless `preventScroll` asks otherwise. An element removed while it
   has focus gives it to the viewport at once and without events; one
   that becomes disabled or stops being rendered loses it at the next
-  rendering, with `blur`, as HTML's fixup has it.
+  rendering, with `blur`, as HTML's fixup has it. *(corrected)* The
+  fixup and `autofocus` read the last frame's styles, not a fresh
+  cascade, so a change is seen a frame late: an early cascade made the
+  frame's animations before its own style stage. `autofocus` looks
+  through the whole document when the styles reach a new version, not a
+  list of inserted candidates, so an attribute set later counts too. The
+  reference browser fires `blur` at an element removed; HTML and this
+  engine do not.
 - *Sequential navigation.* Tab and Shift+Tab move the focus through
   the focusable areas in `tabindex` order (positive values first, in
   order, then the rest in tree order; a negative one is skipped). Past
@@ -385,7 +444,13 @@ document:
 - *Keys.* `Engine::key_down(key, modifiers)` and `key_up`, a key being
   its `key` and `code` strings, its `location` and whether it repeats,
   and `Engine::text(string)` for the text a key or an input method
-  commits. The events go to the focused element, or the body: `keydown`;
+  commits. *(corrected)* A key carries the text it types
+  (`engine::Key`'s `text`), and there is no `Engine::text`: an input
+  method's committed text is `Engine::insert_text`; `key_down` answers
+  whether the page took the key or gave the focus up past its last
+  area. `keypress` comes for each character a key types, none for a
+  control character but Enter, none with Ctrl or Meta held but as
+  AltGr. The events go to the focused element, or the body: `keydown`;
   then, for a key that types, `keypress` (the legacy event, with
   `charCode`); then `keyup` at the release. `keyCode` and `which` take
   the reference browser's values for the keys whose values every
@@ -419,7 +484,9 @@ HTML's cloning steps say; a form's reset puts it back to the defaults.
   `number` are text fields (a number's value sanitized as HTML says, no
   spin buttons); `checkbox`, `radio`, `submit`, `reset`, `button` and
   `hidden` are what they are; `image` is a submit button showing its
-  `alt` (its picture, and the clicked point it sends, are G61); `file`,
+  `alt` (its picture, and the clicked point it sends, are G61)
+  *(corrected: it shows nothing without its picture, as the reference
+  browser does)*; `file`,
   `color`, `range` and the date and time types, which need pickers,
   are text fields until G61 gives them their own (a value sanitized by
   its type all the same).
@@ -437,7 +504,11 @@ HTML's cloning steps say; a form's reset puts it back to the defaults.
   drawn by paint, as list markers' shapes are (M21.6): a new fragment
   kind for it. A `select` with `multiple` or a `size` above 1 is a list
   box: its options as rows, the chosen ones highlighted, a scroll
-  container.
+  container. *(corrected)* A drop-down is as wide as its chosen
+  option's label, where the reference browser's is as wide as its
+  widest; a field's text is not centred in a field taller than its
+  line. An option outside a select is a block showing its label, and a
+  datalist shows nothing, as in the reference browser (M26.11).
 - *The UA sheet* takes the reference browser's computed values above:
   13.3333px text, a text field's 2px inset border of `#767676` and its
   1px 2px padding, a button's `#f0f0f0` with an outset border, a
@@ -447,7 +518,26 @@ HTML's cloning steps say; a form's reset puts it back to the defaults.
   textarea's `cols` and `rows` likewise, through the presentational
   hints M21.6 began. Controls are drawn as their computed style says;
   the reference browser's native look (a 1px rounded border where the
-  computed style says 2px inset) is not copied.
+  computed style says 2px inset) is not copied. *(corrected)* A text
+  field's, a textarea's and a select's sizes are not CSS: their `width`
+  and `height` are `auto`, and the box tree gives their boxes sizes of
+  their own (`LayoutBox::control_size`), the reference browser's
+  figures at its 13.33px Arial as ems of the control's font (a field
+  0.525em a character of its `size` and 2.175em more, by 1.125em; a
+  textarea 0.5475em a column of its `cols` and 1.2em more, by 1.125em a
+  row of its `rows`; a select 1.275em a row), which intrinsic widths and
+  an `auto` height take: so a grid's `normal` and a flex container's
+  `stretch` stretch them, as there (M26.12's page of controls found it,
+  where the hints had made them CSS sizes). A checkbox's and a radio's
+  13px are their marks' natural size, with no ratio (a width alone keeps
+  the height), which a grid's `normal` stretches too (M26.11).
+  `getComputedStyle` reads `auto` for these, where the reference
+  browser reads the used sizes (G46). Fields, button inputs and
+  drop-downs are `overflow: clip`, new (css-overflow-3): it clips with
+  no scroll container, keeping an inline-block's baseline, making no
+  formatting context and leaving a flex or grid item its automatic
+  minimum. A button's border is the fields' grey and the controls' font
+  `sans-serif`, where the reference browser computes black and Arial.
 - *The IDL* M25 left to this milestone (HTML 4.10): `value`,
   `defaultValue`, `checked`, `defaultChecked`, `indeterminate`, `type`,
   `form`, `labels`, `select()`, `selectionStart`, `selectionEnd`,
@@ -459,6 +549,11 @@ HTML's cloning steps say; a form's reset puts it back to the defaults.
   `HTMLFormControlsCollection`, by index and by name), `length`,
   `submit()`, `requestSubmit()` and `reset()` on `form`; `control` and
   `htmlFor` on `label`; and the constraint validation API below.
+  *(corrected)* A select is not indexable itself (`select[0]`);
+  `options` is. A form's named properties (`form.q`) are not there;
+  `form.elements.q` is. `document.forms` and
+  `document.getElementsByName`, which M25 had not given, are
+  (M26.11, M26.13).
 - *The form owner* is the `form` attribute's form when the control is
   connected, else the nearest `form` ancestor, as style's matcher works
   it out now. The parser keeps no form element pointer (G44's tree
@@ -491,13 +586,21 @@ engine:
   selection a band of the selection colour behind the text, both drawn
   by the engine over the focused control's fragment from the positions
   `text`'s caret stops give (M15's way). The caret does not blink, as
-  the address field's does not.
+  the address field's does not. *(corrected)* The selection is a
+  translucent band, rgb(51, 144, 255), drawn over the text, not behind
+  it. A textarea's lines for Up, Down, Home, End and the pointer are its
+  line feeds: a wrapped line is one line still. Tab into a field selects
+  its text; a script's `focus()` leaves the selection where it was;
+  `selectionDirection` reads `forward` where none was set, as the
+  reference browser on Windows and Linux.
 - *The select's list.* A click on a select, or Alt+Down or Space with
   it focused, opens its options as a list drawn by the engine over the
   page below the control (above, when there is no room), hit-tested
   before the page; the arrows move through it, Enter or a click chooses,
   Escape or a click elsewhere closes it. With it closed, the arrows
-  change the choice.
+  change the choice. *(corrected)* No `select` or `selectionchange`
+  events; no Shift range in a list box; the list is the engine's
+  drawing, not a window of its own.
 - *Checkboxes and radios* are toggled by their click's activation
   behaviour; a radio unchecks the others of its group, the group being
   the radios of the same form owner and name.
@@ -527,10 +630,13 @@ engine:
   label `encoding` knows, else the document's): urlencoded,
   `multipart/form-data` (a boundary of `----SilverFormBoundary` and 16
   random letters and digits, names and file names escaped as HTML
-  says) or `text/plain`. The serializers go in `net::url` beside the
-  percent encoding sets they need (the urlencoded set, a space as
-  `+`), and `net::Request` gains `post(url, body, content_type)` and the
-  request header it sends for it.
+  says) or `text/plain`. *(corrected)* A CJK encoding encodes as UTF-8,
+  `encoding` having no encoder for one yet; `Origin` is not sent (M27);
+  an image button's point is 0 and 0 (G61). The serializers go in
+  `net::url` beside the percent encoding sets they need (the
+  urlencoded set, a space as `+`), and `net::Request` gains
+  `post(url, body, content_type)` and the request header it sends for
+  it.
 - *The navigation* is a link's, with the method and body: a POST's
   `Navigation` and the history entry it makes carry its body. Reloading
   a POST's entry, or going back to one the cache did not keep, would
@@ -562,11 +668,25 @@ engine:
   scrolls it into view and says why in the status bubble, in the
   reference browser's words ("Please fill out this field." and the
   rest). The browser's own bubble over the field is the status bubble's
-  text until a better place is found (G64).
+  text until a better place is found (G64). *(corrected)* The context
+  is one per thread, 8 MiB of heap, 200 interrupt checks a match, its
+  answers kept by pattern and value up to 1,024; a match past its budget
+  (a catastrophic backtrack) is no constraint either. `badInput` is
+  never set (a number field takes any text, as a text field does), and
+  dates' ranges and steps are not checked; `:invalid` on a form or a
+  fieldset looks through its controls each time it is matched.
 - The pseudo-classes of form state the matcher gains: `:checked` and
   `:indeterminate` from the state, `:default`, `:placeholder-shown`,
   `:read-only` and `:read-write`, and the validity ones above; all are
   parsed now, where M25's parser refused them and dropped their rules.
+  *(corrected)* A form and a fieldset match `:valid` and `:invalid` by
+  their controls, so when the sheets use those, whatever may change a
+  control's validity (its state, an attribute validity reads, an element
+  put in or taken out) restyles every form and fieldset, as a radio's
+  change restyles every radio button; restyling only a changed
+  control's form and fieldsets missed an attribute removed, a control
+  moved to another form and a fieldset disabled (found by the
+  `dom_api` fuzz target).
 
 **Limits, all named.** `MAX_TIMERS` 100,000 a document; a task slice of
 50ms (`TASK_SLICE`); a hidden document's timers at most once a second
@@ -593,7 +713,16 @@ input. Fuzzing: the `dom_api` target gains events, listeners and timers
 among its calls, and a new target, `input`, drives pages of controls
 with pointer and key sequences, the engine's clock moved between them;
 the document must stay valid, and nothing may panic or exceed its
-limits.
+limits. *(corrected)* Both targets also compare with a fresh engine,
+whose snapshot is given the state no markup holds (each element's
+flags and control record, the focus, the window's, an open list:
+`differential::give_state`), and run their engines on a clock moved by
+hand. The web-platform-tests runner runs a page that keeps
+`reftest-wait` (a crashtest, `test-wait`) on a hand clock until it
+takes the class off, sends it `TestRendered` after its first frame and
+draws two frames more after, as `wptrunner` does; a golden page that
+runs on after its load declares `reference-wait`, the capture running
+it on the reference browser's virtual time as long.
 
 ## 2. Not in this milestone, said rather than hidden
 
@@ -626,6 +755,8 @@ documents step; the number follows each.
 - *Messaging*: `postMessage`, `MessageChannel`, `BroadcastChannel`;
   workers. M31.
 - *`:visited`*, by design (above).
+- *(corrected)* *DOM's `moveBefore`*, which the bindings lack: G66,
+  found at the web-platform tests' step.
 
 ## 3. Order of work
 
@@ -667,6 +798,7 @@ run before the next, with its sabotage pass.
 9. *Submission and validation.* The entry list, the encodings in `net`,
    POST navigations and their history, implicit submission, reset,
    constraint validation with `js::pattern_matches`. M26.8.
+   *(corrected: in two commits, submission and validation)*
 10. *Fuzzing.* `dom_api`'s new calls, the `input` target, seeded.
 11. *The web-platform tests.* The runner waits for `reftest-wait` to be
     taken off and runs the page's timers and frames until it is; the

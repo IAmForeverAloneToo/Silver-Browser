@@ -1554,3 +1554,75 @@ shadow trees; the window's named properties; a viewport for
 `--print-to-pdf`. Events, timers and form controls' state are M26's.
 1,902 tests pass workspace-wide, two ignored. Next milestone: event
 loop, events, input (M26).
+
+Milestone 26 (event loop, events, input; `docs/design/events.md`): pages
+become interactive. HTML's event loop is the engine's (step 1):
+`run_tasks` runs the due timers of the document shown and of one on its
+way, a microtask checkpoint after each, within a 50 ms slice, and
+`next_task_at` says when to wake; every time the engine reads comes from
+one clock it is given, the shell's, a hand's in tests, so that no test
+waits. The realm is entered by a `js::Task`, its callbacks kept in the
+bootstrap, which hands `js` its entry points. The DOM's events (step 2):
+the classes, `AbortController`, listeners with their options, a dispatch
+the realm steps as a generator so that the engine's dispatches take a
+checkpoint after each listener, handlers as IDL and content attributes
+compiled when first needed, the `error` event and `reportError`. The
+rendering steps run at a frame's start (step 3): `resize`, `scroll`, the
+animation and transition events a frame queued, the animation frame
+callbacks; and the document's lifecycle, elements' `load` and `error`,
+`pagehide` and `unload`, a hidden page's throttling. `dom` keeps each
+element's state flags, journaled and restyled by where the selectors
+read them (step 4): `:hover`, `:active`, `:focus`, `:focus-visible`,
+`:focus-within`, `:target`, with `outline` and `cursor`. The pointer
+(step 5) and the keyboard and focus (step 6) reach the page as the
+reference browser's events in its order, with their default actions:
+links followed as their clicks' activation (the shell no longer follows
+them), focus moved by presses and by Tab through the sequential order
+and back to the address field, keys typing into controls, the scrolling
+keys and the wheel moved into the engine. Form controls (step 7) keep
+their state in `dom`, given the IDL, and show it: a field's value or
+placeholder, a checkbox's and a radio's marks drawn by paint, a
+drop-down's chosen option and arrow, a list box's rows; the UA sheet
+takes the reference browser's computed values and the box tree its
+sizes. Editing (step 8) with a caret and a selection, the clipboard and
+an input method's commits, `beforeinput`, `input` and `change`, the
+model `text::edit` shared with the address field; the select's list the
+engine draws. Forms are submitted (step 9) in every encoding, by GET and
+POST, with their history and a resubmission page, by a button, by Enter
+or by script, reset, and validated: the validity states and messages in
+the reference browser's words, `pattern` matched by
+`js::pattern_matches` in a context of its own whether the page's scripts
+run or not, the `invalid` event and the form pseudo-classes. Fuzzing
+(step 10): `dom_api` gains M26's calls and runs on a hand clock, and a
+new target, `input`, uses pages of controls through the engine's input;
+both compare with a fresh engine, whose snapshot is now given the state
+no markup holds. The web-platform tests (step 11) run `reftest-wait` and
+`test-wait` pages on a hand clock as `wptrunner` does, the rule taking
+M26's scripts and controls and two directories: 2,432 tests, 2,254
+passing, each failure named with its reason; on the way they found an
+animation event that waited for an unrelated frame, events sampled
+before the frame's own restyle, `:focus-within` dropped while the focus
+moved within it, `getElementsByName` missing, `overflow: clip` treated
+as a scroll container, checkboxes that could not stretch, and options
+outside a select hidden. Pages 123 to 125 (step 12) match the reference
+browser exactly with timers, frames and events run on its virtual time,
+and a page of controls' boxes found that a text field, a textarea and a
+select took their sizes from CSS: their sizes are the box tree's now, so
+they stretch in flex and grid as the reference browser's do. The
+acceptance (step 13): the to-do list and the search form through the
+shell's window, the search with scripts on and off, by Enter and by its
+button (finding `document.forms` missing), and the to-do page in the
+real shell; T4.3 finds the restyles 9% to 16% slower, the user agent
+sheet's 13 new rules tried on every element (M35.2), and a frame that
+starts 2,000 transitions 31%, sampled again for their events: each
+transition's name is now made only for an event (step 13b), and the 2ms
+left is their events, made a frame sooner; fuzz runs of `dom_api`,
+`input`, `script`, `pipeline`, `style_document` and `mutation` found one
+thing, a form's `:invalid` left stale when a control's attributes, place
+or form changed, every form and fieldset now restyled with them. Not in
+this milestone, said rather than hidden and registered (G56 to G66):
+dialogs the user answers; `beforeunload`; pointer capture, touch and
+drag and drop; editing hosts; composition; pickers; undo; `dirname`; a
+validation bubble; observers; `moveBefore`. 2,063 tests pass
+workspace-wide, two ignored. Next milestone: fetch, SOP, CORS, cookies
+(M27).

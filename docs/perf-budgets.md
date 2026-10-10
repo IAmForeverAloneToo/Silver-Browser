@@ -1316,6 +1316,68 @@ realm is the bindings' compiling, above. The photo grid's rows
 `t43sum.py` flags pair the software backend's section with the GPU
 backend's; each backend's frames are as they were.
 
+### Events and input (M26)
+
+M26 adds no benchmark of its own: its events, input and controls cost
+the pages that use them, and the benchmarks' pages use none. What it
+costs every page shows in T4.3.
+
+**T4.3.** The benchmarks of the code before M26 (b50b989) and of M26,
+by turns, four rounds. Within 10% by their medians, but for these:
+
+| | Before M26 | M26 | |
+| --- | --- | --- | --- |
+| Animation: the body's class changed, 2,000 transitions started: style | 18.8-19.5ms, median 19.5 | 24.8-26.0ms, median 25.5 | x1.31 |
+| Dom: a cell's text edited: style | 2.31-2.63ms, median 2.38 | 2.92-3.50ms, median 3.02 | x1.27 |
+| Mutation: the first frame of 1,000 paragraphs: style | 4.00-4.40ms, median 4.09 | 4.60-5.58ms, median 4.77 | x1.16 |
+| Mutation: 1,000 appended in one frame: style | 4.46-7.45ms, median 4.98 | 4.79-6.28ms, median 5.58 | x1.12 |
+| Its paint | 2.04-2.05ms | 2.19-3.67ms, median 3.40 | x1.67 |
+| Compositing: scrolling 1,000 paragraphs, the first frame | 58.5-65.2ms, median 59.6 | 64.7-70.1ms, median 67.7 | x1.14 |
+| Its scroll frames, median | 0.79-0.90ms, median 0.80 | 0.94-0.99ms, median 0.97 | x1.21 |
+
+- *The transitions' frame.* Since M26.11 a frame samples its
+  animations again after its restyle, so that the events of what the
+  restyle started are queued with the frame's, as the reference
+  browser's next update of its animations finds them; before M26 the
+  next frame found them. That second sample made every running
+  transition's name, an allocation, whether it had an event or not, and
+  sorted the events by a key that cloned each name: 3.7ms of the 6.4.
+  Step 13b makes a name only for an event and sorts by a borrowed one.
+  The four variants timed by turns, four rounds, with another program
+  busy on one of the machine's cores:
+
+  | | The restyle's style |
+  | --- | --- |
+  | Before M26 | 21.1-24.6ms, median 21.3 |
+  | M26 at step 13 | 27.6-28.3ms, median 27.7 |
+  | The same without the second sample | 21.7-22.0ms, median 21.8 |
+  | M26 (step 13b) | 23.6-24.2ms, median 23.9 |
+
+  The 2ms left is the 4,000 events of the transitions' start, made in
+  this frame now and in the next before. The frame was past the budget
+  before M26 as well: a restyle of 1,000 elements, M35.2's and M35.11's.
+- *The other restyles.* M26's user agent sheet has 13 more rules, 73,
+  for its controls, `:any-link` and `:focus-visible`, and the matcher,
+  without M35.2's buckets, tries every rule on every element it
+  restyles; the computed style is 8 bytes larger, 688, for the outline's
+  group. A cell's text edited restyles no element: its 0.6ms more is the
+  style stage's own cost a frame, not located further (M35.11).
+- *The appended paragraphs' paint*, one frame a round: 3.4-3.7ms in
+  three rounds of four and 2.2ms in the fourth, 2.0ms in all four
+  before. M26's paint draws its outlines, a control's marks and a caret
+  only where there is one, and tests each fragment for an outline by a
+  pointer; nothing else of it runs for a paragraph. Not located further.
+- *Scrolling.* M26 adds nothing to a scroll frame's raster and to a
+  first layout only a test of each box for a control's size; the
+  mutation page's first frame, a layout of 1,000 paragraphs as well, is
+  not slower (x0.99), and the scroll frames, under a millisecond, are
+  well within the budget. Not located further.
+
+On the way, T4.3 found a copy under `transition: all` that made an
+outline group for every element restyled, though neither style had an
+outline: a copy between two styles with none now makes none. The
+transitions' row was the same after it.
+
 ### Over budget, and why
 
 These are known and recorded rather than hidden. Each has the item that
