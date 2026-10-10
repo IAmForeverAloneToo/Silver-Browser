@@ -481,7 +481,8 @@ impl Animations {
             }
         }
         self.events.extend(events);
-        self.events[queued..].sort_by_key(|e| {
+        // Sorted by a key that borrows the name rather than clones it.
+        fn order(e: &AnimationEvent) -> (NodeId, u8, bool, &str) {
             let pseudo = match e.pseudo {
                 None => 0,
                 Some(PseudoElement::Before) => 1,
@@ -495,8 +496,9 @@ impl Animations {
                     | EventKind::TransitionEnd
                     | EventKind::TransitionCancel
             );
-            (e.node, pseudo, animation, Arc::clone(&e.name))
-        });
+            (e.node, pseudo, animation, &*e.name)
+        }
+        self.events[queued..].sort_by(|a, b| order(a).cmp(&order(b)));
         for (&(node, _), transitions) in &mut self.transitions {
             for transition in transitions {
                 let now = Sampled::from(

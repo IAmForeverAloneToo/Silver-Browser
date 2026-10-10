@@ -115,9 +115,12 @@ impl CssTransition {
             return;
         }
         let now = Reported::from(self.timing.phase(clock_time(&self.clock, time)));
-        let name = self.property.name();
+        // Its name made only for an event: a frame samples every running
+        // transition twice (M26.13).
+        let mut name = None;
         for (kind, elapsed) in transition_events(&self.timing, self.reported, now) {
-            events.push(event(target, &name, kind, elapsed));
+            let name = name.get_or_insert_with(|| self.property.name());
+            events.push(event(target, name, kind, elapsed));
         }
         self.reported = now;
     }
