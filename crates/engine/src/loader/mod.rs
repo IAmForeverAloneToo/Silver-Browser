@@ -32,6 +32,8 @@ mod request_tests;
 mod rules;
 #[cfg(test)]
 mod script_tests;
+#[cfg(test)]
+mod security_tests;
 mod sheets;
 #[cfg(test)]
 mod state_tests;

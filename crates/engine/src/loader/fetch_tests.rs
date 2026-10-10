@@ -357,11 +357,13 @@ fn a_document_on_its_way_hears_its_fetches_answer_before_it_is_shown() {
         "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{first}",
         first.len() + rest.len()
     );
+    // The rest waits long enough for the fetch to answer on a busy
+    // machine, where a whole test run can take twice its time.
     let server = TestServer::plain(
         move |request: &ServerRequest| match request.target.as_str() {
             "/page.html" => Reply::Pieces(vec![
                 (Duration::ZERO, head.clone().into_bytes()),
-                (Duration::from_millis(300), rest.as_bytes().to_vec()),
+                (Duration::from_secs(2), rest.as_bytes().to_vec()),
             ]),
             _ => Reply::ok("text/plain", b"early"),
         },

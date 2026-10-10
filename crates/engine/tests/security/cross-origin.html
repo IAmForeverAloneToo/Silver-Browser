@@ -1,0 +1,131 @@
+<!doctype html>
+<!--
+  The adversarial page of M27.7 (docs/design/fetch.md). Served from one
+  origin, it tries every way this engine offers of reading another,
+  VICTIM, whose answers hold the word SECRET: in a body, two fields
+  (one never exposed), a status text, a redirect's location, a script's error, a stylesheet,
+  an HttpOnly cookie and a Lax one. It logs, last, one JSON
+  line: the reads that held the word (learned) and the reads it made
+  (ran). crates/engine/src/loader/security_tests.rs loads it against a
+  victim that allows nothing, where it must learn nothing, and against
+  one that allows this origin by CORS with credentials, where the CORS
+  reads must learn, so that it cannot pass by failing at everything.
+-->
+<title>Cross-origin reads</title>
+<p id=probe>probe</p>
+<script>
+  const VICTIM = "{{victim}}";
+  const SECRET = "{{secret}}";
+  const learned = [];
+  const ran = [];
+  function look(what, value) {
+    let text;
+    try {
+      text = typeof value === "string" ? value : JSON.stringify(value);
+    } catch (e) {
+      text = String(value);
+    }
+    if (typeof text === "string" && text.indexOf(SECRET) >= 0) learned.push(what);
+  }
+  // A script's error is the vector's that loads it: they load one at a
+  // time.
+  let loading = "window error";
+  window.onerror = (message, source, line, column, error) => {
+    look(loading, [String(message), String(source), line, column, String(error), error && error.stack]);
+    return true;
+  };
+  async function attempt(what, read) {
+    try {
+      look(what, await read());
+    } catch (e) {
+      look(what + " (thrown)", [String(e), e && e.message, e && e.stack]);
+    }
+    ran.push(what);
+  }
+  function text(buffer) {
+    return String.fromCharCode.apply(null, Array.from(new Uint8Array(buffer)));
+  }
+  function xhr(path, withCredentials, sync) {
+    const x = new XMLHttpRequest();
+    x.open("GET", VICTIM + path, !sync);
+    x.withCredentials = withCredentials;
+    const fields = () => [x.status, x.statusText, x.responseText, x.getAllResponseHeaders(),
+      x.getResponseHeader("X-Secret"), x.responseURL];
+    if (sync) {
+      x.send();
+      return fields();
+    }
+    return new Promise(resolve => {
+      x.onloadend = () => resolve(fields());
+      x.send();
+    });
+  }
+  function element(what, make) {
+    return () => new Promise(resolve => {
+      loading = what;
+      const e = make();
+      e.onload = e.onerror = () => resolve(getComputedStyle(document.getElementById("probe")).fontFamily);
+      document.head.appendChild(e);
+    });
+  }
+  function script(src, cors) {
+    const s = document.createElement("script");
+    if (cors) s.setAttribute("crossorigin", "");
+    s.src = VICTIM + src;
+    return s;
+  }
+  async function run() {
+    await Promise.allSettled([
+      // By CORS: only what the victim allows.
+      attempt("fetch body", () => fetch(VICTIM + "/secret").then(r => r.text())),
+      attempt("fetch headers", () => fetch(VICTIM + "/secret").then(r => [...r.headers])),
+      attempt("fetch status", () => fetch(VICTIM + "/secret").then(r => [r.status, r.statusText])),
+      // A field the victim does not expose stays hidden.
+      attempt("unexposed field", () => fetch(VICTIM + "/secret").then(r =>
+        [r.headers.get("X-Hidden"), [...r.headers].filter(h => h[0] !== "x-secret")])),
+      attempt("fetch credentials", () =>
+        fetch(VICTIM + "/cookies", {credentials: "include"}).then(r => r.text())),
+      // Without credentials, the victim's cookies stay home.
+      attempt("fetch without credentials", () => fetch(VICTIM + "/cookies").then(r => r.text())),
+      attempt("followed redirect", () => fetch(VICTIM + "/redirect").then(r => [r.url, r.redirected])),
+      attempt("manual redirect", () => fetch(VICTIM + "/redirect", {redirect: "manual"}).then(r =>
+        [r.type, r.status, r.statusText, r.url, [...r.headers]])),
+      attempt("write", () => fetch(VICTIM + "/write", {method: "PUT", headers: {"X-Write": "1"}, body: "w"})
+        .then(r => r.text())),
+      // Opaque: nothing, whatever the victim allows.
+      attempt("no-cors body", () => fetch(VICTIM + "/secret", {mode: "no-cors"}).then(r => r.text())),
+      attempt("no-cors fields", () => fetch(VICTIM + "/secret", {mode: "no-cors"}).then(r =>
+        [r.type, r.status, r.statusText, r.url, [...r.headers], r.headers.get("X-Secret")])),
+      attempt("no-cors clone", () => fetch(VICTIM + "/secret", {mode: "no-cors"}).then(r => r.clone().text())),
+      attempt("no-cors blob", () =>
+        fetch(VICTIM + "/secret", {mode: "no-cors"}).then(r => r.blob()).then(b => b.text())),
+      attempt("no-cors buffer", () =>
+        fetch(VICTIM + "/secret", {mode: "no-cors"}).then(r => r.arrayBuffer()).then(text)),
+      attempt("no-cors credentials", () =>
+        fetch(VICTIM + "/cookies", {mode: "no-cors", credentials: "include"}).then(r => r.text())),
+      attempt("no-cors redirect", () => fetch(VICTIM + "/redirect", {mode: "no-cors"}).then(r =>
+        [r.type, r.url, r.redirected])),
+      attempt("resource policy", () => fetch(VICTIM + "/policy", {mode: "no-cors"}).then(r =>
+        r.text().then(t => [r.type, r.status, t]))),
+      // XMLHttpRequest, which is CORS too.
+      attempt("xhr", () => xhr("/secret", false, false)),
+      attempt("xhr redirect", () => xhr("/redirect", false, false)),
+      attempt("xhr credentials", () => xhr("/cookies", true, false)),
+      attempt("synchronous xhr", () => xhr("/secret", false, true)),
+      attempt("cookies", () => document.cookie),
+    ]);
+    // Elements, one at a time.
+    await attempt("script error", element("script error", () => script("/secret.js", false)));
+    await attempt("cors script error", element("cors script error", () => script("/secret.js", true)));
+    await attempt("data as script", element("data as script", () => script("/secret", false)));
+    await attempt("stylesheet", element("stylesheet", () => {
+      const l = document.createElement("link");
+      l.rel = "stylesheet";
+      l.href = VICTIM + "/secret.css";
+      return l;
+    }));
+    loading = "window error";
+    console.log(JSON.stringify({learned: learned.sort(), ran: ran.sort()}));
+  }
+  run();
+</script>
