@@ -217,7 +217,12 @@ impl Session {
     /// window, `(x, y, w, h)`, for an input method's window to stand
     /// by; otherwise no input method is wanted.
     pub(crate) fn ime_area(&mut self) -> Option<(f32, f32, f32, f32)> {
-        (self.focus() == Focus::Field).then(|| self.toolbar.caret_area())
+        if self.focus() == Focus::Field {
+            return Some(self.toolbar.caret_area());
+        }
+        // The page's text control focused (M26.8), below the toolbar.
+        let (x, y, w, h) = self.engine.caret_area()?;
+        Some((x, y + TOP, w, h))
     }
 
     /// What is to be reported on standard error since this was last
@@ -328,8 +333,10 @@ impl Session {
         }
         self.notice = None;
         let in_field = self.focus() == Focus::Field;
+        // An open list takes every key (M26.8).
         let shortcut = key
             .as_ref()
+            .filter(|_| in_field || self.engine.popup_open().is_none())
             .and_then(|key| keys::shortcut(key, self.mods, self.platform, in_field));
         match shortcut {
             Some(shortcut) => self.shortcut(shortcut),
@@ -376,6 +383,9 @@ impl Session {
         self.notice = None;
         if self.focus() == Focus::Field {
             self.insert(text);
+        } else {
+            // Into the page's text control focused, if any (M26.8).
+            self.engine.insert_text(text);
         }
         self.sync();
     }
@@ -563,9 +573,31 @@ impl Session {
                 Ok(text) => self.insert(&text),
                 Err(error) => self.notice = Some(clipboard_notice(&error)),
             },
-            // The page has no selection to copy from, nor a field to
-            // paste into, yet.
-            Shortcut::Copy | Shortcut::Cut | Shortcut::Paste => {}
+            // The page's text control focused, if any (M26.8).
+            Shortcut::Copy => {
+                if let Some(text) = self.engine.copy() {
+                    self.copy(&text);
+                }
+            }
+            Shortcut::Cut => {
+                // The text leaves the control only once the clipboard
+                // has it.
+                if let Some(text) = self.engine.copy()
+                    && self.copy(&text)
+                {
+                    self.engine.cut();
+                }
+            }
+            Shortcut::Paste => {
+                if self.engine.can_paste() {
+                    match self.clipboard.get() {
+                        Ok(text) => {
+                            self.engine.paste(&text);
+                        }
+                        Err(error) => self.notice = Some(clipboard_notice(&error)),
+                    }
+                }
+            }
             Shortcut::Enter => {
                 if let Some(action) = self.toolbar.enter() {
                     self.act(action);

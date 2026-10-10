@@ -915,3 +915,50 @@ fn tab_moves_the_keyboard_between_the_field_and_the_page() {
     window.press_key(Key::F5, NONE);
     assert!(window.session.title().starts_with("ArrowDown"));
 }
+
+#[test]
+fn a_pages_field_takes_typing_the_clipboard_and_an_input_methods_text() {
+    let server = serve(|path| match path {
+        "/" => html("<input id=t>"),
+        _ => None,
+    });
+    let mut window = Window::with_scripts(Some(server.url("/")));
+    window.settle();
+    let value = |window: &Window| {
+        let engine = window.session.engine();
+        let document = engine.document();
+        let field = document
+            .subtree(document.root())
+            .find(|&node| document.attr(node, "id") == Some("t"))
+            .expect("the field");
+        // What the user typed is the field's own value.
+        document
+            .control(field)
+            .and_then(|state| state.value.clone())
+            .unwrap_or_default()
+    };
+    assert_eq!(window.session.focus(), Focus::Page);
+    window.press_key(Key::Tab, NONE);
+    window.type_text("hello");
+    assert_eq!(value(&window), "hello");
+    // Ctrl+A on the page is the field's; copied, then pasted at the end.
+    window.chord("a", CTRL);
+    window.chord("c", CTRL);
+    assert_eq!(window.board.text(), "hello");
+    window.press_key(Key::End, NONE);
+    window.chord("v", CTRL);
+    assert_eq!(value(&window), "hellohello");
+    window.session.commit("!");
+    assert_eq!(value(&window), "hellohello!");
+    // The input method's window stands by the caret, below the toolbar.
+    let (_, y, _, h) = window
+        .session
+        .ime_area()
+        .expect("an input method is wanted");
+    assert!(y >= TOP && h > 0.0);
+    // Cut takes the selection to the clipboard.
+    window.chord("a", CTRL);
+    window.chord("x", CTRL);
+    assert_eq!(window.board.text(), "hellohello!");
+    assert_eq!(value(&window), "");
+}

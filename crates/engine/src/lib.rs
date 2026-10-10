@@ -94,6 +94,7 @@
 
 pub mod address;
 pub mod differential;
+mod editing;
 mod focus;
 mod image_store;
 mod keys;
@@ -102,6 +103,7 @@ mod navigation;
 mod pages;
 mod print;
 mod scripts;
+mod select;
 #[cfg(test)]
 mod testing;
 
@@ -475,6 +477,11 @@ struct Shown {
     autofocused: bool,
     styled_at: u64,
     autofocus_seen: Option<u64>,
+    /// The text control a press began a selection in, which the pointer
+    /// drags while the primary button is held (M26.8).
+    selecting: Option<NodeId>,
+    /// A drop-down's list while it is open (M26.8).
+    popup: Option<select::Popup>,
 }
 
 /// The lifecycle events a document has had (HTML section 8.4.6, "the
@@ -537,6 +544,8 @@ impl Shown {
             autofocused: false,
             styled_at: 0,
             autofocus_seen: None,
+            selecting: None,
+            popup: None,
         }
     }
 
@@ -1317,7 +1326,13 @@ impl Engine {
     /// scripts on, the boundary events of the elements left and entered
     /// come first, then `pointermove` and `mousemove`.
     pub fn pointer_move(&mut self, x: f32, y: f32) {
+        if self.popup_move(x, y) {
+            return;
+        }
         let target = self.pointer_at(x, y);
+        if self.buttons & Button::Primary.bit() != 0 {
+            self.drag_in(x, y);
+        }
         if let Some(target) = target {
             let event = self.mouse_event("PointerEvent", "pointermove", target, -1, 0, None);
             self.fire(js::Target::Node(scripts::handle(target)), event);
@@ -1343,6 +1358,11 @@ impl Engine {
     /// and, unless it was canceled, `mousedown`.
     pub fn pointer_down(&mut self, x: f32, y: f32, button: Button, count: u32) {
         self.keyboard = false;
+        // An open list takes the press (M26.8).
+        if self.popup_press(x, y) {
+            self.buttons |= button.bit();
+            return;
+        }
         let target = self.pointer_at(x, y);
         self.buttons |= button.bit();
         self.shown.pressed[button.number() as usize] = target;
@@ -1393,6 +1413,29 @@ impl Engine {
             let visible =
                 area.is_some_and(|area| dom::forms::is_text_control(&self.shown.document, area));
             self.focus(area, visible, false);
+            if button == Button::Primary
+                && let Some(area) = area
+                && self.text_control() == Some(area)
+            {
+                self.press_in(area, x, y, count);
+            }
+            if button == Button::Primary
+                && let Some(area) = area
+                && self.shown.document.focused() == Some(area)
+                && self.shown.document.tag(area) == Some("select")
+                && !dom::forms::actually_disabled(&self.shown.document, area)
+            {
+                if dom::forms::is_list_box(&self.shown.document, area) {
+                    let option = std::iter::once(target)
+                        .chain(self.shown.document.ancestors(target))
+                        .find(|&n| self.shown.document.tag(n) == Some("option"));
+                    if let Some(option) = option {
+                        self.press_option(area, option);
+                    }
+                } else {
+                    self.open_popup(area, true);
+                }
+            }
         }
     }
 
@@ -1414,6 +1457,13 @@ impl Engine {
             return;
         }
         if let Some(old) = old {
+            if self.popup_open() == Some(old) {
+                self.close_popup();
+            }
+            self.commit_change(old);
+            if self.shown.document.focused() != Some(old) {
+                return;
+            }
             self.shown.document.set_focus(None, false);
             self.state_changed();
             for (kind, bubbles) in [("blur", false), ("focusout", true)] {
@@ -1457,6 +1507,17 @@ impl Engine {
         self.scroll_into_view(node);
     }
 
+    /// A text control's edit committed (HTML section 4.10.5.5): `change`
+    /// at it when the user changed its value since it took the focus.
+    pub(crate) fn commit_change(&mut self, control: NodeId) {
+        if dom::forms::commit_edit(&mut self.shown.document, control) {
+            self.state_changed();
+            let event =
+                js::EventInit::new("Event", "change").with("bubbles", js::Field::Bool(true));
+            self.fire(js::Target::Node(scripts::handle(control)), event);
+        }
+    }
+
     /// The document's state changes are taken, restyling what they reach.
     fn state_changed(&mut self) {
         let changes = self.shown.document.take_changes();
@@ -1486,6 +1547,13 @@ impl Engine {
         match next {
             Some(next) => {
                 self.focus(Some(next), true, true);
+                // A text field Tab reaches has its text selected, as in
+                // the reference browser (M26.8).
+                if self.text_control() == Some(next)
+                    && self.shown.document.tag(next) == Some("input")
+                {
+                    self.move_in(next, text::edit::Command::SelectAll);
+                }
                 true
             }
             None => {
@@ -1503,6 +1571,7 @@ impl Engine {
             return;
         }
         self.window_focused = focused;
+        self.close_popup();
         let element = self.shown.document.focused();
         let kind = if focused { "focus" } else { "blur" };
         let at_element = |engine: &mut Engine| {
@@ -1527,6 +1596,9 @@ impl Engine {
     /// no text control has the focus.
     pub fn key_down(&mut self, key: &Key) -> KeyOutcome {
         self.keyboard = true;
+        if self.shown.popup.is_some() {
+            return self.popup_key(key);
+        }
         if let Some(target) = self.key_target() {
             let event = self.key_event("keydown", key, None);
             if self.fire(js::Target::Node(scripts::handle(target)), event) == Some(true) {
@@ -1534,12 +1606,35 @@ impl Engine {
             }
         }
         let outcome = self.key_default(key);
-        self.key_press(key);
+        let pressed = self.key_press(key);
+        // A key that types does so after its `keypress` (M26.8).
+        if pressed
+            && outcome == KeyOutcome::Ignored
+            && let Some(control) = self.text_control()
+            && self.type_key(control, key)
+        {
+            return KeyOutcome::Taken;
+        }
         outcome
     }
 
     /// A key's default action, after its `keydown` (M26.6).
     fn key_default(&mut self, key: &Key) -> KeyOutcome {
+        if key.key != "Tab"
+            && let Some(control) = self.text_control()
+            && let Some(outcome) = self.edit_key(control, key)
+        {
+            return outcome;
+        }
+        if key.key != "Tab"
+            && let Some(select) = self.shown.document.focused().filter(|&node| {
+                self.shown.document.tag(node) == Some("select")
+                    && !dom::forms::actually_disabled(&self.shown.document, node)
+            })
+            && let Some(outcome) = self.select_key(select, key)
+        {
+            return outcome;
+        }
         let m = self.modifiers;
         let plain = !m.ctrl && !m.alt && !m.meta;
         let focused = self.shown.document.focused();
@@ -1595,20 +1690,22 @@ impl Engine {
     /// 5.6.4, the reference browser's legacy event): none for a control
     /// character but Enter's, nor with Ctrl or Meta held but as AltGr;
     /// its `charCode` and `keyCode` the character's.
-    fn key_press(&mut self, key: &Key) {
+    /// Whether no `keypress` was canceled, and so the key may type.
+    fn key_press(&mut self, key: &Key) -> bool {
         let m = self.modifiers;
         if (m.ctrl && !m.alt) || m.meta {
-            return;
+            return true;
         }
         let Some(text) = key.text.clone() else {
-            return;
+            return true;
         };
+        let mut typed = true;
         for c in text.chars() {
             if c.is_control() && c != '\r' {
                 continue;
             }
             let Some(target) = self.key_target() else {
-                return;
+                return typed;
             };
             let press = Key {
                 key: if c == '\r' {
@@ -1620,8 +1717,11 @@ impl Engine {
                 ..key.clone()
             };
             let event = self.key_event("keypress", &press, Some(c as u32));
-            self.fire(js::Target::Node(scripts::handle(target)), event);
+            if self.fire(js::Target::Node(scripts::handle(target)), event) == Some(true) {
+                typed = false;
+            }
         }
+        typed
     }
 
     /// A key came up (M26.6): `keyup`; Space's release clicks the button
@@ -1707,10 +1807,14 @@ impl Engine {
         let pressed = self.shown.pressed[button.number() as usize].take();
         if button == Button::Primary {
             self.set_flag(ElementState::ACTIVE, Vec::new());
+            self.shown.selecting = None;
         }
         let no_mouse = self.shown.no_mouse;
         if self.buttons == 0 {
             self.shown.no_mouse = false;
+        }
+        if button == Button::Primary && self.popup_release(x, y) {
+            return;
         }
         let Some(target) = target else {
             return;
@@ -1999,10 +2103,55 @@ impl Engine {
     }
 
     /// A click's activation behaviour (HTML section 6.5) when no script
-    /// runs it: the link it is in is followed.
+    /// runs it, of the nearest element around the target that has one:
+    /// a link followed; a checkbox toggled or a radio button checked
+    /// (M26.8); a label's control focused and activated, unless the click
+    /// was in it.
     fn activate(&mut self, node: NodeId) {
-        if let Some(link) = self.link_around(node) {
-            self.follow_link(&link);
+        let document = &self.shown.document;
+        let activator = std::iter::once(node)
+            .chain(document.ancestors(node))
+            .find(|&n| match document.tag(n) {
+                Some("a" | "area") => document.attr(n, "href").is_some(),
+                Some("input") => {
+                    matches!(dom::forms::input_type(document, n), "checkbox" | "radio")
+                        && !dom::forms::actually_disabled(document, n)
+                }
+                Some("label") => dom::forms::labeled_control(document, n).is_some(),
+                _ => false,
+            });
+        let Some(activator) = activator else {
+            return;
+        };
+        match document.tag(activator) {
+            Some("input") => {
+                let checked = dom::forms::checkedness(document, activator);
+                let radio = dom::forms::input_type(document, activator) == "radio";
+                let document = &mut self.shown.document;
+                let _ = dom::forms::set_checkedness(document, activator, radio || !checked, true);
+                let _ = dom::forms::set_indeterminate(document, activator, false);
+                self.state_changed();
+            }
+            Some("label") => {
+                let Some(control) = dom::forms::labeled_control(document, activator) else {
+                    return;
+                };
+                if document.is_inclusive_ancestor(control, node) {
+                    return;
+                }
+                self.cached_styles();
+                let styles = self.shown.styled.as_ref().map(|styled| &styled.styles);
+                if focus::focusable(&self.shown.document, styles, control) {
+                    let visible = dom::forms::is_text_control(&self.shown.document, control);
+                    self.focus(Some(control), visible, false);
+                }
+                self.activate(control);
+            }
+            _ => {
+                if let Some(link) = self.link_around(activator) {
+                    self.follow_link(&link);
+                }
+            }
         }
     }
 
@@ -4414,6 +4563,10 @@ impl Engine {
         let layout = &self.shown.layout.as_ref().expect("just laid out").layout;
         let mut list = paint_fragments_with(&layout.roots, viewport, &offsets, &self.shown.images);
         self.show_pixels(&mut list.items, width as f32, height as f32);
+        let caret = self.caret_items();
+        list.items.extend(caret);
+        let popup = self.popup_items();
+        list.items.extend(popup);
         if let Some(bar) = scrollbar {
             list.items.push(DisplayItem::Rect {
                 x: bar.x,
@@ -4661,6 +4814,8 @@ impl Engine {
         if !dy.is_finite() || dy == 0.0 {
             return;
         }
+        // A scroll closes an open list, as the reference browser's does.
+        self.close_popup();
         // A `wheel` event first (M26.5): canceled, nothing scrolls.
         if let Some(target) = self.pointer_at(x, y) {
             let event = self

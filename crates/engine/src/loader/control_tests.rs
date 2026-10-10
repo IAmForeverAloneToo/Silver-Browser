@@ -224,7 +224,7 @@ fn a_text_controls_selection_is_counted_in_utf16() {
              try { c.setSelectionRange(0, 0); } catch (e) { console.log(e.name); }"
         ),
         [
-            "0 0 none",
+            "0 0 forward",
             "1 8 backward",
             "2 2",
             "0 9 9",

@@ -332,6 +332,11 @@ pub enum Call {
     LabeledControl(Handle),
     /// The labels of a labelable element, in tree order.
     Labels(Handle),
+    /// Whether the user changed a text control's value since it took the
+    /// focus, the edit committed now (M26.8): `change` is to fire.
+    CommitEdit(Handle),
+    /// A radio button's group, in tree order.
+    RadioGroup(Handle),
     /// Whether the document is hidden (HTML section 6.2): its window is
     /// minimized or covered.
     Hidden,

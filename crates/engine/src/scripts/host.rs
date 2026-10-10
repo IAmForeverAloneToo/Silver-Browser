@@ -1061,6 +1061,15 @@ impl DocumentHost {
                 let labels = forms::labels(&self.document, node);
                 Ok(Answer::Nodes(labels.into_iter().map(handle).collect()))
             }
+            Call::CommitEdit(node) => {
+                let node = self.node(node)?;
+                Ok(Answer::Bool(forms::commit_edit(&mut self.document, node)))
+            }
+            Call::RadioGroup(node) => {
+                let node = self.node(node)?;
+                let group = forms::radio_group(&self.document, node);
+                Ok(Answer::Nodes(group.into_iter().map(handle).collect()))
+            }
             Call::Dialog { kind, message } => {
                 self.say(ConsoleLevel::Info, format!("{kind}: {message}"));
                 Ok(Answer::Nothing)
@@ -1639,6 +1648,8 @@ impl DocumentHost {
                         let state = forms::ControlState {
                             selection: forms::Selection::default(),
                             indeterminate: false,
+                            edited_from: None,
+                            scroll: 0,
                             ..state.clone()
                         };
                         if let Err(error) = document.set_control(made, state) {
@@ -1763,7 +1774,17 @@ fn handle(node: NodeId) -> Handle {
 /// Whether `node` is an element with an activation behaviour (HTML
 /// section 6.5): a link, `a` or `area`.
 fn has_activation_behaviour(document: &Document, node: NodeId) -> bool {
-    matches!(document.tag(node), Some("a" | "area"))
+    match document.tag(node) {
+        Some("a" | "area") => true,
+        // A checkbox or a radio button not disabled (M26.8), and a label
+        // with a control.
+        Some("input") => {
+            matches!(forms::input_type(document, node), "checkbox" | "radio")
+                && !forms::actually_disabled(document, node)
+        }
+        Some("label") => forms::labeled_control(document, node).is_some(),
+        _ => false,
+    }
 }
 
 /// `navigator.platform` (HTML section 8.10.1.1): the value every browser

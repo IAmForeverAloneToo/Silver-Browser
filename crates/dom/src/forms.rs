@@ -199,12 +199,20 @@ pub struct ControlState {
     pub indeterminate: bool,
     /// A text control's selection, in bytes of its value.
     pub selection: Selection,
+    /// The value before the user's first edit since the control took the
+    /// focus, while it has one to commit (M26.8): what `change` compares
+    /// the value with when the control loses the focus.
+    pub edited_from: Option<String>,
+    /// How far a single-line text control's text is scrolled left to
+    /// keep the caret in view, in whole px (M26.8).
+    pub scroll: u32,
 }
 
 impl ControlState {
     /// The bytes of data it holds, for the document's limit.
     pub(crate) fn bytes(&self) -> usize {
         self.value.as_ref().map_or(0, String::len)
+            + self.edited_from.as_ref().map_or(0, String::len)
     }
 }
 
@@ -373,7 +381,59 @@ pub fn set_value(
         };
     }
     state.value = Some(value);
+    // A script's value is no edit of the user's to commit.
+    state.edited_from = None;
     document.set_control(element, state)
+}
+
+/// The user's edit of a text control (M26.8): its value, the user's,
+/// with the dirty value flag set, and its selection after the edit; the
+/// value before kept for `change`, at the first edit since the control
+/// took the focus. The value is the editor's, its line breaks already
+/// gone from a single-line control.
+pub fn user_edit(
+    document: &mut Document,
+    control: NodeId,
+    value: String,
+    selection: Selection,
+) -> Result<(), MutationError> {
+    if !is_text_control(document, control) {
+        return Err(MutationError::WrongKind);
+    }
+    let before = self::value(document, control);
+    let mut state = state(document, control);
+    if state.edited_from.is_none() && before != value {
+        state.edited_from = Some(before);
+    }
+    state.value = Some(value);
+    state.selection = selection;
+    document.set_control(control, state)
+}
+
+/// Whether the user changed a text control's value since it took the
+/// focus, to be committed now (HTML section 4.10.5.5): `change` is to
+/// fire. The edit is forgotten either way.
+pub fn commit_edit(document: &mut Document, control: NodeId) -> bool {
+    let Some(mut state) = document.control(control).cloned() else {
+        return false;
+    };
+    let Some(from) = state.edited_from.take() else {
+        return false;
+    };
+    let changed = from != value(document, control);
+    let _ = document.set_control(control, state);
+    changed
+}
+
+/// Sets how far a single-line text control's text is scrolled (M26.8).
+pub fn set_scroll(
+    document: &mut Document,
+    control: NodeId,
+    scroll: u32,
+) -> Result<(), MutationError> {
+    let mut state = state(document, control);
+    state.scroll = scroll;
+    document.set_control(control, state)
 }
 
 /// The value sanitization algorithm of the `input`'s type (HTML section

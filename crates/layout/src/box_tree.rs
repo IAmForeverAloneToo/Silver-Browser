@@ -1577,7 +1577,8 @@ impl BlockContainer<'_> {
     /// Adds the text box of the text the control `node` shows (M26.7):
     /// in its style, but kept on one line in a single-line control, and
     /// in the placeholder's colour, the reference browser's, when it is
-    /// the placeholder.
+    /// the placeholder. A field scrolled to keep its caret in view
+    /// (M26.8) has its text in an inline box moved left as far.
     fn add_control_text(&mut self, parent: Item, node: NodeId, text: String) {
         let styled = self.styled;
         let mut style = styled.style_or_initial(parent);
@@ -1587,6 +1588,34 @@ impl BlockContainer<'_> {
         if styled.control_text(node).1 {
             style.color = PLACEHOLDER_COLOUR;
         }
+        let scroll = styled.document.control(node).map_or(0, |c| c.scroll);
+        if scroll > 0 && styled.document.tag(node) == Some("input") {
+            let mut moved = styled.inherited_from(parent);
+            moved.position = style::computed::Position::Relative;
+            moved.inset[style::computed::LEFT] =
+                style::computed::LengthPercentageAuto::Px(-(scroll as f32));
+            let mut inline =
+                self.styled
+                    .own_box(Item::ControlText(node), &moved, BoxKind::Inline, Vec::new);
+            inline.anonymous = true;
+            self.open.push(inline);
+            self.add_control_text_box(parent, node, text, style);
+            let inline = self.open.pop().expect("just opened");
+            self.add_inline_level(inline);
+            return;
+        }
+        self.add_control_text_box(parent, node, text, style);
+    }
+
+    /// [`BlockContainer::add_control_text`]'s text box.
+    fn add_control_text_box(
+        &mut self,
+        parent: Item,
+        node: NodeId,
+        text: String,
+        style: ComputedStyle,
+    ) {
+        let styled = self.styled;
         self.add_inline_level(LayoutBox {
             style,
             kind: BoxKind::Text(text),

@@ -329,6 +329,8 @@ const NATIVES: &[(&str, Decode)] = &[
     ("formControls", |a| Ok(Call::FormControls(a.handle(0)?))),
     ("labeledControl", |a| Ok(Call::LabeledControl(a.handle(0)?))),
     ("labels", |a| Ok(Call::Labels(a.handle(0)?))),
+    ("commitEdit", |a| Ok(Call::CommitEdit(a.handle(0)?))),
+    ("radioGroup", |a| Ok(Call::RadioGroup(a.handle(0)?))),
     ("hidden", |_| Ok(Call::Hidden)),
     ("dialog", |a| {
         Ok(Call::Dialog {

@@ -1535,6 +1535,10 @@
     } else if (target === global) {
       windowBody();
     }
+    // A checkbox's or a radio button's legacy-pre-activation behaviour
+    // (HTML section 4.10.5.1.15, M26.8): its new state before the
+    // listeners see the click.
+    const pre = activator === null ? null : preActivate(activator);
     s.path = path;
     try {
       for (let i = path.length - 1; i >= 0; i--) {
@@ -1589,10 +1593,98 @@
       s.stop = false;
       s.stopImmediate = false;
     }
-    if (activator !== null && !s.canceled) {
-      native.activate(activator);
+    if (activator !== null && s.canceled && pre !== null) {
+      cancelActivation(activator, pre);
+    } else if (activator !== null && !s.canceled) {
+      yield* activate(activator, pre, target);
     }
     return s.canceled;
+  }
+
+  // The state a checkbox or a radio button was in before a click's
+  // pre-activation changed it, or null for another element: a checkbox
+  // toggled, its indeterminate flag cleared; a radio button checked.
+  function preActivate(handle) {
+    if (native.tag(handle) !== "input") {
+      return null;
+    }
+    const kind = native.inputType(handle);
+    if (kind === "checkbox") {
+      const old = [native.checkedness(handle), native.indeterminate(handle)];
+      native.setCheckedness(handle, !old[0]);
+      native.setIndeterminate(handle, false);
+      return old;
+    }
+    if (kind === "radio") {
+      const group = native.radioGroup(handle);
+      let old = null;
+      for (let i = 0; i < group.length; i++) {
+        if (native.checkedness(group[i])) {
+          old = group[i];
+        }
+      }
+      native.setCheckedness(handle, true);
+      return [old];
+    }
+    return null;
+  }
+
+  // The legacy-canceled-activation behaviour: the state put back.
+  function cancelActivation(handle, pre) {
+    if (native.inputType(handle) === "checkbox") {
+      native.setCheckedness(handle, pre[0]);
+      native.setIndeterminate(handle, pre[1]);
+    } else if (pre[0] !== null) {
+      native.setCheckedness(pre[0], true);
+    } else {
+      native.setCheckedness(handle, false);
+    }
+  }
+
+  // An element's activation behaviour, after a click not canceled: a
+  // link's followed by the host; a checkbox's or a radio button's
+  // `input` and `change` (HTML section 4.10.5.1.15), at one in the
+  // document; a label's click given its control, focused first, unless
+  // the click came from inside the control.
+  function* activate(handle, pre, target) {
+    const tag = native.tag(handle);
+    if (tag === "input" && pre !== null) {
+      if (!native.connected(handle)) {
+        return;
+      }
+      const element = wrap(handle);
+      yield* fireTrusted(element, "input", true);
+      yield* fireTrusted(element, "change", false);
+      return;
+    }
+    if (tag === "label") {
+      const control = native.labeledControl(handle);
+      if (control === null || (isNode(target) && wrap(control).contains(target))) {
+        return;
+      }
+      const element = wrap(control);
+      focusElement(control, false);
+      const click = new MouseEvent("click", made(MOUSE_INIT, [
+        "bubbles", true,
+        "cancelable", true,
+        "composed", true,
+        "view", global,
+      ]));
+      eventState(click).trusted = true;
+      yield* dispatching(element, click);
+      return;
+    }
+    native.activate(handle);
+  }
+
+  // A trusted Event of `type` at `element`, bubbling, composed if asked.
+  function* fireTrusted(element, type, composed) {
+    const event = new Event(type, made(EVENT_INIT, [
+      "bubbles", true,
+      "composed", composed,
+    ]));
+    eventState(event).trusted = true;
+    yield* dispatching(element, event);
   }
 
   // The DOM's "inner invoke" for one listener: removed first if it is
@@ -5448,7 +5540,9 @@
     );
   }
 
-  const DIRECTIONS = ["none", "forward", "backward"];
+  // No direction reads as forward, as on Windows and Linux in the
+  // reference browser, where the platform knows no other (M26.8).
+  const DIRECTIONS = ["forward", "forward", "backward"];
 
   // The host clamps both ends to the value.
   function setSelection(handle, start, end, direction) {
@@ -5841,6 +5935,16 @@
     drain(dispatching(target, event));
   }
 
+  // A text control's edit committed as it loses the focus (HTML section
+  // 4.10.5.5, M26.8): `change` at it when the user changed its value.
+  // Whether it still has the focus after, for the unfocusing to go on.
+  function commitChange(handle) {
+    if (native.commitEdit(handle)) {
+      drain(fireTrusted(wrap(handle), "change", false));
+    }
+    return native.focused() === handle;
+  }
+
   // HTML's focusing steps for the element `handle` names, as `focus()`
   // runs them: the element focused loses it first, with `blur` and
   // `focusout`, then this one gains it, with `focus` and `focusin`, each
@@ -5857,6 +5961,9 @@
     const element = wrap(handle);
     const before = old === null ? null : wrap(old);
     if (before !== null) {
+      if (!commitChange(old)) {
+        return;
+      }
       native.setFocus(null, true);
       fireFocus("blur", before, element);
       fireFocus("focusout", before, element);
@@ -5873,7 +5980,7 @@
   // HTML's unfocusing steps: the element loses the focus, to the
   // viewport.
   function blurElement(handle) {
-    if (native.focused() !== handle) {
+    if (native.focused() !== handle || !commitChange(handle)) {
       return;
     }
     native.setFocus(null, true);
