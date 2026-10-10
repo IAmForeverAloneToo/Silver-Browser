@@ -26,6 +26,7 @@ fn page(input: &str, address_space: AddressSpace) -> Initiator {
     Initiator {
         url: url(input),
         address_space,
+        origin: url(input).origin(),
     }
 }
 
@@ -227,9 +228,15 @@ fn a_request_sends_its_fields() {
     );
     assert_eq!(sent.header("Accept-Language"), Some("en-US,en;q=0.9"));
     assert_eq!(sent.header("Accept-Encoding"), Some("gzip, deflate"));
-    for unsent in ["Referer", "Cookie", "Origin", "Sec-Fetch-Site"] {
+    for unsent in ["Referer", "Cookie", "Origin"] {
         assert_eq!(sent.header(unsent), None, "{unsent}");
     }
+    // A load the user asked for, to a loopback address, which is
+    // potentially trustworthy (M27).
+    assert_eq!(sent.header("Sec-Fetch-Site"), Some("none"));
+    assert_eq!(sent.header("Sec-Fetch-Mode"), Some("navigate"));
+    assert_eq!(sent.header("Sec-Fetch-Dest"), Some("document"));
+    assert_eq!(sent.header("Sec-Fetch-User"), Some("?1"));
     assert_eq!(requests[1].header("Accept"), Some("text/css,*/*;q=0.1"));
     assert_eq!(
         requests[2].header("Accept"),
@@ -242,7 +249,7 @@ fn a_request_sends_its_fields() {
 fn a_post_sends_its_body() {
     let server = TestServer::plain(|_| hello());
     let mut request = document(server.url("/form"));
-    request.method = Method::Post;
+    request.method = Method::POST;
     request.body = Some(b"a=1".to_vec());
     client().fetch(&request).unwrap();
     let sent = &server.requests()[0];
@@ -292,15 +299,15 @@ fn redirects_are_followed() {
 #[test]
 fn methods_after_a_redirect() {
     let cases = [
-        (301, Method::Post, "GET", false),
-        (302, Method::Post, "GET", false),
-        (303, Method::Post, "GET", false),
-        (307, Method::Post, "POST", true),
-        (308, Method::Post, "POST", true),
-        (301, Method::Get, "GET", false),
-        (302, Method::Head, "HEAD", false),
-        (303, Method::Head, "HEAD", false),
-        (303, Method::Get, "GET", false),
+        (301, Method::POST, "GET", false),
+        (302, Method::POST, "GET", false),
+        (303, Method::POST, "GET", false),
+        (307, Method::POST, "POST", true),
+        (308, Method::POST, "POST", true),
+        (301, Method::GET, "GET", false),
+        (302, Method::HEAD, "HEAD", false),
+        (303, Method::HEAD, "HEAD", false),
+        (303, Method::GET, "GET", false),
     ];
     for (status, method, after, with_body) in cases {
         let server = TestServer::plain(move |request| match request.target.as_str() {
@@ -308,9 +315,11 @@ fn methods_after_a_redirect() {
             _ => hello(),
         });
         let mut request = document(server.url("/from"));
-        request.method = method;
-        request.body = (method == Method::Post).then(|| b"x=1".to_vec());
-        request.content_type = (method == Method::Post).then(|| "text/plain".to_owned());
+        request.method = method.clone();
+        request.body = (method == Method::POST).then(|| b"x=1".to_vec());
+        if method == Method::POST {
+            request.headers.append(b"Content-Type", b"text/plain");
+        }
         client().fetch(&request).unwrap();
         let sent = server.requests();
         let last = sent.last().unwrap();
@@ -684,6 +693,7 @@ fn a_scripts_policy_is_checked_before_each_hop() {
             .initiated_by(Initiator {
                 url: page.clone(),
                 address_space: AddressSpace::Loopback,
+                origin: page.origin(),
             })
             .with_csp(Csp::from_headers(&headers, &page))
     };

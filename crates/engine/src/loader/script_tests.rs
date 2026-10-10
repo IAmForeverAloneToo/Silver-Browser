@@ -239,6 +239,9 @@ fn a_document_kept_keeps_its_realm_collected_and_one_whose_realm_died_is_not_kep
     };
     let a = server.url("/a.html");
     load_all(&mut tab, a.clone());
+    // Its icon's fetch done too: a page left with a fetch in flight is
+    // not kept.
+    tab.settle();
     assert_eq!(tab.engine.take_console().len(), 1);
     let heap = tab.engine.shown.scripts.heap();
     load_all(&mut tab, server.url("/b.html"));

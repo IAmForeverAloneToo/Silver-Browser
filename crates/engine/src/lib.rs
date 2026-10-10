@@ -585,6 +585,14 @@ struct Navigation {
     started: scripts::TimeOrigin,
 }
 
+/// The document that starts a navigation (M27): its origin, which the
+/// request carries, and whether the user's activation of one of its
+/// links or controls started it.
+struct NavigationSource {
+    origin: net::Origin,
+    activated: bool,
+}
+
 /// What a navigation's document does to the session history when it is
 /// shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1058,12 +1066,13 @@ impl Engine {
     /// failed. [`Engine::poll_network`] takes the results, and
     /// [`Engine::load_state`] says where the navigation stands.
     pub fn navigate(&mut self, url: Url) {
-        self.navigate_replacing(url, false);
+        self.navigate_replacing(url, false, None);
     }
 
     /// [`Engine::navigate`], the new entry in the current one's place when
-    /// `replace`, as `location.replace` asks (M25).
-    fn navigate_replacing(&mut self, url: Url, replace: bool) {
+    /// `replace`, as `location.replace` asks (M25), started by the
+    /// document `source` names, if any, rather than by the user (M27).
+    fn navigate_replacing(&mut self, url: Url, replace: bool, source: Option<NavigationSource>) {
         let current = self.history.current().url.clone();
         let handling = if replace || self.shown.initial || current.as_ref() == Some(&url) {
             Handling::Replace
@@ -1082,7 +1091,16 @@ impl Engine {
         if same_document {
             self.navigate_to_fragment(url, handling);
         } else {
-            self.start_navigation(url, handling);
+            self.start_navigation_with(url, handling, None, source);
+        }
+    }
+
+    /// The document shown, as the source of a navigation it starts (M27):
+    /// by the user's activation of one of its links or controls, or not.
+    fn navigation_source(&self, activated: bool) -> NavigationSource {
+        NavigationSource {
+            origin: self.shown.page.origin().clone(),
+            activated,
         }
     }
 
@@ -1150,10 +1168,13 @@ impl Engine {
             }
             return;
         }
-        let source = self.shown.page.url().map(Url::scheme);
-        match refusal(&url, source, self.shown.made) {
+        let scheme = self.shown.page.url().map(Url::scheme);
+        match refusal(&url, scheme, self.shown.made) {
             Some(why) => self.notice = Some(why),
-            None => self.navigate(url),
+            None => {
+                let source = self.navigation_source(true);
+                self.navigate_replacing(url, false, Some(source));
+            }
         }
     }
 
@@ -1170,15 +1191,20 @@ impl Engine {
             self.run_javascript_url(&url);
             return;
         }
-        let source = self.shown.page.url().map(Url::scheme);
-        match refusal(&url, source, self.shown.made) {
+        let scheme = self.shown.page.url().map(Url::scheme);
+        match refusal(&url, scheme, self.shown.made) {
             Some(why) => self.notice = Some(why),
             // A followed link navigates as a click on it does (M26), and
-            // a submitted form, with its body (M26.9).
-            None if navigation.link => self.navigate_with(url, navigation.post),
+            // a submitted form, with its body (M26.9); a script's is no
+            // activation by the user (M27).
+            None if navigation.link => {
+                let source = self.navigation_source(false);
+                self.navigate_with(url, navigation.post, source);
+            }
             None => {
                 let replace = navigation.replace || self.load_state != LoadState::Loaded;
-                self.navigate_replacing(url, replace);
+                let source = self.navigation_source(false);
+                self.navigate_replacing(url, replace, Some(source));
             }
         }
     }
@@ -1200,9 +1226,13 @@ impl Engine {
         if url.scheme() == "javascript" {
             return;
         }
+        let from = NavigationSource {
+            origin: current.url.origin(),
+            activated: false,
+        };
         match refusal(&url, Some(&source), false) {
             Some(why) => self.notice = Some(why),
-            None => self.start_navigation(url, handling),
+            None => self.start_navigation_with(url, handling, None, Some(from)),
         }
     }
 
@@ -1242,6 +1272,8 @@ impl Engine {
             body: Vec::new(),
             mime_type: net::MimeType::parse("text/html;charset=utf-8"),
             address_space: None,
+            response_type: net::ResponseType::Basic,
+            cors_exposed: Vec::new(),
         };
         let id = self.new_page_id();
         self.navigation = Some(Navigation {
@@ -2643,11 +2675,19 @@ impl Engine {
     /// every `about:` URL but `about:blank` to the user agent, and this
     /// one has `about:silver`, and an error page for any other.
     fn start_navigation(&mut self, url: Url, handling: Handling) {
-        self.start_navigation_with(url, handling, None);
+        self.start_navigation_with(url, handling, None, None);
     }
 
-    /// [`Engine::start_navigation`], a POST of `post` when given (M26.9).
-    fn start_navigation_with(&mut self, url: Url, handling: Handling, post: Option<submit::Post>) {
+    /// [`Engine::start_navigation`], a POST of `post` when given (M26.9),
+    /// started by the document `source` names, if any (M27): its origin
+    /// goes with the request, for `Origin`, `Sec-Fetch-*` and cookies.
+    fn start_navigation_with(
+        &mut self,
+        url: Url,
+        handling: Handling,
+        post: Option<submit::Post>,
+        source: Option<NavigationSource>,
+    ) {
         self.cancel_navigation();
         self.posting = post.is_some();
         if url.scheme() == "about" && url.path_str() != "blank" {
@@ -2682,6 +2722,10 @@ impl Engine {
                 &post.content_type,
             ),
             None => net::Request::get(url.clone(), net::Destination::Document),
+        };
+        let request = match source {
+            Some(source) => request.from_document(source.origin, source.activated),
+            None => request,
         };
         self.network.fetch(id, Target::Document, request);
         self.navigation = Some(Navigation {
@@ -3192,7 +3236,7 @@ impl Engine {
             Target::Script => {
                 // What is ready runs as the poll goes on.
                 if page == self.shown.page.id() {
-                    self.shown.scripts.arrived(&self.shown.page, id, result);
+                    self.shown.scripts.arrived(id, result);
                 } else if let Some(Navigation {
                     incoming:
                         Incoming::Parsing {
@@ -3204,7 +3248,7 @@ impl Engine {
                 }) = &mut self.navigation
                     && incoming.id() == page
                 {
-                    parsing.scripts.arrived(incoming, id, result);
+                    parsing.scripts.arrived(id, result);
                 }
             }
             Target::Sheet { owner, path } => {

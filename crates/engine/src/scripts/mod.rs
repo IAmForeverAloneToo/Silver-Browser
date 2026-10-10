@@ -29,7 +29,7 @@ use js::{
     Completion, ConsoleLevel, ErrorKind, Limits, QuickJs, Realm, Script, ScriptEngine, ScriptError,
 };
 use net::csp::{Csp, Violation};
-use net::{Destination, Origin, Request, Response, Url};
+use net::{Destination, Request, Response, ResponseType, Url};
 
 use crate::loader::{FetchId, LoadError, Network, Page, Target};
 
@@ -489,12 +489,7 @@ impl Scripts {
     /// classic script"): the script, decoded, if it came with an ok status
     /// and a type a script may have; else a failure, which the console
     /// says. A result no script waits for changes nothing.
-    pub(crate) fn arrived(
-        &mut self,
-        page: &Page,
-        id: FetchId,
-        result: Result<Response, LoadError>,
-    ) {
+    pub(crate) fn arrived(&mut self, id: FetchId, result: Result<Response, LoadError>) {
         let Some(pending) = self
             .blocking
             .iter_mut()
@@ -517,7 +512,7 @@ impl Scripts {
         let element = *element;
         let failed = match result
             .map_err(|error| error.to_string())
-            .and_then(|response| script_source(&response, *fallback, page.origin()))
+            .and_then(|response| script_source(&response, *fallback))
         {
             Ok(mut source) => {
                 source.element = Some(element);
@@ -1063,14 +1058,10 @@ fn script_request(page: &Page, url: Url, csp: Csp) -> Option<Request> {
 /// The script a response to a script's fetch is (HTML's "fetch a
 /// classic script"), or why it is none: it needs an ok status and a type
 /// Fetch lets a script have. It is decoded by its BOM, else its type's
-/// `charset`, else `fallback`; its errors are muted unless every URL it
-/// came through is of the document's `origin` or `data:` (Fetch's
-/// response tainting, with no CORS until M27).
-fn script_source(
-    response: &Response,
-    fallback: Encoding,
-    origin: &Origin,
-) -> Result<Source, String> {
+/// `charset`, else `fallback`; its errors are muted when the response is
+/// CORS-cross-origin (HTML): opaque, its request having left the
+/// document's origin without CORS (M27).
+fn script_source(response: &Response, fallback: Encoding) -> Result<Source, String> {
     if !response.ok() {
         return Err(format!("status {}", response.status));
     }
@@ -1082,10 +1073,10 @@ fn script_source(
     }
     let encoding = net::mime::legacy_extract_encoding(response.mime_type.as_ref(), fallback);
     let (text, _) = encoding::decode(&response.body, encoding);
-    let muted = response
-        .url_list
-        .iter()
-        .any(|url| url.scheme() != "data" && url.origin() != *origin);
+    let muted = matches!(
+        response.response_type,
+        ResponseType::Opaque | ResponseType::OpaqueRedirect
+    );
     Ok(Source {
         text,
         url: response.url().to_string(),
@@ -1429,48 +1420,33 @@ mod tests {
         assert_eq!(request.mode, net::Mode::NoCors);
         assert_eq!(request.body_limit, Some(MAX_SCRIPT_BYTES));
         assert!(request.csp.is_some());
+        assert_eq!(request.origin, Some(url.origin()));
         assert_eq!(request.initiator.map(|i| i.url), Some(url));
         assert!(script_request(&Page::given(2), script, csp).is_none());
     }
 
     #[test]
-    fn a_scripts_errors_are_muted_unless_every_url_is_the_documents() {
-        let url = |s: &str| Url::parse(s).unwrap();
-        let response = |urls: &[&str]| Response {
-            url_list: urls.iter().map(|s| url(s)).collect(),
+    fn a_scripts_errors_are_muted_when_its_response_is_cors_cross_origin() {
+        let response = |response_type| Response {
+            url_list: vec![Url::parse("https://example.com/a.js").unwrap()],
             status: 200,
             status_message: Vec::new(),
             headers: net::HeaderList::new(),
             body: b"1".to_vec(),
             mime_type: None,
             address_space: None,
+            response_type,
+            cors_exposed: Vec::new(),
         };
-        let document = url("https://example.com/page.html");
-        let muted = |urls: &[&str]| {
-            script_source(&response(urls), encoding::UTF_8, &document.origin())
+        let muted = |response_type| {
+            script_source(&response(response_type), encoding::UTF_8)
                 .unwrap()
                 .muted
         };
-        assert!(!muted(&["https://example.com/a.js"]));
-        assert!(!muted(&["data:text/javascript,1"]));
-        assert!(muted(&["https://other.example/a.js"]));
-        assert!(muted(&["https://example.com:8443/a.js"]));
-        assert!(muted(&[
-            "https://example.com/r",
-            "https://other.example/a.js"
-        ]));
-        assert!(muted(&[
-            "https://other.example/r",
-            "https://example.com/a.js"
-        ]));
-        // A document of no origin it shares, a file's, mutes them all.
-        let file = url("file:///page.html");
-        let source = script_source(
-            &response(&["file:///a.js"]),
-            encoding::UTF_8,
-            &file.origin(),
-        );
-        assert!(source.unwrap().muted);
+        assert!(!muted(ResponseType::Basic));
+        assert!(!muted(ResponseType::Cors));
+        assert!(muted(ResponseType::Opaque));
+        assert!(muted(ResponseType::OpaqueRedirect));
     }
 
     #[test]

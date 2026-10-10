@@ -42,6 +42,8 @@ pub(super) fn fetch(url: &Url, limit: usize) -> Result<Response, NetworkError> {
         body,
         mime_type: Some(mime_type),
         address_space: Some(AddressSpace::Loopback),
+        response_type: super::ResponseType::Basic,
+        cors_exposed: Vec::new(),
     })
 }
 

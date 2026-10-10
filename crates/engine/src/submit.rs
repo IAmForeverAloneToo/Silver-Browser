@@ -213,19 +213,27 @@ impl crate::Engine {
             }
             return;
         }
-        let source = self.shown.page.url().map(Url::scheme);
-        match crate::refusal(&url, source, self.shown.made) {
+        let scheme = self.shown.page.url().map(Url::scheme);
+        match crate::refusal(&url, scheme, self.shown.made) {
             Some(why) => self.notice = Some(why),
-            None => self.navigate_with(url, submission.post),
+            None => {
+                let source = self.navigation_source(true);
+                self.navigate_with(url, submission.post, source);
+            }
         }
     }
 
     /// [`crate::Engine::navigate`], a POST of `post` when given (M26.9):
     /// a new entry, after the current one but in the initial document's
     /// place, never a fragment's navigation.
-    pub(crate) fn navigate_with(&mut self, url: Url, post: Option<Post>) {
+    pub(crate) fn navigate_with(
+        &mut self,
+        url: Url,
+        post: Option<Post>,
+        source: crate::NavigationSource,
+    ) {
         let Some(post) = post else {
-            self.navigate(url);
+            self.navigate_replacing(url, false, Some(source));
             return;
         };
         let handling = if self.shown.initial {
@@ -233,7 +241,7 @@ impl crate::Engine {
         } else {
             crate::Handling::Push
         };
-        self.start_navigation_with(url, handling, Some(post));
+        self.start_navigation_with(url, handling, Some(post), Some(source));
     }
 
     /// Resets `form` (HTML section 4.10.22) when no script runs its

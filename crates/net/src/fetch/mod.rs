@@ -3,18 +3,22 @@
 //! redirects followed. Every check a fetch starts with (the scheme, the
 //! port, mixed content, a script's Content Security Policy and the
 //! address space) is made again on each hop, so a redirect cannot reach
-//! what the first URL could not.
+//! what the first URL could not. Since M27 (docs/design/fetch.md) a
+//! request has Fetch's modes, credentials and redirect mode, and its
+//! response a tainting: [`Response::exposed`] is all a script may see.
 
 mod file;
 mod ports;
 
+use std::borrow::Cow;
+
 use crate::csp::Csp;
 use crate::data_url;
 use crate::error::{AbortHandle, NetworkError};
-use crate::headers::HeaderList;
+use crate::headers::{self, HeaderList};
 use crate::mime::{self, MimeType};
 use crate::transport::{self, Exchange, Transport};
-use crate::{AddressSpace, Host, Url};
+use crate::{AddressSpace, Host, Origin, Url};
 
 pub use ports::{BAD_PORTS, is_bad as is_bad_port};
 
@@ -70,22 +74,45 @@ const ACCEPT_LANGUAGE: &[u8] = b"en-US,en;q=0.9";
 /// The content codings [`crate::transport`] removes.
 const ACCEPT_ENCODING: &[u8] = b"gzip, deflate";
 
-/// A request's method.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Method {
-    Get,
-    Head,
-    Post,
-}
+/// A request's method (Fetch 2.2.1): a token, as it goes on the wire.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Method(Cow<'static, str>);
 
 impl Method {
-    /// The method as it goes on the wire.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Method::Get => "GET",
-            Method::Head => "HEAD",
-            Method::Post => "POST",
+    pub const GET: Method = Method(Cow::Borrowed("GET"));
+    pub const HEAD: Method = Method(Cow::Borrowed("HEAD"));
+    pub const POST: Method = Method(Cow::Borrowed("POST"));
+    pub const OPTIONS: Method = Method(Cow::Borrowed("OPTIONS"));
+
+    /// `token` as a method (Fetch 2.2.1): `None` when it is not a token;
+    /// `DELETE`, `GET`, `HEAD`, `OPTIONS`, `POST` and `PUT` in upper case
+    /// whatever their case, the rest as they came (`patch` stays
+    /// `patch`, as the reference browser sends it).
+    pub fn parse(token: &str) -> Option<Method> {
+        if !headers::is_header_name(token.as_bytes()) {
+            return None;
         }
+        Some(Method(
+            ["DELETE", "GET", "HEAD", "OPTIONS", "POST", "PUT"]
+                .into_iter()
+                .find(|normal| token.eq_ignore_ascii_case(normal))
+                .map_or_else(|| Cow::Owned(token.to_owned()), Cow::Borrowed),
+        ))
+    }
+
+    /// The method as it goes on the wire.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Whether it is a CORS-safelisted method: `GET`, `HEAD` or `POST`.
+    pub fn is_cors_safelisted(&self) -> bool {
+        matches!(self.as_str(), "GET" | "HEAD" | "POST")
+    }
+
+    /// Whether it is a forbidden method: `CONNECT`, `TRACE` or `TRACK`.
+    pub fn is_forbidden(&self) -> bool {
+        headers::is_forbidden_method(self.0.as_bytes())
     }
 }
 
@@ -100,9 +127,22 @@ pub enum Destination {
     Image,
     /// A classic script (M24).
     Script,
+    /// No destination: a script's `fetch` or `XMLHttpRequest` (M27).
+    Empty,
 }
 
 impl Destination {
+    /// The destination's name, as `Sec-Fetch-Dest` says it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Destination::Document => "document",
+            Destination::Style => "style",
+            Destination::Image => "image",
+            Destination::Script => "script",
+            Destination::Empty => "empty",
+        }
+    }
+
     /// The `Accept` value Fetch lists for the destination.
     fn accept(self) -> &'static [u8] {
         match self {
@@ -111,7 +151,7 @@ impl Destination {
             }
             Destination::Style => b"text/css,*/*;q=0.1",
             Destination::Image => b"image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5",
-            Destination::Script => b"*/*",
+            Destination::Script | Destination::Empty => b"*/*",
         }
     }
 }
@@ -121,8 +161,45 @@ impl Destination {
 pub enum Mode {
     /// A navigation: the load of a document.
     Navigate,
-    /// A subresource with no CORS: a stylesheet, for now.
+    /// Same origin or nothing: another origin is a network error.
+    SameOrigin,
+    /// A subresource with no CORS: another origin's response is opaque.
     NoCors,
+    /// CORS: another origin's response only when it says so (M27.3).
+    Cors,
+}
+
+impl Mode {
+    /// The mode's name, as `Sec-Fetch-Mode` says it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Mode::Navigate => "navigate",
+            Mode::SameOrigin => "same-origin",
+            Mode::NoCors => "no-cors",
+            Mode::Cors => "cors",
+        }
+    }
+}
+
+/// Fetch's credentials mode: whether cookies go with the request and
+/// are taken from its response (M27.4), and what a CORS response must
+/// allow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Credentials {
+    Omit,
+    /// Only while the request is same origin.
+    SameOrigin,
+    Include,
+}
+
+/// Fetch's redirect mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Redirect {
+    Follow,
+    /// A redirect is a network error.
+    Error,
+    /// A redirect is the answer: an opaque-redirect response.
+    Manual,
 }
 
 /// The document a request comes from.
@@ -133,6 +210,24 @@ pub struct Initiator {
     /// The address space of the server the document came from;
     /// loopback for a `file:` document.
     pub address_space: AddressSpace,
+    /// The document's origin (M27.2): the request's origin.
+    pub origin: Origin,
+}
+
+/// A response's type (Fetch 2.2.6), from its request's tainting: what
+/// [`Response::exposed`] lets a script see.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseType {
+    /// Same origin, or no document asked: everything but its cookies.
+    Basic,
+    /// Another origin's, allowed by CORS: its status, its body and the
+    /// headers it exposes.
+    Cors,
+    /// Another origin's, with no CORS: nothing at all.
+    Opaque,
+    /// A redirect a request in manual redirect mode stopped at: nothing
+    /// but that it happened.
+    OpaqueRedirect,
 }
 
 /// A request to fetch.
@@ -140,14 +235,29 @@ pub struct Initiator {
 pub struct Request {
     pub url: Url,
     pub method: Method,
-    /// The body of a `POST`.
+    /// The author's header list: a form's `Content-Type` (M26.9), what a
+    /// script set (M27); `net` adds its own fields around them.
+    pub headers: HeaderList,
+    /// The body.
     pub body: Option<Vec<u8>>,
-    /// The body's `Content-Type`, sent with it (M26.9).
-    pub content_type: Option<String>,
     pub destination: Destination,
     pub mode: Mode,
-    /// The document that asked, or `None` for a load the user asked for,
-    /// which may go anywhere.
+    pub credentials: Credentials,
+    pub redirect: Redirect,
+    /// The origin of the document that asked (Fetch's request origin),
+    /// or `None` for a load the user asked for: what the tainting,
+    /// `Origin`, CORS, `Sec-Fetch-Site` and cookies' same-site rules go
+    /// by. A navigation a document starts has one but no initiator.
+    pub origin: Option<Origin>,
+    /// Whether the user's activation started it: `Sec-Fetch-User` on a
+    /// navigation.
+    pub user_activated: bool,
+    /// Fetch's use-CORS-preflight flag: an XHR whose upload is listened
+    /// to is preflighted even when it is safelisted.
+    pub preflight: bool,
+    /// The document that asked, for a subresource's checks (its scheme,
+    /// mixed content, its address space), or `None` for a load the user
+    /// asked for or a navigation, which may go anywhere.
     pub initiator: Option<Initiator>,
     /// Stops the fetch.
     pub abort: AbortHandle,
@@ -161,20 +271,31 @@ pub struct Request {
 }
 
 impl Request {
-    /// A `GET` of `url` for `destination`, in navigate mode for a
-    /// document and no-cors otherwise, with no initiator and an abort
-    /// handle of its own.
+    /// A `GET` of `url` for `destination`, as the user asks: in navigate
+    /// mode for a document, CORS for no destination and no-cors
+    /// otherwise, with credentials (same-origin ones for a script's
+    /// fetch), following redirects, with no origin or initiator, and
+    /// an abort handle of its own.
     pub fn get(url: Url, destination: Destination) -> Request {
         Request {
             url,
-            method: Method::Get,
+            method: Method::GET,
+            headers: HeaderList::new(),
             body: None,
-            content_type: None,
             destination,
             mode: match destination {
                 Destination::Document => Mode::Navigate,
+                Destination::Empty => Mode::Cors,
                 Destination::Style | Destination::Image | Destination::Script => Mode::NoCors,
             },
+            credentials: match destination {
+                Destination::Empty => Credentials::SameOrigin,
+                _ => Credentials::Include,
+            },
+            redirect: Redirect::Follow,
+            origin: None,
+            user_activated: destination == Destination::Document,
+            preflight: false,
             initiator: None,
             abort: AbortHandle::new(),
             body_limit: None,
@@ -185,12 +306,22 @@ impl Request {
     /// A `POST` of `body` to `url` for `destination`, of `content_type`
     /// (M26.9): a form's submission.
     pub fn post(url: Url, destination: Destination, body: Vec<u8>, content_type: &str) -> Request {
+        let mut headers = HeaderList::new();
+        headers.append(b"Content-Type", content_type.as_bytes());
         Request {
-            method: Method::Post,
+            method: Method::POST,
+            headers,
             body: Some(body),
-            content_type: Some(content_type.to_owned()),
             ..Request::get(url, destination)
         }
+    }
+
+    /// The request, a navigation the document of `origin` started, by
+    /// the user's activation or not.
+    pub fn from_document(mut self, origin: Origin, activated: bool) -> Request {
+        self.origin = Some(origin);
+        self.user_activated = activated;
+        self
     }
 
     /// The request, checked against `csp` at each hop if it is for a
@@ -211,10 +342,21 @@ impl Request {
         self.body_limit.map_or(limit, |own| own.min(limit))
     }
 
-    /// The request, made by `initiator`'s document.
+    /// The request, made by `initiator`'s document, of its origin.
     pub fn initiated_by(mut self, initiator: Initiator) -> Request {
+        self.origin = Some(initiator.origin.clone());
+        self.user_activated = false;
         self.initiator = Some(initiator);
         self
+    }
+
+    /// Whether it is a CORS request that needs a preflight (Fetch 4.1):
+    /// one asking for it, or of a method or with headers a form could
+    /// not send.
+    fn needs_preflight(&self, method: &Method, author: &HeaderList) -> bool {
+        self.preflight
+            || !method.is_cors_safelisted()
+            || !headers::cors_unsafe_request_header_names(author).is_empty()
     }
 }
 
@@ -237,9 +379,83 @@ pub struct Response {
     /// `file:` URL, and none for `about:` and `data:`, which no server
     /// answers.
     pub address_space: Option<AddressSpace>,
+    /// Its type, from the request's tainting (M27).
+    pub response_type: ResponseType,
+    /// The header names a CORS response exposes beyond the safelisted
+    /// ones (Fetch's CORS-exposed header-name list).
+    pub cors_exposed: Vec<Vec<u8>>,
+}
+
+/// What a script may see of a response (Fetch 2.2.6's filtered
+/// responses), from [`Response::exposed`].
+#[derive(Debug, Clone)]
+pub struct Exposed<'a> {
+    pub response_type: ResponseType,
+    /// 0 for an opaque or opaque-redirect response.
+    pub status: u16,
+    pub status_message: &'a [u8],
+    pub headers: HeaderList,
+    /// Empty for an opaque response.
+    pub url_list: &'a [Url],
+    /// `None` for an opaque or opaque-redirect response.
+    pub body: Option<&'a [u8]>,
 }
 
 impl Response {
+    /// Whether the fetch was redirected: its URL list holds more than one.
+    pub fn redirected(&self) -> bool {
+        self.url_list.len() > 1
+    }
+
+    /// The response as a script may see it (Fetch 2.2.6): a basic one
+    /// without its `Set-Cookie` fields; a CORS one with its status, its
+    /// body and its CORS-safelisted and exposed headers; an opaque one
+    /// with nothing, no URL either; an opaque redirect with its URL
+    /// alone. A realm is given nothing else (docs/design/fetch.md).
+    pub fn exposed(&self) -> Exposed<'_> {
+        let keep = |keep: &dyn Fn(&[u8]) -> bool| {
+            let mut headers = HeaderList::new();
+            for (name, value) in self.headers.iter().filter(|(name, _)| keep(name)) {
+                headers.append(name, value);
+            }
+            headers
+        };
+        let (status, status_message, headers, url_list, body) = match self.response_type {
+            ResponseType::Basic => (
+                self.status,
+                self.status_message.as_slice(),
+                keep(&|name| !headers::is_forbidden_response_header_name(name)),
+                self.url_list.as_slice(),
+                Some(self.body.as_slice()),
+            ),
+            ResponseType::Cors => (
+                self.status,
+                self.status_message.as_slice(),
+                keep(&|name| {
+                    headers::is_cors_safelisted_response_header_name(name, &self.cors_exposed)
+                }),
+                self.url_list.as_slice(),
+                Some(self.body.as_slice()),
+            ),
+            ResponseType::Opaque => (0, &[][..], HeaderList::new(), &[][..], None),
+            ResponseType::OpaqueRedirect => (
+                0,
+                &[][..],
+                HeaderList::new(),
+                self.url_list.as_slice(),
+                None,
+            ),
+        };
+        Exposed {
+            response_type: self.response_type,
+            status,
+            status_message,
+            headers,
+            url_list,
+            body,
+        }
+    }
+
     /// The URL that answered: the last of the URL list.
     pub fn url(&self) -> &Url {
         self.url_list.last().expect("a response has a URL")
@@ -307,73 +523,88 @@ impl Client {
         mut deliver: Option<&mut (dyn FnMut(Delivery<'_>) + 'd)>,
     ) -> Result<Response, NetworkError> {
         let mut url = request.url.clone();
-        let mut method = request.method;
-        let mut body = request.body.clone();
-        let mut url_list = vec![url.clone()];
+        let mut hop = Hop {
+            method: request.method.clone(),
+            author: request.headers.clone(),
+            body: request.body.clone(),
+            url_list: vec![url.clone()],
+            tainting: ResponseType::Basic,
+            tainted_origin: false,
+        };
         loop {
             if request.abort.is_aborted() {
                 return Err(NetworkError::Aborted);
             }
             if let Some(upgraded) = upgrade_mixed_content(request, &url) {
                 url = upgraded;
-                *url_list.last_mut().expect("never empty") = url.clone();
+                *hop.url_list.last_mut().expect("never empty") = url.clone();
             }
-            check(request, &url, url_list.len() - 1)?;
-            let mut response = self.scheme_fetch(
-                request,
-                &url,
-                &url_list,
-                method,
-                body.as_deref(),
-                deliver.as_deref_mut(),
-            )?;
+            check(request, &url, hop.url_list.len() - 1)?;
+            hop.tainting = tainting(request, &url, hop.tainting)?;
+            if hop.tainting == ResponseType::Cors
+                && request.needs_preflight(&hop.method, &hop.author)
+            {
+                return Err(NetworkError::Cors(
+                    "a preflight, which arrives with M27.3".to_owned(),
+                ));
+            }
+            let mut response = self.scheme_fetch(request, &url, &hop, deliver.as_deref_mut())?;
+            match hop.tainting {
+                ResponseType::Cors => cors_check(request, &response.headers, hop.tainted_origin)?,
+                ResponseType::Opaque => resource_policy_check(request, &response.headers, &url)?,
+                _ => {}
+            }
             let Some(location) = location(&response, &url)? else {
-                response.url_list = url_list;
+                response.cors_exposed = match hop.tainting {
+                    ResponseType::Cors => cors_exposed(request, &response.headers),
+                    _ => Vec::new(),
+                };
+                response.response_type = hop.tainting;
+                response.url_list = hop.url_list;
                 return Ok(response);
             };
-            if url_list.len() > MAX_REDIRECTS {
+            match request.redirect {
+                Redirect::Follow => {}
+                Redirect::Error => return Err(NetworkError::Redirected),
+                Redirect::Manual => {
+                    response.response_type = ResponseType::OpaqueRedirect;
+                    response.url_list = hop.url_list;
+                    return Ok(response);
+                }
+            }
+            if hop.url_list.len() > MAX_REDIRECTS {
                 return Err(NetworkError::RedirectLimit);
             }
-            // A POST answered by 301 or 302, or anything but GET or HEAD
-            // answered by 303, goes on as a GET without its body.
-            let to_get = match response.status {
-                301 | 302 => method == Method::Post,
-                303 => !matches!(method, Method::Get | Method::Head),
-                _ => false,
-            };
-            if to_get {
-                method = Method::Get;
-                body = None;
-            }
+            hop.redirect(request, &url, &location, response.status)?;
             url = location;
-            url_list.push(url.clone());
+            hop.url_list.push(url.clone());
         }
     }
 
     /// One hop's fetch, by `url`'s scheme, the response handed to
-    /// `deliver` as it is read when there is one (`url_list` the URLs so
-    /// far, this one last).
-    #[allow(clippy::too_many_arguments)]
+    /// `deliver` as it is read when there is one.
     fn scheme_fetch<'d>(
         &self,
         request: &Request,
         url: &Url,
-        url_list: &[Url],
-        method: Method,
-        body: Option<&[u8]>,
+        hop: &Hop,
         deliver: Option<&mut (dyn FnMut(Delivery<'_>) + 'd)>,
     ) -> Result<Response, NetworkError> {
+        let url_list = hop.url_list.as_slice();
         match url.scheme() {
             "about" => whole(about(url), deliver),
             "data" => whole(data(url, request.limit(self.body_limit)), deliver),
             "file" => whole(file::fetch(url, request.limit(self.body_limit)), deliver),
             "http" | "https" => {
-                // A body's type goes with it: not after a redirect
-                // turned the request into a GET.
-                let content_type = body.and(request.content_type.as_deref());
-                let headers = request_headers(request.destination, self.user_agent, content_type);
+                let headers = self.request_headers(request, url, hop);
+                // A POST or a PUT without a body says its length is 0.
+                let body = match (&hop.body, hop.method.as_str()) {
+                    (Some(body), _) => Some(body.as_slice()),
+                    (None, "POST" | "PUT") => Some(&[][..]),
+                    (None, _) => None,
+                };
                 let exchange = Exchange {
-                    method: method.as_str(),
+                    method: hop.method.as_str(),
                     url,
                     headers: &headers,
                     body,
@@ -404,10 +635,276 @@ impl Client {
                     headers: response.headers,
                     body: response.body,
                     address_space: Some(received.address_space),
+                    response_type: ResponseType::Basic,
+                    cors_exposed: Vec::new(),
                 })
             }
             other => Err(NetworkError::BadScheme(other.to_owned())),
         }
+    }
+
+    /// The fields a hop to `url` sends besides `Host`, which the message
+    /// writer adds: `User-Agent`, `Accept` and `Accept-Language` unless
+    /// the author set them, `Accept-Encoding`, the author's fields, then
+    /// `Origin` and the `Sec-Fetch-*` fields. Not sent: `Referer`
+    /// (M33.3) and `Cookie` (M27.4).
+    fn request_headers(&self, request: &Request, url: &Url, hop: &Hop) -> HeaderList {
+        let mut headers = HeaderList::new();
+        let author = &hop.author;
+        if !author.contains(b"User-Agent") {
+            headers.append(b"User-Agent", self.user_agent.as_bytes());
+        }
+        if !author.contains(b"Accept") {
+            headers.append(b"Accept", request.destination.accept());
+        }
+        if !author.contains(b"Accept-Language") {
+            headers.append(b"Accept-Language", ACCEPT_LANGUAGE);
+        }
+        headers.append(b"Accept-Encoding", ACCEPT_ENCODING);
+        for (name, value) in author.iter() {
+            headers.append(name, value);
+        }
+        if let Some(origin) = origin_field(request, url, hop) {
+            headers.append(b"Origin", origin.as_bytes());
+        }
+        // Fetch Metadata: to potentially trustworthy URLs alone.
+        if url.is_potentially_trustworthy() {
+            headers.append(b"Sec-Fetch-Dest", request.destination.name().as_bytes());
+            headers.append(b"Sec-Fetch-Mode", request.mode.name().as_bytes());
+            headers.append(
+                b"Sec-Fetch-Site",
+                sec_fetch_site(request, &hop.url_list).as_bytes(),
+            );
+            if request.mode == Mode::Navigate && request.user_activated {
+                headers.append(b"Sec-Fetch-User", b"?1");
+            }
+        }
+        headers
+    }
+}
+
+/// Where a fetch stands from hop to hop.
+struct Hop {
+    method: Method,
+    /// The author's fields, less those a redirect dropped.
+    author: HeaderList,
+    body: Option<Vec<u8>>,
+    /// The URLs so far, this hop's last.
+    url_list: Vec<Url>,
+    tainting: ResponseType,
+    /// Fetch's tainted origin flag: a redirect left another origin for a
+    /// third, and the request's origin is `null` from then on.
+    tainted_origin: bool,
+}
+
+impl Hop {
+    /// Fetch's HTTP-redirect fetch, from `url` to `location` on a
+    /// `status`: a CORS request may not go to a URL with credentials; a
+    /// POST answered by 301 or 302, or anything but GET or HEAD
+    /// answered by 303, goes on as a GET without its body or the body's
+    /// fields; `Authorization` stays with its origin; and the origin is
+    /// tainted when the redirect leaves an origin other than the
+    /// request's for another.
+    fn redirect(
+        &mut self,
+        request: &Request,
+        url: &Url,
+        location: &Url,
+        status: u16,
+    ) -> Result<(), NetworkError> {
+        let to = location.origin();
+        if location.includes_credentials()
+            && (self.tainting == ResponseType::Cors
+                || (request.mode == Mode::Cors && request.origin.as_ref() != Some(&to)))
+        {
+            return Err(NetworkError::Cors(
+                "a redirect to a URL with credentials".to_owned(),
+            ));
+        }
+        let to_get = match status {
+            301 | 302 => self.method == Method::POST,
+            303 => !matches!(self.method.as_str(), "GET" | "HEAD"),
+            _ => false,
+        };
+        if to_get {
+            self.method = Method::GET;
+            self.body = None;
+            for name in [
+                b"Content-Encoding".as_slice(),
+                b"Content-Language",
+                b"Content-Location",
+                b"Content-Type",
+            ] {
+                self.author.delete(name);
+            }
+        }
+        let from = url.origin();
+        if from != to {
+            self.author.delete(b"Authorization");
+            if request
+                .origin
+                .as_ref()
+                .is_some_and(|origin| *origin != from)
+            {
+                self.tainted_origin = true;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A hop's response tainting (Fetch 4.1, main fetch's step 12), the
+/// tainting so far `previous`: basic for a request no document made,
+/// while every URL has been the document's origin, for a `data:` URL
+/// and for a navigation; else a network error in same-origin mode,
+/// opaque in no-cors mode (which must follow redirects), and CORS for
+/// an HTTP URL.
+fn tainting(
+    request: &Request,
+    url: &Url,
+    previous: ResponseType,
+) -> Result<ResponseType, NetworkError> {
+    let Some(origin) = &request.origin else {
+        return Ok(ResponseType::Basic);
+    };
+    if (previous == ResponseType::Basic && *origin == url.origin())
+        || url.scheme() == "data"
+        || request.mode == Mode::Navigate
+    {
+        return Ok(ResponseType::Basic);
+    }
+    match request.mode {
+        Mode::SameOrigin => Err(NetworkError::Refused(
+            "a same-origin request to another origin".to_owned(),
+        )),
+        Mode::NoCors if request.redirect != Redirect::Follow => Err(NetworkError::Refused(
+            "a no-cors request that does not follow redirects".to_owned(),
+        )),
+        Mode::NoCors => Ok(ResponseType::Opaque),
+        _ if !matches!(url.scheme(), "http" | "https") => Err(NetworkError::Refused(format!(
+            "a CORS request for a {}: URL",
+            url.scheme()
+        ))),
+        _ => Ok(ResponseType::Cors),
+    }
+}
+
+/// The request's origin as `Origin` and CORS name it: `null` once
+/// tainted, or for a request no document made.
+fn serialized_origin(request: &Request, tainted: bool) -> String {
+    match &request.origin {
+        Some(origin) if !tainted => origin.serialization(),
+        _ => "null".to_owned(),
+    }
+}
+
+/// The `Origin` a hop sends (Fetch 3.2): on a CORS request, and on any
+/// whose method is neither `GET` nor `HEAD`, where it is `null` from an
+/// `https:` document to a URL that is not (the default referrer
+/// policy's downgrade). None for a request no document made.
+fn origin_field(request: &Request, url: &Url, hop: &Hop) -> Option<String> {
+    let origin = request.origin.as_ref()?;
+    let serialized = serialized_origin(request, hop.tainted_origin);
+    if hop.tainting == ResponseType::Cors {
+        return Some(serialized);
+    }
+    if matches!(hop.method.as_str(), "GET" | "HEAD") {
+        return None;
+    }
+    let downgrade = matches!(origin, Origin::Tuple { scheme, .. } if scheme == "https")
+        && url.scheme() != "https";
+    Some(if downgrade {
+        "null".to_owned()
+    } else {
+        serialized
+    })
+}
+
+/// `Sec-Fetch-Site` (Fetch Metadata): `none` for a request the user
+/// made; else `same-origin` while every URL is the request's origin,
+/// `same-site` while every one is its site, `cross-site` otherwise.
+fn sec_fetch_site(request: &Request, url_list: &[Url]) -> &'static str {
+    let Some(origin) = &request.origin else {
+        return "none";
+    };
+    let mut site = "same-origin";
+    for url in url_list {
+        let other = url.origin();
+        if other == *origin {
+            continue;
+        }
+        if !origin.same_site(&other) {
+            return "cross-site";
+        }
+        site = "same-site";
+    }
+    site
+}
+
+/// The CORS check (Fetch 4.10) of a response to a CORS request: exactly
+/// one `Access-Control-Allow-Origin`, `*` for a request without
+/// credentials, or else the request's origin serialized; and with
+/// credentials, `Access-Control-Allow-Credentials: true`.
+fn cors_check(request: &Request, headers: &HeaderList, tainted: bool) -> Result<(), NetworkError> {
+    let refused = |why: &str| Err(NetworkError::Cors(why.to_owned()));
+    let Some(allowed) = headers.get(b"Access-Control-Allow-Origin") else {
+        return refused("no Access-Control-Allow-Origin");
+    };
+    let include = request.credentials == Credentials::Include;
+    if !include && allowed == b"*" {
+        return Ok(());
+    }
+    if allowed != serialized_origin(request, tainted).as_bytes() {
+        return refused("Access-Control-Allow-Origin names another origin");
+    }
+    if !include || headers.get(b"Access-Control-Allow-Credentials").as_deref() == Some(b"true") {
+        return Ok(());
+    }
+    refused("credentials, without Access-Control-Allow-Credentials: true")
+}
+
+/// The header names a CORS response exposes (Fetch 4.1): its
+/// `Access-Control-Expose-Headers`, where `*` without credentials is
+/// every name the response has.
+fn cors_exposed(request: &Request, headers: &HeaderList) -> Vec<Vec<u8>> {
+    let Some(Ok(names)) = headers::token_list(headers, b"Access-Control-Expose-Headers") else {
+        return Vec::new();
+    };
+    if request.credentials != Credentials::Include && names.iter().any(|name| name == b"*") {
+        headers
+            .iter()
+            .map(|(name, _)| name.to_ascii_lowercase())
+            .collect()
+    } else {
+        names
+    }
+}
+
+/// `Cross-Origin-Resource-Policy` (Fetch 3.7) on an opaque response:
+/// `same-origin` refuses it to another origin; `same-site` to a
+/// document that is not schemelessly same site with it, or that is not
+/// `https:` where the response is.
+fn resource_policy_check(
+    request: &Request,
+    headers: &HeaderList,
+    url: &Url,
+) -> Result<(), NetworkError> {
+    let Some(origin) = &request.origin else {
+        return Ok(());
+    };
+    let target = url.origin();
+    let blocked = match headers.get(b"Cross-Origin-Resource-Policy").as_deref() {
+        Some(b"same-origin") => *origin != target,
+        Some(b"same-site") => {
+            !origin.schemelessly_same_site(&target)
+                || (!matches!(origin, Origin::Tuple { scheme, .. } if scheme == "https")
+                    && url.scheme() == "https")
+        }
+        _ => false,
+    };
+    match blocked {
+        true => Err(NetworkError::CrossOriginResourcePolicy),
+        false => Ok(()),
     }
 }
 
@@ -461,6 +958,8 @@ impl transport::ResponseStream for Streaming<'_, '_> {
             headers: headers.clone(),
             body: Vec::new(),
             address_space: Some(space),
+            response_type: ResponseType::Basic,
+            cors_exposed: Vec::new(),
         };
         // A redirect, or a broken one, is the fetch's to follow or fail.
         if !matches!(location(&response, self.url), Ok(None)) {
@@ -532,26 +1031,6 @@ fn upgrade_mixed_content(request: &Request, url: &Url) -> Option<Url> {
     Url::parse(&format!("https{}", &url.as_str()["http".len()..])).ok()
 }
 
-/// The fields every HTTP request sends besides `Host`, which the
-/// message writer adds, and a body's `Content-Type` (M26.9). Not sent:
-/// `Referer` (M33.3), `Cookie` (M27.4), `Origin` (M27) and the
-/// `Sec-Fetch-*` fields (M27).
-fn request_headers(
-    destination: Destination,
-    user_agent: &str,
-    content_type: Option<&str>,
-) -> HeaderList {
-    let mut headers = HeaderList::new();
-    headers.append(b"User-Agent", user_agent.as_bytes());
-    headers.append(b"Accept", destination.accept());
-    headers.append(b"Accept-Language", ACCEPT_LANGUAGE);
-    headers.append(b"Accept-Encoding", ACCEPT_ENCODING);
-    if let Some(content_type) = content_type {
-        headers.append(b"Content-Type", content_type.as_bytes());
-    }
-    headers
-}
-
 /// Where a redirect goes (Fetch's location URL): `None` when the
 /// response is not a redirect, or names no location and is the answer
 /// itself. Several `Location` fields, one that does not parse, or one
@@ -615,8 +1094,12 @@ fn basic(url: &Url, mime_type: MimeType, body: Vec<u8>) -> Response {
         body,
         mime_type: Some(mime_type),
         address_space: None,
+        response_type: ResponseType::Basic,
+        cors_exposed: Vec::new(),
     }
 }
 
+#[cfg(test)]
+mod request_tests;
 #[cfg(test)]
 mod tests;

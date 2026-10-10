@@ -124,6 +124,13 @@ fn network_error(url: &Url, place: &str, error: &NetworkError) -> (String, Strin
             reach,
             "The page's Content-Security-Policy does not allow it.".to_owned(),
         ),
+        NetworkError::Cors(_)
+        | NetworkError::CrossOriginResourcePolicy
+        | NetworkError::Redirected
+        | NetworkError::Refused(_) => (
+            reach,
+            "The site does not let the page that asked for it read it.".to_owned(),
+        ),
     }
 }
 

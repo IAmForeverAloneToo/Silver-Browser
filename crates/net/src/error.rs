@@ -58,6 +58,16 @@ pub enum NetworkError {
     BadRedirect,
     /// The request was aborted.
     Aborted,
+    /// A CORS request the server did not allow, or a preflight it
+    /// refused (M27.3): why, for the console.
+    Cors(String),
+    /// A response whose `Cross-Origin-Resource-Policy` refuses the
+    /// document that asked (M27).
+    CrossOriginResourcePolicy,
+    /// A redirect, for a request whose redirect mode is error.
+    Redirected,
+    /// A request its mode refuses (M27): why.
+    Refused(String),
     /// The document's Content Security Policy does not allow it: the
     /// directive, as the policy wrote it (M24.6).
     Csp(String),
@@ -113,6 +123,12 @@ impl fmt::Display for NetworkError {
             NetworkError::RedirectLimit => f.write_str("too many redirects"),
             NetworkError::BadRedirect => f.write_str("a redirect to where none may go"),
             NetworkError::Aborted => f.write_str("aborted"),
+            NetworkError::Cors(why) => write!(f, "refused by CORS: {why}"),
+            NetworkError::CrossOriginResourcePolicy => {
+                f.write_str("refused by its Cross-Origin-Resource-Policy")
+            }
+            NetworkError::Redirected => f.write_str("a redirect, which the request refuses"),
+            NetworkError::Refused(why) => write!(f, "refused: {why}"),
             NetworkError::Csp(directive) => {
                 write!(f, "blocked by Content-Security-Policy: {directive}")
             }

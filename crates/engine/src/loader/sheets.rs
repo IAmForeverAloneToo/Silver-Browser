@@ -306,6 +306,7 @@ impl Page {
         Some(Initiator {
             url: self.context.url.clone()?,
             address_space: self.context.address_space,
+            origin: self.context.origin.clone(),
         })
     }
 
@@ -342,6 +343,7 @@ impl Page {
             Request::get(icon, Destination::Image).initiated_by(Initiator {
                 url,
                 address_space: self.context.address_space,
+                origin: self.context.origin.clone(),
             }),
         )
     }
@@ -629,6 +631,7 @@ impl Context {
             Request::get(url, Destination::Style).initiated_by(Initiator {
                 url: document,
                 address_space: self.address_space,
+                origin: self.origin.clone(),
             }),
         )
     }

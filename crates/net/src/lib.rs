@@ -29,8 +29,8 @@ pub mod url;
 pub use address_space::AddressSpace;
 pub use error::{AbortHandle, NetworkError, TlsFailure};
 pub use fetch::{
-    COMPAT_USER_AGENT, Client, Delivery, Destination, Initiator, Method, Mode, Request, Response,
-    USER_AGENT,
+    COMPAT_USER_AGENT, Client, Credentials, Delivery, Destination, Exposed, Initiator, Method,
+    Mode, Redirect, Request, Response, ResponseType, USER_AGENT,
 };
 pub use headers::HeaderList;
 pub use mime::MimeType;

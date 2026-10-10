@@ -462,6 +462,22 @@ impl Origin {
     pub fn same_site(&self, other: &Origin) -> bool {
         self.site() == other.site()
     }
+
+    /// Whether the two origins are schemelessly same site (HTML
+    /// 7.1.1.1): the same opaque origin, hosts with the same registrable
+    /// domain, or the same host where it has none.
+    pub fn schemelessly_same_site(&self, other: &Origin) -> bool {
+        match (self, other) {
+            (Origin::Opaque(a), Origin::Opaque(b)) => a == b,
+            (Origin::Tuple { host: a, .. }, Origin::Tuple { host: b, .. }) => {
+                match (a.registrable_domain(), b.registrable_domain()) {
+                    (Some(a), Some(b)) => a == b,
+                    _ => a == b,
+                }
+            }
+            _ => false,
+        }
+    }
 }
 
 /// A site (HTML 7.1.1.1): an opaque origin, or a scheme and a host's

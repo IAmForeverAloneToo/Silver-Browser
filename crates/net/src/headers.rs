@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use crate::infra::isomorphic_decode;
+use crate::infra::{isomorphic_decode, isomorphic_encode};
 
 /// A header list: header fields in the order they came, each name and
 /// value as bytes. Names match ASCII case-insensitively, and a name may
@@ -258,6 +258,283 @@ fn get_decode_split_value(value: &[u8]) -> Vec<String> {
     }
 }
 
+/// Whether `name` is a header name: a token (Fetch 2.2.2).
+pub fn is_header_name(name: &[u8]) -> bool {
+    !name.is_empty()
+        && name
+            .iter()
+            .all(|&b| is_http_token_code_point(char::from(b)))
+}
+
+/// Whether `value` is a header value (Fetch 2.2.2): no HTTP tab or
+/// space at either end, and no NUL, CR or LF.
+pub fn is_header_value(value: &[u8]) -> bool {
+    let edge = |b: &u8| matches!(b, b'\t' | b' ');
+    !value.first().is_some_and(edge)
+        && !value.last().is_some_and(edge)
+        && !value.iter().any(|&b| matches!(b, b'\0' | b'\r' | b'\n'))
+}
+
+/// `value` normalized (Fetch 2.2.2): its leading and trailing HTTP
+/// whitespace bytes removed.
+pub fn normalize(value: &[u8]) -> &[u8] {
+    let space = |b: &u8| matches!(b, b'\n' | b'\r' | b'\t' | b' ');
+    let start = value.iter().position(|b| !space(b)).unwrap_or(value.len());
+    let end = value
+        .iter()
+        .rposition(|b| !space(b))
+        .map_or(start, |end| end + 1);
+    &value[start..end]
+}
+
+/// Whether `method` is a forbidden method (Fetch 2.2.1): `CONNECT`,
+/// `TRACE` or `TRACK`, in any case.
+pub fn is_forbidden_method(method: &[u8]) -> bool {
+    [b"CONNECT".as_slice(), b"TRACE", b"TRACK"]
+        .iter()
+        .any(|forbidden| method.eq_ignore_ascii_case(forbidden))
+}
+
+/// The request headers a script may not set (Fetch 2.2.2's forbidden
+/// request-header names), lower case.
+const FORBIDDEN_REQUEST_NAMES: [&[u8]; 21] = [
+    b"accept-charset",
+    b"accept-encoding",
+    b"access-control-request-headers",
+    b"access-control-request-method",
+    b"connection",
+    b"content-length",
+    b"cookie",
+    b"cookie2",
+    b"date",
+    b"dnt",
+    b"expect",
+    b"host",
+    b"keep-alive",
+    b"origin",
+    b"referer",
+    b"set-cookie",
+    b"te",
+    b"trailer",
+    b"transfer-encoding",
+    b"upgrade",
+    b"via",
+];
+
+/// Whether (`name`, `value`) is a forbidden request-header (Fetch
+/// 2.2.2): one of the names above, a name starting `proxy-` or `sec-`,
+/// or a method override naming a forbidden method.
+pub fn is_forbidden_request_header(name: &[u8], value: &[u8]) -> bool {
+    let name = name.to_ascii_lowercase();
+    if FORBIDDEN_REQUEST_NAMES.contains(&name.as_slice())
+        || name.starts_with(b"proxy-")
+        || name.starts_with(b"sec-")
+    {
+        return true;
+    }
+    matches!(
+        name.as_slice(),
+        b"x-http-method" | b"x-http-method-override" | b"x-method-override"
+    ) && get_decode_split_value(value)
+        .iter()
+        .any(|method| is_forbidden_method(&isomorphic_encode(method)))
+}
+
+/// Whether `name` is a forbidden response-header name (Fetch 2.2.2): a
+/// script never reads `Set-Cookie` or `Set-Cookie2`.
+pub fn is_forbidden_response_header_name(name: &[u8]) -> bool {
+    name.eq_ignore_ascii_case(b"set-cookie") || name.eq_ignore_ascii_case(b"set-cookie2")
+}
+
+/// Whether `name` is a request-body-header name (Fetch 2.2.2), which a
+/// redirect that drops the body drops with it.
+pub fn is_request_body_header_name(name: &[u8]) -> bool {
+    [
+        b"content-encoding".as_slice(),
+        b"content-language",
+        b"content-location",
+        b"content-type",
+    ]
+    .iter()
+    .any(|body| name.eq_ignore_ascii_case(body))
+}
+
+/// A CORS-unsafe request-header byte (Fetch 2.2.2).
+fn is_cors_unsafe_byte(b: u8) -> bool {
+    (b < 0x20 && b != b'\t')
+        || matches!(
+            b,
+            b'"' | b'('
+                | b')'
+                | b':'
+                | b'<'
+                | b'>'
+                | b'?'
+                | b'@'
+                | b'['
+                | b'\\'
+                | b']'
+                | b'{'
+                | b'}'
+                | 0x7F
+        )
+}
+
+/// Whether (`name`, `value`) is a CORS-safelisted request-header (Fetch
+/// 2.2.2): one a form could send, which needs no preflight.
+pub fn is_cors_safelisted_request_header(name: &[u8], value: &[u8]) -> bool {
+    if value.len() > 128 {
+        return false;
+    }
+    match name.to_ascii_lowercase().as_slice() {
+        b"accept" => !value.iter().any(|&b| is_cors_unsafe_byte(b)),
+        b"accept-language" | b"content-language" => value.iter().all(|&b| {
+            b.is_ascii_alphanumeric() || matches!(b, b' ' | b'*' | b',' | b'-' | b'.' | b';' | b'=')
+        }),
+        b"content-type" => {
+            !value.iter().any(|&b| is_cors_unsafe_byte(b))
+                && crate::mime::MimeType::parse(&isomorphic_decode(value)).is_some_and(|mime| {
+                    matches!(
+                        mime.essence(),
+                        "application/x-www-form-urlencoded" | "multipart/form-data" | "text/plain"
+                    )
+                })
+        }
+        b"range" => parse_single_range(value).is_some_and(|(start, _)| start.is_some()),
+        _ => false,
+    }
+}
+
+/// A single range header value (Fetch 2.2.2's "parse a single range
+/// header value", whitespace not allowed): `bytes=` and a start, an
+/// end, or both; `None` when it is none, or the start is past the end.
+fn parse_single_range(value: &[u8]) -> Option<(Option<u64>, Option<u64>)> {
+    let rest = value
+        .get(..6)
+        .filter(|unit| unit.eq_ignore_ascii_case(b"bytes="))
+        .map(|_| &value[6..])?;
+    let dash = rest.iter().position(|&b| b == b'-')?;
+    let number = |digits: &[u8]| -> Option<Option<u64>> {
+        if digits.is_empty() {
+            return Some(None);
+        }
+        if !digits.iter().all(u8::is_ascii_digit) {
+            return None;
+        }
+        std::str::from_utf8(digits).ok()?.parse().ok().map(Some)
+    };
+    let (start, end) = (number(&rest[..dash])?, number(&rest[dash + 1..])?);
+    match (start, end) {
+        (None, None) => None,
+        (Some(start), Some(end)) if start > end => None,
+        _ => Some((start, end)),
+    }
+}
+
+/// The CORS-unsafe request-header names of `headers` (Fetch 2.2.2),
+/// lower case, sorted and each once: those not safelisted, and every
+/// safelisted one too when their values come to more than 1,024 bytes.
+pub fn cors_unsafe_request_header_names(headers: &HeaderList) -> Vec<Vec<u8>> {
+    let mut unsafe_names = Vec::new();
+    let mut potentially_unsafe = Vec::new();
+    let mut safelisted_size = 0;
+    for (name, value) in headers.iter() {
+        if is_cors_safelisted_request_header(name, value) {
+            potentially_unsafe.push(name);
+            safelisted_size += value.len();
+        } else {
+            unsafe_names.push(name);
+        }
+    }
+    if safelisted_size > 1024 {
+        unsafe_names.extend(potentially_unsafe);
+    }
+    sorted_lowercase(unsafe_names)
+}
+
+/// Header names as a sorted, lower-case set (Fetch's "convert header
+/// names to a sorted-lowercase set").
+fn sorted_lowercase<'a>(names: impl IntoIterator<Item = &'a [u8]>) -> Vec<Vec<u8>> {
+    let mut names: Vec<Vec<u8>> = names.into_iter().map(<[u8]>::to_ascii_lowercase).collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Whether `name` is a no-CORS-safelisted request-header name (Fetch
+/// 2.2.2), a name a `no-cors` request may carry.
+pub fn is_no_cors_safelisted_request_header_name(name: &[u8]) -> bool {
+    [
+        b"accept".as_slice(),
+        b"accept-language",
+        b"content-language",
+        b"content-type",
+    ]
+    .iter()
+    .any(|safe| name.eq_ignore_ascii_case(safe))
+}
+
+/// Whether `name` is a CORS-safelisted response-header name given the
+/// names a response exposes (Fetch 2.2.2): one a CORS response shows.
+pub fn is_cors_safelisted_response_header_name(name: &[u8], exposed: &[Vec<u8>]) -> bool {
+    [
+        b"cache-control".as_slice(),
+        b"content-language",
+        b"content-length",
+        b"content-type",
+        b"expires",
+        b"last-modified",
+        b"pragma",
+    ]
+    .iter()
+    .any(|safe| name.eq_ignore_ascii_case(safe))
+        || (!is_forbidden_response_header_name(name)
+            && exposed
+                .iter()
+                .any(|exposed| name.eq_ignore_ascii_case(exposed)))
+}
+
+/// The values of a header whose grammar is a comma-separated list of
+/// tokens (`Access-Control-Expose-Headers`, `-Allow-Headers`,
+/// `-Allow-Methods`; Fetch's "extract header list values"): `None` when
+/// the list has none, `Some(Err(()))` when one is not a token. Empty
+/// elements are skipped, as the list grammar allows.
+pub fn token_list(headers: &HeaderList, name: &[u8]) -> Option<Result<Vec<Vec<u8>>, ()>> {
+    let value = headers.get(name)?;
+    let mut values = Vec::new();
+    for item in value.split(|&b| b == b',') {
+        let item = normalize(item);
+        if item.is_empty() {
+            continue;
+        }
+        if !is_header_name(item) {
+            return Some(Err(()));
+        }
+        values.push(item.to_vec());
+    }
+    Some(Ok(values))
+}
+
+impl HeaderList {
+    /// *Sort and combine* (Fetch 2.2.2): the names lower case and sorted,
+    /// each name's values joined by `, `, but `set-cookie`'s, each a pair
+    /// of its own; what `Headers` iterates by.
+    pub fn sort_and_combine(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let mut out = Vec::new();
+        for name in sorted_lowercase(self.iter().map(|(name, _)| name)) {
+            if name == b"set-cookie" {
+                for (_, value) in self.iter().filter(|(n, _)| n.eq_ignore_ascii_case(&name)) {
+                    out.push((name.clone(), value.to_vec()));
+                }
+            } else {
+                let value = self.get(&name).expect("a name of the list");
+                out.push((name, value));
+            }
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,6 +549,153 @@ mod tests {
 
     fn split(fields: &[(&str, &str)]) -> Option<Vec<String>> {
         list(fields).get_decode_split(b"A")
+    }
+
+    #[test]
+    fn names_and_values_are_what_fetch_allows() {
+        assert!(is_header_name(b"X-A") && is_header_name(b"*"));
+        assert!(!is_header_name(b"") && !is_header_name(b"a b") && !is_header_name(b"a:"));
+        assert!(is_header_value(b"") && is_header_value(b"a b"));
+        for bad in [b" a".as_slice(), b"a\t", b"a\nb", b"a\rb", b"a\0"] {
+            assert!(!is_header_value(bad), "{bad:?}");
+        }
+        assert_eq!(normalize(b" \t\r\na b\n "), b"a b");
+        assert_eq!(normalize(b" \t"), b"");
+    }
+
+    #[test]
+    fn forbidden_request_headers_and_methods() {
+        for name in [
+            "Cookie",
+            "HOST",
+            "origin",
+            "Sec-Fetch-Site",
+            "proxy-x",
+            "Content-Length",
+        ] {
+            assert!(is_forbidden_request_header(name.as_bytes(), b"1"), "{name}");
+        }
+        for name in [
+            "X-A",
+            "Accept",
+            "User-Agent",
+            "Authorization",
+            "sec",
+            "proxy",
+        ] {
+            assert!(
+                !is_forbidden_request_header(name.as_bytes(), b"1"),
+                "{name}"
+            );
+        }
+        assert!(is_forbidden_request_header(
+            b"X-HTTP-Method-Override",
+            b"GET, trace"
+        ));
+        assert!(is_forbidden_request_header(
+            b"x-method-override",
+            b"Connect"
+        ));
+        assert!(!is_forbidden_request_header(b"X-HTTP-Method", b"PUT"));
+        assert!(is_forbidden_method(b"track") && !is_forbidden_method(b"PATCH"));
+        assert!(is_forbidden_response_header_name(b"Set-Cookie2"));
+        assert!(!is_forbidden_response_header_name(b"Cookie"));
+        assert!(is_request_body_header_name(b"Content-Type"));
+        assert!(!is_request_body_header_name(b"Content-Length"));
+    }
+
+    #[test]
+    fn safelisted_request_headers_need_no_preflight() {
+        let safe = |name: &str, value: &str| {
+            is_cors_safelisted_request_header(name.as_bytes(), value.as_bytes())
+        };
+        assert!(safe("Accept", "x"));
+        assert!(!safe("Accept", "a(b"));
+        assert!(safe("accept-language", "en-GB, en;q=0.9"));
+        assert!(!safe("Content-Language", "en_GB"));
+        assert!(safe("Content-Type", "text/plain;charset=UTF-8"));
+        assert!(safe("content-type", "multipart/form-data; boundary=x"));
+        assert!(!safe("Content-Type", "application/json"));
+        assert!(!safe("Content-Type", "text/plain; a=\"b\""));
+        assert!(safe("Range", "bytes=0-"));
+        assert!(safe("Range", "bytes=5-10"));
+        assert!(!safe("Range", "bytes=-5"));
+        assert!(!safe("Range", "bytes=10-5"));
+        assert!(!safe("Range", "bytes = 0-"));
+        assert!(!safe("X-A", "1"));
+        assert!(!safe("Accept", &"a".repeat(129)));
+        assert!(safe("Accept", &"a".repeat(128)));
+        let mut headers = list(&[("X-B", "1"), ("Accept", "a"), ("x-a", "2"), ("X-B", "3")]);
+        assert_eq!(
+            cors_unsafe_request_header_names(&headers),
+            [b"x-a".to_vec(), b"x-b".to_vec()]
+        );
+        // Safelisted values of more than 1,024 bytes together are unsafe.
+        let long = "a".repeat(100);
+        for _ in 0..11 {
+            headers.append(b"Accept-Language", long.as_bytes());
+        }
+        assert_eq!(
+            cors_unsafe_request_header_names(&headers),
+            [
+                b"accept".to_vec(),
+                b"accept-language".to_vec(),
+                b"x-a".to_vec(),
+                b"x-b".to_vec()
+            ]
+        );
+        assert!(is_no_cors_safelisted_request_header_name(b"Content-Type"));
+        assert!(!is_no_cors_safelisted_request_header_name(b"Range"));
+    }
+
+    #[test]
+    fn a_cors_response_shows_safelisted_and_exposed_names() {
+        let exposed = [b"x-custom".to_vec(), b"set-cookie".to_vec()];
+        assert!(is_cors_safelisted_response_header_name(
+            b"Content-Type",
+            &[]
+        ));
+        assert!(is_cors_safelisted_response_header_name(
+            b"X-Custom",
+            &exposed
+        ));
+        assert!(!is_cors_safelisted_response_header_name(
+            b"X-Other", &exposed
+        ));
+        assert!(!is_cors_safelisted_response_header_name(
+            b"Set-Cookie",
+            &exposed
+        ));
+        let headers = list(&[("A", " x , ,y"), ("A", "z"), ("B", "a b")]);
+        assert_eq!(
+            token_list(&headers, b"a"),
+            Some(Ok(vec![b"x".to_vec(), b"y".to_vec(), b"z".to_vec()]))
+        );
+        assert_eq!(token_list(&headers, b"b"), Some(Err(())));
+        assert_eq!(token_list(&headers, b"c"), None);
+    }
+
+    #[test]
+    fn sort_and_combine_lowercases_sorts_and_keeps_set_cookie_apart() {
+        let headers = list(&[
+            ("B", "1"),
+            ("a", "2"),
+            ("Set-Cookie", "x=1"),
+            ("A", "3"),
+            ("set-cookie", "y=2"),
+        ]);
+        let pairs: Vec<(String, String)> = headers
+            .sort_and_combine()
+            .into_iter()
+            .map(|(n, v)| (String::from_utf8(n).unwrap(), String::from_utf8(v).unwrap()))
+            .collect();
+        let expected = [
+            ("a", "2, 3"),
+            ("b", "1"),
+            ("set-cookie", "x=1"),
+            ("set-cookie", "y=2"),
+        ];
+        assert_eq!(pairs, expected.map(|(n, v)| (n.to_owned(), v.to_owned())));
     }
 
     #[test]
