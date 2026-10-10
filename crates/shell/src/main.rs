@@ -44,7 +44,7 @@ use std::time::{Duration, Instant};
 use engine::address::Address;
 use engine::{
     Backend, ColorScheme, Engine, FRAME_BUDGET, FrameTime, LoadState, Preferences, PrintOptions,
-    Url,
+    Profile, Url,
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
@@ -479,8 +479,17 @@ const PRINT_LOAD_LIMIT: Duration = Duration::from_secs(60);
 /// waits until it has loaded or failed, or for [`PRINT_LOAD_LIMIT`], and
 /// prints it to `path` by the default print options; gives the exit
 /// status, zero when the file is written. A page that failed to load
-/// prints as the error page the window would show.
-fn print_to_pdf(start: Option<Url>, asked: Asked, scripts: bool, compat: bool, path: &Path) -> i32 {
+/// prints as the error page the window would show. It keeps nothing
+/// but in a profile the command line names (M28), as the reference
+/// browser's headless mode does.
+fn print_to_pdf(
+    start: Option<Url>,
+    asked: Asked,
+    scripts: bool,
+    compat: bool,
+    keep: &Keep,
+    path: &Path,
+) -> i32 {
     let mut engine = match Engine::new() {
         Ok(engine) => engine,
         Err(e) => {
@@ -488,6 +497,14 @@ fn print_to_pdf(start: Option<Url>, asked: Asked, scripts: bool, compat: bool, p
             return 1;
         }
     };
+    let keep = if *keep == Keep::Default {
+        &Keep::Nothing
+    } else {
+        keep
+    };
+    if let Some(why) = open_profile(&mut engine, keep, None) {
+        eprintln!("silver-browser: {why}");
+    }
     engine.set_preferences(preferences(asked, None, platform::reduced_motion()));
     engine.set_scripting(scripts);
     if compat {
@@ -525,12 +542,43 @@ fn print_to_pdf(start: Option<Url>, asked: Asked, scripts: bool, compat: bool, p
             return 1;
         }
     };
+    if let Err(e) = engine.flush_profile() {
+        eprintln!("silver-browser: the profile was not written: {e}");
+    }
     match std::fs::write(path, pdf) {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("silver-browser: {}: {e}", path.display());
             1
         }
+    }
+}
+
+/// Gives `engine` the profile `keep` names, `default` for the
+/// platform's place (M28, docs/design/storage.md). What went wrong, to
+/// say: the engine then keeps nothing this run, and a profile it could
+/// not open is left as it is.
+fn open_profile(engine: &mut Engine, keep: &Keep, default: Option<PathBuf>) -> Option<String> {
+    let dir = match keep {
+        Keep::Nothing => return None,
+        Keep::In(dir) => dir.clone(),
+        Keep::Default => match default {
+            Some(dir) => dir,
+            None => return Some("no place for the profile; keeping nothing this time".to_owned()),
+        },
+    };
+    let failed = |why: String| {
+        Some(format!(
+            "the profile in {}: {why}; keeping nothing this time",
+            dir.display()
+        ))
+    };
+    match Profile::open(&dir) {
+        Ok(profile) => engine
+            .set_profile(profile)
+            .err()
+            .and_then(|e| failed(e.to_string())),
+        Err(e) => failed(e.to_string()),
     }
 }
 
@@ -663,6 +711,19 @@ struct CommandLine {
     /// `--compat-user-agent`: send the reference browser's user agent
     /// string, this browser named after it (D12's escape hatch, M25).
     compat: bool,
+    /// Where the browsing keeps what it keeps (M28).
+    profile: Keep,
+}
+
+/// The profile the command line asks for (M28).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Keep {
+    /// The platform's place for it, or none for `--print-to-pdf`.
+    Default,
+    /// `--profile <dir>`.
+    In(PathBuf),
+    /// `--temporary-profile`: nothing kept.
+    Nothing,
 }
 
 /// The command line parsed: at most one URL or path, and the options
@@ -680,6 +741,7 @@ fn command_line(args: impl Iterator<Item = OsString>) -> Result<CommandLine, Str
         print_to: None,
         scripts: false,
         compat: false,
+        profile: Keep::Default,
     };
     let mut page: Option<OsString> = None;
     let mut args = args.peekable();
@@ -694,6 +756,20 @@ fn command_line(args: impl Iterator<Item = OsString>) -> Result<CommandLine, Str
         }
         if arg == "--compat-user-agent" {
             line.compat = true;
+            continue;
+        }
+        if arg == "--profile" || arg == "--temporary-profile" {
+            if line.profile != Keep::Default {
+                return Err("--profile and --temporary-profile: one at most".to_owned());
+            }
+            line.profile = if arg == "--temporary-profile" {
+                Keep::Nothing
+            } else {
+                let dir = args
+                    .next()
+                    .ok_or_else(|| "--profile takes the directory of the profile".to_owned())?;
+                Keep::In(PathBuf::from(dir))
+            };
             continue;
         }
         if arg == "--print-to-pdf" {
@@ -774,7 +850,7 @@ fn main() {
                 "usage: silver-browser [--software] [--layer-budget <MiB>] \
                  [--prefers-color-scheme light|dark] [--prefers-reduced-motion] \
                  [--enable-scripts] [--compat-user-agent] [--print-to-pdf <path>] \
-                 [URL or path]"
+                 [--profile <dir> | --temporary-profile] [URL or path]"
             );
             std::process::exit(2);
         }
@@ -782,7 +858,14 @@ fn main() {
     let start = line.start;
     let asked = line.asked;
     if let Some(path) = &line.print_to {
-        std::process::exit(print_to_pdf(start, asked, line.scripts, line.compat, path));
+        std::process::exit(print_to_pdf(
+            start,
+            asked,
+            line.scripts,
+            line.compat,
+            &line.profile,
+            path,
+        ));
     }
 
     let wanted = if line.software {
@@ -809,6 +892,9 @@ fn main() {
     if line.compat {
         engine.set_compat_user_agent(true);
     }
+    if let Some(why) = open_profile(&mut engine, &line.profile, platform::profile_directory()) {
+        eprintln!("silver-browser: {why}");
+    }
 
     let event_loop = match EventLoop::<NetworkWake>::with_user_event().build() {
         Ok(event_loop) => event_loop,
@@ -833,7 +919,13 @@ fn main() {
     let session = Session::new(engine, clipboard, Platform::current(), start);
 
     let mut browser = Browser::new(session, asked, began);
-    if event_loop.run_app(&mut browser).is_err() {
+    let ran = event_loop.run_app(&mut browser);
+    // The window has closed: what changed since the last write is
+    // written now.
+    if let Err(e) = browser.session.flush_profile() {
+        eprintln!("silver-browser: the profile was not written: {e}");
+    }
+    if ran.is_err() {
         std::process::exit(1);
     }
 }
@@ -890,6 +982,7 @@ mod tests {
                 print_to: None,
                 scripts: false,
                 compat: false,
+                profile: Keep::Default,
             })
         );
         assert_eq!(
@@ -902,6 +995,7 @@ mod tests {
                 print_to: None,
                 scripts: false,
                 compat: false,
+                profile: Keep::Default,
             })
         );
         assert_eq!(
@@ -993,7 +1087,14 @@ mod tests {
         let url = Url::from_file_path(&std::fs::canonicalize(&page).unwrap()).unwrap();
         let out = dir.join("page.pdf");
         assert_eq!(
-            print_to_pdf(Some(url), Asked::default(), false, false, &out),
+            print_to_pdf(
+                Some(url),
+                Asked::default(),
+                false,
+                false,
+                &Keep::Default,
+                &out
+            ),
             0
         );
         let pdf = std::fs::read(&out).unwrap();
@@ -1008,10 +1109,109 @@ mod tests {
                 Asked::default(),
                 false,
                 false,
+                &Keep::Default,
                 &dir.join("no/such/dir/x.pdf")
             ),
             1
         );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn print_to_pdf_keeps_what_it_keeps_in_the_profile_named_alone() {
+        use net::test_server::{Reply, TestServer};
+        let server = TestServer::plain(|_| {
+            Reply::with_fields(
+                200,
+                &[
+                    ("Content-Type", "text/html"),
+                    ("Set-Cookie", "kept=1; Max-Age=3600"),
+                ],
+                b"<p>kept</p>",
+            )
+        });
+        let dir = std::env::temp_dir().join(format!("silver-print-kept-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let profile = dir.join("profile");
+        let out = dir.join("page.pdf");
+        let print = |keep: &Keep| {
+            print_to_pdf(
+                Some(server.url("/")),
+                Asked::default(),
+                false,
+                false,
+                keep,
+                &out,
+            )
+        };
+        assert_eq!(print(&Keep::Default), 0);
+        assert!(!profile.exists());
+        assert_eq!(print(&Keep::In(profile.clone())), 0);
+        let kept = Profile::open(&profile).unwrap();
+        assert_eq!(kept.cookies().unwrap().len(), 1);
+        drop(kept);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_profile_is_the_platforms_one_given_or_none() {
+        let keep = |args: &[&str]| command_line(args.iter().map(OsString::from)).map(|l| l.profile);
+        assert_eq!(keep(&[]), Ok(Keep::Default));
+        assert_eq!(
+            keep(&["--profile", "p", "example.com"]),
+            Ok(Keep::In(PathBuf::from("p")))
+        );
+        assert_eq!(keep(&["--temporary-profile"]), Ok(Keep::Nothing));
+        assert_eq!(
+            keep(&["--profile"]),
+            Err("--profile takes the directory of the profile".to_owned())
+        );
+        for both in [
+            ["--profile", "p", "--temporary-profile"],
+            ["--temporary-profile", "--profile", "p"],
+        ] {
+            assert_eq!(
+                keep(&both),
+                Err("--profile and --temporary-profile: one at most".to_owned())
+            );
+        }
+    }
+
+    #[test]
+    fn a_profile_is_opened_or_why_not_said() {
+        let dir = std::env::temp_dir().join(format!("silver-shell-profile-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut engine = Engine::new().unwrap();
+        assert_eq!(
+            open_profile(&mut engine, &Keep::Nothing, Some(dir.clone())),
+            None
+        );
+        assert!(!dir.exists());
+        assert_eq!(
+            open_profile(&mut engine, &Keep::Default, Some(dir.clone())),
+            None
+        );
+        assert!(dir.join("profile.redb").is_file());
+        // Held by the first engine, it is refused to a second.
+        let mut second = Engine::new().unwrap();
+        assert_eq!(
+            open_profile(&mut second, &Keep::In(dir.clone()), None),
+            Some(format!(
+                "the profile in {}: another browser has it open; keeping nothing this time",
+                dir.display()
+            ))
+        );
+        assert_eq!(
+            open_profile(&mut second, &Keep::Default, None),
+            Some("no place for the profile; keeping nothing this time".to_owned())
+        );
+        drop(engine);
+        assert_eq!(
+            open_profile(&mut second, &Keep::In(dir.clone()), None),
+            None
+        );
+        drop(second);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

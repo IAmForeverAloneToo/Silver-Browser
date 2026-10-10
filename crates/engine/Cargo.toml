@@ -20,6 +20,7 @@ images.workspace = true
 layout.workspace = true
 net.workspace = true
 paint.workspace = true
+profile.workspace = true
 render.workspace = true
 style.workspace = true
 text.workspace = true

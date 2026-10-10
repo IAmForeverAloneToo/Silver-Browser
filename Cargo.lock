@@ -631,6 +631,7 @@ dependencies = [
  "net",
  "paint",
  "png",
+ "profile",
  "render",
  "style",
  "text",

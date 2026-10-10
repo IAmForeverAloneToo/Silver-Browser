@@ -165,6 +165,12 @@ impl Session {
         &self.engine
     }
 
+    /// Writes to the profile what changed since it was last written
+    /// (M28): the window has closed.
+    pub(crate) fn flush_profile(&mut self) -> Result<(), String> {
+        self.engine.flush_profile().map_err(|e| e.to_string())
+    }
+
     #[cfg(test)]
     pub(crate) fn toolbar(&self) -> &Toolbar {
         &self.toolbar

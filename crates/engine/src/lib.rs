@@ -104,6 +104,7 @@ mod pages;
 mod print;
 mod scripts;
 mod select;
+mod storage;
 mod submit;
 #[cfg(test)]
 mod testing;
@@ -120,9 +121,11 @@ pub use keys::{Key, KeyOutcome};
 pub use loader::{LoadError, LoadState};
 pub use net::{Client, NetworkError, Url};
 pub use print::{PrintError, PrintOptions, PrintedPage};
+pub use profile::Profile;
 pub use scripts::{
     ConsoleEntry, MAX_CONSOLE_ENTRIES, MAX_CONSOLE_MESSAGE, MAX_SCRIPT_BYTES, ScriptState,
 };
+pub use storage::FLUSH_INTERVAL;
 pub use style::animation::{AnimationEvent, EventKind, Running as RunningAnimation};
 pub use style::computed::Cursor;
 pub use style::{ColorScheme, MediaType, Preferences};
@@ -359,6 +362,8 @@ pub struct Engine {
     next_image: u64,
     /// The clock tasks, timers and scripts read (M26).
     clock: Clock,
+    /// The profile what the browsing keeps is written to (M28).
+    storage: storage::Storage,
     /// Whether the window is hidden (M26): minimized or covered.
     hidden: bool,
     /// When a hidden document's timer last ran.
@@ -924,6 +929,7 @@ impl Engine {
                 let made = Instant::now();
                 Arc::new(move || made.elapsed())
             },
+            storage: storage::Storage::new(),
             hidden: false,
             hidden_ran: None,
             pending_events: Vec::new(),
@@ -2548,6 +2554,7 @@ impl Engine {
                 (_, Some(_)) => self.run_incoming_timer(),
             }
         }
+        self.keep();
         self.needs_frame()
     }
 
@@ -2559,9 +2566,35 @@ impl Engine {
         let incoming = self
             .incoming_scripts()
             .and_then(scripts::Scripts::next_task_at);
-        match (shown, incoming) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
+        let flush = self.storage.flush_at(&self.network.cookies());
+        [shown, incoming, flush].into_iter().flatten().min()
+    }
+
+    /// Keeps what the browsing keeps in `profile` from now on (M28,
+    /// docs/design/storage.md): its cookies join the jar now, and what
+    /// changes is written to it within [`FLUSH_INTERVAL`] of a change,
+    /// as the engine's tasks run, and when the engine is dropped. An
+    /// engine given none keeps nothing. Fails, and does not use it, when
+    /// the profile cannot be read.
+    pub fn set_profile(&mut self, profile: Profile) -> Result<(), profile::Error> {
+        self.storage.set_profile(profile, &self.network.cookies())
+    }
+
+    /// Writes to the profile what changed since it was last written: the
+    /// shell's call when its window closes (M28).
+    pub fn flush_profile(&mut self) -> Result<(), profile::Error> {
+        let now = self.now();
+        self.storage.flush(&self.network.cookies(), now)
+    }
+
+    /// Writes the profile when a change has waited out the interval
+    /// since the last write (M28); a write that fails is tried again an
+    /// interval on, and its error is the next [`Engine::flush_profile`]'s.
+    fn keep(&mut self) {
+        let now = self.now();
+        let cookies = self.network.cookies();
+        if self.storage.flush_at(&cookies).is_some_and(|at| at <= now) {
+            let _ = self.storage.flush(&cookies, now);
         }
     }
 
@@ -5372,9 +5405,10 @@ fn approach(y: &mut f32, target: f32, keep: f32) -> bool {
 }
 
 impl Drop for Engine {
-    /// Aborts the fetches in flight, so that their threads end soon
-    /// rather than read on for an engine gone.
+    /// Writes the profile, then aborts the fetches in flight, so that
+    /// their threads end soon rather than read on for an engine gone.
     fn drop(&mut self) {
+        let _ = self.flush_profile();
         self.network.cancel_all();
     }
 }

@@ -2,8 +2,10 @@
 //! A `Set-Cookie` value is parsed (section 5.6) and stored by the
 //! storage model (5.7), within the jar's limits; the `Cookie` header a
 //! request sends, and what `document.cookie` reads, are retrieved by
-//! section 5.8. The jar lives in memory, one to a client: persistence
-//! is M28's.
+//! section 5.8. The jar lives in memory, one to a client; the cookies
+//! with an expiry outlive the session in the profile (M28.3,
+//! docs/design/storage.md), as records [`Jar::export`] makes and
+//! [`Jar::restore`] reads.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -92,7 +94,12 @@ pub struct Jar {
     cookies: Vec<Cookie>,
     /// The next number for `created` and `accessed`.
     next: u64,
+    /// How many times the cookies with an expiry have changed.
+    kept: u64,
 }
+
+/// The version of the records [`Jar::export`] makes.
+const RECORD: u8 = 1;
 
 /// A `Set-Cookie` value parsed (5.6): its name and value and the
 /// attributes the storage model reads, each the last of its kind.
@@ -467,12 +474,15 @@ impl Jar {
                 return false;
             }
             cookie.created = old.created;
-            self.cookies.remove(index);
+            self.take(index);
         }
         self.next += 1;
         cookie.accessed = self.next;
         if cookie.expires.is_some_and(|expires| expires <= now) {
             return true;
+        }
+        if cookie.expires.is_some() {
+            self.kept += 1;
         }
         let domain = cookie.domain.clone();
         self.cookies.push(cookie);
@@ -546,8 +556,77 @@ impl Jar {
 
     /// Takes out the cookies expired at `now`.
     fn remove_expired(&mut self, now: SystemTime) {
+        let before = self.cookies.len();
         self.cookies
             .retain(|cookie| cookie.expires.is_none_or(|expires| expires > now));
+        if self.cookies.len() != before {
+            self.kept += 1;
+        }
+    }
+
+    /// Takes out the cookie at `index`.
+    fn take(&mut self, index: usize) {
+        if self.cookies.remove(index).expires.is_some() {
+            self.kept += 1;
+        }
+    }
+
+    /// How many times the cookies with an expiry have changed: one
+    /// stored, replaced, expired or evicted (M28.3). The engine writes
+    /// them to the profile when this has moved since it last did; a
+    /// cookie sent moves it not.
+    pub fn kept_changes(&self) -> u64 {
+        self.kept
+    }
+
+    /// The cookies with an expiry, those that outlive the session (the
+    /// RFC's persistent-flag), as records for the profile, in the jar's
+    /// order (M28.3).
+    pub fn export(&self) -> Vec<Vec<u8>> {
+        self.cookies.iter().filter_map(Cookie::encode).collect()
+    }
+
+    /// Takes back the cookies `records` hold, as [`Jar::export`] made
+    /// them, at `now` (M28.3): a record that does not read as one, or
+    /// a cookie expired, is dropped; one with the name, domain and path
+    /// of a cookie in the jar replaces it; and the jar keeps within its
+    /// limits. Their orders of making and of use are kept, after the
+    /// jar's own. Whether the cookies with an expiry the jar now has
+    /// are other than the records: some dropped, or the jar had its own.
+    pub fn restore(&mut self, records: &[Vec<u8>], now: SystemTime) -> bool {
+        self.remove_expired(now);
+        let mut other = self.cookies.iter().any(|cookie| cookie.expires.is_some());
+        let mut restored: Vec<Cookie> = records
+            .iter()
+            .filter_map(|record| Cookie::decode(record))
+            .filter(|cookie| cookie.expires.is_some_and(|expires| expires > now))
+            .collect();
+        other |= restored.len() != records.len();
+        let mut order: Vec<usize> = (0..restored.len()).collect();
+        order.sort_by_key(|&index| restored[index].created);
+        for (rank, index) in (self.next..).zip(order.iter().copied()) {
+            restored[index].created = rank;
+        }
+        order.sort_by_key(|&index| restored[index].accessed);
+        for (rank, index) in (self.next..).zip(order.iter().copied()) {
+            restored[index].accessed = rank;
+        }
+        self.next += restored.len() as u64;
+        let kept = self.kept;
+        for cookie in restored {
+            if let Some(index) = self.cookies.iter().position(|old| {
+                old.name == cookie.name
+                    && old.domain == cookie.domain
+                    && old.host_only == cookie.host_only
+                    && old.path == cookie.path
+            }) {
+                self.take(index);
+            }
+            let domain = cookie.domain.clone();
+            self.cookies.push(cookie);
+            self.evict(&domain);
+        }
+        other || self.kept != kept
     }
 
     /// Keeps the jar within its limits (5.7) once a cookie for `domain`
@@ -568,12 +647,108 @@ impl Jar {
             > MAX_COOKIES_PER_DOMAIN
         {
             let index = oldest(&self.cookies, Some(domain));
-            self.cookies.remove(index);
+            self.take(index);
         }
         while self.cookies.len() > MAX_COOKIES {
             let index = oldest(&self.cookies, None);
-            self.cookies.remove(index);
+            self.take(index);
         }
+    }
+}
+
+impl Cookie {
+    /// The cookie as a record for the profile (M28.3): the version, the
+    /// name, value, domain and path each after its length, the flags,
+    /// `SameSite`, the expiry since the Unix epoch, and the orders of
+    /// making and of use; little-endian. `None` for a session cookie,
+    /// which the profile does not keep.
+    fn encode(&self) -> Option<Vec<u8>> {
+        let expires = self.expires?.duration_since(UNIX_EPOCH).ok()?;
+        let mut record = vec![RECORD];
+        for field in [
+            &self.name[..],
+            &self.value,
+            self.domain.as_bytes(),
+            self.path.as_bytes(),
+        ] {
+            record.extend_from_slice(&u32::try_from(field.len()).ok()?.to_le_bytes());
+            record.extend_from_slice(field);
+        }
+        record.push(
+            u8::from(self.host_only) | u8::from(self.secure) << 1 | u8::from(self.http_only) << 2,
+        );
+        record.push(match self.same_site {
+            SameSite::Strict => 0,
+            SameSite::Lax => 1,
+            SameSite::None => 2,
+        });
+        record.extend_from_slice(&expires.as_secs().to_le_bytes());
+        record.extend_from_slice(&expires.subsec_nanos().to_le_bytes());
+        record.extend_from_slice(&self.created.to_le_bytes());
+        record.extend_from_slice(&self.accessed.to_le_bytes());
+        Some(record)
+    }
+
+    /// The cookie a record holds, if it reads as one [`Cookie::encode`]
+    /// makes, its sizes within the jar's limits: the profile is a file
+    /// anything may have written.
+    fn decode(record: &[u8]) -> Option<Cookie> {
+        fn split<'a>(rest: &mut &'a [u8], n: usize) -> Option<&'a [u8]> {
+            if rest.len() < n {
+                return None;
+            }
+            let (taken, left) = rest.split_at(n);
+            *rest = left;
+            Some(taken)
+        }
+        fn field<'a>(rest: &mut &'a [u8]) -> Option<&'a [u8]> {
+            let length = u32::from_le_bytes(split(rest, 4)?.try_into().ok()?);
+            split(rest, usize::try_from(length).ok()?)
+        }
+        fn number(rest: &mut &[u8]) -> Option<u64> {
+            Some(u64::from_le_bytes(split(rest, 8)?.try_into().ok()?))
+        }
+        let mut rest = record;
+        if split(&mut rest, 1)? != [RECORD] {
+            return None;
+        }
+        let name = field(&mut rest)?.to_vec();
+        let value = field(&mut rest)?.to_vec();
+        let domain = String::from_utf8(field(&mut rest)?.to_vec()).ok()?;
+        let path = String::from_utf8(field(&mut rest)?.to_vec()).ok()?;
+        let flags = split(&mut rest, 1)?[0];
+        let same_site = match split(&mut rest, 1)?[0] {
+            0 => SameSite::Strict,
+            1 => SameSite::Lax,
+            2 => SameSite::None,
+            _ => return None,
+        };
+        let seconds = number(&mut rest)?;
+        let nanos = u32::from_le_bytes(split(&mut rest, 4)?.try_into().ok()?);
+        let created = number(&mut rest)?;
+        let accessed = number(&mut rest)?;
+        if !rest.is_empty()
+            || flags > 7
+            || nanos >= 1_000_000_000
+            || name.len() + value.len() > MAX_COOKIE_SIZE
+            || domain.is_empty()
+            || !path.starts_with('/')
+        {
+            return None;
+        }
+        Some(Cookie {
+            name,
+            value,
+            domain,
+            host_only: flags & 1 != 0,
+            path,
+            expires: Some(UNIX_EPOCH.checked_add(Duration::new(seconds, nanos))?),
+            secure: flags & 2 != 0,
+            http_only: flags & 4 != 0,
+            same_site,
+            created,
+            accessed,
+        })
     }
 }
 
@@ -977,5 +1152,208 @@ mod tests {
             .map(|cookie| cookie.name.as_slice())
             .collect();
         assert!(names.contains(&b"c0".as_slice()) && !names.contains(&b"c1".as_slice()));
+    }
+
+    /// What of a cookie the profile keeps, its orders aside.
+    fn kept(jar: &Jar) -> Vec<Cookie> {
+        jar.cookies()
+            .iter()
+            .filter(|cookie| cookie.expires.is_some())
+            .map(|cookie| Cookie {
+                created: 0,
+                accessed: 0,
+                ..cookie.clone()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_cookies_with_an_expiry_are_exported_and_restored_in_their_order() {
+        let mut jar = jar(
+            "http://a.example/p/q",
+            &[
+                "session=1",
+                "late=1; Max-Age=3600",
+                "early=1; Expires=Wed, 01 Jan 2031 00:00:00 GMT; HttpOnly",
+                "dom=1; Domain=a.example; Max-Age=3600; Path=/p",
+                "strict=1; Max-Age=3600; SameSite=Strict",
+            ],
+        );
+        jar.store(
+            b"sec=1; Secure; SameSite=None; Max-Age=3600",
+            &url("https://a.example/"),
+            Api::Http,
+            SAME,
+            now(),
+        );
+        let records = jar.export();
+        assert_eq!(records.len(), 5);
+        let mut restored = Jar::new();
+        assert!(!restored.restore(&records, now()));
+        assert_eq!(kept(&restored), kept(&jar));
+        // Sent in the same order: the order of making is kept.
+        jar.store(
+            b"session=; Max-Age=0",
+            &url("http://a.example/p/q"),
+            Api::Http,
+            SAME,
+            now(),
+        );
+        for to in ["https://a.example/p/x", "http://a.example/"] {
+            assert_eq!(sent(&mut restored, to, CROSS), sent(&mut jar, to, CROSS));
+            assert_eq!(sent(&mut restored, to, SAME), sent(&mut jar, to, SAME));
+        }
+    }
+
+    #[test]
+    fn a_restored_jar_drops_the_least_used_first_as_the_jar_did() {
+        let mut jar = Jar::new();
+        jar.store(
+            b"c0=1; Path=/only; Max-Age=3600",
+            &url("http://a.example/only/x"),
+            Api::Http,
+            SAME,
+            now(),
+        );
+        for i in 1..MAX_COOKIES_PER_DOMAIN {
+            jar.store(
+                format!("c{i}=1; Path=/other; Max-Age=3600").as_bytes(),
+                &url("http://a.example/"),
+                Api::Http,
+                SAME,
+                now(),
+            );
+        }
+        assert_eq!(sent(&mut jar, "http://a.example/only/y", SAME), "c0=1");
+        let mut restored = Jar::new();
+        restored.restore(&jar.export(), now());
+        restored.store(b"last=1", &url("http://a.example/"), Api::Http, SAME, now());
+        let names: Vec<&[u8]> = restored
+            .cookies()
+            .iter()
+            .map(|cookie| cookie.name.as_slice())
+            .collect();
+        assert!(names.contains(&b"c0".as_slice()) && !names.contains(&b"c1".as_slice()));
+    }
+
+    #[test]
+    fn a_restore_drops_what_has_expired_and_what_does_not_read() {
+        let jar = jar(
+            "http://a.example/",
+            &["soon=1; Max-Age=60", "later=1; Max-Age=3600"],
+        );
+        let records = jar.export();
+        let good = records[1].clone();
+        for n in 0..good.len() {
+            assert!(Cookie::decode(&good[..n]).is_none(), "{n}");
+        }
+        let mut longer = good.clone();
+        longer.push(0);
+        let mut version = good.clone();
+        version[0] = RECORD + 1;
+        let mut flags = good.clone();
+        let at = good.len() - 8 * 3 - 4 - 2;
+        flags[at] = 8;
+        let mut same_site = good.clone();
+        same_site[at + 1] = 3;
+        for bad in [&longer, &version, &flags, &same_site] {
+            assert!(Cookie::decode(bad).is_none());
+        }
+        let mut all = records.clone();
+        all.extend([Vec::new(), longer, version, flags, same_site]);
+        let mut restored = Jar::new();
+        assert!(restored.restore(&all, now() + Duration::from_secs(120)));
+        let names: Vec<&[u8]> = restored
+            .cookies()
+            .iter()
+            .map(|cookie| cookie.name.as_slice())
+            .collect();
+        assert_eq!(names, [b"later".as_slice()]);
+    }
+
+    #[test]
+    fn a_restored_cookie_replaces_its_namesake_and_the_jar_says_it_had_its_own() {
+        let records = jar("http://a.example/", &["a=old; Max-Age=3600"]).export();
+        let mut own = jar("http://a.example/", &["a=new; Max-Age=3600", "s=1"]);
+        assert!(own.restore(&records, now()));
+        assert_eq!(sent(&mut own, "http://a.example/", SAME), "s=1; a=old");
+        // A jar of session cookies alone has nothing of its own to keep.
+        let mut session = jar("http://a.example/", &["s=1"]);
+        assert!(!session.restore(&records, now()));
+        assert_eq!(sent(&mut session, "http://a.example/", SAME), "s=1; a=old");
+    }
+
+    #[test]
+    fn a_restore_numbers_its_cookies_after_the_jars_own_and_keeps_the_limits() {
+        // Records of orders far past the jar's: renumbered in order.
+        let mut source = jar(
+            "http://a.example/",
+            &["a=1; Max-Age=3600", "b=1; Max-Age=3600"],
+        );
+        sent(&mut source, "http://a.example/", SAME);
+        for cookie in &mut source.cookies {
+            cookie.created += u64::MAX / 2;
+            cookie.accessed = u64::MAX - cookie.accessed;
+        }
+        let mut own = jar("http://a.example/", &["own=1"]);
+        assert!(!own.restore(&source.export(), now()));
+        for cookie in own.cookies() {
+            assert!(cookie.created < own.next && cookie.accessed < own.next);
+        }
+        let order = |key: fn(&Cookie) -> u64| {
+            let mut cookies = own.cookies().to_vec();
+            cookies.sort_by_key(key);
+            let names: Vec<Vec<u8>> = cookies.into_iter().map(|c| c.name).collect();
+            names
+        };
+        assert_eq!(
+            order(|c| c.created),
+            [b"own".to_vec(), b"a".to_vec(), b"b".to_vec()]
+        );
+        assert_eq!(
+            order(|c| c.accessed),
+            [b"own".to_vec(), b"b".to_vec(), b"a".to_vec()]
+        );
+        // More for one domain than it may have: the least used go.
+        let full = jar(
+            "http://a.example/",
+            &(0..MAX_COOKIES_PER_DOMAIN)
+                .map(|i| format!("c{i}=1; Max-Age=3600"))
+                .collect::<Vec<_>>()
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+        );
+        let one = jar("http://a.example/", &["x=1; Max-Age=3600"]);
+        let mut records = full.export();
+        records.extend(one.export());
+        let mut restored = Jar::new();
+        assert!(restored.restore(&records, now()));
+        assert_eq!(restored.cookies().len(), MAX_COOKIES_PER_DOMAIN);
+        assert!(!restored.cookies().iter().any(|cookie| cookie.name == b"c0"));
+    }
+
+    #[test]
+    fn kept_changes_moves_with_the_cookies_that_outlive_the_session() {
+        let at = url("http://a.example/");
+        let mut jar = Jar::new();
+        let moved = |jar: &mut Jar, line: &str, when: SystemTime| {
+            let before = jar.kept_changes();
+            jar.store(line.as_bytes(), &at, Api::Http, SAME, when);
+            jar.kept_changes() != before
+        };
+        assert!(!moved(&mut jar, "s=1", now()));
+        assert!(moved(&mut jar, "k=1; Max-Age=60", now()));
+        assert!(moved(&mut jar, "k=2; Max-Age=60", now()));
+        assert!(!moved(&mut jar, "s=2", now()));
+        // A session cookie replacing one with an expiry moves it.
+        assert!(moved(&mut jar, "k=3", now()));
+        assert!(moved(&mut jar, "e=1; Max-Age=60", now()));
+        let before = jar.kept_changes();
+        sent(&mut jar, "http://a.example/", SAME);
+        assert_eq!(jar.kept_changes(), before);
+        // Expired.
+        assert!(moved(&mut jar, "s=3", now() + Duration::from_secs(61)));
+        assert!(!moved(&mut jar, "s=4", now() + Duration::from_secs(62)));
     }
 }
