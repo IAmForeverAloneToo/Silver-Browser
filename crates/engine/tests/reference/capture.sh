@@ -24,6 +24,12 @@
 # with <meta name="reference-wait" content="MS">: the browser runs it on
 # its virtual time for that long before the screenshot.
 #
+# A page that keeps what it stores (M28) says <meta name="reference-load"
+# content="http">: it is served over http by a server of this directory,
+# python's, on $REFERENCE_PORT (8077 unless set), so that it has an origin
+# and with it localStorage and sessionStorage; $BROWSER starts on a new
+# profile, as chrome-capture.sh's does.
+#
 # A page's animations are captured at their first frame (M22). A page
 # that asks for changes after it, <meta name="reference-change"> and
 # <meta name="reference-time">, makes them itself by loading
@@ -60,9 +66,22 @@ for page in "$@"; do
     reduce) motion=--force-prefers-reduced-motion ;;
   esac
   wait=$(meta "$page" reference-wait)
+  url="file://$PWD/$page"
+  server=
+  if [ "$(meta "$page" reference-load)" = http ]; then
+    port=${REFERENCE_PORT:-8077}
+    # python3 where it runs (on Windows the name may be a stub), else python.
+    python=python3
+    "$python" -c "" 2>/dev/null || python=python
+    "$python" -m http.server "$port" --bind 127.0.0.1 >/dev/null 2>&1 &
+    server=$!
+    sleep 2
+    url="http://127.0.0.1:$port/$page"
+  fi
   "$browser" --disable-gpu --hide-scrollbars --force-device-scale-factor=1 \
     --force-color-profile=srgb --window-size="${size%x*},${size#*x}" \
     ${settings:+--blink-settings=$settings} $motion ${wait:+--virtual-time-budget=$wait} \
     ${BROWSER_FLAGS:-} \
-    --screenshot="$PWD/${page%.html}.png" "file://$PWD/$page"
+    --screenshot="$PWD/${page%.html}.png" "$url"
+  [ -z "$server" ] || kill "$server"
 done

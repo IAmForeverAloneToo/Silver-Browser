@@ -1,0 +1,77 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-scripts" content="on">
+<meta name="reference-load" content="http">
+<title>Web Storage (M28): what a page keeps in localStorage and sessionStorage, read back by getItem, as named properties and by its count; a value past the quota; and a StorageEvent made; each puts boxes in a row, their widths saying what it read</title>
+<style>
+  html { background-color: #eef3f0; }
+  body { margin: 10px; }
+  .row { overflow: hidden; margin-bottom: 10px; padding: 4px; background-color: #c8d8d0; height: 40px; }
+  .b { float: left; height: 32px; margin: 4px; background-color: #2f6f5f; }
+  .no { background-color: #8f3f2f; }
+</style>
+</head>
+<body>
+<div class="row" id="local"></div>
+<div class="row" id="session"></div>
+<div class="row" id="named"></div>
+<div class="row" id="count"></div>
+<div class="row" id="quota"></div>
+<div class="row" id="event"></div>
+<script>
+  var put = function (row, width, no) {
+    var b = document.createElement('div');
+    b.className = no ? 'b no' : 'b';
+    b.style.width = width + 'px';
+    document.getElementById(row).appendChild(b);
+  };
+  localStorage.clear();
+  sessionStorage.clear();
+  // Widths kept as strings, read back by name in the order set.
+  ['w1', 'w2', 'w3'].forEach(function (k, i) { localStorage.setItem(k, 20 + i * 15); });
+  ['w1', 'w2', 'w3'].forEach(function (k) { put('local', Number(localStorage.getItem(k))); });
+  // The tab's area, apart: its own widths, none of the other's.
+  sessionStorage.setItem('w1', 70);
+  put('session', Number(sessionStorage.getItem('w1')));
+  put('session', sessionStorage.getItem('w2') === null ? 12 : 90, true);
+  put('session', localStorage.getItem('w1') === '20' ? 16 : 90);
+  // Named properties: set, read, replaced, deleted.
+  localStorage.named = 44;
+  put('named', Number(localStorage.named));
+  localStorage.named = 28;
+  put('named', Number(localStorage['named']));
+  delete localStorage.named;
+  put('named', 'named' in localStorage ? 90 : 10, true);
+  put('named', typeof localStorage.getItem === 'function' ? 18 : 90);
+  // The count, ten pixels an item; after one removal; after clear().
+  put('count', localStorage.length * 10);
+  localStorage.removeItem('w2');
+  put('count', localStorage.length * 10);
+  sessionStorage.clear();
+  put('count', 6 + sessionStorage.length * 10, true);
+  // Past the quota: QuotaExceededError, code 22, the value left as it
+  // was.
+  try {
+    localStorage.setItem('big', 'x'.repeat(6 * 1024 * 1024));
+    put('quota', 90);
+  } catch (e) {
+    put('quota', e.code * 2, true);
+    put('quota', e instanceof DOMException ? 24 : 90);
+    put('quota', localStorage.getItem('big') === null ? 14 : 90);
+  }
+  // A StorageEvent made: its fields, by their lengths; no event at the
+  // document whose storage changed.
+  var heard = 0;
+  addEventListener('storage', function () { heard++; });
+  localStorage.setItem('w4', 1);
+  var e = new StorageEvent('storage', { key: 'abcd', newValue: 'abcdefgh', storageArea: localStorage });
+  put('event', e.key.length * 8);
+  put('event', e.newValue.length * 4);
+  put('event', e.oldValue === null ? 10 : 90, true);
+  put('event', e.storageArea === localStorage ? 20 : 90);
+  put('event', 8 + heard * 50);
+  localStorage.clear();
+</script>
+</body>
+</html>

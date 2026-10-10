@@ -43,6 +43,13 @@
 //! loaded from a string fetches nothing, its images beside it under
 //! `images/`, and drawn once what it draws is decoded.
 //!
+//! A page that keeps what it stores (M28) declares `<meta
+//! name="reference-load" content="http">`: it is served over `http:`,
+//! the directory by a server of the test's and of the capture's, so
+//! that it has an origin and with it `localStorage` and
+//! `sessionStorage`, which a `file:` page's opaque origin has not here;
+//! the capture's browser starts on a new profile, the engine on none.
+//!
 //! A page whose scripts run (M24) declares `<meta name="reference-scripts"
 //! content="on">`: the engine runs them, as the reference browser runs
 //! every page's, and the page is loaded by its `file:` URL, since only a
@@ -94,6 +101,7 @@ use std::time::{Duration, Instant};
 use engine::{
     ColorScheme, Engine, FrameTime, LoadState, MediaType, Preferences, SCROLLBAR_WIDTH, Url,
 };
+use net::test_server::{Reply, TestServer};
 
 /// How long a page loaded by its URL may take to load and decode.
 const LOAD: Duration = Duration::from_secs(30);
@@ -256,13 +264,22 @@ fn render(
             Duration::from_micros(hand.load(Ordering::Relaxed))
         }));
     }
-    let by_url = scripts || meta(source, "reference-load") == Some("file");
+    let load = meta(source, "reference-load");
+    let by_url = scripts || load == Some("file") || load == Some("http");
+    // Served over http, the page has an origin (M28).
+    let server = (load == Some("http")).then(|| serve_directory(page));
     let (wake, woken) = channel();
     engine.set_waker(move || {
         let _ = wake.send(());
     });
     if by_url {
-        let url = Url::from_file_path(page).expect("the page has a path");
+        let url = match &server {
+            Some(server) => {
+                let name = page.file_name().and_then(|name| name.to_str());
+                server.url(&format!("/{}", name.expect("the page has a name")))
+            }
+            None => Url::from_file_path(page).expect("the page has a path"),
+        };
         engine.navigate(url);
         wait(&mut engine, &woken, page, |engine| {
             engine.load_state() == &LoadState::Loaded
@@ -295,6 +312,29 @@ fn render(
     };
     let rgb = frame.chunks(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
     (engine, rgb)
+}
+
+/// A server of the files beside `page`, by their names, for a page
+/// loaded over `http:` (M28).
+fn serve_directory(page: &Path) -> TestServer {
+    let dir = page
+        .parent()
+        .expect("the page is in a directory")
+        .to_path_buf();
+    TestServer::plain(move |request| {
+        let name = request.target.trim_start_matches('/');
+        let kind = match name.rsplit_once('.').map(|(_, extension)| extension) {
+            Some("html") => "text/html",
+            Some("js") => "text/javascript",
+            Some("css") => "text/css",
+            Some("png") => "image/png",
+            _ => "application/octet-stream",
+        };
+        match fs::read(dir.join(name)) {
+            Ok(bytes) if !name.contains("..") => Reply::ok(kind, &bytes),
+            _ => Reply::with_fields(404, &[("Content-Type", "text/plain")], b"not here"),
+        }
+    })
 }
 
 /// An engine with the bundled font: the pages have no text, but the
@@ -490,11 +530,11 @@ fn every_reference_page_renders_as_its_capture() {
     let pages = pages();
     assert_eq!(
         pages.len(),
-        127,
+        128,
         "the ten cases of M10's design note, the eleven of M11's, the five of M12's, the three of M16's, \
          the twenty of M17's, the twenty of M18's, the ten of M19's, the eleven of M20's, the nine \
          of M21's, the ten of M22's, the six of M23's, the three of M24's, the four of M25's, \
-         the three of M26's and the two of M27's"
+         the three of M26's, the two of M27's and the one of M28's"
     );
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/reference");
     let mut failures = Vec::new();
