@@ -15,6 +15,7 @@ license = "AGPL-3.0-only"
 #   ui -> { render, paint, text }
 #   layout, paint, render -> images (a leaf: decoders, M23)
 #   engine -> js (a leaf: scripts, M24)
+#   engine -> profile (a leaf: the profile on disk, M28)
 # See docs/architecture.md — the layering contract is binding.
 [workspace.dependencies]
 # Internal crates
@@ -34,6 +35,7 @@ render = { path = "crates/render", default-features = false }
 engine = { path = "crates/engine", default-features = false }
 ui = { path = "crates/ui" }
 js = { path = "crates/js" }
+profile = { path = "crates/profile" }
 
 # External crates
 winit = "0.30"
@@ -63,6 +65,10 @@ idna = "1.1"
 # generated from the list, for sites, cookies' domains and
 # Sec-Fetch-Site.
 psl = "2.1.241"
+# The profile's store (D10; docs/design/storage.md): an embedded
+# key-value store in one file, pure Rust, with transactions and crash
+# recovery.
+redb = "4.3"
 # TLS for https: (D4; docs/design/net.md): rustls over the aws-lc-rs
 # provider, which has the X25519MLKEM768 key exchange, and Mozilla's
 # root program compiled in.

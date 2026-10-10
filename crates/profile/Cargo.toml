@@ -1,0 +1,10 @@
+[package]
+name = "profile"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Leaf crate: the profile on disk (M28.1, decision D10), over redb. See
+# docs/architecture.md and docs/design/storage.md.
+[dependencies]
+redb.workspace = true
