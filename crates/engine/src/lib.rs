@@ -8419,6 +8419,71 @@ mod tests {
     }
 
     #[test]
+    fn the_differential_check_gives_the_snapshot_what_no_markup_holds() {
+        // The state M26 adds, none of it in the markup, each part of it
+        // drawn: the pointer's hover, the focus and the caret, a value
+        // typed, the window's focus, a checkbox's checkedness, and an
+        // open list.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0 } p:hover { background: #f00 }</style><p>p</p>\
+             <input><input type=checkbox><select><option>one<option>two</select>",
+        );
+        let mut fresh = test_engine();
+        let mut check = |engine: &mut Engine, what: &str| {
+            if let Err(difference) = differential::compare_with_fresh(engine, &mut fresh, 200, 100)
+            {
+                panic!("{what}: {difference}");
+            }
+        };
+        engine.frame(200, 100);
+        let p = boxes_of(&engine, "p")[0].clone();
+        engine.pointer_move(p.x + 1.0, p.y + 1.0);
+        check(&mut engine, "hovered");
+        let input = first(&engine, "input");
+        engine.focus(Some(input), true, false);
+        assert!(engine.insert_text("ab"));
+        check(&mut engine, "typed into");
+        engine.set_window_focus(false);
+        check(&mut engine, "the window's focus lost");
+        engine.set_window_focus(true);
+        let checkbox = engine
+            .document()
+            .next_element_sibling(input)
+            .expect("the checkbox");
+        engine
+            .mutate(|document| dom::forms::set_checkedness(document, checkbox, true, true))
+            .expect("an input");
+        check(&mut engine, "checked");
+        let select = first(&engine, "select");
+        engine.open_popup(select, false);
+        assert_eq!(engine.popup_open(), Some(select));
+        check(&mut engine, "the list open");
+        // A list whose nodes are not the snapshot's at the same ids: a
+        // select made in the slot a freed paragraph left, a generation
+        // on.
+        engine.close_popup();
+        let made = engine
+            .mutate(|document| {
+                let body = document.parent(select).expect("the body");
+                document.remove_child(body, p.node)?;
+                document.free(p.node)?;
+                let made = document.create_element("select")?;
+                let option = document.create_element("option")?;
+                let label = document.create_text("three")?;
+                document.append_child(option, label)?;
+                document.append_child(made, option)?;
+                document.append_child(body, made)?;
+                Ok::<_, dom::MutationError>(made)
+            })
+            .expect("a new select");
+        engine.frame(200, 100);
+        engine.open_popup(made, false);
+        assert_eq!(engine.popup_open(), Some(made));
+        check(&mut engine, "a list of new nodes open");
+    }
+
+    #[test]
     fn an_element_transitioning_out_of_view_is_drawn_and_not_hit() {
         let mut engine = test_engine();
         engine.load_document(

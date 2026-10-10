@@ -226,7 +226,10 @@ pub fn run_script(engine: &mut Engine, source: &str) {
 /// Draws a `width` by `height` frame with `engine` and compares what it
 /// keeps with what `fresh` computes for a snapshot of its document,
 /// scrolled as `engine` is: the computed style of every element, every
-/// fragment of the layout, and every pixel of the frame. `engine`'s
+/// fragment of the layout, and every pixel of the frame. The snapshot
+/// is given the state no markup holds (M26): each element's state
+/// flags and control record, the focus, whether the window has it, and
+/// a drop-down's open list. `engine`'s
 /// transitions are finished first, as a script's `finish()` would
 /// finish them, those of the changes no frame has drawn yet with them,
 /// since `fresh` starts none (M22); its animations, drawn
@@ -245,7 +248,6 @@ pub fn compare_with_fresh(
     engine.finish_transitions();
     let pixels = engine.frame(width, height);
     fresh.set_document(Document::from_node(&engine.shown.document.to_node()));
-    fresh.frame(width, height);
     let order = tree_order(&engine.shown.document);
     let fresh_order = tree_order(&fresh.shown.document);
     if order.len() != fresh_order.len() {
@@ -255,6 +257,8 @@ pub fn compare_with_fresh(
             order.len()
         ));
     }
+    give_state(engine, fresh, &order, &fresh_order);
+    fresh.frame(width, height);
     // The same offsets: the document's, and each scroll container's,
     // node for node in tree order.
     fresh.set_scroll(engine.scroll_y());
@@ -326,6 +330,40 @@ pub fn compare_with_fresh(
 /// Every node of `document`'s tree, in tree order.
 fn tree_order(document: &Document) -> Vec<NodeId> {
     document.subtree(document.root()).collect()
+}
+
+/// Gives `fresh`'s snapshot of `engine`'s document, node for node in
+/// tree order, the state no markup holds (M26): each element's state
+/// flags and control record, the focus, whether the window has it, and
+/// a drop-down's open list. Before its first frame, which cascades it
+/// whole.
+fn give_state(engine: &Engine, fresh: &mut Engine, order: &[NodeId], fresh_order: &[NodeId]) {
+    let places: HashMap<NodeId, NodeId> = order
+        .iter()
+        .copied()
+        .zip(fresh_order.iter().copied())
+        .collect();
+    let document = &engine.shown.document;
+    let snapshot = &mut fresh.shown.document;
+    snapshot.set_focus(
+        document
+            .focused()
+            .and_then(|focused| places.get(&focused).copied()),
+        false,
+    );
+    for (&node, &fresh_node) in order.iter().zip(fresh_order) {
+        // A text node's state is refused.
+        let _ = snapshot.set_state(fresh_node, document.state(node));
+        if let Some(control) = document.control(node) {
+            let _ = snapshot.set_control(fresh_node, control.clone());
+        }
+    }
+    fresh.window_focused = engine.window_focused;
+    fresh.shown.popup = engine
+        .shown
+        .popup
+        .as_ref()
+        .and_then(|popup| popup.mapped(&places));
 }
 
 /// `engine`'s layout at `width` as one line per fragment in tree order,

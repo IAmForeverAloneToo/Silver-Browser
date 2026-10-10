@@ -6,6 +6,8 @@
 //! chosen by presses and the arrows. A choice changed is an `input` and a
 //! `change` at the select.
 
+use std::collections::HashMap;
+
 use dom::NodeId;
 use dom::forms;
 use paint::{DisplayItem, Rect, Rgba8, Step, Viewport, paint_order};
@@ -69,6 +71,21 @@ pub(crate) struct Popup {
 }
 
 impl Popup {
+    /// The list over a copy of the document, its nodes found in
+    /// `places` (the differential check's snapshot, M26.10): none when
+    /// one is not there.
+    pub(crate) fn mapped(&self, places: &HashMap<NodeId, NodeId>) -> Option<Popup> {
+        Some(Popup {
+            select: *places.get(&self.select)?,
+            options: self
+                .options
+                .iter()
+                .map(|option| places.get(option).copied())
+                .collect::<Option<_>>()?,
+            ..self.clone()
+        })
+    }
+
     /// The row at the viewport point, if it is in the list.
     fn row_at(&self, x: f32, y: f32) -> Option<usize> {
         let r = self.rect;

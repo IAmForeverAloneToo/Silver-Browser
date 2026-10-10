@@ -11,16 +11,25 @@
 //! computes for the document as it then stands (M25.3): a script's
 //! changes reach the frame through the invalidation every other change
 //! goes through.
+//!
+//! M26's surface among the calls: listeners, handlers and the events
+//! dispatched to them, `click()` and the focus, timers, animation frame
+//! callbacks and microtasks, an `AbortController`, and the controls'
+//! state, validity and forms. A listener's or a timer's body is a call
+//! of its own. After each run the engine's clock, a hand's, moves on as
+//! the input says, the tasks then due run, and a frame's rendering
+//! steps with them, so that what a script left for later happens.
 
 #![no_main]
 
 use std::fmt::Write as _;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::channel;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use engine::differential::{compare_with_fresh, run_script};
-use engine::{Engine, LoadState};
+use engine::{Engine, FrameTime, LoadState};
 use libfuzzer_sys::fuzz_target;
 use net::url::Url;
 
@@ -41,15 +50,54 @@ const PAGES: &[&str] = &[
     "<!DOCTYPE html><div style='width: 30px; float: left'>f</div><pre>a\nb</pre>\
      <template><p>t</p></template><noscript><p>n</p></noscript>",
     "<p>quirks<table><tr><td>cell</td></tr></table>",
+    "<!DOCTYPE html><style>:focus { outline: 2px solid #00f } :checked + label { color: #f00 }\
+     :invalid { margin-left: 3px } :user-invalid { color: #f0f } :hover { color: #080 }\
+     :focus-within { padding: 1px } :placeholder-shown { width: 30px }</style>\
+     <form id=a><input id=b required pattern='[a-z]*' maxlength=8 placeholder=p>\
+     <input type=checkbox id=c><label for=c>c</label><input type=radio name=r>\
+     <input type=radio name=r checked><select><option>1<option selected>2</select>\
+     <select multiple size=2><option>x<option>y</select><input type=number min=1 max=5>\
+     <textarea>t</textarea><fieldset><input type=email value=e></fieldset><button>b</button>\
+     </form><a href=#a>link</a>",
 ];
 
 // What the calls are given: the strings of these tables, or the input's.
 const TAGS: &[&str] = &[
     "div", "p", "span", "b", "table", "tbody", "tr", "td", "ul", "li", "a", "img", "br", "pre",
-    "style", "script", "template", "noscript", "select", "option", "h1", "svg", "x-y",
+    "style", "script", "template", "noscript", "select", "option", "h1", "svg", "x-y", "input",
+    "textarea", "button", "form", "label", "fieldset",
 ];
 const ATTRIBUTES: &[&str] = &[
-    "id", "class", "style", "title", "hidden", "dir", "lang", "data-x", "colspan", "width",
+    "id",
+    "class",
+    "style",
+    "title",
+    "hidden",
+    "dir",
+    "lang",
+    "data-x",
+    "colspan",
+    "width",
+    "type",
+    "value",
+    "checked",
+    "selected",
+    "required",
+    "disabled",
+    "readonly",
+    "pattern",
+    "min",
+    "max",
+    "maxlength",
+    "placeholder",
+    "multiple",
+    "size",
+    "for",
+    "form",
+    "name",
+    "tabindex",
+    "autofocus",
+    "novalidate",
 ];
 const VALUES: &[&str] = &[
     "",
@@ -63,6 +111,13 @@ const VALUES: &[&str] = &[
     "10px",
     "x",
     "float: right",
+    "checkbox",
+    "radio",
+    "number",
+    "email",
+    "submit",
+    "-1",
+    "[a-z]+",
 ];
 const MARKUP: &[&str] = &[
     "<p>p</p>",
@@ -138,6 +193,55 @@ const SCRIPTS: &[&str] = &[
     "document.currentScript.remove()",
     "document.querySelector('p') && (document.querySelector('p').innerHTML = '<i>i</i>')",
 ];
+/// The events listened for and dispatched.
+const EVENTS: &[&str] = &[
+    "click",
+    "input",
+    "change",
+    "focus",
+    "blur",
+    "focusin",
+    "keydown",
+    "submit",
+    "invalid",
+    "reset",
+    "pointerdown",
+    "mouseover",
+    "x",
+    "load",
+];
+/// What dispatched events are made as.
+const EVENT_CLASSES: &[&str] = &[
+    "Event",
+    "CustomEvent",
+    "UIEvent",
+    "MouseEvent",
+    "PointerEvent",
+    "KeyboardEvent",
+    "FocusEvent",
+    "InputEvent",
+    "SubmitEvent",
+    "WheelEvent",
+];
+/// A listener's options.
+const OPTIONS: &[&str] = &[
+    "false",
+    "true",
+    "{once: true}",
+    "{passive: true}",
+    "{capture: true, once: true}",
+    "{signal: ac.signal}",
+];
+/// What an event handler attribute holds.
+const HANDLER_CODE: &[&str] = &[
+    "return false",
+    "event.preventDefault()",
+    "this.remove()",
+    "event.stopPropagation(); this.className = 'c'",
+    "document.body.appendChild(document.createElement('p'))",
+    "this.focus()",
+    "x(",
+];
 
 /// The input, read a byte at a time; past its end, zeros.
 struct Input<'a>(&'a [u8]);
@@ -191,9 +295,20 @@ fn js_string(text: &str) -> String {
     literal
 }
 
-/// One call, read from `input`, as a statement.
-fn call(input: &mut Input) -> String {
-    let op = input.byte() % 34;
+/// The body of a listener or a timer's callback: a call of its own, or,
+/// in one already `nested`, a plain one.
+fn body(input: &mut Input, nested: bool) -> String {
+    if nested {
+        String::from("p(this)")
+    } else {
+        call(input, true)
+    }
+}
+
+/// One call, read from `input`, as a statement; `nested` in a
+/// listener's or a callback's body.
+fn call(input: &mut Input, nested: bool) -> String {
+    let op = input.byte() % 54;
     let a = input.node();
     match op {
         0 => format!("p(document.createElement({}))", input.pick(TAGS)),
@@ -294,22 +409,121 @@ fn call(input: &mut Input) -> String {
             input.pick(TAGS),
             input.node()
         ),
-        _ => format!(
+        33 => format!(
             "var s = document.createElement('script'); s.textContent = {}; {a}.appendChild(s)",
             input.pick(SCRIPTS)
         ),
+        34 => {
+            let event = input.pick(EVENTS);
+            let options = OPTIONS[usize::from(input.byte()) % OPTIONS.len()];
+            format!(
+                "var k = function (e) {{ {} }}; l.push(k); {a}.addEventListener({event}, k, {options})",
+                body(input, nested)
+            )
+        }
+        35 => format!(
+            "{a}.removeEventListener({}, l[{} % l.length], {})",
+            input.pick(EVENTS),
+            input.byte(),
+            input.byte() % 2 == 0
+        ),
+        36 => {
+            let class = EVENT_CLASSES[usize::from(input.byte()) % EVENT_CLASSES.len()];
+            let flags = input.byte();
+            format!(
+                "{a}.dispatchEvent(new {class}({}, {{bubbles: {}, cancelable: {}}}))",
+                input.pick(EVENTS),
+                flags & 1 != 0,
+                flags & 2 != 0
+            )
+        }
+        37 => format!("{a}.click()"),
+        38 => match input.byte() % 3 {
+            0 => format!("{a}.focus(); p(document.activeElement)"),
+            1 => format!("{a}.blur()"),
+            _ => format!("{a}.focus({{preventScroll: true}}); {a}.tabIndex = -1"),
+        },
+        39 => {
+            let event = EVENTS[usize::from(input.byte()) % EVENTS.len()];
+            format!("{a}.on{event} = function (e) {{ {} }}", body(input, nested))
+        }
+        40 => {
+            let event = EVENTS[usize::from(input.byte()) % EVENTS.len()];
+            format!(
+                "{a}.setAttribute('on{event}', {})",
+                input.pick(HANDLER_CODE)
+            )
+        }
+        41 => {
+            let delay = input.byte() % 64;
+            format!(
+                "t.push(setTimeout(function () {{ {} }}, {delay}))",
+                body(input, nested)
+            )
+        }
+        42 => {
+            let delay = input.byte() % 64;
+            format!(
+                "t.push(setInterval(function () {{ {} }}, {delay}))",
+                body(input, nested)
+            )
+        }
+        43 => format!("clearTimeout(t[{} % t.length])", input.byte()),
+        44 => format!(
+            "requestAnimationFrame(function () {{ {} }})",
+            body(input, nested)
+        ),
+        45 => format!("queueMicrotask(function () {{ {} }})", body(input, nested)),
+        46 => String::from("ac.abort(); ac = new AbortController()"),
+        47 => format!("{a}.value = {}", input.text(VALUES)),
+        48 => {
+            let flags = input.byte();
+            format!(
+                "{a}.checked = {}; {a}.indeterminate = {}",
+                flags & 1 != 0,
+                flags & 2 != 0
+            )
+        }
+        49 => format!(
+            "{a}.selectedIndex = {}; p({a}.options[{}])",
+            i32::from(input.byte() % 4) - 1,
+            input.byte() % 4
+        ),
+        50 => match input.byte() % 3 {
+            0 => format!(
+                "{a}.setSelectionRange({}, {}, 'backward')",
+                input.byte() % 8,
+                input.byte() % 8
+            ),
+            1 => format!("{a}.select()"),
+            _ => format!("{a}.selectionStart = {}", input.byte() % 8),
+        },
+        51 => format!(
+            "{a}.setCustomValidity({}); {a}.reportValidity(); {a}.checkValidity()",
+            input.text(VALUES)
+        ),
+        52 => match input.byte() % 3 {
+            0 => format!("({a}.form || {a}).reset()"),
+            1 => format!("({a}.form || {a}).requestSubmit()"),
+            _ => format!("p({a}.elements[{}]); p({a}.labels[0])", input.byte() % 4),
+        },
+        _ => {
+            let property = ["disabled", "required", "readOnly", "multiple", "noValidate"]
+                [usize::from(input.byte()) % 5];
+            format!("{a}.{property} = !{a}.{property}")
+        }
     }
 }
 
-/// The page: one of `PAGES`, and the calls in a script at its end.
 /// The page: one of `PAGES`, and a script at its end that keeps the
-/// nodes the calls name and makes up to fifteen of them, as the input's
-/// next byte says.
+/// nodes the calls name, the listeners and the timers they make, and
+/// makes up to fifteen calls, as the input's next byte says.
 fn page(input: &mut Input) -> String {
     let mut page = PAGES[usize::from(input.byte()) % PAGES.len()].to_owned();
     let first = input.byte() % 16;
     page.push_str(
         "<script>var h = [document, document.documentElement, document.body];\
+         var l = [], t = [], ac = new AbortController();\
          function p(x) { if (x !== undefined && h.length < 256) h.push(x); }\
          function g(i) { return h[i % h.length]; }\n",
     );
@@ -326,12 +540,16 @@ fn calls(input: &mut Input, count: usize) -> String {
         if input.done() {
             break;
         }
-        let _ = writeln!(script, "try {{ {} }} catch (e) {{}}", call(input));
+        let _ = writeln!(script, "try {{ {} }} catch (e) {{}}", call(input, false));
     }
     script
 }
 
 static FONTS: OnceLock<text::FontCollection> = OnceLock::new();
+
+/// The engines' clock, in milliseconds: moved by hand, so that an input
+/// runs the same timers however fast the machine is.
+static NOW: AtomicU64 = AtomicU64::new(0);
 
 fn fonts() -> &'static text::FontCollection {
     FONTS.get_or_init(|| {
@@ -340,15 +558,22 @@ fn fonts() -> &'static text::FontCollection {
     })
 }
 
-/// A new engine over the bundled font, with scripts on: the one under
-/// test, and the fresh one, whose `noscript` is shown as the other's.
+fn now() -> Duration {
+    Duration::from_millis(NOW.load(Ordering::Relaxed))
+}
+
+/// A new engine over the bundled font, with scripts on and the hand's
+/// clock: the one under test, and the fresh one, whose `noscript` is
+/// shown as the other's.
 fn scripting() -> Engine {
     let mut engine = Engine::with_fonts(fonts().clone());
     engine.set_scripting(true);
+    engine.set_clock(Arc::new(now));
     engine
 }
 
 fuzz_target!(|data: &[u8]| {
+    NOW.store(0, Ordering::Relaxed);
     let mut input = Input(data);
     let page = page(&mut input);
     let mut url = String::from("data:text/html,");
@@ -389,6 +614,11 @@ fuzz_target!(|data: &[u8]| {
         }
         run_script(&mut engine, &calls(&mut input, RUN));
         made += RUN;
+        // Time passes, up to a second: the timers then due run, then a
+        // frame's rendering steps, its animation frame callbacks.
+        NOW.fetch_add(u64::from(input.byte()) * 4, Ordering::Relaxed);
+        engine.run_tasks();
+        engine.frame_at(WIDTH, HEIGHT, FrameTime::at(now()));
     }
     if let Err(difference) = compare_with_fresh(&mut engine, &mut fresh, WIDTH, HEIGHT) {
         panic!("at the end: {difference}");
