@@ -32,7 +32,7 @@ impl Budget {
     /// Adds `units` of work, a step for each [`WORK_PER_STEP`]; past the
     /// budget the run is spent, which the interrupt handler ends at its
     /// next check, and no further native does anything meanwhile.
-    fn charge(&self, units: u64) {
+    pub(super) fn charge(&self, units: u64) {
         let work = self.work.get().saturating_add(units);
         let steps = u32::try_from(work / WORK_PER_STEP).unwrap_or(u32::MAX);
         self.work.set(work % WORK_PER_STEP);
@@ -522,6 +522,7 @@ pub(super) fn install<'js, H: ScriptingHost>(
         )?,
     )?;
     install_errors(ctx, host, &natives)?;
+    super::wasm::install(ctx, &natives, budget)?;
     let bootstrap: Function<'js> = ctx.eval(BOOTSTRAP)?;
     bootstrap.call::<_, Object<'js>>((natives, ctx.globals()))
 }

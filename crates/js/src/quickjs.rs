@@ -5,6 +5,10 @@
 
 pub(crate) mod console;
 mod dom;
+mod wasm;
+
+#[cfg(test)]
+pub(crate) use wasm::from_base64;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;

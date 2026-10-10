@@ -19,6 +19,8 @@
   const $Number = Number;
   const $TypeError = TypeError;
   const $RangeError = RangeError;
+  const $Error = Error;
+  const ToBase64 = uncurry(Uint8Array.prototype.toBase64);
   const $DOMException = DOMException;
   const $Map = Map;
   const $WeakMap = WeakMap;
@@ -9427,6 +9429,150 @@
     }
     return false;
   }
+
+  // ---- WebAssembly (the WebAssembly JavaScript Interface, M29) ------------
+
+  // The namespace, its members defined as Web IDL defines a namespace's:
+  // its operations enumerable, its classes not.
+  const WebAssemblyNamespace = ObjectCreate(Object.prototype);
+  defineProperty(WebAssemblyNamespace, toStringTag, { value: "WebAssembly", configurable: true });
+  defineProperty(global, "WebAssembly", {
+    value: WebAssemblyNamespace,
+    writable: true,
+    configurable: true,
+    enumerable: false,
+  });
+
+  // An interface of the namespace: as `expose` makes one, its class
+  // string `WebAssembly.` and its name.
+  function exposeWasm(cls, name) {
+    const proto = cls.prototype;
+    const keys = getOwnPropertyNames(proto);
+    for (let i = 0; i < keys.length; i++) {
+      if (keys[i] === "constructor") {
+        continue;
+      }
+      const desc = getOwnPropertyDescriptor(proto, keys[i]);
+      desc.enumerable = true;
+      defineProperty(proto, keys[i], desc);
+    }
+    defineProperty(proto, toStringTag, { value: "WebAssembly." + name, configurable: true });
+    defineProperty(WebAssemblyNamespace, name, {
+      value: cls,
+      writable: true,
+      configurable: true,
+      enumerable: false,
+    });
+  }
+
+  function wasmOperation(name, f) {
+    defineProperty(WebAssemblyNamespace, name, {
+      value: f,
+      writable: true,
+      configurable: true,
+      enumerable: true,
+    });
+  }
+
+  // The interface's errors, native errors of its own as `TypeError` is
+  // one of the language's: a name on the prototype, no class string.
+  function wasmError(name) {
+    const cls = class extends $Error {};
+    defineProperty(cls, "name", { value: name, configurable: true });
+    defineProperty(cls.prototype, "name", { value: name, writable: true, configurable: true });
+    defineProperty(cls.prototype, "message", { value: "", writable: true, configurable: true });
+    defineProperty(WebAssemblyNamespace, name, {
+      value: cls,
+      writable: true,
+      configurable: true,
+      enumerable: false,
+    });
+    return cls;
+  }
+  const CompileError = wasmError("CompileError");
+  const LinkError = wasmError("LinkError");
+  const RuntimeError = wasmError("RuntimeError");
+
+  // A buffer source's bytes, copied, as base64 for the natives; a
+  // TypeError in the reference browser's words for anything else.
+  function moduleBytes(value, where) {
+    const bytes = bufferBytes(value);
+    if (bytes === undefined) {
+      throw new $TypeError(where + ": Argument 0 must be a buffer source");
+    }
+    if (viewLength(bytes) > native.wasmModuleLimit) {
+      throw new $RangeError(
+        where + ": the module is larger than " + native.wasmModuleLimit / 1048576 + " MiB",
+      );
+    }
+    return ToBase64(bytes);
+  }
+
+  // A module compiled from `bytes`: its handle, or a CompileError.
+  function compileModule(bytes, where) {
+    const handle = native.wasmCompile(moduleBytes(bytes, where), where);
+    if (typeof handle === "string") {
+      throw new CompileError(where + ": " + handle);
+    }
+    return handle;
+  }
+
+  wasmOperation("validate", function validate(bytes) {
+    return native.wasmValidate(moduleBytes(bytes, "WebAssembly.validate()"));
+  });
+
+  // Each module object's handle.
+  const modules = new $WeakMap();
+
+  function moduleOf(value, where) {
+    const handle = typeof value === "object" && value !== null ? WeakMapGet(modules, value) : undefined;
+    if (handle === undefined) {
+      throw new $TypeError(where + ": Argument 0 must be a WebAssembly.Module");
+    }
+    return handle;
+  }
+
+  // A module object for a handle the natives gave.
+  function moduleObject(handle) {
+    const module = ObjectCreate(Module.prototype);
+    WeakMapSet(modules, module, handle);
+    return module;
+  }
+
+  class Module {
+    constructor(bytes) {
+      WeakMapSet(modules, this, compileModule(bytes, "WebAssembly.Module()"));
+    }
+
+    static exports(module) {
+      const list = native.wasmModuleExports(moduleOf(module, "WebAssembly.Module.exports()"));
+      const out = [];
+      for (let i = 0; i < list.length; i += 2) {
+        ArrayPush(out, { name: list[i], kind: list[i + 1] });
+      }
+      return out;
+    }
+
+    static imports(module) {
+      const list = native.wasmModuleImports(moduleOf(module, "WebAssembly.Module.imports()"));
+      const out = [];
+      for (let i = 0; i < list.length; i += 3) {
+        ArrayPush(out, { module: list[i], name: list[i + 1], kind: list[i + 2] });
+      }
+      return out;
+    }
+
+    static customSections(module, sectionName) {
+      const handle = moduleOf(module, "WebAssembly.Module.customSections()");
+      if (arguments.length < 2) {
+        throw new $TypeError(
+          "WebAssembly.Module.customSections(): Argument 1 is required",
+        );
+      }
+      return native.wasmModuleCustomSections(handle, ToWellFormed(toString(sectionName)));
+    }
+  }
+  exposeWasm(Module, "Module");
 
   // The entry points the realm calls (M26): a timer's task; an event
   // the engine makes, dispatched at the node `handle` names or, for

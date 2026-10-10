@@ -110,6 +110,12 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 # pinned to the version the design note measured. Without the allocator
 # features, under which the heap limit would do nothing.
 rquickjs = { version = "=0.14.0", default-features = false, features = ["std"] }
+# WebAssembly (M29, D21; docs/design/wasm.md): an interpreter in Rust,
+# validating every module; without its text format and memory64.
+wasmi = { version = "2.0", default-features = false, features = ["std", "validate", "auto-dispatch"] }
+# A module's sections in their order, which wasmi keeps not: the
+# version wasmi reads modules with.
+wasmparser = { version = "0.228", default-features = false, features = ["std"] }
 
 # Dependencies are optimised even in the dev profile: the rasterizer,
 # the shaper and the font parser are not what a debug build is for

@@ -19,6 +19,8 @@ mod event_tests;
 mod test_tree;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod wasm_tests;
 
 pub use dom::{Answer, Call, DomError, FetchCall, Handle, MAX_HANDLE, NestedScript, WORK_PER_STEP};
 pub use pattern::pattern_matches;

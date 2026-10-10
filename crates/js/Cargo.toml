@@ -6,3 +6,9 @@ license.workspace = true
 
 [dependencies]
 rquickjs.workspace = true
+wasmi.workspace = true
+wasmparser.workspace = true
+
+[dev-dependencies]
+# The text format, for the tests' modules (M29).
+wat = "1"
