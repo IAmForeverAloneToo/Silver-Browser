@@ -1,0 +1,70 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-scripts" content="on">
+<meta name="reference-wait" content="200">
+<title>XMLHttpRequest of data: URLs (M27): the states of a request and its load, a JSON response, a buffer, a field of the response, a synchronous request, and one that fails; each puts boxes in a row, their widths saying what it saw</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 10px; }
+  .row { overflow: hidden; margin-bottom: 10px; padding: 4px; background-color: #d8d0c0; height: 48px; }
+  .b { float: left; height: 40px; margin: 4px; background-color: #2f4f7f; }
+  .no { background-color: #7f2f4f; }
+</style>
+</head>
+<body>
+<div class="row" id="states"></div>
+<div class="row" id="json"></div>
+<div class="row" id="buffer"></div>
+<div class="row" id="field"></div>
+<div class="row" id="sync"></div>
+<div class="row" id="error"></div>
+<script>
+  var put = function (row, width, no) {
+    var b = document.createElement('div');
+    b.className = no ? 'b no' : 'b';
+    b.style.width = width + 'px';
+    document.getElementById(row).appendChild(b);
+  };
+  // Each state as it changes, eight pixels a state; then the text's
+  // length at load, "abcdef", four pixels a character.
+  var x = new XMLHttpRequest();
+  x.onreadystatechange = function () { put('states', x.readyState * 8); };
+  x.onload = function () { put('states', x.responseText.length * 4, true); };
+  x.open('GET', 'data:text/plain,abcdef');
+  x.send();
+  // A JSON response: a box for each entry.
+  var j = new XMLHttpRequest();
+  j.responseType = 'json';
+  j.onload = function () { j.response.forEach(function (w) { put('json', w); }); };
+  j.open('GET', 'data:application/json,[30,20,10]');
+  j.send();
+  // A buffer: ten pixels a byte.
+  var a = new XMLHttpRequest();
+  a.open('GET', 'data:application/octet-stream;base64,AAECAw==');
+  a.responseType = 'arraybuffer';
+  a.onload = function () { put('buffer', a.response.byteLength * 10); };
+  a.send();
+  // A field of the response, and the status: text/html, two hundred.
+  var f = new XMLHttpRequest();
+  f.open('GET', 'data:text/html,<p>');
+  f.onload = function () {
+    put('field', f.getResponseHeader('Content-Type').length * 4);
+    put('field', f.status / 5);
+  };
+  f.send();
+  // A synchronous request answers before send returns.
+  var s = new XMLHttpRequest();
+  s.open('GET', 'data:,synchronous', false);
+  s.send();
+  put('sync', s.readyState * 10);
+  put('sync', s.responseText.length * 4);
+  // One that fails: a data: URL whose base64 does not decode.
+  var e = new XMLHttpRequest();
+  e.onerror = function () { put('error', 30 + e.readyState, true); };
+  e.onload = function () { put('error', 8); };
+  e.open('GET', 'data:text/plain;base64,%%%');
+  e.send();
+</script>
+</body>
+</html>

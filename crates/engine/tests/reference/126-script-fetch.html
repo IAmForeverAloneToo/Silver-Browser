@@ -1,0 +1,83 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-scripts" content="on">
+<meta name="reference-wait" content="200">
+<title>fetch() of data: URLs (M27): a JSON body, a base64 text body, a response's status, type and fields, bodies a script makes (URLSearchParams, Blob, a buffer), a request cloned with its body, a URL refused and a fetch aborted; each answer puts boxes in a row, their widths saying what it read</title>
+<style>
+  html { background-color: #f6f2ea; }
+  body { margin: 10px; }
+  .row { overflow: hidden; margin-bottom: 10px; padding: 4px; background-color: #d8d0c0; height: 40px; }
+  .b { float: left; height: 32px; margin: 4px; background-color: #2f6f4f; }
+  .no { background-color: #7f2f4f; }
+</style>
+</head>
+<body>
+<div class="row" id="json"></div>
+<div class="row" id="text"></div>
+<div class="row" id="fields"></div>
+<div class="row" id="params"></div>
+<div class="row" id="blob"></div>
+<div class="row" id="buffer"></div>
+<div class="row" id="request"></div>
+<div class="row" id="refused"></div>
+<div class="row" id="aborted"></div>
+<script>
+  var put = function (row, width, no) {
+    var b = document.createElement('div');
+    b.className = no ? 'b no' : 'b';
+    b.style.width = width + 'px';
+    document.getElementById(row).appendChild(b);
+  };
+  // A JSON body: a box for each entry, as wide as the entry.
+  fetch('data:application/json,[12,24,36,48]')
+    .then(function (r) { return r.json(); })
+    .then(function (widths) { widths.forEach(function (w) { put('json', w); }); });
+  // A base64 body, "hello world": four pixels a character.
+  fetch('data:text/plain;base64,aGVsbG8gd29ybGQ=')
+    .then(function (r) { return r.text(); })
+    .then(function (t) { put('text', t.length * 4); });
+  // The status, ok, the type, the URL kept, and the type's field,
+  // text/plain;charset=US-ASCII, two pixels a character.
+  fetch('data:,x').then(function (r) {
+    put('fields', r.status / 5);
+    put('fields', r.ok ? 30 : 10, !r.ok);
+    put('fields', r.type === 'basic' ? 50 : 10, r.type !== 'basic');
+    put('fields', r.url === 'data:,x' ? 20 : 10, r.url !== 'data:,x');
+    put('fields', r.headers.get('content-type').length * 2);
+    put('fields', r.bodyUsed ? 10 : 16, r.bodyUsed);
+  });
+  // Bodies a script makes, read back: "a=1&b=22", "abcde", three bytes.
+  new Response(new URLSearchParams('a=1&b=22')).text().then(function (t) {
+    put('params', t.length * 4);
+  });
+  new Blob(['abc', 'de'], { type: 'text/x' }).text().then(function (t) {
+    put('blob', t.length * 6);
+  });
+  new Response(new Uint8Array([1, 2, 3])).arrayBuffer().then(function (b) {
+    put('buffer', b.byteLength * 10);
+  });
+  // A request with a body, cloned: both read, the method kept.
+  var q = new Request('data:,q', { method: 'POST', body: 'twelve chars' });
+  var copy = q.clone();
+  q.text().then(function (t) {
+    put('request', t.length * 3);
+    return copy.text();
+  }).then(function (t) {
+    put('request', t.length * 2);
+    put('request', copy.method === 'POST' ? 24 : 8, copy.method !== 'POST');
+  });
+  // A URL fetch refuses, and a fetch aborted: both reject.
+  fetch('about:blank').then(function () { put('refused', 60, true); }, function (e) {
+    put('refused', e.name === 'TypeError' ? 36 : 8, e.name !== 'TypeError');
+  });
+  var controller = new AbortController();
+  fetch('data:,y', { signal: controller.signal }).then(function () {
+    put('aborted', 60, true);
+  }, function (e) {
+    put('aborted', e.name === 'AbortError' ? 44 : 8, e.name !== 'AbortError');
+  });
+  controller.abort();
+</script>
+</body>
+</html>
