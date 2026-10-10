@@ -1231,12 +1231,12 @@ pub(crate) fn relative_offset(
 }
 
 /// Whether a box with this style establishes a block formatting context
-/// of its own (CSS2 §9.4.1, M10.4): `overflow` other than `visible`, an
-/// atomic inline (an inline-block, an inline table), a float or an
-/// absolutely positioned box (M11), a table, a table cell or a caption
-/// (M12).
+/// of its own (CSS2 section 9.4.1, M10.4): `overflow` other than `visible`
+/// and `clip` (css-overflow-3 section 3, M26.11), an atomic inline (an
+/// inline-block, an inline table), a float or an absolutely positioned
+/// box (M11), a table, a table cell or a caption (M12).
 pub(crate) fn establishes_bfc(style: &ComputedStyle) -> bool {
-    style.overflow.clips()
+    style.overflow.scrolls()
         || style.display.is_atomic_inline()
         || matches!(
             style.display,
@@ -3739,6 +3739,17 @@ mod tests {
             20.0 + m.line_height() + 20.0,
             "and so is the bottom one"
         );
+        // `overflow: clip` makes none (css-overflow-3 section 3, M26.11): the
+        // p's margins collapse through it.
+        let root = Element::new("div")
+            .attr("class", "o")
+            .push(Element::new("p").text("x"));
+        let frags = fragments_of(
+            root,
+            "div { margin: 0; overflow: clip; } p { margin: 20px 0; }",
+        );
+        let boxes = box_fragments(&frags);
+        assert_eq!((boxes[0].y, boxes[1].y), (20.0, 20.0), "the margin escaped");
 
         // An empty one is never self-collapsing: its own top and bottom
         // margins stay apart, and only its bottom margin collapses with

@@ -271,6 +271,10 @@ pub enum Call {
         node: Option<Handle>,
         prevent_scroll: bool,
     },
+    /// The focused element loses the focus on its way to the element
+    /// (M26.11): `focus-within` stays with the ancestors they share
+    /// while `blur` and `focusout` are dispatched.
+    BlurToward(Handle),
     /// `document.hasFocus()`: whether the window has the system's focus.
     HasFocus,
     /// A form control's `value` (HTML section 4.10, M26.7): an

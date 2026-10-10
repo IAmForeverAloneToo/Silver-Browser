@@ -336,8 +336,9 @@ impl<'a> Item<'a> {
         // a scroll container: the content size suggestion, its min-content
         // size, or the specified size suggestion, its main size, when that
         // is definite and smaller; never more than the maximum.
+        // `overflow: clip` clips but makes no scroll container (M26.11).
         let automatic = || {
-            if style.overflow.clips() {
+            if style.overflow.scrolls() {
                 return 0.0;
             }
             let content = min_content();
@@ -1304,7 +1305,7 @@ fn main_contribution<'a>(
         }
         let max = limit(&style.max_width, max_content);
         let min = match &style.min_width {
-            Size::Auto if style.overflow.clips() => 0.0,
+            Size::Auto if style.overflow.scrolls() => 0.0,
             Size::Auto => size(&style.width, max_content)
                 .map_or(own().0, |specified| specified.min(own().0))
                 .min(max.unwrap_or(f32::INFINITY)),
@@ -1457,6 +1458,23 @@ mod tests {
     }
 
     #[test]
+    fn an_item_that_clips_keeps_its_automatic_minimum_in_the_containers_widths() {
+        // Section 9.9.3: an item's contribution is clamped by its minimum, the
+        // automatic one its content's but for a scroll container, which
+        // `overflow: clip` does not make (M26.11).
+        let html = "<div id=c><div id=a><span></span></div></div>";
+        let width = |overflow: &str| {
+            let css = format!(
+                "#c {{ display: flex; float: left }} #a {{ flex: 0 1 30px; overflow: {overflow} }}
+                 span {{ display: inline-block; width: 120px; height: 10px }}"
+            );
+            rect(&laid(html, &css), "c").2
+        };
+        assert_eq!(width("clip"), 120.0);
+        assert_eq!(width("hidden"), 30.0);
+    }
+
+    #[test]
     fn the_automatic_minimum_keeps_an_items_content_whole() {
         // §4.5: a 120px piece of content in a 100px container. The item
         // is no narrower than its content, unless it is a scroll
@@ -1467,6 +1485,8 @@ mod tests {
         let width = |extra: &str| rect(&laid(html, &format!("{css} {extra}")), "a").2;
         assert_eq!(width("#a { flex: 1 1 0 }"), 120.0);
         assert_eq!(width("#a { flex: 1 1 0; overflow: hidden }"), 100.0);
+        // `clip` clips but makes no scroll container (M26.11).
+        assert_eq!(width("#a { flex: 1 1 0; overflow: clip }"), 120.0);
         assert_eq!(width("#a { flex: 1 1 0; min-width: 0 }"), 100.0);
         // A definite main size smaller than the content is the minimum
         // instead, and a maximum caps it.

@@ -12,6 +12,12 @@
 //! their first frame, the document's timeline at zero (M22), as the
 //! reference browser's capture of a test that does not wait shows them:
 //! paused, or at a negative delay, they show the moment they ask for.
+//! A page's clock is a hand's, moved by the runner: a test that keeps
+//! `reftest-wait` on its root element (a crashtest, `test-wait`) is sent
+//! `TestRendered` after its first frame and has its timers, animation
+//! frames and rendering steps run, the clock moved on to each, until it
+//! takes the class off, and two frames more, as `wptrunner` waits for
+//! it (M26.11); one that never does fails after ten seconds of its time.
 //!
 //! - a reftest is rendered, and so is each of its references, and it
 //!   passes when it matches one of the references it must match and none
@@ -41,14 +47,15 @@ use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, channel};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use dom::{Document, NodeId};
-use engine::{Engine, LoadState};
+use engine::differential::run_script;
+use engine::{Engine, FrameTime, LoadState};
 use layout::{Fragment, FragmentKind};
 use net::test_server::{Reply, TestServer};
 use style::computed::{Display, LEFT, Position, RIGHT, TOP};
@@ -58,6 +65,12 @@ const HEIGHT: u32 = 600;
 
 /// How long a page may take to load.
 const LOAD: Duration = Duration::from_secs(30);
+
+/// How long, on its own clock, a test may wait before it is drawn.
+const WAIT: Duration = Duration::from_secs(10);
+
+/// A frame's time at sixty frames a second.
+const FRAME: Duration = Duration::from_micros(16_667);
 
 /// The vendored directory.
 fn root() -> PathBuf {
@@ -217,14 +230,40 @@ fn serve(root: PathBuf) -> TestServer {
     })
 }
 
-/// An engine with the bundled font that has loaded `path` from `server`,
-/// and what its waker sends; or why it could not.
-fn load_waking(server: &TestServer, path: &str) -> Result<(Engine, Receiver<()>), String> {
+/// A page's clock, in nanoseconds since it was made: moved only by the
+/// runner.
+#[derive(Clone, Default)]
+struct HandClock(Arc<AtomicU64>);
+
+impl HandClock {
+    fn now(&self) -> Duration {
+        Duration::from_nanos(self.0.load(Ordering::Relaxed))
+    }
+
+    fn set(&self, at: Duration) {
+        let nanos = u64::try_from(at.as_nanos()).unwrap_or(u64::MAX);
+        self.0.fetch_max(nanos, Ordering::Relaxed);
+    }
+}
+
+/// A page loaded: its engine, what its waker sends, and its clock.
+struct Loaded {
+    engine: Engine,
+    woken: Receiver<()>,
+    clock: HandClock,
+}
+
+/// An engine with the bundled font and a hand's clock that has loaded
+/// `path` from `server`; or why it could not.
+fn load_waking(server: &TestServer, path: &str) -> Result<Loaded, String> {
     let mut engine = Engine::with_fonts(
         text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
             .expect("the bundled font parses"),
     );
     engine.set_scripting(true);
+    let clock = HandClock::default();
+    let hand = clock.clone();
+    engine.set_clock(Arc::new(move || hand.now()));
     let (wake, woken) = channel();
     engine.set_waker(move || {
         let _ = wake.send(());
@@ -234,7 +273,13 @@ fn load_waking(server: &TestServer, path: &str) -> Result<(Engine, Receiver<()>)
     loop {
         engine.poll_network();
         match engine.load_state() {
-            LoadState::Loaded => return Ok((engine, woken)),
+            LoadState::Loaded => {
+                return Ok(Loaded {
+                    engine,
+                    woken,
+                    clock,
+                });
+            }
             LoadState::Failed(error) => return Err(format!("{path} failed to load: {error}")),
             LoadState::Loading => {}
         }
@@ -248,14 +293,148 @@ fn load_waking(server: &TestServer, path: &str) -> Result<(Engine, Receiver<()>)
 /// An engine with the bundled font that has loaded `path` from `server`,
 /// or why it could not.
 fn load(server: &TestServer, path: &str) -> Result<Engine, String> {
-    load_waking(server, path).map(|(engine, _)| engine)
+    load_waking(server, path).map(|loaded| loaded.engine)
+}
+
+/// Where the page's clock goes from `now`: to the next frame, a frame's
+/// time on when one is wanted now (`frame_wanted`), else when its
+/// animations next change (`next_frame`), or to the next task due,
+/// whichever comes first, and a millisecond on at least; `None` when
+/// neither is.
+fn next_time(
+    now: Duration,
+    frame_wanted: bool,
+    next_frame: Option<Duration>,
+    next_task: Option<Duration>,
+) -> Option<Duration> {
+    let frame = if frame_wanted {
+        Some(now + FRAME)
+    } else {
+        next_frame
+    };
+    [frame, next_task]
+        .into_iter()
+        .flatten()
+        .min()
+        .map(|at| at.max(now + Duration::from_millis(1)))
+}
+
+#[test]
+fn the_clock_moves_on_to_the_next_frame_or_task() {
+    let ms = Duration::from_millis;
+    assert_eq!(
+        next_time(ms(100), true, None, Some(ms(500))),
+        Some(ms(100) + FRAME)
+    );
+    assert_eq!(
+        next_time(ms(100), false, Some(ms(300)), Some(ms(200))),
+        Some(ms(200))
+    );
+    assert_eq!(
+        next_time(ms(100), false, Some(ms(150)), Some(ms(200))),
+        Some(ms(150))
+    );
+    assert_eq!(
+        next_time(ms(100), false, None, Some(ms(50))),
+        Some(ms(101)),
+        "a task overdue: a millisecond on"
+    );
+    assert_eq!(next_time(ms(100), false, None, None), None);
+}
+
+/// Whether the root element's `class` holds `class`.
+fn waits(engine: &Engine, class: &str) -> bool {
+    let document = engine.document();
+    document
+        .document_element()
+        .and_then(|root| document.attr(root, "class"))
+        .is_some_and(|classes| classes.split_ascii_whitespace().any(|c| c == class))
+}
+
+/// Runs the page's event loop until its root element no longer has
+/// `class` (`reftest-wait`, or a crashtest's `test-wait`), as `wptrunner`
+/// waits for it: the tasks due and the network's replies taken, a frame
+/// drawn by time when one is wanted, its rendering steps and animation
+/// frame callbacks with it, and the clock moved on to the next frame
+/// wanted or task due; or to what the network sends, waited for. After
+/// the first frame, `TestRendered` is dispatched at the root element,
+/// bubbling, as the harness dispatches it; after the class goes, two
+/// frames more. Fails past [`WAIT`] of the page's time, or with nothing
+/// left to wait for.
+fn wait_for(loaded: &mut Loaded, path: &str, class: &str) -> Result<(), String> {
+    let Loaded {
+        engine,
+        woken,
+        clock,
+    } = loaded;
+    if !waits(engine, class) {
+        return Ok(());
+    }
+    let nothing = || format!("{path} kept {class} on, with nothing to wait for");
+    let deadline = Instant::now() + LOAD;
+    let mut rendered = false;
+    while waits(engine, class) {
+        let now = clock.now();
+        if now > WAIT {
+            return Err(format!("{path} kept {class} on for {WAIT:?}"));
+        }
+        engine.poll_network();
+        engine.run_tasks();
+        if engine.needs_frame() || !rendered {
+            engine.frame_at(WIDTH, HEIGHT, FrameTime::at(now));
+        }
+        if !rendered {
+            rendered = true;
+            run_script(
+                engine,
+                "document.documentElement.dispatchEvent(\
+                 new Event('TestRendered', { bubbles: true }));",
+            );
+            continue;
+        }
+        if !waits(engine, class) {
+            break;
+        }
+        match next_time(
+            now,
+            engine.needs_frame(),
+            engine.next_frame_at(),
+            engine.next_task_at(),
+        ) {
+            Some(at) => clock.set(at),
+            // Only the network can change anything now.
+            None => {
+                let left = deadline
+                    .checked_duration_since(Instant::now())
+                    .ok_or_else(nothing)?;
+                woken
+                    .recv_timeout(left.min(Duration::from_secs(2)))
+                    .map_err(|_| nothing())?;
+            }
+        }
+    }
+    // Two frames more, as `wptrunner` waits two animation frames after
+    // the class goes before it takes the screenshot: what the page
+    // queued for them, its events and callbacks, is drawn.
+    for _ in 0..2 {
+        let now = clock.now() + FRAME;
+        clock.set(now);
+        engine.poll_network();
+        engine.run_tasks();
+        engine.frame_at(WIDTH, HEIGHT, FrameTime::at(now));
+    }
+    Ok(())
 }
 
 /// The RGB pixels of the page at `path`, drawn once what it draws is
 /// decoded (M23): a frame asks for its images' pixels, and the one after
 /// they are decoded draws them.
 fn render(server: &TestServer, path: &str) -> Result<Vec<u8>, String> {
-    let (mut engine, woken) = load_waking(server, path)?;
+    let mut loaded = load_waking(server, path)?;
+    wait_for(&mut loaded, path, "reftest-wait")?;
+    let Loaded {
+        mut engine, woken, ..
+    } = loaded;
     let deadline = Instant::now() + LOAD;
     let rgba = loop {
         let rgba = engine.frame(WIDTH, HEIGHT);
@@ -715,11 +894,13 @@ fn run_check_layout(
 }
 
 fn run_crashtest(server: &TestServer, path: &str) -> Outcome {
-    match load(server, path) {
-        Ok(mut engine) => {
-            engine.frame(WIDTH, HEIGHT);
-            Outcome::pass()
-        }
+    let ran = load_waking(server, path).and_then(|mut loaded| {
+        wait_for(&mut loaded, path, "test-wait")?;
+        loaded.engine.frame(WIDTH, HEIGHT);
+        Ok(())
+    });
+    match ran {
+        Ok(()) => Outcome::pass(),
         Err(error) => Outcome::fail(error),
     }
 }

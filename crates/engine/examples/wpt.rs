@@ -3,7 +3,8 @@
 //! conditional rules and cascade tests M20's, its tests of custom
 //! properties, values, lists, counters, generated content, decoration
 //! and alignment M21's, its animation, transition and easing tests
-//! M22's, and its tests with scripts M24's and M25's).
+//! M22's, its tests with scripts M24's and M25's, and its tests of
+//! events, controls and the selectors they match M26's).
 //!
 //! `cargo run -p engine --example wpt -- pull <checkout>` reads a
 //! checkout of web-platform-tests and copies into `tests/wpt/` the tests
@@ -16,19 +17,20 @@
 //! - a reftest, a check-layout test or a crashtest, its references and
 //!   its stylesheets on the same checkout;
 //! - no script but `testharness.js`, `testharnessreport.js` and
-//!   `check-layout-th.js`, calls to `checkLayout` with a selector in an
-//!   inline script or `onload`, and inline scripts that use nothing of
-//!   the platform but `console` (M24) and the DOM, `window` and the
-//!   interfaces M25 gives, none of the members its design note leaves to
-//!   other milestones, and no `data-*` name the runner does not check
-//!   and no `style` property the cascade does not take named in them
-//!   (M25); and no event
-//!   handler for an event that fires while a test is drawn (`onload`,
-//!   `onerror`, `onpageshow`, focus, the viewport's size and scroll,
-//!   animations and transitions, M26): the others wait for a user who
-//!   never comes, in the reference browser as here;
+//!   `check-layout-th.js`, which the runner stands in for, the helpers
+//!   `/common/reftest-wait.js` and `/common/rendering-utils.js`, which
+//!   are copied and run (M26), calls to `checkLayout` with a selector in
+//!   an inline script or `onload`, and inline scripts and event handler
+//!   attributes that use nothing of the platform but `console` (M24),
+//!   the DOM, `window` and the interfaces M25 gives, and the events,
+//!   timers, animation frames, focus and controls' state M26 gives, none
+//!   of the members their design notes leave to other milestones, and
+//!   no `data-*` name the runner does not check and no `style` property
+//!   the cascade does not take named in them (M25); a test that keeps
+//!   `reftest-wait` on is drawn when its scripts take it off (M26);
 //! - no element that makes no box here: SVG, canvases, frames, media,
-//!   form controls and `br`; an `img` is taken (M23) but one with a
+//!   fieldsets, meters and `br`, and no `input` of a type that needs a
+//!   picker (G61); an `img` is taken (M23) but one with a
 //!   `srcset` or `sizes`, which this engine does not read (G35), and the
 //!   images it and its page's stylesheets name, by `url()` or
 //!   `image-set()`, are copied with it where they are on the checkout;
@@ -95,6 +97,8 @@ const DIRECTORIES: &[&str] = &[
     "css/selectors/invalidation",
     "dom/nodes",
     "html/dom",
+    "css/selectors",
+    "html/semantics/forms",
 ];
 
 /// How deep `@import`s may go; the engine fetches no deeper.
@@ -103,8 +107,22 @@ const MAX_IMPORT_DEPTH: usize = 16;
 /// Elements that make no box here, or not the box the tests mean.
 const NO_BOX: &[&str] = &[
     "svg", "canvas", "iframe", "frame", "frameset", "object", "embed", "video", "audio", "picture",
-    "math", "input", "button", "select", "textarea", "fieldset", "legend", "meter", "progress",
-    "output", "details", "summary", "dialog", "marquee", "br", "hr",
+    "math", "fieldset", "legend", "meter", "progress", "output", "details", "summary", "dialog",
+    "marquee", "br", "hr",
+];
+
+/// The `input` types drawn as text fields until G61 gives them pickers
+/// of their own (M26).
+const PICKERS: &[&str] = &[
+    "file",
+    "color",
+    "range",
+    "date",
+    "month",
+    "week",
+    "time",
+    "datetime-local",
+    "image",
 ];
 
 /// The scripts a test may load: the harness, which the runner stands in
@@ -113,6 +131,19 @@ const HARNESS: &[&str] = &[
     "testharness.js",
     "testharnessreport.js",
     "check-layout-th.js",
+];
+
+/// The helpers a test may load, copied with it and run (M26): what they
+/// hold is the reference runner's, and the functions a test calls of
+/// them, [`HELPER_FUNCTIONS`], use only what M26 gives.
+const HELPERS: &[&str] = &["common/reftest-wait.js", "common/rendering-utils.js"];
+
+/// The functions of [`HELPERS`] a test's script may call.
+const HELPER_FUNCTIONS: &[&str] = &[
+    "takeScreenshot",
+    "takeScreenshotDelayed",
+    "waitForAtLeastOneFrame",
+    "failIfNot",
 ];
 
 /// The `data-*` expectations the runner checks.
@@ -181,8 +212,11 @@ struct Page {
     selectors: Vec<String>,
     /// Whether it loads `check-layout-th.js`.
     check_layout: bool,
-    /// Its stylesheets and the images it and they name, resolved.
+    /// Its stylesheets and the images it and they name, resolved; and
+    /// the helper scripts it loads (M26).
     stylesheets: Vec<String>,
+    /// The names its inline scripts declare (M26).
+    declared: HashSet<String>,
 }
 
 fn pull(checkout: &Path) -> Result<(), String> {
@@ -381,7 +415,10 @@ fn read_page(checkout: &Path, rel: &str) -> Result<Page, String> {
     }
     let node = html::parse_document(&source).map_err(|e| format!("unparsed page: {e:?}"))?;
     let document = Document::from_node(&node);
-    let mut page = Page::default();
+    let mut page = Page {
+        declared: page_declarations(&document),
+        ..Page::default()
+    };
     for id in document.subtree(document.root()) {
         if !document.is_element(id) {
             continue;
@@ -404,19 +441,23 @@ fn element(
     if NO_BOX.contains(&tag.as_str()) {
         return Err(format!("element <{tag}>"));
     }
+    if tag == "input"
+        && let Some(kind) = document.attr(id, "type")
+        && PICKERS.contains(&kind.trim().to_ascii_lowercase().as_str())
+    {
+        return Err(format!("input type={}", kind.trim().to_ascii_lowercase()));
+    }
     for (name, value) in document.attrs(id).unwrap_or(&[]) {
         let name = name.to_ascii_lowercase();
         if name == "dir" && value.trim().eq_ignore_ascii_case("rtl") {
             return Err("dir=rtl".to_string());
         }
-        if name == "class" && tag == "html" && value.split_whitespace().any(|c| c == "reftest-wait")
-        {
-            return Err("script (reftest-wait)".to_string());
-        }
-        if name == "onload" {
-            page.selectors.extend(check_layout_calls(value)?);
-        } else if fires_by_itself(&name) {
-            return Err("script".to_string());
+        if name.starts_with("on") {
+            match check_layout_calls(value) {
+                Ok(selectors) if name == "onload" => page.selectors.extend(selectors),
+                _ if uses_only_m26_on(value, &page.declared) => writes_supported(value)?,
+                _ => return Err("script".to_string()),
+            }
         }
         if name.starts_with("data-")
             && !name.starts_with("data-test")
@@ -463,6 +504,13 @@ fn element(
                 if HARNESS.contains(&name) {
                     page.check_layout |= name == "check-layout-th.js";
                     Ok(())
+                } else if let Ok(path) = resolve(rel, src)
+                    && HELPERS.contains(&path.as_str())
+                {
+                    if !page.stylesheets.contains(&path) {
+                        page.stylesheets.push(path);
+                    }
+                    Ok(())
                 } else {
                     Err("script".to_string())
                 }
@@ -471,7 +519,9 @@ fn element(
                 let text = document.text_content(id);
                 match check_layout_calls(&text) {
                     Ok(selectors) => page.selectors.extend(selectors),
-                    Err(_) if uses_only_m25(&text) => writes_supported(&text)?,
+                    Err(_) if uses_only_m26_on(&text, &page.declared) => {
+                        writes_supported(&text)?;
+                    }
                     Err(error) => return Err(error),
                 }
                 Ok(())
@@ -584,29 +634,6 @@ fn check_layout_calls(script: &str) -> Result<Vec<String>, String> {
     }
 }
 
-/// Whether the event handler attribute `name` is for an event that
-/// fires while a test is drawn, with no user: loading and its errors,
-/// `pageshow`, focus that `autofocus` gives, the viewport's size and
-/// scroll, printing, a `details` toggled open, and animations and
-/// transitions. The reference browser runs it; this engine has no events
-/// (M26).
-fn fires_by_itself(name: &str) -> bool {
-    matches!(
-        name,
-        "onload"
-            | "onerror"
-            | "onpageshow"
-            | "onfocus"
-            | "onfocusin"
-            | "onresize"
-            | "onscroll"
-            | "onbeforeprint"
-            | "onafterprint"
-            | "ontoggle"
-    ) || name.starts_with("onanimation")
-        || name.starts_with("ontransition")
-}
-
 /// The names a script may use as M24 ran it: ECMAScript's keywords and
 /// global objects, and `console`.
 const ECMASCRIPT: &[&str] = &[
@@ -697,11 +724,46 @@ const ECMASCRIPT: &[&str] = &[
     "console",
 ];
 
-/// The names of the platform a script may use as M25 runs it, beside
+/// The names of the platform a script may use as M26 runs it, beside
 /// ECMAScript's: the document, the window and what it reports, and the
 /// interfaces the bindings expose (docs/design/dom-scripting.md, section
-/// 1), each element interface among them by its `HTML...Element` name.
-const M25_GLOBALS: &[&str] = &[
+/// 1), each element interface among them by its `HTML...Element` name;
+/// and M26's (docs/design/events.md, section 1): the event interfaces,
+/// timers and animation frames, microtasks, `performance`, the abort
+/// signals, the controls' collections and validity, and the window's
+/// `event`.
+const M26_GLOBALS: &[&str] = &[
+    "Event",
+    "CustomEvent",
+    "UIEvent",
+    "FocusEvent",
+    "MouseEvent",
+    "PointerEvent",
+    "WheelEvent",
+    "KeyboardEvent",
+    "InputEvent",
+    "SubmitEvent",
+    "ErrorEvent",
+    "PageTransitionEvent",
+    "AnimationEvent",
+    "TransitionEvent",
+    "AbortController",
+    "AbortSignal",
+    "ValidityState",
+    "HTMLFormControlsCollection",
+    "HTMLOptionsCollection",
+    "RadioNodeList",
+    "Performance",
+    "performance",
+    "setTimeout",
+    "setInterval",
+    "clearTimeout",
+    "clearInterval",
+    "requestAnimationFrame",
+    "cancelAnimationFrame",
+    "queueMicrotask",
+    "reportError",
+    "event",
     "document",
     "window",
     "self",
@@ -733,22 +795,16 @@ const M25_GLOBALS: &[&str] = &[
     "Window",
 ];
 
-/// The members a script may not use as M25 runs it, by the names a test
-/// reaches them by after a dot: those its design note leaves to other
-/// milestones (section 2): events and timers (M26), a layout flush and
-/// CSSOM View's layout queries (G46), more kinds of node (G47),
-/// `document.open` and `close` (G48), the CSSOM's sheets (G50),
-/// namespaces (G51), traversal and ranges (G52), form controls' state
-/// (M26.7), shadow trees (G53); and those of what it has no part of:
-/// animations' objects, fonts, media, canvases, frames and editing. Event
-/// handler properties (`on...`) are left out by their prefix.
-const NOT_M25: &[&str] = &[
-    "addEventListener",
-    "removeEventListener",
-    "dispatchEvent",
-    "setTimeout",
-    "setInterval",
-    "requestAnimationFrame",
+/// The members a script may not use as M26 runs it, by the names a test
+/// reaches them by after a dot: those M25's design note leaves to other
+/// milestones (section 2): a layout flush and CSSOM View's layout
+/// queries (G46), more kinds of node (G47), `document.open` and `close`
+/// (G48), the CSSOM's sheets (G50), namespaces (G51), traversal and
+/// ranges (G52), shadow trees (G53); M26's: pickers and the values they
+/// give (G61), pointer capture (G58), editing hosts (G59); DOM's
+/// `moveBefore` (G66); and those of what neither has a part of:
+/// animations' objects, fonts, media, canvases and frames.
+const NOT_M26: &[&str] = &[
     "offsetWidth",
     "offsetHeight",
     "offsetTop",
@@ -774,9 +830,6 @@ const NOT_M25: &[&str] = &[
     "scroll",
     "innerText",
     "outerText",
-    "focus",
-    "blur",
-    "click",
     "createComment",
     "createDocumentFragment",
     "createProcessingInstruction",
@@ -810,9 +863,19 @@ const NOT_M25: &[&str] = &[
     "compareDocumentPosition",
     "isEqualNode",
     "normalize",
-    "value",
-    "checked",
-    "selectedIndex",
+    "moveBefore",
+    "valueAsNumber",
+    "valueAsDate",
+    "stepUp",
+    "stepDown",
+    "showPicker",
+    "files",
+    "setRangeText",
+    "setPointerCapture",
+    "releasePointerCapture",
+    "contentEditable",
+    "isContentEditable",
+    "designMode",
     "attachShadow",
     "shadowRoot",
     "animate",
@@ -832,7 +895,6 @@ const NOT_M25: &[&str] = &[
     "contentWindow",
     "elementFromPoint",
     "elementsFromPoint",
-    "createEvent",
     "showModal",
     "showPopover",
     "hidePopover",
@@ -843,19 +905,67 @@ const NOT_M25: &[&str] = &[
 ];
 
 /// Whether `script` uses nothing of the platform but `console` and what
-/// M25 gives a script: each name it uses but after a dot is ECMAScript's,
-/// `console`, one of [`M25_GLOBALS`] or an element interface's, or one it
-/// declares (by `var`, `let`, `const`, `function` or `class`, or as a
-/// function's parameter); and none after a dot is one of [`NOT_M25`] or
-/// an event handler's, but for a layout query read as a statement of its
-/// own ([`flushes`]). Its comments and strings are passed over; one with
-/// a template substitution, or a string that does not end, is not read
-/// and not taken.
-fn uses_only_m25(script: &str) -> bool {
+/// M25 and M26 give a script: each name it uses but after a dot is
+/// ECMAScript's, `console`, one of [`M26_GLOBALS`] or an element
+/// interface's, a helper's ([`HELPER_FUNCTIONS`]), or one it declares
+/// (by `var`, `let`, `const`, `function` or `class`, or as a function's
+/// parameter); and none after a dot is one of [`NOT_M26`], but for a
+/// layout query read as a statement of its own ([`flushes`]). Its
+/// comments and strings are passed over; one with a template
+/// substitution, or a string that does not end, is not read and not
+/// taken.
+#[cfg(test)]
+fn uses_only_m26(script: &str) -> bool {
+    uses_only_m26_on(script, &HashSet::new())
+}
+
+/// [`uses_only_m26`] for a script of a page whose scripts declare
+/// `page`'s names, which it may use too: a handler calling a function a
+/// script declares, or one script another's.
+fn uses_only_m26_on(script: &str, page: &HashSet<String>) -> bool {
     let Some(code) = code_only(script) else {
         return false;
     };
-    // Each word: where it starts and ends, and whether a dot is before it.
+    let words = words(&code);
+    let mut declared = declared(&code, &words);
+    // A function's parameters: the words between the parenthesis after
+    // `function` (and its name) or before `=>`, and a word before `=>`.
+    for (open, close) in parameter_lists(&code) {
+        for &(name, end, _) in &words {
+            if end > open && end <= close {
+                declared.insert(name);
+            }
+        }
+    }
+    for &(name, end, _) in &words {
+        if code[end..].trim_start().starts_with("=>") {
+            declared.insert(name);
+        }
+    }
+    // An object literal's key: after `{` or `,`, before `:`.
+    let key = |name: &str, end: usize| {
+        code[..end - name.len()].trim_end().ends_with(['{', ','])
+            && code[end..].trim_start().starts_with(':')
+    };
+    words.iter().all(|&(name, end, after_dot)| {
+        if after_dot {
+            !NOT_M26.contains(&name) || flushes(&code, name, end)
+        } else if key(name, end) {
+            true
+        } else {
+            ECMASCRIPT.contains(&name)
+                || M26_GLOBALS.contains(&name)
+                || HELPER_FUNCTIONS.contains(&name)
+                || is_element_interface(name)
+                || declared.contains(name)
+                || page.contains(name)
+        }
+    })
+}
+
+/// Each word of `code`, a script's code alone: where it starts and ends,
+/// and whether a dot is before it.
+fn words(code: &str) -> Vec<(&str, usize, bool)> {
     let mut words = Vec::new();
     let bytes = code.as_bytes();
     let mut i = 0;
@@ -876,9 +986,14 @@ fn uses_only_m25(script: &str) -> bool {
         let after_dot = before.ends_with('.') && !before.ends_with("..");
         words.push((&code[start..i], i, after_dot));
     }
-    // A name declared follows its keyword with nothing but white space
-    // between: not the first word of an anonymous function's body.
-    let mut declared: HashSet<&str> = HashSet::new();
+    words
+}
+
+/// The names `code`'s `var`, `let`, `const`, `function` and `class`
+/// declare: a name declared follows its keyword with nothing but white
+/// space between, so not the first word of an anonymous function's body.
+fn declared<'a>(code: &str, words: &[(&'a str, usize, bool)]) -> HashSet<&'a str> {
+    let mut declared = HashSet::new();
     for pair in words.windows(2) {
         let ((keyword, end, _), (name, name_end, _)) = (pair[0], pair[1]);
         if matches!(keyword, "var" | "let" | "const" | "function" | "class")
@@ -887,30 +1002,26 @@ fn uses_only_m25(script: &str) -> bool {
             declared.insert(name);
         }
     }
-    // A function's parameters: the words between the parenthesis after
-    // `function` (and its name) or before `=>`, and a word before `=>`.
-    for (open, close) in parameter_lists(&code) {
-        for &(name, end, _) in &words {
-            if end > open && end <= close {
-                declared.insert(name);
-            }
+    declared
+}
+
+/// The names a page's inline scripts declare, which its other scripts
+/// and its event handlers may use.
+fn page_declarations(document: &Document) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for id in document.subtree(document.root()) {
+        if document.tag(id) == Some("script")
+            && document.attr(id, "src").is_none()
+            && let Some(code) = code_only(&document.text_content(id))
+        {
+            names.extend(
+                declared(&code, &words(&code))
+                    .into_iter()
+                    .map(str::to_string),
+            );
         }
     }
-    for &(name, end, _) in &words {
-        if code[end..].trim_start().starts_with("=>") {
-            declared.insert(name);
-        }
-    }
-    words.iter().all(|&(name, end, after_dot)| {
-        if after_dot {
-            (!NOT_M25.contains(&name) && !is_handler(name)) || flushes(&code, name, end)
-        } else {
-            ECMASCRIPT.contains(&name)
-                || M25_GLOBALS.contains(&name)
-                || is_element_interface(name)
-                || declared.contains(name)
-        }
-    })
+    names
 }
 
 /// The layout queries a test reads to have the reference browser bring
@@ -1031,13 +1142,6 @@ fn kebab(name: &str) -> String {
         }
     }
     out
-}
-
-/// Whether `name` is an event handler property's: `on` and a lowercase
-/// event name.
-fn is_handler(name: &str) -> bool {
-    name.strip_prefix("on")
-        .is_some_and(|event| event.bytes().next().is_some_and(|b| b.is_ascii_lowercase()))
 }
 
 /// Whether `name` is an HTML element interface's, `HTMLElement` and
@@ -1657,6 +1761,31 @@ mod tests {
     }
 
     #[test]
+    fn every_vendored_test_is_in_a_directory_the_rule_takes() {
+        // The subset is pulled by the directories: none of them is lost
+        // without a pull that drops its tests.
+        let manifest =
+            fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/wpt/MANIFEST"))
+                .expect("the manifest");
+        let mut used: BTreeSet<&str> = BTreeSet::new();
+        for line in manifest
+            .lines()
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        {
+            let path = line.split('\t').nth(1).expect("a path");
+            let directory = DIRECTORIES
+                .iter()
+                .filter(|d| path.starts_with(&format!("{d}/")))
+                .max_by_key(|d| d.len())
+                .unwrap_or_else(|| panic!("{path} is in no directory of the rule"));
+            used.insert(directory);
+        }
+        for directory in DIRECTORIES {
+            assert!(used.contains(directory), "{directory} gives no test");
+        }
+    }
+
+    #[test]
     fn a_template_wptserve_fills_in_is_left_out() {
         let checkout = Checkout::new(
             "sub",
@@ -1698,9 +1827,13 @@ mod tests {
                 "unchecked attribute data-foo",
             ),
             (reftest("<div dir=rtl></div>"), "dir=rtl"),
+            (reftest("<input type=Range>"), "input type=range"),
+            (reftest("<fieldset></fieldset>"), "element <fieldset>"),
+            (reftest("<script src=/common/other.js></script>"), "script"),
             (
-                "<html class=reftest-wait><link rel=match href=r.html>".to_string(),
-                "script (reftest-wait)",
+                "<body onload=\"document.body.scrollTo(0, 1)\"><link rel=match href=r.html>"
+                    .to_string(),
+                "script",
             ),
             (
                 reftest("<div style='writing-mode: vertical-rl'></div>"),
@@ -1813,7 +1946,7 @@ mod tests {
     }
 
     #[test]
-    fn scripts_that_use_only_what_m25_gives_are_taken() {
+    fn scripts_that_use_only_what_m25_and_m26_give_are_taken() {
         for script in [
             "function PASS() { return false; }",
             "document.title = 'a // b'; console.log(\"c\", `d`)",
@@ -1826,8 +1959,16 @@ mod tests {
             "document.getElementById('t').style.color = 'red'; window.x = 1;",
             "getComputedStyle(document.body).display; innerWidth; HTMLDivElement; Node.ELEMENT_NODE",
             "document.querySelector('p').classList.toggle('b'); document.write('<p>x</p>')",
+            "setTimeout(function () { takeScreenshot(); }, 10); takeScreenshotDelayed(5)",
+            "requestAnimationFrame(() => requestAnimationFrame(takeScreenshot))",
+            "document.body.addEventListener('load', function (e) { e.preventDefault(); })",
+            "window.onload = function () { document.body.onclick = null; }",
+            "var i = document.querySelector('input'); i.focus(); i.value = 'x'; i.checked = true",
+            "document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }))",
+            "performance.now(); queueMicrotask(function () {}); waitForAtLeastOneFrame()",
+            "document.createEvent('Event'); event; new AbortController().signal",
         ] {
-            assert!(uses_only_m25(script), "{script}");
+            assert!(uses_only_m26(script), "{script}");
         }
         for script in [
             "console.log(document.body.offsetTop)",
@@ -1838,28 +1979,32 @@ mod tests {
             "setTimeout(f, 0)",
             "window.onload = function() { window.scrollTo(0, 100); };",
             "console.log(...go)",
-            "document.body.addEventListener('load', f)",
-            "requestAnimationFrame(f)",
             "document.createDocumentFragment()",
+            "document.body.valueAsNumber = 1",
+            "document.body.setPointerCapture(1)",
+            "document.body.contentEditable = 'true'",
+            "new MutationObserver(function () {})",
+            "requestIdleCallback(function () {})",
+            "document.body.moveBefore(document.body.firstChild, null)",
+            "var o = { a: b }",
+            "var t = c ? d : 1",
             "document.styleSheets[0].insertRule('p {}')",
             "document.fonts.ready.then(f)",
             "e.getBoundingClientRect()",
             "HTMLElement2",
-            "window.onload = function () {}",
-            "document.body.focus;",
             "var h = document.body.offsetTop;",
             "f(document.body.offsetTop);",
             "document.body.offsetTop + 1;",
             "document.body.offsetTop = 1;",
         ] {
-            assert!(!uses_only_m25(script), "{script}");
+            assert!(!uses_only_m26(script), "{script}");
         }
         for script in [
             "document.documentElement.offsetTop;",
             "var d = document.body;\n  d.offsetHeight\n  d.className = 'b';",
             "if (true) { document.body.scrollTop }",
         ] {
-            assert!(uses_only_m25(script), "{script}");
+            assert!(uses_only_m26(script), "{script}");
         }
         assert!(
             is_element_interface("HTMLElement") && is_element_interface("HTMLTableCellElement")
@@ -1898,25 +2043,6 @@ mod tests {
             .is_ok()
         );
         assert_eq!(kebab("webkitBoxFlex"), "-webkit-box-flex");
-        assert!(is_handler("onload") && is_handler("onclick"));
-        assert!(!is_handler("onLoad") && !is_handler("on") && !is_handler("other"));
-        for name in [
-            "onload",
-            "onerror",
-            "onpageshow",
-            "onfocus",
-            "onfocusin",
-            "onresize",
-            "onscroll",
-            "onbeforeprint",
-            "onafterprint",
-            "ontoggle",
-            "onanimationstart",
-            "ontransitionend",
-        ] {
-            assert!(fires_by_itself(name), "{name}");
-        }
-        assert!(!fires_by_itself("onblur") && !fires_by_itself("onclick"));
         let checkout = Checkout::new(
             "scripts",
             &[
@@ -1931,6 +2057,17 @@ mod tests {
                      document.getElementById('d').setAttribute('data-expected-scroll-width', 1)\
                      </script>",
                 ),
+                (
+                    "css/x/c.html",
+                    "<html class=reftest-wait><link rel=match href=r.html>\
+                     <script src=/common/reftest-wait.js></script>\
+                     <input id=i onfocus=\"this.value = 'x'\" autofocus>\
+                     <body onload=\"requestAnimationFrame(takeScreenshot)\">",
+                ),
+                (
+                    "css/x/d.html",
+                    "<link rel=match href=r.html><div onclick=\"this.style.writingMode = 'x'\">",
+                ),
                 ("css/x/r.html", "<div></div>"),
             ],
         );
@@ -1938,6 +2075,16 @@ mod tests {
         assert_eq!(
             checkout.take("css/x/b.html").err().as_deref(),
             Some("unchecked attribute data-expected-scroll-width")
+        );
+        let (_, needs) = checkout.take("css/x/c.html").expect("taken");
+        assert!(
+            needs.iter().any(|n| n == "common/reftest-wait.js"),
+            "{needs:?}"
+        );
+        assert_eq!(
+            checkout.take("css/x/d.html").err().as_deref(),
+            Some("declaration of writing-mode"),
+            "a handler's writes are held to the rule"
         );
     }
 

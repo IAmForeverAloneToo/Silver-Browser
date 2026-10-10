@@ -72,10 +72,12 @@ fn natural(style: &ComputedStyle, replaced: &Replaced) -> Natural {
         },
         // A checkbox or a radio button is 13 by 13 (M26.7), as the
         // reference browser's are; an arrow, sized by its style, is too.
+        // None has a ratio: a checkbox given a width alone keeps its
+        // height, as there (M26.11).
         Replaced::Mark(_) => Natural {
             width: Some(MARK_SIZE),
             height: Some(MARK_SIZE),
-            ratio: Some(1.0),
+            ratio: None,
         },
         // A gradient has no natural size nor ratio: the default object
         // size stands in (CSS Images 3 section 4.3).

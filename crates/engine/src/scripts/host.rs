@@ -927,6 +927,11 @@ impl DocumentHost {
                 }
                 Ok(Answer::Nothing)
             }
+            Call::BlurToward(next) => {
+                let next = self.node(next)?;
+                self.document.blur_toward(next);
+                Ok(Answer::Nothing)
+            }
             Call::HasFocus => Ok(Answer::Bool(self.window.focused)),
             Call::ControlValue(node) => {
                 let node = self.node(node)?;

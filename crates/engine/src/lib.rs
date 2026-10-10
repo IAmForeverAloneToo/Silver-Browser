@@ -1475,7 +1475,12 @@ impl Engine {
             if self.shown.document.focused() != Some(old) {
                 return;
             }
-            self.shown.document.set_focus(None, false);
+            // The ancestors the two share keep `:focus-within` meanwhile
+            // (M26.11).
+            match area {
+                Some(area) => self.shown.document.blur_toward(area),
+                None => self.shown.document.set_focus(None, false),
+            }
             self.state_changed();
             for (kind, bubbles) in [("blur", false), ("focusout", true)] {
                 if self.shown.document.contains(old) {
@@ -1484,12 +1489,14 @@ impl Engine {
                 }
             }
         }
-        let Some(area) = area.filter(|&area| self.shown.document.contains(area)) else {
-            return;
-        };
         if self.shown.document.focused().is_some() {
             return;
         }
+        let Some(area) = area.filter(|&area| self.shown.document.contains(area)) else {
+            self.shown.document.set_focus(None, false);
+            self.state_changed();
+            return;
+        };
         self.shown.document.set_focus(Some(area), visible);
         self.state_changed();
         if scroll {
@@ -4044,13 +4051,17 @@ impl Engine {
     /// or a scroll offset set, since the last frame, or a scroll offset,
     /// the document's or a scroll container's, is on its way to its
     /// target, or an animation plays in its active phase or waits for a
-    /// frame to start it (M22.3). A new viewport size is the caller's to
+    /// frame to start it (M22.3), or, with scripts on, an animation
+    /// frame callback or an animation event waits for the next frame's
+    /// rendering steps (M26). A new viewport size is the caller's to
     /// know: the frame takes it.
     pub fn needs_frame(&self) -> bool {
         self.changed
             || self.animating()
             || self.shown.animations.borrow().needs_frame()
-            || (self.scripting && !self.hidden && self.shown.scripts.wants_frame())
+            || (self.scripting
+                && !self.hidden
+                && (self.shown.scripts.wants_frame() || !self.pending_events.is_empty()))
     }
 
     /// When a frame is next wanted, on the clock [`Engine::frame_at`] is
@@ -4589,6 +4600,12 @@ impl Engine {
         self.cached_styles();
         let animations = self.shown.animations.get_mut();
         animations.start_pending();
+        // What the restyle changed, a timing a script set or an
+        // animation it started, is sampled for its events as well, so
+        // that they are queued with this frame's, as the reference
+        // browser's next update of its animations finds them (M26.11).
+        // The values are the restyle's already.
+        let _ = animations.sample();
         self.events = animations.take_events();
         if self.scripting {
             self.pending_events.extend(self.events.iter().cloned());
@@ -6643,6 +6660,42 @@ mod tests {
         assert!(fragment("h").is_none(), "a hidden input makes no box");
         let checkbox = fragment("c").expect("the checkbox's box");
         assert_eq!((checkbox.w, checkbox.h), (13.0, 13.0));
+        // Its size is its mark's by nature, not a given one: a flex item
+        // stretches (M26.11).
+        let mut flex = test_engine();
+        flex.load_document(
+            "<div style='display: flex; width: 50px; height: 50px'>\
+             <input type=checkbox style='margin: 0; width: 100%'></div>",
+        );
+        let stretched = flex
+            .fragments(800.0)
+            .into_iter()
+            .find(|f| {
+                matches!(f.kind, layout::FragmentKind::Box)
+                    && flex.document().tag(f.node) == Some("input")
+            })
+            .expect("the checkbox's box");
+        assert_eq!((stretched.w, stretched.h), (50.0, 50.0));
+        // It has no ratio, and a grid's `normal` stretches it, as the
+        // reference browser's probe measured: a width alone keeps its
+        // height; a radio button's height alone, its width.
+        let mut sized = test_engine();
+        sized.load_document(
+            "<style>body { margin: 0 } input { margin: 0 }</style>\
+             <input type=checkbox style='width: 30px'><input type=radio style='height: 30px'>\
+             <div style='display: grid; width: 50px; height: 50px; grid-template: 50px / 50px'>\
+             <input type=checkbox></div>",
+        );
+        let marks: Vec<(f32, f32)> = sized
+            .fragments(800.0)
+            .into_iter()
+            .filter(|f| {
+                matches!(f.kind, layout::FragmentKind::Box)
+                    && sized.document().tag(f.node) == Some("input")
+            })
+            .map(|f| (f.w, f.h))
+            .collect();
+        assert_eq!(marks, [(30.0, 13.0), (13.0, 30.0), (50.0, 50.0)]);
         assert!(frags.iter().any(|f| f.node == checkbox.node
             && matches!(
                 f.kind,
@@ -8518,34 +8571,26 @@ mod tests {
              #b {{ margin-left: 0px; transition: margin-left 1s linear }}
              #b.on {{ margin-left: 100px }}</style><div id=a></div><div id=b></div>"
         ));
+        // An animation this frame's style made starts at the frame's
+        // time, and its events come with the frame's, sampled after the
+        // style (M26.11): a script hears them at the next frame's
+        // rendering steps, as in the reference browser.
         draw_at(&mut engine, 0);
-        assert!(
-            engine.animation_events().is_empty(),
-            "made by this frame's style"
-        );
-        set(&mut engine, "b", "class", "on");
-        draw_at(&mut engine, 100);
         let (a, b) = (node_by_id(&engine, "a"), node_by_id(&engine, "b"));
         let events: Vec<(NodeId, EventKind, &str)> = engine
             .animation_events()
             .iter()
             .map(|e| (e.node, e.kind, &*e.name))
             .collect();
-        // The transition this frame's style made starts at its end, and
-        // its events come with the next frame.
         assert_eq!(events, vec![(a, EventKind::AnimationStart, "s")]);
-        let running = engine.animations();
-        assert_eq!(running.len(), 2);
-        assert_eq!((running[0].node, &*running[0].name), (a, "s"));
-        assert_eq!(running[0].phase, Some(style::animation::Phase::Active));
-        assert!((running[0].current_time - 0.1).abs() < 1e-9);
-        assert!(running[1].transition && running[1].current_time == 0.0);
-        draw_at(&mut engine, 200);
+        set(&mut engine, "b", "class", "on");
+        draw_at(&mut engine, 100);
         let events: Vec<(NodeId, EventKind)> = engine
             .animation_events()
             .iter()
             .map(|e| (e.node, e.kind))
             .collect();
+        // So do a transition's, which starts at the frame's time.
         assert_eq!(
             events,
             vec![
@@ -8553,6 +8598,14 @@ mod tests {
                 (b, EventKind::TransitionStart)
             ]
         );
+        let running = engine.animations();
+        assert_eq!(running.len(), 2);
+        assert_eq!((running[0].node, &*running[0].name), (a, "s"));
+        assert_eq!(running[0].phase, Some(style::animation::Phase::Active));
+        assert!((running[0].current_time - 0.1).abs() < 1e-9);
+        assert!(running[1].transition && running[1].current_time == 0.0);
+        draw_at(&mut engine, 200);
+        assert!(engine.animation_events().is_empty());
         // Each frame gives its own.
         draw_at(&mut engine, 300);
         assert!(engine.animation_events().is_empty());

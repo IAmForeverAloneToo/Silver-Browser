@@ -8512,11 +8512,12 @@ mod tests {
         // M26.7: the reference browser's computed values. A text field
         // 169px by 15 at 13.33px inside a 2px inset border, a textarea
         // 162px by 30 in monospace and a scroll container, a select 19px
-        // tall with its options hidden, a hidden input nothing, a
-        // checkbox a 13px box with no border.
+        // tall, its options and their groups blocks (which a drop-down
+        // does not lay out), a datalist and a hidden input nothing, a
+        // checkbox no border, its 13px the mark's natural size.
         let html = "<form><input><input type=HIDDEN><input type=checkbox>\
-                    <button>Go</button><select><option>a</option></select>\
-                    <textarea>t</textarea></form>";
+                    <button>Go</button><select><optgroup><option>a</option></optgroup></select>\
+                    <datalist></datalist><textarea>t</textarea></form>";
         let control = |selector: &str| style_of(html, &[], selector);
         let input = control("input:first-child");
         assert_eq!(input.display, Display::InlineBlock);
@@ -8538,7 +8539,7 @@ mod tests {
             "the UA rule matches the type whatever its case"
         );
         let checkbox = control("input[type=checkbox]");
-        assert_eq!(checkbox.width, Size::Px(13.0));
+        assert_eq!(checkbox.width, Size::Auto, "the mark's natural size");
         assert_eq!(checkbox.box_sizing, BoxSizing::BorderBox);
         assert_eq!(checkbox.used_border_width(), [0.0; 4]);
         let button = control("button");
@@ -8548,7 +8549,15 @@ mod tests {
         let select = control("select");
         assert_eq!(select.width, Size::Auto);
         assert!(near(&select.height, 19.0), "{:?}", select.height);
-        assert_eq!(control("option").display, Display::None);
+        let option = control("option");
+        assert_eq!(
+            option.display,
+            Display::Block,
+            "a block, as in the reference browser"
+        );
+        assert_eq!(option.padding[LEFT], LengthPercentage::Px(2.0));
+        assert_eq!(control("datalist").display, Display::None);
+        assert_eq!(control("optgroup").display, Display::Block);
         let textarea = control("textarea");
         assert!(near(&textarea.width, 162.0), "{:?}", textarea.width);
         assert!(near(&textarea.height, 30.0), "{:?}", textarea.height);

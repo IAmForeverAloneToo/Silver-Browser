@@ -3274,6 +3274,34 @@
 
   include(ParentNode, [Document.prototype, Element.prototype]);
   include(ElementLookups, [Document.prototype, Element.prototype]);
+
+  // `getElementsByName` (HTML section 3.1.5, M26.11): a live NodeList
+  // of the document's elements whose `name` is `elementName`.
+  include(
+    {
+      getElementsByName(elementName) {
+        const handle = self(this);
+        need(arguments.length, 1, "getElementsByName", "Document");
+        const name = str(elementName);
+        return collection(
+          NodeList,
+          this,
+          () => {
+            const all = native.byTag(handle, "*");
+            const named = [];
+            for (let i = 0; i < all.length; i++) {
+              if (native.attribute(all[i], "name") === name) {
+                ArrayPush(named, all[i]);
+              }
+            }
+            return named;
+          },
+          true,
+        );
+      },
+    },
+    [Document.prototype],
+  );
   include(ChildNode, [Element.prototype, CharacterData.prototype]);
   include(NonDocumentTypeChildNode, [Element.prototype, CharacterData.prototype]);
 
@@ -6213,12 +6241,19 @@
       if (!commitChange(old)) {
         return;
       }
-      native.setFocus(null, true);
+      // The ancestors the two share keep `:focus-within` meanwhile, as
+      // in the reference browser (M26.11).
+      native.blurToward(handle);
       fireFocus("blur", before, element);
       fireFocus("focusout", before, element);
     }
-    // A listener may have moved the focus, or the element.
-    if (native.focused() !== null || !native.focusable(handle)) {
+    // A listener may have moved the focus, or the element; else what
+    // `:focus-within` kept goes, unless the element takes it.
+    if (native.focused() !== null) {
+      return;
+    }
+    if (!native.focusable(handle)) {
+      native.setFocus(null, true);
       return;
     }
     native.setFocus(handle, preventScroll);

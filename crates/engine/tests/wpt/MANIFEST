@@ -53,6 +53,7 @@ checklayout	css/css-flexbox/column-reverse-gap.html	.flexbox
 checklayout	css/css-flexbox/columns-height-set-via-top-bottom.html	.flexbox
 reftest	css/css-flexbox/content-height-with-scrollbars.html	==css/css-flexbox/reference/content-height-with-scrollbars-ref.html
 crashtest	css/css-flexbox/crashtests/anonymous-block-merge.html
+reftest	css/css-flexbox/css-box-justify-content.html	==css/css-flexbox/reference/css-box-justify-content-ref.html
 reftest	css/css-flexbox/css-flexbox-height-animation-stretch.html	==css/css-flexbox/css-flexbox-height-animation-stretch-ref.html
 reftest	css/css-flexbox/css-flexbox-img-expand-evenly.html	==css/css-flexbox/reference/css-flexbox-img-expand-evenly-ref.html
 reftest	css/css-flexbox/display-flex-001.htm	==css/css-flexbox/reference/align-content-001-ref.html
@@ -136,10 +137,12 @@ reftest	css/css-flexbox/flex-order-last-baseline.html	==css/css-flexbox/flex-ord
 reftest	css/css-flexbox/flex-order-wrap-reverse-baseline.html	==css/css-flexbox/flex-order-wrap-reverse-baseline-ref.html
 reftest	css/css-flexbox/flex-order.html	==css/css-flexbox/flex-order-ref.html
 crashtest	css/css-flexbox/flex-shrink-large-value-crash.html
+reftest	css/css-flexbox/flex-vertical-align-effect.html	==css/css-flexbox/reference/flex-vertical-align-effect.html
 reftest	css/css-flexbox/flexbox-align-items-center-nested-001.html	==css/css-flexbox/flexbox-align-items-center-nested-001-ref.html
 reftest	css/css-flexbox/flexbox-align-self-stretch-vert-001.html	==css/css-flexbox/flexbox-align-self-stretch-vert-001-ref.html
 reftest	css/css-flexbox/flexbox-align-self-stretch-vert-002.html	==css/css-flexbox/flexbox-align-self-stretch-vert-002-ref.html
 reftest	css/css-flexbox/flexbox-anonymous-items-001.html	==css/css-flexbox/flexbox-anonymous-items-001-ref.html
+reftest	css/css-flexbox/flexbox-baseline-nested-001.html	==css/css-flexbox/flexbox-baseline-nested-001-ref.html
 reftest	css/css-flexbox/flexbox-break-request-horiz-001a.html	==css/css-flexbox/flexbox-break-request-horiz-001-ref.html
 reftest	css/css-flexbox/flexbox-break-request-horiz-001b.html	==css/css-flexbox/flexbox-break-request-horiz-001-ref.html
 reftest	css/css-flexbox/flexbox-break-request-horiz-002a.html	==css/css-flexbox/flexbox-break-request-horiz-002-ref.html
@@ -157,6 +160,7 @@ reftest	css/css-flexbox/flexbox-definite-sizes-003.html	==css/css-flexbox/flexbo
 reftest	css/css-flexbox/flexbox-definite-sizes-004.html	==css/css-flexbox/flexbox-definite-sizes-001-ref.html
 reftest	css/css-flexbox/flexbox-definite-sizes-005.html	==css/css-flexbox/flexbox-definite-sizes-005-ref.html
 reftest	css/css-flexbox/flexbox-definite-sizes-006.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-flexbox/flexbox-dyn-resize-001.html	==css/css-flexbox/flexbox-dyn-resize-001-ref.html
 reftest	css/css-flexbox/flexbox-flex-direction-column-percentage-ignored.html	==css/css-flexbox/reference/flexbox-flex-direction-column-percentage-ignored-ref.html
 reftest	css/css-flexbox/flexbox-flex-wrap-default.htm	==css/css-flexbox/reference/flexbox-flex-wrap-nowrap-ref.htm
 reftest	css/css-flexbox/flexbox-flex-wrap-flexing-002.html	==css/reference/ref-filled-green-100px-square-only.html
@@ -372,10 +376,21 @@ reftest	css/css-flexbox/flexible-box-float.html	==css/css-flexbox/reference/flex
 checklayout	css/css-flexbox/flexitem-no-margin-collapsing.html	.flexbox
 checklayout	css/css-flexbox/flexitem-stretch-image.html	.flexbox
 crashtest	css/css-flexbox/frame-flex-item-crash.html
+checklayout	css/css-flexbox/gap-017.html	.button
 reftest	css/css-flexbox/grid-flex-item-002.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-flexbox/grid-flex-item-005.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-flexbox/inline-flex-column-image-load.html	==css/css-flexbox/inline-flex-column-image-load-ref.html
 reftest	css/css-flexbox/inline-flex-min-content-height.html	==css/reference/ref-filled-green-100px-square-only.html
+checklayout	css/css-flexbox/inline-flex.html	#testcase
+checklayout	css/css-flexbox/intrinsic-size/col-wrap-004.html	body > div
+checklayout	css/css-flexbox/intrinsic-size/col-wrap-005.html	body > div
 checklayout	css/css-flexbox/intrinsic-size/col-wrap-010.html	body > div
+checklayout	css/css-flexbox/intrinsic-size/col-wrap-018.html	body > div
+checklayout	css/css-flexbox/intrinsic-size/col-wrap-019.html	body > div
+checklayout	css/css-flexbox/intrinsic-size/row-005.html	.floating-flexbox
+checklayout	css/css-flexbox/intrinsic-size/row-008.html	.min-width-flexbox
+checklayout	css/css-flexbox/intrinsic-size/row-compat-001.html	#wrapping-broke .flex	#bug1454306	#gmail-tables .flex
+checklayout	css/css-flexbox/intrinsic-size/row-wrap-001.html	.floating-flexbox
 reftest	css/css-flexbox/item-with-max-height-and-scrollbar.html	==css/css-flexbox/reference/item-with-max-height-and-scrollbar-ref.html
 reftest	css/css-flexbox/item-with-table-with-infinite-max-intrinsic-width.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-flexbox/justify-content-001.htm	==css/css-flexbox/reference/justify-content-001-ref.html	fuzzy=:0-1;0-7600
@@ -390,6 +405,7 @@ reftest	css/css-flexbox/layout-algorithm_algo-cross-line-001.html	==css/css-flex
 reftest	css/css-flexbox/layout-algorithm_algo-cross-line-002.html	==css/css-flexbox/reference/layout-algorithm_algo-cross-line-002-ref.html
 checklayout	css/css-flexbox/max-width-violation.html	.columns
 crashtest	css/css-flexbox/min-height-min-content-crash.html
+reftest	css/css-flexbox/min-size-auto-overflow-clip.html	==css/css-flexbox/min-size-auto-overflow-clip-ref.html
 crashtest	css/css-flexbox/mixed-containing-blocks-crash.html
 checklayout	css/css-flexbox/multiline-min-max.html	.flexbox
 checklayout	css/css-flexbox/multiline-min-preferred-width.html	.container
@@ -409,6 +425,7 @@ reftest	css/css-flexbox/overflow-area-003.html	==css/css-flexbox/reference/overf
 checklayout	css/css-flexbox/overflow-auto-002.html	section
 checklayout	css/css-flexbox/overflow-auto-004.html	#list-wrapper
 reftest	css/css-flexbox/padding-overflow.html	==css/reference/ref-filled-green-100px-square-only.html
+checklayout	css/css-flexbox/percentage-heights-001.html	.flexbox
 reftest	css/css-flexbox/percentage-heights-002.html	==css/css-flexbox/percentage-heights-002-ref.html
 reftest	css/css-flexbox/percentage-heights-015.html	==css/css-flexbox/percentage-heights-015-ref.html
 reftest	css/css-flexbox/percentage-heights-021.html	==css/reference/ref-filled-green-200px-square.html
@@ -420,11 +437,18 @@ reftest	css/css-flexbox/percentage-padding-002.html	==css/css-flexbox/percentage
 reftest	css/css-flexbox/percentage-padding-005.html	==css/reference/ref-filled-green-100px-square-only.html
 checklayout	css/css-flexbox/percentage-size-quirks-002.html	.pct
 reftest	css/css-flexbox/percentage-size-quirks-003.html	==css/reference/ref-filled-green-100px-square-only.html
+checklayout	css/css-flexbox/percentage-size-quirks.html	.flexbox
+checklayout	css/css-flexbox/percentage-size.html	.flexbox
 reftest	css/css-flexbox/percentage-widths-001.html	==css/css-flexbox/percentage-widths-001-ref.html
 reftest	css/css-flexbox/position-fixed-001.html	==css/css-flexbox/reference/position-fixed-001-ref.html
 crashtest	css/css-flexbox/position-relative-with-scrollable-with-abspos-crash.html
 checklayout	css/css-flexbox/quirks-auto-block-size-with-percentage-item.html	#container
 crashtest	css/css-flexbox/remove-out-of-flow-child-crash.html
+reftest	css/css-flexbox/select-element-multiple.html	==css/css-flexbox/select-element-multiple-ref.html
+reftest	css/css-flexbox/select-element-zero-height-001.html	==css/css-flexbox/select-element-zero-height-001-ref.html
+reftest	css/css-flexbox/select-element-zero-height-002.html	==css/css-flexbox/select-element-zero-height-002-ref.html
+reftest	css/css-flexbox/stretch-flex-item-checkbox-input.html	==css/css-flexbox/stretch-flex-item-checkbox-input-ref.html
+reftest	css/css-flexbox/stretch-flex-item-radio-input.html	==css/css-flexbox/stretch-flex-item-radio-input-ref.html
 reftest	css/css-flexbox/stretched-child-in-nested-flexbox-003.html	==css/reference/ref-filled-green-200px-square.html
 checklayout	css/css-flexbox/table-as-item-cross-size.html	.test
 reftest	css/css-flexbox/table-as-item-inflexible-in-column-1.html	==css/reference/ref-filled-green-100px-square-only.html
@@ -442,6 +466,7 @@ checklayout	css/css-flexbox/table-with-percent-intrinsic-width.html	table
 checklayout	css/css-flexbox/total-min-max-violation-zero.html	.item
 reftest	css/css-flexbox/whitespace-in-flexitem-001.html	==css/css-flexbox/whitespace-in-flexitem-001-ref.html
 crashtest	css/css-flexbox/zero-content-size-with-scrollbar-crash.html
+reftest	css/css-grid/abspos/absolute-positioning-changing-containing-block-001.html	==css/css-grid/abspos/absolute-positioning-changing-containing-block-001-ref.html
 crashtest	css/css-grid/abspos/abspos-in-flexbox-in-grid-crash.html
 reftest	css/css-grid/abspos/descendant-static-position-001.html	==css/css-grid/abspos/descendant-static-position-001-ref.html
 reftest	css/css-grid/abspos/descendant-static-position-003.html	==css/css-grid/abspos/descendant-static-position-003-ref.html
@@ -470,7 +495,10 @@ reftest	css/css-grid/abspos/grid-abspos-staticpos-justify-self-img-last-baseline
 reftest	css/css-grid/abspos/grid-abspos-staticpos-justify-self-last-baseline-001.html	==css/css-grid/abspos/grid-abspos-staticpos-justify-self-last-baseline-001-ref.html
 reftest	css/css-grid/abspos/grid-abspos-staticpos-justify-self-last-baseline-002.html	==css/css-grid/abspos/grid-abspos-staticpos-justify-self-last-baseline-002-ref.html
 reftest	css/css-grid/abspos/grid-fixedpos-static-position-not-containing-block.html	==css/css-grid/abspos/grid-fixedpos-static-position-not-containing-block-ref.html
+reftest	css/css-grid/abspos/grid-item-absolute-positioning-dynamic-001.html	==css/reference/ref-filled-green-200px-square.html
+reftest	css/css-grid/abspos/grid-positioned-item-dynamic-change-004.html	==css/css-grid/abspos/grid-positioned-item-dynamic-change-004-ref.html
 reftest	css/css-grid/abspos/grid-positioned-item-dynamic-change-006.html	==css/css-grid/abspos/grid-positioned-item-dynamic-change-006-ref.html
+reftest	css/css-grid/abspos/grid-positioned-item-dynamic-change-007.html	==css/css-grid/abspos/grid-positioned-item-dynamic-change-007-ref.html
 reftest	css/css-grid/abspos/positioned-grid-descendant-containing-block-001.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/abspos/positioned-grid-descendant-containing-block-002.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/abspos/positioned-grid-descendant-containing-block-003.html	==css/reference/ref-filled-green-100px-square-only.html
@@ -478,7 +506,12 @@ reftest	css/css-grid/abspos/positioned-grid-descendant-containing-block-004.html
 reftest	css/css-grid/abspos/positioned-grid-descendant-containing-block-005.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/abspos/positioned-grid-descendant-containing-block-006.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/abspos/positioned-grid-descendant-containing-block-007.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-grid/abspos/positioned-grid-descendant-containing-block-008.html	==css/css-grid/abspos/positioned-grid-descendant-containing-block-008-expected.html
+reftest	css/css-grid/abspos/positioned-grid-descendant-containing-block-009.html	==css/css-grid/abspos/positioned-grid-descendant-containing-block-009-expected.html
+reftest	css/css-grid/abspos/positioned-grid-descendant-containing-block-010.html	==css/css-grid/abspos/positioned-grid-descendant-containing-block-010-expected.html
 reftest	css/css-grid/abspos/positioned-grid-descendant-containing-block-011.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-grid/abspos/positioned-grid-descendant-containing-block-012.html	==css/css-grid/abspos/positioned-grid-descendant-containing-block-012-expected.html
+reftest	css/css-grid/abspos/positioned-grid-descendant-containing-block-013.html	==css/css-grid/abspos/positioned-grid-descendant-containing-block-013-expected.html
 reftest	css/css-grid/abspos/positioned-grid-descendant-containing-block-014.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/abspos/positioned-grid-descendant-containing-block-015.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/abspos/positioned-grid-descendant-containing-block-016.html	==css/reference/ref-filled-green-100px-square-only.html
@@ -581,6 +614,8 @@ reftest	css/css-grid/alignment/grid-gutters-016.html	==css/css-grid/alignment/gr
 reftest	css/css-grid/alignment/grid-gutters-explicit-placement.html	==css/css-grid/alignment/grid-gutters-explicit-placement-ref.html
 reftest	css/css-grid/alignment/grid-justify-content-end-001.html	==css/css-grid/alignment/grid-justify-content-end-001-ref.html
 reftest	css/css-grid/alignment/grid-justify-content-space-between-001.html	==css/css-grid/alignment/grid-justify-content-space-between-001-ref.html
+reftest	css/css-grid/animation/grid-template-columns-001.html	==css/css-grid/animation/grid-template-columns-001-ref.html
+reftest	css/css-grid/animation/grid-template-rows-001.html	==css/css-grid/animation/grid-template-rows-001-ref.html
 reftest	css/css-grid/anonymous-grid-items-001.html	==css/css-grid/reference/anonymous-grid-items-001-ref.html
 reftest	css/css-grid/child-border-box-and-max-content-001.html	==css/css-grid/child-border-box-and-max-content-001-ref.html
 reftest	css/css-grid/child-border-box-and-max-content-002.html	==css/css-grid/child-border-box-and-max-content-002-ref.html
@@ -598,6 +633,7 @@ reftest	css/css-grid/grid-definition/fr-unit-with-percentage.html	==css/css-grid
 reftest	css/css-grid/grid-definition/fr-unit.html	==css/css-grid/reference/fr-unit-ref.html
 crashtest	css/css-grid/grid-definition/grid-add-item-with-positioned-items-crash.html
 crashtest	css/css-grid/grid-definition/grid-add-positioned-block-item-after-inline-item-crash.html
+checklayout	css/css-grid/grid-definition/grid-auto-explicit-rows-001.html	.grid
 reftest	css/css-grid/grid-definition/grid-auto-fit-with-calc.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/grid-definition/grid-auto-repeat-aspect-ratio-001.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/grid-definition/grid-auto-repeat-aspect-ratio-002.html	==css/reference/ref-filled-green-100px-square-only.html
@@ -638,6 +674,7 @@ reftest	css/css-grid/grid-items/aspect-ratio-grid-item-dynamic-container-shrink-
 reftest	css/css-grid/grid-items/explicitly-sized-grid-item-as-table.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/grid-items/grid-img-item-percent-max-height-001.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/grid-items/grid-item-border-padding-001.html	==css/css-grid/grid-items/grid-item-border-padding-001-ref.html
+reftest	css/css-grid/grid-items/grid-item-border-padding-002.html	==css/css-grid/grid-items/grid-item-border-padding-002-ref.html
 reftest	css/css-grid/grid-items/grid-item-border-padding-003.html	==css/css-grid/grid-items/grid-item-border-padding-003-ref.html
 reftest	css/css-grid/grid-items/grid-item-border-padding-004.html	==css/css-grid/grid-items/grid-item-border-padding-004-ref.html
 reftest	css/css-grid/grid-items/grid-item-border-padding-005.html	==css/css-grid/grid-items/grid-item-border-padding-005-ref.html
@@ -666,6 +703,8 @@ reftest	css/css-grid/grid-items/table-with-infinite-max-intrinsic-width.html	==c
 reftest	css/css-grid/grid-model/display-grid.html	==css/css-grid/reference/display-grid-ref.html
 reftest	css/css-grid/grid-model/display-inline-grid.html	==css/css-grid/reference/display-inline-grid-ref.html
 checklayout	css/css-grid/grid-model/grid-box-sizing-001.html	.grid
+checklayout	css/css-grid/grid-model/grid-button-001.html	[data-expected-width]
+reftest	css/css-grid/grid-model/grid-container-ignores-first-letter-002.html	==css/css-grid/grid-model/grid-container-ignores-first-letter-002-ref.html
 reftest	css/css-grid/grid-model/grid-first-letter-001.html	==css/css-grid/reference/grid-text-green-margin-no-collapse-ref.html
 reftest	css/css-grid/grid-model/grid-first-letter-002.html	==css/css-grid/reference/grid-text-green-margin-no-collapse-ref.html
 reftest	css/css-grid/grid-model/grid-first-letter-003.html	==css/css-grid/reference/grid-first-letter-green-margin-no-collapse-ref.html
@@ -697,6 +736,7 @@ reftest	css/css-grid/img-src-changes.html	==css/reference/ref-filled-green-100px
 checklayout	css/css-grid/implicit-grids/grid-item-placed-in-trailing-implicit-column-001.html	.grid
 reftest	css/css-grid/implicit-grids/grid-support-grid-auto-columns-rows-001.html	==css/css-grid/reference/grid-support-grid-auto-columns-rows-001-ref.html
 reftest	css/css-grid/implicit-grids/grid-support-grid-auto-columns-rows-002.html	==css/css-grid/reference/grid-support-grid-auto-columns-rows-002-ref.html
+reftest	css/css-grid/implicit-grids/grid-support-grid-auto-columns-rows-003.html	==css/css-grid/reference/grid-support-grid-auto-columns-rows-003-ref.html
 reftest	css/css-grid/layout-algorithm/auto-margins-ignored-during-track-sizing-001.html	==css/css-grid/layout-algorithm/references/auto-margins-ignored-during-track-sizing-001-ref.html
 crashtest	css/css-grid/layout-algorithm/flexible-column-track-intrinsic-sizing-001-crash.html
 crashtest	css/css-grid/layout-algorithm/flexible-column-track-intrinsic-sizing-002-crash.html
@@ -706,6 +746,7 @@ reftest	css/css-grid/layout-algorithm/grid-intrinsic-size-nested-baseline-grid-0
 reftest	css/css-grid/layout-algorithm/grid-layout-free-space-unit.html	==css/css-grid/reference/grid-layout-basic-ref.html
 reftest	css/css-grid/layout-algorithm/grid-max-content-tracks-items-with-paddings-001.html	==css/css-grid/layout-algorithm/grid-max-content-tracks-items-with-paddings-001-ref.html
 checklayout	css/css-grid/layout-algorithm/grid-minimum-contribution-baseline-shim.html	.grid
+reftest	css/css-grid/min-size-auto-overflow-clip.html	==css/css-grid/min-size-auto-overflow-clip-ref.html
 checklayout	css/css-grid/placement/grid-auto-placement-implicit-tracks-001.html	.grid
 checklayout	css/css-grid/placement/grid-implicit-columns-for-items-locked-to-row-001.html	.grid
 checklayout	css/css-grid/placement/grid-implicit-track-placement-001.html	.grid
@@ -719,6 +760,8 @@ reftest	css/css-grid/placement/grid-template-areas-media-query-001.html	==css/cs
 reftest	css/css-grid/placement/grid-template-areas-must-keep-named-columns-order-001.html	==css/css-grid/reference/grid-template-areas-must-keep-named-columns-order-001-ref.html
 reftest	css/css-grid/replaced-element-percentage-height-in-grid-nested-in-flex-001.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-grid/replaced-element-percentage-height-in-grid-nested-in-flex-002.html	==css/reference/ref-filled-green-100px-square-only.html
+reftest	css/css-grid/stretch-grid-item-checkbox-input.html	==css/css-grid/stretch-grid-item-checkbox-input-ref.html
+reftest	css/css-grid/stretch-grid-item-radio-input.html	==css/css-grid/stretch-grid-item-radio-input-ref.html
 reftest	css/css-transforms/3d-rendering-context-and-abspos.html	==css/css-transforms/reference/green.html
 reftest	css/css-transforms/3d-rendering-context-and-fixpos.html	==css/css-transforms/reference/green.html
 reftest	css/css-transforms/3d-rendering-context-and-inline.html	==css/css-transforms/transform-blank-ref.html
@@ -726,6 +769,7 @@ reftest	css/css-transforms/3d-rendering-context-and-z-ordering-001.html	==css/cs
 reftest	css/css-transforms/3d-rendering-context-and-z-ordering-002.html	==css/css-transforms/transform-lime-square-ref.html
 reftest	css/css-transforms/3dtransform-and-position-sticky-001.html	==css/css-transforms/3dtransform-and-position-sticky-ref.html
 reftest	css/css-transforms/3dtransform-and-position-sticky-002.html	==css/css-transforms/3dtransform-and-position-sticky-ref.html
+reftest	css/css-transforms/add-child-in-empty-layer.html	==css/css-transforms/add-child-in-empty-layer-ref.html
 reftest	css/css-transforms/animation/rotate-animation-with-will-change-transform-001.html	==css/css-transforms/animation/rotate-animation-with-will-change-transform-001-ref.html
 reftest	css/css-transforms/backface-visibility-001.html	==css/css-transforms/backface-visibility-001.ref.html	fuzzy=:0-1;0-2
 reftest	css/css-transforms/backface-visibility-hidden-002.html	==css/css-transforms/backface-visibility-hidden-002-ref.html
@@ -774,13 +818,17 @@ reftest	css/css-transforms/individual-transform/individual-transform-2c.html	==c
 reftest	css/css-transforms/individual-transform/individual-transform-2d.html	==css/css-transforms/individual-transform/individual-transform-2-ref.html
 reftest	css/css-transforms/individual-transform/individual-transform-2e.html	==css/css-transforms/individual-transform/individual-transform-2-ref.html
 reftest	css/css-transforms/individual-transform/individual-transform-3.html	==css/reference/ref-filled-green-200px-square.html
+reftest	css/css-transforms/individual-transform/stacking-context-001.html	==css/css-transforms/individual-transform/stacking-context-ref.html
 reftest	css/css-transforms/overflow-perspective-001.html	==css/css-transforms/overflow-perspective-ref.html
+reftest	css/css-transforms/overflow-perspective-002.html	==css/css-transforms/overflow-perspective-ref.html
 reftest	css/css-transforms/overflow-perspective-003.html	==css/css-transforms/overflow-perspective-ref.html
 reftest	css/css-transforms/perspective-children-only-abspos.html	==css/css-transforms/reference/green.html
 reftest	css/css-transforms/perspective-children-only-fixpos.html	==css/css-transforms/reference/green.html
 reftest	css/css-transforms/perspective-children-only-inline.html	==css/css-transforms/reference/green.html
 reftest	css/css-transforms/perspective-origin-x.html	==css/css-transforms/reference/perspective-origin-reftest.html
 reftest	css/css-transforms/perspective-origin-xy.html	==css/css-transforms/reference/perspective-reftest.html
+reftest	css/css-transforms/perspective-split-by-zero-w.html	==css/css-transforms/perspective-split-by-zero-w-ref.html
+reftest	css/css-transforms/perspective-transforms-equivalence.html	==css/css-transforms/perspective-transforms-equivalence-ref.html	fuzzy=:0-178;0-538
 reftest	css/css-transforms/perspective-translateZ-0.html	==css/css-transforms/reference/perspective-reftest.html
 reftest	css/css-transforms/perspective-translateZ-negative.html	==css/css-transforms/reference/perspective-reftest.html
 reftest	css/css-transforms/perspective-translateZ-positive.html	==css/css-transforms/reference/perspective-reftest.html
@@ -801,6 +849,7 @@ reftest	css/css-transforms/preserve3d-and-flattening-z-order-005.html	==css/css-
 reftest	css/css-transforms/preserve3d-and-flattening-z-order-006.html	==css/css-transforms/preserve3d-and-flattening-002-ref.html
 reftest	css/css-transforms/preserve3d-and-flattening-z-order-007.html	==css/css-transforms/preserve3d-and-flattening-002-ref.html
 reftest	css/css-transforms/preserve3d-and-flattening-z-order-008.html	==css/css-transforms/reference/green.html	fuzzy=:1-1;0-3244
+reftest	css/css-transforms/preserve3d-button.html	==css/css-transforms/preserve3d-button-ref.html
 reftest	css/css-transforms/preserve3d-nested-perspective.html	==css/css-transforms/preserve3d-nested-perspective-ref.html
 reftest	css/css-transforms/preserve3d-overflow-percent.html	!=common/blank.html
 reftest	css/css-transforms/preserve3d-pseudo-element.html	==css/css-transforms/preserve3d-pseudo-element-ref.html
@@ -819,6 +868,7 @@ reftest	css/css-transforms/scaley.html	==css/css-transforms/scaley-ref.html
 reftest	css/css-transforms/subpixel-perspective-backface-hidden.html	==css/css-transforms/subpixel-perspective-backface-hidden-ref.html
 reftest	css/css-transforms/subpixel-perspective-translate-z-0.html	==css/css-transforms/subpixel-perspective-translate-z-0-ref.html
 crashtest	css/css-transforms/transform-3d-fixed-under-fixed-opacity-crash.html
+reftest	css/css-transforms/transform-3d-scales-different-x-y-dynamic-002.html	==css/css-transforms/transform-3d-scales-different-x-y-dynamic-002-ref.html
 reftest	css/css-transforms/transform-abspos-001.html	==css/css-transforms/transform-abspos-ref.html
 reftest	css/css-transforms/transform-abspos-002.html	==css/css-transforms/transform-abspos-ref.html
 reftest	css/css-transforms/transform-abspos-003.html	==css/css-transforms/transform-abspos-ref.html
@@ -826,6 +876,7 @@ reftest	css/css-transforms/transform-abspos-004.html	==css/css-transforms/transf
 reftest	css/css-transforms/transform-abspos-005.html	!=css/css-transforms/transform-abspos-ref.html
 reftest	css/css-transforms/transform-abspos-006.html	==css/css-transforms/transform-abspos-ref.html
 reftest	css/css-transforms/transform-abspos-007.html	==css/css-transforms/transform-abspos-ref.html
+reftest	css/css-transforms/transform-box/content-box-mutation-001.html	==css/css-transforms/transform-box/reference/cssbox-ref.html
 reftest	css/css-transforms/transform-box/cssbox-border-box.html	==css/css-transforms/transform-box/reference/cssbox-ref.html
 reftest	css/css-transforms/transform-box/cssbox-content-box-001.html	==css/css-transforms/transform-box/reference/cssbox-ref.html
 reftest	css/css-transforms/transform-box/cssbox-content-box-002.html	==css/css-transforms/transform-box/reference/cssbox-ref.html
@@ -845,6 +896,17 @@ reftest	css/css-transforms/transform-inherit-001.html	==css/css-transforms/trans
 reftest	css/css-transforms/transform-inherit-002.html	==css/css-transforms/transform-inherit-ref.html
 reftest	css/css-transforms/transform-inherit-origin-001.html	==css/css-transforms/transform-inherit-origin-ref.html
 reftest	css/css-transforms/transform-inherit-origin-002.html	==css/css-transforms/transform-inherit-origin-ref.html
+reftest	css/css-transforms/transform-input-001.html	==css/css-transforms/transform-input-001-ref.html	fuzzy=:0-128;0-553
+reftest	css/css-transforms/transform-input-003.html	==css/css-transforms/transform-input-003-ref.html	fuzzy=:0-128;0-553
+reftest	css/css-transforms/transform-input-004.html	==css/css-transforms/transform-input-004-ref.html	fuzzy=:0-128;0-1094
+reftest	css/css-transforms/transform-input-005.html	==css/css-transforms/transform-input-005-ref.html	fuzzy=:0-180;0-2389
+reftest	css/css-transforms/transform-input-006.html	==css/css-transforms/transform-input-006-ref.html	fuzzy=:0-128;0-2333
+reftest	css/css-transforms/transform-input-007.html	==css/css-transforms/transform-input-007-ref.html	fuzzy=:0-128;0-544
+reftest	css/css-transforms/transform-input-008.html	==css/css-transforms/transform-input-008-ref.html	fuzzy=:0-128;0-1940
+reftest	css/css-transforms/transform-input-014.html	==css/css-transforms/transform-input-014-ref.html	fuzzy=:0-128;0-866
+reftest	css/css-transforms/transform-input-017.html	==css/css-transforms/transform-input-017-ref.html	fuzzy=:0-48;0-16
+reftest	css/css-transforms/transform-input-018.html	==css/css-transforms/transform-input-018-ref.html
+reftest	css/css-transforms/transform-input-019.html	==css/css-transforms/transform-input-019-ref.html	fuzzy=:0-60;0-100
 reftest	css/css-transforms/transform-matrix-001.html	==css/css-transforms/transform-matrix-001-ref.html
 reftest	css/css-transforms/transform-matrix-002.html	==css/css-transforms/transform-matrix-002-ref.html
 reftest	css/css-transforms/transform-matrix-003.html	==css/css-transforms/transform-matrix-003-ref.html
@@ -940,6 +1002,7 @@ reftest	css/css-transforms/transform-translate-003.html	==css/css-transforms/tra
 reftest	css/css-transforms/transform-translate-004.html	==css/css-transforms/transform-translate-ref.html
 reftest	css/css-transforms/transform-translate-005.html	==css/css-transforms/transform-translate-ref.html
 reftest	css/css-transforms/transform-translate-background-001.html	==css/css-transforms/transform-translate-background-001-ref.html
+reftest	css/css-transforms/transform-translate-background-002.html	==css/css-transforms/transform-translate-background-001-ref.html
 reftest	css/css-transforms/transform-translatex-001.html	==css/css-transforms/transform-translatex-ref.html
 reftest	css/css-transforms/transform-translatex-002.html	==css/css-transforms/transform-translatex-ref.html
 reftest	css/css-transforms/transform-translatex-003.html	==css/css-transforms/transform-translatex-ref.html
@@ -1337,6 +1400,7 @@ reftest	css/css-values/calc-width-table-auto-1.html	==css/css-values/calc-width-
 reftest	css/css-values/calc-width-table-fixed-1.html	==css/css-values/calc-width-table-fixed-1-ref.html
 crashtest	css/css-values/chrome-typed-arithmetic-crash.html
 crashtest	css/css-values/crashtests/chrome-bug-492735384.html
+crashtest	css/css-values/crashtests/chrome-bug-493952652.html
 reftest	css/css-values/ex-calc-expression-001.html	==css/css-values/ex-calc-expression-001-ref.html
 reftest	css/css-values/html-attr-case-insensitivity.html	==css/css-values/html-attr-case-insensitivity-ref.html
 reftest	css/css-values/max-20-arguments.html	==css/css-values/reference/all-green.html
@@ -1405,7 +1469,9 @@ reftest	css/css-lists/counters-scope-002.html	==css/css-lists/counters-scope-002
 reftest	css/css-lists/counters-scope-003.html	==css/css-lists/counters-scope-003-ref.html
 reftest	css/css-lists/counters-scope-004.html	==css/css-lists/counters-scope-004-ref.html
 crashtest	css/css-lists/crashtests/chrome-bug-1377573.html
+crashtest	css/css-lists/crashtests/list-item-hidden-until-found-crash.html
 reftest	css/css-lists/implicit-and-explicit-list-item-counters.html	==css/css-lists/implicit-and-explicit-list-item-counters-ref.html
+reftest	css/css-lists/li-insert-child.html	==css/css-lists/li-insert-child-ref.html
 reftest	css/css-lists/li-list-item-counter-002.html	==css/css-lists/li-list-item-counter-002-ref.html
 reftest	css/css-lists/li-list-item-counter-003.html	==css/css-lists/li-list-item-counter-003-ref.html
 reftest	css/css-lists/li-list-item-counter-004.html	==css/css-lists/li-list-item-counter-004-ref.html
@@ -1441,10 +1507,14 @@ reftest	css/css-lists/li-with-height-001.html	==css/css-lists/li-with-height-001
 reftest	css/css-lists/li-with-overflow-hidden-change-list-style-position-001.html	==css/css-lists/li-with-overflow-hidden-change-list-style-position-001-ref.html
 crashtest	css/css-lists/li-without-ul-counter-crash.html
 reftest	css/css-lists/list-and-grid-001.html	==css/css-lists/list-and-grid-001-ref.html	fuzzy=:0-8;0-10
+reftest	css/css-lists/list-item-dynamic-padding.html	==css/css-lists/list-item-dynamic-padding-ref.html
+crashtest	css/css-lists/list-marker-position-crash.html
 reftest	css/css-lists/list-type-none-style-image.html	==css/css-lists/list-type-none-style-image-ref.html
 reftest	css/css-lists/list-with-image-display-changed-001.html	==css/css-lists/list-with-image-display-changed-001-ref.html
 reftest	css/css-lists/marker-counter.html	==css/css-lists/marker-counter-ref.html
+reftest	css/css-lists/marker-dynamic-content-change.html	==css/css-lists/marker-dynamic-content-change-ref.html
 reftest	css/css-lists/marker-quotes.html	==css/css-lists/marker-quotes-ref.html
+reftest	css/css-lists/nested-marker-dynamic.html	==css/css-lists/nested-marker-ref.html
 reftest	css/css-lists/nested-marker.html	==css/css-lists/nested-marker-ref.html
 reftest	css/css-lists/ol-change-display-type.html	==css/css-lists/ol-change-display-type-ref.html
 reftest	css/css-counter-styles/arabic-indic/css3-counter-styles-101.html	==css/css-counter-styles/arabic-indic/css3-counter-styles-101-ref.html
@@ -1628,6 +1698,7 @@ reftest	css/css-content/element-replacement-gradient.html	==css/css-content/elem
 reftest	css/css-content/element-replacement-image-no-src.tentative.html	==css/css-content/element-replacement-image-no-src-ref.html
 reftest	css/css-content/element-replacement-image-src.tentative.html	==css/css-content/element-replacement-image-no-src-ref.html
 crashtest	css/css-text-decor/crashtests/pseudo-element-text-decoration-under-pseudo-first-line-crash.html
+crashtest	css/css-text-decor/crashtests/text-decoration-first-line-layer-crash.html
 crashtest	css/css-text-decor/crashtests/text-decoration-on-empty-first-line-crash.html
 crashtest	css/css-text-decor/crashtests/text-decoration-on-pseudo-first-line-crash.html
 reftest	css/css-text-decor/decorating-box/text-decoration-decorating-box-thickness-001.html	==css/css-text-decor/decorating-box/text-decoration-decorating-box-thickness-001-ref.html
@@ -1807,6 +1878,8 @@ reftest	css/CSS2/generated-content/after-inheritable-002.xht	==css/CSS2/generate
 reftest	css/CSS2/generated-content/after-location-001.xht	==css/CSS2/generated-content/after-location-001-ref.html
 reftest	css/CSS2/generated-content/before-after-002.xht	==css/CSS2/generated-content/content-003-ref.html
 reftest	css/CSS2/generated-content/before-after-display-types-001.xht	==css/CSS2/generated-content/before-after-display-types-001-ref.xht
+reftest	css/CSS2/generated-content/before-after-dynamic-attr-001.xht	==css/CSS2/generated-content/before-after-dynamic-attr-001-ref.xht
+reftest	css/CSS2/generated-content/before-after-dynamic-restyle-001.xht	==css/CSS2/generated-content/before-after-dynamic-restyle-001-ref.xht
 reftest	css/CSS2/generated-content/before-after-floated-001.xht	==css/CSS2/generated-content/before-after-floated-001-ref.xht
 reftest	css/CSS2/generated-content/before-after-images-001.xht	==css/CSS2/generated-content/before-after-images-001-ref.xht
 reftest	css/CSS2/generated-content/before-after-positioned-001.xht	==css/CSS2/generated-content/before-after-positioned-001-ref.xht
@@ -1880,9 +1953,11 @@ reftest	css/CSS2/generated-content/content-103.xht	==css/CSS2/generated-content/
 reftest	css/CSS2/generated-content/content-105.xht	==css/reference/only_pass_parens_semicolon.html
 reftest	css/CSS2/generated-content/content-107.xht	==css/reference/only_pass_parens_semicolon.html
 reftest	css/CSS2/generated-content/content-108.xht	==css/reference/only_pass_parens_semicolon.html
+reftest	css/CSS2/generated-content/content-109.xht	==css/reference/only_pass_parens_semicolon.html
 reftest	css/CSS2/generated-content/content-110.xht	==css/reference/only_pass_parens_semicolon.html
 reftest	css/CSS2/generated-content/content-111.xht	==css/reference/only_pass_parens_semicolon.html
 reftest	css/CSS2/generated-content/content-112.xht	==css/reference/only_pass_parens_semicolon.html
+reftest	css/CSS2/generated-content/content-113.xht	==css/CSS2/generated-content/content-113-ref.html
 reftest	css/CSS2/generated-content/content-114.xht	==css/reference/only_pass_parens_semicolon.html
 reftest	css/CSS2/generated-content/content-115.xht	==css/reference/only_pass_parens_semicolon.html
 reftest	css/CSS2/generated-content/content-116.xht	==css/reference/only_pass_parens_semicolon.html
@@ -1935,22 +2010,33 @@ reftest	css/CSS2/generated-content/quotes-applies-to-013.xht	==css/reference/pas
 reftest	css/CSS2/generated-content/quotes-applies-to-014.xht	==css/reference/pass_if_pass_below.html
 reftest	css/CSS2/generated-content/quotes-applies-to-015.xht	==css/reference/pass_if_pass_below.html
 reftest	css/css-animations/animate-font-size-with-margin-override.html	==css/css-animations/animate-font-size-with-margin-override-ref.html
+reftest	css/css-animations/animation-append-stylesheet-reverse.html	==css/css-animations/animation-append-stylesheet-reverse-ref.html
+reftest	css/css-animations/animation-delay-008.html	==css/css-animations/animation-common-ref.html
+reftest	css/css-animations/animation-delay-009.html	==css/css-animations/animation-common-ref.html
+reftest	css/css-animations/animation-delay-010.html	==css/css-animations/animation-common-ref.html
 reftest	css/css-animations/animation-delay-011.html	==css/css-animations/animation-common-ref.html
 reftest	css/css-animations/animation-delay-012.html	==css/reference/ref-filled-green-200px-square.html
 reftest	css/css-animations/animation-duration-infinite.html	==css/css-animations/animation-duration-infinite-ref.html
+reftest	css/css-animations/animation-important-002.html	==css/css-animations/animation-important-002-ref.html
 reftest	css/css-animations/animation-name-in-nested-shadow.html	==css/css-animations/animation-name-in-nested-shadow-ref.html
+crashtest	css/css-animations/crashtests/background-shorthand.html
 crashtest	css/css-animations/crashtests/inherit.html
 crashtest	css/css-animations/crashtests/keyframe-timing-function-unset.html
+crashtest	css/css-animations/crashtests/pause.html
 crashtest	css/css-animations/crashtests/pseudo-element-animation-with-color.html
 crashtest	css/css-animations/crashtests/servo-bug-45008.html
 crashtest	css/css-animations/crashtests/transform-css-animation-squash.html
+crashtest	css/css-animations/crashtests/transform-properties-from-none-to-none-crash.html
 crashtest	css/css-animations/crashtests/universal-selector-opacity-inherit.html
 crashtest	css/css-animations/crashtests/update-delay-of-paused-animation.html
 reftest	css/css-animations/inheritance-pseudo-element.html	==css/css-animations/inheritance-pseudo-element-ref.html
+crashtest	css/css-animations/keyframes-remove-documentElement-crash.html
+reftest	css/css-animations/nested-scale-animations.html	==css/css-animations/nested-scale-animations-ref.html
 crashtest	css/css-animations/neutral-var-keyframe-cycle-crash.html
 reftest	css/css-animations/transform-animation-under-large-scale.html	==css/css-animations/transform-animation-under-large-scale-ref.html
 reftest	css/css-animations/translation-animation-on-important-property.html	==css/css-animations/translation-animation-on-important-property-ref.html
 reftest	css/css-animations/translation-animation-subpixel-offset.html	==css/css-animations/translation-animation-subpixel-offset-ref.html
+crashtest	css/css-transitions/crashtests/clear-duration-in-transitionend.html
 crashtest	css/css-transitions/crashtests/transition-large-word-spacing-001.html
 crashtest	css/css-transitions/crashtests/transition-transform-translate-calculated-length-crash.html
 reftest	css/css-transitions/render-blocking/no-transition-from-ua-to-blocking-stylesheet.html	==css/css-transitions/render-blocking/no-transition-from-ua-to-blocking-stylesheet-ref.html
@@ -1961,6 +2047,8 @@ checklayout	css/css-easing/step-jump-start.html	.test
 crashtest	css/css-images/empty-radial-gradient-crash.html
 reftest	css/css-images/gradient/gradient-analogous-missing-components-002.html	==css/css-images/gradient/gradient-analogous-missing-components-002-ref.html	fuzzy=:0-1;0-4200
 reftest	css/css-images/gradient/gradient-analogous-missing-components-003.html	==css/css-images/gradient/gradient-analogous-missing-components-003-ref.html	fuzzy=:0-2;0-40000
+reftest	css/css-images/gradient/gradient-eval-001.html	==css/css-images/gradient/gradient-eval-001-ref.html	fuzzy=:1-2;0-10000
+reftest	css/css-images/gradient/gradient-eval-004.html	==css/css-images/gradient/gradient-eval-004-ref.html	fuzzy=:1-2;0-2000
 reftest	css/css-images/gradient/gradient-infinity-003.html	==css/css-images/gradient/gradient-infinity-003-ref.html
 reftest	css/css-images/gradient/gradient-longer-hue-hsl-001.html	==css/css-images/gradient/gradient-longer-hue-hsl-001-ref.html
 reftest	css/css-images/gradient/gradient-longer-hue-hsl-002.html	==css/css-images/gradient/gradient-longer-hue-hsl-002-ref.html
@@ -1992,6 +2080,8 @@ reftest	css/css-images/gradient/gradient-single-stop-003.html	==css/reference/re
 reftest	css/css-images/gradient/gradient-single-stop-004.html	==css/reference/ref-filled-green-100px-square-only.html	fuzzy=:0-1;0-6000
 reftest	css/css-images/gradient/gradient-single-stop-005.html	==css/reference/ref-filled-green-100px-square-only.html	fuzzy=:0-1;0-6000
 reftest	css/css-images/gradient/gradient-single-stop-longer-hue-hsl-002.html	==css/css-images/gradient/gradient-single-stop-longer-hue-hsl-002-ref.html	fuzzy=:0-8;0-18000
+reftest	css/css-images/gradient/gradient-to-transparent.html	==css/css-images/gradient/gradient-to-transparent-ref.html	fuzzy=:0-1;0-200
+reftest	css/css-images/gradient/legacy-color-gradient.html	==css/css-images/gradient/srgb-gradient-ref.html	fuzzy=:1-2;0-24000
 reftest	css/css-images/gradient-border-box.html	==css/css-images/gradient-border-box-ref.html	fuzzy=:0-1;0-2500
 reftest	css/css-images/gradient-content-box.html	==css/css-images/gradient-content-box-ref.html
 reftest	css/css-images/gradient-move-stops.html	==css/css-images/gradient-move-stops-ref.html
@@ -2006,6 +2096,8 @@ reftest	css/css-images/image-orientation/image-orientation-border-image.html	==c
 reftest	css/css-images/image-orientation/image-orientation-exif-png-2.html	==css/css-images/image-orientation/reference/image-orientation-exif-png-ref.html
 reftest	css/css-images/image-orientation/image-orientation-exif-png-3.html	==css/css-images/image-orientation/reference/image-orientation-exif-png-ref.html
 reftest	css/css-images/image-orientation/image-orientation-exif-png.html	==css/css-images/image-orientation/reference/image-orientation-exif-png-ref.html
+reftest	css/css-images/image-orientation/image-orientation-from-image-composited-dynamic2.html	==css/css-images/image-orientation/reference/image-orientation-none-ref.html	fuzzy=:0-100;0-123
+reftest	css/css-images/image-orientation/image-orientation-from-image-dynamic2.html	==css/css-images/image-orientation/reference/image-orientation-none-ref.html	fuzzy=:0-100;0-123
 reftest	css/css-images/image-orientation/image-orientation-img-object-fit.html	==css/css-images/image-orientation/reference/image-orientation-img-object-fit-ref.html	fuzzy=:0-5;0-375
 reftest	css/css-images/image-orientation/image-orientation-list-style-image.html	==css/css-images/image-orientation/reference/image-orientation-list-style-image-ref.html	fuzzy=:0-3;0-60
 reftest	css/css-images/image-orientation/image-orientation-none.html	==css/css-images/image-orientation/reference/image-orientation-none-ref.html	fuzzy=:0-100;0-123
@@ -2059,8 +2151,21 @@ reftest	css/css-images/object-position-png-002i.html	==css/css-images/object-pos
 crashtest	css/css-images/radial-gradient-transition-hint-crash.html
 reftest	css/css-images/tiled-gradients.html	==css/css-images/tiled-gradients-ref.html	fuzzy=:0-255;0-800
 reftest	css/css-images/tiled-radial-gradients.html	==css/css-images/tiled-radial-gradients-ref.html	fuzzy=:0-2;0-8009
+reftest	css/css-backgrounds/animations/background-color-animation-element-not-visible-at-current-viewport.html	==css/css-backgrounds/animations/background-color-animation-element-not-visible-at-current-viewport-ref.html
+reftest	css/css-backgrounds/animations/background-color-animation-in-body.html	==css/css-backgrounds/animations/background-color-animation-in-body-ref.html
 crashtest	css/css-backgrounds/animations/background-color-animation-non-empty-no-draw-crash.html
+reftest	css/css-backgrounds/animations/background-color-animation-non-zero-size-element-change-to-zero.html	==css/css-backgrounds/animations/background-color-animation-non-zero-size-element-change-to-zero-ref.html
+reftest	css/css-backgrounds/animations/background-color-animation-with-images.html	==css/css-backgrounds/animations/background-color-animation-with-images-ref.html
+reftest	css/css-backgrounds/animations/background-color-animation-with-table1.html	==css/css-backgrounds/animations/background-color-animation-with-table1-ref.html
+reftest	css/css-backgrounds/animations/background-color-animation-with-table2.html	==css/css-backgrounds/animations/background-color-animation-with-table1-ref.html
+reftest	css/css-backgrounds/animations/background-color-animation-with-table3.html	==css/css-backgrounds/animations/background-color-animation-with-table1-ref.html
+reftest	css/css-backgrounds/animations/background-color-animation-zero-size-element-change-to-non-zero.html	==css/css-backgrounds/animations/background-color-animation-zero-size-element-change-to-non-zero-ref.html
+reftest	css/css-backgrounds/animations/background-color-animation-zero-size-element.html	==css/css-backgrounds/animations/background-color-animation-zero-size-element-ref.html
+reftest	css/css-backgrounds/animations/background-color-transparent-animation-in-body.html	==css/css-backgrounds/animations/background-color-transparent-animation-in-body-ref.html
+reftest	css/css-backgrounds/animations/invalidation/background-color-animation-with-zero-alpha.html	==css/css-backgrounds/animations/invalidation/background-color-animation-with-zero-alpha-ref.html
 reftest	css/css-backgrounds/background-attachment-fixed-inside-transform-1.html	==css/css-backgrounds/background-attachment-fixed-inside-transform-1-ref.html
+reftest	css/css-backgrounds/background-attachment-margin-root-001.html	==css/css-backgrounds/background-attachment-margin-root-001-ref.html
+reftest	css/css-backgrounds/background-attachment-margin-root-002.html	==css/css-backgrounds/background-attachment-margin-root-002-ref.html
 reftest	css/css-backgrounds/background-clip-002.html	==css/css-backgrounds/reference/background-clip-002-ref.html
 reftest	css/css-backgrounds/background-clip-003.html	==css/css-backgrounds/reference/background-clip-002-ref.html
 reftest	css/css-backgrounds/background-clip-004.html	==css/css-backgrounds/reference/background-clip-004-ref.html
@@ -2071,6 +2176,7 @@ reftest	css/css-backgrounds/background-clip-008.html	==css/css-backgrounds/refer
 reftest	css/css-backgrounds/background-clip-009.html	==css/css-backgrounds/reference/ref-filled-black-96px-square.xht
 reftest	css/css-backgrounds/background-clip-010.html	==css/css-backgrounds/reference/ref-if-there-is-no-red.xht
 reftest	css/css-backgrounds/background-clip-color.html	==css/css-backgrounds/background-clip-color-ref.html
+reftest	css/css-backgrounds/background-clip-content-box-001.html	==css/css-backgrounds/reference/background-clip-content-box-ref.html
 reftest	css/css-backgrounds/background-clip-content-box-002.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-backgrounds/background-clip-padding-box-001.html	==css/reference/ref-filled-green-100px-square-only.html
 reftest	css/css-backgrounds/background-clip_padding-box.html	==css/css-backgrounds/reference/background_clip_padding-box.html
@@ -2079,9 +2185,11 @@ reftest	css/css-backgrounds/background-color-body-propagation-002.html	==css/css
 reftest	css/css-backgrounds/background-color-body-propagation-003.html	==css/css-backgrounds/background-color-body-propagation-ref.html
 reftest	css/css-backgrounds/background-color-body-propagation-004.html	==css/reference/blank.html
 reftest	css/css-backgrounds/background-color-body-propagation-005.html	==css/reference/blank.html
+reftest	css/css-backgrounds/background-color-body-propagation-006.html	==css/reference/blank.html
 reftest	css/css-backgrounds/background-color-body-propagation-010.html	==css/css-backgrounds/background-color-no-body-propagation-ref.html
 reftest	css/css-backgrounds/background-color-clip.html	==css/css-backgrounds/reference/background-color-clip.html
 reftest	css/css-backgrounds/background-color-root-propagation-001.html	==css/reference/blank.html
+reftest	css/css-backgrounds/background-color-root-propagation-002.html	==css/reference/blank.html
 reftest	css/css-backgrounds/background-color-root-propagation-003.html	==css/css-backgrounds/background-color-no-body-propagation-ref.html
 reftest	css/css-backgrounds/background-gradient-subpixel-fills-area.html	==css/css-backgrounds/reference/background-gradient-subpixel-fills-area-ref.html	fuzzy=:0-1;0-6800
 reftest	css/css-backgrounds/background-image-001.html	==css/css-backgrounds/reference/background-image-001-ref.html
@@ -2107,7 +2215,9 @@ reftest	css/css-backgrounds/background-origin-008.html	==css/css-backgrounds/ref
 reftest	css/css-backgrounds/background-paint-order-001.html	==css/css-backgrounds/reference/background-paint-order-001-ref.html
 reftest	css/css-backgrounds/background-position/background-position-bottom-right-repeat-round.html	==css/css-backgrounds/background-position/reference/background-position-bottom-right-repeat-round-ref.html
 reftest	css/css-backgrounds/background-position/background-position-right-in-body.html	==css/filter-effects/reference/green-100x100.html
+reftest	css/css-backgrounds/background-position/subpixel-position-center.tentative.html	==css/css-backgrounds/background-position/reference/subpixel-position-center-ref.tentative.html
 reftest	css/css-backgrounds/background-position-negative-percentage-comparison.html	==css/css-backgrounds/reference/background-position-negative-percentage-comparison-ref.html
+reftest	css/css-backgrounds/background-position-subpixel-at-border.tentative.html	==css/css-backgrounds/reference/background-position-subpixel-at-border-ref.tentative.html
 reftest	css/css-backgrounds/background-position-three-four-values.html	==css/css-backgrounds/reference/background-position-three-four-values-ref.html
 crashtest	css/css-backgrounds/background-repeat/background-repeat-image-larger-than-positioning-area-crash.html
 reftest	css/css-backgrounds/background-repeat/gradient-repeat-spaced-with-borders.html	==css/css-backgrounds/background-repeat/reference/gradient-repeat-spaced-with-borders.html
@@ -2130,6 +2240,7 @@ reftest	css/css-backgrounds/background-repeat-space-4.html	==css/css-backgrounds
 reftest	css/css-backgrounds/background-repeat-space-5.html	==css/css-backgrounds/background-repeat-space-5-ref.html	fuzzy=:0-52;0-8350
 reftest	css/css-backgrounds/background-repeat-space-6.html	==css/css-backgrounds/background-repeat-space-6-ref.html	fuzzy=:0-32;0-16500
 reftest	css/css-backgrounds/background-repeat-space-7.html	==css/css-backgrounds/background-repeat-space-7-ref.html	fuzzy=:0-32;0-16500
+reftest	css/css-backgrounds/background-repeat-space-8.html	==css/css-backgrounds/background-repeat-space-8-ref.html	fuzzy=:0-80;0-15880
 reftest	css/css-backgrounds/background-repeat-space-9.html	==css/css-backgrounds/background-repeat-space-9-ref.html	fuzzy=:0-52;0-1680
 reftest	css/css-backgrounds/background-size/background-size-near-zero-color.html	==css/css-backgrounds/background-size/reference/background-size-near-zero-ref.html
 reftest	css/css-backgrounds/background-size/background-size-near-zero-gradient.html	==css/css-backgrounds/background-size/reference/background-size-near-zero-ref.html
@@ -2224,14 +2335,101 @@ reftest	css/css-backgrounds/css3-background-size.html	==css/css-backgrounds/refe
 reftest	css/css-backgrounds/css3-border-image-repeat-repeat.html	==css/css-backgrounds/reference/css3-border-image-repeat-repeat-ref.html	fuzzy=:0-58;0-5300
 reftest	css/css-backgrounds/css3-border-image-repeat-stretch.html	==css/css-backgrounds/reference/css3-border-image-repeat-stretch-ref.html
 reftest	css/css-backgrounds/css3-border-image-source.html	==css/css-backgrounds/reference/css3-border-image-source-ref.html
+reftest	css/css-backgrounds/document-canvas-remove-body.html	==css/css-backgrounds/document-canvas-remove-body-ref.html
 reftest	css/css-backgrounds/first-letter-space-not-selected.html	==css/css-backgrounds/reference/first-letter-space-not-selected-ref.html
 crashtest	css/css-backgrounds/linear-gradient-calc-crash.html
 reftest	css/css-backgrounds/order-of-images.htm	==css/css-backgrounds/reference/order-of-images-ref.html
+reftest	html/semantics/embedded-content/the-img-element/animated-image-update.tentative.html	==html/semantics/embedded-content/the-img-element/animated-image-update-ref.tentative.html
+reftest	html/semantics/embedded-content/the-img-element/animated-webp-update.tentative.html	==html/semantics/embedded-content/the-img-element/animated-image-update-ref.tentative.html
 reftest	html/semantics/embedded-content/the-img-element/document-base-url.html	==html/semantics/embedded-content/the-img-element/document-base-url-ref.html
+reftest	css/selectors/invalidation/any-link-attribute-removal.html	==css/selectors/invalidation/any-link-attribute-removal-ref.html
 crashtest	dom/nodes/crashtests/childNodes-last_visited-unwrap-crash.html
 crashtest	dom/nodes/crashtests/document-replaceChild-input-documentElement.html
 crashtest	dom/nodes/crashtests/documentElement-remove-descendant-query.html
-crashtest	dom/nodes/moveBefore/moveBefore-subframe-count-crash.html
 crashtest	dom/nodes/replaceWith-document-element-crash.html
 reftest	html/dom/directionality/bdi-element-invalid-dir.html	==html/dom/directionality/bdi-element-invalid-dir-ref.html
+reftest	html/dom/elements/global-attributes/dir-auto-dynamic-simple-dataChange.html	==html/dom/elements/global-attributes/dir-auto-dynamic-simple-ref.html
+reftest	html/dom/elements/global-attributes/dir-auto-dynamic-simple-replace.html	==html/dom/elements/global-attributes/dir-auto-dynamic-simple-ref.html
+reftest	html/dom/elements/global-attributes/dir-auto-dynamic-simple-textContent.html	==html/dom/elements/global-attributes/dir-auto-dynamic-simple-ref.html
 reftest	html/dom/elements/global-attributes/lang-xyzzy.html	==html/dom/elements/global-attributes/lang-xyzzy-ref.html
+reftest	css/selectors/child-indexed-no-parent.html	==css/selectors/child-indexed-no-parent-ref.html
+crashtest	css/selectors/crashtests/empty-pseudo-with-first-line.html
+reftest	css/selectors/floating-first-letter-05d0.html	==css/selectors/floating-first-letter-ref.html
+reftest	css/selectors/floating-first-letter-feff.html	==css/selectors/floating-first-letter-ref.html
+reftest	css/selectors/focus-within-001.html	==css/selectors/focus-within-001-ref.html
+reftest	css/selectors/focus-within-002.html	==css/selectors/focus-within-001-ref.html
+reftest	css/selectors/focus-within-003.html	==css/selectors/focus-within-001-ref.html
+reftest	css/selectors/focus-within-007.html	==css/selectors/focus-within-007-ref.html
+reftest	css/selectors/focus-within-008.html	==css/selectors/focus-within-007-ref.html
+reftest	css/selectors/focus-within-010.html	==css/selectors/focus-within-shadow-001-ref.html
+reftest	css/selectors/focus-within-011.html	==css/selectors/focus-within-011-ref.html
+reftest	css/selectors/focus-within-012.html	==css/selectors/focus-within-012-ref.html
+reftest	css/selectors/invalidation/any-link-attribute-removal.html	==css/selectors/invalidation/any-link-attribute-removal-ref.html
+crashtest	css/selectors/is-where-error-crash.html
+reftest	css/selectors/not-links.html	==css/selectors/not-links-ref.html
+reftest	css/selectors/nth-child-of-classname.html	==css/selectors/nth-child-of-classname-ref.html
+reftest	css/selectors/nth-child-of-complex-selector-many-children-2.html	==css/selectors/nth-child-of-complex-selector-many-children-2-ref.html
+reftest	css/selectors/nth-child-of-complex-selector-many-children.html	==css/selectors/nth-child-of-complex-selector-many-children-ref.html
+reftest	css/selectors/nth-child-of-complex-selector.html	==css/selectors/nth-child-of-complex-selector-ref.html
+reftest	css/selectors/nth-child-of-compound-selector.html	==css/selectors/nth-child-of-compound-selector-ref.html
+reftest	css/selectors/nth-child-of-nesting.html	==css/selectors/nth-child-of-nesting-ref.html
+reftest	css/selectors/nth-child-of-no-space-after-of.html	==css/selectors/nth-child-of-no-space-after-of-ref.html
+reftest	css/selectors/nth-child-of-pseudo.html	==css/selectors/nth-child-of-pseudo-ref.html
+reftest	css/selectors/nth-child-of-tagname.html	==css/selectors/nth-child-of-tagname-ref.html
+reftest	css/selectors/nth-child-specificity-1.html	==css/selectors/nth-child-specificity-1-ref.html
+reftest	css/selectors/nth-child-specificity-2.html	==css/selectors/nth-child-specificity-2-ref.html
+reftest	css/selectors/nth-child-specificity-3.html	==css/selectors/nth-child-specificity-3-ref.html
+reftest	css/selectors/nth-child-specificity-4.html	==css/selectors/nth-child-specificity-4-ref.html
+reftest	css/selectors/nth-of-selector-before.html	==css/reference/pass_if_pass_below.html
+crashtest	css/selectors/pseudo-where-crash.html
+reftest	css/selectors/selector-required.html	==css/selectors/selector-required-ref.html
+reftest	css/selectors/selector-structural-pseudo-root.html	==css/selectors/selector-structural-pseudo-root-ref.html
+reftest	css/selectors/selectors-4/lang-000.html	==css/selectors/selectors-4/lang-000-ref.html
+reftest	css/selectors/selectors-4/lang-001.html	==css/selectors/selectors-4/lang-000-ref.html
+reftest	css/selectors/selectors-4/lang-002.html	==css/selectors/selectors-4/lang-000-ref.html
+reftest	css/selectors/selectors-4/lang-003.html	==css/selectors/selectors-4/lang-000-ref.html
+reftest	css/selectors/selectors-4/lang-004.html	==css/selectors/selectors-4/lang-000-ref.html
+reftest	css/selectors/selectors-4/lang-005.html	==css/selectors/selectors-4/lang-000-ref.html
+reftest	css/selectors/selectors-4/lang-006.html	==css/selectors/selectors-4/lang-000-ref.html
+reftest	css/selectors/selectors-4/lang-007.html	==css/selectors/selectors-4/lang-000-ref.html
+reftest	css/selectors/selectors-4/lang-008.html	==css/selectors/selectors-4/lang-000-ref.html
+reftest	css/selectors/selectors-4/lang-009.html	==css/selectors/selectors-4/lang-000-ref.html
+reftest	css/selectors/selectors-4/lang-010.html	==css/selectors/selectors-4/lang-000-ref.html
+reftest	css/selectors/selectors-4/lang-011.html	==css/selectors/selectors-4/lang-000-ref.html
+reftest	css/selectors/selectors-4/lang-012.html	==css/selectors/selectors-4/lang-000-ref.html
+reftest	css/selectors/selectors-4/lang-015.html	==css/selectors/selectors-4/lang-000-ref.html
+reftest	css/selectors/selectors-4/lang-016.html	==css/selectors/selectors-4/lang-000-ref.html
+reftest	css/selectors/selectors-4/lang-017.html	==css/selectors/selectors-4/lang-000-ref.html
+reftest	css/selectors/selectors-4/lang-018.html	==css/selectors/selectors-4/lang-000-ref.html
+reftest	css/selectors/selectors-4/lang-019.html	==css/selectors/selectors-4/lang-000-ref.html
+reftest	css/selectors/selectors-4/lang-020.html	==css/selectors/selectors-4/lang-020-ref.html
+reftest	css/selectors/selectors-4/lang-021.html	==css/selectors/selectors-4/lang-000-ref.html
+reftest	css/selectors/selectors-4/lang-022.html	==css/selectors/selectors-4/lang-000-ref.html
+reftest	css/selectors/selectors-4/lang-023.html	==css/selectors/selectors-4/lang-000-ref.html
+reftest	css/selectors/selectors-4/lang-024.html	==css/selectors/selectors-4/lang-000-ref.html
+reftest	css/selectors/selectors-4/lang-025.html	==css/selectors/selectors-4/lang-000-ref.html
+reftest	css/selectors/selectors-attr-many.html	==css/selectors/selectors-attr-many-ref.html
+reftest	css/selectors/user-invalid-form-submission-invalidation.html	==css/selectors/user-invalid-form-submission-invalidation-ref.html
+reftest	html/semantics/forms/the-input-element/auto-direction-dynamic.html	==html/semantics/forms/the-input-element/auto-direction-ref.html
+reftest	html/semantics/forms/the-input-element/dynamic-value-update.html	==html/semantics/forms/the-input-element/dynamic-value-update-ref.html
+crashtest	html/semantics/forms/the-input-element/input-type-change-during-activation-crash.html
+reftest	html/semantics/forms/the-input-element/multiline-placeholder-cr.html	==html/semantics/forms/the-input-element/multiline-placeholder-ref.html
+reftest	html/semantics/forms/the-input-element/multiline-placeholder-crlf.html	==html/semantics/forms/the-input-element/multiline-placeholder-ref.html
+reftest	html/semantics/forms/the-input-element/multiline-placeholder.html	==html/semantics/forms/the-input-element/multiline-placeholder-ref.html
+reftest	html/semantics/forms/the-input-element/placeholder-update.html	==html/semantics/forms/the-input-element/placeholder-update-ref.html
+reftest	html/semantics/forms/the-option-element/dynamic-content-change-rendering.html	==html/semantics/forms/the-option-element/dynamic-content-change-rendering-ref.html	fuzzy=:0-3;0-20
+crashtest	html/semantics/forms/the-select-element/customizable-select/select-optgroup-crash.html
+crashtest	html/semantics/forms/the-select-element/customizable-select/selected-option-parser-crash.html
+reftest	html/semantics/forms/the-select-element/customizable-select/standalone-option-no-shadow-tree-after-select.html	==html/semantics/forms/the-select-element/customizable-select/standalone-option-no-shadow-tree-ref.html
+reftest	html/semantics/forms/the-select-element/customizable-select/standalone-option-no-shadow-tree.html	==html/semantics/forms/the-select-element/customizable-select/standalone-option-no-shadow-tree-ref.html
+reftest	html/semantics/forms/the-select-element/reset-algorithm-rendering.html	==html/semantics/forms/the-select-element/reset-algorithm-rendering-ref.html
+crashtest	html/semantics/forms/the-select-element/select-add-optgroup-before-argument-is-select-crash.html
+crashtest	html/semantics/forms/the-select-element/select-attribute-crash.html
+reftest	html/semantics/forms/the-select-element/select-dropdown-vs-listbox.html	!=html/semantics/forms/the-select-element/select-dropdown-vs-listbox-ref.html
+crashtest	html/semantics/forms/the-select-element/select-in-table-crash.html
+reftest	html/semantics/forms/the-select-element/select-multiple-size-4.html	==html/semantics/forms/the-select-element/select-multiple-size-4-ref.html
+crashtest	html/semantics/forms/the-select-element/select-root-crash.html
+reftest	html/semantics/forms/the-select-element/select-toggle-multiple.html	==html/semantics/forms/the-select-element/select-toggle-multiple-ref.html
+reftest	html/semantics/forms/the-textarea-element/textarea-newline-bidi.html	==html/semantics/forms/the-textarea-element/textarea-newline-bidi-ref.html
+reftest	html/semantics/forms/the-textarea-element/wrap-reflect-1a.html	==html/semantics/forms/the-textarea-element/wrap-reflect-1-ref.html
+reftest	html/semantics/forms/the-textarea-element/wrap-reflect-1b.html	==html/semantics/forms/the-textarea-element/wrap-reflect-1-ref.html

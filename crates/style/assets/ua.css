@@ -223,10 +223,14 @@ button, input[type=submit i], input[type=button i], input[type=reset i] {
   cursor: default;
 }
 input[type=submit i], input[type=button i], input[type=reset i] { white-space: pre; }
+/* A checkbox's and a radio button's 13px are their marks' natural size,
+ * as in the reference browser, whose `getComputedStyle` reads them as
+ * the used sizes (G46): `auto` here, so that a flex or grid item
+ * stretches (M26.11). */
 input[type=checkbox i], input[type=radio i] {
   box-sizing: border-box;
-  width: 13px;
-  height: 13px;
+  width: auto;
+  height: auto;
   padding: 0;
   border: none;
   background-color: transparent;
@@ -260,11 +264,14 @@ input[type=checkbox i]:disabled, input[type=radio i]:disabled {
   background-color: transparent;
 }
 input[type=hidden i] { display: none; }
-optgroup, option { display: none; }
-select[multiple] option, select[size] option, select[multiple] optgroup, select[size] optgroup {
+/* Options and their groups are blocks, in a list box and standing
+ * alone as in the reference browser (M26.11); a drop-down lays out none
+ * of its children, and a datalist shows none. */
+datalist { display: none; }
+optgroup { display: block; font-weight: bolder; }
+option {
   display: block;
-}
-select[multiple] option, select[size] option {
+  font-weight: normal;
   padding: 0 2px 1px;
   min-height: 1.2em;
   white-space: nowrap;

@@ -28,7 +28,7 @@ use crate::block::{
     carried, clamp_height, definite_height, extent_bottom, height_bounds, layout_contents,
     relative_offset, settle_absolutes_in, width_constraints,
 };
-use crate::box_tree::{BoxKind, LayoutBox};
+use crate::box_tree::{BoxKind, LayoutBox, Replaced};
 use crate::pass::{ItemKey, Pass};
 use placement::{Axis, ExplicitAxis, Room, place, repetitions, resolve, resolve_absolute};
 use tracks::{Available, Contribution, Sizing, Space, Track, size_tracks};
@@ -604,8 +604,9 @@ fn align_self(item: &ComputedStyle, container: &ComputedStyle) -> SelfAlignment 
 /// Whether the item `b` stretches in an axis (section 6.2): its
 /// self-alignment there is `stretch`, or `normal` and it is not replaced
 /// (M23.2: `normal` is `start` for a replaced item, css-align-3 section
-/// 6.1), its size there is `auto`, and neither of its margins there is
-/// `auto`.
+/// 6.1) or is a checkbox or a radio button, which have no ratio and
+/// stretch in the reference browser (M26.11), its size there is `auto`,
+/// and neither of its margins there is `auto`.
 fn stretches(
     b: &LayoutBox,
     alignment: SelfAlignment,
@@ -613,7 +614,8 @@ fn stretches(
     margins: [&LengthPercentageAuto; 2],
 ) -> bool {
     (alignment == SelfAlignment::Stretch
-        || (alignment == SelfAlignment::Normal && b.replaced.is_none()))
+        || (alignment == SelfAlignment::Normal
+            && matches!(b.replaced, None | Some(Replaced::Mark(_)))))
         && size.is_auto()
         && !margins.iter().any(|m| m.is_auto())
 }
@@ -672,7 +674,7 @@ fn known_widths(
 /// spans a track whose minimum is `auto`, and when it spans more than
 /// one, none of them is flexible.
 fn has_automatic_minimum(style: &ComputedStyle, tracks: &[Track], span: &Range<usize>) -> bool {
-    !style.overflow.clips()
+    !style.overflow.scrolls()
         && span.clone().any(|t| tracks[t].min == Sizing::Auto)
         && (span.len() == 1
             || !span
@@ -1903,6 +1905,12 @@ mod tests {
             "#g { display: grid; width: 200px; grid-template-columns: 1fr 1fr } #a { overflow: hidden }",
         );
         assert_eq!(rect(&l, "a").2, 100.0);
+        // `clip` clips but makes no scroll container (M26.11).
+        let l = laid(
+            &html,
+            "#g { display: grid; width: 200px; grid-template-columns: 1fr 1fr } #a { overflow: clip }",
+        );
+        assert!(rect(&l, "a").2 > 100.0, "{}", rect(&l, "a").2);
     }
 
     #[test]

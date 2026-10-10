@@ -285,9 +285,12 @@ pub struct Document {
     max_nodes: usize,
     /// [`MAX_DATA_BYTES`], lowered by tests.
     max_data: usize,
-    /// The focused element (M26.6): it has the focus flags, and it and
-    /// its ancestors `focus-within`.
+    /// The focused element (M26.6): it has the focus flags.
     focused: Option<NodeId>,
+    /// The element that and whose ancestors have `focus-within`: the
+    /// focused one, or while the focus moves, the ancestor it shares
+    /// with where it goes (M26.11).
+    within: Option<NodeId>,
 }
 
 impl Default for Document {
@@ -313,6 +316,7 @@ impl Document {
             max_nodes: MAX_NODES,
             max_data: MAX_DATA_BYTES,
             focused: None,
+            within: None,
         };
         document.root = document.allocate(NodeData::Document);
         document
@@ -491,7 +495,11 @@ impl Document {
         let focus = ElementState::FOCUS.with(ElementState::FOCUS_VISIBLE, true);
         if let Some(old) = self.focused.take().filter(|&old| self.contains(old)) {
             let _ = self.set_state(old, self.state(old).with(focus, false));
-            let chain: Vec<NodeId> = std::iter::once(old).chain(self.ancestors(old)).collect();
+        }
+        if let Some(within) = self.within.take().filter(|&within| self.contains(within)) {
+            let chain: Vec<NodeId> = std::iter::once(within)
+                .chain(self.ancestors(within))
+                .collect();
             for node in chain {
                 if self.is_element(node) {
                     let state = self.state(node).with(ElementState::FOCUS_WITHIN, false);
@@ -514,6 +522,37 @@ impl Document {
             }
         }
         self.focused = Some(element);
+        self.within = Some(element);
+    }
+
+    /// The focused element loses the focus on its way to `next` (HTML's
+    /// focus update steps, M26.11): its focus flags go, and
+    /// `focus-within` from it up to the nearest ancestor it shares with
+    /// `next`, which keep it, as the reference browser keeps them while
+    /// `blur` and `focusout` are dispatched; [`Document::set_focus`] then
+    /// gives `next` the focus, or takes the rest.
+    pub fn blur_toward(&mut self, next: NodeId) {
+        let Some(old) = self.focused.take().filter(|&old| self.contains(old)) else {
+            return;
+        };
+        let focus = ElementState::FOCUS.with(ElementState::FOCUS_VISIBLE, true);
+        let _ = self.set_state(old, self.state(old).with(focus, false));
+        let Some(within) = self.within.take().filter(|&within| self.contains(within)) else {
+            return;
+        };
+        let chain: Vec<NodeId> = std::iter::once(within)
+            .chain(self.ancestors(within))
+            .collect();
+        for node in chain {
+            if self.is_inclusive_ancestor(node, next) {
+                self.within = self.is_element(node).then_some(node);
+                break;
+            }
+            if self.is_element(node) {
+                let state = self.state(node).with(ElementState::FOCUS_WITHIN, false);
+                let _ = self.set_state(node, state);
+            }
+        }
     }
 
     /// Sets an element's state flags to `state` (M26), journaled when
@@ -1209,7 +1248,7 @@ impl Document {
     /// out that has it or holds what has, at once (M26.6, HTML's focus
     /// fixup).
     fn detach(&mut self, child: NodeId) {
-        if let Some(focused) = self.focused()
+        if let Some(focused) = self.focused().or(self.within.filter(|&w| self.contains(w)))
             && self.is_inclusive_ancestor(child, focused)
             && self.parent(child).is_some()
         {

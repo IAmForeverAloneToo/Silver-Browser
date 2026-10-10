@@ -8,7 +8,7 @@ under its BSD licence (`LICENSE.md` beside this file), at commit
 dc7f6a3c0000e1da9e575ff4ef5618cff136697b (2026-10-03)
 ```
 
-They are the tests of `css/css-flexbox`, `css/css-grid`, `css/css-transforms`, `css/css-will-change`, `css/mediaqueries`, `css/css-conditional`, `css/css-cascade`, `css/css-variables`, `css/css-values`, `css/css-lists`, `css/css-counter-styles`, `css/css-content`, `css/css-text-decor`, `css/css-text/text-align`, `css/css-text/text-justify`, `css/CSS2/lists`, `css/CSS2/generated-content`, `css/css-animations`, `css/css-transitions`, `css/css-easing`, `css/css-images`, `css/css-backgrounds`, `html/semantics/embedded-content/the-img-element`, `css/selectors/invalidation`, `dom/nodes` and `html/dom`
+They are the tests of `css/css-flexbox`, `css/css-grid`, `css/css-transforms`, `css/css-will-change`, `css/mediaqueries`, `css/css-conditional`, `css/css-cascade`, `css/css-variables`, `css/css-values`, `css/css-lists`, `css/css-counter-styles`, `css/css-content`, `css/css-text-decor`, `css/css-text/text-align`, `css/css-text/text-justify`, `css/CSS2/lists`, `css/CSS2/generated-content`, `css/css-animations`, `css/css-transitions`, `css/css-easing`, `css/css-images`, `css/css-backgrounds`, `html/semantics/embedded-content/the-img-element`, `css/selectors/invalidation`, `dom/nodes`, `html/dom`, `css/selectors` and `html/semantics/forms`
 that use only what this engine has, chosen by the rule in
 `examples/wpt.rs` and copied with their references, stylesheets
 and images at their own paths by
@@ -24,10 +24,10 @@ them; `expectations.txt` names those expected to fail, and why.
 
 | Kind | Tests |
 | --- | ---: |
-| checklayout | 51 |
-| crashtest | 76 |
-| reftest | 2107 |
-| all | 2234 |
+| checklayout | 66 |
+| crashtest | 94 |
+| reftest | 2272 |
+| all | 2432 |
 
 ## Left out
 
@@ -35,147 +35,160 @@ The first reason the rule found for each test it left out:
 
 | Reason | Tests |
 | --- | ---: |
-| script | 2222 |
-| @font-face | 836 |
-| declaration of font | 705 |
-| CDATA section in XHTML | 517 |
-| declaration of display | 496 |
-| element <svg> | 346 |
-| SVG image | 304 |
-| script (reftest-wait) | 280 |
-| not a reftest, a check-layout test or a crashtest | 249 |
-| declaration of line-height | 227 |
-| declaration of writing-mode | 205 |
-| element <br> | 128 |
-| declaration of direction | 86 |
-| dir=rtl | 85 |
-| selector | 82 |
-| declaration of white-space | 77 |
-| declaration of border-radius | 74 |
-| declaration of container-type | 72 |
-| element <iframe> | 68 |
-| wptserve substitution (.sub) | 60 |
-| declaration of background-image | 55 |
-| element <input> | 53 |
-| element <object> | 52 |
-| element <canvas> | 49 |
+| script | 3053 |
+| @font-face | 856 |
+| declaration of font | 711 |
+| CDATA section in XHTML | 528 |
+| declaration of display | 503 |
+| element <svg> | 358 |
+| SVG image | 306 |
+| not a reftest, a check-layout test or a crashtest | 261 |
+| selector | 241 |
+| declaration of line-height | 230 |
+| declaration of writing-mode | 207 |
+| element <br> | 146 |
+| dir=rtl | 113 |
+| element <iframe> | 101 |
+| declaration of direction | 90 |
+| declaration of border-radius | 85 |
+| declaration of white-space | 81 |
+| declaration of container-type | 78 |
+| wptserve substitution (.sub) | 65 |
+| declaration of background-image | 62 |
+| declaration of font-weight | 54 |
+| element <object> | 54 |
+| element <canvas> | 52 |
 | self-closing <div/> in XHTML | 48 |
-| declaration of background | 47 |
 | element <video> | 47 |
 | element <embed> | 46 |
-| declaration of font-variant-numeric | 43 |
-| declaration of outline | 43 |
-| declaration of background-color | 38 |
+| declaration of background | 44 |
+| declaration of font-variant-numeric | 44 |
 | declaration of flex-wrap | 38 |
-| @counter-style | 33 |
-| declaration of visibility | 31 |
-| @scope | 30 |
-| nested rule | 28 |
-| declaration of border | 27 |
-| declaration of font-weight | 27 |
+| nested rule | 36 |
+| element <hr> | 35 |
+| @counter-style | 34 |
+| @scope | 32 |
+| declaration of visibility | 32 |
+| declaration of box-shadow | 30 |
+| declaration of appearance | 29 |
+| declaration of background-clip | 28 |
+| @property | 27 |
 | declaration of inline-size | 27 |
 | declaration of transform | 27 |
-| @property | 26 |
-| declaration of box-shadow | 26 |
+| declaration of color | 26 |
 | declaration of grid-template-rows | 26 |
-| declaration of background-clip | 25 |
-| declaration of color | 25 |
-| @container | 22 |
+| declaration of overflow-y | 25 |
+| @container | 23 |
 | declaration of grid-template-columns | 21 |
+| declaration of text-shadow | 21 |
+| element <fieldset> | 21 |
+| declaration of background-color | 20 |
+| declaration of contain | 20 |
 | declaration of width | 19 |
-| declaration of overflow-y | 16 |
-| declaration of text-shadow | 16 |
-| element <button> | 16 |
-| declaration of contain | 15 |
+| declaration of fill | 18 |
+| input type=range | 18 |
+| @namespace | 16 |
 | declaration of border-top-left-radius | 14 |
+| declaration of object-view-box | 14 |
 | declaration of block-size | 13 |
-| declaration of fill | 13 |
-| declaration of object-view-box | 13 |
+| declaration of text-decoration-inset | 13 |
 | declaration of all | 12 |
+| declaration of columns | 12 |
 | declaration of height | 12 |
-| declaration of text-decoration-inset | 12 |
+| declaration of overflow-x | 12 |
+| img srcset | 12 |
+| unchecked attribute data-foo | 12 |
 | declaration of align-self | 11 |
 | declaration of column-count | 11 |
-| declaration of columns | 11 |
 | declaration of text-emphasis | 11 |
-| @namespace | 10 |
-| declaration of overflow-x | 10 |
 | declaration of text-decoration-skip-spaces | 10 |
+| declaration of filter | 9 |
 | declaration of text-decoration-skip-ink | 9 |
-| element <fieldset> | 9 |
-| unchecked attribute data-foo | 9 |
-| declaration of filter | 8 |
-| img srcset | 8 |
+| unchecked attribute data-expected | 9 |
+| element <meter> | 8 |
 | declaration of break-after | 7 |
 | declaration of grid-template | 7 |
+| declaration of inset | 7 |
+| declaration of zoom | 7 |
 | declaration of flex | 6 |
-| declaration of inset | 6 |
 | declaration of min-width | 6 |
-| declaration of zoom | 6 |
 | element <dialog> | 6 |
 | element <math> | 6 |
+| element <output> | 6 |
 | element <picture> | 6 |
+| input type=date | 6 |
 | unchecked attribute data-val | 6 |
 | declaration of --a | 5 |
 | declaration of border-top-right-radius | 5 |
 | declaration of break-before | 5 |
-| declaration of overflow | 5 |
-| element <select> | 5 |
-| element <textarea> | 5 |
-| declaration of clip-path | 4 |
+| declaration of clip-path | 5 |
+| declaration of pointer-events | 5 |
+| declaration of -webkit-locale | 4 |
 | declaration of column-width | 4 |
+| declaration of container-name | 4 |
 | declaration of min-height | 4 |
-| declaration of pointer-events | 4 |
 | declaration of resize | 4 |
 | declaration of scrollbar-gutter | 4 |
 | declaration of scrollbar-width | 4 |
 | declaration of text-indent | 4 |
 | declaration of z-index | 4 |
+| element <legend> | 4 |
+| element <progress> | 4 |
+| input type=image | 4 |
+| input type=month | 4 |
+| input type=time | 4 |
 | self-closing <canvas/> in XHTML | 4 |
 | @starting-style | 3 |
-| declaration of appearance | 3 |
+| declaration of -webkit-text-fill-color | 3 |
+| declaration of accent-color | 3 |
 | declaration of background-position-x | 3 |
 | declaration of background-size | 3 |
+| declaration of border | 3 |
 | declaration of border-bottom-right-radius | 3 |
-| declaration of container-name | 3 |
-| declaration of cursor | 3 |
+| declaration of caret-color | 3 |
 | declaration of flex-line-count | 3 |
 | declaration of mask-image | 3 |
 | declaration of padding-inline-start | 3 |
 | declaration of text-orientation | 3 |
 | declaration of transform-origin | 3 |
 | element <details> | 3 |
-| unchecked attribute data-expected | 3 |
-| declaration of -webkit-text-fill-color | 2 |
-| declaration of accent-color | 2 |
+| element <marquee> | 3 |
+| input type=datetime-local | 3 |
+| input type=file | 3 |
 | declaration of border-bottom-left-radius | 2 |
 | declaration of border-image | 2 |
+| declaration of color-scheme | 2 |
 | declaration of content | 2 |
 | declaration of flex-basis | 2 |
 | declaration of flex-grow | 2 |
 | declaration of flex-shrink | 2 |
 | declaration of float | 2 |
 | declaration of font-size | 2 |
+| declaration of font-style | 2 |
 | declaration of image-rendering | 2 |
 | declaration of margin-block-end | 2 |
 | declaration of margin-top | 2 |
 | declaration of order | 2 |
+| declaration of outline | 2 |
 | declaration of padding-left | 2 |
+| declaration of rotate | 2 |
 | declaration of scrollbar-color | 2 |
 | declaration of text-decoration-line | 2 |
 | declaration of text-emphasis-style | 2 |
 | declaration of text-overflow | 2 |
 | declaration of text-size-adjust | 2 |
+| declaration of translate | 2 |
 | declaration of unicode-bidi | 2 |
-| element <hr> | 2 |
-| element <marquee> | 2 |
+| element <audio> | 2 |
 | missing file css/css-transforms/about:blank | 2 |
 | self-closing <fieldset/> in XHTML | 2 |
 | self-closing <iframe/> in XHTML | 2 |
 | self-closing <param/> in XHTML | 2 |
 | self-closing <textarea/> in XHTML | 2 |
 | self-closing <video/> in XHTML | 2 |
+| unchecked attribute data-affiliation | 2 |
 | unchecked attribute data-color | 2 |
+| unchecked attribute data-description | 2 |
 | unchecked attribute data-document | 2 |
 | unchecked attribute data-marker | 2 |
 | unchecked attribute data-name | 2 |
@@ -188,28 +201,33 @@ The first reason the rule found for each test it left out:
 | declaration of --prop | 1 |
 | declaration of --var | 1 |
 | declaration of --w | 1 |
+| declaration of -moz-appearance | 1 |
 | declaration of -webkit-appearance | 1 |
 | declaration of -webkit-filter | 1 |
+| declaration of -webkit-mask-image | 1 |
 | declaration of -webkit-perspective-origin-y | 1 |
+| declaration of -webkit-text-stroke-color | 1 |
 | declaration of -webkit-writing-mode | 1 |
 | declaration of align-items | 1 |
 | declaration of anchor-name | 1 |
+| declaration of animation-composition | 1 |
 | declaration of animation-name | 1 |
 | declaration of background-blend-mode | 1 |
 | declaration of background-origin | 1 |
 | declaration of border-block | 1 |
-| declaration of border-color | 1 |
 | declaration of border-inline | 1 |
 | declaration of border-inline-start-color | 1 |
 | declaration of border-shape | 1 |
 | declaration of column-rule | 1 |
+| declaration of column-rule-color | 1 |
 | declaration of contain-intrinsic-size | 1 |
 | declaration of content-visibility | 1 |
 | declaration of expando | 1 |
+| declaration of field-sizing | 1 |
 | declaration of flex-direction | 1 |
+| declaration of flood-color | 1 |
 | declaration of font-feature-settings | 1 |
 | declaration of font-size-adjust | 1 |
-| declaration of font-style | 1 |
 | declaration of font-variant | 1 |
 | declaration of font-variation-settings | 1 |
 | declaration of foo | 1 |
@@ -226,27 +244,29 @@ The first reason the rule found for each test it left out:
 | declaration of max-width | 1 |
 | declaration of mix-blend-mode | 1 |
 | declaration of object-fit | 1 |
+| declaration of offset-position | 1 |
+| declaration of overflow-wrap | 1 |
 | declaration of padding-block-end | 1 |
 | declaration of perspective | 1 |
-| declaration of rotate | 1 |
 | declaration of scale | 1 |
+| declaration of shape-outside | 1 |
 | declaration of stroke-dasharray | 1 |
 | declaration of text-align | 1 |
 | declaration of text-autospace | 1 |
 | declaration of text-decoration | 1 |
 | declaration of text-decoration-skip | 1 |
+| declaration of text-emphasis-color | 1 |
 | declaration of top | 1 |
 | declaration of transition-delay | 1 |
 | declaration of transition-duration | 1 |
 | declaration of transition-properties | 1 |
 | declaration of transition-timing-function | 1 |
-| declaration of translate | 1 |
 | declaration of var-a | 1 |
 | declaration of will-change | 1 |
 | declaration of xcolor | 1 |
-| element <audio> | 1 |
 | element <frameset> | 1 |
-| element <output> | 1 |
+| input type=color | 1 |
+| input type=week | 1 |
 | link to  | 1 |
 | link to //[ | 1 |
 | missing file css/css-cascade/data:text/css,@layer foo;@media(all){} | 1 |
@@ -254,19 +274,25 @@ The first reason the rule found for each test it left out:
 | missing file css/css-cascade/data:text/css,@layer{target{background-color:green}} | 1 |
 | missing file css/css-flexbox/resources/flexbox.css | 1 |
 | missing file css/css-images/tools/REPLACEME_REFERENCE_FILENAME | 1 |
+| missing file css/selectors/data:,a{ | 1 |
+| missing file css/selectors/data:text/css,.a{--x:%22%EF%89%BB%22;}.b{} | 1 |
+| missing file css/selectors/data:text/css,a{xyz | 1 |
 | missing file dom/nodes/insertion-removing-steps/data:text/css,%23div{display:none} | 1 |
 | self-closing <rect/> in XHTML | 1 |
-| unchecked attribute data-affiliation | 1 |
+| self-closing <span/> in XHTML | 1 |
 | unchecked attribute data-bar | 1 |
 | unchecked attribute data-crash | 1 |
 | unchecked attribute data-e2 | 1 |
 | unchecked attribute data-expect | 1 |
+| unchecked attribute data-expect-match | 1 |
 | unchecked attribute data-expected-left | 1 |
 | unchecked attribute data-expected-padding-left | 1 |
 | unchecked attribute data-expected-scroll-height | 1 |
 | unchecked attribute data-expected-scroll-width | 1 |
+| unchecked attribute data-in | 1 |
 | unchecked attribute data-main | 1 |
 | unchecked attribute data-natural-width | 1 |
+| unchecked attribute data-sizes | 1 |
 | unchecked attribute data-weapons | 1 |
 | unchecked attribute data-x | 1 |
 | unchecked attribute data-yes | 1 |

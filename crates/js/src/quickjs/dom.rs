@@ -281,6 +281,7 @@ const NATIVES: &[(&str, Decode)] = &[
             prevent_scroll: a.bool(1),
         })
     }),
+    ("blurToward", |a| Ok(Call::BlurToward(a.handle(0)?))),
     ("hasFocus", |_| Ok(Call::HasFocus)),
     ("controlValue", |a| Ok(Call::ControlValue(a.handle(0)?))),
     ("valueMode", |a| Ok(Call::ValueMode(a.handle(0)?))),

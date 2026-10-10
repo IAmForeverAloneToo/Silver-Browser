@@ -468,3 +468,30 @@ fn a_focus_scrolls_no_clip_to_its_element() {
         "a hidden box is scrolled"
     );
 }
+
+#[test]
+fn get_elements_by_name_is_a_live_node_list_of_the_named() {
+    let mut tab =
+        page("<input name=a id=x><p name=a></p><form name=b></form><div><input name=a></div>");
+    assert_eq!(
+        run(
+            &mut tab,
+            "var l = document.getElementsByName('a'); \
+             console.log(l.length, l instanceof NodeList, l[0].id, l[1].localName); \
+             document.getElementById('x').setAttribute('name', 'c'); \
+             console.log(l.length, document.getElementsByName('b').length);"
+        ),
+        ["3 true x p", "2 1"]
+    );
+}
+
+#[test]
+fn an_option_standing_alone_is_a_block_and_a_datalist_shows_nothing() {
+    // The reference browser shows an option outside a select as a block
+    // with its label, and nothing of a datalist.
+    let mut tab = page(
+        "<option label=L>child</option><option>plain</option>\
+         <datalist><option>hidden</option></datalist>",
+    );
+    assert_eq!(texts(&mut tab), ["L", "plain"]);
+}

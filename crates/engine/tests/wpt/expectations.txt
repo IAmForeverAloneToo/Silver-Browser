@@ -5,7 +5,8 @@
 # note's section 3: docs/design/flexbox.md for M17, docs/design/grid.md
 # for M18, docs/design/compositing.md for M19, docs/design/media.md for
 # M20, docs/design/values.md for M21, docs/design/animations.md for M22,
-# docs/design/images.md for M23, docs/design/dom-scripting.md for M25.
+# docs/design/images.md for M23, docs/design/dom-scripting.md for M25,
+# docs/design/events.md for M26.
 
 # Not in either milestone (docs/design/flexbox.md and docs/design/grid.md,
 # section 2).
@@ -200,3 +201,29 @@ css/css-grid/grid-definition/grid-auto-repeat-dynamic-003.html                  
 css/css-grid/grid-with-dynamic-img.html                                           the script gives the image an SVG source, and SVG images are M23.4's
 css/css-backgrounds/background-color-body-propagation-003.html                    the script makes the body `display: inline` with a green background, which this engine does not carry to the canvas as the reference browser does (css-backgrounds-3 2.11.2); the same declarations in the markup render the same here
 html/dom/directionality/bdi-element-invalid-dir.html                              an invalid `dir` on a `bdi` is `auto` (HTML 3.2.6.4), right to left by its Hebrew letter; this engine has no `dir=auto` and lays the `bdi` out left to right
+
+# Tests taken at M26 (docs/design/events.md, step 11): with `reftest-wait`
+# or event handlers, run until they take the class off; with controls, or
+# with what M26 adds to the cascade (`outline`, `cursor`, `overflow:
+# clip`, inset and outset borders); and the directories css/selectors
+# and html/semantics/forms. These fail by gaps outside M26, named at
+# their milestones, or where the reference browser and the test disagree.
+css/css-flexbox/intrinsic-size/col-wrap-005.html                                                                a multi-line column container's max-content width is its largest item's here, not its lines' (docs/design/flexbox.md, section 2)
+css/css-flexbox/intrinsic-size/col-wrap-018.html                                                                `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
+css/css-flexbox/intrinsic-size/col-wrap-019.html                                                                `aspect-ratio` on a box that is not replaced, which computes but sizes nothing (G36)
+css/css-flexbox/intrinsic-size/row-005.html                                                                     the test wants a row container's intrinsic widths from its items' desired flex fractions (css-flexbox-1 9.9.1.1); this engine has the Web-compatible algorithm (9.9.1.2, docs/design/flexbox.md), the sum of the items' contributions
+css/css-flexbox/intrinsic-size/row-008.html                                                                     the test wants a row container's intrinsic widths from its items' desired flex fractions (css-flexbox-1 9.9.1.1); this engine has the Web-compatible algorithm (9.9.1.2, docs/design/flexbox.md), the sum of the items' contributions
+css/css-flexbox/intrinsic-size/row-compat-001.html                                                              as fixed-table-layout-with-percentage-width-in-flex-item.html: the last case's fixed-layout table with a percentage width has an unbounded max-content width in the reference browsers; this engine's is its columns'
+css/css-flexbox/select-element-zero-height-001.html                                                             the UA sheet gives a drop-down its 19px as `height: 1.425em`, where the reference browser's 19px is its content's: in a column flex container 0px tall, its automatic minimum is its content's 17px here and it shrinks to that
+css/css-flexbox/select-element-zero-height-002.html                                                             as select-element-zero-height-001.html: the drop-down shrinks to its content's 17px, its height a given one here
+css/css-transforms/perspective-split-by-zero-w.html                                                             corners of the plane are behind the eye, and the software backend leaves such a plane undrawn where the reference browser clips it at the eye (docs/design/compositing.md, section 2)
+css/css-transforms/transform-translate-background-002.html                                                      as transform-translate-background-001.html: the root's overflow is not carried to the viewport (css-overflow-3 3.3), so the viewport shows a scrollbar for the root's overflow
+css/css-lists/nested-marker-dynamic.html                                                                        as nested-marker.html: a `::before` or `::after` with `display: list-item` is no list item here: it has no marker
+css/css-animations/animation-important-002.html                                                                 `:visited` matches no link here, by design (docs/design/events.md), so the second link's colour is the animation's; the reference browser counts the page itself visited
+css/css-transitions/crashtests/clear-duration-in-transitionend.html                                             the script reads `offsetHeight` so that its change starts a transition from the style before it, which needs the style flush G46 gives; here the first frame sees the changed style alone, no transition runs and no `transitionend` takes `test-wait` off
+css/css-images/gradient/gradient-eval-004.html                                                                  the colours are interpolated in gamma-encoded sRGB, as for the legacy colours the engine parses (docs/design/images.md); the reference browser interpolates this modern `rgb()` with a `none` in Oklab, giving rgb(0, 0, 99) where this engine gives 128
+css/css-backgrounds/background-position/subpixel-position-center.tentative.html                                 both images start at x 68.25; this engine draws an image's partly covered edge pixels with their coverage, so the red one shows through the green one's left column, where the reference browser snaps a background image to whole pixels
+html/semantics/embedded-content/the-img-element/animated-webp-update.tentative.html                             the WebP's frames are lossy, and this engine's decoder (image-webp) turns their YUV into RGB one away from the reference browser's: (1, 128, 1) for its (0, 128, 0)
+css/selectors/selectors-4/lang-023.html                                                                         `x` is not a well-formed language range, and `:lang()` matches nothing with one here (docs/design/selectors-pseudo.md); the test wants extended filtering to take it
+html/semantics/forms/the-select-element/customizable-select/standalone-option-no-shadow-tree.html               the test wants an option outside a select to show its children; the reference browser (Chrome 154) shows its `label`, padded 2px, as this engine does
+html/semantics/forms/the-select-element/customizable-select/standalone-option-no-shadow-tree-after-select.html  as standalone-option-no-shadow-tree.html: the option taken out of its select shows its `label`, as in the reference browser (Chrome 154)

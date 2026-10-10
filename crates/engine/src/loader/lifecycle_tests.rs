@@ -311,8 +311,12 @@ fn css_animation_events_reach_their_listeners_in_the_next_frame() {
     frame_at(&mut tab, 1016);
     assert_eq!(lines(&mut tab), ["animationstart fade 0 true true"]);
     frame_at(&mut tab, 1200);
+    // The animation is over, but its event waits for the next frame's
+    // rendering steps: that frame is wanted.
+    assert!(tab.engine.needs_frame(), "a frame for the queued event");
     frame_at(&mut tab, 1216);
     assert_eq!(lines(&mut tab), ["animationend fade 0.1 true true"]);
+    assert!(!tab.engine.needs_frame());
 }
 
 #[test]
@@ -351,4 +355,28 @@ fn a_hidden_window_hides_its_document_and_slows_its_timers() {
     assert!(tab.engine.needs_frame());
     frame_at(&mut tab, 3016);
     assert_eq!(lines(&mut tab), ["frame"]);
+}
+
+#[test]
+fn an_animation_a_frame_callback_finishes_is_heard_before_the_next_callbacks() {
+    // css-animations/animation-delay-009: a callback moves a running
+    // animation past its end; its start and end reach the listeners in
+    // the next frame's rendering steps, before that frame's callbacks.
+    let (mut tab, _) = scripted(
+        "<style>@keyframes red { from { color: red } to { color: red } }</style>\
+         <div>x</div><script>\
+         var div = document.querySelector('div');\
+         div.style.animation = 'red 1000s';\
+         div.addEventListener('animationstart', function () { console.log('start'); });\
+         div.addEventListener('animationend', function () { console.log('end'); });\
+         requestAnimationFrame(function () { console.log('frame 1');\
+           div.style.animationDelay = '-1000s';\
+           requestAnimationFrame(function () { console.log('frame 2'); }); });\
+         </script>",
+        true,
+    );
+    frame_at(&mut tab, 0);
+    assert_eq!(lines(&mut tab), ["frame 1"]);
+    frame_at(&mut tab, 16);
+    assert_eq!(lines(&mut tab), ["start", "end", "frame 2"]);
 }

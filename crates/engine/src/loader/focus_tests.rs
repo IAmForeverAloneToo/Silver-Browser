@@ -705,3 +705,87 @@ fn autofocus_leaves_a_focus_something_has_already() {
     render(&mut tab);
     assert_eq!(focused(&tab), "b");
 }
+
+#[test]
+fn focus_within_stays_with_the_ancestors_the_focus_moves_between() {
+    // css/selectors/focus-within-010: the target is shown only while its
+    // wrapper has `:focus-within`, which it keeps as the focus moves
+    // from the wrapper to the target, so the target takes it.
+    let mut tab = page(
+        "<style>#target { display: none } #wrapper:focus-within > #target { display: block }\
+         </style><div id=wrapper tabindex=1><div id=target tabindex=2></div></div>\
+         <div id=other tabindex=0></div>\
+         <script>var w = document.getElementById('wrapper'), \
+           t = document.getElementById('target'), o = document.getElementById('other');\
+           w.addEventListener('blur', function () { \
+             console.log('blur within', w.matches(':focus-within')); });</script>",
+    );
+    tab.engine.run_classic("w.focus(); t.focus();");
+    assert_eq!(focused(&tab), "target");
+    assert!(lines(&mut tab).contains(&"blur within true".to_owned()));
+    let wrapper = id(&tab, "wrapper");
+    assert!(
+        tab.engine
+            .document()
+            .state(wrapper)
+            .contains(ElementState::FOCUS_WITHIN),
+        "the wrapper holds the focus"
+    );
+    // Away from the wrapper: it loses `:focus-within`.
+    tab.engine.run_classic("o.focus();");
+    assert_eq!(focused(&tab), "other");
+    assert!(
+        !tab.engine
+            .document()
+            .state(wrapper)
+            .contains(ElementState::FOCUS_WITHIN)
+    );
+    // A focus that fails after the blur leaves no `:focus-within`
+    // behind: the target is taken out as the wrapper loses the focus.
+    tab.engine.run_classic(
+        "w.focus(); w.addEventListener('blur', function () { t.remove(); }); t.focus();",
+    );
+    assert_eq!(focused(&tab), "-");
+    assert!(
+        !tab.engine
+            .document()
+            .state(wrapper)
+            .contains(ElementState::FOCUS_WITHIN)
+    );
+    // The shared ancestor taken out as the focus leaves it takes its
+    // `:focus-within` and its ancestors' with it.
+    let mut tab = page(
+        "<div id=wrapper tabindex=1><div id=target tabindex=2></div></div>\
+         <script>var w = document.getElementById('wrapper'), \
+           t = document.getElementById('target');</script>",
+    );
+    tab.engine.run_classic(
+        "w.focus(); w.addEventListener('blur', function () { w.remove(); }); t.focus();",
+    );
+    assert_eq!(focused(&tab), "-");
+    let document = tab.engine.document();
+    let root = document.document_element().expect("the root");
+    assert!(
+        document
+            .subtree(root)
+            .all(|node| !document.state(node).contains(ElementState::FOCUS_WITHIN)),
+        "no element keeps it"
+    );
+    // The engine's own moves keep it too: a click on the target from
+    // the wrapper.
+    let mut tab = page(
+        "<style>#target { display: none; height: 20px } \
+         #wrapper:focus-within > #target { display: block }</style>\
+         <div id=wrapper tabindex=1><div id=target tabindex=2></div></div>\
+         <script>var w = document.getElementById('wrapper');\
+           w.addEventListener('blur', function () { \
+             console.log('blur within', w.matches(':focus-within')); });</script>",
+    );
+    tab.engine.run_classic("w.focus();");
+    tab.engine.frame(400, 300);
+    lines(&mut tab);
+    tab.engine.pointer_down(20.0, 15.0, Button::Primary, 1);
+    tab.engine.pointer_up(20.0, 15.0, Button::Primary, 1);
+    assert_eq!(focused(&tab), "target");
+    assert!(lines(&mut tab).contains(&"blur within true".to_owned()));
+}
