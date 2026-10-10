@@ -5,7 +5,7 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use dom::{Document, MutationError, NodeData, NodeId, forms};
@@ -22,6 +22,7 @@ use super::{
     prepare_element, refusal_text, report_text,
 };
 use crate::loader::Page;
+use crate::storage;
 
 /// A script running, innermost last.
 struct Frame {
@@ -302,6 +303,72 @@ impl DocumentHost {
             .url()
             .filter(|url| matches!(url.scheme(), "http" | "https"))
             .cloned()
+    }
+
+    /// Why the document's scripts may not reach its Web Storage areas
+    /// (HTML 12.2.2 and 12.2.3, M28), in the reference browser's words:
+    /// the empty string when they may. An opaque origin has none.
+    fn storage_refused(&self) -> String {
+        let Some(page) = &self.page else {
+            return "Access is denied for this document.".to_owned();
+        };
+        if !page.origin().is_opaque() && self.window.storage.is_some() {
+            return String::new();
+        }
+        if page.url().is_some_and(|url| url.scheme() == "data") {
+            return "Storage is disabled inside 'data:' URLs.".to_owned();
+        }
+        "Access is denied for this document.".to_owned()
+    }
+
+    /// `f` of the document's `localStorage` area if `local`, else its
+    /// `sessionStorage` area; a `SecurityError` when its scripts may not
+    /// reach them.
+    fn with_area<T>(
+        &self,
+        local: bool,
+        f: impl FnOnce(&mut storage::Area) -> T,
+    ) -> Result<T, DomError> {
+        let refused = self.storage_refused();
+        if !refused.is_empty() {
+            return Err(DomError::new("SecurityError", refused));
+        }
+        let (Some(page), Some(storage)) = (&self.page, &self.window.storage) else {
+            return Err(DomError::new("SecurityError", refused));
+        };
+        let origin = page.origin().serialization();
+        let mut storage = storage.lock().unwrap_or_else(PoisonError::into_inner);
+        Ok(f(storage.area(local, &origin)))
+    }
+
+    /// Notes a change of an area (M28): for the profile, and, when
+    /// another document alive shares the origin, for its `storage` event.
+    fn storage_changed(
+        &self,
+        local: bool,
+        key: Option<String>,
+        old: Option<String>,
+        new: Option<String>,
+    ) {
+        let (Some(page), Some(storage)) = (&self.page, &self.window.storage) else {
+            return;
+        };
+        let origin = page.origin().serialization();
+        let mut storage = storage.lock().unwrap_or_else(PoisonError::into_inner);
+        storage.changed(local, &origin, key.as_deref());
+        if self.window.storage_peer {
+            storage.broadcast(storage::Change {
+                local,
+                origin,
+                key,
+                old,
+                new,
+                url: page
+                    .url()
+                    .map_or_else(String::new, |url| url.as_str().to_owned()),
+                page: page.id(),
+            });
+        }
     }
 
     /// Answers `call`.
@@ -913,6 +980,45 @@ impl DocumentHost {
                     "The document's origin is opaque.",
                 )),
             },
+            Call::StorageOpen(_) => Ok(Answer::String(self.storage_refused())),
+            Call::StorageLength(local) => {
+                self.with_area(local, |area| Answer::Number(area.len() as f64))
+            }
+            Call::StorageKey(local, index) => self.with_area(local, |area| {
+                Answer::MaybeString(usize::try_from(index).ok().and_then(|i| area.key(i)))
+            }),
+            Call::StorageKeys(local) => {
+                self.with_area(local, |area| Answer::Strings(area.keys().to_vec()))
+            }
+            Call::StorageGet(local, key) => self.with_area(local, |area| {
+                Answer::MaybeString(area.get(&key).map(str::to_owned))
+            }),
+            Call::StorageSet(local, key, value) => {
+                let changed = self.with_area(local, |area| match area.set(&key, &value) {
+                    Ok(old) => Ok(old),
+                    Err(storage::OverQuota) => Err(()),
+                })?;
+                match changed {
+                    Err(()) => Ok(Answer::Bool(false)),
+                    Ok(None) => Ok(Answer::Bool(true)),
+                    Ok(Some(old)) => {
+                        self.storage_changed(local, Some(key), old, Some(value));
+                        Ok(Answer::Bool(true))
+                    }
+                }
+            }
+            Call::StorageRemove(local, key) => {
+                if let Some(old) = self.with_area(local, |area| area.remove(&key))? {
+                    self.storage_changed(local, Some(key), Some(old), None);
+                }
+                Ok(Answer::Nothing)
+            }
+            Call::StorageClear(local) => {
+                if self.with_area(local, |area| area.clear())? {
+                    self.storage_changed(local, None, None, None);
+                }
+                Ok(Answer::Nothing)
+            }
             Call::Navigate { url, replace } => {
                 let parsed = self
                     .page

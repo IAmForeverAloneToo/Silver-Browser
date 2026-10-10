@@ -110,8 +110,8 @@ mod submit;
 mod testing;
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
 pub use dom::ElementState;
@@ -125,7 +125,7 @@ pub use profile::Profile;
 pub use scripts::{
     ConsoleEntry, MAX_CONSOLE_ENTRIES, MAX_CONSOLE_MESSAGE, MAX_SCRIPT_BYTES, ScriptState,
 };
-pub use storage::FLUSH_INTERVAL;
+pub use storage::{FLUSH_INTERVAL, STORAGE_QUOTA};
 pub use style::animation::{AnimationEvent, EventKind, Running as RunningAnimation};
 pub use style::computed::Cursor;
 pub use style::{ColorScheme, MediaType, Preferences};
@@ -362,8 +362,11 @@ pub struct Engine {
     next_image: u64,
     /// The clock tasks, timers and scripts read (M26).
     clock: Clock,
-    /// The profile what the browsing keeps is written to (M28).
-    storage: storage::Storage,
+    /// The profile what the browsing keeps is written to, and the Web
+    /// Storage areas (M28), which scripts reach through their host.
+    storage: Arc<Mutex<storage::Storage>>,
+    /// The `storage` events queued (M28), each at the page it goes to.
+    storage_events: VecDeque<(PageId, js::EventInit)>,
     /// Whether the window is hidden (M26): minimized or covered.
     hidden: bool,
     /// When a hidden document's timer last ran.
@@ -929,7 +932,8 @@ impl Engine {
                 let made = Instant::now();
                 Arc::new(move || made.elapsed())
             },
-            storage: storage::Storage::new(),
+            storage: Arc::new(Mutex::new(storage::Storage::new())),
+            storage_events: VecDeque::new(),
             hidden: false,
             hidden_ran: None,
             pending_events: Vec::new(),
@@ -1343,6 +1347,8 @@ impl Engine {
             hidden: self.hidden,
             focused: self.window_focused,
             keyboard: self.keyboard,
+            storage: Some(self.storage.clone()),
+            storage_peer: self.storage_peers(),
         }
     }
 
@@ -2542,6 +2548,11 @@ impl Engine {
                 self.wake();
                 break;
             }
+            self.queue_storage_events();
+            if let Some((page, event)) = self.storage_events.pop_front() {
+                self.fire_storage_event(page, event);
+                continue;
+            }
             let shown = self.shown_task_at().filter(|due| *due <= now);
             let incoming = self
                 .incoming_scripts()
@@ -2566,8 +2577,111 @@ impl Engine {
         let incoming = self
             .incoming_scripts()
             .and_then(scripts::Scripts::next_task_at);
-        let flush = self.storage.flush_at(&self.network.cookies());
-        [shown, incoming, flush].into_iter().flatten().min()
+        let storage = self.storage();
+        let flush = storage.flush_at(&self.network.cookies());
+        let events =
+            (!self.storage_events.is_empty() || storage.has_changes()).then_some(Duration::ZERO);
+        [shown, incoming, flush, events].into_iter().flatten().min()
+    }
+
+    /// The engine's storage, locked.
+    fn storage(&self) -> MutexGuard<'_, storage::Storage> {
+        self.storage.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Queues a `storage` event (HTML 12.2.1, M28) for each change of an
+    /// area taken, at each document alive of its origin other than the
+    /// one that made it: the one shown and the one on its way.
+    fn queue_storage_events(&mut self) {
+        let changes = self.storage().take_changes();
+        if changes.is_empty() {
+            return;
+        }
+        let mut pages = vec![(self.shown.page.id(), self.shown.page.origin().clone())];
+        if let Some(Navigation {
+            incoming: Incoming::Parsing { page, .. },
+            ..
+        }) = &self.navigation
+        {
+            pages.push((page.id(), page.origin().clone()));
+        }
+        let text = |value: Option<String>| value.map_or(js::Field::Null, js::Field::String);
+        for change in changes {
+            let event = js::EventInit::new("StorageEvent", "storage")
+                .with("key", text(change.key))
+                .with("oldValue", text(change.old))
+                .with("newValue", text(change.new))
+                .with("url", js::Field::String(change.url))
+                .with("storageArea", js::Field::Storage(change.local));
+            for (page, origin) in &pages {
+                if *page != change.page
+                    && !origin.is_opaque()
+                    && origin.serialization() == change.origin
+                {
+                    self.storage_events.push_back((*page, event.clone()));
+                }
+            }
+        }
+    }
+
+    /// Fires a `storage` event at the window of the document of `page`,
+    /// the one shown or the one on its way, if it is still alive.
+    fn fire_storage_event(&mut self, page: PageId, event: js::EventInit) {
+        if self.shown.page.id() == page {
+            self.fire(js::Target::Window, event);
+            return;
+        }
+        let media = self.media(self.viewport);
+        let window = self.window_env();
+        let Some(Navigation {
+            incoming:
+                Incoming::Parsing {
+                    page: incoming,
+                    document,
+                    parsing,
+                },
+            ..
+        }) = &mut self.navigation
+        else {
+            return;
+        };
+        if incoming.id() != page || !self.scripting {
+            return;
+        }
+        let loader::Parsing { load, scripts, .. } = &mut **parsing;
+        let mut lent = scripts::Lent {
+            document,
+            page: incoming,
+            parser: Some(load),
+            network: &mut self.network,
+            ready: scripts::ReadyState::Loading,
+            window,
+        };
+        scripts.dispatch(&mut lent, js::Target::Window, event);
+        let asked = scripts.take_navigation();
+        let changes = document.take_changes();
+        if changes
+            .iter()
+            .any(|change| loader::may_touch_sheets(document, change))
+        {
+            incoming.rescan(document, &mut self.network, Some(&media));
+        }
+        if let Some(navigation) = asked {
+            self.incoming_navigation(navigation);
+        }
+    }
+
+    /// Whether the document shown and the one on its way share an
+    /// origin (M28): a change of an area in one is then told to the
+    /// other.
+    fn storage_peers(&self) -> bool {
+        match &self.navigation {
+            Some(Navigation {
+                incoming: Incoming::Parsing { page, .. },
+                ..
+            }) => !page.origin().is_opaque() && page.origin() == self.shown.page.origin(),
+            _ => false,
+        }
     }
 
     /// Keeps what the browsing keeps in `profile` from now on (M28,
@@ -2577,14 +2691,16 @@ impl Engine {
     /// engine given none keeps nothing. Fails, and does not use it, when
     /// the profile cannot be read.
     pub fn set_profile(&mut self, profile: Profile) -> Result<(), profile::Error> {
-        self.storage.set_profile(profile, &self.network.cookies())
+        let cookies = self.network.cookies();
+        self.storage().set_profile(profile, &cookies)
     }
 
     /// Writes to the profile what changed since it was last written: the
     /// shell's call when its window closes (M28).
     pub fn flush_profile(&mut self) -> Result<(), profile::Error> {
         let now = self.now();
-        self.storage.flush(&self.network.cookies(), now)
+        let cookies = self.network.cookies();
+        self.storage().flush(&cookies, now)
     }
 
     /// Writes the profile when a change has waited out the interval
@@ -2593,8 +2709,9 @@ impl Engine {
     fn keep(&mut self) {
         let now = self.now();
         let cookies = self.network.cookies();
-        if self.storage.flush_at(&cookies).is_some_and(|at| at <= now) {
-            let _ = self.storage.flush(&cookies, now);
+        let mut storage = self.storage();
+        if storage.flush_at(&cookies).is_some_and(|at| at <= now) {
+            let _ = storage.flush(&cookies, now);
         }
     }
 

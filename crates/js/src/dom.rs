@@ -256,6 +256,26 @@ pub enum Call {
     /// host or a registrable suffix of it, and then nothing, as in an
     /// origin-keyed agent cluster (HTML 7.1.1.2).
     SetDocumentDomain(String),
+    /// Whether the window's `localStorage` (`true`) or `sessionStorage`
+    /// may be read (HTML 12.2.2 and 12.2.3, M28): the empty string, or
+    /// why not, a `SecurityError`'s message. The calls below name the
+    /// area the same way.
+    StorageOpen(bool),
+    /// An area's `length`.
+    StorageLength(bool),
+    /// An area's `key(index)`: the key, or `null`.
+    StorageKey(bool, u32),
+    /// An area's keys, in their order.
+    StorageKeys(bool),
+    /// An area's `getItem(key)`: the value, or `null`.
+    StorageGet(bool, String),
+    /// An area's `setItem(key, value)`: whether the area could hold it,
+    /// within its quota.
+    StorageSet(bool, String, String),
+    /// An area's `removeItem(key)`.
+    StorageRemove(bool, String),
+    /// An area's `clear()`.
+    StorageClear(bool),
     /// The document's URL in parts, as `Location` gives them: `href`,
     /// `origin`, `protocol`, `host`, `hostname`, `port`, `pathname`,
     /// `search`, `hash`.

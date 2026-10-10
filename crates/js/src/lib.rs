@@ -261,6 +261,11 @@ pub enum Field {
     Node(Option<Handle>),
     /// The window (a `view`).
     Window,
+    /// `null` (a `key` a `clear()` leaves `null`, M28).
+    Null,
+    /// The window's `localStorage` (`true`) or `sessionStorage`: a
+    /// `storageArea` (M28).
+    Storage(bool),
 }
 
 /// A realm: a global object and the heap its scripts share.

@@ -312,6 +312,22 @@ const NATIVES: &[(&str, Decode)] = &[
     ("setDocumentDomain", |a| {
         Ok(Call::SetDocumentDomain(a.string(0)?))
     }),
+    ("storageOpen", |a| Ok(Call::StorageOpen(a.bool(0)))),
+    ("storageLength", |a| Ok(Call::StorageLength(a.bool(0)))),
+    ("storageKey", |a| {
+        Ok(Call::StorageKey(a.bool(0), a.integer(1) as u32))
+    }),
+    ("storageKeys", |a| Ok(Call::StorageKeys(a.bool(0)))),
+    ("storageGet", |a| {
+        Ok(Call::StorageGet(a.bool(0), a.string(1)?))
+    }),
+    ("storageSet", |a| {
+        Ok(Call::StorageSet(a.bool(0), a.string(1)?, a.string(2)?))
+    }),
+    ("storageRemove", |a| {
+        Ok(Call::StorageRemove(a.bool(0), a.string(1)?))
+    }),
+    ("storageClear", |a| Ok(Call::StorageClear(a.bool(0)))),
     ("navigate", |a| {
         Ok(Call::Navigate {
             url: a.string(0)?,

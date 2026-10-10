@@ -33,6 +33,7 @@
   const ReflectDefineProperty = Reflect.defineProperty;
   const ReflectDeleteProperty = Reflect.deleteProperty;
   const ReflectGetOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
+  const ReflectGetPrototypeOf = Reflect.getPrototypeOf;
   const ArraySplice = uncurry(Array.prototype.splice);
   const StringIndexOf = uncurry(String.prototype.indexOf);
   const FromCharCode = String.fromCharCode;
@@ -680,6 +681,11 @@
           return value;
         }
         throw new $TypeError(where + "Failed to convert value to 'HTMLElement'.");
+      case "Storage?":
+        if (value === null || WeakMapGet(areaKinds, value) !== undefined) {
+          return value;
+        }
+        throw new $TypeError(where + "Failed to convert value to 'Storage'.");
       default:
         return value;
     }
@@ -1450,6 +1456,75 @@
     }
   }
 
+  // StorageEvent (HTML section 12.2.4, M28): a change of a Web Storage
+  // area another document of the origin made.
+  const STORAGE = 32768;
+  const STORAGE_INIT = members(EVENT_INIT, [
+    ["key", "DOMString?", null],
+    ["newValue", "DOMString?", null],
+    ["oldValue", "DOMString?", null],
+    ["storageArea", "Storage?", null],
+    ["url", "USVString", ""],
+  ], "StorageEventInit");
+
+  class StorageEvent extends Event {
+    constructor(type, eventInitDict = undefined) {
+      const args = eventArgs(arguments.length, type, eventInitDict, STORAGE_INIT, "StorageEvent");
+      super(args[0], args[1]);
+      eventState(this).kinds |= STORAGE;
+    }
+
+    get key() {
+      return fieldsOf(this, STORAGE).key;
+    }
+
+    get oldValue() {
+      return fieldsOf(this, STORAGE).oldValue;
+    }
+
+    get newValue() {
+      return fieldsOf(this, STORAGE).newValue;
+    }
+
+    get url() {
+      return fieldsOf(this, STORAGE).url;
+    }
+
+    get storageArea() {
+      return fieldsOf(this, STORAGE).storageArea;
+    }
+
+    initStorageEvent(
+      type,
+      bubbles = false,
+      cancelable = false,
+      key = null,
+      oldValue = null,
+      newValue = null,
+      url = "",
+      storageArea = null,
+    ) {
+      const s = eventOf(this, STORAGE);
+      need(arguments.length, 1, "initStorageEvent", "StorageEvent");
+      const name = str(type);
+      const text = (value) => (value === null ? null : str(value));
+      const fields = [text(key), text(oldValue), text(newValue), str(url)];
+      if (storageArea !== null && WeakMapGet(areaKinds, storageArea) === undefined) {
+        throw new $TypeError(
+          prefix("initStorageEvent", "StorageEvent") + "parameter 8 is not of type 'Storage'.",
+        );
+      }
+      if (!s.dispatching) {
+        initialize(s, name, !!bubbles, !!cancelable);
+        s.fields.key = fields[0];
+        s.fields.oldValue = fields[1];
+        s.fields.newValue = fields[2];
+        s.fields.url = fields[3];
+        s.fields.storageArea = storageArea;
+      }
+    }
+  }
+
   // An interface's constants, on it and its prototype, as Web IDL has
   // them.
   function constants(cls, pairs) {
@@ -1479,6 +1554,7 @@
     ["AnimationEvent", AnimationEvent, ANIMATION_INIT],
     ["TransitionEvent", TransitionEvent, TRANSITION_INIT],
     ["ProgressEvent", ProgressEvent, PROGRESS_INIT],
+    ["StorageEvent", StorageEvent, STORAGE_INIT],
   ];
   for (let i = 0; i < EVENT_INTERFACES.length; i++) {
     const entry = EVENT_INTERFACES[i];
@@ -1504,6 +1580,7 @@
     ["keyboardevent", KeyboardEvent, KEYBOARD_INIT],
     ["mouseevent", MouseEvent, MOUSE_INIT],
     ["mouseevents", MouseEvent, MOUSE_INIT],
+    ["storageevent", StorageEvent, STORAGE_INIT],
     ["svgevents", Event, EVENT_INIT],
     ["uievent", UIEvent, UI_INIT],
     ["uievents", UIEvent, UI_INIT],
@@ -6893,6 +6970,241 @@
     },
   };
 
+  // ---- QuotaExceededError (Web IDL section 2.8.1, M28) ------------------
+
+  // A DOMException of its own interface, with the quota and the amount
+  // asked for where they are known: the storage areas know neither.
+  const QUOTA_OPTIONS = members([], [
+    ["quota", "double", null],
+    ["requested", "double", null],
+  ], "QuotaExceededErrorOptions");
+  const quotas = new $WeakMap();
+
+  class QuotaExceededError extends $DOMException {
+    constructor(message = "", options = undefined) {
+      const text = str(message);
+      const given = dictionary(options, QUOTA_OPTIONS, "QuotaExceededError");
+      const where = "Failed to construct 'QuotaExceededError': ";
+      if (given.quota !== null && given.quota < 0) {
+        throw new $RangeError(where + "The quota must not be negative.");
+      }
+      if (given.requested !== null && given.requested < 0) {
+        throw new $RangeError(where + "The requested amount must not be negative.");
+      }
+      if (given.quota !== null && given.requested !== null && given.requested < given.quota) {
+        throw new $RangeError(where + "The requested amount must not be less than the quota.");
+      }
+      super(text, "QuotaExceededError");
+      WeakMapSet(quotas, this, given);
+    }
+
+    get quota() {
+      return quotaOf(this).quota;
+    }
+
+    get requested() {
+      return quotaOf(this).requested;
+    }
+  }
+  expose(QuotaExceededError, "QuotaExceededError");
+
+  function quotaOf(value) {
+    const given = WeakMapGet(quotas, value);
+    if (given === undefined) {
+      throw illegalInvocation();
+    }
+    return given;
+  }
+
+  // ---- Web Storage (HTML section 12.2, M28) ------------------------------
+
+  // Each area, its object and the proxy scripts hold, to whether it is
+  // the window's `localStorage` (true) or `sessionStorage` (false); and
+  // each object's proxy.
+  const areaKinds = new $WeakMap();
+  const areaProxies = new $WeakMap();
+  let localArea = null;
+  let sessionArea = null;
+
+  function areaOf(value) {
+    const local = WeakMapGet(areaKinds, value);
+    if (local === undefined) {
+      throw illegalInvocation();
+    }
+    return local;
+  }
+
+  // Its members in the reference browser's order.
+  class Storage {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("Storage");
+      }
+    }
+
+    get length() {
+      return native.storageLength(areaOf(this));
+    }
+
+    clear() {
+      native.storageClear(areaOf(this));
+    }
+
+    getItem(key) {
+      const local = areaOf(this);
+      need(arguments.length, 1, "getItem", "Storage");
+      return native.storageGet(local, str(key));
+    }
+
+    key(index) {
+      const local = areaOf(this);
+      need(arguments.length, 1, "key", "Storage");
+      return native.storageKey(local, unsigned(index));
+    }
+
+    removeItem(key) {
+      const local = areaOf(this);
+      need(arguments.length, 1, "removeItem", "Storage");
+      native.storageRemove(local, str(key));
+    }
+
+    setItem(key, value) {
+      const local = areaOf(this);
+      need(arguments.length, 2, "setItem", "Storage");
+      const name = str(key);
+      if (!native.storageSet(local, name, str(value))) {
+        throw new QuotaExceededError(
+          prefix("setItem", "Storage") + "Setting the value of '" + name +
+            "' exceeded the quota.",
+        );
+      }
+    }
+  }
+  expose(Storage, "Storage");
+
+  // The window's `localStorage` (`local`) or `sessionStorage` (HTML
+  // sections 12.2.2 and 12.2.3): the same object at every reading, made
+  // at the first; a SecurityError for a document whose origin is opaque.
+  function storageArea(local) {
+    const made = local ? localArea : sessionArea;
+    if (made !== null) {
+      return made;
+    }
+    const refused = native.storageOpen(local);
+    if (refused !== "") {
+      throw new $DOMException(
+        "Failed to read the '" + (local ? "localStorage" : "sessionStorage") +
+          "' property from 'Window': " + refused,
+        "SecurityError",
+      );
+    }
+    const target = new Storage(KEY);
+    const area = new $Proxy(target, storageHandlers);
+    WeakMapSet(areaKinds, target, local);
+    WeakMapSet(areaKinds, area, local);
+    WeakMapSet(areaProxies, target, area);
+    if (local) {
+      localArea = area;
+    } else {
+      sessionArea = area;
+    }
+    return area;
+  }
+
+  // Whether an item named `key` shows as a property of the area
+  // `target` (Web IDL's named property visibility algorithm): not when
+  // the object or a prototype has a property of that name, `Storage`
+  // not overriding built-ins.
+  function visible(target, key) {
+    if (ReflectGetOwnPropertyDescriptor(target, key) !== undefined) {
+      return false;
+    }
+    const proto = ReflectGetPrototypeOf(target);
+    return proto === null || !ReflectHas(proto, key);
+  }
+
+  // The value of the item `key` if it shows as a property, or null.
+  function shown(target, key) {
+    if (typeof key !== "string" || !visible(target, key)) {
+      return null;
+    }
+    return native.storageGet(WeakMapGet(areaKinds, target), str(key));
+  }
+
+  // The named property setter: `setItem` in the words of a property.
+  function namedSet(target, key, value) {
+    const name = str(key);
+    if (!native.storageSet(WeakMapGet(areaKinds, target), name, str(value))) {
+      throw new QuotaExceededError(
+        "Failed to set a named property '" + name + "' on 'Storage': Setting the value of '" +
+          name + "' exceeded the quota.",
+      );
+    }
+  }
+
+  // A legacy platform object's internal methods (Web IDL section 3.9)
+  // for an interface with a named getter, setter and deleter.
+  const storageHandlers = {
+    get(target, key, receiver) {
+      const value = shown(target, key);
+      return value === null ? ReflectGet(target, key, receiver) : value;
+    },
+    set(target, key, value, receiver) {
+      if (typeof key === "string" && receiver === WeakMapGet(areaProxies, target)) {
+        namedSet(target, key, value);
+        return true;
+      }
+      return ReflectSet(target, key, value, receiver);
+    },
+    defineProperty(target, key, desc) {
+      if (typeof key === "string" && ReflectGetOwnPropertyDescriptor(target, key) === undefined) {
+        if (!ReflectHas(desc, "value") && !ReflectHas(desc, "writable")) {
+          throw new $TypeError(
+            "Failed to set a named property '" + key +
+              "' on 'Storage': Accessor properties are not allowed.",
+          );
+        }
+        namedSet(target, key, desc.value);
+        return true;
+      }
+      return ReflectDefineProperty(target, key, desc);
+    },
+    deleteProperty(target, key) {
+      if (shown(target, key) !== null) {
+        native.storageRemove(WeakMapGet(areaKinds, target), str(key));
+        return true;
+      }
+      return ReflectDeleteProperty(target, key);
+    },
+    has(target, key) {
+      return shown(target, key) !== null || ReflectHas(target, key);
+    },
+    ownKeys(target) {
+      const keys = native.storageKeys(WeakMapGet(areaKinds, target));
+      const out = [];
+      for (let i = 0; i < keys.length; i++) {
+        if (visible(target, keys[i])) {
+          ArrayPush(out, keys[i]);
+        }
+      }
+      const own = ReflectOwnKeys(target);
+      for (let i = 0; i < own.length; i++) {
+        ArrayPush(out, own[i]);
+      }
+      return out;
+    },
+    getOwnPropertyDescriptor(target, key) {
+      const value = shown(target, key);
+      if (value === null) {
+        return ReflectGetOwnPropertyDescriptor(target, key);
+      }
+      return { value, writable: true, enumerable: true, configurable: true };
+    },
+    preventExtensions() {
+      throw new $TypeError("Cannot prevent extensions");
+    },
+  };
+
   // HTML's element interfaces (HTML section 3.2.2 and each element's
   // definition): the interface each tag's elements are objects of.
   const interfaces = new $Map();
@@ -7680,6 +7992,14 @@
 
     get navigator() {
       return navigator;
+    }
+
+    get localStorage() {
+      return storageArea(true);
+    }
+
+    get sessionStorage() {
+      return storageArea(false);
     }
 
     get screen() {
@@ -9124,6 +9444,10 @@
       }
       if (typeof init.submitter === "number") {
         init.submitter = wrap(init.submitter);
+      }
+      // A `storage` event's area, which the engine names (M28).
+      if (typeof init.storageArea === "boolean") {
+        init.storageArea = storageArea(init.storageArea);
       }
       const event = new known[1](type, dictionary(init, known[2], iface));
       const s = eventState(event);

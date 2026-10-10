@@ -552,8 +552,10 @@ fn init_object<'js>(
             Field::Number(value) => Value::new_number(ctx.clone(), *value),
             Field::String(text) => rquickjs::String::from_str(ctx.clone(), text)?.into_value(),
             Field::Node(Some(handle)) => Value::new_float(ctx.clone(), handle.0 as f64),
-            Field::Node(None) => Value::new_null(ctx.clone()),
+            Field::Node(None) | Field::Null => Value::new_null(ctx.clone()),
             Field::Window => ctx.globals().into_value(),
+            // The bootstrap's `dispatch` makes it the window's area.
+            Field::Storage(local) => Value::new_bool(ctx.clone(), *local),
         };
         object.set(*name, value)?;
     }

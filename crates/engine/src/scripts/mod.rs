@@ -18,6 +18,7 @@ mod host;
 pub(crate) use fetch::MAX_SCRIPT_FETCHES;
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// The most scripts that run nested, one inside another's call, the
@@ -178,6 +179,11 @@ pub(crate) struct WindowEnv {
     /// input was a key, so that a focus a script gives is shown (M26.6).
     pub(crate) focused: bool,
     pub(crate) keyboard: bool,
+    /// The engine's storage, for `localStorage` and `sessionStorage`
+    /// (M28), and whether another document alive shares this one's
+    /// origin, to hear of its changes.
+    pub(crate) storage: Option<Arc<Mutex<crate::storage::Storage>>>,
+    pub(crate) storage_peer: bool,
 }
 
 /// A document's time origin (High Resolution Time): the engine's clock
