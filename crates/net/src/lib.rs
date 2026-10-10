@@ -13,6 +13,7 @@
 
 mod address_space;
 mod content_coding;
+pub mod cookies;
 pub mod csp;
 pub mod data_url;
 mod error;

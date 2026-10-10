@@ -12,7 +12,10 @@ mod file;
 mod ports;
 
 use std::borrow::Cow;
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
+use crate::cookies::{self, Jar};
 use crate::csp::Csp;
 use crate::data_url;
 use crate::error::{AbortHandle, NetworkError};
@@ -477,6 +480,9 @@ pub struct Client {
     user_agent: &'static str,
     /// What preflights allowed (M27.3).
     preflights: cors::PreflightCache,
+    /// The cookies every fetch reads and writes (M27.4), which an engine
+    /// shares with `document.cookie`.
+    cookies: Arc<Mutex<Jar>>,
 }
 
 impl Default for Client {
@@ -492,6 +498,7 @@ impl Client {
             transport: Transport::new(config),
             user_agent: USER_AGENT,
             preflights: cors::PreflightCache::default(),
+            cookies: Arc::default(),
         }
     }
 
@@ -500,6 +507,18 @@ impl Client {
     pub fn with_user_agent(mut self, user_agent: &'static str) -> Client {
         self.user_agent = user_agent;
         self
+    }
+
+    /// The client, its fetches keeping their cookies in `jar` (M27.4):
+    /// an engine's, which outlives the clients it is given.
+    pub fn with_cookies(mut self, jar: Arc<Mutex<Jar>>) -> Client {
+        self.cookies = jar;
+        self
+    }
+
+    /// The client's cookie jar.
+    pub fn cookies(&self) -> &Arc<Mutex<Jar>> {
+        &self.cookies
     }
 
     /// Fetches `request`, blocking until the response is whole or the
@@ -615,13 +634,22 @@ impl Client {
                     abort: &request.abort,
                     body_limit: request.body_limit,
                 };
+                // Set-Cookie is taken as soon as the head comes, a
+                // redirect's too: before a document's scripts run.
+                let take_cookies =
+                    |headers: &HeaderList| self.take_cookies(request, url, hop, headers);
                 let received = match deliver {
-                    None => self.transport.exchange(&exchange)?,
+                    None => {
+                        let received = self.transport.exchange(&exchange)?;
+                        take_cookies(&received.response.headers);
+                        received
+                    }
                     Some(deliver) => {
                         let mut stream = Streaming {
                             url,
                             url_list,
                             deliver,
+                            take_cookies: &take_cookies,
                         };
                         self.transport.exchange_streaming(&exchange, &mut stream)?
                     }
@@ -742,11 +770,33 @@ impl Client {
         Ok(())
     }
 
+    /// Stores the cookies of a hop's response from `url` (RFC 6265bis
+    /// 5.7), when the request includes credentials.
+    fn take_cookies(&self, request: &Request, url: &Url, hop: &Hop, headers: &HeaderList) {
+        if !includes_credentials(request, hop) {
+            return;
+        }
+        let mut jar = self.cookies.lock().expect("never poisoned");
+        let now = SystemTime::now();
+        for (_, line) in headers
+            .iter()
+            .filter(|(name, _)| name.eq_ignore_ascii_case(b"Set-Cookie"))
+        {
+            jar.store(
+                line,
+                url,
+                cookies::Api::Http,
+                cookie_context(request, hop),
+                now,
+            );
+        }
+    }
+
     /// The fields a hop to `url` sends besides `Host`, which the message
     /// writer adds: `User-Agent`, `Accept` and `Accept-Language` unless
     /// the author set them, `Accept-Encoding`, the author's fields, then
-    /// `Origin` and the `Sec-Fetch-*` fields. Not sent: `Referer`
-    /// (M33.3) and `Cookie` (M27.4).
+    /// `Origin`, the `Sec-Fetch-*` fields and `Cookie`, when the request
+    /// includes credentials. Not sent: `Referer` (M33.3).
     fn request_headers(&self, request: &Request, url: &Url, hop: &Hop) -> HeaderList {
         let mut headers = HeaderList::new();
         let author = &hop.author;
@@ -776,6 +826,13 @@ impl Client {
             );
             if request.mode == Mode::Navigate && request.user_activated {
                 headers.append(b"Sec-Fetch-User", b"?1");
+            }
+        }
+        if includes_credentials(request, hop) {
+            let mut jar = self.cookies.lock().expect("never poisoned");
+            let context = cookie_context(request, hop);
+            if let Some(cookie) = jar.header(url, cookies::Api::Http, context, SystemTime::now()) {
+                headers.append(b"Cookie", &cookie);
             }
         }
         headers
@@ -885,6 +942,33 @@ fn tainting(
             url.scheme()
         ))),
         _ => Ok(ResponseType::Cors),
+    }
+}
+
+/// Whether a hop includes credentials (Fetch 4.6's includeCredentials):
+/// always for a request in include mode; in same-origin mode while it
+/// is basic; never in omit mode.
+fn includes_credentials(request: &Request, hop: &Hop) -> bool {
+    match request.credentials {
+        Credentials::Include => true,
+        Credentials::SameOrigin => hop.tainting == ResponseType::Basic,
+        Credentials::Omit => false,
+    }
+}
+
+/// A hop as cookies' rules see it (RFC 6265bis 5.2): same-site when no
+/// document asked (the user did) or every URL so far is same site with
+/// the asking document; a navigation's is a top-level one, by a safe
+/// method or not.
+fn cookie_context(request: &Request, hop: &Hop) -> cookies::Context {
+    cookies::Context {
+        same_site: request.origin.as_ref().is_none_or(|origin| {
+            hop.url_list
+                .iter()
+                .all(|url| origin.same_site(&url.origin()))
+        }),
+        top_level: request.mode == Mode::Navigate,
+        safe_method: matches!(hop.method.as_str(), "GET" | "HEAD" | "OPTIONS" | "TRACE"),
     }
 }
 
@@ -1039,6 +1123,8 @@ struct Streaming<'a, 'd> {
     url: &'a Url,
     url_list: &'a [Url],
     deliver: &'a mut (dyn FnMut(Delivery<'_>) + 'd),
+    /// Stores the head's cookies, first of all.
+    take_cookies: &'a dyn Fn(&HeaderList),
 }
 
 impl transport::ResponseStream for Streaming<'_, '_> {
@@ -1049,6 +1135,7 @@ impl transport::ResponseStream for Streaming<'_, '_> {
         headers: &HeaderList,
         space: AddressSpace,
     ) -> bool {
+        (self.take_cookies)(headers);
         let response = Response {
             url_list: self.url_list.to_vec(),
             status,

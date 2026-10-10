@@ -5,10 +5,12 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
 
 use dom::{Document, MutationError, NodeData, NodeId, forms};
 use js::{Answer, Call, ConsoleLevel, DomError, Handle, NestedScript, ScriptError, ScriptingHost};
+use net::cookies::{Api, Context};
 use style::animation::Animations;
 use style::selector_matching::{Matcher, PseudoElement, SelectorList};
 use style::{CascadeContext, FontMeasure, Styles, Stylesheets};
@@ -152,6 +154,8 @@ pub(crate) struct DocumentHost {
     detached: Vec<NodeId>,
     /// The work done since the realm last asked.
     work: u64,
+    /// The engine's cookie jar, lent for a run (M27.4).
+    cookies: Option<Arc<Mutex<net::cookies::Jar>>>,
     /// The document's page and parser, lent for a run; and where its
     /// loading stands.
     page: Option<Page>,
@@ -280,6 +284,17 @@ impl ScriptingHost for DocumentHost {
 }
 
 impl DocumentHost {
+    /// The URL `document.cookie` reads and writes the cookies of: the
+    /// document's, unless the document is cookie-averse (HTML 3.1.4),
+    /// its URL not `http:` or `https:`.
+    fn cookie_url(&self) -> Option<net::Url> {
+        self.page
+            .as_ref()?
+            .url()
+            .filter(|url| matches!(url.scheme(), "http" | "https"))
+            .cloned()
+    }
+
     /// Answers `call`.
     fn answer(&mut self, call: Call) -> Result<Answer, DomError> {
         match call {
@@ -744,6 +759,29 @@ impl DocumentHost {
             Call::SecureContext => Ok(Answer::Bool(
                 self.page.as_ref().is_none_or(Page::is_secure_context),
             )),
+            Call::Cookie => {
+                let cookies = self.cookie_url().and_then(|url| {
+                    let jar = self.cookies.as_ref()?;
+                    let mut jar = jar.lock().expect("never poisoned");
+                    jar.header(&url, Api::Script, Context::SAME_SITE, SystemTime::now())
+                });
+                Ok(Answer::String(cookies.map_or_else(String::new, |bytes| {
+                    String::from_utf8_lossy(&bytes).into_owned()
+                })))
+            }
+            Call::SetCookie(value) => {
+                if let (Some(url), Some(jar)) = (self.cookie_url(), &self.cookies) {
+                    let mut jar = jar.lock().expect("never poisoned");
+                    jar.store(
+                        value.as_bytes(),
+                        &url,
+                        Api::Script,
+                        Context::SAME_SITE,
+                        SystemTime::now(),
+                    );
+                }
+                Ok(Answer::Nothing)
+            }
             Call::DocumentDomain => {
                 Ok(Answer::String(match self.page.as_ref().map(Page::origin) {
                     Some(net::Origin::Tuple { host, .. }) => host.to_string(),
@@ -1235,6 +1273,7 @@ impl DocumentHost {
         self.document = std::mem::take(lent.document);
         let placeholder = Page::given(lent.page.id());
         self.page = Some(std::mem::replace(lent.page, placeholder));
+        self.cookies = Some(lent.network.cookies());
         self.parser = lent
             .parser
             .as_deref_mut()

@@ -5,6 +5,8 @@
 #[cfg(test)]
 mod control_tests;
 #[cfg(test)]
+mod cookie_tests;
+#[cfg(test)]
 mod dom_tests;
 #[cfg(test)]
 mod editing_tests;
@@ -37,6 +39,7 @@ mod tests;
 mod validity_tests;
 
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 /// The state of a CORS settings attribute (HTML 2.5.4, M27.3): no CORS
 /// when it is absent; credentials for `use-credentials`, in any case;
@@ -174,6 +177,9 @@ pub(crate) struct Network {
     /// Made at the first fetch: a document given to the engine needs
     /// none.
     client: Option<Arc<Client>>,
+    /// The cookies every client of the engine keeps (M27.4), and
+    /// `document.cookie` reads and writes.
+    cookies: Arc<Mutex<net::cookies::Jar>>,
     flights: HashMap<FetchId, Flight>,
     next: FetchId,
 }
@@ -183,6 +189,7 @@ impl Network {
         Network {
             pool: Pool::new(MAX_FETCH_THREADS),
             client: None,
+            cookies: Arc::default(),
             flights: HashMap::new(),
             next: 0,
         }
@@ -191,7 +198,12 @@ impl Network {
     /// Fetches from now on with `client`; fetches in flight finish with
     /// the client they began with.
     pub(crate) fn set_client(&mut self, client: Client) {
-        self.client = Some(Arc::new(client));
+        self.client = Some(Arc::new(client.with_cookies(self.cookies.clone())));
+    }
+
+    /// The engine's cookie jar.
+    pub(crate) fn cookies(&self) -> Arc<Mutex<net::cookies::Jar>> {
+        self.cookies.clone()
     }
 
     pub(crate) fn set_waker(&self, waker: Waker) {
@@ -204,7 +216,7 @@ impl Network {
         let streamed = target == Target::Document;
         let client = self
             .client
-            .get_or_insert_with(|| Arc::new(Client::default()))
+            .get_or_insert_with(|| Arc::new(Client::default().with_cookies(self.cookies.clone())))
             .clone();
         let id = self.next;
         self.next += 1;

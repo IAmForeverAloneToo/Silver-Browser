@@ -240,6 +240,8 @@ const NATIVES: &[(&str, Decode)] = &[
     ("location", |_| Ok(Call::Location)),
     ("origin", |_| Ok(Call::Origin)),
     ("secureContext", |_| Ok(Call::SecureContext)),
+    ("cookie", |_| Ok(Call::Cookie)),
+    ("setCookie", |a| Ok(Call::SetCookie(a.string(0)?))),
     ("documentDomain", |_| Ok(Call::DocumentDomain)),
     ("setDocumentDomain", |a| {
         Ok(Call::SetDocumentDomain(a.string(0)?))

@@ -193,6 +193,13 @@ pub enum Call {
     Origin,
     /// Whether the document is a secure context (`isSecureContext`).
     SecureContext,
+    /// `document.cookie` (HTML 3.1.4, M27.4): the cookies a script may
+    /// read for the document's URL, the empty string for a document
+    /// whose URL is not `http:` or `https:`.
+    Cookie,
+    /// `document.cookie` set: one cookie stored as a script stores it,
+    /// nothing for a document whose URL is not `http:` or `https:`.
+    SetCookie(String),
     /// `document.domain`: the origin's host, or the empty string for an
     /// opaque origin.
     DocumentDomain,

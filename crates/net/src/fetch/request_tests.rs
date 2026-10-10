@@ -813,3 +813,141 @@ fn a_same_site_policy_refuses_an_http_document_an_https_response() {
     assert!(!check("http://a.example.com/", "https://b.example.com/x"));
     assert!(!check("https://a.example.com/", "https://b.example.org/x"));
 }
+
+/// A server that sets the cookies its path's query names (`/set?a=1`)
+/// and answers with what it was sent, allowing CORS with credentials
+/// from `http://a.localhost`; `/r?` redirects, setting `hop=1`.
+fn cookie_server() -> TestServer {
+    TestServer::plain(|request: &ServerRequest| {
+        let cookie = request.header("Cookie").unwrap_or("").to_owned();
+        let mut fields = vec![
+            ("Access-Control-Allow-Origin", "http://a.localhost"),
+            ("Access-Control-Allow-Credentials", "true"),
+        ];
+        let sets: Vec<String> = request
+            .target
+            .strip_prefix("/set?")
+            .map(|query| query.split('&').map(|c| c.replace("%20", " ")).collect())
+            .unwrap_or_default();
+        for set in &sets {
+            fields.push(("Set-Cookie", set));
+        }
+        if let Some(to) = request.target.strip_prefix("/r?") {
+            fields.push(("Set-Cookie", "hop=1"));
+            fields.push(("Location", to));
+            return Reply::with_fields(302, &fields, b"");
+        }
+        Reply::with_fields(200, &fields, cookie.as_bytes())
+    })
+}
+
+#[test]
+fn cookies_go_and_come_by_the_credentials_mode() {
+    let server = cookie_server();
+    let client = Client::default();
+    let same = server.url("/page");
+    let set = from(&same, server.url("/set?a=1"), Mode::Cors);
+    client.fetch(&set).unwrap();
+    let read = |request: &Request| String::from_utf8(client.fetch(request).unwrap().body).unwrap();
+    assert_eq!(read(&from(&same, server.url("/x"), Mode::Cors)), "a=1");
+    let mut omit = from(&same, server.url("/x"), Mode::Cors);
+    omit.credentials = Credentials::Omit;
+    assert_eq!(read(&omit), "");
+    // Same-origin credentials go nowhere else; included ones do.
+    let other = url("http://a.localhost/page");
+    assert_eq!(read(&from(&other, server.url("/x"), Mode::Cors)), "");
+    let mut include = from(&other, server.url("/x"), Mode::Cors);
+    include.credentials = Credentials::Include;
+    // Lax by default: not to another site's subresource.
+    assert_eq!(read(&include), "");
+    let mut none = from(
+        &same,
+        server.url("/set?n=1;%20SameSite=None;%20Secure"),
+        Mode::Cors,
+    );
+    none.credentials = Credentials::Include;
+    client.fetch(&none).unwrap();
+    assert_eq!(read(&include), "n=1");
+    // Same-origin credentials stay home, even for a cookie that may go
+    // anywhere.
+    assert_eq!(read(&from(&other, server.url("/x"), Mode::Cors)), "");
+    // A response to a request without credentials sets nothing.
+    let mut quiet = from(&same, server.url("/set?q=1"), Mode::Cors);
+    quiet.credentials = Credentials::Omit;
+    client.fetch(&quiet).unwrap();
+    assert_eq!(read(&from(&same, server.url("/x"), Mode::Cors)), "a=1; n=1");
+    assert_eq!(client.cookies().lock().unwrap().cookies().len(), 2);
+}
+
+#[test]
+fn a_redirects_cookies_are_kept_before_its_next_hop_and_a_preflight_sends_none() {
+    let server = cookie_server();
+    let client = Client::default();
+    let same = server.url("/page");
+    let through = from(
+        &same,
+        server.url(&format!("/r?{}", server.url("/x"))),
+        Mode::Cors,
+    );
+    assert_eq!(client.fetch(&through).unwrap().body, b"hop=1");
+    // A cookie that may go anywhere, which a preflight carries all the
+    // same not: it has no credentials.
+    let none = Request::get(
+        server.url("/set?n=1;%20SameSite=None;%20Secure"),
+        Destination::Document,
+    );
+    client.fetch(&none).unwrap();
+    let mut put = from(
+        &url("http://a.localhost/page"),
+        server.url("/x"),
+        Mode::Cors,
+    );
+    put.method = Method::parse("PUT").unwrap();
+    put.credentials = Credentials::Include;
+    let _ = client.fetch(&put);
+    let sent: Vec<(String, Option<String>)> = server
+        .requests()
+        .iter()
+        .map(|r| (r.method.clone(), r.header("Cookie").map(str::to_owned)))
+        .collect();
+    assert!(sent.contains(&("OPTIONS".to_owned(), None)), "{sent:?}");
+    // A document's own cookies come before its body is handed over.
+    let mut handed = None;
+    client
+        .fetch_streaming(
+            &Request::get(server.url("/set?early=1"), Destination::Document),
+            &mut |delivery| {
+                if let Delivery::Head(_) = delivery {
+                    let jar = client.cookies().lock().unwrap();
+                    handed = Some(jar.cookies().iter().any(|c| c.name == b"early"));
+                }
+            },
+        )
+        .unwrap();
+    assert_eq!(handed, Some(true));
+}
+
+#[test]
+fn a_cross_site_post_navigation_carries_no_lax_cookie() {
+    let server = cookie_server();
+    let client = Client::default();
+    client
+        .fetch(&Request::get(
+            server.url("/set?lax=1"),
+            Destination::Document,
+        ))
+        .unwrap();
+    let from_elsewhere = url("http://a.localhost/page").origin();
+    let read = |request: &Request| String::from_utf8(client.fetch(request).unwrap().body).unwrap();
+    let get = Request::get(server.url("/x"), Destination::Document)
+        .from_document(from_elsewhere.clone(), true);
+    assert_eq!(read(&get), "lax=1");
+    let post = Request::post(
+        server.url("/x"),
+        Destination::Document,
+        b"a=1".to_vec(),
+        "text/plain",
+    )
+    .from_document(from_elsewhere, true);
+    assert_eq!(read(&post), "");
+}

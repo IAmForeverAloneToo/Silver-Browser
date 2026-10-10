@@ -3166,6 +3166,16 @@
       return native.documentInfo()[3];
     }
 
+    get cookie() {
+      self(this);
+      return native.cookie();
+    }
+
+    set cookie(value) {
+      self(this);
+      native.setCookie(str(value));
+    }
+
     get domain() {
       self(this);
       return native.documentDomain();
@@ -4973,7 +4983,7 @@
     }
 
     get cookieEnabled() {
-      return false;
+      return true;
     }
 
     get webdriver() {

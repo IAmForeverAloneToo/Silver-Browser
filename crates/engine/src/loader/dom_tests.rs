@@ -1278,7 +1278,7 @@ fn location_navigator_and_screen_say_what_d12_lets_them() {
             "http:|127.0.0.1|/dir/page.html|?q=1|#frag",
             "true true",
             "UTF-8 text/html CSS1Compat",
-            "Mozilla Netscape 5.0 (compatible) Gecko 20100101 \"\" \"\" en-US en-US,en true false \
+            "Mozilla Netscape 5.0 (compatible) Gecko 20100101 \"\" \"\" en-US en-US,en true true \
              false false 0 0 false true undefined undefined",
             "true true",
             "400 200",
