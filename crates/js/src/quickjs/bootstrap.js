@@ -1674,7 +1674,70 @@
       yield* dispatching(element, click);
       return;
     }
+    // A submit or reset button's: its form submitted or reset (M26.9).
+    const form = native.formOwner(handle);
+    if (form !== null && isSubmitButton(handle)) {
+      yield* submitForm(form, handle, false);
+      return;
+    }
+    if (form !== null && isResetButton(handle)) {
+      yield* resetForm(form);
+      return;
+    }
     native.activate(handle);
+  }
+
+  // A `button`'s type, `submit` by default (HTML section 4.10.6).
+  function buttonType(handle) {
+    const value = native.attribute(handle, "type");
+    const lower = value === null ? "" : ToLowerCase(value);
+    return lower === "reset" || lower === "button" ? lower : "submit";
+  }
+
+  function isSubmitButton(handle) {
+    const tag = native.tag(handle);
+    if (tag === "button") {
+      return buttonType(handle) === "submit";
+    }
+    const kind = tag === "input" ? native.inputType(handle) : "";
+    return kind === "submit" || kind === "image";
+  }
+
+  function isResetButton(handle) {
+    const tag = native.tag(handle);
+    if (tag === "button") {
+      return buttonType(handle) === "reset";
+    }
+    return tag === "input" && native.inputType(handle) === "reset";
+  }
+
+  // HTML's form submission from the bindings (section 4.10.21.3,
+  // M26.9): unless `submit()` asked, a cancelable `submit` naming the
+  // submitter; then the host's navigation, after the run.
+  function* submitForm(form, submitter, fromMethod) {
+    if (!fromMethod) {
+      const event = new SubmitEvent("submit", made(SUBMIT_INIT, [
+        "bubbles", true,
+        "cancelable", true,
+        "submitter", submitter === null ? null : wrap(submitter),
+      ]));
+      eventState(event).trusted = true;
+      if (yield* dispatching(wrap(form), event)) {
+        return;
+      }
+    }
+    native.submitForm(form, submitter);
+  }
+
+  // HTML's reset (section 4.10.22): a cancelable `reset`, then the
+  // controls back to their defaults.
+  function* resetForm(form) {
+    const event = new Event("reset", made(EVENT_INIT, ["bubbles", true, "cancelable", true]));
+    eventState(event).trusted = true;
+    if (yield* dispatching(wrap(form), event)) {
+      return;
+    }
+    native.resetForm(form);
   }
 
   // A trusted Event of `type` at `element`, bubbling, composed if asked.
@@ -5874,6 +5937,37 @@
       get length() {
         return native.formControls(self(this)).length;
       },
+
+      submit() {
+        drain(submitForm(self(this), null, true));
+      },
+
+      requestSubmit(submitter) {
+        const handle = self(this);
+        let by = null;
+        if (submitter !== undefined && submitter !== null) {
+          if (!isNode(submitter) || !isSubmitButton(handleOf(submitter))) {
+            throw new $TypeError(
+              prefix("requestSubmit", "HTMLFormElement") +
+                "The specified element is not a submit button.",
+            );
+          }
+          by = handleOf(submitter);
+          if (native.formOwner(by) !== handle) {
+            throw domError(
+              "NotFoundError",
+              "The specified element is not owned by this form element.",
+              "requestSubmit",
+              "HTMLFormElement",
+            );
+          }
+        }
+        drain(submitForm(handle, by, false));
+      },
+
+      reset() {
+        drain(resetForm(self(this)));
+      },
     },
     [HTMLFormElement.prototype],
   );
@@ -5895,9 +5989,7 @@
   include(
     {
       get type() {
-        const value = native.attribute(self(this), "type");
-        const lower = value === null ? "" : ToLowerCase(value);
-        return lower === "reset" || lower === "button" ? lower : "submit";
+        return buttonType(self(this));
       },
 
       set type(value) {

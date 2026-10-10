@@ -7,6 +7,7 @@
 //! and `application/x-www-form-urlencoded` come with their users,
 //! scripts and form submission (M25, M27).
 
+pub mod form;
 mod host;
 mod parser;
 pub(crate) mod percent;

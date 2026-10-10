@@ -305,9 +305,13 @@ impl Engine {
                 });
                 return true;
             }
-            // Enter commits a field's edit (HTML section 4.10.5.5).
+            // Enter commits a field's edit (HTML section 4.10.5.5), and
+            // submits its form implicitly (M26.9).
             self.commit_change(control);
-            return false;
+            if self.shown.document.focused() == Some(control) {
+                self.implicit_submission(control);
+            }
+            return true;
         }
         let Some(text) = key.text.as_deref() else {
             return false;

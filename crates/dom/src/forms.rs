@@ -1076,6 +1076,206 @@ pub fn labels(document: &Document, element: NodeId) -> Vec<NodeId> {
         .collect()
 }
 
+// ---- Form submission (M26.9) ------------------------------------------------
+
+/// An entry of a form's entry list (HTML section 4.10.21.4): a name and
+/// a string, or a file input's file, `None`, the empty file no file
+/// chosen makes (G61 chooses them).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub name: String,
+    pub value: Option<String>,
+}
+
+/// Whether the element is submittable (HTML section 4.10.2).
+pub fn is_submittable(document: &Document, element: NodeId) -> bool {
+    matches!(
+        document.tag(element),
+        Some("button" | "input" | "select" | "textarea" | "object")
+    )
+}
+
+/// A `button`'s type (HTML section 4.10.6): `submit`, its default, or
+/// `reset` or `button`.
+pub fn button_type(document: &Document, button: NodeId) -> &'static str {
+    match document.attr(button, "type") {
+        Some(kind) if kind.eq_ignore_ascii_case("reset") => "reset",
+        Some(kind) if kind.eq_ignore_ascii_case("button") => "button",
+        _ => "submit",
+    }
+}
+
+/// Whether the element is a submit button: a `button` of type `submit`,
+/// an `input` of type `submit` or `image`.
+pub fn is_submit_button(document: &Document, element: NodeId) -> bool {
+    match document.tag(element) {
+        Some("button") => button_type(document, element) == "submit",
+        Some("input") => matches!(input_type(document, element), "submit" | "image"),
+        _ => false,
+    }
+}
+
+/// Whether the element is a reset button.
+pub fn is_reset_button(document: &Document, element: NodeId) -> bool {
+    match document.tag(element) {
+        Some("button") => button_type(document, element) == "reset",
+        Some("input") => input_type(document, element) == "reset",
+        _ => false,
+    }
+}
+
+/// Whether the element is a button of any kind, for the entry list.
+fn is_button(document: &Document, element: NodeId) -> bool {
+    match document.tag(element) {
+        Some("button") => true,
+        Some("input") => matches!(
+            input_type(document, element),
+            "submit" | "image" | "reset" | "button"
+        ),
+        _ => false,
+    }
+}
+
+/// The elements in the form's tree whose form owner it is, of the kind
+/// `keep` picks, in tree order.
+fn owned_by(document: &Document, form: NodeId, keep: impl Fn(NodeId) -> bool) -> Vec<NodeId> {
+    let root = document.ancestors(form).last().unwrap_or(form);
+    document
+        .subtree(root)
+        .filter(|&node| keep(node) && form_owner(document, node) == Some(form))
+        .collect()
+}
+
+/// A form's default button (HTML section 4.10.21.2): its first submit
+/// button in tree order.
+pub fn default_button(document: &Document, form: NodeId) -> Option<NodeId> {
+    owned_by(document, form, |node| is_submit_button(document, node))
+        .into_iter()
+        .next()
+}
+
+/// How many of a form's fields block implicit submission (HTML section
+/// 4.10.21.2): its inputs of the types a single field submits with
+/// Enter, the text fields and the date, time and number ones.
+pub fn implicit_submission_blockers(document: &Document, form: NodeId) -> usize {
+    owned_by(document, form, |node| {
+        document.tag(node) == Some("input")
+            && matches!(
+                input_type(document, node),
+                "text"
+                    | "search"
+                    | "url"
+                    | "tel"
+                    | "email"
+                    | "password"
+                    | "date"
+                    | "month"
+                    | "week"
+                    | "time"
+                    | "datetime-local"
+                    | "number"
+            )
+    })
+    .len()
+}
+
+/// HTML's "constructing the entry list" (section 4.10.21.4) of `form`,
+/// `submitter` its submit button if any, `charset` the encoding's name a
+/// hidden `_charset_` field sends: each submittable field it owns, in
+/// tree order, but one in a `datalist`, a disabled one, a button other
+/// than the submitter, an unchecked checkbox or radio button, an
+/// `object`, and one with no name; an image button's point as `name.x`
+/// and `name.y`, 0 and 0 (G61 sends the point clicked); each option a
+/// select has chosen; a checkbox's or a radio button's value, `on` with
+/// none; a file input's empty file. `dirname` is G63.
+pub fn entry_list(
+    document: &Document,
+    form: NodeId,
+    submitter: Option<NodeId>,
+    charset: &str,
+) -> Vec<Entry> {
+    let mut entries = Vec::new();
+    let mut push = |name: &str, value: Option<String>| {
+        entries.push(Entry {
+            name: name.to_owned(),
+            value,
+        });
+    };
+    for field in owned_by(document, form, |node| is_submittable(document, node)) {
+        if document
+            .ancestors(field)
+            .any(|ancestor| document.tag(ancestor) == Some("datalist"))
+            || actually_disabled(document, field)
+            || (is_button(document, field) && Some(field) != submitter)
+            || document.tag(field) == Some("object")
+        {
+            continue;
+        }
+        let kind = (document.tag(field) == Some("input")).then(|| input_type(document, field));
+        if matches!(kind, Some("checkbox" | "radio")) && !checkedness(document, field) {
+            continue;
+        }
+        let name = document.attr(field, "name").unwrap_or("");
+        if kind == Some("image") {
+            let (x, y) = if name.is_empty() {
+                ("x".to_owned(), "y".to_owned())
+            } else {
+                (format!("{name}.x"), format!("{name}.y"))
+            };
+            push(&x, Some("0".to_owned()));
+            push(&y, Some("0".to_owned()));
+            continue;
+        }
+        if name.is_empty() {
+            continue;
+        }
+        match (document.tag(field), kind) {
+            (Some("select"), _) => {
+                for option in list_of_options(document, field) {
+                    if selectedness(document, option) && !option_disabled(document, option) {
+                        push(name, Some(option_value(document, option)));
+                    }
+                }
+            }
+            (_, Some("checkbox" | "radio")) => {
+                push(
+                    name,
+                    Some(document.attr(field, "value").unwrap_or("on").to_owned()),
+                );
+            }
+            (_, Some("file")) => push(name, None),
+            (_, Some("hidden")) if name.eq_ignore_ascii_case("_charset_") => {
+                push(name, Some(charset.to_owned()));
+            }
+            _ => push(name, Some(value(document, field))),
+        }
+    }
+    entries
+}
+
+/// HTML's reset of a form (section 4.10.22): each of its controls back
+/// to its defaults, a field's value and a checkbox's checkedness their
+/// attributes' and clean, a select's options their `selected`
+/// attributes' with the selectedness setting algorithm after. A custom
+/// validity stays (M26.9b).
+pub fn reset_form(document: &mut Document, form: NodeId) {
+    let controls = owned_by(document, form, |node| {
+        matches!(document.tag(node), Some("input" | "select" | "textarea"))
+    });
+    for control in controls {
+        let resettable: Vec<NodeId> = if document.tag(control) == Some("select") {
+            list_of_options(document, control)
+        } else {
+            vec![control]
+        };
+        for element in resettable {
+            if document.control(element).is_some() {
+                let _ = document.set_control(element, ControlState::default());
+            }
+        }
+    }
+}
+
 /// Whether the element is form-associated (HTML section 4.10.2): it can
 /// have a form owner.
 pub fn form_associated(document: &Document, element: NodeId) -> bool {

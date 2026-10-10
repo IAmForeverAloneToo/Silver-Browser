@@ -310,6 +310,7 @@ fn methods_after_a_redirect() {
         let mut request = document(server.url("/from"));
         request.method = method;
         request.body = (method == Method::Post).then(|| b"x=1".to_vec());
+        request.content_type = (method == Method::Post).then(|| "text/plain".to_owned());
         client().fetch(&request).unwrap();
         let sent = server.requests();
         let last = sent.last().unwrap();
@@ -317,6 +318,12 @@ fn methods_after_a_redirect() {
         assert_eq!(last.body.is_empty(), !with_body, "{status} {method:?}");
         assert_eq!(
             last.header("Content-Length").is_some(),
+            with_body,
+            "{status} {method:?}"
+        );
+        // A body's type goes with it, and goes when it does (M26.9).
+        assert_eq!(
+            last.header("Content-Type").is_some(),
             with_body,
             "{status} {method:?}"
         );

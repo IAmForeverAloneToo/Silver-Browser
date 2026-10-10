@@ -331,6 +331,13 @@ const NATIVES: &[(&str, Decode)] = &[
     ("labels", |a| Ok(Call::Labels(a.handle(0)?))),
     ("commitEdit", |a| Ok(Call::CommitEdit(a.handle(0)?))),
     ("radioGroup", |a| Ok(Call::RadioGroup(a.handle(0)?))),
+    ("submitForm", |a| {
+        Ok(Call::SubmitForm {
+            form: a.handle(0)?,
+            submitter: a.maybe_handle(1)?,
+        })
+    }),
+    ("resetForm", |a| Ok(Call::ResetForm(a.handle(0)?))),
     ("hidden", |_| Ok(Call::Hidden)),
     ("dialog", |a| {
         Ok(Call::Dialog {

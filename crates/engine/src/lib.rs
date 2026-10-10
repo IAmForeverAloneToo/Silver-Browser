@@ -104,6 +104,7 @@ mod pages;
 mod print;
 mod scripts;
 mod select;
+mod submit;
 #[cfg(test)]
 mod testing;
 
@@ -375,6 +376,9 @@ pub struct Engine {
     /// (M26.5).
     buttons: u16,
     modifiers: Modifiers,
+    /// Whether the navigation under way sends a form's POST (M26.9): the
+    /// entry its document gets is a posted one.
+    posting: bool,
     /// Whether the window has the system's focus, and whether the last
     /// input was a key rather than the pointer (M26.6).
     window_focused: bool,
@@ -914,6 +918,7 @@ impl Engine {
             pointer: None,
             buttons: 0,
             modifiers: Modifiers::default(),
+            posting: false,
             window_focused: true,
             keyboard: false,
         }
@@ -1163,8 +1168,9 @@ impl Engine {
         let source = self.shown.page.url().map(Url::scheme);
         match refusal(&url, source, self.shown.made) {
             Some(why) => self.notice = Some(why),
-            // A followed link navigates as a click on it does (M26).
-            None if navigation.link => self.navigate(url),
+            // A followed link navigates as a click on it does (M26), and
+            // a submitted form, with its body (M26.9).
+            None if navigation.link => self.navigate_with(url, navigation.post),
             None => {
                 let replace = navigation.replace || self.load_state != LoadState::Loaded;
                 self.navigate_replacing(url, replace);
@@ -2109,10 +2115,16 @@ impl Engine {
     /// was in it.
     fn activate(&mut self, node: NodeId) {
         let document = &self.shown.document;
+        let button = |n: NodeId| {
+            (dom::forms::is_submit_button(document, n) || dom::forms::is_reset_button(document, n))
+                && !dom::forms::actually_disabled(document, n)
+                && dom::forms::form_owner(document, n).is_some()
+        };
         let activator = std::iter::once(node)
             .chain(document.ancestors(node))
             .find(|&n| match document.tag(n) {
                 Some("a" | "area") => document.attr(n, "href").is_some(),
+                _ if button(n) => true,
                 Some("input") => {
                     matches!(dom::forms::input_type(document, n), "checkbox" | "radio")
                         && !dom::forms::actually_disabled(document, n)
@@ -2123,6 +2135,17 @@ impl Engine {
         let Some(activator) = activator else {
             return;
         };
+        // A submit or reset button submits or resets its form (M26.9).
+        if button(activator)
+            && let Some(form) = dom::forms::form_owner(document, activator)
+        {
+            if dom::forms::is_submit_button(document, activator) {
+                self.submit_form(form, Some(activator), false);
+            } else {
+                self.reset_form(form);
+            }
+            return;
+        }
         match document.tag(activator) {
             Some("input") => {
                 let checked = dom::forms::checkedness(document, activator);
@@ -2604,7 +2627,13 @@ impl Engine {
     /// every `about:` URL but `about:blank` to the user agent, and this
     /// one has `about:silver`, and an error page for any other.
     fn start_navigation(&mut self, url: Url, handling: Handling) {
+        self.start_navigation_with(url, handling, None);
+    }
+
+    /// [`Engine::start_navigation`], a POST of `post` when given (M26.9).
+    fn start_navigation_with(&mut self, url: Url, handling: Handling, post: Option<submit::Post>) {
         self.cancel_navigation();
+        self.posting = post.is_some();
         if url.scheme() == "about" && url.path_str() != "blank" {
             let shown = if url.path_str() == "silver" {
                 let mut page = Page::fetched(
@@ -2629,7 +2658,15 @@ impl Engine {
             return;
         }
         let id = self.new_page_id();
-        let request = net::Request::get(url.clone(), net::Destination::Document);
+        let request = match post {
+            Some(post) => net::Request::post(
+                url.clone(),
+                net::Destination::Document,
+                post.body,
+                &post.content_type,
+            ),
+            None => net::Request::get(url.clone(), net::Destination::Document),
+        };
         self.network.fetch(id, Target::Document, request);
         self.navigation = Some(Navigation {
             url,
@@ -2823,8 +2860,20 @@ impl Engine {
                     .with("persisted", js::Field::Bool(true)),
             );
         } else if let Some(url) = url {
-            self.start_navigation(url, Handling::Traverse(index));
+            if self.history.entry_mut(index).posted {
+                self.resubmission(url, Handling::Traverse(index));
+            } else {
+                self.start_navigation(url, Handling::Traverse(index));
+            }
         }
+    }
+
+    /// The page shown in place of a document a form's POST made, which
+    /// would be sent again (M26.9, G57): the reference browser asks first,
+    /// and with no dialog to ask in, this says why nothing was sent.
+    fn resubmission(&mut self, url: Url, handling: Handling) {
+        let shown = self.made(pages::resubmission(&url), None);
+        self.commit(shown, Some(url), handling);
     }
 
     /// Fetches the current entry's URL again and shows the new document
@@ -2832,6 +2881,11 @@ impl Engine {
     /// A document given to the engine has no URL, and is not reloaded.
     pub fn reload(&mut self) {
         if let Some(url) = self.history.current().url.clone() {
+            // A form's POST is not sent again by itself (M26.9).
+            if self.history.current().posted {
+                self.resubmission(url, Handling::Reload);
+                return;
+            }
             self.start_navigation(url, Handling::Reload);
         }
     }
@@ -3725,24 +3779,29 @@ impl Engine {
             .as_ref()
             .and_then(Url::fragment)
             .map(|fragment| ScrollGoal::Fragment(fragment.to_owned()));
+        let posted = std::mem::take(&mut self.posting);
         match handling {
             Handling::Push => {
                 let state = self.history.new_state();
                 self.history.push(url, state);
+                self.history.current_mut().posted = posted;
             }
             Handling::Replace => {
                 let state = self.history.new_state();
                 self.history.replace(url, state);
+                self.history.current_mut().posted = posted;
             }
             Handling::Reload => {
                 let entry = self.history.current_mut();
                 entry.url = url;
+                entry.posted |= posted;
                 goal = Some(ScrollGoal::Offset(entry.scroll));
             }
             Handling::Traverse(index) => {
                 self.history.go_to(index);
                 let entry = self.history.entry_mut(index);
                 entry.url = url;
+                entry.posted |= posted;
                 goal = Some(ScrollGoal::Offset(entry.scroll));
             }
         }

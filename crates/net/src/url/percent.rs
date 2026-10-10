@@ -22,8 +22,10 @@ pub(crate) enum EncodeSet {
     Path,
     /// The userinfo percent-encode set: username and password.
     Userinfo,
-    // The component and application/x-www-form-urlencoded sets come
-    // with their users, scripts and form submission (M25, M27).
+    /// The application/x-www-form-urlencoded percent-encode set (M26.9):
+    /// all but the ASCII letters and digits and `*`, `-`, `.` and `_`, a
+    /// space written as `+` by [`percent_encode_after_encoding`].
+    Form,
 }
 
 impl EncodeSet {
@@ -49,6 +51,9 @@ impl EncodeSet {
                         c,
                         b'/' | b':' | b';' | b'=' | b'@' | b'[' | b'\\' | b']' | b'|'
                     )
+            }
+            EncodeSet::Form => {
+                !(c.is_ascii_alphanumeric() || matches!(c, b'*' | b'-' | b'.' | b'_'))
             }
         }
     }
@@ -88,8 +93,8 @@ pub(crate) fn utf8_percent_encode(input: &str, set: EncodeSet, out: &mut String)
 /// (the percent-encoding of `&#N;`), appending to `out`.
 ///
 /// An encoding the `encoding` crate cannot encode yet (a legacy CJK
-/// one) encodes as UTF-8. The standard's `spaceAsPlus` belongs to
-/// `application/x-www-form-urlencoded`, which comes with its users.
+/// one) encodes as UTF-8. In the form set a space is written `+`, the
+/// standard's `spaceAsPlus` (M26.9).
 pub(crate) fn percent_encode_after_encoding(
     encoding: Encoding,
     input: &str,
@@ -109,6 +114,10 @@ pub(crate) fn percent_encode_after_encoding(
             continue;
         }
         for &byte in &bytes {
+            if byte == b' ' && set == EncodeSet::Form {
+                out.push('+');
+                continue;
+            }
             // Every set contains every non-ASCII code point, so only an
             // ASCII byte can stand for itself.
             if byte < 0x80 && !set.contains(byte as char) {

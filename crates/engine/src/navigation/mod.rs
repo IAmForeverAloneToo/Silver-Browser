@@ -34,6 +34,9 @@ pub(crate) struct Entry {
     /// The viewport's scroll offset, saved when the entry stopped being
     /// the current one (HTML's "save persisted state").
     pub(crate) scroll: f32,
+    /// Whether a form's POST made its document (M26.9): a reload or a
+    /// traversal does not send it again.
+    pub(crate) posted: bool,
 }
 
 /// The session history, and the back-forward cache of `D`s, the
@@ -54,6 +57,7 @@ impl<D> History<D> {
                 url,
                 state: 0,
                 scroll: 0.0,
+                posted: false,
             }],
             current: 0,
             next_state: 1,
@@ -108,6 +112,7 @@ impl<D> History<D> {
             url,
             state,
             scroll: 0.0,
+            posted: false,
         });
         if self.entries.len() > MAX_ENTRIES {
             let over = self.entries.len() - MAX_ENTRIES;
@@ -123,6 +128,7 @@ impl<D> History<D> {
             url,
             state,
             scroll: 0.0,
+            posted: false,
         };
         self.prune();
     }

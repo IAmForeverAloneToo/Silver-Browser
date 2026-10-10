@@ -186,6 +186,25 @@ pub(crate) fn unshowable(url: &Url, essence: &str) -> Document {
     )
 }
 
+/// The page shown, under `url`, in place of a document a form's POST
+/// made, on a reload or a return to it (M26.9, G57): the reference
+/// browser asks before it sends the form again; this says why it was not.
+pub(crate) fn resubmission(url: &Url) -> Document {
+    page(
+        "Confirm Form Resubmission",
+        "Confirm Form Resubmission",
+        vec![
+            paragraph(
+                "",
+                "This page was made from information sent in a form. Sending it again \
+                 could repeat what it did, such as a purchase, so it was not sent again."
+                    .to_owned(),
+            ),
+            paragraph("detail", url.as_str().to_owned()),
+        ],
+    )
+}
+
 /// A text document, as HTML's "load a text document" makes one: one
 /// `<pre>` holding `text`, with the style HTML lets the user agent add.
 /// The text is what an HTML parser in its PLAINTEXT state would put in

@@ -337,6 +337,15 @@ pub enum Call {
     CommitEdit(Handle),
     /// A radio button's group, in tree order.
     RadioGroup(Handle),
+    /// Submits a form with its submitter, if any, the events before it
+    /// the bindings' (M26.9): the navigation its plan makes, after the
+    /// run.
+    SubmitForm {
+        form: Handle,
+        submitter: Option<Handle>,
+    },
+    /// Resets a form's controls, its `reset` event the bindings'.
+    ResetForm(Handle),
     /// Whether the document is hidden (HTML section 6.2): its window is
     /// minimized or covered.
     Hidden,

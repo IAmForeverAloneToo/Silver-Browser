@@ -747,6 +747,7 @@ impl DocumentHost {
                     replace,
                     reload: false,
                     link: false,
+                    post: None,
                 });
                 Ok(Answer::Nothing)
             }
@@ -756,6 +757,7 @@ impl DocumentHost {
                     replace: true,
                     reload: true,
                     link: false,
+                    post: None,
                 });
                 Ok(Answer::Nothing)
             }
@@ -1061,6 +1063,32 @@ impl DocumentHost {
                 let labels = forms::labels(&self.document, node);
                 Ok(Answer::Nodes(labels.into_iter().map(handle).collect()))
             }
+            Call::SubmitForm { form, submitter } => {
+                let form = self.node(form)?;
+                let submitter = submitter.map(|node| self.node(node)).transpose()?;
+                if !self.connected(form) {
+                    return Ok(Answer::Nothing);
+                }
+                let seed = self.document.version() ^ (self.work << 20);
+                let planned = self.page.as_ref().and_then(|page| {
+                    crate::submit::plan(&self.document, page, form, submitter, seed)
+                });
+                if let Some(submission) = planned {
+                    self.outputs.navigation = Some(ScriptNavigation {
+                        url: Some(submission.url),
+                        replace: false,
+                        reload: false,
+                        link: true,
+                        post: submission.post,
+                    });
+                }
+                Ok(Answer::Nothing)
+            }
+            Call::ResetForm(form) => {
+                let form = self.node(form)?;
+                forms::reset_form(&mut self.document, form);
+                Ok(Answer::Nothing)
+            }
             Call::CommitEdit(node) => {
                 let node = self.node(node)?;
                 Ok(Answer::Bool(forms::commit_edit(&mut self.document, node)))
@@ -1108,6 +1136,7 @@ impl DocumentHost {
             replace: false,
             reload: false,
             link: true,
+            post: None,
         });
     }
 
@@ -1774,6 +1803,13 @@ fn handle(node: NodeId) -> Handle {
 /// Whether `node` is an element with an activation behaviour (HTML
 /// section 6.5): a link, `a` or `area`.
 fn has_activation_behaviour(document: &Document, node: NodeId) -> bool {
+    // A submit or reset button not disabled, with a form (M26.9).
+    if (forms::is_submit_button(document, node) || forms::is_reset_button(document, node))
+        && !forms::actually_disabled(document, node)
+        && forms::form_owner(document, node).is_some()
+    {
+        return true;
+    }
     match document.tag(node) {
         Some("a" | "area") => true,
         // A checkbox or a radio button not disabled (M26.8), and a label

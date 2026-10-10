@@ -199,7 +199,9 @@ pub(crate) struct ScriptNavigation {
     pub(crate) reload: bool,
     /// A link was followed (M26): its activation behaviour, which
     /// navigates as a click on it does, rather than as `location` does.
+    /// A form submitted does too (M26.9), with its body for a POST.
     pub(crate) link: bool,
+    pub(crate) post: Option<crate::submit::Post>,
 }
 
 /// How a script is run.

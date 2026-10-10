@@ -24,6 +24,8 @@ mod sheets;
 #[cfg(test)]
 mod state_tests;
 #[cfg(test)]
+mod submit_tests;
+#[cfg(test)]
 mod task_tests;
 #[cfg(test)]
 mod tests;

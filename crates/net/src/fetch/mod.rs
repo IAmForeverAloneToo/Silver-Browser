@@ -142,6 +142,8 @@ pub struct Request {
     pub method: Method,
     /// The body of a `POST`.
     pub body: Option<Vec<u8>>,
+    /// The body's `Content-Type`, sent with it (M26.9).
+    pub content_type: Option<String>,
     pub destination: Destination,
     pub mode: Mode,
     /// The document that asked, or `None` for a load the user asked for,
@@ -167,6 +169,7 @@ impl Request {
             url,
             method: Method::Get,
             body: None,
+            content_type: None,
             destination,
             mode: match destination {
                 Destination::Document => Mode::Navigate,
@@ -176,6 +179,17 @@ impl Request {
             abort: AbortHandle::new(),
             body_limit: None,
             csp: None,
+        }
+    }
+
+    /// A `POST` of `body` to `url` for `destination`, of `content_type`
+    /// (M26.9): a form's submission.
+    pub fn post(url: Url, destination: Destination, body: Vec<u8>, content_type: &str) -> Request {
+        Request {
+            method: Method::Post,
+            body: Some(body),
+            content_type: Some(content_type.to_owned()),
+            ..Request::get(url, destination)
         }
     }
 
@@ -354,7 +368,10 @@ impl Client {
             "data" => whole(data(url, request.limit(self.body_limit)), deliver),
             "file" => whole(file::fetch(url, request.limit(self.body_limit)), deliver),
             "http" | "https" => {
-                let headers = request_headers(request.destination, self.user_agent);
+                // A body's type goes with it: not after a redirect
+                // turned the request into a GET.
+                let content_type = body.and(request.content_type.as_deref());
+                let headers = request_headers(request.destination, self.user_agent, content_type);
                 let exchange = Exchange {
                     method: method.as_str(),
                     url,
@@ -528,14 +545,22 @@ fn is_potentially_trustworthy_host(url: &Url) -> bool {
 }
 
 /// The fields every HTTP request sends besides `Host`, which the
-/// message writer adds. Not sent: `Referer` (M33.3), `Cookie` (M27.4),
-/// `Origin` (M27) and the `Sec-Fetch-*` fields (M27).
-fn request_headers(destination: Destination, user_agent: &str) -> HeaderList {
+/// message writer adds, and a body's `Content-Type` (M26.9). Not sent:
+/// `Referer` (M33.3), `Cookie` (M27.4), `Origin` (M27) and the
+/// `Sec-Fetch-*` fields (M27).
+fn request_headers(
+    destination: Destination,
+    user_agent: &str,
+    content_type: Option<&str>,
+) -> HeaderList {
     let mut headers = HeaderList::new();
     headers.append(b"User-Agent", user_agent.as_bytes());
     headers.append(b"Accept", destination.accept());
     headers.append(b"Accept-Language", ACCEPT_LANGUAGE);
     headers.append(b"Accept-Encoding", ACCEPT_ENCODING);
+    if let Some(content_type) = content_type {
+        headers.append(b"Content-Type", content_type.as_bytes());
+    }
     headers
 }
 
