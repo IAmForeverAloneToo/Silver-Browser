@@ -204,6 +204,9 @@ pub enum Call {
     /// A URL parsed against the document's base URL, or `None` when it
     /// does not parse (a URL-reflecting attribute's getter).
     ResolveUrl(String),
+    /// A URL parsed against the document's own URL, its fallback base
+    /// URL, which a `<base>`'s `href` reads (M27).
+    ResolveUrlFromDocument(String),
     /// The document's URL, if it has one.
     DocumentUrl,
     /// The serialization of the document's origin (M27.2), what

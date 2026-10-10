@@ -27,7 +27,19 @@
 //!   checks it: each element its selectors find, the element's parent,
 //!   and the element's descendants, by their `data-*` attributes, within
 //!   a pixel, the CSSOM View values computed from the engine's fragments;
-//! - a crashtest must load and render without panicking.
+//! - a crashtest must load and render without panicking;
+//! - a testharness.js test (M27) runs the real `testharness.js` under
+//!   the runner's own `testharnessreport.js`, which writes each
+//!   subtest's result into the page, as `wptrunner`'s report hands them
+//!   to its driver; an `.any.js` or `.window.js` test is served in the
+//!   page wptserve makes of it for a window, a file's `.headers` are
+//!   sent with it, and an `.asis` file is sent as the whole response,
+//!   as wptserve sends them. The page's clock waits for the network while a
+//!   fetch is in flight and moves on to its timers otherwise; the
+//!   harness keeps no timeout of its own, and a test still running
+//!   after ten seconds of its time (a minute for a long one), or with
+//!   nothing left to wait for, times out. Pages of other kinds that load
+//!   the harness have the runner stand in for it, as before.
 //!
 //! The acceptance layouts of M17 to M20 (`tests/layouts/`, M17.10,
 //! M18.7, M19's and M20.5) are check-layout pages too, their expectations
@@ -35,12 +47,17 @@
 //! here the same way, every element of the body checked, each at 800 by
 //! 600 or the size its `reference-size` asks for.
 //!
-//! `expectations.txt` names each test expected to fail, with the reason.
-//! A test that fails without being named fails the run, and so does one
-//! named that passes, so that the file stays the true list of what does
-//! not work and why. Every run writes `target/wpt/report.html`: each test
+//! `expectations.txt` names each test expected to fail, with the reason,
+//! and each testharness subtest expected to fail as its test's path, a
+//! tab, the subtest's name, a tab and the reason; a testharness test
+//! whose harness does not finish is named as a whole. A test or subtest
+//! that fails without being named fails the run, and so does one named
+//! that passes, so that the file stays the true list of what does not
+//! work and why. Every run writes `target/wpt/report.html`: each test
 //! with its result, and a failing reftest's render, its reference's and
-//! their difference side by side.
+//! their difference side by side; and `target/wpt/testharness.txt`,
+//! each testharness test and subtest that failed, for keeping the
+//! expectations.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
@@ -104,6 +121,11 @@ enum Test {
     Crashtest {
         path: String,
     },
+    Testharness {
+        path: String,
+        /// Whether its `timeout` is long.
+        long: bool,
+    },
 }
 
 type Fuzzy = ((u32, u32), (u32, u32));
@@ -113,7 +135,8 @@ impl Test {
         match self {
             Test::Reftest { path, .. }
             | Test::CheckLayout { path, .. }
-            | Test::Crashtest { path } => path,
+            | Test::Crashtest { path }
+            | Test::Testharness { path, .. } => path,
         }
     }
 
@@ -122,6 +145,7 @@ impl Test {
             Test::Reftest { .. } => "reftest",
             Test::CheckLayout { .. } => "check-layout",
             Test::Crashtest { .. } => "crashtest",
+            Test::Testharness { .. } => "testharness",
         }
     }
 }
@@ -164,6 +188,10 @@ fn manifest() -> Vec<Test> {
                 size: (WIDTH, HEIGHT),
             },
             "crashtest" => Test::Crashtest { path },
+            "testharness" => Test::Testharness {
+                path,
+                long: fields.any(|field| field == "timeout=long"),
+            },
             _ => panic!("an unknown kind in the manifest: {line}"),
         });
     }
@@ -181,7 +209,8 @@ fn parse_fuzzy(spec: &str) -> Option<(String, Fuzzy)> {
     Some((reference.to_string(), (range(channel)?, range(pixels)?)))
 }
 
-/// `expectations.txt`: each test expected to fail, and why.
+/// `expectations.txt`: each test expected to fail, and why; a subtest
+/// by its test's path and its name, a tab between.
 fn expectations() -> BTreeMap<String, String> {
     let text = fs::read_to_string(root().join("expectations.txt")).unwrap_or_default();
     let mut out = BTreeMap::new();
@@ -189,7 +218,17 @@ fn expectations() -> BTreeMap<String, String> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let (path, reason) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
+        let (path, reason) = match line.split_once('\t') {
+            Some((path, rest)) => {
+                let (name, reason) = rest.split_once('\t').unwrap_or((rest, ""));
+                (format!("{path}\t{}", unescape(name)), reason)
+            }
+            None => {
+                let (path, reason) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
+                (path.to_string(), reason)
+            }
+        };
+        let path = path.as_str();
         let reason = reason.trim();
         assert!(!reason.is_empty(), "expectations.txt: {path} has no reason");
         assert!(
@@ -197,6 +236,33 @@ fn expectations() -> BTreeMap<String, String> {
             "expectations.txt: {path} is named twice"
         );
     }
+    out
+}
+
+/// A subtest's name as `expectations.txt` writes it, in ASCII: each
+/// `\u{HEX}` the character it names.
+fn unescape(name: &str) -> String {
+    let mut out = String::new();
+    let mut rest = name;
+    while let Some(at) = rest.find("\\u{") {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + 3..];
+        let named = after.split_once('}').and_then(|(hex, tail)| {
+            let c = char::from_u32(u32::from_str_radix(hex, 16).ok()?)?;
+            Some((c, tail))
+        });
+        match named {
+            Some((c, tail)) => {
+                out.push(c);
+                rest = tail;
+            }
+            None => {
+                out.push_str("\\u{");
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
     out
 }
 
@@ -213,20 +279,136 @@ fn content_type(path: &str) -> &'static str {
         Some("webp") => "image/webp",
         Some("svg") => "image/svg+xml",
         Some("avif") => "image/avif",
+        Some("txt") => "text/plain",
+        Some("json") => "application/json",
+        Some("xml") => "application/xml",
         _ => "application/octet-stream",
     }
 }
 
-/// The server of `root`, the vendored directory or the layouts'.
-fn serve(root: PathBuf) -> TestServer {
+/// The runner's `testharnessreport.js` (M27): it turns the harness's own
+/// timeout and log off, as `wptrunner`'s does, and writes the results
+/// into the page, a line each, for [`harness_results`] to read: the
+/// harness's status and message, then each subtest's status, name and
+/// message, tabs between, tabs and line breaks in them made spaces.
+const REPORT: &str = r#"setup({explicit_timeout: true, output: false});
+add_completion_callback(function (tests, status) {
+  function clean(text) {
+    return String(text === undefined || text === null ? "" : text).replace(/[\t\n\r]/g, " ");
+  }
+  var lines = [status.status + "\t" + clean(status.message)];
+  for (var i = 0; i < tests.length; i++) {
+    lines.push(tests[i].status + "\t" + clean(tests[i].name) + "\t" + clean(tests[i].message));
+  }
+  var out = document.createElement("pre");
+  out.id = "wpt-results";
+  out.textContent = lines.join("\n");
+  (document.body || document.documentElement).appendChild(out);
+});
+"#;
+
+/// The page wptserve makes of the `.any.js` or `.window.js` test whose
+/// source is `source`, served beside it as `name`, for a window: its
+/// title and the scripts its `// META:` lines name, `self.GLOBAL` for an
+/// `.any.js` one, the harness, then the test.
+fn wrapper(name: &str, source: &str, any: bool) -> String {
+    let mut head = String::new();
+    for line in source.lines().map(str::trim) {
+        let Some(meta) = line.strip_prefix("// META:") else {
+            if line.is_empty() || line.starts_with("//") {
+                continue;
+            }
+            break;
+        };
+        match meta.trim().split_once('=') {
+            Some(("title", title)) => {
+                let _ = writeln!(head, "<title>{}</title>", escape(title.trim()));
+            }
+            Some(("script", src)) => {
+                let _ = writeln!(head, "<script src=\"{}\"></script>", escape(src.trim()));
+            }
+            _ => {}
+        }
+    }
+    let global = if any {
+        "<script>\nself.GLOBAL = {\n  isWindow: function() { return true; },\n  \
+         isWorker: function() { return false; },\n  isShadowRealm: function() { return false; },\n};\n\
+         </script>\n"
+    } else {
+        ""
+    };
+    format!(
+        "<!doctype html>\n<meta charset=utf-8>\n{global}\
+         <script src=\"/resources/testharness.js\"></script>\n\
+         <script src=\"/resources/testharnessreport.js\"></script>\n{head}\
+         <div id=log></div>\n<script src=\"{}\"></script>\n",
+        escape(name)
+    )
+}
+
+/// The server of `root`, the vendored directory or the layouts'. With
+/// `harness`, the testharness tests' (M27): `testharnessreport.js` is
+/// the runner's, and an `.any.html` or `.window.html` page is made of
+/// its test; without, the harness's scripts are not found, the runner
+/// standing in for them. A file's `.headers` beside it are sent with it.
+fn serve(root: PathBuf, harness: bool) -> TestServer {
     TestServer::plain(move |request| {
         let path = request.target.split(['?', '#']).next().unwrap_or("");
         let file = path.trim_start_matches('/');
         let safe = !file.split('/').any(|part| part == ".." || part.is_empty());
-        match fs::read(root.join(file)) {
-            Ok(body) if safe => Reply::ok(content_type(file), &body),
-            _ => Reply::with_fields(404, &[("Content-Type", "text/plain")], b"not found"),
+        let not_found = || {
+            Reply::Send(
+                b"HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: 9\r\n\r\nnot found"
+                    .to_vec(),
+            )
+        };
+        if !safe {
+            return not_found();
         }
+        match (harness, file) {
+            (true, "resources/testharnessreport.js") => {
+                return Reply::ok("text/javascript", REPORT.as_bytes());
+            }
+            (false, "resources/testharness.js" | "resources/testharnessreport.js") => {
+                return not_found();
+            }
+            _ => {}
+        }
+        if harness && !root.join(file).is_file() {
+            for (page, script, any) in [
+                (".any.html", ".any.js", true),
+                (".window.html", ".window.js", false),
+            ] {
+                if let Some(stem) = file.strip_suffix(page)
+                    && let Ok(source) = fs::read_to_string(root.join(format!("{stem}{script}")))
+                {
+                    let name = format!("{}{script}", stem.rsplit('/').next().unwrap_or(stem));
+                    let page = wrapper(&name, &source, any);
+                    return Reply::ok("text/html; charset=utf-8", page.as_bytes());
+                }
+            }
+        }
+        let Ok(body) = fs::read(root.join(file)) else {
+            return not_found();
+        };
+        if file.ends_with(".asis") {
+            return Reply::SendAndClose(body);
+        }
+        let mut fields = vec![("Content-Type".to_string(), content_type(file).to_string())];
+        if let Ok(headers) = fs::read_to_string(root.join(format!("{file}.headers"))) {
+            for (name, value) in headers.lines().filter_map(|line| line.split_once(':')) {
+                let (name, value) = (name.trim(), value.trim());
+                fields.retain(|(old, _)| !old.eq_ignore_ascii_case(name));
+                fields.push((name.to_string(), value.to_string()));
+            }
+        }
+        let mut bytes = b"HTTP/1.1 200 OK\r\n".to_vec();
+        for (name, value) in &fields {
+            bytes.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
+        }
+        bytes.extend_from_slice(format!("Content-Length: {}\r\n\r\n", body.len()).as_bytes());
+        bytes.extend_from_slice(&body);
+        Reply::Send(bytes)
     })
 }
 
@@ -317,6 +499,56 @@ fn next_time(
         .flatten()
         .min()
         .map(|at| at.max(now + Duration::from_millis(1)))
+}
+
+#[test]
+fn a_harness_is_held_to_the_expectations_subtest_by_subtest() {
+    let harness = |status, tests: &[(&str, u8)]| Harness {
+        status,
+        message: "why".to_string(),
+        tests: tests
+            .iter()
+            .map(|(name, status)| (name.to_string(), *status, "said".to_string()))
+            .collect(),
+    };
+    let expected = |keys: &[&str]| -> BTreeMap<String, String> {
+        keys.iter()
+            .map(|key| (key.to_string(), "a reason".to_string()))
+            .collect()
+    };
+    let ran = harness(0, &[("a", 0), ("b", 1), ("c", 1)]);
+    // Each failing subtest named: nothing unexpected.
+    assert!(harness_unexpected("t.html", &ran, &expected(&["t.html\tb", "t.html\tc"])).is_empty());
+    // One not named, one named that passes, one named that did not run,
+    // and the whole test named though its harness finished.
+    let unexpected = harness_unexpected(
+        "t.html",
+        &ran,
+        &expected(&["t.html", "t.html\ta", "t.html\tb", "t.html\tgone"]),
+    );
+    assert_eq!(unexpected.len(), 4, "{unexpected:?}");
+    assert!(unexpected[0].starts_with("PASS t.html: its harness finished"));
+    assert!(unexpected[1].starts_with("PASS t.html\ta:"));
+    assert!(unexpected[2].starts_with("FAIL t.html\tc: said"));
+    assert!(unexpected[3].starts_with("GONE t.html\tgone:"));
+    // A harness that did not finish: the test named whole, or it is
+    // unexpected.
+    let error = harness(1, &[("a", 0)]);
+    assert!(harness_unexpected("t.html", &error, &expected(&["t.html"])).is_empty());
+    assert_eq!(
+        harness_unexpected("t.html", &error, &expected(&[])),
+        ["ERROR t.html: why"]
+    );
+}
+
+#[test]
+fn an_expectation_names_a_subtest_in_ascii() {
+    assert_eq!(
+        unescape("sort: \\u{FFFD}=x&\\u{1F308}"),
+        "sort: \u{FFFD}=x&\u{1F308}"
+    );
+    // What names no character stays as it is.
+    assert_eq!(unescape("a \\u{zz} b \\u{D800}"), "a \\u{zz} b \\u{D800}");
 }
 
 #[test]
@@ -497,6 +729,8 @@ struct Outcome {
     /// For a failing reftest: the test's render and the closest
     /// reference's, with the reference's path.
     images: Option<(Vec<u8>, Vec<u8>, String)>,
+    /// For a testharness test whose harness wrote its results.
+    harness: Option<Harness>,
 }
 
 impl Outcome {
@@ -505,6 +739,7 @@ impl Outcome {
             passed: true,
             message: String::new(),
             images: None,
+            harness: None,
         }
     }
 
@@ -513,6 +748,134 @@ impl Outcome {
             passed: false,
             message,
             images: None,
+            harness: None,
+        }
+    }
+}
+
+/// What the runner's `testharnessreport.js` wrote: the harness's status
+/// and message, and each subtest's name, status and message. A status
+/// is testharness.js's: 0 for an harness that finished (OK) or a subtest
+/// that passed.
+struct Harness {
+    status: u8,
+    message: String,
+    tests: Vec<(String, u8, String)>,
+}
+
+/// testharness.js's names of a harness's statuses.
+const HARNESS_STATUSES: [&str; 4] = ["OK", "ERROR", "TIMEOUT", "PRECONDITION_FAILED"];
+
+/// testharness.js's names of a subtest's statuses.
+const SUBTEST_STATUSES: [&str; 5] = ["PASS", "FAIL", "TIMEOUT", "NOTRUN", "PRECONDITION_FAILED"];
+
+fn status_name(names: &[&'static str], status: u8) -> &'static str {
+    names.get(usize::from(status)).copied().unwrap_or("UNKNOWN")
+}
+
+/// The page's time a testharness test may take, as `wptrunner` gives
+/// it: ten seconds, a minute for one whose `timeout` is long.
+const HARNESS_WAIT: Duration = Duration::from_secs(10);
+const HARNESS_WAIT_LONG: Duration = Duration::from_secs(60);
+
+/// The results the report wrote into the page, once it has.
+fn harness_results(engine: &Engine) -> Option<Harness> {
+    let document = engine.document();
+    let out = document
+        .subtree(document.root())
+        .find(|&id| document.attr(id, "id") == Some("wpt-results"))?;
+    let text = document.text_content(out);
+    let mut lines = text.split('\n');
+    let (status, message) = lines.next()?.split_once('\t')?;
+    let tests = lines
+        .filter_map(|line| {
+            let mut fields = line.splitn(3, '\t');
+            let status = fields.next()?.parse().ok()?;
+            let name = fields.next()?.to_string();
+            Some((name, status, fields.next().unwrap_or("").to_string()))
+        })
+        .collect();
+    Some(Harness {
+        status: status.parse().ok()?,
+        message: message.to_string(),
+        tests,
+    })
+}
+
+/// Runs the testharness test at `path` until its harness writes its
+/// results, as [`wait_for`] runs a page's event loop: the network's
+/// replies taken and the tasks due run, a frame drawn by time when one
+/// is wanted, and the clock moved on to the next frame or task, but only
+/// once no fetch is in flight, so that a page waiting on the server is
+/// not timed out by its own timers running ahead.
+fn run_testharness(server: &TestServer, path: &str, long: bool) -> Outcome {
+    let mut loaded = match load_waking(server, path) {
+        Ok(loaded) => loaded,
+        Err(error) => return Outcome::fail(error),
+    };
+    let Loaded {
+        engine,
+        woken,
+        clock,
+    } = &mut loaded;
+    let wait = if long {
+        HARNESS_WAIT_LONG
+    } else {
+        HARNESS_WAIT
+    };
+    let deadline = Instant::now() + LOAD;
+    loop {
+        let now = clock.now();
+        engine.poll_network();
+        engine.run_tasks();
+        if engine.needs_frame() {
+            engine.frame_at(WIDTH, HEIGHT, FrameTime::at(now));
+        }
+        if let Some(harness) = harness_results(engine) {
+            let passed = harness.status == 0 && harness.tests.iter().all(|(_, s, _)| *s == 0);
+            let failed = harness.tests.iter().filter(|(_, s, _)| *s != 0).count();
+            let message = match harness.status {
+                0 => format!("{failed} of {} subtests failed", harness.tests.len()),
+                status => format!(
+                    "harness {}: {}",
+                    status_name(&HARNESS_STATUSES, status),
+                    harness.message
+                ),
+            };
+            return Outcome {
+                passed,
+                message,
+                images: None,
+                harness: Some(harness),
+            };
+        }
+        if now > wait {
+            return Outcome::fail(format!("TIMEOUT: still running after {wait:?} of its time"));
+        }
+        let left = deadline.checked_duration_since(Instant::now());
+        let Some(left) = left else {
+            return Outcome::fail(format!("TIMEOUT: still running after {LOAD:?}"));
+        };
+        if engine.fetching() {
+            let _ = woken.recv_timeout(left.min(Duration::from_millis(100)));
+            continue;
+        }
+        match next_time(
+            now,
+            engine.needs_frame(),
+            engine.next_frame_at(),
+            engine.next_task_at(),
+        ) {
+            Some(at) => clock.set(at),
+            // Only the network or a decoder can change anything now.
+            None => {
+                if woken
+                    .recv_timeout(left.min(Duration::from_secs(1)))
+                    .is_err()
+                {
+                    return Outcome::fail("TIMEOUT: nothing left to wait for".to_string());
+                }
+            }
         }
     }
 }
@@ -568,6 +931,7 @@ fn run_reftest(
         passed: false,
         message: messages.join("; "),
         images: closest.map(|(_, reference, name)| (test, reference, name)),
+        harness: None,
     }
 }
 
@@ -905,8 +1269,9 @@ fn run_crashtest(server: &TestServer, path: &str) -> Outcome {
     }
 }
 
-/// Runs one test, a panic being a failure.
-fn run(server: &TestServer, test: &Test) -> Outcome {
+/// Runs one test, a panic being a failure; a testharness test from
+/// `harness`, the server that serves the harness.
+fn run(server: &TestServer, harness: &TestServer, test: &Test) -> Outcome {
     let ran = panic::catch_unwind(AssertUnwindSafe(|| match test {
         Test::Reftest { path, refs, fuzzy } => run_reftest(server, path, refs, fuzzy),
         Test::CheckLayout {
@@ -915,6 +1280,7 @@ fn run(server: &TestServer, test: &Test) -> Outcome {
             size,
         } => run_check_layout(server, path, selectors, *size),
         Test::Crashtest { path } => run_crashtest(server, path),
+        Test::Testharness { path, long } => run_testharness(harness, path, *long),
     }));
     ran.unwrap_or_else(|payload| {
         let message = payload
@@ -987,6 +1353,22 @@ fn report(results: &[(Test, Outcome)], expected: &BTreeMap<String, String>) {
             escape(path),
             escape(&outcome.message)
         );
+        if let Some(harness) = &outcome.harness {
+            for (name, status, message) in &harness.tests {
+                if *status == 0 {
+                    continue;
+                }
+                let named = expected.contains_key(&format!("{path}\t{name}"));
+                let _ = write!(
+                    html,
+                    "<br><span class={}>{}</span> {}: {}",
+                    if named { "expected" } else { "fail" },
+                    status_name(&SUBTEST_STATUSES, *status),
+                    escape(name),
+                    escape(message)
+                );
+            }
+        }
         if let Some((rendered, reference, name)) = &outcome.images {
             let stem = format!("{i:04}");
             write_png(&out.join(format!("{stem}-test.png")), rendered);
@@ -1006,19 +1388,46 @@ fn report(results: &[(Test, Outcome)], expected: &BTreeMap<String, String>) {
     }
     html.push_str("</table>");
     fs::write(out.join("report.html"), html).expect("the report is written");
+    // Each testharness test that failed, and each subtest, a line each
+    // with tabs between, for keeping expectations.txt: the path, the
+    // subtest's name (none for the whole test), the status and the
+    // message.
+    let mut failures = String::new();
+    for (test, outcome) in results {
+        if !matches!(test, Test::Testharness { .. }) || outcome.passed {
+            continue;
+        }
+        let path = test.path();
+        match &outcome.harness {
+            Some(harness) if harness.status == 0 => {
+                for (name, status, message) in &harness.tests {
+                    if *status != 0 {
+                        let status = status_name(&SUBTEST_STATUSES, *status);
+                        let _ = writeln!(failures, "{path}\t{name}\t{status}\t{message}");
+                    }
+                }
+            }
+            _ => {
+                let _ = writeln!(failures, "{path}\t\tFAIL\t{}", outcome.message);
+            }
+        }
+    }
+    fs::write(out.join("testharness.txt"), failures).expect("the failures are written");
 }
 
 #[test]
 fn the_web_platform_tests_subset_runs_as_expected() {
     let tests = manifest();
     let expected = expectations();
-    for path in expected.keys() {
+    for key in expected.keys() {
+        let path = key.split('\t').next().unwrap_or(key);
         assert!(
             tests.iter().any(|t| t.path() == path),
             "expectations.txt names {path}, which is not in the manifest"
         );
     }
-    let server = serve(root());
+    let server = serve(root(), false);
+    let harness = serve(root(), true);
     let next = AtomicUsize::new(0);
     let results: Mutex<Vec<Option<Outcome>>> = Mutex::new((0..tests.len()).map(|_| None).collect());
     let threads = thread::available_parallelism()
@@ -1032,7 +1441,7 @@ fn the_web_platform_tests_subset_runs_as_expected() {
                     let Some(test) = tests.get(i) else {
                         break;
                     };
-                    let outcome = run(&server, test);
+                    let outcome = run(&server, &harness, test);
                     results.lock().unwrap_or_else(|e| e.into_inner())[i] = Some(outcome);
                 }
             });
@@ -1045,7 +1454,14 @@ fn the_web_platform_tests_subset_runs_as_expected() {
         .collect();
     report(&results, &expected);
     let mut unexpected = Vec::new();
+    let mut subtests = (0, 0);
     for (test, outcome) in &results {
+        if let Some(harness) = &outcome.harness {
+            subtests.0 += harness.tests.len();
+            subtests.1 += harness.tests.iter().filter(|(_, s, _)| *s == 0).count();
+            unexpected.extend(harness_unexpected(test.path(), harness, &expected));
+            continue;
+        }
         match (outcome.passed, expected.contains_key(test.path())) {
             (false, false) => unexpected.push(format!("FAIL {}: {}", test.path(), outcome.message)),
             (true, true) => unexpected.push(format!(
@@ -1057,8 +1473,11 @@ fn the_web_platform_tests_subset_runs_as_expected() {
     }
     let passed = results.iter().filter(|(_, o)| o.passed).count();
     eprintln!(
-        "web-platform-tests: {passed} of {} passed, {} expected to fail; report in {}",
+        "web-platform-tests: {passed} of {} passed ({} of {} testharness subtests), \
+         {} expected to fail; report in {}",
         results.len(),
+        subtests.1,
+        subtests.0,
         expected.len(),
         out_dir().join("report.html").display()
     );
@@ -1068,6 +1487,63 @@ fn the_web_platform_tests_subset_runs_as_expected() {
         unexpected.len(),
         unexpected.join("\n")
     );
+}
+
+/// What is unexpected of the testharness test at `path` whose harness
+/// wrote `harness`: a harness that did not finish, unless the test is
+/// named whole; one that did, if it is; each subtest that failed and is
+/// not named, or passed and is; and each subtest named that did not run.
+fn harness_unexpected(
+    path: &str,
+    harness: &Harness,
+    expected: &BTreeMap<String, String>,
+) -> Vec<String> {
+    let whole = expected.contains_key(path);
+    if harness.status != 0 {
+        return match whole {
+            true => Vec::new(),
+            false => vec![format!(
+                "{} {path}: {}",
+                status_name(&HARNESS_STATUSES, harness.status),
+                harness.message
+            )],
+        };
+    }
+    let mut unexpected = Vec::new();
+    if whole {
+        unexpected.push(format!(
+            "PASS {path}: its harness finished, so expectations.txt must name its failing \
+             subtests rather than the test"
+        ));
+    }
+    for (name, status, message) in &harness.tests {
+        match (
+            *status == 0,
+            expected.contains_key(&format!("{path}\t{name}")),
+        ) {
+            (false, false) => unexpected.push(format!(
+                "{} {path}\t{name}: {message}",
+                status_name(&SUBTEST_STATUSES, *status)
+            )),
+            (true, true) => unexpected.push(format!(
+                "PASS {path}\t{name}: it passes, so expectations.txt must no longer name it"
+            )),
+            _ => {}
+        }
+    }
+    let prefix = format!("{path}\t");
+    for key in expected.keys().filter(|key| key.starts_with(&prefix)) {
+        if !harness
+            .tests
+            .iter()
+            .any(|(name, ..)| key[prefix.len()..] == *name)
+        {
+            unexpected.push(format!(
+                "GONE {key}: expectations.txt names a subtest that did not run"
+            ));
+        }
+    }
+    unexpected
 }
 
 /// The viewport's size an acceptance layout asks for with its
@@ -1101,7 +1577,7 @@ fn the_acceptance_layouts_lay_out_as_the_reference_browser_lays_them_out() {
          M19's carousel, rotated panels, modal and fixed header in a transform, \
          M20's responsive page at three widths and M26's form controls"
     );
-    let server = serve(dir.clone());
+    let server = serve(dir.clone(), false);
     let mut failures = Vec::new();
     for page in &pages {
         // A page without its expectations would pass on nothing.
@@ -1115,7 +1591,7 @@ fn the_acceptance_layouts_lay_out_as_the_reference_browser_lays_them_out() {
             selectors: vec!["body".to_string()],
             size: size_of(&source),
         };
-        let outcome = run(&server, &test);
+        let outcome = run(&server, &server, &test);
         if !outcome.passed {
             failures.push(format!("{page}: {}", outcome.message.replace("; ", "\n  ")));
         }

@@ -301,3 +301,21 @@ fn a_response_is_text_json_a_buffer_or_a_blob_as_asked() {
         ]
     );
 }
+
+#[test]
+fn a_base_a_script_inserts_is_what_open_resolves_against() {
+    let (mut tab, _server) = page_with("", |request| match request.target.as_str() {
+        "/r/f.txt" => ok(b"bottom"),
+        "/f.txt" => ok(b"top"),
+        _ => None,
+    });
+    // A base's href reads against the document's own URL, not itself.
+    tab.engine.run_classic(
+        "var b = document.createElement('base'); b.href = 'r/';\
+         document.head.appendChild(b);\
+         console.log(b.href.replace(location.origin, ''), b.getAttribute('href'));\
+         var c = new XMLHttpRequest(); c.open('GET', 'f.txt', false); c.send();\
+         console.log(c.responseURL.replace(location.origin, ''), c.responseText);",
+    );
+    assert_eq!(logged(&mut tab, 2), ["/r/ r/", "/r/f.txt bottom"]);
+}

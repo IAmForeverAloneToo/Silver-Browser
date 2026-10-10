@@ -454,6 +454,20 @@ fn schemes_a_fetch_may_use() {
 }
 
 #[test]
+fn a_response_to_head_has_no_body_whatever_its_scheme() {
+    let mut request = Request::get(url("data:text/plain,hello"), Destination::Empty);
+    request.method = Method::HEAD;
+    let response = client().fetch(&request).unwrap();
+    assert!(response.body.is_empty());
+    assert_eq!(
+        response.headers.get(b"Content-Type").as_deref(),
+        Some(&b"text/plain"[..])
+    );
+    request.method = Method::GET;
+    assert_eq!(client().fetch(&request).unwrap().body, b"hello");
+}
+
+#[test]
 fn mixed_content_is_blocked() {
     let from_https = page("https://example.org/", AddressSpace::Loopback);
     let style = |url: Url| Request::get(url, Destination::Style).initiated_by(from_https.clone());

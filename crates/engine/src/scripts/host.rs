@@ -752,6 +752,13 @@ impl DocumentHost {
                     .and_then(|page| page.resolve(&self.document, &text));
                 Ok(Answer::MaybeString(url.map(|url| url.to_string())))
             }
+            Call::ResolveUrlFromDocument(text) => {
+                let url = self
+                    .page
+                    .as_ref()
+                    .and_then(|page| page.resolve_from_document(&text));
+                Ok(Answer::MaybeString(url.map(|url| url.to_string())))
+            }
             Call::DocumentUrl => {
                 let url = self.page.as_ref().and_then(|page| page.url());
                 Ok(Answer::MaybeString(url.map(ToString::to_string)))

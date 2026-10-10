@@ -302,6 +302,12 @@ impl Page {
         Url::parse_with(href, base.as_ref(), self.context.encoding).ok()
     }
 
+    /// `href` parsed against the document's own URL, its fallback base
+    /// URL, as a `<base>`'s `href` is read (M27).
+    pub(crate) fn resolve_from_document(&self, href: &str) -> Option<Url> {
+        Url::parse_with(href, self.context.url.as_ref(), self.context.encoding).ok()
+    }
+
     /// What a request of the page's is initiated by; none for a page
     /// with no URL, which fetches nothing.
     pub(crate) fn initiator(&self) -> Option<Initiator> {

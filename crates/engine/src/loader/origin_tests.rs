@@ -62,3 +62,14 @@ fn a_data_page_has_an_opaque_origin_and_no_domain() {
         ]
     );
 }
+
+#[test]
+fn a_window_is_its_own_top_level_with_no_frames() {
+    // A top-level window's relatives, which testharness.js walks (M27).
+    let (_tab, console) = scripted(
+        "<script>console.log(parent === window, top === window, frames === window, \
+         opener, length, window.length)</script>",
+        true,
+    );
+    assert_eq!(console, ["true true true null 0 0"]);
+}

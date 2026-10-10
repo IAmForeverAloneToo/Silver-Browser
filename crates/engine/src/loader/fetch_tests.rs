@@ -415,3 +415,18 @@ fn answers_that_came_at_one_time_run_in_the_order_they_were_asked_for() {
         .collect();
     assert_eq!(lines, ["slow", "fast"]);
 }
+
+#[test]
+fn an_iterable_init_has_its_iterator_read_once() {
+    // Web IDL reads @@iterator once to choose the union's member, and
+    // the sequence's conversion uses what it read.
+    let (mut tab, _server) = page_with(
+        "for (const make of [i => new Headers(i), i => new URLSearchParams(i)]) {\
+           let reads = 0;\
+           const init = { get [Symbol.iterator]() { reads++; return function* () { yield ['a', '1']; }; } };\
+           console.log(reads, make(init).get('a'), reads);\
+         }",
+        |_| None,
+    );
+    assert_eq!(logged(&mut tab, 2), ["0 1 1", "0 1 1"]);
+}

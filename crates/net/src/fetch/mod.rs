@@ -612,8 +612,14 @@ impl Client {
         let url_list = hop.url_list.as_slice();
         match url.scheme() {
             "about" => whole(about(url), deliver),
-            "data" => whole(data(url, request.limit(self.body_limit)), deliver),
-            "file" => whole(file::fetch(url, request.limit(self.body_limit)), deliver),
+            "data" => whole(
+                headless(hop, data(url, request.limit(self.body_limit))),
+                deliver,
+            ),
+            "file" => whole(
+                headless(hop, file::fetch(url, request.limit(self.body_limit))),
+                deliver,
+            ),
             "http" | "https" => {
                 let headers = self.request_headers(request, url, hop);
                 // A POST or a PUT without a body says its length is 0.
@@ -1217,6 +1223,17 @@ fn upgrade_mixed_content(request: &Request, url: &Url) -> Option<Url> {
     }
     // The default port goes with the scheme; another is kept.
     Url::parse(&format!("https{}", &url.as_str()["http".len()..])).ok()
+}
+
+/// Fetch's main fetch (4.1, step 22): a response to `HEAD` has no
+/// body, whatever the scheme gave; HTTP's has none to read already.
+fn headless(hop: &Hop, result: Result<Response, NetworkError>) -> Result<Response, NetworkError> {
+    result.map(|mut response| {
+        if hop.method == Method::HEAD {
+            response.body.clear();
+        }
+        response
+    })
 }
 
 /// Where a redirect goes (Fetch's location URL): `None` when the

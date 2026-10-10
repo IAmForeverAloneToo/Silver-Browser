@@ -20,6 +20,14 @@ cargo run -p engine --example wpt -- pull <checkout>
 which rewrites them, `MANIFEST` and this file. `tests/wpt.rs` runs
 them; `expectations.txt` names those expected to fail, and why.
 
+With them are the testharness.js tests of `fetch/api/headers`, `fetch/api/request`, `fetch/api/response`, `fetch/api/basic`, `xhr`, `url` (the `urlsearchparams-*` tests), `FileAPI/blob` (M27) that
+the runner's one server can serve: no Python handler, no `.sub`
+template, no other host, nothing over `https:` and no worker's
+global. `resources/testharness.js` is the real one; the runner
+serves its own `testharnessreport.js`, and the page wptserve
+makes of an `.any.js` or `.window.js` test. Each subtest they
+fail is named in `expectations.txt`, and why.
+
 ## Taken
 
 | Kind | Tests |
@@ -27,7 +35,8 @@ them; `expectations.txt` names those expected to fail, and why.
 | checklayout | 66 |
 | crashtest | 94 |
 | reftest | 2272 |
-| all | 2432 |
+| testharness | 156 |
+| all | 2588 |
 
 ## Left out
 
@@ -44,16 +53,17 @@ The first reason the rule found for each test it left out:
 | SVG image | 306 |
 | not a reftest, a check-layout test or a crashtest | 261 |
 | selector | 241 |
+| Python handler | 237 |
 | declaration of line-height | 230 |
 | declaration of writing-mode | 207 |
 | element <br> | 146 |
 | dir=rtl | 113 |
 | element <iframe> | 101 |
+| wptserve substitution (.sub) | 91 |
 | declaration of direction | 90 |
 | declaration of border-radius | 85 |
 | declaration of white-space | 81 |
 | declaration of container-type | 78 |
-| wptserve substitution (.sub) | 65 |
 | declaration of background-image | 62 |
 | declaration of font-weight | 54 |
 | element <object> | 54 |
@@ -79,6 +89,7 @@ The first reason the rule found for each test it left out:
 | declaration of grid-template-rows | 26 |
 | declaration of overflow-y | 25 |
 | @container | 23 |
+| a frame | 23 |
 | declaration of grid-template-columns | 21 |
 | declaration of text-shadow | 21 |
 | element <fieldset> | 21 |
@@ -101,11 +112,15 @@ The first reason the rule found for each test it left out:
 | declaration of align-self | 11 |
 | declaration of column-count | 11 |
 | declaration of text-emphasis | 11 |
+| a worker's global | 10 |
 | declaration of text-decoration-skip-spaces | 10 |
+| https: | 10 |
 | declaration of filter | 9 |
 | declaration of text-decoration-skip-ink | 9 |
 | unchecked attribute data-expected | 9 |
 | element <meter> | 8 |
+| not a testharness test | 8 |
+| wptserve pipe | 8 |
 | declaration of break-after | 7 |
 | declaration of grid-template | 7 |
 | declaration of inset | 7 |
@@ -155,6 +170,7 @@ The first reason the rule found for each test it left out:
 | element <marquee> | 3 |
 | input type=datetime-local | 3 |
 | input type=file | 3 |
+| another host | 2 |
 | declaration of border-bottom-left-radius | 2 |
 | declaration of border-image | 2 |
 | declaration of color-scheme | 2 |
@@ -278,6 +294,7 @@ The first reason the rule found for each test it left out:
 | missing file css/selectors/data:text/css,.a{--x:%22%EF%89%BB%22;}.b{} | 1 |
 | missing file css/selectors/data:text/css,a{xyz | 1 |
 | missing file dom/nodes/insertion-removing-steps/data:text/css,%23div{display:none} | 1 |
+| missing file resources/WebIDLParser.js | 1 |
 | self-closing <rect/> in XHTML | 1 |
 | self-closing <span/> in XHTML | 1 |
 | unchecked attribute data-bar | 1 |

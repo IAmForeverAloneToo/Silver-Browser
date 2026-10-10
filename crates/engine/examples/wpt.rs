@@ -56,6 +56,18 @@
 //! - no `.sub` file, a template wptserve fills in before it is served,
 //!   which the runner's server does not (M23).
 //!
+//! And the testharness.js tests of the directories of
+//! [`TESTHARNESS_DIRECTORIES`] (M27), by another rule, since what such a
+//! test needs of the engine shows subtest by subtest, each that fails
+//! named in `expectations.txt` with why: what the runner's one server
+//! can serve. So an `.any.js` test for a window, a `.window.js` test or
+//! a page that loads `testharness.js`, with the scripts it loads, and no
+//! Python handler, no `.sub` template, no other host, nothing over
+//! `https:` and no worker's global. The real `testharness.js` is copied
+//! with them, and the files of the directories of
+//! [`SUPPORT_DIRECTORIES`] they read, but for their Python handlers and
+//! templates.
+//!
 //! The manifest has a line per test, its fields separated by tabs: the
 //! kind and the path, then for a reftest each reference as `==path` or
 //! `!=path` and each fuzziness as `fuzzy=ref:a-b;c-d` (an empty `ref`
@@ -99,6 +111,28 @@ const DIRECTORIES: &[&str] = &[
     "html/dom",
     "css/selectors",
     "html/semantics/forms",
+];
+
+/// The directories whose testharness.js tests are taken (M27), each with
+/// the start the name of a test taken must have.
+const TESTHARNESS_DIRECTORIES: &[(&str, &str)] = &[
+    ("fetch/api/headers", ""),
+    ("fetch/api/request", ""),
+    ("fetch/api/response", ""),
+    ("fetch/api/basic", ""),
+    ("xhr", ""),
+    ("url", "urlsearchparams-"),
+    ("FileAPI/blob", ""),
+];
+
+/// The directories of files the testharness tests read, copied whole
+/// but for wptserve's Python handlers and templates.
+const SUPPORT_DIRECTORIES: &[&str] = &[
+    "fetch/api/resources",
+    "fetch/api/cors/resources",
+    "fetch/api/request/resources",
+    "xhr/resources",
+    "FileAPI/support",
 ];
 
 /// How deep `@import`s may go; the engine fetches no deeper.
@@ -199,6 +233,8 @@ enum Kind {
     CheckLayout { selectors: Vec<String> },
     /// Loaded and rendered, and must not panic.
     Crashtest,
+    /// Run under testharness.js, each subtest checked (M27).
+    Testharness { long: bool },
 }
 
 /// What a page links and declares, and the files it needs.
@@ -244,6 +280,58 @@ fn pull(checkout: &Path) -> Result<(), String> {
                     files.extend(needs);
                 }
                 Err(reason) => *left_out.entry(reason).or_default() += 1,
+            }
+        }
+    }
+    for (directory, start) in TESTHARNESS_DIRECTORIES {
+        let mut tests = Vec::new();
+        walk(&checkout.join(directory), &mut tests)?;
+        tests.sort();
+        for path in tests {
+            let rel = relative(checkout, &path)?;
+            let name = rel.rsplit('/').next().unwrap_or(&rel);
+            if !name.starts_with(start) || !is_testharness_test(name) {
+                continue;
+            }
+            match take_testharness(checkout, &rel) {
+                Ok((page, long, needs)) => {
+                    let (name, line) = manifest_line(&page, &Kind::Testharness { long });
+                    *counts.entry(name).or_default() += 1;
+                    manifest.push(line);
+                    files.insert(rel);
+                    files.extend(needs);
+                }
+                Err(reason) => *left_out.entry(reason).or_default() += 1,
+            }
+        }
+    }
+    if counts.contains_key("testharness") {
+        files.insert("resources/testharness.js".to_string());
+        // The data the tests read beside them: anything but a page, a
+        // script, a Python handler or a template.
+        for (directory, _) in TESTHARNESS_DIRECTORIES {
+            let mut data = Vec::new();
+            walk(&checkout.join(directory), &mut data)?;
+            for path in data {
+                let rel = relative(checkout, &path)?;
+                let name = rel.rsplit('/').next().unwrap_or(&rel);
+                let kind = name.rsplit('.').next().unwrap_or("");
+                if !matches!(kind, "html" | "htm" | "xhtml" | "js" | "py" | "yml" | "md")
+                    && !name.contains(".sub.")
+                {
+                    files.insert(rel);
+                }
+            }
+        }
+        for directory in SUPPORT_DIRECTORIES {
+            let mut support = Vec::new();
+            walk_all(&checkout.join(directory), &mut support)?;
+            for path in support {
+                let rel = relative(checkout, &path)?;
+                let name = rel.rsplit('/').next().unwrap_or(&rel);
+                if !name.ends_with(".py") && !name.contains(".sub.") {
+                    files.insert(rel);
+                }
             }
         }
     }
@@ -327,6 +415,195 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Every file under `dir`, in every directory.
+fn walk_all(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries = fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    for entry in entries {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        if path.is_dir() {
+            walk_all(&path, out)?;
+        } else {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+/// Whether the file `name` is a testharness test, as wptserve names
+/// them: an `.any.js` or `.window.js` test, or a page.
+fn is_testharness_test(name: &str) -> bool {
+    let page = [".html", ".htm", ".xhtml"]
+        .iter()
+        .any(|ext| name.ends_with(ext));
+    let stem = name.split('.').next().unwrap_or(name);
+    (name.ends_with(".any.js") || name.ends_with(".window.js") || page)
+        && !stem.ends_with("-manual")
+        && !stem.ends_with("-ref")
+}
+
+/// The `// META:` lines at the top of an `.any.js` or `.window.js`
+/// test: each name and value.
+fn metas(source: &str) -> Vec<(String, String)> {
+    let mut metas = Vec::new();
+    for line in source.lines().map(str::trim) {
+        let Some(meta) = line.strip_prefix("// META:") else {
+            if line.is_empty() || line.starts_with("//") {
+                continue;
+            }
+            break;
+        };
+        if let Some((name, value)) = meta.trim().split_once('=') {
+            metas.push((name.trim().to_string(), value.trim().to_string()));
+        }
+    }
+    metas
+}
+
+/// Fails on what only wptserve can serve: a Python handler, a pipe
+/// that shapes a response, or a page of another host than the runner's
+/// one; and on what has no global here: a worker, or a frame or a
+/// window a script makes.
+fn served_here(text: &str) -> Result<(), String> {
+    if text.contains(".py") {
+        return Err("Python handler".to_string());
+    }
+    if text.contains("pipe=") {
+        return Err("wptserve pipe".to_string());
+    }
+    if ["new Worker(", "SharedWorker(", "serviceWorker"]
+        .iter()
+        .any(|worker| text.contains(worker))
+    {
+        return Err("a worker's global".to_string());
+    }
+    if [
+        "createElement(\"iframe\")",
+        "createElement('iframe')",
+        "window.open(",
+        ".contentWindow",
+    ]
+    .iter()
+    .any(|frame| text.contains(frame))
+    {
+        return Err("a frame".to_string());
+    }
+    let hosts = [
+        "get_host_info",
+        "{{host",
+        "{{domains",
+        "{{hosts",
+        "REMOTE_ORIGIN",
+        "REMOTE_HOST",
+        "OTHER_ORIGIN",
+        "www1.",
+        "www2.",
+    ];
+    if hosts.iter().any(|host| text.contains(host)) {
+        return Err("another host".to_string());
+    }
+    Ok(())
+}
+
+/// The testharness test at `rel`, if the rule takes it: the page the
+/// runner loads (for an `.any.js` or `.window.js` test, the one wptserve
+/// makes of it), whether its timeout is long, and the scripts it loads;
+/// else why it is left out.
+fn take_testharness(checkout: &Path, rel: &str) -> Result<(String, bool, Vec<String>), String> {
+    let name = rel.rsplit('/').next().unwrap_or(rel);
+    if name.contains(".sub.") {
+        return Err("wptserve substitution (.sub)".to_string());
+    }
+    if name.contains(".https.") || name.contains(".h2.") {
+        return Err("https:".to_string());
+    }
+    if [
+        ".worker.",
+        ".serviceworker.",
+        ".sharedworker.",
+        ".worker-module.",
+    ]
+    .iter()
+    .any(|worker| name.contains(worker))
+    {
+        return Err("a worker's global".to_string());
+    }
+    let source = fs::read(checkout.join(rel)).map_err(|_| format!("missing file {rel}"))?;
+    let source = String::from_utf8_lossy(&source).into_owned();
+    served_here(&source)?;
+    let mut scripts = Vec::new();
+    let (page, long) = if let Some(stem) = rel
+        .strip_suffix(".any.js")
+        .map(|stem| (stem, ".any.html"))
+        .or_else(|| {
+            rel.strip_suffix(".window.js")
+                .map(|stem| (stem, ".window.html"))
+        }) {
+        let metas = metas(&source);
+        let globals: Vec<&str> = metas
+            .iter()
+            .filter(|(name, _)| name == "global")
+            .flat_map(|(_, value)| value.split(','))
+            .map(str::trim)
+            .collect();
+        if rel.ends_with(".any.js")
+            && !globals.is_empty()
+            && !globals.iter().any(|g| matches!(*g, "window" | "default"))
+        {
+            return Err("not for a window".to_string());
+        }
+        for (name, value) in &metas {
+            if name == "script" {
+                scripts.push(resolve(rel, value)?);
+            }
+        }
+        let long = metas
+            .iter()
+            .any(|(name, value)| name == "timeout" && value == "long");
+        (format!("{}{}", stem.0, stem.1), long)
+    } else {
+        let node = html::parse_document(&source).map_err(|e| format!("unparsed page: {e:?}"))?;
+        let document = Document::from_node(&node);
+        let mut harness = false;
+        let mut long = false;
+        for id in document.subtree(document.root()) {
+            match document.tag(id).map(str::to_ascii_lowercase).as_deref() {
+                Some("script") => {
+                    if let Some(src) = document.attr(id, "src") {
+                        let name = src.rsplit('/').next().unwrap_or(src);
+                        if name == "testharness.js" {
+                            harness = true;
+                        } else if !HARNESS.contains(&name) {
+                            scripts.push(resolve(rel, src)?);
+                        }
+                    }
+                }
+                Some("meta") => {
+                    long |= document
+                        .attr(id, "name")
+                        .is_some_and(|n| n.eq_ignore_ascii_case("timeout"))
+                        && document.attr(id, "content") == Some("long");
+                }
+                Some("iframe" | "frame" | "object" | "embed") => {
+                    return Err("a frame".to_string());
+                }
+                _ => {}
+            }
+        }
+        if !harness {
+            return Err("not a testharness test".to_string());
+        }
+        (rel.to_string(), long)
+    };
+    for script in &scripts {
+        if script.contains(".sub.") {
+            return Err("wptserve substitution (.sub)".to_string());
+        }
+        let text = fs::read(checkout.join(script)).map_err(|_| format!("missing file {script}"))?;
+        served_here(&String::from_utf8_lossy(&text))?;
+    }
+    Ok((page, long, scripts))
 }
 
 /// `path` relative to the checkout, with `/` between its parts.
@@ -1571,6 +1848,12 @@ fn manifest_line(rel: &str, kind: &Kind) -> (&'static str, String) {
             "checklayout"
         }
         Kind::Crashtest => "crashtest",
+        Kind::Testharness { long } => {
+            if *long {
+                fields.push("timeout=long".to_string());
+            }
+            "testharness"
+        }
     };
     let mut line = format!("{name}\t{rel}");
     for field in fields {
@@ -1593,6 +1876,14 @@ fn readme(
         Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
         _ => quoted.join(""),
     };
+    let testharness = TESTHARNESS_DIRECTORIES
+        .iter()
+        .map(|(directory, start)| match start.is_empty() {
+            true => format!("`{directory}`"),
+            false => format!("`{directory}` (the `{start}*` tests)"),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
     let mut text = format!(
         "# web-platform-tests subset\n\n\
          The tests here are copied from\n\
@@ -1610,6 +1901,13 @@ fn readme(
          ```\n\n\
          which rewrites them, `MANIFEST` and this file. `tests/wpt.rs` runs\n\
          them; `expectations.txt` names those expected to fail, and why.\n\n\
+         With them are the testharness.js tests of {testharness} (M27) that\n\
+         the runner's one server can serve: no Python handler, no `.sub`\n\
+         template, no other host, nothing over `https:` and no worker's\n\
+         global. `resources/testharness.js` is the real one; the runner\n\
+         serves its own `testharnessreport.js`, and the page wptserve\n\
+         makes of an `.any.js` or `.window.js` test. Each subtest they\n\
+         fail is named in `expectations.txt`, and why.\n\n\
          ## Taken\n\n\
          | Kind | Tests |\n\
          | --- | ---: |\n"
@@ -1768,21 +2066,113 @@ mod tests {
             fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/wpt/MANIFEST"))
                 .expect("the manifest");
         let mut used: BTreeSet<&str> = BTreeSet::new();
+        let testharness: Vec<&str> = TESTHARNESS_DIRECTORIES.iter().map(|(d, _)| *d).collect();
         for line in manifest
             .lines()
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
         {
-            let path = line.split('\t').nth(1).expect("a path");
-            let directory = DIRECTORIES
+            let mut fields = line.split('\t');
+            let kind = fields.next().expect("a kind");
+            let path = fields.next().expect("a path");
+            // A testharness test by the directories of its own rule (M27).
+            let directories = match kind {
+                "testharness" => testharness.as_slice(),
+                _ => DIRECTORIES,
+            };
+            let directory = directories
                 .iter()
                 .filter(|d| path.starts_with(&format!("{d}/")))
                 .max_by_key(|d| d.len())
                 .unwrap_or_else(|| panic!("{path} is in no directory of the rule"));
             used.insert(directory);
         }
-        for directory in DIRECTORIES {
+        for directory in DIRECTORIES.iter().chain(&testharness) {
             assert!(used.contains(directory), "{directory} gives no test");
         }
+    }
+
+    #[test]
+    fn a_testharness_test_is_taken_when_the_runners_server_can_serve_it() {
+        let harness = "<script src=/resources/testharness.js></script>\
+                       <script src=/resources/testharnessreport.js></script>";
+        let checkout = Checkout::new(
+            "testharness",
+            &[
+                (
+                    "fetch/a/t.any.js",
+                    "// META: script=../r/u.js\n// META: timeout=long\ntest(() => {});",
+                ),
+                ("fetch/r/u.js", "function u() {}"),
+                ("fetch/a/w.window.js", "test(() => {});"),
+                (
+                    "fetch/a/p.html",
+                    &format!("{harness}<script src=h.js></script>"),
+                ),
+                ("fetch/a/h.js", "function h() {}"),
+                (
+                    "fetch/a/worker.any.js",
+                    "// META: global=worker\ntest(() => {});",
+                ),
+                ("fetch/a/py.any.js", "fetch('resources/echo.py');"),
+                (
+                    "fetch/a/inc.any.js",
+                    "// META: script=../r/py.js\ntest(() => {});",
+                ),
+                ("fetch/r/py.js", "const url = 'x.py';"),
+                (
+                    "fetch/a/host.any.js",
+                    "const u = get_host_info().HTTP_REMOTE_ORIGIN;",
+                ),
+                ("fetch/a/pipe.any.js", "fetch('x?pipe=trickle(d1)');"),
+                ("fetch/a/made.any.js", "new Worker('w.js');"),
+                ("fetch/a/frame.any.js", "document.createElement('iframe');"),
+                (
+                    "fetch/a/f.html",
+                    &format!("{harness}<iframe src=x.html></iframe>"),
+                ),
+                ("fetch/a/s.https.any.js", "test(() => {});"),
+                ("fetch/a/t.sub.any.js", "test(() => {});"),
+                ("fetch/a/none.html", "<p>no harness</p>"),
+            ],
+        );
+        let take = |rel: &str| take_testharness(&checkout.0, rel);
+        assert_eq!(
+            take("fetch/a/t.any.js"),
+            Ok((
+                "fetch/a/t.any.html".to_string(),
+                true,
+                vec!["fetch/r/u.js".to_string()]
+            ))
+        );
+        assert_eq!(
+            take("fetch/a/w.window.js"),
+            Ok(("fetch/a/w.window.html".to_string(), false, vec![]))
+        );
+        assert_eq!(
+            take("fetch/a/p.html"),
+            Ok((
+                "fetch/a/p.html".to_string(),
+                false,
+                vec!["fetch/a/h.js".to_string()]
+            ))
+        );
+        for (rel, why) in [
+            ("fetch/a/worker.any.js", "not for a window"),
+            ("fetch/a/py.any.js", "Python handler"),
+            ("fetch/a/inc.any.js", "Python handler"),
+            ("fetch/a/host.any.js", "another host"),
+            ("fetch/a/pipe.any.js", "wptserve pipe"),
+            ("fetch/a/made.any.js", "a worker's global"),
+            ("fetch/a/frame.any.js", "a frame"),
+            ("fetch/a/f.html", "a frame"),
+            ("fetch/a/s.https.any.js", "https:"),
+            ("fetch/a/t.sub.any.js", "wptserve substitution (.sub)"),
+            ("fetch/a/none.html", "not a testharness test"),
+        ] {
+            assert_eq!(take(rel), Err(why.to_string()), "{rel}");
+        }
+        assert!(is_testharness_test("t.any.js") && is_testharness_test("p.html"));
+        assert!(!is_testharness_test("u.js") && !is_testharness_test("m-manual.html"));
     }
 
     #[test]

@@ -258,6 +258,9 @@ const NATIVES: &[(&str, Decode)] = &[
         Ok(Call::CssValid(a.string(0)?, a.string(1)?))
     }),
     ("resolveUrl", |a| Ok(Call::ResolveUrl(a.string(0)?))),
+    ("resolveUrlFromDocument", |a| {
+        Ok(Call::ResolveUrlFromDocument(a.string(0)?))
+    }),
     ("documentUrl", |_| Ok(Call::DocumentUrl)),
     ("location", |_| Ok(Call::Location)),
     ("origin", |_| Ok(Call::Origin)),

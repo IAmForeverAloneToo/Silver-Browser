@@ -70,10 +70,19 @@
   // is a script's `new`, which the DOM's interfaces refuse.
   const KEY = Symbol("key");
 
+  // ECMAScript's ToString, as Web IDL's conversions call it: a Symbol
+  // throws, where String() would describe it.
+  function toString(value) {
+    if (typeof value === "symbol") {
+      throw new $TypeError("Cannot convert a Symbol value to a string");
+    }
+    return $String(value);
+  }
+
   // A DOMString: the value as a string, with any lone surrogate made
   // U+FFFD, which the host's strings cannot hold.
   function str(value) {
-    return ToWellFormed($String(value));
+    return ToWellFormed(toString(value));
   }
 
   // A DOMString that is "" for null ([LegacyNullToEmptyString]).
@@ -480,7 +489,6 @@
   // (bits of `kinds`), and its dictionary's members (`fields`).
   let eventState;
   let isEvent;
-  const MathFloorEarly = Math.floor;
   const EVENT = 1;
   const UI = 2;
   const FOCUS = 4;
@@ -648,12 +656,6 @@
         return $Number(value) | 0;
       case "unsigned long":
         return $Number(value) >>> 0;
-      case "unsigned long long": {
-        const n = $Number(value);
-        if (n !== n || n === Infinity || n === -Infinity) return 0;
-        const t = n < 0 ? -MathFloorEarly(-n) : MathFloorEarly(n);
-        return t < 0 ? t + 18446744073709551616 : t;
-      }
       case "short":
         return ($Number(value) << 16) >> 16;
       case "unsigned short":
@@ -749,7 +751,7 @@
       isEvent = (value) => typeof value === "object" && value !== null && #state in value;
     }
 
-    constructor(type, eventInitDict) {
+    constructor(type, eventInitDict = undefined) {
       const args = eventArgs(arguments.length, type, eventInitDict, EVENT_INIT, "Event");
       const fields = args[1];
       this.#state = {
@@ -865,7 +867,7 @@
   }
 
   class CustomEvent extends Event {
-    constructor(type, eventInitDict) {
+    constructor(type, eventInitDict = undefined) {
       const args = eventArgs(arguments.length, type, eventInitDict, CUSTOM_INIT, "CustomEvent");
       super(args[0], args[1]);
       eventState(this).kinds |= CUSTOM;
@@ -886,7 +888,7 @@
   }
 
   class UIEvent extends Event {
-    constructor(type, eventInitDict) {
+    constructor(type, eventInitDict = undefined) {
       const args = eventArgs(arguments.length, type, eventInitDict, UI_INIT, "UIEvent");
       super(args[0], args[1]);
       eventState(this).kinds |= UI;
@@ -925,7 +927,7 @@
   }
 
   class FocusEvent extends UIEvent {
-    constructor(type, eventInitDict) {
+    constructor(type, eventInitDict = undefined) {
       const args = eventArgs(arguments.length, type, eventInitDict, FOCUS_INIT, "FocusEvent");
       super(args[0], args[1]);
       eventState(this).kinds |= FOCUS;
@@ -965,7 +967,7 @@
   }
 
   class MouseEvent extends UIEvent {
-    constructor(type, eventInitDict) {
+    constructor(type, eventInitDict = undefined) {
       const args = eventArgs(arguments.length, type, eventInitDict, MOUSE_INIT, "MouseEvent");
       super(args[0], args[1]);
       eventState(this).kinds |= MOUSE;
@@ -1087,7 +1089,7 @@
   }
 
   class PointerEvent extends MouseEvent {
-    constructor(type, eventInitDict) {
+    constructor(type, eventInitDict = undefined) {
       const args = eventArgs(arguments.length, type, eventInitDict, POINTER_INIT, "PointerEvent");
       super(args[0], args[1]);
       eventState(this).kinds |= POINTER;
@@ -1158,7 +1160,7 @@
   }
 
   class WheelEvent extends MouseEvent {
-    constructor(type, eventInitDict) {
+    constructor(type, eventInitDict = undefined) {
       const args = eventArgs(arguments.length, type, eventInitDict, WHEEL_INIT, "WheelEvent");
       super(args[0], args[1]);
       eventState(this).kinds |= WHEEL;
@@ -1182,7 +1184,7 @@
   }
 
   class KeyboardEvent extends UIEvent {
-    constructor(type, eventInitDict) {
+    constructor(type, eventInitDict = undefined) {
       const args = eventArgs(
         arguments.length,
         type,
@@ -1266,7 +1268,7 @@
   }
 
   class InputEvent extends UIEvent {
-    constructor(type, eventInitDict) {
+    constructor(type, eventInitDict = undefined) {
       const args = eventArgs(arguments.length, type, eventInitDict, INPUT_INIT, "InputEvent");
       super(args[0], args[1]);
       eventState(this).kinds |= INPUT;
@@ -1296,7 +1298,7 @@
   }
 
   class SubmitEvent extends Event {
-    constructor(type, eventInitDict) {
+    constructor(type, eventInitDict = undefined) {
       const args = eventArgs(arguments.length, type, eventInitDict, SUBMIT_INIT, "SubmitEvent");
       super(args[0], args[1]);
       eventState(this).kinds |= SUBMIT;
@@ -1308,7 +1310,7 @@
   }
 
   class ErrorEvent extends Event {
-    constructor(type, eventInitDict) {
+    constructor(type, eventInitDict = undefined) {
       const args = eventArgs(arguments.length, type, eventInitDict, ERROR_INIT, "ErrorEvent");
       super(args[0], args[1]);
       eventState(this).kinds |= ERROR;
@@ -1336,7 +1338,7 @@
   }
 
   class PageTransitionEvent extends Event {
-    constructor(type, eventInitDict) {
+    constructor(type, eventInitDict = undefined) {
       const args = eventArgs(
         arguments.length,
         type,
@@ -1369,7 +1371,7 @@
   // CSS Animations' and Transitions' events (M26): what an animation or a
   // transition's change of phase queued (M22.2).
   class AnimationEvent extends Event {
-    constructor(type, eventInitDict) {
+    constructor(type, eventInitDict = undefined) {
       const args = eventArgs(
         arguments.length,
         type,
@@ -1395,7 +1397,7 @@
   }
 
   class TransitionEvent extends Event {
-    constructor(type, eventInitDict) {
+    constructor(type, eventInitDict = undefined) {
       const args = eventArgs(
         arguments.length,
         type,
@@ -1424,12 +1426,12 @@
   const PROGRESS = 16384;
   const PROGRESS_INIT = members(EVENT_INIT, [
     ["lengthComputable", "boolean", false],
-    ["loaded", "unsigned long long", 0],
-    ["total", "unsigned long long", 0],
+    ["loaded", "double", 0],
+    ["total", "double", 0],
   ], "ProgressEventInit");
 
   class ProgressEvent extends Event {
-    constructor(type, eventInitDict) {
+    constructor(type, eventInitDict = undefined) {
       const args = eventArgs(arguments.length, type, eventInitDict, PROGRESS_INIT, "ProgressEvent");
       super(args[0], args[1]);
       eventState(this).kinds |= PROGRESS;
@@ -1994,22 +1996,63 @@
 
   // Web IDL's conversion of an iterable to a sequence, through the
   // value's own iterator, as Web IDL says.
-  function sequence(value, method, iface) {
-    const iterate = typeof value === "object" && value !== null ? value[iteratorSymbol] : undefined;
-    if (typeof iterate !== "function") {
-      throw new $TypeError(
-        prefix(method, iface) + "The provided value cannot be converted to a sequence.",
-      );
+  // Web IDL's sequence from an iterable (3.2.18): its values, each
+  // converted by `convert`, if given, as the iteration reaches it, so
+  // that what converting one does shows in the next. `iterate` is the
+  // iterable's @@iterator when the caller has read it already. With no
+  // `method`, a failure is the constructor of `iface`'s.
+  function sequence(value, method, iface, convert, iterate) {
+    const where = method === "" ? "Failed to construct '" + iface + "': " : prefix(method, iface);
+    const object = (typeof value === "object" && value !== null) || typeof value === "function";
+    if (iterate === undefined && object) {
+      iterate = value[iteratorSymbol];
+    }
+    if (!object || typeof iterate !== "function") {
+      throw new $TypeError(where + "The provided value cannot be converted to a sequence.");
     }
     const iterator = ReflectApply(iterate, value, []);
+    if ((typeof iterator !== "object" || iterator === null) && typeof iterator !== "function") {
+      throw new $TypeError(where + "The iterator is not an object.");
+    }
+    const next = iterator.next;
     const items = [];
     for (;;) {
-      const step = iterator.next();
+      const step = ReflectApply(next, iterator, []);
+      if ((typeof step !== "object" || step === null) && typeof step !== "function") {
+        throw new $TypeError(where + "The iterator's result is not an object.");
+      }
       if (step.done) {
         return items;
       }
-      ArrayPush(items, step.value);
+      const item = step.value;
+      ArrayPush(items, convert === undefined ? item : convert(item));
     }
+  }
+
+  // Web IDL's record from an object (3.2.19): its own enumerable
+  // properties in order, each key converted by `key` and each value by
+  // `value`, a key seen again taking the later value in the earlier
+  // place; a Symbol key that is enumerable fails, as ToString does.
+  function record(object, key, value) {
+    const keys = ReflectOwnKeys(object);
+    const out = [];
+    const at = new $Map();
+    for (let i = 0; i < keys.length; i++) {
+      const name = keys[i];
+      const desc = ReflectGetOwnPropertyDescriptor(object, name);
+      if (desc === undefined || !desc.enumerable) {
+        continue;
+      }
+      const typedKey = key(name);
+      const typedValue = value(object[name]);
+      if (MapHas(at, typedKey)) {
+        out[MapGet(at, typedKey)][1] = typedValue;
+      } else {
+        MapSet(at, typedKey, out.length);
+        ArrayPush(out, [typedKey, typedValue]);
+      }
+    }
+    return out;
   }
 
   let signalOfController;
@@ -2327,47 +2370,52 @@
   // Blob and File (File API, M27): bytes and a type.
   let blobBytes;
   let isBlob;
+  // The parts of a Blob or a File (sequence<BlobPart>), each converted
+  // as the iteration reaches it: a Blob's bytes, a buffer's, or a
+  // USVString.
+  function blobParts(parts, iface) {
+    if (parts === undefined) {
+      return [];
+    }
+    return sequence(parts, "", iface, (part) => {
+      if (isBlob(part)) {
+        return blobBytes(part);
+      }
+      const bytes = bufferBytes(part);
+      return bytes !== undefined ? bytes : str(part);
+    });
+  }
+
+  // The bytes of blobParts' items, each string UTF-8 encoded, its line
+  // endings made the platform's if `endings` is native.
+  function blobPartBytes(items, endings) {
+    const list = [];
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (typeof item === "string") {
+        ArrayPush(list, utf8Encode(endings === "native" ? nativeEndings(item) : item));
+      } else {
+        ArrayPush(list, item);
+      }
+    }
+    return concat(list);
+  }
+
   class Blob {
     #bytes;
     #type;
 
-    constructor(parts, options) {
+    constructor(parts = undefined, options = undefined) {
       if (parts === KEY) {
         this.#bytes = options.bytes;
         this.#type = options.type;
         return;
       }
-      const iface = this instanceof File ? "File" : "Blob";
-      const read = blobOptions(options, iface, false);
-      const list = [];
-      if (parts !== undefined) {
-        let items;
-        try {
-          items = sequence(parts, "", "");
-        } catch (e) {
-          throw new $TypeError(
-            "Failed to construct '" + iface + "': The provided value cannot be converted to a sequence.",
-          );
-        }
-        for (let i = 0; i < items.length; i++) {
-          const part = items[i];
-          if (isBlob(part)) {
-            ArrayPush(list, part.#bytes);
-            continue;
-          }
-          const bytes = bufferBytes(part);
-          if (bytes !== undefined) {
-            ArrayPush(list, bytes);
-            continue;
-          }
-          let text = str(part);
-          if (read.endings === "native") {
-            text = nativeEndings(text);
-          }
-          ArrayPush(list, utf8Encode(text));
-        }
-      }
-      this.#bytes = concat(list);
+      // Web IDL converts the arguments in order: the parts, each as the
+      // iteration reaches it, then the options.
+      const items = blobParts(parts, "Blob");
+      const read = blobOptions(options, "Blob", false);
+      this.#bytes = blobPartBytes(items, read.endings);
       this.#type = read.type;
     }
 
@@ -2394,7 +2442,13 @@
           return fallback;
         }
         let n = $Number(value);
-        n = n !== n ? 0 : n < 0 ? -MathFloor(-n) : MathFloor(n);
+        if (n !== n) {
+          n = 0;
+        } else if (n !== Infinity && n !== -Infinity) {
+          const floor = MathFloor(n);
+          const rest = n - floor;
+          n = rest > 0.5 || (rest === 0.5 && floor % 2 !== 0) ? floor + 1 : floor;
+        }
         return n < 0 ? MathMax(size + n, 0) : MathMin(n, size);
       };
       const from = at(start, 0);
@@ -2429,7 +2483,7 @@
     #name;
     #lastModified;
 
-    constructor(bits, name, options) {
+    constructor(bits, name, options = undefined) {
       if (bits === KEY) {
         super(KEY, name);
         this.#name = name.name;
@@ -2437,9 +2491,11 @@
         return;
       }
       needToConstruct(arguments.length, 2, "File");
+      const items = blobParts(bits, "File");
+      const fileName = str(name);
       const read = blobOptions(options, "File", true);
-      super(bits, { type: read.type, endings: read.endings });
-      this.#name = str(name);
+      super(KEY, { bytes: blobPartBytes(items, read.endings), type: read.type });
+      this.#name = fileName;
       this.#lastModified =
         read.lastModified === undefined ? DateNow() : MathTrunc(read.lastModified) || 0;
     }
@@ -2805,42 +2861,20 @@
         return;
       }
       if (typeof init === "object" || typeof init === "function") {
-        if (isParams(init)) {
-          const from = init.#list;
-          for (let i = 0; i < from.length; i++) {
-            ArrayPush(this.#list, [from[i][0], from[i][1]]);
-          }
-          return;
-        }
         const iterate = init[iteratorSymbol];
         if (iterate !== undefined && iterate !== null) {
-          const items = sequence(init, "", "");
-          for (let i = 0; i < items.length; i++) {
-            let pair;
-            try {
-              pair = sequence(items[i], "", "");
-            } catch (e) {
-              throw new $TypeError(
-                "Failed to construct 'URLSearchParams': The provided value cannot be converted to a sequence.",
-              );
-            }
+          this.#list = sequence(init, "", "URLSearchParams", (item) => {
+            const pair = sequence(item, "", "URLSearchParams", str);
             if (pair.length !== 2) {
               throw new $TypeError(
                 "Failed to construct 'URLSearchParams': Sequence initializer must only contain pair elements",
               );
             }
-            ArrayPush(this.#list, [str(pair[0]), str(pair[1])]);
-          }
+            return pair;
+          }, iterate);
           return;
         }
-        const keys = ReflectOwnKeys(init);
-        for (let i = 0; i < keys.length; i++) {
-          const key = keys[i];
-          if (typeof key !== "string") continue;
-          const desc = ReflectGetOwnPropertyDescriptor(init, key);
-          if (desc === undefined || !desc.enumerable) continue;
-          ArrayPush(this.#list, [str(key), str(init[key])]);
-        }
+        this.#list = record(init, str, str);
         return;
       }
       let text = str(init);
@@ -2962,7 +2996,7 @@
 
   // A ByteString (Web IDL): a string of code points up to U+00FF.
   function byteString(value, method, iface) {
-    const text = $String(value);
+    const text = toString(value);
     for (let i = 0; i < text.length; i++) {
       if (CharCodeAt(text, i) > 0xff) {
         throw new $TypeError(
@@ -3284,37 +3318,22 @@
     if (init === null) {
       throw fail("The provided value is not of type '(record<ByteString, ByteString> or sequence<sequence<ByteString>>)'.");
     }
-    if (isHeaders(init)) {
-      const list = headersState(init).list;
-      const copy = [];
-      for (let i = 0; i < list.length; i++) ArrayPush(copy, [list[i][0], list[i][1]]);
-      for (let i = 0; i < copy.length; i++) appendHeader(headers, copy[i][0], copy[i][1], "append");
-      return;
-    }
+    const toByteString = (value) => byteString(value, "append", "Headers");
     const iterate = init[iteratorSymbol];
+    let pairs;
     if (iterate !== undefined && iterate !== null) {
-      const items = sequence(init, "", "");
-      for (let i = 0; i < items.length; i++) {
-        let pair;
-        try {
-          pair = sequence(items[i], "", "");
-        } catch (e) {
-          throw fail("The provided value cannot be converted to a sequence.");
-        }
+      pairs = sequence(init, "", iface, (item) => {
+        const pair = sequence(item, "", iface, toByteString);
         if (pair.length !== 2) {
           throw fail("Invalid value");
         }
-        appendHeader(headers, byteString(pair[0], "append", "Headers"), byteString(pair[1], "append", "Headers"), "append");
-      }
-      return;
+        return pair;
+      }, iterate);
+    } else {
+      pairs = record(init, toByteString, toByteString);
     }
-    const keys = ReflectOwnKeys(init);
-    for (let i = 0; i < keys.length; i++) {
-      const key = keys[i];
-      if (typeof key !== "string") continue;
-      const desc = ReflectGetOwnPropertyDescriptor(init, key);
-      if (desc === undefined || !desc.enumerable) continue;
-      appendHeader(headers, byteString(key, "append", "Headers"), byteString(init[key], "append", "Headers"), "append");
+    for (let i = 0; i < pairs.length; i++) {
+      appendHeader(headers, pairs[i][0], pairs[i][1], "append");
     }
   }
 
@@ -3438,8 +3457,19 @@
     const entries = [];
     if (!at(0, delimiter)) return null;
     let i = viewLength(delimiter);
+    // Transport padding (RFC 2046): spaces and tabs after a delimiter.
+    const padding = (from) => {
+      while (from < n && (bytes[from] === 0x20 || bytes[from] === 0x09)) from++;
+      return from;
+    };
     for (;;) {
-      if (at(i, utf8Encode("--"))) return entries;
+      if (at(i, utf8Encode("--"))) {
+        // The close delimiter, then the end or a line break before any
+        // epilogue.
+        const end = padding(i + 2);
+        return end === n || at(end, crlf) ? entries : null;
+      }
+      i = padding(i);
       if (!at(i, crlf)) return null;
       i += 2;
       const headEnd = find(i, utf8Encode("\r\n\r\n"));
@@ -3592,6 +3622,9 @@
   const REQUEST_MODES = ["same-origin", "no-cors", "cors", "navigate"];
   const REQUEST_CREDENTIALS = ["omit", "same-origin", "include"];
   const REQUEST_CACHES = ["default", "no-store", "reload", "no-cache", "force-cache", "only-if-cached"];
+  // A request's priority: checked, as Fetch's IDL has it, and kept by
+  // nothing, the engine having no priorities to give.
+  const REQUEST_PRIORITIES = ["high", "low", "auto"];
   const REQUEST_REDIRECTS = ["follow", "error", "manual"];
   const REFERRER_POLICIES = [
     "", "no-referrer", "no-referrer-when-downgrade", "same-origin", "origin",
@@ -3697,6 +3730,7 @@
       }
       const redirect = enumMember(given, "redirect", REQUEST_REDIRECTS, "RequestRedirect");
       if (redirect !== undefined) state.redirect = redirect;
+      enumMember(given, "priority", REQUEST_PRIORITIES, "RequestPriority");
       if (has("integrity")) state.integrity = str(given.integrity);
       if (has("keepalive")) state.keepalive = !!given.keepalive;
       if (has("method")) {
@@ -3729,7 +3763,10 @@
       if (has("headers")) {
         fillHeaders(headers, given.headers, "Request", true);
       } else if (inputIsRequest) {
-        fillHeaders(headers, input.#state.headers, "Request", true);
+        const list = headersState(input.#state.headers).list;
+        for (let i = 0; i < list.length; i++) {
+          appendHeader(headers, list[i][0], list[i][1], "append");
+        }
       }
       // The body.
       const inputBody = inputIsRequest ? input.#state.body : null;
@@ -4179,6 +4216,12 @@
         throw domError("SyntaxError", "Invalid URL", "open", "XMLHttpRequest");
       }
       const isAsync = arguments.length < 3 ? true : !!async;
+      if (username !== undefined && username !== null) {
+        str(username);
+      }
+      if (password !== undefined && password !== null) {
+        str(password);
+      }
       if (!isAsync && (this.#timeout !== 0 || this.#responseType !== "")) {
         throw domError(
           "InvalidAccessError",
@@ -7018,8 +7061,9 @@
 
   // Defines `property` on `prototype` reflecting the content attribute
   // `attribute`, of `kind`: a string, a URL resolved against the base
-  // URL, a boolean, an unsigned or signed number with `fallback`, or the
-  // enumerated `dir`.
+  // URL (against the document's own for a `<base>`'s, `fallback` of
+  // "fallback base"), a boolean, an unsigned or signed number with
+  // `fallback`, or the enumerated `dir`.
   function reflect(prototype, property, attribute, kind, fallback) {
     defineProperty(prototype, property, {
       get() {
@@ -7035,7 +7079,9 @@
               }
               return "";
             }
-            const url = native.resolveUrl(value);
+            const url = fallback === "fallback base"
+              ? native.resolveUrlFromDocument(value)
+              : native.resolveUrl(value);
             return url === null ? value : url;
           }
           case "unsigned":
@@ -7098,6 +7144,10 @@
       ["rel", "rel", "string"],
       ["hreflang", "hreflang", "string"],
       ["type", "type", "string"],
+    ]],
+    ["HTMLBaseElement", [
+      ["href", "href", "url", "fallback base"],
+      ["target", "target", "string"],
     ]],
     ["HTMLAreaElement", [
       ["href", "href", "url"],

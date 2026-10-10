@@ -4013,6 +4013,12 @@ impl Engine {
         self.network.set_client(client);
     }
 
+    /// Whether a fetch is in flight (M27): a runner on a hand's clock
+    /// waits for the network before it moves the clock on.
+    pub fn fetching(&self) -> bool {
+        self.network.in_flight() > 0
+    }
+
     /// The current document.
     pub fn document(&self) -> &Document {
         &self.shown.document
