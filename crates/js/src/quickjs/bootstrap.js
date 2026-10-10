@@ -480,6 +480,7 @@
   // (bits of `kinds`), and its dictionary's members (`fields`).
   let eventState;
   let isEvent;
+  const MathFloorEarly = Math.floor;
   const EVENT = 1;
   const UI = 2;
   const FOCUS = 4;
@@ -647,6 +648,12 @@
         return $Number(value) | 0;
       case "unsigned long":
         return $Number(value) >>> 0;
+      case "unsigned long long": {
+        const n = $Number(value);
+        if (n !== n || n === Infinity || n === -Infinity) return 0;
+        const t = n < 0 ? -MathFloorEarly(-n) : MathFloorEarly(n);
+        return t < 0 ? t + 18446744073709551616 : t;
+      }
       case "short":
         return ($Number(value) << 16) >> 16;
       case "unsigned short":
@@ -1413,6 +1420,34 @@
     }
   }
 
+  // ProgressEvent (XMLHttpRequest 5, M27.6).
+  const PROGRESS = 16384;
+  const PROGRESS_INIT = members(EVENT_INIT, [
+    ["lengthComputable", "boolean", false],
+    ["loaded", "unsigned long long", 0],
+    ["total", "unsigned long long", 0],
+  ], "ProgressEventInit");
+
+  class ProgressEvent extends Event {
+    constructor(type, eventInitDict) {
+      const args = eventArgs(arguments.length, type, eventInitDict, PROGRESS_INIT, "ProgressEvent");
+      super(args[0], args[1]);
+      eventState(this).kinds |= PROGRESS;
+    }
+
+    get lengthComputable() {
+      return fieldsOf(this, PROGRESS).lengthComputable;
+    }
+
+    get loaded() {
+      return fieldsOf(this, PROGRESS).loaded;
+    }
+
+    get total() {
+      return fieldsOf(this, PROGRESS).total;
+    }
+  }
+
   // An interface's constants, on it and its prototype, as Web IDL has
   // them.
   function constants(cls, pairs) {
@@ -1441,6 +1476,7 @@
     ["PageTransitionEvent", PageTransitionEvent, PAGE_TRANSITION_INIT],
     ["AnimationEvent", AnimationEvent, ANIMATION_INIT],
     ["TransitionEvent", TransitionEvent, TRANSITION_INIT],
+    ["ProgressEvent", ProgressEvent, PROGRESS_INIT],
   ];
   for (let i = 0; i < EVENT_INTERFACES.length; i++) {
     const entry = EVENT_INTERFACES[i];
@@ -3986,6 +4022,10 @@
     const pending = MapGet(fetches, id);
     if (pending === undefined) return;
     MapDelete(fetches, id);
+    if (pending.deliver !== undefined) {
+      pending.deliver(answer);
+      return;
+    }
     const algorithms = signalOf(pending.signal).algorithms;
     for (let i = 0; i < algorithms.length; i++) {
       if (algorithms[i] === pending.abort) {
@@ -4016,6 +4056,494 @@
     enumerable: true,
     configurable: true,
   });
+
+  // ---- XMLHttpRequest (XMLHttpRequest Standard, M27.6) ----
+
+  // Whether `target` has a listener (XHR's upload listener flag).
+  function hasListeners(target) {
+    return listenersOf(target).length > 0;
+  }
+
+  // An event of the request's own, dispatched at once, trusted.
+  function fireAt(target, event) {
+    eventState(event).trusted = true;
+    drain(dispatching(target, event));
+  }
+
+  function progressEvent(type, loaded, total, computable) {
+    return new ProgressEvent(type, { lengthComputable: computable, loaded, total });
+  }
+
+  class XMLHttpRequestEventTarget extends EventTarget {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("XMLHttpRequestEventTarget");
+      }
+      super();
+    }
+  }
+
+  class XMLHttpRequestUpload extends XMLHttpRequestEventTarget {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("XMLHttpRequestUpload");
+      }
+      super(KEY);
+    }
+  }
+
+  const UNSENT = 0;
+  const OPENED = 1;
+  const HEADERS_RECEIVED = 2;
+  const LOADING = 3;
+  const DONE = 4;
+  const RESPONSE_TYPES = ["", "arraybuffer", "blob", "document", "json", "text"];
+
+  let isXhr;
+  class XMLHttpRequest extends XMLHttpRequestEventTarget {
+    #state = UNSENT;
+    #send = false;
+    #method = "GET";
+    #url = "";
+    #async = true;
+    #headers = [];
+    #timeout = 0;
+    #credentials = false;
+    #upload = new XMLHttpRequestUpload(KEY);
+    #uploadComplete = false;
+    #uploadListened = false;
+    #response = null;
+    #responseType = "";
+    #override = null;
+    #fetch = 0;
+    #timer = 0;
+    #cache = undefined;
+
+    constructor() {
+      super(KEY);
+    }
+
+    static {
+      isXhr = (value) => typeof value === "object" && value !== null && #state in value;
+    }
+
+    get readyState() {
+      return this.#state;
+    }
+
+    get upload() {
+      return this.#upload;
+    }
+
+    get timeout() {
+      return this.#timeout;
+    }
+
+    set timeout(value) {
+      this.#state;
+      const ms = unsigned(value);
+      if (!this.#async && this.#state !== UNSENT) {
+        throw new $DOMException(
+          "Failed to set the 'timeout' property on 'XMLHttpRequest': Timeouts cannot be set for synchronous requests made from a document.",
+          "InvalidAccessError",
+        );
+      }
+      this.#timeout = ms;
+    }
+
+    get withCredentials() {
+      return this.#credentials;
+    }
+
+    set withCredentials(value) {
+      if ((this.#state !== UNSENT && this.#state !== OPENED) || this.#send) {
+        throw new $DOMException(
+          "Failed to set the 'withCredentials' property on 'XMLHttpRequest': The value may only be set if the object's state is UNSENT or OPENED.",
+          "InvalidStateError",
+        );
+      }
+      this.#credentials = !!value;
+    }
+
+    open(method, url, async, username, password) {
+      need(arguments.length, 2, "open", "XMLHttpRequest");
+      const m = byteString(method, "open", "XMLHttpRequest");
+      if (!isToken(m)) {
+        throw domError("SyntaxError", "'" + m + "' is not a valid HTTP method.", "open", "XMLHttpRequest");
+      }
+      if (isForbiddenMethod(m)) {
+        throw domError("SecurityError", "'" + m + "' HTTP method is unsupported.", "open", "XMLHttpRequest");
+      }
+      const resolved = native.resolveUrl(str(url));
+      if (resolved === null) {
+        throw domError("SyntaxError", "Invalid URL", "open", "XMLHttpRequest");
+      }
+      const isAsync = arguments.length < 3 ? true : !!async;
+      if (!isAsync && (this.#timeout !== 0 || this.#responseType !== "")) {
+        throw domError(
+          "InvalidAccessError",
+          "Synchronous requests from a document must not set a timeout or a response type.",
+          "open",
+          "XMLHttpRequest",
+        );
+      }
+      this.#terminate();
+      const upper = ToUpperCase(m);
+      this.#method =
+        upper === "DELETE" || upper === "GET" || upper === "HEAD" || upper === "OPTIONS" ||
+        upper === "POST" || upper === "PUT" ? upper : m;
+      this.#url = resolved;
+      this.#async = isAsync;
+      this.#headers = [];
+      this.#send = false;
+      this.#response = null;
+      this.#cache = undefined;
+      if (this.#state !== OPENED) {
+        this.#state = OPENED;
+        fireAt(this, new Event("readystatechange"));
+      }
+    }
+
+    setRequestHeader(name, value) {
+      need(arguments.length, 2, "setRequestHeader", "XMLHttpRequest");
+      if (this.#state !== OPENED || this.#send) {
+        throw domError("InvalidStateError", "The object's state must be OPENED.", "setRequestHeader", "XMLHttpRequest");
+      }
+      const key = byteString(name, "setRequestHeader", "XMLHttpRequest");
+      const normal = normalizeValue(byteString(value, "setRequestHeader", "XMLHttpRequest"));
+      if (!isToken(key)) {
+        throw domError("SyntaxError", "'" + key + "' is not a valid HTTP header field name.", "setRequestHeader", "XMLHttpRequest");
+      }
+      if (!isHeaderValue(normal)) {
+        throw domError("SyntaxError", "'" + normal + "' is not a valid HTTP header field value.", "setRequestHeader", "XMLHttpRequest");
+      }
+      if (isForbiddenRequestHeader(key, normal)) {
+        return;
+      }
+      // Combined with a field of the same name (XMLHttpRequest 3.5.2).
+      const lower = ToLowerCase(key);
+      for (let i = 0; i < this.#headers.length; i++) {
+        if (ToLowerCase(this.#headers[i][0]) === lower) {
+          this.#headers[i][1] += ", " + normal;
+          return;
+        }
+      }
+      ArrayPush(this.#headers, [key, normal]);
+    }
+
+    send(body) {
+      if (this.#state !== OPENED || this.#send) {
+        throw domError("InvalidStateError", "The object's state must be OPENED.", "send", "XMLHttpRequest");
+      }
+      let bytes = null;
+      if (body !== undefined && body !== null && this.#method !== "GET" && this.#method !== "HEAD") {
+        const extracted = extract(body, "XMLHttpRequest");
+        bytes = extracted.bytes;
+        const set = combined(this.#headers, "content-type");
+        if (set === null && extracted.type !== null) {
+          ArrayPush(this.#headers, ["Content-Type", extracted.type]);
+        }
+      }
+      this.#uploadComplete = bytes === null;
+      this.#uploadListened = hasListeners(this.#upload);
+      this.#send = true;
+      const credentials = this.#credentials ? "include" : "same-origin";
+      if (!this.#async) {
+        let answer;
+        try {
+          answer = native.fetchNow(
+            this.#method, this.#url, flatten(this.#headers),
+            bytes === null ? null : binaryString(bytes), "cors", credentials, "follow", false,
+          );
+        } catch (e) {
+          answer = null;
+        }
+        if (answer === null) {
+          this.#state = DONE;
+          this.#send = false;
+          this.#response = { error: true };
+          throw domError("NetworkError", "Failed to load '" + this.#url + "'.", "send", "XMLHttpRequest");
+        }
+        this.#response = answer;
+        this.#state = DONE;
+        this.#send = false;
+        fireAt(this, new Event("readystatechange"));
+        const length = answer.body === null ? 0 : bufferLength(answer.body);
+        fireAt(this, progressEvent("load", length, length, true));
+        fireAt(this, progressEvent("loadend", length, length, true));
+        return;
+      }
+      fireAt(this, progressEvent("loadstart", 0, 0, false));
+      if (this.#uploadListened && !this.#uploadComplete) {
+        fireAt(this.#upload, progressEvent("loadstart", 0, viewLength(bytes), true));
+      }
+      if (this.#state !== OPENED || !this.#send) {
+        return;
+      }
+      const id = nextFetch++;
+      this.#fetch = id;
+      try {
+        native.fetch(
+          id, this.#method, this.#url, flatten(this.#headers),
+          bytes === null ? null : binaryString(bytes), "cors", credentials, "follow",
+          this.#uploadListened,
+        );
+      } catch (e) {
+        this.#fetch = 0;
+        this.#errorSteps("error");
+        return;
+      }
+      const sent = bytes === null ? 0 : viewLength(bytes);
+      MapSet(fetches, id, {
+        deliver: (answer) => this.#answered(answer, sent),
+      });
+      if (this.#timeout > 0) {
+        this.#timer = startTimer(() => this.#timedOut(id), this.#timeout, [], false);
+      }
+    }
+
+    // The response came, or a network error (XMLHttpRequest 3.5.6's
+    // process response, end of body, and request error steps).
+    #answered(answer, sent) {
+      this.#fetch = 0;
+      this.#stopTimer();
+      if (answer === null) {
+        this.#errorSteps("error");
+        return;
+      }
+      if (this.#uploadListened && !this.#uploadComplete) {
+        this.#uploadComplete = true;
+        fireAt(this.#upload, progressEvent("progress", sent, sent, true));
+        fireAt(this.#upload, progressEvent("load", sent, sent, true));
+        fireAt(this.#upload, progressEvent("loadend", sent, sent, true));
+      }
+      this.#uploadComplete = true;
+      this.#response = answer;
+      this.#state = HEADERS_RECEIVED;
+      fireAt(this, new Event("readystatechange"));
+      if (this.#state !== HEADERS_RECEIVED) return;
+      const length = answer.body === null ? 0 : bufferLength(answer.body);
+      if (length > 0) {
+        this.#state = LOADING;
+        fireAt(this, new Event("readystatechange"));
+        if (this.#state !== LOADING) return;
+      }
+      fireAt(this, progressEvent("progress", length, length, true));
+      this.#state = DONE;
+      this.#send = false;
+      fireAt(this, new Event("readystatechange"));
+      fireAt(this, progressEvent("load", length, length, true));
+      fireAt(this, progressEvent("loadend", length, length, true));
+    }
+
+    // The request error steps of `event`: error, abort or timeout.
+    #errorSteps(event) {
+      this.#state = DONE;
+      this.#send = false;
+      this.#response = { error: true };
+      fireAt(this, new Event("readystatechange"));
+      if (!this.#uploadComplete) {
+        this.#uploadComplete = true;
+        if (this.#uploadListened) {
+          fireAt(this.#upload, progressEvent(event, 0, 0, false));
+          fireAt(this.#upload, progressEvent("loadend", 0, 0, false));
+        }
+      }
+      fireAt(this, progressEvent(event, 0, 0, false));
+      fireAt(this, progressEvent("loadend", 0, 0, false));
+    }
+
+    #stopTimer() {
+      if (this.#timer !== 0) {
+        stopTimer(this.#timer);
+        this.#timer = 0;
+      }
+    }
+
+    #timedOut(id) {
+      this.#timer = 0;
+      if (this.#fetch !== id) return;
+      MapDelete(fetches, id);
+      native.abortFetch(id);
+      this.#fetch = 0;
+      this.#errorSteps("timeout");
+    }
+
+    // Stops a fetch under way, quietly (open's terminate).
+    #terminate() {
+      if (this.#fetch !== 0) {
+        MapDelete(fetches, this.#fetch);
+        native.abortFetch(this.#fetch);
+        this.#fetch = 0;
+      }
+      this.#stopTimer();
+    }
+
+    abort() {
+      const pending = (this.#state === OPENED && this.#send) || this.#state === HEADERS_RECEIVED ||
+        this.#state === LOADING;
+      this.#terminate();
+      if (pending) {
+        this.#errorSteps("abort");
+      }
+      if (this.#state === DONE) {
+        this.#state = UNSENT;
+        this.#response = null;
+      }
+    }
+
+    get responseURL() {
+      const response = this.#response;
+      if (response === null || response.error || response.urlList.length === 0) return "";
+      const url = response.urlList[response.urlList.length - 1];
+      const hash = StringIndexOf(url, "#");
+      return hash < 0 ? url : StringSlice(url, 0, hash);
+    }
+
+    get status() {
+      const response = this.#response;
+      return response === null || response.error ? 0 : response.status;
+    }
+
+    get statusText() {
+      const response = this.#response;
+      return response === null || response.error ? "" : response.statusText;
+    }
+
+    getResponseHeader(name) {
+      need(arguments.length, 1, "getResponseHeader", "XMLHttpRequest");
+      const response = this.#response;
+      if (response === null || response.error) return null;
+      return combined(pairsFrom(response.headers), ToLowerCase(byteString(name, "getResponseHeader", "XMLHttpRequest")));
+    }
+
+    getAllResponseHeaders() {
+      const response = this.#response;
+      if (response === null || response.error) return "";
+      const pairs = sortAndCombine(pairsFrom(response.headers));
+      let out = "";
+      for (let i = 0; i < pairs.length; i++) {
+        out += pairs[i][0] + ": " + pairs[i][1] + "\r\n";
+      }
+      return out;
+    }
+
+    overrideMimeType(mime) {
+      need(arguments.length, 1, "overrideMimeType", "XMLHttpRequest");
+      if (this.#state === LOADING || this.#state === DONE) {
+        throw domError("InvalidStateError", "MimeType cannot be overridden when the state is LOADING or DONE.", "overrideMimeType", "XMLHttpRequest");
+      }
+      this.#override = str(mime);
+    }
+
+    get responseType() {
+      return this.#responseType;
+    }
+
+    set responseType(value) {
+      const type = str(value);
+      if (!within(RESPONSE_TYPES, type)) return;
+      if (this.#state === LOADING || this.#state === DONE) {
+        throw new $DOMException(
+          "Failed to set the 'responseType' property on 'XMLHttpRequest': The response type cannot be set if the object's state is LOADING or DONE.",
+          "InvalidStateError",
+        );
+      }
+      if (!this.#async && this.#state !== UNSENT) {
+        throw new $DOMException(
+          "Failed to set the 'responseType' property on 'XMLHttpRequest': The response type cannot be changed for synchronous requests made from a document.",
+          "InvalidAccessError",
+        );
+      }
+      this.#responseType = type;
+    }
+
+    // The final MIME type: the override's, or the response's.
+    #mime() {
+      if (this.#override !== null) return this.#override;
+      const response = this.#response;
+      return combined(pairsFrom(response.headers), "content-type") || "text/xml";
+    }
+
+    #text() {
+      const response = this.#response;
+      if (response === null || response.error || response.body === null) return "";
+      const mime = this.#mime();
+      const charset = parameter(";" + StringSlice(mime, StringIndexOf(mime, ";") + 1), "charset");
+      const bytes = new $Uint8Array(response.body);
+      if (charset !== null && StringIndexOf(mime, ";") >= 0) {
+        const decoded = native.decode(binaryString(bytes), charset);
+        if (decoded !== null) return decoded;
+      }
+      return utf8Decode(bytes, true);
+    }
+
+    get responseText() {
+      if (this.#responseType !== "" && this.#responseType !== "text") {
+        throw new $DOMException(
+          "Failed to read the 'responseText' property from 'XMLHttpRequest': The value is only accessible if the object's 'responseType' is '' or 'text' (was '" +
+            this.#responseType + "').",
+          "InvalidStateError",
+        );
+      }
+      if (this.#state !== LOADING && this.#state !== DONE) return "";
+      return this.#text();
+    }
+
+    get responseXML() {
+      if (this.#responseType !== "" && this.#responseType !== "document") {
+        throw new $DOMException(
+          "Failed to read the 'responseXML' property from 'XMLHttpRequest': The value is only accessible if the object's 'responseType' is '' or 'document' (was '" +
+            this.#responseType + "').",
+          "InvalidStateError",
+        );
+      }
+      return null;
+    }
+
+    get response() {
+      const type = this.#responseType;
+      if (type === "" || type === "text") {
+        return this.responseText;
+      }
+      if (this.#state !== DONE) return null;
+      const response = this.#response;
+      if (response === null || response.error) return null;
+      if (this.#cache !== undefined) return this.#cache;
+      const bytes = response.body === null ? new $Uint8Array(0) : new $Uint8Array(response.body);
+      let value = null;
+      if (type === "arraybuffer") {
+        value = viewBuffer(TypedArraySlice(bytes));
+      } else if (type === "blob") {
+        value = new Blob(KEY, { bytes: TypedArraySlice(bytes), type: blobType(this.#mime()) });
+      } else if (type === "json") {
+        try {
+          value = JSONParse(utf8Decode(bytes, true));
+        } catch (e) {
+          value = null;
+        }
+      }
+      this.#cache = value;
+      return value;
+    }
+  }
+  constants(XMLHttpRequest, ["UNSENT", 0, "OPENED", 1, "HEADERS_RECEIVED", 2, "LOADING", 3, "DONE", 4]);
+  defineHandlers(
+    XMLHttpRequestEventTarget.prototype,
+    ["loadstart", "progress", "abort", "error", "load", "timeout", "loadend"],
+    false,
+  );
+  defineHandlers(XMLHttpRequest.prototype, ["readystatechange"], false);
+  expose(XMLHttpRequestEventTarget, "XMLHttpRequestEventTarget");
+  expose(XMLHttpRequestUpload, "XMLHttpRequestUpload");
+  expose(XMLHttpRequest, "XMLHttpRequest");
+
+  // A header list as pairs, from the natives' names and values.
+  function pairsFrom(flat) {
+    const out = [];
+    for (let i = 0; i < flat.length; i += 2) ArrayPush(out, [flat[i], flat[i + 1]]);
+    return out;
+  }
 
   // The handle of `node`, which must be a Node; whether a value is one;
   // and a node's kind and name. Set from inside Node's body, where its

@@ -275,6 +275,22 @@ const NATIVES: &[(&str, Decode)] = &[
             preflight: a.bool(8),
         })))
     }),
+    ("fetchNow", |a| {
+        Ok(Call::FetchNow(Box::new(crate::dom::FetchCall {
+            id: 0,
+            method: a.string(0)?,
+            url: a.string(1)?,
+            headers: a.strings(2)?,
+            body: a.bytes(3)?,
+            mode: a.string(4)?,
+            credentials: a.string(5)?,
+            redirect: a.string(6)?,
+            preflight: a.bool(7),
+        })))
+    }),
+    ("decode", |a| {
+        Ok(Call::Decode(a.bytes(0)?.unwrap_or_default(), a.string(1)?))
+    }),
     ("abortFetch", |a| Ok(Call::AbortFetch(a.integer(0) as u32))),
     ("urlHasCredentials", |a| {
         Ok(Call::UrlHasCredentials(a.string(0)?))
@@ -619,6 +635,8 @@ fn value<'js>(ctx: &Ctx<'js>, answer: Answer) -> rquickjs::Result<Value<'js>> {
         Answer::String(text) | Answer::MaybeString(Some(text)) => {
             rquickjs::String::from_str(ctx.clone(), &text)?.into_value()
         }
+        Answer::Fetched(None) => Value::new_null(ctx.clone()),
+        Answer::Fetched(Some(answer)) => crate::quickjs::answer_object(ctx, &answer)?.into_value(),
         Answer::Numbers(numbers) => {
             let array = Array::new(ctx.clone())?;
             for (i, number) in numbers.into_iter().enumerate() {

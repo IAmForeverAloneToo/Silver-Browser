@@ -160,6 +160,9 @@ pub(crate) struct DocumentHost {
     work: u64,
     /// How many fetches the document has in flight (M27.1).
     pub(crate) in_flight: usize,
+    /// The engine's client, lent for a run, for a synchronous XHR
+    /// (M27.6).
+    client: Option<Arc<net::Client>>,
     /// The engine's cookie jar, lent for a run (M27.4).
     cookies: Option<Arc<Mutex<net::cookies::Jar>>>,
     /// The document's page and parser, lent for a run; and where its
@@ -778,6 +781,28 @@ impl DocumentHost {
                 self.outputs.fetches.push((call.id, request));
                 Ok(Answer::Nothing)
             }
+            Call::FetchNow(call) => {
+                let page = self
+                    .page
+                    .as_ref()
+                    .ok_or_else(|| DomError::new("TypeError", "Failed to fetch"))?;
+                let request = super::fetch::request(page, &call)?;
+                let Some(client) = &self.client else {
+                    return Ok(Answer::Fetched(None));
+                };
+                // The run, and the page, wait for it, as the reference
+                // browser's does.
+                Ok(Answer::Fetched(
+                    client
+                        .fetch(&request)
+                        .ok()
+                        .map(|response| Box::new(super::fetch::answer(&response))),
+                ))
+            }
+            Call::Decode(bytes, label) => Ok(Answer::MaybeString(
+                encoding::Encoding::for_label(&label)
+                    .map(|encoding| encoding::decode(&bytes, encoding).0),
+            )),
             Call::AbortFetch(id) => {
                 self.outputs.aborted.push(id);
                 Ok(Answer::Nothing)
@@ -1351,6 +1376,7 @@ impl DocumentHost {
         let placeholder = Page::given(lent.page.id());
         self.page = Some(std::mem::replace(lent.page, placeholder));
         self.cookies = Some(lent.network.cookies());
+        self.client = Some(lent.network.client());
         self.parser = lent
             .parser
             .as_deref_mut()

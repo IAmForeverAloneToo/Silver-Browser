@@ -215,6 +215,13 @@ pub enum Call {
     /// engine checks again and starts once the run ends; its answer is a
     /// `Task::Fetched` of the same `id`. A `TypeError` for one it refuses.
     Fetch(Box<FetchCall>),
+    /// A synchronous XHR's request (M27.6): fetched at once, the run
+    /// waiting, its answer the response a script may see, or `null` for
+    /// a network error.
+    FetchNow(Box<FetchCall>),
+    /// Bytes decoded with the encoding a label names (an XHR's charset),
+    /// or `None` for a label no encoding has.
+    Decode(Vec<u8>, String),
     /// Fetch `id` aborted by its signal: the engine stops it.
     AbortFetch(u32),
     /// Whether a URL includes credentials, which a Request refuses.
@@ -457,6 +464,8 @@ pub enum Answer {
     /// Nodes, each with a flag.
     Pins(Vec<(Handle, bool)>),
     Numbers(Vec<f64>),
+    /// A synchronous fetch's answer, `None` for a network error (M27.6).
+    Fetched(Option<Box<crate::FetchAnswer>>),
 }
 
 /// Why a call failed: the exception the script gets, a `DOMException`

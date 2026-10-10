@@ -563,7 +563,10 @@ fn init_object<'js>(
 /// A fetch's answer as the bootstrap's `fetched` takes it (M27.1): its
 /// type, URL list, status, status text, fields as names and values one
 /// after the other, and body, a buffer or `null`.
-fn answer_object<'js>(ctx: &Ctx<'js>, answer: &FetchAnswer) -> rquickjs::Result<Object<'js>> {
+pub(crate) fn answer_object<'js>(
+    ctx: &Ctx<'js>,
+    answer: &FetchAnswer,
+) -> rquickjs::Result<Object<'js>> {
     let object = Object::new(ctx.clone())?;
     object.set("type", answer.response_type)?;
     let urls = rquickjs::Array::new(ctx.clone())?;

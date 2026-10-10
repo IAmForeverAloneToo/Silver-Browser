@@ -41,6 +41,8 @@ mod task_tests;
 mod tests;
 #[cfg(test)]
 mod validity_tests;
+#[cfg(test)]
+mod xhr_tests;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -205,6 +207,13 @@ impl Network {
     /// the client they began with.
     pub(crate) fn set_client(&mut self, client: Client) {
         self.client = Some(Arc::new(client.with_cookies(self.cookies.clone())));
+    }
+
+    /// The client fetches are made with, made now if none is yet.
+    pub(crate) fn client(&mut self) -> Arc<Client> {
+        self.client
+            .get_or_insert_with(|| Arc::new(Client::default().with_cookies(self.cookies.clone())))
+            .clone()
     }
 
     /// The engine's cookie jar.
