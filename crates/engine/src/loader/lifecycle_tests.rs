@@ -122,6 +122,9 @@ fn a_page_left_hears_pagehide_and_unload_and_one_shown_again_pageshow() {
     let mut tab = Tab::new();
     tab.engine.set_scripting(true);
     load_all(&mut tab, server.url("/one.html"));
+    // Its icon's fetch done too: a page left with a fetch in flight is
+    // not kept.
+    tab.settle();
     assert_eq!(lines(&mut tab), ["pageshow false"]);
     load_all(&mut tab, server.url("/two.html"));
     // Kept by the back-forward cache: no unload.

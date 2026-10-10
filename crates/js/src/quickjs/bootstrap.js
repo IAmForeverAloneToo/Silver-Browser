@@ -2005,6 +2005,904 @@
   expose(AbortSignal, "AbortSignal");
   expose(AbortController, "AbortController");
 
+  // ---- Bytes and the bodies scripts make (M27, docs/design/fetch.md) ----
+
+  const $Uint8Array = Uint8Array;
+  const $ArrayBuffer = ArrayBuffer;
+  const $Promise = Promise;
+  const DateNow = Date.now;
+  const ArraySort = uncurry(Array.prototype.sort);
+  const TypedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
+  const TypedArraySet = uncurry(TypedArrayPrototype.set);
+  const TypedArraySlice = uncurry(TypedArrayPrototype.slice);
+  const viewBuffer = uncurry(getOwnPropertyDescriptor(TypedArrayPrototype, "buffer").get);
+  const viewOffset = uncurry(getOwnPropertyDescriptor(TypedArrayPrototype, "byteOffset").get);
+  const viewLength = uncurry(getOwnPropertyDescriptor(TypedArrayPrototype, "byteLength").get);
+  const dataViewBuffer = uncurry(getOwnPropertyDescriptor(DataView.prototype, "buffer").get);
+  const dataViewOffset = uncurry(getOwnPropertyDescriptor(DataView.prototype, "byteOffset").get);
+  const dataViewLength = uncurry(getOwnPropertyDescriptor(DataView.prototype, "byteLength").get);
+  const bufferLength = uncurry(getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength").get);
+  const ArrayBufferSlice = uncurry(ArrayBuffer.prototype.slice);
+  const IsView = ArrayBuffer.isView;
+  const MathFloor = Math.floor;
+  const MathMax = Math.max;
+  const MathMin = Math.min;
+  const MathTrunc = Math.trunc;
+
+  // A promise of `value`, resolved; one of `error`, rejected.
+  function resolved(value) {
+    return new $Promise((resolve) => resolve(value));
+  }
+
+  function rejected(error) {
+    return new $Promise((_, reject) => reject(error));
+  }
+
+  // Web IDL's check of a constructor's arguments.
+  function needToConstruct(count, required, iface) {
+    if (count < required) {
+      throw new $TypeError(
+        "Failed to construct '" + iface + "': " + required + " argument" +
+          (required === 1 ? "" : "s") + " required, but only " + count + " present.",
+      );
+    }
+  }
+
+  // Whether `value` is an ArrayBuffer, by its own internal slot.
+  function isBuffer(value) {
+    try {
+      bufferLength(value);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // Whether `value` is a typed array, as against a DataView.
+  function isTypedArray(value) {
+    try {
+      viewLength(value);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // A copy of the bytes a BufferSource holds (Web IDL's "get a copy of
+  // the buffer source"), or undefined for a value that is none.
+  function bufferBytes(value) {
+    if (isBuffer(value)) {
+      return new $Uint8Array(ArrayBufferSlice(value, 0));
+    }
+    if (typeof value === "object" && value !== null && IsView(value)) {
+      const typed = isTypedArray(value);
+      const buffer = typed ? viewBuffer(value) : dataViewBuffer(value);
+      const offset = typed ? viewOffset(value) : dataViewOffset(value);
+      const length = typed ? viewLength(value) : dataViewLength(value);
+      return new $Uint8Array(ArrayBufferSlice(buffer, offset, offset + length));
+    }
+    return undefined;
+  }
+
+  // Bytes from a list of numbers, made without the list's iterator.
+  function bytesFrom(numbers) {
+    const out = new $Uint8Array(numbers.length);
+    for (let i = 0; i < numbers.length; i++) {
+      out[i] = numbers[i];
+    }
+    return out;
+  }
+
+  // The bytes of `parts`, a list of byte arrays, one after another.
+  function concat(parts) {
+    let length = 0;
+    for (let i = 0; i < parts.length; i++) {
+      length += viewLength(parts[i]);
+    }
+    const out = new $Uint8Array(length);
+    let at = 0;
+    for (let i = 0; i < parts.length; i++) {
+      TypedArraySet(out, parts[i], at);
+      at += viewLength(parts[i]);
+    }
+    return out;
+  }
+
+  // UTF-8 encode (Encoding 4.2): a lone surrogate becomes U+FFFD.
+  function utf8Encode(text) {
+    const out = [];
+    for (let i = 0; i < text.length; i++) {
+      let c = CharCodeAt(text, i);
+      if (c >= 0xd800 && c <= 0xdbff && i + 1 < text.length) {
+        const d = CharCodeAt(text, i + 1);
+        if (d >= 0xdc00 && d <= 0xdfff) {
+          c = 0x10000 + ((c - 0xd800) << 10) + (d - 0xdc00);
+          i++;
+        } else {
+          c = 0xfffd;
+        }
+      } else if (c >= 0xd800 && c <= 0xdfff) {
+        c = 0xfffd;
+      }
+      if (c < 0x80) {
+        ArrayPush(out, c);
+      } else if (c < 0x800) {
+        ArrayPush(out, 0xc0 | (c >> 6), 0x80 | (c & 0x3f));
+      } else if (c < 0x10000) {
+        ArrayPush(out, 0xe0 | (c >> 12), 0x80 | ((c >> 6) & 0x3f), 0x80 | (c & 0x3f));
+      } else {
+        ArrayPush(
+          out,
+          0xf0 | (c >> 18),
+          0x80 | ((c >> 12) & 0x3f),
+          0x80 | ((c >> 6) & 0x3f),
+          0x80 | (c & 0x3f),
+        );
+      }
+    }
+    return bytesFrom(out);
+  }
+
+  // UTF-8 decode (Encoding 4.1, the decoder's error mode replacement),
+  // a leading byte order mark dropped when `bom` says so.
+  function utf8Decode(bytes, bom) {
+    const n = viewLength(bytes);
+    let i = 0;
+    if (bom && n >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
+      i = 3;
+    }
+    let out = "";
+    let units = [];
+    const flush = () => {
+      out += ReflectApply(FromCharCode, null, units);
+      units = [];
+    };
+    const push = (c) => {
+      if (c >= 0x10000) {
+        c -= 0x10000;
+        ArrayPush(units, 0xd800 + (c >> 10), 0xdc00 + (c & 0x3ff));
+      } else {
+        ArrayPush(units, c);
+      }
+      if (units.length >= 4096) {
+        flush();
+      }
+    };
+    let need = 0;
+    let seen = 0;
+    let point = 0;
+    let lower = 0x80;
+    let upper = 0xbf;
+    for (; i < n; i++) {
+      const b = bytes[i];
+      if (need === 0) {
+        if (b <= 0x7f) {
+          push(b);
+        } else if (b >= 0xc2 && b <= 0xdf) {
+          need = 1;
+          point = b & 0x1f;
+        } else if (b >= 0xe0 && b <= 0xef) {
+          lower = b === 0xe0 ? 0xa0 : 0x80;
+          upper = b === 0xed ? 0x9f : 0xbf;
+          need = 2;
+          point = b & 0xf;
+        } else if (b >= 0xf0 && b <= 0xf4) {
+          lower = b === 0xf0 ? 0x90 : 0x80;
+          upper = b === 0xf4 ? 0x8f : 0xbf;
+          need = 3;
+          point = b & 0x7;
+        } else {
+          push(0xfffd);
+        }
+        continue;
+      }
+      if (b < lower || b > upper) {
+        need = seen = point = 0;
+        lower = 0x80;
+        upper = 0xbf;
+        push(0xfffd);
+        i--;
+        continue;
+      }
+      lower = 0x80;
+      upper = 0xbf;
+      point = (point << 6) | (b & 0x3f);
+      seen++;
+      if (seen === need) {
+        push(point);
+        need = seen = point = 0;
+      }
+    }
+    if (need !== 0) {
+      push(0xfffd);
+    }
+    flush();
+    return out;
+  }
+
+  // `text` with every line ending made the platform's, as a Blob's
+  // `native` endings say (File API's "convert line endings to native").
+  function nativeEndings(text) {
+    const ending = native.platformNewline();
+    let out = "";
+    for (let i = 0; i < text.length; i++) {
+      const c = CharCodeAt(text, i);
+      if (c === 0x0d) {
+        out += ending;
+        if (i + 1 < text.length && CharCodeAt(text, i + 1) === 0x0a) {
+          i++;
+        }
+      } else if (c === 0x0a) {
+        out += ending;
+      } else {
+        out += FromCharCode(c);
+      }
+    }
+    return out;
+  }
+
+  // A Blob's type as File API keeps it: lower case, or the empty string
+  // when it holds a code point outside U+0020 to U+007E.
+  function blobType(type) {
+    for (let i = 0; i < type.length; i++) {
+      const c = CharCodeAt(type, i);
+      if (c < 0x20 || c > 0x7e) {
+        return "";
+      }
+    }
+    return ToLowerCase(type);
+  }
+
+  // A Blob's or a File's options, read as their dictionaries say.
+  function blobOptions(options, iface, file) {
+    if (options !== undefined && options !== null && typeof options !== "object" && typeof options !== "function") {
+      throw new $TypeError(
+        "Failed to construct '" + iface + "': The provided value is not of type '" +
+          (file ? "FilePropertyBag" : "BlobPropertyBag") + "'.",
+      );
+    }
+    const get = (name) => (options === undefined || options === null ? undefined : options[name]);
+    const endings = get("endings");
+    const out = { endings: "transparent", type: "", lastModified: undefined };
+    if (endings !== undefined) {
+      const value = str(endings);
+      if (value !== "transparent" && value !== "native") {
+        throw new $TypeError(
+          "Failed to construct '" + iface + "': Failed to read the 'endings' property from '" +
+            (file ? "FilePropertyBag" : "BlobPropertyBag") + "': The provided value '" + value +
+            "' is not a valid enum value of type EndingType.",
+        );
+      }
+      out.endings = value;
+    }
+    if (file) {
+      const lastModified = get("lastModified");
+      if (lastModified !== undefined) {
+        out.lastModified = $Number(lastModified);
+      }
+    }
+    const type = get("type");
+    if (type !== undefined) {
+      out.type = blobType(str(type));
+    }
+    return out;
+  }
+
+  // Blob and File (File API, M27): bytes and a type.
+  let blobBytes;
+  let isBlob;
+  class Blob {
+    #bytes;
+    #type;
+
+    constructor(parts, options) {
+      if (parts === KEY) {
+        this.#bytes = options.bytes;
+        this.#type = options.type;
+        return;
+      }
+      const iface = this instanceof File ? "File" : "Blob";
+      const read = blobOptions(options, iface, false);
+      const list = [];
+      if (parts !== undefined) {
+        let items;
+        try {
+          items = sequence(parts, "", "");
+        } catch (e) {
+          throw new $TypeError(
+            "Failed to construct '" + iface + "': The provided value cannot be converted to a sequence.",
+          );
+        }
+        for (let i = 0; i < items.length; i++) {
+          const part = items[i];
+          if (isBlob(part)) {
+            ArrayPush(list, part.#bytes);
+            continue;
+          }
+          const bytes = bufferBytes(part);
+          if (bytes !== undefined) {
+            ArrayPush(list, bytes);
+            continue;
+          }
+          let text = str(part);
+          if (read.endings === "native") {
+            text = nativeEndings(text);
+          }
+          ArrayPush(list, utf8Encode(text));
+        }
+      }
+      this.#bytes = concat(list);
+      this.#type = read.type;
+    }
+
+    static {
+      blobBytes = (blob) => blob.#bytes;
+      isBlob = (value) => typeof value === "object" && value !== null && #bytes in value;
+    }
+
+    get size() {
+      if (!isBlob(this)) throw illegalInvocation();
+      return viewLength(this.#bytes);
+    }
+
+    get type() {
+      if (!isBlob(this)) throw illegalInvocation();
+      return this.#type;
+    }
+
+    slice(start, end, contentType) {
+      if (!isBlob(this)) throw illegalInvocation();
+      const size = viewLength(this.#bytes);
+      const at = (value, fallback) => {
+        if (value === undefined) {
+          return fallback;
+        }
+        let n = $Number(value);
+        n = n !== n ? 0 : n < 0 ? -MathFloor(-n) : MathFloor(n);
+        return n < 0 ? MathMax(size + n, 0) : MathMin(n, size);
+      };
+      const from = at(start, 0);
+      const to = at(end, size);
+      const span = MathMax(to - from, 0);
+      const type = contentType === undefined ? "" : blobType(str(contentType));
+      return new Blob(KEY, {
+        bytes: TypedArraySlice(this.#bytes, from, from + span),
+        type,
+      });
+    }
+
+    text() {
+      if (!isBlob(this)) return rejected(illegalInvocation());
+      return resolved(utf8Decode(this.#bytes, true));
+    }
+
+    arrayBuffer() {
+      if (!isBlob(this)) return rejected(illegalInvocation());
+      return resolved(viewBuffer(TypedArraySlice(this.#bytes)));
+    }
+
+    bytes() {
+      if (!isBlob(this)) return rejected(illegalInvocation());
+      return resolved(TypedArraySlice(this.#bytes));
+    }
+  }
+  expose(Blob, "Blob");
+
+  let isFile;
+  class File extends Blob {
+    #name;
+    #lastModified;
+
+    constructor(bits, name, options) {
+      if (bits === KEY) {
+        super(KEY, name);
+        this.#name = name.name;
+        this.#lastModified = name.lastModified;
+        return;
+      }
+      needToConstruct(arguments.length, 2, "File");
+      const read = blobOptions(options, "File", true);
+      super(bits, { type: read.type, endings: read.endings });
+      this.#name = str(name);
+      this.#lastModified =
+        read.lastModified === undefined ? DateNow() : MathTrunc(read.lastModified) || 0;
+    }
+
+    static {
+      isFile = (value) => typeof value === "object" && value !== null && #name in value;
+    }
+
+    get name() {
+      if (!isFile(this)) throw illegalInvocation();
+      return this.#name;
+    }
+
+    get lastModified() {
+      if (!isFile(this)) throw illegalInvocation();
+      return this.#lastModified;
+    }
+  }
+  expose(File, "File");
+
+  // A File of `blob`'s bytes and type named `name`, made by the bindings.
+  function fileOf(blob, name, lastModified) {
+    return new File(KEY, {
+      bytes: blobBytes(blob),
+      type: blob.type,
+      name,
+      lastModified: lastModified === undefined ? DateNow() : lastModified,
+    });
+  }
+
+  // Web IDL's pair iterators: an object whose `next` reads the pairs
+  // its target has at each step, so that changes made while iterating
+  // show, its prototype named `iface + " Iterator"`.
+  function pairIterator(iface, pairsOf) {
+    const prototype = ObjectCreate(Object.getPrototypeOf(Object.getPrototypeOf([][iteratorSymbol]())));
+    const states = new $WeakMap();
+    defineProperty(prototype, "next", {
+      value: function next() {
+        const state = WeakMapGet(states, this);
+        if (state === undefined) {
+          throw new $TypeError("Illegal invocation");
+        }
+        const pairs = pairsOf(state.target);
+        if (state.index >= pairs.length) {
+          return { value: undefined, done: true };
+        }
+        const pair = pairs[state.index++];
+        const value =
+          state.kind === "key" ? pair[0] : state.kind === "value" ? pair[1] : [pair[0], pair[1]];
+        return { value, done: false };
+      },
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+    defineProperty(prototype, toStringTag, { value: iface + " Iterator", configurable: true });
+    const make = (target, kind) => {
+      const iterator = ObjectCreate(prototype);
+      WeakMapSet(states, iterator, { target, kind, index: 0 });
+      return iterator;
+    };
+    return {
+      install(cls, brand) {
+        const proto = cls.prototype;
+        const method = (name, kind) =>
+          defineProperty(proto, name, {
+            value: {
+              [name]() {
+                brand(this);
+                return make(this, kind);
+              },
+            }[name],
+            writable: true,
+            enumerable: true,
+            configurable: true,
+          });
+        method("entries", "key+value");
+        method("keys", "key");
+        method("values", "value");
+        defineProperty(proto, iteratorSymbol, {
+          value: proto.entries,
+          writable: true,
+          configurable: true,
+        });
+        defineProperty(proto, "forEach", {
+          value: function forEach(callback, thisArg) {
+            brand(this);
+            if (typeof callback !== "function") {
+              throw new $TypeError(
+                "Failed to execute 'forEach' on '" + iface +
+                  "': The callback provided as parameter 1 is not a function.",
+              );
+            }
+            // The pairs read again at each step, as Web IDL's forEach.
+            for (let i = 0; ; i++) {
+              const pairs = pairsOf(this);
+              if (i >= pairs.length) {
+                return;
+              }
+              ReflectApply(callback, thisArg, [pairs[i][1], pairs[i][0], this]);
+            }
+          },
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      },
+    };
+  }
+
+  // FormData (XMLHttpRequest 4, M27): an entry list of names and values,
+  // each a string or a File.
+  let entriesOf;
+  let isFormData;
+  class FormData {
+    #entries = [];
+
+    constructor(form, submitter) {
+      if (form !== undefined) {
+        if (!isNode(form)) {
+          throw new $TypeError(
+            "Failed to construct 'FormData': parameter 1 is not of type 'HTMLFormElement'.",
+          );
+        }
+        const by =
+          submitter === undefined || submitter === null ? null : isNode(submitter) ? handleOf(submitter) : -1;
+        if (by === -1) {
+          throw new $TypeError(
+            "Failed to construct 'FormData': parameter 2 is not of type 'HTMLElement'.",
+          );
+        }
+        let list;
+        try {
+          list = native.formEntries(handleOf(form), by);
+        } catch (e) {
+          throw failedConstruct(e, "FormData");
+        }
+        for (let i = 0; i < list.length; i += 3) {
+          const value = list[i + 1] === "file" ? fileOf(new Blob(KEY, { bytes: new $Uint8Array(0), type: "application/octet-stream" }), "") : list[i + 2];
+          ArrayPush(this.#entries, [list[i], value]);
+        }
+      }
+    }
+
+    static {
+      entriesOf = (data) => data.#entries;
+      isFormData = (value) => typeof value === "object" && value !== null && #entries in value;
+    }
+
+    append(name, value, filename) {
+      formData(this);
+      need(arguments.length, 2, "append", "FormData");
+      ArrayPush(this.#entries, entry(name, value, filename, arguments.length, "append"));
+    }
+
+    delete(name) {
+      formData(this);
+      need(arguments.length, 1, "delete", "FormData");
+      const wanted = str(name);
+      const kept = [];
+      for (let i = 0; i < this.#entries.length; i++) {
+        if (this.#entries[i][0] !== wanted) {
+          ArrayPush(kept, this.#entries[i]);
+        }
+      }
+      this.#entries = kept;
+    }
+
+    get(name) {
+      formData(this);
+      need(arguments.length, 1, "get", "FormData");
+      const wanted = str(name);
+      for (let i = 0; i < this.#entries.length; i++) {
+        if (this.#entries[i][0] === wanted) {
+          return this.#entries[i][1];
+        }
+      }
+      return null;
+    }
+
+    getAll(name) {
+      formData(this);
+      need(arguments.length, 1, "getAll", "FormData");
+      const wanted = str(name);
+      const out = [];
+      for (let i = 0; i < this.#entries.length; i++) {
+        if (this.#entries[i][0] === wanted) {
+          ArrayPush(out, this.#entries[i][1]);
+        }
+      }
+      return out;
+    }
+
+    has(name) {
+      formData(this);
+      need(arguments.length, 1, "has", "FormData");
+      const wanted = str(name);
+      for (let i = 0; i < this.#entries.length; i++) {
+        if (this.#entries[i][0] === wanted) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    set(name, value, filename) {
+      formData(this);
+      need(arguments.length, 2, "set", "FormData");
+      const made = entry(name, value, filename, arguments.length, "set");
+      const kept = [];
+      let placed = false;
+      for (let i = 0; i < this.#entries.length; i++) {
+        if (this.#entries[i][0] !== made[0]) {
+          ArrayPush(kept, this.#entries[i]);
+        } else if (!placed) {
+          ArrayPush(kept, made);
+          placed = true;
+        }
+      }
+      if (!placed) {
+        ArrayPush(kept, made);
+      }
+      this.#entries = kept;
+    }
+  }
+  pairIterator("FormData", (data) => entriesOf(data)).install(FormData, (value) => {
+    if (!isFormData(value)) throw illegalInvocation();
+  });
+  expose(FormData, "FormData");
+
+  function formData(value) {
+    if (!isFormData(value)) throw illegalInvocation();
+  }
+
+  // An entry of a FormData (XMLHttpRequest's "create an entry"): a Blob
+  // value made a File named `filename`, or "blob" for one that is not a
+  // File; a File renamed by `filename`; anything else a string.
+  function entry(name, value, filename, count, method) {
+    const key = str(name);
+    if (isBlob(value)) {
+      if (!isFile(value) || count > 2) {
+        const named = count > 2 ? str(filename) : isFile(value) ? value.name : "blob";
+        return [key, fileOf(value, named, isFile(value) ? value.lastModified : undefined)];
+      }
+      return [key, value];
+    }
+    if (count > 2) {
+      throw new $TypeError(
+        "Failed to execute '" + method + "' on 'FormData': parameter 2 is not of type 'Blob'.",
+      );
+    }
+    return [key, str(value)];
+  }
+
+  // The exception a native's failure is in a constructor:
+  // "Failed to construct 'I': reason".
+  function failedConstruct(error, iface) {
+    const words = "Failed to construct '" + iface + "': ";
+    if (error instanceof $DOMException) {
+      return new $DOMException(words + error.message, error.name);
+    }
+    if (error instanceof $TypeError || error instanceof $RangeError) {
+      error.message = words + error.message;
+    }
+    return error;
+  }
+
+  // application/x-www-form-urlencoded (URL Standard 5): the parser, of a
+  // string's UTF-8 bytes, and the serializer.
+  function hexValue(c) {
+    if (c >= 0x30 && c <= 0x39) return c - 0x30;
+    if (c >= 0x41 && c <= 0x46) return c - 0x37;
+    if (c >= 0x61 && c <= 0x66) return c - 0x57;
+    return -1;
+  }
+
+  function percentDecode(bytes, from, to) {
+    const out = [];
+    for (let i = from; i < to; i++) {
+      const b = bytes[i];
+      if (b === 0x2b) {
+        ArrayPush(out, 0x20);
+      } else if (
+        b === 0x25 && i + 2 < to && hexValue(bytes[i + 1]) >= 0 && hexValue(bytes[i + 2]) >= 0
+      ) {
+        ArrayPush(out, hexValue(bytes[i + 1]) * 16 + hexValue(bytes[i + 2]));
+        i += 2;
+      } else {
+        ArrayPush(out, b);
+      }
+    }
+    return utf8Decode(bytesFrom(out), false);
+  }
+
+  function formParse(text) {
+    return formParseBytes(utf8Encode(text));
+  }
+
+  function formParseBytes(bytes) {
+    const n = viewLength(bytes);
+    const pairs = [];
+    let start = 0;
+    for (let i = 0; i <= n; i++) {
+      if (i < n && bytes[i] !== 0x26) {
+        continue;
+      }
+      if (i > start) {
+        let equals = i;
+        for (let j = start; j < i; j++) {
+          if (bytes[j] === 0x3d) {
+            equals = j;
+            break;
+          }
+        }
+        const name = percentDecode(bytes, start, equals);
+        const value = equals < i ? percentDecode(bytes, equals + 1, i) : "";
+        ArrayPush(pairs, [name, value]);
+      }
+      start = i + 1;
+    }
+    return pairs;
+  }
+
+  const HEX = "0123456789ABCDEF";
+
+  function formEncode(text) {
+    const bytes = utf8Encode(text);
+    let out = "";
+    for (let i = 0; i < viewLength(bytes); i++) {
+      const b = bytes[i];
+      if (
+        (b >= 0x30 && b <= 0x39) || (b >= 0x41 && b <= 0x5a) || (b >= 0x61 && b <= 0x7a) ||
+        b === 0x2a || b === 0x2d || b === 0x2e || b === 0x5f
+      ) {
+        out += FromCharCode(b);
+      } else if (b === 0x20) {
+        out += "+";
+      } else {
+        out += "%" + HEX[b >> 4] + HEX[b & 15];
+      }
+    }
+    return out;
+  }
+
+  function formSerialize(pairs) {
+    let out = "";
+    for (let i = 0; i < pairs.length; i++) {
+      if (i > 0) out += "&";
+      out += formEncode(pairs[i][0]) + "=" + formEncode(pairs[i][1]);
+    }
+    return out;
+  }
+
+  // URLSearchParams (URL Standard 6, M27): a list of names and values.
+  let paramsOf;
+  let isParams;
+  class URLSearchParams {
+    #list = [];
+
+    constructor(init) {
+      if (init === undefined || init === null) {
+        if (init === null) this.#list = formParse("null");
+        return;
+      }
+      if (typeof init === "object" || typeof init === "function") {
+        if (isParams(init)) {
+          const from = init.#list;
+          for (let i = 0; i < from.length; i++) {
+            ArrayPush(this.#list, [from[i][0], from[i][1]]);
+          }
+          return;
+        }
+        const iterate = init[iteratorSymbol];
+        if (iterate !== undefined && iterate !== null) {
+          const items = sequence(init, "", "");
+          for (let i = 0; i < items.length; i++) {
+            let pair;
+            try {
+              pair = sequence(items[i], "", "");
+            } catch (e) {
+              throw new $TypeError(
+                "Failed to construct 'URLSearchParams': The provided value cannot be converted to a sequence.",
+              );
+            }
+            if (pair.length !== 2) {
+              throw new $TypeError(
+                "Failed to construct 'URLSearchParams': Sequence initializer must only contain pair elements",
+              );
+            }
+            ArrayPush(this.#list, [str(pair[0]), str(pair[1])]);
+          }
+          return;
+        }
+        const keys = ReflectOwnKeys(init);
+        for (let i = 0; i < keys.length; i++) {
+          const key = keys[i];
+          if (typeof key !== "string") continue;
+          const desc = ReflectGetOwnPropertyDescriptor(init, key);
+          if (desc === undefined || !desc.enumerable) continue;
+          ArrayPush(this.#list, [str(key), str(init[key])]);
+        }
+        return;
+      }
+      let text = str(init);
+      if (CharCodeAt(text, 0) === 0x3f) {
+        text = StringSlice(text, 1);
+      }
+      this.#list = formParse(text);
+    }
+
+    static {
+      paramsOf = (params) => params.#list;
+      isParams = (value) => typeof value === "object" && value !== null && #list in value;
+    }
+
+    get size() {
+      return this.#list.length;
+    }
+
+    append(name, value) {
+      need(arguments.length, 2, "append", "URLSearchParams");
+      ArrayPush(this.#list, [str(name), str(value)]);
+    }
+
+    delete(name, value) {
+      need(arguments.length, 1, "delete", "URLSearchParams");
+      const wanted = str(name);
+      const also = value === undefined ? undefined : str(value);
+      const kept = [];
+      for (let i = 0; i < this.#list.length; i++) {
+        const pair = this.#list[i];
+        if (pair[0] !== wanted || (also !== undefined && pair[1] !== also)) {
+          ArrayPush(kept, pair);
+        }
+      }
+      this.#list = kept;
+    }
+
+    get(name) {
+      need(arguments.length, 1, "get", "URLSearchParams");
+      const wanted = str(name);
+      for (let i = 0; i < this.#list.length; i++) {
+        if (this.#list[i][0] === wanted) return this.#list[i][1];
+      }
+      return null;
+    }
+
+    getAll(name) {
+      need(arguments.length, 1, "getAll", "URLSearchParams");
+      const wanted = str(name);
+      const out = [];
+      for (let i = 0; i < this.#list.length; i++) {
+        if (this.#list[i][0] === wanted) ArrayPush(out, this.#list[i][1]);
+      }
+      return out;
+    }
+
+    has(name, value) {
+      need(arguments.length, 1, "has", "URLSearchParams");
+      const wanted = str(name);
+      const also = value === undefined ? undefined : str(value);
+      for (let i = 0; i < this.#list.length; i++) {
+        const pair = this.#list[i];
+        if (pair[0] === wanted && (also === undefined || pair[1] === also)) return true;
+      }
+      return false;
+    }
+
+    set(name, value) {
+      need(arguments.length, 2, "set", "URLSearchParams");
+      const pair = [str(name), str(value)];
+      const kept = [];
+      let placed = false;
+      for (let i = 0; i < this.#list.length; i++) {
+        if (this.#list[i][0] !== pair[0]) {
+          ArrayPush(kept, this.#list[i]);
+        } else if (!placed) {
+          ArrayPush(kept, pair);
+          placed = true;
+        }
+      }
+      if (!placed) ArrayPush(kept, pair);
+      this.#list = kept;
+    }
+
+    sort() {
+      // Stable, by the names' code units.
+      ArraySort(this.#list, (a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    }
+
+    toString() {
+      return formSerialize(this.#list);
+    }
+  }
+  pairIterator("URLSearchParams", (params) => paramsOf(params)).install(URLSearchParams, (value) => {
+    if (!isParams(value)) throw illegalInvocation();
+  });
+  expose(URLSearchParams, "URLSearchParams");
+
   // The handle of `node`, which must be a Node; whether a value is one;
   // and a node's kind and name. Set from inside Node's body, where its
   // private fields are seen.

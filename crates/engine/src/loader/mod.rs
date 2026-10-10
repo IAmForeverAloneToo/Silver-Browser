@@ -3,6 +3,8 @@
 //! own, their results taken on the engine's thread.
 
 #[cfg(test)]
+mod body_tests;
+#[cfg(test)]
 mod control_tests;
 #[cfg(test)]
 mod cookie_tests;

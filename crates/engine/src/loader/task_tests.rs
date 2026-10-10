@@ -164,6 +164,9 @@ fn timers_stay_with_their_document() {
     let clock = tab.hand_clock();
     tab.engine.set_scripting(true);
     load_all(&mut tab, server.url("/one.html"));
+    // Its icon's fetch done too: a page left with a fetch in flight is
+    // not kept.
+    tab.settle();
     load_all(&mut tab, server.url("/two.html"));
     assert_eq!(after(&mut tab, &clock, 10), Vec::<String>::new());
     assert_eq!(tab.engine.next_task_at(), None);

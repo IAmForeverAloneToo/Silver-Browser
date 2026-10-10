@@ -759,6 +759,52 @@ impl DocumentHost {
             Call::SecureContext => Ok(Answer::Bool(
                 self.page.as_ref().is_none_or(Page::is_secure_context),
             )),
+            Call::FormEntries { form, submitter } => {
+                let form = self.node(form)?;
+                if self.document.tag(form) != Some("form") {
+                    return Err(DomError::new(
+                        "TypeError",
+                        "parameter 1 is not of type 'HTMLFormElement'.",
+                    ));
+                }
+                let submitter = match submitter {
+                    Some(submitter) => {
+                        let submitter = self.node(submitter)?;
+                        if !forms::is_submit_button(&self.document, submitter) {
+                            return Err(DomError::new(
+                                "TypeError",
+                                "The specified element is not a submit button.",
+                            ));
+                        }
+                        if forms::form_owner(&self.document, submitter) != Some(form) {
+                            return Err(DomError::new(
+                                "NotFoundError",
+                                "The specified element is not owned by this form element.",
+                            ));
+                        }
+                        Some(submitter)
+                    }
+                    None => None,
+                };
+                let mut out = Vec::new();
+                for entry in forms::entry_list(&self.document, form, submitter, "UTF-8") {
+                    out.push(entry.name);
+                    match entry.value {
+                        Some(value) => {
+                            out.push("text".to_owned());
+                            out.push(value);
+                        }
+                        None => {
+                            out.push("file".to_owned());
+                            out.push(String::new());
+                        }
+                    }
+                }
+                Ok(Answer::Strings(out))
+            }
+            Call::PlatformNewline => Ok(Answer::String(
+                if cfg!(windows) { "\r\n" } else { "\n" }.to_owned(),
+            )),
             Call::Cookie => {
                 let cookies = self.cookie_url().and_then(|url| {
                     let jar = self.cookies.as_ref()?;

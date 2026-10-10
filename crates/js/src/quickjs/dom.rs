@@ -240,6 +240,13 @@ const NATIVES: &[(&str, Decode)] = &[
     ("location", |_| Ok(Call::Location)),
     ("origin", |_| Ok(Call::Origin)),
     ("secureContext", |_| Ok(Call::SecureContext)),
+    ("formEntries", |a| {
+        Ok(Call::FormEntries {
+            form: a.handle(0)?,
+            submitter: a.maybe_handle(1)?,
+        })
+    }),
+    ("platformNewline", |_| Ok(Call::PlatformNewline)),
     ("cookie", |_| Ok(Call::Cookie)),
     ("setCookie", |a| Ok(Call::SetCookie(a.string(0)?))),
     ("documentDomain", |_| Ok(Call::DocumentDomain)),

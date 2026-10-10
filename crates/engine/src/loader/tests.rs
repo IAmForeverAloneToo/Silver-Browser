@@ -2001,6 +2001,7 @@ fn a_page_left_while_an_image_decodes_is_not_kept() {
     // Left with its image read: kept, and shown again from the cache;
     // `b`, left with nothing in flight, kept too.
     load_all(&mut tab, a.clone());
+    tab.settle();
     load_all(&mut tab, server.url("/b.html"));
     tab.settle();
     tab.engine.go_back();

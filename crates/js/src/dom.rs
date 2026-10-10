@@ -193,6 +193,17 @@ pub enum Call {
     Origin,
     /// Whether the document is a secure context (`isSecureContext`).
     SecureContext,
+    /// A form's entry list, as `FormData`'s constructor makes it
+    /// (M27): each entry's name, `text` or `file`, and value; a
+    /// `TypeError` for an element that is not a form or a submitter that
+    /// is not a submit button, a `NotFoundError` for a submitter the
+    /// form does not own.
+    FormEntries {
+        form: Handle,
+        submitter: Option<Handle>,
+    },
+    /// The platform's line ending, for a Blob's `native` endings.
+    PlatformNewline,
     /// `document.cookie` (HTML 3.1.4, M27.4): the cookies a script may
     /// read for the document's URL, the empty string for a document
     /// whose URL is not `http:` or `https:`.
