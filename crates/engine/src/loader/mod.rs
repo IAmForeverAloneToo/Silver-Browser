@@ -21,6 +21,8 @@ mod focus_tests;
 #[cfg(test)]
 mod lifecycle_tests;
 #[cfg(test)]
+mod mixed_tests;
+#[cfg(test)]
 mod origin_tests;
 #[cfg(test)]
 mod pointer_tests;

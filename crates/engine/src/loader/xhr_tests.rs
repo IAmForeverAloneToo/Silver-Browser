@@ -120,8 +120,21 @@ fn errors_aborts_and_timeouts_end_an_xhr_with_their_events() {
         "/hang" => Some(Reply::Hang),
         _ => None,
     });
-    let mut lines = logged(&mut tab, 5);
+    let mut lines = logged(&mut tab, 7);
     lines.sort();
+    // The console says why the two failed; the page learns only that.
+    let said: Vec<String> = lines.drain(..2).collect();
+    assert_eq!(
+        said[0],
+        "Failed to fetch http://127.0.0.1:1/: port 1 is not fetched"
+    );
+    assert_eq!(
+        said[1],
+        format!(
+            "Failed to fetch {}: refused by CORS: no Access-Control-Allow-Origin",
+            other.url("/x")
+        )
+    );
     let failed = "[\"readystatechange1\",\"loadstart(0/0/false)\",\"readystatechange4\",\"error(0/0/false)\",\"loadend(0/0/false)\"] 0 \"\"  4";
     assert_eq!(
         lines,
@@ -174,8 +187,14 @@ fn a_synchronous_xhr_answers_before_send_returns() {
             _ => None,
         },
     );
+    let mut lines = logged(&mut tab, 7);
+    // The console says why the last failed, before the page hears it.
     assert_eq!(
-        logged(&mut tab, 6),
+        lines.remove(5),
+        "Failed to fetch http://127.0.0.1:1/: port 1 is not fetched"
+    );
+    assert_eq!(
+        lines,
         [
             "[1,4,\"load\"] 200 now",
             "InvalidAccessError",

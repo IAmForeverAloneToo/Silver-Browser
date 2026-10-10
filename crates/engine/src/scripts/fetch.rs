@@ -120,6 +120,14 @@ pub(crate) fn request(page: &Page, call: &FetchCall) -> Result<net::Request, Dom
     Ok(request)
 }
 
+/// What the console says of a script's fetch of `url` that failed for
+/// `why` (M27.5). The page learns only that it failed, a `TypeError` or
+/// an `error` event, so that a refusal tells it nothing of another
+/// origin; whoever reads the console learns why.
+pub(crate) fn failure_text(url: &Url, why: impl std::fmt::Display) -> String {
+    format!("Failed to fetch {url}: {why}")
+}
+
 /// What a script may see of `response` (Fetch 2.2.6): its exposed view,
 /// fields Latin-1 decoded.
 pub(crate) fn answer(response: &Response) -> FetchAnswer {

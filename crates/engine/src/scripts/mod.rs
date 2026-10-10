@@ -379,8 +379,8 @@ pub(crate) struct Scripts {
     /// document: one with none makes no realm for an event.
     handlers: Option<(u64, bool)>,
     /// Its scripts' fetches in flight (M27.1): the script's number of
-    /// each, by the engine's.
-    fetching: HashMap<FetchId, u32>,
+    /// each, and its URL, by the engine's.
+    fetching: HashMap<FetchId, (u32, Url)>,
     /// The answers that came, each a task from when it came (the
     /// networking task source), in that order.
     answers: VecDeque<(Duration, u32, Option<js::FetchAnswer>)>,
@@ -887,14 +887,15 @@ impl Scripts {
         aborted: Vec<u32>,
     ) {
         for (id, request) in fetches {
+            let url = request.url.clone();
             let fetch = lent.network.fetch(lent.page.id(), Target::Fetch, request);
-            self.fetching.insert(fetch, id);
+            self.fetching.insert(fetch, (id, url));
         }
         for id in aborted {
             if let Some(fetch) = self
                 .fetching
                 .iter()
-                .find(|(_, of)| **of == id)
+                .find(|(_, (of, _))| *of == id)
                 .map(|(fetch, _)| *fetch)
             {
                 self.fetching.remove(&fetch);
@@ -905,15 +906,24 @@ impl Scripts {
 
     /// Takes the result of fetch `id` for a script's `fetch()`, which
     /// came at `now`: what the script may see of it, or a network error,
-    /// queued as a task.
+    /// queued as a task; why it failed goes to the console.
     pub(crate) fn fetch_arrived(
         &mut self,
         id: FetchId,
         result: Result<Response, LoadError>,
         now: Duration,
     ) {
-        if let Some(script) = self.fetching.remove(&id) {
-            let answer = result.ok().map(|response| fetch::answer(&response));
+        if let Some((script, url)) = self.fetching.remove(&id) {
+            let answer = match result {
+                Ok(response) => Some(fetch::answer(&response)),
+                Err(error) => {
+                    self.push(ConsoleEntry {
+                        level: ConsoleLevel::Error,
+                        text: cut(fetch::failure_text(&url, error)),
+                    });
+                    None
+                }
+            };
             self.answers.push_back((now, script, answer));
         }
     }

@@ -792,12 +792,15 @@ impl DocumentHost {
                 };
                 // The run, and the page, wait for it, as the reference
                 // browser's does.
-                Ok(Answer::Fetched(
-                    client
-                        .fetch(&request)
-                        .ok()
-                        .map(|response| Box::new(super::fetch::answer(&response))),
-                ))
+                let result = client.fetch(&request);
+                Ok(Answer::Fetched(match result {
+                    Ok(response) => Some(Box::new(super::fetch::answer(&response))),
+                    Err(error) => {
+                        let text = super::fetch::failure_text(&request.url, error);
+                        self.say(ConsoleLevel::Error, text);
+                        None
+                    }
+                }))
             }
             Call::Decode(bytes, label) => Ok(Answer::MaybeString(
                 encoding::Encoding::for_label(&label)

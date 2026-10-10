@@ -105,15 +105,19 @@ fn another_origins_response_is_opaque_refused_or_shown_by_cors() {
         open = at("/open"),
     );
     let (mut tab, _server) = page_with(&script, |_| None);
-    let mut lines = logged(&mut tab, 4);
+    let mut lines = logged(&mut tab, 6);
     lines.sort();
+    // The console says why; the page learns only that it failed.
+    let closed = at("/closed");
     assert_eq!(
         lines,
         [
-            "TypeError Failed to fetch",
-            "cors content-length,content-type open",
-            "opaque 0 true 0 \"\"",
-            "same-origin Failed to fetch",
+            format!("Failed to fetch {closed}: refused by CORS: no Access-Control-Allow-Origin"),
+            format!("Failed to fetch {closed}: refused: a same-origin request to another origin"),
+            "TypeError Failed to fetch".to_owned(),
+            "cors content-length,content-type open".to_owned(),
+            "opaque 0 true 0 \"\"".to_owned(),
+            "same-origin Failed to fetch".to_owned(),
         ]
     );
 }
@@ -244,7 +248,7 @@ fn headers_requests_and_responses_hold_what_fetch_says() {
          fetch('http://[').catch(e => console.log(e.message));",
         |_| Some(Reply::ok("text/plain", b"x")),
     );
-    let lines = logged(&mut tab, 19);
+    let lines = logged(&mut tab, 20);
     let first: Vec<&str> = lines[..12].iter().map(String::as_str).collect();
     assert_eq!(
         first,
@@ -271,6 +275,7 @@ fn headers_requests_and_responses_hold_what_fetch_says() {
             "Failed to execute 'fetch' on 'Window': Failed to parse URL from http://[",
             "Failed to execute 'set' on 'Headers': Headers are immutable",
             "Failed to execute 'text' on 'Response': body stream already read",
+            "Failed to fetch about:blank: about: URLs are not fetched",
             "about Failed to fetch",
             "basic hello",
             "hi hi true true",

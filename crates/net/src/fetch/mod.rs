@@ -1202,10 +1202,12 @@ fn check(request: &Request, url: &Url, redirects: usize) -> Result<(), NetworkEr
 
 /// Mixed Content section 4.1: an `http:` image of an `https:` page is
 /// fetched over `https:` instead, unless its host is an IP address or
-/// counts as trustworthy already. Other mixed content stays blocked.
+/// counts as trustworthy already. Other mixed content stays blocked,
+/// a CORS-mode image's too (Mixed Content 3, M27.5).
 fn upgrade_mixed_content(request: &Request, url: &Url) -> Option<Url> {
     let initiator = request.initiator.as_ref()?;
     if request.destination != Destination::Image
+        || request.mode == Mode::Cors
         || initiator.url.scheme() != "https"
         || url.scheme() != "http"
         || url.is_potentially_trustworthy()

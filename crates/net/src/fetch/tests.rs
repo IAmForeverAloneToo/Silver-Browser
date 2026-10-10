@@ -521,6 +521,13 @@ fn an_http_image_of_an_https_page_is_upgraded() {
     let style = Request::get(url("http://example.com/a.css"), Destination::Style)
         .initiated_by(from_https.clone());
     assert_eq!(upgraded(&style), None);
+    // Nor a crossorigin image, which is blocked.
+    let cors = image("http://example.com/a.png", &from_https).with_cors(Credentials::SameOrigin);
+    assert_eq!(upgraded(&cors), None);
+    assert_eq!(
+        client().fetch(&cors).unwrap_err(),
+        NetworkError::MixedContent
+    );
     // An image from an IP address stays mixed, and blocked.
     let error = client().fetch(&image("http://192.0.2.1/a.png", &from_https));
     assert_eq!(error.unwrap_err(), NetworkError::MixedContent);
