@@ -82,6 +82,10 @@ name = "fetch"
 harness = false
 
 [[bench]]
+name = "storage"
+harness = false
+
+[[bench]]
 name = "scripts"
 harness = false
 

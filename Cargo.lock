@@ -2368,6 +2368,7 @@ dependencies = [
  "engine",
  "net",
  "objc2-app-kit 0.3.2",
+ "profile",
  "softbuffer",
  "text",
  "ui",

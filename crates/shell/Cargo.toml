@@ -28,4 +28,6 @@ objc2-app-kit.workspace = true
 [dev-dependencies]
 # The scripted server, and the bundled font, the session's tests run on.
 net = { workspace = true, features = ["test-server"] }
+# A profile in memory, for the windows that keep what they keep (M28).
+profile.workspace = true
 text.workspace = true

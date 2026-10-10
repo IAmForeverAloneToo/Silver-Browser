@@ -7,6 +7,7 @@
 //! docs/design/storage.md), as records [`Jar::export`] makes and
 //! [`Jar::restore`] reads.
 
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::{Host, Url};
@@ -620,20 +621,75 @@ impl Jar {
         }
         self.next += restored.len() as u64;
         let kept = self.kept;
+        // The names, domains and paths kept, so that a namesake is found
+        // without a search of the jar for each of thousands.
+        let identity = |c: &Cookie| {
+            (
+                c.name.clone(),
+                c.domain.clone(),
+                c.host_only,
+                c.path.clone(),
+            )
+        };
+        let mut held: HashSet<_> = self.cookies.iter().map(identity).collect();
         for cookie in restored {
-            if let Some(index) = self.cookies.iter().position(|old| {
-                old.name == cookie.name
-                    && old.domain == cookie.domain
-                    && old.host_only == cookie.host_only
-                    && old.path == cookie.path
-            }) {
+            if !held.insert(identity(&cookie))
+                && let Some(index) = self
+                    .cookies
+                    .iter()
+                    .position(|old| identity(old) == identity(&cookie))
+            {
                 self.take(index);
             }
-            let domain = cookie.domain.clone();
             self.cookies.push(cookie);
-            self.evict(&domain);
         }
+        self.trim();
         other || self.kept != kept
+    }
+
+    /// Keeps the jar within its limits all at once, the least recently
+    /// used going first, as [`Jar::evict`] would after each of many
+    /// cookies came: a domain's past [`MAX_COOKIES_PER_DOMAIN`], then
+    /// the jar's past [`MAX_COOKIES`]. A sort, not a search for each,
+    /// however many a profile held. The orders of use are distinct.
+    fn trim(&mut self) {
+        let mut by_domain: HashMap<&str, Vec<u64>> = HashMap::new();
+        for cookie in &self.cookies {
+            by_domain
+                .entry(&cookie.domain)
+                .or_default()
+                .push(cookie.accessed);
+        }
+        let mut gone = HashSet::new();
+        for (_, mut used) in by_domain {
+            if used.len() > MAX_COOKIES_PER_DOMAIN {
+                used.sort_unstable();
+                gone.extend(used[..used.len() - MAX_COOKIES_PER_DOMAIN].iter().copied());
+            }
+        }
+        let left = self.cookies.len() - gone.len();
+        if left > MAX_COOKIES {
+            let mut used: Vec<u64> = self
+                .cookies
+                .iter()
+                .map(|cookie| cookie.accessed)
+                .filter(|accessed| !gone.contains(accessed))
+                .collect();
+            used.sort_unstable();
+            gone.extend(used[..left - MAX_COOKIES].iter().copied());
+        }
+        if gone.is_empty() {
+            return;
+        }
+        let kept = self
+            .cookies
+            .iter()
+            .any(|cookie| gone.contains(&cookie.accessed) && cookie.expires.is_some());
+        self.cookies
+            .retain(|cookie| !gone.contains(&cookie.accessed));
+        if kept {
+            self.kept += 1;
+        }
     }
 
     /// Keeps the jar within its limits (5.7) once a cookie for `domain`
@@ -1346,6 +1402,23 @@ mod tests {
         assert!(restored.restore(&records, now()));
         assert!(restored.cookies().is_empty());
         assert!(!restored.restore(&[record(|_| {})], now()));
+        // Far more than the limits, as a profile anything wrote may
+        // hold: the most recently used of them kept, at once.
+        let many: Vec<Vec<u8>> = (0..20_000u64)
+            .map(|i| {
+                let mut cookie = good.clone();
+                cookie.name = format!("c{i}").into_bytes();
+                cookie.domain = format!("d{}.example", i % 40);
+                cookie.accessed = i;
+                cookie.encode().unwrap()
+            })
+            .collect();
+        let mut restored = Jar::new();
+        assert!(restored.restore(&many, now()));
+        assert_eq!(restored.cookies().len(), MAX_COOKIES);
+        let mut kept: Vec<u64> = restored.cookies().iter().map(|c| c.accessed).collect();
+        kept.sort_unstable();
+        assert_eq!(kept[0], (20_000 - MAX_COOKIES) as u64);
         // One that would live past the limit lives to it.
         let mut restored = Jar::new();
         restored.restore(

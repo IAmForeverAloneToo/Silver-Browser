@@ -79,10 +79,29 @@ impl Window {
     }
 
     fn running(start: Option<Url>, platform: Platform, scripts: bool) -> Window {
+        Window::kept(start, platform, scripts, None)
+    }
+
+    /// A window with scripts on whose engine keeps what it keeps in
+    /// `memory` (M28), as `--profile` asks.
+    fn on_profile(start: Option<Url>, memory: &profile::Memory) -> Window {
+        let profile = profile::Profile::in_memory(memory).expect("a profile opens");
+        Window::kept(start, Platform::Other, true, Some(profile))
+    }
+
+    fn kept(
+        start: Option<Url>,
+        platform: Platform,
+        scripts: bool,
+        profile: Option<profile::Profile>,
+    ) -> Window {
         let fonts = text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
             .expect("the bundled font parses");
         let mut engine = Engine::with_fonts(fonts);
         engine.set_scripting(scripts);
+        if let Some(profile) = profile {
+            engine.set_profile(profile).expect("the profile reads");
+        }
         let (wake, woken) = channel();
         engine.set_waker(move || {
             let _ = wake.send(());
@@ -1120,6 +1139,42 @@ const SIGN_IN: &str = "<style>body { margin: 0 } button { position: absolute; le
        document.title = 'Signed in as ' + me.name + ', visits ' + visits.join(' then ') +\
          ', cookie ' + JSON.stringify(document.cookie);\
      });</script>";
+
+/// M28's acceptance page: it counts its visits in `localStorage` and
+/// in a cookie with an expiry, and says how many items the tab's
+/// `sessionStorage` had, in its title.
+const VISITS: &str = "<!DOCTYPE html><script>\
+    const n = Number(localStorage.getItem('visits') || 0) + 1;\
+    localStorage.setItem('visits', n);\
+    const c = Number((document.cookie.match(/visits=([0-9]+)/) || [0, 0])[1]) + 1;\
+    document.cookie = 'visits=' + c + '; Max-Age=3600';\
+    const s = sessionStorage.length;\
+    sessionStorage.setItem('here', '1');\
+    document.title = 'visits ' + n + ' cookie ' + c + ' session ' + s;\
+    </script>";
+
+#[test]
+fn a_page_counts_its_visits_across_windows_on_one_profile() {
+    let server = TestServer::plain(|_| Reply::ok("text/html", VISITS.as_bytes()));
+    let memory = profile::Memory::new();
+    for visit in 1..=2 {
+        let mut window = Window::on_profile(Some(server.url("/")), &memory);
+        window.settle();
+        assert_eq!(
+            window.session.engine().title(),
+            format!("visits {visit} cookie {visit} session 0")
+        );
+        // The window closes: the shell writes the profile.
+        window.session.flush_profile().unwrap();
+    }
+    // A window with no profile starts again.
+    let mut window = Window::with_scripts(Some(server.url("/")));
+    window.settle();
+    assert_eq!(
+        window.session.engine().title(),
+        "visits 1 cookie 1 session 0"
+    );
+}
 
 #[test]
 fn a_page_signs_in_by_fetch_and_reads_another_origin_by_cors_with_credentials() {
