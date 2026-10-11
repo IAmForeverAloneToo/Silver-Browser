@@ -1648,6 +1648,15 @@ impl DocumentHost {
         };
         let answer = self.canvases.call(call, element);
         self.work += self.canvases.take_work();
+        // A placeholder takes its offscreen's new size (M31.4).
+        for (node, (width, height)) in self.canvases.take_resizes() {
+            let _ = self
+                .document
+                .set_attribute(node, "width", &width.to_string());
+            let _ = self
+                .document
+                .set_attribute(node, "height", &height.to_string());
+        }
         answer
     }
 

@@ -41,6 +41,8 @@ pub(crate) const MAX_QUEUED_BYTES: usize = 512 << 20;
 const WORKER_STACK: usize = 32 << 20;
 /// The threads a worker's fetches run on at once.
 const MAX_WORKER_FETCH_THREADS: usize = 6;
+/// How often a worker's animation frames run: sixty times a second.
+const FRAME_PERIOD: Duration = Duration::from_micros(16_667);
 
 /// What crosses between a worker and the realm that made it (M31.3).
 pub(crate) enum WorkerMessage {
@@ -54,6 +56,9 @@ pub(crate) enum WorkerMessage {
     Wake,
     /// A message for port `n`, which the realm holds (M31.5).
     Port(u32, String),
+    /// A worker's frame for placeholder `n` of the document (M31.4): its
+    /// offscreen's size and pixels.
+    Frame(super::canvas::Commit),
 }
 
 impl WorkerMessage {
@@ -589,6 +594,17 @@ fn work(
             return;
         }
         let now = host.now();
+        let frame_due = host
+            .frame_wanted
+            .then(|| host.last_frame.map_or(now, |last| last + FRAME_PERIOD));
+        if frame_due.is_some_and(|due| due <= now) {
+            host.frame_wanted = false;
+            host.last_frame = Some(now);
+            let at = now.as_secs_f64() * 1000.0;
+            let result = realm.enter(&Task::AnimationFrames(at), host);
+            host.finish(realm, result, stop);
+            continue;
+        }
         if host.timers.next_due().is_some_and(|due| due <= now) {
             let Some((id, level)) = host.timers.take_next() else {
                 continue;
@@ -599,7 +615,11 @@ fn work(
             host.finish(realm, result, stop);
             continue;
         }
-        let wait = host.timers.next_due().map(|due| due.saturating_sub(now));
+        let wait = [host.timers.next_due(), frame_due]
+            .into_iter()
+            .flatten()
+            .min()
+            .map(|due| due.saturating_sub(now));
         let message = match mailbox.take(wait) {
             Waited::Message(message) => message,
             Waited::TimedOut => continue,
@@ -607,6 +627,8 @@ fn work(
         };
         let task = match message {
             WorkerMessage::Stop => return,
+            // Frames are the document's alone.
+            WorkerMessage::Frame(_) => continue,
             WorkerMessage::Wake => {
                 for task in host.take_fetched() {
                     if host.closing || stop.load(Ordering::SeqCst) {
@@ -710,6 +732,9 @@ pub(crate) struct WorkerHost {
     compat: bool,
     /// `close()` was called: the task ends, and nothing more runs.
     closing: bool,
+    /// An animation frame callback waits, and when the last ran.
+    frame_wanted: bool,
+    last_frame: Option<Duration>,
     workers: Option<Workers>,
     /// The router of its document's ports, and its realm's number there.
     router: Option<SharedRouter>,
@@ -731,6 +756,8 @@ impl Default for WorkerHost {
             epoch_ms: 0.0,
             timers: Timers::default(),
             nesting: 0,
+            frame_wanted: false,
+            last_frame: None,
             pool: None,
             fetching: HashMap::new(),
             next_job: 0,
@@ -883,6 +910,12 @@ impl ScriptingHost for WorkerHost {
                 self.closing = true;
                 Ok(Answer::Nothing)
             }
+            // A dedicated worker's animation frames (HTML section 8.10).
+            Call::WantFrame => {
+                self.frame_wanted = true;
+                Ok(Answer::Nothing)
+            }
+            Call::Hidden => Ok(Answer::Bool(false)),
             Call::WorkerStart {
                 url,
                 name,
@@ -1063,6 +1096,13 @@ impl WorkerHost {
         }
         if realm.dead().is_some() {
             self.closing = true;
+        }
+        // What its offscreen canvases with placeholders drew in the task
+        // goes to the document, which shows it at its next frame.
+        if let Some(router) = &self.router {
+            for commit in self.canvases.commits() {
+                lock(router).send_document(WorkerMessage::Frame(commit));
+            }
         }
     }
 }

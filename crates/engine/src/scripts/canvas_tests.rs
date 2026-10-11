@@ -136,11 +136,11 @@ step("matrixLengths", () => ["translate", "scale", "rotate", "multiply", "fromMa
                 "\"constructor matrixTransform toJSON w x y z | fromPoint length name prototype\"",
             ),
             ("point", "\"constructor w x y z\""),
-            // Chrome's but captureStream and transferControlToOffscreen
-            // (the design note's section 2).
+            // Chrome's but captureStream (the design note's section 2);
+            // transferControlToOffscreen came with M31.4.
             (
                 "canvasProto",
-                "\"constructor getContext height toBlob toDataURL width\"",
+                "\"constructor getContext height toBlob toDataURL transferControlToOffscreen width\"",
             ),
             (
                 "attrs",

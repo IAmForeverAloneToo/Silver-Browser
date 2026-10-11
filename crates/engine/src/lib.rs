@@ -3162,6 +3162,22 @@ impl Engine {
     fn take_worker_messages(&mut self) {
         let now = self.now();
         self.shown.scripts.take_worker_messages(now);
+        // A placeholder canvas takes the size its worker gave its
+        // offscreen (M31.4).
+        let resizes = self.shown.scripts.take_placeholder_resizes();
+        if !resizes.is_empty() {
+            for (node, (width, height)) in resizes {
+                let _ = self
+                    .shown
+                    .document
+                    .set_attribute(node, "width", &width.to_string());
+                let _ = self
+                    .shown
+                    .document
+                    .set_attribute(node, "height", &height.to_string());
+            }
+            self.scripts_ran();
+        }
         if let Some(Navigation {
             incoming: Incoming::Parsing { parsing, .. },
             ..

@@ -573,3 +573,171 @@ fn ports_deliver_once_started_across_realms_as_the_reference_browser_does() {
         ]
     );
 }
+
+#[test]
+fn a_canvas_shows_what_its_offscreen_draws_in_a_worker_once_each_task_ends() {
+    let (mut tab, _server) = page(
+        "<canvas id=c width=40 height=20></canvas><script>\
+         var err = function (e) { return e.name + ': ' + e.message + ' [' + e.code + ']'; };\
+         var log = function (k, v) { console.log(k + '=' + (typeof v === 'string' ? v : JSON.stringify(v))); };\
+         var wait = function (ms) { return new Promise(function (ok) { setTimeout(ok, ms); }); };\
+         var c = document.getElementById('c');\
+         var reader = document.createElement('canvas'); reader.width = 40; reader.height = 20;\
+         var rx = reader.getContext('2d');\
+         var sample = function () {\
+           rx.clearRect(0, 0, 40, 20);\
+           try { rx.drawImage(c, 0, 0); } catch (e) { return err(e); }\
+           var px = function (x, y) { return Array.from(rx.getImageData(x, y, 1, 1).data).join(','); };\
+           return [px(2, 2), px(12, 2), px(2, 12), px(32, 2)].join(' | ');\
+         };\
+         var msgs = [];\
+         var heard = async function () { while (msgs.length === 0) { await wait(5); } \
+           await wait(50); return msgs.splice(0); };\
+         (async function () {\
+           var other = document.createElement('canvas'); other.getContext('2d');\
+           try { other.transferControlToOffscreen(); log('after getContext', 'ok'); } catch (e) { log('after getContext', err(e)); }\
+           var oc = c.transferControlToOffscreen();\
+           log('offscreen', [oc.constructor.name, oc.width, oc.height]);\
+           try { c.transferControlToOffscreen(); log('twice', 'ok'); } catch (e) { log('twice', err(e)); }\
+           try { c.getContext('2d'); log('getContext after', 'ok'); } catch (e) { log('getContext after', err(e)); }\
+           try { c.width = 50; log('width after', 'ok'); } catch (e) { log('width after', err(e)); }\
+           log('placeholder before', sample());\
+           var w = new Worker('draw.js');\
+           w.onmessage = function (e) { msgs.push(e.data); };\
+           var oc3 = document.createElement('canvas').transferControlToOffscreen();\
+           try { w.postMessage({ canvas: oc3 }); log('post without transfer', 'ok'); } catch (e) { log('post without transfer', err(e)); }\
+           var oc4 = document.createElement('canvas').transferControlToOffscreen(); oc4.getContext('2d');\
+           try { w.postMessage(oc4, [oc4]); log('transfer with context', 'ok'); } catch (e) { log('transfer with context', err(e)); }\
+           w.postMessage({ canvas: oc }, [oc]);\
+           log('oc after transfer', [oc.width, oc.height]);\
+           log('worker', await heard());\
+           log('placeholder drawn', sample());\
+           w.postMessage('raf');\
+           log('worker', await heard());\
+           log('placeholder raf', sample());\
+           w.postMessage('resize');\
+           log('worker', await heard());\
+           log('placeholder resized', [c.width, c.height, sample()]);\
+           w.postMessage('busy');\
+           await wait(50);\
+           log('placeholder during busy', sample());\
+           log('worker', await heard());\
+           log('placeholder after busy', sample());\
+           w.postMessage('bitmap');\
+           var sent = (await heard())[0];\
+           rx.clearRect(0, 0, 40, 20); rx.drawImage(sent[1], 0, 0);\
+           log('bitmap from worker', [sent[0], sent[1] instanceof ImageBitmap, sent[1].width,\
+           Array.from(rx.getImageData(1, 1, 1, 1).data).join(',')]);\
+           var local = document.createElement('canvas'); local.width = 4; local.height = 4;\
+           var lc = local.transferControlToOffscreen().getContext('2d');\
+           lc.fillStyle = '#00f'; lc.fillRect(0, 0, 4, 4);\
+           rx.clearRect(0, 0, 40, 20); rx.drawImage(local, 0, 0);\
+           log('drawn here', Array.from(rx.getImageData(1, 1, 1, 1).data).join(','));\
+           console.log('done');\
+         })();\
+         </script>",
+        &[(
+            "/draw.js",
+            "var canvas, ctx;\
+             onmessage = function (e) {\
+               if (e.data.canvas) {\
+                 canvas = e.data.canvas; ctx = canvas.getContext('2d');\
+                 ctx.fillStyle = '#00ff00'; ctx.fillRect(0, 0, 10, 10);\
+                 postMessage(['drawn', canvas.width, canvas.height, typeof requestAnimationFrame]);\
+                 return;\
+               }\
+               if (e.data === 'resize') {\
+                 canvas.width = 30; ctx.fillStyle = '#0000ff'; ctx.fillRect(0, 0, 5, 5);\
+                 postMessage(['resized', canvas.width, canvas.height]);\
+                 return;\
+               }\
+               if (e.data === 'raf') {\
+                 var t0 = performance.now();\
+                 requestAnimationFrame(function (t) {\
+                   ctx.fillStyle = '#ff0000'; ctx.fillRect(10, 0, 10, 10);\
+                   postMessage(['raf', typeof t, t >= t0 - 1000]);\
+                 });\
+                 return;\
+               }\
+               if (e.data === 'bitmap') {\
+               var small = new OffscreenCanvas(2, 2); var sc = small.getContext('2d');\
+               sc.fillStyle = '#f0f'; sc.fillRect(0, 0, 2, 2);\
+               postMessage(['bitmap', small.transferToImageBitmap()]);\
+               return;\
+               }\
+               if (e.data === 'busy') {\
+                 ctx.fillStyle = '#ffff00'; ctx.fillRect(0, 10, 10, 10);\
+                 var end = Date.now() + 200; while (Date.now() < end) {}\
+                 postMessage(['busy done']);\
+               }\
+             };",
+        )],
+    );
+    let lines = until(&mut tab, "done");
+    let state = |what: &str, method: &str, why: &str| {
+        format!("{what}=InvalidStateError: Failed to {method}: {why} [11]")
+    };
+    assert_eq!(
+        lines,
+        [
+            state(
+                "after getContext",
+                "execute 'transferControlToOffscreen' on 'HTMLCanvasElement'",
+                "Cannot transfer control from a canvas that has a rendering context."
+            ),
+            "offscreen=[\"OffscreenCanvas\",40,20]".to_owned(),
+            state(
+                "twice",
+                "execute 'transferControlToOffscreen' on 'HTMLCanvasElement'",
+                "Cannot transfer control from a canvas for more than one time."
+            ),
+            state(
+                "getContext after",
+                "execute 'getContext' on 'HTMLCanvasElement'",
+                "Cannot get context from a canvas that has transferred its control to offscreen."
+            ),
+            state(
+                "width after",
+                "set the 'width' property on 'HTMLCanvasElement'",
+                "Cannot resize canvas after call to transferControlToOffscreen()."
+            ),
+            "placeholder before=0,0,0,0 | 0,0,0,0 | 0,0,0,0 | 0,0,0,0".to_owned(),
+            "post without transfer=DataCloneError: Failed to execute 'postMessage' on 'Worker': \
+             An OffscreenCanvas could not be cloned because it was not transferred. [25]"
+                .to_owned(),
+            state(
+                "transfer with context",
+                "execute 'postMessage' on 'Worker'",
+                "An OffscreenCanvas could not be transferred because it had a rendering context."
+            ),
+            "oc after transfer=[0,0]".to_owned(),
+            "worker=[[\"drawn\",40,20,\"function\"]]".to_owned(),
+            "placeholder drawn=0,255,0,255 | 0,0,0,0 | 0,0,0,0 | 0,0,0,0".to_owned(),
+            "worker=[[\"raf\",\"number\",true]]".to_owned(),
+            "placeholder raf=0,255,0,255 | 255,0,0,255 | 0,0,0,0 | 0,0,0,0".to_owned(),
+            "worker=[[\"resized\",30,20]]".to_owned(),
+            "placeholder resized=[30,20,\"0,0,255,255 | 0,0,0,0 | 0,0,0,0 | 0,0,0,0\"]".to_owned(),
+            "placeholder during busy=0,0,255,255 | 0,0,0,0 | 0,0,0,0 | 0,0,0,0".to_owned(),
+            "worker=[[\"busy done\"]]".to_owned(),
+            "placeholder after busy=0,0,255,255 | 0,0,0,0 | 255,255,0,255 | 0,0,0,0".to_owned(),
+            "bitmap from worker=[\"bitmap\",true,2,\"255,0,255,255\"]".to_owned(),
+            "drawn here=0,0,255,255".to_owned(),
+            "done".to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn a_placeholder_drawn_here_takes_its_offscreens_size() {
+    let (mut tab, _server) = page(
+        "<canvas id=c width=40 height=20></canvas><script>\
+         var c = document.getElementById('c');\
+         var oc = c.transferControlToOffscreen();\
+         oc.width = 7;\
+         oc.getContext('2d').fillRect(0, 0, 7, 20);\
+         setTimeout(function () { console.log('size', c.width, c.height); }, 50);\
+         </script>",
+        &[],
+    );
+    assert_eq!(until(&mut tab, "size 7 20"), ["size 7 20"]);
+}

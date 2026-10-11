@@ -12294,6 +12294,8 @@
   const MATRIX = 18;
   const POINT = 19;
   const PORT = 20;
+  const OFFSCREEN_CANVAS = 21;
+  const IMAGE_BITMAP_PIXELS = 22;
 
   // What `native.cloneKind` says of an object: what no script can tell.
   const KIND_FUNCTION = 1;
@@ -12609,6 +12611,11 @@
     if (isPort(value)) {
       throw dataCloneError(where, "A MessagePort could not be cloned because it was not transferred.");
     }
+    const canvasTarget = WeakMapGet(canvasTargets, value);
+    if (canvasTarget !== undefined && canvasTarget.kind === 1) {
+      throw dataCloneError(where,
+        "An OffscreenCanvas could not be cloned because it was not transferred.");
+    }
     if (isBlob(value)) {
       if (isFile(value)) {
         return [FILE, TypedArraySlice(blobBytes(value)), BlobType(value), FileName(value),
@@ -12793,6 +12800,9 @@
       case IMAGE_BITMAP:
         object = bitmapMade(e[1]);
         break;
+      case IMAGE_BITMAP_PIXELS:
+        object = makeBitmap(native.canvasData("bitmapFrom", e[3], e[1], e[2], e[4] ? 1 : 0));
+        break;
       case MATRIX:
         object = makeMatrix(e[1] === "DOMMatrix" ? DOMMatrix : DOMMatrixReadOnly,
           { s: ArraySlice(e[3], 0), is2D: e[2] });
@@ -12839,6 +12849,15 @@
     const out = [];
     for (let i = 0; i < entries.length; i++) {
       const e = entries[i];
+      if (e !== null && e[0] === IMAGE_BITMAP) {
+        // A bitmap of this realm's host crosses as its pixels (M31).
+        const id = e[1][0];
+        const bytes = new $Uint8Array(native.canvas("bitmapBytes", 4, id));
+        const clean = native.canvas("bitmapClean", 4, id);
+        native.canvas("release", 5, id);
+        ArrayPush(out, [IMAGE_BITMAP_PIXELS, e[1][1], e[1][2], ToBase64(bytes), clean]);
+        continue;
+      }
       const at = MapGet(BYTES_AT, e[0]);
       if (at === undefined) {
         ArrayPush(out, e);
@@ -13379,6 +13398,125 @@
       throw new $TypeError("The message holds a port it may not.");
     }
     return new MessagePort(KEY, e[1]);
+  };
+
+  // ---- An OffscreenCanvas from a page's canvas (M31, HTML 4.12.5.3) ------
+
+  // The canvas elements that gave their control away: placeholders,
+  // which show what their OffscreenCanvas draws, wherever it is.
+  const placeholders = new $WeakSet();
+
+  // An OffscreenCanvas of the host's offscreen `made`, [number, width,
+  // height], as transferControlToOffscreen and a transfer make one.
+  function madeOffscreen(made) {
+    const canvas = bindCanvasObject(ObjectCreate(OffscreenCanvas.prototype), 1, made[0],
+      "OffscreenCanvas");
+    const t = targetOf(canvas);
+    t.width = made[1];
+    t.height = made[2];
+    t.context = null;
+    return canvas;
+  }
+
+  {
+    const proto = MapGet(interfaces, "canvas").prototype;
+    const iface = "HTMLCanvasElement";
+    defineProperty(proto, "transferControlToOffscreen", {
+      value: function transferControlToOffscreen() {
+        const handle = self(this);
+        const method = "transferControlToOffscreen";
+        if (WeakMapGet(canvasContexts, this) !== undefined) {
+          throw domError("InvalidStateError",
+            "Cannot transfer control from a canvas that has a rendering context.", method, iface);
+        }
+        if (WeakSetHas(placeholders, this)) {
+          throw domError("InvalidStateError",
+            "Cannot transfer control from a canvas for more than one time.", method, iface);
+        }
+        const made = native.canvas("transferControl", 0, handle);
+        WeakSetAdd(placeholders, this);
+        return madeOffscreen(made);
+      },
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+    // A placeholder has no context of its own, and keeps its size.
+    const elementContext = proto.getContext;
+    defineProperty(proto, "getContext", {
+      value: function getContext(contextId) {
+        if (WeakSetHas(placeholders, this)) {
+          throw domError("InvalidStateError",
+            "Cannot get context from a canvas that has transferred its control to offscreen.",
+            "getContext", iface);
+        }
+        return ReflectApply(elementContext, this, arguments);
+      },
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+    const sizes = ["width", "height"];
+    for (let i = 0; i < sizes.length; i++) {
+      const name = sizes[i];
+      const desc = getOwnPropertyDescriptor(proto, name);
+      const set = desc.set;
+      desc.set = function (value) {
+        if (WeakSetHas(placeholders, this)) {
+          throw new $DOMException("Failed to set the '" + name + "' property on '" + iface +
+            "': Cannot resize canvas after call to transferControlToOffscreen().",
+            "InvalidStateError");
+        }
+        ReflectApply(set, this, [value]);
+      };
+      defineProperty(proto, name, desc);
+    }
+  }
+
+  // An OffscreenCanvas in a transfer list: its entry, unless it has a
+  // context or went already. Once the record is made it is detached
+  // here, its entry naming its placeholder, and made again where the
+  // message arrives.
+  const transferBefore = transferEntry;
+  transferEntry = function (t, i, where, source, at) {
+    const target = WeakMapGet(canvasTargets, t);
+    if (target === undefined || target.kind !== 1) {
+      return transferBefore(t, i, where, source, at);
+    }
+    if (target.detached) {
+      throw dataCloneError(where, "OffscreenCanvas at index " + i + " is already detached.");
+    }
+    if (target.context !== null) {
+      throw new $DOMException(where +
+        "An OffscreenCanvas could not be transferred because it had a rendering context.",
+        "InvalidStateError");
+    }
+    return [OFFSCREEN_CANVAS, target.id, target.width, target.height];
+  };
+  const transferredBefore = transferred;
+  transferred = function (entries) {
+    transferredBefore(entries);
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      if (e !== null && e[0] === OFFSCREEN_CANVAS) {
+        const ref = MapGet(canvasObjects, e[1]);
+        const canvas = ref === undefined ? undefined : WeakRefDeref(ref);
+        if (canvas !== undefined) {
+          const t = targetOf(canvas);
+          t.detached = true;
+          t.width = 0;
+          t.height = 0;
+        }
+        e[1] = native.canvas("offscreenAway", 1, e[1]);
+      }
+    }
+  };
+  const madeBefore = transferMade;
+  transferMade = function (e) {
+    if (e[0] !== OFFSCREEN_CANVAS) {
+      return madeBefore(e);
+    }
+    return madeOffscreen(native.canvas("offscreenAdopt", 1, e[1], e[2], e[3]));
   };
 
   // ---- Timers (M26, HTML section 8.6) ------------------------------------

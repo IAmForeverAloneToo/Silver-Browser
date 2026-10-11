@@ -51,6 +51,13 @@ impl Router {
         self.realms.insert(realm, inbox);
     }
 
+    /// Sends the document's realm `message` (M31.4: a worker's frame).
+    pub(crate) fn send_document(&self, message: WorkerMessage) {
+        if let Some(inbox) = self.realms.get(&0) {
+            inbox.send(message);
+        }
+    }
+
     /// A new realm, whose port messages go to `inbox`: its number.
     pub(crate) fn add_realm(&mut self, inbox: Inbox) -> u32 {
         let realm = self.next_realm;

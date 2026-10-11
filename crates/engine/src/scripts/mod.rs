@@ -913,6 +913,10 @@ impl Scripts {
         while let Some(message) = self.host.workers.mailbox.try_take() {
             let (id, event) = match message {
                 workers::WorkerMessage::FromWorker(id, event) => (id, event),
+                workers::WorkerMessage::Frame((number, size, image)) => {
+                    self.host.canvases.placeholder_frame(number, size, image);
+                    continue;
+                }
                 workers::WorkerMessage::Port(port, data) => {
                     let task = js::Task::Message {
                         target: js::MessageTarget::Port(port),
@@ -930,6 +934,11 @@ impl Scripts {
                 workers::Received::Nothing => {}
             }
         }
+    }
+
+    /// The sizes the placeholder canvases are to take (M31.4), taken.
+    pub(crate) fn take_placeholder_resizes(&mut self) -> Vec<(NodeId, (u32, u32))> {
+        self.host.canvases.take_resizes()
     }
 
     /// The document's live workers, for the tests.

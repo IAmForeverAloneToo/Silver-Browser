@@ -163,6 +163,21 @@ pub(crate) enum Owner {
     Offscreen(u32),
 }
 
+/// A `canvas` element that gave its control to an `OffscreenCanvas`
+/// (M31.4): its number, which a worker's frames name; the offscreen of
+/// this document that draws for it, while it is here; the last frame a
+/// worker sent, and the size it has.
+struct Placeholder {
+    number: u32,
+    local: Option<u32>,
+    frame: Option<(u64, Arc<images::Image>)>,
+    size: (u32, u32),
+}
+
+/// What a worker commits to a placeholder after a task (M31.4): its
+/// number, the offscreen's size and its pixels, none with no context.
+pub(crate) type Commit = (u32, (u32, u32), Option<Arc<images::Image>>);
+
 /// An `ImageBitmap`'s pixels and whether they are origin-clean; `None`
 /// once it is closed.
 type Bitmap = Option<(Arc<images::Image>, bool)>;
@@ -233,6 +248,17 @@ pub(crate) struct Canvases {
     /// Colours the styles were given, parsed, by their text (M30.4): a
     /// page sets the same few again and again, a particle's each frame.
     colours: RefCell<HashMap<String, Option<Rgba>>>,
+    /// The placeholders (M31.4), by element; each offscreen with one,
+    /// by number, with the placeholder's; the frames made for them, and
+    /// the sizes their elements are to take.
+    placeholders: HashMap<NodeId, Placeholder>,
+    links: HashMap<u32, u32>,
+    next_placeholder: u32,
+    frames_made: u64,
+    resizes: Vec<(NodeId, (u32, u32))>,
+    /// What a worker last committed of each linked offscreen: its
+    /// generation and size.
+    committed: HashMap<u32, (u64, (u32, u32))>,
 }
 
 /// The most colours [`Canvases`] keeps parsed; past it they are let go.
@@ -255,6 +281,11 @@ pub(crate) fn names_context(op: &str) -> bool {
             | "imageBitmap"
             | "offscreen"
             | "offscreenResize"
+            | "offscreenAway"
+            | "offscreenAdopt"
+            | "bitmapBytes"
+            | "bitmapClean"
+            | "bitmapFrom"
             | "closeBitmap"
     )
 }
@@ -340,6 +371,18 @@ impl Canvases {
     /// The bitmap of `node`'s canvas as an image, as it is now, for a
     /// print, which keeps nothing.
     pub(crate) fn image(&self, node: NodeId) -> Option<Arc<images::Image>> {
+        if let Some(placeholder) = self.placeholders.get(&node) {
+            return match placeholder.local {
+                Some(local) => self
+                    .contexts
+                    .get(&Owner::Offscreen(local))
+                    .and_then(Canvas::snapshot),
+                None => placeholder
+                    .frame
+                    .as_ref()
+                    .map(|(_, image)| Arc::clone(image)),
+            };
+        }
         let owner = Owner::Element(node);
         let canvas = self.contexts.get(&owner)?;
         match self.snapshots.get(&owner) {
@@ -352,6 +395,15 @@ impl Canvases {
     /// copy taken when the generation moved, the same until it moves
     /// again.
     pub(crate) fn pixels(&mut self, owner: Owner) -> Option<(u64, Arc<images::Image>)> {
+        // A placeholder shows its offscreen's, or a worker's last frame.
+        if let Owner::Element(node) = owner
+            && let Some(placeholder) = self.placeholders.get(&node)
+        {
+            return match placeholder.local {
+                Some(local) => self.pixels(Owner::Offscreen(local)),
+                None => placeholder.frame.clone(),
+            };
+        }
         let canvas = self.contexts.get(&owner)?;
         let generation = canvas.generation();
         if let Some((taken, image)) = self.snapshots.get(&owner)
@@ -397,6 +449,16 @@ impl Canvases {
     pub(crate) fn resized(&mut self, owner: Owner, size: (u32, u32)) {
         if let Owner::Offscreen(id) = owner {
             self.offscreen.insert(id, size);
+            // Its placeholder here takes its size.
+            if let Some((node, placeholder)) = self
+                .placeholders
+                .iter_mut()
+                .find(|(_, placeholder)| placeholder.local == Some(id))
+                && placeholder.size != size
+            {
+                placeholder.size = size;
+                self.resizes.push((*node, size));
+            }
         }
         let others = self.others(owner);
         if let Some(canvas) = self.contexts.get_mut(&owner) {
@@ -426,6 +488,54 @@ impl Canvases {
         });
         let contexts = &self.contexts;
         self.snapshots.retain(|node, _| contexts.contains_key(node));
+        self.placeholders.retain(|node, _| alive(*node));
+    }
+
+    /// A frame worker sent placeholder `number` (M31.4): shown at the
+    /// next frame, its element given its size.
+    pub(crate) fn placeholder_frame(
+        &mut self,
+        number: u32,
+        size: (u32, u32),
+        image: Option<Arc<images::Image>>,
+    ) {
+        let Some((node, placeholder)) = self
+            .placeholders
+            .iter_mut()
+            .find(|(_, placeholder)| placeholder.number == number)
+        else {
+            return;
+        };
+        self.frames_made += 1;
+        placeholder.frame = image.map(|image| ((1 << 40) + self.frames_made, image));
+        if placeholder.size != size {
+            placeholder.size = size;
+            self.resizes.push((*node, size));
+        }
+        self.changed = true;
+    }
+
+    /// The sizes placeholders' elements are to take, taken.
+    pub(crate) fn take_resizes(&mut self) -> Vec<(NodeId, (u32, u32))> {
+        std::mem::take(&mut self.resizes)
+    }
+
+    /// What changed of each offscreen with a placeholder since it was
+    /// last committed (M31.4), for a worker to send its document.
+    pub(crate) fn commits(&mut self) -> Vec<Commit> {
+        let links: Vec<(u32, u32)> = self.links.iter().map(|(id, n)| (*id, *n)).collect();
+        let mut commits = Vec::new();
+        for (id, number) in links {
+            let size = self.offscreen_size(id).unwrap_or((0, 0));
+            let pixels = self.pixels(Owner::Offscreen(id));
+            let generation = pixels.as_ref().map_or(0, |(generation, _)| *generation);
+            if self.committed.get(&id) == Some(&(generation, size)) {
+                continue;
+            }
+            self.committed.insert(id, (generation, size));
+            commits.push((number, size, pixels.map(|(_, image)| image)));
+        }
+        commits
     }
 
     /// The points the document's budget has room for yet.
@@ -616,6 +726,91 @@ impl Canvases {
                     .insert(id, (at(n, 0) as u32, at(n, 1) as u32));
                 return Ok(number(f64::from(id)));
             }
+            // HTMLCanvasElement's transferControlToOffscreen (M31.4): the
+            // element a placeholder, an offscreen of its size drawing for
+            // it.
+            "transferControl" => {
+                let Some(Element {
+                    owner: Owner::Element(node),
+                    size,
+                    ..
+                }) = element
+                else {
+                    return Err(bad_call());
+                };
+                if self.contexts.contains_key(&Owner::Element(node))
+                    || self.placeholders.contains_key(&node)
+                {
+                    return Err(DomError::new(
+                        "InvalidStateError",
+                        "Cannot transfer control from this canvas.",
+                    ));
+                }
+                let id = self.new_id()?;
+                self.offscreen.insert(id, size);
+                let which = self.next_placeholder;
+                self.next_placeholder += 1;
+                self.placeholders.insert(
+                    node,
+                    Placeholder {
+                        number: which,
+                        local: Some(id),
+                        frame: None,
+                        size,
+                    },
+                );
+                self.links.insert(id, which);
+                return Ok(Answer::Numbers(vec![
+                    f64::from(id),
+                    f64::from(size.0),
+                    f64::from(size.1),
+                ]));
+            }
+            // An offscreen transferred away: its placeholder's number,
+            // or -1.
+            "offscreenAway" => {
+                let id = at(n, 1) as u32;
+                if self.offscreen.remove(&id).is_none() {
+                    return Err(bad_call());
+                }
+                let owner = Owner::Offscreen(id);
+                if let Some(canvas) = self.contexts.remove(&owner) {
+                    self.points -= canvas.path().len();
+                }
+                self.snapshots.remove(&owner);
+                self.committed.remove(&id);
+                let link = self.links.remove(&id);
+                for placeholder in self.placeholders.values_mut() {
+                    if placeholder.local == Some(id) {
+                        placeholder.local = None;
+                    }
+                }
+                return Ok(number(link.map_or(-1.0, f64::from)));
+            }
+            // An offscreen transferred here, of a size, drawing for the
+            // placeholder it names: its number and size.
+            "offscreenAdopt" => {
+                let size = (at(n, 2) as u32, at(n, 3) as u32);
+                let id = self.new_id()?;
+                self.offscreen.insert(id, size);
+                let link = at(n, 1);
+                if (0.0..=f64::from(u32::MAX)).contains(&link) && link.fract() == 0.0 {
+                    let which = link as u32;
+                    self.links.insert(id, which);
+                    if let Some(placeholder) = self
+                        .placeholders
+                        .values_mut()
+                        .find(|placeholder| placeholder.number == which)
+                    {
+                        placeholder.local = Some(id);
+                    }
+                }
+                return Ok(Answer::Numbers(vec![
+                    f64::from(id),
+                    f64::from(size.0),
+                    f64::from(size.1),
+                ]));
+            }
             "offscreenResize" => {
                 let id = at(n, 1) as u32;
                 if !self.offscreen.contains_key(&id) {
@@ -623,6 +818,42 @@ impl Canvases {
                 }
                 self.resized(Owner::Offscreen(id), (at(n, 2) as u32, at(n, 3) as u32));
                 return Ok(Answer::Nothing);
+            }
+            // A bitmap crossing to another realm as its pixels (M31),
+            // premultiplied as it holds them, and made again there.
+            "bitmapBytes" => {
+                let (image, _) = self.bitmap(at(n, 1) as u32)?;
+                let bytes = image
+                    .frames
+                    .first()
+                    .map_or_else(Vec::new, |frame| frame.pixels.to_vec());
+                return Ok(Answer::Bytes(bytes));
+            }
+            "bitmapClean" => {
+                let (_, clean) = self.bitmap(at(n, 1) as u32)?;
+                return Ok(Answer::Bool(clean));
+            }
+            "bitmapFrom" => {
+                let (width, height) = (at(n, 0) as u32, at(n, 1) as u32);
+                let bytes = call.bytes.clone().unwrap_or_default();
+                if u64::from(width) * u64::from(height) * 4 != bytes.len() as u64 {
+                    return Err(bad_call());
+                }
+                let image = Arc::new(images::Image {
+                    width,
+                    height,
+                    frames: vec![images::Frame {
+                        pixels: Arc::from(bytes),
+                        delay: 0,
+                    }],
+                    plays: images::Plays::Forever,
+                });
+                let id = self.make_bitmap(image, at(n, 2) == 1.0)?;
+                return Ok(Answer::Numbers(vec![
+                    f64::from(id),
+                    f64::from(width),
+                    f64::from(height),
+                ]));
             }
             "closeBitmap" => {
                 if let Some(bitmap) = self.bitmaps.get_mut(&(at(n, 1) as u32)) {
