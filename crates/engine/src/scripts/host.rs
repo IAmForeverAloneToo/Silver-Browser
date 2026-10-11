@@ -1486,7 +1486,7 @@ impl DocumentHost {
             };
             Some(Element {
                 node,
-                size: canvas_size(&self.document, node),
+                size: layout::canvas_size(&self.document, node),
                 color,
             })
         } else {
@@ -1503,7 +1503,7 @@ impl DocumentHost {
         if (name.eq_ignore_ascii_case("width") || name.eq_ignore_ascii_case("height"))
             && self.document.tag(node) == Some("canvas")
         {
-            let size = canvas_size(&self.document, node);
+            let size = layout::canvas_size(&self.document, node);
             self.canvases.resized(node, size);
         }
     }
@@ -2202,22 +2202,6 @@ impl DocumentHost {
     pub(crate) fn forget_objects(&mut self) {
         self.exposed.clear();
     }
-}
-
-/// A `canvas` element's size, as its attributes give it: each a
-/// non-negative integer, 300 by 150 when absent or not one (HTML
-/// section 4.12.5), a value past 2^31 - 1 the default, as the reflecting
-/// IDL attribute's is.
-pub(crate) fn canvas_size(document: &Document, node: NodeId) -> (u32, u32) {
-    let side = |name: &str, default: u32| {
-        document
-            .attr(node, name)
-            .and_then(dom::parse_non_negative_integer)
-            .and_then(|value| u32::try_from(value).ok())
-            .filter(|&value| value <= i32::MAX as u32)
-            .unwrap_or(default)
-    };
-    (side("width", 300), side("height", 150))
 }
 
 /// A node's handle.

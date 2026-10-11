@@ -196,7 +196,11 @@ impl Engine {
                         item
                         && image.pixels.is_none()
                     {
-                        image.pixels = self.shown.images.decoded_now(image.id);
+                        // A canvas prints its bitmap (M30.3).
+                        image.pixels = match paint::canvas_node(image.id) {
+                            Some(node) => self.shown.scripts.canvas_image(node),
+                            None => self.shown.images.decoded_now(image.id),
+                        };
                     }
                 }
                 PrintedPage {

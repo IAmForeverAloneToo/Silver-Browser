@@ -201,6 +201,30 @@ pub enum Replaced {
     /// A control's mark (M26.7), which paint draws: a checkbox or a
     /// radio button, 13 by 13 by nature, or a drop-down's arrow.
     Mark(Mark),
+    /// A canvas's bitmap (M30, HTML section 4.12.5), with scripts on:
+    /// the element, whose context the engine shows, and its size by its
+    /// `width` and `height` attributes.
+    Canvas {
+        node: NodeId,
+        width: u32,
+        height: u32,
+    },
+}
+
+/// A `canvas` element's size, as its attributes give it (HTML section
+/// 4.12.5): each a non-negative integer, 300 by 150 when absent or not
+/// one, and a value past 2^31 - 1 the default, as the reflecting IDL
+/// attribute's is.
+pub fn canvas_size(document: &Document, node: NodeId) -> (u32, u32) {
+    let side = |name: &str, default: u32| {
+        document
+            .attr(node, name)
+            .and_then(dom::parse_non_negative_integer)
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|&value| value <= i32::MAX as u32)
+            .unwrap_or(default)
+    };
+    (side("width", 300), side("height", 150))
 }
 
 /// What a control's mark shows (M26.7).
@@ -1260,6 +1284,17 @@ impl<'a> Styled<'a> {
             if !(img && broken) {
                 return Some(self.content_box(item, style, image));
             }
+        }
+        // A canvas shows its bitmap with scripts on (HTML section
+        // 15.4.1), its fallback content off.
+        if self.styles.scripting && self.document.tag(node) == Some("canvas") {
+            let (width, height) = canvas_size(self.document, node);
+            let canvas = Replaced::Canvas {
+                node,
+                width,
+                height,
+            };
+            return Some(self.replaced_box(item, style, canvas));
         }
         img.then(|| self.img_box(item, node, style))
     }
@@ -2575,6 +2610,21 @@ mod tests {
 
     fn pairs(items: &[(&str, usize)]) -> Vec<(String, usize)> {
         items.iter().map(|(k, n)| (k.to_string(), *n)).collect()
+    }
+
+    #[test]
+    fn a_canvas_is_sized_by_its_attributes_as_html_parses_them() {
+        let doc = html::parse_document(
+            "<canvas id=a width=40 height=20></canvas><canvas width=-3 height=x></canvas>             <canvas width='  12px' height=4294967295></canvas><canvas></canvas>",
+        )
+        .expect("html parsing never fails");
+        let document = dom::Document::from_node(&doc);
+        let sizes: Vec<(u32, u32)> = document
+            .subtree(document.root())
+            .filter(|&node| document.tag(node) == Some("canvas"))
+            .map(|node| canvas_size(&document, node))
+            .collect();
+        assert_eq!(sizes, [(40, 20), (300, 150), (12, 150), (300, 150)]);
     }
 
     #[test]

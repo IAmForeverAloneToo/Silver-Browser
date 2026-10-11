@@ -42,7 +42,7 @@ pub use block::{
 };
 pub use box_tree::{
     BoxKind, FirstLine, ImageState, Images, LayoutBox, MAX_GENERATED_TEXT, Mark, MarkerShape,
-    Replaced, RowGroupKind, build_box_tree, build_box_tree_showing,
+    Replaced, RowGroupKind, build_box_tree, build_box_tree_showing, canvas_size,
 };
 pub use cache::{LayoutCache, shown_by_controls};
 pub use composite::{Composited, EffectsChange};

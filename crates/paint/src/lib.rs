@@ -58,6 +58,26 @@ pub enum GroupKey {
     /// among it, and each piece is a group of its own, numbered from
     /// zero in paint order.
     Document(u32),
+    /// The bitmap of this `canvas` element (M30.3), alone.
+    Canvas(NodeId),
+}
+
+/// The bit a canvas's image number has (M30.3), apart from the engine's
+/// images' (counted from 1) and gradients' (the top bit): the rest is
+/// the element's node.
+pub const CANVAS_IMAGE: u64 = 1 << 62;
+
+/// The image number the bitmap of the canvas `node` is drawn by.
+pub fn canvas_image(node: NodeId) -> u64 {
+    CANVAS_IMAGE | node.to_bits()
+}
+
+/// The canvas an image number names, if it names one.
+pub fn canvas_node(id: u64) -> Option<NodeId> {
+    if id & (1 << 63) != 0 || id & CANVAS_IMAGE == 0 {
+        return None;
+    }
+    NodeId::from_bits(id & !CANVAS_IMAGE)
 }
 
 /// Why a group is a layer (M19): the compositing note's policy, which
@@ -77,6 +97,9 @@ pub enum LayerReason {
     /// always, an element's when its `will-change` names
     /// `scroll-position`. A scroll is then a composite.
     Scrolled,
+    /// It is a canvas's bitmap (M30.3), which scripts draw again from
+    /// frame to frame: drawn again alone, the content beneath it not.
+    Canvas,
 }
 
 /// The height of a tile of a scrolled layer (M19): a layer of scrolled
@@ -1110,6 +1133,58 @@ fn push_replaced(
                     ..rect
                 }),
             );
+        }
+        // A canvas (M30.3): its bitmap placed as an image's is, in a
+        // layer of its own; the engine gives the pixels and, as the
+        // frame, the bitmap's generation.
+        Replaced::Canvas {
+            node,
+            width,
+            height,
+        } => {
+            let image = fragment.style.image();
+            let natural = (*width as f32, *height as f32);
+            let (w, h) = fitted(image.object_fit, natural, (rect.w, rect.h));
+            let x = rect.x + image.object_position.x.resolve(rect.w - w);
+            let y = rect.y + image.object_position.y.resolve(rect.h - h);
+            if w <= 0.0 || h <= 0.0 || natural.0 <= 0.0 || natural.1 <= 0.0 {
+                return;
+            }
+            items.push(DisplayItem::PushGroup {
+                matrix: Matrix::IDENTITY,
+                opacity: 1.0,
+                key: GroupKey::Canvas(*node),
+                layer: Some(LayerReason::Canvas),
+            });
+            let clipped =
+                x < rect.x || y < rect.y || x + w > rect.x + rect.w || y + h > rect.y + rect.h;
+            if clipped {
+                let r = snapped(rect);
+                items.push(DisplayItem::PushClip {
+                    x: r.x,
+                    y: r.y,
+                    w: r.w,
+                    h: r.h,
+                });
+            }
+            items.push(DisplayItem::Image {
+                x,
+                y,
+                w,
+                h,
+                image: ImageRef {
+                    id: canvas_image(*node),
+                    frame: 0,
+                    orientation: images::Orientation::Normal,
+                    crop: None,
+                    pixels: None,
+                },
+                sharp: image.image_rendering.is_sharp(),
+            });
+            if clipped {
+                items.push(DisplayItem::PopClip);
+            }
+            items.push(DisplayItem::PopGroup);
         }
         Replaced::Image { id, header } => {
             let image = fragment.style.image();
@@ -4181,6 +4256,16 @@ mod styled_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_canvas_image_number_names_its_node_and_no_other_image() {
+        let node = NodeId::from_bits((5 << 32) | 9).expect("an id");
+        let id = canvas_image(node);
+        assert_eq!(canvas_node(id), Some(node));
+        assert_eq!(canvas_node(1), None);
+        assert_eq!(canvas_node(42 | 1 << 63), None);
+        assert_eq!(canvas_node(CANVAS_IMAGE | 1 << 63), None);
+    }
     use dom::Element;
 
     #[test]

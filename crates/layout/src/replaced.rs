@@ -79,6 +79,15 @@ fn natural(style: &ComputedStyle, replaced: &Replaced) -> Natural {
             height: Some(MARK_SIZE),
             ratio: None,
         },
+        // A canvas is its bitmap's size (M30).
+        Replaced::Canvas { width, height, .. } => {
+            let (w, h) = (*width as f32, *height as f32);
+            Natural {
+                width: Some(w),
+                height: Some(h),
+                ratio: (w > 0.0 && h > 0.0).then(|| w / h),
+            }
+        }
         // A gradient has no natural size nor ratio: the default object
         // size stands in (CSS Images 3 section 4.3).
         Replaced::Gradient(_) => Natural {

@@ -728,6 +728,29 @@ impl Scripts {
         self.host.frame_wanted && !self.stopped
     }
 
+    /// The bitmap of the canvas `node` and its generation (M30.3), if a
+    /// script made its context.
+    pub(crate) fn canvas_pixels(
+        &mut self,
+        node: NodeId,
+    ) -> Option<(u64, std::sync::Arc<images::Image>)> {
+        self.host.canvases.pixels(node)
+    }
+
+    /// The bitmap of the canvas `node` as it is now, for a print.
+    pub(crate) fn canvas_image(&self, node: NodeId) -> Option<std::sync::Arc<images::Image>> {
+        self.host.canvases.image(node)
+    }
+
+    /// Whether a canvas's bitmap changed since the last frame.
+    pub(crate) fn canvases_changed(&self) -> bool {
+        self.host.canvases.changed()
+    }
+
+    pub(crate) fn take_canvases_changed(&mut self) -> bool {
+        self.host.canvases.take_changed()
+    }
+
     /// Runs the animation frame callbacks (M26) for a frame at `now`, in
     /// milliseconds on the document's clock.
     pub(crate) fn run_frames(&mut self, lent: &mut Lent<'_>, now: f64) {

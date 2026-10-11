@@ -60,6 +60,10 @@ pub(crate) struct Canvases {
     points: usize,
     /// The stops the gradients scripts hold have.
     stops: usize,
+    /// A bitmap changed since the last frame took this.
+    changed: bool,
+    /// Each bitmap as an image, with the generation it was taken at.
+    snapshots: HashMap<NodeId, (u64, Arc<images::Image>)>,
     /// The work done since it was last taken.
     work: u64,
 }
@@ -111,6 +115,42 @@ impl Canvases {
         std::mem::take(&mut self.work)
     }
 
+    /// Whether a bitmap changed since the last frame took this (M30.3).
+    pub(crate) fn changed(&self) -> bool {
+        self.changed
+    }
+
+    pub(crate) fn take_changed(&mut self) -> bool {
+        std::mem::take(&mut self.changed)
+    }
+
+    /// The bitmap of `node`'s canvas as an image, as it is now, for a
+    /// print, which keeps nothing.
+    pub(crate) fn image(&self, node: NodeId) -> Option<Arc<images::Image>> {
+        let canvas = self.contexts.get(&node)?;
+        match self.snapshots.get(&node) {
+            Some((taken, image)) if *taken == canvas.generation() => Some(Arc::clone(image)),
+            _ => canvas.snapshot(),
+        }
+    }
+
+    /// The bitmap of `node`'s canvas as an image, and its generation: a
+    /// copy taken when the generation moved, the same until it moves
+    /// again.
+    pub(crate) fn pixels(&mut self, node: NodeId) -> Option<(u64, Arc<images::Image>)> {
+        let canvas = self.contexts.get(&node)?;
+        let generation = canvas.generation();
+        if let Some((taken, image)) = self.snapshots.get(&node)
+            && *taken == generation
+        {
+            return Some((generation, Arc::clone(image)));
+        }
+        let image = canvas.snapshot()?;
+        self.snapshots
+            .insert(node, (generation, Arc::clone(&image)));
+        Some((generation, image))
+    }
+
     /// The points the `Path2D` `id` holds.
     #[cfg(test)]
     pub(crate) fn path_len(&self, id: u32) -> Option<usize> {
@@ -150,6 +190,7 @@ impl Canvases {
             } else {
                 canvas.resize(size.0, size.1);
             }
+            self.changed = true;
         }
     }
 
@@ -163,6 +204,8 @@ impl Canvases {
             }
             keep
         });
+        let contexts = &self.contexts;
+        self.snapshots.retain(|node, _| contexts.contains_key(node));
     }
 
     /// The points the document's budget has room for yet.
@@ -383,8 +426,10 @@ impl Canvases {
         let room = self.room();
         let mut canvas = self.contexts.remove(&element.node).ok_or_else(bad_call)?;
         let before = canvas.path().len();
+        let generation = canvas.generation();
         let answer = self.context_call(&mut canvas, &call, &element, room);
         self.points = self.points - before + canvas.path().len();
+        self.changed |= canvas.generation() != generation;
         self.work += canvas.take_work();
         self.contexts.insert(element.node, canvas);
         answer

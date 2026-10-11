@@ -1052,7 +1052,12 @@ impl Turned {
     /// not, or for an empty crop.
     fn pixels(&mut self, image: &ImageRef) -> Option<(Arc<[u8]>, u32, u32)> {
         let decoded = image.pixels.as_deref()?;
-        let frame = decoded.frames.get(image.frame as usize)?;
+        // A still image's one frame, whatever the number says: a canvas's
+        // bitmap (M30.3) names its generation there.
+        let frame = match decoded.frames.as_slice() {
+            [only] => only,
+            frames => frames.get(image.frame as usize)?,
+        };
         let (w, h) = image.orientation.size(decoded.width, decoded.height);
         let crop = match image.crop {
             Some(crop) => Some(crop_pixels(crop, w, h)?),
@@ -1966,7 +1971,7 @@ impl SoftwareBackend {
         let shape = old.as_ref().map(Layer::shape);
         let kept = match reason {
             LayerReason::Scrolled => self.update_tiles(key, reason, old, items, visible, extra),
-            LayerReason::Transformed | LayerReason::WillChange => {
+            LayerReason::Transformed | LayerReason::WillChange | LayerReason::Canvas => {
                 self.update_whole(key, reason, old, items, composed, extra)
             }
         };

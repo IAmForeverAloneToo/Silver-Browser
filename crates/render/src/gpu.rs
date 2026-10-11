@@ -649,6 +649,25 @@ impl GpuBackend {
             return Some(pick(kept));
         }
         let (pixels, w, h) = self.turned.pixels(image)?;
+        // A canvas's bitmap at a new generation (M30.3): written into
+        // the texture of the one before when its size is the same, not
+        // a texture made a frame.
+        let before = paint::canvas_node(image.id).and_then(|_| {
+            self.images
+                .keys()
+                .find(|k| k.0 == key.0 && k.1 != key.1 && k.2 == key.2 && k.3 == key.3)
+                .copied()
+        });
+        if let Some(mut kept) = before.and_then(|before| self.images.remove(&before)) {
+            if (kept.texture.width, kept.texture.height) == (w, h) {
+                self.upload(&kept.texture.texture, &pixels, w, h);
+                kept.used = frame;
+                let bind = pick(&kept);
+                self.images.insert(key, kept);
+                return Some(bind);
+            }
+            self.image_bytes -= kept.texture.bytes();
+        }
         let texture = self.texture(
             w,
             h,
@@ -657,25 +676,7 @@ impl GpuBackend {
             wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             &self.pipelines.linear,
         )?;
-        self.queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &pixels,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(4 * w),
-                rows_per_image: Some(h),
-            },
-            wgpu::Extent3d {
-                width: w,
-                height: h,
-                depth_or_array_layers: 1,
-            },
-        );
+        self.upload(&texture.texture, &pixels, w, h);
         let bind = |sampler: &wgpu::Sampler| {
             self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: None,
@@ -720,6 +721,29 @@ impl GpuBackend {
         let bind = pick(&kept);
         self.images.insert(key, kept);
         Some(bind)
+    }
+
+    /// `pixels`, `w` by `h`, written into `texture`.
+    fn upload(&self, texture: &wgpu::Texture, pixels: &[u8], w: u32, h: u32) {
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * w),
+                rows_per_image: Some(h),
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+        );
     }
 
     /// A colour texture a pass draws into and a composite samples.
@@ -1622,7 +1646,7 @@ impl GpuBackend {
         }
         let kept = match reason {
             LayerReason::Scrolled => self.update_tiles(key, reason, old, items, visible, extra),
-            LayerReason::Transformed | LayerReason::WillChange => {
+            LayerReason::Transformed | LayerReason::WillChange | LayerReason::Canvas => {
                 self.update_whole(key, reason, old, items, composed, extra)
             }
         };
@@ -2482,6 +2506,66 @@ mod tests {
 
     fn rgba(r: u8, g: u8, b: u8, a: u8) -> Rgba8 {
         Rgba8 { r, g, b, a }
+    }
+
+    #[test]
+    fn a_canvas_at_a_new_generation_is_written_into_its_texture() {
+        let Some((_, mut gpu)) = backends() else {
+            return;
+        };
+        let id = paint::canvas_image(dom::NodeId::from_bits(7).expect("an id"));
+        let at = |frame: u32, colour: [u8; 4]| DisplayItem::Image {
+            x: 0.0,
+            y: 0.0,
+            w: 8.0,
+            h: 8.0,
+            image: ImageRef {
+                frame,
+                ..crate::tests::picture(id, 8, 8, &[colour; 64])
+            },
+            sharp: true,
+        };
+        let mut shown = Vec::new();
+        let mut textures = Vec::new();
+        for (frame, colour) in [(1, [255, 0, 0, 255]), (2, [0, 0, 255, 255])] {
+            let pixels = gpu.rasterize(
+                &DisplayList {
+                    items: vec![at(frame, colour)],
+                },
+                8,
+                8,
+            );
+            shown.push(pixels[..4].to_vec());
+            assert_eq!(
+                (gpu.images.len(), gpu.image_bytes),
+                (1, 256),
+                "frame {frame}"
+            );
+            let kept = gpu.images.values().next().expect("one");
+            textures.push(kept.texture.texture.clone());
+        }
+        assert_eq!(shown, [vec![255, 0, 0, 255], vec![0, 0, 255, 255]]);
+        // The same texture, written again.
+        assert!(textures[0] == textures[1]);
+        // Another size makes a texture of its own, the old one let go.
+        gpu.rasterize(
+            &DisplayList {
+                items: vec![DisplayItem::Image {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 8.0,
+                    h: 8.0,
+                    image: ImageRef {
+                        frame: 3,
+                        ..crate::tests::picture(id, 4, 4, &[[0, 255, 0, 255]; 16])
+                    },
+                    sharp: true,
+                }],
+            },
+            8,
+            8,
+        );
+        assert_eq!((gpu.images.len(), gpu.image_bytes), (1, 64));
     }
 
     #[test]

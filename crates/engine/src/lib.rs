@@ -3338,8 +3338,10 @@ impl Engine {
                     .bounds(rect[0], rect[1], rect[2], rect[3])
                     .is_none_or(|(l, t, r, b)| l < width && r > 0.0 && t < height && b > 0.0),
             );
-            let size = drawn_size(matrix, tile, image);
-            self.shown.images.drew(image.id, frame, size);
+            if paint::canvas_node(image.id).is_none() {
+                let size = drawn_size(matrix, tile, image);
+                self.shown.images.drew(image.id, frame, size);
+            }
         }
         let mut next: Option<f64> = None;
         let mut seen = seen.into_iter();
@@ -3349,6 +3351,14 @@ impl Engine {
                 _ => continue,
             };
             let seen = seen.next().unwrap_or(true);
+            // A canvas's bitmap (M30.3), its generation as the frame.
+            if let Some(node) = paint::canvas_node(image.id) {
+                if let Some((generation, pixels)) = self.shown.scripts.canvas_pixels(node) {
+                    image.pixels = Some(pixels);
+                    image.frame = generation as u32;
+                }
+                continue;
+            }
             if image.pixels.is_none() {
                 image.pixels = self.image_pixels(image.id);
             }
@@ -4274,6 +4284,7 @@ impl Engine {
     /// know: the frame takes it.
     pub fn needs_frame(&self) -> bool {
         self.changed
+            || self.shown.scripts.canvases_changed()
             || self.animating()
             || self.shown.animations.borrow().needs_frame()
             || (self.scripting
@@ -4803,6 +4814,7 @@ impl Engine {
             return &[];
         }
         self.changed = false;
+        self.shown.scripts.take_canvases_changed();
         self.viewport = (width, height);
         // The frame's animations (M22.3): those made since the last frame
         // start at its time, and the elements whose animations give

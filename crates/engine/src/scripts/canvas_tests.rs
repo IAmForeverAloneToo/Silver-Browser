@@ -569,3 +569,157 @@ fn a_documents_canvas_objects_are_bounded_together() {
     assert!(canvases.call(call("path", &[], &[]), None).is_ok());
     assert!(canvases.call(call("path", &[], &[]), None).is_err());
 }
+
+/// The text the layout shows as the element `node`'s own, laid out at
+/// `width`.
+fn shown_text(tab: &mut Tab, node: dom::NodeId, width: f32) -> String {
+    fn texts(fragments: &[layout::Fragment], node: dom::NodeId, out: &mut String) {
+        for fragment in fragments {
+            if let layout::FragmentKind::Text(text) = &fragment.kind
+                && fragment.node == node
+            {
+                out.push_str(text);
+            }
+            texts(&fragment.children, node, out);
+        }
+    }
+    let mut out = String::new();
+    texts(&tab.engine.layout(width).roots, node, &mut out);
+    out
+}
+
+/// A frame's pixel at (x, y), the frame `width` wide.
+fn pixel(frame: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
+    let i = ((y * width + x) * 4) as usize;
+    [frame[i], frame[i + 1], frame[i + 2], frame[i + 3]]
+}
+
+/// A tab showing `page` with scripts on or off, loaded; and the server,
+/// which must outlive it.
+fn shown(page: &'static str, scripting: bool) -> (net::test_server::TestServer, Tab) {
+    let server = serve(move |path| match path {
+        "/page.html" => Some(html(page)),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(scripting);
+    let url = server.url("/page.html");
+    tab.engine.navigate(url.clone());
+    tab.wait_until(|engine| {
+        incoming(engine).is_none()
+            && engine.url() == Some(&url)
+            && engine.load_state() == &LoadState::Loaded
+    });
+    (server, tab)
+}
+
+const RED: [u8; 4] = [255, 0, 0, 255];
+const BLUE: [u8; 4] = [0, 0, 255, 255];
+const WHITE: [u8; 4] = [255, 255, 255, 255];
+
+#[test]
+fn a_canvas_shows_its_bitmap_and_its_changes_without_a_layout() {
+    let (_server, mut tab) = shown(
+        "<!DOCTYPE html><style>body { margin: 0 } canvas { display: block }</style>\
+         <canvas id=c width=40 height=20>fallback</canvas><script>\
+         const x = document.getElementById('c').getContext('2d'); x.fillStyle = '#f00'; x.fillRect(0, 0, 10, 10);\
+         setTimeout(() => { x.fillStyle = '#00f'; x.fillRect(0, 0, 10, 10); }, 0);\
+         </script>",
+        true,
+    );
+    let frame = tab.engine.frame(100, 60);
+    assert_eq!(
+        [
+            pixel(&frame, 100, 5, 5),
+            pixel(&frame, 100, 15, 5),
+            pixel(&frame, 100, 5, 30)
+        ],
+        [RED, WHITE, WHITE]
+    );
+    let c = by_id(&tab.engine, "c");
+    assert_eq!(shown_text(&mut tab, c, 100.0), "");
+    let layers = tab.engine.layers();
+    assert!(
+        layers
+            .iter()
+            .any(|l| l.key == paint::GroupKey::Canvas(c) && l.reason == paint::LayerReason::Canvas),
+        "{layers:?}"
+    );
+    // The timer draws again: a frame is wanted, which shows it, and
+    // nothing is laid out for it.
+    let laid_out = tab.engine.boxes_laid_out();
+    let deadline = std::time::Instant::now() + WAIT;
+    while !tab.engine.needs_frame() {
+        assert!(std::time::Instant::now() < deadline, "no frame wanted");
+        tab.engine.run_tasks();
+    }
+    let frame = tab.engine.frame(100, 60);
+    assert_eq!(pixel(&frame, 100, 5, 5), BLUE);
+    assert_eq!(tab.engine.boxes_laid_out(), laid_out);
+    assert!(!tab.engine.needs_frame());
+}
+
+#[test]
+fn a_canvas_is_sized_by_its_attributes_and_scaled_by_its_style() {
+    let (_server, mut tab) = shown(
+        "<!DOCTYPE html><style>body { margin: 0 } canvas { display: block }\
+         #b { width: 80px }</style>\
+         <canvas id=a></canvas><canvas id=b width=40 height=20></canvas><script>\
+         const x = document.getElementById('b').getContext('2d'); x.fillStyle = '#f00'; x.fillRect(0, 0, 10, 10);\
+         </script>",
+        true,
+    );
+    let frame = tab.engine.frame(400, 400);
+    // 300 by 150 by default, transparent; then 40 by 20 drawn at twice
+    // its size, keeping its ratio.
+    assert_eq!(pixel(&frame, 400, 299, 149), WHITE);
+    assert_eq!(pixel(&frame, 400, 15, 165), RED);
+    assert_eq!(pixel(&frame, 400, 25, 165), WHITE);
+    assert_eq!(pixel(&frame, 400, 15, 190), WHITE);
+    let b = by_id(&tab.engine, "b");
+    let a = by_id(&tab.engine, "a");
+    let mut size = |node| {
+        let layout = tab.engine.layout(400.0);
+        crate::fragment_of(&layout.roots, node).map(|f| (f.w, f.h))
+    };
+    assert_eq!(size(a), Some((300.0, 150.0)));
+    assert_eq!(size(b), Some((80.0, 40.0)));
+}
+
+#[test]
+fn a_canvas_without_scripts_shows_its_fallback_content() {
+    let (_server, mut tab) = shown(
+        "<!DOCTYPE html><canvas id=c width=40 height=20>fallback</canvas>",
+        false,
+    );
+    tab.engine.frame(100, 60);
+    let c = by_id(&tab.engine, "c");
+    assert_eq!(shown_text(&mut tab, c, 100.0), "fallback");
+}
+
+#[test]
+fn a_printed_canvas_shows_its_bitmap() {
+    let (_server, tab) = shown(
+        "<!DOCTYPE html><canvas id=c width=40 height=20></canvas><script>\
+         const x = document.getElementById('c').getContext('2d');\
+         x.fillStyle = '#f00'; x.fillRect(0, 0, 40, 20);\
+         </script>",
+        true,
+    );
+    let pages = tab
+        .engine
+        .printed_pages(&crate::PrintOptions::default())
+        .expect("printed");
+    let canvas = pages[0]
+        .list
+        .items
+        .iter()
+        .find_map(|item| match item {
+            paint::DisplayItem::Image { image, .. } if paint::canvas_node(image.id).is_some() => {
+                image.pixels.clone()
+            }
+            _ => None,
+        })
+        .expect("the canvas's pixels");
+    assert_eq!(&canvas.frames[0].pixels[..4], &RED);
+}
