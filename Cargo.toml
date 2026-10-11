@@ -16,6 +16,7 @@ license = "AGPL-3.0-only"
 #   layout, paint, render -> images (a leaf: decoders, M23)
 #   engine -> js (a leaf: scripts, M24)
 #   engine -> profile (a leaf: the profile on disk, M28)
+#   engine -> canvas -> { style, text, images, css } (the 2D canvas, M30)
 # See docs/architecture.md — the layering contract is binding.
 [workspace.dependencies]
 # Internal crates

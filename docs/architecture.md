@@ -21,6 +21,9 @@ shell          (bin "silver-browser": windowing, event loop, input, clipboard)
  └ engine      (session glue: orchestrates net → parse → style → layout →
                 paint → render for each frame/navigation)
     ├ render  (rasterization backends: software today, wgpu GPU later)
+    | canvas  (the 2D canvas context drawing with tiny-skia, since M30:
+    |          below engine, beside render, over style, text, images
+    |          and css; it knows no DOM and no script)
     ├ paint   (fragment tree → display list)
     ├ layout  (box tree construction + layout algorithms)
     ├ style   (selector matching, cascade, computed values)
@@ -85,8 +88,9 @@ shell          (bin "silver-browser": windowing, event loop, input, clipboard)
    through `rustls` in `net`. `profile` forbids it too, over `redb`,
    whose own (its file reads, locks and hashing) is third-party (M28).
    `js` runs WebAssembly over `wasmi` (M29), whose executor's own is
-   third-party too. The unsafe code that leaves, third-party and
-   pinned, is M33.5's audit.
+   third-party too. `canvas` forbids it, drawing with `tiny-skia`
+   (M30), whose own is third-party. The unsafe code that leaves,
+   third-party and pinned, is M33.5's audit.
 
 ## Pixels: where fractions become whole (M8.5)
 
@@ -1797,3 +1801,52 @@ threads and shared memories (M31); ES module integration (G41); a JIT
 (M34); compilation off the realm's thread or while the bytes arrive
 (M31, M38). 2,247 tests pass workspace-wide, two ignored. Next
 milestone: Canvas 2D (M30).
+
+Milestone 30 (Canvas 2D; `docs/design/canvas.md`): a page's scripts
+draw. A crate of its own, `canvas`, below `engine` beside `render`,
+holds the 2D context and draws with `tiny-skia` 0.12 (D22) into a
+premultiplied bitmap (step 1): the state and its stack, paths and
+`Path2D`, from SVG path data too, fills by both rules, strokes with
+joins, caps and dashes, linear, radial and conic gradients, patterns,
+every composite operator, shadows by three box blurs, clipping by a
+mask, pixels in and out, PNG out; colours with `hsl()` and `hwb()`,
+which CSS gains with them. The bindings (step 2): `getContext`, the
+context's 74 members, `CanvasGradient`, `CanvasPattern`, `Path2D`,
+`ImageData` and the geometry interfaces written in the bootstrap, each
+call a `Call::Canvas` the host answers from the document's canvases,
+within the document's bounds. The element (step 3): with scripts on, a
+replaced element whose image is named by its node and drawn at its
+bitmap's generation, every canvas a composited layer, a change shown
+at the next frame without a layout, the GPU backend writing a new
+generation into the canvas's texture in place. Text (step 4) in the
+engine's face as the glyphs' outlines, `font` parsed and serialized as
+the reference browser does. Images (step 5): `drawImage` and patterns
+of `img`, canvases and bitmaps, the `img`'s `crossorigin` and the
+origin-clean flag. Export and offscreen (step 6): `toDataURL`,
+`toBlob`, `OffscreenCanvas`, `ImageBitmap`. Fuzzing (step 7): the
+`canvas` target and `dom_api`'s canvas calls, which found tiny-skia's
+walk of the edges failing on a shape reaching billions of pixels out
+(cut since to 8,192 pixels past its target), its blend lanes
+overflowing on purpose (unchecked in tiny-skia since) and a stroke
+traced to a billionth of a unit (capped since). The web-platform tests
+(step 8): `html/canvas`, 2,180 testharness tests, which found thirteen
+bugs, fixed, and leave 326 subtests failing by their gaps. Pages 130
+and 131 (step 9) match the reference browser within an edge's
+tolerance. The acceptance (step 10): a chart and a particle demo drawn
+correctly in the engine and the real shell, which now prints what a
+frame's callbacks log; 2,000 particles at 26.9 ms a frame on the GPU
+backend and 31.3 on the software one, against 116 and 120 ms as
+elements, sixty frames a second up to 1,000 and 700 particles, the
+calls and tiny-skia's fills the rest; T4.3 within 10% but for whatever
+makes a realm, 5.2 ms slower (a realm made in 22.9 ms from 17.8,
+x1.29), the canvas's bindings every realm compiles; fuzz runs on six
+workers, of `canvas` (fifteen minutes, then ten) and of `dom_api`
+(ten, from an empty corpus), found strokes a billion pixels wide slow,
+traced since to the step single precision has where they reach, and no
+crash. Not in this milestone, said rather than hidden: the calls
+batched and the canvas drawn on the GPU, `filter`, colour spaces past
+sRGB and formats past 8 bits, `transferControlToOffscreen()`,
+`TextMetrics`'s proposed members (G81); `OffscreenCanvas` in a worker
+(M31.4); faces by family and weight, `@font-face` (G22, G12); WebGL
+and WebGPU. 2,335 tests pass workspace-wide, two ignored. Next
+milestone: Web Workers (M31).

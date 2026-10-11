@@ -1533,10 +1533,71 @@ the two pages that make one and do little else:
 - *Faster:* the nested flex chain x0.91 and the media page's cascade
   x0.87, code M29 does not change: the machine's bimodal variance.
 
+### Canvas 2D (M30)
+
+`benches/canvas.rs` (`cargo bench -p engine --bench canvas`), on the
+Windows machine, release, ten seconds of frames sixty a second through
+`Engine::frame_at`, each frame timed whole: the page's animation
+callback, its drawing and the frame's showing.
+
+| | Software | GPU (Intel UHD) |
+| --- | --- | --- |
+| 2,000 particles on a canvas, median | 31.3ms | 26.9ms |
+| The same, 95th percentile | 32.1ms | 29.3ms |
+| 2,000 particles as elements of the page, median | 119.8ms | 115.9ms |
+| The most particles within 16.7ms, by hundreds | 700 | 1,000 |
+
+The chart demo, from its navigation to its first frame: 32.4ms. The
+particles lay nothing out; as elements they lay out every frame.
+
+- *A frame, taken apart* (scratchpad `m30/prof`, variants of the demo,
+  software): a frame whose canvas changes whole 7.6ms (its raster
+  6.8ms: the document's tiles under the canvas's layer drawn again,
+  M35.10), 4.9ms on the GPU; the demo's 8,000 calls about 14ms; the
+  drawing in Rust about 7.5ms, of which tiny-skia's fills of 2,000
+  small circles 5.3ms (2.6us each, ours adding nothing) and the
+  snapshot the frame shows 0.9ms.
+- *A call.* `beginPath` 0.83us, `lineWidth` 0.95us, `fillStyle` 1.32us
+  with the colours kept parsed (1.64 before), `moveTo` 1.39us once the
+  bootstrap called it straight (1.79 before); reading the element's
+  `width` 2.2us, which the demo now does once rather than 8,000 times
+  a frame (8.4ms of it).
+- *What sixty frames a second at 2,000 need:* the calls batched in the
+  bootstrap and sent once a frame, and the canvas drawn on the GPU:
+  G81, as the design note's section 2 set aside.
+
+**T4.3.** The benchmarks of the code before M30 (1684579) and of M30
+(80ae265), by turns, four rounds, M29's sixteen and its `wasm`. Within
+10% by their medians, but for whatever makes a realm:
+
+| | Before M30 | M30 | |
+| --- | --- | --- | --- |
+| Scripts: a realm made | 17.8ms | 22.9ms | x1.29 |
+| Fetch: the page alone, navigate to the last promise | 18.7ms | 24.1ms | x1.29 |
+| Storage: the page alone, navigate to its title | 18.0ms | 23.5ms | x1.30 |
+| WebAssembly: a page doing nothing | 18.3ms | 24.0ms | x1.31 |
+
+- *A realm's bindings.* The bootstrap every realm compiles and runs
+  grew from 10,495 lines (341 KB) to 13,210 (416 KB): the canvas's
+  classes, its context's members and the geometry interfaces. A page
+  pays 5.2ms more at its first script; scripts run as fast as before
+  (two million additions x0.98). Loading the bootstrap compiled is
+  M35.12's.
+- *The media page's print* came out x1.17 by its median, its range
+  53.3 to 87.6ms; run three times more by turns, 56.1 and 54.6ms by
+  their medians: the machine's variance.
+
 ### Over budget, and why
 
 These are known and recorded rather than hidden. Each has the item that
 is to take it on.
+
+- **2,000 particles on a canvas (M30).** 26.9ms a frame on the GPU
+  backend and 31.3ms on the software one, where the acceptance asked
+  16.7: the calls through the bindings, about 14ms, and tiny-skia's
+  fills, 5.3ms. Sixty frames a second hold up to 1,000 particles on the
+  GPU backend. Batching the calls and drawing the canvas on the GPU are
+  G81's.
 
 - **A selector that fails at its leftmost compound, after descendant
   combinators.** The matcher keeps what it has failed on for one
@@ -1614,8 +1675,8 @@ is to take it on.
   is the conservative rule of M13.1.
 - **A realm made.** A page's first script waits for its realm, which
   compiles and runs the bindings' bootstrap: 5ms at M25, 10.6ms at
-  M26, 15.6ms at M27 and 17.5ms at M29, 10,495 lines, past a frame's
-  budget alone. Loading it compiled is M35.12's.
+  M26, 15.6ms at M27, 17.5ms at M29 and 22.9ms at M30, 13,210 lines,
+  past a frame's budget alone. Loading it compiled is M35.12's.
 - **A WebAssembly call with the memory seen.** 1.9ms for a module's
   1.1 MB memory, the buffer a copy synced at each call's edges (M29):
   a module called a few times a frame is served, one called in a loop

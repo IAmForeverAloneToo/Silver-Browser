@@ -397,13 +397,24 @@ images, the last item on T0's list, come with M23.
   a trap an error, a loop stopped by the run's budget as a script's
   is, the realm's memories and tables bounded; a compiled Rust
   function given numbers and giving them back.
+- **M30, Canvas 2D** (done 2026-10-11, designed in
+  `docs/design/canvas.md`): a `canvas` crate drawing with `tiny-skia`
+  0.12 (D22): the 2D context's state, paths, fills and strokes,
+  gradients and patterns, every composite operator, shadows, clipping,
+  text in the engine's face, images, pixels in and out, PNG out;
+  `<canvas>` a replaced element in a layer of its own, shown again
+  without a layout, its texture written in place on the GPU backend;
+  `OffscreenCanvas` and `ImageBitmap`; `crossorigin` and the
+  origin-clean flag; the web-platform tests of `html/canvas`; a chart
+  and a particle demo drawn, 2,000 particles at 27 ms a frame (sixty a
+  second up to 1,000; the rest G81's).
 
 Each milestone's fuller writeup and stated gaps are in
 `docs/architecture.md` "Current state", and the gaps no milestone holds
 on the G list (M39+, below).
 
 Verified per the vertical-slice rule at each milestone, by the gate:
-the workspace's tests (2,247 at M29, two ignored), clippy clean (`-D
+the workspace's tests (2,335 at M30, two ignored), clippy clean (`-D
 warnings`, every target), `cargo deny`, the fuzz targets, and a smoke
 run of the shell. Toolchain: 1.98.1, pinned by `rust-toolchain.toml`.
 The checkout lives outside OneDrive since 2026-10-08
@@ -1865,15 +1876,46 @@ Per css-grid-1 (level 2 subgrid included):
 
 ## M30 — Canvas 2D  ·  `render`/`js`  ·  Effort: L  ·  Depends: M25
 
-- [ ] M30.1 Canvas 2D API: paths, fills/strokes (colors + gradients),
+- [x] M30.1 Canvas 2D API: paths, fills/strokes (colors + gradients),
        text (through the `text` stack), images, transforms,
        `save/restore`, `clearRect/fillRect`.
-- [ ] M30.2 Pixel formats, `toDataURL` (PNG), `OffscreenCanvas` v0
+       Done 2026-10-11 (`docs/design/canvas.md`): a crate of its own,
+       `canvas`, below `engine`, drawing with `tiny-skia` 0.12 (D22)
+       into a premultiplied bitmap; the whole 2D context of the HTML
+       Standard but `filter`, its 74 members and `Path2D`,
+       `CanvasGradient`, `CanvasPattern`, `ImageData`, `TextMetrics`
+       and the geometry interfaces in the bootstrap, each call a
+       `Call::Canvas` the host answers; text as the glyphs' outlines;
+       `drawImage` from `img`, canvases and bitmaps, `crossorigin` and
+       the origin-clean flag. `hsl()` and `hwb()` in `style` (G16).
+- [x] M30.2 Pixel formats, `toDataURL` (PNG), `OffscreenCanvas` v0
        (no worker transfer until M31).
-- [ ] M30.3 Rasterization shares the software/wgpu backend split (M19);
+       Done 2026-10-11: `getImageData`, `putImageData` and
+       `createImageData` in 8-bit sRGB; `toDataURL` and `toBlob` in
+       PNG through `png`'s encoder; `OffscreenCanvas` with its context
+       and `convertToBlob`, `ImageBitmap` and `createImageBitmap` from
+       every source. Formats past 8 bits and colour spaces past sRGB:
+       G81.
+- [x] M30.3 Rasterization shares the software/wgpu backend split (M19);
        canvas-in-composited-layer.
-- [ ] M30.4 Acceptance: a chart + a particle demo render correctly at
+       Done 2026-10-11: `Replaced::Canvas` with scripts on; its image
+       named by the node and drawn at its bitmap's generation, a frame
+       wanted at a change and nothing laid out; every canvas a layer
+       (`LayerReason::Canvas`); the GPU backend writing a new
+       generation into the canvas's texture in place. Drawing stays on
+       the processor (G81 for the GPU).
+- [x] M30.4 Acceptance: a chart + a particle demo render correctly at
        60fps.
+       Done 2026-10-11, the rate in part: a chart and 2,000 particles
+       drawn correctly in the engine and the real shell, pages 130 and
+       131 matching the reference browser within an edge's tolerance;
+       the chart from its load to its first frame in 32 ms; the
+       particles 26.9 ms a frame on the GPU backend and 31.3 on the
+       software one (37 and 32 a second, against 116 and 120 ms as
+       elements), sixty a second up to 1,000 and 700. The rest, the
+       calls and tiny-skia's fills, G81. The web-platform tests of
+       `html/canvas` (2,180), the `canvas` fuzz target,
+       `benches/canvas.rs` and T4.3 in `docs/perf-budgets.md`.
 
 ---
 
@@ -2390,6 +2432,16 @@ Deferred from the milestones above, each with what it waits on:
        interface. Named at M29: the core specification's suite, Wasm
        3.0's, needs memory64 and GC to run; 46 subtests of
        `wasm/jsapi`.
+- [ ] G81 The 2D canvas past M30: its calls batched in the bootstrap, a
+       command buffer sent once a frame, and its drawing on the GPU,
+       which 2,000 particles at sixty frames a second need (26.9 ms a
+       frame at M30: 14 ms of calls at 0.8 to 1.8 us each, 5.3 ms of
+       tiny-skia's fills); `filter`; colour spaces past sRGB, pixel
+       formats past 8 bits and the HDR attributes; `ctx.canvas` over a
+       `transferControlToOffscreen()`; `TextMetrics`'s proposed members
+       and `fillTextCluster`; a style given as a colour object. Named
+       at M30 (`docs/design/canvas.md`, section 2), with 191 of the
+       web-platform subtests it leaves failing.
 
 ---
 
@@ -2408,7 +2460,7 @@ Deferred from the milestones above, each with what it waits on:
        Done 2026-10-01 (M10.7) as `tests/reference.rs`: pages captured
        from a headless reference browser, Chrome rather than Firefox
        (the box model's note), compared byte for byte or within a
-       tolerance a page declares; 129 pages at M29, 123 to 127 run
+       tolerance a page declares; 131 pages at M30, 123 to 127 run
        on the reference browser's virtual time, M27's two waiting for
        their fetches, and M28's served over `http:` for its storage.
        It is one of the workspace's tests, which CI runs (`cargo
@@ -2529,6 +2581,7 @@ Deferred from the milestones above, each with what it waits on:
 | D19 | Requests from public pages to local addresses, before M33 | M14 | allow until M33.4 / refuse outright now | refuse outright now, by Local Network Access's address spaces, checked on the address connected to (see `docs/design/net.md`) |
 | D20 | The Public Suffix List | M27 | the `psl` crate / the list vendored with a matcher of our own | the `psl` crate (2.1.241, `no_std`, `forbid(unsafe_code)`), a matcher generated from the list; a bump of the crate keeps it current (see `docs/design/fetch.md`) |
 | D21 | WebAssembly | M29 | a `wasmi` bridge / a `wasmtime` bridge / the change of JavaScript engine D1 left open | `wasmi` 2.0 in `js` beside QuickJS-ng: an interpreter, validating every module, metered by fuel, bounded by a resource limiter, calls resumable at a host function; no JIT before M34's sandbox (see `docs/design/wasm.md`) |
+| D22 | The 2D canvas's rasterizer | M30 | `tiny-skia` on the processor / the GPU through `wgpu` / a rasterizer of our own | `tiny-skia` 0.12 in a `canvas` crate below `engine`: a port of Skia, the reference browser's, on every machine and read back without a stall; the bitmap shown as an image by both backends; drawing on the GPU left to G81 (see `docs/design/canvas.md`) |
 
 ---
 
