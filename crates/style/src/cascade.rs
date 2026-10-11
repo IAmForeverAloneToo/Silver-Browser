@@ -5440,7 +5440,16 @@ fn parse_hsl(arguments: &[Token], whiteness: bool) -> Option<Color> {
 /// A colour written as CSS writes one, with the functions and names the
 /// engine knows (M30: for a canvas's styles); `None` for any other text.
 pub fn parse_color_text(text: &str) -> Option<Color> {
-    parse_color(&css::tokenize(text))
+    let mut tokens = css::tokenize(text);
+    // A function the text leaves open is closed at its end, as CSS
+    // Syntax 3 closes one at the end of its input (section 5.4.9).
+    let open = tokens.iter().fold(0usize, |open, token| match token {
+        Token::Function(_) | Token::OpenParen => open + 1,
+        Token::CloseParen => open.saturating_sub(1),
+        _ => open,
+    });
+    tokens.extend(std::iter::repeat_n(Token::CloseParen, open));
+    parse_color(&tokens)
 }
 
 /// `content` (CSS 2.2 §12.2, M16): `normal`, `none`, or one or more
@@ -8791,6 +8800,10 @@ mod tests {
             assert_eq!(color(text), None, "{text}");
         }
         assert_eq!(parse_color_text("hsl(120 100% 50%)"), color("#0f0"));
+        // A function left open at the end is closed there.
+        assert_eq!(parse_color_text("rgb(0, 255, 0"), color("#0f0"));
+        assert_eq!(parse_color_text("rgba(0, 255, 0, 1"), color("#0f0"));
+        assert_eq!(parse_color_text("rgb(0, 255"), None);
     }
 
     #[test]

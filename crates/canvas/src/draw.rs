@@ -160,11 +160,12 @@ impl Canvas {
         }
     }
 
-    /// The outline of `user`'s stroke, in the bitmap's coordinates.
+    /// The outline of `user`'s stroke, in the bitmap's coordinates: of
+    /// the path with its pieces of no length pruned.
     pub(crate) fn stroke_outline(&self, user: &Path) -> Option<tiny_skia::Path> {
         let state = &self.state;
         state.transform.invert()?;
-        let mut path = user.to_skia()?;
+        let mut path = user.pruned().to_skia()?;
         // Traced to a device pixel's precision in the user's space, but no
         // finer than [`MAX_STROKE_RESOLUTION`].
         let resolution = state.transform.scale().clamp(1.0, MAX_STROKE_RESOLUTION) as f32;
@@ -201,8 +202,10 @@ impl Canvas {
         }
     }
 
-    /// `strokeRect()`: nothing for an empty rectangle, a line for one of
-    /// no width or no height.
+    /// `strokeRect()`: nothing for an empty rectangle; for one of no
+    /// width or no height, a line closed back on itself, which joins at
+    /// both ends and has no caps, as the standard's subpath of two points
+    /// is closed.
     pub fn stroke_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
         if ![x, y, w, h].iter().all(|v| v.is_finite()) || (w == 0.0 && h == 0.0) {
             return;
@@ -211,6 +214,7 @@ impl Canvas {
         if w == 0.0 || h == 0.0 {
             user.move_to(x, y, &Matrix::IDENTITY);
             user.line_to(x + w, y + h, &Matrix::IDENTITY);
+            user.close();
         } else {
             user.rect(x, y, w, h, &Matrix::IDENTITY);
         }
@@ -224,7 +228,12 @@ impl Canvas {
     pub fn clear_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
         let mut rect = Path::new();
         rect.rect(x, y, w, h, &self.state.transform);
-        let (Some(skia), Some(mut pixmap)) = (rect.to_skia(), self.pixmap.take()) else {
+        // A rectangle of a value not finite clears nothing: the bitmap
+        // is taken only once there is one.
+        let Some(skia) = rect.to_skia() else {
+            return;
+        };
+        let Some(mut pixmap) = self.pixmap.take() else {
             return;
         };
         self.charge_bounds(&skia);

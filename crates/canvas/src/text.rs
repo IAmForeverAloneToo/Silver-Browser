@@ -79,24 +79,29 @@ impl Canvas {
             };
         }
         // Spaced, each character shaped alone, as the reference browser
-        // does without ligatures once letters are spaced.
-        let mut pen = 0.0;
+        // does without ligatures once letters are spaced, and put where
+        // the run shaped whole puts it, its kerning kept: the run as wide
+        // as it is unspaced and the spacing.
+        let stops = fonts.caret_stops(text, size);
+        let stop = |i: usize| stops.get(i).map_or(0.0, |&x| f64::from(x));
+        let mut extra = 0.0;
         let mut one = [0u8; 4];
-        for c in text.chars() {
+        for (i, c) in text.chars().enumerate() {
             let c_text = c.encode_utf8(&mut one);
             for (script, glyph) in fonts.shape(c_text, size) {
                 glyphs.push(Placed {
                     curves: outline(script, glyph.glyph_id),
-                    x: pen + f64::from(glyph.x),
+                    x: stop(i) + extra + f64::from(glyph.x),
                     y: f64::from(glyph.y),
                 });
             }
-            pen += f64::from(fonts.measure(c_text, size)) + letter;
+            extra += letter;
             if c == ' ' {
-                pen += word;
+                extra += word;
             }
         }
-        Laid { glyphs, width: pen }
+        let width = stops.last().map_or(0.0, |&x| f64::from(x)) + extra;
+        Laid { glyphs, width }
     }
 
     /// The font's ascent and descent at its size, and its em box's.

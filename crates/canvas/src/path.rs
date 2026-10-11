@@ -268,20 +268,20 @@ impl Path {
         anticlockwise: bool,
         m: &Matrix,
     ) {
+        // A turn the other way round by whole circles is a whole circle,
+        // as the reference browser has it: `arc(x, y, r, 0, 2 * PI,
+        // true)` draws one.
+        let around = |turn: f64| {
+            if turn >= TAU {
+                return TAU;
+            }
+            let part = turn.rem_euclid(TAU);
+            if part == 0.0 && turn < 0.0 { TAU } else { part }
+        };
         let sweep = if anticlockwise {
-            let turn = start - end;
-            if turn >= TAU {
-                -TAU
-            } else {
-                -turn.rem_euclid(TAU)
-            }
+            -around(start - end)
         } else {
-            let turn = end - start;
-            if turn >= TAU {
-                TAU
-            } else {
-                turn.rem_euclid(TAU)
-            }
+            around(end - start)
         };
         let (sin_r, cos_r) = rotation.sin_cos();
         let on = |ux: f64, uy: f64| -> Point {
@@ -428,19 +428,22 @@ impl Path {
             [a, b, c, d] => [a, b, c, d],
             _ => unreachable!(),
         };
+        // A side given negative mirrors the rectangle: each radius stays
+        // with its corner as given, and a single mirror runs the path the
+        // other way round, as in the reference browser.
         let (mut x, mut y, mut w, mut h) = (x, y, w, h);
+        let mut mirror = Matrix::IDENTITY;
         if w < 0.0 {
             x += w;
             w = -w;
-            std::mem::swap(&mut ul, &mut ur);
-            std::mem::swap(&mut ll, &mut lr);
+            mirror = mirror.then(&Matrix::new(-1.0, 0.0, 0.0, 1.0, 2.0 * x + w, 0.0));
         }
         if h < 0.0 {
             y += h;
             h = -h;
-            std::mem::swap(&mut ul, &mut ll);
-            std::mem::swap(&mut ur, &mut lr);
+            mirror = mirror.then(&Matrix::new(1.0, 0.0, 0.0, -1.0, 0.0, 2.0 * y + h));
         }
+        let m = &m.then(&mirror);
         // The radii scaled down together where a side's two overlap.
         let mut scale: f64 = 1.0;
         for (side, sum) in [
@@ -561,6 +564,42 @@ impl Path {
                 })
                 .collect(),
             points: self.points,
+        }
+    }
+
+    /// The path as a stroke traces it (HTML 4.12.5.1.15): its lines and
+    /// curves of no length pruned, then the subpaths left with none.
+    pub(crate) fn pruned(&self) -> Path {
+        let subpaths = self
+            .subpaths
+            .iter()
+            .filter_map(|subpath| {
+                let mut at = subpath.start;
+                let segments: Vec<Segment> = subpath
+                    .segments
+                    .iter()
+                    .filter(|segment| {
+                        let still = match **segment {
+                            Segment::Line(p) => p == at,
+                            Segment::Quad(c, p) => c == at && p == at,
+                            Segment::Cubic(a, b, p) => a == at && b == at && p == at,
+                        };
+                        at = segment.end();
+                        !still
+                    })
+                    .copied()
+                    .collect();
+                (!segments.is_empty()).then_some(Subpath {
+                    start: subpath.start,
+                    segments,
+                    closed: subpath.closed,
+                })
+            })
+            .collect();
+        Path {
+            subpaths,
+            points: self.points,
+            limit: self.limit,
         }
     }
 

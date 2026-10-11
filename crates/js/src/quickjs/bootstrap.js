@@ -11358,9 +11358,54 @@
   }
 
   // An ImageDataSettings' colour space.
+  // The settings a 2D context is made with (HTML 4.12.5.1.1), read as
+  // Web IDL converts the dictionary: its members in the order of their
+  // names, the colour space and type as their enumerations. Anything not
+  // an object gives the defaults, as the reference browser takes it.
+  function contextSettings(options, iface) {
+    const settings = { alpha: true, willReadFrequently: false };
+    if (options === undefined || options === null ||
+        (typeof options !== "object" && typeof options !== "function")) {
+      return settings;
+    }
+    const wrong = (member, type, text) => new $TypeError(prefix("getContext", iface) +
+      "Failed to read the '" + member + "' property from 'CanvasRenderingContext2DSettings': " +
+      "The provided value '" + text + "' is not a valid enum value of type " + type + ".");
+    const alpha = options.alpha;
+    if (alpha !== undefined) {
+      settings.alpha = !!alpha;
+    }
+    const colorSpace = options.colorSpace;
+    if (colorSpace !== undefined) {
+      const text = str(colorSpace);
+      if (text !== "srgb" && text !== "display-p3") {
+        throw wrong("colorSpace", "PredefinedColorSpace", text);
+      }
+    }
+    const colorType = options.colorType;
+    if (colorType !== undefined) {
+      const text = str(colorType);
+      if (text !== "unorm8" && text !== "float16") {
+        throw wrong("colorType", "CanvasColorType", text);
+      }
+    }
+    // Read, as the dictionary is, though nothing is drawn apart.
+    void options.desynchronized;
+    const frequently = options.willReadFrequently;
+    if (frequently !== undefined) {
+      settings.willReadFrequently = !!frequently;
+    }
+    return settings;
+  }
+
   function imageDataColorSpace(settings, m, iface) {
     if (settings === undefined || settings === null) {
       return "srgb";
+    }
+    // A dictionary converts from an object alone.
+    if (typeof settings !== "object" && typeof settings !== "function") {
+      throw new $TypeError(prefix(m, iface) +
+        "The provided value is not of type 'ImageDataSettings'.");
     }
     const given = settings.colorSpace;
     if (given === undefined) {
@@ -11413,6 +11458,8 @@
       if (a0 !== null && typeof a0 === "object" && TypedArrayTag(a0) === "Uint8ClampedArray") {
         const length = TypedArrayLength(a0);
         const width = unsignedLong(a1);
+        const given = a.length > 2 && a[2] !== undefined ? unsignedLong(a[2]) : undefined;
+        const colorSpace = imageDataColorSpace(a[3], c, "ImageData");
         if (length === 0 || length % 4 !== 0) {
           throw new $DOMException(where("The input data length is not a multiple of 4."),
             "InvalidStateError");
@@ -11426,7 +11473,7 @@
             "IndexSizeError");
         }
         const height = length / 4 / width;
-        if (a.length > 2 && a[2] !== undefined && unsignedLong(a[2]) !== height) {
+        if (given !== undefined && given !== height) {
           throw new $DOMException(
             where("The input data length is not equal to (4 * width * height)."),
             "IndexSizeError");
@@ -11435,12 +11482,13 @@
           data: a0,
           width,
           height,
-          colorSpace: imageDataColorSpace(a[3], c, "ImageData"),
+          colorSpace,
         });
         return;
       }
       const width = unsignedLong(a0);
       const height = unsignedLong(a1);
+      const colorSpace = imageDataColorSpace(a[2], c, "ImageData");
       if (width === 0) {
         throw new $DOMException(where("The source width is zero or not a number."),
           "IndexSizeError");
@@ -11457,7 +11505,7 @@
         data: new $Uint8ClampedArray(width * height * 4),
         width,
         height,
-        colorSpace: imageDataColorSpace(a[2], c, "ImageData"),
+        colorSpace,
       });
     }
 
@@ -11624,21 +11672,20 @@
       const t = targetOf(this);
       need(arguments.length, 1, "getContext", "OffscreenCanvas");
       const id = str(contextId);
+      // OffscreenRenderingContextId, an enumeration: a name outside it
+      // a TypeError, one in it but "2d" no context.
+      if (id !== "2d" && id !== "bitmaprenderer" && id !== "webgl" && id !== "webgl2" &&
+          id !== "webgpu") {
+        throw new $TypeError(prefix("getContext", "OffscreenCanvas") + "The provided value '" +
+          id + "' is not a valid enum value of type OffscreenRenderingContextId.");
+      }
       if (id !== "2d") {
         return null;
       }
       if (t.context !== null) {
         return t.context;
       }
-      const options = arguments[1];
-      const read = (name, fallback) => {
-        if (options === undefined || options === null || typeof options !== "object") {
-          return fallback;
-        }
-        const value = options[name];
-        return value === undefined ? fallback : !!value;
-      };
-      const alpha = read("alpha", true);
+      const { alpha, willReadFrequently } = contextSettings(arguments[1], "OffscreenCanvas");
       native.canvas("context", 0, -t.id, alpha);
       const context = new OffscreenCanvasRenderingContext2D(KEY);
       WeakMapSet(canvasTargets, context, {
@@ -11647,7 +11694,7 @@
         iface: "OffscreenCanvasRenderingContext2D",
         element: this,
         alpha,
-        willReadFrequently: read("willReadFrequently", false),
+        willReadFrequently,
       });
       t.context = context;
       return context;
@@ -11879,15 +11926,7 @@
         if (existing !== undefined) {
           return existing;
         }
-        const options = arguments[1];
-        const read = (name, fallback) => {
-          if (options === undefined || options === null || typeof options !== "object") {
-            return fallback;
-          }
-          const value = options[name];
-          return value === undefined ? fallback : !!value;
-        };
-        const alpha = read("alpha", true);
+        const { alpha, willReadFrequently } = contextSettings(arguments[1], "HTMLCanvasElement");
         native.canvas("context", 0, handle, alpha);
         const context = new CanvasRenderingContext2D(KEY);
         WeakMapSet(canvasTargets, context, {
@@ -11896,7 +11935,7 @@
           iface: CTX,
           element: this,
           alpha,
-          willReadFrequently: read("willReadFrequently", false),
+          willReadFrequently,
         });
         WeakMapSet(canvasContexts, this, context);
         return context;

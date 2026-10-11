@@ -186,13 +186,29 @@ pub(crate) enum Done {
     Pixels(Result<Image, images::Error>),
 }
 
+/// What an `img` was scanned for: its `src` and its `crossorigin` as
+/// written (M30). A canvas draws the image scanned only while they are
+/// unchanged: a script that changes either before the next scan finds
+/// the element's image not yet there, as its request is then pending.
+pub(crate) type Scanned = (String, Option<String>);
+
+/// What `node` is scanned for now.
+pub(crate) fn scanned(document: &Document, node: NodeId) -> Scanned {
+    (
+        document.attr(node, "src").unwrap_or_default().to_owned(),
+        document.attr(node, "crossorigin").map(str::to_owned),
+    )
+}
+
 /// A document's images: HTML's list of available images, by URL, and
 /// the elements showing each.
 #[derive(Default)]
 pub(crate) struct ImageStore {
     entries: HashMap<String, ImageEntry>,
-    /// Each `img` element's URL, as last scanned.
+    /// Each `img` element's URL, as last scanned, and what it was
+    /// scanned for.
     sources: HashMap<NodeId, String>,
+    scanned: HashMap<NodeId, Scanned>,
     /// Each entry's URL by its number, which display items name it by.
     ids: HashMap<u64, String>,
     /// Each URL a style's `<image>` names, as the style has it, and the
@@ -263,6 +279,7 @@ impl ImageStore {
         next: &mut u64,
     ) -> Vec<(net::Url, CrossOrigin)> {
         self.sources.clear();
+        self.scanned.clear();
         let mut wanted = Vec::new();
         // Every `img`, in the document or not: one a script made and
         // holds fetches its image too (HTML section 4.8.4.3), as `new
@@ -295,12 +312,14 @@ impl ImageStore {
                 wanted.push((url, cross));
             }
             self.sources.insert(node, key);
+            self.scanned.insert(node, scanned(document, node));
         }
         wanted
     }
 
-    /// What a canvas can draw of each `img` (M30), by the element.
-    pub(crate) fn drawables(&self) -> HashMap<NodeId, Drawable> {
+    /// What a canvas can draw of each `img` (M30), by the element, with
+    /// what it was scanned for.
+    pub(crate) fn drawables(&self) -> HashMap<NodeId, (Scanned, Drawable)> {
         let mut out = HashMap::new();
         for (node, key) in &self.sources {
             let Some(entry) = self.entries.get(key) else {
@@ -325,7 +344,8 @@ impl ImageStore {
                 ImageState::Broken => Drawable::Broken,
                 ImageState::Fetching | ImageState::Reading => continue,
             };
-            out.insert(*node, drawable);
+            let scanned = self.scanned.get(node).cloned().unwrap_or_default();
+            out.insert(*node, (scanned, drawable));
         }
         out
     }

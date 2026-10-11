@@ -931,6 +931,121 @@ step("resetClears", () => { try { x.getImageData(0, 0, 1, 1); return "clean agai
     }
 }
 
+#[test]
+fn settings_names_and_sizes_convert_as_web_idl_says() {
+    // As the reference browser gave them (the M30 notes, p8-wpt.html,
+    // and WPT's 2d.getContext.options).
+    let lines = run(r#"
+const read = [];
+const options = { get alpha() { read.push("alpha"); return true; },
+  get willReadFrequently() { read.push("willReadFrequently"); return false; },
+  get desynchronized() { read.push("desynchronized"); return false; },
+  get colorSpace() { read.push("colorSpace");
+    return { toString() { read.push("colorSpace toString"); return "srgb"; } }; } };
+fresh().getContext("2d", options);
+step("order", () => read);
+step("offscreen2D", () => new OffscreenCanvas(1, 1).getContext("2D"));
+step("offscreenWebgl", () => new OffscreenCanvas(1, 1).getContext("webgl"));
+step("element2D", () => fresh().getContext("2D"));
+step("number", () => fresh().getContext("2d", 5) !== null);
+step("u8", () => new ImageData(new Uint8Array(8), 1, 2));
+step("window", () => new ImageData(self, 4, 4));
+step("windowTwo", () => new ImageData(self, 4));
+step("zeroSettings", () => new ImageData(0, 4, 4));
+"#);
+    let settings = "threw TypeError: Failed to execute 'constructor' on 'ImageData': \
+                    The provided value is not of type 'ImageDataSettings'.";
+    check(
+        &lines,
+        &[
+            (
+                "order",
+                r#"["alpha","colorSpace","colorSpace toString","desynchronized","willReadFrequently"]"#,
+            ),
+            (
+                "offscreen2D",
+                "threw TypeError: Failed to execute 'getContext' on 'OffscreenCanvas': The \
+                 provided value '2D' is not a valid enum value of type \
+                 OffscreenRenderingContextId.",
+            ),
+            ("offscreenWebgl", "null"),
+            ("element2D", "null"),
+            ("number", "true"),
+            ("u8", settings),
+            ("window", settings),
+            (
+                "windowTwo",
+                "threw IndexSizeError: Failed to construct 'ImageData': The source width is \
+                 zero or not a number.",
+            ),
+            ("zeroSettings", settings),
+        ],
+    );
+}
+
+#[test]
+fn a_canvas_without_a_context_draws_as_transparent_black() {
+    // WPT's 2d.composite.uncovered.nocontext and 2d.pattern.basic.nocontext.
+    let lines = run(r##"
+const x = fresh(4, 4).getContext("2d");
+x.fillStyle = "#0f0"; x.fillRect(0, 0, 4, 4);
+x.globalCompositeOperation = "copy";
+x.drawImage(fresh(4, 4), 0, 0);
+step("copied", () => px(x, 1, 1));
+const y = fresh(4, 4).getContext("2d");
+y.fillStyle = "#0f0"; y.fillRect(0, 0, 4, 4);
+const pattern = y.createPattern(fresh(4, 4), "no-repeat");
+step("pattern", () => pattern !== null);
+y.fillStyle = pattern; y.fillRect(0, 0, 4, 4);
+step("patterned", () => px(y, 1, 1));
+const z = fresh(4, 4).getContext("2d");
+z.globalCompositeOperation = "copy";
+z.fillRect(0, 0, 4, 4);
+z.drawImage(new OffscreenCanvas(4, 4), 0, 0);
+step("offscreen", () => px(z, 1, 1));
+"##);
+    check(
+        &lines,
+        &[
+            ("copied", "[0,0,0,0]"),
+            ("pattern", "true"),
+            ("patterned", "[0,255,0,255]"),
+            ("offscreen", "[0,0,0,0]"),
+        ],
+    );
+}
+
+#[test]
+fn an_image_whose_source_changed_is_not_drawn_until_it_comes() {
+    // WPT's 2d.drawImage.incomplete and 2d.pattern.image.incomplete: an
+    // image asked for again, or no longer, is not yet there to draw.
+    let lines = run_with_images(
+        r##"
+const img = await load("/img.png");
+const x = fresh(2, 2).getContext("2d");
+x.fillStyle = "#0f0";
+const probe = () => { x.fillRect(0, 0, 2, 2); x.drawImage(img, 0, 0);
+  return [img.complete, px(x, 0, 0), x.createPattern(img, "repeat") === null]; };
+step("loaded", probe);
+img.src = "/img.png?again";
+step("changed", probe);
+img.removeAttribute("src");
+step("removed", probe);
+img.src = "";
+step("empty", probe);
+"##,
+    );
+    check(
+        &lines,
+        &[
+            ("loaded", "[true,[255,0,0,255],false]"),
+            ("changed", "[false,[0,255,0,255],true]"),
+            ("removed", "[true,[0,255,0,255],true]"),
+            ("empty", "[true,[0,255,0,255],true]"),
+        ],
+    );
+}
+
 /// `text` as JSON writes a string.
 fn serde_text(text: &str) -> String {
     format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))

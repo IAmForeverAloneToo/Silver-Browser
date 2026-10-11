@@ -23,7 +23,7 @@ use canvas::{
 use dom::NodeId;
 use js::{Answer, CanvasCall, DomError};
 
-use crate::image_store::Drawable;
+use crate::image_store::{Drawable, Scanned};
 
 /// The most bytes a document's bitmaps hold in all: a canvas made or
 /// resized past it has no bitmap, and draws nothing.
@@ -49,7 +49,7 @@ pub(crate) const MAX_DRAWN_DECODED: usize = 256 << 20;
 #[derive(Default)]
 pub(crate) struct Drawables {
     pub(crate) page: Option<crate::loader::PageId>,
-    by_node: HashMap<NodeId, Drawable>,
+    by_node: HashMap<NodeId, (Scanned, Drawable)>,
     decoded: HashMap<usize, Arc<images::Image>>,
     bytes: usize,
 }
@@ -68,10 +68,10 @@ pub(crate) enum Drawn {
 impl Drawables {
     /// The engine's list, as it is now: decoded pixels whose bytes are
     /// gone let go.
-    pub(crate) fn update(&mut self, by_node: HashMap<NodeId, Drawable>) {
+    pub(crate) fn update(&mut self, by_node: HashMap<NodeId, (Scanned, Drawable)>) {
         let alive: std::collections::HashSet<usize> = by_node
             .values()
-            .filter_map(|drawable| match drawable {
+            .filter_map(|(_, drawable)| match drawable {
                 Drawable::Ready { bytes, .. } => Some(Arc::as_ptr(bytes) as *const u8 as usize),
                 Drawable::Broken => None,
             })
@@ -87,10 +87,18 @@ impl Drawables {
         self.by_node = by_node;
     }
 
+    /// The image of the `img` `node` scanned for what it is `now`.
+    fn of(&self, node: NodeId, now: &Scanned) -> Option<&Drawable> {
+        self.by_node
+            .get(&node)
+            .filter(|(was, _)| was == now)
+            .map(|(_, drawable)| drawable)
+    }
+
     /// Where the `img` `node`'s image stands, for `complete` and its
     /// natural size: 0 coming or none, 1 there, 2 broken; and its size.
-    pub(crate) fn state(&self, node: NodeId) -> (u8, u32, u32) {
-        match self.by_node.get(&node) {
+    pub(crate) fn state(&self, node: NodeId, now: &Scanned) -> (u8, u32, u32) {
+        match self.of(node, now) {
             None => (0, 0, 0),
             Some(Drawable::Broken) => (2, 0, 0),
             Some(Drawable::Ready { size, .. }) => (1, size.0, size.1),
@@ -98,8 +106,8 @@ impl Drawables {
     }
 
     /// What the `img` `node` gives a draw, decoded now if it must be.
-    pub(crate) fn get(&mut self, node: NodeId) -> Drawn {
-        let Some(drawable) = self.by_node.get(&node) else {
+    pub(crate) fn get(&mut self, node: NodeId, now: &Scanned) -> Drawn {
+        let Some(drawable) = self.of(node, now) else {
             return Drawn::Coming;
         };
         let (bytes, decoded, clean) = match drawable {

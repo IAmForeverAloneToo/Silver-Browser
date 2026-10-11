@@ -1469,10 +1469,11 @@ impl DocumentHost {
             }
             let node = self.node(Handle(which as u64))?;
             let page = self.page.as_ref().map(Page::id);
+            let now = crate::image_store::scanned(&self.document, node);
             let state = self.window.drawables.as_ref().map_or((0, 0, 0), |shared| {
                 let drawables = shared.lock().unwrap_or_else(PoisonError::into_inner);
                 if drawables.page.is_some() && drawables.page == page {
-                    drawables.state(node)
+                    drawables.state(node, &now)
                 } else {
                     (0, 0, 0)
                 }
@@ -1608,7 +1609,8 @@ impl DocumentHost {
                 return Ok(self
                     .canvases
                     .pixels(owner)
-                    .and_then(|(_, image)| source(&image, clean)));
+                    .and_then(|(_, image)| source(&image, clean))
+                    .or_else(|| transparent(size)));
             }
             // An `ImageBitmap`, by its number.
             4 => {
@@ -1632,7 +1634,8 @@ impl DocumentHost {
                 if drawables.page.is_none() || drawables.page != page {
                     return Ok(None);
                 }
-                match drawables.get(node) {
+                let now = crate::image_store::scanned(&self.document, node);
+                match drawables.get(node, &now) {
                     Drawn::Pixels(image, clean) => {
                         let Some(frame) = image.frames.first() else {
                             return Ok(None);
@@ -1673,7 +1676,8 @@ impl DocumentHost {
                             height: image.height,
                             origin_clean: clean,
                         })
-                    }))
+                    })
+                    .or_else(|| transparent((width, height))))
             }
             (5, Some("video")) => Ok(None),
             _ => Err(DomError::new("TypeError", "Illegal invocation")),
@@ -2577,6 +2581,19 @@ impl DocumentHost {
     pub(crate) fn forget_objects(&mut self) {
         self.exposed.clear();
     }
+}
+
+/// What a canvas with no context gives a draw (M30): its size of
+/// transparent black, as its bitmap is; nothing past the bound of a
+/// canvas's pixels.
+fn transparent(size: (u32, u32)) -> Option<canvas::Source> {
+    let pixels = canvas::blank_image_data(u64::from(size.0), u64::from(size.1)).ok()?;
+    Some(canvas::Source {
+        pixels: Arc::from(pixels),
+        width: size.0,
+        height: size.1,
+        origin_clean: true,
+    })
 }
 
 /// A node's handle.

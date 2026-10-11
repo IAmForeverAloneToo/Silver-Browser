@@ -388,9 +388,11 @@ impl Quality {
 }
 
 /// `globalCompositeOperation`: Compositing and Blending's operators and
-/// blend modes, by their names.
+/// blend modes, by their names; `clear` among them, which the reference
+/// browser takes (and `plus-lighter` and `plus-darker` not).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Composite {
+    Clear,
     SourceOver,
     SourceIn,
     SourceOut,
@@ -419,7 +421,8 @@ pub enum Composite {
     Luminosity,
 }
 
-const COMPOSITES: [(&str, Composite); 26] = [
+const COMPOSITES: [(&str, Composite); 27] = [
+    ("clear", Composite::Clear),
     ("source-over", Composite::SourceOver),
     ("source-in", Composite::SourceIn),
     ("source-out", Composite::SourceOut),
@@ -465,6 +468,7 @@ impl Composite {
 
     pub(crate) fn blend_mode(self) -> BlendMode {
         match self {
+            Composite::Clear => BlendMode::Clear,
             Composite::SourceOver => BlendMode::SourceOver,
             Composite::SourceIn => BlendMode::SourceIn,
             Composite::SourceOut => BlendMode::SourceOut,
@@ -510,7 +514,11 @@ impl Composite {
     /// Whether drawing with it can leave a pixel less than opaque on an
     /// opaque canvas.
     pub(crate) fn may_clear(self) -> bool {
-        self.unbounded() || matches!(self, Composite::DestinationOut | Composite::Xor)
+        self.unbounded()
+            || matches!(
+                self,
+                Composite::Clear | Composite::DestinationOut | Composite::Xor
+            )
     }
 }
 

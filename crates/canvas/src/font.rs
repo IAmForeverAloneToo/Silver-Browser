@@ -175,7 +175,9 @@ pub(crate) fn length(value: f64, unit: &str, base: &FontBase, font: f64) -> Opti
         "cm" => value * 96.0 / 2.54,
         "mm" => value * 96.0 / 25.4,
         "q" => value * 96.0 / 101.6,
-        "em" => value * font,
+        // `ic`, the advance of an ideograph, is an em when the face has
+        // none, as CSS Values 4 says and as the engine's face has.
+        "em" | "ic" => value * font,
         "ex" | "ch" => value * font / 2.0,
         "rem" => value * base.rem,
         "vw" => value * base.viewport.0 / 100.0,
@@ -403,15 +405,19 @@ impl Spacing {
         }
         let lower = unit.to_ascii_lowercase();
         let (px, em) = match lower.as_str() {
-            "em" => (0.0, *value),
+            "em" | "ic" => (0.0, *value),
             "ex" | "ch" => (0.0, value / 2.0),
             _ => (length(*value, &lower, base, 0.0)?, 0.0),
         };
-        Some(Spacing {
-            text: text.to_owned(),
-            px,
-            em,
-        })
+        // Read back as written but for its unit, in lower case, as the
+        // reference browser has it.
+        let text = match text.len().checked_sub(unit.len()) {
+            Some(cut) if text.is_char_boundary(cut) && text[cut..].eq_ignore_ascii_case(unit) => {
+                format!("{}{lower}", &text[..cut])
+            }
+            _ => text.to_owned(),
+        };
+        Some(Spacing { text, px, em })
     }
 
     /// In pixels, for a font of `size`.

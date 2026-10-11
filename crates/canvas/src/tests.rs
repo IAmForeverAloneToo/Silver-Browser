@@ -1445,3 +1445,190 @@ fn a_stroke_under_a_vast_scale_is_traced_to_a_bounded_precision() {
     let dashed = canvas.stroke_outline(&user).expect("an outline");
     assert!(dashed.len() < 10_000, "{}", dashed.len());
 }
+
+#[test]
+fn a_rectangle_of_values_not_finite_clears_nothing() {
+    // WPT's 2d.clearRect.nonfinite, which found the bitmap dropped.
+    let inf = f64::INFINITY;
+    let mut canvas = Canvas::new(4, 4, false);
+    fill(&mut canvas, "#0f0");
+    canvas.fill_rect(0.0, 0.0, 4.0, 4.0);
+    for (x, y, w, h) in [
+        (inf, 0.0, 4.0, 4.0),
+        (0.0, f64::NAN, 4.0, 4.0),
+        (0.0, 0.0, -inf, 4.0),
+    ] {
+        canvas.clear_rect(x, y, w, h);
+    }
+    assert_eq!(px(&canvas, 2, 2), [0, 255, 0, 255]);
+    canvas.clear_rect(0.0, 0.0, 4.0, 4.0);
+    assert_eq!(px(&canvas, 2, 2), [0, 0, 0, 0]);
+}
+
+#[test]
+fn a_turn_the_other_way_by_whole_circles_is_a_whole_circle() {
+    // As the reference browser draws them (the M30 notes, p8-wpt.html).
+    for (start, end, anticlockwise) in
+        [(0.0, TAU, true), (TAU, 0.0, false), (2.0 * TAU, 0.0, false)]
+    {
+        let mut canvas = Canvas::new(20, 20, false);
+        canvas
+            .with_path(|path, m| path.arc(10.0, 10.0, 5.0, start, end, anticlockwise, m))
+            .expect("an arc");
+        canvas.fill(None, FillRule::Winding);
+        assert_eq!(
+            px(&canvas, 10, 10),
+            [0, 0, 0, 255],
+            "{start} {end} {anticlockwise}"
+        );
+    }
+    // From an angle to itself, no arc at all.
+    let mut canvas = Canvas::new(20, 20, false);
+    canvas
+        .with_path(|path, m| path.arc(10.0, 10.0, 5.0, 1.0, 1.0, true, m))
+        .expect("an arc");
+    canvas.fill(None, FillRule::Winding);
+    assert_eq!(px(&canvas, 10, 10), [0, 0, 0, 0]);
+}
+
+#[test]
+fn a_rounded_rectangle_given_one_negative_side_winds_the_other_way() {
+    // WPT's 2d.path.roundrect.winding: two halves wound one way, two
+    // mirrored once the other, cancelling out.
+    let mut canvas = Canvas::new(100, 50, false);
+    canvas
+        .with_path(|path, m| {
+            [
+                (0.0, 0.0, 50.0, 50.0),
+                (100.0, 50.0, -50.0, -50.0),
+                (0.0, 25.0, 100.0, -25.0),
+                (100.0, 25.0, -100.0, 25.0),
+            ]
+            .into_iter()
+            .try_for_each(|(x, y, w, h)| path.round_rect(x, y, w, h, &[(0.0, 0.0)], m))
+        })
+        .expect("radii");
+    canvas.fill(None, FillRule::Winding);
+    for (x, y) in [(25, 12), (75, 12), (25, 37), (75, 37)] {
+        assert_eq!(px(&canvas, x, y), [0, 0, 0, 0], "{x} {y}");
+    }
+    // Each radius stays with its corner as given: the first, of the
+    // corner at (x, y), is the top right's when the width is negative.
+    let mut canvas = Canvas::new(40, 40, false);
+    canvas
+        .with_path(|path, m| {
+            path.round_rect(40.0, 0.0, -40.0, 40.0, &[(20.0, 20.0), (0.0, 0.0)], m)
+        })
+        .expect("radii");
+    canvas.fill(None, FillRule::Winding);
+    assert_eq!(px(&canvas, 0, 0), [0, 0, 0, 255]);
+    assert_eq!(px(&canvas, 39, 0), [0, 0, 0, 0]);
+}
+
+#[test]
+fn a_stroke_prunes_what_has_no_length() {
+    // WPT's 2d.path.stroke.prune: wide round caps and joins, and nothing
+    // of no length drawn.
+    let mut canvas = Canvas::new(100, 50, false);
+    let state = canvas.state_mut();
+    state.set_line_width(100.0);
+    state.line_cap = crate::state::LineCap::Round;
+    state.line_join = crate::state::LineJoin::Round;
+    canvas.with_path(|path, m| {
+        path.move_to(50.0, 25.0, m);
+        path.line_to(50.0, 25.0, m);
+        path.close();
+        path.move_to(50.0, 25.0, m);
+        path.quad_to(50.0, 25.0, 50.0, 25.0, m);
+        path.cubic_to(50.0, 25.0, 50.0, 25.0, 50.0, 25.0, m);
+        path.rect(50.0, 25.0, 0.0, 0.0, m);
+    });
+    canvas.stroke(None);
+    assert_eq!(px(&canvas, 50, 25), [0, 0, 0, 0]);
+    // A line of length after one of none is drawn with its caps.
+    canvas.begin_path();
+    canvas.with_path(|path, m| {
+        path.move_to(50.0, 25.0, m);
+        path.line_to(50.0, 25.0, m);
+        path.line_to(60.0, 25.0, m);
+    });
+    canvas.stroke(None);
+    assert_eq!(px(&canvas, 5, 25), [0, 0, 0, 255]);
+}
+
+#[test]
+fn a_stroked_rectangle_of_no_height_is_a_closed_line() {
+    // WPT's 2d.strokeRect.zero.4 and .5: no caps, joins at both ends.
+    let mut canvas = Canvas::new(100, 50, false);
+    let state = canvas.state_mut();
+    state.set_line_width(250.0);
+    state.line_cap = crate::state::LineCap::Round;
+    canvas.stroke_rect(100.0, 25.0, 100.0, 0.0);
+    assert_eq!(px(&canvas, 50, 25), [0, 0, 0, 0]);
+    canvas.state_mut().line_join = crate::state::LineJoin::Round;
+    canvas.stroke_rect(100.0, 25.0, 100.0, 0.0);
+    assert_eq!(px(&canvas, 50, 25), [0, 0, 0, 255]);
+}
+
+#[test]
+fn clear_composites_the_shape_away_and_leaves_the_rest() {
+    // As the reference browser has it (p8-wpt.html): bounded by the
+    // shape; `plus-lighter` not taken.
+    let mut canvas = Canvas::new(100, 50, false);
+    fill(&mut canvas, "#0f0");
+    canvas.fill_rect(0.0, 0.0, 100.0, 50.0);
+    canvas.state_mut().composite = Composite::from_name("clear").expect("an operator");
+    assert_eq!(canvas.state().composite.name(), "clear");
+    fill(&mut canvas, "#f00");
+    canvas.fill_rect(10.0, 10.0, 20.0, 20.0);
+    assert_eq!(px(&canvas, 15, 15), [0, 0, 0, 0]);
+    assert_eq!(px(&canvas, 50, 25), [0, 255, 0, 255]);
+    assert_eq!(Composite::from_name("plus-lighter"), None);
+}
+
+#[test]
+fn spacing_reads_back_its_unit_in_lower_case() {
+    for (given, want) in [
+        ("1PX", "1px"),
+        ("1EX", "1ex"),
+        ("0.5Em", "0.5em"),
+        ("-2px", "-2px"),
+        ("1ic", "1ic"),
+    ] {
+        let spacing = Spacing::parse(given, &base()).expect("a spacing");
+        assert_eq!(spacing.text, want);
+    }
+    // An `ic` is an em of the font the text is drawn in.
+    let ic = Spacing::parse("1ic", &base()).expect("a spacing");
+    assert_eq!(ic.pixels(20.0), 20.0);
+}
+
+#[test]
+fn spaced_text_is_as_wide_as_the_run_and_its_spacing() {
+    // WPT's letterSpacing.measure and wordSpacing.change.font: the run
+    // kerned as it is unspaced, and the spacing (the reference browser's
+    // 51.5 and 84.5 for 'Hello World' at 3px).
+    let fonts = fonts();
+    let mut canvas = Canvas::new(10, 10, false);
+    canvas
+        .state_mut()
+        .set_font(parse_font("10px sans-serif", &base()).expect("a font"));
+    let mut measure = |text: &str, letter: &str, word: &str| {
+        let state = canvas.state_mut();
+        state.letter_spacing = Spacing::parse(letter, &base()).expect("a spacing");
+        state.word_spacing = Spacing::parse(word, &base()).expect("a spacing");
+        canvas.measure_text(&fonts, text, false).width
+    };
+    let plain = measure("Hello World", "0px", "0px");
+    assert!((measure("Hello World", "3px", "0px") - plain - 33.0).abs() < 1e-3);
+    let plain = measure("Hello World, again", "0px", "0px");
+    assert!((measure("Hello World, again", "0px", "1em") - plain - 20.0).abs() < 1e-3);
+    // Each character drawn where the spacing before it puts it: the ink
+    // of 'ab' ends a spacing further on.
+    let mut ink = |letter: &str| {
+        canvas.state_mut().letter_spacing = Spacing::parse(letter, &base()).expect("a spacing");
+        canvas.measure_text(&fonts, "ab", false).actual_right
+    };
+    let plain = ink("0px");
+    assert!((ink("20px") - plain - 20.0).abs() < 1e-3);
+}

@@ -62,7 +62,8 @@ const FONTS: [&str; 6] = [
     "2rem b",
 ];
 
-const COMPOSITES: [&str; 26] = [
+const COMPOSITES: [&str; 27] = [
+    "clear",
     "source-over",
     "source-in",
     "source-out",

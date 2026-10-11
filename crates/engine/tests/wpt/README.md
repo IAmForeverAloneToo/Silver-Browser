@@ -20,7 +20,7 @@ cargo run -p engine --example wpt -- pull <checkout>
 which rewrites them, `MANIFEST` and this file. `tests/wpt.rs` runs
 them; `expectations.txt` names those expected to fail, and why.
 
-With them are the testharness.js tests of `fetch/api/headers`, `fetch/api/request`, `fetch/api/response`, `fetch/api/basic`, `xhr`, `url` (the `urlsearchparams-*` tests), `FileAPI/blob`, `webstorage`, `wasm/jsapi` (the `interface.*` tests), `wasm/jsapi` (the `prototypes.*` tests), `wasm/jsapi/constructor`, `wasm/jsapi/global`, `wasm/jsapi/instance`, `wasm/jsapi/memory`, `wasm/jsapi/module`, `wasm/jsapi/table` (M27, M29) that
+With them are the testharness.js tests of `fetch/api/headers`, `fetch/api/request`, `fetch/api/response`, `fetch/api/basic`, `xhr`, `url` (the `urlsearchparams-*` tests), `FileAPI/blob`, `webstorage`, `wasm/jsapi` (the `interface.*` tests), `wasm/jsapi` (the `prototypes.*` tests), `wasm/jsapi/constructor`, `wasm/jsapi/global`, `wasm/jsapi/instance`, `wasm/jsapi/memory`, `wasm/jsapi/module`, `wasm/jsapi/table`, `html/canvas/element`, `html/canvas/offscreen` (M27, M29) that
 the runner's one server can serve: no Python handler, no `.sub`
 template, no other host, nothing over `https:` and no worker's
 global. `resources/testharness.js` is the real one; the runner
@@ -35,8 +35,8 @@ fail is named in `expectations.txt`, and why.
 | checklayout | 66 |
 | crashtest | 94 |
 | reftest | 2272 |
-| testharness | 223 |
-| all | 2655 |
+| testharness | 2180 |
+| all | 4612 |
 
 ## Left out
 
@@ -49,18 +49,23 @@ The first reason the rule found for each test it left out:
 | declaration of font | 711 |
 | CDATA section in XHTML | 528 |
 | declaration of display | 503 |
+| the manual reftests (by the reftest rule) | 404 |
 | element <svg> | 358 |
+| layers (beginLayer, not in the standard) | 354 |
 | SVG image | 306 |
 | not a reftest, a check-layout test or a crashtest | 261 |
 | selector | 241 |
 | Python handler | 237 |
 | declaration of line-height | 230 |
 | declaration of writing-mode | 207 |
+| not a testharness test | 183 |
 | element <br> | 146 |
+| canvas filters (G81) | 138 |
 | dir=rtl | 113 |
 | element <iframe> | 101 |
 | wptserve substitution (.sub) | 93 |
 | declaration of direction | 90 |
+| transferControlToOffscreen (G81) | 88 |
 | declaration of border-radius | 85 |
 | declaration of white-space | 81 |
 | declaration of container-type | 78 |
@@ -69,6 +74,7 @@ The first reason the rule found for each test it left out:
 | element <object> | 54 |
 | element <canvas> | 52 |
 | a frame | 49 |
+| a worker's global | 49 |
 | self-closing <div/> in XHTML | 48 |
 | element <video> | 47 |
 | element <embed> | 46 |
@@ -86,6 +92,7 @@ The first reason the rule found for each test it left out:
 | @property | 27 |
 | declaration of inline-size | 27 |
 | declaration of transform | 27 |
+| colour spaces past sRGB (G81) | 26 |
 | declaration of color | 26 |
 | declaration of grid-template-rows | 26 |
 | declaration of overflow-y | 25 |
@@ -113,13 +120,12 @@ The first reason the rule found for each test it left out:
 | declaration of column-count | 11 |
 | declaration of text-emphasis | 11 |
 | https: | 11 |
-| a worker's global | 10 |
 | declaration of text-decoration-skip-spaces | 10 |
 | declaration of filter | 9 |
 | declaration of text-decoration-skip-ink | 9 |
 | unchecked attribute data-expected | 9 |
+| colour types past 8 bits (G81) | 8 |
 | element <meter> | 8 |
-| not a testharness test | 8 |
 | wptserve pipe | 8 |
 | declaration of break-after | 7 |
 | declaration of grid-template | 7 |
@@ -154,6 +160,7 @@ The first reason the rule found for each test it left out:
 | input type=time | 4 |
 | self-closing <canvas/> in XHTML | 4 |
 | @starting-style | 3 |
+| HDR (G81) | 3 |
 | declaration of -webkit-text-fill-color | 3 |
 | declaration of accent-color | 3 |
 | declaration of background-position-x | 3 |
@@ -313,3 +320,4 @@ The first reason the rule found for each test it left out:
 | unchecked attribute data-weapons | 1 |
 | unchecked attribute data-x | 1 |
 | unchecked attribute data-yes | 1 |
+| video (with media) | 1 |
