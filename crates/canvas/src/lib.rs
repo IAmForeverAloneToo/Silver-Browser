@@ -14,6 +14,7 @@ mod font;
 mod image;
 mod path;
 mod pixels;
+mod reach;
 mod state;
 mod svg;
 mod text;

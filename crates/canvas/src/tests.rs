@@ -1344,3 +1344,104 @@ fn clearing_the_bitmap_keeps_the_state() {
     assert_eq!(canvas.state().transform.e, 1.0);
     assert!(matches!(canvas.state().fill, Paint::Color(c) if c == color("#f00")));
 }
+
+#[test]
+fn a_shape_reaching_far_past_the_bitmap_is_drawn_where_it_shows() {
+    // The fuzzer's: a rectangle a billion pixels long under a skew,
+    // whose edges the rasterizer could not walk; its corner shows.
+    let skew = Matrix::new(1.0, 2.5, 7.0, -1.0, 1.0, 0.0);
+    let mut canvas = Canvas::new(32, 24, false);
+    canvas.transform(&skew);
+    canvas.fill_rect(0.0, 0.0, 2.5, 1e9);
+    assert_eq!(px(&canvas, 30, 0), [0, 0, 0, 255]);
+    assert_eq!(px(&canvas, 5, 10), [0, 0, 0, 0]);
+    // Below its lower edge, which leaves the bitmap rising.
+    assert_eq!(px(&canvas, 25, 4), [0, 0, 0, 0]);
+    canvas.clear_rect(0.0, 0.0, 2.5, 1e9);
+    assert_eq!(px(&canvas, 30, 0), [0, 0, 0, 0]);
+    canvas.stroke_rect(0.0, 0.0, 2.5, 1e9);
+    assert_eq!(px(&canvas, 20, 3), [0, 0, 0, 255]);
+    assert_eq!(px(&canvas, 20, 12), [0, 0, 0, 0]);
+    // Through a layer, as an operator that clears where it does not
+    // draw has it.
+    canvas.fill_rect(0.0, 0.0, 1.0, 1.0);
+    canvas.state_mut().composite = Composite::Copy;
+    canvas.fill_rect(0.0, 0.0, 2.5, 1e9);
+    assert_eq!(px(&canvas, 30, 0), [0, 0, 0, 255]);
+    assert_eq!(px(&canvas, 20, 12), [0, 0, 0, 0]);
+    canvas.state_mut().composite = Composite::SourceOver;
+    // A clip as far: only its corner is left to draw in.
+    canvas.clear_bitmap();
+    canvas.with_path(|path, m| path.rect(0.0, 0.0, 2.5, 1e9, m));
+    canvas.clip(None, FillRule::Winding);
+    canvas.set_transform(&Matrix::IDENTITY);
+    canvas.fill_rect(0.0, 0.0, 32.0, 24.0);
+    assert_eq!(px(&canvas, 30, 0), [0, 0, 0, 255]);
+    assert_eq!(px(&canvas, 5, 10), [0, 0, 0, 0]);
+    // The same mirrored, reaching as far to the left.
+    let mut canvas = Canvas::new(32, 24, false);
+    canvas.transform(&Matrix::new(-1.0, 2.5, -7.0, -1.0, 31.0, 0.0));
+    canvas.fill_rect(0.0, 0.0, 2.5, 1e9);
+    assert_eq!(px(&canvas, 1, 0), [0, 0, 0, 255]);
+    assert_eq!(px(&canvas, 6, 4), [0, 0, 0, 0]);
+    assert_eq!(px(&canvas, 26, 10), [0, 0, 0, 0]);
+}
+
+#[test]
+fn a_far_shape_keeps_its_curves_and_its_winding_where_it_shows() {
+    let mut canvas = Canvas::new(32, 24, false);
+    // A circle a million pixels round, its leftmost point at (16, 12):
+    // its edge there all but straight.
+    let mut path = Path::new();
+    path.arc(1e6 + 16.0, 12.0, 1e6, 0.0, TAU, false, &Matrix::IDENTITY)
+        .expect("an arc");
+    canvas.fill(Some(&path), FillRule::Winding);
+    assert_eq!(px(&canvas, 16, 12), [0, 0, 0, 255]);
+    assert_eq!(px(&canvas, 15, 12), [0, 0, 0, 0]);
+    assert_eq!(px(&canvas, 31, 0), [0, 0, 0, 255]);
+    // A square as far round the bitmap, a hole in it by the even-odd
+    // rule.
+    canvas.clear_bitmap();
+    let mut path = Path::new();
+    path.rect(-1e9, -1e9, 2e9, 2e9, &Matrix::IDENTITY);
+    path.rect(8.0, 8.0, 4.0, 4.0, &Matrix::IDENTITY);
+    canvas.fill(Some(&path), FillRule::EvenOdd);
+    assert_eq!(px(&canvas, 9, 9), [0, 0, 0, 0]);
+    assert_eq!(px(&canvas, 0, 0), [0, 0, 0, 255]);
+    // Each contour kept apart: joined, the lines between them would
+    // turn a wedge to the hole's left inside out.
+    assert_eq!(px(&canvas, 2, 10), [0, 0, 0, 255]);
+    assert_eq!(px(&canvas, 31, 23), [0, 0, 0, 255]);
+    canvas.fill(Some(&path), FillRule::Winding);
+    assert_eq!(px(&canvas, 9, 9), [0, 0, 0, 255]);
+}
+
+#[test]
+fn hard_light_and_overlay_of_black_on_black_stay_black() {
+    for name in ["hard-light", "overlay"] {
+        let mut canvas = Canvas::new(2, 2, false);
+        canvas.fill_rect(0.0, 0.0, 2.0, 2.0);
+        canvas.state_mut().composite = Composite::from_name(name).expect("an operator");
+        canvas.fill_rect(0.0, 0.0, 2.0, 2.0);
+        assert_eq!(px(&canvas, 1, 1), [0, 0, 0, 255], "{name}");
+    }
+}
+
+#[test]
+fn a_stroke_under_a_vast_scale_is_traced_to_a_bounded_precision() {
+    // The fuzzer's: a circle of radius 7 under a skew of a billion,
+    // traced to a billionth of a unit, made millions of points and took
+    // a second a stroke.
+    let mut canvas = Canvas::new(32, 16, false);
+    canvas.transform(&Matrix::new(7.0, 0.0, 1e9, -0.75, -41.0, 1.0));
+    canvas
+        .with_path(|path, m| path.arc(-1.0, 1.0, 7.0, 0.0, 6.0, false, m))
+        .expect("an arc");
+    let inverse = canvas.state().transform.invert().expect("invertible");
+    let user = canvas.path().transformed(&inverse);
+    let outline = canvas.stroke_outline(&user).expect("an outline");
+    assert!(outline.len() < 10_000, "{}", outline.len());
+    canvas.state_mut().dash.set(&[3.0, 2.0]);
+    let dashed = canvas.stroke_outline(&user).expect("an outline");
+    assert!(dashed.len() < 10_000, "{}", dashed.len());
+}

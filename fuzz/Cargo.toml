@@ -8,7 +8,8 @@
 # may run; and for the cookie jar; and for sequences of DOM calls a page's script makes, and of
 # the input a page's controls are used through; and for Web Storage over
 # the profile, and the HTTP cache; and for WebAssembly modules, valid
-# ones made by wasm-smith and any bytes besides.
+# ones made by wasm-smith and any bytes besides; and for the 2D canvas
+# context alone.
 # Not a workspace member: libfuzzer needs nightly, and the normal build
 # must not.
 # `cargo +nightly fuzz run <target>` from the repository root; CI runs
@@ -28,6 +29,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 arbitrary = "1"
 wasm-smith = "0.228"
+canvas = { path = "../crates/canvas" }
 css = { path = "../crates/css" }
 dom = { path = "../crates/dom" }
 encoding = { path = "../crates/encoding" }
@@ -45,9 +47,23 @@ render = { path = "../crates/render", default-features = false }
 style = { path = "../crates/style" }
 text = { path = "../crates/text" }
 
+# The fuzz build checks overflow everywhere; not in tiny-skia, whose
+# 16-bit lanes wrap on purpose (the workspace's dev profile says why).
+# Its debug assertions stay.
+[profile.release.package.tiny-skia]
+debug-assertions = true
+overflow-checks = false
+
 [[bin]]
 name = "csp"
 path = "fuzz_targets/csp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "canvas"
+path = "fuzz_targets/canvas.rs"
 test = false
 doc = false
 bench = false

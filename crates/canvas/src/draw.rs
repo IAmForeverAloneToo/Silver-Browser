@@ -16,6 +16,7 @@ use tiny_skia::{
 
 use crate::blur::blur;
 use crate::path::Path;
+use crate::reach::within;
 use crate::state::{Gradient, GradientKind, LineCap, LineJoin, Matrix, Paint, Repetition};
 use crate::{Canvas, MAX_SHADOW_BLUR};
 
@@ -32,6 +33,14 @@ const TRANSPARENT: Shader<'static> = Shader::SolidColor(tiny_skia::Color::TRANSP
 
 /// The farthest from the bitmap a layer is made, in pixels.
 const FAR: f64 = 1e7;
+
+/// The finest a stroke's outline and dashes are traced, as a scale of
+/// the user's space: past it a curve under a vast scale is traced as at
+/// this one, as the bitmap's single-precision coordinates hold less
+/// there anyway. Traced to a billionth of a unit, a circle of radius 7
+/// made millions of points and took a second a stroke (found by
+/// fuzzing).
+const MAX_STROKE_RESOLUTION: f64 = 65_536.0;
 
 /// A rectangle of whole pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,7 +165,9 @@ impl Canvas {
         let state = &self.state;
         state.transform.invert()?;
         let mut path = user.to_skia()?;
-        let resolution = state.transform.scale().max(1.0) as f32;
+        // Traced to a device pixel's precision in the user's space, but no
+        // finer than [`MAX_STROKE_RESOLUTION`].
+        let resolution = state.transform.scale().clamp(1.0, MAX_STROKE_RESOLUTION) as f32;
         if !state.dash.list.is_empty() && state.dash.list.iter().sum::<f64>() > 0.0 {
             let list: Vec<f32> = state.dash.list.iter().map(|&v| v as f32).collect();
             let dash = StrokeDash::new(list, state.dash.offset as f32)?;
@@ -217,13 +228,15 @@ impl Canvas {
             return;
         };
         self.charge_bounds(&skia);
-        clear(
-            &mut pixmap,
-            &skia,
-            FillRule::Winding,
-            true,
-            self.state.clip.as_deref(),
-        );
+        if let Some(skia) = within(&skia, self.bitmap_area()) {
+            clear(
+                &mut pixmap,
+                &skia,
+                FillRule::Winding,
+                true,
+                self.state.clip.as_deref(),
+            );
+        }
         self.pixmap = Some(pixmap);
         if self.opaque {
             self.keep_opaque();
@@ -235,6 +248,9 @@ impl Canvas {
     pub fn clip(&mut self, path: Option<&Path>, rule: FillRule) {
         let device = path.map(|path| path.transformed(&self.state.transform));
         let skia = device.as_ref().unwrap_or(&self.path).to_skia();
+        let skia = skia
+            .as_ref()
+            .and_then(|skia| within(skia, self.bitmap_area()));
         let (width, height) = (self.width, self.height);
         if self.pixmap.is_none() {
             return;
@@ -348,15 +364,17 @@ impl Canvas {
                 (None, Some(clip)) => Some(clip.clone()),
                 (None, None) => None,
             };
-            self.with_shader(which, |shader| {
-                let paint = tiny_skia::Paint {
-                    shader,
-                    blend_mode: composite.blend_mode(),
-                    anti_alias: true,
-                    ..tiny_skia::Paint::default()
-                };
-                pixmap.fill_path(path, &paint, rule, Transform::identity(), clip.as_ref());
-            });
+            if let Some(path) = within(path, self.bitmap_area()) {
+                self.with_shader(which, |shader| {
+                    let paint = tiny_skia::Paint {
+                        shader,
+                        blend_mode: composite.blend_mode(),
+                        anti_alias: true,
+                        ..tiny_skia::Paint::default()
+                    };
+                    pixmap.fill_path(&path, &paint, rule, Transform::identity(), clip.as_ref());
+                });
+            }
         }
         self.pixmap = Some(pixmap);
         if self.opaque && composite.may_clear() {
@@ -448,6 +466,7 @@ impl Canvas {
         area: Area,
     ) -> Option<Pixmap> {
         let mut layer = Pixmap::new(area.w, area.h)?;
+        let path = within(path, area)?;
         let shift = Transform::from_translate(-area.x as f32, -area.y as f32);
         let band = self.pattern_band(which, area);
         self.with_shader(which, |shader| {
@@ -456,7 +475,7 @@ impl Canvas {
                 anti_alias: true,
                 ..tiny_skia::Paint::default()
             };
-            layer.fill_path(path, &paint, rule, shift, band.as_ref());
+            layer.fill_path(&path, &paint, rule, shift, band.as_ref());
         });
         Some(layer)
     }
@@ -613,7 +632,8 @@ impl Canvas {
         let mut band = Path::new();
         band.rect(x0, y0, x1 - x0, y1 - y0, &at);
         let mut mask = Mask::new(area.w, area.h)?;
-        if let Some(skia) = band.to_skia() {
+        let whole = Area { x: 0, y: 0, ..area };
+        if let Some(skia) = band.to_skia().as_ref().and_then(|skia| within(skia, whole)) {
             mask.fill_path(&skia, FillRule::Winding, true, Transform::identity());
         }
         Some(mask)

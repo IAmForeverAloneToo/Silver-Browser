@@ -33,6 +33,10 @@
 //! M29's: WebAssembly, a small module ([`MODULE`]) compiled and
 //! instantiated with an import that changes the document, its exports
 //! used, and `instantiate`'s promise settled with the run's microtasks.
+//!
+//! M30's: canvases in the document drawn on through their 2D contexts,
+//! their paths, styles, text and pixels; an `OffscreenCanvas`, an
+//! `ImageBitmap` and the exports; numbers from [`NUMBERS`].
 
 #![no_main]
 
@@ -265,6 +269,22 @@ const HANDLER_CODE: &[&str] = &[
 
 /// What scripts fetch (M27): `data:` URLs of each kind a body comes
 /// in, and URLs a fetch refuses or cannot parse.
+/// Numbers a canvas's call takes: the edges of what it takes.
+const NUMBERS: &[&str] = &[
+    "0",
+    "1",
+    "-1",
+    "0.5",
+    "7",
+    "300",
+    "1e9",
+    "-1e9",
+    "NaN",
+    "Infinity",
+    "-Infinity",
+    "2e-300",
+];
+
 const URLS: &[&str] = &[
     "data:text/plain,hello",
     "data:text/html,%3Cp%3Ex%3C/p%3E",
@@ -384,7 +404,7 @@ fn body(input: &mut Input, nested: bool) -> String {
 /// One call, read from `input`, as a statement; `nested` in a
 /// listener's or a callback's body.
 fn call(input: &mut Input, nested: bool) -> String {
-    let op = input.byte() % 66;
+    let op = input.byte() % 70;
     let a = input.node();
     match op {
         0 => format!("p(document.createElement({}))", input.pick(TAGS)),
@@ -671,6 +691,80 @@ fn call(input: &mut Input, nested: bool) -> String {
             input.byte(),
             input.byte(),
             input.byte()
+        ),
+        66 => format!(
+            "var cv = document.createElement('canvas'); cv.width = {}; cv.height = {}; {a}.append(cv); \
+             p(cv); var cx = cv.getContext('2d'); cx.fillStyle = {}; cx.fillRect({}, {}, {}, {}); \
+             cx.beginPath(); cx.arc({}, {}, {}, 0, {}); cx.roundRect(0, 0, {}, {}, [{}]); cx.fill(); \
+             cx.lineWidth = {}; cx.setLineDash([{}, {}]); cx.stroke(new Path2D({}))",
+            input.byte() % 64,
+            input.byte() % 64,
+            input.text(VALUES),
+            input.pick(NUMBERS),
+            input.pick(NUMBERS),
+            input.pick(NUMBERS),
+            input.pick(NUMBERS),
+            input.pick(NUMBERS),
+            input.pick(NUMBERS),
+            input.pick(NUMBERS),
+            input.pick(NUMBERS),
+            input.pick(NUMBERS),
+            input.pick(NUMBERS),
+            input.pick(NUMBERS),
+            input.pick(NUMBERS),
+            input.pick(NUMBERS),
+            input.pick(NUMBERS),
+            input.text(VALUES)
+        ),
+        67 => format!(
+            "var cy = ({a} instanceof HTMLCanvasElement ? {a} : document.createElement('canvas')).getContext('2d'); \
+             cy.globalCompositeOperation = {}; cy.globalAlpha = {}; cy.shadowBlur = {}; cy.shadowColor = 'red'; \
+             cy.shadowOffsetX = {}; var gr = cy.createLinearGradient(0, 0, {}, {}); gr.addColorStop(0.5, {}); \
+             cy.fillStyle = gr; cy.translate({}, {}); cy.rotate({}); cy.fillRect(0, 0, 9, 9); \
+             cy.drawImage(cy.canvas, {}, {}); cy.putImageData(cy.createImageData(3, 2), {}, {}); \
+             {a}.title = cy.getImageData(0, 0, 2, 2).data.join() + cy.isPointInPath({}, {})",
+            input.text(VALUES),
+            input.pick(NUMBERS),
+            input.pick(NUMBERS),
+            input.pick(NUMBERS),
+            input.pick(NUMBERS),
+            input.pick(NUMBERS),
+            input.text(VALUES),
+            input.pick(NUMBERS),
+            input.pick(NUMBERS),
+            input.pick(NUMBERS),
+            input.pick(NUMBERS),
+            input.pick(NUMBERS),
+            input.byte() % 8,
+            input.byte() % 8,
+            input.pick(NUMBERS),
+            input.pick(NUMBERS)
+        ),
+        68 => format!(
+            "var cz = document.createElement('canvas').getContext('2d'); cz.font = {}; cz.textAlign = {}; \
+             cz.textBaseline = {}; cz.letterSpacing = {}; cz.fillText({}, {}, {}, {}); \
+             cz.strokeText({}, 1, 20); {a}.title = cz.measureText({}).width + cz.font",
+            input.text(VALUES),
+            input.text(VALUES),
+            input.text(VALUES),
+            input.text(VALUES),
+            input.text(VALUES),
+            input.pick(NUMBERS),
+            input.pick(NUMBERS),
+            input.pick(NUMBERS),
+            input.text(VALUES),
+            input.text(VALUES)
+        ),
+        69 => format!(
+            "var oc = new OffscreenCanvas({}, {}); var ox = oc.getContext('2d'); ox.fillRect(0, 0, {}, {}); \
+             createImageBitmap(oc, {{resizeWidth: {}}}).then((b) => {{ {a}.title = b.width; b.close(); }}, () => 0); \
+             oc.convertToBlob().then((b) => {{ {a}.dataset.c = b.size; }}, () => 0); \
+             {a}.title = document.createElement('canvas').toDataURL().length + oc.transferToImageBitmap().width",
+            input.byte() % 32,
+            input.byte() % 32,
+            input.pick(NUMBERS),
+            input.pick(NUMBERS),
+            input.byte() % 16 + 1
         ),
         _ => {
             let property = ["disabled", "required", "readOnly", "multiple", "noValidate"]
