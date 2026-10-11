@@ -15,7 +15,7 @@ use style::animation::Animations;
 use style::selector_matching::{Matcher, PseudoElement, SelectorList};
 use style::{CascadeContext, FontMeasure, Styles, Stylesheets};
 
-use super::canvas::{Canvases, Drawn, Element, names_context, needs_source, needs_text};
+use super::canvas::{Canvases, Drawn, Element, Owner, names_context, needs_source, needs_text};
 use super::cssom;
 use super::{
     ConsoleEntry, How, Lent, MAX_SCRIPT_NESTING, MAX_TIMERS, Place, Prepared, ReadyState,
@@ -1483,8 +1483,43 @@ impl DocumentHost {
                 f64::from(state.2),
             ]));
         }
+        if call.op == "imageBitmap" {
+            let answer = self.image_bitmap(&call);
+            self.work += self.canvases.take_work();
+            return answer;
+        }
         let element = if names_context(&call.op) && call.numbers.first() == Some(&0.0) {
-            let handle = call.numbers.get(1).copied().unwrap_or(-1.0);
+            let handle = call.numbers.get(1).copied().unwrap_or(f64::NAN);
+            // An `OffscreenCanvas`'s context, by the negative of its
+            // number.
+            if (-f64::from(u32::MAX)..0.0).contains(&handle) && handle.fract() == 0.0 {
+                let source = if needs_source(&call.op) {
+                    let kind = call.numbers.get(2).copied().unwrap_or(-1.0);
+                    let which = call.numbers.get(3).copied().unwrap_or(-1.0);
+                    self.canvas_source(kind, which, &call.op)?
+                } else {
+                    None
+                };
+                let viewport = (
+                    f64::from(self.window.viewport.0),
+                    f64::from(self.window.viewport.1),
+                );
+                let element = Element {
+                    owner: Owner::Offscreen((-handle) as u32),
+                    size: (0, 0),
+                    color: canvas::Rgba::BLACK,
+                    font_base: canvas::FontBase {
+                        viewport,
+                        ..canvas::FontBase::default()
+                    },
+                    rtl: false,
+                    fonts: self.window.fonts.clone(),
+                    source,
+                };
+                let answer = self.canvases.call(call, Some(element));
+                self.work += self.canvases.take_work();
+                return answer;
+            }
             if !(0.0..=js::MAX_HANDLE as f64).contains(&handle) || handle.fract() != 0.0 {
                 return Err(DomError::new("TypeError", "Illegal invocation"));
             }
@@ -1520,7 +1555,7 @@ impl DocumentHost {
                 None
             };
             Some(Element {
-                node,
+                owner: Owner::Element(node),
                 size: layout::canvas_size(&self.document, node),
                 color,
                 font_base,
@@ -1547,6 +1582,41 @@ impl DocumentHost {
         which: f64,
         op: &str,
     ) -> Result<Option<canvas::Source>, DomError> {
+        let source = |image: &images::Image, clean: bool| {
+            let frame = image.frames.first()?;
+            Some(canvas::Source {
+                pixels: Arc::clone(&frame.pixels),
+                width: image.width,
+                height: image.height,
+                origin_clean: clean,
+            })
+        };
+        match kind as u8 {
+            // An `OffscreenCanvas`, by its number.
+            3 => {
+                let id = which as u32;
+                let size = self
+                    .canvases
+                    .offscreen_size(id)
+                    .ok_or_else(|| DomError::new("TypeError", "Illegal invocation"))?;
+                if size.0 == 0 || size.1 == 0 {
+                    let error = canvas::empty_canvas();
+                    return Err(DomError::new(error.name, error.message));
+                }
+                let owner = Owner::Offscreen(id);
+                let clean = self.canvases.origin_clean(owner);
+                return Ok(self
+                    .canvases
+                    .pixels(owner)
+                    .and_then(|(_, image)| source(&image, clean)));
+            }
+            // An `ImageBitmap`, by its number.
+            4 => {
+                let (image, clean) = self.canvases.bitmap(which as u32)?;
+                return Ok(source(&image, clean));
+            }
+            _ => {}
+        }
         if !(0.0..=js::MAX_HANDLE as f64).contains(&which) || which.fract() != 0.0 {
             return Err(DomError::new("TypeError", "Illegal invocation"));
         }
@@ -1591,20 +1661,178 @@ impl DocumentHost {
                     let error = canvas::empty_canvas();
                     return Err(DomError::new(error.name, error.message));
                 }
-                let clean = self.canvases.origin_clean(node);
-                Ok(self.canvases.pixels(node).and_then(|(_, image)| {
-                    let frame = image.frames.first()?;
-                    Some(canvas::Source {
-                        pixels: Arc::clone(&frame.pixels),
-                        width: image.width,
-                        height: image.height,
-                        origin_clean: clean,
-                    })
-                }))
+                let clean = self.canvases.origin_clean(Owner::Element(node));
+                Ok(self
+                    .canvases
+                    .pixels(Owner::Element(node))
+                    .and_then(|(_, image)| {
+                        let frame = image.frames.first()?;
+                        Some(canvas::Source {
+                            pixels: Arc::clone(&frame.pixels),
+                            width: image.width,
+                            height: image.height,
+                            origin_clean: clean,
+                        })
+                    }))
             }
             (5, Some("video")) => Ok(None),
             _ => Err(DomError::new("TypeError", "Illegal invocation")),
         }
+    }
+
+    /// `createImageBitmap()` (M30.2): the source (kind 1 an img, 2 a
+    /// canvas, 3 an OffscreenCanvas, 4 a bitmap, 6 an ImageData's
+    /// pixels, `width` and `height` after, 7 a Blob's bytes to decode),
+    /// cut to the crop rectangle, sized to the resize, flipped, drawn
+    /// into a new bitmap: its number and size. Refused in the reference
+    /// browser's words.
+    fn image_bitmap(&mut self, call: &js::CanvasCall) -> Result<Answer, DomError> {
+        let n = &call.numbers;
+        let at = |i: usize| n.get(i).copied().unwrap_or(f64::NAN);
+        let state = |message: &str| DomError::new("InvalidStateError", message);
+        let unusable = || state("The image source is not usable.");
+        let (kind, which) = (at(0), at(1));
+        let image_of = |image: &images::Image, clean: bool| {
+            let frame = image.frames.first()?;
+            Some(canvas::Source {
+                pixels: Arc::clone(&frame.pixels),
+                width: image.width,
+                height: image.height,
+                origin_clean: clean,
+            })
+        };
+        let empty_side = |size: (u32, u32)| -> Result<(), DomError> {
+            if size.0 == 0 {
+                return Err(state("The image source's width is 0."));
+            }
+            if size.1 == 0 {
+                return Err(state("The image source's height is 0."));
+            }
+            Ok(())
+        };
+        let transparent = |size: (u32, u32)| -> Result<canvas::Source, DomError> {
+            let pixels = canvas::blank_image_data(u64::from(size.0), u64::from(size.1))
+                .map_err(|_| state("The ImageBitmap could not be allocated."))?;
+            Ok(canvas::Source {
+                pixels: Arc::from(pixels),
+                width: size.0,
+                height: size.1,
+                origin_clean: true,
+            })
+        };
+        let source = match kind as u8 {
+            1 => match self.canvas_source(1.0, which, "createImageBitmap") {
+                Ok(Some(source)) => source,
+                _ => return Err(unusable()),
+            },
+            2 => {
+                if !(0.0..=js::MAX_HANDLE as f64).contains(&which) || which.fract() != 0.0 {
+                    return Err(DomError::new("TypeError", "Illegal invocation"));
+                }
+                let node = self.node(Handle(which as u64))?;
+                let size = layout::canvas_size(&self.document, node);
+                empty_side(size)?;
+                let owner = Owner::Element(node);
+                let clean = self.canvases.origin_clean(owner);
+                match self.canvases.pixels(owner) {
+                    Some((_, image)) => image_of(&image, clean).ok_or_else(unusable)?,
+                    None => transparent(size)?,
+                }
+            }
+            3 => {
+                let id = which as u32;
+                let size = self.canvases.offscreen_size(id).ok_or_else(unusable)?;
+                empty_side(size)?;
+                let owner = Owner::Offscreen(id);
+                let clean = self.canvases.origin_clean(owner);
+                match self.canvases.pixels(owner) {
+                    Some((_, image)) => image_of(&image, clean).ok_or_else(unusable)?,
+                    None => return Err(state("The ImageBitmap could not be allocated.")),
+                }
+            }
+            4 => {
+                let (image, clean) = self.canvases.bitmap(which as u32).map_err(|_| unusable())?;
+                image_of(&image, clean).ok_or_else(unusable)?
+            }
+            6 => {
+                let (width, height) = (which as u32, at(11) as u32);
+                let bytes = call.bytes.as_deref().unwrap_or_default();
+                if u64::from(width) * u64::from(height) * 4 != bytes.len() as u64 {
+                    return Err(unusable());
+                }
+                canvas::Source {
+                    pixels: Arc::from(canvas::premultiplied(bytes)),
+                    width,
+                    height,
+                    origin_clean: true,
+                }
+            }
+            7 => {
+                let bytes = call.bytes.as_deref().unwrap_or_default();
+                let image = images::decode(bytes)
+                    .map_err(|_| state("The source image could not be decoded."))?;
+                self.work += bytes.len() as u64 / 64;
+                image_of(&image, true).ok_or_else(unusable)?
+            }
+            _ => return Err(DomError::new("TypeError", "Illegal invocation")),
+        };
+        // The crop rectangle, flipped to positive sizes; the source's whole
+        // when none is given.
+        let (w, h) = (f64::from(source.width), f64::from(source.height));
+        let crop = if at(2) == 1.0 {
+            let (mut sx, mut sy, mut sw, mut sh) = (at(3), at(4), at(5), at(6));
+            if sw < 0.0 {
+                sx += sw;
+                sw = -sw;
+            }
+            if sh < 0.0 {
+                sy += sh;
+                sh = -sh;
+            }
+            [sx, sy, sw, sh]
+        } else {
+            [0.0, 0.0, w, h]
+        };
+        // The size: the resize's, one side of it keeping the crop's ratio.
+        let (rw, rh) = (at(7), at(8));
+        let (out_w, out_h) = match (rw > 0.0, rh > 0.0) {
+            (true, true) => (rw, rh),
+            (true, false) => (rw, (crop[3] * rw / crop[2]).ceil()),
+            (false, true) => ((crop[2] * rh / crop[3]).ceil(), rh),
+            (false, false) => (crop[2], crop[3]),
+        };
+        let pixels = out_w * out_h;
+        if !(out_w >= 1.0 && out_h >= 1.0) || pixels > canvas::MAX_CANVAS_PIXELS as f64 {
+            return Err(state("The ImageBitmap could not be allocated."));
+        }
+        let (out_w, out_h) = (out_w as u32, out_h as u32);
+        let mut made = canvas::Canvas::new(out_w, out_h, false);
+        made.state_mut().image_smoothing = at(9) != 1.0;
+        if at(10) == 1.0 {
+            made.set_transform(&canvas::Matrix::new(
+                1.0,
+                0.0,
+                0.0,
+                -1.0,
+                0.0,
+                f64::from(out_h),
+            ));
+        }
+        made.draw_image(
+            &source,
+            Some(crop),
+            [0.0, 0.0, f64::from(out_w), f64::from(out_h)],
+        );
+        self.work += made.take_work();
+        let image = made
+            .snapshot()
+            .ok_or_else(|| state("The ImageBitmap could not be allocated."))?;
+        let id = self.canvases.make_bitmap(image, source.origin_clean)?;
+        Ok(Answer::Numbers(vec![
+            f64::from(id),
+            f64::from(out_w),
+            f64::from(out_h),
+        ]))
     }
 
     /// What a canvas's text reads of its element `node` (M30): the sizes
@@ -1651,7 +1879,7 @@ impl DocumentHost {
             && self.document.tag(node) == Some("canvas")
         {
             let size = layout::canvas_size(&self.document, node);
-            self.canvases.resized(node, size);
+            self.canvases.resized(Owner::Element(node), size);
         }
     }
 

@@ -1,7 +1,8 @@
 //! The document's canvases (M30, `docs/design/canvas.md`): each
 //! `canvas` element's 2D context, kept by its node while the node
-//! lives, and the objects scripts make for them, `Path2D`s and
-//! `CanvasGradient`s, by number until the bindings let them go. The
+//! lives, each `OffscreenCanvas` and its context, and the objects
+//! scripts make for them, `Path2D`s, `CanvasGradient`s, `CanvasPattern`s
+//! and `ImageBitmap`s, by number until the bindings let them go. The
 //! bindings' calls of them, `Call::Canvas`, are answered here.
 //!
 //! A document's canvases are bounded together, past each canvas's own
@@ -137,9 +138,30 @@ fn image_bytes(image: &images::Image) -> usize {
 
 /// The kinds of object a call names, as the bindings number them.
 const CONTEXT: u8 = 0;
+const OFFSCREEN: u8 = 1;
 const PATH: u8 = 2;
 const GRADIENT: u8 = 3;
 const PATTERN: u8 = 4;
+const BITMAP: u8 = 5;
+
+/// Whose a context and its bitmap are: a `canvas` element's, or an
+/// `OffscreenCanvas`'s, by its number. The bindings name the second by
+/// the negative of its number where the first is named by the element's
+/// handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Owner {
+    Element(NodeId),
+    Offscreen(u32),
+}
+
+/// An `ImageBitmap`'s pixels and whether they are origin-clean; `None`
+/// once it is closed.
+type Bitmap = Option<(Arc<images::Image>, bool)>;
+
+/// The refusal of a closed bitmap drawn.
+fn detached() -> DomError {
+    DomError::new("InvalidStateError", "The image source is detached")
+}
 
 /// What the host knows of the call that the canvases do not: the
 /// element a context's call is made on and its size by its attributes,
@@ -147,7 +169,7 @@ const PATTERN: u8 = 4;
 /// text what a font's relative sizes are of, whether the element's
 /// direction is right to left, and the window's fonts.
 pub(crate) struct Element {
-    pub(crate) node: NodeId,
+    pub(crate) owner: Owner,
     pub(crate) size: (u32, u32),
     pub(crate) color: Rgba,
     pub(crate) font_base: FontBase,
@@ -181,7 +203,10 @@ pub(crate) fn needs_text(op: &str) -> bool {
 
 #[derive(Default)]
 pub(crate) struct Canvases {
-    contexts: HashMap<NodeId, Canvas>,
+    contexts: HashMap<Owner, Canvas>,
+    /// Each `OffscreenCanvas`'s size, by its number.
+    offscreen: HashMap<u32, (u32, u32)>,
+    bitmaps: HashMap<u32, Bitmap>,
     paths: HashMap<u32, Path>,
     gradients: HashMap<u32, Arc<Mutex<Gradient>>>,
     patterns: HashMap<u32, Arc<Mutex<Pattern>>>,
@@ -193,7 +218,7 @@ pub(crate) struct Canvases {
     /// A bitmap changed since the last frame took this.
     changed: bool,
     /// Each bitmap as an image, with the generation it was taken at.
-    snapshots: HashMap<NodeId, (u64, Arc<images::Image>)>,
+    snapshots: HashMap<Owner, (u64, Arc<images::Image>)>,
     /// The work done since it was last taken.
     work: u64,
 }
@@ -212,6 +237,10 @@ pub(crate) fn names_context(op: &str) -> bool {
             | "addColorStop"
             | "patternTransform"
             | "imageState"
+            | "imageBitmap"
+            | "offscreen"
+            | "offscreenResize"
+            | "closeBitmap"
     )
 }
 
@@ -255,8 +284,33 @@ impl Canvases {
 
     /// Whether the canvas `node`'s bitmap is origin-clean: one with no
     /// context is.
-    pub(crate) fn origin_clean(&self, node: NodeId) -> bool {
-        self.contexts.get(&node).is_none_or(Canvas::origin_clean)
+    pub(crate) fn origin_clean(&self, owner: Owner) -> bool {
+        self.contexts.get(&owner).is_none_or(Canvas::origin_clean)
+    }
+
+    /// The size of the `OffscreenCanvas` `id`.
+    pub(crate) fn offscreen_size(&self, id: u32) -> Option<(u32, u32)> {
+        self.offscreen.get(&id).copied()
+    }
+
+    /// The pixels of the bitmap `id`, the refusal of a closed one.
+    pub(crate) fn bitmap(&self, id: u32) -> Result<(Arc<images::Image>, bool), DomError> {
+        match self.bitmaps.get(&id) {
+            Some(Some((image, clean))) => Ok((Arc::clone(image), *clean)),
+            Some(None) => Err(detached()),
+            None => Err(bad_call()),
+        }
+    }
+
+    /// A new `ImageBitmap` of `image`: its number.
+    pub(crate) fn make_bitmap(
+        &mut self,
+        image: Arc<images::Image>,
+        clean: bool,
+    ) -> Result<u32, DomError> {
+        let id = self.new_id()?;
+        self.bitmaps.insert(id, Some((image, clean)));
+        Ok(id)
     }
 
     /// Whether a bitmap changed since the last frame took this (M30.3).
@@ -271,8 +325,9 @@ impl Canvases {
     /// The bitmap of `node`'s canvas as an image, as it is now, for a
     /// print, which keeps nothing.
     pub(crate) fn image(&self, node: NodeId) -> Option<Arc<images::Image>> {
-        let canvas = self.contexts.get(&node)?;
-        match self.snapshots.get(&node) {
+        let owner = Owner::Element(node);
+        let canvas = self.contexts.get(&owner)?;
+        match self.snapshots.get(&owner) {
             Some((taken, image)) if *taken == canvas.generation() => Some(Arc::clone(image)),
             _ => canvas.snapshot(),
         }
@@ -281,17 +336,17 @@ impl Canvases {
     /// The bitmap of `node`'s canvas as an image, and its generation: a
     /// copy taken when the generation moved, the same until it moves
     /// again.
-    pub(crate) fn pixels(&mut self, node: NodeId) -> Option<(u64, Arc<images::Image>)> {
-        let canvas = self.contexts.get(&node)?;
+    pub(crate) fn pixels(&mut self, owner: Owner) -> Option<(u64, Arc<images::Image>)> {
+        let canvas = self.contexts.get(&owner)?;
         let generation = canvas.generation();
-        if let Some((taken, image)) = self.snapshots.get(&node)
+        if let Some((taken, image)) = self.snapshots.get(&owner)
             && *taken == generation
         {
             return Some((generation, Arc::clone(image)));
         }
         let image = canvas.snapshot()?;
         self.snapshots
-            .insert(node, (generation, Arc::clone(&image)));
+            .insert(owner, (generation, Arc::clone(&image)));
         Some((generation, image))
     }
 
@@ -312,11 +367,11 @@ impl Canvases {
         }
     }
 
-    /// The bytes the bitmaps but `node`'s hold.
-    fn others(&self, node: NodeId) -> u64 {
+    /// The bytes the bitmaps but `owner`'s hold.
+    fn others(&self, owner: Owner) -> u64 {
         self.contexts
             .iter()
-            .filter(|(n, _)| **n != node)
+            .filter(|(o, _)| **o != owner)
             .map(|(_, canvas)| bytes_of(canvas))
             .sum()
     }
@@ -324,9 +379,12 @@ impl Canvases {
     /// The canvas `node`'s `width` or `height` attribute was set or
     /// removed: its bitmap made again at its size, cleared, and its
     /// context's state reset, as setting either does.
-    pub(crate) fn resized(&mut self, node: NodeId, size: (u32, u32)) {
-        let others = self.others(node);
-        if let Some(canvas) = self.contexts.get_mut(&node) {
+    pub(crate) fn resized(&mut self, owner: Owner, size: (u32, u32)) {
+        if let Owner::Offscreen(id) = owner {
+            self.offscreen.insert(id, size);
+        }
+        let others = self.others(owner);
+        if let Some(canvas) = self.contexts.get_mut(&owner) {
             self.points -= canvas.path().len();
             let bytes = u64::from(size.0) * u64::from(size.1) * 4;
             if others.saturating_add(bytes) > MAX_CANVAS_MEMORY {
@@ -341,8 +399,11 @@ impl Canvases {
     /// The contexts of nodes no longer in the document's arena let go.
     pub(crate) fn retain(&mut self, mut alive: impl FnMut(NodeId) -> bool) {
         let points = &mut self.points;
-        self.contexts.retain(|&node, canvas| {
-            let keep = alive(node);
+        self.contexts.retain(|&owner, canvas| {
+            let keep = match owner {
+                Owner::Element(node) => alive(node),
+                Owner::Offscreen(_) => true,
+            };
             if !keep {
                 *points -= canvas.path().len();
             }
@@ -359,7 +420,12 @@ impl Canvases {
 
     /// A number for a new object, past [`MAX_CANVAS_OBJECTS`] none.
     fn new_id(&mut self) -> Result<u32, DomError> {
-        if self.paths.len() + self.gradients.len() + self.patterns.len() >= MAX_CANVAS_OBJECTS {
+        let held = self.paths.len()
+            + self.gradients.len()
+            + self.patterns.len()
+            + self.offscreen.len()
+            + self.bitmaps.len();
+        if held >= MAX_CANVAS_OBJECTS {
             return Err(DomError::new(
                 "RangeError",
                 format!("No more than {MAX_CANVAS_OBJECTS} canvas objects may be held."),
@@ -371,6 +437,8 @@ impl Canvases {
             if !self.paths.contains_key(&id)
                 && !self.gradients.contains_key(&id)
                 && !self.patterns.contains_key(&id)
+                && !self.offscreen.contains_key(&id)
+                && !self.bitmaps.contains_key(&id)
             {
                 return Ok(id);
             }
@@ -498,6 +566,26 @@ impl Canvases {
                     .insert(id, Arc::new(Mutex::new(Gradient::new(kind))));
                 return Ok(number(f64::from(id)));
             }
+            "offscreen" => {
+                let id = self.new_id()?;
+                self.offscreen
+                    .insert(id, (at(n, 0) as u32, at(n, 1) as u32));
+                return Ok(number(f64::from(id)));
+            }
+            "offscreenResize" => {
+                let id = at(n, 1) as u32;
+                if !self.offscreen.contains_key(&id) {
+                    return Err(bad_call());
+                }
+                self.resized(Owner::Offscreen(id), (at(n, 2) as u32, at(n, 3) as u32));
+                return Ok(Answer::Nothing);
+            }
+            "closeBitmap" => {
+                if let Some(bitmap) = self.bitmaps.get_mut(&(at(n, 1) as u32)) {
+                    *bitmap = None;
+                }
+                return Ok(Answer::Nothing);
+            }
             "patternTransform" => {
                 let m = Matrix::new(at(n, 2), at(n, 3), at(n, 4), at(n, 5), at(n, 6), at(n, 7));
                 let pattern = self.patterns.get(&(at(n, 1) as u32)).ok_or_else(bad_call)?;
@@ -525,6 +613,17 @@ impl Canvases {
                     }
                     PATTERN => {
                         self.patterns.remove(&id);
+                    }
+                    OFFSCREEN => {
+                        self.offscreen.remove(&id);
+                        let owner = Owner::Offscreen(id);
+                        if let Some(canvas) = self.contexts.remove(&owner) {
+                            self.points -= canvas.path().len();
+                        }
+                        self.snapshots.remove(&owner);
+                    }
+                    BITMAP => {
+                        self.bitmaps.remove(&id);
                     }
                     _ => {}
                 }
@@ -570,24 +669,108 @@ impl Canvases {
             return Err(bad_call());
         }
         let element = element.ok_or_else(bad_call)?;
+        let owner = element.owner;
+        // An `OffscreenCanvas`'s size is kept here.
+        let size = match owner {
+            Owner::Element(_) => element.size,
+            Owner::Offscreen(id) => self.offscreen_size(id).ok_or_else(bad_call)?,
+        };
         if call.op == "context" {
-            if !self.contexts.contains_key(&element.node) {
-                let canvas =
-                    Canvases::made(element.size, at(n, 2) == 0.0, self.others(element.node));
-                self.contexts.insert(element.node, canvas);
+            if !self.contexts.contains_key(&owner) {
+                let canvas = Canvases::made(size, at(n, 2) == 0.0, self.others(owner));
+                self.contexts.insert(owner, canvas);
             }
             return Ok(Answer::Nothing);
         }
+        if call.op == "encode" {
+            return self.encode(owner, size);
+        }
+        if call.op == "transfer" {
+            return self.transfer(owner);
+        }
         let room = self.room();
-        let mut canvas = self.contexts.remove(&element.node).ok_or_else(bad_call)?;
+        let mut canvas = self.contexts.remove(&owner).ok_or_else(bad_call)?;
         let before = canvas.path().len();
         let generation = canvas.generation();
         let answer = self.context_call(&mut canvas, &call, &element, room);
         self.points = self.points - before + canvas.path().len();
         self.changed |= canvas.generation() != generation;
         self.work += canvas.take_work();
-        self.contexts.insert(element.node, canvas);
+        self.contexts.insert(owner, canvas);
         answer
+    }
+
+    /// `toDataURL()`, `toBlob()` and `convertToBlob()`: the bitmap as a
+    /// PNG file, a transparent one of the canvas's size for one with no
+    /// context; an empty string for one of no area; refused for one that
+    /// is not origin-clean, in the reference browser's words for each.
+    fn encode(&mut self, owner: Owner, size: (u32, u32)) -> Result<Answer, DomError> {
+        let offscreen = matches!(owner, Owner::Offscreen(_));
+        let canvas = self.contexts.get(&owner);
+        if canvas.is_some_and(|canvas| !canvas.origin_clean()) {
+            return Err(DomError::new(
+                "SecurityError",
+                if offscreen {
+                    "A tainted OffscreenCanvas may not be exported."
+                } else {
+                    "Tainted canvases may not be exported."
+                },
+            ));
+        }
+        if size.0 == 0 || size.1 == 0 {
+            if offscreen {
+                return Err(DomError::new(
+                    "IndexSizeError",
+                    "The size of the OffscreenCanvas is zero.",
+                ));
+            }
+            return Ok(Answer::String(String::new()));
+        }
+        let png = match canvas {
+            Some(canvas) => canvas.to_png(),
+            None if u64::from(size.0) * u64::from(size.1) <= canvas::MAX_CANVAS_PIXELS => {
+                Canvas::new(size.0, size.1, false).to_png()
+            }
+            None => None,
+        };
+        let Some(png) = png else {
+            return Ok(Answer::String(String::new()));
+        };
+        self.work += u64::from(size.0) * u64::from(size.1) / 16;
+        Ok(Answer::Bytes(png))
+    }
+
+    /// `transferToImageBitmap()`: the bitmap given to a new `ImageBitmap`,
+    /// the canvas left a transparent one of its size: the bitmap's number
+    /// and size.
+    fn transfer(&mut self, owner: Owner) -> Result<Answer, DomError> {
+        let Some(canvas) = self.contexts.get_mut(&owner) else {
+            return Err(DomError::new(
+                "InvalidStateError",
+                "Cannot transfer an ImageBitmap from an OffscreenCanvas with no context",
+            ));
+        };
+        let clean = canvas.origin_clean();
+        let (width, height) = (canvas.width(), canvas.height());
+        let image = canvas.snapshot().unwrap_or_else(|| {
+            Arc::new(images::Image {
+                width: 0,
+                height: 0,
+                frames: vec![images::Frame {
+                    pixels: Arc::from(Vec::new()),
+                    delay: 0,
+                }],
+                plays: images::Plays::Forever,
+            })
+        });
+        canvas.clear_bitmap();
+        self.changed = true;
+        let id = self.make_bitmap(image, clean)?;
+        Ok(Answer::Numbers(vec![
+            f64::from(id),
+            f64::from(width),
+            f64::from(height),
+        ]))
     }
 
     /// A call of a `Path2D` (kind 2, its number second).

@@ -1314,3 +1314,33 @@ fn patterns_of_an_image_repeat_and_move_as_asked() {
         (R, T, W)
     );
 }
+
+#[test]
+fn the_bitmap_exports_as_a_png_its_pixels_unpremultiplied() {
+    let mut canvas = Canvas::new(3, 2, false);
+    fill(&mut canvas, "rgba(255, 0, 0, 0.5)");
+    canvas.fill_rect(0.0, 0.0, 1.0, 1.0);
+    fill(&mut canvas, "#00f");
+    canvas.fill_rect(2.0, 1.0, 1.0, 1.0);
+    let png = canvas.to_png().expect("a bitmap");
+    assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    let image = images::decode(&png).expect("our own PNG decodes");
+    assert_eq!((image.width, image.height), (3, 2));
+    // The decoder premultiplies again: what the bitmap held.
+    assert_eq!(&image.frames[0].pixels[..], canvas.bytes().unwrap());
+    assert!(Canvas::new(0, 4, false).to_png().is_none());
+}
+
+#[test]
+fn clearing_the_bitmap_keeps_the_state() {
+    let mut canvas = Canvas::new(2, 2, false);
+    fill(&mut canvas, "#f00");
+    canvas.translate(1.0, 0.0);
+    canvas.fill_rect(0.0, 0.0, 1.0, 1.0);
+    let generation = canvas.generation();
+    canvas.clear_bitmap();
+    assert!(canvas.generation() > generation);
+    assert_eq!(px(&canvas, 1, 0), [0, 0, 0, 0]);
+    assert_eq!(canvas.state().transform.e, 1.0);
+    assert!(matches!(canvas.state().fill, Paint::Color(c) if c == color("#f00")));
+}

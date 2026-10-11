@@ -137,8 +137,11 @@ step("matrixLengths", () => ["translate", "scale", "rotate", "multiply", "fromMa
             ),
             ("point", "\"constructor w x y z\""),
             // Chrome's but captureStream and transferControlToOffscreen
-            // (section 2), and toBlob and toDataURL (step 6).
-            ("canvasProto", "\"constructor getContext height width\""),
+            // (the design note's section 2).
+            (
+                "canvasProto",
+                "\"constructor getContext height toBlob toDataURL width\"",
+            ),
             (
                 "attrs",
                 "\"{\\\"alpha\\\":true,\\\"colorSpace\\\":\\\"srgb\\\",\\\"colorType\\\":\\\"unorm8\\\",\
@@ -1011,6 +1014,143 @@ step("detached", () => { const x = fresh(4, 4).getContext("2d"); x.drawImage(img
          \"anonymous\",\"bogus\",null,false]",
         // `new Image()`, never in the document, loads and draws.
         "detached=[false,255]",
+    ];
+    for line in want {
+        assert!(lines.iter().any(|l| l == line), "no {line} in {lines:#?}");
+    }
+}
+
+#[test]
+fn bitmaps_are_exported_and_offscreen_canvases_draw_as_the_reference_browser_says() {
+    let lines = run_with_images(
+        r##"
+const img = await load("/img.png");
+const cross = await load(other + "/img.png");
+const own = (p) => Object.getOwnPropertyNames(p).sort().join(" ");
+const stepAsync = async (name, f) => { let v; try { v = JSON.stringify(await f()); } catch (e) { v = err(e); } console.log(name + "=" + v); };
+step("protoOffscreen", () => own(OffscreenCanvas.prototype));
+step("protoOffscreenCtx", () => own(OffscreenCanvasRenderingContext2D.prototype) === own(CanvasRenderingContext2D.prototype).replace(" drawFocusIfNeeded", ""));
+step("protoBitmap", () => own(ImageBitmap.prototype));
+step("dataUrl", () => { const c = fresh(2, 2); const x = c.getContext("2d"); x.fillStyle = "#f00"; x.fillRect(0, 0, 1, 1);
+  return [c.toDataURL().slice(0, 30), c.toDataURL("bogus").slice(0, 22), c.toDataURL("IMAGE/PNG").slice(0, 22), fresh(0, 3).toDataURL(), fresh(3, 0).toDataURL("image/jpeg")]; });
+step("dataUrlNoContext", () => fresh(2, 2).toDataURL().slice(0, 22));
+step("dataUrlTainted", () => { const c = fresh(2, 2); c.getContext("2d").drawImage(cross, 0, 0); const r = [];
+  try { c.toDataURL(); } catch (e) { r.push(err(e)); } try { c.toBlob(() => {}); } catch (e) { r.push(err(e)); } return r; });
+await stepAsync("toBlob", () => new Promise((ok) => { const c = fresh(2, 2); c.getContext("2d").fillRect(0, 0, 1, 1); let sync = true;
+  c.toBlob((b) => { ok([sync, String(b), b.type, b.size > 50]); }); sync = false; }));
+await stepAsync("toBlobEmpty", () => new Promise((ok) => { fresh(0, 2).toBlob((b) => ok(String(b))); }));
+await stepAsync("toBlobType", () => new Promise((ok) => { fresh(2, 2).toBlob((b) => ok(b.type), "image/bogus"); }));
+step("toBlobErrors", () => { const r = []; try { fresh().toBlob(); } catch (e) { r.push(err(e)); } try { fresh().toBlob(5); } catch (e) { r.push(err(e)); } return r; });
+await stepAsync("pngRoundTrip", async () => { const c = fresh(2, 1); const x = c.getContext("2d"); x.fillStyle = "rgba(255, 0, 0, 0.5)"; x.fillRect(0, 0, 1, 1);
+  const blob = await new Promise((ok) => c.toBlob(ok)); const b = await createImageBitmap(blob); const d = fresh(2, 1).getContext("2d"); d.drawImage(b, 0, 0); return [px(d, 0, 0), px(d, 1, 0)]; });
+step("offscreen", () => { const o = new OffscreenCanvas(3, 2); const r = [o.width, o.height, String(o)]; const x = o.getContext("2d"); r.push(String(x), x === o.getContext("2d"), x.canvas === o);
+  x.fillStyle = "#0f0"; x.fillRect(0, 0, 1, 1); r.push(px(x, 0, 0)); o.width = 4; r.push(px(x, 0, 0), o.width, o.getContext("webgl"));
+  try { new OffscreenCanvas(); } catch (e) { r.push(err(e)); } try { OffscreenCanvas(1, 1); r.push("called"); } catch (e) { r.push(e.name); }
+  try { new OffscreenCanvas(-1, 2); } catch (e) { r.push(err(e)); } return r; });
+step("offscreenDraw", () => { const o = new OffscreenCanvas(2, 2); const x = o.getContext("2d"); x.fillStyle = "#00f"; x.fillRect(0, 0, 2, 2);
+  const d = fresh(4, 4).getContext("2d"); d.drawImage(o, 1, 1); return [px(d, 1, 1), px(d, 0, 0)]; });
+step("offscreenText", () => { const o = new OffscreenCanvas(60, 30); const x = o.getContext("2d"); x.font = "20px monospace"; x.fillText("W", 5, 20); let n = 0;
+  const d = x.getImageData(0, 0, 60, 30).data; for (let i = 3; i < d.length; i += 4) if (d[i] > 0) n++; return [n > 20, x.measureText("W").width > 5]; });
+await stepAsync("convertToBlob", async () => { const o = new OffscreenCanvas(2, 2); o.getContext("2d").fillRect(0, 0, 1, 1); const b = await o.convertToBlob(); return [String(b), b.type, b.size > 50]; });
+await stepAsync("convertToBlobErrors", async () => { const r = []; try { await new OffscreenCanvas(0, 2).convertToBlob(); r.push("ok"); } catch (e) { r.push(err(e)); }
+  const o = new OffscreenCanvas(2, 2); o.getContext("2d").drawImage(cross, 0, 0); try { await o.convertToBlob(); r.push("ok"); } catch (e) { r.push(err(e)); } return r; });
+step("offscreenTaints", () => { const o = new OffscreenCanvas(2, 2); o.getContext("2d").drawImage(cross, 0, 0); const x = fresh(2, 2).getContext("2d"); x.drawImage(o, 0, 0);
+  try { x.getImageData(0, 0, 1, 1); return "clean"; } catch (e) { return e.name; } });
+step("transfer", () => { const o = new OffscreenCanvas(2, 2); const x = o.getContext("2d"); x.fillRect(0, 0, 2, 2); const b = o.transferToImageBitmap();
+  return [String(b), b.width, b.height, px(x, 0, 0), o.width]; });
+step("transferNoContext", () => { try { new OffscreenCanvas(2, 2).transferToImageBitmap(); return "ok"; } catch (e) { return err(e); } });
+await stepAsync("bitmap", async () => { const b = await createImageBitmap(img); const r = [String(b), b.width, b.height]; const d = fresh(4, 4).getContext("2d"); d.imageSmoothingEnabled = false; d.drawImage(b, 0, 0);
+  r.push(px(d, 1, 1)); b.close(); r.push(b.width, b.height); try { d.drawImage(b, 0, 0); r.push("drew closed"); } catch (e) { r.push(err(e)); } return r; });
+await stepAsync("bitmapCrop", async () => { const b = await createImageBitmap(img, 1, 0, 1, 2); const d = fresh(4, 4).getContext("2d"); d.drawImage(b, 0, 0); return [b.width, b.height, px(d, 0, 0), px(d, 0, 1)]; });
+await stepAsync("bitmapCropOutside", async () => { const b = await createImageBitmap(img, -1, -1, 3, 3); const d = fresh(4, 4).getContext("2d"); d.drawImage(b, 0, 0); return [b.width, b.height, px(d, 0, 0), px(d, 1, 1)]; });
+await stepAsync("bitmapResize", async () => { const b = await createImageBitmap(img, { resizeWidth: 4, resizeHeight: 2, resizeQuality: "pixelated" }); const d = fresh(4, 4).getContext("2d"); d.drawImage(b, 0, 0);
+  return [b.width, b.height, px(d, 1, 0), px(d, 2, 0)]; });
+await stepAsync("bitmapResizeOneSide", async () => { const b = await createImageBitmap(img, 0, 0, 2, 1, { resizeWidth: 6 }); return [b.width, b.height]; });
+await stepAsync("bitmapFlip", async () => { const b = await createImageBitmap(img, { imageOrientation: "flipY" }); const d = fresh(4, 4).getContext("2d"); d.drawImage(b, 0, 0); return [px(d, 0, 0), px(d, 0, 1)]; });
+await stepAsync("bitmapSources", async () => { const r = []; const c = fresh(2, 2); c.getContext("2d").fillRect(0, 0, 1, 1); const o = new OffscreenCanvas(3, 3); o.getContext("2d");
+  for (const s of [c, o, new ImageData(4, 2), await createImageBitmap(img)]) { const b = await createImageBitmap(s); r.push(b.width); }
+  try { await createImageBitmap(new OffscreenCanvas(2, 2)); } catch (e) { r.push(err(e)); } return r; });
+await stepAsync("bitmapErrors", async () => { const r = []; for (const f of [() => createImageBitmap(), () => createImageBitmap({}), () => createImageBitmap(img, 0, 0, 0, 1), () => createImageBitmap(img, 0, 0, 1, 0),
+    () => createImageBitmap(fresh(0, 2)), () => createImageBitmap(new Image()), () => createImageBitmap(new Blob(["x"])), () => createImageBitmap(img, { resizeWidth: 0 }), () => createImageBitmap(img, 0, 0, 1)]) {
+    try { await f(); r.push("ok"); } catch (e) { r.push(err(e)); } } return r; });
+await stepAsync("bitmapTainted", async () => { const b = await createImageBitmap(cross); const c = fresh(2, 2); const x = c.getContext("2d"); x.drawImage(b, 0, 0); try { x.getImageData(0, 0, 1, 1); return "clean"; } catch (e) { return err(e); } });
+await stepAsync("bitmapClosedErrors", async () => { const b = await createImageBitmap(img); b.close(); const r = []; try { await createImageBitmap(b); } catch (e) { r.push(err(e)); }
+  try { fresh().getContext("2d").createPattern(b, "repeat"); r.push("pattern ok"); } catch (e) { r.push(err(e)); } try { fresh().getContext("2d").drawImage(b, 0, 0); r.push("drew"); } catch (e) { r.push(err(e)); } return r; });
+step("tags", () => [String(new OffscreenCanvas(1, 1)), Object.prototype.toString.call(OffscreenCanvasRenderingContext2D.prototype), typeof ImageBitmap, ImageBitmap.length, OffscreenCanvas.length, createImageBitmap.length]);
+step("bitmapCtor", () => { try { new ImageBitmap(); } catch (e) { return err(e); } });
+"##,
+    );
+    let want = [
+        // Chrome's but its context loss handlers (oncontextlost,
+        // oncontextrestored), which no context here loses.
+        "protoOffscreen=\"constructor convertToBlob getContext height transferToImageBitmap width\"",
+        "protoOffscreenCtx=true",
+        "protoBitmap=\"close constructor height width\"",
+        "dataUrl=[\"data:image/png;base64,iVBORw0K\",\"data:image/png;base64,\",\
+         \"data:image/png;base64,\",\"data:,\",\"data:,\"]",
+        "dataUrlNoContext=\"data:image/png;base64,\"",
+        "dataUrlTainted=[\"threw SecurityError: Failed to execute 'toDataURL' on \
+         'HTMLCanvasElement': Tainted canvases may not be exported.\",\"threw SecurityError: \
+         Failed to execute 'toBlob' on 'HTMLCanvasElement': Tainted canvases may not be \
+         exported.\"]",
+        "toBlob=[false,\"[object Blob]\",\"image/png\",true]",
+        "toBlobEmpty=\"null\"",
+        "toBlobType=\"image/png\"",
+        "toBlobErrors=[\"threw TypeError: Failed to execute 'toBlob' on 'HTMLCanvasElement': 1 \
+         argument required, but only 0 present.\",\"threw TypeError: Failed to execute 'toBlob' \
+         on 'HTMLCanvasElement': parameter 1 is not of type 'Function'.\"]",
+        "pngRoundTrip=[[255,0,0,128],[0,0,0,0]]",
+        "offscreen=[3,2,\"[object OffscreenCanvas]\",\"[object OffscreenCanvasRenderingContext2D]\",\
+         true,true,[0,255,0,255],[0,0,0,0],4,null,\"threw TypeError: Failed to construct \
+         'OffscreenCanvas': 2 arguments required, but only 0 present.\",\"TypeError\",\"threw \
+         TypeError: Failed to construct 'OffscreenCanvas': Value is outside the 'unsigned long' \
+         value range.\"]",
+        "offscreenDraw=[[0,0,255,255],[0,0,0,0]]",
+        "offscreenText=[true,true]",
+        "convertToBlob=[\"[object Blob]\",\"image/png\",true]",
+        "convertToBlobErrors=[\"threw IndexSizeError: Failed to execute 'convertToBlob' on \
+         'OffscreenCanvas': The size of the OffscreenCanvas is zero.\",\"threw SecurityError: \
+         Failed to execute 'convertToBlob' on 'OffscreenCanvas': A tainted OffscreenCanvas may \
+         not be exported.\"]",
+        "offscreenTaints=\"SecurityError\"",
+        "bitmapResizeOneSide=[6,3]",
+        "transfer=[\"[object ImageBitmap]\",2,2,[0,0,0,0],2]",
+        "transferNoContext=\"threw InvalidStateError: Failed to execute 'transferToImageBitmap' \
+         on 'OffscreenCanvas': Cannot transfer an ImageBitmap from an OffscreenCanvas with no \
+         context\"",
+        "bitmap=[\"[object ImageBitmap]\",2,2,[255,255,255,255],0,0,\"threw InvalidStateError: \
+         Failed to execute 'drawImage' on 'CanvasRenderingContext2D': The image source is \
+         detached\"]",
+        "bitmapCrop=[1,2,[255,0,255,255],[255,255,255,255]]",
+        "bitmapCropOutside=[3,3,[0,0,0,0],[255,0,0,255]]",
+        "bitmapResize=[4,2,[255,0,0,255],[255,0,255,255]]",
+        "bitmapFlip=[[0,0,255,255],[255,0,0,255]]",
+        "bitmapSources=[2,3,4,2,\"threw InvalidStateError: Failed to execute \
+         'createImageBitmap' on 'Window': The ImageBitmap could not be allocated.\"]",
+        "bitmapErrors=[\"threw TypeError: Failed to execute 'createImageBitmap' on 'Window': 1 \
+         argument required, but only 0 present.\",\"threw TypeError: Failed to execute \
+         'createImageBitmap' on 'Window': The provided value is not of type '(Blob or \
+         HTMLCanvasElement or HTMLImageElement or HTMLVideoElement or ImageBitmap or ImageData or \
+         OffscreenCanvas or SVGImageElement or VideoFrame)'.\",\"threw RangeError: Failed to \
+         execute 'createImageBitmap' on 'Window': The crop rect width is 0.\",\"threw \
+         RangeError: Failed to execute 'createImageBitmap' on 'Window': The crop rect height is \
+         0.\",\"threw InvalidStateError: Failed to execute 'createImageBitmap' on 'Window': The \
+         image source's width is 0.\",\"threw InvalidStateError: Failed to execute \
+         'createImageBitmap' on 'Window': The image source is not usable.\",\"threw \
+         InvalidStateError: The source image could not be decoded.\",\"threw InvalidStateError: \
+         Failed to execute 'createImageBitmap' on 'Window': The options's resizeWidth or \
+         resizeHeight is 0.\",\"threw TypeError: Failed to execute 'createImageBitmap' on \
+         'Window': Overload resolution failed.\"]",
+        "bitmapTainted=\"threw SecurityError: Failed to execute 'getImageData' on \
+         'CanvasRenderingContext2D': The canvas has been tainted by cross-origin data.\"",
+        "bitmapClosedErrors=[\"threw InvalidStateError: Failed to execute 'createImageBitmap' on \
+         'Window': The image source is not usable.\",\"threw InvalidStateError: Failed to \
+         execute 'createPattern' on 'CanvasRenderingContext2D': The image source is \
+         detached\",\"threw InvalidStateError: Failed to execute 'drawImage' on \
+         'CanvasRenderingContext2D': The image source is detached\"]",
+        "tags=[\"[object OffscreenCanvas]\",\"[object OffscreenCanvasRenderingContext2D]\",\
+         \"function\",0,2,1]",
+        "bitmapCtor=\"threw TypeError: Failed to construct 'ImageBitmap': Illegal constructor\"",
     ];
     for line in want {
         assert!(lines.iter().any(|l| l == line), "no {line} in {lines:#?}");

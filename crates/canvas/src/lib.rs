@@ -9,6 +9,7 @@
 mod blur;
 mod color;
 mod draw;
+mod export;
 mod font;
 mod image;
 mod path;
@@ -25,10 +26,11 @@ use std::sync::Arc;
 use tiny_skia::Pixmap;
 
 pub use color::{Rgba, parse_color, serialize_color};
+pub use export::encode_png;
 pub use font::{Font, FontBase, Spacing, Stretch, parse_font};
 pub use image::{Source, empty_canvas};
 pub use path::Path;
-pub use pixels::{blank_image_data, too_large};
+pub use pixels::{blank_image_data, premultiplied, too_large};
 pub use state::{
     Caps, Composite, Dash, Direction, Gradient, GradientKind, Kerning, LineCap, LineJoin, Matrix,
     Paint, Pattern, Quality, Rendering, Repetition, State, TextAlign, TextBaseline,
@@ -139,6 +141,12 @@ impl Canvas {
         self.state = State::default();
         self.stack.clear();
         self.path = Path::default();
+        self.reset_bitmap();
+    }
+
+    /// The bitmap made transparent black again, the state kept, as
+    /// `transferToImageBitmap()` leaves it.
+    pub fn clear_bitmap(&mut self) {
         self.reset_bitmap();
     }
 

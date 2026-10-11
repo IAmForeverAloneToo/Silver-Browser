@@ -167,6 +167,16 @@ pub(crate) fn unpremultiply(pixel: &[u8; 4]) -> [u8; 4] {
     ]
 }
 
+/// Straight RGBA pixels premultiplied, as a bitmap holds them: an
+/// `ImageData` made an image.
+pub fn premultiplied(straight: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(straight.len());
+    for pixel in straight.as_chunks::<4>().0 {
+        out.extend_from_slice(&premultiply(pixel));
+    }
+    out
+}
+
 /// A straight pixel premultiplied, each channel rounded.
 pub(crate) fn premultiply(pixel: &[u8; 4]) -> [u8; 4] {
     let a = u32::from(pixel[3]);

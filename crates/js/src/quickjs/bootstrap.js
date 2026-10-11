@@ -11495,6 +11495,13 @@
   // canvas, 5 a video) and its node's handle; anything else, a
   // TypeError in the reference browser's words.
   function imageSource(value, m) {
+    const t = value !== null && typeof value === "object" ? WeakMapGet(canvasTargets, value) : undefined;
+    if (t !== undefined && t.kind === 1) {
+      return [3, t.id];
+    }
+    if (t !== undefined && t.kind === 5) {
+      return [4, t.id];
+    }
     if (isNode(value) && kindOf(value) === 1) {
       const handle = handleOf(value);
       const tag = native.tag(handle);
@@ -11562,9 +11569,305 @@
   expose(Path2D, "Path2D");
   expose(ImageData, "ImageData");
 
-  // HTMLCanvasElement's own members (HTML section 4.12.5): its context.
+  // A PNG file's bytes, as the host gives them, a Blob.
+  function pngBlob(buffer) {
+    return new Blob(KEY, { bytes: new $Uint8Array(buffer), type: "image/png" });
+  }
+
+  // ---- OffscreenCanvas and ImageBitmap (HTML 4.12.5.3, 8.10, M30.2) ----
+
+  // Web IDL's `[EnforceRange] unsigned long long`, for a size.
+  function enforcedSize(value, where) {
+    const n = typeof value === "number" ? value : $Number(value);
+    if (n !== n || n === Infinity || n === -Infinity || MathTrunc(n) < 0 ||
+      MathTrunc(n) > 4294967295) {
+      throw new $TypeError(where + "Value is outside the 'unsigned long' value range.");
+    }
+    return MathTrunc(n);
+  }
+
+  class OffscreenCanvas {
+    constructor(width, height) {
+      needToConstruct(arguments.length, 2, "OffscreenCanvas");
+      const where = "Failed to construct 'OffscreenCanvas': ";
+      const w = enforcedSize(width, where);
+      const h = enforcedSize(height, where);
+      const id = native.canvas("offscreen", w, h);
+      bindCanvasObject(this, 1, id, "OffscreenCanvas");
+      const t = targetOf(this);
+      t.width = w;
+      t.height = h;
+      t.context = null;
+    }
+
+    get width() {
+      return targetOf(this).width;
+    }
+
+    set width(value) {
+      const t = targetOf(this);
+      t.width = enforcedSize(value, "Failed to set the 'width' property on 'OffscreenCanvas': ");
+      native.canvas("offscreenResize", 1, t.id, t.width, t.height);
+    }
+
+    get height() {
+      return targetOf(this).height;
+    }
+
+    set height(value) {
+      const t = targetOf(this);
+      t.height = enforcedSize(value, "Failed to set the 'height' property on 'OffscreenCanvas': ");
+      native.canvas("offscreenResize", 1, t.id, t.width, t.height);
+    }
+
+    getContext(contextId) {
+      const t = targetOf(this);
+      need(arguments.length, 1, "getContext", "OffscreenCanvas");
+      const id = str(contextId);
+      if (id !== "2d") {
+        return null;
+      }
+      if (t.context !== null) {
+        return t.context;
+      }
+      const options = arguments[1];
+      const read = (name, fallback) => {
+        if (options === undefined || options === null || typeof options !== "object") {
+          return fallback;
+        }
+        const value = options[name];
+        return value === undefined ? fallback : !!value;
+      };
+      const alpha = read("alpha", true);
+      native.canvas("context", 0, -t.id, alpha);
+      const context = new OffscreenCanvasRenderingContext2D(KEY);
+      WeakMapSet(canvasTargets, context, {
+        kind: 0,
+        id: -t.id,
+        iface: "OffscreenCanvasRenderingContext2D",
+        element: this,
+        alpha,
+        willReadFrequently: read("willReadFrequently", false),
+      });
+      t.context = context;
+      return context;
+    }
+
+    convertToBlob() {
+      const t = targetOf(this);
+      let bytes;
+      try {
+        bytes = native.canvas("encode", 0, -t.id);
+      } catch (error) {
+        return rejected(failed(error, "convertToBlob", "OffscreenCanvas"));
+      }
+      return resolved(pngBlob(bytes));
+    }
+
+    transferToImageBitmap() {
+      const t = targetOf(this);
+      let made;
+      try {
+        made = native.canvas("transfer", 0, -t.id);
+      } catch (error) {
+        throw failed(error, "transferToImageBitmap", "OffscreenCanvas");
+      }
+      return makeBitmap(made);
+    }
+  }
+
+  // The context of an OffscreenCanvas: the 2D context's members but
+  // those of an element's alone.
+  class OffscreenCanvasRenderingContext2D {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("OffscreenCanvasRenderingContext2D");
+      }
+    }
+  }
+  {
+    const names = getOwnPropertyNames(CanvasRenderingContext2D.prototype);
+    for (let i = 0; i < names.length; i++) {
+      if (names[i] === "constructor" || names[i] === "drawFocusIfNeeded") {
+        continue;
+      }
+      defineProperty(OffscreenCanvasRenderingContext2D.prototype, names[i],
+        getOwnPropertyDescriptor(CanvasRenderingContext2D.prototype, names[i]));
+    }
+  }
+
+  class ImageBitmap {
+    constructor() {
+      if (arguments[0] !== KEY) {
+        throw illegalConstructor("ImageBitmap");
+      }
+    }
+
+    get width() {
+      const t = targetOf(this);
+      return t.closed ? 0 : t.width;
+    }
+
+    get height() {
+      const t = targetOf(this);
+      return t.closed ? 0 : t.height;
+    }
+
+    close() {
+      const t = targetOf(this);
+      t.closed = true;
+      native.canvas("closeBitmap", 5, t.id);
+    }
+  }
+
+  // A new ImageBitmap from the host's [number, width, height].
+  function makeBitmap(made) {
+    const bitmap = bindCanvasObject(new ImageBitmap(KEY), 5, made[0], "ImageBitmap");
+    const t = targetOf(bitmap);
+    t.width = made[1];
+    t.height = made[2];
+    t.closed = false;
+    return bitmap;
+  }
+
+  // createImageBitmap() (HTML 8.10): its source, crop and options for the
+  // host, which makes the bitmap; every refusal a rejected promise.
+  function createImageBitmap(image) {
+    const a = arguments;
+    const where = prefix("createImageBitmap", "Window");
+    try {
+      if (a.length < 1) {
+        throw new $TypeError(where + "1 argument required, but only 0 present.");
+      }
+      if (a.length > 2 && a.length < 5) {
+        throw new $TypeError(where + "Overload resolution failed.");
+      }
+      let source;
+      let bytes = null;
+      let imageDataHeight = 0;
+      const t = image !== null && typeof image === "object" ? WeakMapGet(canvasTargets, image) : undefined;
+      const data = image !== null && typeof image === "object" ? WeakMapGet(imageDatas, image) : undefined;
+      if (t !== undefined && t.kind === 1) {
+        source = [3, t.id];
+      } else if (t !== undefined && t.kind === 5) {
+        if (t.closed) {
+          throw new $DOMException(where + "The image source is not usable.", "InvalidStateError");
+        }
+        source = [4, t.id];
+      } else if (data !== undefined) {
+        source = [6, data.width];
+        imageDataHeight = data.height;
+        bytes = ToBase64(new $Uint8Array(TypedArrayBuffer(data.data),
+          TypedArrayOffset(data.data), TypedArrayLength(data.data)));
+      } else if (isBlob(image)) {
+        source = [7, 0];
+        bytes = ToBase64(blobBytes(image));
+      } else if (isNode(image) && kindOf(image) === 1 &&
+        (native.tag(handleOf(image)) === "img" || native.tag(handleOf(image)) === "canvas")) {
+        source = [native.tag(handleOf(image)) === "img" ? 1 : 2, handleOf(image)];
+      } else {
+        throw new $TypeError(where + "The provided value is not of type '(Blob or " +
+          "HTMLCanvasElement or HTMLImageElement or HTMLVideoElement or ImageBitmap or ImageData " +
+          "or OffscreenCanvas or SVGImageElement or VideoFrame)'.");
+      }
+      let crop = [0, 0, 0, 0, 0];
+      let options = a[1];
+      if (a.length >= 5) {
+        const m = "createImageBitmap";
+        crop = [1, enforcedLong(a[1], m, "Window"), enforcedLong(a[2], m, "Window"),
+          enforcedLong(a[3], m, "Window"), enforcedLong(a[4], m, "Window")];
+        if (crop[3] === 0) {
+          throw new $RangeError(where + "The crop rect width is 0.");
+        }
+        if (crop[4] === 0) {
+          throw new $RangeError(where + "The crop rect height is 0.");
+        }
+        options = a[5];
+      }
+      const option = (name) =>
+        options === undefined || options === null || typeof options !== "object" ? undefined
+          : options[name];
+      const size = (name) => {
+        const value = option(name);
+        return value === undefined ? -1 : enforcedSize(value, where);
+      };
+      const rw = size("resizeWidth");
+      const rh = size("resizeHeight");
+      if (rw === 0 || rh === 0) {
+        throw new $DOMException(where + "The options's resizeWidth or resizeHeight is 0.",
+          "InvalidStateError");
+      }
+      const quality = option("resizeQuality");
+      const orientation = option("imageOrientation");
+      const numbers = [source[0], source[1], crop[0], crop[1], crop[2], crop[3], crop[4], rw, rh,
+        quality !== undefined && str(quality) === "pixelated" ? 1 : 0,
+        orientation !== undefined && str(orientation) === "flipY" ? 1 : 0, imageDataHeight];
+      const args = bytes === null ? ["imageBitmap"] : ["imageBitmap", bytes];
+      for (let i = 0; i < numbers.length; i++) {
+        ArrayPush(args, numbers[i]);
+      }
+      let made;
+      try {
+        made = ReflectApply(bytes === null ? native.canvas : native.canvasData, undefined, args);
+      } catch (error) {
+        // The reference browser words a Blob it cannot decode without
+        // the method.
+        if (error instanceof $DOMException && error.message === "The source image could not be decoded.") {
+          throw error;
+        }
+        throw failed(error, "createImageBitmap", "Window");
+      }
+      return resolved(makeBitmap(made));
+    } catch (error) {
+      return rejected(error);
+    }
+  }
+
+  expose(OffscreenCanvas, "OffscreenCanvas");
+  expose(OffscreenCanvasRenderingContext2D, "OffscreenCanvasRenderingContext2D");
+  expose(ImageBitmap, "ImageBitmap");
+  defineProperty(global, "createImageBitmap", {
+    value: createImageBitmap,
+    writable: true,
+    configurable: true,
+    enumerable: true,
+  });
+
+  // HTMLCanvasElement's own members (HTML section 4.12.5): its context
+  // and its bitmap exported.
   include(
     {
+      toDataURL() {
+        const handle = self(this);
+        let bytes;
+        try {
+          bytes = native.canvas("encode", 0, handle);
+        } catch (error) {
+          throw failed(error, "toDataURL", "HTMLCanvasElement");
+        }
+        if (typeof bytes === "string") {
+          return "data:,";
+        }
+        return "data:image/png;base64," + ToBase64(new $Uint8Array(bytes));
+      },
+
+      toBlob(callback) {
+        const handle = self(this);
+        need(arguments.length, 1, "toBlob", "HTMLCanvasElement");
+        if (typeof callback !== "function") {
+          throw new $TypeError(prefix("toBlob", "HTMLCanvasElement") +
+            "parameter 1 is not of type 'Function'.");
+        }
+        let bytes;
+        try {
+          bytes = native.canvas("encode", 0, handle);
+        } catch (error) {
+          throw failed(error, "toBlob", "HTMLCanvasElement");
+        }
+        const blob = typeof bytes === "string" ? null : pngBlob(bytes);
+        PromiseThen(resolved(undefined), () => callback(blob));
+      },
+
       getContext(contextId) {
         const handle = self(this);
         need(arguments.length, 1, "getContext", "HTMLCanvasElement");

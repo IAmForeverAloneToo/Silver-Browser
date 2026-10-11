@@ -736,7 +736,7 @@ impl Scripts {
         &mut self,
         node: NodeId,
     ) -> Option<(u64, std::sync::Arc<images::Image>)> {
-        self.host.canvases.pixels(node)
+        self.host.canvases.pixels(canvas::Owner::Element(node))
     }
 
     /// The bitmap of the canvas `node` as it is now, for a print.
