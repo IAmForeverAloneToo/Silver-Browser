@@ -81,7 +81,11 @@
 //! plane against the browser's raster through the transform, which
 //! moves an edge's coverage, never the colour inside it, and M21's page
 //! of list markers for the anti-aliasing of a disc's and a circle's
-//! edge by another rasterizer. Every other page is exact; M21's pages of
+//! edge by another rasterizer; M30's canvas pages, with a level inside
+//! for a gradient's rounding, for the edges of curves and strokes whose
+//! coverage tiny-skia's four-by-four samples put apart from the
+//! browser's (a slice of a pie at 18 against 0 percent where the exact
+//! coverage is 12). Every other page is exact; M21's pages of
 //! markers and decorations give the reference browser the engine's own
 //! font by `@font-face`, whose metrics place them, their text
 //! transparent. A page may declare
@@ -530,11 +534,12 @@ fn every_reference_page_renders_as_its_capture() {
     let pages = pages();
     assert_eq!(
         pages.len(),
-        129,
+        131,
         "the ten cases of M10's design note, the eleven of M11's, the five of M12's, the three of M16's, \
          the twenty of M17's, the twenty of M18's, the ten of M19's, the eleven of M20's, the nine \
          of M21's, the ten of M22's, the six of M23's, the three of M24's, the four of M25's, \
-         the three of M26's, the two of M27's, the one of M28's and the one of M29's"
+         the three of M26's, the two of M27's, the one of M28's, the one of M29's \
+         and the two of M30's"
     );
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/reference");
     let mut failures = Vec::new();

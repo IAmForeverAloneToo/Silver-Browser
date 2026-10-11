@@ -1,0 +1,114 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-scripts" content="on">
+<meta name="reference-tolerance" content="1">
+<meta name="reference-edge-tolerance" content="80">
+<title>Canvas 2D (M30): a chart drawn by the page's script on a canvas, its grid of lines on half pixels, bars, an area under a line filled with a gradient, the line stroked with round joins, its points as circles, a dashed average, and a pie of arcs; no text</title>
+<style>
+  html { background-color: #eef0f3; }
+  body { margin: 10px; }
+  canvas { display: block; margin-bottom: 10px; background-color: #ffffff; }
+</style>
+</head>
+<body>
+<canvas id="chart" width="400" height="220"></canvas>
+<canvas id="pie" width="220" height="160"></canvas>
+<script>
+  var values = [42, 77, 58, 120, 96, 140, 88, 160];
+  var chart = document.getElementById('chart').getContext('2d');
+  var left = 30, bottom = 200, step = 45;
+  var y = function (v) { return bottom - v; };
+  // The grid: lines a pixel wide on half pixels, so each covers its
+  // pixels whole.
+  chart.strokeStyle = '#c8d0d8';
+  chart.lineWidth = 1;
+  chart.beginPath();
+  for (var g = 0; g <= 180; g += 30) {
+    chart.moveTo(left, y(g) + 0.5);
+    chart.lineTo(left + step * values.length, y(g) + 0.5);
+  }
+  chart.stroke();
+  // The bars, whole pixels.
+  for (var i = 0; i < values.length; i++) {
+    chart.fillStyle = i % 2 ? '#7f9fbf' : '#5f7f9f';
+    chart.fillRect(left + i * step + 8, y(values[i]), 28, values[i]);
+  }
+  // The area under the line, a gradient from top to bottom.
+  var area = chart.createLinearGradient(0, 40, 0, bottom);
+  area.addColorStop(0, 'rgba(47, 79, 111, 0.6)');
+  area.addColorStop(1, 'rgba(47, 79, 111, 0)');
+  chart.fillStyle = area;
+  chart.beginPath();
+  chart.moveTo(left + 22, bottom);
+  for (var j = 0; j < values.length; j++) {
+    chart.lineTo(left + j * step + 22, y(values[j]) - 10);
+  }
+  chart.lineTo(left + (values.length - 1) * step + 22, bottom);
+  chart.closePath();
+  chart.fill();
+  // The line, round joins.
+  chart.strokeStyle = '#8f3f2f';
+  chart.lineWidth = 3;
+  chart.lineJoin = 'round';
+  chart.beginPath();
+  for (var k = 0; k < values.length; k++) {
+    chart.lineTo(left + k * step + 22, y(values[k]) - 10);
+  }
+  chart.stroke();
+  // The points.
+  chart.fillStyle = '#ffffff';
+  chart.lineWidth = 2;
+  for (var p = 0; p < values.length; p++) {
+    chart.beginPath();
+    chart.arc(left + p * step + 22, y(values[p]) - 10, 5, 0, 2 * Math.PI);
+    chart.fill();
+    chart.stroke();
+  }
+  // The average, dashed.
+  var mean = values.reduce(function (a, b) { return a + b; }, 0) / values.length;
+  chart.setLineDash([8, 4]);
+  chart.strokeStyle = '#2f4f6f';
+  chart.lineWidth = 2;
+  chart.beginPath();
+  chart.moveTo(left, Math.round(y(mean)));
+  chart.lineTo(left + step * values.length, Math.round(y(mean)));
+  chart.stroke();
+  chart.setLineDash([]);
+  // The axes.
+  chart.strokeStyle = '#2f4f6f';
+  chart.lineWidth = 2;
+  chart.beginPath();
+  chart.moveTo(left - 1, 10);
+  chart.lineTo(left - 1, bottom + 1);
+  chart.lineTo(left + step * values.length, bottom + 1);
+  chart.stroke();
+
+  // A pie: each share an arc from the centre, outlined in white.
+  var pie = document.getElementById('pie').getContext('2d');
+  var shares = [35, 25, 20, 12, 8];
+  var colours = ['#2f4f6f', '#5f7f9f', '#8f3f2f', '#bf8f3f', '#7f9f5f'];
+  var start = -Math.PI / 2;
+  pie.lineWidth = 2;
+  pie.strokeStyle = '#ffffff';
+  for (var s = 0; s < shares.length; s++) {
+    var end = start + shares[s] / 100 * 2 * Math.PI;
+    pie.fillStyle = colours[s];
+    pie.beginPath();
+    pie.moveTo(80, 80);
+    pie.arc(80, 80, 70, start, end);
+    pie.closePath();
+    pie.fill();
+    pie.stroke();
+    start = end;
+  }
+  // A ring beside it: the same circle cut out of a larger one by the
+  // even-odd rule.
+  pie.fillStyle = '#5f7f9f';
+  pie.beginPath();
+  pie.arc(185, 80, 30, 0, 2 * Math.PI);
+  pie.arc(185, 80, 18, 0, 2 * Math.PI);
+  pie.fill('evenodd');
+</script>
+</body>
+</html>

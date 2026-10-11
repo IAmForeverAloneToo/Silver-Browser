@@ -1,0 +1,146 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-scripts" content="on">
+<meta name="reference-tolerance" content="1">
+<meta name="reference-edge-tolerance" content="48">
+<meta name="reference-load" content="file">
+<meta name="reference-wait" content="300">
+<title>Canvas 2D (M30): what a script draws on canvases once its images have come: transforms and the state's stack, a clip, linear and radial gradients, composite operators, a shadow, images drawn whole, cut and scaled without smoothing, a pattern, pixels put, a canvas drawn on another, rounded rectangles, an ellipse, curves and line caps; no text</title>
+<style>
+  html { background-color: #eef0f3; }
+  body { margin: 10px; }
+  canvas { float: left; margin: 0 10px 10px 0; background-color: #ffffff; }
+</style>
+</head>
+<body>
+<canvas id="shapes" width="240" height="160"></canvas>
+<canvas id="paint" width="240" height="160"></canvas>
+<canvas id="images" width="240" height="160"></canvas>
+<canvas id="pixels" width="240" height="160"></canvas>
+<script>
+  var context = function (id) { return document.getElementById(id).getContext('2d'); };
+
+  // Shapes: transforms, the stack, a clip, rounded rectangles, an
+  // ellipse, curves and caps.
+  var a = context('shapes');
+  a.fillStyle = '#5f7f9f';
+  a.save();
+  a.translate(60, 50);
+  a.rotate(Math.PI / 8);
+  a.fillRect(-30, -20, 60, 40);
+  a.restore();
+  a.fillStyle = '#8f3f2f';
+  a.beginPath();
+  a.roundRect(120, 15, 100, 60, [6, 18, 30, 0]);
+  a.fill();
+  a.save();
+  a.beginPath();
+  a.arc(170, 45, 22, 0, 2 * Math.PI);
+  a.clip();
+  a.fillStyle = '#bf8f3f';
+  a.fillRect(140, 15, 60, 60);
+  a.restore();
+  a.strokeStyle = '#2f4f6f';
+  a.lineWidth = 3;
+  a.beginPath();
+  a.ellipse(60, 120, 40, 18, Math.PI / 10, 0, 2 * Math.PI);
+  a.stroke();
+  a.lineWidth = 2;
+  a.beginPath();
+  a.moveTo(120, 140);
+  a.quadraticCurveTo(150, 90, 180, 140);
+  a.bezierCurveTo(195, 100, 215, 100, 225, 140);
+  a.stroke();
+  a.lineWidth = 8;
+  var caps = ['butt', 'round', 'square'];
+  for (var c = 0; c < caps.length; c++) {
+    a.lineCap = caps[c];
+    a.beginPath();
+    a.moveTo(130 + c * 30, 100);
+    a.lineTo(130 + c * 30, 110);
+    a.stroke();
+  }
+
+  // Paint: gradients, alpha, operators, a shadow.
+  var b = context('paint');
+  var linear = b.createLinearGradient(10, 0, 110, 0);
+  linear.addColorStop(0, '#2f4f6f');
+  linear.addColorStop(0.5, '#bf8f3f');
+  linear.addColorStop(1, '#8f3f2f');
+  b.fillStyle = linear;
+  b.fillRect(10, 10, 100, 40);
+  var radial = b.createRadialGradient(170, 40, 4, 170, 40, 40);
+  radial.addColorStop(0, '#ffffff');
+  radial.addColorStop(1, '#5f7f9f');
+  b.fillStyle = radial;
+  b.fillRect(130, 0, 80, 80);
+  b.globalAlpha = 0.5;
+  b.fillStyle = '#8f3f2f';
+  b.fillRect(20, 60, 60, 40);
+  b.fillStyle = '#2f4f6f';
+  b.fillRect(50, 75, 60, 40);
+  b.globalAlpha = 1;
+  b.fillStyle = '#7f9f5f';
+  b.fillRect(130, 90, 90, 50);
+  b.globalCompositeOperation = 'destination-out';
+  b.beginPath();
+  b.arc(175, 115, 15, 0, 2 * Math.PI);
+  b.fill();
+  b.globalCompositeOperation = 'multiply';
+  b.fillStyle = '#bf8f3f';
+  b.fillRect(140, 100, 30, 30);
+  b.globalCompositeOperation = 'source-over';
+  b.shadowColor = 'rgba(0, 0, 0, 0.5)';
+  b.shadowBlur = 6;
+  b.shadowOffsetX = 4;
+  b.shadowOffsetY = 4;
+  b.fillStyle = '#5f7f9f';
+  b.fillRect(20, 125, 70, 20);
+
+  // Pixels: an ImageData written by the script, put whole and in part.
+  var d = context('pixels');
+  var data = d.createImageData(64, 64);
+  for (var py = 0; py < 64; py++) {
+    for (var px = 0; px < 64; px++) {
+      var o = (py * 64 + px) * 4;
+      data.data[o] = px * 4;
+      data.data[o + 1] = py * 4;
+      data.data[o + 2] = 128;
+      data.data[o + 3] = 255;
+    }
+  }
+  d.putImageData(data, 10, 10);
+  d.putImageData(data, 90, 10, 16, 16, 32, 32);
+  d.fillStyle = '#8f3f2f';
+  d.fillRect(170, 10, 50, 50);
+  var copied = d.getImageData(170, 10, 25, 50);
+  d.putImageData(copied, 170, 80);
+
+  // Images, once they have come: drawn whole, cut and scaled without
+  // smoothing, as a pattern; and the pixels canvas drawn onto this one.
+  var quad = new Image();
+  var stripes = new Image();
+  var waiting = 2;
+  var images = function () {
+    if (--waiting > 0) {
+      return;
+    }
+    var e = context('images');
+    e.drawImage(quad, 10, 10);
+    e.imageSmoothingEnabled = false;
+    e.drawImage(quad, 0, 0, 10, 10, 40, 10, 40, 40);
+    e.drawImage(quad, 90, 10, 80, 40);
+    e.fillStyle = e.createPattern(stripes, 'repeat');
+    e.fillRect(10, 60, 100, 40);
+    var pixels = document.getElementById('pixels');
+    e.drawImage(pixels, 10, 10, 64, 64, 120, 60, 64, 64);
+    e.drawImage(pixels, 10, 10, 16, 16, 190, 60, 32, 32);
+  };
+  quad.onload = images;
+  stripes.onload = images;
+  quad.src = 'images/quad.png';
+  stripes.src = 'images/stripes.png';
+</script>
+</body>
+</html>
