@@ -16,6 +16,7 @@
 use std::collections::HashMap;
 
 use dom::{Document, NodeId};
+use layout::{FragmentKind, Replaced};
 
 use crate::Engine;
 
@@ -405,9 +406,22 @@ fn fragment_lines(
                 f.node
             ));
         };
+        // A canvas's bitmap names its element, by its place too: the two
+        // engines number their nodes as they made them (M31).
+        let kind = match &f.kind {
+            FragmentKind::Replaced(Replaced::Canvas {
+                node,
+                width,
+                height,
+            }) => format!(
+                "Replaced(Canvas of node {:?} {width} by {height})",
+                places.get(node)
+            ),
+            kind => format!("{kind:?}"),
+        };
         lines.push(format!(
-            "node {number} {:?} at ({}, {}) {} by {} ascent {} scroll height {} style {:?}",
-            f.kind, f.x, f.y, f.w, f.h, f.ascent, f.scroll_height, f.style
+            "node {number} {kind} at ({}, {}) {} by {} ascent {} scroll height {} style {:?}",
+            f.x, f.y, f.w, f.h, f.ascent, f.scroll_height, f.style
         ));
     }
     Ok(lines)

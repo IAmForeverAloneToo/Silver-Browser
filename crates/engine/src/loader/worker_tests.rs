@@ -667,7 +667,7 @@ fn a_canvas_shows_what_its_offscreen_draws_in_a_worker_once_each_task_ends() {
                }\
                if (e.data === 'busy') {\
                  ctx.fillStyle = '#ffff00'; ctx.fillRect(0, 10, 10, 10);\
-                 var end = Date.now() + 200; while (Date.now() < end) {}\
+                 var end = Date.now() + 600; while (Date.now() < end) {}\
                  postMessage(['busy done']);\
                }\
              };",

@@ -37,6 +37,12 @@
 //! M30's: canvases in the document drawn on through their 2D contexts,
 //! their paths, styles, text and pixels; an `OffscreenCanvas`, an
 //! `ImageBitmap` and the exports; numbers from [`NUMBERS`].
+//!
+//! M31's: a worker started from a `data:` URL that echoes what it is
+//! sent, values from [`MESSAGES`] posted to it and to a port of a
+//! `MessageChannel`, the answers changing the document as they come
+//! (from the worker's thread: whenever they do), and `terminate` and
+//! `close`.
 
 #![no_main]
 
@@ -270,6 +276,26 @@ const HANDLER_CODE: &[&str] = &[
 /// What scripts fetch (M27): `data:` URLs of each kind a body comes
 /// in, and URLs a fetch refuses or cannot parse.
 /// Numbers a canvas's call takes: the edges of what it takes.
+/// What the calls post and clone (M31): values the structured clone
+/// makes again, and some it refuses.
+const MESSAGES: &[&str] = &[
+    "1",
+    "'a'",
+    "[1, { a: 2 }]",
+    "new Map([[1, 2]])",
+    "new Set(['x'])",
+    "new Uint8Array([1, 2]).buffer",
+    "new Date(0)",
+    "/x/g",
+    "{ a: { b: [null, undefined, -0, NaN, 1n] } }",
+    "new Blob(['x'])",
+    "new ImageData(1, 1)",
+    "new TypeError('t')",
+    "() => 0",
+    "Symbol()",
+    "document.body",
+];
+
 const NUMBERS: &[&str] = &[
     "0",
     "1",
@@ -404,7 +430,7 @@ fn body(input: &mut Input, nested: bool) -> String {
 /// One call, read from `input`, as a statement; `nested` in a
 /// listener's or a callback's body.
 fn call(input: &mut Input, nested: bool) -> String {
-    let op = input.byte() % 70;
+    let op = input.byte() % 72;
     let a = input.node();
     match op {
         0 => format!("p(document.createElement({}))", input.pick(TAGS)),
@@ -765,6 +791,23 @@ fn call(input: &mut Input, nested: bool) -> String {
             input.pick(NUMBERS),
             input.pick(NUMBERS),
             input.byte() % 16 + 1
+        ),
+        70 => format!(
+            "var w = new Worker('data:text/javascript,onmessage%3Dfunction(e)%7BpostMessage(e.data)%7D'); \
+             w.onmessage = (e) => {{ {a}.title = typeof e.data; }}; \
+             w.onerror = () => {{ {a}.title = 'error'; }}; \
+             w.postMessage({}); if ({}) w.terminate()",
+            input.pick(MESSAGES),
+            input.byte() % 2 == 0
+        ),
+        71 => format!(
+            "var mc = new MessageChannel(); \
+             mc.port2.onmessage = (e) => {{ {a}.title = String(e.data); }}; \
+             mc.port1.postMessage({}); if ({}) mc.port1.close(); \
+             {a}.dataset.m = typeof structuredClone({}, {{ transfer: [] }})",
+            input.pick(MESSAGES),
+            input.byte() % 2 == 0,
+            input.pick(MESSAGES)
         ),
         _ => {
             let property = ["disabled", "required", "readOnly", "multiple", "noValidate"]

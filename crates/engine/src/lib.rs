@@ -5707,6 +5707,27 @@ mod tests {
     }
 
     #[test]
+    fn a_canvas_a_script_made_compares_with_a_fresh_engine_by_its_place() {
+        // The canvas's node is numbered as a script made it here and as
+        // its markup is parsed in the fresh engine's snapshot: the
+        // comparison names it by its place (found by dom_api at M31).
+        let mut engine = test_engine();
+        engine.set_scripting(true);
+        engine.load_document("<p>a</p><p>b</p>");
+        differential::run_script(
+            &mut engine,
+            "var c = document.createElement('canvas'); c.width = 8; c.height = 4;             document.body.insertBefore(c, document.body.firstChild);",
+        );
+        engine.frame(200, 100);
+        let mut fresh = test_engine();
+        fresh.set_scripting(true);
+        if let Err(difference) = differential::compare_with_fresh(&mut engine, &mut fresh, 200, 100)
+        {
+            panic!("{difference}");
+        }
+    }
+
+    #[test]
     fn an_image_is_drawn_at_its_tiles_size_on_the_raster_whole_and_unturned() {
         let image = |crop, orientation| paint::ImageRef {
             id: 1,

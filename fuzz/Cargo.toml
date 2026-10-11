@@ -9,7 +9,8 @@
 # the input a page's controls are used through; and for Web Storage over
 # the profile, and the HTTP cache; and for WebAssembly modules, valid
 # ones made by wasm-smith and any bytes besides; and for the 2D canvas
-# context alone.
+# context alone; and for a message's serialized form, made again in a
+# realm.
 # Not a workspace member: libfuzzer needs nightly, and the normal build
 # must not.
 # `cargo +nightly fuzz run <target>` from the repository root; CI runs
@@ -53,6 +54,13 @@ text = { path = "../crates/text" }
 [profile.release.package.tiny-skia]
 debug-assertions = true
 overflow-checks = false
+
+[[bin]]
+name = "clone"
+path = "fuzz_targets/clone.rs"
+test = false
+doc = false
+bench = false
 
 [[bin]]
 name = "csp"
