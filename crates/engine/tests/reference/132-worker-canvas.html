@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+<head>
+<meta name="reference-scripts" content="on">
+<meta name="reference-tolerance" content="1">
+<meta name="reference-edge-tolerance" content="48">
+<meta name="reference-load" content="http">
+<meta name="reference-wait" content="2000">
+<title>Workers (M31): a page's canvas whose control went to an OffscreenCanvas, transferred to a worker, which draws on it and is terminated; the canvas shows what it drew, and a canvas the page draws through its own OffscreenCanvas. No text</title>
+<style>
+  html { background-color: #eef0f3; }
+  body { margin: 10px; }
+  canvas { float: left; margin: 0 10px 10px 0; background-color: #ffffff; }
+</style>
+</head>
+<body>
+<canvas id="worker" width="320" height="200"></canvas>
+<canvas id="here" width="160" height="200"></canvas>
+<script>
+  // One canvas drawn by a worker, one by the page through its own
+  // OffscreenCanvas.
+  var drawn = false;
+  var offscreen = document.getElementById('worker').transferControlToOffscreen();
+  var worker = new Worker('132-worker-canvas.js');
+  worker.onmessage = function () {
+    drawn = true;
+    worker.terminate();
+  };
+  worker.postMessage({ canvas: offscreen }, [offscreen]);
+
+  var here = document.getElementById('here').transferControlToOffscreen().getContext('2d');
+  here.fillStyle = '#7c3aed';
+  here.fillRect(20, 20, 120, 160);
+  here.fillStyle = '#fde68a';
+  here.beginPath();
+  here.arc(80, 100, 40, 0, Math.PI * 2);
+  here.fill();
+
+  // The capture's browser runs on a virtual clock, which does not wait
+  // for a worker's thread: synchronous requests spend real time until
+  // the worker has drawn.
+  function keepAlive() {
+    if (drawn) {
+      return;
+    }
+    for (var i = 0; i < 20; i++) {
+      var request = new XMLHttpRequest();
+      request.open('GET', location.href, false);
+      request.send();
+    }
+    setTimeout(keepAlive, 0);
+  }
+  setTimeout(keepAlive, 0);
+</script>
+</body>
+</html>

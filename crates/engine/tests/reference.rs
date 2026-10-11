@@ -65,7 +65,8 @@
 //! tasks and draws a frame every sixtieth of a second, its rendering
 //! steps with it, for as long; before each step, what the page's
 //! scripts fetch (M27) is waited for, as the browser's virtual time
-//! waits for the network.
+//! waits for the network, and what its workers send (M31), which run in
+//! real time, until they are quiet for a tenth of a second.
 //!
 //! A page may declare `<meta name="reference-tolerance" content="N">`:
 //! a channel may then differ by up to `N`, and the test says how many
@@ -109,6 +110,8 @@ use net::test_server::{Reply, TestServer};
 
 /// How long a page loaded by its URL may take to load and decode.
 const LOAD: Duration = Duration::from_secs(30);
+/// How long a page's workers stay quiet before its clock moves on (M31).
+const WORKERS_QUIET: Duration = Duration::from_millis(100);
 
 /// The size a page is drawn at unless it says another.
 const WIDTH: u32 = 800;
@@ -297,6 +300,11 @@ fn render(
             clock.store(at, Ordering::Relaxed);
             engine.poll_network();
             wait(&mut engine, &woken, page, |engine| !engine.fetching());
+            // A page's workers (M31) run in real time: what they send is
+            // taken until they are quiet for a while.
+            while engine.has_workers() && woken.recv_timeout(WORKERS_QUIET).is_ok() {
+                engine.poll_network();
+            }
             engine.run_tasks();
             engine.frame_at(
                 setting.width,
@@ -534,12 +542,12 @@ fn every_reference_page_renders_as_its_capture() {
     let pages = pages();
     assert_eq!(
         pages.len(),
-        131,
+        132,
         "the ten cases of M10's design note, the eleven of M11's, the five of M12's, the three of M16's, \
          the twenty of M17's, the twenty of M18's, the ten of M19's, the eleven of M20's, the nine \
          of M21's, the ten of M22's, the six of M23's, the three of M24's, the four of M25's, \
          the three of M26's, the two of M27's, the one of M28's, the one of M29's \
-         and the two of M30's"
+         the two of M30's and the one of M31's"
     );
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/reference");
     let mut failures = Vec::new();
