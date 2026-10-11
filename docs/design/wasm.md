@@ -1,8 +1,8 @@
 # Design note: WebAssembly
 
 Roadmap M29. Written before the code, as the record of the decisions,
-and corrected to the code when the milestone ends: where they
-disagree, the code wins, and the places are marked *(corrected)*. What
+and corrected to the code when the milestone ended: where they
+disagreed, the code won, and the places are marked *(corrected)*. What
 ships is described in `docs/architecture.md` "Current state".
 
 A page's scripts run in QuickJS-ng (D1, M24), which has no
@@ -118,6 +118,16 @@ and a JIT is a question for when the sandbox exists. `wasmi` has
 multi-value, bulk memory, reference types) and 3.0's tail calls and
 extended constant expressions, what compilers emit today; not SIMD,
 memory64, multiple memories, threads, exceptions or GC (section 2).
+*(corrected)* Multiple memories are on: `wasmi` turns them on by
+default, and the bridge handles a module's memories one by one anyway.
+Its dispatch is the portable one, a loop: its default, by tail calls,
+counts on sibling calls LLVM does not always make, and on Windows a
+long loop and a deep recursion overflowed the native stack, ending the
+process. A module's calls nest 10,000 deep at most
+(`MAX_WASM_RECURSION`; `wasmi`'s default, 1,000, is few for compiled
+programs), on a value stack of 1 MB, its default. `wasmi` does not
+export the error type of its resource limiter's trait: `wasmi_core`,
+in the lockfile already, is a direct dependency for it.
 
 - *Where it lives.* In `js`, beside QuickJS-ng: a module's functions
   and a page's are called from each other in one realm, on one thread,
@@ -126,6 +136,13 @@ memory64, multiple memories, threads, exceptions or GC (section 2).
   memories, tables, globals and functions, each known to the
   bootstrap's objects by a handle, as nodes are. Nothing of it reaches
   the engine: a module is bytes a script already holds.
+  *(corrected)* `wasmi` gives a function, a memory, a table or a global
+  no equality and no public key; the handle is the key of `wasmi`'s
+  arena, which only its `Debug` form names: read from it, the version
+  held by the lockfile and the form by the tests of identity. A
+  module's order of imports and exports, which `wasmi` keeps by kind
+  and by name, is read again with `wasmparser` 0.228, the version
+  `wasmi` uses.
 - *The JavaScript interface* is the bootstrap's, over natives of the
   `js` crate's own (`wasmCompile`, `wasmInstantiate`, `wasmCall`, ...),
   not the host's: the classes, their constructors' and methods'
@@ -139,6 +156,11 @@ memory64, multiple memories, threads, exceptions or GC (section 2).
   by `ToInt32`, `i64` by `ToBigInt64`, `f32` and `f64` by `ToNumber`,
   `externref` any value, `funcref` an exported function or `null`) and
   each result by `ToJSValue` (several results an array).
+  *(corrected)* It is a bound function, which QuickJS prints on three
+  lines where V8 prints one. Its name, its index in its module, comes
+  from the key of its instance's first defined function, which `wasmi`
+  allocates with the rest in order: the bridge exports that function
+  under a reserved name to learn it.
 - *Imports.* Instantiation reads the import object in the module's
   order, as the interface says, with the reference browser's messages:
   a function import takes any callable, an exported function by its
@@ -152,6 +174,14 @@ memory64, multiple memories, threads, exceptions or GC (section 2).
   reaches the script, the same value. A module's call into the page's
   code and the page's call back into a module nest as deep as the
   realm's stack lets them.
+  *(corrected)* No native calls the realm: a call's answer to the
+  bootstrap is its results, the script's function it stopped at with
+  the arguments, or its failure, and the bootstrap calls the function
+  and resumes the call (`wasmCall`, `wasmResume`, `wasmAbandon`). The
+  start function, which `wasmi` calls inside `Instance::new` where a
+  call cannot stop, is taken out of the module's bytes and exported
+  under a reserved name, and the bridge calls it once the instance is
+  made; it may be an import, a script's function.
 
 **The memory a script sees (M29.2).** A module's linear memory is the
 store's. A script sees it as `memory.buffer`, an `ArrayBuffer`, and
@@ -179,6 +209,16 @@ megabyte here. A module of a few megabytes called a few times a frame
 is served; one of hundreds of megabytes called in a loop is not. The
 copy is what this milestone can do without `unsafe`, and it is
 measured; sharing the bytes is G79.
+*(corrected)* The native keeps a copy of what each buffer holds.
+Entering, the bootstrap sends each buffer whole as base64 and the
+native writes it into the memory; leaving, the native compares the
+memory with its copy in runs of 4 KiB and sends the runs that differ,
+which `setFromBase64` writes in place. Measured: 1.9 ms a call with a
+1.1 MB memory seen, 1.7 ms a megabyte, two thirds of it QuickJS's
+`toBase64` and the string's crossing; the benchmark found the native's
+decoding at 2.2 ms of a 3.3 ms call, now a decoder by table into the
+kept copy. A memory that grows, by the module or by `grow()`, even by
+nothing, has its buffer detached.
 
 **Traps and limits (M29.3).** Nothing a module does ends the engine:
 
@@ -197,10 +237,21 @@ measured; sharing the bytes is G79.
   large to make is a `RangeError`, a `memory.grow` past it returns -1
   to the module, as the core specification lets an embedder decide.
   `MAX_WASM_INSTANCES`, `MAX_WASM_TABLE_ELEMENTS` and
-  `MAX_WASM_MODULE_BYTES` bound the rest.
+  `MAX_WASM_MODULE_BYTES` bound the rest. *(corrected)* A table's
+  element counts eight bytes; a realm's memories and tables are ten
+  times `MAX_WASM_INSTANCES` each.
+- *Nesting.* *(corrected)* QuickJS's stack, 256 KiB, ends a page's
+  nesting at about ten levels, long before `MAX_WASM_NESTING`, which a
+  test holds without it. A stack overflow unwinding through a script's
+  functions can make the bootstrap's own report of the call's end fail
+  too: resuming or abandoning a call drops every call above it, and a
+  call made with none under way starts from none.
 - *A panic* of `wasmi`'s, which a valid module should never cause, is
   caught at the bridge: the call throws, and the realm's store is not
   used again, its modules throwing for the rest of the page's life.
+  *(corrected)* An `InternalError`. And `wasmi`'s `MemoryType::new` and
+  `TableType::new` panic at limits that do not fit: the natives check
+  them, not only the bootstrap.
 - *Compilation* of a large module is work the run is charged for, by
   its bytes; functions are translated lazily, at their first call, so
   that a large module starts as fast as it validates.
@@ -212,6 +263,14 @@ and `instantiateStreaming` take a `Response` or a promise of one, check
 its MIME type (`application/wasm`) and status as the Web API says, in
 the reference browser's words, and compile its body once it has all
 come; compiling while it arrives is M38's streaming bodies (G67).
+*(corrected)* Bytes are copied at the call, the rest done in a promise
+job; `instantiate` of a module reads the import object at the call, of
+bytes after compiling, as the interface orders them. Every streaming
+refusal is a `TypeError` in the reference browser's words, "Failed to
+execute 'compile' on 'WebAssembly': ...". Optional arguments are read
+by count, so that the operations and constructors have Web IDL's
+lengths and `Table.set(i, undefined)` is refused as the reference
+browser refuses it.
 
 **Limits (the bounds a hostile page cannot pass).**
 
@@ -223,6 +282,7 @@ come; compiling while it arrives is M38's streaming bodies (G67).
 | `MAX_WASM_INSTANCES` | 1,000 | a realm's instances |
 | `MAX_WASM_TABLE_ELEMENTS` | 10,000,000 | a table's length |
 | `MAX_WASM_NESTING` | 64 | calls between a module and scripts, nested |
+| `MAX_WASM_RECURSION` *(corrected)* | 10,000 | a module's own calls, nested |
 
 The store keeps what it made for the realm's life: `wasmi` frees
 nothing before its store goes, and a page's modules go with its realm.
@@ -242,16 +302,35 @@ imports of every kind, their exports called with arguments the input
 says, under small limits: nothing panics, every failure is one of the
 interface's errors, and the realm runs a script after. `dom_api` gains
 the interface's calls on modules of the target's making.
+*(corrected)* `wasm-smith` 0.228 without SIMD, threads, exceptions,
+GC or memory64, up to two memories of 1 MiB and two tables of 1,000;
+the input's own bytes when its bit says. `dom_api`'s calls are on one
+small module of the target's making, the same each time: an instance
+whose import changes the document, and `instantiate`'s promise.
 
 **The web-platform tests.** The interface's tests (`wasm/jsapi`), which
 build their modules with `wasm-module-builder.js`, and the core
 specification's own tests run through the interface (`wasm/core`),
 those under 256 KiB: the float tables beside them, megabytes each, are
 left out by size, a new clause of the pull's rule.
+*(corrected)* Not `wasm/core`: it is Wasm 3.0's suite, whose harness
+makes a 64-bit table before any test (memory64) and whose wrappers
+compare floats and references through imports of GC types. Run once
+with its table let through: 16,663 of 19,462 subtests passed, every
+failure traced to a 3.0 feature `wasmi` lacks or to its follow-on,
+none to the bridge. `wasm/jsapi` is taken but for the proposals'
+directories: 42 tests, 879 of 925 subtests passing, the rest named
+(type reflection, source phase imports, a memory's own buffer, shared
+memories). They found four bugs, fixed: `Module`'s static methods
+not enumerable, a result iterator's `next` read at every step, a lone
+surrogate naming a custom section, `Table.set(i, undefined)`.
 
 **Golden cases** continue from 129: a page whose boxes are sized by
 what a module computed, with its memory read and written by the page's
-script, captured from the reference browser.
+script, captured from the reference browser. *(corrected)* Page 129,
+seven rows: numbers, the memory both ways, the import calling the page
+back by its global's scale, the table, a trap, a BigInt and a float,
+a grow; the module's text in the page.
 
 **Acceptance.** The roadmap's: a Rust function compiled to WebAssembly
 (`wasm32-unknown-unknown`, its module in the tests) given numbers by a
@@ -260,12 +339,19 @@ real shell; a module that traps, and one that loops, leaving the page
 running and its scripts stopped as M24 stops them. A benchmark,
 `benches/wasm.rs`: a module's compute against the same in a script, a
 call's cost across the bridge, with and without a memory a script has
-seen, and a module compiled.
+seen, and a module compiled. *(corrected)* `tests/wasm/numbers`, plain
+`no_std` Rust built for `wasm32-unknown-unknown`, 469 bytes, fetched
+and instantiated as it streams in; its `spin`, which never returns, is
+stopped and the page's next script runs, in the engine and in the
+real shell, where the stop is reported at the bootstrap's line, not
+the page's. Collatz to 20,000 takes 72 ms in the module and 175 ms in
+the page's script; a call across the bridge 2 us, 1.9 ms with a
+1.1 MB memory seen (`docs/perf-budgets.md`).
 
 ## 2. Not in this milestone, said rather than hidden
 
-- *SIMD* (`v128`, relaxed SIMD), *memory64* and *multiple memories*.
-  G80.
+- *SIMD* (`v128`, relaxed SIMD) and *memory64*. G80. *(corrected)*
+  Multiple memories are in (section 1).
 - *Threads*: shared memories and atomics, with `SharedArrayBuffer`,
   which the realm does not have. M31, with workers.
 - *Exception handling* (`Tag`, `Exception`, `JSTag`) and *GC*. G80.

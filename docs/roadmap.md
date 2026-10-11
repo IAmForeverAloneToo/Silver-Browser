@@ -388,13 +388,22 @@ images, the last item on T0's list, come with M23.
   `storage` event; the cookies with an expiry kept; an HTTP cache in
   memory by RFC 9111's freshness, kept apart by site; what one origin
   keeps no other reads, before and after the profile is opened again.
+- **M29, WebAssembly** (done 2026-10-11, designed in
+  `docs/design/wasm.md`): `wasmi` 2.0 bridged into the realm (D21);
+  the `WebAssembly` namespace, `Module`, `Instance`, `Memory`, `Table`,
+  `Global`, their errors and the promise-returning and streaming
+  forms; a module's calls into a page's script and back, resumed by
+  the bootstrap; a memory's buffer a mirror kept at the calls' edges;
+  a trap an error, a loop stopped by the run's budget as a script's
+  is, the realm's memories and tables bounded; a compiled Rust
+  function given numbers and giving them back.
 
 Each milestone's fuller writeup and stated gaps are in
 `docs/architecture.md` "Current state", and the gaps no milestone holds
 on the G list (M39+, below).
 
 Verified per the vertical-slice rule at each milestone, by the gate:
-the workspace's tests (2,221 at M28, two ignored), clippy clean (`-D
+the workspace's tests (2,247 at M29, two ignored), clippy clean (`-D
 warnings`, every target), `cargo deny`, the fuzz targets, and a smoke
 run of the shell. Toolchain: 1.98.1, pinned by `rust-toolchain.toml`.
 The checkout lives outside OneDrive since 2026-10-08
@@ -1815,13 +1824,42 @@ Per css-grid-1 (level 2 subgrid included):
 
 ## M29 — WebAssembly MVP  ·  `js`  ·  Effort: L  ·  Depends: M24
 
-- [ ] M29.1 WASM instantiation via the chosen engine's WASM support
+- [x] M29.1 WASM instantiation via the chosen engine's WASM support
        (quickjs-ng: none — D1 contingency: `wasmtime`/`wasmi` bridge, or
        this milestone forces the SpiderMonkey upgrade decision D1).
-- [ ] M29.2 `WebAssembly.Module/Instance/Memory` JS API surface.
-- [ ] M29.3 Engine-crash isolation: trap = error, never engine death.
-- [ ] M29.4 Acceptance: a small WASM module (e.g., compiled Rust fn)
+       Done 2026-10-11 (`docs/design/wasm.md`): the contingency, D21,
+       `wasmi` 2.0, an interpreter in Rust, in `js` beside QuickJS-ng:
+       one store a realm, made at its first module; its portable
+       dispatch; modules validated whole and translated lazily; a
+       module's call into a script's function stopped by `wasmi`'s
+       resumable call and resumed by the bootstrap, the start function
+       too, taken out of the module's bytes to be called so.
+- [x] M29.2 `WebAssembly.Module/Instance/Memory` JS API surface.
+       Done 2026-10-11: the namespace with `validate`, `compile`,
+       `instantiate` and their streaming forms; `Module` and its
+       reflection, `Instance`, `Memory`, `Table`, `Global`,
+       `CompileError`, `LinkError`, `RuntimeError`; the interface's
+       conversions, exported functions the same object wherever they
+       come from; a memory's buffer a copy synced at the calls' edges
+       (G79 to share it). The web-platform tests of `wasm/jsapi`, 879
+       of 925 subtests passing, the rest proposals (G80) and shared
+       memories (M31).
+- [x] M29.3 Engine-crash isolation: trap = error, never engine death.
+       Done 2026-10-11: traps `RuntimeError`s in the reference
+       browser's words, a recursion too deep a `RangeError`; a module's
+       work charged to the run's budget as fuel, a loop stopped as a
+       script's is; the realm's memories and tables bounded to 256 MiB,
+       instances to 1,000, calls nested to 64; a panic of `wasmi`'s
+       caught, the realm's WebAssembly given up. The `wasm` fuzz
+       target, `wasm-smith`'s modules and any bytes.
+- [x] M29.4 Acceptance: a small WASM module (e.g., compiled Rust fn)
        round-trips numbers.
+       Done 2026-10-11: `tests/wasm/numbers`, plain Rust built for
+       `wasm32-unknown-unknown`, fetched and instantiated by a page in
+       the engine and in the real shell: numbers in and out, a panic a
+       trap, a call that never returns stopped and the page running
+       on. Page 129 matches the reference browser. `benches/wasm.rs`
+       and T4.3 in `docs/perf-budgets.md`.
 
 ---
 
@@ -2339,6 +2377,19 @@ Deferred from the milestones above, each with what it waits on:
        keys and values, as the reference browser keeps them: here every
        string a script hands the engine is well formed, a lone
        surrogate U+FFFD. Named at M28, 12 web-platform subtests.
+- [ ] G79 A WebAssembly memory's bytes shared with the script's
+       `ArrayBuffer`, not copied at the calls' edges, and the memory's
+       own fixed-length and resizable buffers
+       (`toFixedLengthBuffer`, `toResizableBuffer`). Named at M29: a
+       call with a megabyte's memory seen costs 1.6 ms, and the `js`
+       crate writes no `unsafe` to lend the bytes.
+- [ ] G80 WebAssembly's proposals past what `wasmi` has: SIMD and
+       relaxed SIMD, memory64 and 64-bit tables, exception handling,
+       GC and typed function references, JavaScript promise
+       integration, the JS string builtins, the type reflection
+       interface. Named at M29: the core specification's suite, Wasm
+       3.0's, needs memory64 and GC to run; 46 subtests of
+       `wasm/jsapi`.
 
 ---
 
@@ -2357,7 +2408,7 @@ Deferred from the milestones above, each with what it waits on:
        Done 2026-10-01 (M10.7) as `tests/reference.rs`: pages captured
        from a headless reference browser, Chrome rather than Firefox
        (the box model's note), compared byte for byte or within a
-       tolerance a page declares; 128 pages at M28, 123 to 127 run
+       tolerance a page declares; 129 pages at M29, 123 to 127 run
        on the reference browser's virtual time, M27's two waiting for
        their fetches, and M28's served over `http:` for its storage.
        It is one of the workspace's tests, which CI runs (`cargo
@@ -2476,6 +2527,8 @@ Deferred from the milestones above, each with what it waits on:
 | D17 | URL parser | M14 | the `url` crate / our own | our own WHATWG URL parser in `net`, UTS #46 through the `idna` crate (see `docs/design/net.md`) |
 | D18 | Character encodings | M14 | `encoding_rs` / our own | our own `encoding` crate, a leaf beside `dom`; `encoding_rs` is Gecko code (§1.3); CJK legacy encodings with M42 or a T1 page (see `docs/design/net.md`) |
 | D19 | Requests from public pages to local addresses, before M33 | M14 | allow until M33.4 / refuse outright now | refuse outright now, by Local Network Access's address spaces, checked on the address connected to (see `docs/design/net.md`) |
+| D20 | The Public Suffix List | M27 | the `psl` crate / the list vendored with a matcher of our own | the `psl` crate (2.1.241, `no_std`, `forbid(unsafe_code)`), a matcher generated from the list; a bump of the crate keeps it current (see `docs/design/fetch.md`) |
+| D21 | WebAssembly | M29 | a `wasmi` bridge / a `wasmtime` bridge / the change of JavaScript engine D1 left open | `wasmi` 2.0 in `js` beside QuickJS-ng: an interpreter, validating every module, metered by fuel, bounded by a resource limiter, calls resumable at a host function; no JIT before M34's sandbox (see `docs/design/wasm.md`) |
 
 ---
 

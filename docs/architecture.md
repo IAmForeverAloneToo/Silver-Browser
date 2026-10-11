@@ -29,7 +29,8 @@ shell          (bin "silver-browser": windowing, event loop, input, clipboard)
     |          crate, since M23, below layout, paint and render)
     | js      (scripts: the script engine behind traits of the engine's,
     |          the boundary scripts reach the document through, and
-    |          their limits: a leaf crate, since M24, below engine)
+    |          their limits: a leaf crate, since M24, below engine;
+    |          WebAssembly over wasmi, since M29)
     | profile (what the browsing keeps on disk, over redb: a leaf
     |          crate, since M28, below engine)
     ├ net     (URL parsing, resource fetching)
@@ -83,8 +84,9 @@ shell          (bin "silver-browser": windowing, event loop, input, clipboard)
    `js`, which says so with `#![forbid(unsafe_code)]`, and aws-lc
    through `rustls` in `net`. `profile` forbids it too, over `redb`,
    whose own (its file reads, locks and hashing) is third-party (M28).
-   The unsafe code that leaves, third-party and pinned, is M33.5's
-   audit.
+   `js` runs WebAssembly over `wasmi` (M29), whose executor's own is
+   third-party too. The unsafe code that leaves, third-party and
+   pinned, is M33.5's audit.
 
 ## Pixels: where fractions become whole (M8.5)
 
@@ -1747,3 +1749,51 @@ cache on disk, revalidation and documents cached (M38); the Cache API
 profile's encryption (M33); a profile a browser process owns (M34);
 lone surrogates kept (G78). 2,221 tests pass workspace-wide, two
 ignored. Next milestone: WebAssembly (M29).
+
+Milestone 29 (WebAssembly; `docs/design/wasm.md`): a page's scripts
+run WebAssembly. QuickJS-ng has none; the roadmap's contingency is
+taken (D21): `wasmi` 2.0, an interpreter in Rust, in `js` beside it,
+one store a realm made at its first module, its portable dispatch (its
+tail-call dispatch overflowed the native stack on Windows). Modules
+(step 1): `validate`, `Module` and its reflection in the module's own
+order (read again with `wasmparser`), the interface's three errors, 64
+MiB at most, compiled as their bytes are charged to the run. Instances
+(step 2): imports read in the module's order with the reference
+browser's words; exported functions, bound functions named by their
+index and the same object wherever a function comes from (`wasmi`'s
+arena key, read from its `Debug` form); a module's call into a
+script's function stopped by `wasmi`'s resumable call and resumed by
+the bootstrap, so that no native calls the realm; the start function
+taken out of the module's bytes and called so; traps `RuntimeError`s
+in the reference browser's words. `Memory`, `Table` and `Global` (step
+3), imported, exported and the same object each time; a memory's
+buffer a copy, the native's copy beside it, synced whole on the way in
+and by 4 KiB runs on the way out, detached when the memory grows.
+Limits (step 4): a module's work charged to the run's budget as fuel,
+a loop stopped as a script's is; the realm's memories and tables
+within 256 MiB, 1,000 instances, calls nested 64 deep and a module's
+own 10,000; a panic of `wasmi`'s caught, the realm's WebAssembly given
+up. The promise-returning interface (step 5), settled in promise jobs,
+and the streaming forms, a response's type, origin and status checked.
+Fuzzing (step 6): the `wasm` target, `wasm-smith`'s modules and any
+bytes driven through the interface, only its errors allowed;
+`dom_api`'s calls of a small module. The web-platform tests (step 7):
+`wasm/jsapi`, 42 tests, 879 of 925 subtests passing, the rest
+proposals and shared memories, after four fixes they found; not
+`wasm/core`, Wasm 3.0's suite, which needs memory64 and GC to start.
+Page 129 (step 8) matches the reference browser. The acceptance (step
+9): plain Rust built for `wasm32-unknown-unknown`
+(`tests/wasm/numbers`), fetched and instantiated by a page in the
+engine and in the real shell, gives numbers back, its panic a trap,
+its endless call stopped with the page running on; `benches/wasm.rs`,
+which found the mirror's decoding slow (a call with 1.1 MB of memory
+seen 3.3 ms, now 1.9); T4.3 within 10% but for a realm made, 17.5 ms
+from 15.7 (x1.11), the WebAssembly bindings every realm compiles; fuzz
+runs of `wasm`, `dom_api` and `script`, fifteen minutes each on six
+workers, found nothing. Not in this milestone, said rather than
+hidden: the memory's bytes shared (G79); SIMD, memory64, exceptions,
+GC, promise integration, string builtins and type reflection (G80);
+threads and shared memories (M31); ES module integration (G41); a JIT
+(M34); compilation off the realm's thread or while the bytes arrive
+(M31, M38). 2,247 tests pass workspace-wide, two ignored. Next
+milestone: Canvas 2D (M30).

@@ -1482,6 +1482,57 @@ change:
   response stored there, stale (it has no lifetime) but kept for a
   `force-cache` request, as RFC 9111 lets a 200 be.
 
+### WebAssembly (M29)
+
+`benches/wasm.rs` (`cargo bench -p engine --bench wasm`), on the
+Windows machine, release, medians of ten runs, each a page from
+`navigate` to the title its script sets:
+
+| | Median | Range |
+| --- | --- | --- |
+| A page doing nothing | 18.0ms | 17.3-20.8ms |
+| The acceptance module fetched and instantiated as it streams in | 18.1ms | 17.7-18.5ms |
+| Collatz steps for every number to 20,000, in the module | 90.5ms | 89.0-91.4ms |
+| The same in the page's script | 193.2ms | 192.3-195.2ms |
+| 10,000 calls across the bridge | 38.8ms | 37.2-39.5ms |
+| 100 calls with the module's 1.1 MB memory seen by the script | 205.0ms | 199.2-207.9ms |
+| A module of 1,000 functions fetched | 18.2ms | 17.6-18.8ms |
+| The same compiled | 19.7ms | 18.8-20.1ms |
+
+- *Compute.* 72ms in the module against 175ms in the script, an
+  interpreter's against QuickJS's, the module's 20,000 calls with a
+  BigInt each among it: `wasmi`'s portable dispatch, a loop (the
+  design note says why not its tail calls). A JIT is M34's question.
+- *A call.* About 2us across the bridge: the arguments converted by
+  the bootstrap, the call made resumable, the answer an array.
+- *A call with the memory seen.* 1.9ms: the buffer read whole as
+  base64 on the way in, compared in 4 KiB runs on the way out, about
+  1.7ms a megabyte. The benchmark found 3.3ms, two thirds of it the
+  native's decoding, now by table into the kept copy; what is left is
+  mostly QuickJS's `toBase64` and the string's crossing. Sharing the
+  bytes is G79.
+- *A module compiled.* 1.5ms for 1,000 functions, validated whole and
+  translated at their first call.
+
+**T4.3.** The benchmarks of the code before M29 (ed1a409) and of M29,
+by turns, four rounds, the fourteen of M26's list, M27's `fetch` and
+M28's `storage`. Within 10% by their medians, but for a realm made and
+the two pages that make one and do little else:
+
+| | Before M29 | M29 | |
+| --- | --- | --- | --- |
+| Scripts: a realm made | 15.6-16.1ms, median 15.7 | 17.4-17.6ms, median 17.5 | x1.11 |
+| Fetch: the page alone, navigate to the last promise | 16.5-16.7ms, median 16.6 | 18.4-19.3ms, median 18.7 | x1.13 |
+| Storage: the page alone, navigate to its title | 16.0-16.5ms, median 16.2 | 17.6-18.3ms, median 17.9 | x1.11 |
+
+- *A realm's bindings.* The bootstrap every realm compiles and runs
+  grew from 9,482 lines (296 KB) to 10,495 (330 KB), the WebAssembly
+  namespace and its classes; the realm's `wasmi` store is made at its
+  first module, not with the realm. A page pays it once, at its first
+  script. Loading the bootstrap compiled is M35.12's.
+- *Faster:* the nested flex chain x0.91 and the media page's cascade
+  x0.87, code M29 does not change: the machine's bimodal variance.
+
 ### Over budget, and why
 
 These are known and recorded rather than hidden. Each has the item that
@@ -1563,5 +1614,9 @@ is to take it on.
   is the conservative rule of M13.1.
 - **A realm made.** A page's first script waits for its realm, which
   compiles and runs the bindings' bootstrap: 5ms at M25, 10.6ms at
-  M26 and 15.6ms at M27, 9,158 lines, near a frame's budget alone.
-  Loading it compiled is M35.12's.
+  M26, 15.6ms at M27 and 17.5ms at M29, 10,495 lines, past a frame's
+  budget alone. Loading it compiled is M35.12's.
+- **A WebAssembly call with the memory seen.** 1.9ms for a module's
+  1.1 MB memory, the buffer a copy synced at each call's edges (M29):
+  a module called a few times a frame is served, one called in a loop
+  with its memory seen is not. G79.
