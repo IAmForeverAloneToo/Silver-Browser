@@ -883,6 +883,9 @@ impl DocumentHost {
                     client: client.clone(),
                     initiator,
                     secure: page.is_secure_context(),
+                    viewport: self.window.viewport,
+                    fonts: self.window.fonts.clone(),
+                    compat: self.window.compat,
                 };
                 Ok(Answer::Number(f64::from(self.workers.workers.start(start))))
             }
@@ -895,7 +898,9 @@ impl DocumentHost {
                 self.outputs.terminated.push(worker);
                 Ok(Answer::Nothing)
             }
-            Call::PostToOwner(_) | Call::CloseWorker => Err(DomError::not_supported()),
+            Call::PostToOwner(_) | Call::CloseWorker | Call::ImportScript(_) => {
+                Err(DomError::not_supported())
+            }
             Call::SecureContext => Ok(Answer::Bool(
                 self.page.as_ref().is_none_or(Page::is_secure_context),
             )),
@@ -904,7 +909,7 @@ impl DocumentHost {
                     .page
                     .as_ref()
                     .ok_or_else(|| DomError::new("TypeError", "Failed to fetch"))?;
-                let request = super::fetch::request(page, &call)?;
+                let request = super::fetch::request(page.initiator(), &call)?;
                 if self.in_flight >= super::fetch::MAX_SCRIPT_FETCHES {
                     return Err(DomError::new("TypeError", "Too many requests in flight."));
                 }
@@ -917,7 +922,7 @@ impl DocumentHost {
                     .page
                     .as_ref()
                     .ok_or_else(|| DomError::new("TypeError", "Failed to fetch"))?;
-                let request = super::fetch::request(page, &call)?;
+                let request = super::fetch::request(page.initiator(), &call)?;
                 let Some(client) = &self.client else {
                     return Ok(Answer::Fetched(None));
                 };
@@ -1576,22 +1581,12 @@ impl DocumentHost {
                 } else {
                     None
                 };
-                let viewport = (
-                    f64::from(self.window.viewport.0),
-                    f64::from(self.window.viewport.1),
-                );
-                let element = Element {
-                    owner: Owner::Offscreen((-handle) as u32),
-                    size: (0, 0),
-                    color: canvas::Rgba::BLACK,
-                    font_base: canvas::FontBase {
-                        viewport,
-                        ..canvas::FontBase::default()
-                    },
-                    rtl: false,
-                    fonts: self.window.fonts.clone(),
+                let element = offscreen_element(
+                    handle,
+                    self.window.viewport,
+                    self.window.fonts.clone(),
                     source,
-                };
+                );
                 let answer = self.canvases.call(call, Some(element));
                 self.work += self.canvases.take_work();
                 return answer;
@@ -1658,41 +1653,8 @@ impl DocumentHost {
         which: f64,
         op: &str,
     ) -> Result<Option<canvas::Source>, DomError> {
-        let source = |image: &images::Image, clean: bool| {
-            let frame = image.frames.first()?;
-            Some(canvas::Source {
-                pixels: Arc::clone(&frame.pixels),
-                width: image.width,
-                height: image.height,
-                origin_clean: clean,
-            })
-        };
-        match kind as u8 {
-            // An `OffscreenCanvas`, by its number.
-            3 => {
-                let id = which as u32;
-                let size = self
-                    .canvases
-                    .offscreen_size(id)
-                    .ok_or_else(|| DomError::new("TypeError", "Illegal invocation"))?;
-                if size.0 == 0 || size.1 == 0 {
-                    let error = canvas::empty_canvas();
-                    return Err(DomError::new(error.name, error.message));
-                }
-                let owner = Owner::Offscreen(id);
-                let clean = self.canvases.origin_clean(owner);
-                return Ok(self
-                    .canvases
-                    .pixels(owner)
-                    .and_then(|(_, image)| source(&image, clean))
-                    .or_else(|| transparent(size)));
-            }
-            // An `ImageBitmap`, by its number.
-            4 => {
-                let (image, clean) = self.canvases.bitmap(which as u32)?;
-                return Ok(source(&image, clean));
-            }
-            _ => {}
+        if let Some(found) = offscreen_source(&mut self.canvases, kind, which) {
+            return found;
         }
         if !(0.0..=js::MAX_HANDLE as f64).contains(&which) || which.fract() != 0.0 {
             return Err(DomError::new("TypeError", "Illegal invocation"));
@@ -1799,9 +1761,9 @@ impl DocumentHost {
                 origin_clean: true,
             })
         };
-        let source = match kind as u8 {
+        let given = match kind as u8 {
             1 => match self.canvas_source(1.0, which, "createImageBitmap") {
-                Ok(Some(source)) => source,
+                Ok(Some(source)) => Some(source),
                 _ => return Err(unusable()),
             },
             2 => {
@@ -1813,105 +1775,14 @@ impl DocumentHost {
                 empty_side(size)?;
                 let owner = Owner::Element(node);
                 let clean = self.canvases.origin_clean(owner);
-                match self.canvases.pixels(owner) {
+                Some(match self.canvases.pixels(owner) {
                     Some((_, image)) => image_of(&image, clean).ok_or_else(unusable)?,
                     None => transparent(size)?,
-                }
+                })
             }
-            3 => {
-                let id = which as u32;
-                let size = self.canvases.offscreen_size(id).ok_or_else(unusable)?;
-                empty_side(size)?;
-                let owner = Owner::Offscreen(id);
-                let clean = self.canvases.origin_clean(owner);
-                match self.canvases.pixels(owner) {
-                    Some((_, image)) => image_of(&image, clean).ok_or_else(unusable)?,
-                    None => return Err(state("The ImageBitmap could not be allocated.")),
-                }
-            }
-            4 => {
-                let (image, clean) = self.canvases.bitmap(which as u32).map_err(|_| unusable())?;
-                image_of(&image, clean).ok_or_else(unusable)?
-            }
-            6 => {
-                let (width, height) = (which as u32, at(11) as u32);
-                let bytes = call.bytes.as_deref().unwrap_or_default();
-                if u64::from(width) * u64::from(height) * 4 != bytes.len() as u64 {
-                    return Err(unusable());
-                }
-                canvas::Source {
-                    pixels: Arc::from(canvas::premultiplied(bytes)),
-                    width,
-                    height,
-                    origin_clean: true,
-                }
-            }
-            7 => {
-                let bytes = call.bytes.as_deref().unwrap_or_default();
-                let image = images::decode(bytes)
-                    .map_err(|_| state("The source image could not be decoded."))?;
-                self.work += bytes.len() as u64 / 64;
-                image_of(&image, true).ok_or_else(unusable)?
-            }
-            _ => return Err(DomError::new("TypeError", "Illegal invocation")),
+            _ => None,
         };
-        // The crop rectangle, flipped to positive sizes; the source's whole
-        // when none is given.
-        let (w, h) = (f64::from(source.width), f64::from(source.height));
-        let crop = if at(2) == 1.0 {
-            let (mut sx, mut sy, mut sw, mut sh) = (at(3), at(4), at(5), at(6));
-            if sw < 0.0 {
-                sx += sw;
-                sw = -sw;
-            }
-            if sh < 0.0 {
-                sy += sh;
-                sh = -sh;
-            }
-            [sx, sy, sw, sh]
-        } else {
-            [0.0, 0.0, w, h]
-        };
-        // The size: the resize's, one side of it keeping the crop's ratio.
-        let (rw, rh) = (at(7), at(8));
-        let (out_w, out_h) = match (rw > 0.0, rh > 0.0) {
-            (true, true) => (rw, rh),
-            (true, false) => (rw, (crop[3] * rw / crop[2]).ceil()),
-            (false, true) => ((crop[2] * rh / crop[3]).ceil(), rh),
-            (false, false) => (crop[2], crop[3]),
-        };
-        let pixels = out_w * out_h;
-        if !(out_w >= 1.0 && out_h >= 1.0) || pixels > canvas::MAX_CANVAS_PIXELS as f64 {
-            return Err(state("The ImageBitmap could not be allocated."));
-        }
-        let (out_w, out_h) = (out_w as u32, out_h as u32);
-        let mut made = canvas::Canvas::new(out_w, out_h, false);
-        made.state_mut().image_smoothing = at(9) != 1.0;
-        if at(10) == 1.0 {
-            made.set_transform(&canvas::Matrix::new(
-                1.0,
-                0.0,
-                0.0,
-                -1.0,
-                0.0,
-                f64::from(out_h),
-            ));
-        }
-        made.draw_image(
-            &source,
-            Some(crop),
-            [0.0, 0.0, f64::from(out_w), f64::from(out_h)],
-        );
-        self.work += made.take_work();
-        let image = made
-            .snapshot()
-            .ok_or_else(|| state("The ImageBitmap could not be allocated."))?;
-        let id = self.canvases.make_bitmap(image, source.origin_clean)?;
-        Ok(Answer::Numbers(vec![
-            f64::from(id),
-            f64::from(out_w),
-            f64::from(out_h),
-        ]))
+        image_bitmap(&mut self.canvases, call, given, &mut self.work)
     }
 
     /// What a canvas's text reads of its element `node` (M30): the sizes
@@ -2667,6 +2538,207 @@ impl DocumentHost {
     }
 }
 
+/// `createImageBitmap()` (M30.2) of a source a document or a worker
+/// may have: `given` (an element's, which the document found), or an
+/// OffscreenCanvas (3), a bitmap (4), an ImageData's pixels (6) or a
+/// Blob's bytes (7). See [`DocumentHost::image_bitmap`].
+pub(crate) fn image_bitmap(
+    canvases: &mut Canvases,
+    call: &js::CanvasCall,
+    given: Option<canvas::Source>,
+    work: &mut u64,
+) -> Result<Answer, DomError> {
+    let n = &call.numbers;
+    let at = |i: usize| n.get(i).copied().unwrap_or(f64::NAN);
+    let state = |message: &str| DomError::new("InvalidStateError", message);
+    let unusable = || state("The image source is not usable.");
+    let (kind, which) = (at(0), at(1));
+    let image_of = |image: &images::Image, clean: bool| {
+        let frame = image.frames.first()?;
+        Some(canvas::Source {
+            pixels: Arc::clone(&frame.pixels),
+            width: image.width,
+            height: image.height,
+            origin_clean: clean,
+        })
+    };
+    let empty_side = |size: (u32, u32)| -> Result<(), DomError> {
+        if size.0 == 0 {
+            return Err(state("The image source's width is 0."));
+        }
+        if size.1 == 0 {
+            return Err(state("The image source's height is 0."));
+        }
+        Ok(())
+    };
+    let source = match given {
+        Some(source) => source,
+        None => match kind as u8 {
+            3 => {
+                let id = which as u32;
+                let size = canvases.offscreen_size(id).ok_or_else(unusable)?;
+                empty_side(size)?;
+                let owner = Owner::Offscreen(id);
+                let clean = canvases.origin_clean(owner);
+                match canvases.pixels(owner) {
+                    Some((_, image)) => image_of(&image, clean).ok_or_else(unusable)?,
+                    None => return Err(state("The ImageBitmap could not be allocated.")),
+                }
+            }
+            4 => {
+                let (image, clean) = canvases.bitmap(which as u32).map_err(|_| unusable())?;
+                image_of(&image, clean).ok_or_else(unusable)?
+            }
+            6 => {
+                let (width, height) = (which as u32, at(11) as u32);
+                let bytes = call.bytes.as_deref().unwrap_or_default();
+                if u64::from(width) * u64::from(height) * 4 != bytes.len() as u64 {
+                    return Err(unusable());
+                }
+                canvas::Source {
+                    pixels: Arc::from(canvas::premultiplied(bytes)),
+                    width,
+                    height,
+                    origin_clean: true,
+                }
+            }
+            7 => {
+                let bytes = call.bytes.as_deref().unwrap_or_default();
+                let image = images::decode(bytes)
+                    .map_err(|_| state("The source image could not be decoded."))?;
+                *work += bytes.len() as u64 / 64;
+                image_of(&image, true).ok_or_else(unusable)?
+            }
+            _ => return Err(DomError::new("TypeError", "Illegal invocation")),
+        },
+    };
+    // The crop rectangle, flipped to positive sizes; the source's whole
+    // when none is given.
+    let (w, h) = (f64::from(source.width), f64::from(source.height));
+    let crop = if at(2) == 1.0 {
+        let (mut sx, mut sy, mut sw, mut sh) = (at(3), at(4), at(5), at(6));
+        if sw < 0.0 {
+            sx += sw;
+            sw = -sw;
+        }
+        if sh < 0.0 {
+            sy += sh;
+            sh = -sh;
+        }
+        [sx, sy, sw, sh]
+    } else {
+        [0.0, 0.0, w, h]
+    };
+    // The size: the resize's, one side of it keeping the crop's ratio.
+    let (rw, rh) = (at(7), at(8));
+    let (out_w, out_h) = match (rw > 0.0, rh > 0.0) {
+        (true, true) => (rw, rh),
+        (true, false) => (rw, (crop[3] * rw / crop[2]).ceil()),
+        (false, true) => ((crop[2] * rh / crop[3]).ceil(), rh),
+        (false, false) => (crop[2], crop[3]),
+    };
+    let pixels = out_w * out_h;
+    if !(out_w >= 1.0 && out_h >= 1.0) || pixels > canvas::MAX_CANVAS_PIXELS as f64 {
+        return Err(state("The ImageBitmap could not be allocated."));
+    }
+    let (out_w, out_h) = (out_w as u32, out_h as u32);
+    let mut made = canvas::Canvas::new(out_w, out_h, false);
+    made.state_mut().image_smoothing = at(9) != 1.0;
+    if at(10) == 1.0 {
+        made.set_transform(&canvas::Matrix::new(
+            1.0,
+            0.0,
+            0.0,
+            -1.0,
+            0.0,
+            f64::from(out_h),
+        ));
+    }
+    made.draw_image(
+        &source,
+        Some(crop),
+        [0.0, 0.0, f64::from(out_w), f64::from(out_h)],
+    );
+    *work += made.take_work();
+    let image = made
+        .snapshot()
+        .ok_or_else(|| state("The ImageBitmap could not be allocated."))?;
+    let id = canvases.make_bitmap(image, source.origin_clean)?;
+    Ok(Answer::Numbers(vec![
+        f64::from(id),
+        f64::from(out_w),
+        f64::from(out_h),
+    ]))
+}
+
+/// The element an `OffscreenCanvas`'s context draws for, by the
+/// negative of its number (M30): no element's size, black for
+/// `currentcolor`, the viewport's units for its fonts.
+pub(crate) fn offscreen_element(
+    handle: f64,
+    viewport: (u32, u32),
+    fonts: Option<text::FontCollection>,
+    source: Option<canvas::Source>,
+) -> Element {
+    Element {
+        owner: Owner::Offscreen((-handle) as u32),
+        size: (0, 0),
+        color: canvas::Rgba::BLACK,
+        font_base: canvas::FontBase {
+            viewport: (f64::from(viewport.0), f64::from(viewport.1)),
+            ..canvas::FontBase::default()
+        },
+        rtl: false,
+        fonts,
+        source,
+    }
+}
+
+/// The pixels a drawing takes of an `OffscreenCanvas` (kind 3) or an
+/// `ImageBitmap` (kind 4), by number (M30): `None` for another kind,
+/// which is an element's.
+pub(crate) fn offscreen_source(
+    canvases: &mut Canvases,
+    kind: f64,
+    which: f64,
+) -> Option<Result<Option<canvas::Source>, DomError>> {
+    let source = |image: &images::Image, clean: bool| {
+        let frame = image.frames.first()?;
+        Some(canvas::Source {
+            pixels: Arc::clone(&frame.pixels),
+            width: image.width,
+            height: image.height,
+            origin_clean: clean,
+        })
+    };
+    match kind as u8 {
+        // An `OffscreenCanvas`, by its number.
+        3 => {
+            let id = which as u32;
+            let Some(size) = canvases.offscreen_size(id) else {
+                return Some(Err(DomError::new("TypeError", "Illegal invocation")));
+            };
+            if size.0 == 0 || size.1 == 0 {
+                let error = canvas::empty_canvas();
+                return Some(Err(DomError::new(error.name, error.message)));
+            }
+            let owner = Owner::Offscreen(id);
+            let clean = canvases.origin_clean(owner);
+            Some(Ok(canvases
+                .pixels(owner)
+                .and_then(|(_, image)| source(&image, clean))
+                .or_else(|| transparent(size))))
+        }
+        // An `ImageBitmap`, by its number.
+        4 => Some(
+            canvases
+                .bitmap(which as u32)
+                .map(|(image, clean)| source(&image, clean)),
+        ),
+        _ => None,
+    }
+}
+
 /// What a canvas with no context gives a draw (M30): its size of
 /// transparent black, as its bitmap is; nothing past the bound of a
 /// canvas's pixels.
@@ -2711,15 +2783,15 @@ fn has_activation_behaviour(document: &Document, node: NodeId) -> bool {
 /// `navigator.platform` (HTML section 8.10.1.1): the value every browser
 /// on this system gives.
 #[cfg(target_os = "windows")]
-const PLATFORM: &str = "Win32";
+pub(crate) const PLATFORM: &str = "Win32";
 #[cfg(target_os = "macos")]
-const PLATFORM: &str = "MacIntel";
+pub(crate) const PLATFORM: &str = "MacIntel";
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-const PLATFORM: &str = "Linux x86_64";
+pub(crate) const PLATFORM: &str = "Linux x86_64";
 
 /// The parts of `url` as `Location` gives them; `about:blank`'s for a
 /// document with none.
-fn location_parts(url: Option<&net::Url>) -> Vec<String> {
+pub(crate) fn location_parts(url: Option<&net::Url>) -> Vec<String> {
     let Some(url) = url else {
         return ["about:blank", "null", "about:", "", "", "", "blank", "", ""]
             .map(str::to_owned)

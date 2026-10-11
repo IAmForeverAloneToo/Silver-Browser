@@ -182,7 +182,7 @@
     OffscreenCanvas: true, OffscreenCanvasRenderingContext2D: true, Path2D: true,
     Performance: true, ProgressEvent: true, QuotaExceededError: true, Request: true,
     Response: true, TextMetrics: true, URLSearchParams: true, Worker: true,
-    WorkerGlobalScope: "worker",
+    WorkerGlobalScope: "worker", WorkerLocation: "worker", WorkerNavigator: "worker",
     XMLHttpRequest: true, XMLHttpRequestEventTarget: true, XMLHttpRequestUpload: true,
   };
 
@@ -7993,6 +7993,79 @@
   expose(Navigator, "Navigator");
   const navigator = new Navigator(KEY);
 
+  // ---- A worker's location and navigator (M31, HTML 10.3.1, 10.3.2) ------
+
+  // The worker's script URL in parts, as the window's location reads its
+  // document's: the worker's host answers.
+  class WorkerLocation {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("WorkerLocation");
+      }
+    }
+
+    get href() {
+      return locationPart(0);
+    }
+
+    get origin() {
+      return locationPart(1);
+    }
+
+    get protocol() {
+      return locationPart(2);
+    }
+
+    get host() {
+      return locationPart(3);
+    }
+
+    get hostname() {
+      return locationPart(4);
+    }
+
+    get port() {
+      return locationPart(5);
+    }
+
+    get pathname() {
+      return locationPart(6);
+    }
+
+    get search() {
+      return locationPart(7);
+    }
+
+    get hash() {
+      return locationPart(8);
+    }
+
+    toString() {
+      return locationPart(0);
+    }
+  }
+  expose(WorkerLocation, "WorkerLocation");
+  const workerLocation = new WorkerLocation(KEY);
+
+  // The members of the window's navigator a worker's has too.
+  class WorkerNavigator {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("WorkerNavigator");
+      }
+    }
+  }
+  {
+    const shared = ["appCodeName", "appName", "appVersion", "language", "languages", "onLine",
+      "platform", "product", "userAgent"];
+    for (let i = 0; i < shared.length; i++) {
+      defineProperty(WorkerNavigator.prototype, shared[i],
+        getOwnPropertyDescriptor(Navigator.prototype, shared[i]));
+    }
+  }
+  expose(WorkerNavigator, "WorkerNavigator");
+  const workerNavigator = new WorkerNavigator(KEY);
+
   // ---- Screen (CSSOM View section 4.3) -----------------------------------
 
   // The screen is reported as the window (D12): its real size tells one
@@ -8193,6 +8266,39 @@
 
     get performance() {
       return performance;
+    }
+
+    get location() {
+      return workerLocation;
+    }
+
+    get navigator() {
+      return workerNavigator;
+    }
+
+    // importScripts (HTML section 10.3.3): every URL parsed against the
+    // worker's, then each script fetched and run in order, what it
+    // throws thrown on; one that fails to load a NetworkError.
+    importScripts() {
+      const a = arguments;
+      const where = prefix("importScripts", "WorkerGlobalScope");
+      const urls = [];
+      for (let i = 0; i < a.length; i++) {
+        const text = str(a[i]);
+        const url = native.resolveUrl(text);
+        if (url === null) {
+          throw new $DOMException(where + "The URL '" + text + "' is invalid.", "SyntaxError");
+        }
+        ArrayPush(urls, url);
+      }
+      for (let i = 0; i < urls.length; i++) {
+        const script = native.importScript(urls[i]);
+        if (script.length === 0) {
+          throw new $DOMException(where + "The script at '" + urls[i] + "' failed to load.",
+            "NetworkError");
+        }
+        native.evaluate(script[0], script[1]);
+      }
     }
   }
   expose(WorkerGlobalScope, "WorkerGlobalScope");

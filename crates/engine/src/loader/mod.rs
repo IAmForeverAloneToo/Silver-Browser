@@ -28,7 +28,7 @@ mod mixed_tests;
 mod origin_tests;
 #[cfg(test)]
 mod pointer_tests;
-mod pool;
+pub(crate) mod pool;
 #[cfg(test)]
 mod request_tests;
 mod rules;

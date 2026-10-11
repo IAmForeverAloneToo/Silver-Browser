@@ -280,6 +280,9 @@ pub enum Call {
     PostToOwner(String),
     /// A worker's `close()`.
     CloseWorker,
+    /// A script `importScripts` runs (M31): its text and the URL it came
+    /// from, or nothing when it failed to load.
+    ImportScript(String),
     /// A form's entry list, as `FormData`'s constructor makes it
     /// (M27): each entry's name, `text` or `file`, and value; a
     /// `TypeError` for an element that is not a form or a submitter that

@@ -17,9 +17,13 @@ use js::{
 };
 use net::{Client, Credentials, Destination, Initiator, Origin, Request, Url};
 
-use super::host::Timers;
+use super::canvas::{Canvases, names_context, needs_source};
+use super::host::{
+    PLATFORM, Timers, image_bitmap, location_parts, offscreen_element, offscreen_source,
+};
 use super::{MAX_SCRIPT_BYTES, cut, report_text};
 use crate::loader::Waker;
+use crate::loader::pool::Pool;
 
 /// A document's live workers, its workers' own included: past it, a
 /// new one waits for one to end, as the standard allows.
@@ -34,6 +38,8 @@ pub(crate) const MAX_MESSAGE_BYTES: usize = 256 << 20;
 pub(crate) const MAX_QUEUED_BYTES: usize = 512 << 20;
 /// A worker thread's stack: the engine's own.
 const WORKER_STACK: usize = 32 << 20;
+/// The threads a worker's fetches run on at once.
+const MAX_WORKER_FETCH_THREADS: usize = 6;
 
 /// What crosses between a worker and the realm that made it (M31.3).
 pub(crate) enum WorkerMessage {
@@ -43,6 +49,8 @@ pub(crate) enum WorkerMessage {
     FromWorker(u32, FromWorker),
     /// Stops the worker's loop: its owner terminated it or went.
     Stop,
+    /// One of the worker's own fetches finished (M31.2).
+    Wake,
 }
 
 impl WorkerMessage {
@@ -175,6 +183,12 @@ pub(crate) struct Start {
     pub(crate) initiator: Initiator,
     /// Whether its creator is a secure context, which it then is.
     pub(crate) secure: bool,
+    /// What its canvases measure text with: the window's viewport and
+    /// fonts, as its creator had them.
+    pub(crate) viewport: (u32, u32),
+    pub(crate) fonts: Option<text::FontCollection>,
+    /// Whether the user asked for D12's compatibility user agent.
+    pub(crate) compat: bool,
 }
 
 /// A worker its owner knows of: how to reach it and stop it.
@@ -483,9 +497,18 @@ fn run(setup: Setup) {
     } else {
         url.origin()
     };
+    let pool = Pool::new(MAX_WORKER_FETCH_THREADS);
+    let woken = me.clone();
+    pool.set_waker(Arc::new(move || {
+        woken.send(WorkerMessage::Wake);
+    }));
     let mut host = WorkerHost {
         id,
         owner: Some(owner.clone()),
+        pool: Some(pool),
+        viewport: start.viewport,
+        fonts: start.fonts.clone(),
+        compat: start.compat,
         initiator: Some(Initiator {
             url: url.clone(),
             address_space: start.initiator.address_space,
@@ -551,6 +574,16 @@ fn work(
         };
         let task = match message {
             WorkerMessage::Stop => return,
+            WorkerMessage::Wake => {
+                for task in host.take_fetched() {
+                    if host.closing || stop.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    let result = realm.enter(&task, host);
+                    host.finish(realm, result, stop);
+                }
+                continue;
+            }
             WorkerMessage::ToWorker(data) => Task::Message {
                 target: MessageTarget::Global,
                 data,
@@ -625,6 +658,18 @@ pub(crate) struct WorkerHost {
     timers: Timers,
     /// The timer nesting level of the task it runs.
     nesting: u32,
+    /// The threads its fetches run on, which wake it through its inbox:
+    /// each fetch by its job, with the number the bindings gave it, its
+    /// URL and its abort handle.
+    pool: Option<Pool<Result<net::Response, net::NetworkError>>>,
+    fetching: HashMap<u64, (u32, Url, net::AbortHandle)>,
+    next_job: u64,
+    /// Its canvases (an `OffscreenCanvas`'s, an `ImageBitmap`'s), and
+    /// what they measure text with.
+    canvases: Canvases,
+    viewport: (u32, u32),
+    fonts: Option<text::FontCollection>,
+    compat: bool,
     /// `close()` was called: the task ends, and nothing more runs.
     closing: bool,
     workers: Option<Workers>,
@@ -645,6 +690,13 @@ impl Default for WorkerHost {
             epoch_ms: 0.0,
             timers: Timers::default(),
             nesting: 0,
+            pool: None,
+            fetching: HashMap::new(),
+            next_job: 0,
+            canvases: Canvases::default(),
+            viewport: (0, 0),
+            fonts: None,
+            compat: false,
             closing: false,
             workers: None,
             work: 0,
@@ -682,6 +734,88 @@ impl ScriptingHost for WorkerHost {
             Call::TimeOrigin => Ok(Answer::Number(self.epoch_ms)),
             Call::Origin => Ok(Answer::String(self.origin.serialization())),
             Call::SecureContext => Ok(Answer::Bool(self.secure)),
+            // The worker's URL is the base its URLs are parsed against
+            // (HTML section 10.2.1.1), and its location's.
+            Call::ResolveUrl(text) | Call::ResolveUrlFromDocument(text) => Ok(Answer::MaybeString(
+                Url::parse_with(&text, self.url.as_ref(), encoding::UTF_8)
+                    .ok()
+                    .map(|url| url.to_string()),
+            )),
+            Call::DocumentUrl => Ok(Answer::MaybeString(self.url.as_ref().map(Url::to_string))),
+            Call::Location => Ok(Answer::Strings(location_parts(self.url.as_ref()))),
+            Call::NavigatorInfo => {
+                let (agent, mode) = if self.compat {
+                    (net::COMPAT_USER_AGENT, "chrome")
+                } else {
+                    (net::USER_AGENT, "gecko")
+                };
+                Ok(Answer::Strings(vec![
+                    agent.to_owned(),
+                    PLATFORM.to_owned(),
+                    mode.to_owned(),
+                ]))
+            }
+            Call::UrlHasCredentials(url) => Ok(Answer::Bool(
+                Url::parse(&url).is_ok_and(|url| url.includes_credentials()),
+            )),
+            Call::SameOriginUrl(url) => Ok(Answer::Bool(
+                Url::parse(&url).is_ok_and(|url| url.origin() == self.origin),
+            )),
+            Call::Decode(bytes, label) => Ok(Answer::MaybeString(
+                encoding::Encoding::for_label(&label)
+                    .map(|encoding| encoding::decode(&bytes, encoding).0),
+            )),
+            Call::PlatformNewline => Ok(Answer::String(
+                if cfg!(windows) { "\r\n" } else { "\n" }.to_owned(),
+            )),
+            Call::Fetch(call) => {
+                let request = super::fetch::request(self.initiator.clone(), &call)?;
+                if self.fetching.len() >= super::fetch::MAX_SCRIPT_FETCHES {
+                    return Err(DomError::new("TypeError", "Too many requests in flight."));
+                }
+                let (Some(client), Some(pool)) = (self.client.clone(), self.pool.as_ref()) else {
+                    return Err(DomError::new("TypeError", "Failed to fetch"));
+                };
+                let job = self.next_job;
+                self.next_job += 1;
+                self.fetching
+                    .insert(job, (call.id, request.url.clone(), request.abort.clone()));
+                pool.run(job, move |_| client.fetch(&request));
+                Ok(Answer::Nothing)
+            }
+            Call::FetchNow(call) => {
+                let request = super::fetch::request(self.initiator.clone(), &call)?;
+                let Some(client) = &self.client else {
+                    return Ok(Answer::Fetched(None));
+                };
+                Ok(Answer::Fetched(match client.fetch(&request) {
+                    Ok(response) => Some(Box::new(super::fetch::answer(&response))),
+                    Err(error) => {
+                        let text = super::fetch::failure_text(&request.url, error);
+                        self.tell(FromWorker::Console(ConsoleLevel::Error, cut(text)));
+                        None
+                    }
+                }))
+            }
+            Call::AbortFetch(id) => {
+                let jobs: Vec<u64> = self
+                    .fetching
+                    .iter()
+                    .filter(|(_, (of, ..))| *of == id)
+                    .map(|(job, _)| *job)
+                    .collect();
+                for job in jobs {
+                    if let Some((_, _, abort)) = self.fetching.remove(&job) {
+                        abort.abort();
+                    }
+                }
+                Ok(Answer::Nothing)
+            }
+            Call::ImportScript(url) => Ok(Answer::Strings(
+                self.import_script(&url)
+                    .map_or_else(Vec::new, |(text, url)| vec![text, url]),
+            )),
+            Call::Canvas(call) => self.canvas(*call),
             Call::PostToOwner(data) => {
                 if data.len() > MAX_MESSAGE_BYTES {
                     return Err(too_large());
@@ -721,6 +855,9 @@ impl ScriptingHost for WorkerHost {
                     client: client.clone(),
                     initiator: initiator.clone(),
                     secure: self.secure,
+                    viewport: self.viewport,
+                    fonts: self.fonts.clone(),
+                    compat: self.compat,
                 }))))
             }
             Call::WorkerPost { worker, data } => {
@@ -749,6 +886,88 @@ impl ScriptingHost for WorkerHost {
 }
 
 impl WorkerHost {
+    /// The answers of the worker's fetches that finished, as tasks; why
+    /// one failed goes to the console. Those aborted are dropped.
+    fn take_fetched(&mut self) -> Vec<Task> {
+        let mut tasks = Vec::new();
+        while let Some((job, result)) = self.pool.as_ref().and_then(Pool::try_take) {
+            let Some((id, url, _)) = self.fetching.remove(&job) else {
+                continue;
+            };
+            let answer = match result {
+                Ok(Ok(response)) => Some(Box::new(super::fetch::answer(&response))),
+                Ok(Err(error)) => {
+                    let text = super::fetch::failure_text(&url, error);
+                    self.tell(FromWorker::Console(ConsoleLevel::Error, cut(text)));
+                    None
+                }
+                Err(_) => None,
+            };
+            tasks.push(Task::Fetched { id, answer });
+        }
+        tasks
+    }
+
+    /// A script `importScripts` runs (HTML's "fetch a classic
+    /// worker-imported script"): fetched as a script, which needs an ok
+    /// status and a JavaScript type, decoded as UTF-8; its text and URL.
+    fn import_script(&self, url: &str) -> Option<(String, String)> {
+        let url = Url::parse(url).ok()?;
+        let request = Request::get(url, Destination::Script)
+            .initiated_by(self.initiator.clone()?)
+            .with_body_limit(MAX_SCRIPT_BYTES);
+        let response = self.client.as_ref()?.fetch(&request).ok()?;
+        if !response.ok()
+            || !response
+                .mime_type
+                .as_ref()
+                .is_some_and(net::MimeType::is_javascript)
+        {
+            return None;
+        }
+        let (text, _) = encoding::decode(&response.body, encoding::UTF_8);
+        Some((text, response.url().to_string()))
+    }
+
+    /// A canvas's call in a worker (M31): an `OffscreenCanvas`'s or an
+    /// `ImageBitmap`'s, there being no element.
+    fn canvas(&mut self, call: js::CanvasCall) -> Result<Answer, DomError> {
+        let illegal = || DomError::new("TypeError", "Illegal invocation");
+        if call.op == "imageState" {
+            return Err(illegal());
+        }
+        if call.op == "imageBitmap" {
+            let answer = image_bitmap(&mut self.canvases, &call, None, &mut self.work);
+            self.work += self.canvases.take_work();
+            return answer;
+        }
+        let element = if names_context(&call.op) && call.numbers.first() == Some(&0.0) {
+            let handle = call.numbers.get(1).copied().unwrap_or(f64::NAN);
+            if !((-f64::from(u32::MAX)..0.0).contains(&handle) && handle.fract() == 0.0) {
+                return Err(illegal());
+            }
+            let source = if needs_source(&call.op) {
+                let kind = call.numbers.get(2).copied().unwrap_or(-1.0);
+                let which = call.numbers.get(3).copied().unwrap_or(-1.0);
+                offscreen_source(&mut self.canvases, kind, which)
+                    .unwrap_or_else(|| Err(illegal()))?
+            } else {
+                None
+            };
+            Some(offscreen_element(
+                handle,
+                self.viewport,
+                self.fonts.clone(),
+                source,
+            ))
+        } else {
+            None
+        };
+        let answer = self.canvases.call(call, element);
+        self.work += self.canvases.take_work();
+        answer
+    }
+
     /// The worker's time: since it started.
     fn now(&self) -> Duration {
         self.clock.elapsed()

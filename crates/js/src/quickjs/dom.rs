@@ -348,6 +348,7 @@ const NATIVES: &[(&str, Decode)] = &[
     }),
     ("postToOwner", |a| Ok(Call::PostToOwner(a.string(0)?))),
     ("closeWorker", |_| Ok(Call::CloseWorker)),
+    ("importScript", |a| Ok(Call::ImportScript(a.string(0)?))),
     ("postMessage", |a| {
         Ok(Call::PostMessage {
             target_origin: a.string(0)?,

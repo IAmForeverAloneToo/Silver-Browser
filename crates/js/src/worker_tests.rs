@@ -55,7 +55,8 @@ var names = ["fetch", "XMLHttpRequest", "OffscreenCanvas", "structuredClone", "W
   "ononline", "onrejectionhandled", "onunhandledrejection", "WorkerGlobalScope",
   "DedicatedWorkerGlobalScope", "SharedArrayBuffer", "alert", "print", "getComputedStyle",
   "HTMLElement", "Node", "Image", "Window", "Location", "Navigator", "Storage", "UIEvent",
-  "MouseEvent", "CanvasRenderingContext2D", "HTMLCanvasElement"];
+  "MouseEvent", "CanvasRenderingContext2D", "HTMLCanvasElement", "importScripts", "location",
+  "navigator", "WorkerLocation", "WorkerNavigator", "Worker", "postMessage", "close"];
 for (var i = 0; i < names.length; i++) {
   console.log("typeof " + names[i] + "=" + typeof self[names[i]]);
 }
@@ -68,7 +69,8 @@ var where = function (n) {
   return d ? (o.constructor ? o.constructor.name : "own") + ":" +
     Object.keys(d).sort().join(",") : "none";
 };
-var own = ["onmessage", "self", "name", "onerror", "performance"];
+var own = ["onmessage", "self", "name", "onerror", "performance", "location", "navigator",
+  "importScripts", "postMessage", "close"];
 for (var j = 0; j < own.length; j++) {
   console.log("where " + own[j] + "=" + where(own[j]));
 }
@@ -90,6 +92,11 @@ fn a_workers_global_is_as_the_reference_browser_has_it() {
         "where name=DedicatedWorkerGlobalScope:configurable,enumerable,get,set",
         "where onerror=WorkerGlobalScope:configurable,enumerable,get,set",
         "where performance=WorkerGlobalScope:configurable,enumerable,get,set",
+        "where location=WorkerGlobalScope:configurable,enumerable,get,set",
+        "where navigator=WorkerGlobalScope:configurable,enumerable,get,set",
+        "where importScripts=WorkerGlobalScope:configurable,enumerable,value,writable",
+        "where postMessage=DedicatedWorkerGlobalScope:configurable,enumerable,value,writable",
+        "where close=DedicatedWorkerGlobalScope:configurable,enumerable,value,writable",
         "name=probe",
         "self is global=true",
         "setTimeout=Failed to execute 'setTimeout' on 'WorkerGlobalScope': \
@@ -166,6 +173,14 @@ fn a_workers_global_is_as_the_reference_browser_has_it() {
         ("MouseEvent", "undefined"),
         ("CanvasRenderingContext2D", "undefined"),
         ("HTMLCanvasElement", "undefined"),
+        ("importScripts", "function"),
+        ("location", "object"),
+        ("navigator", "object"),
+        ("WorkerLocation", "function"),
+        ("WorkerNavigator", "function"),
+        ("Worker", "function"),
+        ("postMessage", "function"),
+        ("close", "function"),
     ];
     let typeofs: Vec<String> = typeofs
         .iter()
@@ -179,11 +194,12 @@ fn a_workers_global_is_as_the_reference_browser_has_it() {
 fn a_windows_global_has_no_workers_interfaces() {
     let lines = logged(
         "console.log(typeof WorkerGlobalScope, typeof DedicatedWorkerGlobalScope, \
-         self === window, String(self), typeof document, typeof Image)",
+         self === window, String(self), typeof document, typeof Image, \
+         typeof WorkerLocation, typeof importScripts, typeof Worker)",
     );
     assert_eq!(
         lines,
-        ["undefined undefined true [object Window] object function"]
+        ["undefined undefined true [object Window] object function undefined undefined function"]
     );
 }
 

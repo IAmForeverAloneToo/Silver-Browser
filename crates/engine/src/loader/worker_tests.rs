@@ -349,3 +349,99 @@ fn a_documents_workers_end_with_it() {
     assert_eq!(live.load(Ordering::SeqCst), 0);
     assert!(tab.engine.take_console().is_empty());
 }
+
+#[test]
+fn a_workers_scope_has_its_location_imports_fetches_and_canvases() {
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<script>\
+             var w = new Worker('scope.js');\
+             w.onmessage = function (e) { e.data.forEach(function (line) { console.log(line); }); \
+               console.log('done'); };\
+             w.onerror = function (e) { console.log('failed', e.message); console.log('done'); };\
+             </script>",
+        )),
+        "/scope.js" => Some(script(SCOPE)),
+        "/a.js" => Some(script("self.order = ['a'];")),
+        "/b.js" => Some(script("self.order.push('b');")),
+        "/throws.js" => Some(script("throw new Error('from import');")),
+        "/gone.js" => Some(Reply::with_fields(
+            404,
+            &[("Content-Type", "text/javascript")],
+            b"self.order.push('gone');",
+        )),
+        "/data.txt" => Some(Reply::ok("text/plain", b"hello")),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(server.url("/page.html"));
+    let lines = until(&mut tab, "done");
+    assert_eq!(
+        lines,
+        [
+            "location scope.js /scope.js true scope.js [object WorkerLocation]",
+            "navigator Mozilla/5.0 string en-US true [object WorkerNavigator]",
+            "performance number true true",
+            "imported a,b",
+            "missing NetworkError 19 Failed to execute 'importScripts' on 'WorkerGlobalScope': \
+             The script at '/missing.js' failed to load.",
+            "html NetworkError",
+            "gone NetworkError a,b",
+            "throws from import",
+            "bad url SyntaxError 12",
+            "sync xhr 200 hello",
+            "canvas 255,0,0,255 0,0,0,0",
+            "bitmap 4x2 0",
+            "created 2",
+            "fetched hello",
+            "async xhr hello",
+            "aborted AbortError",
+            "wasm object",
+            "timer",
+            "done",
+        ]
+    );
+}
+
+/// What a worker's scope is given to do, line by line.
+const SCOPE: &str = "\
+var out = [];\
+var tag = function (o) { return Object.prototype.toString.call(o); };\
+out.push(['location', location.href.split('/').pop(), location.pathname, \
+  location.origin === self.origin, String(location).split('/').pop(), tag(location)].join(' '));\
+out.push(['navigator', navigator.userAgent.slice(0, 11), typeof navigator.platform, \
+  navigator.language, navigator.onLine, tag(navigator)].join(' '));\
+out.push(['performance', typeof performance.now(), performance.now() >= 0, \
+  performance.timeOrigin > 0].join(' '));\
+importScripts('a.js', 'b.js');\
+out.push('imported ' + self.order.join(','));\
+try { importScripts('missing.js'); } catch (e) { \
+  out.push(['missing', e.name, e.code, e.message.split(location.origin).join('')].join(' ')); }\
+try { importScripts('page.html'); } catch (e) { out.push('html ' + e.name); }\
+try { importScripts('gone.js'); } catch (e) { out.push('gone ' + e.name + ' ' + self.order); }\
+try { importScripts('throws.js'); } catch (e) { out.push('throws ' + e.message); }\
+try { importScripts('http://[x'); } catch (e) { out.push('bad url ' + e.name + ' ' + e.code); }\
+importScripts();\
+var sync = new XMLHttpRequest(); sync.open('GET', 'data.txt', false); sync.send();\
+out.push('sync xhr ' + sync.status + ' ' + sync.responseText);\
+var canvas = new OffscreenCanvas(4, 2); var ctx = canvas.getContext('2d');\
+ctx.fillStyle = '#f00'; ctx.fillRect(0, 0, 2, 2);\
+out.push('canvas ' + Array.from(ctx.getImageData(1, 1, 1, 1).data) + ' ' + \
+  Array.from(ctx.getImageData(3, 1, 1, 1).data));\
+var bitmap = canvas.transferToImageBitmap();\
+out.push('bitmap ' + bitmap.width + 'x' + bitmap.height + ' ' + \
+  Array.from(ctx.getImageData(0, 0, 1, 1).data)[0]);\
+createImageBitmap(new ImageData(2, 2)).then(function (b) { out.push('created ' + b.width); \
+  return fetch('data.txt'); }).then(function (r) { return r.text(); }).then(function (t) {\
+  out.push('fetched ' + t);\
+  var later = new XMLHttpRequest(); later.open('GET', 'data.txt');\
+  later.onload = function () { out.push('async xhr ' + later.responseText);\
+    var c = new AbortController(); var p = fetch('data.txt', { signal: c.signal }); c.abort();\
+    p.catch(function (e) { out.push('aborted ' + e.name); \
+      return WebAssembly.instantiate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])); })\
+    .then(function (r) { out.push('wasm ' + typeof r.instance);\
+      setTimeout(function () { out.push('timer'); postMessage(out); }, 1); });\
+  };\
+  later.send();\
+});";

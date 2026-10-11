@@ -6,10 +6,9 @@
 use js::{DomError, FetchAnswer, FetchCall};
 use net::headers;
 use net::{
-    Credentials, Destination, HeaderList, Method, Mode, Redirect, Response, ResponseType, Url,
+    Credentials, Destination, HeaderList, Initiator, Method, Mode, Redirect, Response,
+    ResponseType, Url,
 };
-
-use crate::loader::Page;
 
 /// The most fetches a document has in flight; more are refused.
 pub(crate) const MAX_SCRIPT_FETCHES: usize = 1000;
@@ -28,9 +27,13 @@ fn type_error(message: impl Into<String>) -> DomError {
 /// URL without credentials, its method a token and not forbidden, its
 /// modes Fetch's, its fields valid, the forbidden ones dropped and, in
 /// no-cors mode, those not no-CORS-safelisted; its body within
-/// [`MAX_REQUEST_BODY`] and not with `GET` or `HEAD`; the document its
-/// initiator, so that its origin, address space and mixed content count.
-pub(crate) fn request(page: &Page, call: &FetchCall) -> Result<net::Request, DomError> {
+/// [`MAX_REQUEST_BODY`] and not with `GET` or `HEAD`; the document (or
+/// worker, M31) its initiator, so that its origin, address space and
+/// mixed content count.
+pub(crate) fn request(
+    initiator: Option<Initiator>,
+    call: &FetchCall,
+) -> Result<net::Request, DomError> {
     let url = Url::parse(&call.url)
         .map_err(|_| type_error(format!("Failed to parse URL from {}", call.url)))?;
     if url.includes_credentials() {
@@ -113,9 +116,7 @@ pub(crate) fn request(page: &Page, call: &FetchCall) -> Result<net::Request, Dom
         }
         fields.append(name.as_bytes(), value);
     }
-    let initiator = page
-        .initiator()
-        .ok_or_else(|| type_error("Failed to fetch"))?;
+    let initiator = initiator.ok_or_else(|| type_error("Failed to fetch"))?;
     let mut request = net::Request::get(url, Destination::Empty).initiated_by(initiator);
     request.method = method;
     request.headers = fields;
@@ -163,6 +164,7 @@ pub(crate) fn answer(response: &Response) -> FetchAnswer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::loader::Page;
 
     fn call(change: impl FnOnce(&mut FetchCall)) -> FetchCall {
         let mut call = FetchCall {
@@ -188,7 +190,8 @@ mod tests {
 
     #[test]
     fn the_engine_checks_what_the_bindings_ask_whatever_they_did() {
-        let refused = |change: fn(&mut FetchCall)| request(&page(), &call(change)).is_err();
+        let refused =
+            |change: fn(&mut FetchCall)| request(page().initiator(), &call(change)).is_err();
         assert!(!refused(|_| {}));
         assert!(refused(|c| c.url = "https://u:p@example.com/".to_owned()));
         assert!(refused(|c| c.url = "not a url".to_owned()));
@@ -220,13 +223,13 @@ mod tests {
             |c| c.headers = vec!["a".to_owned(), "x".repeat(MAX_REQUEST_HEADERS)]
         ));
         // A document with no URL fetches nothing.
-        assert!(request(&Page::given(2), &call(|_| {})).is_err());
+        assert!(request(Page::given(2).initiator(), &call(|_| {})).is_err());
     }
 
     #[test]
     fn forbidden_fields_are_dropped_and_no_cors_keeps_its_safelist() {
         fn fields(change: impl FnOnce(&mut FetchCall)) -> Vec<String> {
-            let request = request(&page(), &call(change)).unwrap();
+            let request = request(page().initiator(), &call(change)).unwrap();
             request
                 .headers
                 .iter()
@@ -263,7 +266,7 @@ mod tests {
             ["Accept=a"]
         );
         let made = request(
-            &page(),
+            page().initiator(),
             &call(|c| {
                 c.method = "patch".to_owned();
                 c.body = Some(b"b".to_vec());
