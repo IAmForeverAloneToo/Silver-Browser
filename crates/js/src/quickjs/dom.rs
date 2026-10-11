@@ -112,6 +112,33 @@ impl<'js> Args<'_, 'js> {
             .map(Some)
     }
 
+    /// A canvas's call: the operation's name first, then its pixels as
+    /// base64 when `bytes` holds them, then its arguments, each a number
+    /// or a string (a boolean as 0 or 1).
+    fn canvas(&self, bytes: Option<Vec<u8>>) -> rquickjs::Result<Call> {
+        let op = self.string(0)?;
+        let mut numbers = Vec::new();
+        let mut strings = Vec::new();
+        let first = if bytes.is_some() { 2 } else { 1 };
+        for value in self.values.iter().skip(first) {
+            if let Some(number) = value.as_number() {
+                numbers.push(number);
+            } else if let Some(flag) = value.as_bool() {
+                numbers.push(f64::from(u8::from(flag)));
+            } else if let Some(text) = value.as_string() {
+                strings.push(text.to_string()?);
+            } else {
+                return Err(Exception::throw_type(self.ctx, "not a canvas argument"));
+            }
+        }
+        Ok(Call::Canvas(Box::new(crate::dom::CanvasCall {
+            op,
+            numbers,
+            strings,
+            bytes,
+        })))
+    }
+
     /// A string, which the bootstrap has made well formed.
     fn string(&self, i: usize) -> rquickjs::Result<String> {
         match self.value(i).as_string() {
@@ -451,6 +478,14 @@ const NATIVES: &[(&str, Decode)] = &[
     }),
     ("reportInvalid", |a| Ok(Call::ReportInvalid(a.handle(0)?))),
     ("hidden", |_| Ok(Call::Hidden)),
+    ("canvas", |a| a.canvas(None)),
+    // `putImageData`'s pixels, as base64 (`toBase64` makes it at the
+    // speed of C; `rquickjs` lends no buffer's bytes safely).
+    ("canvasData", |a| {
+        let bytes = super::wasm::from_base64(&a.string(1)?)
+            .ok_or_else(|| Exception::throw_type(a.ctx, "not base64"))?;
+        a.canvas(Some(bytes))
+    }),
     ("dialog", |a| {
         Ok(Call::Dialog {
             kind: a.string(0)?,
@@ -681,6 +716,7 @@ fn value<'js>(ctx: &Ctx<'js>, answer: Answer) -> rquickjs::Result<Value<'js>> {
             }
             array.into_value()
         }
+        Answer::Bytes(bytes) => rquickjs::ArrayBuffer::new(ctx.clone(), bytes)?.into_value(),
     })
 }
 

@@ -10,6 +10,9 @@
 //! The host stays with the document between runs (M25), keeping what
 //! scripts hold; after each run the subtrees they let go of are freed.
 
+mod canvas;
+#[cfg(test)]
+mod canvas_tests;
 mod cssom;
 mod fetch;
 mod host;

@@ -50,11 +50,12 @@ impl Subpath {
 }
 
 /// A path: its subpaths, and how many points they hold, at most
-/// [`MAX_PATH_POINTS`].
+/// [`MAX_PATH_POINTS`] or the lower limit its owner set.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Path {
     subpaths: Vec<Subpath>,
     points: usize,
+    limit: Option<usize>,
 }
 
 fn finite(values: &[f64]) -> bool {
@@ -73,6 +74,13 @@ impl Path {
         Path::default()
     }
 
+    /// `new Path2D(d)`: SVG path data, up to its first error.
+    pub fn from_svg(d: &str) -> Path {
+        let mut path = Path::new();
+        crate::svg::parse(d, &mut path);
+        path
+    }
+
     pub fn is_empty(&self) -> bool {
         self.subpaths.is_empty()
     }
@@ -83,7 +91,14 @@ impl Path {
     }
 
     fn room(&self, points: usize) -> bool {
-        self.points + points <= MAX_PATH_POINTS
+        self.points + points <= self.limit.unwrap_or(MAX_PATH_POINTS).min(MAX_PATH_POINTS)
+    }
+
+    /// The most points the path may hold below [`MAX_PATH_POINTS`], as
+    /// a document's budget for all its paths leaves it; `None` for that
+    /// bound alone.
+    pub fn set_limit(&mut self, limit: Option<usize>) {
+        self.limit = limit;
     }
 
     fn push(&mut self, segment: Segment) {
@@ -241,7 +256,7 @@ impl Path {
     /// when the angles are a turn or more apart in its direction, else
     /// the way round in its direction, never more than a turn.
     #[allow(clippy::too_many_arguments)]
-    fn add_ellipse(
+    pub(crate) fn add_ellipse(
         &mut self,
         x: f64,
         y: f64,
@@ -527,6 +542,7 @@ impl Path {
     pub fn transformed(&self, m: &Matrix) -> Path {
         let at = |p: Point| m.apply(p.0, p.1);
         Path {
+            limit: self.limit,
             subpaths: self
                 .subpaths
                 .iter()

@@ -256,6 +256,34 @@ impl LineJoin {
     }
 }
 
+/// `imageSmoothingQuality`: read back as it was set, every one drawn
+/// with bilinear interpolation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Quality {
+    Low,
+    Medium,
+    High,
+}
+
+impl Quality {
+    pub fn from_name(name: &str) -> Option<Quality> {
+        Some(match name {
+            "low" => Quality::Low,
+            "medium" => Quality::Medium,
+            "high" => Quality::High,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Quality::Low => "low",
+            Quality::Medium => "medium",
+            Quality::High => "high",
+        }
+    }
+}
+
 /// `globalCompositeOperation`: Compositing and Blending's operators and
 /// blend modes, by their names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -422,6 +450,9 @@ pub struct State {
     pub shadow_blur: f64,
     pub shadow_color: Rgba,
     pub image_smoothing: bool,
+    pub image_smoothing_quality: Quality,
+    /// `filter`, as it was set: read back, not drawn (G81).
+    pub filter: String,
     /// The clipping region, shared until a `clip()` changes it.
     pub(crate) clip: Option<Arc<Mask>>,
 }
@@ -444,6 +475,8 @@ impl Default for State {
             shadow_blur: 0.0,
             shadow_color: Rgba::TRANSPARENT,
             image_smoothing: true,
+            image_smoothing_quality: Quality::Low,
+            filter: "none".to_owned(),
             clip: None,
         }
     }

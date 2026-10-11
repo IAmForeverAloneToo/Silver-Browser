@@ -823,3 +823,56 @@ fn every_change_moves_the_generation_on() {
     let snapshot = canvas.snapshot().unwrap();
     assert_eq!((snapshot.width, snapshot.height), (4, 4));
 }
+
+#[test]
+fn svg_path_data_is_read_up_to_its_first_error() {
+    let fill = |d: &str| {
+        let mut canvas = Canvas::new(20, 20, false);
+        canvas.fill(Some(&Path::from_svg(d)), FillRule::Winding);
+        canvas
+    };
+    // Absolute and relative, with h, v and z.
+    let canvas = fill("M2 2 L8 2 L8 8 Z m10 0 h4 v4 h-4 z");
+    assert_eq!(px(&canvas, 6, 4)[3], 255);
+    assert_eq!(px(&canvas, 13, 3)[3], 255);
+    assert_eq!(px(&canvas, 3, 6)[3], 0);
+    // Numbers after a move are lines.
+    let canvas = fill("M2 2 8 2 8 8z");
+    assert_eq!(px(&canvas, 6, 4)[3], 255);
+    // The error stops it: a line alone fills nothing.
+    let canvas = fill("M 2 2 L 10 2 L 10 x 5 L 2 10 Z");
+    assert_eq!(px(&canvas, 5, 3)[3], 0);
+    // An arc by its end points, the sweep flag clockwise: the upper half.
+    let canvas = fill("M 2 10 A 8 8 0 0 1 18 10 Z");
+    assert_eq!((px(&canvas, 10, 5)[3], px(&canvas, 10, 15)[3]), (255, 0));
+    // A radius past half the chord: the small arc clockwise bulges up,
+    // its centre below the chord.
+    let canvas = fill("M 2 10 A 10 10 0 0 1 18 10 Z");
+    let at = |x, y| px(&canvas, x, y)[3];
+    assert_eq!((at(10, 7), at(10, 3), at(10, 12)), (255, 0, 0));
+    // Flags need no separator.
+    let canvas = fill("M0 0a5 5 0 1012 0");
+    assert_eq!(px(&canvas, 6, 3)[3], 255);
+    // Smooth curves, implicit repeats and exponents parse; data that
+    // does not start with a move is nothing.
+    let path = Path::from_svg(
+        "M1,1L5,1 5,5zM 10 10 Q 15 10 15 15 T 18 18 C 1 2 3 4 5 6 S 7 8 9 9 A 2 2 0 1 0 12 12 1e1 5",
+    );
+    assert!(path.len() > 20);
+    assert!(Path::from_svg("L 1 1 M 2 2").is_empty());
+    assert!(Path::from_svg("").is_empty());
+}
+
+#[test]
+fn a_path_holds_no_more_than_its_limit() {
+    let mut path = Path::new();
+    let m = Matrix::IDENTITY;
+    path.set_limit(Some(3));
+    for i in 0..10 {
+        path.line_to(f64::from(i), 0.0, &m);
+    }
+    assert_eq!(path.len(), 3);
+    path.set_limit(None);
+    path.line_to(1.0, 1.0, &m);
+    assert_eq!(path.len(), 4);
+}

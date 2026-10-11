@@ -9258,6 +9258,2076 @@
     [HTMLElement.prototype],
   );
 
+  // ---- Geometry (Geometry Interfaces Module Level 1, M30) ------------------
+
+  const MathSin = Math.sin;
+  const MathCos = Math.cos;
+  const MathTan = Math.tan;
+  const MathAtan2 = Math.atan2;
+  const MathSqrt = Math.sqrt;
+  const PI = Math.PI;
+  const $Uint8ClampedArray = Uint8ClampedArray;
+  const $Float32Array = Float32Array;
+  const $Float64Array = Float64Array;
+  // A typed array's kind, buffer, offset and length, by the getters no
+  // page reaches: undefined for what is not a typed array.
+  const TYPED_ARRAY = ReflectGetPrototypeOf(Uint8Array.prototype);
+  const TypedArrayTag = uncurry(getOwnPropertyDescriptor(TYPED_ARRAY, toStringTag).get);
+  const TypedArrayBuffer = uncurry(getOwnPropertyDescriptor(TYPED_ARRAY, "buffer").get);
+  const TypedArrayOffset = uncurry(getOwnPropertyDescriptor(TYPED_ARRAY, "byteOffset").get);
+  const TypedArrayLength = uncurry(getOwnPropertyDescriptor(TYPED_ARRAY, "byteLength").get);
+
+  // A point's numbers, x, y, z and w; a matrix's sixteen, column by
+  // column (m11, m12, m13, m14, m21, ...), and whether it is 2D; each
+  // where no page reaches them.
+  const points = new $WeakMap();
+  const matrices = new $WeakMap();
+
+  function pointOf(object) {
+    const p = WeakMapGet(points, object);
+    if (p === undefined) {
+      throw illegalInvocation();
+    }
+    return p;
+  }
+
+  function matrixOf(object) {
+    const m = WeakMapGet(matrices, object);
+    if (m === undefined) {
+      throw illegalInvocation();
+    }
+    return m;
+  }
+
+  class DOMPointReadOnly {
+    constructor() {
+      const a = arguments;
+      WeakMapSet(points, this, [
+        a[0] === undefined ? 0 : $Number(a[0]),
+        a[1] === undefined ? 0 : $Number(a[1]),
+        a[2] === undefined ? 0 : $Number(a[2]),
+        a[3] === undefined ? 1 : $Number(a[3]),
+      ]);
+    }
+
+    static fromPoint() {
+      const p = pointInit(arguments[0], "fromPoint", "DOMPointReadOnly");
+      return new DOMPointReadOnly(p[0], p[1], p[2], p[3]);
+    }
+
+    get x() {
+      return pointOf(this)[0];
+    }
+
+    get y() {
+      return pointOf(this)[1];
+    }
+
+    get z() {
+      return pointOf(this)[2];
+    }
+
+    get w() {
+      return pointOf(this)[3];
+    }
+
+    matrixTransform() {
+      const p = pointOf(this);
+      return transformed(matrixInit(arguments[0], "matrixTransform", "DOMPointReadOnly", true), p);
+    }
+
+    toJSON() {
+      const p = pointOf(this);
+      return { x: p[0], y: p[1], z: p[2], w: p[3] };
+    }
+  }
+
+  class DOMPoint extends DOMPointReadOnly {
+    static fromPoint() {
+      const p = pointInit(arguments[0], "fromPoint", "DOMPoint");
+      return new DOMPoint(p[0], p[1], p[2], p[3]);
+    }
+  }
+  const POINT_FIELDS = ["x", "y", "z", "w"];
+  for (let i = 0; i < 4; i++) {
+    defineProperty(DOMPoint.prototype, POINT_FIELDS[i], {
+      get() {
+        return pointOf(this)[i];
+      },
+      set(value) {
+        pointOf(this)[i] = $Number(value);
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  }
+
+  // A DOMPointInit's numbers.
+  function pointInit(value, method, iface) {
+    if (value !== undefined && value !== null && typeof value !== "object" &&
+      typeof value !== "function") {
+      throw new $TypeError(prefix(method, iface) +
+        "The provided value is not of type 'DOMPointInit'.");
+    }
+    const field = (name, fallback) => {
+      const given = value === undefined || value === null ? undefined : value[name];
+      return given === undefined ? fallback : $Number(given);
+    };
+    return [field("x", 0), field("y", 0), field("z", 0), field("w", 1)];
+  }
+
+  // The point `p` transformed by the matrix `m`, a new DOMPoint.
+  function transformed(m, p) {
+    const s = m.s;
+    const x = p[0], y = p[1], z = p[2], w = p[3];
+    return new DOMPoint(
+      s[0] * x + s[4] * y + s[8] * z + s[12] * w,
+      s[1] * x + s[5] * y + s[9] * z + s[13] * w,
+      s[2] * x + s[6] * y + s[10] * z + s[14] * w,
+      s[3] * x + s[7] * y + s[11] * z + s[15] * w,
+    );
+  }
+
+  const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+
+  // The identity, 2D or not.
+  function identity(is2D) {
+    return { s: ArraySlice(IDENTITY, 0), is2D };
+  }
+
+  // A matrix's numbers from six (2D) or sixteen.
+  function fromList(list, is2D) {
+    const s = ArraySlice(IDENTITY, 0);
+    if (is2D) {
+      s[0] = list[0];
+      s[1] = list[1];
+      s[4] = list[2];
+      s[5] = list[3];
+      s[12] = list[4];
+      s[13] = list[5];
+    } else {
+      for (let i = 0; i < 16; i++) {
+        s[i] = list[i];
+      }
+    }
+    return { s, is2D };
+  }
+
+  // The product a x b, b applied to a point first.
+  function multiplied(a, b) {
+    const s = [];
+    for (let col = 0; col < 4; col++) {
+      for (let row = 0; row < 4; row++) {
+        let sum = 0;
+        for (let k = 0; k < 4; k++) {
+          sum += a.s[k * 4 + row] * b.s[col * 4 + k];
+        }
+        s[col * 4 + row] = sum;
+      }
+    }
+    return { s, is2D: a.is2D && b.is2D };
+  }
+
+  function sameValueZero(a, b) {
+    return a === b || (a !== a && b !== b);
+  }
+
+  // Geometry's "validate and fixup" of a DOMMatrix2DInit, or of a
+  // DOMMatrixInit when `full`: the numbers, `a` and `m11` and the rest
+  // agreeing, and whether it is 2D.
+  function matrixInit(value, method, iface, full) {
+    if (value !== undefined && value !== null && typeof value !== "object" &&
+      typeof value !== "function") {
+      throw new $TypeError(prefix(method, iface) + "The provided value is not of type '" +
+        (full ? "DOMMatrixInit" : "DOMMatrix2DInit") + "'.");
+    }
+    const get = (name) => {
+      const given = value === undefined || value === null ? undefined : value[name];
+      return given === undefined ? undefined : $Number(given);
+    };
+    const pairs = [["a", "m11", 1], ["b", "m12", 0], ["c", "m21", 0], ["d", "m22", 1],
+      ["e", "m41", 0], ["f", "m42", 0]];
+    const two = [];
+    for (let i = 0; i < 6; i++) {
+      const short = get(pairs[i][0]);
+      const long = get(pairs[i][1]);
+      if (short !== undefined && long !== undefined && !sameValueZero(short, long)) {
+        throw new $TypeError(prefix(method, iface) + "Property mismatch on matrix initialization.");
+      }
+      two[i] = long !== undefined ? long : short !== undefined ? short : pairs[i][2];
+    }
+    const m = fromList(two, true);
+    if (!full) {
+      return m;
+    }
+    const rest = [["m13", 2, 0], ["m14", 3, 0], ["m23", 6, 0], ["m24", 7, 0], ["m31", 8, 0],
+      ["m32", 9, 0], ["m33", 10, 1], ["m34", 11, 0], ["m43", 14, 0], ["m44", 15, 1]];
+    let flat = true;
+    for (let i = 0; i < rest.length; i++) {
+      const given = get(rest[i][0]);
+      const v = given === undefined ? rest[i][2] : given;
+      m.s[rest[i][1]] = v;
+      if (v !== rest[i][2]) {
+        flat = false;
+      }
+    }
+    const is2D = value === undefined || value === null ? undefined : value.is2D;
+    if (is2D === undefined) {
+      m.is2D = flat;
+    } else if (!!is2D && !flat) {
+      throw new $TypeError(prefix(method, iface) +
+        "The is2D member is set to true but the input matrix is a 3d matrix.");
+    } else {
+      m.is2D = !!is2D;
+    }
+    return m;
+  }
+
+  // A matrix of the class `cls` holding `m`.
+  function makeMatrix(cls, m) {
+    const object = new cls(KEY);
+    WeakMapSet(matrices, object, m);
+    return object;
+  }
+
+  function translation(tx, ty, tz) {
+    const m = identity(tz === 0);
+    m.s[12] = tx;
+    m.s[13] = ty;
+    m.s[14] = tz;
+    return m;
+  }
+
+  function scaling(sx, sy, sz) {
+    const m = identity(sz === 1);
+    m.s[0] = sx;
+    m.s[5] = sy;
+    m.s[10] = sz;
+    return m;
+  }
+
+  // The sine and cosine of `degrees`, exact at quarter turns.
+  function sinCos(degrees) {
+    const turns = degrees / 90;
+    if (turns === MathFloor(turns) && turns === turns) {
+      const q = ((turns % 4) + 4) % 4;
+      return [[0, 1, 0, -1][q], [1, 0, -1, 0][q]];
+    }
+    const radians = (degrees * PI) / 180;
+    return [MathSin(radians), MathCos(radians)];
+  }
+
+  // A rotation of `degrees` about the axis (x, y, z): about one of the
+  // three axes by its sine and cosine, else as CSS Transforms 2 writes it.
+  function rotation(x, y, z, degrees) {
+    const m = identity(false);
+    const s = m.s;
+    const length = MathSqrt(x * x + y * y + z * z);
+    if (length === 0 || length !== length) {
+      m.is2D = x === 0 && y === 0;
+      return m;
+    }
+    x /= length;
+    y /= length;
+    z /= length;
+    const sc = sinCos(degrees);
+    const sin = sc[0], cos = sc[1];
+    if (x === 0 && y === 0) {
+      s[0] = cos;
+      s[1] = z * sin;
+      s[4] = -z * sin;
+      s[5] = cos;
+      m.is2D = true;
+      return m;
+    }
+    if (y === 0 && z === 0) {
+      s[5] = cos;
+      s[6] = x * sin;
+      s[9] = -x * sin;
+      s[10] = cos;
+      return m;
+    }
+    if (x === 0 && z === 0) {
+      s[0] = cos;
+      s[2] = -y * sin;
+      s[8] = y * sin;
+      s[10] = cos;
+      return m;
+    }
+    const half = sinCos(degrees / 2);
+    const scHalf = half[0] * half[1];
+    const sq = half[0] * half[0];
+    s[0] = 1 - 2 * (y * y + z * z) * sq;
+    s[1] = 2 * (x * y * sq + z * scHalf);
+    s[2] = 2 * (x * z * sq - y * scHalf);
+    s[4] = 2 * (x * y * sq - z * scHalf);
+    s[5] = 1 - 2 * (x * x + z * z) * sq;
+    s[6] = 2 * (y * z * sq + x * scHalf);
+    s[8] = 2 * (x * z * sq + y * scHalf);
+    s[9] = 2 * (y * z * sq - x * scHalf);
+    s[10] = 1 - 2 * (x * x + y * y) * sq;
+    return m;
+  }
+
+  function skewing(xDegrees, yDegrees) {
+    const m = identity(true);
+    m.s[4] = MathTan((xDegrees * PI) / 180);
+    m.s[1] = MathTan((yDegrees * PI) / 180);
+    return m;
+  }
+
+  function nans() {
+    const s = [];
+    for (let i = 0; i < 16; i++) {
+      s[i] = NaN;
+    }
+    return s;
+  }
+
+  // The inverse of `m`, or NaN everywhere when it has none.
+  function inverted(m) {
+    const s = m.s;
+    if (m.is2D) {
+      const det = s[0] * s[5] - s[1] * s[4];
+      if (det === 0 || det !== det) {
+        return { s: nans(), is2D: false };
+      }
+      return fromList([
+        s[5] / det, -s[1] / det, -s[4] / det, s[0] / det,
+        (s[4] * s[13] - s[5] * s[12]) / det, (s[1] * s[12] - s[0] * s[13]) / det,
+      ], true);
+    }
+    const v = [];
+    v[0] = s[5] * s[10] * s[15] - s[5] * s[11] * s[14] - s[9] * s[6] * s[15] +
+      s[9] * s[7] * s[14] + s[13] * s[6] * s[11] - s[13] * s[7] * s[10];
+    v[4] = -s[4] * s[10] * s[15] + s[4] * s[11] * s[14] + s[8] * s[6] * s[15] -
+      s[8] * s[7] * s[14] - s[12] * s[6] * s[11] + s[12] * s[7] * s[10];
+    v[8] = s[4] * s[9] * s[15] - s[4] * s[11] * s[13] - s[8] * s[5] * s[15] +
+      s[8] * s[7] * s[13] + s[12] * s[5] * s[11] - s[12] * s[7] * s[9];
+    v[12] = -s[4] * s[9] * s[14] + s[4] * s[10] * s[13] + s[8] * s[5] * s[14] -
+      s[8] * s[6] * s[13] - s[12] * s[5] * s[10] + s[12] * s[6] * s[9];
+    v[1] = -s[1] * s[10] * s[15] + s[1] * s[11] * s[14] + s[9] * s[2] * s[15] -
+      s[9] * s[3] * s[14] - s[13] * s[2] * s[11] + s[13] * s[3] * s[10];
+    v[5] = s[0] * s[10] * s[15] - s[0] * s[11] * s[14] - s[8] * s[2] * s[15] +
+      s[8] * s[3] * s[14] + s[12] * s[2] * s[11] - s[12] * s[3] * s[10];
+    v[9] = -s[0] * s[9] * s[15] + s[0] * s[11] * s[13] + s[8] * s[1] * s[15] -
+      s[8] * s[3] * s[13] - s[12] * s[1] * s[11] + s[12] * s[3] * s[9];
+    v[13] = s[0] * s[9] * s[14] - s[0] * s[10] * s[13] - s[8] * s[1] * s[14] +
+      s[8] * s[2] * s[13] + s[12] * s[1] * s[10] - s[12] * s[2] * s[9];
+    v[2] = s[1] * s[6] * s[15] - s[1] * s[7] * s[14] - s[5] * s[2] * s[15] +
+      s[5] * s[3] * s[14] + s[13] * s[2] * s[7] - s[13] * s[3] * s[6];
+    v[6] = -s[0] * s[6] * s[15] + s[0] * s[7] * s[14] + s[4] * s[2] * s[15] -
+      s[4] * s[3] * s[14] - s[12] * s[2] * s[7] + s[12] * s[3] * s[6];
+    v[10] = s[0] * s[5] * s[15] - s[0] * s[7] * s[13] - s[4] * s[1] * s[15] +
+      s[4] * s[3] * s[13] + s[12] * s[1] * s[7] - s[12] * s[3] * s[5];
+    v[14] = -s[0] * s[5] * s[14] + s[0] * s[6] * s[13] + s[4] * s[1] * s[14] -
+      s[4] * s[2] * s[13] - s[12] * s[1] * s[6] + s[12] * s[2] * s[5];
+    v[3] = -s[1] * s[6] * s[11] + s[1] * s[7] * s[10] + s[5] * s[2] * s[11] -
+      s[5] * s[3] * s[10] - s[9] * s[2] * s[7] + s[9] * s[3] * s[6];
+    v[7] = s[0] * s[6] * s[11] - s[0] * s[7] * s[10] - s[4] * s[2] * s[11] +
+      s[4] * s[3] * s[10] + s[8] * s[2] * s[7] - s[8] * s[3] * s[6];
+    v[11] = -s[0] * s[5] * s[11] + s[0] * s[7] * s[9] + s[4] * s[1] * s[11] -
+      s[4] * s[3] * s[9] - s[8] * s[1] * s[7] + s[8] * s[3] * s[5];
+    v[15] = s[0] * s[5] * s[10] - s[0] * s[6] * s[9] - s[4] * s[1] * s[10] +
+      s[4] * s[2] * s[9] + s[8] * s[1] * s[6] - s[8] * s[2] * s[5];
+    const det = s[0] * v[0] + s[1] * v[4] + s[2] * v[8] + s[3] * v[12];
+    if (det === 0 || det !== det) {
+      return { s: nans(), is2D: false };
+    }
+    for (let i = 0; i < 16; i++) {
+      v[i] /= det;
+    }
+    return { s: v, is2D: false };
+  }
+
+  // The absolute lengths and the angles a transform list may hold, in
+  // pixels and degrees; the lengths it may not, relative to a font, a
+  // viewport or a box.
+  const LENGTHS = ["px", 1, "cm", 96 / 2.54, "mm", 96 / 25.4, "q", 96 / 101.6, "in", 96,
+    "pt", 4 / 3, "pc", 16];
+  const ANGLES = ["deg", 1, "grad", 0.9, "rad", 180 / PI, "turn", 360];
+  const RELATIVE = ["%", "em", "ex", "ch", "rem", "vw", "vh", "vmin", "vmax", "lh", "rlh",
+    "cap", "ic", "vi", "vb", "svw", "svh", "lvw", "lvh", "dvw", "dvh", "cqw", "cqh"];
+
+  function unitScale(list, unit) {
+    for (let i = 0; i < list.length; i += 2) {
+      if (list[i] === unit) {
+        return list[i + 1];
+      }
+    }
+    return undefined;
+  }
+
+  // A transform list (CSS Transforms 1 and 2) as a matrix, as DOMMatrix's
+  // string reads it: its functions multiplied in order, `none` or
+  // nothing the identity. One that does not parse is a SyntaxError, as is
+  // one with a length that is not absolute.
+  function fromTransformList(text, iface, method) {
+    const fail = (message) => new $DOMException(
+      "Failed to " + method + " '" + iface + "': " + message, "SyntaxError");
+    const parse = () => fail("Failed to parse '" + text + "'.");
+    const n = text.length;
+    let i = 0;
+    const space = () => {
+      while (i < n && (text[i] === " " || text[i] === "\t" || text[i] === "\n" ||
+        text[i] === "\r" || text[i] === "\f")) {
+        i++;
+      }
+    };
+    const letter = (c) => (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || c === "-";
+    const digit = (c) => c >= "0" && c <= "9";
+    space();
+    let result = identity(true);
+    const start = i;
+    while (i < n && letter(text[i])) {
+      i++;
+    }
+    if (ToLowerCase(StringSlice(text, start, i)) === "none") {
+      space();
+      if (i === n) {
+        return result;
+      }
+      throw parse();
+    }
+    i = start;
+    while (i < n) {
+      const nameStart = i;
+      while (i < n && (letter(text[i]) || digit(text[i]))) {
+        i++;
+      }
+      const name = ToLowerCase(StringSlice(text, nameStart, i));
+      if (name === "" || text[i] !== "(") {
+        throw parse();
+      }
+      i++;
+      const args = [];
+      space();
+      while (i < n && text[i] !== ")") {
+        const numberStart = i;
+        if (text[i] === "+" || text[i] === "-") {
+          i++;
+        }
+        let digits = 0;
+        while (i < n && digit(text[i])) {
+          i++;
+          digits++;
+        }
+        if (text[i] === ".") {
+          i++;
+          while (i < n && digit(text[i])) {
+            i++;
+            digits++;
+          }
+        }
+        if (digits === 0) {
+          throw parse();
+        }
+        if ((text[i] === "e" || text[i] === "E") &&
+          (digit(text[i + 1]) || ((text[i + 1] === "+" || text[i + 1] === "-") && digit(text[i + 2])))) {
+          i += 2;
+          while (i < n && digit(text[i])) {
+            i++;
+          }
+        }
+        const value = $Number(StringSlice(text, numberStart, i));
+        const unitStart = i;
+        while (i < n && (letter(text[i]) || text[i] === "%")) {
+          i++;
+        }
+        ArrayPush(args, [value, ToLowerCase(StringSlice(text, unitStart, i))]);
+        space();
+        if (text[i] === ",") {
+          i++;
+          space();
+          if (text[i] === ")") {
+            throw parse();
+          }
+        }
+      }
+      if (i >= n) {
+        throw parse();
+      }
+      i++;
+      space();
+      result = multiplied(result, transformFunction(name, args, parse, fail));
+    }
+    return result;
+  }
+
+  // One function of a transform list as a matrix.
+  function transformFunction(name, args, parse, fail) {
+    const count = args.length;
+    const numberAt = (k) => {
+      if (args[k][1] !== "") {
+        throw parse();
+      }
+      return args[k][0];
+    };
+    const lengthAt = (k) => {
+      const v = args[k][0], unit = args[k][1];
+      if (unit === "" && v === 0) {
+        return 0;
+      }
+      const scale = unitScale(LENGTHS, unit);
+      if (scale !== undefined) {
+        return v * scale;
+      }
+      for (let r = 0; r < RELATIVE.length; r++) {
+        if (RELATIVE[r] === unit) {
+          throw fail("Values must be resolvable at parse time");
+        }
+      }
+      throw parse();
+    };
+    const angleAt = (k) => {
+      const v = args[k][0], unit = args[k][1];
+      if (unit === "" && v === 0) {
+        return 0;
+      }
+      const scale = unitScale(ANGLES, unit);
+      if (scale === undefined) {
+        throw parse();
+      }
+      return v * scale;
+    };
+    const want = (lo, hi) => {
+      if (count < lo || count > hi) {
+        throw parse();
+      }
+    };
+    switch (name) {
+      case "matrix": {
+        want(6, 6);
+        const v = [];
+        for (let k = 0; k < 6; k++) {
+          v[k] = numberAt(k);
+        }
+        return fromList(v, true);
+      }
+      case "matrix3d": {
+        want(16, 16);
+        const v = [];
+        for (let k = 0; k < 16; k++) {
+          v[k] = numberAt(k);
+        }
+        return fromList(v, false);
+      }
+      case "translate":
+        want(1, 2);
+        return translation(lengthAt(0), count > 1 ? lengthAt(1) : 0, 0);
+      case "translatex":
+        want(1, 1);
+        return translation(lengthAt(0), 0, 0);
+      case "translatey":
+        want(1, 1);
+        return translation(0, lengthAt(0), 0);
+      case "translatez": {
+        want(1, 1);
+        const m = translation(0, 0, lengthAt(0));
+        m.is2D = false;
+        return m;
+      }
+      case "translate3d": {
+        want(3, 3);
+        const m = translation(lengthAt(0), lengthAt(1), lengthAt(2));
+        m.is2D = false;
+        return m;
+      }
+      case "scale":
+        want(1, 2);
+        return scaling(numberAt(0), count > 1 ? numberAt(1) : numberAt(0), 1);
+      case "scalex":
+        want(1, 1);
+        return scaling(numberAt(0), 1, 1);
+      case "scaley":
+        want(1, 1);
+        return scaling(1, numberAt(0), 1);
+      case "scalez": {
+        want(1, 1);
+        const m = scaling(1, 1, numberAt(0));
+        m.is2D = false;
+        return m;
+      }
+      case "scale3d": {
+        want(3, 3);
+        const m = scaling(numberAt(0), numberAt(1), numberAt(2));
+        m.is2D = false;
+        return m;
+      }
+      case "rotate":
+      case "rotatez": {
+        want(1, 1);
+        const m = rotation(0, 0, 1, angleAt(0));
+        m.is2D = name === "rotate";
+        return m;
+      }
+      case "rotatex":
+        want(1, 1);
+        return rotation(1, 0, 0, angleAt(0));
+      case "rotatey":
+        want(1, 1);
+        return rotation(0, 1, 0, angleAt(0));
+      case "rotate3d": {
+        want(4, 4);
+        const m = rotation(numberAt(0), numberAt(1), numberAt(2), angleAt(3));
+        m.is2D = false;
+        return m;
+      }
+      case "skew":
+        want(1, 2);
+        return skewing(angleAt(0), count > 1 ? angleAt(1) : 0);
+      case "skewx":
+        want(1, 1);
+        return skewing(angleAt(0), 0);
+      case "skewy":
+        want(1, 1);
+        return skewing(0, angleAt(0));
+      case "perspective": {
+        want(1, 1);
+        const m = identity(false);
+        const d = lengthAt(0);
+        if (d !== 0) {
+          m.s[11] = -1 / d;
+        }
+        return m;
+      }
+      default:
+        throw parse();
+    }
+  }
+
+  // A matrix's numbers from a list given to the constructor: six for a
+  // 2D one, sixteen for one in 3D.
+  function fromSequence(list, iface) {
+    if (list.length === 6) {
+      return fromList(list, true);
+    }
+    if (list.length === 16) {
+      return fromList(list, false);
+    }
+    throw new $TypeError("Failed to construct '" + iface +
+      "': The sequence must contain 6 elements for a 2D matrix or 16 elements for a 3D matrix.");
+  }
+
+  // The constructor's argument as a matrix: none the identity, a string
+  // a transform list, anything iterable its numbers.
+  function constructed(init, iface) {
+    if (init === undefined) {
+      return identity(true);
+    }
+    if (typeof init === "string") {
+      return fromTransformList(init, iface, "construct");
+    }
+    if (init === null || (typeof init !== "object" && typeof init !== "function") ||
+      typeof init[iteratorSymbol] !== "function") {
+      throw new $TypeError("Failed to construct '" + iface +
+        "': The provided value cannot be converted to a sequence.");
+    }
+    const list = [];
+    const iterator = init[iteratorSymbol]();
+    for (;;) {
+      const step = iterator.next();
+      if (step.done) {
+        break;
+      }
+      ArrayPush(list, $Number(step.value));
+    }
+    return fromSequence(list, iface);
+  }
+
+  // A matrix from a typed array's numbers.
+  function typedMatrix(array, method, iface, type) {
+    if (array === null || typeof array !== "object" || TypedArrayTag(array) !== type) {
+      throw new $TypeError(prefix(method, iface) + "parameter 1 is not of type '" + type + "'.");
+    }
+    const list = [];
+    for (let i = 0; i < array.length; i++) {
+      list[i] = array[i];
+    }
+    if (list.length !== 6 && list.length !== 16) {
+      throw new $TypeError(prefix(method, iface) +
+        "The sequence must contain 6 elements for a 2D matrix or 16 elements for a 3D matrix.");
+    }
+    return fromList(list, list.length === 6);
+  }
+
+  // A number argument, its default when undefined.
+  function or(value, fallback) {
+    return value === undefined ? fallback : $Number(value);
+  }
+
+  function translated(m, tx, ty, tz) {
+    return multiplied(m, translation(or(tx, 0), or(ty, 0), or(tz, 0)));
+  }
+
+  function scaled(m, sx, sy, sz, ox, oy, oz) {
+    sx = or(sx, 1);
+    sy = or(sy, sx);
+    sz = or(sz, 1);
+    ox = or(ox, 0);
+    oy = or(oy, 0);
+    oz = or(oz, 0);
+    let out = multiplied(m, translation(ox, oy, oz));
+    out = multiplied(out, scaling(sx, sy, sz));
+    out = multiplied(out, translation(-ox, -oy, -oz));
+    out.is2D = m.is2D && sz === 1 && oz === 0;
+    return out;
+  }
+
+  function rotated(m, rx, ry, rz) {
+    rx = or(rx, 0);
+    if (ry === undefined && rz === undefined) {
+      rz = rx;
+      rx = 0;
+      ry = 0;
+    } else {
+      ry = or(ry, 0);
+      rz = or(rz, 0);
+    }
+    let out = m;
+    if (rz !== 0 || (rx === 0 && ry === 0)) {
+      out = multiplied(out, rotation(0, 0, 1, rz));
+    }
+    if (ry !== 0) {
+      out = multiplied(out, rotation(0, 1, 0, ry));
+    }
+    if (rx !== 0) {
+      out = multiplied(out, rotation(1, 0, 0, rx));
+    }
+    return out;
+  }
+
+  function rotatedFromVector(m, x, y) {
+    x = or(x, 0);
+    y = or(y, 0);
+    const degrees = x === 0 && y === 0 ? 0 : (MathAtan2(y, x) * 180) / PI;
+    return multiplied(m, rotation(0, 0, 1, degrees));
+  }
+
+  function axisAngle(m, x, y, z, angle) {
+    return multiplied(m, rotation(or(x, 0), or(y, 0), or(z, 0), or(angle, 0)));
+  }
+
+  class DOMMatrixReadOnly {
+    constructor() {
+      if (arguments[0] === KEY) {
+        return;
+      }
+      const iface = new.target === DOMMatrix ? "DOMMatrix" : "DOMMatrixReadOnly";
+      WeakMapSet(matrices, this, constructed(arguments[0], iface));
+    }
+
+    static fromMatrix() {
+      return makeMatrix(DOMMatrixReadOnly,
+        matrixInit(arguments[0], "fromMatrix", "DOMMatrixReadOnly", true));
+    }
+
+    static fromFloat32Array(array) {
+      return makeMatrix(DOMMatrixReadOnly,
+        typedMatrix(array, "fromFloat32Array", "DOMMatrixReadOnly", "Float32Array"));
+    }
+
+    static fromFloat64Array(array) {
+      return makeMatrix(DOMMatrixReadOnly,
+        typedMatrix(array, "fromFloat64Array", "DOMMatrixReadOnly", "Float64Array"));
+    }
+
+    get is2D() {
+      return matrixOf(this).is2D;
+    }
+
+    get isIdentity() {
+      const s = matrixOf(this).s;
+      for (let i = 0; i < 16; i++) {
+        if (s[i] !== IDENTITY[i]) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    translate() {
+      const a = arguments;
+      return makeMatrix(DOMMatrix, translated(matrixOf(this), a[0], a[1], a[2]));
+    }
+
+    scale() {
+      const a = arguments;
+      return makeMatrix(DOMMatrix, scaled(matrixOf(this), a[0], a[1], a[2], a[3], a[4], a[5]));
+    }
+
+    scaleNonUniform() {
+      const a = arguments;
+      return makeMatrix(DOMMatrix, scaled(matrixOf(this), or(a[0], 1), or(a[1], 1), 1, 0, 0, 0));
+    }
+
+    scale3d() {
+      const a = arguments;
+      const s = or(a[0], 1);
+      return makeMatrix(DOMMatrix, scaled(matrixOf(this), s, s, s, a[1], a[2], a[3]));
+    }
+
+    rotate() {
+      const a = arguments;
+      return makeMatrix(DOMMatrix, rotated(matrixOf(this), a[0], a[1], a[2]));
+    }
+
+    rotateFromVector() {
+      const a = arguments;
+      return makeMatrix(DOMMatrix, rotatedFromVector(matrixOf(this), a[0], a[1]));
+    }
+
+    rotateAxisAngle() {
+      const a = arguments;
+      return makeMatrix(DOMMatrix, axisAngle(matrixOf(this), a[0], a[1], a[2], a[3]));
+    }
+
+    skewX() {
+      return makeMatrix(DOMMatrix, multiplied(matrixOf(this), skewing(or(arguments[0], 0), 0)));
+    }
+
+    skewY() {
+      return makeMatrix(DOMMatrix, multiplied(matrixOf(this), skewing(0, or(arguments[0], 0))));
+    }
+
+    multiply() {
+      const m = matrixOf(this);
+      return makeMatrix(DOMMatrix,
+        multiplied(m, matrixInit(arguments[0], "multiply", "DOMMatrixReadOnly", true)));
+    }
+
+    flipX() {
+      return makeMatrix(DOMMatrix, multiplied(matrixOf(this), fromList([-1, 0, 0, 1, 0, 0], true)));
+    }
+
+    flipY() {
+      return makeMatrix(DOMMatrix, multiplied(matrixOf(this), fromList([1, 0, 0, -1, 0, 0], true)));
+    }
+
+    inverse() {
+      return makeMatrix(DOMMatrix, inverted(matrixOf(this)));
+    }
+
+    transformPoint() {
+      const m = matrixOf(this);
+      return transformed(m, pointInit(arguments[0], "transformPoint", "DOMMatrixReadOnly"));
+    }
+
+    toFloat32Array() {
+      return new $Float32Array(matrixOf(this).s);
+    }
+
+    toFloat64Array() {
+      return new $Float64Array(matrixOf(this).s);
+    }
+
+    toJSON() {
+      const m = matrixOf(this);
+      const out = {};
+      for (let i = 0; i < MATRIX_FIELDS.length; i++) {
+        out[MATRIX_FIELDS[i][0]] = m.s[MATRIX_FIELDS[i][1]];
+      }
+      out.is2D = m.is2D;
+      out.isIdentity = this.isIdentity;
+      return out;
+    }
+
+    toString() {
+      const m = matrixOf(this);
+      const s = m.s;
+      for (let i = 0; i < 16; i++) {
+        const n = s[i];
+        if (n !== n || n === Infinity || n === -Infinity) {
+          throw new $DOMException(
+            "Failed to execute 'toString' on 'DOMMatrixReadOnly': " +
+              "DOMMatrix cannot be serialized with NaN or Infinity values.",
+            "InvalidStateError",
+          );
+        }
+      }
+      if (m.is2D) {
+        return "matrix(" + $String(s[0]) + ", " + $String(s[1]) + ", " +
+          $String(s[4]) + ", " + $String(s[5]) + ", " + $String(s[12]) + ", " +
+          $String(s[13]) + ")";
+      }
+      let text = "matrix3d(";
+      for (let i = 0; i < 16; i++) {
+        text += (i === 0 ? "" : ", ") + $String(s[i]);
+      }
+      return text + ")";
+    }
+  }
+
+  // a..f and m11..m44: getters on the read-only class, with setters on
+  // DOMMatrix, where a value set off the 2D plane makes it 3D.
+  const MATRIX_FIELDS = [["a", 0], ["b", 1], ["c", 4], ["d", 5], ["e", 12], ["f", 13]];
+  for (let i = 0; i < 16; i++) {
+    ArrayPush(MATRIX_FIELDS, ["m" + ((i >> 2) + 1) + ((i & 3) + 1), i]);
+  }
+  for (let i = 0; i < MATRIX_FIELDS.length; i++) {
+    const at = MATRIX_FIELDS[i][1];
+    defineProperty(DOMMatrixReadOnly.prototype, MATRIX_FIELDS[i][0], {
+      get() {
+        return matrixOf(this).s[at];
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  }
+
+  class DOMMatrix extends DOMMatrixReadOnly {
+    static fromMatrix() {
+      return makeMatrix(DOMMatrix, matrixInit(arguments[0], "fromMatrix", "DOMMatrix", true));
+    }
+
+    static fromFloat32Array(array) {
+      return makeMatrix(DOMMatrix,
+        typedMatrix(array, "fromFloat32Array", "DOMMatrix", "Float32Array"));
+    }
+
+    static fromFloat64Array(array) {
+      return makeMatrix(DOMMatrix,
+        typedMatrix(array, "fromFloat64Array", "DOMMatrix", "Float64Array"));
+    }
+
+    multiplySelf() {
+      const other = arguments[0];
+      return becomes(this, (m) => multiplied(m, matrixInit(other, "multiplySelf", "DOMMatrix", true)));
+    }
+
+    preMultiplySelf() {
+      const other = arguments[0];
+      return becomes(this,
+        (m) => multiplied(matrixInit(other, "preMultiplySelf", "DOMMatrix", true), m));
+    }
+
+    translateSelf() {
+      const a = arguments;
+      return becomes(this, (m) => translated(m, a[0], a[1], a[2]));
+    }
+
+    scaleSelf() {
+      const a = arguments;
+      return becomes(this, (m) => scaled(m, a[0], a[1], a[2], a[3], a[4], a[5]));
+    }
+
+    scale3dSelf() {
+      const a = arguments;
+      const s = or(a[0], 1);
+      return becomes(this, (m) => scaled(m, s, s, s, a[1], a[2], a[3]));
+    }
+
+    rotateSelf() {
+      const a = arguments;
+      return becomes(this, (m) => rotated(m, a[0], a[1], a[2]));
+    }
+
+    rotateFromVectorSelf() {
+      const a = arguments;
+      return becomes(this, (m) => rotatedFromVector(m, a[0], a[1]));
+    }
+
+    rotateAxisAngleSelf() {
+      const a = arguments;
+      return becomes(this, (m) => axisAngle(m, a[0], a[1], a[2], a[3]));
+    }
+
+    skewXSelf() {
+      const sx = or(arguments[0], 0);
+      return becomes(this, (m) => multiplied(m, skewing(sx, 0)));
+    }
+
+    skewYSelf() {
+      const sy = or(arguments[0], 0);
+      return becomes(this, (m) => multiplied(m, skewing(0, sy)));
+    }
+
+    invertSelf() {
+      return becomes(this, inverted);
+    }
+
+    setMatrixValue(transformList) {
+      const text = str(transformList);
+      return becomes(this,
+        () => fromTransformList(text, "DOMMatrix", "execute 'setMatrixValue' on"));
+    }
+  }
+
+  // The matrix `object` holds replaced by what `change` makes of it.
+  function becomes(object, change) {
+    const m = matrixOf(object);
+    const next = change(m);
+    m.s = next.s;
+    m.is2D = next.is2D;
+    return object;
+  }
+
+  for (let i = 0; i < MATRIX_FIELDS.length; i++) {
+    const at = MATRIX_FIELDS[i][1];
+    const flat = at === 10 || at === 15 ? 1 : 0;
+    const plane = at === 0 || at === 1 || at === 4 || at === 5 || at === 12 || at === 13;
+    defineProperty(DOMMatrix.prototype, MATRIX_FIELDS[i][0], {
+      get() {
+        return matrixOf(this).s[at];
+      },
+      set(value) {
+        const m = matrixOf(this);
+        const v = $Number(value);
+        m.s[at] = v;
+        if (!plane && v !== flat) {
+          m.is2D = false;
+        }
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  }
+
+  expose(DOMPointReadOnly, "DOMPointReadOnly");
+  expose(DOMPoint, "DOMPoint");
+  expose(DOMMatrixReadOnly, "DOMMatrixReadOnly");
+  expose(DOMMatrix, "DOMMatrix");
+
+  // ---- Canvas: the 2D context (HTML section 4.12.5, M30) ------------------
+
+  // What a context, a Path2D, a gradient or a pattern is to the host:
+  // the kind it numbers it by (0 an element's context, by the element's
+  // handle; 2 a Path2D, 3 a CanvasGradient, 4 a CanvasPattern, by their
+  // numbers), which, and the interface its errors name.
+  const canvasTargets = new $WeakMap();
+  const CTX = "CanvasRenderingContext2D";
+
+  function targetOf(object) {
+    const t = WeakMapGet(canvasTargets, object);
+    if (t === undefined) {
+      throw illegalInvocation();
+    }
+    return t;
+  }
+
+  // The objects the host numbers, by their numbers, while they live; the
+  // registry tells the host when one is gone and no newer object holds
+  // its number.
+  const canvasObjects = new $Map();
+  const canvasRegistry = new $FinalizationRegistry((held) => {
+    const ref = MapGet(canvasObjects, held[1]);
+    if (ref !== undefined && WeakRefDeref(ref) !== undefined) {
+      return;
+    }
+    MapDelete(canvasObjects, held[1]);
+    native.canvas("release", held[0], held[1]);
+  });
+
+  function bindCanvasObject(object, kind, id, iface) {
+    WeakMapSet(canvasTargets, object, { kind, id, iface });
+    MapSet(canvasObjects, id, new $WeakRef(object));
+    Register(canvasRegistry, object, [kind, id]);
+    return object;
+  }
+
+  // The object for a gradient or pattern the host names, the one the
+  // script holds or, when it let that go, a new one.
+  function canvasObject(kind, id) {
+    const ref = MapGet(canvasObjects, id);
+    const object = ref === undefined ? undefined : WeakRefDeref(ref);
+    if (object !== undefined) {
+      return object;
+    }
+    return bindCanvasObject(
+      kind === 3 ? new CanvasGradient(KEY) : new CanvasPattern(KEY),
+      kind,
+      id,
+      kind === 3 ? "CanvasGradient" : "CanvasPattern",
+    );
+  }
+
+  // Web IDL's `unrestricted double`: ECMAScript's ToNumber, which a
+  // Symbol or a BigInt refuses.
+  function unrestricted(value, method, iface) {
+    if (typeof value === "number") {
+      return value;
+    }
+    if (typeof value === "symbol" || typeof value === "bigint") {
+      throw new $TypeError(prefix(method, iface) + "Cannot convert a " +
+        (typeof value === "symbol" ? "Symbol" : "BigInt") + " value to a number");
+    }
+    return $Number(value);
+  }
+
+  // The same for an attribute's setter, in its words.
+  function unrestrictedSet(value, property, iface) {
+    if (typeof value === "number") {
+      return value;
+    }
+    if (typeof value === "symbol" || typeof value === "bigint") {
+      throw new $TypeError("Failed to set the '" + property + "' property on '" + iface +
+        "': Cannot convert a " + (typeof value === "symbol" ? "Symbol" : "BigInt") +
+        " value to a number");
+    }
+    return $Number(value);
+  }
+
+  // Web IDL's `double`: a value not finite a TypeError.
+  function restricted(value, method, iface) {
+    const n = unrestricted(value, method, iface);
+    if (n !== n || n === Infinity || n === -Infinity) {
+      throw new $TypeError(prefix(method, iface) + "The provided double value is non-finite.");
+    }
+    return n;
+  }
+
+  // Web IDL's `[EnforceRange] long`.
+  function enforcedLong(value, method, iface) {
+    const n = unrestricted(value, method, iface);
+    if (n !== n || n === Infinity || n === -Infinity) {
+      throw new $TypeError(prefix(method, iface) + "Value is not a finite number.");
+    }
+    const whole = MathTrunc(n);
+    if (whole < -2147483648 || whole > 2147483647) {
+      throw new $TypeError(prefix(method, iface) + "Value is outside the 'long' value range.");
+    }
+    return whole;
+  }
+
+  // A CanvasFillRule, its default `nonzero` for undefined: 1 for
+  // `evenodd`, 0 for `nonzero`.
+  function fillRule(value, method, iface) {
+    if (value === undefined) {
+      return 0;
+    }
+    const text = str(value);
+    if (text === "nonzero") {
+      return 0;
+    }
+    if (text === "evenodd") {
+      return 1;
+    }
+    throw new $TypeError(prefix(method, iface) + "The provided value '" + text +
+      "' is not a valid enum value of type CanvasFillRule.");
+  }
+
+  function finite(n) {
+    return n === n && n !== Infinity && n !== -Infinity;
+  }
+
+  function isPath2D(value) {
+    if (value === null || typeof value !== "object") {
+      return false;
+    }
+    const t = WeakMapGet(canvasTargets, value);
+    return t !== undefined && t.kind === 2;
+  }
+
+  // The functions `filter` takes (Filter Effects 1), by name: a value
+  // of them, or `none`, is kept; any other changes nothing. It is not
+  // drawn (G81).
+  const FILTERS = ["blur", "brightness", "contrast", "drop-shadow", "grayscale",
+    "hue-rotate", "invert", "opacity", "saturate", "sepia", "url"];
+  function validFilter(text) {
+    let i = 0;
+    const n = text.length;
+    const space = () => {
+      while (i < n && (text[i] === " " || text[i] === "\t" || text[i] === "\n")) {
+        i++;
+      }
+    };
+    space();
+    if (StringSlice(text, i, i + 4) === "none") {
+      const start = i;
+      i += 4;
+      space();
+      if (i === n) {
+        return true;
+      }
+      i = start;
+    }
+    let count = 0;
+    while (i < n) {
+      const open = StringIndexOf(text, "(", i);
+      if (open < 0) {
+        return false;
+      }
+      const name = ToLowerCase(StringSlice(text, i, open));
+      let known = false;
+      for (let k = 0; k < FILTERS.length; k++) {
+        if (FILTERS[k] === name) {
+          known = true;
+        }
+      }
+      const close = StringIndexOf(text, ")", open);
+      if (!known || close < 0) {
+        return false;
+      }
+      i = close + 1;
+      count++;
+      space();
+    }
+    return count > 0;
+  }
+
+  // The contexts of canvas elements, by the element's object, which a
+  // context holds so that its element lives as long as it does.
+  const canvasContexts = new $WeakMap();
+
+  class CanvasRenderingContext2D {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor(CTX);
+      }
+    }
+
+    get canvas() {
+      return targetOf(this).element;
+    }
+
+    getContextAttributes() {
+      const t = targetOf(this);
+      return {
+        alpha: t.alpha,
+        colorSpace: "srgb",
+        colorType: "unorm8",
+        desynchronized: false,
+        toneMapping: { mode: "standard" },
+        willReadFrequently: t.willReadFrequently,
+      };
+    }
+
+    isContextLost() {
+      targetOf(this);
+      return false;
+    }
+
+    save() {
+      native.canvas("save", 0, targetOf(this).id);
+    }
+
+    restore() {
+      native.canvas("restore", 0, targetOf(this).id);
+    }
+
+    reset() {
+      native.canvas("reset", 0, targetOf(this).id);
+    }
+
+    scale(x, y) {
+      const id = targetOf(this).id;
+      need(arguments.length, 2, "scale", CTX);
+      native.canvas("scale", 0, id, unrestricted(x, "scale", CTX), unrestricted(y, "scale", CTX));
+    }
+
+    rotate(angle) {
+      const id = targetOf(this).id;
+      need(arguments.length, 1, "rotate", CTX);
+      native.canvas("rotate", 0, id, unrestricted(angle, "rotate", CTX));
+    }
+
+    translate(x, y) {
+      const id = targetOf(this).id;
+      need(arguments.length, 2, "translate", CTX);
+      native.canvas("translate", 0, id, unrestricted(x, "translate", CTX),
+        unrestricted(y, "translate", CTX));
+    }
+
+    transform(a, b, c, d, e, f) {
+      const id = targetOf(this).id;
+      need(arguments.length, 6, "transform", CTX);
+      native.canvas("transform", 0, id, unrestricted(a, "transform", CTX),
+        unrestricted(b, "transform", CTX), unrestricted(c, "transform", CTX),
+        unrestricted(d, "transform", CTX), unrestricted(e, "transform", CTX),
+        unrestricted(f, "transform", CTX));
+    }
+
+    getTransform() {
+      const m = native.canvas("getTransform", 0, targetOf(this).id);
+      return makeMatrix(DOMMatrix, fromList(m, true));
+    }
+
+    setTransform() {
+      const id = targetOf(this).id;
+      if (arguments.length >= 6) {
+        const v = [];
+        for (let i = 0; i < 6; i++) {
+          v[i] = unrestricted(arguments[i], "setTransform", CTX);
+        }
+        native.canvas("setTransform", 0, id, v[0], v[1], v[2], v[3], v[4], v[5]);
+        return;
+      }
+      if (arguments.length > 1) {
+        throw new $TypeError(prefix("setTransform", CTX) +
+          "The provided value is not of type 'DOMMatrixInit'.");
+      }
+      const m = matrixInit(arguments[0], "setTransform", CTX, false).s;
+      native.canvas("setTransform", 0, id, m[0], m[1], m[4], m[5], m[12], m[13]);
+    }
+
+    resetTransform() {
+      native.canvas("resetTransform", 0, targetOf(this).id);
+    }
+
+    get globalAlpha() {
+      return native.canvas("globalAlpha", 0, targetOf(this).id);
+    }
+
+    set globalAlpha(value) {
+      const id = targetOf(this).id;
+      native.canvas("globalAlpha", 0, id, unrestrictedSet(value, "globalAlpha", CTX));
+    }
+
+    get globalCompositeOperation() {
+      return native.canvas("globalCompositeOperation", 0, targetOf(this).id);
+    }
+
+    set globalCompositeOperation(value) {
+      native.canvas("globalCompositeOperation", 0, targetOf(this).id, str(value));
+    }
+
+    get imageSmoothingEnabled() {
+      return native.canvas("imageSmoothingEnabled", 0, targetOf(this).id);
+    }
+
+    set imageSmoothingEnabled(value) {
+      native.canvas("imageSmoothingEnabled", 0, targetOf(this).id, !!value);
+    }
+
+    get imageSmoothingQuality() {
+      return native.canvas("imageSmoothingQuality", 0, targetOf(this).id);
+    }
+
+    set imageSmoothingQuality(value) {
+      native.canvas("imageSmoothingQuality", 0, targetOf(this).id, str(value));
+    }
+
+    get strokeStyle() {
+      return paintOf(native.canvas("strokeStyle", 0, targetOf(this).id));
+    }
+
+    set strokeStyle(value) {
+      setPaint(targetOf(this).id, "strokeStyle", value);
+    }
+
+    get fillStyle() {
+      return paintOf(native.canvas("fillStyle", 0, targetOf(this).id));
+    }
+
+    set fillStyle(value) {
+      setPaint(targetOf(this).id, "fillStyle", value);
+    }
+
+    createLinearGradient(x0, y0, x1, y1) {
+      targetOf(this);
+      need(arguments.length, 4, "createLinearGradient", CTX);
+      const m = "createLinearGradient";
+      const id = native.canvas("linearGradient", restricted(x0, m, CTX), restricted(y0, m, CTX),
+        restricted(x1, m, CTX), restricted(y1, m, CTX));
+      return bindCanvasObject(new CanvasGradient(KEY), 3, id, "CanvasGradient");
+    }
+
+    createRadialGradient(x0, y0, r0, x1, y1, r1) {
+      targetOf(this);
+      const m = "createRadialGradient";
+      need(arguments.length, 6, m, CTX);
+      const v = [restricted(x0, m, CTX), restricted(y0, m, CTX), restricted(r0, m, CTX),
+        restricted(x1, m, CTX), restricted(y1, m, CTX), restricted(r1, m, CTX)];
+      let id;
+      try {
+        id = native.canvas("radialGradient", v[0], v[1], v[2], v[3], v[4], v[5]);
+      } catch (error) {
+        throw failed(error, m, CTX);
+      }
+      return bindCanvasObject(new CanvasGradient(KEY), 3, id, "CanvasGradient");
+    }
+
+    createConicGradient(angle, x, y) {
+      targetOf(this);
+      const m = "createConicGradient";
+      need(arguments.length, 3, m, CTX);
+      const id = native.canvas("conicGradient", restricted(angle, m, CTX), restricted(x, m, CTX),
+        restricted(y, m, CTX));
+      return bindCanvasObject(new CanvasGradient(KEY), 3, id, "CanvasGradient");
+    }
+
+    get shadowOffsetX() {
+      return native.canvas("shadowOffsetX", 0, targetOf(this).id);
+    }
+
+    set shadowOffsetX(value) {
+      const id = targetOf(this).id;
+      native.canvas("shadowOffsetX", 0, id, unrestrictedSet(value, "shadowOffsetX", CTX));
+    }
+
+    get shadowOffsetY() {
+      return native.canvas("shadowOffsetY", 0, targetOf(this).id);
+    }
+
+    set shadowOffsetY(value) {
+      const id = targetOf(this).id;
+      native.canvas("shadowOffsetY", 0, id, unrestrictedSet(value, "shadowOffsetY", CTX));
+    }
+
+    get shadowBlur() {
+      return native.canvas("shadowBlur", 0, targetOf(this).id);
+    }
+
+    set shadowBlur(value) {
+      const id = targetOf(this).id;
+      native.canvas("shadowBlur", 0, id, unrestrictedSet(value, "shadowBlur", CTX));
+    }
+
+    get shadowColor() {
+      return native.canvas("shadowColor", 0, targetOf(this).id);
+    }
+
+    set shadowColor(value) {
+      native.canvas("shadowColor", 0, targetOf(this).id, str(value));
+    }
+
+    get filter() {
+      return native.canvas("filter", 0, targetOf(this).id);
+    }
+
+    set filter(value) {
+      const id = targetOf(this).id;
+      const text = str(value);
+      if (validFilter(text)) {
+        native.canvas("filter", 0, id, text);
+      }
+    }
+
+    clearRect(x, y, w, h) {
+      rectangle(this, "clearRect", arguments.length, x, y, w, h);
+    }
+
+    fillRect(x, y, w, h) {
+      rectangle(this, "fillRect", arguments.length, x, y, w, h);
+    }
+
+    strokeRect(x, y, w, h) {
+      rectangle(this, "strokeRect", arguments.length, x, y, w, h);
+    }
+
+    beginPath() {
+      native.canvas("beginPath", 0, targetOf(this).id);
+    }
+
+    fill() {
+      const id = targetOf(this).id;
+      const a = arguments;
+      if (a.length > 0 && isPath2D(a[0])) {
+        native.canvas("fill", 0, id, targetOf(a[0]).id, fillRule(a[1], "fill", CTX));
+      } else {
+        native.canvas("fill", 0, id, -1, fillRule(a[0], "fill", CTX));
+      }
+    }
+
+    stroke() {
+      const id = targetOf(this).id;
+      const a = arguments;
+      if (a.length > 0 && a[0] !== undefined) {
+        if (!isPath2D(a[0])) {
+          throw new $TypeError(prefix("stroke", CTX) + "parameter 1 is not of type 'Path2D'.");
+        }
+        native.canvas("stroke", 0, id, targetOf(a[0]).id);
+      } else {
+        native.canvas("stroke", 0, id, -1);
+      }
+    }
+
+    clip() {
+      const id = targetOf(this).id;
+      const a = arguments;
+      if (a.length > 0 && isPath2D(a[0])) {
+        native.canvas("clip", 0, id, targetOf(a[0]).id, fillRule(a[1], "clip", CTX));
+      } else {
+        native.canvas("clip", 0, id, -1, fillRule(a[0], "clip", CTX));
+      }
+    }
+
+    isPointInPath(a0, a1) {
+      const id = targetOf(this).id;
+      const a = arguments;
+      const m = "isPointInPath";
+      need(a.length, 2, m, CTX);
+      if (isPath2D(a[0])) {
+        need(a.length, 3, m, CTX);
+        return native.canvas(m, 0, id, targetOf(a[0]).id, unrestricted(a[1], m, CTX),
+          unrestricted(a[2], m, CTX), fillRule(a[3], m, CTX));
+      }
+      return native.canvas(m, 0, id, -1, unrestricted(a[0], m, CTX), unrestricted(a[1], m, CTX),
+        fillRule(a[2], m, CTX));
+    }
+
+    isPointInStroke(a0, a1) {
+      const id = targetOf(this).id;
+      const a = arguments;
+      const m = "isPointInStroke";
+      need(a.length, 2, m, CTX);
+      if (isPath2D(a[0])) {
+        need(a.length, 3, m, CTX);
+        return native.canvas(m, 0, id, targetOf(a[0]).id, unrestricted(a[1], m, CTX),
+          unrestricted(a[2], m, CTX));
+      }
+      return native.canvas(m, 0, id, -1, unrestricted(a[0], m, CTX), unrestricted(a[1], m, CTX));
+    }
+
+    drawFocusIfNeeded(element) {
+      targetOf(this);
+      need(arguments.length, 1, "drawFocusIfNeeded", CTX);
+    }
+
+    get lineWidth() {
+      return native.canvas("lineWidth", 0, targetOf(this).id);
+    }
+
+    set lineWidth(value) {
+      const id = targetOf(this).id;
+      native.canvas("lineWidth", 0, id, unrestrictedSet(value, "lineWidth", CTX));
+    }
+
+    get lineCap() {
+      return native.canvas("lineCap", 0, targetOf(this).id);
+    }
+
+    set lineCap(value) {
+      native.canvas("lineCap", 0, targetOf(this).id, str(value));
+    }
+
+    get lineJoin() {
+      return native.canvas("lineJoin", 0, targetOf(this).id);
+    }
+
+    set lineJoin(value) {
+      native.canvas("lineJoin", 0, targetOf(this).id, str(value));
+    }
+
+    get miterLimit() {
+      return native.canvas("miterLimit", 0, targetOf(this).id);
+    }
+
+    set miterLimit(value) {
+      const id = targetOf(this).id;
+      native.canvas("miterLimit", 0, id, unrestrictedSet(value, "miterLimit", CTX));
+    }
+
+    setLineDash(segments) {
+      const id = targetOf(this).id;
+      need(arguments.length, 1, "setLineDash", CTX);
+      const list = numberSequence(segments, "setLineDash", CTX);
+      const args = ["setLineDash", 0, id];
+      for (let i = 0; i < list.length; i++) {
+        ArrayPush(args, list[i]);
+      }
+      ReflectApply(native.canvas, undefined, args);
+    }
+
+    getLineDash() {
+      return native.canvas("getLineDash", 0, targetOf(this).id);
+    }
+
+    get lineDashOffset() {
+      return native.canvas("lineDashOffset", 0, targetOf(this).id);
+    }
+
+    set lineDashOffset(value) {
+      const id = targetOf(this).id;
+      native.canvas("lineDashOffset", 0, id, unrestrictedSet(value, "lineDashOffset", CTX));
+    }
+
+    createImageData(a0) {
+      targetOf(this);
+      const m = "createImageData";
+      need(arguments.length, 1, m, CTX);
+      if (arguments.length === 1) {
+        const data = WeakMapGet(imageDatas, a0);
+        if (data === undefined) {
+          throw new $TypeError(prefix(m, CTX) + "parameter 1 is not of type 'ImageData'.");
+        }
+        return blankImageData(data.width, data.height, m, CTX, data.colorSpace);
+      }
+      const w = enforcedLong(arguments[0], m, CTX);
+      const h = enforcedLong(arguments[1], m, CTX);
+      return blankImageData(w < 0 ? -w : w, h < 0 ? -h : h, m, CTX,
+        imageDataColorSpace(arguments[2], m, CTX));
+    }
+
+    getImageData(sx, sy, sw, sh) {
+      const id = targetOf(this).id;
+      const m = "getImageData";
+      need(arguments.length, 4, m, CTX);
+      const v = [enforcedLong(sx, m, CTX), enforcedLong(sy, m, CTX), enforcedLong(sw, m, CTX),
+        enforcedLong(sh, m, CTX)];
+      let buffer;
+      try {
+        buffer = native.canvas(m, 0, id, v[0], v[1], v[2], v[3]);
+      } catch (error) {
+        throw failed(error, m, CTX);
+      }
+      const data = new $Uint8ClampedArray(buffer);
+      return makeImageData(data, v[2] < 0 ? -v[2] : v[2], v[3] < 0 ? -v[3] : v[3], "srgb");
+    }
+
+    putImageData(imagedata, dx, dy) {
+      const id = targetOf(this).id;
+      const m = "putImageData";
+      need(arguments.length, 3, m, CTX);
+      const data = WeakMapGet(imageDatas, imagedata);
+      if (data === undefined) {
+        throw new $TypeError(prefix(m, CTX) + "parameter 1 is not of type 'ImageData'.");
+      }
+      const a = arguments;
+      if (a.length > 3 && a.length < 7) {
+        throw new $TypeError(prefix(m, CTX) + "Overload resolution failed.");
+      }
+      const x = enforcedLong(dx, m, CTX);
+      const y = enforcedLong(dy, m, CTX);
+      const bytes = ToBase64(new $Uint8Array(TypedArrayBuffer(data.data),
+        TypedArrayOffset(data.data), TypedArrayLength(data.data)));
+      if (a.length >= 7) {
+        native.canvasData(m, bytes, 0, id, data.width, data.height, x, y,
+          enforcedLong(a[3], m, CTX), enforcedLong(a[4], m, CTX), enforcedLong(a[5], m, CTX),
+          enforcedLong(a[6], m, CTX));
+      } else {
+        native.canvasData(m, bytes, 0, id, data.width, data.height, x, y);
+      }
+    }
+  }
+
+  // fillRect, strokeRect and clearRect.
+  function rectangle(context, m, count, x, y, w, h) {
+    const id = targetOf(context).id;
+    need(count, 4, m, CTX);
+    native.canvas(m, 0, id, unrestricted(x, m, CTX), unrestricted(y, m, CTX),
+      unrestricted(w, m, CTX), unrestricted(h, m, CTX));
+  }
+
+  // A style the host answers as a colour's text, or a gradient's or a
+  // pattern's kind and number.
+  function paintOf(answer) {
+    return typeof answer === "string" ? answer : canvasObject(answer[0], answer[1]);
+  }
+
+  function setPaint(id, property, value) {
+    if (value !== null && typeof value === "object") {
+      const t = WeakMapGet(canvasTargets, value);
+      if (t !== undefined && (t.kind === 3 || t.kind === 4)) {
+        native.canvas(property, 0, id, t.kind, t.id);
+        return;
+      }
+    }
+    native.canvas(property, 0, id, str(value));
+  }
+
+  // A sequence of unrestricted doubles, from anything iterable.
+  function numberSequence(value, method, iface) {
+    if (value === null || (typeof value !== "object" && typeof value !== "function") ||
+      typeof value[iteratorSymbol] !== "function") {
+      throw new $TypeError(prefix(method, iface) +
+        "The provided value cannot be converted to a sequence.");
+    }
+    const list = [];
+    const iterator = value[iteratorSymbol]();
+    for (;;) {
+      const step = iterator.next();
+      if (step.done) {
+        break;
+      }
+      ArrayPush(list, unrestricted(step.value, method, iface));
+    }
+    return list;
+  }
+
+  // CanvasPath (HTML section 4.12.5.1.5), on contexts and Path2D alike.
+  const CANVAS_PATH = {
+    closePath() {
+      const t = targetOf(this);
+      native.canvas("closePath", t.kind, t.id);
+    },
+
+    moveTo(x, y) {
+      pathCall(this, "moveTo", 2, arguments);
+    },
+
+    lineTo(x, y) {
+      pathCall(this, "lineTo", 2, arguments);
+    },
+
+    quadraticCurveTo(cpx, cpy, x, y) {
+      pathCall(this, "quadraticCurveTo", 4, arguments);
+    },
+
+    bezierCurveTo(cp1x, cp1y, cp2x, cp2y, x, y) {
+      pathCall(this, "bezierCurveTo", 6, arguments);
+    },
+
+    arcTo(x1, y1, x2, y2, radius) {
+      pathCall(this, "arcTo", 5, arguments);
+    },
+
+    rect(x, y, w, h) {
+      pathCall(this, "rect", 4, arguments);
+    },
+
+    roundRect(x, y, w, h) {
+      const t = targetOf(this);
+      const m = "roundRect";
+      need(arguments.length, 4, m, t.iface);
+      const v = [unrestricted(x, m, t.iface), unrestricted(y, m, t.iface),
+        unrestricted(w, m, t.iface), unrestricted(h, m, t.iface)];
+      const radii = roundRectRadii(arguments[4], m, t.iface);
+      if (radii === null) {
+        return;
+      }
+      for (let i = 0; i < radii.length; i++) {
+        ArrayPush(v, radii[i]);
+      }
+      const args = [m, t.kind, t.id];
+      for (let i = 0; i < v.length; i++) {
+        ArrayPush(args, v[i]);
+      }
+      try {
+        ReflectApply(native.canvas, undefined, args);
+      } catch (error) {
+        throw failed(error, m, t.iface);
+      }
+    },
+
+    arc(x, y, radius, startAngle, endAngle) {
+      pathCall(this, "arc", 5, arguments, 6);
+    },
+
+    ellipse(x, y, radiusX, radiusY, rotation, startAngle, endAngle) {
+      pathCall(this, "ellipse", 7, arguments, 8);
+    },
+  };
+
+  // A CanvasPath method of `count` numbers, and when `flag` is given, a
+  // boolean after them (`counterclockwise`) to make that many.
+  function pathCall(object, m, count, a, flag) {
+    const t = targetOf(object);
+    need(a.length, count, m, t.iface);
+    const args = [m, t.kind, t.id];
+    for (let i = 0; i < count; i++) {
+      ArrayPush(args, unrestricted(a[i], m, t.iface));
+    }
+    if (flag !== undefined) {
+      ArrayPush(args, !!a[count]);
+    }
+    try {
+      ReflectApply(native.canvas, undefined, args);
+    } catch (error) {
+      throw failed(error, m, t.iface);
+    }
+  }
+
+  // roundRect's radii (HTML section 4.12.5.1.5) as (x, y) pairs, in the
+  // reference browser's words when they are refused; null when one is
+  // not finite, which draws nothing.
+  function roundRectRadii(value, m, iface) {
+    let list;
+    if (value === undefined) {
+      list = [0];
+    } else if (value !== null && (typeof value === "object" || typeof value === "function") &&
+      typeof value[iteratorSymbol] === "function") {
+      list = [];
+      const iterator = value[iteratorSymbol]();
+      for (;;) {
+        const step = iterator.next();
+        if (step.done) {
+          break;
+        }
+        ArrayPush(list, step.value);
+      }
+    } else {
+      list = [value];
+    }
+    if (list.length < 1 || list.length > 4) {
+      throw new $RangeError(prefix(m, iface) + list.length +
+        " radii provided. Between one and four radii are necessary.");
+    }
+    const out = [];
+    for (let i = 0; i < list.length; i++) {
+      const r = list[i];
+      if (r !== null && (typeof r === "object" || typeof r === "function")) {
+        const x = r.x === undefined ? 0 : unrestricted(r.x, m, iface);
+        const y = r.y === undefined ? 0 : unrestricted(r.y, m, iface);
+        if (!finite(x) || !finite(y)) {
+          return null;
+        }
+        if (x < 0) {
+          throw new $RangeError(prefix(m, iface) + "X-radius value " + x + " is negative.");
+        }
+        if (y < 0) {
+          throw new $RangeError(prefix(m, iface) + "Y-radius value " + y + " is negative.");
+        }
+        ArrayPush(out, x);
+        ArrayPush(out, y);
+      } else {
+        const v = unrestricted(r, m, iface);
+        if (!finite(v)) {
+          return null;
+        }
+        if (v < 0) {
+          throw new $RangeError(prefix(m, iface) + "Radius value " + v + " is negative.");
+        }
+        ArrayPush(out, v);
+        ArrayPush(out, v);
+      }
+    }
+    return out;
+  }
+
+  class CanvasGradient {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("CanvasGradient");
+      }
+    }
+
+    addColorStop(offset, color) {
+      const t = targetOf(this);
+      const m = "addColorStop";
+      need(arguments.length, 2, m, "CanvasGradient");
+      const at = restricted(offset, m, "CanvasGradient");
+      const text = str(color);
+      try {
+        native.canvas(m, 3, t.id, at, text);
+      } catch (error) {
+        throw failed(error, m, "CanvasGradient");
+      }
+    }
+  }
+
+  class CanvasPattern {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("CanvasPattern");
+      }
+    }
+
+    setTransform(transform) {
+      const t = targetOf(this);
+      const s = matrixInit(transform, "setTransform", "CanvasPattern", false).s;
+      native.canvas("patternTransform", 4, t.id, s[0], s[1], s[4], s[5], s[12], s[13]);
+    }
+  }
+
+  class Path2D {
+    constructor() {
+      const a = arguments;
+      let id;
+      if (a.length === 0 || a[0] === undefined) {
+        id = native.canvas("path");
+      } else if (isPath2D(a[0])) {
+        id = native.canvas("path", targetOf(a[0]).id);
+      } else {
+        id = native.canvas("path", str(a[0]));
+      }
+      bindCanvasObject(this, 2, id, "Path2D");
+    }
+
+    addPath(path) {
+      const t = targetOf(this);
+      need(arguments.length, 1, "addPath", "Path2D");
+      if (!isPath2D(path)) {
+        throw new $TypeError(prefix("addPath", "Path2D") + "parameter 1 is not of type 'Path2D'.");
+      }
+      const s = matrixInit(arguments[1], "addPath", "Path2D", false).s;
+      native.canvas("addPath", 2, t.id, targetOf(path).id, s[0], s[1], s[4], s[5], s[12], s[13]);
+    }
+  }
+
+  include(CANVAS_PATH, [CanvasRenderingContext2D.prototype, Path2D.prototype]);
+
+  // ---- ImageData (HTML section 4.12.5.1.16) ---------------------------------
+
+  // Each ImageData's pixels, its size and its colour space.
+  const imageDatas = new $WeakMap();
+
+  function makeImageData(data, width, height, colorSpace) {
+    const object = new ImageData(KEY);
+    WeakMapSet(imageDatas, object, { data, width, height, colorSpace });
+    return object;
+  }
+
+  // An ImageDataSettings' colour space.
+  function imageDataColorSpace(settings, m, iface) {
+    if (settings === undefined || settings === null) {
+      return "srgb";
+    }
+    const given = settings.colorSpace;
+    if (given === undefined) {
+      return "srgb";
+    }
+    const text = str(given);
+    if (text !== "srgb" && text !== "display-p3") {
+      throw new $TypeError(prefix(m, iface) + "Failed to read the 'colorSpace' property from " +
+        "'ImageDataSettings': The provided value '" + text +
+        "' is not a valid enum value of type PredefinedColorSpace.");
+    }
+    return text;
+  }
+
+  // A transparent ImageData, its size within the canvas's bound.
+  function blankImageData(width, height, m, iface, colorSpace) {
+    if (width === 0) {
+      throw domError("IndexSizeError", "The source width is zero or not a number.", m, iface);
+    }
+    if (height === 0) {
+      throw domError("IndexSizeError", "The source height is zero or not a number.", m, iface);
+    }
+    if (width * height > 33554432) {
+      throw domError("IndexSizeError", "The requested image size exceeds the supported range.",
+        m, iface);
+    }
+    return makeImageData(new $Uint8ClampedArray(width * height * 4), width, height, colorSpace);
+  }
+
+  class ImageData {
+    constructor(a0, a1) {
+      if (a0 === KEY) {
+        return;
+      }
+      const a = arguments;
+      const c = "constructor";
+      const where = (message) => "Failed to construct 'ImageData': " + message;
+      // Web IDL's `unsigned long`: ToUint32, NaN 0.
+      const unsignedLong = (value) => {
+        if (typeof value === "symbol" || typeof value === "bigint") {
+          throw new $TypeError(where("Cannot convert a " +
+            (typeof value === "symbol" ? "Symbol" : "BigInt") + " value to a number"));
+        }
+        return $Number(value) >>> 0;
+      };
+      if (a.length < 2) {
+        throw new $TypeError(where(
+          "2 arguments required, but only " + a.length + " present."));
+      }
+      if (a0 !== null && typeof a0 === "object" && TypedArrayTag(a0) === "Uint8ClampedArray") {
+        const length = TypedArrayLength(a0);
+        const width = unsignedLong(a1);
+        if (length === 0 || length % 4 !== 0) {
+          throw new $DOMException(where("The input data length is not a multiple of 4."),
+            "InvalidStateError");
+        }
+        if (width === 0) {
+          throw new $DOMException(where("The source width is zero or not a number."),
+            "IndexSizeError");
+        }
+        if ((length / 4) % width !== 0) {
+          throw new $DOMException(where("The input data length is not a multiple of (4 * width)."),
+            "IndexSizeError");
+        }
+        const height = length / 4 / width;
+        if (a.length > 2 && a[2] !== undefined && unsignedLong(a[2]) !== height) {
+          throw new $DOMException(
+            where("The input data length is not equal to (4 * width * height)."),
+            "IndexSizeError");
+        }
+        WeakMapSet(imageDatas, this, {
+          data: a0,
+          width,
+          height,
+          colorSpace: imageDataColorSpace(a[3], c, "ImageData"),
+        });
+        return;
+      }
+      const width = unsignedLong(a0);
+      const height = unsignedLong(a1);
+      if (width === 0) {
+        throw new $DOMException(where("The source width is zero or not a number."),
+          "IndexSizeError");
+      }
+      if (height === 0) {
+        throw new $DOMException(where("The source height is zero or not a number."),
+          "IndexSizeError");
+      }
+      if (width * height > 33554432) {
+        throw new $DOMException(where("The requested image size exceeds the supported range."),
+          "IndexSizeError");
+      }
+      WeakMapSet(imageDatas, this, {
+        data: new $Uint8ClampedArray(width * height * 4),
+        width,
+        height,
+        colorSpace: imageDataColorSpace(a[2], c, "ImageData"),
+      });
+    }
+
+    get width() {
+      return imageDataOf(this).width;
+    }
+
+    get height() {
+      return imageDataOf(this).height;
+    }
+
+    get data() {
+      return imageDataOf(this).data;
+    }
+
+    get colorSpace() {
+      return imageDataOf(this).colorSpace;
+    }
+
+    get pixelFormat() {
+      imageDataOf(this);
+      return "rgba-unorm8";
+    }
+  }
+
+  function imageDataOf(object) {
+    const data = WeakMapGet(imageDatas, object);
+    if (data === undefined) {
+      throw illegalInvocation();
+    }
+    return data;
+  }
+
+  expose(CanvasRenderingContext2D, CTX);
+  expose(CanvasGradient, "CanvasGradient");
+  expose(CanvasPattern, "CanvasPattern");
+  expose(Path2D, "Path2D");
+  expose(ImageData, "ImageData");
+
+  // HTMLCanvasElement's own members (HTML section 4.12.5): its context.
+  include(
+    {
+      getContext(contextId) {
+        const handle = self(this);
+        need(arguments.length, 1, "getContext", "HTMLCanvasElement");
+        const id = str(contextId);
+        const existing = WeakMapGet(canvasContexts, this);
+        if (id !== "2d") {
+          return null;
+        }
+        if (existing !== undefined) {
+          return existing;
+        }
+        const options = arguments[1];
+        const read = (name, fallback) => {
+          if (options === undefined || options === null || typeof options !== "object") {
+            return fallback;
+          }
+          const value = options[name];
+          return value === undefined ? fallback : !!value;
+        };
+        const alpha = read("alpha", true);
+        native.canvas("context", 0, handle, alpha);
+        const context = new CanvasRenderingContext2D(KEY);
+        WeakMapSet(canvasTargets, context, {
+          kind: 0,
+          id: handle,
+          iface: CTX,
+          element: this,
+          alpha,
+          willReadFrequently: read("willReadFrequently", false),
+        });
+        WeakMapSet(canvasContexts, this, context);
+        return context;
+      },
+    },
+    [MapGet(interfaces, "canvas").prototype],
+  );
+
   // ---- Timers (M26, HTML section 8.6) ------------------------------------
 
   // Each timer's callback (a function, or a string compiled when it

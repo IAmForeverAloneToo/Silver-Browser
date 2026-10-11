@@ -15,6 +15,7 @@ use style::animation::Animations;
 use style::selector_matching::{Matcher, PseudoElement, SelectorList};
 use style::{CascadeContext, FontMeasure, Styles, Stylesheets};
 
+use super::canvas::{Canvases, Element, names_context};
 use super::cssom;
 use super::{
     ConsoleEntry, How, Lent, MAX_SCRIPT_NESTING, MAX_TIMERS, Place, Prepared, ReadyState,
@@ -209,6 +210,9 @@ pub(crate) struct DocumentHost {
     pub(crate) origin: Option<TimeOrigin>,
     /// An animation frame callback waits for the next frame (M26).
     pub(crate) frame_wanted: bool,
+    /// The document's canvases and the objects scripts made for them
+    /// (M30).
+    pub(crate) canvases: Canvases,
 }
 
 impl ScriptingHost for DocumentHost {
@@ -522,6 +526,7 @@ impl DocumentHost {
                 self.document
                     .set_attribute(node, &name, &value)
                     .map_err(refused)?;
+                self.canvas_attribute(node, &name);
                 Ok(Answer::Nothing)
             }
             Call::RemoveAttribute(node, name) => {
@@ -532,6 +537,7 @@ impl DocumentHost {
                     self.document
                         .remove_attribute(node, &name)
                         .map_err(refused)?;
+                    self.canvas_attribute(node, &name);
                 }
                 Ok(Answer::Nothing)
             }
@@ -1446,6 +1452,59 @@ impl DocumentHost {
                 self.say(ConsoleLevel::Info, format!("{kind}: {message}"));
                 Ok(Answer::Nothing)
             }
+            Call::Canvas(call) => self.canvas(*call),
+        }
+    }
+
+    /// A canvas's call (M30): a context's names its `canvas` element,
+    /// whose size its attributes give and whose computed `color` is
+    /// `currentcolor`, read only when a colour says it.
+    fn canvas(&mut self, call: js::CanvasCall) -> Result<Answer, DomError> {
+        let element = if names_context(&call.op) && call.numbers.first() == Some(&0.0) {
+            let handle = call.numbers.get(1).copied().unwrap_or(-1.0);
+            if !(0.0..=js::MAX_HANDLE as f64).contains(&handle) || handle.fract() != 0.0 {
+                return Err(DomError::new("TypeError", "Illegal invocation"));
+            }
+            let node = self.node(Handle(handle as u64))?;
+            if self.document.tag(node) != Some("canvas") {
+                return Err(DomError::new("TypeError", "Illegal invocation"));
+            }
+            let current = call
+                .strings
+                .iter()
+                .any(|text| text.trim().eq_ignore_ascii_case("currentcolor"));
+            let color = if current && self.connected(node) {
+                self.styles_now()
+                    .and_then(|styles| styles.get(node))
+                    .map_or(canvas::Rgba::BLACK, |style| {
+                        let channel = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+                        let c = style.color;
+                        canvas::Rgba::new(channel(c.r), channel(c.g), channel(c.b), channel(c.a))
+                    })
+            } else {
+                canvas::Rgba::BLACK
+            };
+            Some(Element {
+                node,
+                size: canvas_size(&self.document, node),
+                color,
+            })
+        } else {
+            None
+        };
+        let answer = self.canvases.call(call, element);
+        self.work += self.canvases.take_work();
+        answer
+    }
+
+    /// A `canvas` element's `width` or `height` was set or removed: its
+    /// context's bitmap made again at its size.
+    fn canvas_attribute(&mut self, node: NodeId, name: &str) {
+        if (name.eq_ignore_ascii_case("width") || name.eq_ignore_ascii_case("height"))
+            && self.document.tag(node) == Some("canvas")
+        {
+            let size = canvas_size(&self.document, node);
+            self.canvases.resized(node, size);
         }
     }
 
@@ -2135,12 +2194,30 @@ impl DocumentHost {
             let _ = document.free(root);
             false
         });
+        let document = &self.document;
+        self.canvases.retain(|node| document.contains(node));
     }
 
     /// The realm is gone, and with it every object a script held.
     pub(crate) fn forget_objects(&mut self) {
         self.exposed.clear();
     }
+}
+
+/// A `canvas` element's size, as its attributes give it: each a
+/// non-negative integer, 300 by 150 when absent or not one (HTML
+/// section 4.12.5), a value past 2^31 - 1 the default, as the reflecting
+/// IDL attribute's is.
+pub(crate) fn canvas_size(document: &Document, node: NodeId) -> (u32, u32) {
+    let side = |name: &str, default: u32| {
+        document
+            .attr(node, name)
+            .and_then(dom::parse_non_negative_integer)
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|&value| value <= i32::MAX as u32)
+            .unwrap_or(default)
+    };
+    (side("width", 300), side("height", 150))
 }
 
 /// A node's handle.

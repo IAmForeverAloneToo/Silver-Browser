@@ -50,6 +50,22 @@ pub struct FetchCall {
     pub cache: String,
 }
 
+/// A call of a canvas's 2D context, or of an object scripts make for
+/// one (M30, `docs/design/canvas.md`): the operation by its name, and
+/// its arguments as the bindings converted them, numbers and strings
+/// each in their order. An operation on an object names it first, by
+/// two numbers: its kind (0 an element's context, by the element's
+/// handle; 2 a `Path2D`, 3 a `CanvasGradient`, 4 a `CanvasPattern`, by
+/// their numbers) and which.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CanvasCall {
+    pub op: String,
+    pub numbers: Vec<f64>,
+    pub strings: Vec<String>,
+    /// The pixels `putImageData` writes.
+    pub bytes: Option<Vec<u8>>,
+}
+
 /// A call the bindings make of the host, one per native function.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Call {
@@ -470,6 +486,8 @@ pub enum Call {
         kind: String,
         message: String,
     },
+    /// A canvas's operation (M30): one variant for them all.
+    Canvas(Box<CanvasCall>),
 }
 
 /// What the host answers a [`Call`] with.
@@ -491,6 +509,9 @@ pub enum Answer {
     Numbers(Vec<f64>),
     /// A synchronous fetch's answer, `None` for a network error (M27.6).
     Fetched(Option<Box<crate::FetchAnswer>>),
+    /// Bytes, which the script receives as a new `ArrayBuffer` (M30: a
+    /// canvas's pixels).
+    Bytes(Vec<u8>),
 }
 
 /// Why a call failed: the exception the script gets, a `DOMException`

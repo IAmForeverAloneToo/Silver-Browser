@@ -29,6 +29,7 @@ text = { path = "crates/text" }
 net = { path = "crates/net" }
 paint = { path = "crates/paint" }
 images = { path = "crates/images" }
+canvas = { path = "crates/canvas" }
 # Without their default features: the GPU backend (M19.3) is a feature
 # of each, `gpu`, which the shell's own turns on down the line.
 render = { path = "crates/render", default-features = false }

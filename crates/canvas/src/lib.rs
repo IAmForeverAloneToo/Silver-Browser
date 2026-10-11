@@ -12,6 +12,7 @@ mod draw;
 mod path;
 mod pixels;
 mod state;
+mod svg;
 
 #[cfg(test)]
 mod tests;
@@ -24,8 +25,8 @@ pub use color::{Rgba, parse_color, serialize_color};
 pub use path::Path;
 pub use pixels::{blank_image_data, too_large};
 pub use state::{
-    Composite, Dash, Gradient, GradientKind, LineCap, LineJoin, Matrix, Paint, Pattern, Repetition,
-    State,
+    Composite, Dash, Gradient, GradientKind, LineCap, LineJoin, Matrix, Paint, Pattern, Quality,
+    Repetition, State,
 };
 pub use tiny_skia::FillRule;
 
