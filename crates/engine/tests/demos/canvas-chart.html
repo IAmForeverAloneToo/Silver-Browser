@@ -1,0 +1,112 @@
+<!doctype html>
+<html>
+<head>
+<title>Monthly visits</title>
+<style>
+  html { background-color: #eef0f3; font-family: sans-serif; }
+  body { margin: 24px; }
+  h1 { font-size: 20px; color: #2f4f6f; margin: 0 0 12px; }
+  canvas { background-color: #ffffff; }
+</style>
+</head>
+<body>
+<h1>Monthly visits</h1>
+<canvas id="chart" width="720" height="400"></canvas>
+<script>
+  // M30's acceptance (docs/design/canvas.md, "Acceptance"): a chart drawn
+  // with the calls a charting library makes: axes with ticks and labels,
+  // bars filled with a gradient, a line with points and a shadow, a
+  // dashed target, a legend.
+  var canvas = document.getElementById('chart');
+  var context = canvas.getContext('2d');
+  var months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  var visits = [420, 510, 480, 620, 700, 660, 810, 860, 790, 900, 980, 1040];
+  var returning = [180, 230, 220, 300, 350, 330, 420, 460, 410, 500, 560, 610];
+  var plot = { left: 60, top: 40, right: 690, bottom: 350 };
+  var most = 1200;
+  var x = function (i) { return plot.left + (i + 0.5) * (plot.right - plot.left) / months.length; };
+  var y = function (v) { return plot.bottom - v / most * (plot.bottom - plot.top); };
+
+  context.font = '12px sans-serif';
+  context.textBaseline = 'middle';
+  context.textAlign = 'right';
+  context.strokeStyle = '#d8dee6';
+  context.fillStyle = '#5f6f7f';
+  context.lineWidth = 1;
+  for (var v = 0; v <= most; v += 200) {
+    context.beginPath();
+    context.moveTo(plot.left, Math.round(y(v)) + 0.5);
+    context.lineTo(plot.right, Math.round(y(v)) + 0.5);
+    context.stroke();
+    context.fillText(String(v), plot.left - 8, y(v));
+  }
+
+  var bars = context.createLinearGradient(0, plot.top, 0, plot.bottom);
+  bars.addColorStop(0, '#5f8fbf');
+  bars.addColorStop(1, '#2f4f6f');
+  context.fillStyle = bars;
+  var width = (plot.right - plot.left) / months.length * 0.6;
+  for (var i = 0; i < months.length; i++) {
+    context.fillRect(x(i) - width / 2, y(visits[i]), width, plot.bottom - y(visits[i]));
+  }
+
+  context.save();
+  context.shadowColor = 'rgba(0, 0, 0, 0.35)';
+  context.shadowBlur = 4;
+  context.shadowOffsetY = 2;
+  context.strokeStyle = '#d0603f';
+  context.lineWidth = 3;
+  context.lineJoin = 'round';
+  context.beginPath();
+  for (var j = 0; j < months.length; j++) {
+    context.lineTo(x(j), y(returning[j]));
+  }
+  context.stroke();
+  context.restore();
+  context.fillStyle = '#ffffff';
+  context.strokeStyle = '#d0603f';
+  context.lineWidth = 2;
+  for (var k = 0; k < months.length; k++) {
+    context.beginPath();
+    context.arc(x(k), y(returning[k]), 4, 0, 2 * Math.PI);
+    context.fill();
+    context.stroke();
+  }
+
+  context.setLineDash([6, 4]);
+  context.strokeStyle = '#7f9f5f';
+  context.lineWidth = 2;
+  context.beginPath();
+  context.moveTo(plot.left, Math.round(y(800)));
+  context.lineTo(plot.right, Math.round(y(800)));
+  context.stroke();
+  context.setLineDash([]);
+
+  context.strokeStyle = '#2f4f6f';
+  context.lineWidth = 2;
+  context.beginPath();
+  context.moveTo(plot.left, plot.top - 10);
+  context.lineTo(plot.left, plot.bottom);
+  context.lineTo(plot.right, plot.bottom);
+  context.stroke();
+  context.fillStyle = '#5f6f7f';
+  context.textAlign = 'center';
+  context.textBaseline = 'top';
+  for (var m = 0; m < months.length; m++) {
+    context.fillText(months[m], x(m), plot.bottom + 8);
+  }
+
+  var legend = [['#2f4f6f', 'Visits'], ['#d0603f', 'Returning'], ['#7f9f5f', 'Target']];
+  context.textAlign = 'left';
+  context.textBaseline = 'middle';
+  context.font = 'bold 13px sans-serif';
+  for (var l = 0; l < legend.length; l++) {
+    var left = plot.left + 20 + l * 130;
+    context.fillStyle = legend[l][0];
+    context.fillRect(left, 14, 14, 14);
+    context.fillStyle = '#2f3f4f';
+    context.fillText(legend[l][1], left + 22, 21);
+  }
+</script>
+</body>
+</html>

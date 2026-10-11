@@ -767,6 +767,23 @@ fn a_pages_scripts_title_the_window_and_a_realm_out_of_memory_says_so() {
 }
 
 #[test]
+fn what_a_pages_animation_callbacks_write_is_printed_with_the_frame() {
+    // M30's particle demo logs from its animation frames, which no task
+    // follows: the window prints what each frame's callbacks wrote.
+    let server = serve(|path| match path {
+        "/" => html(
+            "<script>const again = () => { console.log('framed'); \
+             requestAnimationFrame(again); }; requestAnimationFrame(again);</script>",
+        ),
+        _ => None,
+    });
+    let mut window = Window::with_scripts(Some(server.url("/")));
+    window.settle();
+    window.frame();
+    assert!(window.session.engine_mut().take_console().is_empty());
+}
+
+#[test]
 fn a_pages_timers_run_when_the_window_ticks() {
     let server = serve(|path| match path {
         "/" => html(

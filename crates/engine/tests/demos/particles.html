@@ -1,0 +1,68 @@
+<!doctype html>
+<html>
+<head>
+<title>Particles</title>
+<style>
+  html, body { margin: 0; background-color: #10141a; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="particles" width="1280" height="800"></canvas>
+<script>
+  // M30's acceptance (docs/design/canvas.md, "Acceptance"): 2,000
+  // particles, each a filled circle of its own colour, moved and drawn
+  // each animation frame over a canvas cleared first. The positions come
+  // from a seeded generator, so that every run draws the same frames.
+  var canvas = document.getElementById('particles');
+  var context = canvas.getContext('2d');
+  // The canvas's size read once: each read is a call into the engine.
+  var width = canvas.width;
+  var height = canvas.height;
+  var asked = /[?&]n=([0-9]+)/.exec(location.search);
+  var count = asked ? Number(asked[1]) : 2000;
+  var seed = 7;
+  var random = function () {
+    seed = (seed * 16807) % 2147483647;
+    return (seed - 1) / 2147483646;
+  };
+  var particles = [];
+  for (var i = 0; i < count; i++) {
+    particles.push({
+      x: random() * width,
+      y: random() * height,
+      dx: (random() - 0.5) * 6,
+      dy: (random() - 0.5) * 6,
+      r: 2 + random() * 5,
+      colour: 'hsl(' + Math.floor(random() * 360) + ', 70%, 60%)'
+    });
+  }
+  var frames = 0;
+  var draw = function () {
+    context.fillStyle = '#10141a';
+    context.fillRect(0, 0, width, height);
+    for (var i = 0; i < particles.length; i++) {
+      var p = particles[i];
+      p.x += p.dx;
+      p.y += p.dy;
+      if (p.x < p.r || p.x > width - p.r) {
+        p.dx = -p.dx;
+      }
+      if (p.y < p.r || p.y > height - p.r) {
+        p.dy = -p.dy;
+      }
+      context.fillStyle = p.colour;
+      context.beginPath();
+      context.arc(p.x, p.y, p.r, 0, 2 * Math.PI);
+      context.fill();
+    }
+    frames++;
+    if (frames % 60 === 0) {
+      console.log('frames ' + frames);
+    }
+    requestAnimationFrame(draw);
+  };
+  requestAnimationFrame(draw);
+</script>
+</body>
+</html>

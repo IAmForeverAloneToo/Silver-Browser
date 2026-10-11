@@ -165,6 +165,11 @@ impl Session {
         &self.engine
     }
 
+    #[cfg(test)]
+    pub(crate) fn engine_mut(&mut self) -> &mut Engine {
+        &mut self.engine
+    }
+
     /// Writes to the profile what changed since it was last written
     /// (M28): the window has closed.
     pub(crate) fn flush_profile(&mut self) -> Result<(), String> {
@@ -525,6 +530,9 @@ impl Session {
             }
             // A scroll moves the page under a pointer that stays.
             self.refresh_hover();
+            // What the frame's animation callbacks wrote (M30), printed
+            // as a task's is.
+            print_console(&mut self.engine);
         }
         self.drawn_bubble = self.bubble_text().map(str::to_owned);
         if let Some(text) = &self.drawn_bubble

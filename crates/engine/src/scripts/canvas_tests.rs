@@ -6,7 +6,7 @@
 
 use js::{Answer, CanvasCall};
 
-use super::canvas::{Canvases, MAX_CANVAS_OBJECTS, MAX_CANVAS_POINTS};
+use super::canvas::{Canvases, MAX_CANVAS_OBJECTS, MAX_CANVAS_POINTS, MAX_KEPT_COLOURS};
 use crate::LoadState;
 use crate::testing::*;
 
@@ -1044,6 +1044,75 @@ step("empty", probe);
             ("empty", "[true,[0,255,0,255],true]"),
         ],
     );
+}
+
+#[test]
+fn colours_kept_parsed_read_back_as_given_but_currentcolor_as_it_is_now() {
+    // M30.4's cache of the colours the styles were given: the same text
+    // again is the same colour, a text that does not parse still changes
+    // nothing, and currentcolor follows the element's colour.
+    let lines = run(r##"
+const x = fresh().getContext("2d");
+x.fillStyle = "hsl(120, 100%, 25%)";
+x.fillStyle = "#000";
+x.fillStyle = "hsl(120, 100%, 25%)";
+step("again", () => x.fillStyle);
+x.fillStyle = "bogus";
+x.fillStyle = "bogus";
+step("bogus", () => x.fillStyle);
+for (let i = 0; i < 600; i++) { x.fillStyle = "rgb(" + (i % 256) + ", 0, 0)"; }
+step("many", () => x.fillStyle);
+const c = fresh();
+document.body.append(c);
+c.style.color = "red";
+const y = c.getContext("2d");
+y.fillStyle = "currentcolor";
+const first = y.fillStyle;
+c.style.color = "blue";
+y.fillStyle = "#fff";
+y.fillStyle = "currentcolor";
+step("current", () => [first, y.fillStyle]);
+"##);
+    check(
+        &lines,
+        &[
+            ("again", "\"#008000\""),
+            ("bogus", "\"#008000\""),
+            ("many", "\"#570000\""),
+            ("current", r##"["#ff0000","#0000ff"]"##),
+        ],
+    );
+}
+
+#[test]
+fn the_colours_kept_parsed_are_bounded() {
+    let canvases = Canvases::default();
+    let black = canvas::Rgba::BLACK;
+    for i in 0..MAX_KEPT_COLOURS * 3 {
+        let text = format!("rgb({}, {}, 0)", i % 256, i / 256);
+        assert!(canvases.colour(&text, black).is_some());
+        assert!(canvases.kept_colours() <= MAX_KEPT_COLOURS);
+    }
+    assert_eq!(
+        canvases.colour("rgb(1, 2, 3)", black),
+        Some(canvas::Rgba::new(1, 2, 3, 255))
+    );
+}
+
+#[test]
+fn arc_to_through_the_bindings_turns_toward_its_second_point() {
+    // A corner at (20, 0) rounded toward (20, 30): the path's inside is
+    // the rectangle's but for the corner's outside.
+    let lines = run(r##"
+const x = fresh(40, 40).getContext("2d");
+x.moveTo(0, 0);
+x.arcTo(20, 0, 20, 30, 8);
+x.lineTo(20, 20);
+x.lineTo(0, 20);
+x.closePath();
+step("inside", () => [[10, 10], [17, 3], [19, 1], [10, 1], [22, 10], [21, 6]].map(([a, b]) => x.isPointInPath(a, b)));
+"##);
+    check(&lines, &[("inside", "[true,true,false,true,false,false]")]);
 }
 
 /// `text` as JSON writes a string.

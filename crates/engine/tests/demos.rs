@@ -244,3 +244,85 @@ fn the_scripts_demo_logs_titles_itself_and_notes_its_error() {
         assert!(!draw(&mut engine, 0).is_empty());
     }
 }
+
+/// The demo `name` navigated to by its file URL, scripts on, loaded.
+fn navigated(name: &str) -> Engine {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/demos/{name}.html"));
+    let url = Url::from_file_path(&path).expect("a path");
+    let mut engine = engine();
+    engine.set_scripting(true);
+    engine.set_viewport(WIDTH, HEIGHT);
+    let (wake, woken) = std::sync::mpsc::channel();
+    engine.set_waker(move || {
+        let _ = wake.send(());
+    });
+    engine.navigate(url);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while engine.load_state() != &LoadState::Loaded {
+        let left = deadline
+            .checked_duration_since(Instant::now())
+            .expect("the page loads in time");
+        let _ = woken.recv_timeout(left);
+        engine.poll_network();
+    }
+    engine
+}
+
+#[test]
+fn the_particle_demos_frames_draw_its_canvas_and_lay_nothing_out() {
+    // M30.4's: 2,000 circles moved and drawn each animation frame over a
+    // cleared canvas, which its own layer shows; one callback a frame.
+    let mut engine = navigated("particles");
+    let mut last = draw(&mut engine, 0);
+    let runs = engine.layout_runs();
+    for i in 1..=60 {
+        let frame = draw(&mut engine, i);
+        if i <= 12 {
+            assert_ne!(frame, last, "frame {i} moves the particles");
+            let layered = engine.layered();
+            assert!(
+                layered
+                    .composited
+                    .iter()
+                    .any(|key| matches!(key, GroupKey::Canvas(_))),
+                "frame {i}: {layered:?}"
+            );
+        }
+        last = frame;
+    }
+    assert_eq!(engine.layout_runs(), runs, "no frame laid anything out");
+    assert!(engine.needs_frame(), "it moves for as long as it is shown");
+    let console: Vec<String> = engine
+        .take_console()
+        .into_iter()
+        .map(|entry| entry.text)
+        .collect();
+    assert_eq!(console, ["frames 60"]);
+}
+
+#[test]
+fn the_chart_demo_draws_its_bars_line_labels_and_legend() {
+    // M30.4's: a chart drawn with the calls a charting library makes.
+    let mut engine = navigated("canvas-chart");
+    let frame = draw(&mut engine, 0);
+    // The canvas's corner, white, below the heading at the body's margin.
+    let top = (0..HEIGHT)
+        .find(|&y| px(&frame, 24, y) == [255, 255, 255])
+        .expect("the canvas is shown");
+    let at = |x: u32, y: u32| px(&frame, 24 + x, top + y);
+    // The legend's squares, at 80, 210 and 340, 14 high from 14.
+    assert_eq!(at(87, 21), [0x2f, 0x4f, 0x6f]);
+    assert_eq!(at(217, 21), [0xd0, 0x60, 0x3f]);
+    assert_eq!(at(347, 21), [0x7f, 0x9f, 0x5f]);
+    // The first bar, January's 420 of 1,200 over 310 pixels, in the
+    // gradient: bluer at its top than at the bottom.
+    let (high, low) = (at(86, 250), at(86, 345));
+    assert!(high[2] > low[2], "{high:?} {low:?}");
+    // The month labels' ink below the axis, the white around it.
+    let ink = (86 - 15..86 + 15)
+        .flat_map(|x| (358..372).map(move |y| (x, y)))
+        .filter(|&(x, y)| at(x, y)[0] < 160)
+        .count();
+    assert!(ink > 10, "{ink} pixels of 'Jan'");
+    assert_eq!(at(700, 380), [255, 255, 255]);
+}

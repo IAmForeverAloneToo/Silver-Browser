@@ -12,6 +12,7 @@
 //! [`MAX_CANVAS_STOPS`], so that a loop making them ends in a refusal
 //! or in nothing more drawn, not in the engine's memory spent.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -229,7 +230,13 @@ pub(crate) struct Canvases {
     snapshots: HashMap<Owner, (u64, Arc<images::Image>)>,
     /// The work done since it was last taken.
     work: u64,
+    /// Colours the styles were given, parsed, by their text (M30.4): a
+    /// page sets the same few again and again, a particle's each frame.
+    colours: RefCell<HashMap<String, Option<Rgba>>>,
 }
+
+/// The most colours [`Canvases`] keeps parsed; past it they are let go.
+pub(crate) const MAX_KEPT_COLOURS: usize = 512;
 
 /// Whether a call of `op` names a context, its first number its kind:
 /// those that make objects, or work on a gradient or a pattern, name
@@ -493,12 +500,41 @@ impl Canvases {
         })
     }
 
+    /// `text` as a colour, `current` the element's: kept once parsed,
+    /// but for a text naming `currentcolor`, whose colour is the
+    /// element's of the moment.
+    pub(crate) fn colour(&self, text: &str, current: Rgba) -> Option<Rgba> {
+        let names_current = text
+            .as_bytes()
+            .windows(12)
+            .any(|w| w.eq_ignore_ascii_case(b"currentcolor"));
+        if names_current {
+            return parse_color(text, current);
+        }
+        if let Some(&kept) = self.colours.borrow().get(text) {
+            return kept;
+        }
+        let parsed = parse_color(text, current);
+        let mut colours = self.colours.borrow_mut();
+        if colours.len() >= MAX_KEPT_COLOURS {
+            colours.clear();
+        }
+        colours.insert(text.to_owned(), parsed);
+        parsed
+    }
+
+    /// How many colours are kept parsed.
+    #[cfg(test)]
+    pub(crate) fn kept_colours(&self) -> usize {
+        self.colours.borrow().len()
+    }
+
     /// The paint a style setter's arguments name: a colour's text, or a
     /// gradient or pattern by its kind and number. `None` changes
     /// nothing, as a colour that does not parse does not.
     fn paint_of(&self, call: &CanvasCall, current: Rgba) -> Option<Paint> {
         if let Some(text) = call.strings.first() {
-            return parse_color(text, current).map(Paint::Color);
+            return self.colour(text, current).map(Paint::Color);
         }
         let id = at(&call.numbers, 3) as u32;
         match at(&call.numbers, 2) as u8 {

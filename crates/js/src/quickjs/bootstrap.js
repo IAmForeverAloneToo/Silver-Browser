@@ -11213,6 +11213,35 @@
   function pathCall(object, m, count, a, flag) {
     const t = targetOf(object);
     need(a.length, count, m, t.iface);
+    // moveTo and lineTo, the most made, called straight (M30.4).
+    if (count === 2 && flag === undefined) {
+      const x = unrestricted(a[0], m, t.iface);
+      const y = unrestricted(a[1], m, t.iface);
+      try {
+        native.canvas(m, t.kind, t.id, x, y);
+      } catch (error) {
+        throw failed(error, m, t.iface);
+      }
+      return;
+    }
+    // arc and arcTo, five numbers and arc's flag.
+    if (count === 5) {
+      const x = unrestricted(a[0], m, t.iface);
+      const y = unrestricted(a[1], m, t.iface);
+      const p = unrestricted(a[2], m, t.iface);
+      const q = unrestricted(a[3], m, t.iface);
+      const r = unrestricted(a[4], m, t.iface);
+      try {
+        if (flag === undefined) {
+          native.canvas(m, t.kind, t.id, x, y, p, q, r);
+        } else {
+          native.canvas(m, t.kind, t.id, x, y, p, q, r, !!a[5]);
+        }
+      } catch (error) {
+        throw failed(error, m, t.iface);
+      }
+      return;
+    }
     const args = [m, t.kind, t.id];
     for (let i = 0; i < count; i++) {
       ArrayPush(args, unrestricted(a[i], m, t.iface));
