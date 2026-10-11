@@ -408,13 +408,26 @@ images, the last item on T0's list, come with M23.
   origin-clean flag; the web-platform tests of `html/canvas`; a chart
   and a particle demo drawn, 2,000 particles at 27 ms a frame (sixty a
   second up to 1,000; the rest G81's).
+- **M31, Web Workers v1** (done 2026-10-11, designed in
+  `docs/design/workers.md`): dedicated workers, each a realm of its own
+  on an operating-system thread, its global what Web IDL exposes to a
+  dedicated worker; the structured clone in the reference browser's
+  order and words, with transfer; `postMessage`, `MessageChannel` and
+  `MessagePort` across realms through one router; a worker's script
+  fetched same-origin, `close`, `terminate` and errors through every
+  step; timers, `fetch`, XHR, `importScripts` and WebAssembly in a
+  worker; `transferControlToOffscreen` and frames drawn from a worker;
+  every crossing a message on a channel, the seam M34's processes
+  replace; the web-platform tests of workers and messaging and a
+  worker's variant of every `.any.js` test; a Mandelbrot demo whose
+  workers keep its frames 16.7 ms apart.
 
 Each milestone's fuller writeup and stated gaps are in
 `docs/architecture.md` "Current state", and the gaps no milestone holds
 on the G list (M39+, below).
 
 Verified per the vertical-slice rule at each milestone, by the gate:
-the workspace's tests (2,335 at M30, two ignored), clippy clean (`-D
+the workspace's tests (2,364 at M31, two ignored), clippy clean (`-D
 warnings`, every target), `cargo deny`, the fuzz targets, and a smoke
 run of the shell. Toolchain: 1.98.1, pinned by `rust-toolchain.toml`.
 The checkout lives outside OneDrive since 2026-10-08
@@ -1921,15 +1934,53 @@ Per css-grid-1 (level 2 subgrid included):
 
 ## M31 — Web Workers v1  ·  `engine`  ·  Effort: L  ·  Depends: M25, M28
 
-- [ ] M31.1 Dedicated workers: dedicated-thread JS realms, `postMessage`
+- [x] M31.1 Dedicated workers: dedicated-thread JS realms, `postMessage`
        + structured clone, `onmessage`.
-- [ ] M31.2 Worker script fetch (SOP applies), termination semantics,
+       Done 2026-10-11 (`docs/design/workers.md`): each worker a thread
+       of its own making its realm there (`RealmKind::DedicatedWorker`,
+       one bootstrap putting on its global only what Web IDL exposes to
+       a dedicated worker); the structured clone in the bootstrap, in
+       the reference browser's order and words, crossing realms as a
+       string; `structuredClone`, `MessageEvent`, `window.postMessage`
+       to the window itself; `MessageChannel` and `MessagePort` across
+       realms through one router a document and its workers share.
+- [x] M31.2 Worker script fetch (SOP applies), termination semantics,
        error propagation.
-- [ ] M31.3 Thread policy: workers are OS threads now; process isolation
+       Done 2026-10-11: the script fetched as a worker's (destination
+       `worker`, same-origin mode, `data:` taken), another origin a
+       `SecurityError`; `close()` ending the task, `terminate()` the
+       stop flag and nothing more heard; an uncaught error at the
+       worker's global, then its `Worker` object, then the window, in
+       the reference browser's words; a worker's scope: timers, fetch
+       and XHR on threads of its own, `importScripts`, `location`,
+       `navigator`, canvases, WebAssembly and nested workers.
+- [x] M31.3 Thread policy: workers are OS threads now; process isolation
        happens in M34 (document the migration seam).
-- [ ] M31.4 `OffscreenCanvas` transfer + render-from-worker v1 (if wgpu
+       Done 2026-10-11: every crossing a `WorkerMessage` on a channel
+       and a wake, the data already strings, the seam M34 turns into
+       its IPC; a document's workers bounded (16 live, 8 deep), its
+       messages (256 MiB, 512 MiB waiting) and ports (65,536).
+- [x] M31.4 `OffscreenCanvas` transfer + render-from-worker v1 (if wgpu
        path exists; else software-surface handoff).
-- [ ] M31.5 Acceptance: worker-driven Mandelbrot page stays responsive.
+       Done 2026-10-11, the software-surface handoff:
+       `transferControlToOffscreen()` and placeholders; an
+       `OffscreenCanvas` transferred to a worker, its frames committed
+       after each of the worker's tasks and shown at the next frame;
+       `requestAnimationFrame` in a worker; golden page 132 matching
+       the reference browser.
+- [x] M31.5 Acceptance: worker-driven Mandelbrot page stays responsive.
+       Done 2026-10-11: `tests/demos/mandelbrot.html`, the set
+       computed by four workers in bands sent back in transferred
+       buffers while the page's own square turns: in
+       `benches/workers.rs` every frame 16.7 ms after the last while
+       they compute (the set in 463 ms), where on the page's own
+       thread frames come 100 ms apart (1,548 ms); in the real shell
+       the set in 515 ms over 30 frames, once the shell drew a wanted
+       frame no sooner than a frame's budget after the last (it drew
+       270 a second); the same set, pixel for pixel, as the page's own
+       thread computes (`tests/demos.rs`). A worker's start 25.9 ms, a
+       message's round trip 0.17 ms, 4 MB there and back 89 ms:
+       `docs/perf-budgets.md`, with T4.3.
 
 ---
 
@@ -2437,11 +2488,27 @@ Deferred from the milestones above, each with what it waits on:
        which 2,000 particles at sixty frames a second need (26.9 ms a
        frame at M30: 14 ms of calls at 0.8 to 1.8 us each, 5.3 ms of
        tiny-skia's fills); `filter`; colour spaces past sRGB, pixel
-       formats past 8 bits and the HDR attributes; `ctx.canvas` over a
-       `transferControlToOffscreen()`; `TextMetrics`'s proposed members
-       and `fillTextCluster`; a style given as a colour object. Named
-       at M30 (`docs/design/canvas.md`, section 2), with 191 of the
-       web-platform subtests it leaves failing.
+       formats past 8 bits and the HDR attributes; `TextMetrics`'s
+       proposed members and `fillTextCluster`; a style given as a
+       colour object. Named at M30 (`docs/design/canvas.md`, section
+       2), with 191 of the web-platform subtests it leaves failing.
+- [ ] G82 Shared workers (`SharedWorker`, `SharedWorkerGlobalScope`,
+       `onconnect`) and service workers' own globals (M39's). Named at
+       M31 (`docs/design/workers.md`, section 2).
+- [ ] G83 `SharedArrayBuffer` and `Atomics.wait` between threads, with
+       `crossOriginIsolated` and the headers that give it (COOP and
+       COEP), and WebAssembly's shared memories with them. Named at M31.
+- [ ] G84 `BroadcastChannel`. Named at M31.
+- [ ] G85 Workers past M31: an `ImageBitmap` in a transfer list; a
+       placeholder canvas's `toDataURL` and `toBlob` of the frame its
+       worker sent; a cross-origin `importScripts` script's errors
+       muted; `WorkerNavigator`'s `hardwareConcurrency` and the
+       navigator members neither global has here; a page with workers
+       kept by the back-forward cache, its workers suspended; messages'
+       bytes crossing without base64 (MESSAGE_COST); a length-tracking
+       view's clone tracking its buffer (QuickJS-ng keeps whether a
+       view tracks from script); `MessageEvent`'s `userActivation`.
+       Named at M31.
 
 ---
 
@@ -2460,9 +2527,10 @@ Deferred from the milestones above, each with what it waits on:
        Done 2026-10-01 (M10.7) as `tests/reference.rs`: pages captured
        from a headless reference browser, Chrome rather than Firefox
        (the box model's note), compared byte for byte or within a
-       tolerance a page declares; 131 pages at M30, 123 to 127 run
-       on the reference browser's virtual time, M27's two waiting for
-       their fetches, and M28's served over `http:` for its storage.
+       tolerance a page declares; 132 pages at M31, 123 to 127 and
+       132 run on the reference browser's virtual time, M27's two
+       waiting for their fetches, M28's served over `http:` for its
+       storage, and M31's waiting for its worker.
        It is one of the workspace's tests, which CI runs (`cargo
        test`) and the gate runs on the machine while CI's runs are
        stopped by the account's billing.

@@ -1850,3 +1850,56 @@ sRGB and formats past 8 bits, `transferControlToOffscreen()`,
 (M31.4); faces by family and weight, `@font-face` (G22, G12); WebGL
 and WebGPU. 2,335 tests pass workspace-wide, two ignored. Next
 milestone: Web Workers (M31).
+
+Milestone 31 (Web Workers v1; `docs/design/workers.md`): a page's
+scripts compute off its thread. The structured clone, in the bootstrap
+(step 1), walks a value into a record of tagged entries in the
+reference browser's order, with its words for what it refuses, and
+makes it again; `structuredClone`, `MessageEvent` and
+`window.postMessage` to the window itself, a task of the posted
+message task source. A worker's realm (step 2): `RealmKind`, one
+bootstrap putting on the global only what Web IDL exposes to a
+dedicated worker, `DedicatedWorkerGlobalScope` over
+`WorkerGlobalScope`, its errors naming it; `Limits::worker()` with no
+step budget, and a stop flag the interrupt handler reads. Dedicated
+workers (step 3, `scripts/workers.rs`): each an operating-system
+thread making its realm there (a realm is not `Send`), its script
+fetched as a worker's (destination `worker`, same-origin, `data:`
+taken), its event loop taking timers and its inbox; every crossing a
+`WorkerMessage` on a channel and a wake, the seam M34's processes
+replace; messages both ways with transfer, `close`, `terminate`, an
+uncaught error at the worker, its `Worker` object, then the window;
+its console the document's; nested workers; 16 live a document, 8
+deep; a document with workers not kept by the back-forward cache. Its
+scope (step 4): `WorkerLocation`, `WorkerNavigator`, `importScripts`,
+`fetch` and `XMLHttpRequest` on six threads of its own, canvases
+through the document's offscreen code, WebAssembly. `MessageChannel`
+and `MessagePort` (step 5, `scripts/ports.rs`): one router a document
+and its workers share, a port's messages kept until it is started or
+lands. `transferControlToOffscreen` (step 6): placeholders, an
+`OffscreenCanvas` transferred to a worker, its frames committed after
+each task and shown at the next frame, `requestAnimationFrame` in a
+worker, an `ImageBitmap` crossing realms as its pixels. Fuzzing (step
+7): the `clone` target, `dom_api`'s workers and ports, which found a
+latent bug of the differential's (a canvas named by its node's
+number). The web-platform tests (step 8): workers, webmessaging and
+the structured clone's, and a worker's variant of every `.any.js` test
+the subset takes, which found ten bugs; 5,502 of 6,086 tests pass.
+Page 132 (step 9), a canvas a worker draws, matches the reference
+browser within an edge's tolerance. The acceptance (step 10): a
+Mandelbrot demo whose set four workers compute while the page turns a
+square, every frame 16.7 ms after the last (the set in 463 ms), where
+on the page's own thread they come 100 ms apart (1,548 ms), the same
+set either way; the real shell, which drew a wanted frame as soon as
+the last was presented, about 270 a second, now waits a frame's budget
+after the last; T4.3 within 10% but for whatever makes a realm, 4.4 ms
+slower (a realm made in 27.6 ms from 23.2, x1.19), the bootstrap
+having grown by M31's bindings; fuzz runs of `clone` (fifteen minutes,
+with its dictionary) and of `dom_api` (ten, on six workers, from the
+milestone's seeds) found nothing. Not in this milestone, said rather
+than hidden: shared and service workers (G82, M39), module workers
+(G41), `blob:` URLs (G68), `SharedArrayBuffer` and `Atomics` (G83),
+`BroadcastChannel` (G84), frames' `postMessage` (M33.2), transferable
+streams (G67), a worker's own CSP and referrer policy (M33.1, M33.3),
+what G85 lists, and process isolation (M34). 2,364 tests pass
+workspace-wide, two ignored. Next milestone: SVG v1 (M32).

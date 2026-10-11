@@ -1587,6 +1587,70 @@ particles lay nothing out; as elements they lay out every frame.
   53.3 to 87.6ms; run three times more by turns, 56.1 and 54.6ms by
   their medians: the machine's variance.
 
+### Web Workers (M31)
+
+`benches/workers.rs` (`cargo bench -p engine --bench workers`), on the
+Windows machine, release: the Mandelbrot demo (`tests/demos/
+mandelbrot.html`, 640 by 400, 200 iterations) run as the shell runs
+it, its frames at the display's ticks sixty a second (a tick missed is
+skipped), each timed, and the time from each frame to the next.
+
+| | By four workers | On the page's thread |
+| --- | --- | --- |
+| The set drawn | 463ms | 1,548ms |
+| Frames meanwhile | 28 | 17 |
+| A frame, median (worst) | 2.14ms (3.98ms) | 2.46ms (3.11ms) |
+| From one frame to the next, median (worst) | 16.7ms (16.7ms) | 100.0ms (147.7ms) |
+| Frames late (over 20ms from the last) | 0 | 15 |
+
+| | |
+| --- | --- |
+| A worker's start, `new Worker` to its first message | 25.9ms |
+| A message's round trip, page to worker and back | 0.17ms |
+| 4 MB transferred there and back | 89ms |
+
+In the real shell (release, windowed): the set in 515ms over 30
+frames by the workers, 1,622ms over 29 on the page's thread.
+
+- *A worker's start* is its realm's making, the bootstrap compiled and
+  run (22.9ms at M30): M35.12's.
+- *A transfer* crosses as a string: the buffer's bytes in base64, made
+  again on arrival (the design note, "The structured clone"): 4 MB
+  there and back is about 89ms, where moving the bytes would cost
+  nothing. Bytes crossing as they are is G85's.
+- *The shell's frames* came as fast as the software surface presented
+  them while a page wanted frames, about 270 a second for this demo; a
+  wanted frame now waits for a frame's budget after the last (M31).
+
+**T4.3.** The benchmarks of the code before M31 (539127f) and of M31
+(3514126), by turns, four rounds, M30's seventeen and its `canvas`.
+Within 10% by their medians, but for whatever makes a realm and the
+media page's print:
+
+| | Before M31 | M31 | |
+| --- | --- | --- | --- |
+| Scripts: a realm made | 23.2ms | 27.6ms | x1.19 |
+| Fetch: the page alone, navigate to the last promise | 24.4ms | 28.8ms | x1.18 |
+| Storage: the page alone, navigate to its title | 24.1ms | 28.3ms | x1.18 |
+| WebAssembly: a page doing nothing | 24.2ms | 28.4ms | x1.17 |
+| Canvas: the chart demo, its load to its first frame | 33.1ms | 38.1ms | x1.15 |
+| Media: a print, its layout, pagination and paint | 56.5ms | 72.7ms | x1.29 |
+
+- *A realm's bindings.* The bootstrap every realm compiles and runs
+  grew from 13,210 lines (416 KB) to 14,854 (475 KB): the structured
+  clone, `MessageEvent`, `Worker`, `MessagePort` and `MessageChannel`,
+  the offscreen canvas's placeholders, and a worker's global. A page
+  pays 4.4ms more at its first script, and a worker as much at its
+  start; scripts run as fast as before (two million additions x1.00).
+  Loading the bootstrap compiled is M35.12's.
+- *The media page's print* came out x1.29 by its median, each side's
+  runs either near 55ms or well above (base 67 to 69ms, M31 89 to
+  93ms); run three times more by turns, seven runs a side: medians
+  57.1 and 59.5ms (x1.04), the machine's variance, as at M30.
+- *The mutation page's appended paragraphs* over 16.7ms: 19 to 36 of
+  1,000 before, 25 to 37 after, their frame's median the same (12.1
+  and 12.2ms).
+
 ### Over budget, and why
 
 These are known and recorded rather than hidden. Each has the item that
@@ -1675,8 +1739,13 @@ is to take it on.
   is the conservative rule of M13.1.
 - **A realm made.** A page's first script waits for its realm, which
   compiles and runs the bindings' bootstrap: 5ms at M25, 10.6ms at
-  M26, 15.6ms at M27, 17.5ms at M29 and 22.9ms at M30, 13,210 lines,
-  past a frame's budget alone. Loading it compiled is M35.12's.
+  M26, 15.6ms at M27, 17.5ms at M29, 22.9ms at M30 and 27.6ms at M31,
+  14,854 lines, past a frame's budget alone; a worker waits as long
+  for its first message (25.9ms). Loading it compiled is M35.12's.
+- **A transfer between realms (M31).** 4 MB there and back in 89ms:
+  a message crosses as a string, a buffer's bytes in base64, where the
+  reference browser moves them. A page that hands large buffers to its
+  workers every frame cannot. G85.
 - **A WebAssembly call with the memory seen.** 1.9ms for a module's
   1.1 MB memory, the buffer a copy synced at each call's edges (M29):
   a module called a few times a frame is served, one called in a loop
