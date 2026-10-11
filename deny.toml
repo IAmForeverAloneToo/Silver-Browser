@@ -70,6 +70,10 @@ skip = [
     { name = "syn" },
     { name = "thiserror" },
     { name = "thiserror-impl" },
+    # The canvas (M30) needs 0.12's gradients; the windowing crate's
+    # Wayland decorations, on Linux alone, pin 0.11.
+    { name = "tiny-skia" },
+    { name = "tiny-skia-path" },
     { name = "windows-sys" },
 ]
 

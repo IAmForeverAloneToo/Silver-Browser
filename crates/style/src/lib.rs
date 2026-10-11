@@ -109,7 +109,7 @@ pub use selector_matching::{matches_selector, matches_selector_list, parse_selec
 
 pub use cascade::{
     CascadeContext, Composited, FontMeasure, PseudoStyles, Recascade, Recascader, Restyle, Styles,
-    Stylesheets, cascade_document, property_name, supports,
+    Stylesheets, cascade_document, parse_color_text, property_name, supports,
 };
 pub use computed::ComputedStyle;
 pub use conditions::supports_condition;

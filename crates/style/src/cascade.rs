@@ -10,9 +10,9 @@
 //!   `@media` lists evaluated against [`CascadeContext::media`] at each
 //!   cascade, `@supports` decided once, and the declarations sorted by
 //!   their cascade layers. Every other at-rule's rules are passed over.
-//! * Colors: hex (`#rgb`/`#rgba`/`#rrggbb`/`#rrggbbaa`) and CSS Color
-//!   4's 148 names (M17; eighteen before), not `rgb()`/`hsl()`
-//!   functions yet.
+//! * Colors: hex (`#rgb`/`#rgba`/`#rrggbb`/`#rrggbbaa`), CSS Color
+//!   4's 148 names (M17; eighteen before), `rgb()` (M25), `hsl()` and
+//!   `hwb()` (M30).
 //! * Lengths (M10.1): `px`, the absolute units (`in`, `cm`, `mm`, `q`,
 //!   `pt`, `pc`), `em`, `rem`, `ex`, `ch`, and the viewport units `vw`,
 //!   `vh`, `vmin`, `vmax`. The relative ones resolve here, against the
@@ -5239,10 +5239,13 @@ fn parse_font_family(tokens: &[Token]) -> Option<String> {
 }
 
 fn parse_color(tokens: &[Token]) -> Option<Color> {
-    if let [Token::Function(name), arguments @ .., Token::CloseParen] = trim(tokens)
-        && matches!(name.to_ascii_lowercase().as_str(), "rgb" | "rgba")
-    {
-        return parse_rgb(arguments);
+    if let [Token::Function(name), arguments @ .., Token::CloseParen] = trim(tokens) {
+        return match name.to_ascii_lowercase().as_str() {
+            "rgb" | "rgba" => parse_rgb(arguments),
+            "hsl" | "hsla" => parse_hsl(arguments, false),
+            "hwb" => parse_hsl(arguments, true),
+            _ => None,
+        };
     }
     match single_token(tokens)? {
         Token::Hash { value, .. } => parse_hex_color(value),
@@ -5325,6 +5328,119 @@ fn parse_rgb(arguments: &[Token]) -> Option<Color> {
         b: channel(channels[2])?,
         a,
     })
+}
+
+/// The arguments of `hsl()` or `hsla()`, the same function, or of `hwb()`
+/// when `whiteness` (css-color-4 sections 7 and 8; M30, which canvas
+/// code writes as often as hexadecimal): a hue, a number of degrees or an
+/// angle, and two percentages, separated by commas with an optional
+/// alpha (the legacy syntax, which `hwb()` has not), or by white space
+/// with an optional alpha after `/`, numbers then taken as percentages
+/// and `none` as zero.
+fn parse_hsl(arguments: &[Token], whiteness: bool) -> Option<Color> {
+    let legacy = arguments.iter().any(|token| matches!(token, Token::Comma));
+    let mut parts: Vec<&Token> = Vec::new();
+    let mut alpha = None;
+    if legacy {
+        if whiteness {
+            return None;
+        }
+        for (i, part) in arguments
+            .split(|token| matches!(token, Token::Comma))
+            .enumerate()
+        {
+            let value = single_token(part)?;
+            match i {
+                0..=2 => parts.push(value),
+                3 => alpha = Some(value),
+                _ => return None,
+            }
+        }
+        // The legacy syntax takes percentages for the two and no `none`.
+        if parts.len() != 3
+            || parts[1..]
+                .iter()
+                .any(|token| !matches!(token, Token::Percentage { .. }))
+            || alpha.is_some_and(|token| matches!(token, Token::Ident(_)))
+            || matches!(parts[0], Token::Ident(_))
+        {
+            return None;
+        }
+    } else {
+        let words: Vec<&Token> = arguments
+            .iter()
+            .filter(|token| !matches!(token, Token::Whitespace))
+            .collect();
+        match words.as_slice() {
+            [h, s, l] => parts.extend([*h, *s, *l]),
+            [h, s, l, Token::Delim('/'), a] => {
+                parts.extend([*h, *s, *l]);
+                alpha = Some(*a);
+            }
+            _ => return None,
+        }
+    }
+    let degrees = match parts[0] {
+        Token::Number { value, .. } => *value,
+        Token::Dimension { value, unit } => match unit.to_ascii_lowercase().as_str() {
+            "deg" => *value,
+            "grad" => value * 0.9,
+            "rad" => value.to_degrees(),
+            "turn" => value * 360.0,
+            _ => return None,
+        },
+        Token::Ident(none) if none.eq_ignore_ascii_case("none") => 0.0,
+        _ => return None,
+    };
+    let fraction = |token: &Token| -> Option<f64> {
+        let value = match token {
+            Token::Percentage { value } | Token::Number { value, .. } => value / 100.0,
+            Token::Ident(none) if none.eq_ignore_ascii_case("none") => 0.0,
+            _ => return None,
+        };
+        Some(value.clamp(0.0, 1.0))
+    };
+    let (first, second) = (fraction(parts[1])?, fraction(parts[2])?);
+    let a = match alpha {
+        None => 1.0,
+        Some(Token::Number { value, .. }) => value.clamp(0.0, 1.0),
+        Some(Token::Percentage { value }) => (value / 100.0).clamp(0.0, 1.0),
+        Some(Token::Ident(none)) if none.eq_ignore_ascii_case("none") => 0.0,
+        Some(_) => return None,
+    };
+    let hue = degrees.rem_euclid(360.0) / 30.0;
+    // css-color-4's hslToRgb: each channel from its offset on the wheel.
+    let hsl = |saturation: f64, lightness: f64| {
+        let channel = |n: f64| {
+            let k = (n + hue) % 12.0;
+            let a = saturation * lightness.min(1.0 - lightness);
+            lightness - a * (k - 3.0).min(9.0 - k).clamp(-1.0, 1.0)
+        };
+        [channel(0.0), channel(8.0), channel(4.0)]
+    };
+    let [r, g, b] = if whiteness {
+        let (white, black) = (first, second);
+        if white + black >= 1.0 {
+            let gray = white / (white + black);
+            [gray; 3]
+        } else {
+            hsl(1.0, 0.5).map(|c| c * (1.0 - white - black) + white)
+        }
+    } else {
+        hsl(first, second)
+    };
+    Some(Color {
+        r: r as f32,
+        g: g as f32,
+        b: b as f32,
+        a: a as f32,
+    })
+}
+
+/// A colour written as CSS writes one, with the functions and names the
+/// engine knows (M30: for a canvas's styles); `None` for any other text.
+pub fn parse_color_text(text: &str) -> Option<Color> {
+    parse_color(&css::tokenize(text))
 }
 
 /// `content` (CSS 2.2 §12.2, M16): `normal`, `none`, or one or more
@@ -5952,7 +6068,7 @@ mod tests {
             ("width", "-5px"),
             ("width", "calc(10px + 1s)"),
             ("width", "sin(1deg)"),
-            ("color", "hsl(0 0% 0%)"),
+            ("color", "lab(0% 0 0)"),
             ("writing-mode", "vertical-rl"),
             ("bogus", "inherit"),
             ("font-size", "-1px"),
@@ -8636,10 +8752,45 @@ mod tests {
             "rgb(255 0 51 / 0.5 / 1)",
             "rgb(1px 0 0)",
             "rgb(255 0 51",
-            "hsl(0 0% 0%)",
+            "lab(0% 0 0)",
         ] {
             assert_eq!(color(text), None, "{text}");
         }
+    }
+
+    #[test]
+    fn hsl_and_hwb_are_read_as_css_color_4_converts_them() {
+        let color = |text: &str| parse_color(&css::tokenize(text));
+        let rgb8 = |text: &str| {
+            color(text).map(|c| [c.r, c.g, c.b, c.a].map(|v| (v * 255.0).round() as u8))
+        };
+        for (text, want) in [
+            ("hsl(120, 100%, 50%)", [0, 255, 0, 255]),
+            ("hsl(120 100% 50%)", [0, 255, 0, 255]),
+            ("hsla(0, 100%, 50%, 0.5)", [255, 0, 0, 128]),
+            ("hsl(240deg 100 50 / 50%)", [0, 0, 255, 128]),
+            ("hsl(0.5turn 100% 25%)", [0, 128, 128, 255]),
+            ("hsl(200grad 100% 50%)", [0, 255, 255, 255]),
+            ("hsl(-120 100% 50%)", [0, 0, 255, 255]),
+            ("hsl(30 50% 60%)", [204, 153, 102, 255]),
+            ("hsl(none 0% 100%)", [255, 255, 255, 255]),
+            ("hwb(0 0% 0%)", [255, 0, 0, 255]),
+            ("hwb(120 20% 30%)", [51, 179, 51, 255]),
+            ("hwb(0 60% 60%)", [128, 128, 128, 255]),
+        ] {
+            assert_eq!(rgb8(text), Some(want), "{text}");
+        }
+        for text in [
+            "hsl(120, 100, 50%)",
+            "hsl(120, none, 50%)",
+            "hwb(0, 0%, 0%)",
+            "hsl(120 100% 50% 1)",
+            "hsl(1px 100% 50%)",
+            "hsl(120 100%)",
+        ] {
+            assert_eq!(color(text), None, "{text}");
+        }
+        assert_eq!(parse_color_text("hsl(120 100% 50%)"), color("#0f0"));
     }
 
     #[test]
