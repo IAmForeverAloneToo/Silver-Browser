@@ -22,6 +22,8 @@ use canvas::{
 use dom::NodeId;
 use js::{Answer, CanvasCall, DomError};
 
+use crate::image_store::Drawable;
+
 /// The most bytes a document's bitmaps hold in all: a canvas made or
 /// resized past it has no bitmap, and draws nothing.
 pub(crate) const MAX_CANVAS_MEMORY: u64 = 512 << 20;
@@ -34,6 +36,104 @@ pub(crate) const MAX_CANVAS_POINTS: usize = 1 << 22;
 /// The most colour stops a document's gradients hold together: past
 /// it, a stop is not added.
 pub(crate) const MAX_CANVAS_STOPS: usize = 1 << 20;
+
+/// The most bytes of pixels decoded for drawing a document keeps
+/// (M30): past it an image is decoded again for each draw.
+pub(crate) const MAX_DRAWN_DECODED: usize = 256 << 20;
+
+/// What the shown document's `img` elements give a canvas to draw
+/// (M30), shared between the engine, which keeps it as images arrive,
+/// and the scripts' host, which draws from it: for the page named, by
+/// element; and the pixels decoded for drawing, by their bytes.
+#[derive(Default)]
+pub(crate) struct Drawables {
+    pub(crate) page: Option<crate::loader::PageId>,
+    by_node: HashMap<NodeId, Drawable>,
+    decoded: HashMap<usize, Arc<images::Image>>,
+    bytes: usize,
+}
+
+/// The list as the engine and the host share it.
+pub(crate) type SharedDrawables = Arc<Mutex<Drawables>>;
+
+/// What an `img` gives a draw: its pixels and whether they leave a
+/// canvas clean; that it is broken; or nothing yet.
+pub(crate) enum Drawn {
+    Pixels(Arc<images::Image>, bool),
+    Broken,
+    Coming,
+}
+
+impl Drawables {
+    /// The engine's list, as it is now: decoded pixels whose bytes are
+    /// gone let go.
+    pub(crate) fn update(&mut self, by_node: HashMap<NodeId, Drawable>) {
+        let alive: std::collections::HashSet<usize> = by_node
+            .values()
+            .filter_map(|drawable| match drawable {
+                Drawable::Ready { bytes, .. } => Some(Arc::as_ptr(bytes) as *const u8 as usize),
+                Drawable::Broken => None,
+            })
+            .collect();
+        let bytes = &mut self.bytes;
+        self.decoded.retain(|key, image| {
+            let keep = alive.contains(key);
+            if !keep {
+                *bytes -= image_bytes(image);
+            }
+            keep
+        });
+        self.by_node = by_node;
+    }
+
+    /// Where the `img` `node`'s image stands, for `complete` and its
+    /// natural size: 0 coming or none, 1 there, 2 broken; and its size.
+    pub(crate) fn state(&self, node: NodeId) -> (u8, u32, u32) {
+        match self.by_node.get(&node) {
+            None => (0, 0, 0),
+            Some(Drawable::Broken) => (2, 0, 0),
+            Some(Drawable::Ready { size, .. }) => (1, size.0, size.1),
+        }
+    }
+
+    /// What the `img` `node` gives a draw, decoded now if it must be.
+    pub(crate) fn get(&mut self, node: NodeId) -> Drawn {
+        let Some(drawable) = self.by_node.get(&node) else {
+            return Drawn::Coming;
+        };
+        let (bytes, decoded, clean) = match drawable {
+            Drawable::Broken => return Drawn::Broken,
+            Drawable::Ready {
+                bytes,
+                decoded,
+                clean,
+                ..
+            } => (bytes, decoded, *clean),
+        };
+        if let Some(image) = decoded {
+            return Drawn::Pixels(Arc::clone(image), clean);
+        }
+        let key = Arc::as_ptr(bytes) as *const u8 as usize;
+        if let Some(image) = self.decoded.get(&key) {
+            return Drawn::Pixels(Arc::clone(image), clean);
+        }
+        let Ok(image) = images::decode(bytes) else {
+            return Drawn::Broken;
+        };
+        let image = Arc::new(image);
+        let size = image_bytes(&image);
+        if self.bytes + size <= MAX_DRAWN_DECODED {
+            self.bytes += size;
+            self.decoded.insert(key, Arc::clone(&image));
+        }
+        Drawn::Pixels(image, clean)
+    }
+}
+
+/// The bytes an image's frames hold.
+fn image_bytes(image: &images::Image) -> usize {
+    image.frames.iter().map(|frame| frame.pixels.len()).sum()
+}
 
 /// The kinds of object a call names, as the bindings number them.
 const CONTEXT: u8 = 0;
@@ -53,6 +153,15 @@ pub(crate) struct Element {
     pub(crate) font_base: FontBase,
     pub(crate) rtl: bool,
     pub(crate) fonts: Option<text::FontCollection>,
+    /// The image a `drawImage()` or a `createPattern()` names, when it
+    /// has pixels to draw.
+    pub(crate) source: Option<canvas::Source>,
+}
+
+/// Whether a context's call of `op` names an image (its kind and which
+/// after the context's): the host finds its pixels first.
+pub(crate) fn needs_source(op: &str) -> bool {
+    matches!(op, "drawImage" | "createPattern")
 }
 
 /// Whether a context's call of `op` reads what [`Element`] holds for
@@ -90,11 +199,19 @@ pub(crate) struct Canvases {
 }
 
 /// Whether a call of `op` names a context, its first number its kind:
-/// those that make objects, or work on a gradient, name none.
+/// those that make objects, or work on a gradient or a pattern, name
+/// none.
 pub(crate) fn names_context(op: &str) -> bool {
     !matches!(
         op,
-        "path" | "linearGradient" | "radialGradient" | "conicGradient" | "release" | "addColorStop"
+        "path"
+            | "linearGradient"
+            | "radialGradient"
+            | "conicGradient"
+            | "release"
+            | "addColorStop"
+            | "patternTransform"
+            | "imageState"
     )
 }
 
@@ -134,6 +251,12 @@ impl Canvases {
     /// The work done since the last call, for the run's budget.
     pub(crate) fn take_work(&mut self) -> u64 {
         std::mem::take(&mut self.work)
+    }
+
+    /// Whether the canvas `node`'s bitmap is origin-clean: one with no
+    /// context is.
+    pub(crate) fn origin_clean(&self, node: NodeId) -> bool {
+        self.contexts.get(&node).is_none_or(Canvas::origin_clean)
     }
 
     /// Whether a bitmap changed since the last frame took this (M30.3).
@@ -374,6 +497,17 @@ impl Canvases {
                 self.gradients
                     .insert(id, Arc::new(Mutex::new(Gradient::new(kind))));
                 return Ok(number(f64::from(id)));
+            }
+            "patternTransform" => {
+                let m = Matrix::new(at(n, 2), at(n, 3), at(n, 4), at(n, 5), at(n, 6), at(n, 7));
+                let pattern = self.patterns.get(&(at(n, 1) as u32)).ok_or_else(bad_call)?;
+                if m.is_finite() {
+                    pattern
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .transform = m;
+                }
+                return Ok(Answer::Nothing);
             }
             "release" => {
                 let id = at(n, 1) as u32;
@@ -716,6 +850,44 @@ impl Canvases {
                 Answer::Nothing
             }
             "lang" => Answer::String(state.lang.clone()),
+            // The source's kind and which first, then two, four or eight
+            // numbers.
+            "drawImage" => {
+                if let Some(source) = &element.source {
+                    let a = &n[2.min(n.len())..];
+                    let (w, h) = (f64::from(source.width), f64::from(source.height));
+                    let (src, dst) = match a.len() {
+                        2 => (None, [at(a, 0), at(a, 1), w, h]),
+                        4 => (None, [at(a, 0), at(a, 1), at(a, 2), at(a, 3)]),
+                        _ => (
+                            Some([at(a, 0), at(a, 1), at(a, 2), at(a, 3)]),
+                            [at(a, 4), at(a, 5), at(a, 6), at(a, 7)],
+                        ),
+                    };
+                    canvas.draw_image(source, src, dst);
+                }
+                Answer::Nothing
+            }
+            "createPattern" => match &element.source {
+                Some(source) => {
+                    let repetition = text
+                        .and_then(canvas::Repetition::from_name)
+                        .ok_or_else(bad_call)?;
+                    let id = self.new_id()?;
+                    let pattern = Pattern {
+                        width: source.width,
+                        height: source.height,
+                        pixels: Arc::clone(&source.pixels),
+                        repetition,
+                        transform: Matrix::IDENTITY,
+                        origin_clean: source.origin_clean,
+                    };
+                    self.patterns.insert(id, Arc::new(Mutex::new(pattern)));
+                    number(f64::from(id))
+                }
+                // An image not yet decoded makes no pattern: null.
+                None => Answer::MaybeString(None),
+            },
             "fillText" | "strokeText" => {
                 if let Some(fonts) = &element.fonts {
                     let max = (n.len() > 2).then(|| at(n, 2));

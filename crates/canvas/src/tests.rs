@@ -13,8 +13,8 @@ use tiny_skia::FillRule;
 use crate::path::Path;
 use crate::state::{Composite, Gradient, GradientKind, Matrix, Paint, Pattern, Repetition};
 use crate::{
-    Canvas, FontBase, MAX_CANVAS_SIDE, MAX_CANVAS_STATES, MAX_PATH_POINTS, Rgba, Spacing, Stretch,
-    TextAlign, TextBaseline, parse_color, parse_font, serialize_color,
+    Canvas, FontBase, MAX_CANVAS_SIDE, MAX_CANVAS_STATES, MAX_PATH_POINTS, Rgba, Source, Spacing,
+    Stretch, TextAlign, TextBaseline, parse_color, parse_font, serialize_color,
 };
 
 fn px(canvas: &Canvas, x: i64, y: i64) -> [u8; 4] {
@@ -1127,5 +1127,190 @@ fn metrics_are_of_the_glyphs_and_the_font_from_the_point() {
     assert_eq!(
         (empty.width, empty.actual_left, empty.actual_right),
         (0.0, 0.0, 0.0)
+    );
+}
+
+/// The probe's image: two by two, red and magenta over blue and white.
+fn picture(origin_clean: bool) -> Source {
+    let pixels: Vec<u8> = [
+        [255, 0, 0, 255],
+        [255, 0, 255, 255],
+        [0, 0, 255, 255],
+        [255, 255, 255, 255],
+    ]
+    .concat();
+    Source {
+        pixels: Arc::from(pixels),
+        width: 2,
+        height: 2,
+        origin_clean,
+    }
+}
+
+const R: [u8; 4] = [255, 0, 0, 255];
+const M: [u8; 4] = [255, 0, 255, 255];
+const B: [u8; 4] = [0, 0, 255, 255];
+const W: [u8; 4] = [255, 255, 255, 255];
+const T: [u8; 4] = [0, 0, 0, 0];
+
+fn sharp(width: u32, height: u32) -> Canvas {
+    let mut canvas = Canvas::new(width, height, false);
+    canvas.state_mut().image_smoothing = false;
+    canvas
+}
+
+#[test]
+fn draw_image_takes_its_three_forms_as_the_reference_browser_does() {
+    let image = picture(true);
+    let mut canvas = sharp(10, 10);
+    canvas.draw_image(&image, None, [0.0, 0.0, 2.0, 2.0]);
+    let at = |canvas: &Canvas, points: &[(i64, i64)]| -> Vec<[u8; 4]> {
+        points.iter().map(|&(x, y)| px(canvas, x, y)).collect()
+    };
+    assert_eq!(
+        at(&canvas, &[(0, 0), (1, 0), (0, 1), (1, 1), (2, 2)]),
+        [R, M, B, W, T]
+    );
+    let mut canvas = sharp(10, 10);
+    canvas.draw_image(&image, None, [2.0, 2.0, 4.0, 4.0]);
+    assert_eq!(
+        at(&canvas, &[(2, 2), (5, 2), (2, 5), (5, 5), (6, 6)]),
+        [R, M, B, W, T]
+    );
+    let mut canvas = sharp(10, 10);
+    canvas.draw_image(&image, Some([1.0, 0.0, 1.0, 2.0]), [0.0, 0.0, 2.0, 4.0]);
+    assert_eq!(at(&canvas, &[(0, 0), (1, 3), (2, 0)]), [M, W, T]);
+    // A source reaching past the image is cut to it, the destination
+    // with it.
+    let mut canvas = sharp(10, 10);
+    canvas.draw_image(&image, Some([-1.0, -1.0, 4.0, 4.0]), [0.0, 0.0, 8.0, 8.0]);
+    assert_eq!(
+        at(&canvas, &[(0, 0), (2, 2), (3, 3), (5, 5), (7, 7)]),
+        [T, R, R, W, T]
+    );
+    // Negative sizes flip to positive ones; one of no size draws nothing.
+    let mut canvas = sharp(10, 10);
+    canvas.draw_image(&image, Some([2.0, 2.0, -2.0, -2.0]), [0.0, 0.0, 4.0, 4.0]);
+    assert_eq!(at(&canvas, &[(0, 0), (3, 3)]), [R, W]);
+    let mut canvas = sharp(10, 10);
+    canvas.draw_image(&image, Some([0.0, 0.0, 2.0, 2.0]), [4.0, 4.0, -4.0, -4.0]);
+    assert_eq!(at(&canvas, &[(0, 0), (3, 3)]), [R, W]);
+    let mut canvas = sharp(10, 10);
+    canvas.draw_image(&image, Some([0.0, 0.0, 0.0, 2.0]), [0.0, 0.0, 4.0, 4.0]);
+    canvas.draw_image(&image, None, [0.0, 0.0, 0.0, 0.0]);
+    canvas.draw_image(&image, None, [f64::NAN, 0.0, 2.0, 2.0]);
+    assert_eq!(px(&canvas, 1, 1), T);
+}
+
+#[test]
+fn a_drawn_image_takes_the_alpha_the_shadow_and_the_transform() {
+    let image = picture(true);
+    let mut canvas = sharp(4, 4);
+    canvas.state_mut().set_global_alpha(0.5);
+    canvas.draw_image(&image, None, [0.0, 0.0, 2.0, 2.0]);
+    assert_near(px(&canvas, 0, 0), [255, 0, 0, 128], 1);
+    let mut canvas = sharp(10, 10);
+    canvas.state_mut().shadow_color = color("#000");
+    canvas.state_mut().set_shadow_offset(Some(4.0), None);
+    canvas.draw_image(&image, None, [0.0, 0.0, 2.0, 2.0]);
+    assert_eq!((px(&canvas, 0, 0), px(&canvas, 4, 0)), (R, [0, 0, 0, 255]));
+    let mut canvas = sharp(10, 10);
+    canvas.translate(5.0, 5.0);
+    canvas.scale(2.0, 2.0);
+    canvas.draw_image(&image, None, [0.0, 0.0, 2.0, 2.0]);
+    assert_eq!(
+        (px(&canvas, 5, 5), px(&canvas, 7, 5), px(&canvas, 8, 8)),
+        (R, M, W)
+    );
+}
+
+#[test]
+fn a_scaled_image_is_filtered_as_smoothing_says() {
+    // Black and white, two pixels, drawn eight wide: the reference
+    // browser's bilinear ramp, or the nearest pixel.
+    let pixels: Vec<u8> = [[0, 0, 0, 255], [255, 255, 255, 255]].concat();
+    let image = Source {
+        pixels: Arc::from(pixels),
+        width: 2,
+        height: 1,
+        origin_clean: true,
+    };
+    let mut canvas = Canvas::new(8, 1, false);
+    canvas.draw_image(&image, None, [0.0, 0.0, 8.0, 1.0]);
+    let ramp: Vec<u8> = (0..8).map(|x| px(&canvas, x, 0)[0]).collect();
+    let want = [0, 0, 32, 96, 159, 223, 255, 255];
+    assert!(
+        ramp.iter().zip(want).all(|(&g, w)| g.abs_diff(w) <= 1),
+        "{ramp:?}"
+    );
+    canvas.state_mut().image_smoothing = false;
+    canvas.draw_image(&image, None, [0.0, 0.0, 8.0, 1.0]);
+    assert_eq!((px(&canvas, 3, 0)[0], px(&canvas, 4, 0)[0]), (0, 255));
+}
+
+#[test]
+fn an_image_or_a_pattern_of_another_origin_taints_the_canvas() {
+    let mut canvas = Canvas::new(4, 4, false);
+    canvas.draw_image(&picture(true), None, [0.0, 0.0, 2.0, 2.0]);
+    assert!(canvas.origin_clean());
+    // One of no area returns before the standard's taint step.
+    canvas.draw_image(&picture(false), None, [0.0, 0.0, 0.0, 0.0]);
+    assert!(canvas.origin_clean());
+    canvas.draw_image(&picture(false), None, [0.0, 0.0, 2.0, 2.0]);
+    assert!(!canvas.origin_clean());
+    let mut canvas = Canvas::new(4, 4, false);
+    let image = picture(false);
+    let pattern = Pattern {
+        width: 2,
+        height: 2,
+        pixels: image.pixels,
+        repetition: Repetition::Repeat,
+        transform: Matrix::IDENTITY,
+        origin_clean: false,
+    };
+    canvas.state_mut().fill = Paint::Pattern(Arc::new(Mutex::new(pattern)));
+    assert!(canvas.origin_clean(), "a pattern set is not yet drawn");
+    canvas.fill_rect(0.0, 0.0, 4.0, 4.0);
+    assert!(!canvas.origin_clean());
+}
+
+#[test]
+fn patterns_of_an_image_repeat_and_move_as_asked() {
+    let image = picture(true);
+    let fill = |repetition: Repetition, transform: Matrix| {
+        let mut canvas = Canvas::new(8, 8, false);
+        let pattern = Pattern {
+            width: 2,
+            height: 2,
+            pixels: Arc::clone(&image.pixels),
+            repetition,
+            transform,
+            origin_clean: true,
+        };
+        canvas.state_mut().fill = Paint::Pattern(Arc::new(Mutex::new(pattern)));
+        canvas.fill_rect(0.0, 0.0, 8.0, 8.0);
+        canvas
+    };
+    for (repetition, want) in [
+        (Repetition::Repeat, [255, 255, 255]),
+        (Repetition::RepeatX, [255, 0, 0]),
+        (Repetition::RepeatY, [0, 255, 0]),
+        (Repetition::NoRepeat, [0, 0, 0]),
+    ] {
+        let canvas = fill(repetition, Matrix::IDENTITY);
+        let got = [
+            px(&canvas, 2, 0)[3],
+            px(&canvas, 0, 2)[3],
+            px(&canvas, 3, 3)[3],
+        ];
+        assert_eq!(got, want, "{repetition:?}");
+    }
+    let canvas = fill(
+        Repetition::NoRepeat,
+        Matrix::new(1.0, 0.0, 0.0, 1.0, 3.0, 3.0),
+    );
+    assert_eq!(
+        (px(&canvas, 3, 3), px(&canvas, 0, 0), px(&canvas, 4, 4)),
+        (R, T, W)
     );
 }

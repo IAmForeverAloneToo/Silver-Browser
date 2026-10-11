@@ -10,7 +10,7 @@
 //! The host stays with the document between runs (M25), keeping what
 //! scripts hold; after each run the subtrees they let go of are freed.
 
-mod canvas;
+pub(crate) mod canvas;
 #[cfg(test)]
 mod canvas_tests;
 mod cssom;
@@ -184,6 +184,8 @@ pub(crate) struct WindowEnv {
     /// input was a key, so that a focus a script gives is shown (M26.6).
     pub(crate) focused: bool,
     pub(crate) keyboard: bool,
+    /// What the shown document's `img`s give a canvas to draw (M30).
+    pub(crate) drawables: Option<canvas::SharedDrawables>,
     /// The engine's storage, for `localStorage` and `sessionStorage`
     /// (M28), and whether another document alive shares this one's
     /// origin, to hear of its changes.

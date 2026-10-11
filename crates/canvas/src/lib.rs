@@ -10,6 +10,7 @@ mod blur;
 mod color;
 mod draw;
 mod font;
+mod image;
 mod path;
 mod pixels;
 mod state;
@@ -25,6 +26,7 @@ use tiny_skia::Pixmap;
 
 pub use color::{Rgba, parse_color, serialize_color};
 pub use font::{Font, FontBase, Spacing, Stretch, parse_font};
+pub use image::{Source, empty_canvas};
 pub use path::Path;
 pub use pixels::{blank_image_data, too_large};
 pub use state::{
@@ -83,6 +85,8 @@ pub struct Canvas {
     opaque: bool,
     /// The work done since it was last taken.
     work: u64,
+    /// The image a `drawImage()` paints with, while it does.
+    pub(crate) drawing: Option<image::ImagePaint>,
 }
 
 impl Canvas {
@@ -100,6 +104,7 @@ impl Canvas {
             origin_clean: true,
             opaque,
             work: 0,
+            drawing: None,
         };
         canvas.reset_bitmap();
         canvas

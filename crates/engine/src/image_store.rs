@@ -98,6 +98,58 @@ pub(crate) struct ImageEntry {
     pub(crate) state: ImageState,
     /// Whether its URL is same origin with the document's (M23.2).
     same_origin: bool,
+    /// Whether its response may be read by the document (M30): same
+    /// origin, or allowed by CORS; not an opaque response, which taints
+    /// a canvas that draws it.
+    clean: bool,
+}
+
+/// How an `img` asks for its image (HTML 2.5.4, its `crossorigin`): with
+/// no CORS, or in CORS mode with or without credentials.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CrossOrigin {
+    None,
+    Anonymous,
+    UseCredentials,
+}
+
+impl CrossOrigin {
+    /// The attribute's state: absent none; `use-credentials` that; any
+    /// other value, the empty one too, anonymous.
+    pub(crate) fn of(value: Option<&str>) -> CrossOrigin {
+        match value {
+            None => CrossOrigin::None,
+            Some(value) if value.eq_ignore_ascii_case("use-credentials") => {
+                CrossOrigin::UseCredentials
+            }
+            Some(_) => CrossOrigin::Anonymous,
+        }
+    }
+
+    /// The store's key for `url` fetched so: the URL alone without
+    /// CORS, which no URL's serialization holds a space of.
+    pub(crate) fn key(self, url: &net::Url) -> String {
+        match self {
+            CrossOrigin::None => url.as_str().to_owned(),
+            CrossOrigin::Anonymous => format!("cors {}", url.as_str()),
+            CrossOrigin::UseCredentials => format!("cors-credentials {}", url.as_str()),
+        }
+    }
+}
+
+/// What a canvas can draw of an `img` (M30): its pixels, decoded whole
+/// when the store has them so, else its bytes to decode; or that it is
+/// broken. An image coming, or none, is not in the list.
+#[derive(Debug, Clone)]
+pub(crate) enum Drawable {
+    Ready {
+        bytes: Arc<[u8]>,
+        decoded: Option<Arc<Image>>,
+        clean: bool,
+        /// Its natural size, as its header says.
+        size: (u32, u32),
+    },
+    Broken,
 }
 
 /// Whether `url` is same origin with the document `page` shows: never
@@ -209,10 +261,13 @@ impl ImageStore {
         document: &Document,
         page: &Page,
         next: &mut u64,
-    ) -> Vec<net::Url> {
+    ) -> Vec<(net::Url, CrossOrigin)> {
         self.sources.clear();
         let mut wanted = Vec::new();
-        for node in document.subtree(document.root()) {
+        // Every `img`, in the document or not: one a script made and
+        // holds fetches its image too (HTML section 4.8.4.3), as `new
+        // Image()` for a canvas does.
+        for node in (0..document.slot_count()).filter_map(|i| document.id_at(i)) {
             if document.tag(node) != Some("img") {
                 continue;
             }
@@ -223,7 +278,8 @@ impl ImageStore {
             else {
                 continue;
             };
-            let key = url.as_str().to_owned();
+            let cross = CrossOrigin::of(document.attr(node, "crossorigin"));
+            let key = cross.key(&url);
             if !self.entries.contains_key(&key) {
                 self.entries.insert(
                     key.clone(),
@@ -231,15 +287,47 @@ impl ImageStore {
                         id: *next,
                         state: ImageState::Fetching,
                         same_origin: same_origin(page, &url),
+                        clean: true,
                     },
                 );
                 self.ids.insert(*next, key.clone());
                 *next += 1;
-                wanted.push(url);
+                wanted.push((url, cross));
             }
             self.sources.insert(node, key);
         }
         wanted
+    }
+
+    /// What a canvas can draw of each `img` (M30), by the element.
+    pub(crate) fn drawables(&self) -> HashMap<NodeId, Drawable> {
+        let mut out = HashMap::new();
+        for (node, key) in &self.sources {
+            let Some(entry) = self.entries.get(key) else {
+                continue;
+            };
+            let drawable = match &entry.state {
+                ImageState::Ready(ready) => match &ready.pixels {
+                    Pixels::Failed => Drawable::Broken,
+                    Pixels::Decoded(image) if ready.kept_for.is_none() => Drawable::Ready {
+                        bytes: Arc::clone(&ready.bytes),
+                        decoded: Some(Arc::clone(image)),
+                        clean: entry.clean,
+                        size: (ready.header.width, ready.header.height),
+                    },
+                    _ => Drawable::Ready {
+                        bytes: Arc::clone(&ready.bytes),
+                        decoded: None,
+                        clean: entry.clean,
+                        size: (ready.header.width, ready.header.height),
+                    },
+                },
+                ImageState::Broken => Drawable::Broken,
+                ImageState::Fetching | ImageState::Reading => continue,
+            };
+            out.insert(*node, drawable);
+        }
+        out
     }
 
     /// Scans the computed `styles` of `document`'s elements, and of their
@@ -312,6 +400,7 @@ impl ImageStore {
                                 id: *next,
                                 state: ImageState::Fetching,
                                 same_origin: same_origin(page, &url),
+                                clean: true,
                             },
                         );
                         self.ids.insert(*next, key);
@@ -342,8 +431,14 @@ impl ImageStore {
     /// Takes the body fetched for `url`, or its failure: what to read,
     /// if anything. The HTTP status is not looked at (HTML section
     /// 4.8.4.3): a body that is no image, an empty one too, fails to read.
-    pub(crate) fn fetched(&mut self, url: &str, body: Option<Vec<u8>>) -> Option<Work> {
+    pub(crate) fn fetched(
+        &mut self,
+        url: &str,
+        body: Option<Vec<u8>>,
+        clean: bool,
+    ) -> Option<Work> {
         let entry = self.entries.get_mut(url)?;
+        entry.clean = clean;
         match body {
             Some(body) => {
                 entry.state = ImageState::Reading;

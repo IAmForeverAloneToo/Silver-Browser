@@ -453,6 +453,9 @@ struct Shown {
     animated: Vec<NodeId>,
     /// The document's images (M23).
     images: ImageStore,
+    /// What its `img`s give a canvas to draw, shared with its scripts'
+    /// host (M30).
+    drawables: scripts::canvas::SharedDrawables,
     /// When on the timeline the next frame of an animated image the last
     /// frame showed in the viewport comes (M23.1).
     next_image_frame: Option<f64>,
@@ -541,6 +544,7 @@ impl Shown {
             timeline_origin: None,
             animated: Vec::new(),
             images: ImageStore::default(),
+            drawables: Default::default(),
             next_image_frame: None,
             parsing: None,
             scripts: scripts::Scripts::default(),
@@ -1349,6 +1353,7 @@ impl Engine {
             keyboard: self.keyboard,
             storage: Some(self.storage.clone()),
             storage_peer: self.storage_peers(),
+            drawables: Some(self.shown.drawables.clone()),
         }
     }
 
@@ -3160,14 +3165,28 @@ impl Engine {
         let wanted = shown
             .images
             .scan(&shown.document, &shown.page, &mut self.next_image);
-        for url in wanted {
-            let key = url.as_str().to_owned();
-            let request = net::Request::get(url, net::Destination::Image)
+        for (url, cross) in wanted {
+            let key = cross.key(&url);
+            let mut request = net::Request::get(url, net::Destination::Image)
                 .initiated_by(initiator.clone())
                 .with_body_limit(images::MAX_IMAGE_BYTES);
+            // `crossorigin` asks in CORS mode (M30): an answer another
+            // origin does not allow is a network error, a broken image.
+            match cross {
+                image_store::CrossOrigin::None => {}
+                image_store::CrossOrigin::Anonymous => {
+                    request.mode = net::Mode::Cors;
+                    request.credentials = net::Credentials::SameOrigin;
+                }
+                image_store::CrossOrigin::UseCredentials => {
+                    request.mode = net::Mode::Cors;
+                    request.credentials = net::Credentials::Include;
+                }
+            }
             self.network
                 .fetch(shown.page.id(), Target::Image { url: key }, request);
         }
+        self.share_drawables();
         // An element showing an image that came before it was made is
         // told now (M26).
         for url in self.shown.images.known() {
@@ -3210,10 +3229,15 @@ impl Engine {
         if page != self.shown.page.id() {
             return;
         }
+        // An opaque response, another origin's without CORS, taints a
+        // canvas that draws it (M30).
+        let clean = result
+            .as_ref()
+            .is_ok_and(|response| response.response_type != net::ResponseType::Opaque);
         match self
             .shown
             .images
-            .fetched(url, result.ok().map(|response| response.body))
+            .fetched(url, result.ok().map(|response| response.body), clean)
         {
             Some(work) => self.decoder.start(page, url.to_owned(), work),
             None => self.image_changed(url),
@@ -3234,12 +3258,27 @@ impl Engine {
         } else {
             // New pixels to draw; nothing to lay out.
             self.changed = true;
+            self.share_drawables();
         }
+    }
+
+    /// What the shown document's `img`s give a canvas to draw (M30),
+    /// shared with its scripts' host.
+    fn share_drawables(&mut self) {
+        let drawables = self.shown.images.drawables();
+        let mut shared = self
+            .shown
+            .drawables
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        shared.page = Some(self.shown.page.id());
+        shared.update(drawables);
     }
 
     /// An image's size or brokenness changed: the boxes showing it are
     /// laid out again.
     fn image_changed(&mut self, url: &str) {
+        self.share_drawables();
         self.tell_images(url);
         let users = self.shown.images.users(url);
         if !users.is_empty() {

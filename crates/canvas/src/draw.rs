@@ -19,11 +19,13 @@ use crate::path::Path;
 use crate::state::{Gradient, GradientKind, LineCap, LineJoin, Matrix, Paint, Repetition};
 use crate::{Canvas, MAX_SHADOW_BLUR};
 
-/// Which of the two styles a shape is painted with.
+/// What a shape is painted with: either style, or the image a
+/// `drawImage()` draws.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Which {
     Fill,
     Stroke,
+    Image,
 }
 
 const TRANSPARENT: Shader<'static> = Shader::SolidColor(tiny_skia::Color::TRANSPARENT);
@@ -302,6 +304,11 @@ impl Canvas {
         let Some(mut pixmap) = self.pixmap.take() else {
             return;
         };
+        // A pattern of an image another origin did not let it read
+        // leaves the bitmap no longer clean (HTML 4.12.5.1.8).
+        if self.pattern_taints(which) {
+            self.taint();
+        }
         self.charge_bounds(path);
         let bounds = path.bounds();
         // One pixel round the bounds for the smoothing of the edges.
@@ -505,13 +512,55 @@ impl Canvas {
         }
     }
 
+    /// Whether the style `which` paints with is a pattern of an image
+    /// that is not origin-clean.
+    fn pattern_taints(&self, which: Which) -> bool {
+        let paint = match which {
+            Which::Fill => &self.state.fill,
+            Which::Stroke => &self.state.stroke,
+            Which::Image => return false,
+        };
+        match paint {
+            Paint::Pattern(pattern) => {
+                !pattern
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .origin_clean
+            }
+            _ => false,
+        }
+    }
+
     /// `f` given the shader the style of `which` paints with, faded by
     /// the global alpha.
     pub(crate) fn with_shader(&self, which: Which, f: impl FnOnce(Shader<'_>)) {
         let state = &self.state;
+        let quality = if state.image_smoothing {
+            FilterQuality::Bilinear
+        } else {
+            FilterQuality::Nearest
+        };
         let paint = match which {
             Which::Fill => &state.fill,
             Which::Stroke => &state.stroke,
+            // An image drawn: its edges clamped, not repeated.
+            Which::Image => {
+                let Some(image) = &self.drawing else {
+                    return f(TRANSPARENT);
+                };
+                let Some(pixels) = PixmapRef::from_bytes(&image.pixels, image.width, image.height)
+                else {
+                    return f(TRANSPARENT);
+                };
+                let at = state.transform.then(&image.transform);
+                return f(tiny_skia::Pattern::new(
+                    pixels,
+                    SpreadMode::Pad,
+                    quality,
+                    state.global_alpha as f32,
+                    at.to_skia(),
+                ));
+            }
         };
         let alpha = state.global_alpha;
         match paint {
@@ -526,11 +575,6 @@ impl Canvas {
                     PixmapRef::from_bytes(&pattern.pixels, pattern.width, pattern.height)
                 else {
                     return f(TRANSPARENT);
-                };
-                let quality = if state.image_smoothing {
-                    FilterQuality::Bilinear
-                } else {
-                    FilterQuality::Nearest
                 };
                 let at = state.transform.then(&pattern.transform);
                 f(tiny_skia::Pattern::new(
@@ -550,6 +594,7 @@ impl Canvas {
         let paint = match which {
             Which::Fill => &self.state.fill,
             Which::Stroke => &self.state.stroke,
+            Which::Image => return None,
         };
         let Paint::Pattern(pattern) = paint else {
             return None;

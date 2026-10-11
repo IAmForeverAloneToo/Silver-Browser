@@ -7415,6 +7415,12 @@
             const lower = value === null ? "" : ToLowerCase(value);
             return lower === "ltr" || lower === "rtl" || lower === "auto" ? lower : "";
           }
+          // A CORS settings attribute (HTML 2.5.4): null when absent.
+          case "cors":
+            if (value === null) {
+              return null;
+            }
+            return ToLowerCase(value) === "use-credentials" ? "use-credentials" : "anonymous";
           default:
             return value === null ? "" : value;
         }
@@ -7436,6 +7442,13 @@
           }
           case "long":
             setAttribute(handle, attribute, $String(value | 0), property);
+            return;
+          case "cors":
+            if (value === null) {
+              native.removeAttribute(handle, attribute);
+            } else {
+              setAttribute(handle, attribute, str(value), property);
+            }
             return;
           default:
             setAttribute(handle, attribute, str(value), property);
@@ -7486,6 +7499,7 @@
     ]],
     ["HTMLImageElement", [
       ["src", "src", "url"],
+      ["crossOrigin", "crossorigin", "cors"],
       ["alt", "alt", "string"],
       ["srcset", "srcset", "string"],
       ["sizes", "sizes", "string"],
@@ -10288,6 +10302,52 @@
   expose(DOMMatrixReadOnly, "DOMMatrixReadOnly");
   expose(DOMMatrix, "DOMMatrix");
 
+  // ---- Images for a canvas (HTML section 4.8.4, M30) ----------------------
+
+  // An `img`'s image as a canvas would draw it: [0 coming or none, 1
+  // there, 2 broken; its natural width; its height].
+  function imageState(element) {
+    return native.canvas("imageState", 1, self(element));
+  }
+
+  include(
+    {
+      get complete() {
+        const handle = self(this);
+        const src = native.attribute(handle, "src");
+        return src === null || src === "" || imageState(this)[0] !== 0;
+      },
+
+      get naturalWidth() {
+        return imageState(this)[1];
+      },
+
+      get naturalHeight() {
+        return imageState(this)[2];
+      },
+    },
+    [MapGet(interfaces, "img").prototype],
+  );
+
+  // The legacy factory function `Image(width, height)` (HTML 4.8.4.1):
+  // a new `img`, its size attributes set when given.
+  const ImageFactory = function Image(width, height) {
+    if (new.target === undefined) {
+      throw new $TypeError("Failed to construct 'Image': Please use the 'new' operator, " +
+        "this DOM object constructor cannot be called as a function.");
+    }
+    const element = wrap(native.createElement("img"));
+    if (width !== undefined) {
+      element.width = width;
+    }
+    if (height !== undefined) {
+      element.height = height;
+    }
+    return element;
+  };
+  defineProperty(ImageFactory, "prototype", { value: MapGet(interfaces, "img").prototype });
+  defineProperty(global, "Image", { value: ImageFactory, writable: true, configurable: true });
+
   // ---- Canvas: the 2D context (HTML section 4.12.5, M30) ------------------
 
   // What a context, a Path2D, a gradient or a pattern is to the host:
@@ -10937,6 +10997,50 @@
       return metrics;
     }
 
+    drawImage(image, a, b) {
+      const id = targetOf(this).id;
+      const m = "drawImage";
+      const n = arguments.length;
+      need(n, 3, m, CTX);
+      if (n !== 3 && n !== 5 && n < 9) {
+        throw new $TypeError(prefix(m, CTX) + "Overload resolution failed.");
+      }
+      const source = imageSource(image, m);
+      const count = n >= 9 ? 8 : n - 1;
+      const args = [m, 0, id, source[0], source[1]];
+      for (let i = 1; i <= count; i++) {
+        ArrayPush(args, unrestricted(arguments[i], m, CTX));
+      }
+      try {
+        ReflectApply(native.canvas, undefined, args);
+      } catch (error) {
+        throw failed(error, m, CTX);
+      }
+    }
+
+    createPattern(image, repetition) {
+      const id = targetOf(this).id;
+      const m = "createPattern";
+      need(arguments.length, 2, m, CTX);
+      const source = imageSource(image, m);
+      const type = repetition === null ? "" : str(repetition);
+      if (type !== "" && type !== "repeat" && type !== "repeat-x" && type !== "repeat-y" &&
+        type !== "no-repeat") {
+        throw domError("SyntaxError", "The provided type ('" + type +
+          "') is not one of 'repeat', 'no-repeat', 'repeat-x', or 'repeat-y'.", m, CTX);
+      }
+      let made;
+      try {
+        made = native.canvas(m, 0, id, source[0], source[1], type);
+      } catch (error) {
+        throw failed(error, m, CTX);
+      }
+      if (made === null) {
+        return null;
+      }
+      return bindCanvasObject(new CanvasPattern(KEY), 4, made, "CanvasPattern");
+    }
+
     createImageData(a0) {
       targetOf(this);
       const m = "createImageData";
@@ -11385,6 +11489,28 @@
       throw illegalInvocation();
     }
     return data;
+  }
+
+  // A CanvasImageSource as the host knows it: its kind (1 an img, 2 a
+  // canvas, 5 a video) and its node's handle; anything else, a
+  // TypeError in the reference browser's words.
+  function imageSource(value, m) {
+    if (isNode(value) && kindOf(value) === 1) {
+      const handle = handleOf(value);
+      const tag = native.tag(handle);
+      if (tag === "img") {
+        return [1, handle];
+      }
+      if (tag === "canvas") {
+        return [2, handle];
+      }
+      if (tag === "video") {
+        return [5, handle];
+      }
+    }
+    throw new $TypeError(prefix(m, CTX) + "The provided value is not of type '(CSSImageValue " +
+      "or HTMLCanvasElement or HTMLImageElement or HTMLVideoElement or ImageBitmap or " +
+      "OffscreenCanvas or SVGImageElement or VideoFrame)'.");
   }
 
   // fillText and strokeText: the text, the point, and the maximum

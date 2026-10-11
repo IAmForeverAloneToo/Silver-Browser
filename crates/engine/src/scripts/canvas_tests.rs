@@ -85,20 +85,21 @@ step("matrixLengths", () => ["translate", "scale", "rotate", "multiply", "fromMa
     check(
         &lines,
         &[
-            // Chrome's but for images (createPattern, drawImage), step 5.
+            // Chrome's, all 73 and the constructor.
             (
                 "ctxProto",
                 "\"arc arcTo beginPath bezierCurveTo canvas clearRect clip closePath constructor \
-                 createConicGradient createImageData createLinearGradient createRadialGradient \
-                 direction drawFocusIfNeeded ellipse fill fillRect fillStyle fillText filter font \
-                 fontKerning fontStretch fontVariantCaps getContextAttributes getImageData \
-                 getLineDash getTransform globalAlpha globalCompositeOperation \
-                 imageSmoothingEnabled imageSmoothingQuality isContextLost isPointInPath \
-                 isPointInStroke lang letterSpacing lineCap lineDashOffset lineJoin lineTo \
-                 lineWidth measureText miterLimit moveTo putImageData quadraticCurveTo rect reset \
-                 resetTransform restore rotate roundRect save scale setLineDash setTransform \
-                 shadowBlur shadowColor shadowOffsetX shadowOffsetY stroke strokeRect strokeStyle \
-                 strokeText textAlign textBaseline textRendering transform translate wordSpacing\"",
+                 createConicGradient createImageData createLinearGradient createPattern \
+                 createRadialGradient direction drawFocusIfNeeded drawImage ellipse fill fillRect \
+                 fillStyle fillText filter font fontKerning fontStretch fontVariantCaps \
+                 getContextAttributes getImageData getLineDash getTransform globalAlpha \
+                 globalCompositeOperation imageSmoothingEnabled imageSmoothingQuality \
+                 isContextLost isPointInPath isPointInStroke lang letterSpacing lineCap \
+                 lineDashOffset lineJoin lineTo lineWidth measureText miterLimit moveTo \
+                 putImageData quadraticCurveTo rect reset resetTransform restore rotate roundRect \
+                 save scale setLineDash setTransform shadowBlur shadowColor shadowOffsetX \
+                 shadowOffsetY stroke strokeRect strokeStyle strokeText textAlign textBaseline \
+                 textRendering transform translate wordSpacing\"",
             ),
             (
                 "path2dProto",
@@ -809,4 +810,209 @@ step("direction", () => { const c = fresh(); c.dir = "rtl"; const x = c.getConte
             ("direction", "[\"rtl\"]"),
         ],
     );
+}
+
+/// The probe's image, a PNG two by two: red and magenta over blue and
+/// white.
+const PNG: &[u8] = &[
+    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 2, 8, 2, 0,
+    0, 0, 253, 212, 154, 115, 0, 0, 0, 18, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240, 31, 8,
+    129, 36, 16, 0, 0, 40, 229, 6, 250, 245, 50, 76, 156, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96,
+    130,
+];
+
+/// The lines a page's `script` logs, with `other` the URL of another
+/// origin's server: each serves `/img.png`, and `/acao.png` with
+/// `Access-Control-Allow-Origin: *`. The page logs `done` last.
+fn run_with_images(script: &str) -> Vec<String> {
+    let images = |path: &str| match path.split('?').next().unwrap_or_default() {
+        "/img.png" => Some(net::test_server::Reply::ok("image/png", PNG)),
+        "/acao.png" => Some(net::test_server::Reply::with_fields(
+            200,
+            &[
+                ("Content-Type", "image/png"),
+                ("Access-Control-Allow-Origin", "*"),
+            ],
+            PNG,
+        )),
+        _ => None,
+    };
+    let other_server = serve(images);
+    let other = other_server
+        .url("/")
+        .as_str()
+        .trim_end_matches('/')
+        .to_owned();
+    let page = format!(
+        "<!DOCTYPE html><script>\n\
+         const other = '{other}';\n\
+         const err = (e) => 'threw ' + (e && e.name) + ': ' + (e && e.message);\n\
+         const px = (ctx, x, y) => Array.from(ctx.getImageData(x, y, 1, 1).data);\n\
+         const fresh = (w, h) => {{ const c = document.createElement('canvas'); \
+         c.width = w === undefined ? 10 : w; c.height = h === undefined ? 10 : h; return c; }};\n\
+         const load = (src, cors) => new Promise((ok) => {{ const i = new Image(); \
+         if (cors !== undefined) i.crossOrigin = cors; i.onload = () => ok(i); \
+         i.onerror = () => ok(i); i.src = src; }});\n\
+         const step = (name, f) => {{ let v; try {{ v = JSON.stringify(f()); }} \
+         catch (e) {{ v = err(e); }} console.log(name + '=' + v); }};\n\
+         (async () => {{\n{script}\nconsole.log('done');\n}})();</script>"
+    );
+    let server = serve(move |path| match path {
+        "/page.html" => Some(html(&page)),
+        path => images(path),
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    let url = server.url("/page.html");
+    tab.engine.navigate(url.clone());
+    let mut lines = Vec::new();
+    let deadline = std::time::Instant::now() + WAIT;
+    while !lines.iter().any(|line: &String| line == "done") {
+        assert!(std::time::Instant::now() < deadline, "only {lines:#?}");
+        tab.engine.poll_network();
+        tab.engine.run_tasks();
+        lines.extend(
+            tab.engine
+                .take_console()
+                .into_iter()
+                .map(|entry| entry.text),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    lines
+}
+
+#[test]
+fn images_are_drawn_and_their_origins_taint_as_the_reference_browser_says() {
+    let lines = run_with_images(
+        r##"
+const probe = (img) => { if (!img.complete || img.naturalWidth === 0) return "load error";
+  const c = fresh(2, 2); const x = c.getContext("2d"); x.drawImage(img, 0, 0); const r = [img.naturalWidth];
+  try { r.push(px(x, 0, 0)); } catch (e) { r.push(err(e)); }
+  try { x.createPattern(img, "repeat"); r.push("pattern ok"); } catch (e) { r.push(err(e)); } return r; };
+const same = await load("/img.png");
+step("same", () => probe(same));
+const cross = await load(other + "/img.png");
+step("cross", () => probe(cross));
+const anon = await load(other + "/acao.png", "anonymous");
+step("crossAnon", () => probe(anon));
+const refused = await load(other + "/img.png?no-acao", "anonymous");
+step("crossAnonNoAcao", () => probe(refused));
+// The URL fetched without CORS above, asked for again with it: a fetch
+// of its own, which the other origin does not allow.
+const again = await load(other + "/img.png", "anonymous");
+step("sameUrlInCors", () => probe(again));
+const c = fresh(2, 2); const x = c.getContext("2d"); x.drawImage(cross, 0, 0);
+const d = fresh(2, 2).getContext("2d"); d.drawImage(c, 0, 0);
+step("propagates", () => { try { d.getImageData(0, 0, 1, 1); return "no"; } catch (e) { return err(e); } });
+step("patternTaints", () => { const y = fresh(2, 2).getContext("2d"); y.fillStyle = y.createPattern(cross, "repeat"); const before = px(y, 0, 0);
+  y.fillRect(0, 0, 2, 2); try { y.getImageData(0, 0, 1, 1); return "no"; } catch (e) { return [before, err(e)]; } });
+c.width = 2;
+step("resetClears", () => { try { x.getImageData(0, 0, 1, 1); return "clean again"; } catch (e) { return err(e); } });
+"##,
+    );
+    let tainted = "threw SecurityError: Failed to execute 'getImageData' on \
+                   'CanvasRenderingContext2D': The canvas has been tainted by cross-origin data.";
+    let want = [
+        "same=[2,[255,0,0,255],\"pattern ok\"]".to_owned(),
+        format!("cross=[2,{},\"pattern ok\"]", serde_text(tainted)),
+        "crossAnon=[2,[255,0,0,255],\"pattern ok\"]".to_owned(),
+        "crossAnonNoAcao=\"load error\"".to_owned(),
+        "sameUrlInCors=\"load error\"".to_owned(),
+        format!("propagates={}", serde_text(tainted)),
+        format!("patternTaints=[[0,0,0,0],{}]", serde_text(tainted)),
+        "resetClears=\"clean again\"".to_owned(),
+    ];
+    for line in want {
+        assert!(lines.contains(&line), "no {line} in {lines:#?}");
+    }
+}
+
+/// `text` as JSON writes a string.
+fn serde_text(text: &str) -> String {
+    format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+#[test]
+fn draw_image_and_create_pattern_answer_as_the_reference_browser_does() {
+    let lines = run_with_images(
+        r##"
+const img = await load("/img.png");
+const broken = await load("/missing.png");
+step("forms", () => { const x = fresh(10, 10).getContext("2d"); x.imageSmoothingEnabled = false; x.drawImage(img, 0, 0); const a = [px(x, 0, 0), px(x, 1, 0), px(x, 0, 1), px(x, 1, 1), px(x, 2, 2)];
+  x.clearRect(0, 0, 10, 10); x.drawImage(img, 2, 2, 4, 4); const b = [px(x, 2, 2), px(x, 5, 2), px(x, 2, 5), px(x, 5, 5), px(x, 6, 6)];
+  x.clearRect(0, 0, 10, 10); x.drawImage(img, 1, 0, 1, 2, 0, 0, 2, 4); const c = [px(x, 0, 0), px(x, 1, 3), px(x, 2, 0)];
+  return [a, b, c]; });
+step("broken", () => { const x = fresh().getContext("2d"); try { x.drawImage(broken, 0, 0); return "drew"; } catch (e) { return err(e); } });
+step("brokenPattern", () => { const x = fresh().getContext("2d"); try { return String(x.createPattern(broken, "repeat")); } catch (e) { return err(e); } });
+step("unloadedPattern", () => { const x = fresh().getContext("2d"); return String(x.createPattern(new Image(), "repeat")); });
+step("emptyCanvas", () => { const x = fresh().getContext("2d"); const r = []; try { x.drawImage(fresh(0, 0), 0, 0); r.push("drew"); } catch (e) { r.push(err(e)); }
+  try { r.push(String(x.createPattern(fresh(0, 5), "repeat"))); } catch (e) { r.push(err(e)); } return r; });
+step("noContext", () => { const x = fresh().getContext("2d"); x.fillRect(0, 0, 10, 10); x.drawImage(fresh(4, 4), 0, 0); return px(x, 1, 1); });
+step("self", () => { const c = fresh(4, 4); const x = c.getContext("2d"); x.fillStyle = "#f00"; x.fillRect(0, 0, 2, 2); x.drawImage(c, 2, 2); return [px(x, 3, 3), px(x, 1, 1)]; });
+step("patternForms", () => { const x = fresh(8, 8).getContext("2d"); const r = []; for (const rep of ["repeat", "repeat-x", "repeat-y", "no-repeat", "", null]) {
+  x.clearRect(0, 0, 8, 8); const p = x.createPattern(img, rep); x.fillStyle = p; x.fillRect(0, 0, 8, 8); r.push(String(rep) + ":" + [px(x, 2, 0)[3], px(x, 0, 2)[3], px(x, 3, 3)[3]].join(",")); } return r; });
+step("patternTransform", () => { const x = fresh(8, 8).getContext("2d"); const p = x.createPattern(img, "no-repeat"); p.setTransform(new DOMMatrix([1, 0, 0, 1, 3, 3])); x.fillStyle = p; x.fillRect(0, 0, 8, 8);
+  return [px(x, 3, 3), px(x, 0, 0), px(x, 4, 4)]; });
+step("patternErrors", () => { const x = fresh().getContext("2d"); const r = []; try { x.createPattern({}, "repeat"); } catch (e) { r.push(err(e)); }
+  try { x.createPattern(img); } catch (e) { r.push(err(e)); } try { r.push(String(x.createPattern(img, undefined))); } catch (e) { r.push(err(e)); } return r; });
+step("argCounts", () => { const x = fresh().getContext("2d"); const r = []; for (const n of [1, 2, 4, 6, 7, 8]) { try { x.drawImage.apply(x, [img].concat(new Array(n - 1).fill(0))); r.push(n + ":ok"); } catch (e) { r.push(n + ":" + err(e)); } } return r; });
+step("drawImageErrors", () => { const x = fresh().getContext("2d"); try { x.drawImage({}, 0, 0); } catch (e) { return err(e); } });
+const fresh_image = new Image(); const none = fresh_image.complete; fresh_image.src = "/img.png?complete";
+const coming = fresh_image.complete; await new Promise((ok) => { fresh_image.onload = ok; });
+step("complete", () => [none, coming, fresh_image.complete, fresh_image.naturalWidth, fresh_image.naturalHeight]);
+step("crossOrigin", () => { const i = new Image(5, 6); const r = [i.crossOrigin, i.width, i.height]; for (const v of ["", "USE-CREDENTIALS", "bogus"]) { i.crossOrigin = v; r.push(i.crossOrigin, i.getAttribute("crossorigin")); }
+  i.crossOrigin = null; r.push(i.crossOrigin, i.hasAttribute("crossorigin")); return r; });
+step("detached", () => { const x = fresh(4, 4).getContext("2d"); x.drawImage(img, 0, 0, 4, 4); return [img.isConnected, px(x, 0, 0)[3]]; });
+"##,
+    );
+    let want = [
+        "forms=[[[255,0,0,255],[255,0,255,255],[0,0,255,255],[255,255,255,255],[0,0,0,0]],\
+         [[255,0,0,255],[255,0,255,255],[0,0,255,255],[255,255,255,255],[0,0,0,0]],\
+         [[255,0,255,255],[255,255,255,255],[0,0,0,0]]]",
+        "broken=\"threw InvalidStateError: Failed to execute 'drawImage' on \
+         'CanvasRenderingContext2D': The HTMLImageElement provided is in the 'broken' state.\"",
+        "brokenPattern=\"threw InvalidStateError: Failed to execute 'createPattern' on \
+         'CanvasRenderingContext2D': Source image is in the 'broken' state.\"",
+        "unloadedPattern=\"null\"",
+        "emptyCanvas=[\"threw InvalidStateError: Failed to execute 'drawImage' on \
+         'CanvasRenderingContext2D': The image argument is a canvas element with a width or \
+         height of 0.\",\"threw InvalidStateError: Failed to execute 'createPattern' on \
+         'CanvasRenderingContext2D': The image argument is a canvas element with a width or \
+         height of 0.\"]",
+        "noContext=[0,0,0,255]",
+        "self=[[255,0,0,255],[255,0,0,255]]",
+        "patternForms=[\"repeat:255,255,255\",\"repeat-x:255,0,0\",\"repeat-y:0,255,0\",\
+         \"no-repeat:0,0,0\",\":255,255,255\",\"null:255,255,255\"]",
+        "patternTransform=[[255,0,0,255],[0,0,0,0],[255,255,255,255]]",
+        "patternErrors=[\"threw TypeError: Failed to execute 'createPattern' on \
+         'CanvasRenderingContext2D': The provided value is not of type '(CSSImageValue or \
+         HTMLCanvasElement or HTMLImageElement or HTMLVideoElement or ImageBitmap or \
+         OffscreenCanvas or SVGImageElement or VideoFrame)'.\",\"threw TypeError: Failed to \
+         execute 'createPattern' on 'CanvasRenderingContext2D': 2 arguments required, but only \
+         1 present.\",\"threw SyntaxError: Failed to execute 'createPattern' on \
+         'CanvasRenderingContext2D': The provided type ('undefined') is not one of 'repeat', \
+         'no-repeat', 'repeat-x', or 'repeat-y'.\"]",
+        "argCounts=[\"1:threw TypeError: Failed to execute 'drawImage' on \
+         'CanvasRenderingContext2D': 3 arguments required, but only 1 present.\",\"2:threw \
+         TypeError: Failed to execute 'drawImage' on 'CanvasRenderingContext2D': 3 arguments \
+         required, but only 2 present.\",\"4:threw TypeError: Failed to execute 'drawImage' on \
+         'CanvasRenderingContext2D': Overload resolution failed.\",\"6:threw TypeError: Failed \
+         to execute 'drawImage' on 'CanvasRenderingContext2D': Overload resolution failed.\",\
+         \"7:threw TypeError: Failed to execute 'drawImage' on 'CanvasRenderingContext2D': \
+         Overload resolution failed.\",\"8:threw TypeError: Failed to execute 'drawImage' on \
+         'CanvasRenderingContext2D': Overload resolution failed.\"]",
+        "drawImageErrors=\"threw TypeError: Failed to execute 'drawImage' on \
+         'CanvasRenderingContext2D': The provided value is not of type '(CSSImageValue or \
+         HTMLCanvasElement or HTMLImageElement or HTMLVideoElement or ImageBitmap or \
+         OffscreenCanvas or SVGImageElement or VideoFrame)'.\"",
+        "complete=[true,false,true,2,2]",
+        "crossOrigin=[null,5,6,\"anonymous\",\"\",\"use-credentials\",\"USE-CREDENTIALS\",\
+         \"anonymous\",\"bogus\",null,false]",
+        // `new Image()`, never in the document, loads and draws.
+        "detached=[false,255]",
+    ];
+    for line in want {
+        assert!(lines.iter().any(|l| l == line), "no {line} in {lines:#?}");
+    }
 }

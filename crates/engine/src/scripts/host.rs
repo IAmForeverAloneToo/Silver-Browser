@@ -15,7 +15,7 @@ use style::animation::Animations;
 use style::selector_matching::{Matcher, PseudoElement, SelectorList};
 use style::{CascadeContext, FontMeasure, Styles, Stylesheets};
 
-use super::canvas::{Canvases, Element, names_context, needs_text};
+use super::canvas::{Canvases, Drawn, Element, names_context, needs_source, needs_text};
 use super::cssom;
 use super::{
     ConsoleEntry, How, Lent, MAX_SCRIPT_NESTING, MAX_TIMERS, Place, Prepared, ReadyState,
@@ -1460,6 +1460,29 @@ impl DocumentHost {
     /// whose size its attributes give and whose computed `color` is
     /// `currentcolor`, read only when a colour says it.
     fn canvas(&mut self, call: js::CanvasCall) -> Result<Answer, DomError> {
+        // An `img`'s state, which `complete` and `naturalWidth` read
+        // (M30): the image a canvas would draw.
+        if call.op == "imageState" {
+            let which = call.numbers.get(1).copied().unwrap_or(-1.0);
+            if !(0.0..=js::MAX_HANDLE as f64).contains(&which) || which.fract() != 0.0 {
+                return Err(DomError::new("TypeError", "Illegal invocation"));
+            }
+            let node = self.node(Handle(which as u64))?;
+            let page = self.page.as_ref().map(Page::id);
+            let state = self.window.drawables.as_ref().map_or((0, 0, 0), |shared| {
+                let drawables = shared.lock().unwrap_or_else(PoisonError::into_inner);
+                if drawables.page.is_some() && drawables.page == page {
+                    drawables.state(node)
+                } else {
+                    (0, 0, 0)
+                }
+            });
+            return Ok(Answer::Numbers(vec![
+                f64::from(state.0),
+                f64::from(state.1),
+                f64::from(state.2),
+            ]));
+        }
         let element = if names_context(&call.op) && call.numbers.first() == Some(&0.0) {
             let handle = call.numbers.get(1).copied().unwrap_or(-1.0);
             if !(0.0..=js::MAX_HANDLE as f64).contains(&handle) || handle.fract() != 0.0 {
@@ -1489,6 +1512,13 @@ impl DocumentHost {
             } else {
                 (canvas::FontBase::default(), false, None)
             };
+            let source = if needs_source(&call.op) {
+                let kind = call.numbers.get(2).copied().unwrap_or(-1.0);
+                let which = call.numbers.get(3).copied().unwrap_or(-1.0);
+                self.canvas_source(kind, which, &call.op)?
+            } else {
+                None
+            };
             Some(Element {
                 node,
                 size: layout::canvas_size(&self.document, node),
@@ -1496,6 +1526,7 @@ impl DocumentHost {
                 font_base,
                 rtl,
                 fonts,
+                source,
             })
         } else {
             None
@@ -1503,6 +1534,77 @@ impl DocumentHost {
         let answer = self.canvases.call(call, element);
         self.work += self.canvases.take_work();
         answer
+    }
+
+    /// The pixels of the image a `drawImage()` or a `createPattern()`
+    /// (`op`) names (M30): an `img` (kind 1) once decoded, a `canvas`
+    /// (kind 2) as its bitmap is, a `video` (kind 5) never; `None` for
+    /// one with nothing to draw yet. A broken image and a canvas of no
+    /// area are refused, in the reference browser's words.
+    fn canvas_source(
+        &mut self,
+        kind: f64,
+        which: f64,
+        op: &str,
+    ) -> Result<Option<canvas::Source>, DomError> {
+        if !(0.0..=js::MAX_HANDLE as f64).contains(&which) || which.fract() != 0.0 {
+            return Err(DomError::new("TypeError", "Illegal invocation"));
+        }
+        let node = self.node(Handle(which as u64))?;
+        let tag = self.document.tag(node);
+        match (kind as u8, tag) {
+            (1, Some("img")) => {
+                let Some(shared) = self.window.drawables.clone() else {
+                    return Ok(None);
+                };
+                let page = self.page.as_ref().map(Page::id);
+                let mut drawables = shared.lock().unwrap_or_else(PoisonError::into_inner);
+                if drawables.page.is_none() || drawables.page != page {
+                    return Ok(None);
+                }
+                match drawables.get(node) {
+                    Drawn::Pixels(image, clean) => {
+                        let Some(frame) = image.frames.first() else {
+                            return Ok(None);
+                        };
+                        Ok(Some(canvas::Source {
+                            pixels: Arc::clone(&frame.pixels),
+                            width: image.width,
+                            height: image.height,
+                            origin_clean: clean,
+                        }))
+                    }
+                    Drawn::Broken => Err(DomError::new(
+                        "InvalidStateError",
+                        if op == "createPattern" {
+                            "Source image is in the 'broken' state."
+                        } else {
+                            "The HTMLImageElement provided is in the 'broken' state."
+                        },
+                    )),
+                    Drawn::Coming => Ok(None),
+                }
+            }
+            (2, Some("canvas")) => {
+                let (width, height) = layout::canvas_size(&self.document, node);
+                if width == 0 || height == 0 {
+                    let error = canvas::empty_canvas();
+                    return Err(DomError::new(error.name, error.message));
+                }
+                let clean = self.canvases.origin_clean(node);
+                Ok(self.canvases.pixels(node).and_then(|(_, image)| {
+                    let frame = image.frames.first()?;
+                    Some(canvas::Source {
+                        pixels: Arc::clone(&frame.pixels),
+                        width: image.width,
+                        height: image.height,
+                        origin_clean: clean,
+                    })
+                }))
+            }
+            (5, Some("video")) => Ok(None),
+            _ => Err(DomError::new("TypeError", "Illegal invocation")),
+        }
     }
 
     /// What a canvas's text reads of its element `node` (M30): the sizes
