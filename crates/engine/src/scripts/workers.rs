@@ -1,0 +1,801 @@
+//! Dedicated workers (M31, `docs/design/workers.md`): each a thread of
+//! its own running a realm of its own, which shares nothing with the
+//! realm that made it but the messages between them. Every crossing is
+//! a [`WorkerMessage`] on a channel, followed by a wake: the seam M34's
+//! processes turn into their IPC (M31.3), the messages already strings.
+
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime};
+
+use js::{
+    Answer, Call, ConsoleLevel, DomError, ErrorKind, Limits, MessageTarget, QuickJs, Realm,
+    RealmKind, Script, ScriptEngine, ScriptError, ScriptingHost, Task,
+};
+use net::{Client, Credentials, Destination, Initiator, Origin, Request, Url};
+
+use super::host::Timers;
+use super::{MAX_SCRIPT_BYTES, cut, report_text};
+use crate::loader::Waker;
+
+/// A document's live workers, its workers' own included: past it, a
+/// new one waits for one to end, as the standard allows.
+pub(crate) const MAX_WORKERS: usize = 16;
+/// How deep workers may make workers, from the document: a worker made
+/// deeper fails to load.
+pub(crate) const MAX_WORKER_DEPTH: u32 = 8;
+/// The most a message's serialized form may hold, in bytes.
+pub(crate) const MAX_MESSAGE_BYTES: usize = 256 << 20;
+/// The most the messages waiting in one realm's inbox may hold, in
+/// bytes.
+pub(crate) const MAX_QUEUED_BYTES: usize = 512 << 20;
+/// A worker thread's stack: the engine's own.
+const WORKER_STACK: usize = 32 << 20;
+
+/// What crosses between a worker and the realm that made it (M31.3).
+pub(crate) enum WorkerMessage {
+    /// A message for the worker's global, from its owner.
+    ToWorker(String),
+    /// What worker `id` sends its owner.
+    FromWorker(u32, FromWorker),
+    /// Stops the worker's loop: its owner terminated it or went.
+    Stop,
+}
+
+impl WorkerMessage {
+    /// The bytes of data it holds, which an inbox counts.
+    fn bytes(&self) -> usize {
+        match self {
+            WorkerMessage::ToWorker(data)
+            | WorkerMessage::FromWorker(_, FromWorker::Message(data)) => data.len(),
+            _ => 0,
+        }
+    }
+}
+
+/// What a worker sends its owner.
+pub(crate) enum FromWorker {
+    /// A message for its `Worker` object.
+    Message(String),
+    /// An exception it did not handle, as the console words it, or
+    /// `None` when its script could not be fetched or run.
+    Error(Option<ScriptError>),
+    /// A console message of its or of its workers, for its document's
+    /// console.
+    Console(ConsoleLevel, String),
+    /// It ended: it closed itself, failed to load, or was stopped.
+    Ended,
+}
+
+/// A realm's inbox as others send to it: the channel, the bytes of
+/// data waiting in it, and what wakes its loop.
+#[derive(Clone)]
+pub(crate) struct Inbox {
+    sender: Sender<WorkerMessage>,
+    queued: Arc<AtomicUsize>,
+    wake: Option<Waker>,
+}
+
+impl Inbox {
+    /// Sends `message` and wakes the receiver; false, sending nothing,
+    /// when its data would take the inbox past [`MAX_QUEUED_BYTES`], and
+    /// when the receiver is gone.
+    fn send(&self, message: WorkerMessage) -> bool {
+        let bytes = message.bytes();
+        if self.queued.fetch_add(bytes, Ordering::SeqCst) + bytes > MAX_QUEUED_BYTES {
+            self.queued.fetch_sub(bytes, Ordering::SeqCst);
+            return false;
+        }
+        if self.sender.send(message).is_err() {
+            self.queued.fetch_sub(bytes, Ordering::SeqCst);
+            return false;
+        }
+        if let Some(wake) = &self.wake {
+            wake();
+        }
+        true
+    }
+}
+
+/// A realm's inbox as it takes from it.
+pub(crate) struct Mailbox {
+    receiver: Receiver<WorkerMessage>,
+    queued: Arc<AtomicUsize>,
+}
+
+/// What waiting on a mailbox gave.
+enum Waited {
+    Message(WorkerMessage),
+    TimedOut,
+    Gone,
+}
+
+impl Mailbox {
+    /// A message, if one waits.
+    pub(crate) fn try_take(&self) -> Option<WorkerMessage> {
+        match self.receiver.try_recv() {
+            Ok(message) => Some(self.taken(message)),
+            Err(TryRecvError::Empty | TryRecvError::Disconnected) => None,
+        }
+    }
+
+    /// The next message, waiting for it until `timeout` if given.
+    fn take(&self, timeout: Option<Duration>) -> Waited {
+        let message = match timeout {
+            Some(timeout) => match self.receiver.recv_timeout(timeout) {
+                Ok(message) => message,
+                Err(RecvTimeoutError::Timeout) => return Waited::TimedOut,
+                Err(RecvTimeoutError::Disconnected) => return Waited::Gone,
+            },
+            None => match self.receiver.recv() {
+                Ok(message) => message,
+                Err(_) => return Waited::Gone,
+            },
+        };
+        Waited::Message(self.taken(message))
+    }
+
+    fn taken(&self, message: WorkerMessage) -> WorkerMessage {
+        self.queued.fetch_sub(message.bytes(), Ordering::SeqCst);
+        message
+    }
+}
+
+/// A new inbox: how others send to it, and how its realm takes.
+pub(crate) fn inbox(wake: Option<Waker>) -> (Inbox, Mailbox) {
+    let (sender, receiver) = channel();
+    let queued = Arc::new(AtomicUsize::new(0));
+    (
+        Inbox {
+            sender,
+            queued: queued.clone(),
+            wake,
+        },
+        Mailbox { receiver, queued },
+    )
+}
+
+/// What a worker starts from (M31.2): its script's URL, already the
+/// creator's origin or `data:`, its options, and what it shares with
+/// its creator.
+pub(crate) struct Start {
+    pub(crate) url: Url,
+    pub(crate) name: String,
+    /// `type: "module"`, which fails to load here (module scripts are
+    /// G41).
+    pub(crate) module: bool,
+    pub(crate) credentials: Credentials,
+    /// The client its fetches share with the engine's: its cookies and
+    /// its cache.
+    pub(crate) client: Arc<Client>,
+    /// Its creator, which its script's request is made by.
+    pub(crate) initiator: Initiator,
+    /// Whether its creator is a secure context, which it then is.
+    pub(crate) secure: bool,
+}
+
+/// A worker its owner knows of: how to reach it and stop it.
+struct Known {
+    to: Inbox,
+    stop: Arc<AtomicBool>,
+    /// Whether it counts among the document's live workers: started, or
+    /// waiting to be.
+    counted: bool,
+}
+
+/// What a worker is given to run.
+struct Setup {
+    id: u32,
+    start: Start,
+    owner: Inbox,
+    mailbox: Mailbox,
+    me: Inbox,
+    stop: Arc<AtomicBool>,
+    depth: u32,
+    live: Arc<AtomicUsize>,
+}
+
+/// The workers a realm made (M31.1), by number, and those waiting for
+/// a slot.
+pub(crate) struct Workers {
+    /// Where its workers send to: its realm's inbox.
+    inbox: Inbox,
+    next: u32,
+    known: HashMap<u32, Known>,
+    waiting: VecDeque<Setup>,
+    /// The document's live workers, its workers' included.
+    live: Arc<AtomicUsize>,
+    /// How deep its realm is: 0 for a document's.
+    depth: u32,
+}
+
+/// What a worker's message is for its owner's realm.
+pub(crate) enum Received {
+    /// A task for the realm: an event at the worker's object.
+    Task(Task),
+    /// A line for the document's console.
+    Console(ConsoleLevel, String),
+    Nothing,
+}
+
+impl Workers {
+    /// The workers of a realm `depth` deep, sending to `inbox`, counted
+    /// in `live`.
+    pub(crate) fn new(inbox: Inbox, live: Arc<AtomicUsize>, depth: u32) -> Workers {
+        Workers {
+            inbox,
+            next: 1,
+            known: HashMap::new(),
+            waiting: VecDeque::new(),
+            live,
+            depth,
+        }
+    }
+
+    /// Starts a worker, or queues it when the document has
+    /// [`MAX_WORKERS`] live; its number. A module worker, or one past
+    /// [`MAX_WORKER_DEPTH`], fails to load.
+    pub(crate) fn start(&mut self, start: Start) -> u32 {
+        let id = self.next;
+        self.next += 1;
+        let (to, mailbox) = inbox(None);
+        let stop = Arc::new(AtomicBool::new(false));
+        if start.module || self.depth >= MAX_WORKER_DEPTH {
+            self.known.insert(
+                id,
+                Known {
+                    to,
+                    stop,
+                    counted: false,
+                },
+            );
+            self.inbox
+                .send(WorkerMessage::FromWorker(id, FromWorker::Error(None)));
+            self.inbox
+                .send(WorkerMessage::FromWorker(id, FromWorker::Ended));
+            return id;
+        }
+        self.known.insert(
+            id,
+            Known {
+                to: to.clone(),
+                stop: stop.clone(),
+                counted: true,
+            },
+        );
+        self.waiting.push_back(Setup {
+            id,
+            start,
+            owner: self.inbox.clone(),
+            mailbox,
+            me: to,
+            stop,
+            depth: self.depth + 1,
+            live: self.live.clone(),
+        });
+        self.start_waiting();
+        id
+    }
+
+    /// Starts the workers waiting, while the document has room.
+    pub(crate) fn start_waiting(&mut self) {
+        while !self.waiting.is_empty() && self.live.load(Ordering::SeqCst) < MAX_WORKERS {
+            let Some(setup) = self.waiting.pop_front() else {
+                return;
+            };
+            self.live.fetch_add(1, Ordering::SeqCst);
+            let (id, owner) = (setup.id, setup.owner.clone());
+            let spawned = thread::Builder::new()
+                .name(format!("worker {id}"))
+                .stack_size(WORKER_STACK)
+                .spawn(move || run(setup));
+            if spawned.is_err() {
+                owner.send(WorkerMessage::FromWorker(id, FromWorker::Error(None)));
+                owner.send(WorkerMessage::FromWorker(id, FromWorker::Ended));
+            }
+        }
+    }
+
+    /// Posts `data` to worker `id`'s global; nothing for a worker that
+    /// ended. A `DataCloneError` past the bounds.
+    pub(crate) fn post(&mut self, id: u32, data: String) -> Result<(), DomError> {
+        if data.len() > MAX_MESSAGE_BYTES {
+            return Err(too_large());
+        }
+        if let Some(known) = self.known.get(&id)
+            && !known.to.send(WorkerMessage::ToWorker(data))
+            && !known.stop.load(Ordering::SeqCst)
+        {
+            return Err(too_large());
+        }
+        Ok(())
+    }
+
+    /// Stops worker `id` at once (`terminate()`): what it runs is
+    /// interrupted, and nothing it sent that is not yet taken is.
+    pub(crate) fn terminate(&mut self, id: u32) {
+        let Some(known) = self.known.remove(&id) else {
+            return;
+        };
+        known.stop.store(true, Ordering::SeqCst);
+        known.to.send(WorkerMessage::Stop);
+        if let Some(at) = self.waiting.iter().position(|setup| setup.id == id) {
+            self.waiting.remove(at);
+            if known.counted {
+                // It never started: nothing to count down but its slot.
+                return;
+            }
+        }
+        if known.counted {
+            self.live.fetch_sub(1, Ordering::SeqCst);
+        }
+        self.start_waiting();
+    }
+
+    /// Stops every worker: the realm goes.
+    pub(crate) fn terminate_all(&mut self) {
+        let ids: Vec<u32> = self.known.keys().copied().collect();
+        for id in ids {
+            self.terminate(id);
+        }
+    }
+
+    /// What worker `id`'s `event` is for the realm; nothing for a
+    /// worker it terminated.
+    pub(crate) fn receive(&mut self, id: u32, event: FromWorker) -> Received {
+        if !self.known.contains_key(&id) {
+            return Received::Nothing;
+        }
+        match event {
+            FromWorker::Message(data) => Received::Task(Task::Message {
+                target: MessageTarget::Worker(id),
+                data,
+                origin: String::new(),
+            }),
+            FromWorker::Error(error) => Received::Task(Task::WorkerError { worker: id, error }),
+            FromWorker::Console(level, text) => Received::Console(level, text),
+            FromWorker::Ended => {
+                if let Some(known) = self.known.remove(&id)
+                    && known.counted
+                {
+                    self.live.fetch_sub(1, Ordering::SeqCst);
+                }
+                self.start_waiting();
+                Received::Task(Task::WorkerEnded(id))
+            }
+        }
+    }
+}
+
+impl Workers {
+    /// Whether the realm has a worker that has not ended.
+    pub(crate) fn any(&self) -> bool {
+        !self.known.is_empty()
+    }
+
+    /// The document's live workers, for the tests.
+    #[cfg(test)]
+    pub(crate) fn live(&self) -> Arc<AtomicUsize> {
+        self.live.clone()
+    }
+}
+
+impl Drop for Workers {
+    fn drop(&mut self) {
+        self.terminate_all();
+    }
+}
+
+/// The `DataCloneError` of a message past the bounds.
+fn too_large() -> DomError {
+    DomError::new("DataCloneError", "Data cannot be cloned, out of memory.")
+}
+
+/// A document's workers and its inbox, which they send to.
+pub(crate) struct DocumentWorkers {
+    pub(crate) workers: Workers,
+    pub(crate) mailbox: Mailbox,
+    inbox: Inbox,
+}
+
+impl Default for DocumentWorkers {
+    fn default() -> DocumentWorkers {
+        let (inbox, mailbox) = inbox(None);
+        DocumentWorkers {
+            workers: Workers::new(inbox.clone(), Arc::default(), 0),
+            mailbox,
+            inbox,
+        }
+    }
+}
+
+impl DocumentWorkers {
+    /// Wakes the engine's owner with `wake` when a worker sends.
+    pub(crate) fn set_wake(&mut self, wake: Option<Waker>) {
+        if self.inbox.wake.is_none() && wake.is_some() {
+            self.inbox.wake = wake;
+            self.workers.inbox = self.inbox.clone();
+        }
+    }
+}
+
+/// The URL of a worker's script, `url` parsed against `base`, if it may
+/// run for a creator of `origin` (HTML's "Worker constructor" steps):
+/// the creator's origin, or `data:`; else the reference browser's
+/// `SecurityError`, or a `SyntaxError` for a URL that does not parse.
+pub(crate) fn worker_url(url: &str, base: Option<&Url>, origin: &Origin) -> Result<Url, DomError> {
+    let Ok(parsed) = Url::parse_with(url, base, encoding::UTF_8) else {
+        return Err(DomError::new(
+            "SyntaxError",
+            format!("The URL '{url}' is invalid."),
+        ));
+    };
+    if parsed.scheme() == "data" || parsed.origin() == *origin {
+        return Ok(parsed);
+    }
+    Err(DomError::new(
+        "SecurityError",
+        format!(
+            "Script at '{parsed}' cannot be accessed from origin '{}'.",
+            origin.serialization()
+        ),
+    ))
+}
+
+/// A worker's thread: its script fetched and run, then its event loop
+/// until it closes, is stopped or its owner goes; its owner told it
+/// ended.
+fn run(setup: Setup) {
+    let Setup {
+        id,
+        start,
+        owner,
+        mailbox,
+        me,
+        stop,
+        depth,
+        live,
+    } = setup;
+    let ended = |error: Option<Option<ScriptError>>| {
+        if let Some(error) = error {
+            owner.send(WorkerMessage::FromWorker(id, FromWorker::Error(error)));
+        }
+        owner.send(WorkerMessage::FromWorker(id, FromWorker::Ended));
+    };
+    let Some((source, url)) = fetch_script(&start) else {
+        return ended(Some(None));
+    };
+    if stop.load(Ordering::SeqCst) {
+        return;
+    }
+    let kind = RealmKind::DedicatedWorker {
+        name: start.name.clone(),
+    };
+    let Ok(mut realm) = QuickJs.realm_of::<WorkerHost>(kind, Limits::worker(), Some(stop.clone()))
+    else {
+        return ended(Some(None));
+    };
+    let origin = if url.scheme() == "data" {
+        Origin::new_opaque()
+    } else {
+        url.origin()
+    };
+    let mut host = WorkerHost {
+        id,
+        owner: Some(owner.clone()),
+        initiator: Some(Initiator {
+            url: url.clone(),
+            address_space: start.initiator.address_space,
+            origin: origin.clone(),
+        }),
+        client: Some(start.client.clone()),
+        origin,
+        url: Some(url.clone()),
+        secure: start.secure,
+        clock: Instant::now(),
+        epoch_ms: SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64()
+            * 1000.0,
+        workers: Some(Workers::new(me, live, depth)),
+        ..WorkerHost::default()
+    };
+    let script = Script {
+        source: &source,
+        url: url.as_str(),
+        line: 1,
+        muted: false,
+    };
+    let result = realm.run(&script, &mut host).map(|_| false);
+    host.finish(&mut *realm, result, &stop);
+    work(&mut *realm, &mut host, &mailbox, &stop);
+    if !stop.load(Ordering::SeqCst) {
+        ended(None);
+    }
+}
+
+/// A worker's event loop (HTML section 10.2.4): its timers, and the
+/// messages of its owner and of its own workers, in the order they are
+/// due, each a task with its microtask checkpoint, until it closes or
+/// is stopped.
+fn work(
+    realm: &mut dyn Realm<WorkerHost>,
+    host: &mut WorkerHost,
+    mailbox: &Mailbox,
+    stop: &AtomicBool,
+) {
+    loop {
+        if host.closing || stop.load(Ordering::SeqCst) {
+            return;
+        }
+        let now = host.now();
+        if host.timers.next_due().is_some_and(|due| due <= now) {
+            let Some((id, level)) = host.timers.take_next() else {
+                continue;
+            };
+            host.nesting = level;
+            let result = realm.enter(&Task::Timer(id), host);
+            host.nesting = 0;
+            host.finish(realm, result, stop);
+            continue;
+        }
+        let wait = host.timers.next_due().map(|due| due.saturating_sub(now));
+        let message = match mailbox.take(wait) {
+            Waited::Message(message) => message,
+            Waited::TimedOut => continue,
+            Waited::Gone => return,
+        };
+        let task = match message {
+            WorkerMessage::Stop => return,
+            WorkerMessage::ToWorker(data) => Task::Message {
+                target: MessageTarget::Global,
+                data,
+                origin: String::new(),
+            },
+            WorkerMessage::FromWorker(child, event) => {
+                let received = match host.workers.as_mut() {
+                    Some(workers) => workers.receive(child, event),
+                    None => Received::Nothing,
+                };
+                match received {
+                    Received::Task(task) => task,
+                    Received::Console(level, text) => {
+                        host.tell(FromWorker::Console(level, text));
+                        continue;
+                    }
+                    Received::Nothing => continue,
+                }
+            }
+        };
+        let result = realm.enter(&task, host);
+        host.finish(realm, result, stop);
+    }
+}
+
+/// The worker's script (HTML's "fetch a classic worker script"): its
+/// text, decoded as UTF-8, and the URL it came from; none when the
+/// fetch fails, the status is not ok or the type is not a script's.
+fn fetch_script(start: &Start) -> Option<(String, Url)> {
+    if start.module {
+        return None;
+    }
+    let mut request = Request::get(start.url.clone(), Destination::Worker)
+        .initiated_by(start.initiator.clone())
+        .with_body_limit(MAX_SCRIPT_BYTES);
+    request.credentials = start.credentials;
+    let response = start.client.fetch(&request).ok()?;
+    if !response.ok()
+        || net::mime::blocked_as_script(response.mime_type.as_ref(), &response.headers)
+    {
+        return None;
+    }
+    let (text, _) = encoding::decode(&response.body, encoding::UTF_8);
+    Some((text, response.url().clone()))
+}
+
+/// A worker's credentials mode, from WorkerOptions' `credentials`,
+/// which the bindings checked.
+pub(crate) fn credentials_mode(text: &str) -> Credentials {
+    match text {
+        "omit" => Credentials::Omit,
+        "include" => Credentials::Include,
+        _ => Credentials::SameOrigin,
+    }
+}
+
+/// The host a worker's scripts reach the engine through: no document,
+/// its own timers and workers, and its owner, which its messages,
+/// console and errors go to.
+pub(crate) struct WorkerHost {
+    id: u32,
+    owner: Option<Inbox>,
+    /// What its requests are made by: its URL and origin.
+    initiator: Option<Initiator>,
+    client: Option<Arc<Client>>,
+    origin: Origin,
+    url: Option<Url>,
+    secure: bool,
+    /// Its clock: real time from when it started.
+    clock: Instant,
+    epoch_ms: f64,
+    timers: Timers,
+    /// The timer nesting level of the task it runs.
+    nesting: u32,
+    /// `close()` was called: the task ends, and nothing more runs.
+    closing: bool,
+    workers: Option<Workers>,
+    work: u64,
+}
+
+impl Default for WorkerHost {
+    fn default() -> WorkerHost {
+        WorkerHost {
+            id: 0,
+            owner: None,
+            initiator: None,
+            client: None,
+            origin: Origin::Opaque(0),
+            url: None,
+            secure: false,
+            clock: Instant::now(),
+            epoch_ms: 0.0,
+            timers: Timers::default(),
+            nesting: 0,
+            closing: false,
+            workers: None,
+            work: 0,
+        }
+    }
+}
+
+impl ScriptingHost for WorkerHost {
+    fn console(&mut self, level: ConsoleLevel, message: String) {
+        self.tell(FromWorker::Console(level, cut(message)));
+    }
+
+    fn title(&mut self) -> String {
+        String::new()
+    }
+
+    fn set_title(&mut self, _title: String) {}
+
+    fn dom(&mut self, call: Call) -> Result<Answer, DomError> {
+        self.work += 1;
+        match call {
+            Call::SetTimer { id, delay } => {
+                let now = self.now();
+                self.timers.set(id, delay, self.nesting, now)?;
+                Ok(Answer::Nothing)
+            }
+            Call::ClearTimer(id) => {
+                self.timers.clear(id);
+                Ok(Answer::Nothing)
+            }
+            Call::Now => {
+                let tenths = self.now().as_micros() / 100;
+                Ok(Answer::Number(tenths as f64 / 10.0))
+            }
+            Call::TimeOrigin => Ok(Answer::Number(self.epoch_ms)),
+            Call::Origin => Ok(Answer::String(self.origin.serialization())),
+            Call::SecureContext => Ok(Answer::Bool(self.secure)),
+            Call::PostToOwner(data) => {
+                if data.len() > MAX_MESSAGE_BYTES {
+                    return Err(too_large());
+                }
+                let sent = self.owner.as_ref().is_some_and(|owner| {
+                    owner.send(WorkerMessage::FromWorker(
+                        self.id,
+                        FromWorker::Message(data),
+                    ))
+                });
+                if !sent {
+                    return Err(too_large());
+                }
+                Ok(Answer::Nothing)
+            }
+            Call::CloseWorker => {
+                self.closing = true;
+                Ok(Answer::Nothing)
+            }
+            Call::WorkerStart {
+                url,
+                name,
+                module,
+                credentials,
+            } => {
+                let url = worker_url(&url, self.url.as_ref(), &self.origin)?;
+                let (Some(client), Some(initiator), Some(workers)) =
+                    (&self.client, &self.initiator, self.workers.as_mut())
+                else {
+                    return Err(DomError::not_supported());
+                };
+                Ok(Answer::Number(f64::from(workers.start(Start {
+                    url,
+                    name,
+                    module,
+                    credentials: credentials_mode(&credentials),
+                    client: client.clone(),
+                    initiator: initiator.clone(),
+                    secure: self.secure,
+                }))))
+            }
+            Call::WorkerPost { worker, data } => {
+                if let Some(workers) = self.workers.as_mut() {
+                    workers.post(worker, data)?;
+                }
+                Ok(Answer::Nothing)
+            }
+            Call::WorkerTerminate(worker) => {
+                if let Some(workers) = self.workers.as_mut() {
+                    workers.terminate(worker);
+                }
+                Ok(Answer::Nothing)
+            }
+            _ => Err(DomError::not_supported()),
+        }
+    }
+
+    fn take_work(&mut self) -> u64 {
+        std::mem::take(&mut self.work)
+    }
+
+    fn report(&mut self, error: ScriptError) {
+        self.uncaught(error);
+    }
+}
+
+impl WorkerHost {
+    /// The worker's time: since it started.
+    fn now(&self) -> Duration {
+        self.clock.elapsed()
+    }
+
+    /// Sends the owner `event`.
+    fn tell(&self, event: FromWorker) {
+        if let Some(owner) = &self.owner {
+            owner.send(WorkerMessage::FromWorker(self.id, event));
+        }
+    }
+
+    /// An error the worker's own `error` event did not handle: an
+    /// exception goes to its owner, which fires it at the worker's
+    /// object; a rejection, which stays in the worker, to the console.
+    fn uncaught(&self, error: ScriptError) {
+        match error.kind {
+            ErrorKind::Exception => self.tell(FromWorker::Error(Some(error))),
+            ErrorKind::Rejection | ErrorKind::Heap => {
+                if let Some(text) = report_text(&error) {
+                    self.tell(FromWorker::Console(ConsoleLevel::Error, cut(text)));
+                }
+            }
+            ErrorKind::Budget | ErrorKind::Dead | ErrorKind::Handled => {}
+        }
+    }
+
+    /// After a task: the microtask checkpoint, and the errors of both,
+    /// unless the worker was stopped.
+    fn finish(
+        &mut self,
+        realm: &mut dyn Realm<WorkerHost>,
+        result: Result<bool, ScriptError>,
+        stop: &AtomicBool,
+    ) {
+        let errors = realm.checkpoint(self);
+        if stop.load(Ordering::SeqCst) {
+            return;
+        }
+        if let Err(error) = result {
+            self.uncaught(error);
+        }
+        for error in errors {
+            self.uncaught(error);
+        }
+        if realm.dead().is_some() {
+            self.closing = true;
+        }
+    }
+}

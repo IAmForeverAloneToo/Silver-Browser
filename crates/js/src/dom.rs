@@ -260,6 +260,26 @@ pub enum Call {
         target_origin: String,
         data: String,
     },
+    /// `new Worker(url, options)` (M31): the worker started, its number
+    /// answered; a `SecurityError` for a URL of another origin, a
+    /// `SyntaxError` for one that does not parse.
+    WorkerStart {
+        url: String,
+        name: String,
+        module: bool,
+        credentials: String,
+    },
+    /// A message for worker `worker`'s global, its data serialized.
+    WorkerPost {
+        worker: u32,
+        data: String,
+    },
+    /// `worker.terminate()`.
+    WorkerTerminate(u32),
+    /// A worker's `postMessage`, to its `Worker` object (M31).
+    PostToOwner(String),
+    /// A worker's `close()`.
+    CloseWorker,
     /// A form's entry list, as `FormData`'s constructor makes it
     /// (M27): each entry's name, `text` or `file`, and value; a
     /// `TypeError` for an element that is not a form or a submitter that

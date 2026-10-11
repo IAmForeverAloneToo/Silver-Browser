@@ -17,6 +17,7 @@ use style::{CascadeContext, FontMeasure, Styles, Stylesheets};
 
 use super::canvas::{Canvases, Drawn, Element, Owner, names_context, needs_source, needs_text};
 use super::cssom;
+use super::workers::{DocumentWorkers, Start, credentials_mode, worker_url};
 use super::{
     ConsoleEntry, How, Lent, MAX_SCRIPT_NESTING, MAX_TIMERS, Place, Prepared, ReadyState,
     ScriptNavigation, Source, TimeOrigin, Wanted, WindowEnv, cut, document_title, parser_place,
@@ -58,6 +59,8 @@ pub(crate) struct Outputs {
     /// The messages posted (M31), each with when it was, delivered in
     /// tasks.
     pub(crate) messages: Vec<(Duration, js::Task)>,
+    /// The workers terminated, whose tasks not yet run are dropped.
+    pub(crate) terminated: Vec<u32>,
 }
 
 /// The document's styles as a run's `getComputedStyle` sees them: the
@@ -87,7 +90,13 @@ impl Timers {
     /// after `now`, from a task at nesting level `level`: a delay below
     /// 0 is 0, and below 4 is 4 past the fifth level, as HTML clamps it.
     /// A new timer past [`MAX_TIMERS`] is refused.
-    fn set(&mut self, id: u32, delay: i32, level: u32, now: Duration) -> Result<(), DomError> {
+    pub(crate) fn set(
+        &mut self,
+        id: u32,
+        delay: i32,
+        level: u32,
+        now: Duration,
+    ) -> Result<(), DomError> {
         let mut delay = u64::try_from(delay).unwrap_or(0);
         if level > 5 && delay < 4 {
             delay = 4;
@@ -112,7 +121,7 @@ impl Timers {
     }
 
     /// Clears timer `id`, if it is set.
-    fn clear(&mut self, id: u32) {
+    pub(crate) fn clear(&mut self, id: u32) {
         if let Some(key) = self.by_id.remove(&id) {
             self.queue.remove(&key);
         }
@@ -216,6 +225,8 @@ pub(crate) struct DocumentHost {
     /// The document's canvases and the objects scripts made for them
     /// (M30).
     pub(crate) canvases: Canvases,
+    /// The document's workers and its inbox (M31).
+    pub(crate) workers: DocumentWorkers,
 }
 
 impl ScriptingHost for DocumentHost {
@@ -852,6 +863,39 @@ impl DocumentHost {
                 Ok(Answer::Strings(location_parts(url)))
             }
             Call::Origin => Ok(Answer::String(self.origin_text())),
+            Call::WorkerStart {
+                url,
+                name,
+                module,
+                credentials,
+            } => {
+                let (Some(page), Some(client)) = (&self.page, &self.client) else {
+                    return Err(DomError::not_supported());
+                };
+                let base = page.base_url(&self.document);
+                let url = worker_url(&url, base.as_ref(), page.origin())?;
+                let initiator = page.initiator().ok_or_else(DomError::not_supported)?;
+                let start = Start {
+                    url,
+                    name,
+                    module,
+                    credentials: credentials_mode(&credentials),
+                    client: client.clone(),
+                    initiator,
+                    secure: page.is_secure_context(),
+                };
+                Ok(Answer::Number(f64::from(self.workers.workers.start(start))))
+            }
+            Call::WorkerPost { worker, data } => {
+                self.workers.workers.post(worker, data)?;
+                Ok(Answer::Nothing)
+            }
+            Call::WorkerTerminate(worker) => {
+                self.workers.workers.terminate(worker);
+                self.outputs.terminated.push(worker);
+                Ok(Answer::Nothing)
+            }
+            Call::PostToOwner(_) | Call::CloseWorker => Err(DomError::not_supported()),
             Call::SecureContext => Ok(Answer::Bool(
                 self.page.as_ref().is_none_or(Page::is_secure_context),
             )),
@@ -929,7 +973,7 @@ impl DocumentHost {
                     self.outputs.messages.push((
                         now,
                         js::Task::Message {
-                            target: js::MessageTarget::Window,
+                            target: js::MessageTarget::Global,
                             data,
                             origin,
                         },
@@ -1978,6 +2022,7 @@ impl DocumentHost {
         self.page = Some(std::mem::replace(lent.page, placeholder));
         self.cookies = Some(lent.network.cookies());
         self.client = Some(lent.network.client());
+        self.workers.set_wake(lent.network.waker());
         self.parser = lent
             .parser
             .as_deref_mut()

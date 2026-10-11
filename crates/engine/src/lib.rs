@@ -2527,6 +2527,12 @@ impl Engine {
         (self.clock)()
     }
 
+    /// The engine's time, for the tests.
+    #[cfg(test)]
+    pub(crate) fn clock_now(&self) -> Duration {
+        self.now()
+    }
+
     /// A time origin for a document made now: the clock, and the time
     /// since the Unix epoch.
     fn time_origin(&self) -> scripts::TimeOrigin {
@@ -3128,6 +3134,7 @@ impl Engine {
     /// as [`Engine::needs_frame`] does. The shell calls it when the
     /// waker wakes it.
     pub fn poll_network(&mut self) -> bool {
+        self.take_worker_messages();
         while let Some(taken) = self.network.take() {
             match taken {
                 loader::Taken::Arrived(arrived) => self.arrived(arrived),
@@ -3142,6 +3149,26 @@ impl Engine {
             self.image_read(finished);
         }
         self.needs_frame()
+    }
+
+    /// The shown document's live workers, for the tests (M31).
+    #[cfg(test)]
+    pub(crate) fn live_workers(&self) -> Arc<std::sync::atomic::AtomicUsize> {
+        self.shown.scripts.live_workers()
+    }
+
+    /// Takes what the workers of the document shown and of the one on
+    /// its way sent (M31), queued as their tasks.
+    fn take_worker_messages(&mut self) {
+        let now = self.now();
+        self.shown.scripts.take_worker_messages(now);
+        if let Some(Navigation {
+            incoming: Incoming::Parsing { parsing, .. },
+            ..
+        }) = &mut self.navigation
+        {
+            parsing.scripts.take_worker_messages(now);
+        }
     }
 
     /// Whether an image a frame drew is being decoded (M23.5): a frame

@@ -181,7 +181,8 @@
     Headers: true, ImageBitmap: true, ImageData: true, MessageEvent: true,
     OffscreenCanvas: true, OffscreenCanvasRenderingContext2D: true, Path2D: true,
     Performance: true, ProgressEvent: true, QuotaExceededError: true, Request: true,
-    Response: true, TextMetrics: true, URLSearchParams: true, WorkerGlobalScope: "worker",
+    Response: true, TextMetrics: true, URLSearchParams: true, Worker: true,
+    WorkerGlobalScope: "worker",
     XMLHttpRequest: true, XMLHttpRequestEventTarget: true, XMLHttpRequestUpload: true,
   };
 
@@ -1714,7 +1715,7 @@
           activator = found;
         }
       }
-    } else if (target === global) {
+    } else if (target === global && !WORKER) {
       windowBody();
     }
     // A checkbox's or a radio button's legacy-pre-activation behaviour
@@ -12869,7 +12870,7 @@
     const event = new MessageEvent(type, made(MESSAGE_INIT, [
       "data", data,
       "origin", origin,
-      "source", target === global ? global : null,
+      "source", target === global && !WORKER ? global : null,
       "ports", ports,
     ]));
     eventState(event).trusted = true;
@@ -12916,6 +12917,178 @@
     configurable: true,
     enumerable: true,
   });
+
+  // ---- Dedicated workers (M31, HTML section 10.2.6) ----------------------
+
+  // The workers this realm made and has not seen end, by number: each
+  // is kept while it may still hear from its worker.
+  const workerObjects = new $Map();
+  let workerNumber;
+
+  // A message's transfer list from the argument after it: a sequence of
+  // objects, or StructuredSerializeOptions (Web IDL's overload
+  // resolution of postMessage(message, transfer) and
+  // postMessage(message, options)).
+  function postTransfer(second, method, iface) {
+    const object = (typeof second === "object" && second !== null) || typeof second === "function";
+    if (object && second[iteratorSymbol] !== undefined) {
+      return transferList(second, method, iface, undefined);
+    }
+    return serializeOptions(second, method, iface, "StructuredSerializeOptions");
+  }
+
+  // One of an enumeration's values, or the reference browser's error.
+  function workerEnum(value, values, member, type) {
+    const text = str(value);
+    for (let i = 0; i < values.length; i++) {
+      if (values[i] === text) {
+        return text;
+      }
+    }
+    throw new $TypeError("Failed to construct 'Worker': Failed to read the '" + member +
+      "' property from 'WorkerOptions': The provided value '" + text +
+      "' is not a valid enum value of type " + type + ".");
+  }
+
+  // WorkerOptions (HTML section 10.2.6.3), its members read in Web
+  // IDL's order: [credentials, name, type].
+  function workerOptions(options) {
+    if (options !== undefined && options !== null && typeof options !== "object" &&
+      typeof options !== "function") {
+      throw new $TypeError(
+        "Failed to construct 'Worker': The provided value is not of type 'WorkerOptions'.");
+    }
+    const given = options === undefined || options === null ? null : options;
+    const credentials = given === null ? undefined : given.credentials;
+    const name = given === null ? undefined : given.name;
+    const type = given === null ? undefined : given.type;
+    return [
+      credentials === undefined ? "same-origin"
+        : workerEnum(credentials, ["omit", "same-origin", "include"], "credentials",
+          "RequestCredentials"),
+      name === undefined ? "" : str(name),
+      type === undefined ? "classic" : workerEnum(type, ["classic", "module"], "type", "WorkerType"),
+    ];
+  }
+
+  class Worker extends EventTarget {
+    #id = 0;
+
+    static {
+      workerNumber = (worker) => {
+        if (typeof worker === "object" && worker !== null && #id in worker) {
+          return worker.#id;
+        }
+        throw illegalInvocation();
+      };
+    }
+
+    constructor(scriptURL, options = undefined) {
+      if (arguments.length < 1) {
+        throw new $TypeError(
+          "Failed to construct 'Worker': 1 argument required, but only 0 present.");
+      }
+      super();
+      const url = str(scriptURL);
+      const o = workerOptions(options);
+      let id;
+      try {
+        id = native.workerStart(url, o[1], o[2] === "module", o[0]);
+      } catch (error) {
+        if (error instanceof $DOMException) {
+          throw new $DOMException("Failed to construct 'Worker': " + error.message, error.name);
+        }
+        throw error;
+      }
+      this.#id = id;
+      MapSet(workerObjects, id, this);
+    }
+
+    postMessage(message) {
+      const id = workerNumber(this);
+      const a = arguments;
+      need(a.length, 1, "postMessage", "Worker");
+      const transfer = postTransfer(a[1], "postMessage", "Worker");
+      const record = serialize(message, transfer, prefix("postMessage", "Worker"), null);
+      try {
+        native.workerPost(id, wire(record));
+      } catch (error) {
+        throw failed(error, "postMessage", "Worker");
+      }
+    }
+
+    terminate() {
+      const id = workerNumber(this);
+      native.workerTerminate(id);
+      MapDelete(workerObjects, id);
+    }
+  }
+  // The reference browser's Worker has no onmessageerror.
+  defineHandlers(Worker.prototype, ["error", "message"], false);
+  expose(Worker, "Worker");
+
+  // A dedicated worker's own members (HTML section 10.2.1.2): a message
+  // to its owner, and close().
+  if (WORKER) {
+    defineProperty(global, "postMessage", {
+      value: function postMessage(message) {
+        const a = arguments;
+        const iface = "DedicatedWorkerGlobalScope";
+        need(a.length, 1, "postMessage", iface);
+        const transfer = postTransfer(a[1], "postMessage", iface);
+        const record = serialize(message, transfer, prefix("postMessage", iface), null);
+        try {
+          native.postToOwner(wire(record));
+        } catch (error) {
+          throw failed(error, "postMessage", iface);
+        }
+      },
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+    defineProperty(global, "close", {
+      value: function close() {
+        native.closeWorker();
+      },
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+
+  // An entry's run that dispatches nothing.
+  function* nothing() {
+    return false;
+  }
+
+  // Worker `id`'s uncaught error (HTML section 10.2.4, "runtime script
+  // errors"): an ErrorEvent at its object, cancelable, then, not
+  // canceled, reported here as an error of this realm's own, with no
+  // error object; for a script that failed to load (`message` null), a
+  // plain `error` event. Whether it was canceled.
+  function* workerError(id, message, url, line, column) {
+    const worker = MapGet(workerObjects, id);
+    if (worker === undefined) {
+      return false;
+    }
+    const event = message === null
+      ? new Event("error", made(EVENT_INIT, ["cancelable", true]))
+      : new ErrorEvent("error", made(ERROR_INIT, [
+        "cancelable", true,
+        "message", "Uncaught " + message,
+        "filename", url,
+        "lineno", line,
+        "colno", column,
+        "error", null,
+      ]));
+    eventState(event).trusted = true;
+    const canceled = yield* dispatching(worker, event);
+    if (message !== null && !canceled && !fireError(null, message, url, line, column, false)) {
+      native.reportError(message, url, line, column);
+    }
+    return canceled;
+  }
 
   // ---- Timers (M26, HTML section 8.6) ------------------------------------
 
@@ -14138,9 +14311,20 @@
     },
     frames: runFrames,
     fetched,
-    // A message's arrival (M31): `target` null for the window.
+    // A message's arrival (M31): `target` null for the global, else the
+    // number of the worker whose object it is for.
     message(target, text, origin) {
-      return messageEvent(global, text, origin, []);
+      if (target === null) {
+        return messageEvent(global, text, origin, []);
+      }
+      const worker = MapGet(workerObjects, target);
+      return worker === undefined ? nothing() : messageEvent(worker, text, origin, []);
+    },
+    workerError,
+    // Worker `id` ended: its object is let go.
+    workerEnded(id) {
+      MapDelete(workerObjects, id);
+      return nothing();
     },
     resume(run) {
       const step = GeneratorNext(run);

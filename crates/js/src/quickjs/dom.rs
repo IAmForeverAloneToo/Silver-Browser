@@ -329,6 +329,25 @@ const NATIVES: &[(&str, Decode)] = &[
     }),
     ("sameOriginUrl", |a| Ok(Call::SameOriginUrl(a.string(0)?))),
     ("targetOrigin", |a| Ok(Call::TargetOrigin(a.string(0)?))),
+    ("workerStart", |a| {
+        Ok(Call::WorkerStart {
+            url: a.string(0)?,
+            name: a.string(1)?,
+            module: a.bool(2),
+            credentials: a.string(3)?,
+        })
+    }),
+    ("workerPost", |a| {
+        Ok(Call::WorkerPost {
+            worker: a.integer(0) as u32,
+            data: a.string(1)?,
+        })
+    }),
+    ("workerTerminate", |a| {
+        Ok(Call::WorkerTerminate(a.integer(0) as u32))
+    }),
+    ("postToOwner", |a| Ok(Call::PostToOwner(a.string(0)?))),
+    ("closeWorker", |_| Ok(Call::CloseWorker)),
     ("postMessage", |a| {
         Ok(Call::PostMessage {
             target_origin: a.string(0)?,

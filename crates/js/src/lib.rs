@@ -251,13 +251,26 @@ pub enum Task {
         data: String,
         origin: String,
     },
+    /// Worker `worker`'s error (M31.2): an exception it did not handle,
+    /// as the console words it, fired at its `Worker` object and then,
+    /// unhandled, reported in this realm; `None` for a script that could
+    /// not be fetched or run, a plain `error` event.
+    WorkerError {
+        worker: u32,
+        error: Option<ScriptError>,
+    },
+    /// Worker `worker` ended: its object hears nothing more.
+    WorkerEnded(u32),
 }
 
 /// Where a message is delivered (M31).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageTarget {
-    /// The window, by `window.postMessage`.
-    Window,
+    /// The realm's global: the window, by `window.postMessage`, or a
+    /// worker's, from its owner.
+    Global,
+    /// The `Worker` object of worker `n`, from its worker.
+    Worker(u32),
 }
 
 /// What a script may see of a response (M27.1): `net`'s exposed view,

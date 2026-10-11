@@ -54,6 +54,37 @@ impl Tab {
         }
     }
 
+    /// Runs the engine as the shell does, taking results and running
+    /// the tasks due as the waker says they come (M31: a worker's
+    /// messages), until `done` holds of the console's lines so far,
+    /// which it gives.
+    pub(crate) fn run_until(&mut self, mut done: impl FnMut(&[String]) -> bool) -> Vec<String> {
+        let deadline = Instant::now() + WAIT;
+        let mut lines = Vec::new();
+        loop {
+            self.engine.poll_network();
+            self.engine.run_tasks();
+            lines.extend(
+                self.engine
+                    .take_console()
+                    .into_iter()
+                    .map(|entry| entry.text),
+            );
+            if done(&lines) {
+                return lines;
+            }
+            let left = deadline
+                .checked_duration_since(Instant::now())
+                .unwrap_or_else(|| panic!("the engine gets there in time: {lines:#?}"));
+            // Until the next task is due, as the shell waits, or a wake.
+            let wait = self
+                .engine
+                .next_task_at()
+                .map_or(left, |due| due.saturating_sub(self.engine.clock_now()));
+            let _ = self.woken.recv_timeout(left.min(wait));
+        }
+    }
+
     /// Gives the engine a clock the test moves by hand (M26), at 0.
     pub(crate) fn hand_clock(&mut self) -> HandClock {
         let clock = HandClock::default();

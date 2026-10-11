@@ -84,6 +84,11 @@ impl<T: Send + 'static> Pool<T> {
         *lock(&self.shared.waker) = Some(waker);
     }
 
+    /// The waker, if one was set.
+    pub(crate) fn waker(&self) -> Option<Waker> {
+        lock(&self.shared.waker).clone()
+    }
+
     /// Runs `job` as `id`: on a new thread if fewer than the cap are
     /// running, or else on the first thread free, after the jobs
     /// already waiting.

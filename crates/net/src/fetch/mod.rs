@@ -133,6 +133,8 @@ pub enum Destination {
     Image,
     /// A classic script (M24).
     Script,
+    /// A dedicated worker's script (M31).
+    Worker,
     /// No destination: a script's `fetch` or `XMLHttpRequest` (M27).
     Empty,
 }
@@ -145,6 +147,7 @@ impl Destination {
             Destination::Style => "style",
             Destination::Image => "image",
             Destination::Script => "script",
+            Destination::Worker => "worker",
             Destination::Empty => "empty",
         }
     }
@@ -157,7 +160,7 @@ impl Destination {
             }
             Destination::Style => b"text/css,*/*;q=0.1",
             Destination::Image => b"image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5",
-            Destination::Script | Destination::Empty => b"*/*",
+            Destination::Script | Destination::Worker | Destination::Empty => b"*/*",
         }
     }
 }
@@ -280,10 +283,11 @@ pub struct Request {
 
 impl Request {
     /// A `GET` of `url` for `destination`, as the user asks: in navigate
-    /// mode for a document, CORS for no destination and no-cors
-    /// otherwise, with credentials (same-origin ones for a script's
-    /// fetch), following redirects, with no origin or initiator, and
-    /// an abort handle of its own.
+    /// mode for a document, CORS for no destination, same-origin for a
+    /// worker's script and no-cors otherwise, with credentials
+    /// (same-origin ones for a script's fetch and a worker's script),
+    /// following redirects, with no origin or initiator, and an abort
+    /// handle of its own.
     pub fn get(url: Url, destination: Destination) -> Request {
         Request {
             url,
@@ -294,10 +298,11 @@ impl Request {
             mode: match destination {
                 Destination::Document => Mode::Navigate,
                 Destination::Empty => Mode::Cors,
+                Destination::Worker => Mode::SameOrigin,
                 Destination::Style | Destination::Image | Destination::Script => Mode::NoCors,
             },
             credentials: match destination {
-                Destination::Empty => Credentials::SameOrigin,
+                Destination::Empty | Destination::Worker => Credentials::SameOrigin,
                 _ => Credentials::Include,
             },
             redirect: Redirect::Follow,

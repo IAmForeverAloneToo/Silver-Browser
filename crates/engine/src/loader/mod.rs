@@ -48,6 +48,8 @@ mod tests;
 #[cfg(test)]
 mod validity_tests;
 #[cfg(test)]
+mod worker_tests;
+#[cfg(test)]
 mod xhr_tests;
 
 use std::collections::HashMap;
@@ -240,6 +242,12 @@ impl Network {
 
     pub(crate) fn set_waker(&self, waker: Waker) {
         self.pool.set_waker(waker);
+    }
+
+    /// What wakes the engine's owner, if it was given one (M31: a
+    /// worker's message).
+    pub(crate) fn waker(&self) -> Option<Waker> {
+        self.pool.waker()
     }
 
     /// Starts fetching `request` for `target` of `page`; a document's

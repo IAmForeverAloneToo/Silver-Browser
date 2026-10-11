@@ -386,11 +386,33 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                 origin,
             } => self.stepped(&entries, |ctx, entries| {
                 let at = match target {
-                    crate::MessageTarget::Window => Value::new_null(ctx.clone()),
+                    crate::MessageTarget::Global => Value::new_null(ctx.clone()),
+                    crate::MessageTarget::Worker(n) => {
+                        Value::new_number(ctx.clone(), f64::from(*n))
+                    }
                 };
                 entries
                     .get::<_, Function<'_>>("message")?
                     .call::<_, Value<'_>>((at, data.as_str(), origin.as_str()))
+            }),
+            Task::WorkerError { worker, error } => self.stepped(&entries, |ctx, entries| {
+                let (message, url, line, column) = match error {
+                    Some(error) => (
+                        rquickjs::String::from_str(ctx.clone(), &error.message)?.into_value(),
+                        error.url.as_str(),
+                        error.line,
+                        error.column,
+                    ),
+                    None => (Value::new_null(ctx.clone()), "", 0, 0),
+                };
+                entries
+                    .get::<_, Function<'_>>("workerError")?
+                    .call::<_, Value<'_>>((*worker, message, url, line, column))
+            }),
+            Task::WorkerEnded(worker) => self.stepped(&entries, |_, entries| {
+                entries
+                    .get::<_, Function<'_>>("workerEnded")?
+                    .call::<_, Value<'_>>((*worker,))
             }),
             Task::Fetched { id, answer } => self.context.with(|ctx| {
                 let called = entries.clone().restore(&ctx).and_then(|entries| {

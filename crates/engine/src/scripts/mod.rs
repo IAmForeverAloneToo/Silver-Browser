@@ -18,6 +18,7 @@ mod fetch;
 mod host;
 #[cfg(test)]
 mod wasm_tests;
+pub(crate) mod workers;
 
 #[cfg(test)]
 pub(crate) use fetch::MAX_SCRIPT_FETCHES;
@@ -827,6 +828,7 @@ impl Scripts {
         }
         self.start_fetches(lent, outputs.fetches, outputs.aborted);
         self.posted.extend(outputs.messages);
+        self.drop_tasks_of(&outputs.terminated);
         self.events.extend(outputs.events);
         if outputs.scroll_to.is_some() {
             self.scroll_to = outputs.scroll_to;
@@ -886,6 +888,7 @@ impl Scripts {
         }
         self.start_fetches(lent, outputs.fetches, outputs.aborted);
         self.posted.extend(outputs.messages);
+        self.drop_tasks_of(&outputs.terminated);
         self.events.extend(outputs.events);
         if outputs.scroll_to.is_some() {
             self.scroll_to = outputs.scroll_to;
@@ -900,6 +903,48 @@ impl Scripts {
             self.stop();
         }
         canceled
+    }
+
+    /// Takes what the document's workers sent (M31): their messages,
+    /// errors and ends queued as tasks from `now`, their console lines
+    /// put in the document's console.
+    pub(crate) fn take_worker_messages(&mut self, now: Duration) {
+        while let Some(message) = self.host.workers.mailbox.try_take() {
+            let workers::WorkerMessage::FromWorker(id, event) = message else {
+                continue;
+            };
+            match self.host.workers.workers.receive(id, event) {
+                workers::Received::Task(task) => self.posted.push_back((now, task)),
+                workers::Received::Console(level, text) => self.push(ConsoleEntry { level, text }),
+                workers::Received::Nothing => {}
+            }
+        }
+    }
+
+    /// The document's live workers, for the tests.
+    #[cfg(test)]
+    pub(crate) fn live_workers(&self) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+        self.host.workers.workers.live()
+    }
+
+    /// Drops the tasks not yet run of the workers `terminated`: their
+    /// objects hear nothing more.
+    fn drop_tasks_of(&mut self, terminated: &[u32]) {
+        if terminated.is_empty() {
+            return;
+        }
+        self.posted.retain(|(_, task)| {
+            let worker = match task {
+                js::Task::Message {
+                    target: js::MessageTarget::Worker(worker),
+                    ..
+                }
+                | js::Task::WorkerError { worker, .. }
+                | js::Task::WorkerEnded(worker) => *worker,
+                _ => return true,
+            };
+            !terminated.contains(&worker)
+        });
     }
 
     /// Gives the document its time origin, unless it has one.
@@ -1004,9 +1049,10 @@ impl Scripts {
     }
 
     /// Whether the back-forward cache may keep the document: not when
-    /// its realm died.
+    /// its realm died, nor while it has workers (M31), which end with it
+    /// as it goes.
     pub(crate) fn keepable(&self) -> bool {
-        !self.stopped
+        !self.stopped && !self.host.workers.workers.any()
     }
 
     /// Collects the realm's garbage, as when the document is kept.
@@ -1036,6 +1082,7 @@ impl Scripts {
         self.realm = None;
         self.host.forget_objects();
         self.host.timers.clear_all();
+        self.host.workers.workers.terminate_all();
         self.stopped = true;
         self.just_stopped = true;
         self.push(ConsoleEntry {
