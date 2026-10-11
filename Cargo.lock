@@ -312,8 +312,10 @@ dependencies = [
 name = "canvas"
 version = "0.0.1"
 dependencies = [
+ "css",
  "images",
  "style",
+ "text",
  "tiny-skia 0.12.0",
 ]
 

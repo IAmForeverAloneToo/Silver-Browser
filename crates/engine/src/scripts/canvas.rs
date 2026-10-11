@@ -15,8 +15,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use canvas::{
-    Canvas, CanvasError, Composite, FillRule, Gradient, GradientKind, LineCap, LineJoin, Matrix,
-    Paint, Path, Pattern, Quality, Rgba, parse_color, serialize_color,
+    Canvas, CanvasError, Caps, Composite, Direction, FillRule, FontBase, Gradient, GradientKind,
+    Kerning, LineCap, LineJoin, Matrix, Paint, Path, Pattern, Quality, Rendering, Rgba, Spacing,
+    Stretch, TextAlign, TextBaseline, parse_color, parse_font, serialize_color,
 };
 use dom::NodeId;
 use js::{Answer, CanvasCall, DomError};
@@ -42,11 +43,31 @@ const PATTERN: u8 = 4;
 
 /// What the host knows of the call that the canvases do not: the
 /// element a context's call is made on and its size by its attributes,
-/// and its computed `color`, which `currentcolor` is.
+/// its computed `color`, which `currentcolor` is, and for a call of
+/// text what a font's relative sizes are of, whether the element's
+/// direction is right to left, and the window's fonts.
 pub(crate) struct Element {
     pub(crate) node: NodeId,
     pub(crate) size: (u32, u32),
     pub(crate) color: Rgba,
+    pub(crate) font_base: FontBase,
+    pub(crate) rtl: bool,
+    pub(crate) fonts: Option<text::FontCollection>,
+}
+
+/// Whether a context's call of `op` reads what [`Element`] holds for
+/// text: the host works it out only then.
+pub(crate) fn needs_text(op: &str) -> bool {
+    matches!(
+        op,
+        "font"
+            | "letterSpacing"
+            | "wordSpacing"
+            | "direction"
+            | "fillText"
+            | "strokeText"
+            | "measureText"
+    )
 }
 
 #[derive(Default)]
@@ -609,6 +630,121 @@ impl Canvases {
                 Answer::Nothing
             }
             "filter" => Answer::String(state.filter.clone()),
+            "font" if set => {
+                if let Some(font) = text.and_then(|text| parse_font(text, &element.font_base)) {
+                    state.set_font(font);
+                }
+                Answer::Nothing
+            }
+            "font" => Answer::String(state.font.serialize()),
+            "textAlign" if set => {
+                if let Some(align) = text.and_then(TextAlign::from_name) {
+                    state.text_align = align;
+                }
+                Answer::Nothing
+            }
+            "textAlign" => Answer::String(state.text_align.name().to_owned()),
+            "textBaseline" if set => {
+                if let Some(baseline) = text.and_then(TextBaseline::from_name) {
+                    state.text_baseline = baseline;
+                }
+                Answer::Nothing
+            }
+            "textBaseline" => Answer::String(state.text_baseline.name().to_owned()),
+            "direction" if set => {
+                if let Some(direction) = text.and_then(Direction::from_name) {
+                    state.direction = direction;
+                }
+                Answer::Nothing
+            }
+            // `inherit` reads back as the element's, as the reference
+            // browser has it.
+            "direction" => Answer::String(
+                if state.direction.is_rtl(element.rtl) {
+                    "rtl"
+                } else {
+                    "ltr"
+                }
+                .to_owned(),
+            ),
+            "letterSpacing" | "wordSpacing" if set => {
+                if let Some(spacing) =
+                    text.and_then(|text| Spacing::parse(text, &element.font_base))
+                {
+                    if call.op == "letterSpacing" {
+                        state.letter_spacing = spacing;
+                    } else {
+                        state.word_spacing = spacing;
+                    }
+                }
+                Answer::Nothing
+            }
+            "letterSpacing" => Answer::String(state.letter_spacing.text.clone()),
+            "wordSpacing" => Answer::String(state.word_spacing.text.clone()),
+            "fontKerning" if set => {
+                if let Some(kerning) = text.and_then(Kerning::from_name) {
+                    state.font_kerning = kerning;
+                }
+                Answer::Nothing
+            }
+            "fontKerning" => Answer::String(state.font_kerning.name().to_owned()),
+            "fontStretch" if set => {
+                if let Some(stretch) = text.and_then(Stretch::from_name) {
+                    state.font_stretch = stretch;
+                }
+                Answer::Nothing
+            }
+            "fontStretch" => Answer::String(state.font_stretch.name().to_owned()),
+            "fontVariantCaps" if set => {
+                if let Some(caps) = text.and_then(Caps::from_name) {
+                    state.font_variant_caps = caps;
+                }
+                Answer::Nothing
+            }
+            "fontVariantCaps" => Answer::String(state.font_variant_caps.name().to_owned()),
+            "textRendering" if set => {
+                if let Some(rendering) = text.and_then(Rendering::from_name) {
+                    state.text_rendering = rendering;
+                }
+                Answer::Nothing
+            }
+            "textRendering" => Answer::String(state.text_rendering.name().to_owned()),
+            "lang" if set => {
+                if let Some(text) = text {
+                    state.lang = text.to_owned();
+                }
+                Answer::Nothing
+            }
+            "lang" => Answer::String(state.lang.clone()),
+            "fillText" | "strokeText" => {
+                if let Some(fonts) = &element.fonts {
+                    let max = (n.len() > 2).then(|| at(n, 2));
+                    let stroke = call.op == "strokeText";
+                    let text = text.unwrap_or_default();
+                    canvas.draw_text(fonts, text, value, at(n, 1), max, stroke, element.rtl);
+                }
+                Answer::Nothing
+            }
+            "measureText" => {
+                let m = match &element.fonts {
+                    Some(fonts) => {
+                        canvas.measure_text(fonts, text.unwrap_or_default(), element.rtl)
+                    }
+                    None => canvas::TextMetrics::default(),
+                };
+                Answer::Numbers(vec![
+                    m.width,
+                    m.actual_left,
+                    m.actual_right,
+                    m.actual_ascent,
+                    m.actual_descent,
+                    m.font_ascent,
+                    m.font_descent,
+                    m.alphabetic,
+                    m.hanging,
+                    m.ideographic,
+                ])
+            }
             "lineWidth" if set => {
                 state.set_line_width(value);
                 Answer::Nothing

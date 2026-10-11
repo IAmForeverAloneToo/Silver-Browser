@@ -15,7 +15,7 @@ use style::animation::Animations;
 use style::selector_matching::{Matcher, PseudoElement, SelectorList};
 use style::{CascadeContext, FontMeasure, Styles, Stylesheets};
 
-use super::canvas::{Canvases, Element, names_context};
+use super::canvas::{Canvases, Element, names_context, needs_text};
 use super::cssom;
 use super::{
     ConsoleEntry, How, Lent, MAX_SCRIPT_NESTING, MAX_TIMERS, Place, Prepared, ReadyState,
@@ -1484,10 +1484,18 @@ impl DocumentHost {
             } else {
                 canvas::Rgba::BLACK
             };
+            let (font_base, rtl, fonts) = if needs_text(&call.op) {
+                self.canvas_text(node)
+            } else {
+                (canvas::FontBase::default(), false, None)
+            };
             Some(Element {
                 node,
                 size: layout::canvas_size(&self.document, node),
                 color,
+                font_base,
+                rtl,
+                fonts,
             })
         } else {
             None
@@ -1495,6 +1503,43 @@ impl DocumentHost {
         let answer = self.canvases.call(call, element);
         self.work += self.canvases.take_work();
         answer
+    }
+
+    /// What a canvas's text reads of its element `node` (M30): the sizes
+    /// a font's relative units are of, the element's computed
+    /// `font-size` and the root's (10 pixels each out of the document,
+    /// as the reference browser has them) and the viewport's; whether
+    /// its direction is right to left; and the window's fonts.
+    fn canvas_text(
+        &mut self,
+        node: NodeId,
+    ) -> (canvas::FontBase, bool, Option<text::FontCollection>) {
+        let viewport = (
+            f64::from(self.window.viewport.0),
+            f64::from(self.window.viewport.1),
+        );
+        let fonts = self.window.fonts.clone();
+        let mut base = canvas::FontBase {
+            viewport,
+            ..canvas::FontBase::default()
+        };
+        let mut rtl = self
+            .document
+            .attr(node, "dir")
+            .is_some_and(|dir| dir.trim().eq_ignore_ascii_case("rtl"));
+        if self.connected(node) {
+            let root = self.document.document_element();
+            if let Some(styles) = self.styles_now() {
+                if let Some(style) = styles.get(node) {
+                    base.em = f64::from(style.font_size_px);
+                    rtl = style.direction == style::computed::Direction::Rtl;
+                }
+                if let Some(style) = root.and_then(|root| styles.get(root)) {
+                    base.rem = f64::from(style.font_size_px);
+                }
+            }
+        }
+        (base, rtl, fonts)
     }
 
     /// A `canvas` element's `width` or `height` was set or removed: its

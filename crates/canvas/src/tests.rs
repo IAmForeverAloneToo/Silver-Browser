@@ -13,7 +13,8 @@ use tiny_skia::FillRule;
 use crate::path::Path;
 use crate::state::{Composite, Gradient, GradientKind, Matrix, Paint, Pattern, Repetition};
 use crate::{
-    Canvas, MAX_CANVAS_SIDE, MAX_CANVAS_STATES, MAX_PATH_POINTS, Rgba, parse_color, serialize_color,
+    Canvas, FontBase, MAX_CANVAS_SIDE, MAX_CANVAS_STATES, MAX_PATH_POINTS, Rgba, Spacing, Stretch,
+    TextAlign, TextBaseline, parse_color, parse_font, serialize_color,
 };
 
 fn px(canvas: &Canvas, x: i64, y: i64) -> [u8; 4] {
@@ -875,4 +876,256 @@ fn a_path_holds_no_more_than_its_limit() {
     path.set_limit(None);
     path.line_to(1.0, 1.0, &m);
     assert_eq!(path.len(), 4);
+}
+
+fn base() -> FontBase {
+    FontBase {
+        em: 10.0,
+        rem: 10.0,
+        viewport: (800.0, 600.0),
+    }
+}
+
+#[test]
+fn fonts_parse_and_serialize_as_the_reference_browser_has_them() {
+    // Each against Chrome's answer after `10px sans-serif`; a font that
+    // does not parse leaves that.
+    let cases = [
+        ("20px serif", "20px serif"),
+        ("bold 12px Arial", "bold 12px Arial"),
+        (
+            "italic small-caps 300 16px/2 Georgia, serif",
+            "italic 300 small-caps 16px Georgia, serif",
+        ),
+        ("1em sans-serif", "10px sans-serif"),
+        ("bogus", "10px sans-serif"),
+        ("12pt monospace", "16px monospace"),
+        ("50% serif", "5px serif"),
+        ("700 10px serif", "bold 10px serif"),
+        ("bolder 10px serif", "bold 10px serif"),
+        ("lighter 10px serif", "100 10px serif"),
+        ("1000 10px serif", "1000 10px serif"),
+        ("1001 10px serif", "10px sans-serif"),
+        ("0 10px serif", "10px sans-serif"),
+        ("oblique 10px serif", "italic 10px serif"),
+        ("oblique 10deg 10px serif", "10px serif"),
+        ("normal normal normal normal 10px serif", "10px serif"),
+        ("normal bold 10px serif", "bold 10px serif"),
+        ("condensed 10px serif", "10px serif"),
+        (
+            "italic bold condensed small-caps 10px serif",
+            "italic bold small-caps 10px serif",
+        ),
+        ("10px 'Times New Roman'", "10px \"Times New Roman\""),
+        ("10px Times New Roman", "10px \"Times New Roman\""),
+        ("10px \"Arial\", sans-serif", "10px Arial, sans-serif"),
+        ("10px serif,", "10px sans-serif"),
+        ("10px", "10px sans-serif"),
+        ("serif", "10px sans-serif"),
+        ("-10px serif", "10px sans-serif"),
+        ("0px serif", "0px serif"),
+        ("small serif", "13px serif"),
+        ("xx-large serif", "32px serif"),
+        ("larger serif", "12px serif"),
+        ("smaller serif", "8.33333px serif"),
+        ("10.5px serif", "10.5px serif"),
+        ("1e1px serif", "10px serif"),
+        ("10px inherit", "10px sans-serif"),
+        ("inherit", "10px sans-serif"),
+        ("10px/normal serif", "10px serif"),
+        ("10px / 2 serif", "10px serif"),
+        ("10PX SERIF", "10px serif"),
+        ("italic italic 10px serif", "10px sans-serif"),
+        ("10px serif, monospace", "10px serif, monospace"),
+        ("2rem serif", "20px serif"),
+        ("1vw serif", "8px serif"),
+        ("10px system-ui", "10px system-ui"),
+        ("10px  serif", "10px serif"),
+        // Chrome takes calc() and the system fonts ("caption" is 16px
+        // Arial there); they are refused here.
+        ("calc(5px + 5px) serif", "10px sans-serif"),
+        ("caption", "10px sans-serif"),
+    ];
+    for (text, want) in cases {
+        let font = parse_font(text, &base()).unwrap_or_default();
+        assert_eq!(font.serialize(), want, "{text}");
+    }
+    let font = parse_font("condensed 12px serif", &base()).unwrap();
+    assert_eq!(font.stretch, Stretch::Condensed);
+    // Relative to a canvas in a 20px element, the root at 16px.
+    let inside = FontBase {
+        em: 20.0,
+        rem: 16.0,
+        ..base()
+    };
+    let sizes: Vec<String> = ["1em serif", "50% serif", "larger serif", "2rem serif"]
+        .iter()
+        .map(|text| parse_font(text, &inside).unwrap().serialize())
+        .collect();
+    assert_eq!(
+        sizes,
+        ["20px serif", "10px serif", "24px serif", "32px serif"]
+    );
+}
+
+#[test]
+fn spacings_are_lengths_alone() {
+    for (text, want) in [
+        ("2px", Some(2.0)),
+        ("0.5em", Some(5.0)),
+        ("1pt", Some(4.0 / 3.0)),
+        ("-3px", Some(-3.0)),
+        ("1rem", Some(10.0)),
+        ("bogus", None),
+        ("2", None),
+        ("10%", None),
+        ("0", None),
+        ("  4px ", None),
+        (" 4px", None),
+        ("4px 2px", None),
+    ] {
+        let got = Spacing::parse(text, &base()).map(|s| s.pixels(10.0));
+        assert_eq!(got, want, "{text}");
+    }
+    assert_eq!(Spacing::parse("0.5em", &base()).unwrap().text, "0.5em");
+}
+
+fn fonts() -> text::FontCollection {
+    text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0).expect("the test font")
+}
+
+/// The inked pixels' bounds: left, top, right, bottom.
+fn inked(canvas: &Canvas) -> Option<(i64, i64, i64, i64)> {
+    let (w, h) = (i64::from(canvas.width()), i64::from(canvas.height()));
+    let data = canvas.get_image_data(0, 0, w, h).unwrap();
+    let mut bounds: Option<(i64, i64, i64, i64)> = None;
+    for y in 0..h {
+        for x in 0..w {
+            if data[((y * w + x) * 4 + 3) as usize] > 128 {
+                bounds = Some(match bounds {
+                    None => (x, y, x, y),
+                    Some((l, t, r, b)) => (l.min(x), t.min(y), r.max(x), b.max(y)),
+                });
+            }
+        }
+    }
+    bounds
+}
+
+#[test]
+fn text_is_drawn_as_its_outlines_where_align_and_baseline_put_it() {
+    let fonts = fonts();
+    let draw = |align: &str, baseline: &str| {
+        let mut canvas = Canvas::new(100, 60, false);
+        canvas
+            .state_mut()
+            .set_font(parse_font("40px serif", &base()).unwrap());
+        canvas.state_mut().text_align = TextAlign::from_name(align).unwrap();
+        canvas.state_mut().text_baseline = TextBaseline::from_name(baseline).unwrap();
+        canvas.draw_text(&fonts, "H", 50.0, 30.0, None, false, false);
+        inked(&canvas).expect("drawn")
+    };
+    let (l, t, r, b) = draw("left", "alphabetic");
+    assert!(
+        (50..56).contains(&l) && (28..=30).contains(&b) && t < 10,
+        "{l} {t} {r} {b}"
+    );
+    // Right aligned ends at the point; centred straddles it.
+    let right = draw("right", "alphabetic");
+    assert!((44..=50).contains(&right.2), "{right:?}");
+    let centre = draw("center", "alphabetic");
+    assert!((centre.0 + centre.2 - 100).abs() <= 2, "{centre:?}");
+    // Hung from its top, the text is below the point; set on its
+    // bottom, above it; the middle between.
+    let top = draw("left", "top");
+    assert!(top.1 > 30, "{top:?}");
+    let bottom = draw("left", "bottom");
+    assert!(bottom.3 < 30, "{bottom:?}");
+    let middle = draw("left", "middle");
+    assert!(middle.1 < 30 && middle.3 > 30 && middle.1 > t, "{middle:?}");
+    // The direction's start is the right.
+    let mut canvas = Canvas::new(100, 60, false);
+    canvas
+        .state_mut()
+        .set_font(parse_font("40px serif", &base()).unwrap());
+    canvas.draw_text(&fonts, "H", 50.0, 30.0, None, false, true);
+    assert!(inked(&canvas).unwrap().2 <= 50);
+}
+
+#[test]
+fn a_maximum_width_squeezes_the_text_and_one_not_positive_draws_nothing() {
+    let fonts = fonts();
+    let draw = |max: Option<f64>, stroke: bool| {
+        let mut canvas = Canvas::new(200, 50, false);
+        canvas
+            .state_mut()
+            .set_font(parse_font("30px serif", &base()).unwrap());
+        canvas.draw_text(&fonts, "WWWW", 5.0, 35.0, max, stroke, false);
+        inked(&canvas)
+    };
+    let (l, _, r, _) = draw(None, false).unwrap();
+    assert!(r - l > 80);
+    let (l, _, r, _) = draw(Some(40.0), false).unwrap();
+    assert!(r - l <= 41 && l >= 5, "{l} {r}");
+    for max in [0.0, -1.0, f64::NAN] {
+        assert_eq!(draw(Some(max), false), None, "{max}");
+    }
+    assert!(draw(None, true).is_some());
+}
+
+#[test]
+fn metrics_are_of_the_glyphs_and_the_font_from_the_point() {
+    let fonts = fonts();
+    let mut canvas = Canvas::new(10, 10, false);
+    canvas
+        .state_mut()
+        .set_font(parse_font("20px serif", &base()).unwrap());
+    let m = canvas.measure_text(&fonts, "Hello", false);
+    assert!((m.width - f64::from(fonts.measure("Hello", 20.0))).abs() < 1e-9);
+    assert!(m.actual_left.abs() < 2.0 && (m.actual_right - m.width).abs() < 2.0);
+    assert!(m.actual_ascent > 10.0 && m.actual_descent.abs() < 1.0);
+    assert_eq!(m.alphabetic, 0.0);
+    assert!((m.ideographic + m.font_descent).abs() < 1e-9);
+    assert!((m.hanging - 0.8 * m.font_ascent).abs() < 1e-9);
+    // From the top: everything moves by the em box's ascent.
+    canvas.state_mut().text_baseline = TextBaseline::Top;
+    let top = canvas.measure_text(&fonts, "Hello", false);
+    let shift = m.actual_ascent - top.actual_ascent;
+    // The em box is the font's ascent and descent made the size.
+    let total = m.font_ascent + m.font_descent;
+    let (em_ascent, em_descent) = (20.0 * m.font_ascent / total, 20.0 * m.font_descent / total);
+    assert!((shift - em_ascent).abs() < 1e-9, "{shift} {em_ascent}");
+    assert!((top.alphabetic + shift).abs() < 1e-9);
+    assert!((top.actual_descent - m.actual_descent - shift).abs() < 1e-9);
+    // From the middle of the em box.
+    canvas.state_mut().text_baseline = TextBaseline::Middle;
+    let middle = canvas.measure_text(&fonts, "Hello", false);
+    assert!((middle.alphabetic + (em_ascent - em_descent) / 2.0).abs() < 1e-9);
+    // Right aligned, the glyphs are left of the point.
+    canvas.state_mut().text_align = TextAlign::Right;
+    let right = canvas.measure_text(&fonts, "Hello", false);
+    assert!((right.actual_left - m.width).abs() < 2.0 && right.actual_right.abs() < 2.0);
+    // Spacing: after each character, and after each space.
+    let mut canvas = Canvas::new(10, 10, false);
+    canvas
+        .state_mut()
+        .set_font(parse_font("20px serif", &base()).unwrap());
+    let plain = canvas.measure_text(&fonts, "ab c", false).width;
+    canvas.state_mut().letter_spacing = Spacing::parse("3px", &base()).unwrap();
+    let lettered = canvas.measure_text(&fonts, "ab c", false).width;
+    canvas.state_mut().letter_spacing = Spacing::default();
+    canvas.state_mut().word_spacing = Spacing::parse("5px", &base()).unwrap();
+    let worded = canvas.measure_text(&fonts, "ab c", false).width;
+    assert!((lettered - plain - 12.0).abs() < 0.5, "{plain} {lettered}");
+    assert!((worded - plain - 5.0).abs() < 0.5, "{plain} {worded}");
+    // White space is spaces.
+    let spaced = canvas.measure_text(&fonts, "a b", false).width;
+    let tabbed = canvas.measure_text(&fonts, "a	b", false).width;
+    assert_eq!(spaced, tabbed);
+    // Nothing inks nothing.
+    let empty = canvas.measure_text(&fonts, "", false);
+    assert_eq!(
+        (empty.width, empty.actual_left, empty.actual_right),
+        (0.0, 0.0, 0.0)
+    );
 }

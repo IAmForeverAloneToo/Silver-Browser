@@ -85,22 +85,20 @@ step("matrixLengths", () => ["translate", "scale", "rotate", "multiply", "fromMa
     check(
         &lines,
         &[
-            // Chrome's but for text (direction, fillText, font, fontKerning,
-            // fontStretch, fontVariantCaps, lang, letterSpacing,
-            // measureText, strokeText, textAlign, textBaseline,
-            // textRendering, wordSpacing) and images (createPattern,
-            // drawImage), steps 4 and 5.
+            // Chrome's but for images (createPattern, drawImage), step 5.
             (
                 "ctxProto",
                 "\"arc arcTo beginPath bezierCurveTo canvas clearRect clip closePath constructor \
                  createConicGradient createImageData createLinearGradient createRadialGradient \
-                 drawFocusIfNeeded ellipse fill fillRect fillStyle filter getContextAttributes \
-                 getImageData getLineDash getTransform globalAlpha globalCompositeOperation \
+                 direction drawFocusIfNeeded ellipse fill fillRect fillStyle fillText filter font \
+                 fontKerning fontStretch fontVariantCaps getContextAttributes getImageData \
+                 getLineDash getTransform globalAlpha globalCompositeOperation \
                  imageSmoothingEnabled imageSmoothingQuality isContextLost isPointInPath \
-                 isPointInStroke lineCap lineDashOffset lineJoin lineTo lineWidth miterLimit moveTo \
-                 putImageData quadraticCurveTo rect reset resetTransform restore rotate roundRect \
-                 save scale setLineDash setTransform shadowBlur shadowColor shadowOffsetX \
-                 shadowOffsetY stroke strokeRect strokeStyle transform translate\"",
+                 isPointInStroke lang letterSpacing lineCap lineDashOffset lineJoin lineTo \
+                 lineWidth measureText miterLimit moveTo putImageData quadraticCurveTo rect reset \
+                 resetTransform restore rotate roundRect save scale setLineDash setTransform \
+                 shadowBlur shadowColor shadowOffsetX shadowOffsetY stroke strokeRect strokeStyle \
+                 strokeText textAlign textBaseline textRendering transform translate wordSpacing\"",
             ),
             (
                 "path2dProto",
@@ -722,4 +720,93 @@ fn a_printed_canvas_shows_its_bitmap() {
         })
         .expect("the canvas's pixels");
     assert_eq!(&canvas.frames[0].pixels[..4], &RED);
+}
+
+#[test]
+fn text_attributes_read_back_as_the_reference_browser_reads_them() {
+    let lines = run(r##"
+step("attrs", () => { const x = fresh().getContext("2d"); const r = [];
+  for (const [p, vs] of [["textAlign", ["left", "right", "center", "start", "end", "bogus", "LEFT"]], ["textBaseline", ["top", "hanging", "middle", "alphabetic", "ideographic", "bottom", "bogus"]],
+    ["direction", ["rtl", "ltr", "inherit", "bogus"]], ["fontKerning", ["normal", "none", "auto", "bogus"]], ["fontStretch", ["condensed", "ultra-expanded", "50%", "bogus", "normal"]],
+    ["fontVariantCaps", ["small-caps", "all-small-caps", "petite-caps", "unicase", "titling-caps", "bogus", "normal"]],
+    ["textRendering", ["optimizeSpeed", "optimizelegibility", "geometricPrecision", "bogus", "auto"]], ["lang", ["en", "", "bogus-lang", "inherit"]]]) {
+    for (const v of vs) { x[p] = v; r.push(x[p]); } } return r.join(" "); });
+step("spacing", () => { const x = fresh().getContext("2d"); const r = []; for (const v of ["2px", "0.5em", "1pt", "-3px", "bogus", "2", "10%", "1rem", "0", "  4px "]) {
+  x.letterSpacing = v; r.push(x.letterSpacing); x.wordSpacing = v; r.push(x.wordSpacing); } return r.join(" "); });
+step("fontResetsStretch", () => { const x = fresh().getContext("2d"); x.fontStretch = "condensed"; x.fontVariantCaps = "small-caps"; x.fontKerning = "none"; x.font = "12px serif";
+  return [x.fontStretch, x.fontVariantCaps, x.fontKerning, x.font]; });
+step("stretchInFont", () => { const x = fresh().getContext("2d"); x.font = "condensed 12px serif"; return [x.font, x.fontStretch, x.fontVariantCaps]; });
+step("fonts", () => { const x = fresh().getContext("2d"); const r = []; for (const f of ["italic small-caps 300 16px/2 Georgia, serif", "1em sans-serif", "bogus", "12pt monospace"]) {
+  x.font = "10px sans-serif"; x.font = f; r.push(x.font); } return r; });
+step("relative", () => { const d = document.createElement("div"); d.style.fontSize = "20px"; document.body.append(d); const c = fresh(); d.append(c);
+  const x = c.getContext("2d"); const r = []; x.font = "1em serif"; r.push(x.font); x.font = "50% serif"; r.push(x.font); x.font = "larger serif"; r.push(x.font);
+  x.font = "2rem serif"; r.push(x.font); return r; });
+step("metricsProto", () => own(TextMetrics.prototype));
+step("defaults", () => { const x = fresh().getContext("2d"); return [x.font, x.textAlign, x.textBaseline, x.direction, x.letterSpacing, x.wordSpacing, x.fontKerning, x.fontStretch, x.fontVariantCaps, x.textRendering, x.lang]; });
+step("textErrors", () => { const x = fresh().getContext("2d"); const r = []; try { x.fillText("a"); } catch (e) { r.push(err(e)); } try { x.measureText(); } catch (e) { r.push(err(e)); }
+  try { x.strokeText("a", 1); } catch (e) { r.push(err(e)); } x.fillText("a", 0, 10, -1); x.fillText("a", 0, 10, NaN); x.fillText("a", 0, 10, 0); r.push("ok"); return r; });
+step("drawn", () => { const x = fresh(100, 40).getContext("2d"); x.font = "30px monospace"; const count = () => { let n = 0;
+  const d = x.getImageData(0, 0, 100, 40).data; for (let i = 3; i < d.length; i += 4) if (d[i] > 0) n++; return n; };
+  x.fillText("WW", 5, 30); const a = count(); x.clearRect(0, 0, 100, 40); x.fillText("WW", 5, 30, 10); const b = count(); x.clearRect(0, 0, 100, 40);
+  x.fillText("WW", 5, 30, -1); const c = count(); x.clearRect(0, 0, 100, 40); x.strokeText("WW", 5, 30); const d = count(); return [a > 100, b < a / 2, c, d > 50]; });
+step("metrics", () => { const x = fresh().getContext("2d"); x.font = "20px monospace"; const m = x.measureText("Hello");
+  return [m.width > 40, m.width === x.measureText("Hello").width, m.alphabeticBaseline, m.ideographicBaseline === -m.fontBoundingBoxDescent, typeof m.emHeightAscent]; });
+step("rtl", () => { const x = fresh().getContext("2d"); x.font = "20px monospace"; x.direction = "rtl"; const m = x.measureText("ab"); return [m.actualBoundingBoxLeft > 10, m.actualBoundingBoxRight < 2, x.textAlign]; });
+step("direction", () => { const c = fresh(); c.dir = "rtl"; const x = c.getContext("2d"); return [x.direction]; });
+"##);
+    check(
+        &lines,
+        &[
+            (
+                "attrs",
+                "\"left right center start end end end top hanging middle alphabetic ideographic \
+                 bottom bottom rtl ltr ltr ltr normal none auto auto condensed ultra-expanded \
+                 ultra-expanded ultra-expanded normal small-caps all-small-caps petite-caps \
+                 unicase titling-caps titling-caps normal optimizeSpeed optimizeSpeed \
+                 geometricPrecision geometricPrecision auto en  bogus-lang inherit\"",
+            ),
+            (
+                "spacing",
+                "\"2px 2px 0.5em 0.5em 1pt 1pt -3px -3px -3px -3px -3px -3px -3px -3px 1rem 1rem \
+                 1rem 1rem 1rem 1rem\"",
+            ),
+            (
+                "fontResetsStretch",
+                "[\"normal\",\"normal\",\"none\",\"12px serif\"]",
+            ),
+            ("stretchInFont", "[\"12px serif\",\"condensed\",\"normal\"]"),
+            (
+                "fonts",
+                "[\"italic 300 small-caps 16px Georgia, serif\",\"10px sans-serif\",\
+                 \"10px sans-serif\",\"16px monospace\"]",
+            ),
+            (
+                "relative",
+                "[\"20px serif\",\"10px serif\",\"24px serif\",\"32px serif\"]",
+            ),
+            (
+                "metricsProto",
+                "\"actualBoundingBoxAscent actualBoundingBoxDescent actualBoundingBoxLeft \
+                 actualBoundingBoxRight alphabeticBaseline constructor fontBoundingBoxAscent \
+                 fontBoundingBoxDescent hangingBaseline ideographicBaseline width\"",
+            ),
+            (
+                "defaults",
+                "[\"10px sans-serif\",\"start\",\"alphabetic\",\"ltr\",\"0px\",\"0px\",\"auto\",\
+                 \"normal\",\"normal\",\"auto\",\"inherit\"]",
+            ),
+            (
+                "textErrors",
+                "[\"threw TypeError: Failed to execute 'fillText' on 'CanvasRenderingContext2D': \
+                 3 arguments required, but only 1 present.\",\"threw TypeError: Failed to execute \
+                 'measureText' on 'CanvasRenderingContext2D': 1 argument required, but only 0 \
+                 present.\",\"threw TypeError: Failed to execute 'strokeText' on \
+                 'CanvasRenderingContext2D': 3 arguments required, but only 2 present.\",\"ok\"]",
+            ),
+            ("drawn", "[true,true,0,true]"),
+            ("metrics", "[true,true,0,true,\"undefined\"]"),
+            ("rtl", "[true,true,\"start\"]"),
+            ("direction", "[\"rtl\"]"),
+        ],
+    );
 }

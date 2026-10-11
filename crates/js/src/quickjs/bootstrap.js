@@ -10832,6 +10832,111 @@
       native.canvas("lineDashOffset", 0, id, unrestrictedSet(value, "lineDashOffset", CTX));
     }
 
+    get font() {
+      return native.canvas("font", 0, targetOf(this).id);
+    }
+
+    set font(value) {
+      native.canvas("font", 0, targetOf(this).id, str(value));
+    }
+
+    get textAlign() {
+      return native.canvas("textAlign", 0, targetOf(this).id);
+    }
+
+    set textAlign(value) {
+      native.canvas("textAlign", 0, targetOf(this).id, str(value));
+    }
+
+    get textBaseline() {
+      return native.canvas("textBaseline", 0, targetOf(this).id);
+    }
+
+    set textBaseline(value) {
+      native.canvas("textBaseline", 0, targetOf(this).id, str(value));
+    }
+
+    get direction() {
+      return native.canvas("direction", 0, targetOf(this).id);
+    }
+
+    set direction(value) {
+      native.canvas("direction", 0, targetOf(this).id, str(value));
+    }
+
+    get letterSpacing() {
+      return native.canvas("letterSpacing", 0, targetOf(this).id);
+    }
+
+    set letterSpacing(value) {
+      native.canvas("letterSpacing", 0, targetOf(this).id, str(value));
+    }
+
+    get wordSpacing() {
+      return native.canvas("wordSpacing", 0, targetOf(this).id);
+    }
+
+    set wordSpacing(value) {
+      native.canvas("wordSpacing", 0, targetOf(this).id, str(value));
+    }
+
+    get fontKerning() {
+      return native.canvas("fontKerning", 0, targetOf(this).id);
+    }
+
+    set fontKerning(value) {
+      native.canvas("fontKerning", 0, targetOf(this).id, str(value));
+    }
+
+    get fontStretch() {
+      return native.canvas("fontStretch", 0, targetOf(this).id);
+    }
+
+    set fontStretch(value) {
+      native.canvas("fontStretch", 0, targetOf(this).id, str(value));
+    }
+
+    get fontVariantCaps() {
+      return native.canvas("fontVariantCaps", 0, targetOf(this).id);
+    }
+
+    set fontVariantCaps(value) {
+      native.canvas("fontVariantCaps", 0, targetOf(this).id, str(value));
+    }
+
+    get textRendering() {
+      return native.canvas("textRendering", 0, targetOf(this).id);
+    }
+
+    set textRendering(value) {
+      native.canvas("textRendering", 0, targetOf(this).id, str(value));
+    }
+
+    get lang() {
+      return native.canvas("lang", 0, targetOf(this).id);
+    }
+
+    set lang(value) {
+      native.canvas("lang", 0, targetOf(this).id, str(value));
+    }
+
+    fillText(text, x, y) {
+      drawText(this, "fillText", arguments);
+    }
+
+    strokeText(text, x, y) {
+      drawText(this, "strokeText", arguments);
+    }
+
+    measureText(text) {
+      const id = targetOf(this).id;
+      need(arguments.length, 1, "measureText", CTX);
+      const m = native.canvas("measureText", 0, id, str(text));
+      const metrics = new TextMetrics(KEY);
+      WeakMapSet(textMetrics, metrics, m);
+      return metrics;
+    }
+
     createImageData(a0) {
       targetOf(this);
       const m = "createImageData";
@@ -11282,6 +11387,49 @@
     return data;
   }
 
+  // fillText and strokeText: the text, the point, and the maximum
+  // width when one is given.
+  function drawText(context, m, a) {
+    const id = targetOf(context).id;
+    need(a.length, 3, m, CTX);
+    const text = str(a[0]);
+    const x = unrestricted(a[1], m, CTX);
+    const y = unrestricted(a[2], m, CTX);
+    if (a.length > 3 && a[3] !== undefined) {
+      native.canvas(m, 0, id, text, x, y, unrestricted(a[3], m, CTX));
+    } else {
+      native.canvas(m, 0, id, text, x, y);
+    }
+  }
+
+  // Each TextMetrics' numbers, in the order the host gives them.
+  const textMetrics = new $WeakMap();
+
+  class TextMetrics {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("TextMetrics");
+      }
+    }
+  }
+  const TEXT_METRICS = ["width", "actualBoundingBoxLeft", "actualBoundingBoxRight",
+    "actualBoundingBoxAscent", "actualBoundingBoxDescent", "fontBoundingBoxAscent",
+    "fontBoundingBoxDescent", "alphabeticBaseline", "hangingBaseline", "ideographicBaseline"];
+  for (let i = 0; i < TEXT_METRICS.length; i++) {
+    defineProperty(TextMetrics.prototype, TEXT_METRICS[i], {
+      get() {
+        const m = WeakMapGet(textMetrics, this);
+        if (m === undefined) {
+          throw illegalInvocation();
+        }
+        return m[i];
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  }
+
+  expose(TextMetrics, "TextMetrics");
   expose(CanvasRenderingContext2D, CTX);
   expose(CanvasGradient, "CanvasGradient");
   expose(CanvasPattern, "CanvasPattern");

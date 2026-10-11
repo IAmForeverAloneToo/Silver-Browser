@@ -9,10 +9,12 @@
 mod blur;
 mod color;
 mod draw;
+mod font;
 mod path;
 mod pixels;
 mod state;
 mod svg;
+mod text;
 
 #[cfg(test)]
 mod tests;
@@ -22,12 +24,14 @@ use std::sync::Arc;
 use tiny_skia::Pixmap;
 
 pub use color::{Rgba, parse_color, serialize_color};
+pub use font::{Font, FontBase, Spacing, Stretch, parse_font};
 pub use path::Path;
 pub use pixels::{blank_image_data, too_large};
 pub use state::{
-    Composite, Dash, Gradient, GradientKind, LineCap, LineJoin, Matrix, Paint, Pattern, Quality,
-    Repetition, State,
+    Caps, Composite, Dash, Direction, Gradient, GradientKind, Kerning, LineCap, LineJoin, Matrix,
+    Paint, Pattern, Quality, Rendering, Repetition, State, TextAlign, TextBaseline,
 };
+pub use text::TextMetrics;
 pub use tiny_skia::FillRule;
 
 /// The most pixels a canvas's bitmap may have.

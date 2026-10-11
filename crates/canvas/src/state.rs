@@ -6,7 +6,110 @@ use std::sync::{Arc, Mutex};
 use tiny_skia::{BlendMode, Mask};
 
 use crate::color::Rgba;
+use crate::font::{Font, Spacing, Stretch};
 use crate::{CanvasError, MAX_DASHES};
+
+/// An enumeration the context names its values of by keywords: each
+/// value and its keyword, and the two ways between them.
+macro_rules! keywords {
+    ($(#[$doc:meta])* $name:ident { $($variant:ident = $text:literal),+ $(,)? }) => {
+        $(#[$doc])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum $name {
+            $($variant),+
+        }
+
+        impl $name {
+            pub fn from_name(name: &str) -> Option<$name> {
+                match name {
+                    $($text => Some($name::$variant),)+
+                    _ => None,
+                }
+            }
+
+            pub fn name(self) -> &'static str {
+                match self {
+                    $($name::$variant => $text),+
+                }
+            }
+        }
+    };
+}
+
+keywords!(
+    /// `textAlign`.
+    TextAlign {
+        Start = "start",
+        End = "end",
+        Left = "left",
+        Right = "right",
+        Center = "center",
+    }
+);
+
+keywords!(
+    /// `textBaseline`.
+    TextBaseline {
+        Top = "top",
+        Hanging = "hanging",
+        Middle = "middle",
+        Alphabetic = "alphabetic",
+        Ideographic = "ideographic",
+        Bottom = "bottom",
+    }
+);
+
+keywords!(
+    /// `direction`: `inherit` the canvas element's.
+    Direction {
+        Ltr = "ltr",
+        Rtl = "rtl",
+        Inherit = "inherit",
+    }
+);
+
+impl Direction {
+    /// Whether text runs right to left, `inherited` the element's.
+    pub fn is_rtl(self, inherited: bool) -> bool {
+        match self {
+            Direction::Ltr => false,
+            Direction::Rtl => true,
+            Direction::Inherit => inherited,
+        }
+    }
+}
+
+keywords!(
+    /// `fontKerning`: read back; the engine's shaping kerns as it does.
+    Kerning {
+        Auto = "auto",
+        Normal = "normal",
+        None = "none",
+    }
+);
+
+keywords!(
+    /// `fontVariantCaps`: read back, not drawn (G22).
+    Caps {
+        Normal = "normal",
+        SmallCaps = "small-caps",
+        AllSmallCaps = "all-small-caps",
+        PetiteCaps = "petite-caps",
+        AllPetiteCaps = "all-petite-caps",
+        Unicase = "unicase",
+        TitlingCaps = "titling-caps",
+    }
+);
+
+keywords!(
+    /// `textRendering`: read back.
+    Rendering {
+        Auto = "auto",
+        OptimizeSpeed = "optimizeSpeed",
+        OptimizeLegibility = "optimizeLegibility",
+        GeometricPrecision = "geometricPrecision",
+    }
+);
 
 /// An affine transform, as the 2D context and `DOMMatrix` write one:
 /// a point (x, y) goes to (a x + c y + e, b x + d y + f).
@@ -453,6 +556,18 @@ pub struct State {
     pub image_smoothing_quality: Quality,
     /// `filter`, as it was set: read back, not drawn (G81).
     pub filter: String,
+    pub font: Font,
+    pub text_align: TextAlign,
+    pub text_baseline: TextBaseline,
+    pub direction: Direction,
+    pub letter_spacing: Spacing,
+    pub word_spacing: Spacing,
+    pub font_kerning: Kerning,
+    pub font_stretch: Stretch,
+    pub font_variant_caps: Caps,
+    pub text_rendering: Rendering,
+    /// `lang`, as it was set: read back.
+    pub lang: String,
     /// The clipping region, shared until a `clip()` changes it.
     pub(crate) clip: Option<Arc<Mask>>,
 }
@@ -477,6 +592,17 @@ impl Default for State {
             image_smoothing: true,
             image_smoothing_quality: Quality::Low,
             filter: "none".to_owned(),
+            font: Font::default(),
+            text_align: TextAlign::Start,
+            text_baseline: TextBaseline::Alphabetic,
+            direction: Direction::Inherit,
+            letter_spacing: Spacing::default(),
+            word_spacing: Spacing::default(),
+            font_kerning: Kerning::Auto,
+            font_stretch: Stretch::Normal,
+            font_variant_caps: Caps::Normal,
+            text_rendering: Rendering::Auto,
+            lang: "inherit".to_owned(),
             clip: None,
         }
     }
@@ -521,6 +647,18 @@ impl State {
         if let Some(y) = y.filter(|v| v.is_finite()) {
             self.shadow_offset_y = y;
         }
+    }
+
+    /// `font`, parsed: its stretch and its small caps given to
+    /// `fontStretch` and `fontVariantCaps`, as setting it does.
+    pub fn set_font(&mut self, font: Font) {
+        self.font_stretch = font.stretch;
+        self.font_variant_caps = if font.small_caps {
+            Caps::SmallCaps
+        } else {
+            Caps::Normal
+        };
+        self.font = font;
     }
 
     /// `lineDashOffset`: a value not finite changes nothing.
