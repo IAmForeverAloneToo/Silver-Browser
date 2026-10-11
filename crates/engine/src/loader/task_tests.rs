@@ -226,3 +226,50 @@ fn a_document_may_set_no_more_than_its_timers() {
         ["100000 RangeError: No more than 100000 timers may be set."]
     );
 }
+
+#[test]
+fn a_message_to_the_window_is_a_task_for_its_target_origin() {
+    let (mut tab, clock, _server) = timed(
+        "<script>\
+         window.onmessage = function (e) { var d = e.data; console.log('message', \
+           d instanceof Array ? Array.from(d[0]) + ' ' + d[0].constructor.name + ' ' + \
+           Object.is(d[1], -0) : JSON.stringify(d), \
+           e.origin === location.origin, e.source === window, e.isTrusted, e.ports.length); \
+           if (!window.timed) { window.timed = setTimeout(function () { console.log('timer'); }); } };\
+         window.postMessage({ a: [1, 2] }, '*');\
+         window.postMessage('own', '/');\
+         window.postMessage('other', 'https://other.test');\
+         window.postMessage('options', { targetOrigin: location.origin + '/any/path' });\
+         window.postMessage('default', {});\
+         var u = new Uint8Array([1, 250]);\
+         window.postMessage([u, -0], '*', [u.buffer]);\
+         console.log('detached', u.byteLength);\
+         try { window.postMessage('x', 'nope'); } catch (e) { console.log(e.name, e.message); }\
+         console.log('script');\
+         </script>",
+    );
+    assert_eq!(
+        lines(&mut tab),
+        [
+            "detached 0",
+            "SyntaxError Failed to execute 'postMessage' on 'Window': \
+             Invalid target origin 'nope' in a call to 'postMessage'.",
+            "script"
+        ]
+    );
+    assert_eq!(tab.engine.next_task_at(), Some(Duration::ZERO));
+    // Each a task of its own, before a timer due when they are (set by
+    // the first), the one for another origin dropped.
+    assert_eq!(
+        after(&mut tab, &clock, 0),
+        [
+            "message {\"a\":[1,2]} true true true 0",
+            "message \"own\" true true true 0",
+            "message \"options\" true true true 0",
+            "message \"default\" true true true 0",
+            "message 1,250 Uint8Array true true true true 0",
+            "timer"
+        ]
+    );
+    assert_eq!(tab.engine.next_task_at(), None);
+}

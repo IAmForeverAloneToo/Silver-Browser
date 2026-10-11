@@ -397,6 +397,9 @@ pub(crate) struct Scripts {
     /// The answers that came, each a task from when it came (the
     /// networking task source), in that order.
     answers: VecDeque<(Duration, u32, Option<js::FetchAnswer>)>,
+    /// The messages posted (M31), each a task from when it was (the
+    /// posted message task source), in that order.
+    posted: VecDeque<(Duration, js::Task)>,
 }
 
 impl Default for Scripts {
@@ -428,6 +431,7 @@ impl Scripts {
             navigation: None,
             fetching: HashMap::new(),
             answers: VecDeque::new(),
+            posted: VecDeque::new(),
         }
     }
 
@@ -822,6 +826,7 @@ impl Scripts {
             self.fetch(lent, wanted);
         }
         self.start_fetches(lent, outputs.fetches, outputs.aborted);
+        self.posted.extend(outputs.messages);
         self.events.extend(outputs.events);
         if outputs.scroll_to.is_some() {
             self.scroll_to = outputs.scroll_to;
@@ -880,6 +885,7 @@ impl Scripts {
             self.fetch(lent, wanted);
         }
         self.start_fetches(lent, outputs.fetches, outputs.aborted);
+        self.posted.extend(outputs.messages);
         self.events.extend(outputs.events);
         if outputs.scroll_to.is_some() {
             self.scroll_to = outputs.scroll_to;
@@ -908,10 +914,11 @@ impl Scripts {
             return None;
         }
         let answer = self.answers.front().map(|(came, ..)| *came);
-        match (self.host.timers.next_due(), answer) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        let posted = self.posted.front().map(|(at, _)| *at);
+        [self.host.timers.next_due(), answer, posted]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     /// Starts the fetches a run asked for, on the document's page, and
@@ -974,6 +981,14 @@ impl Scripts {
     pub(crate) fn take_next_task(&mut self) -> Option<(js::Task, u32)> {
         let timer = self.host.timers.next_due();
         let answer = self.answers.front().map(|(came, ..)| *came);
+        // A message posted no later than the next timer and answer runs
+        // first (M31).
+        if let Some(&(at, _)) = self.posted.front()
+            && timer.is_none_or(|due| at <= due)
+            && answer.is_none_or(|came| at <= came)
+        {
+            return self.posted.pop_front().map(|(_, task)| (task, 0));
+        }
         if answer.is_some_and(|came| timer.is_none_or(|due| came <= due)) {
             let (_, id, answer) = self.answers.pop_front()?;
             return Some((

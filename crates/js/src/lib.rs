@@ -12,6 +12,8 @@ mod pattern;
 mod quickjs;
 
 #[cfg(test)]
+mod clone_tests;
+#[cfg(test)]
 mod dom_tests;
 #[cfg(test)]
 mod event_tests;
@@ -201,6 +203,22 @@ pub enum Task {
         id: u32,
         answer: Option<Box<FetchAnswer>>,
     },
+    /// Delivers a message posted to `target` (M31, HTML section 9): the
+    /// serialized form of its data, which the realm makes again, and
+    /// the origin of the realm that sent it; a `messageerror` when the
+    /// data cannot be made again.
+    Message {
+        target: MessageTarget,
+        data: String,
+        origin: String,
+    },
+}
+
+/// Where a message is delivered (M31).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageTarget {
+    /// The window, by `window.postMessage`.
+    Window,
 }
 
 /// What a script may see of a response (M27.1): `net`'s exposed view,

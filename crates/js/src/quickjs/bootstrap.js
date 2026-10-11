@@ -154,11 +154,21 @@
     }
   }
 
+  // The prototypes of the interfaces the bindings expose: an object
+  // with one in its chain is a platform object, which a structured
+  // clone serializes only if its interface says how (M31).
+  const platformPrototypes = new $WeakSet();
+
+  // The interface of the global object, which the global's own
+  // members name in their errors.
+  const GLOBAL_INTERFACE = "Window";
+
   // Makes an interface look as Web IDL says: its members enumerable,
   // its prototype tagged with its name, its constructor a global
   // property that is writable and configurable but not enumerable.
   function expose(cls, name) {
     const proto = cls.prototype;
+    WeakSetAdd(platformPrototypes, proto);
     const keys = getOwnPropertyNames(proto);
     for (let i = 0; i < keys.length; i++) {
       if (keys[i] === "constructor") {
@@ -693,6 +703,19 @@
           return value;
         }
         throw new $TypeError(where + "Failed to convert value to 'Storage'.");
+      case "MessageEventSource?":
+        if (value === null || value === global || isPort(value)) {
+          return value;
+        }
+        throw new $TypeError(where +
+          "The provided value is not of type '(MessagePort or ServiceWorker or Window)'.");
+      case "sequence<MessagePort>":
+        return sequence(value, "", m[3], (item) => {
+          if (!isPort(item)) {
+            throw new $TypeError(where + "Failed to convert value to 'MessagePort'.");
+          }
+          return item;
+        });
       default:
         return value;
     }
@@ -11973,6 +11996,836 @@
     [MapGet(interfaces, "canvas").prototype],
   );
 
+  // ---- Structured data (HTML section 2.7, M31) ------------------------------
+  //
+  // StructuredSerializeWithTransfer makes a record of a value, and
+  // StructuredDeserializeWithTransfer the value again from it, in this
+  // realm (structuredClone, a message to the window itself) or in
+  // another, the record then crossing as a string (`wire`). A record is
+  // [root, entries]: the root a value's code, and an entry for each
+  // object met, which codes name by index, so that cycles and shared
+  // buffers come out as they went in. A code is the value itself for a
+  // string, a boolean, null and a finite number but -0; [0] for
+  // undefined, [1, text] for NaN, the infinities and -0, [2, digits]
+  // for a BigInt, [3, index] for an object.
+  const BooleanValueOf = uncurry(Boolean.prototype.valueOf);
+  const NumberValueOf = uncurry(Number.prototype.valueOf);
+  const StringValueOf = uncurry(String.prototype.valueOf);
+  const BigIntValueOf = uncurry(BigInt.prototype.valueOf);
+  const BigIntToString = uncurry(BigInt.prototype.toString);
+  const $BigInt = BigInt;
+  const $Boolean = Boolean;
+  const $Object = Object;
+  const BlobType = uncurry(getOwnPropertyDescriptor(Blob.prototype, "type").get);
+  const FileName = uncurry(getOwnPropertyDescriptor(File.prototype, "name").get);
+  const FileLastModified = uncurry(getOwnPropertyDescriptor(File.prototype, "lastModified").get);
+  const $Date = Date;
+  const DateGetTime = uncurry(Date.prototype.getTime);
+  const RegExpPrototype = RegExp.prototype;
+  const $RegExp = RegExp;
+  const RegExpSource = uncurry(getOwnPropertyDescriptor(RegExp.prototype, "source").get);
+  const RegExpFlags = uncurry(getOwnPropertyDescriptor(RegExp.prototype, "flags").get);
+  const ArrayBufferByteLength = uncurry(
+    getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength").get);
+  const detachedGetter = getOwnPropertyDescriptor(ArrayBuffer.prototype, "detached");
+  const ArrayBufferDetached = detachedGetter === undefined ? undefined : uncurry(detachedGetter.get);
+  const ArrayBufferIsView = ArrayBuffer.isView;
+  const TypedArrayCount = uncurry(getOwnPropertyDescriptor(TYPED_ARRAY, "length").get);
+  const $DataView = DataView;
+  const DataViewBuffer = uncurry(getOwnPropertyDescriptor(DataView.prototype, "buffer").get);
+  const DataViewOffset = uncurry(getOwnPropertyDescriptor(DataView.prototype, "byteOffset").get);
+  const DataViewLength = uncurry(getOwnPropertyDescriptor(DataView.prototype, "byteLength").get);
+  const MapSize = uncurry(getOwnPropertyDescriptor(Map.prototype, "size").get);
+  const SetSize = uncurry(getOwnPropertyDescriptor(Set.prototype, "size").get);
+  const SetForEach = uncurry(Set.prototype.forEach);
+  const SetAdd = uncurry(Set.prototype.add);
+  const $Set = Set;
+  const WeakMapHasOf = uncurry(WeakMap.prototype.has);
+  const WeakSetHasOf = uncurry(WeakSet.prototype.has);
+  const WeakRefDerefOf = uncurry(WeakRef.prototype.deref);
+  const FunctionToString = uncurry(Function.prototype.toString);
+  const SymbolToString = uncurry(Symbol.prototype.toString);
+  const ArrayIsArray = Array.isArray;
+  const NumberIsNaN = Number.isNaN;
+  const FromBase64 = Uint8Array.fromBase64;
+  const domExceptionName = getOwnPropertyDescriptor($DOMException.prototype, "name");
+  const DOMExceptionName = domExceptionName !== undefined && domExceptionName.get !== undefined
+    ? uncurry(domExceptionName.get) : undefined;
+  // The engine keeps an error's stack in an accessor of Error.prototype
+  // where the reference browser keeps it on the error itself.
+  const errorStack = getOwnPropertyDescriptor(Error.prototype, "stack");
+  const ErrorStack = errorStack !== undefined && errorStack.get !== undefined
+    ? uncurry(errorStack.get) : undefined;
+  // The typed arrays, by the names their tag gives.
+  const TYPED_ARRAYS = new $Map();
+  {
+    const kinds = [Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array,
+      Int32Array, Uint32Array, Float32Array, Float64Array, BigInt64Array, BigUint64Array];
+    if (typeof Float16Array === "function") {
+      ArrayPush(kinds, Float16Array);
+    }
+    for (let i = 0; i < kinds.length; i++) {
+      MapSet(TYPED_ARRAYS, kinds[i].name, kinds[i]);
+    }
+  }
+  // The errors whose names a clone keeps (HTML section 2.7.3).
+  const ERROR_TYPES = new $Map([["Error", $Error], ["EvalError", EvalError],
+    ["RangeError", $RangeError], ["ReferenceError", ReferenceError],
+    ["SyntaxError", SyntaxError], ["TypeError", $TypeError], ["URIError", URIError]]);
+
+  // The kinds of entry.
+  const OBJECT = 0;
+  const ARRAY = 1;
+  const BOOLEAN_OBJECT = 2;
+  const NUMBER_OBJECT = 3;
+  const STRING_OBJECT = 4;
+  const BIGINT_OBJECT = 5;
+  const DATE = 6;
+  const REGEXP = 7;
+  const BUFFER = 8;
+  const VIEW = 9;
+  const MAP = 10;
+  const SET = 11;
+  const ERROR_ENTRY = 12;
+  const DOM_EXCEPTION = 13;
+  const BLOB = 14;
+  const FILE = 15;
+  const IMAGE_DATA = 16;
+  const IMAGE_BITMAP = 17;
+  const MATRIX = 18;
+  const POINT = 19;
+
+  // What `native.cloneKind` says of an object: what no script can tell.
+  const KIND_FUNCTION = 1;
+  const KIND_PROXY = 2;
+  const KIND_PROMISE = 3;
+  const KIND_ERROR = 4;
+
+  function dataCloneError(where, what) {
+    return new $DOMException(where + what, "DataCloneError");
+  }
+
+  // The name an object's class goes by in the reference browser's words.
+  function className(value) {
+    let proto = ReflectGetPrototypeOf(value);
+    while (proto !== null) {
+      const ctor = ReflectGetOwnPropertyDescriptor(proto, "constructor");
+      if (ctor !== undefined && typeof ctor.value === "function" && typeof ctor.value.name === "string" &&
+        ctor.value.name !== "") {
+        return ctor.value.name;
+      }
+      proto = ReflectGetPrototypeOf(proto);
+    }
+    return "Object";
+  }
+
+  // The interface of a platform object, the most derived the bindings
+  // exposed, or undefined for an object that is none.
+  function platformInterface(value) {
+    if (isNode(value)) {
+      return className(value);
+    }
+    let proto = ReflectGetPrototypeOf(value);
+    while (proto !== null) {
+      if (WeakSetHas(platformPrototypes, proto)) {
+        const tag = ReflectGetOwnPropertyDescriptor(proto, toStringTag);
+        return tag !== undefined && typeof tag.value === "string" ? tag.value : className(value);
+      }
+      proto = ReflectGetPrototypeOf(proto);
+    }
+    return undefined;
+  }
+
+  // Whether `value` passes a brand check that throws for what fails it.
+  function branded(check, value) {
+    try {
+      check(value);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function numberCode(n) {
+    if (n !== n) {
+      return [1, "NaN"];
+    }
+    if (n === Infinity) {
+      return [1, "Infinity"];
+    }
+    if (n === -Infinity) {
+      return [1, "-Infinity"];
+    }
+    if (n === 0 && 1 / n < 0) {
+      return [1, "-0"];
+    }
+    return n;
+  }
+
+  function codeNumber(code) {
+    if (typeof code === "number") {
+      return code;
+    }
+    switch (code[1]) {
+      case "NaN":
+        return NaN;
+      case "Infinity":
+        return Infinity;
+      case "-Infinity":
+        return -Infinity;
+      default:
+        return -0;
+    }
+  }
+
+  // StructuredSerializeWithTransfer: `value` serialized with the
+  // objects of `transfer` (already a list) transferred, its refusals
+  // worded after `where`. The buffers transferred are detached once the
+  // value is serialized, as the standard says.
+  function serialize(value, transfer, where, source) {
+    const memory = new $Map();
+    const entries = [];
+    const buffers = [];
+    for (let i = 0; i < transfer.length; i++) {
+      const t = transfer[i];
+      if (MapHas(memory, t)) {
+        const what = branded(ArrayBufferByteLength, t) ? "ArrayBuffer" : "Message port";
+        throw dataCloneError(where, what + " at index " + i + " is a duplicate of an earlier " +
+          (what === "ArrayBuffer" ? "ArrayBuffer." : "port."));
+      }
+      if (branded(ArrayBufferByteLength, t)) {
+        if (isDetached(t)) {
+          throw dataCloneError(where, "ArrayBuffer at index " + i + " is already detached.");
+        }
+        MapSet(memory, t, entries.length);
+        ArrayPush(entries, null);
+        ArrayPush(buffers, t);
+        continue;
+      }
+      const placed = transferEntry(t, i, where, source, entries.length);
+      if (placed === undefined) {
+        throw dataCloneError(where, "Value at index " + i + " does not have a transferable type.");
+      }
+      MapSet(memory, t, entries.length);
+      ArrayPush(entries, placed);
+    }
+    const root = codeOf(value, memory, entries, where);
+    // The transferred buffers' bytes, then the buffers detached.
+    for (let i = 0; i < buffers.length; i++) {
+      const at = MapGet(memory, buffers[i]);
+      entries[at] = [BUFFER, TypedArraySlice(new $Uint8Array(buffers[i])), null];
+    }
+    for (let i = 0; i < buffers.length; i++) {
+      native.wasmDetach(buffers[i]);
+    }
+    transferred(entries);
+    return [root, entries];
+  }
+
+  // A transfer's entry for what is not a buffer, or undefined for what
+  // cannot be transferred: ports (M31.5) and offscreen canvases (M31.4)
+  // define it, the steps that make them.
+  let transferEntry = function () {
+    return undefined;
+  };
+  // What a transfer does once the record is made: the steps that
+  // define transferable objects hook in.
+  let transferred = function () {};
+
+  function isDetached(buffer) {
+    if (ArrayBufferDetached !== undefined) {
+      return ArrayBufferDetached(buffer);
+    }
+    return false;
+  }
+
+  // The code of `value`, its object entered in `entries` if it is not
+  // there yet.
+  function codeOf(value, memory, entries, where) {
+    switch (typeof value) {
+      case "undefined":
+        return [0];
+      case "boolean":
+      case "string":
+        return value;
+      case "number":
+        return numberCode(value);
+      case "bigint":
+        return [2, BigIntToString(value)];
+      case "symbol":
+        throw dataCloneError(where, SymbolToString(value) + " could not be cloned.");
+      default:
+        break;
+    }
+    if (value === null) {
+      return null;
+    }
+    const known = MapGet(memory, value);
+    if (known !== undefined) {
+      return [3, known];
+    }
+    const at = entries.length;
+    MapSet(memory, value, at);
+    ArrayPush(entries, null);
+    entries[at] = entryOf(value, memory, entries, where);
+    return [3, at];
+  }
+
+  // The entry of object `value`, its own codes made as the standard's
+  // steps reach them.
+  function entryOf(value, memory, entries, where) {
+    if (typeof value === "function") {
+      throw dataCloneError(where, FunctionToString(value) + " could not be cloned.");
+    }
+    if (value === global) {
+      throw dataCloneError(where, "#<" + GLOBAL_INTERFACE + "> could not be cloned.");
+    }
+    const kind = native.cloneKind(value);
+    if (kind === KIND_PROXY) {
+      throw dataCloneError(where, "#<Object> could not be cloned.");
+    }
+    if (kind === KIND_PROMISE) {
+      throw dataCloneError(where, "#<" + className(value) + "> could not be cloned.");
+    }
+    if (branded(BooleanValueOf, value)) {
+      return [BOOLEAN_OBJECT, BooleanValueOf(value)];
+    }
+    if (branded(NumberValueOf, value)) {
+      return [NUMBER_OBJECT, numberCode(NumberValueOf(value))];
+    }
+    if (branded(BigIntValueOf, value)) {
+      return [BIGINT_OBJECT, BigIntToString(BigIntValueOf(value))];
+    }
+    if (branded(StringValueOf, value)) {
+      return [STRING_OBJECT, StringValueOf(value)];
+    }
+    if (branded(DateGetTime, value)) {
+      return [DATE, numberCode(DateGetTime(value))];
+    }
+    if (value !== RegExpPrototype && branded(RegExpSource, value)) {
+      return [REGEXP, RegExpSource(value), RegExpFlags(value)];
+    }
+    if (branded(ArrayBufferByteLength, value)) {
+      if (isDetached(value)) {
+        throw dataCloneError(where, "An ArrayBuffer is detached and could not be cloned.");
+      }
+      return [BUFFER, TypedArraySlice(new $Uint8Array(value)), null];
+    }
+    if (ArrayBufferIsView(value)) {
+      const tag = TypedArrayTag(value);
+      if (tag !== undefined) {
+        const buffer = codeOf(TypedArrayBuffer(value), memory, entries, where);
+        return [VIEW, tag, buffer[1], TypedArrayOffset(value), TypedArrayCount(value)];
+      }
+      const buffer = codeOf(DataViewBuffer(value), memory, entries, where);
+      return [VIEW, "DataView", buffer[1], DataViewOffset(value), DataViewLength(value)];
+    }
+    if (branded(MapSize, value)) {
+      const pairs = [];
+      MapForEach(value, (v, k) => {
+        ArrayPush(pairs, k, v);
+      });
+      const codes = [];
+      for (let i = 0; i < pairs.length; i++) {
+        ArrayPush(codes, codeOf(pairs[i], memory, entries, where));
+      }
+      return [MAP, codes];
+    }
+    if (branded(SetSize, value)) {
+      const items = [];
+      SetForEach(value, (v) => {
+        ArrayPush(items, v);
+      });
+      const codes = [];
+      for (let i = 0; i < items.length; i++) {
+        ArrayPush(codes, codeOf(items[i], memory, entries, where));
+      }
+      return [SET, codes];
+    }
+    if (DOMExceptionName !== undefined && branded(DOMExceptionName, value)) {
+      return [DOM_EXCEPTION, DOMExceptionName(value), value.message];
+    }
+    if (kind === KIND_ERROR) {
+      return errorEntry(value, memory, entries, where);
+    }
+    if (ArrayIsArray(value)) {
+      const length = value.length;
+      return [ARRAY, length, ownCodes(value, memory, entries, where)];
+    }
+    const platform = platformInterface(value);
+    if (platform !== undefined) {
+      return platformEntry(value, platform, where);
+    }
+    if (branded((v) => WeakMapHasOf(v, value), value) || branded((v) => WeakSetHasOf(v, value), value) ||
+      branded(WeakRefDerefOf, value)) {
+      throw dataCloneError(where, "#<" + className(value) + "> could not be cloned.");
+    }
+    return [OBJECT, ownCodes(value, memory, entries, where)];
+  }
+
+  // The codes of an object's own enumerable string-keyed properties,
+  // name then value, read in the order of its keys.
+  function ownCodes(value, memory, entries, where) {
+    const keys = ReflectOwnKeys(value);
+    const codes = [];
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      if (typeof key !== "string") {
+        continue;
+      }
+      const desc = ReflectGetOwnPropertyDescriptor(value, key);
+      if (desc === undefined || !desc.enumerable) {
+        continue;
+      }
+      const v = value[key];
+      ArrayPush(codes, key, codeOf(v, memory, entries, where));
+    }
+    return codes;
+  }
+
+  // An error's entry: its name if the standard keeps it, its own
+  // message, its own cause, and its stack, which the reference browser
+  // keeps too.
+  function errorEntry(value, memory, entries, where) {
+    let name = value.name;
+    name = typeof name === "string" && MapHas(ERROR_TYPES, name) ? name : "Error";
+    const messageDesc = ReflectGetOwnPropertyDescriptor(value, "message");
+    const message = messageDesc !== undefined && "value" in messageDesc ? str(messageDesc.value) : [0];
+    const causeDesc = ReflectGetOwnPropertyDescriptor(value, "cause");
+    const hasCause = causeDesc !== undefined && "value" in causeDesc;
+    const cause = hasCause ? codeOf(causeDesc.value, memory, entries, where) : null;
+    const stackDesc = ReflectGetOwnPropertyDescriptor(value, "stack");
+    let stack = stackDesc !== undefined && typeof stackDesc.value === "string" ? stackDesc.value : null;
+    if (stackDesc === undefined && ErrorStack !== undefined) {
+      const own = ErrorStack(value);
+      stack = typeof own === "string" ? own : null;
+    }
+    return [ERROR_ENTRY, name, message, hasCause, cause, stack];
+  }
+
+  // The entry of a platform object: a serializable one's state, or the
+  // refusal the reference browser words.
+  function platformEntry(value, iface, where) {
+    if (isBlob(value)) {
+      if (isFile(value)) {
+        return [FILE, TypedArraySlice(blobBytes(value)), BlobType(value), FileName(value),
+          FileLastModified(value)];
+      }
+      return [BLOB, TypedArraySlice(blobBytes(value)), BlobType(value)];
+    }
+    const data = WeakMapGet(imageDatas, value);
+    if (data !== undefined) {
+      return [IMAGE_DATA, data.width, data.height,
+        TypedArraySlice(new $Uint8Array(TypedArrayBuffer(data.data), TypedArrayOffset(data.data),
+          TypedArrayLength(data.data))), data.colorSpace];
+    }
+    const m = WeakMapGet(matrices, value);
+    if (m !== undefined) {
+      return [MATRIX, iface, m.is2D, ArraySlice(m.s, 0)];
+    }
+    const p = WeakMapGet(points, value);
+    if (p !== undefined) {
+      return [POINT, iface, ArraySlice(p, 0)];
+    }
+    const t = WeakMapGet(canvasTargets, value);
+    if (t !== undefined && t.kind === 5) {
+      if (t.closed) {
+        throw dataCloneError(where, "An ImageBitmap is detached and could not be cloned.");
+      }
+      return [IMAGE_BITMAP, bitmapCopy(t)];
+    }
+    throw dataCloneError(where, iface + " object could not be cloned.");
+  }
+
+  // A copy of an ImageBitmap's pixels for a clone, kept as the host's
+  // [number, width, height]: here a new bitmap of this realm's.
+  let bitmapCopy = function (t) {
+    return native.canvas("imageBitmap", 4, t.id, 0, 0, 0, 0, 0, -1, -1, 0, 0, 0);
+  };
+
+  // StructuredDeserializeWithTransfer: the value of a record.
+  function deserialize(record) {
+    const entries = record[1];
+    const made = [];
+    made.length = entries.length;
+    return valueOf(record[0], entries, made);
+  }
+
+  function valueOf(code, entries, made) {
+    if (typeof code !== "object" || code === null) {
+      return code;
+    }
+    switch (code[0]) {
+      case 0:
+        return undefined;
+      case 1:
+        return codeNumber(code);
+      case 2:
+        return $BigInt(code[1]);
+      default:
+        return objectAt(code[1], entries, made);
+    }
+  }
+
+  // The object of entry `at`, made once: its shell first, then what it
+  // holds, so that what refers back to it finds it.
+  function objectAt(at, entries, made) {
+    if (made[at] !== undefined) {
+      return made[at];
+    }
+    const e = entries[at];
+    let object;
+    switch (e[0]) {
+      case OBJECT:
+        object = {};
+        made[at] = object;
+        fillOwn(object, e[1], entries, made);
+        return object;
+      case ARRAY:
+        object = [];
+        object.length = e[1];
+        made[at] = object;
+        fillOwn(object, e[2], entries, made);
+        return object;
+      case BOOLEAN_OBJECT:
+        object = new $Boolean(e[1]);
+        break;
+      case NUMBER_OBJECT:
+        object = new $Number(codeNumber(e[1]));
+        break;
+      case STRING_OBJECT:
+        object = new $String(e[1]);
+        break;
+      case BIGINT_OBJECT:
+        object = $Object($BigInt(e[1]));
+        break;
+      case DATE:
+        object = new $Date(codeNumber(e[1]));
+        break;
+      case REGEXP:
+        object = new $RegExp(e[1], e[2]);
+        break;
+      case BUFFER: {
+        object = new $ArrayBuffer(TypedArrayLength(e[1]));
+        TypedArraySet(new $Uint8Array(object), e[1]);
+        break;
+      }
+      case VIEW: {
+        const buffer = objectAt(e[2], entries, made);
+        if (e[1] === "DataView") {
+          object = new $DataView(buffer, e[3], e[4]);
+        } else {
+          const cls = MapGet(TYPED_ARRAYS, e[1]);
+          object = new cls(buffer, e[3], e[4]);
+        }
+        break;
+      }
+      case MAP: {
+        object = new $Map();
+        made[at] = object;
+        const codes = e[1];
+        for (let i = 0; i < codes.length; i += 2) {
+          MapSet(object, valueOf(codes[i], entries, made), valueOf(codes[i + 1], entries, made));
+        }
+        return object;
+      }
+      case SET: {
+        object = new $Set();
+        made[at] = object;
+        const codes = e[1];
+        for (let i = 0; i < codes.length; i++) {
+          SetAdd(object, valueOf(codes[i], entries, made));
+        }
+        return object;
+      }
+      case ERROR_ENTRY: {
+        const cls = MapGet(ERROR_TYPES, e[1]);
+        object = new cls();
+        made[at] = object;
+        if (typeof e[2] === "string") {
+          defineProperty(object, "message", { value: e[2], writable: true, configurable: true, enumerable: false });
+        }
+        if (e[3]) {
+          defineProperty(object, "cause", {
+            value: valueOf(e[4], entries, made), writable: true, configurable: true, enumerable: false,
+          });
+        }
+        if (typeof e[5] === "string") {
+          defineProperty(object, "stack", { value: e[5], writable: true, configurable: true, enumerable: false });
+        }
+        return object;
+      }
+      case DOM_EXCEPTION:
+        // Made again without the stack its construction gave it, as
+        // the reference browser makes it.
+        object = new $DOMException(e[2], e[1]);
+        ReflectDeleteProperty(object, "stack");
+        break;
+      case BLOB:
+        object = new Blob(KEY, { bytes: e[1], type: e[2] });
+        break;
+      case FILE:
+        object = new File(KEY, { bytes: e[1], type: e[2], name: e[3], lastModified: e[4] });
+        break;
+      case IMAGE_DATA: {
+        object = new ImageData(KEY);
+        const bytes = new $Uint8ClampedArray(TypedArrayLength(e[3]));
+        TypedArraySet(bytes, e[3]);
+        WeakMapSet(imageDatas, object, { data: bytes, width: e[1], height: e[2], colorSpace: e[4] });
+        break;
+      }
+      case IMAGE_BITMAP:
+        object = bitmapMade(e[1]);
+        break;
+      case MATRIX:
+        object = makeMatrix(e[1] === "DOMMatrix" ? DOMMatrix : DOMMatrixReadOnly,
+          { s: ArraySlice(e[3], 0), is2D: e[2] });
+        break;
+      case POINT:
+        object = e[1] === "DOMPoint" ? new DOMPoint(e[2][0], e[2][1], e[2][2], e[2][3])
+          : new DOMPointReadOnly(e[2][0], e[2][1], e[2][2], e[2][3]);
+        break;
+      default:
+        object = transferMade(e);
+        break;
+    }
+    made[at] = object;
+    return object;
+  }
+
+  // The ImageBitmap of a clone's copy; the transferred objects' made by
+  // the steps that define them.
+  let bitmapMade = function (made) {
+    return makeBitmap(made);
+  };
+  let transferMade = function () {
+    throw new $TypeError("The message holds what this realm cannot make.");
+  };
+
+  function fillOwn(object, codes, entries, made) {
+    for (let i = 0; i < codes.length; i += 2) {
+      defineProperty(object, codes[i], {
+        value: valueOf(codes[i + 1], entries, made),
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    }
+  }
+
+  // The kinds of entry whose bytes cross as base64, and where they are.
+  const BYTES_AT = new $Map([[BUFFER, 1], [BLOB, 1], [FILE, 1], [IMAGE_DATA, 3]]);
+
+  // A record as the string another realm takes: its JSON, bytes in
+  // base64.
+  function wire(record) {
+    const entries = record[1];
+    const out = [];
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      const at = MapGet(BYTES_AT, e[0]);
+      if (at === undefined) {
+        ArrayPush(out, e);
+        continue;
+      }
+      const copy = ArraySlice(e, 0);
+      copy[at] = ToBase64(e[at]);
+      ArrayPush(out, copy);
+    }
+    return JSONStringify([record[0], out]);
+  }
+
+  // The record of a string `wire` made.
+  function unwire(text) {
+    const record = JSONParse(text);
+    const entries = record[1];
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      const at = MapGet(BYTES_AT, e[0]);
+      if (at !== undefined) {
+        e[at] = FromBase64(e[at]);
+      }
+    }
+    return record;
+  }
+
+  // The transfer list of `options`' `transfer` member (a dictionary's,
+  // StructuredSerializeOptions and the post messages' options), or a
+  // `transfer` argument.
+  function transferList(value, method, iface, dictionaryName) {
+    const where = prefix(method, iface);
+    if (value === undefined) {
+      return [];
+    }
+    return sequence(value, method, iface, (item) => {
+      if ((typeof item !== "object" || item === null) && typeof item !== "function") {
+        throw new $TypeError(where + (dictionaryName === undefined ? ""
+          : "Failed to read the 'transfer' property from '" + dictionaryName + "': ") +
+          "Failed to convert value to 'object'.");
+      }
+      return item;
+    });
+  }
+
+  function serializeOptions(options, method, iface, dictionaryName) {
+    if (options === undefined || options === null) {
+      return [];
+    }
+    if (typeof options !== "object" && typeof options !== "function") {
+      throw new $TypeError(prefix(method, iface) + "The provided value is not of type '" +
+        dictionaryName + "'.");
+    }
+    return transferList(options.transfer, method, iface, dictionaryName);
+  }
+
+  // structuredClone() (HTML section 2.7.6).
+  defineProperty(global, "structuredClone", {
+    value: function structuredClone(value) {
+      const where = prefix("structuredClone", GLOBAL_INTERFACE);
+      if (arguments.length < 1) {
+        throw new $TypeError(where + "1 argument required, but only 0 present.");
+      }
+      const transfer = serializeOptions(arguments[1], "structuredClone", GLOBAL_INTERFACE,
+        "StructuredSerializeOptions");
+      return deserialize(serialize(value, transfer, where, null));
+    },
+    writable: true,
+    configurable: true,
+    enumerable: true,
+  });
+
+  // MessageEvent (HTML section 9.3, M31): a message's data, its origin,
+  // its last event ID, its source and the ports sent with it, frozen.
+  const MESSAGE = 65536;
+  const MESSAGE_INIT = members(EVENT_INIT, [
+    ["data", "any", null],
+    ["lastEventId", "DOMString", ""],
+    ["origin", "USVString", ""],
+    ["ports", "sequence<MessagePort>", []],
+    ["source", "MessageEventSource?", null],
+  ], "MessageEventInit");
+
+  class MessageEvent extends Event {
+    constructor(type, eventInitDict = undefined) {
+      const args = eventArgs(arguments.length, type, eventInitDict, MESSAGE_INIT, "MessageEvent");
+      super(args[0], args[1]);
+      const s = eventState(this);
+      s.kinds |= MESSAGE;
+      s.fields.ports = ObjectFreeze(ArraySlice(s.fields.ports, 0));
+    }
+
+    get data() {
+      return fieldsOf(this, MESSAGE).data;
+    }
+
+    get origin() {
+      return fieldsOf(this, MESSAGE).origin;
+    }
+
+    get lastEventId() {
+      return fieldsOf(this, MESSAGE).lastEventId;
+    }
+
+    get source() {
+      return fieldsOf(this, MESSAGE).source;
+    }
+
+    get ports() {
+      return fieldsOf(this, MESSAGE).ports;
+    }
+
+    initMessageEvent(type, bubbles = false, cancelable = false, data = null, origin = "",
+      lastEventId = "", source = null, ports = []) {
+      const s = eventOf(this, MESSAGE);
+      if (arguments.length < 1) {
+        throw new $TypeError(prefix("initMessageEvent", "MessageEvent") +
+          "1 argument required, but only 0 present.");
+      }
+      if (s.dispatching) {
+        return;
+      }
+      const list = MESSAGE_INIT;
+      const fields = s.fields;
+      fields.data = data;
+      fields.origin = str(origin);
+      fields.lastEventId = str(lastEventId);
+      fields.source = member(source, list[list.length - 1], "MessageEvent");
+      fields.ports = ObjectFreeze(member(ports, list[list.length - 2], "MessageEvent"));
+      initialize(s, str(type), !!bubbles, !!cancelable);
+    }
+  }
+  ArrayPush(EVENT_INTERFACES, ["MessageEvent", MessageEvent, MESSAGE_INIT]);
+  expose(MessageEvent, "MessageEvent");
+  MapSet(eventInterfaces, "MessageEvent", EVENT_INTERFACES[EVENT_INTERFACES.length - 1]);
+
+  // Whether `value` is a MessagePort, which M31.5's ports define.
+  let isPort = function () {
+    return false;
+  };
+
+  // The message event a message's arrival fires at `target`: its data
+  // made again, or, when it cannot be, a `messageerror` (HTML section
+  // 9.5.3); `origin` the sender's, `source` the window for a message
+  // to the window.
+  function messageEvent(target, text, origin, ports) {
+    let data = null;
+    let type = "message";
+    try {
+      data = deserialize(unwire(text));
+    } catch {
+      type = "messageerror";
+    }
+    const event = new MessageEvent(type, made(MESSAGE_INIT, [
+      "data", data,
+      "origin", origin,
+      "source", target === global ? global : null,
+      "ports", ports,
+    ]));
+    eventState(event).trusted = true;
+    return dispatching(target, event);
+  }
+
+  // window.postMessage (HTML section 9.4.3, M31): to this window, the
+  // only one there is until frames (M33.2). `targetOrigin` "*" for any,
+  // "/" for the window's own, else a URL whose origin it must be; the
+  // message dropped when it is not.
+  defineProperty(Window.prototype, "postMessage", {
+    value: function postMessage(message) {
+      const a = arguments;
+      const where = prefix("postMessage", "Window");
+      if (a.length < 1) {
+        throw new $TypeError(where + "1 argument required, but only 0 present.");
+      }
+      let targetOrigin;
+      let transfer;
+      const second = a[1];
+      if (a.length >= 3 || (a.length === 2 && second !== undefined && second !== null &&
+        typeof second !== "object" && typeof second !== "function")) {
+        targetOrigin = str(second);
+        transfer = transferList(a[2], "postMessage", "Window", undefined);
+      } else {
+        if (second !== undefined && second !== null && typeof second !== "object" &&
+          typeof second !== "function") {
+          throw new $TypeError(where + "The provided value is not of type 'WindowPostMessageOptions'.");
+        }
+        transfer = serializeOptions(second, "postMessage", "Window", "WindowPostMessageOptions");
+        const given = second === undefined || second === null ? undefined : second.targetOrigin;
+        targetOrigin = given === undefined ? "/" : str(given);
+      }
+      let origin;
+      try {
+        origin = native.targetOrigin(targetOrigin);
+      } catch (error) {
+        throw failed(error, "postMessage", "Window");
+      }
+      const record = serialize(message, transfer, where, global);
+      native.postMessage(origin, wire(record));
+    },
+    writable: true,
+    configurable: true,
+    enumerable: true,
+  });
+
   // ---- Timers (M26, HTML section 8.6) ------------------------------------
 
   // Each timer's callback (a function, or a string compiled when it
@@ -13194,6 +14047,10 @@
     },
     frames: runFrames,
     fetched,
+    // A message's arrival (M31): `target` null for the window.
+    message(target, text, origin) {
+      return messageEvent(global, text, origin, []);
+    },
     resume(run) {
       const step = GeneratorNext(run);
       return step.done ? step.value : null;

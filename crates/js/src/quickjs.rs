@@ -365,6 +365,18 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                     .get::<_, Function<'_>>("frames")?
                     .call::<_, Value<'_>>((*now,))
             }),
+            Task::Message {
+                target,
+                data,
+                origin,
+            } => self.stepped(&entries, |ctx, entries| {
+                let at = match target {
+                    crate::MessageTarget::Window => Value::new_null(ctx.clone()),
+                };
+                entries
+                    .get::<_, Function<'_>>("message")?
+                    .call::<_, Value<'_>>((at, data.as_str(), origin.as_str()))
+            }),
             Task::Fetched { id, answer } => self.context.with(|ctx| {
                 let called = entries.clone().restore(&ctx).and_then(|entries| {
                     let answer = match answer {

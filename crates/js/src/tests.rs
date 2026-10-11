@@ -28,6 +28,8 @@ pub(crate) struct Recorder {
     /// How often a frame was wanted, and whether the document is hidden.
     pub(crate) frames_wanted: usize,
     pub(crate) hidden: bool,
+    /// The messages posted to the window (M31), by target origin.
+    pub(crate) posted: Vec<(String, String)>,
 }
 
 impl ScriptingHost for Recorder {
@@ -72,6 +74,17 @@ impl ScriptingHost for Recorder {
                 Ok(Answer::Nothing)
             }
             Call::Hidden => Ok(Answer::Bool(self.hidden)),
+            Call::TargetOrigin(target) => Ok(Answer::String(match target.as_str() {
+                "*" => target,
+                _ => "https://example.com".to_owned(),
+            })),
+            Call::PostMessage {
+                target_origin,
+                data,
+            } => {
+                self.posted.push((target_origin, data));
+                Ok(Answer::Nothing)
+            }
             call => self.tree.dom(call),
         }
     }
@@ -103,7 +116,7 @@ pub(crate) fn script(source: &str) -> Script<'_> {
 }
 
 /// The console's lines after running `source` and a checkpoint.
-fn logged(source: &str) -> Vec<String> {
+pub(crate) fn logged(source: &str) -> Vec<String> {
     let mut realm = realm();
     let mut host = Recorder::default();
     realm.run(&script(source), &mut host).expect("it runs");

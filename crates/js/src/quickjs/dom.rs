@@ -328,6 +328,13 @@ const NATIVES: &[(&str, Decode)] = &[
         Ok(Call::UrlHasCredentials(a.string(0)?))
     }),
     ("sameOriginUrl", |a| Ok(Call::SameOriginUrl(a.string(0)?))),
+    ("targetOrigin", |a| Ok(Call::TargetOrigin(a.string(0)?))),
+    ("postMessage", |a| {
+        Ok(Call::PostMessage {
+            target_origin: a.string(0)?,
+            data: a.string(1)?,
+        })
+    }),
     ("formEntries", |a| {
         Ok(Call::FormEntries {
             form: a.handle(0)?,
@@ -573,6 +580,24 @@ fn install_errors<'js, H: ScriptingHost>(
     host: &Slot<H>,
     natives: &Object<'js>,
 ) -> rquickjs::Result<()> {
+    // What a structured clone cannot tell of an object by script (M31):
+    // 1 a function, 2 a proxy, 3 a promise, 4 an error, else 0.
+    natives.set(
+        "cloneKind",
+        Function::new(ctx.clone(), |value: Value<'js>| -> i32 {
+            if value.is_proxy() {
+                2
+            } else if value.is_function() {
+                1
+            } else if value.is_promise() {
+                3
+            } else if value.is_error() {
+                4
+            } else {
+                0
+            }
+        })?,
+    )?;
     natives.set(
         "describe",
         Function::new(

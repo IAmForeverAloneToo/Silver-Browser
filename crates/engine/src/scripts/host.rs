@@ -55,6 +55,9 @@ pub(crate) struct Outputs {
     pub(crate) fetches: Vec<(u32, net::Request)>,
     /// The fetches their signals aborted.
     pub(crate) aborted: Vec<u32>,
+    /// The messages posted (M31), each with when it was, delivered in
+    /// tasks.
+    pub(crate) messages: Vec<(Duration, js::Task)>,
 }
 
 /// The document's styles as a run's `getComputedStyle` sees them: the
@@ -848,11 +851,7 @@ impl DocumentHost {
                 let url = self.page.as_ref().and_then(|page| page.url());
                 Ok(Answer::Strings(location_parts(url)))
             }
-            Call::Origin => Ok(Answer::String(
-                self.page
-                    .as_ref()
-                    .map_or_else(|| "null".to_owned(), |page| page.origin().serialization()),
-            )),
+            Call::Origin => Ok(Answer::String(self.origin_text())),
             Call::SecureContext => Ok(Answer::Bool(
                 self.page.as_ref().is_none_or(Page::is_secure_context),
             )),
@@ -906,6 +905,38 @@ impl DocumentHost {
                     .as_ref()
                     .is_some_and(|page| *page.origin() == url.origin())
             }))),
+            Call::TargetOrigin(target) => match target.as_str() {
+                "*" => Ok(Answer::String(target)),
+                "/" => Ok(Answer::String(self.origin_text())),
+                _ => net::Url::parse(&target)
+                    .map(|url| Answer::String(url.origin().serialization()))
+                    .map_err(|_| {
+                        DomError::new(
+                            "SyntaxError",
+                            format!("Invalid target origin '{target}' in a call to 'postMessage'."),
+                        )
+                    }),
+            },
+            Call::PostMessage {
+                target_origin,
+                data,
+            } => {
+                // A message for another origin than the document's is
+                // dropped, as when it would have been delivered.
+                let origin = self.origin_text();
+                if target_origin == "*" || target_origin == origin {
+                    let now = self.now();
+                    self.outputs.messages.push((
+                        now,
+                        js::Task::Message {
+                            target: js::MessageTarget::Window,
+                            data,
+                            origin,
+                        },
+                    ));
+                }
+                Ok(Answer::Nothing)
+            }
             Call::FormEntries { form, submitter } => {
                 let form = self.node(form)?;
                 if self.document.tag(form) != Some("form") {
@@ -1929,6 +1960,14 @@ impl DocumentHost {
             .as_ref()
             .map(|clock| clock())
             .unwrap_or_default()
+    }
+
+    /// The serialization of the document's origin, `null` without a
+    /// page.
+    fn origin_text(&self) -> String {
+        self.page
+            .as_ref()
+            .map_or_else(|| "null".to_owned(), |page| page.origin().serialization())
     }
 
     /// Lends the host what a run needs, `how` the script runs, and

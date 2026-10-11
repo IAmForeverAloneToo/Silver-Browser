@@ -249,6 +249,17 @@ pub enum Call {
     UrlHasCredentials(String),
     /// Whether a URL is of the document's origin (a Request's referrer).
     SameOriginUrl(String),
+    /// `window.postMessage`'s target origin (M31): `*`, or the origin
+    /// `/` names (the document's) or a URL's, serialized; a
+    /// `SyntaxError` for a URL that does not parse.
+    TargetOrigin(String),
+    /// A message to the window itself (M31), its data serialized, for
+    /// the target origin `TargetOrigin` gave: delivered in a task, as a
+    /// `Task::Message`, unless the origin is not the document's.
+    PostMessage {
+        target_origin: String,
+        data: String,
+    },
     /// A form's entry list, as `FormData`'s constructor makes it
     /// (M27): each entry's name, `text` or `file`, and value; a
     /// `TypeError` for an element that is not a form or a submitter that
