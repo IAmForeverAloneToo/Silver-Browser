@@ -2509,6 +2509,12 @@ Deferred from the milestones above, each with what it waits on:
        view's clone tracking its buffer (QuickJS-ng keeps whether a
        view tracks from script); `MessageEvent`'s `userActivation`.
        Named at M31.
+- [ ] G86 `matchMedia()` and `MediaQueryList`: `matches`, `media` and
+       its `change` events as the viewport and the preferences change.
+       M20's note left them to M24 and M25, which did not take them
+       up. Found 2026-10-12 in Google's account bar, which calls
+       `matchMedia` as it starts and fails without it (with `URL`,
+       G68).
 
 ---
 
