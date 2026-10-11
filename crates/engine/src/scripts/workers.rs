@@ -21,6 +21,7 @@ use super::canvas::{Canvases, names_context, needs_source};
 use super::host::{
     PLATFORM, Timers, image_bitmap, location_parts, offscreen_element, offscreen_source,
 };
+use super::ports::{SharedRouter, lock, port_call};
 use super::{MAX_SCRIPT_BYTES, cut, report_text};
 use crate::loader::Waker;
 use crate::loader::pool::Pool;
@@ -51,6 +52,8 @@ pub(crate) enum WorkerMessage {
     Stop,
     /// One of the worker's own fetches finished (M31.2).
     Wake,
+    /// A message for port `n`, which the realm holds (M31.5).
+    Port(u32, String),
 }
 
 impl WorkerMessage {
@@ -58,7 +61,8 @@ impl WorkerMessage {
     fn bytes(&self) -> usize {
         match self {
             WorkerMessage::ToWorker(data)
-            | WorkerMessage::FromWorker(_, FromWorker::Message(data)) => data.len(),
+            | WorkerMessage::FromWorker(_, FromWorker::Message(data))
+            | WorkerMessage::Port(_, data) => data.len(),
             _ => 0,
         }
     }
@@ -91,7 +95,7 @@ impl Inbox {
     /// Sends `message` and wakes the receiver; false, sending nothing,
     /// when its data would take the inbox past [`MAX_QUEUED_BYTES`], and
     /// when the receiver is gone.
-    fn send(&self, message: WorkerMessage) -> bool {
+    pub(crate) fn send(&self, message: WorkerMessage) -> bool {
         let bytes = message.bytes();
         if self.queued.fetch_add(bytes, Ordering::SeqCst) + bytes > MAX_QUEUED_BYTES {
             self.queued.fetch_sub(bytes, Ordering::SeqCst);
@@ -210,6 +214,7 @@ struct Setup {
     stop: Arc<AtomicBool>,
     depth: u32,
     live: Arc<AtomicUsize>,
+    router: SharedRouter,
 }
 
 /// The workers a realm made (M31.1), by number, and those waiting for
@@ -224,6 +229,8 @@ pub(crate) struct Workers {
     live: Arc<AtomicUsize>,
     /// How deep its realm is: 0 for a document's.
     depth: u32,
+    /// The ports of the document and its workers.
+    router: SharedRouter,
 }
 
 /// What a worker's message is for its owner's realm.
@@ -238,7 +245,12 @@ pub(crate) enum Received {
 impl Workers {
     /// The workers of a realm `depth` deep, sending to `inbox`, counted
     /// in `live`.
-    pub(crate) fn new(inbox: Inbox, live: Arc<AtomicUsize>, depth: u32) -> Workers {
+    pub(crate) fn new(
+        inbox: Inbox,
+        live: Arc<AtomicUsize>,
+        depth: u32,
+        router: SharedRouter,
+    ) -> Workers {
         Workers {
             inbox,
             next: 1,
@@ -246,6 +258,7 @@ impl Workers {
             waiting: VecDeque::new(),
             live,
             depth,
+            router,
         }
     }
 
@@ -289,6 +302,7 @@ impl Workers {
             stop,
             depth: self.depth + 1,
             live: self.live.clone(),
+            router: self.router.clone(),
         });
         self.start_waiting();
         id
@@ -408,31 +422,45 @@ fn too_large() -> DomError {
     DomError::new("DataCloneError", "Data cannot be cloned, out of memory.")
 }
 
-/// A document's workers and its inbox, which they send to.
+/// A document's workers and its inbox, which they and its ports send
+/// to, and the router of its ports and its workers'.
 pub(crate) struct DocumentWorkers {
     pub(crate) workers: Workers,
     pub(crate) mailbox: Mailbox,
     inbox: Inbox,
+    router: SharedRouter,
+    realm: u32,
 }
 
 impl Default for DocumentWorkers {
     fn default() -> DocumentWorkers {
         let (inbox, mailbox) = inbox(None);
+        let router = SharedRouter::default();
+        let realm = lock(&router).add_realm(inbox.clone());
         DocumentWorkers {
-            workers: Workers::new(inbox.clone(), Arc::default(), 0),
+            workers: Workers::new(inbox.clone(), Arc::default(), 0, router.clone()),
             mailbox,
             inbox,
+            router,
+            realm,
         }
     }
 }
 
 impl DocumentWorkers {
-    /// Wakes the engine's owner with `wake` when a worker sends.
+    /// Wakes the engine's owner with `wake` when a worker or a port
+    /// sends.
     pub(crate) fn set_wake(&mut self, wake: Option<Waker>) {
         if self.inbox.wake.is_none() && wake.is_some() {
             self.inbox.wake = wake;
             self.workers.inbox = self.inbox.clone();
+            lock(&self.router).set_inbox(self.realm, self.inbox.clone());
         }
+    }
+
+    /// A port's call of the document's (M31.5).
+    pub(crate) fn port_call(&self, call: &js::Call) -> Option<Result<Answer, DomError>> {
+        port_call(&self.router, self.realm, call)
     }
 }
 
@@ -472,6 +500,7 @@ fn run(setup: Setup) {
         stop,
         depth,
         live,
+        router,
     } = setup;
     let ended = |error: Option<Option<ScriptError>>| {
         if let Some(error) = error {
@@ -497,6 +526,7 @@ fn run(setup: Setup) {
     } else {
         url.origin()
     };
+    let realm_id = lock(&router).add_realm(me.clone());
     let pool = Pool::new(MAX_WORKER_FETCH_THREADS);
     let woken = me.clone();
     pool.set_waker(Arc::new(move || {
@@ -524,7 +554,9 @@ fn run(setup: Setup) {
             .unwrap_or_default()
             .as_secs_f64()
             * 1000.0,
-        workers: Some(Workers::new(me, live, depth)),
+        router: Some(router.clone()),
+        realm: realm_id,
+        workers: Some(Workers::new(me, live, depth, router.clone())),
         ..WorkerHost::default()
     };
     let script = Script {
@@ -536,6 +568,7 @@ fn run(setup: Setup) {
     let result = realm.run(&script, &mut host).map(|_| false);
     host.finish(&mut *realm, result, &stop);
     work(&mut *realm, &mut host, &mailbox, &stop);
+    lock(&router).remove_realm(realm_id);
     if !stop.load(Ordering::SeqCst) {
         ended(None);
     }
@@ -586,6 +619,11 @@ fn work(
             }
             WorkerMessage::ToWorker(data) => Task::Message {
                 target: MessageTarget::Global,
+                data,
+                origin: String::new(),
+            },
+            WorkerMessage::Port(port, data) => Task::Message {
+                target: MessageTarget::Port(port),
                 data,
                 origin: String::new(),
             },
@@ -673,6 +711,9 @@ pub(crate) struct WorkerHost {
     /// `close()` was called: the task ends, and nothing more runs.
     closing: bool,
     workers: Option<Workers>,
+    /// The router of its document's ports, and its realm's number there.
+    router: Option<SharedRouter>,
+    realm: u32,
     work: u64,
 }
 
@@ -699,6 +740,8 @@ impl Default for WorkerHost {
             compat: false,
             closing: false,
             workers: None,
+            router: None,
+            realm: 0,
             work: 0,
         }
     }
@@ -717,6 +760,11 @@ impl ScriptingHost for WorkerHost {
 
     fn dom(&mut self, call: Call) -> Result<Answer, DomError> {
         self.work += 1;
+        if let Some(router) = &self.router
+            && let Some(answer) = port_call(router, self.realm, &call)
+        {
+            return answer;
+        }
         match call {
             Call::SetTimer { id, delay } => {
                 let now = self.now();

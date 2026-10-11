@@ -399,6 +399,9 @@ impl DocumentHost {
 
     /// Answers `call`.
     fn answer(&mut self, call: Call) -> Result<Answer, DomError> {
+        if let Some(answer) = self.workers.port_call(&call) {
+            return answer;
+        }
         match call {
             Call::Document => Ok(self.give(Some(self.document.root()))),
             Call::Wrap(node) => {
@@ -898,9 +901,15 @@ impl DocumentHost {
                 self.outputs.terminated.push(worker);
                 Ok(Answer::Nothing)
             }
-            Call::PostToOwner(_) | Call::CloseWorker | Call::ImportScript(_) => {
-                Err(DomError::not_supported())
-            }
+            Call::PostToOwner(_)
+            | Call::CloseWorker
+            | Call::ImportScript(_)
+            | Call::PortChannel
+            | Call::PortPost { .. }
+            | Call::PortStart(_)
+            | Call::PortClose(_)
+            | Call::PortAway(_)
+            | Call::PortAdopt(_) => Err(DomError::not_supported()),
             Call::SecureContext => Ok(Answer::Bool(
                 self.page.as_ref().is_none_or(Page::is_secure_context),
             )),

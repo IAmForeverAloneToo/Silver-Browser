@@ -445,3 +445,131 @@ createImageBitmap(new ImageData(2, 2)).then(function (b) { out.push('created ' +
   };\
   later.send();\
 });";
+
+#[test]
+fn a_ports_message_wakes_the_engine_with_nothing_else_due() {
+    // As a scheduler posts its work to itself through a channel.
+    let (mut tab, _server) = page(
+        "<script>\
+         var c = new MessageChannel();\
+         c.port1.onmessage = function (e) { console.log('got', e.data); };\
+         c.port2.postMessage('work');\
+         </script>",
+        &[],
+    );
+    assert_eq!(until(&mut tab, "got work"), ["got work"]);
+}
+
+#[test]
+fn ports_deliver_once_started_across_realms_as_the_reference_browser_does() {
+    let (mut tab, _server) = page(
+        "<script>\
+         var err = function (e) { return e.name + ': ' + e.message + ' [' + e.code + ']'; };\
+         var log = function (k, v) { console.log(k + '=' + (typeof v === 'string' ? v : JSON.stringify(v))); };\
+         var wait = function (ms) { return new Promise(function (ok) { setTimeout(ok, ms); }); };\
+         (async function () {\
+           var c = new MessageChannel();\
+           log('channel', [c.constructor.name, c.port1.constructor.name, \
+             Object.getOwnPropertyNames(MessageChannel.prototype).sort().join(' ')]);\
+           log('port proto chain', [Object.getPrototypeOf(MessagePort.prototype) === EventTarget.prototype]);\
+           var got = [];\
+           c.port2.addEventListener('message', function (e) { got.push('listener ' + e.data); });\
+           c.port1.postMessage('a');\
+           await wait(50);\
+           log('before start', got.slice());\
+           c.port2.start();\
+           await wait(50);\
+           log('after start', got.slice());\
+           var d = new MessageChannel();\
+           d.port2.onmessage = function (e) { got.push(['onmessage', e.data, e.origin, \
+             e.source === null, e.ports.length, e.target === d.port2, e.lastEventId]); };\
+           d.port1.postMessage({ x: 1 });\
+           await wait(50);\
+           log('onmessage', got.slice(-1));\
+           var e2 = new MessageChannel();\
+           e2.port1.postMessage(1); e2.port1.postMessage(2); e2.port1.postMessage(3);\
+           var seq = [];\
+           e2.port2.onmessage = function (e) { seq.push(e.data); };\
+           await wait(50);\
+           log('order', seq);\
+           var f = new MessageChannel();\
+           var closed = [];\
+           f.port2.onmessage = function (e) { closed.push(e.data); };\
+           f.port1.close();\
+           f.port1.postMessage('after close');\
+           await wait(50);\
+           log('closed sender', closed);\
+           var g = new MessageChannel();\
+           g.port2.onmessage = function (e) { closed.push('g ' + e.data); };\
+           g.port2.close();\
+           g.port1.postMessage('to closed');\
+           await wait(50);\
+           log('closed receiver', closed);\
+           var h = new MessageChannel();\
+           try { h.port1.postMessage(1, [h.port1]); log('self transfer', 'ok'); } catch (e) { log('self transfer', err(e)); }\
+           try { h.port1.postMessage(h.port2); log('clone port', 'ok'); } catch (e) { log('clone port', err(e)); }\
+           try { h.port1.postMessage(1, [h.port2, h.port2]); log('dup port', 'ok'); } catch (e) { log('dup port', err(e)); }\
+           var w = new Worker('port.js');\
+           var k = new MessageChannel();\
+           var fromWorker = [];\
+           w.onmessage = function (e) { fromWorker.push(e.data); };\
+           k.port1.onmessage = function (e) { fromWorker.push(['port', e.data, e.target === k.port1]); };\
+           w.postMessage('hello', [k.port2]);\
+           try { k.port2.postMessage('x'); log('port after transfer', 'ok'); } catch (e) { log('port after transfer', err(e)); }\
+           try { w.postMessage(1, [k.port2]); log('transfer again', 'ok'); } catch (e) { log('transfer again', err(e)); }\
+           k.port1.postMessage('ping');\
+           while (fromWorker.length < 2) { await wait(10); }\
+           log('worker', fromWorker);\
+           var q = new MessageChannel();\
+           log('structuredClone port', structuredClone(q.port1, { transfer: [q.port1] }).constructor.name);\
+           console.log('done');\
+         })();\
+         </script>",
+        &[(
+            "/port.js",
+            "onmessage = function (e) {\
+               var port = e.ports[0];\
+               postMessage(['worker got', e.data, e.ports.length, port && port.constructor.name]);\
+               port.onmessage = function (m) { port.postMessage('echo ' + m.data); };\
+             };",
+        )],
+    );
+    let lines = until(&mut tab, "done");
+    let refused = |what: &str, why: &str| {
+        format!("{what}=DataCloneError: Failed to execute 'postMessage' on {why} [25]")
+    };
+    assert_eq!(
+        lines,
+        [
+            "channel=[\"MessageChannel\",\"MessagePort\",\"constructor port1 port2\"]".to_owned(),
+            "port proto chain=[true]".to_owned(),
+            "before start=[]".to_owned(),
+            "after start=[\"listener a\"]".to_owned(),
+            "onmessage=[[\"onmessage\",{\"x\":1},\"\",true,0,true,\"\"]]".to_owned(),
+            "order=[1,2,3]".to_owned(),
+            "closed sender=[]".to_owned(),
+            "closed receiver=[]".to_owned(),
+            refused(
+                "self transfer",
+                "'MessagePort': Port at index 0 contains the source port."
+            ),
+            refused(
+                "clone port",
+                "'MessagePort': A MessagePort could not be cloned because it was not transferred."
+            ),
+            refused(
+                "dup port",
+                "'MessagePort': Message port at index 1 is a duplicate of an earlier port."
+            ),
+            "port after transfer=ok".to_owned(),
+            refused(
+                "transfer again",
+                "'Worker': Port at index 0 is already neutered."
+            ),
+            "worker=[[\"worker got\",\"hello\",1,\"MessagePort\"],[\"port\",\"echo ping\",true]]"
+                .to_owned(),
+            "structuredClone port=MessagePort".to_owned(),
+            "done".to_owned(),
+        ]
+    );
+}

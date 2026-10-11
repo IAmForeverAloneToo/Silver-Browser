@@ -564,7 +564,6 @@ FileAPI/blob/Blob-constructor-endings.html	Input LFCRLFCR with endings unspecifi
 FileAPI/blob/Blob-constructor-endings.html	Input LFCRLFCR with endings 'transparent'	no FileReader (G75)
 FileAPI/blob/Blob-constructor-endings.html	Input LFCRLFCR with endings 'native'	no FileReader (G75)
 FileAPI/blob/Blob-constructor-endings.html	CR/LF in adjacent input strings	no FileReader (G75)
-FileAPI/blob/Blob-constructor.any.html	Passing a FrozenArray as the blobParts array should work (FrozenArray<MessagePort>).	no MessageChannel: postMessage is frames' (M33.2 and M31)
 FileAPI/blob/Blob-newobject.any.html	Blob.stream() returns [NewObject]	no Blob.stream() or textStream(): no streams (G67)
 FileAPI/blob/Blob-stream.any.html	Blob.stream()	no Blob.stream() or textStream(): no streams (G67)
 FileAPI/blob/Blob-stream.any.html	Blob.stream() empty Blob	no Blob.stream() or textStream(): no streams (G67)

@@ -56,7 +56,8 @@ var names = ["fetch", "XMLHttpRequest", "OffscreenCanvas", "structuredClone", "W
   "DedicatedWorkerGlobalScope", "SharedArrayBuffer", "alert", "print", "getComputedStyle",
   "HTMLElement", "Node", "Image", "Window", "Location", "Navigator", "Storage", "UIEvent",
   "MouseEvent", "CanvasRenderingContext2D", "HTMLCanvasElement", "importScripts", "location",
-  "navigator", "WorkerLocation", "WorkerNavigator", "Worker", "postMessage", "close"];
+  "navigator", "WorkerLocation", "WorkerNavigator", "Worker", "postMessage", "close",
+  "MessageChannel", "MessagePort"];
 for (var i = 0; i < names.length; i++) {
   console.log("typeof " + names[i] + "=" + typeof self[names[i]]);
 }
@@ -181,6 +182,8 @@ fn a_workers_global_is_as_the_reference_browser_has_it() {
         ("Worker", "function"),
         ("postMessage", "function"),
         ("close", "function"),
+        ("MessageChannel", "function"),
+        ("MessagePort", "function"),
     ];
     let typeofs: Vec<String> = typeofs
         .iter()

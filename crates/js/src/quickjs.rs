@@ -384,16 +384,15 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                 target,
                 data,
                 origin,
-            } => self.stepped(&entries, |ctx, entries| {
-                let at = match target {
-                    crate::MessageTarget::Global => Value::new_null(ctx.clone()),
-                    crate::MessageTarget::Worker(n) => {
-                        Value::new_number(ctx.clone(), f64::from(*n))
-                    }
+            } => self.stepped(&entries, |_, entries| {
+                let (kind, n) = match target {
+                    crate::MessageTarget::Global => (0, 0),
+                    crate::MessageTarget::Worker(n) => (1, *n),
+                    crate::MessageTarget::Port(n) => (2, *n),
                 };
                 entries
                     .get::<_, Function<'_>>("message")?
-                    .call::<_, Value<'_>>((at, data.as_str(), origin.as_str()))
+                    .call::<_, Value<'_>>((kind, n, data.as_str(), origin.as_str()))
             }),
             Task::WorkerError { worker, error } => self.stepped(&entries, |ctx, entries| {
                 let (message, url, line, column) = match error {

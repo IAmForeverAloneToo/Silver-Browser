@@ -182,6 +182,7 @@
     OffscreenCanvas: true, OffscreenCanvasRenderingContext2D: true, Path2D: true,
     Performance: true, ProgressEvent: true, QuotaExceededError: true, Request: true,
     Response: true, TextMetrics: true, URLSearchParams: true, Worker: true,
+    MessageChannel: true, MessagePort: true,
     WorkerGlobalScope: "worker", WorkerLocation: "worker", WorkerNavigator: "worker",
     XMLHttpRequest: true, XMLHttpRequestEventTarget: true, XMLHttpRequestUpload: true,
   };
@@ -12292,6 +12293,7 @@
   const IMAGE_BITMAP = 17;
   const MATRIX = 18;
   const POINT = 19;
+  const PORT = 20;
 
   // What `native.cloneKind` says of an object: what no script can tell.
   const KIND_FUNCTION = 1;
@@ -12604,6 +12606,9 @@
   // The entry of a platform object: a serializable one's state, or the
   // refusal the reference browser words.
   function platformEntry(value, iface, where) {
+    if (isPort(value)) {
+      throw dataCloneError(where, "A MessagePort could not be cloned because it was not transferred.");
+    }
     if (isBlob(value)) {
       if (isFile(value)) {
         return [FILE, TypedArraySlice(blobBytes(value)), BlobType(value), FileName(value),
@@ -12643,10 +12648,23 @@
 
   // StructuredDeserializeWithTransfer: the value of a record.
   function deserialize(record) {
+    return deserializeWithPorts(record)[0];
+  }
+
+  // The value of a record and the ports transferred with it, in the
+  // order of its transfer list (M31.5): a message event's `ports`.
+  function deserializeWithPorts(record) {
     const entries = record[1];
     const made = [];
     made.length = entries.length;
-    return valueOf(record[0], entries, made);
+    const ports = [];
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      if (e !== null && typeof e === "object" && e[0] === PORT) {
+        ArrayPush(ports, objectAt(i, entries, made));
+      }
+    }
+    return [valueOf(record[0], entries, made), ports];
   }
 
   function valueOf(code, entries, made) {
@@ -12965,11 +12983,14 @@
   // made again, or, when it cannot be, a `messageerror` (HTML section
   // 9.5.3); `origin` the sender's, `source` the window for a message
   // to the window.
-  function messageEvent(target, text, origin, ports) {
+  function messageEvent(target, text, origin) {
     let data = null;
+    let ports = [];
     let type = "message";
     try {
-      data = deserialize(unwire(text));
+      const both = deserializeWithPorts(unwire(text));
+      data = both[0];
+      ports = both[1];
     } catch {
       type = "messageerror";
     }
@@ -13195,6 +13216,170 @@
     }
     return canceled;
   }
+
+  // ---- Channel messaging (M31, HTML section 9.5) ---------------------------
+
+  // The ports this realm holds, by number. A port keeps its messages
+  // until it is started, by start() or by setting onmessage, as the
+  // host's router keeps them for it.
+  const portObjects = new $Map();
+  let portNumber;
+  let portGone;
+  let startPort;
+  let neuterPort;
+
+  class MessagePort extends EventTarget {
+    #id = 0;
+    // 0 not started, 1 started, 2 transferred or closed.
+    #state = 0;
+
+    static {
+      portNumber = (port) => {
+        if (typeof port === "object" && port !== null && #id in port) {
+          return port.#id;
+        }
+        throw illegalInvocation();
+      };
+      isPort = (value) => typeof value === "object" && value !== null && #id in value;
+      portGone = (port) => port.#state === 2;
+      startPort = (port) => {
+        if (port.#state === 0) {
+          port.#state = 1;
+          native.portStart(port.#id);
+        }
+      };
+      neuterPort = (port) => {
+        port.#state = 2;
+        MapDelete(portObjects, port.#id);
+      };
+    }
+
+    constructor(key, id) {
+      if (key !== KEY) {
+        throw illegalConstructor("MessagePort");
+      }
+      super();
+      this.#id = id;
+      MapSet(portObjects, id, this);
+    }
+
+    postMessage(message) {
+      const id = portNumber(this);
+      const a = arguments;
+      need(a.length, 1, "postMessage", "MessagePort");
+      const transfer = postTransfer(a[1], "postMessage", "MessagePort");
+      const record = serialize(message, transfer, prefix("postMessage", "MessagePort"), this);
+      if (this.#state === 2) {
+        return;
+      }
+      try {
+        native.portPost(id, wire(record));
+      } catch (error) {
+        throw failed(error, "postMessage", "MessagePort");
+      }
+    }
+
+    start() {
+      portNumber(this);
+      startPort(this);
+    }
+
+    close() {
+      const id = portNumber(this);
+      if (this.#state !== 2) {
+        neuterPort(this);
+        native.portClose(id);
+      }
+    }
+  }
+  defineHandlers(MessagePort.prototype, ["message", "messageerror"], false);
+  // Setting onmessage starts the port (HTML section 9.5.3).
+  {
+    const desc = getOwnPropertyDescriptor(MessagePort.prototype, "onmessage");
+    const setHandler = desc.set;
+    desc.set = function (value) {
+      ReflectApply(setHandler, this, [value]);
+      startPort(this);
+    };
+    defineProperty(MessagePort.prototype, "onmessage", desc);
+  }
+  expose(MessagePort, "MessagePort");
+
+  class MessageChannel {
+    #port1;
+    #port2;
+
+    constructor() {
+      let ids;
+      try {
+        ids = native.portChannel();
+      } catch (error) {
+        if (error instanceof $RangeError) {
+          error.message = "Failed to construct 'MessageChannel': " + error.message;
+        }
+        throw error;
+      }
+      this.#port1 = new MessagePort(KEY, ids[0]);
+      this.#port2 = new MessagePort(KEY, ids[1]);
+    }
+
+    get port1() {
+      if (!(#port1 in this)) {
+        throw illegalInvocation();
+      }
+      return this.#port1;
+    }
+
+    get port2() {
+      if (!(#port2 in this)) {
+        throw illegalInvocation();
+      }
+      return this.#port2;
+    }
+  }
+  expose(MessageChannel, "MessageChannel");
+
+  // A port in a message's transfer list: its entry, unless it is the
+  // port posting or one already transferred or closed.
+  const transferOther = transferEntry;
+  transferEntry = function (t, i, where, source, at) {
+    if (!isPort(t)) {
+      return transferOther(t, i, where, source, at);
+    }
+    if (t === source) {
+      throw dataCloneError(where, "Port at index " + i + " contains the source port.");
+    }
+    if (portGone(t)) {
+      throw dataCloneError(where, "Port at index " + i + " is already neutered.");
+    }
+    return [PORT, portNumber(t)];
+  };
+  // Once the record is made, the ports in it are this realm's no more.
+  const transferredOther = transferred;
+  transferred = function (entries) {
+    transferredOther(entries);
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      if (e !== null && e[0] === PORT) {
+        const port = MapGet(portObjects, e[1]);
+        if (port !== undefined) {
+          neuterPort(port);
+        }
+        native.portAway(e[1]);
+      }
+    }
+  };
+  // A port taken from a message: this realm's from now on.
+  const madeOther = transferMade;
+  transferMade = function (e) {
+    if (e[0] !== PORT) {
+      return madeOther(e);
+    }
+    if (!native.portAdopt(e[1])) {
+      throw new $TypeError("The message holds a port it may not.");
+    }
+    return new MessagePort(KEY, e[1]);
+  };
 
   // ---- Timers (M26, HTML section 8.6) ------------------------------------
 
@@ -14417,14 +14602,11 @@
     },
     frames: runFrames,
     fetched,
-    // A message's arrival (M31): `target` null for the global, else the
-    // number of the worker whose object it is for.
-    message(target, text, origin) {
-      if (target === null) {
-        return messageEvent(global, text, origin, []);
-      }
-      const worker = MapGet(workerObjects, target);
-      return worker === undefined ? nothing() : messageEvent(worker, text, origin, []);
+    // A message's arrival (M31): at the global (`kind` 0), at worker
+    // `n`'s object (1) or at port `n` (2).
+    message(kind, n, text, origin) {
+      const target = kind === 0 ? global : MapGet(kind === 1 ? workerObjects : portObjects, n);
+      return target === undefined ? nothing() : messageEvent(target, text, origin);
     },
     workerError,
     // Worker `id` ended: its object is let go.

@@ -271,6 +271,8 @@ pub enum MessageTarget {
     Global,
     /// The `Worker` object of worker `n`, from its worker.
     Worker(u32),
+    /// `MessagePort` `n` (M31.5), from its entangled port.
+    Port(u32),
 }
 
 /// What a script may see of a response (M27.1): `net`'s exposed view,

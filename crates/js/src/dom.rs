@@ -280,6 +280,22 @@ pub enum Call {
     PostToOwner(String),
     /// A worker's `close()`.
     CloseWorker,
+    /// `new MessageChannel()` (M31.5): its two ports' numbers.
+    PortChannel,
+    /// A message from port `port` to its entangled port, its data
+    /// serialized; a `DataCloneError` past the bounds.
+    PortPost {
+        port: u32,
+        data: String,
+    },
+    /// A port started: the messages kept for it come.
+    PortStart(u32),
+    /// `port.close()`.
+    PortClose(u32),
+    /// A port in a message on its way: the realm holds it no more.
+    PortAway(u32),
+    /// A port taken from a message: whether the realm may hold it.
+    PortAdopt(u32),
     /// A script `importScripts` runs (M31): its text and the URL it came
     /// from, or nothing when it failed to load.
     ImportScript(String),

@@ -16,6 +16,7 @@ mod canvas_tests;
 mod cssom;
 mod fetch;
 mod host;
+pub(crate) mod ports;
 #[cfg(test)]
 mod wasm_tests;
 pub(crate) mod workers;
@@ -910,8 +911,18 @@ impl Scripts {
     /// put in the document's console.
     pub(crate) fn take_worker_messages(&mut self, now: Duration) {
         while let Some(message) = self.host.workers.mailbox.try_take() {
-            let workers::WorkerMessage::FromWorker(id, event) = message else {
-                continue;
+            let (id, event) = match message {
+                workers::WorkerMessage::FromWorker(id, event) => (id, event),
+                workers::WorkerMessage::Port(port, data) => {
+                    let task = js::Task::Message {
+                        target: js::MessageTarget::Port(port),
+                        data,
+                        origin: String::new(),
+                    };
+                    self.posted.push_back((now, task));
+                    continue;
+                }
+                _ => continue,
             };
             match self.host.workers.workers.receive(id, event) {
                 workers::Received::Task(task) => self.posted.push_back((now, task)),

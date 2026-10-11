@@ -348,6 +348,17 @@ const NATIVES: &[(&str, Decode)] = &[
     }),
     ("postToOwner", |a| Ok(Call::PostToOwner(a.string(0)?))),
     ("closeWorker", |_| Ok(Call::CloseWorker)),
+    ("portChannel", |_| Ok(Call::PortChannel)),
+    ("portPost", |a| {
+        Ok(Call::PortPost {
+            port: a.integer(0) as u32,
+            data: a.string(1)?,
+        })
+    }),
+    ("portStart", |a| Ok(Call::PortStart(a.integer(0) as u32))),
+    ("portClose", |a| Ok(Call::PortClose(a.integer(0) as u32))),
+    ("portAway", |a| Ok(Call::PortAway(a.integer(0) as u32))),
+    ("portAdopt", |a| Ok(Call::PortAdopt(a.integer(0) as u32))),
     ("importScript", |a| Ok(Call::ImportScript(a.string(0)?))),
     ("postMessage", |a| {
         Ok(Call::PostMessage {
