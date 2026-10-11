@@ -7,6 +7,9 @@
 
 #![forbid(unsafe_code)]
 
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+
 mod dom;
 mod pattern;
 mod quickjs;
@@ -23,6 +26,8 @@ mod test_tree;
 mod tests;
 #[cfg(test)]
 mod wasm_tests;
+#[cfg(test)]
+mod worker_tests;
 
 pub use dom::{
     Answer, Call, CanvasCall, DomError, FetchCall, Handle, MAX_HANDLE, NestedScript, WORK_PER_STEP,
@@ -61,6 +66,29 @@ impl Default for Limits {
             stack: MAX_SCRIPT_STACK,
         }
     }
+}
+
+impl Limits {
+    /// A worker's (M31): no step budget, since a worker is there to
+    /// compute for long, and the page's heap and stack.
+    pub fn worker() -> Limits {
+        Limits {
+            steps: u32::MAX,
+            ..Limits::default()
+        }
+    }
+}
+
+/// The global object a realm is made with (M31).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum RealmKind {
+    /// A document's `Window`.
+    #[default]
+    Window,
+    /// A dedicated worker's `DedicatedWorkerGlobalScope` (HTML section
+    /// 10.2.1.2), with only the interfaces Web IDL exposes there, and
+    /// the name its creator gave it.
+    DedicatedWorker { name: String },
 }
 
 /// A classic script to run (HTML section 8.1.4.1).
@@ -177,8 +205,19 @@ pub trait ScriptingHost: Default + 'static {
 
 /// A JavaScript engine (M24.1, roadmap D1): makes realms.
 pub trait ScriptEngine {
-    /// A new realm, a global object with its heap, under `limits`.
-    fn realm<H: ScriptingHost>(&self, limits: Limits) -> Result<Box<dyn Realm<H>>, ScriptError>;
+    /// A new realm, a window with its heap, under `limits`.
+    fn realm<H: ScriptingHost>(&self, limits: Limits) -> Result<Box<dyn Realm<H>>, ScriptError> {
+        self.realm_of(RealmKind::Window, limits, None)
+    }
+    /// A new realm of `kind` under `limits` (M31), which `stop` stops:
+    /// once it is set, what runs ends at its next interrupt check as a
+    /// run whose budget ran out (a worker's `terminate()`).
+    fn realm_of<H: ScriptingHost>(
+        &self,
+        kind: RealmKind,
+        limits: Limits,
+        stop: Option<Arc<AtomicBool>>,
+    ) -> Result<Box<dyn Realm<H>>, ScriptError>;
 }
 
 /// What the engine asks a realm to do besides running a script (M26,

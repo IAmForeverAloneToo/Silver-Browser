@@ -11,7 +11,7 @@ use rquickjs::{Array, CaughtError, Coerced, Ctx, Exception, Function, Object, Va
 
 use super::{Entries, Slot, evaluate, report, thrown, with_host};
 use crate::{
-    Answer, Call, DomError, ErrorKind, Handle, MAX_HANDLE, ScriptError, ScriptingHost,
+    Answer, Call, DomError, ErrorKind, Handle, MAX_HANDLE, RealmKind, ScriptError, ScriptingHost,
     WORK_PER_STEP,
 };
 
@@ -506,11 +506,20 @@ const NATIVES: &[(&str, Decode)] = &[
 /// which a nested script's error reaches through `entries`.
 pub(super) fn install<'js, H: ScriptingHost>(
     ctx: &Ctx<'js>,
+    kind: &RealmKind,
     host: &Slot<H>,
     budget: &Budget,
     entries: &Entries,
 ) -> rquickjs::Result<Object<'js>> {
     let natives = Object::new(ctx.clone())?;
+    // The kind of global the bootstrap makes (M31).
+    match kind {
+        RealmKind::Window => natives.set("realmKind", "window")?,
+        RealmKind::DedicatedWorker { name } => {
+            natives.set("realmKind", "worker")?;
+            natives.set("workerName", name.as_str())?;
+        }
+    }
     for &(name, decode) in NATIVES {
         let (host, budget, entries) = (host.clone(), budget.clone(), entries.clone());
         let runs_scripts = RUN_SCRIPTS.contains(&name);

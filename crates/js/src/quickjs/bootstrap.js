@@ -159,9 +159,41 @@
   // clone serializes only if its interface says how (M31).
   const platformPrototypes = new $WeakSet();
 
-  // The interface of the global object, which the global's own
-  // members name in their errors.
-  const GLOBAL_INTERFACE = "Window";
+  // The kind of realm (M31): a document's window, or a dedicated
+  // worker's global scope, which has only the interfaces Web IDL
+  // exposes in a dedicated worker, and the name its creator gave it.
+  const WORKER = native.realmKind === "worker";
+  const WORKER_NAME = WORKER ? native.workerName : "";
+
+  // The interface of the members the window and the workers share,
+  // which they name in their errors, and the global's own.
+  const GLOBAL_INTERFACE = WORKER ? "WorkerGlobalScope" : "Window";
+  const GLOBAL_CLASS = WORKER ? "DedicatedWorkerGlobalScope" : "Window";
+
+  // Of the interfaces the bindings make, those a dedicated worker has
+  // too (true) or alone ("worker"); the others are the window's.
+  const WORKER_INTERFACES = {
+    __proto__: null,
+    AbortController: true, AbortSignal: true, Blob: true, CanvasGradient: true,
+    CanvasPattern: true, CustomEvent: true, DOMMatrix: true, DOMMatrixReadOnly: true,
+    DOMPoint: true, DOMPointReadOnly: true, DedicatedWorkerGlobalScope: "worker",
+    ErrorEvent: true, Event: true, EventTarget: true, File: true, FormData: true,
+    Headers: true, ImageBitmap: true, ImageData: true, MessageEvent: true,
+    OffscreenCanvas: true, OffscreenCanvasRenderingContext2D: true, Path2D: true,
+    Performance: true, ProgressEvent: true, QuotaExceededError: true, Request: true,
+    Response: true, TextMetrics: true, URLSearchParams: true, WorkerGlobalScope: "worker",
+    XMLHttpRequest: true, XMLHttpRequestEventTarget: true, XMLHttpRequestUpload: true,
+  };
+
+  // Every interface the bindings make, by name, exposed or not.
+  const madeInterfaces = { __proto__: null };
+
+  // Defines a property of the window's that a worker's global has not.
+  function windowOnly(name, desc) {
+    if (!WORKER) {
+      defineProperty(global, name, desc);
+    }
+  }
 
   // Makes an interface look as Web IDL says: its members enumerable,
   // its prototype tagged with its name, its constructor a global
@@ -179,6 +211,11 @@
       defineProperty(proto, keys[i], desc);
     }
     defineProperty(proto, toStringTag, { value: name, configurable: true });
+    madeInterfaces[name] = cls;
+    const where = WORKER_INTERFACES[name];
+    if (WORKER ? where === undefined : where === "worker") {
+      return cls;
+    }
     defineProperty(global, name, {
       value: cls,
       writable: true,
@@ -4126,7 +4163,7 @@
           state.mode, state.credentials, state.redirect, false, state.cache,
         );
       } catch (e) {
-        reject(failed(e, "fetch", "Window"));
+        reject(failed(e, "fetch", GLOBAL_INTERFACE));
         return;
       }
       const abort = () => {
@@ -7661,7 +7698,7 @@
     ]],
   ];
   for (let i = 0; i < REFLECTED.length; i++) {
-    const iface = global[REFLECTED[i][0]];
+    const iface = madeInterfaces[REFLECTED[i][0]];
     const members = REFLECTED[i][1];
     for (let j = 0; j < members.length; j++) {
       const m = members[j];
@@ -8127,10 +8164,57 @@
     }
   }
   expose(Window, "Window");
-  setPrototypeOf(global, Window.prototype);
-  // The window is tagged by its prototype, as a Window, not by
-  // QuickJS-ng's own tag.
+
+  // ---- A dedicated worker's global scope (M31, HTML section 10.2) -----
+
+  // WorkerGlobalScope's members are its prototype's and the dedicated
+  // scope's the global's own, as the reference browser has them.
+  class WorkerGlobalScope extends EventTarget {
+    constructor() {
+      throw illegalConstructor("WorkerGlobalScope");
+    }
+
+    get self() {
+      return global;
+    }
+
+    get origin() {
+      return native.origin();
+    }
+
+    get isSecureContext() {
+      return native.secureContext();
+    }
+
+    get crossOriginIsolated() {
+      return false;
+    }
+
+    get performance() {
+      return performance;
+    }
+  }
+  expose(WorkerGlobalScope, "WorkerGlobalScope");
+
+  class DedicatedWorkerGlobalScope extends WorkerGlobalScope {
+    constructor() {
+      throw illegalConstructor("DedicatedWorkerGlobalScope");
+    }
+  }
+  expose(DedicatedWorkerGlobalScope, "DedicatedWorkerGlobalScope");
+
+  setPrototypeOf(global, WORKER ? DedicatedWorkerGlobalScope.prototype : Window.prototype);
+  // The global is tagged by its prototype, not by QuickJS-ng's own tag.
   ReflectDeleteProperty(global, toStringTag);
+  if (WORKER) {
+    defineProperty(global, "name", {
+      get() {
+        return WORKER_NAME;
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  }
 
   // The document's object, made the first time a script asks: the
   // realm is made before any host is there to ask.
@@ -8141,7 +8225,7 @@
     }
     return document;
   }
-  defineProperty(global, "document", {
+  windowOnly("document", {
     get: theDocument,
     enumerable: true,
     configurable: false,
@@ -8149,7 +8233,7 @@
 
   // `window.event` (HTML section 7.2.2.1): the event whose listener
   // runs; replaceable.
-  defineProperty(global, "event", {
+  windowOnly("event", {
     get() {
       return currentEvent;
     },
@@ -8169,7 +8253,7 @@
   // exception is.
   defineProperty(global, "reportError", {
     value: function reportError(e) {
-      need(arguments.length, 1, "reportError", "Window");
+      need(arguments.length, 1, "reportError", GLOBAL_INTERFACE);
       reportException(e);
     },
     writable: true,
@@ -8399,6 +8483,13 @@
   defineHandlers(Document.prototype, ["readystatechange", "visibilitychange"], false);
   defineHandlers(Window.prototype, GLOBAL_HANDLERS, false);
   defineHandlers(Window.prototype, WINDOW_HANDLERS, false);
+  // A worker's (M31): WorkerGlobalScope's, and the dedicated scope's
+  // message handlers, the global's own.
+  defineHandlers(WorkerGlobalScope.prototype,
+    ["error", "languagechange", "rejectionhandled", "unhandledrejection"], false);
+  if (WORKER) {
+    defineHandlers(global, ["message", "messageerror"], false);
+  }
   defineHandlers(AbortSignal.prototype, ["abort"], false);
   const BODIES = ["body", "frameset"];
   for (let i = 0; i < BODIES.length; i++) {
@@ -8737,7 +8828,7 @@
         collection(NodeList, element, () => native.labels(handle), true));
     },
   };
-  include(textControlMembers, [HTMLInputElement.prototype, HTMLTextAreaElement.prototype]);
+  include(textControlMembers, [madeInterfaces.HTMLInputElement.prototype, madeInterfaces.HTMLTextAreaElement.prototype]);
 
   include(
     {
@@ -8765,7 +8856,7 @@
         native.setIndeterminate(self(this), !!value);
       },
     },
-    [HTMLInputElement.prototype],
+    [madeInterfaces.HTMLInputElement.prototype],
   );
 
   include(
@@ -8787,7 +8878,7 @@
         return native.controlValue(self(this)).length;
       },
     },
-    [HTMLTextAreaElement.prototype],
+    [madeInterfaces.HTMLTextAreaElement.prototype],
   );
 
   include(
@@ -8892,7 +8983,7 @@
         removeOption(this, index | 0);
       },
     },
-    [HTMLSelectElement.prototype],
+    [madeInterfaces.HTMLSelectElement.prototype],
   );
 
   include(
@@ -8951,7 +9042,7 @@
         return select === null ? null : wrap(native.formOwner(select));
       },
     },
-    [HTMLOptionElement.prototype],
+    [madeInterfaces.HTMLOptionElement.prototype],
   );
 
   include(
@@ -9002,7 +9093,7 @@
         drain(resetForm(self(this)));
       },
     },
-    [HTMLFormElement.prototype],
+    [madeInterfaces.HTMLFormElement.prototype],
   );
 
   include(
@@ -9016,7 +9107,7 @@
         return control === null ? null : wrap(native.formOwner(control));
       },
     },
-    [HTMLLabelElement.prototype],
+    [madeInterfaces.HTMLLabelElement.prototype],
   );
 
   include(
@@ -9040,7 +9131,7 @@
           collection(NodeList, element, () => native.labels(handle), true));
       },
     },
-    [HTMLButtonElement.prototype],
+    [madeInterfaces.HTMLButtonElement.prototype],
   );
 
   // ---- Constraint validation (HTML section 4.10.20, M26.9b) ---------------
@@ -9161,10 +9252,10 @@
       },
     },
     [
-      HTMLInputElement.prototype,
-      HTMLSelectElement.prototype,
-      HTMLTextAreaElement.prototype,
-      HTMLButtonElement.prototype,
+      madeInterfaces.HTMLInputElement.prototype,
+      madeInterfaces.HTMLSelectElement.prototype,
+      madeInterfaces.HTMLTextAreaElement.prototype,
+      madeInterfaces.HTMLButtonElement.prototype,
     ],
   );
 
@@ -9182,7 +9273,7 @@
         return drain(validateInteractively(self(this)));
       },
     },
-    [HTMLFormElement.prototype],
+    [madeInterfaces.HTMLFormElement.prototype],
   );
 
   // ---- Focus (HTML section 6.6, M26.6) ------------------------------------
@@ -10369,7 +10460,7 @@
     return element;
   };
   defineProperty(ImageFactory, "prototype", { value: MapGet(interfaces, "img").prototype });
-  defineProperty(global, "Image", { value: ImageFactory, writable: true, configurable: true });
+  windowOnly("Image", { value: ImageFactory, writable: true, configurable: true });
 
   // ---- Canvas: the 2D context (HTML section 4.12.5, M30) ------------------
 
@@ -11833,7 +11924,7 @@
   // host, which makes the bitmap; every refusal a rejected promise.
   function createImageBitmap(image) {
     const a = arguments;
-    const where = prefix("createImageBitmap", "Window");
+    const where = prefix("createImageBitmap", GLOBAL_INTERFACE);
     try {
       if (a.length < 1) {
         throw new $TypeError(where + "1 argument required, but only 0 present.");
@@ -11873,8 +11964,8 @@
       let options = a[1];
       if (a.length >= 5) {
         const m = "createImageBitmap";
-        crop = [1, enforcedLong(a[1], m, "Window"), enforcedLong(a[2], m, "Window"),
-          enforcedLong(a[3], m, "Window"), enforcedLong(a[4], m, "Window")];
+        crop = [1, enforcedLong(a[1], m, GLOBAL_INTERFACE), enforcedLong(a[2], m, GLOBAL_INTERFACE),
+          enforcedLong(a[3], m, GLOBAL_INTERFACE), enforcedLong(a[4], m, GLOBAL_INTERFACE)];
         if (crop[3] === 0) {
           throw new $RangeError(where + "The crop rect width is 0.");
         }
@@ -11914,7 +12005,7 @@
         if (error instanceof $DOMException && error.message === "The source image could not be decoded.") {
           throw error;
         }
-        throw failed(error, "createImageBitmap", "Window");
+        throw failed(error, "createImageBitmap", GLOBAL_INTERFACE);
       }
       return resolved(makeBitmap(made));
     } catch (error) {
@@ -12278,7 +12369,7 @@
       throw dataCloneError(where, FunctionToString(value) + " could not be cloned.");
     }
     if (value === global) {
-      throw dataCloneError(where, "#<" + GLOBAL_INTERFACE + "> could not be cloned.");
+      throw dataCloneError(where, "#<" + GLOBAL_CLASS + "> could not be cloned.");
     }
     const kind = native.cloneKind(value);
     if (kind === KIND_PROXY) {
@@ -12891,11 +12982,11 @@
 
   const timerFunctions = {
     setTimeout(handler, timeout = 0) {
-      need(arguments.length, 1, "setTimeout", "Window");
+      need(arguments.length, 1, "setTimeout", GLOBAL_INTERFACE);
       return startTimer(handler, timeout, ArraySlice(arguments, 2), false);
     },
     setInterval(handler, timeout = 0) {
-      need(arguments.length, 1, "setInterval", "Window");
+      need(arguments.length, 1, "setInterval", GLOBAL_INTERFACE);
       return startTimer(handler, timeout, ArraySlice(arguments, 2), true);
     },
     clearTimeout(id = 0) {
@@ -12951,10 +13042,10 @@
 
   const frameFunctions = {
     requestAnimationFrame(callback) {
-      need(arguments.length, 1, "requestAnimationFrame", "Window");
+      need(arguments.length, 1, "requestAnimationFrame", GLOBAL_CLASS);
       if (typeof callback !== "function") {
         throw new $TypeError(
-          prefix("requestAnimationFrame", "Window") +
+          prefix("requestAnimationFrame", GLOBAL_CLASS) +
             "The callback provided as parameter 1 is not a function.",
         );
       }
@@ -12964,7 +13055,7 @@
       return lastFrame;
     },
     cancelAnimationFrame(handle) {
-      need(arguments.length, 1, "cancelAnimationFrame", "Window");
+      need(arguments.length, 1, "cancelAnimationFrame", GLOBAL_CLASS);
       MapDelete(frameCallbacks, long(handle));
     },
   };

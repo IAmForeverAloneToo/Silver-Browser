@@ -12,6 +12,8 @@ pub(crate) use wasm::from_base64;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use rquickjs::context::EvalOptions;
 use rquickjs::function::Rest;
@@ -21,8 +23,8 @@ use rquickjs::{
 };
 
 use crate::{
-    Completion, ConsoleLevel, Death, ErrorKind, FetchAnswer, Field, Limits, Realm, Script,
-    ScriptEngine, ScriptError, ScriptingHost, Target, Task,
+    Completion, ConsoleLevel, Death, ErrorKind, FetchAnswer, Field, Limits, Realm, RealmKind,
+    Script, ScriptEngine, ScriptError, ScriptingHost, Target, Task,
 };
 
 /// QuickJS-ng 0.16, which `rquickjs` builds from its source.
@@ -30,8 +32,13 @@ use crate::{
 pub struct QuickJs;
 
 impl ScriptEngine for QuickJs {
-    fn realm<H: ScriptingHost>(&self, limits: Limits) -> Result<Box<dyn Realm<H>>, ScriptError> {
-        Ok(Box::new(QuickJsRealm::new(limits)?))
+    fn realm_of<H: ScriptingHost>(
+        &self,
+        kind: RealmKind,
+        limits: Limits,
+        stop: Option<Arc<AtomicBool>>,
+    ) -> Result<Box<dyn Realm<H>>, ScriptError> {
+        Ok(Box::new(QuickJsRealm::new(&kind, limits, stop)?))
     }
 }
 
@@ -82,7 +89,11 @@ struct QuickJsRealm<H: ScriptingHost> {
 }
 
 impl<H: ScriptingHost> QuickJsRealm<H> {
-    fn new(limits: Limits) -> Result<QuickJsRealm<H>, ScriptError> {
+    fn new(
+        kind: &RealmKind,
+        limits: Limits,
+        stop: Option<Arc<AtomicBool>>,
+    ) -> Result<QuickJsRealm<H>, ScriptError> {
         let failed = |e: rquickjs::Error| ScriptError {
             kind: ErrorKind::Heap,
             message: format!("InternalError: {e}"),
@@ -99,7 +110,11 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
         runtime.set_interrupt_handler(Some(Box::new(move || {
             let n = taken.get().saturating_add(1);
             taken.set(n);
-            if n > budget {
+            if n > budget
+                || stop
+                    .as_ref()
+                    .is_some_and(|stop| stop.load(Ordering::Relaxed))
+            {
                 out.set(true);
             }
             out.get()
@@ -136,7 +151,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
         let entries: Entries = Rc::default();
         let saved = context
             .with(|ctx| {
-                install(&ctx, &host, &budget, &entries)
+                install(&ctx, kind, &host, &budget, &entries)
                     .map(|entries| Persistent::save(&ctx, entries))
                     .catch(&ctx)
                     .map_err(|e| e.to_string())
@@ -703,6 +718,7 @@ fn mute(error: ScriptError, muted: bool) -> ScriptError {
 /// `SharedArrayBuffer`.
 fn install<'js, H: ScriptingHost>(
     ctx: &Ctx<'js>,
+    kind: &RealmKind,
     host: &Slot<H>,
     budget: &dom::Budget,
     entries: &Entries,
@@ -710,8 +726,11 @@ fn install<'js, H: ScriptingHost>(
     let global = ctx.globals();
     global.remove("performance")?;
     global.remove("SharedArrayBuffer")?;
-    global.set("window", global.clone())?;
-    global.set("self", global.clone())?;
+    // A worker's `self` is its scope's (M31), and it has no `window`.
+    if *kind == RealmKind::Window {
+        global.set("window", global.clone())?;
+        global.set("self", global.clone())?;
+    }
     let console = Object::new(ctx.clone())?;
     for (name, level) in [
         ("log", ConsoleLevel::Log),
@@ -736,7 +755,7 @@ fn install<'js, H: ScriptingHost>(
         console.set(name, method)?;
     }
     global.set("console", console)?;
-    dom::install(ctx, host, budget, entries)
+    dom::install(ctx, kind, host, budget, entries)
 }
 
 /// Calls `f` with the host, which is there only while a run the engine
