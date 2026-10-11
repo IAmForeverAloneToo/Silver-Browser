@@ -610,6 +610,7 @@ fn a_canvas_shows_what_its_offscreen_draws_in_a_worker_once_each_task_ends() {
            try { w.postMessage(oc4, [oc4]); log('transfer with context', 'ok'); } catch (e) { log('transfer with context', err(e)); }\
            w.postMessage({ canvas: oc }, [oc]);\
            log('oc after transfer', [oc.width, oc.height]);\
+           try { rx.drawImage(oc, 0, 0); log('draw transferred', 'ok'); } catch (e) { log('draw transferred', err(e)); }\
            log('worker', await heard());\
            log('placeholder drawn', sample());\
            w.postMessage('raf');\
@@ -711,6 +712,11 @@ fn a_canvas_shows_what_its_offscreen_draws_in_a_worker_once_each_task_ends() {
                 "An OffscreenCanvas could not be transferred because it had a rendering context."
             ),
             "oc after transfer=[0,0]".to_owned(),
+            state(
+                "draw transferred",
+                "execute 'drawImage' on 'CanvasRenderingContext2D'",
+                "The image source is detached."
+            ),
             "worker=[[\"drawn\",40,20,\"function\"]]".to_owned(),
             "placeholder drawn=0,255,0,255 | 0,0,0,0 | 0,0,0,0 | 0,0,0,0".to_owned(),
             "worker=[[\"raf\",\"number\",true]]".to_owned(),
@@ -740,4 +746,74 @@ fn a_placeholder_drawn_here_takes_its_offscreens_size() {
         &[],
     );
     assert_eq!(until(&mut tab, "size 7 20"), ["size 7 20"]);
+}
+
+#[test]
+fn a_message_to_a_worker_that_ended_is_dropped() {
+    // A module worker fails to load here (G41): its thread never runs.
+    let (mut tab, _server) = page(
+        "<script>\
+         var w = new Worker('w.js', { type: 'module' });\
+         w.onerror = function () {\
+           try { w.postMessage(1); console.log('posted'); } catch (e) { console.log('threw', e.name); }\
+         };\
+         </script>",
+        &[("/w.js", "postMessage(1);")],
+    );
+    assert_eq!(until(&mut tab, "posted"), ["posted"]);
+}
+
+#[test]
+fn a_workers_xhr_scripts_and_url_are_a_workers() {
+    // A page in windows-1252, whose worker's URL keeps its query so.
+    let page = b"<meta charset=windows-1252><script>\
+        var w = new Worker('xhr.js?\xDF');\
+        w.onmessage = function (e) { console.log('xhr', JSON.stringify(e.data));\
+          var bom = new Worker('utf16.js');\
+          bom.onerror = function (e) { e.preventDefault(); console.log('utf-16 refused');\
+            var eight = new Worker('utf8.js');\
+            eight.onmessage = function (e) { console.log('utf-8', e.data); console.log('done'); }; };\
+          bom.onmessage = function () { console.log('utf-16 ran'); console.log('done'); }; };\
+        </script>"
+        .to_vec();
+    let server = serve(move |path| match path {
+        "/page.html" => Some(Reply::ok("text/html", &page)),
+        // XHR in a worker: no responseXML, no "document", and a timeout
+        // and a response type for a synchronous request.
+        "/xhr.js?%DF" => Some(script(
+            "var x = new XMLHttpRequest();\
+             var out = ['responseXML' in x];\
+             x.responseType = 'document'; out.push(x.responseType);\
+             x.open('GET', 'data.json', false); x.responseType = 'json'; x.timeout = 1000;\
+             x.send(); out.push(x.response);\
+             var y = new XMLHttpRequest(); y.responseType = 'text'; y.timeout = 1000;\
+             y.open('GET', 'data.json', false); y.send(); out.push(y.response);\
+             postMessage(out);",
+        )),
+        "/data.json" => Some(Reply::ok("application/json", b"[1]")),
+        // A UTF-16 byte order mark is no UTF-8 one: the script's text is
+        // garbage, its compilation an error.
+        "/utf16.js" => Some(Reply::ok(
+            "text/javascript",
+            b"\xFE\xFF\0p\0o\0s\0t\0M\0e\0s\0s\0a\0g\0e\0(\x001\0)",
+        )),
+        "/utf8.js" => Some(Reply::ok(
+            "text/javascript",
+            b"\xEF\xBB\xBFpostMessage('bom');",
+        )),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(server.url("/page.html"));
+    let lines = until(&mut tab, "done");
+    assert_eq!(
+        lines,
+        [
+            "xhr [false,\"\",[1],\"[1]\"]",
+            "utf-16 refused",
+            "utf-8 bom",
+            "done"
+        ]
+    );
 }

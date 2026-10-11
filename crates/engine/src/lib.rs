@@ -4255,6 +4255,13 @@ impl Engine {
         self.network.set_client(client);
     }
 
+    /// Whether the document shown has a worker that has not ended (M31):
+    /// a runner on a hand's clock waits for what it sends, which comes in
+    /// real time.
+    pub fn has_workers(&self) -> bool {
+        self.shown.scripts.has_workers()
+    }
+
     /// Whether a fetch is in flight (M27): a runner on a hand's clock
     /// waits for the network before it moves the clock on.
     pub fn fetching(&self) -> bool {

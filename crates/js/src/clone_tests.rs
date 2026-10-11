@@ -219,3 +219,45 @@ try { window.postMessage(function () {}, "*"); } catch (x) { console.log("functi
         ],
     );
 }
+
+#[test]
+fn a_transfer_lists_detached_objects_are_found_after_the_value_is_serialized() {
+    // StructuredSerializeWithTransfer's order: a getter's exception
+    // before a detached buffer, and a buffer the getter detached refused.
+    let lines = logged(
+        r#"
+var gone = new ArrayBuffer(4);
+structuredClone(gone, { transfer: [gone] });
+try {
+  structuredClone({ get x() { throw new Error("getter first"); } }, { transfer: [gone] });
+} catch (e) { console.log("order=" + e.message); }
+var buffer = new ArrayBuffer(4);
+var detaching = { get x() { structuredClone(buffer, { transfer: [buffer] }); return 1; } };
+try { structuredClone(detaching, { transfer: [buffer] }); } catch (e) { console.log("during=" + e.name + " " + e.message); }
+var big = new ArrayBuffer(4, { maxByteLength: 16 });
+console.log("resizable=" + structuredClone(big).maxByteLength + " " + structuredClone(big).resizable);
+var shrinking = new ArrayBuffer(8, { maxByteLength: 8 });
+var view = new Uint8Array(shrinking, 4, 4);
+shrinking.resize(2);
+try { structuredClone(view); } catch (e) { console.log("out of bounds=" + e.name); }
+console.log("FormData length=" + FormData.length);
+var cut = new ArrayBuffer(4);
+var cutView = new Uint8Array(cut, 1, 2);
+var cutData = new DataView(cut);
+structuredClone(cut, { transfer: [cut] });
+console.log("blob=" + new Blob([cut, cutView, cutData, "a"]).size);
+"#,
+    );
+    check(
+        &lines,
+        &[
+            "order=getter first",
+            "during=DataCloneError Failed to execute 'structuredClone' on 'Window': ArrayBuffer at \
+             index 0 is already detached.",
+            "resizable=16 true",
+            "out of bounds=DataCloneError",
+            "FormData length=0",
+            "blob=1",
+        ],
+    );
+}

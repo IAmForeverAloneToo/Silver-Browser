@@ -20,13 +20,15 @@ cargo run -p engine --example wpt -- pull <checkout>
 which rewrites them, `MANIFEST` and this file. `tests/wpt.rs` runs
 them; `expectations.txt` names those expected to fail, and why.
 
-With them are the testharness.js tests of `fetch/api/headers`, `fetch/api/request`, `fetch/api/response`, `fetch/api/basic`, `xhr`, `url` (the `urlsearchparams-*` tests), `FileAPI/blob`, `webstorage`, `wasm/jsapi` (the `interface.*` tests), `wasm/jsapi` (the `prototypes.*` tests), `wasm/jsapi/constructor`, `wasm/jsapi/global`, `wasm/jsapi/instance`, `wasm/jsapi/memory`, `wasm/jsapi/module`, `wasm/jsapi/table`, `html/canvas/element`, `html/canvas/offscreen` (M27, M29) that
-the runner's one server can serve: no Python handler, no `.sub`
-template, no other host, nothing over `https:` and no worker's
-global. `resources/testharness.js` is the real one; the runner
-serves its own `testharnessreport.js`, and the page wptserve
-makes of an `.any.js` or `.window.js` test. Each subtest they
-fail is named in `expectations.txt`, and why.
+With them are the testharness.js tests of `fetch/api/headers`, `fetch/api/request`, `fetch/api/response`, `fetch/api/basic`, `xhr`, `url` (the `urlsearchparams-*` tests), `FileAPI/blob`, `webstorage`, `wasm/jsapi` (the `interface.*` tests), `wasm/jsapi` (the `prototypes.*` tests), `wasm/jsapi/constructor`, `wasm/jsapi/global`, `wasm/jsapi/instance`, `wasm/jsapi/memory`, `wasm/jsapi/module`, `wasm/jsapi/table`, `html/canvas/element`, `html/canvas/offscreen`, `workers`, `webmessaging`, `html/infrastructure/safe-passing-of-structured-data`, `html/webappapis/structured-clone` (M27, M29, M31)
+that the runner's one server can serve: no Python handler, no `.sub`
+template, no other host, nothing over `https:`, no shared or
+service worker and no module worker. `resources/testharness.js` is
+the real one; the runner serves its own `testharnessreport.js`, and
+the pages wptserve makes of an `.any.js` test (for a window and,
+as its `global` says, a dedicated worker), a `.window.js` test or a
+`.worker.js` test, and an `.any.js` test's worker script. Each
+subtest they fail is named in `expectations.txt`, and why.
 
 ## Taken
 
@@ -35,8 +37,8 @@ fail is named in `expectations.txt`, and why.
 | checklayout | 66 |
 | crashtest | 94 |
 | reftest | 2272 |
-| testharness | 2180 |
-| all | 4612 |
+| testharness | 3654 |
+| all | 6086 |
 
 ## Left out
 
@@ -49,38 +51,38 @@ The first reason the rule found for each test it left out:
 | declaration of font | 711 |
 | CDATA section in XHTML | 528 |
 | declaration of display | 503 |
-| the manual reftests (by the reftest rule) | 404 |
+| the manual reftests (by the reftest rule) | 407 |
+| layers (beginLayer, not in the standard) | 374 |
 | element <svg> | 358 |
-| layers (beginLayer, not in the standard) | 354 |
 | SVG image | 306 |
 | not a reftest, a check-layout test or a crashtest | 261 |
+| Python handler | 254 |
 | selector | 241 |
-| Python handler | 237 |
 | declaration of line-height | 230 |
+| not a testharness test | 229 |
 | declaration of writing-mode | 207 |
-| not a testharness test | 183 |
+| canvas filters (G81) | 150 |
 | element <br> | 146 |
-| canvas filters (G81) | 138 |
+| wptserve substitution (.sub) | 129 |
 | dir=rtl | 113 |
 | element <iframe> | 101 |
-| wptserve substitution (.sub) | 93 |
 | declaration of direction | 90 |
-| transferControlToOffscreen (G81) | 88 |
+| a frame | 89 |
 | declaration of border-radius | 85 |
 | declaration of white-space | 81 |
+| a shared or service worker | 80 |
 | declaration of container-type | 78 |
 | declaration of background-image | 62 |
 | declaration of font-weight | 54 |
 | element <object> | 54 |
 | element <canvas> | 52 |
-| a frame | 49 |
-| a worker's global | 49 |
 | self-closing <div/> in XHTML | 48 |
 | element <video> | 47 |
 | element <embed> | 46 |
 | declaration of background | 44 |
 | declaration of font-variant-numeric | 44 |
 | declaration of flex-wrap | 38 |
+| https: | 36 |
 | nested rule | 36 |
 | element <hr> | 35 |
 | @counter-style | 34 |
@@ -90,9 +92,9 @@ The first reason the rule found for each test it left out:
 | declaration of appearance | 29 |
 | declaration of background-clip | 28 |
 | @property | 27 |
+| colour spaces past sRGB (G81) | 27 |
 | declaration of inline-size | 27 |
 | declaration of transform | 27 |
-| colour spaces past sRGB (G81) | 26 |
 | declaration of color | 26 |
 | declaration of grid-template-rows | 26 |
 | declaration of overflow-y | 25 |
@@ -106,27 +108,29 @@ The first reason the rule found for each test it left out:
 | declaration of fill | 18 |
 | input type=range | 18 |
 | @namespace | 16 |
+| wptserve pipe | 16 |
 | declaration of border-top-left-radius | 14 |
 | declaration of object-view-box | 14 |
 | declaration of block-size | 13 |
 | declaration of text-decoration-inset | 13 |
+| colour types past 8 bits (G81) | 12 |
 | declaration of all | 12 |
 | declaration of columns | 12 |
 | declaration of height | 12 |
 | declaration of overflow-x | 12 |
 | img srcset | 12 |
 | unchecked attribute data-foo | 12 |
+| a module worker (G41) | 11 |
 | declaration of align-self | 11 |
 | declaration of column-count | 11 |
 | declaration of text-emphasis | 11 |
-| https: | 11 |
 | declaration of text-decoration-skip-spaces | 10 |
 | declaration of filter | 9 |
 | declaration of text-decoration-skip-ink | 9 |
 | unchecked attribute data-expected | 9 |
-| colour types past 8 bits (G81) | 8 |
+| BroadcastChannel (G84) | 8 |
+| a blob: URL (G68) | 8 |
 | element <meter> | 8 |
-| wptserve pipe | 8 |
 | declaration of break-after | 7 |
 | declaration of grid-template | 7 |
 | declaration of inset | 7 |
@@ -161,6 +165,7 @@ The first reason the rule found for each test it left out:
 | self-closing <canvas/> in XHTML | 4 |
 | @starting-style | 3 |
 | HDR (G81) | 3 |
+| another host | 3 |
 | declaration of -webkit-text-fill-color | 3 |
 | declaration of accent-color | 3 |
 | declaration of background-position-x | 3 |
@@ -177,7 +182,8 @@ The first reason the rule found for each test it left out:
 | element <marquee> | 3 |
 | input type=datetime-local | 3 |
 | input type=file | 3 |
-| another host | 2 |
+| not for a window or a dedicated worker | 3 |
+| SharedArrayBuffer (G83) | 2 |
 | declaration of border-bottom-left-radius | 2 |
 | declaration of border-image | 2 |
 | declaration of color-scheme | 2 |

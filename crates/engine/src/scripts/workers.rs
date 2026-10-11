@@ -98,8 +98,8 @@ pub(crate) struct Inbox {
 
 impl Inbox {
     /// Sends `message` and wakes the receiver; false, sending nothing,
-    /// when its data would take the inbox past [`MAX_QUEUED_BYTES`], and
-    /// when the receiver is gone.
+    /// when its data would take the inbox past [`MAX_QUEUED_BYTES`]. A
+    /// message to a receiver that is gone is dropped.
     pub(crate) fn send(&self, message: WorkerMessage) -> bool {
         let bytes = message.bytes();
         if self.queued.fetch_add(bytes, Ordering::SeqCst) + bytes > MAX_QUEUED_BYTES {
@@ -107,8 +107,9 @@ impl Inbox {
             return false;
         }
         if self.sender.send(message).is_err() {
+            // A realm that went hears nothing more: dropped, not refused.
             self.queued.fetch_sub(bytes, Ordering::SeqCst);
-            return false;
+            return true;
         }
         if let Some(wake) = &self.wake {
             wake();
@@ -469,12 +470,13 @@ impl DocumentWorkers {
     }
 }
 
-/// The URL of a worker's script, `url` parsed against `base`, if it may
-/// run for a creator of `origin` (HTML's "Worker constructor" steps):
-/// the creator's origin, or `data:`; else the reference browser's
-/// `SecurityError`, or a `SyntaxError` for a URL that does not parse.
-pub(crate) fn worker_url(url: &str, base: Option<&Url>, origin: &Origin) -> Result<Url, DomError> {
-    let Ok(parsed) = Url::parse_with(url, base, encoding::UTF_8) else {
+/// The URL of a worker's script, `url` as its creator parsed it
+/// (`parsed`), if it may run for a creator of `origin` (HTML's "Worker
+/// constructor" steps): the creator's origin, or `data:`; else the
+/// reference browser's `SecurityError`, or a `SyntaxError` for a URL
+/// that does not parse.
+pub(crate) fn worker_url(url: &str, parsed: Option<Url>, origin: &Origin) -> Result<Url, DomError> {
+    let Some(parsed) = parsed else {
         return Err(DomError::new(
             "SyntaxError",
             format!("The URL '{url}' is invalid."),
@@ -686,8 +688,15 @@ fn fetch_script(start: &Start) -> Option<(String, Url)> {
     {
         return None;
     }
-    let (text, _) = encoding::decode(&response.body, encoding::UTF_8);
-    Some((text, response.url().clone()))
+    Some((utf8_decode(&response.body), response.url().clone()))
+}
+
+/// Encoding's "UTF-8 decode": a UTF-8 byte order mark taken away and the
+/// rest decoded as UTF-8, whatever another mark says (a worker's and an
+/// imported script's text, HTML section 10.2.4).
+fn utf8_decode(bytes: &[u8]) -> String {
+    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 /// A worker's credentials mode, from WorkerOptions' `credentials`,
@@ -922,7 +931,8 @@ impl ScriptingHost for WorkerHost {
                 module,
                 credentials,
             } => {
-                let url = worker_url(&url, self.url.as_ref(), &self.origin)?;
+                let parsed = Url::parse_with(&url, self.url.as_ref(), encoding::UTF_8).ok();
+                let url = worker_url(&url, parsed, &self.origin)?;
                 let (Some(client), Some(initiator), Some(workers)) =
                     (&self.client, &self.initiator, self.workers.as_mut())
                 else {
@@ -1006,8 +1016,7 @@ impl WorkerHost {
         {
             return None;
         }
-        let (text, _) = encoding::decode(&response.body, encoding::UTF_8);
-        Some((text, response.url().to_string()))
+        Some((utf8_decode(&response.body), response.url().to_string()))
     }
 
     /// A canvas's call in a worker (M31): an `OffscreenCanvas`'s or an
@@ -1104,5 +1113,18 @@ impl WorkerHost {
                 lock(router).send_document(WorkerMessage::Frame(commit));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_message_to_a_realm_that_went_is_dropped_not_refused() {
+        let (to, mailbox) = inbox(None);
+        drop(mailbox);
+        assert!(to.send(WorkerMessage::ToWorker("late".to_owned())));
+        assert_eq!(to.queued.load(Ordering::SeqCst), 0);
     }
 }

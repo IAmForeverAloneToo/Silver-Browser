@@ -60,10 +60,13 @@
 //! [`TESTHARNESS_DIRECTORIES`] (M27), by another rule, since what such a
 //! test needs of the engine shows subtest by subtest, each that fails
 //! named in `expectations.txt` with why: what the runner's one server
-//! can serve. So an `.any.js` test for a window, a `.window.js` test or
-//! a page that loads `testharness.js`, with the scripts it loads, and no
-//! Python handler, no `.sub` template, no other host, nothing over
-//! `https:` and no worker's global. The real `testharness.js` is copied
+//! can serve. So an `.any.js` test for a window and for a dedicated
+//! worker (M31), as its `global` says, a `.window.js` or `.worker.js`
+//! test, or a page that loads `testharness.js`, with the scripts it
+//! loads, and no Python handler, no `.sub` template, no other host,
+//! nothing over `https:`, no shared or service worker, no module worker
+//! (G41), no `blob:` URL (G68), no `SharedArrayBuffer` (G83) and no
+//! `BroadcastChannel` (G84). The real `testharness.js` is copied
 //! with them, and the files of the directories of
 //! [`SUPPORT_DIRECTORIES`] they read, but for their Python handlers and
 //! templates.
@@ -141,6 +144,12 @@ const TESTHARNESS_DIRECTORIES: &[(&str, &str)] = &[
     // window, but for the directories of [`CANVAS_LEFT_OUT`].
     ("html/canvas/element", ""),
     ("html/canvas/offscreen", ""),
+    // Workers and messages (M31): dedicated workers, channel messaging
+    // without frames, and the structured clone.
+    ("workers", ""),
+    ("webmessaging", ""),
+    ("html/infrastructure/safe-passing-of-structured-data", ""),
+    ("html/webappapis/structured-clone", ""),
 ];
 
 /// The directories of the canvas's tests left out, and why: what the
@@ -152,7 +161,6 @@ const CANVAS_LEFT_OUT: &[(&str, &str)] = &[
     ("/global-hdr-headroom/", "HDR (G81)"),
     ("/video/", "video (with media)"),
     ("/layers/", "layers (beginLayer, not in the standard)"),
-    ("/canvas-host/", "transferControlToOffscreen (G81)"),
     ("/manual/", "the manual reftests (by the reftest rule)"),
 ];
 
@@ -179,6 +187,12 @@ const SUPPORT_DIRECTORIES: &[&str] = &[
     "webstorage/resources",
     "html/canvas/resources",
     "images",
+    // M31's directories whole: the scripts a test's workers run are named
+    // in its scripts, not by its markup.
+    "workers",
+    "webmessaging",
+    "html/infrastructure/safe-passing-of-structured-data",
+    "html/webappapis/structured-clone",
 ];
 
 /// How deep `@import`s may go; the engine fetches no deeper.
@@ -347,10 +361,12 @@ fn pull(checkout: &Path) -> Result<(), String> {
                 continue;
             }
             match take_testharness(checkout, &rel) {
-                Ok((page, long, needs)) => {
-                    let (name, line) = manifest_line(&page, &Kind::Testharness { long });
-                    *counts.entry(name).or_default() += 1;
-                    manifest.push(line);
+                Ok((pages, long, needs)) => {
+                    for page in pages {
+                        let (name, line) = manifest_line(&page, &Kind::Testharness { long });
+                        *counts.entry(name).or_default() += 1;
+                        manifest.push(line);
+                    }
                     files.insert(rel);
                     files.extend(needs);
                 }
@@ -491,13 +507,17 @@ fn walk_all(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
 }
 
 /// Whether the file `name` is a testharness test, as wptserve names
-/// them: an `.any.js` or `.window.js` test, or a page.
+/// them: an `.any.js`, `.window.js` or `.worker.js` test (M31), or a
+/// page.
 fn is_testharness_test(name: &str) -> bool {
     let page = [".html", ".htm", ".xhtml"]
         .iter()
         .any(|ext| name.ends_with(ext));
     let stem = name.split('.').next().unwrap_or(name);
-    (name.ends_with(".any.js") || name.ends_with(".window.js") || page)
+    (name.ends_with(".any.js")
+        || name.ends_with(".window.js")
+        || name.ends_with(".worker.js")
+        || page)
         && !stem.ends_with("-manual")
         && !stem.ends_with("-ref")
 }
@@ -507,7 +527,10 @@ fn is_testharness_test(name: &str) -> bool {
 fn metas(source: &str) -> Vec<(String, String)> {
     let mut metas = Vec::new();
     for line in source.lines().map(str::trim) {
-        let Some(meta) = line.strip_prefix("// META:") else {
+        let Some(meta) = line
+            .strip_prefix("//")
+            .and_then(|rest| rest.trim_start().strip_prefix("META:"))
+        else {
             if line.is_empty() || line.starts_with("//") {
                 continue;
             }
@@ -518,6 +541,49 @@ fn metas(source: &str) -> Vec<(String, String)> {
         }
     }
     metas
+}
+
+/// The directories of M31's tests: held to [`workers_rule`] besides.
+const WORKER_DIRECTORIES: &[&str] = &[
+    "workers/",
+    "webmessaging/",
+    "html/infrastructure/safe-passing-of-structured-data/",
+    "html/webappapis/structured-clone/",
+];
+
+/// Fails on what M31 leaves to others (docs/design/workers.md, section
+/// 2): a module worker, a `blob:` URL, a `SharedArrayBuffer` and a
+/// `BroadcastChannel`; a `helper` script's `SharedArrayBuffer` taken, as
+/// `/common/sab.js` makes one only when a test asks.
+fn workers_rule(text: &str, helper: bool) -> Result<(), String> {
+    let module = [
+        "type: 'module'",
+        "type: \"module\"",
+        "type:'module'",
+        "type:\"module\"",
+    ];
+    if module.iter().any(|m| text.contains(m)) {
+        return Err("a module worker (G41)".to_string());
+    }
+    if text.contains("createObjectURL") {
+        return Err("a blob: URL (G68)".to_string());
+    }
+    if !helper && (text.contains("SharedArrayBuffer") || text.contains("Atomics.")) {
+        return Err("SharedArrayBuffer (G83)".to_string());
+    }
+    if text.contains("BroadcastChannel") {
+        return Err("BroadcastChannel (G84)".to_string());
+    }
+    Ok(())
+}
+
+/// A script's text without its `//` comment lines: a generated worker
+/// test names its generator (`gentest.py`) in them (M31).
+fn without_line_comments(text: &str) -> String {
+    text.lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// `text` without its HTML comments: what a generated test says it was
@@ -547,11 +613,11 @@ fn served_here(text: &str) -> Result<(), String> {
     if text.contains("pipe=") {
         return Err("wptserve pipe".to_string());
     }
-    if ["new Worker(", "SharedWorker(", "serviceWorker"]
+    if ["SharedWorker", "serviceWorker", "ServiceWorker"]
         .iter()
         .any(|worker| text.contains(worker))
     {
-        return Err("a worker's global".to_string());
+        return Err("a shared or service worker".to_string());
     }
     // In any case: a tag name is (`createElement("IFRAME")`, M28).
     let lower = text.to_ascii_lowercase();
@@ -583,11 +649,15 @@ fn served_here(text: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The testharness test at `rel`, if the rule takes it: the page the
-/// runner loads (for an `.any.js` or `.window.js` test, the one wptserve
-/// makes of it), whether its timeout is long, and the scripts it loads;
-/// else why it is left out.
-fn take_testharness(checkout: &Path, rel: &str) -> Result<(String, bool, Vec<String>), String> {
+/// The testharness test at `rel`, if the rule takes it: the pages the
+/// runner loads (for an `.any.js`, `.window.js` or `.worker.js` test,
+/// those wptserve makes of it: an `.any.js` one's for a window and for a
+/// dedicated worker, as its `global` says, M31), whether its timeout is
+/// long, and the scripts it loads; else why it is left out.
+fn take_testharness(
+    checkout: &Path,
+    rel: &str,
+) -> Result<(Vec<String>, bool, Vec<String>), String> {
     let name = rel.rsplit('/').next().unwrap_or(rel);
     if name.contains(".sub.") {
         return Err("wptserve substitution (.sub)".to_string());
@@ -595,28 +665,40 @@ fn take_testharness(checkout: &Path, rel: &str) -> Result<(String, bool, Vec<Str
     if name.contains(".https.") || name.contains(".h2.") {
         return Err("https:".to_string());
     }
-    if [
-        ".worker.",
-        ".serviceworker.",
-        ".sharedworker.",
-        ".worker-module.",
-    ]
-    .iter()
-    .any(|worker| name.contains(worker))
+    if [".serviceworker.", ".sharedworker.", ".worker-module."]
+        .iter()
+        .any(|worker| name.contains(worker))
+        || (name.contains(".worker.") && !name.ends_with(".worker.js"))
     {
-        return Err("a worker's global".to_string());
+        return Err("a shared or service worker".to_string());
     }
     let source = fs::read(checkout.join(rel)).map_err(|_| format!("missing file {rel}"))?;
     let source = String::from_utf8_lossy(&source).into_owned();
-    served_here(&without_comments(&source))?;
+    let text = if rel.ends_with(".js") {
+        without_line_comments(&source)
+    } else {
+        without_comments(&source)
+    };
+    served_here(&text)?;
+    let workers = WORKER_DIRECTORIES.iter().any(|d| rel.starts_with(d));
+    if workers {
+        if rel.contains("/broadcastchannel/") {
+            return Err("BroadcastChannel (G84)".to_string());
+        }
+        // A module worker made through a helper, its type a variable:
+        // the test's path names it.
+        if rel.contains("module") {
+            return Err("a module worker (G41)".to_string());
+        }
+        workers_rule(&text, false)?;
+    }
     let mut scripts = Vec::new();
-    let (page, long) = if let Some(stem) = rel
+    let (pages, long) = if let Some(stem) = rel
         .strip_suffix(".any.js")
-        .map(|stem| (stem, ".any.html"))
-        .or_else(|| {
-            rel.strip_suffix(".window.js")
-                .map(|stem| (stem, ".window.html"))
-        }) {
+        .map(|stem| (stem, ".any"))
+        .or_else(|| rel.strip_suffix(".window.js").map(|stem| (stem, ".window")))
+        .or_else(|| rel.strip_suffix(".worker.js").map(|stem| (stem, ".worker")))
+    {
         let metas = metas(&source);
         let globals: Vec<&str> = metas
             .iter()
@@ -624,12 +706,26 @@ fn take_testharness(checkout: &Path, rel: &str) -> Result<(String, bool, Vec<Str
             .flat_map(|(_, value)| value.split(','))
             .map(str::trim)
             .collect();
-        if rel.ends_with(".any.js")
-            && !globals.is_empty()
-            && !globals.iter().any(|g| matches!(*g, "window" | "default"))
-        {
-            return Err("not for a window".to_string());
-        }
+        // An `.any.js` test is for a window and a dedicated worker when
+        // it names no global, as wptserve's default is.
+        let names =
+            |wanted: &[&str]| globals.is_empty() || globals.iter().any(|g| wanted.contains(g));
+        let pages = match stem.1 {
+            ".any" => {
+                let mut pages = Vec::new();
+                if names(&["window", "default"]) {
+                    pages.push(format!("{}.any.html", stem.0));
+                }
+                if names(&["worker", "dedicatedworker", "default"]) {
+                    pages.push(format!("{}.any.worker.html", stem.0));
+                }
+                if pages.is_empty() {
+                    return Err("not for a window or a dedicated worker".to_string());
+                }
+                pages
+            }
+            kind => vec![format!("{}{kind}.html", stem.0)],
+        };
         for (name, value) in &metas {
             if name == "script" {
                 scripts.push(resolve(rel, value)?);
@@ -638,7 +734,7 @@ fn take_testharness(checkout: &Path, rel: &str) -> Result<(String, bool, Vec<Str
         let long = metas
             .iter()
             .any(|(name, value)| name == "timeout" && value == "long");
-        (format!("{}{}", stem.0, stem.1), long)
+        (pages, long)
     } else {
         let node = html::parse_document(&source).map_err(|e| format!("unparsed page: {e:?}"))?;
         let document = Document::from_node(&node);
@@ -671,7 +767,7 @@ fn take_testharness(checkout: &Path, rel: &str) -> Result<(String, bool, Vec<Str
         if !harness {
             return Err("not a testharness test".to_string());
         }
-        (rel.to_string(), long)
+        (vec![rel.to_string()], long)
     };
     for script in &scripts {
         if script.contains(".sub.") {
@@ -684,9 +780,13 @@ fn take_testharness(checkout: &Path, rel: &str) -> Result<(String, bool, Vec<Str
             continue;
         }
         let text = fs::read(checkout.join(script)).map_err(|_| format!("missing file {script}"))?;
-        served_here(&String::from_utf8_lossy(&text))?;
+        let text = String::from_utf8_lossy(&text);
+        served_here(&text)?;
+        if workers {
+            workers_rule(&text, true)?;
+        }
     }
-    Ok((page, long, scripts))
+    Ok((pages, long, scripts))
 }
 
 /// `path` relative to the checkout, with `/` between its parts.
@@ -1984,13 +2084,15 @@ fn readme(
          ```\n\n\
          which rewrites them, `MANIFEST` and this file. `tests/wpt.rs` runs\n\
          them; `expectations.txt` names those expected to fail, and why.\n\n\
-         With them are the testharness.js tests of {testharness} (M27, M29) that\n\
-         the runner's one server can serve: no Python handler, no `.sub`\n\
-         template, no other host, nothing over `https:` and no worker's\n\
-         global. `resources/testharness.js` is the real one; the runner\n\
-         serves its own `testharnessreport.js`, and the page wptserve\n\
-         makes of an `.any.js` or `.window.js` test. Each subtest they\n\
-         fail is named in `expectations.txt`, and why.\n\n\
+         With them are the testharness.js tests of {testharness} (M27, M29, M31)\n\
+         that the runner's one server can serve: no Python handler, no `.sub`\n\
+         template, no other host, nothing over `https:`, no shared or\n\
+         service worker and no module worker. `resources/testharness.js` is\n\
+         the real one; the runner serves its own `testharnessreport.js`, and\n\
+         the pages wptserve makes of an `.any.js` test (for a window and,\n\
+         as its `global` says, a dedicated worker), a `.window.js` test or a\n\
+         `.worker.js` test, and an `.any.js` test's worker script. Each\n\
+         subtest they fail is named in `expectations.txt`, and why.\n\n\
          ## Taken\n\n\
          | Kind | Tests |\n\
          | --- | ---: |\n"
@@ -2220,36 +2322,116 @@ mod tests {
                 ("fetch/a/s.https.any.js", "test(() => {});"),
                 ("fetch/a/t.sub.any.js", "test(() => {});"),
                 ("fetch/a/none.html", "<p>no harness</p>"),
+                // M31's: workers.
+                ("fetch/a/shared.any.js", "new SharedWorker('w.js');"),
+                (
+                    "fetch/a/only.any.js",
+                    "// META: global=sharedworker\ntest(() => {});",
+                ),
+                (
+                    "fetch/a/gen.worker.js",
+                    "// generated by gentest.py\nimportScripts('/resources/testharness.js');\n\
+                     test(() => {});\ndone();",
+                ),
+                ("fetch/a/x.sharedworker.html", &format!("{harness}<p>")),
+                ("fetch/a/blob.any.js", "URL.createObjectURL(new Blob([]));"),
+                (
+                    "workers/a/blob.any.js",
+                    "URL.createObjectURL(new Blob([]));",
+                ),
+                (
+                    "workers/a/module.html",
+                    &format!("{harness}<script>new Worker('w.js', {{ type: 'module' }});</script>"),
+                ),
+                ("workers/a/sab.any.js", "new SharedArrayBuffer(8);"),
+                ("workers/a/bc.any.js", "new BroadcastChannel('b');"),
+                (
+                    "workers/a/helped.any.js",
+                    "// META: script=/common/sab.js\ntest(() => {});",
+                ),
+                (
+                    "common/sab.js",
+                    "function make(type) { return new SharedArrayBuffer(8); }",
+                ),
             ],
         );
         let take = |rel: &str| take_testharness(&checkout.0, rel);
+        let pages = |names: &[&str]| names.iter().map(ToString::to_string).collect::<Vec<_>>();
+        // An `.any.js` test is a window's and a dedicated worker's unless
+        // its `global` says otherwise (M31).
         assert_eq!(
             take("fetch/a/t.any.js"),
             Ok((
-                "fetch/a/t.any.html".to_string(),
+                pages(&["fetch/a/t.any.html", "fetch/a/t.any.worker.html"]),
                 true,
                 vec!["fetch/r/u.js".to_string()]
             ))
         );
         assert_eq!(
             take("fetch/a/w.window.js"),
-            Ok(("fetch/a/w.window.html".to_string(), false, vec![]))
+            Ok((pages(&["fetch/a/w.window.html"]), false, vec![]))
         );
         assert_eq!(
             take("fetch/a/p.html"),
             Ok((
-                "fetch/a/p.html".to_string(),
+                pages(&["fetch/a/p.html"]),
                 false,
                 vec!["fetch/a/h.js".to_string()]
             ))
         );
+        assert_eq!(
+            take("fetch/a/worker.any.js"),
+            Ok((pages(&["fetch/a/worker.any.worker.html"]), false, vec![]))
+        );
+        assert_eq!(
+            take("fetch/a/made.any.js"),
+            Ok((
+                pages(&["fetch/a/made.any.html", "fetch/a/made.any.worker.html"]),
+                false,
+                vec![]
+            ))
+        );
+        // A generated worker test's comments name no file it loads.
+        assert_eq!(
+            take("fetch/a/gen.worker.js"),
+            Ok((pages(&["fetch/a/gen.worker.html"]), false, vec![]))
+        );
+        // A helper that makes a SharedArrayBuffer only when asked.
+        assert_eq!(
+            take("workers/a/helped.any.js"),
+            Ok((
+                pages(&[
+                    "workers/a/helped.any.html",
+                    "workers/a/helped.any.worker.html"
+                ]),
+                false,
+                vec!["common/sab.js".to_string()]
+            ))
+        );
+        // What M31 leaves to others, in its own directories only.
+        assert_eq!(
+            take("fetch/a/blob.any.js"),
+            Ok((
+                pages(&["fetch/a/blob.any.html", "fetch/a/blob.any.worker.html"]),
+                false,
+                vec![]
+            ))
+        );
         for (rel, why) in [
-            ("fetch/a/worker.any.js", "not for a window"),
             ("fetch/a/py.any.js", "Python handler"),
             ("fetch/a/inc.any.js", "Python handler"),
             ("fetch/a/host.any.js", "another host"),
             ("fetch/a/pipe.any.js", "wptserve pipe"),
-            ("fetch/a/made.any.js", "a worker's global"),
+            ("fetch/a/shared.any.js", "a shared or service worker"),
+            (
+                "fetch/a/only.any.js",
+                "not for a window or a dedicated worker",
+            ),
+            ("fetch/a/x.sharedworker.html", "a shared or service worker"),
+            ("workers/a/blob.any.js", "a blob: URL (G68)"),
+            ("workers/a/module.html", "a module worker (G41)"),
+            ("workers/a/sab.any.js", "SharedArrayBuffer (G83)"),
+            ("workers/a/bc.any.js", "BroadcastChannel (G84)"),
             ("fetch/a/frame.any.js", "a frame"),
             ("fetch/a/upper.any.js", "a frame"),
             ("fetch/a/f.html", "a frame"),
@@ -2260,6 +2442,7 @@ mod tests {
             assert_eq!(take(rel), Err(why.to_string()), "{rel}");
         }
         assert!(is_testharness_test("t.any.js") && is_testharness_test("p.html"));
+        assert!(is_testharness_test("t.worker.js"));
         assert!(!is_testharness_test("u.js") && !is_testharness_test("m-manual.html"));
     }
 
@@ -2292,7 +2475,7 @@ mod tests {
         assert_eq!(
             take("html/canvas/element/a/t.html"),
             Ok((
-                "html/canvas/element/a/t.html".to_string(),
+                vec!["html/canvas/element/a/t.html".to_string()],
                 false,
                 vec!["html/canvas/resources/canvas-tests.js".to_string()]
             ))

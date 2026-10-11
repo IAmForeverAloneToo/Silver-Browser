@@ -314,7 +314,10 @@ add_completion_callback(function (tests, status) {
 fn wrapper(name: &str, source: &str, any: bool) -> String {
     let mut head = String::new();
     for line in source.lines().map(str::trim) {
-        let Some(meta) = line.strip_prefix("// META:") else {
+        let Some(meta) = line
+            .strip_prefix("//")
+            .and_then(|rest| rest.trim_start().strip_prefix("META:"))
+        else {
             if line.is_empty() || line.starts_with("//") {
                 continue;
             }
@@ -343,6 +346,68 @@ fn wrapper(name: &str, source: &str, any: bool) -> String {
          <script src=\"/resources/testharnessreport.js\"></script>\n{head}\
          <div id=log></div>\n<script src=\"{}\"></script>\n",
         escape(name)
+    )
+}
+
+/// A test's text, its bytes that are no UTF-8 replaced: a test may hold
+/// some on purpose (M31's encodings tests).
+fn read_lossy(path: &Path) -> std::io::Result<String> {
+    fs::read(path).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// The page wptserve makes of a test for a dedicated worker (M31): the
+/// harness, which takes the tests the worker `script` runs and reports.
+fn worker_page(script: &str, source: &str) -> String {
+    let mut head = String::new();
+    for line in source.lines().map(str::trim) {
+        let Some(meta) = line
+            .strip_prefix("//")
+            .and_then(|rest| rest.trim_start().strip_prefix("META:"))
+        else {
+            if line.is_empty() || line.starts_with("//") {
+                continue;
+            }
+            break;
+        };
+        if let Some(("title", title)) = meta.trim().split_once('=') {
+            let _ = writeln!(head, "<title>{}</title>", escape(title.trim()));
+        }
+    }
+    format!(
+        "<!doctype html>\n<meta charset=utf-8>\n{head}\
+         <script src=\"/resources/testharness.js\"></script>\n\
+         <script src=\"/resources/testharnessreport.js\"></script>\n\
+         <div id=log></div>\n\
+         <script>\nfetch_tests_from_worker(new Worker(\"{}\"));\n</script>\n",
+        escape(script)
+    )
+}
+
+/// The script wptserve makes of an `.any.js` test for a dedicated worker
+/// (M31): `self.GLOBAL`, the harness and the scripts its `// META:`
+/// lines name, imported, then the test, then `done()`.
+fn worker_script(name: &str, source: &str) -> String {
+    let mut imports = String::new();
+    for line in source.lines().map(str::trim) {
+        let Some(meta) = line
+            .strip_prefix("//")
+            .and_then(|rest| rest.trim_start().strip_prefix("META:"))
+        else {
+            if line.is_empty() || line.starts_with("//") {
+                continue;
+            }
+            break;
+        };
+        if let Some(("script", src)) = meta.trim().split_once('=') {
+            let _ = writeln!(imports, "importScripts({:?});", src.trim());
+        }
+    }
+    format!(
+        "self.GLOBAL = {{\n  isWindow: function() {{ return false; }},\n  \
+         isWorker: function() {{ return true; }},\n  \
+         isShadowRealm: function() {{ return false; }},\n}};\n\
+         importScripts(\"/resources/testharness.js\");\n{imports}\
+         importScripts({name:?});\ndone();\n"
     )
 }
 
@@ -375,12 +440,35 @@ fn serve(root: PathBuf, harness: bool) -> TestServer {
             _ => {}
         }
         if harness && !root.join(file).is_file() {
+            // A test for a dedicated worker (M31): its page, and an
+            // `.any.js` one's script.
+            let worker = file
+                .strip_suffix(".any.worker.html")
+                .map(|stem| (stem, ".any.js", ".any.worker.js"))
+                .or_else(|| {
+                    file.strip_suffix(".worker.html")
+                        .map(|stem| (stem, ".worker.js", ".worker.js"))
+                });
+            if let Some((stem, test, script)) = worker
+                && let Ok(source) = read_lossy(&root.join(format!("{stem}{test}")))
+            {
+                let name = format!("{}{script}", stem.rsplit('/').next().unwrap_or(stem));
+                let page = worker_page(&name, &source);
+                return Reply::ok("text/html; charset=utf-8", page.as_bytes());
+            }
+            if let Some(stem) = file.strip_suffix(".any.worker.js")
+                && let Ok(source) = read_lossy(&root.join(format!("{stem}.any.js")))
+            {
+                let name = format!("{}.any.js", stem.rsplit('/').next().unwrap_or(stem));
+                let script = worker_script(&name, &source);
+                return Reply::ok("text/javascript", script.as_bytes());
+            }
             for (page, script, any) in [
                 (".any.html", ".any.js", true),
                 (".window.html", ".window.js", false),
             ] {
                 if let Some(stem) = file.strip_suffix(page)
-                    && let Ok(source) = fs::read_to_string(root.join(format!("{stem}{script}")))
+                    && let Ok(source) = read_lossy(&root.join(format!("{stem}{script}")))
                 {
                     let name = format!("{}{script}", stem.rsplit('/').next().unwrap_or(stem));
                     let page = wrapper(&name, &source, any);
@@ -860,6 +948,11 @@ fn run_testharness(server: &TestServer, path: &str, long: bool) -> Outcome {
             let _ = woken.recv_timeout(left.min(Duration::from_millis(100)));
             continue;
         }
+        // A page's workers run in real time (M31): what they send is
+        // waited for a little before the page's clock moves on.
+        if engine.has_workers() && woken.recv_timeout(Duration::from_millis(20)).is_ok() {
+            continue;
+        }
         match next_time(
             now,
             engine.needs_frame(),
@@ -867,12 +960,15 @@ fn run_testharness(server: &TestServer, path: &str, long: bool) -> Outcome {
             engine.next_task_at(),
         ) {
             Some(at) => clock.set(at),
-            // Only the network or a decoder can change anything now.
+            // Only the network, a decoder or a worker can change
+            // anything now; a worker may take its time.
             None => {
-                if woken
-                    .recv_timeout(left.min(Duration::from_secs(1)))
-                    .is_err()
-                {
+                let quiet = if engine.has_workers() {
+                    left
+                } else {
+                    left.min(Duration::from_secs(1))
+                };
+                if woken.recv_timeout(quiet).is_err() {
                     return Outcome::fail("TIMEOUT: nothing left to wait for".to_string());
                 }
             }

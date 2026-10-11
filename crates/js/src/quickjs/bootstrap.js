@@ -2248,6 +2248,8 @@
   const dataViewLength = uncurry(getOwnPropertyDescriptor(DataView.prototype, "byteLength").get);
   const bufferLength = uncurry(getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength").get);
   const ArrayBufferSlice = uncurry(ArrayBuffer.prototype.slice);
+  const goneGetter = getOwnPropertyDescriptor(ArrayBuffer.prototype, "detached");
+  const bufferGone = goneGetter === undefined ? () => false : uncurry(goneGetter.get);
   const IsView = ArrayBuffer.isView;
   const MathFloor = Math.floor;
   const MathMax = Math.max;
@@ -2297,11 +2299,15 @@
   // the buffer source"), or undefined for a value that is none.
   function bufferBytes(value) {
     if (isBuffer(value)) {
-      return new $Uint8Array(ArrayBufferSlice(value, 0));
+      return bufferGone(value) ? new $Uint8Array(0) : new $Uint8Array(ArrayBufferSlice(value, 0));
     }
     if (typeof value === "object" && value !== null && IsView(value)) {
       const typed = isTypedArray(value);
       const buffer = typed ? viewBuffer(value) : dataViewBuffer(value);
+      // A detached buffer's copy is empty.
+      if (bufferGone(buffer)) {
+        return new $Uint8Array(0);
+      }
       const offset = typed ? viewOffset(value) : dataViewOffset(value);
       const length = typed ? viewLength(value) : dataViewLength(value);
       return new $Uint8Array(ArrayBufferSlice(buffer, offset, offset + length));
@@ -2759,7 +2765,7 @@
   class FormData {
     #entries = [];
 
-    constructor(form, submitter) {
+    constructor(form = undefined, submitter = undefined) {
       if (form !== undefined) {
         if (!isNode(form)) {
           throw new $TypeError(
@@ -4325,7 +4331,7 @@
     set timeout(value) {
       this.#state;
       const ms = unsigned(value);
-      if (!this.#async && this.#state !== UNSENT) {
+      if (!WORKER && !this.#async && this.#state !== UNSENT) {
         throw new $DOMException(
           "Failed to set the 'timeout' property on 'XMLHttpRequest': Timeouts cannot be set for synchronous requests made from a document.",
           "InvalidAccessError",
@@ -4368,7 +4374,7 @@
       if (password !== undefined && password !== null) {
         str(password);
       }
-      if (!isAsync && (this.#timeout !== 0 || this.#responseType !== "")) {
+      if (!WORKER && !isAsync && (this.#timeout !== 0 || this.#responseType !== "")) {
         throw domError(
           "InvalidAccessError",
           "Synchronous requests from a document must not set a timeout or a response type.",
@@ -4632,13 +4638,14 @@
     set responseType(value) {
       const type = str(value);
       if (!within(RESPONSE_TYPES, type)) return;
+      if (WORKER && type === "document") return;
       if (this.#state === LOADING || this.#state === DONE) {
         throw new $DOMException(
           "Failed to set the 'responseType' property on 'XMLHttpRequest': The response type cannot be set if the object's state is LOADING or DONE.",
           "InvalidStateError",
         );
       }
-      if (!this.#async && this.#state !== UNSENT) {
+      if (!WORKER && !this.#async && this.#state !== UNSENT) {
         throw new $DOMException(
           "Failed to set the 'responseType' property on 'XMLHttpRequest': The response type cannot be changed for synchronous requests made from a document.",
           "InvalidAccessError",
@@ -4726,6 +4733,10 @@
   expose(XMLHttpRequestEventTarget, "XMLHttpRequestEventTarget");
   expose(XMLHttpRequestUpload, "XMLHttpRequestUpload");
   expose(XMLHttpRequest, "XMLHttpRequest");
+  // `responseXML` is the window's alone (XHR Standard 4.8).
+  if (WORKER) {
+    ReflectDeleteProperty(XMLHttpRequest.prototype, "responseXML");
+  }
 
   // A header list as pairs, from the natives' names and values.
   function pairsFrom(flat) {
@@ -8315,9 +8326,19 @@
   // The global is tagged by its prototype, not by QuickJS-ng's own tag.
   ReflectDeleteProperty(global, toStringTag);
   if (WORKER) {
+    // [Replaceable] (HTML section 10.2.1.2): a script's own `name`
+    // replaces it.
     defineProperty(global, "name", {
       get() {
         return WORKER_NAME;
+      },
+      set(value) {
+        defineProperty(global, "name", {
+          value,
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
       },
       enumerable: true,
       configurable: true,
@@ -11796,6 +11817,11 @@
   function imageSource(value, m) {
     const t = value !== null && typeof value === "object" ? WeakMapGet(canvasTargets, value) : undefined;
     if (t !== undefined && t.kind === 1) {
+      // One transferred away is detached (HTML's "check the usability
+      // of the image argument").
+      if (t.detached) {
+        throw new $DOMException(prefix(m, CTX) + "The image source is detached.", "InvalidStateError");
+      }
       return [3, t.id];
     }
     if (t !== undefined && t.kind === 5) {
@@ -12234,6 +12260,14 @@
   const DataViewBuffer = uncurry(getOwnPropertyDescriptor(DataView.prototype, "buffer").get);
   const DataViewOffset = uncurry(getOwnPropertyDescriptor(DataView.prototype, "byteOffset").get);
   const DataViewLength = uncurry(getOwnPropertyDescriptor(DataView.prototype, "byteLength").get);
+  // A resizable buffer's bound, and whether a view is out of its
+  // buffer's bounds: the methods that validate a view throw for one.
+  const resizableGetter = getOwnPropertyDescriptor(ArrayBuffer.prototype, "resizable");
+  const ArrayBufferResizable = resizableGetter === undefined ? undefined
+    : uncurry(resizableGetter.get);
+  const maxGetter = getOwnPropertyDescriptor(ArrayBuffer.prototype, "maxByteLength");
+  const ArrayBufferMax = maxGetter === undefined ? undefined : uncurry(maxGetter.get);
+  const TypedArrayKeys = uncurry(TYPED_ARRAY.keys);
   const MapSize = uncurry(getOwnPropertyDescriptor(Map.prototype, "size").get);
   const SetSize = uncurry(getOwnPropertyDescriptor(Set.prototype, "size").get);
   const SetForEach = uncurry(Set.prototype.forEach);
@@ -12387,7 +12421,12 @@
   function serialize(value, transfer, where, source) {
     const memory = new $Map();
     const entries = [];
+    // Each index and object of the list, buffers apart.
     const buffers = [];
+    const others = [];
+    // The list first: what can be transferred, and nothing twice. What
+    // went before (detached, neutered) is found once the value is
+    // serialized, which may make it so, as the standard orders it.
     for (let i = 0; i < transfer.length; i++) {
       const t = transfer[i];
       if (MapHas(memory, t)) {
@@ -12396,43 +12435,74 @@
           (what === "ArrayBuffer" ? "ArrayBuffer." : "port."));
       }
       if (branded(ArrayBufferByteLength, t)) {
-        if (isDetached(t)) {
-          throw dataCloneError(where, "ArrayBuffer at index " + i + " is already detached.");
-        }
-        MapSet(memory, t, entries.length);
-        ArrayPush(entries, null);
-        ArrayPush(buffers, t);
-        continue;
-      }
-      const placed = transferEntry(t, i, where, source, entries.length);
-      if (placed === undefined) {
+        ArrayPush(buffers, i, t);
+      } else if (transferable(t, i, where, source)) {
+        ArrayPush(others, i, t);
+      } else {
         throw dataCloneError(where, "Value at index " + i + " does not have a transferable type.");
       }
       MapSet(memory, t, entries.length);
-      ArrayPush(entries, placed);
+      ArrayPush(entries, null);
     }
     const root = codeOf(value, memory, entries, where);
-    // The transferred buffers' bytes, then the buffers detached.
-    for (let i = 0; i < buffers.length; i++) {
-      const at = MapGet(memory, buffers[i]);
-      entries[at] = [BUFFER, TypedArraySlice(new $Uint8Array(buffers[i])), null];
+    for (let k = 0; k < buffers.length; k += 2) {
+      if (isDetached(buffers[k + 1])) {
+        throw dataCloneError(where, "ArrayBuffer at index " + buffers[k] + " is already detached.");
+      }
     }
-    for (let i = 0; i < buffers.length; i++) {
-      native.wasmDetach(buffers[i]);
+    for (let k = 0; k < others.length; k += 2) {
+      entries[MapGet(memory, others[k + 1])] = transferEntry(others[k + 1], others[k], where);
+    }
+    // The transferred buffers' bytes, then the buffers detached.
+    for (let k = 0; k < buffers.length; k += 2) {
+      const at = MapGet(memory, buffers[k + 1]);
+      entries[at] = [BUFFER, TypedArraySlice(new $Uint8Array(buffers[k + 1])),
+        bufferMax(buffers[k + 1])];
+    }
+    for (let k = 0; k < buffers.length; k += 2) {
+      native.wasmDetach(buffers[k + 1]);
     }
     transferred(entries);
     return [root, entries];
   }
 
-  // A transfer's entry for what is not a buffer, or undefined for what
-  // cannot be transferred: ports (M31.5) and offscreen canvases (M31.4)
-  // define it, the steps that make them.
+  // Whether what is not a buffer can be transferred (its type, and not
+  // the port posting), and its entry once the value is serialized, or
+  // the refusal of one that went: ports (M31.5) and offscreen canvases
+  // (M31.4) define them, the steps that make them.
+  let transferable = function () {
+    return false;
+  };
   let transferEntry = function () {
     return undefined;
   };
   // What a transfer does once the record is made: the steps that
   // define transferable objects hook in.
   let transferred = function () {};
+
+  // A buffer's `maxByteLength` when it is resizable, else null: what
+  // its entry keeps beside its bytes.
+  function bufferMax(buffer) {
+    if (ArrayBufferResizable === undefined || !ArrayBufferResizable(buffer)) {
+      return null;
+    }
+    return ArrayBufferMax(buffer);
+  }
+
+  // Whether a view is out of its buffer's bounds, its buffer detached or
+  // shrunk under it (ECMAScript's IsArrayBufferViewOutOfBounds).
+  function outOfBounds(view, typed) {
+    try {
+      if (typed) {
+        TypedArrayKeys(view);
+      } else {
+        DataViewLength(view);
+      }
+      return false;
+    } catch {
+      return true;
+    }
+  }
 
   function isDetached(buffer) {
     if (ArrayBufferDetached !== undefined) {
@@ -12511,10 +12581,13 @@
       if (isDetached(value)) {
         throw dataCloneError(where, "An ArrayBuffer is detached and could not be cloned.");
       }
-      return [BUFFER, TypedArraySlice(new $Uint8Array(value)), null];
+      return [BUFFER, TypedArraySlice(new $Uint8Array(value)), bufferMax(value)];
     }
     if (ArrayBufferIsView(value)) {
       const tag = TypedArrayTag(value);
+      if (outOfBounds(value, tag !== undefined)) {
+        throw dataCloneError(where, "An ArrayBuffer is detached and could not be cloned.");
+      }
       if (tag !== undefined) {
         const buffer = codeOf(TypedArrayBuffer(value), memory, entries, where);
         return [VIEW, tag, buffer[1], TypedArrayOffset(value), TypedArrayCount(value)];
@@ -12729,7 +12802,8 @@
         object = new $RegExp(e[1], e[2]);
         break;
       case BUFFER: {
-        object = new $ArrayBuffer(TypedArrayLength(e[1]));
+        object = e[2] === null || e[2] === undefined ? new $ArrayBuffer(TypedArrayLength(e[1]))
+          : new $ArrayBuffer(TypedArrayLength(e[1]), { maxByteLength: e[2] });
         TypedArraySet(new $Uint8Array(object), e[1]);
         break;
       }
@@ -13360,13 +13434,20 @@
 
   // A port in a message's transfer list: its entry, unless it is the
   // port posting or one already transferred or closed.
-  const transferOther = transferEntry;
-  transferEntry = function (t, i, where, source, at) {
+  const transferableOther = transferable;
+  transferable = function (t, i, where, source) {
     if (!isPort(t)) {
-      return transferOther(t, i, where, source, at);
+      return transferableOther(t, i, where, source);
     }
     if (t === source) {
       throw dataCloneError(where, "Port at index " + i + " contains the source port.");
+    }
+    return true;
+  };
+  const transferOther = transferEntry;
+  transferEntry = function (t, i, where) {
+    if (!isPort(t)) {
+      return transferOther(t, i, where);
     }
     if (portGone(t)) {
       throw dataCloneError(where, "Port at index " + i + " is already neutered.");
@@ -13477,11 +13558,16 @@
   // context or went already. Once the record is made it is detached
   // here, its entry naming its placeholder, and made again where the
   // message arrives.
+  const transferableBefore = transferable;
+  transferable = function (t, i, where, source) {
+    const target = WeakMapGet(canvasTargets, t);
+    return (target !== undefined && target.kind === 1) || transferableBefore(t, i, where, source);
+  };
   const transferBefore = transferEntry;
-  transferEntry = function (t, i, where, source, at) {
+  transferEntry = function (t, i, where) {
     const target = WeakMapGet(canvasTargets, t);
     if (target === undefined || target.kind !== 1) {
-      return transferBefore(t, i, where, source, at);
+      return transferBefore(t, i, where);
     }
     if (target.detached) {
       throw dataCloneError(where, "OffscreenCanvas at index " + i + " is already detached.");

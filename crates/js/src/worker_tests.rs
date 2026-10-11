@@ -225,3 +225,10 @@ fn a_workers_realm_has_no_step_budget_but_stops_when_told() {
     assert_eq!(error.kind, ErrorKind::Budget);
     setter.join().expect("the setter ends");
 }
+
+#[test]
+fn a_workers_name_is_replaceable() {
+    // As a test's `for (var name in ...)` sets it.
+    let lines = in_worker("name = 'mine'; console.log(name, self.name);");
+    assert_eq!(lines, ["mine mine"]);
+}

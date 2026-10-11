@@ -875,8 +875,10 @@ impl DocumentHost {
                 let (Some(page), Some(client)) = (&self.page, &self.client) else {
                     return Err(DomError::not_supported());
                 };
-                let base = page.base_url(&self.document);
-                let url = worker_url(&url, base.as_ref(), page.origin())?;
+                // Parsed as the document's URLs are, its query in the
+                // document's encoding.
+                let parsed = page.resolve(&self.document, &url);
+                let url = worker_url(&url, parsed, page.origin())?;
                 let initiator = page.initiator().ok_or_else(DomError::not_supported)?;
                 let start = Start {
                     url,

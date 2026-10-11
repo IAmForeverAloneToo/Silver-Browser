@@ -936,6 +936,11 @@ impl Scripts {
         }
     }
 
+    /// Whether the document has a worker that has not ended (M31).
+    pub(crate) fn has_workers(&self) -> bool {
+        self.host.workers.workers.any()
+    }
+
     /// The sizes the placeholder canvases are to take (M31.4), taken.
     pub(crate) fn take_placeholder_resizes(&mut self) -> Vec<(NodeId, (u32, u32))> {
         self.host.canvases.take_resizes()
