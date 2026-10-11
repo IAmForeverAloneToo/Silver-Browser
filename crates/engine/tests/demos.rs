@@ -6,7 +6,9 @@
 //! drawing it again; the colour fade's lay out the card alone, the rest
 //! of the page taken from the layout cache. How long the frames take,
 //! sixty a second for ten seconds on each backend, is
-//! `benches/animation.rs`'s to measure.
+//! `benches/animation.rs`'s to measure. M31.5's: the Mandelbrot demo's
+//! workers draw the set the page draws on its own thread, while its
+//! square turns; `benches/workers.rs` times its frames.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -325,4 +327,70 @@ fn the_chart_demo_draws_its_bars_line_labels_and_legend() {
         .count();
     assert!(ink > 10, "{ink} pixels of 'Jan'");
     assert_eq!(at(700, 380), [255, 255, 255]);
+}
+
+/// The Mandelbrot demo with `query` (M31.5), run as the shell runs it, a
+/// frame a tick on the real clock, until the set is drawn: its last
+/// frame, and how many frames before it turned the page's own square.
+fn mandelbrot(query: &str) -> (Vec<u8>, u32) {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/demos/mandelbrot.html");
+    let file = Url::from_file_path(&path).expect("a path");
+    let url = Url::parse(&format!("{file}?{query}")).expect("a URL");
+    let mut engine = engine();
+    engine.set_scripting(true);
+    engine.set_viewport(WIDTH, HEIGHT);
+    let (wake, woken) = std::sync::mpsc::channel();
+    engine.set_waker(move || {
+        let _ = wake.send(());
+    });
+    engine.navigate(url);
+    let start = Instant::now();
+    let deadline = start + Duration::from_secs(120);
+    let square = |frame: &[u8]| {
+        (0..120)
+            .flat_map(|y| (640..760).map(move |x| px(frame, x, y)))
+            .collect::<Vec<_>>()
+    };
+    let (mut turned, mut last) = (0, None);
+    loop {
+        assert!(Instant::now() < deadline, "the set is drawn in time");
+        let _ = woken.recv_timeout(FRAME_BUDGET);
+        engine.poll_network();
+        engine.run_tasks();
+        let frame = engine
+            .frame_at(WIDTH, HEIGHT, FrameTime::at(start.elapsed()))
+            .to_vec();
+        let drawn = engine
+            .take_console()
+            .into_iter()
+            .any(|entry| entry.text.starts_with("set "));
+        if drawn {
+            return (frame, turned);
+        }
+        let now = square(&frame);
+        if engine.load_state() == &LoadState::Loaded && last.as_ref().is_some_and(|l| *l != now) {
+            turned += 1;
+        }
+        last = Some(now);
+    }
+}
+
+#[test]
+fn the_mandelbrot_demos_workers_draw_the_set_the_page_would_while_it_turns() {
+    // M31.5's: four workers compute the set's bands and send them back
+    // in transferred buffers; the page's square turns meanwhile. The
+    // same set as the page computes on its own thread, a band a task.
+    let (by_workers, turned) = mandelbrot("workers=4&iterations=20");
+    assert!(turned >= 2, "the square turned in {turned} frames");
+    // The main cardioid's middle stays bounded, black; the corner, -2.2
+    // and -1, leaves at once.
+    assert_eq!(px(&by_workers, 340, 200), [0, 0, 0]);
+    assert_eq!(px(&by_workers, 0, 0), [9, 4, 135]);
+    let (by_page, _) = mandelbrot("workers=0&iterations=20");
+    let set = |frame: &[u8]| {
+        (0..400)
+            .flat_map(|y| (0..640).map(move |x| px(frame, x, y)))
+            .collect::<Vec<_>>()
+    };
+    assert!(set(&by_workers) == set(&by_page), "the same set either way");
 }

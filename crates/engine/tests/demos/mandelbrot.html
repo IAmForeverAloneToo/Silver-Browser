@@ -1,0 +1,156 @@
+<!doctype html>
+<html>
+<head>
+<title>Mandelbrot</title>
+<style>
+  html, body { margin: 0; background-color: #10141a; }
+  canvas { display: block; float: left; }
+</style>
+</head>
+<body>
+<canvas id="set" width="640" height="400"></canvas>
+<canvas id="spinner" width="120" height="120"></canvas>
+<script id="compute" type="text/plain">
+  // A worker's part: the rows it is asked for, sent back transferred.
+  var width, band, iterations, x0, y0, scale;
+  onmessage = function (e) {
+    if (e.data.setup) {
+      width = e.data.setup[0]; band = e.data.setup[1]; iterations = e.data.setup[2];
+      x0 = e.data.setup[3]; y0 = e.data.setup[4]; scale = e.data.setup[5];
+      return;
+    }
+    var top = e.data.top;
+    var pixels = new Uint8ClampedArray(width * band * 4);
+    for (var row = 0; row < band; row++) {
+      var ci = y0 + (top + row) * scale;
+      for (var column = 0; column < width; column++) {
+        var cr = x0 + column * scale;
+        var zr = 0, zi = 0, n = 0;
+        while (n < iterations && zr * zr + zi * zi <= 4) {
+          var t = zr * zr - zi * zi + cr;
+          zi = 2 * zr * zi + ci;
+          zr = t;
+          n++;
+        }
+        var at = (row * width + column) * 4;
+        if (n === iterations) {
+          pixels[at] = 0; pixels[at + 1] = 0; pixels[at + 2] = 0;
+        } else {
+          pixels[at] = (n * 9) % 256;
+          pixels[at + 1] = (n * 4) % 256;
+          pixels[at + 2] = 128 + (n * 7) % 128;
+        }
+        pixels[at + 3] = 255;
+      }
+    }
+    postMessage({ top: top, buffer: pixels.buffer }, [pixels.buffer]);
+  };
+</script>
+<script>
+  // M31's acceptance (docs/design/workers.md, "Acceptance"): the
+  // Mandelbrot set computed by four workers, each sent bands of rows and
+  // sending back their pixels in transferred buffers, which the page puts
+  // on its canvas, while an animation of its own goes on each frame.
+  // `?workers=0` computes it on the page's own thread, a band a task;
+  // `?iterations=` sets the depth.
+  var canvas = document.getElementById('set');
+  var context = canvas.getContext('2d');
+  var width = canvas.width;
+  var height = canvas.height;
+  var param = function (name, otherwise) {
+    var found = new RegExp('[?&]' + name + '=([0-9]+)').exec(location.search);
+    return found ? Number(found[1]) : otherwise;
+  };
+  var workers = param('workers', 4);
+  var iterations = param('iterations', 200);
+  var band = 20;
+  var view = { x: -2.2, y: -1.0, scale: 3.2 / width };
+  var started = performance.now();
+  var bands = height / band;
+  var done = 0;
+
+  // The pixels of rows `top` to `top + band`, as a worker computes them.
+  var compute = function (top) {
+    var pixels = new Uint8ClampedArray(width * band * 4);
+    for (var row = 0; row < band; row++) {
+      var ci = view.y + (top + row) * view.scale;
+      for (var column = 0; column < width; column++) {
+        var cr = view.x + column * view.scale;
+        var zr = 0, zi = 0, n = 0;
+        while (n < iterations && zr * zr + zi * zi <= 4) {
+          var t = zr * zr - zi * zi + cr;
+          zi = 2 * zr * zi + ci;
+          zr = t;
+          n++;
+        }
+        var at = (row * width + column) * 4;
+        if (n === iterations) {
+          pixels[at] = 0; pixels[at + 1] = 0; pixels[at + 2] = 0;
+        } else {
+          pixels[at] = (n * 9) % 256;
+          pixels[at + 1] = (n * 4) % 256;
+          pixels[at + 2] = 128 + (n * 7) % 128;
+        }
+        pixels[at + 3] = 255;
+      }
+    }
+    return pixels;
+  };
+
+  var put = function (top, pixels) {
+    context.putImageData(new ImageData(pixels, width, band), 0, top);
+    done++;
+    if (done === bands) {
+      console.log('set ' + Math.round(performance.now() - started) + ' ms, ' + frames + ' frames');
+    }
+  };
+
+  if (workers > 0) {
+    var next = 0;
+    var source = document.getElementById('compute').textContent;
+    var url = 'data:text/javascript,' + encodeURIComponent(source);
+    for (var w = 0; w < workers; w++) {
+      var worker = new Worker(url);
+      worker.onmessage = function (e) {
+        put(e.data.top, new Uint8ClampedArray(e.data.buffer));
+        if (next < bands) {
+          this.postMessage({ top: next++ * band });
+        }
+      };
+      worker.postMessage({ setup: [width, band, iterations, view.x, view.y, view.scale] });
+      worker.postMessage({ top: next++ * band });
+    }
+  } else {
+    var row = 0;
+    var step = function () {
+      put(row * band, compute(row * band));
+      row++;
+      if (row < bands) {
+        setTimeout(step, 0);
+      }
+    };
+    setTimeout(step, 0);
+  }
+
+  // The animation of the page's own: a square turning each frame.
+  var spinner = document.getElementById('spinner').getContext('2d');
+  var frames = 0;
+  var spin = function (time) {
+    spinner.fillStyle = '#10141a';
+    spinner.fillRect(0, 0, 120, 120);
+    spinner.save();
+    spinner.translate(60, 60);
+    spinner.rotate(frames * 0.05);
+    spinner.fillStyle = '#f59e0b';
+    spinner.fillRect(-30, -30, 60, 60);
+    spinner.restore();
+    frames++;
+    if (frames % 60 === 0) {
+      console.log('frames ' + frames);
+    }
+    requestAnimationFrame(spin);
+  };
+  requestAnimationFrame(spin);
+</script>
+</body>
+</html>

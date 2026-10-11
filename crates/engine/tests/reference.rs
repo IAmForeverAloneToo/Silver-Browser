@@ -110,8 +110,10 @@ use net::test_server::{Reply, TestServer};
 
 /// How long a page loaded by its URL may take to load and decode.
 const LOAD: Duration = Duration::from_secs(30);
-/// How long a page's workers stay quiet before its clock moves on (M31).
+/// How long a page's workers stay quiet before its clock moves on (M31),
+/// and the longest they are waited for, however often they send.
 const WORKERS_QUIET: Duration = Duration::from_millis(100);
+const WORKERS_LONGEST: Duration = Duration::from_secs(1);
 
 /// The size a page is drawn at unless it says another.
 const WIDTH: u32 = 800;
@@ -302,7 +304,11 @@ fn render(
             wait(&mut engine, &woken, page, |engine| !engine.fetching());
             // A page's workers (M31) run in real time: what they send is
             // taken until they are quiet for a while.
-            while engine.has_workers() && woken.recv_timeout(WORKERS_QUIET).is_ok() {
+            let longest = Instant::now() + WORKERS_LONGEST;
+            while engine.has_workers()
+                && Instant::now() < longest
+                && woken.recv_timeout(WORKERS_QUIET).is_ok()
+            {
                 engine.poll_network();
             }
             engine.run_tasks();

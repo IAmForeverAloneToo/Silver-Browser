@@ -865,6 +865,9 @@ fn status_name(names: &[&'static str], status: u8) -> &'static str {
 /// it: ten seconds, a minute for one whose `timeout` is long.
 const HARNESS_WAIT: Duration = Duration::from_secs(10);
 const HARNESS_WAIT_LONG: Duration = Duration::from_secs(60);
+/// The real time a page with workers is given before each move of its
+/// clock (M31).
+const WORKER_SLICE: Duration = Duration::from_millis(20);
 
 /// The results the report wrote into the page, once it has.
 fn harness_results(engine: &Engine) -> Option<Harness> {
@@ -912,6 +915,8 @@ fn run_testharness(server: &TestServer, path: &str, long: bool) -> Outcome {
         HARNESS_WAIT
     };
     let deadline = Instant::now() + LOAD;
+    // When the page's clock last moved, in real time.
+    let mut moved = Instant::now();
     loop {
         let now = clock.now();
         engine.poll_network();
@@ -949,8 +954,11 @@ fn run_testharness(server: &TestServer, path: &str, long: bool) -> Outcome {
             continue;
         }
         // A page's workers run in real time (M31): what they send is
-        // waited for a little before the page's clock moves on.
-        if engine.has_workers() && woken.recv_timeout(Duration::from_millis(20)).is_ok() {
+        // taken for a slice of real time before the page's clock moves
+        // on, however often they send.
+        let slice = moved.elapsed();
+        if engine.has_workers() && slice < WORKER_SLICE {
+            let _ = woken.recv_timeout(WORKER_SLICE - slice);
             continue;
         }
         match next_time(
@@ -959,7 +967,10 @@ fn run_testharness(server: &TestServer, path: &str, long: bool) -> Outcome {
             engine.next_frame_at(),
             engine.next_task_at(),
         ) {
-            Some(at) => clock.set(at),
+            Some(at) => {
+                clock.set(at);
+                moved = Instant::now();
+            }
             // Only the network, a decoder or a worker can change
             // anything now; a worker may take its time.
             None => {

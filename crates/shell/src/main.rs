@@ -88,6 +88,8 @@ struct Browser {
     asked: Asked,
     /// The window's theme, when the system says it.
     theme: Option<Theme>,
+    /// When the last frame began.
+    drawn: Option<Instant>,
 }
 
 /// The size a surface was last given: it is given another only when
@@ -128,6 +130,7 @@ impl Browser {
             shown: Shown::default(),
             asked,
             theme: None,
+            drawn: None,
         }
     }
 
@@ -142,6 +145,7 @@ impl Browser {
     /// (logged) rather than taking the process down.
     fn draw(&mut self) {
         let began = Instant::now();
+        self.drawn = Some(began);
         let Some(window) = self.window.as_ref() else {
             return;
         };
@@ -212,10 +216,20 @@ impl Browser {
         {
             window.set_ime_cursor_area(PhysicalPosition::new(x, y), PhysicalSize::new(w, h));
         }
-        if self.session.needs_frame() {
+        if self.session.needs_frame() && frame_due(self.drawn, Instant::now()).is_none() {
             window.request_redraw();
         }
     }
+}
+
+/// When a frame the page wants may be drawn, if not now: a frame's
+/// budget after the last began, sixty a second as a display shows them,
+/// since a software surface presents at once, with no vertical sync to
+/// wait on (M31: a light page's animation frames came 270 a second).
+fn frame_due(drawn: Option<Instant>, now: Instant) -> Option<Instant> {
+    drawn
+        .map(|drawn| drawn + FRAME_BUDGET)
+        .filter(|&due| due > now)
 }
 
 impl ApplicationHandler<NetworkWake> for Browser {
@@ -239,10 +253,11 @@ impl ApplicationHandler<NetworkWake> for Browser {
         if let Some(window) = self.window.clone() {
             self.update(&window);
         }
-        let frame = self
-            .session
-            .next_frame_at()
-            .filter(|_| !self.session.needs_frame());
+        // A frame wanted now waits for the next tick.
+        let frame = match self.session.needs_frame() {
+            true => frame_due(self.drawn, Instant::now()).map(|due| due - self.start),
+            false => self.session.next_frame_at(),
+        };
         let at = match (frame, self.session.next_task_at()) {
             (Some(frame), Some(task)) => Some(frame.min(task)),
             (frame, task) => frame.or(task),
@@ -933,6 +948,15 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_wanted_frame_waits_for_a_frames_budget_after_the_last() {
+        let drawn = Instant::now();
+        assert_eq!(frame_due(None, drawn), None);
+        let soon = drawn + Duration::from_millis(5);
+        assert_eq!(frame_due(Some(drawn), soon), Some(drawn + FRAME_BUDGET));
+        assert_eq!(frame_due(Some(drawn), drawn + FRAME_BUDGET), None);
+    }
 
     fn start(args: &[&str]) -> Result<Option<Url>, String> {
         command_line(args.iter().map(OsString::from)).map(|line| line.start)
