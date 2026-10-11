@@ -42,6 +42,13 @@ const FAR: f64 = 1e7;
 /// fuzzing).
 const MAX_STROKE_RESOLUTION: f64 = 65_536.0;
 
+/// How far out, in pixels, a stroke's outline is traced to a quarter of
+/// a pixel: past it, to the step single precision has where the outline
+/// reaches. A circle of radius 1e9 stroked a billion wide made eight
+/// million points and took a second and a half (found by fuzzing); 266
+/// so.
+const FAR_STROKE: f64 = 4_194_304.0;
+
 /// A rectangle of whole pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Area {
@@ -167,8 +174,24 @@ impl Canvas {
         state.transform.invert()?;
         let mut path = user.pruned().to_skia()?;
         // Traced to a device pixel's precision in the user's space, but no
-        // finer than [`MAX_STROKE_RESOLUTION`].
-        let resolution = state.transform.scale().clamp(1.0, MAX_STROKE_RESOLUTION) as f32;
+        // finer than [`MAX_STROKE_RESOLUTION`], nor than the outline's
+        // reach past [`FAR_STROKE`] lets single precision hold.
+        let bounds = path.bounds();
+        let corner = |x: f32, y: f32| {
+            let (x, y) = state.transform.apply(f64::from(x), f64::from(y));
+            x.abs().max(y.abs())
+        };
+        let reach = [
+            corner(bounds.left(), bounds.top()),
+            corner(bounds.right(), bounds.top()),
+            corner(bounds.left(), bounds.bottom()),
+            corner(bounds.right(), bounds.bottom()),
+        ]
+        .into_iter()
+        .fold(0.0, f64::max)
+            + state.line_width * state.transform.scale();
+        let far = (reach / FAR_STROKE).max(1.0);
+        let resolution = (state.transform.scale().max(1.0) / far).min(MAX_STROKE_RESOLUTION) as f32;
         if !state.dash.list.is_empty() && state.dash.list.iter().sum::<f64>() > 0.0 {
             let list: Vec<f32> = state.dash.list.iter().map(|&v| v as f32).collect();
             let dash = StrokeDash::new(list, state.dash.offset as f32)?;

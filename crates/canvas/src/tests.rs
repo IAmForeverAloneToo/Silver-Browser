@@ -1444,6 +1444,26 @@ fn a_stroke_under_a_vast_scale_is_traced_to_a_bounded_precision() {
     canvas.state_mut().dash.set(&[3.0, 2.0]);
     let dashed = canvas.stroke_outline(&user).expect("an outline");
     assert!(dashed.len() < 10_000, "{}", dashed.len());
+    // The fuzzer's again: a circle of radius 1e9 stroked a billion wide,
+    // whose outline reaches billions of pixels out.
+    let mut canvas = Canvas::new(46, 16, false);
+    canvas
+        .with_path(|path, m| path.arc(1.0, 1e9, 1e9, -1.0, -16.0, true, m))
+        .expect("an arc");
+    canvas.state_mut().set_line_width(1e9);
+    let user = canvas.path().clone();
+    let outline = canvas.stroke_outline(&user).expect("an outline");
+    assert!(outline.len() < 100_000, "{}", outline.len());
+    canvas.stroke(None);
+    assert_eq!(px(&canvas, 20, 8), [0, 0, 0, 255]);
+    // A small circle as wide: its outline reaches as far by its width.
+    canvas.begin_path();
+    canvas
+        .with_path(|path, m| path.arc(20.0, 8.0, 7.0, 0.0, TAU, false, m))
+        .expect("an arc");
+    let user = canvas.path().clone();
+    let outline = canvas.stroke_outline(&user).expect("an outline");
+    assert!(outline.len() < 100_000, "{}", outline.len());
 }
 
 #[test]
