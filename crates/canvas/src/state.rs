@@ -576,6 +576,9 @@ pub struct State {
     pub text_rendering: Rendering,
     /// `lang`, as it was set: read back.
     pub lang: String,
+    /// Whether shapes' edges are smoothed: always for a 2D context, not
+    /// for an SVG shape of `shape-rendering: crispEdges` (M32).
+    pub anti_alias: bool,
     /// The clipping region, shared until a `clip()` changes it.
     pub(crate) clip: Option<Arc<Mask>>,
 }
@@ -611,6 +614,7 @@ impl Default for State {
             font_variant_caps: Caps::Normal,
             text_rendering: Rendering::Auto,
             lang: "inherit".to_owned(),
+            anti_alias: true,
             clip: None,
         }
     }

@@ -85,6 +85,19 @@ impl Path {
         self.subpaths.is_empty()
     }
 
+    /// The bounds of the path's geometry, its curves' extremes and not
+    /// their control points: `[x, y, width, height]`; `None` for a path
+    /// with nothing to bound (M32, an SVG shape's fill box).
+    pub fn bounds(&self) -> Option<[f64; 4]> {
+        let r = self.to_skia()?.compute_tight_bounds()?;
+        Some([
+            f64::from(r.x()),
+            f64::from(r.y()),
+            f64::from(r.width()),
+            f64::from(r.height()),
+        ])
+    }
+
     /// The points the path holds.
     pub fn len(&self) -> usize {
         self.points

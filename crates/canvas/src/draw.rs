@@ -397,11 +397,12 @@ impl Canvas {
                 (None, None) => None,
             };
             if let Some(path) = within(path, self.bitmap_area()) {
+                let anti_alias = self.state.anti_alias;
                 self.with_shader(which, |shader| {
                     let paint = tiny_skia::Paint {
                         shader,
                         blend_mode: composite.blend_mode(),
-                        anti_alias: true,
+                        anti_alias,
                         ..tiny_skia::Paint::default()
                     };
                     pixmap.fill_path(&path, &paint, rule, Transform::identity(), clip.as_ref());
@@ -501,10 +502,11 @@ impl Canvas {
         let path = within(path, area)?;
         let shift = Transform::from_translate(-area.x as f32, -area.y as f32);
         let band = self.pattern_band(which, area);
+        let anti_alias = self.state.anti_alias;
         self.with_shader(which, |shader| {
             let paint = tiny_skia::Paint {
                 shader,
-                anti_alias: true,
+                anti_alias,
                 ..tiny_skia::Paint::default()
             };
             layer.fill_path(&path, &paint, rule, shift, band.as_ref());

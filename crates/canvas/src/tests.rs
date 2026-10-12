@@ -1652,3 +1652,22 @@ fn spaced_text_is_as_wide_as_the_run_and_its_spacing() {
     let plain = ink("0px");
     assert!((ink("20px") - plain - 20.0).abs() < 1e-3);
 }
+
+#[test]
+fn a_paths_bounds_are_its_geometrys_and_its_edges_may_go_unsmoothed() {
+    // M32: an SVG shape's fill box, and `shape-rendering: crispEdges`.
+    let mut path = Path::new();
+    path.move_to(0.0, 10.0, &Matrix::IDENTITY);
+    path.cubic_to(0.0, 0.0, 20.0, 0.0, 20.0, 10.0, &Matrix::IDENTITY);
+    let [x, y, w, h] = path.bounds().expect("bounds");
+    // The curve's top is at 2.5, not its control points' 0.
+    assert_eq!((x, w, y + h), (0.0, 20.0, 10.0));
+    assert!((y - 2.5).abs() < 1e-3, "{y}");
+    assert_eq!(Path::new().bounds(), None);
+    let mut canvas = Canvas::new(10, 10, false);
+    canvas.state_mut().anti_alias = false;
+    let mut half = Path::new();
+    half.rect(2.5, 0.0, 3.0, 10.0, &Matrix::IDENTITY);
+    canvas.fill(Some(&half), FillRule::Winding);
+    assert!((0..10).all(|x| matches!(px(&canvas, x, 5)[3], 0 | 255)));
+}

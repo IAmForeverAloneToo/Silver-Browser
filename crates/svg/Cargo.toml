@@ -1,0 +1,13 @@
+[package]
+name = "svg"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+canvas.workspace = true
+dom.workspace = true
+style.workspace = true
+
+[dev-dependencies]
+html.workspace = true
