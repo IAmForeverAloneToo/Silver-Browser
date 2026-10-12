@@ -1644,11 +1644,18 @@ impl GpuBackend {
         if old.as_ref().is_some_and(|layer| layer.reason != reason) {
             old = None;
         }
+        // Tiles are drawn at a pixel to a pixel: a scrolled group under a
+        // display's scale (M32.4) is kept whole at its scale instead, as
+        // the software backend keeps it, rather than drawn small and
+        // stretched.
         let kept = match reason {
-            LayerReason::Scrolled => self.update_tiles(key, reason, old, items, visible, extra),
-            LayerReason::Transformed | LayerReason::WillChange | LayerReason::Canvas => {
-                self.update_whole(key, reason, old, items, composed, extra)
+            LayerReason::Scrolled if raster_scale(composed) == (1.0, 1.0) => {
+                self.update_tiles(key, reason, old, items, visible, extra)
             }
+            LayerReason::Scrolled
+            | LayerReason::Transformed
+            | LayerReason::WillChange
+            | LayerReason::Canvas => self.update_whole(key, reason, old, items, composed, extra),
         };
         match kept {
             Some(layer) => {

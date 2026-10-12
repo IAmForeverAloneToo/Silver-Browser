@@ -8,7 +8,10 @@
 //! sixty a second for ten seconds on each backend, is
 //! `benches/animation.rs`'s to measure. M31.5's: the Mandelbrot demo's
 //! workers draw the set the page draws on its own thread, while its
-//! square turns; `benches/workers.rs` times its frames.
+//! square turns; `benches/workers.rs` times its frames. M32.4's: the
+//! icon set and the chart drawn at each display ratio, 1.25 to 3, are
+//! the same pictures as the pages drawn that many times larger at 1;
+//! `benches/svg.rs` times them.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -393,4 +396,147 @@ fn the_mandelbrot_demos_workers_draw_the_set_the_page_would_while_it_turns() {
             .collect::<Vec<_>>()
     };
     assert!(set(&by_workers) == set(&by_page), "the same set either way");
+}
+
+/// The page at `path`, loaded by its URL at the display scale `ratio`,
+/// drawn `css` CSS pixels big once what it draws is decoded: its RGBA
+/// device pixels and their size (M32.4).
+fn drawn_at(path: &Path, ratio: f32, css: (u32, u32)) -> (Vec<u8>, (u32, u32)) {
+    let url = Url::from_file_path(path).expect("a path");
+    let device = (
+        (css.0 as f32 * ratio).round() as u32,
+        (css.1 as f32 * ratio).round() as u32,
+    );
+    let mut engine = engine();
+    engine.set_scale_factor(ratio);
+    let (wake, woken) = std::sync::mpsc::channel();
+    engine.set_waker(move || {
+        let _ = wake.send(());
+    });
+    engine.navigate(url);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let wait = |engine: &mut Engine, done: &dyn Fn(&Engine) -> bool| {
+        while !done(engine) {
+            let left = deadline
+                .checked_duration_since(Instant::now())
+                .expect("the page is drawn in time");
+            let _ = woken.recv_timeout(left.min(Duration::from_millis(200)));
+            engine.poll_network();
+        }
+    };
+    wait(&mut engine, &|engine| {
+        engine.load_state() == &LoadState::Loaded
+    });
+    loop {
+        let frame = engine.frame(device.0, device.1);
+        if !engine.decoding() {
+            return (frame, device);
+        }
+        wait(&mut engine, &|engine| !engine.decoding());
+    }
+}
+
+/// M32.4's acceptance: the demo `name` drawn at each display scale is
+/// the same picture as the demo with its sizes that many times as large
+/// (what `larger` makes of its source) drawn at 1: the same pixels, edges
+/// as sharp, within `levels` of a channel (two rasterizations of the same
+/// geometry, the one under a scale, the other at its size).
+fn same_at_every_ratio(
+    name: &str,
+    css: (u32, u32),
+    levels: u8,
+    larger: impl Fn(&str, f32) -> String,
+) {
+    let demos = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/demos");
+    let page = demos.join(format!("{name}.html"));
+    let source = demo(name);
+    let base = Url::from_file_path(&demos).expect("a path");
+    let dir = std::env::temp_dir().join(format!("svg-ratios-{}-{name}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a directory");
+    for ratio in [1.25f32, 1.5, 2.0, 3.0] {
+        let (scaled, device) = drawn_at(&page, ratio, css);
+        // The larger page, its images and files found where the demo's are.
+        let larger_page = dir.join(format!("{name}-{ratio}.html"));
+        let text = larger(&source, ratio).replacen(
+            "<head>",
+            &format!("<head>\n<base href=\"{base}/\">"),
+            1,
+        );
+        std::fs::write(&larger_page, text).expect("the larger page is written");
+        let (at_one, size) = drawn_at(&larger_page, 1.0, device);
+        assert_eq!(size, device);
+        let mut differing = 0;
+        let mut most = 0u8;
+        for (a, b) in scaled.chunks(4).zip(at_one.chunks(4)) {
+            let by = (0..3).map(|i| a[i].abs_diff(b[i])).max().unwrap_or(0);
+            most = most.max(by);
+            differing += usize::from(by > levels);
+        }
+        assert!(
+            differing == 0,
+            "{name} at {ratio}: {differing} pixels differ by more than {levels}, by {most} at most"
+        );
+        println!("{name} at {ratio}: within {most} of the page drawn larger at 1");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_icons_are_the_same_picture_at_every_display_ratio() {
+    // Thirty icons, a stroked family and a filled one, through use of
+    // symbols and as img files, at 16, 24 and 48 pixels.
+    same_at_every_ratio("svg-icons", (1280, 400), 2, |source, ratio| {
+        [16, 24, 48].iter().fold(source.to_string(), |text, size| {
+            let at = (*size as f32 * ratio).round();
+            text.replace(
+                &format!(".i{size} {{ width: {size}px; height: {size}px; }}"),
+                &format!(".i{size} {{ width: {at}px; height: {at}px; }}"),
+            )
+        })
+    });
+}
+
+#[test]
+fn the_chart_is_the_same_picture_at_every_display_ratio() {
+    // Axes, ticks and labels, gridlines, bars, a line with points, an area
+    // under a gradient and a legend, as a charting library writes them.
+    same_at_every_ratio("svg-chart", (640, 360), 2, |source, ratio| {
+        source.replacen(
+            "width='640' height='360'",
+            &format!("width='{}' height='{}'", 640.0 * ratio, 360.0 * ratio),
+            1,
+        )
+    });
+}
+
+#[test]
+fn the_icons_and_the_chart_draw_their_shapes_and_text() {
+    // At 1: an icon of each family in its colour, inline and as an image;
+    // the chart's bars, its line's points, its labels' ink.
+    let demos = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/demos");
+    let (icons, (w, _)) = drawn_at(&demos.join("svg-icons.html"), 1.0, (1280, 400));
+    let at = |frame: &[u8], w: u32, x: u32, y: u32| {
+        let i = ((y * w + x) * 4) as usize;
+        [frame[i], frame[i + 1], frame[i + 2]]
+    };
+    // The 24-pixel rows start at 32 (two 16-pixel rows): the house's roof
+    // (stroked, #2f4f6f) and the heart (filled, #8f3f2f) at its middle.
+    let ink = |rgb: [u8; 3], want: [u8; 3]| rgb.iter().zip(want).all(|(a, b)| a.abs_diff(b) < 40);
+    let row = |y0: u32| {
+        let roof = (0..24).any(|x| ink(at(&icons, w, x, y0 + 4), [0x2f, 0x4f, 0x6f]));
+        let heart = ink(at(&icons, w, 15 * 24 + 12, y0 + 12), [0x8f, 0x3f, 0x2f]);
+        (roof, heart)
+    };
+    assert_eq!(row(32), (true, true), "inline, through use");
+    assert_eq!(row(56), (true, true), "as img files");
+    let (chart, (w, _)) = drawn_at(&demos.join("svg-chart.html"), 1.0, (640, 360));
+    // The first bar (returning, 180 of 1200) and the first point's white
+    // middle on the line, the y axis's labels' ink left of it.
+    assert!(ink(at(&chart, w, 50 + 26, 40 + 270), [0x9f, 0xb4, 0xc8]));
+    assert_eq!(at(&chart, w, 74, 222), [255, 255, 255]);
+    let labels = (20..44)
+        .flat_map(|x| (40..320).map(move |y| (x, y)))
+        .filter(|&(x, y)| at(&chart, w, x, y)[0] < 128)
+        .count();
+    assert!(labels > 50, "{labels}");
 }

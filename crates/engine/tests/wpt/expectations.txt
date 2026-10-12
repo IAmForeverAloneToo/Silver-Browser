@@ -1510,7 +1510,6 @@ workers/constructors/Worker/constructor-utf16-bom.html  a script with null bytes
 # milestone, where the reference browser and the test differ, or where
 # two rasterizations of one edge do.
 css/css-flexbox/image-nested-within-definite-column-flexbox.html                 an img's min-height of 100% is not carried through its ratio into the column flex container's min-content width (css-sizing-4 section 5.1), so the container is the image's 1 pixel wide
-css/css-transforms/css-skew-002.html                                             the red SVG path under the skewed green box shows along their shared slanted edges, by up to 45: the path's coverage and the transformed box's are two rasterizations of one edge
 css/css-transforms/ttwf-transform-skewx-001.html                                 the red SVG polygon under the skewed box shows along their shared slanted edges, by up to 80: two rasterizations of one edge
 css/css-transforms/transforms-rotate-degree-45.html                              the rotated box and the reference's SVG polygon are anti-aliased apart along their diagonal edges, by up to 27: two rasterizations of one edge
 css/css-transforms/css-transforms-transformlist.html                             the script reads transform.baseVal, the SVG DOM's animated values (G87)

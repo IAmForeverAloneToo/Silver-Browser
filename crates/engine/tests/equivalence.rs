@@ -154,9 +154,9 @@ fn pages_in(dir: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-fn write_png(path: &Path, rgb: &[u8]) {
+fn write_png_sized(path: &Path, rgb: &[u8], (width, height): (u32, u32)) {
     let file = File::create(path).expect("the output directory is writable");
-    let mut encoder = png::Encoder::new(file, WIDTH, HEIGHT);
+    let mut encoder = png::Encoder::new(file, width, height);
     encoder.set_color(png::ColorType::Rgb);
     encoder.set_depth(png::BitDepth::Eight);
     encoder
@@ -172,7 +172,18 @@ fn rgb(rgba: &[u8]) -> Vec<u8> {
 /// Compares the GPU's frame with the software's: `None` when they are
 /// equivalent, else a description, with the frames written for a look.
 fn compare(name: &str, software: &[u8], on_gpu: &[u8], out_dir: &Path) -> Option<String> {
-    let found = gpu::compare(software, on_gpu, WIDTH, HEIGHT);
+    compare_sized(name, software, on_gpu, (WIDTH, HEIGHT), out_dir)
+}
+
+/// [`compare`] of frames `size` big.
+fn compare_sized(
+    name: &str,
+    software: &[u8],
+    on_gpu: &[u8],
+    size: (u32, u32),
+    out_dir: &Path,
+) -> Option<String> {
+    let found = gpu::compare(software, on_gpu, size.0, size.1);
     if found.differing == 0 {
         if found.tolerated > 0 {
             println!("{name}: {} pixels within the tolerances", found.tolerated);
@@ -180,12 +191,13 @@ fn compare(name: &str, software: &[u8], on_gpu: &[u8], out_dir: &Path) -> Option
         return None;
     }
     fs::create_dir_all(out_dir).expect("the output directory is created");
-    write_png(
+    write_png_sized(
         &out_dir.join(format!("{name}.software.png")),
         &rgb(software),
+        size,
     );
-    write_png(&out_dir.join(format!("{name}.gpu.png")), &rgb(on_gpu));
-    write_png(&out_dir.join(format!("{name}.diff.png")), &found.diff);
+    write_png_sized(&out_dir.join(format!("{name}.gpu.png")), &rgb(on_gpu), size);
+    write_png_sized(&out_dir.join(format!("{name}.diff.png")), &found.diff, size);
     let (x, y, s, g) = found.first.expect("some pixel differs");
     Some(format!(
         "{name}: {} pixels differ past the tolerances within {:?}, {} more within them; \
@@ -195,6 +207,52 @@ fn compare(name: &str, software: &[u8], on_gpu: &[u8], out_dir: &Path) -> Option
         found.tolerated,
         out_dir.display()
     ))
+}
+
+#[test]
+fn the_gpu_backend_draws_at_a_displays_scale_as_the_software_backend_does() {
+    // M32.4: under a display's scale the document's scrolled layer is
+    // kept whole at the scale on both backends; the GPU's tiled it a
+    // pixel to a pixel and stretched it, which blurred everything.
+    let fonts = fonts();
+    let backend = match GpuBackend::with_fonts(fonts.clone()) {
+        Ok(backend) => backend,
+        Err(e) => {
+            println!("no GPU adapter here ({e}): the equivalence suite is skipped");
+            return;
+        }
+    };
+    let mut on_gpu = Engine::with_backend(fonts.clone(), Box::new(backend));
+    let mut software = Engine::with_fonts(fonts);
+    let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/equivalence");
+    let pages: Vec<(String, String)> = pages_in("tests/reference")
+        .into_iter()
+        .filter(|(name, _)| name.contains("svg") || name.starts_with("01"))
+        .collect();
+    assert!(pages.len() >= 7, "{}", pages.len());
+    let mut failures = Vec::new();
+    for scale in [1.25f32, 2.0] {
+        software.set_scale_factor(scale);
+        on_gpu.set_scale_factor(scale);
+        let size = (
+            (WIDTH as f32 * scale) as u32,
+            (HEIGHT as f32 * scale) as u32,
+        );
+        for (name, source) in &pages {
+            software.load_document(source);
+            on_gpu.load_document(source);
+            let a = software.frame(size.0, size.1);
+            let b = on_gpu.frame(size.0, size.1);
+            failures.extend(compare_sized(
+                &format!("{name}.at-{scale}"),
+                &a,
+                &b,
+                size,
+                &out_dir,
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }
 
 #[test]

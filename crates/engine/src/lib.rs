@@ -754,6 +754,46 @@ struct SvgDrawing {
 /// its content box, and that box's size.
 type SvgPoint = (NodeId, (f32, f32), (f32, f32));
 
+/// Lands each outer `<svg>`'s drawing in `items` on whole device pixels
+/// where its groups only translate and scale it, as replaced content is
+/// snapped (M32.4): its raster then drawn a pixel to a pixel, as sharp
+/// at a display's scale as at 1, and alike on either backend, whose
+/// samplings of an image between pixels differ by half of one.
+fn snap_svgs(items: &mut [DisplayItem]) {
+    let mut groups = vec![style::transform::Matrix::IDENTITY];
+    for item in items.iter_mut() {
+        match item {
+            DisplayItem::PushGroup { matrix, .. } => {
+                let outer = groups.last().expect("the viewport's");
+                groups.push(outer.then(matrix));
+            }
+            DisplayItem::PopGroup => {
+                if groups.len() > 1 {
+                    groups.pop();
+                }
+            }
+            DisplayItem::Image {
+                x, y, w, h, image, ..
+            } if paint::svg_node(image.id).is_some() => {
+                let matrix = groups.last().expect("the viewport's");
+                let Some([a, _, _, d, e, f]) = matrix
+                    .to_2d()
+                    .filter(|_| matrix.translates_and_scales_only())
+                else {
+                    continue;
+                };
+                let snap = |v: f32, scale: f32, offset: f32| {
+                    ((v * scale + offset).round() - offset) / scale
+                };
+                let (x0, y0) = (snap(*x, a, e), snap(*y, d, f));
+                let (x1, y1) = (snap(*x + *w, a, e), snap(*y + *h, d, f));
+                (*x, *y, *w, *h) = (x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0));
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Moved on by each drawing of an outer `<svg>`, in any document of any
 /// engine: the frame its image is shown as, so that a new drawing is
 /// never taken for the last, nor another document's of a node of the
@@ -3467,6 +3507,7 @@ impl Engine {
     /// matrices, or whose place cannot be told; one elsewhere moves on
     /// unseen.
     fn show_pixels(&mut self, items: &mut [DisplayItem], width: f32, height: f32) {
+        snap_svgs(items);
         let now = self.shown.animations.borrow().time();
         let frame = self.shown.images.next_frame();
         // First the size each image is drawn at and whether in view, so
@@ -6240,6 +6281,28 @@ mod tests {
         let row: Vec<u8> = (0..20).map(|x| alpha_like(x, 20)).collect();
         let between = row.iter().filter(|&&v| v > 30 && v < 225).count();
         assert!(between <= 2, "{row:?}");
+    }
+
+    #[test]
+    fn an_svgs_drawing_lands_on_whole_device_pixels() {
+        // M32.4: at 1.25 an svg 10 CSS pixels in starts 12.5 device
+        // pixels in; its drawing lands at 13, a pixel to a pixel, no
+        // column of it half covered.
+        let mut engine = test_engine();
+        engine.set_scale_factor(1.25);
+        engine.load_document(
+            "<body style='margin: 10px'><svg width=16 height=16 style='display: block'>\
+             <rect width=16 height=16 fill=blue></rect></svg>",
+        );
+        let frame = engine.frame(100, 100);
+        let at = |x: usize, y: usize| {
+            let i = (y * 100 + x) * 4;
+            [frame[i], frame[i + 1], frame[i + 2]]
+        };
+        assert_eq!(at(12, 20), [255, 255, 255]);
+        assert_eq!(at(13, 20), [0, 0, 255]);
+        assert_eq!(at(32, 20), [0, 0, 255]);
+        assert_eq!(at(33, 20), [255, 255, 255]);
     }
 
     #[test]
