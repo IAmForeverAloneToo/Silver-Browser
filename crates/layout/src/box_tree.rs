@@ -832,6 +832,10 @@ impl<'a> Styled<'a> {
             {
                 None
             }
+            // An SVG element makes no CSS box: an `<svg>` is drawn whole
+            // as a replaced element (M32), its content never laid out as
+            // the page's.
+            Item::Node(node) if self.document.svg_tag(node).is_some() => None,
             Item::Node(node) => self.styles.get(node),
             Item::Generated(element, side) => self.styles.pseudo(element, side.pseudo_element()),
             Item::GeneratedText(..) | Item::ControlText(_) | Item::ControlArrow(_) => None,

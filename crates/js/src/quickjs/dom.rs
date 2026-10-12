@@ -209,6 +209,21 @@ const NATIVES: &[(&str, Decode)] = &[
     }),
     ("attributeNames", |a| Ok(Call::AttributeNames(a.handle(0)?))),
     ("createElement", |a| Ok(Call::CreateElement(a.string(0)?))),
+    ("createElementNS", |a| {
+        let ns = a.string(0)?;
+        Ok(Call::CreateElementNs(
+            (!ns.is_empty()).then_some(ns),
+            a.string(1)?,
+        ))
+    }),
+    ("byTagNS", |a| {
+        let ns = a.string(1)?;
+        Ok(Call::ElementsByTagNameNs(
+            a.handle(0)?,
+            (!ns.is_empty()).then_some(ns),
+            a.string(2)?,
+        ))
+    }),
     ("createText", |a| Ok(Call::CreateText(a.string(0)?))),
     ("insert", |a| {
         Ok(Call::Insert {

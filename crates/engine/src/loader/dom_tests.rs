@@ -6,6 +6,7 @@
 use super::script_tests::{scripted, scripted_bytes};
 use super::tests::load_all;
 use crate::testing::*;
+use net::test_server::Reply;
 
 /// The console's lines of `page` loaded with scripts on.
 fn logged(page: &'static str) -> Vec<String> {
@@ -1484,4 +1485,143 @@ fn svg_markup_is_svgs_through_inner_html_clones_and_tag_name_lookups() {
         .collect();
     assert_eq!(kids, ["Svg clipPath", "Svg clipPath", "Svg script"]);
     document.validate().unwrap();
+}
+
+#[test]
+fn create_element_ns_makes_svgs_interfaces_and_refuses_as_the_reference_browser() {
+    // Chrome 154's answers (scratchpad m32/p9-ns.html).
+    let console = logged(
+        "<script>var SVG = 'http://www.w3.org/2000/svg'; \
+         var show = function (e) { return [e.constructor.name, e.tagName, e.localName, \
+         e.namespaceURI, e.prefix].join(); }; \
+         var tryIt = function (f) { try { return f(); } catch (e) { return e.name + ': ' + e.message; } }; \
+         console.log(show(document.createElementNS(SVG, 'rect'))); \
+         console.log(show(document.createElementNS(SVG, 's:rect'))); \
+         console.log(show(document.createElementNS(null, 'Foo'))); \
+         console.log(show(document.createElementNS('http://www.w3.org/1998/Math/MathML', 'mi'))); \
+         console.log(show(document.createElementNS('urn:x', 'x:item'))); \
+         console.log(show(document.createElementNS(SVG, 'blink'))); \
+         console.log(tryIt(function () { return document.createElementNS(null, 'a:b'); })); \
+         console.log(tryIt(function () { return document.createElementNS('urn:x', 'xml:b'); })); \
+         console.log(tryIt(function () { return document.createElementNS('urn:x', 'xmlns'); })); \
+         console.log(tryIt(function () { return document.createElementNS(SVG, '1abc'); })); \
+         console.log(tryIt(function () { return document.createElementNS(SVG, ''); })); \
+         console.log(Object.getPrototypeOf(SVGRectElement.prototype).constructor.name, \
+         Object.getPrototypeOf(SVGGeometryElement.prototype).constructor.name, \
+         Object.getPrototypeOf(SVGGraphicsElement.prototype).constructor.name, \
+         Object.getPrototypeOf(SVGElement.prototype).constructor.name, \
+         typeof SVGAnimateElement)</script>",
+    );
+    assert_eq!(
+        console,
+        [
+            "SVGRectElement,rect,rect,http://www.w3.org/2000/svg,",
+            "SVGRectElement,s:rect,rect,http://www.w3.org/2000/svg,s",
+            "Element,Foo,Foo,,",
+            "MathMLElement,mi,mi,http://www.w3.org/1998/Math/MathML,",
+            "Element,x:item,item,urn:x,x",
+            "SVGElement,blink,blink,http://www.w3.org/2000/svg,",
+            "NamespaceError: Failed to execute 'createElementNS' on 'Document': The namespace URI \
+             provided ('') is not valid for the qualified name provided ('a:b').",
+            "NamespaceError: Failed to execute 'createElementNS' on 'Document': The namespace URI \
+             provided ('urn:x') is not valid for the qualified name provided ('xml:b').",
+            "NamespaceError: Failed to execute 'createElementNS' on 'Document': The namespace URI \
+             provided ('urn:x') is not valid for the qualified name provided ('xmlns').",
+            "InvalidCharacterError: Failed to execute 'createElementNS' on 'Document': The \
+             qualified name provided ('1abc') contains the invalid character '1'.",
+            "InvalidCharacterError: Failed to execute 'createElementNS' on 'Document': The \
+             qualified name provided is empty.",
+            // SMIL's interfaces are not there (M32.3).
+            "SVGGeometryElement SVGGraphicsElement SVGElement Element undefined",
+        ]
+    );
+}
+
+#[test]
+fn an_svg_elements_attributes_names_and_namespaced_lookups_are_the_doms() {
+    let console = logged(
+        "<svg id=s class='a b'><use id=u xlink:href=#a href=#b /><g><rect id=r /></g></svg>\
+         <math><mi id=m>x</mi></math>\
+         <script>var XL = 'http://www.w3.org/1999/xlink', SVG = 'http://www.w3.org/2000/svg'; \
+         var u = document.getElementById('u'), r = document.getElementById('r'); \
+         console.log(u.getAttribute('xlink:href'), u.getAttributeNS(XL, 'href'), \
+         u.getAttributeNS(null, 'href'), u.hasAttributeNS(XL, 'href'), u.getAttributeNames().join('|')); \
+         r.setAttribute('viewBox', '1'); r.setAttributeNS(XL, 'xlink:title', 't'); \
+         console.log(r.getAttributeNames().join('|'), r.getAttribute('viewbox'), r.getAttribute('viewBox')); \
+         r.removeAttributeNS(XL, 'title'); console.log(r.getAttributeNames().join('|')); \
+         console.log(document.getElementsByTagNameNS(SVG, 'use').length, \
+         document.getElementsByTagNameNS('*', 'rect').length, document.getElementsByTagNameNS(SVG, '*').length, \
+         document.getElementsByTagNameNS(null, 'use').length); \
+         var s = document.getElementById('s'); \
+         console.log(typeof s.className, s.className.constructor.name, s.className.baseVal, \
+         s.className === s.className, s.classList.length); \
+         s.className.baseVal = 'c'; console.log(s.getAttribute('class')); \
+         console.log(r.ownerSVGElement.id, s.ownerSVGElement, r.viewportElement.id); \
+         console.log(r.tagName, r.nodeName, document.getElementById('m').tagName, \
+         document.getElementById('m').constructor.name, s.namespaceURI); \
+         console.log(typeof u.focus, u.tabIndex, typeof u.onclick, typeof u.click, 'dataset' in u)</script>",
+    );
+    assert_eq!(
+        console,
+        [
+            "#a #a #b true id|xlink:href|href",
+            "id|viewBox|xlink:title null 1",
+            "id|viewBox",
+            "1 1 4 0",
+            "object SVGAnimatedString a b true 2",
+            "c",
+            "s null s",
+            "rect rect mi MathMLElement http://www.w3.org/2000/svg",
+            "function -1 object undefined true",
+        ]
+    );
+}
+
+#[test]
+fn an_svg_script_runs_as_htmls_does_parsed_made_or_by_its_href() {
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<svg><script>console.log('parsed')</script>\
+             <script href=a.js></script><script xlink:href=b.js></script></svg>\
+             <script>var s = document.createElementNS('http://www.w3.org/2000/svg', 'script'); \
+             s.textContent = \"console.log('made')\"; document.body.appendChild(s);</script>",
+        )),
+        "/a.js" => Some(Reply::ok("text/javascript", b"console.log('href')")),
+        "/b.js" => Some(Reply::ok("text/javascript", b"console.log('xlink')")),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    load_all(&mut tab, server.url("/page.html"));
+    let console: Vec<String> = tab
+        .engine
+        .take_console()
+        .into_iter()
+        .map(|entry| entry.text)
+        .collect();
+    assert_eq!(console, ["parsed", "href", "xlink", "made"]);
+}
+
+#[test]
+fn the_user_agents_rules_are_htmls_or_svgs_and_a_sheet_declares_its_namespaces() {
+    // M32: an SVG `a` takes no link colour and an SVG `title` is not
+    // hidden by HTML's rules; SVG's own make a `text` a block and clip a
+    // nested viewport; an author sheet's `@namespace` names its
+    // prefixes, one after a style rule is not taken.
+    let console = logged(
+        "<style>@namespace svg url(http://www.w3.org/2000/svg); \
+         svg|rect { fill-opacity: 0.5; } svg|* { color: rgb(1, 2, 3); } \
+         p { color: rgb(9, 9, 9); } @namespace q url(http://www.w3.org/2000/svg); \
+         q|rect { color: red; }</style>\
+         <p id=p style='color: green'>x<svg id=s><a id=a href=#x><text id=t>y</text></a>\
+         <title id=ti>z</title><rect id=r /></svg></p>\
+         <script>var cs = function (id, p) { return getComputedStyle(document.getElementById(id))\
+         .getPropertyValue(p); }; \
+         console.log(cs('a', 'color'), cs('a', 'cursor'), cs('ti', 'display'), \
+         cs('t', 'display'), cs('s', 'overflow-x'), cs('r', 'color'))</script>",
+    );
+    assert_eq!(
+        console,
+        ["rgb(1, 2, 3) auto inline block hidden rgb(1, 2, 3)"]
+    );
 }

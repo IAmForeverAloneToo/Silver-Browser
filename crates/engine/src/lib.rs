@@ -5788,6 +5788,26 @@ mod tests {
     }
 
     #[test]
+    fn an_svg_elements_content_is_never_laid_out_as_the_pages() {
+        // M32: SVG draws its own; its `text` and `title` make no runs
+        // of the page's text, MathML's content still does.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<p>a<svg><title>t</title><text>b</text><style>s</style></svg>c\
+             <math><mi>x</mi></math></p>",
+        );
+        let runs: Vec<String> = engine
+            .fragments(800.0)
+            .into_iter()
+            .filter_map(|f| match f.kind {
+                layout::FragmentKind::Text(text) => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(runs.concat(), "acx");
+    }
+
+    #[test]
     fn a_root_with_no_box_leaves_the_canvas_white() {
         let mut engine = test_engine();
         engine.load_document("<html style='display: none'><p>hidden</p>");

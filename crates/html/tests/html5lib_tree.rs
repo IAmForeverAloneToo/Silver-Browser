@@ -207,7 +207,11 @@ fn html5libs_tree_construction_tests_of_foreign_content_pass() {
     let mut ran = 0;
     for file in files {
         let name = file.file_name().unwrap().to_string_lossy().into_owned();
-        let text = fs::read_to_string(&file).expect("a test file");
+        // A checkout may have given the files CRLF line ends; the
+        // files themselves hold no CR.
+        let text = fs::read_to_string(&file)
+            .expect("a test file")
+            .replace("\r\n", "\n");
         for (index, test) in tests(&text).iter().enumerate() {
             let id = format!("{name}#{index}");
             ran += 1;

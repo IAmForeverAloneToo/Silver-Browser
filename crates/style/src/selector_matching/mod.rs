@@ -43,7 +43,7 @@ mod matcher;
 mod parse;
 
 pub use matcher::{Matcher, matches_selector, matches_selector_list};
-pub use parse::{parse_selector_list, supports_selector};
+pub use parse::{parse_selector_list, parse_selector_list_in, supports_selector};
 
 /// A comma-separated selector list.
 #[derive(Debug, Clone, PartialEq)]
@@ -149,6 +149,33 @@ pub enum SimpleSelector {
     },
     /// A pseudo-class.
     PseudoClass(PseudoClass),
+    /// The element's namespace: a type or universal selector's prefix
+    /// (`svg|rect`, `|x` for none), or the sheet's default namespace
+    /// (CSS Namespaces 3, M32). It adds no specificity.
+    Namespace(dom::Namespace),
+}
+
+/// A style sheet's namespace declarations (`@namespace`, CSS Namespaces
+/// 3): its default namespace and its prefixes, which its selectors are
+/// read with (M32).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Namespaces {
+    /// The default namespace, if one is declared.
+    pub default: Option<dom::Namespace>,
+    /// Each prefix and its namespace, the last declaration of a prefix
+    /// winning.
+    pub prefixes: Vec<(String, dom::Namespace)>,
+}
+
+impl Namespaces {
+    /// The namespace `prefix` names here, if declared.
+    pub fn prefix(&self, prefix: &str) -> Option<&dom::Namespace> {
+        self.prefixes
+            .iter()
+            .rev()
+            .find(|(name, _)| name == prefix)
+            .map(|(_, ns)| ns)
+    }
 }
 
 /// Attribute selector operators (selectors-4 §6.1).

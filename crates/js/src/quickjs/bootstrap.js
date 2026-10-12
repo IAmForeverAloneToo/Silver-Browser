@@ -311,28 +311,47 @@
       }
     }
     const answer = native.wrap(handle);
-    const object = make(handle, answer[0]);
+    const object = make(handle, answer[0], answer[2]);
     MapSet(objects, handle, {
       ref: new $WeakRef(object),
       strong: answer[1] === "" ? null : object,
     });
     Register(registry, object, handle);
-    for (let i = 2; i < answer.length; i++) {
+    for (let i = 3; i < answer.length; i++) {
       attributeHandler(object, answer[i], true);
     }
     return object;
   }
 
-  // A new object for a node, of the interface its name says. The host
-  // hears it from `wrap`, and holds the node until it is released.
-  function make(handle, name) {
+  // A new object for a node, of the interface its name and namespace
+  // say. The host hears it from `wrap`, and holds the node until it is
+  // released.
+  function make(handle, name, ns) {
     if (name === "#text") {
       return new Text(KEY, handle, 3, name);
     }
     if (name === "#document") {
       return new HTMLDocument(KEY, handle, 9, name);
     }
-    return new (elementInterface(name))(KEY, handle, 1, name);
+    const object = new (elementInterface(name, ns))(KEY, handle, 1, name);
+    setNsOf(object, ns === "" ? null : ns);
+    return object;
+  }
+
+  // The namespaces (Infra section 8) and a qualified name's parts.
+  const HTML_NS = "http://www.w3.org/1999/xhtml";
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  const MATHML_NS = "http://www.w3.org/1998/Math/MathML";
+  const XLINK_NS = "http://www.w3.org/1999/xlink";
+  const XML_NS = "http://www.w3.org/XML/1998/namespace";
+  const XMLNS_NS = "http://www.w3.org/2000/xmlns/";
+  function localPart(qualified) {
+    const at = StringIndexOf(qualified, ":");
+    return at < 0 ? qualified : StringSlice(qualified, at + 1);
+  }
+  function prefixPart(qualified) {
+    const at = StringIndexOf(qualified, ":");
+    return at < 0 ? null : StringSlice(qualified, 0, at);
   }
 
   // ---- Events (DOM section 2, M26) ----------------------------------------
@@ -4752,6 +4771,8 @@
   let isNode;
   let kindOf;
   let nameOf;
+  let nsOf;
+  let setNsOf;
   let childList;
   let elementList;
   let tokensOf;
@@ -4764,6 +4785,8 @@
     // which never change.
     #kind;
     #name;
+    // An element's namespace's URI, null for none (M32).
+    #ns = null;
     // The `childNodes` and `children` collections, each made once; an
     // element's `classList`, `style` and `dataset`, the same.
     #childNodes = null;
@@ -4787,6 +4810,10 @@
       isNode = (value) => typeof value === "object" && value !== null && #handle in value;
       kindOf = (node) => node.#kind;
       nameOf = (node) => node.#name;
+      nsOf = (node) => node.#ns;
+      setNsOf = (node, ns) => {
+        node.#ns = ns;
+      };
       childList = (node) => {
         if (node.#childNodes === null) {
           const handle = node.#handle;
@@ -4833,7 +4860,7 @@
 
     get nodeName() {
       self(this);
-      return kindOf(this) === 1 ? ToUpperCase(nameOf(this)) : nameOf(this);
+      return kindOf(this) === 1 ? qualifiedTag(this) : nameOf(this);
     }
 
     get ownerDocument() {
@@ -5179,6 +5206,24 @@
       return collection(HTMLCollection, this, () => native.byTag(handle, name), true);
     },
 
+    getElementsByTagNameNS(namespace, localName) {
+      const handle = self(this);
+      need(
+        arguments.length,
+        2,
+        "getElementsByTagNameNS",
+        kindOf(this) === 9 ? "Document" : "Element",
+      );
+      const ns = nullable(namespace);
+      const local = str(localName);
+      return collection(
+        HTMLCollection,
+        this,
+        () => native.byTagNS(handle, ns === null ? "" : ns, local),
+        true,
+      );
+    },
+
     getElementsByClassName(classNames) {
       const handle = self(this);
       need(
@@ -5454,6 +5499,114 @@
     return true;
   }
 
+  // An element's `tagName`: an HTML element's name in upper case,
+  // another's as it is (DOM section 4.9).
+  function qualifiedTag(element) {
+    const name = nameOf(element);
+    return nsOf(element) === HTML_NS ? ToUpperCase(name) : name;
+  }
+
+  // An attribute's name as an element keeps it: lowercased on an HTML
+  // element, as given on another.
+  function attrKey(element, name) {
+    return nsOf(element) === HTML_NS ? ToLowerCase(name) : name;
+  }
+
+  // A nullable namespace argument: null, undefined and the empty string
+  // are none.
+  function nullable(value) {
+    if (value === null || value === undefined) {
+      return null;
+    }
+    const text = str(value);
+    return text === "" ? null : text;
+  }
+
+  // The namespace of an element's attribute named `qualified`: its
+  // prefix's, where that is XLink's, XML's or XMLNS's, on an element
+  // that is not HTML's; none otherwise.
+  function attributeNamespace(element, qualified) {
+    if (nsOf(element) === HTML_NS) {
+      return null;
+    }
+    if (qualified === "xmlns") {
+      return XMLNS_NS;
+    }
+    switch (prefixPart(qualified)) {
+      case "xlink":
+        return XLINK_NS;
+      case "xml":
+        return XML_NS;
+      case "xmlns":
+        return XMLNS_NS;
+      default:
+        return null;
+    }
+  }
+
+  // The qualified name of an element's attribute of namespace `ns` and
+  // local name `local`, or null.
+  function attributeNamed(element, ns, local) {
+    const names = native.attributeNames(handleOf(element));
+    for (let i = 0; i < names.length; i++) {
+      const name = names[i];
+      const namespace = attributeNamespace(element, name);
+      const own = namespace === null ? name : localPart(name);
+      if (namespace === ns && own === local) {
+        return name;
+      }
+    }
+    return null;
+  }
+
+  // DOM's "validate and extract" (section 1.5): `qualified` a name with
+  // at most one prefix, the namespace one its prefix allows; the
+  // namespace and the name, or the reference browser's error.
+  function validateAndExtract(ns, qualified, method, iface) {
+    if (qualified.length === 0) {
+      throw domError("InvalidCharacterError", "The qualified name provided is empty.", method, iface);
+    }
+    const at = StringIndexOf(qualified, ":");
+    const local = at < 0 ? qualified : StringSlice(qualified, at + 1);
+    const prefix = at < 0 ? null : StringSlice(qualified, 0, at);
+    const bad = (c) => c === 9 || c === 10 || c === 12 || c === 13 || c === 32 || c === 0 ||
+      c === 47 || c === 62;
+    const first = CharCodeAt(qualified, 0);
+    const startsWell = (first >= 65 && first <= 90) || (first >= 97 && first <= 122) ||
+      first === 95 || first === 58 || first >= 128;
+    let invalid = startsWell ? -1 : 0;
+    for (let i = 0; invalid < 0 && i < qualified.length; i++) {
+      if (bad(CharCodeAt(qualified, i))) {
+        invalid = i;
+      }
+    }
+    if (invalid >= 0 || local.length === 0 || (prefix !== null && prefix.length === 0)) {
+      const c = invalid >= 0 ? qualified[invalid] : ":";
+      throw domError(
+        "InvalidCharacterError",
+        "The qualified name provided ('" + qualified + "') contains the invalid character '" + c +
+          "'.",
+        method,
+        iface,
+      );
+    }
+    if (
+      (prefix !== null && ns === null) ||
+      (prefix === "xml" && ns !== XML_NS) ||
+      ((qualified === "xmlns" || prefix === "xmlns") && ns !== XMLNS_NS) ||
+      (ns === XMLNS_NS && qualified !== "xmlns" && prefix !== "xmlns")
+    ) {
+      throw domError(
+        "NamespaceError",
+        "The namespace URI provided ('" + (ns === null ? "" : ns) +
+          "') is not valid for the qualified name provided ('" + qualified + "').",
+        method,
+        iface,
+      );
+    }
+    return [ns, qualified];
+  }
+
   function badAttributeName(name, method) {
     return domError(
       "InvalidCharacterError",
@@ -5473,12 +5626,22 @@
 
     get tagName() {
       self(this);
-      return ToUpperCase(nameOf(this));
+      return qualifiedTag(this);
     }
 
     get localName() {
       self(this);
-      return nameOf(this);
+      return localPart(nameOf(this));
+    }
+
+    get namespaceURI() {
+      self(this);
+      return nsOf(this);
+    }
+
+    get prefix() {
+      self(this);
+      return prefixPart(nameOf(this));
     }
 
     get id() {
@@ -5527,7 +5690,7 @@
     getAttribute(name) {
       const handle = self(this);
       need(arguments.length, 1, "getAttribute", "Element");
-      return native.attribute(handle, ToLowerCase(str(name)));
+      return native.attribute(handle, attrKey(this, str(name)));
     }
 
     getAttributeNames() {
@@ -5537,7 +5700,7 @@
     hasAttribute(name) {
       const handle = self(this);
       need(arguments.length, 1, "hasAttribute", "Element");
-      return native.attribute(handle, ToLowerCase(str(name))) !== null;
+      return native.attribute(handle, attrKey(this, str(name))) !== null;
     }
 
     hasAttributes() {
@@ -5551,13 +5714,54 @@
       if (!validAttributeName(key)) {
         throw badAttributeName(key, "setAttribute");
       }
-      setAttribute(handle, ToLowerCase(key), str(value), "setAttribute");
+      setAttribute(handle, attrKey(this, key), str(value), "setAttribute");
     }
 
     removeAttribute(name) {
       const handle = self(this);
       need(arguments.length, 1, "removeAttribute", "Element");
-      removeAttribute(handle, ToLowerCase(str(name)));
+      removeAttribute(handle, attrKey(this, str(name)));
+    }
+
+    // The namespaced attribute methods (DOM section 4.9): an attribute's
+    // namespace is its prefix's, XLink's, XML's or XMLNS's, on an
+    // element that is not HTML's (M32; G51 for the rest).
+    getAttributeNS(namespace, localName) {
+      const handle = self(this);
+      need(arguments.length, 2, "getAttributeNS", "Element");
+      const name = attributeNamed(this, nullable(namespace), str(localName));
+      return name === null ? null : native.attribute(handle, name);
+    }
+
+    hasAttributeNS(namespace, localName) {
+      self(this);
+      need(arguments.length, 2, "hasAttributeNS", "Element");
+      return attributeNamed(this, nullable(namespace), str(localName)) !== null;
+    }
+
+    setAttributeNS(namespace, qualifiedName, value) {
+      const handle = self(this);
+      need(arguments.length, 3, "setAttributeNS", "Element");
+      const [ns, qualified] = validateAndExtract(
+        nullable(namespace),
+        str(qualifiedName),
+        "setAttributeNS",
+        "Element",
+      );
+      const before = attributeNamed(this, ns, localPart(qualified));
+      if (before !== null && before !== qualified) {
+        removeAttribute(handle, before);
+      }
+      setAttribute(handle, qualified, str(value), "setAttributeNS");
+    }
+
+    removeAttributeNS(namespace, localName) {
+      const handle = self(this);
+      need(arguments.length, 2, "removeAttributeNS", "Element");
+      const name = attributeNamed(this, nullable(namespace), str(localName));
+      if (name !== null) {
+        removeAttribute(handle, name);
+      }
     }
 
     toggleAttribute(name, force) {
@@ -5567,7 +5771,7 @@
       if (!validAttributeName(key)) {
         throw badAttributeName(key, "toggleAttribute");
       }
-      const lower = ToLowerCase(key);
+      const lower = attrKey(this, key);
       if (native.attribute(handle, lower) === null) {
         if (force === undefined || force) {
           setAttribute(handle, lower, "", "toggleAttribute");
@@ -5965,6 +6169,22 @@
         return wrap(native.createElement(name));
       } catch (error) {
         throw failed(error, "createElement", "Document");
+      }
+    }
+
+    createElementNS(namespace, qualifiedName) {
+      self(this);
+      need(arguments.length, 2, "createElementNS", "Document");
+      const [ns, qualified] = validateAndExtract(
+        nullable(namespace),
+        str(qualifiedName),
+        "createElementNS",
+        "Document",
+      );
+      try {
+        return wrap(native.createElementNS(ns === null ? "" : ns, qualified));
+      } catch (error) {
+        throw failed(error, "createElementNS", "Document");
       }
     }
 
@@ -7731,10 +7951,168 @@
     MapSet(interfaces, PLAIN[i], HTMLElement);
   }
 
-  // The interface an element with local name `tag` is an object of:
-  // HTML's for its tag, HTMLElement for a name with a hyphen (a custom
-  // element's), HTMLUnknownElement for the rest.
-  function elementInterface(tag) {
+  // SVG's element interfaces (SVG 2's IDL, M32): SVGElement over
+  // Element, with `className` an SVGAnimatedString and its nearest
+  // `svg`; the graphics and geometry elements' own above it, each
+  // tag's interface its own. The geometry methods come with drawing
+  // (docs/design/svg.md).
+  const animatedStrings = new $WeakMap();
+  class SVGAnimatedString {
+    #element;
+    #attribute;
+
+    constructor(key, element, attribute) {
+      if (key !== KEY) {
+        throw illegalConstructor("SVGAnimatedString");
+      }
+      this.#element = element;
+      this.#attribute = attribute;
+    }
+
+    get baseVal() {
+      const value = native.attribute(handleOf(this.#element), this.#attribute);
+      return value === null ? "" : value;
+    }
+
+    set baseVal(value) {
+      setAttribute(handleOf(this.#element), this.#attribute, str(value), "baseVal");
+    }
+
+    get animVal() {
+      return this.baseVal;
+    }
+  }
+  expose(SVGAnimatedString, "SVGAnimatedString");
+
+  class SVGElement extends Element {
+    constructor(key, handle, kind, name) {
+      if (key !== KEY) {
+        throw illegalConstructor("SVGElement");
+      }
+      super(key, handle, kind, name);
+    }
+
+    get className() {
+      self(this);
+      let animated = WeakMapGet(animatedStrings, this);
+      if (animated === undefined) {
+        animated = new SVGAnimatedString(KEY, this, "class");
+        WeakMapSet(animatedStrings, this, animated);
+      }
+      return animated;
+    }
+
+    // The nearest `svg` ancestor; null for the outermost.
+    get ownerSVGElement() {
+      let at = native.parent(self(this));
+      while (at !== null && native.kind(at) === 1) {
+        const element = wrap(at);
+        if (nsOf(element) === SVG_NS && nameOf(element) === "svg") {
+          return element;
+        }
+        at = native.parent(at);
+      }
+      return null;
+    }
+
+    get viewportElement() {
+      return this.ownerSVGElement;
+    }
+  }
+  expose(SVGElement, "SVGElement");
+
+  const svgInterfaces = new $Map();
+  function svgElement(name, tags, base) {
+    const cls = {
+      [name]: class extends base {
+        constructor(key, handle, kind, tag) {
+          if (key !== KEY) {
+            throw illegalConstructor(name);
+          }
+          super(key, handle, kind, tag);
+        }
+      },
+    }[name];
+    expose(cls, name);
+    for (let i = 0; i < tags.length; i++) {
+      MapSet(svgInterfaces, tags[i], cls);
+    }
+    return cls;
+  }
+  const SVGGraphicsElement = svgElement("SVGGraphicsElement", [], SVGElement);
+  const SVGGeometryElement = svgElement("SVGGeometryElement", [], SVGGraphicsElement);
+  const SVGTextContentElement = svgElement("SVGTextContentElement", [], SVGGraphicsElement);
+  const SVGTextPositioningElement = svgElement(
+    "SVGTextPositioningElement",
+    [],
+    SVGTextContentElement,
+  );
+  const SVGGradientElement = svgElement("SVGGradientElement", [], SVGElement);
+  const SVG_ELEMENTS = [
+    ["SVGSVGElement", ["svg"], SVGGraphicsElement],
+    ["SVGGElement", ["g"], SVGGraphicsElement],
+    ["SVGDefsElement", ["defs"], SVGGraphicsElement],
+    ["SVGUseElement", ["use"], SVGGraphicsElement],
+    ["SVGSwitchElement", ["switch"], SVGGraphicsElement],
+    ["SVGAElement", ["a"], SVGGraphicsElement],
+    ["SVGImageElement", ["image"], SVGGraphicsElement],
+    ["SVGForeignObjectElement", ["foreignObject"], SVGGraphicsElement],
+    ["SVGRectElement", ["rect"], SVGGeometryElement],
+    ["SVGCircleElement", ["circle"], SVGGeometryElement],
+    ["SVGEllipseElement", ["ellipse"], SVGGeometryElement],
+    ["SVGLineElement", ["line"], SVGGeometryElement],
+    ["SVGPolylineElement", ["polyline"], SVGGeometryElement],
+    ["SVGPolygonElement", ["polygon"], SVGGeometryElement],
+    ["SVGPathElement", ["path"], SVGGeometryElement],
+    ["SVGTextElement", ["text"], SVGTextPositioningElement],
+    ["SVGTSpanElement", ["tspan"], SVGTextPositioningElement],
+    ["SVGTextPathElement", ["textPath"], SVGTextContentElement],
+    ["SVGLinearGradientElement", ["linearGradient"], SVGGradientElement],
+    ["SVGRadialGradientElement", ["radialGradient"], SVGGradientElement],
+    ["SVGStopElement", ["stop"], SVGElement],
+    ["SVGSymbolElement", ["symbol"], SVGElement],
+    ["SVGClipPathElement", ["clipPath"], SVGElement],
+    ["SVGMaskElement", ["mask"], SVGElement],
+    ["SVGPatternElement", ["pattern"], SVGElement],
+    ["SVGMarkerElement", ["marker"], SVGElement],
+    ["SVGFilterElement", ["filter"], SVGElement],
+    ["SVGTitleElement", ["title"], SVGElement],
+    ["SVGDescElement", ["desc"], SVGElement],
+    ["SVGMetadataElement", ["metadata"], SVGElement],
+    ["SVGStyleElement", ["style"], SVGElement],
+    ["SVGScriptElement", ["script"], SVGElement],
+    ["SVGViewElement", ["view"], SVGElement],
+  ];
+  for (let i = 0; i < SVG_ELEMENTS.length; i++) {
+    svgElement(SVG_ELEMENTS[i][0], SVG_ELEMENTS[i][1], SVG_ELEMENTS[i][2]);
+  }
+
+  // MathML's elements are all MathMLElements (MathML Core).
+  class MathMLElement extends Element {
+    constructor(key, handle, kind, name) {
+      if (key !== KEY) {
+        throw illegalConstructor("MathMLElement");
+      }
+      super(key, handle, kind, name);
+    }
+  }
+  expose(MathMLElement, "MathMLElement");
+
+  // The interface an element with local name `tag` of the namespace
+  // `ns` is an object of: SVG's for its name, else SVGElement; MathML's
+  // MathMLElement; another namespace's Element; HTML's for its tag,
+  // HTMLElement for a name with a hyphen (a custom element's),
+  // HTMLUnknownElement for the rest.
+  function elementInterface(tag, ns) {
+    if (ns === SVG_NS) {
+      return MapGet(svgInterfaces, localPart(tag)) || SVGElement;
+    }
+    if (ns === MATHML_NS) {
+      return MathMLElement;
+    }
+    if (ns !== undefined && ns !== HTML_NS) {
+      return Element;
+    }
     const known = MapGet(interfaces, tag);
     if (known !== undefined) {
       return known;
@@ -8607,6 +8985,8 @@
 
   defineHandlers(HTMLElement.prototype, GLOBAL_HANDLERS, false);
   defineHandlers(HTMLElement.prototype, DOCUMENT_ELEMENT_HANDLERS, false);
+  defineHandlers(SVGElement.prototype, GLOBAL_HANDLERS, false);
+  defineHandlers(MathMLElement.prototype, GLOBAL_HANDLERS, false);
   defineHandlers(Document.prototype, GLOBAL_HANDLERS, false);
   defineHandlers(Document.prototype, DOCUMENT_ELEMENT_HANDLERS, false);
   defineHandlers(Document.prototype, ["readystatechange", "visibilitychange"], false);
@@ -9512,7 +9892,7 @@
         setAttribute(self(this), "tabindex", $String($Number(value) | 0), "tabIndex");
       },
     },
-    [HTMLElement.prototype],
+    [HTMLElement.prototype, SVGElement.prototype, MathMLElement.prototype],
   );
 
   // ---- Geometry (Geometry Interfaces Module Level 1, M30) ------------------

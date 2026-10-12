@@ -19,6 +19,13 @@
  * later.
  */
 
+/* The rules below are HTML's, under the default namespace (M32): an SVG
+ * `a`, `title` or `style` is none of HTML's. SVG's own close the sheet,
+ * under its prefix.
+ */
+@namespace url(http://www.w3.org/1999/xhtml);
+@namespace svg url(http://www.w3.org/2000/svg);
+
 /* Non-rendering elements: real browsers hide these via the UA
  * stylesheet, not a hardcoded tag-name check scattered through the
  * renderer — this is what keeps `<style>`/`<script>` text (and anything
@@ -275,4 +282,39 @@ option {
 select[multiple] option:checked, select[size] option:checked {
   background-color: rgb(206, 206, 206);
   color: rgb(16, 16, 16);
+}
+
+/* SVG's own (M32, `docs/design/svg.md`), as the reference browser's
+ * svg.css has them: a viewport clips unless it is the root, a text
+ * is a block that does not wrap, and an SVG element transforms
+ * about its user space's origin.
+ */
+svg|svg:not(:root), svg|symbol, svg|image, svg|marker, svg|pattern,
+svg|foreignObject {
+  overflow: hidden;
+}
+
+svg|svg:root {
+  width: 100%;
+  height: 100%;
+}
+
+svg|text, svg|foreignObject {
+  display: block;
+}
+
+svg|text {
+  white-space: nowrap;
+}
+
+svg|tspan, svg|textPath {
+  white-space: inherit;
+}
+
+svg|*:not(svg|svg), svg|*:not(svg|foreignObject) > svg|svg {
+  transform-origin: 0 0;
+}
+
+svg|*[xml\:space="preserve"], svg|*[xml\:space="preserve"] svg|* {
+  white-space: pre;
 }

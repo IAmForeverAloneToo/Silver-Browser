@@ -324,6 +324,7 @@ impl<'a> Matcher<'a> {
                 case,
             } => matches_attribute(document, element, name, *op, value, *case),
             SimpleSelector::PseudoClass(pc) => self.matches_pseudo_class(element, pc),
+            SimpleSelector::Namespace(ns) => document.namespace(element) == Some(ns),
         }
     }
 
@@ -1018,6 +1019,10 @@ mod tests {
         assert_eq!(matched_tags(&doc, "lineargradient"), vec!["linearGradient"]);
         assert_eq!(matched_tags(&doc, "[viewBox]"), vec!["svg"]);
         assert_eq!(matched_tags(&doc, "[viewbox='0 0 1 1']"), vec!["svg"]);
+        // A namespace constraint: none of these is in no namespace, and
+        // `*|` takes any.
+        assert!(matched_tags(&doc, "|a").is_empty());
+        assert_eq!(matched_tags(&doc, "*|a").len(), 4);
         // The HTML `a`s are of one type, the SVG `a` of another, siblings
         // or not: in the `svg` each is the only one of its type.
         assert_eq!(matched_tags(&doc, "a:nth-of-type(2)"), vec!["a"]);

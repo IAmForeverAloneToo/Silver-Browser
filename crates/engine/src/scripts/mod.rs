@@ -269,6 +269,12 @@ pub(crate) enum Prepared {
 /// Prepares `element` as HTML section 4.12.1.1 does, its text starting
 /// on the document's `line`, whoever inserted it; what runs, and when, is
 /// its caller's to decide.
+/// Whether `node` is a script element: HTML's, or SVG's (M32), which
+/// runs as HTML's does.
+pub(crate) fn is_script(document: &Document, node: NodeId) -> bool {
+    document.tag(node) == Some("script") || document.svg_tag(node) == Some("script")
+}
+
 pub(crate) fn prepare_element(
     page: &mut Page,
     document: &Document,
@@ -278,7 +284,14 @@ pub(crate) fn prepare_element(
     let Some(kind) = script_type(document, element) else {
         return Prepared::NotYet;
     };
-    let src = document.attr(element, "src");
+    // An SVG script names its file by `href`, or XLink's (M32).
+    let src = if document.svg_tag(element).is_some() {
+        document
+            .attr(element, "href")
+            .or_else(|| document.attr(element, "xlink:href"))
+    } else {
+        document.attr(element, "src")
+    };
     let text = document.text_content(element);
     if src.is_none() && text.is_empty() {
         return Prepared::NotYet;

@@ -137,7 +137,13 @@ impl Tree {
                     _ => "#document".to_owned(),
                 };
                 // The tests' tree holds no node's object: each is weak.
-                Answer::Strings(vec![name, String::new()])
+                // Its elements are HTML's.
+                let ns = if n.kind == 1 {
+                    "http://www.w3.org/1999/xhtml"
+                } else {
+                    ""
+                };
+                Answer::Strings(vec![name, String::new(), ns.to_owned()])
             }
             Call::Children(h) => {
                 let node = self.node(h)?;

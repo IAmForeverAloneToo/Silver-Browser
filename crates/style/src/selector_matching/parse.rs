@@ -28,7 +28,7 @@ use css::Token;
 
 use super::language::is_well_formed_range;
 use super::{
-    AttrOp, CaseFlag, Combinator, CompoundSelector, PseudoClass, PseudoElement,
+    AttrOp, CaseFlag, Combinator, CompoundSelector, Namespaces, PseudoClass, PseudoElement,
     PseudoElementSelector, Selector, SelectorList, SimpleSelector, Specificity,
 };
 
@@ -39,7 +39,27 @@ pub const MAX_NESTING: usize = 32;
 /// trailing comma, an empty member or an unbalanced parenthesis is an
 /// error (selectors-4 §5.1: `<complex-selector>#`, no empty members).
 pub fn parse_selector_list(tokens: &[Token]) -> Result<SelectorList, ParseError> {
+    parse_selector_list_in(tokens, &NO_NAMESPACES)
+}
+
+/// No namespace declared: what a selector outside a style sheet is read
+/// with (`querySelector`), where a prefix other than `*` and none is an
+/// error.
+static NO_NAMESPACES: Namespaces = Namespaces {
+    default: None,
+    prefixes: Vec::new(),
+};
+
+/// Parses a selector list as [`parse_selector_list`] does, its prefixes
+/// and its default namespace those of the sheet's `namespaces` (CSS
+/// Namespaces 3, M32): a prefix the sheet does not declare makes the
+/// selector invalid.
+pub fn parse_selector_list_in(
+    tokens: &[Token],
+    namespaces: &Namespaces,
+) -> Result<SelectorList, ParseError> {
     let mut c = Cursor::new(tokens);
+    c.namespaces = namespaces;
     let list = parse_list(&mut c, 0, Scope::Rule, false, false)?;
     c.skip_ws();
     if !c.at_end() {
@@ -85,6 +105,8 @@ struct Cursor<'a> {
     pos: usize,
     /// No list is forgiving, as in `@supports selector()`.
     strict: bool,
+    /// The sheet's namespaces.
+    namespaces: &'a Namespaces,
 }
 
 impl<'a> Cursor<'a> {
@@ -93,11 +115,47 @@ impl<'a> Cursor<'a> {
             tokens,
             pos: 0,
             strict: false,
+            namespaces: &NO_NAMESPACES,
         }
     }
 
     fn peek(&self) -> Option<&'a Token> {
         self.tokens.get(self.pos)
+    }
+
+    /// The token `ahead` after the next.
+    fn peek_ahead(&self, ahead: usize) -> Option<&'a Token> {
+        self.tokens.get(self.pos + ahead)
+    }
+
+    /// A namespace prefix and its `|` at the cursor, before a type or
+    /// universal selector (CSS Namespaces 3): `Some(Some(ns))` for a
+    /// declared prefix or `|` (no namespace), `Some(None)` for `*|`
+    /// (any), consumed; `None` when there is none; `Err` for a prefix not
+    /// declared.
+    fn namespace_prefix(&mut self) -> Result<Option<Option<dom::Namespace>>, ()> {
+        let names_element =
+            |t: Option<&Token>| matches!(t, Some(Token::Ident(_)) | Some(Token::Delim('*')));
+        let found = match (self.peek(), self.peek_ahead(1)) {
+            (Some(Token::Delim('|')), _) if names_element(self.peek_ahead(1)) => {
+                self.advance();
+                return Ok(Some(Some(dom::Namespace::Other(None))));
+            }
+            (Some(Token::Delim('*')), Some(Token::Delim('|')))
+                if names_element(self.peek_ahead(2)) =>
+            {
+                None
+            }
+            (Some(Token::Ident(prefix)), Some(Token::Delim('|')))
+                if names_element(self.peek_ahead(2)) =>
+            {
+                Some(self.namespaces.prefix(prefix).cloned().ok_or(())?)
+            }
+            _ => return Ok(None),
+        };
+        self.advance();
+        self.advance();
+        Ok(Some(found))
     }
 
     fn advance(&mut self) {
@@ -318,6 +376,14 @@ fn parse_compound(c: &mut Cursor, depth: usize, scope: Scope) -> Option<Compound
     let mut simple: Vec<SimpleSelector> = Vec::new();
     let mut spec = Specificity::default();
     let mut seen_type = false;
+    // The compound's namespace: a prefix's, or else, in the rule's own
+    // list, the sheet's default (Selectors 4 section 5.1: a compound
+    // with no type selector too).
+    let namespace = match c.namespace_prefix().ok()? {
+        Some(prefixed) => prefixed,
+        None if depth == 0 => c.namespaces.default.clone(),
+        None => None,
+    };
     while let Some(t) = c.peek() {
         match t {
             Token::Ident(name) => {
@@ -377,6 +443,7 @@ fn parse_compound(c: &mut Cursor, depth: usize, scope: Scope) -> Option<Compound
                         if simple.is_empty() {
                             simple.push(SimpleSelector::Universal);
                         }
+                        simple.extend(namespace.map(SimpleSelector::Namespace));
                         return Some(Compound {
                             selector: CompoundSelector { simple },
                             specificity: spec,
@@ -393,6 +460,7 @@ fn parse_compound(c: &mut Cursor, depth: usize, scope: Scope) -> Option<Compound
     if simple.is_empty() {
         return None;
     }
+    simple.extend(namespace.map(SimpleSelector::Namespace));
     Some(Compound {
         selector: CompoundSelector { simple },
         specificity: spec,
@@ -940,10 +1008,54 @@ mod tests {
     }
 
     #[test]
-    fn namespaces_are_unsupported() {
+    fn a_namespace_prefix_is_the_sheets_or_none_or_any() {
+        use dom::Namespace;
+        let compound = |list: SelectorList| list.0[0].compounds[0].simple.clone();
+        // Outside a sheet no prefix is declared; `|` is no namespace and
+        // `*|` any (CSS Namespaces 3).
         err("ns|div");
-        err("|div");
-        err("*|div");
+        assert_eq!(
+            compound(ok("|div")),
+            [
+                SimpleSelector::Type("div".into()),
+                SimpleSelector::Namespace(Namespace::Other(None))
+            ]
+        );
+        assert_eq!(compound(ok("*|div")), [SimpleSelector::Type("div".into())]);
+        let sheet = Namespaces {
+            default: Some(Namespace::Html),
+            prefixes: vec![("svg".into(), Namespace::Svg)],
+        };
+        let parse_in = |s: &str| parse_selector_list_in(&css::tokenize(s), &sheet).unwrap();
+        assert_eq!(
+            compound(parse_in("svg|rect")),
+            [
+                SimpleSelector::Type("rect".into()),
+                SimpleSelector::Namespace(Namespace::Svg)
+            ]
+        );
+        assert_eq!(
+            compound(parse_in("svg|*")),
+            [
+                SimpleSelector::Universal,
+                SimpleSelector::Namespace(Namespace::Svg)
+            ]
+        );
+        // The default namespace holds for a compound without a type
+        // selector too, at the rule's level alone; specificity is none.
+        let list = parse_in(".a:not(b)");
+        assert_eq!(
+            compound(list.clone()),
+            [
+                SimpleSelector::Class("a".into()),
+                SimpleSelector::PseudoClass(PseudoClass::Not(SelectorList(vec![
+                    ok("b").0[0].clone()
+                ]))),
+                SimpleSelector::Namespace(Namespace::Html)
+            ]
+        );
+        assert_eq!(list.0[0].specificity, ok(".a:not(b)").0[0].specificity);
+        assert!(parse_selector_list_in(&css::tokenize("math|mi"), &sheet).is_err());
     }
 
     // ---- attributes -------------------------------------------------------

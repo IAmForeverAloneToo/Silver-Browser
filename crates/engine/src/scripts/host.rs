@@ -20,8 +20,8 @@ use super::cssom;
 use super::workers::{DocumentWorkers, Start, credentials_mode, worker_url};
 use super::{
     ConsoleEntry, How, Lent, MAX_SCRIPT_NESTING, MAX_TIMERS, Place, Prepared, ReadyState,
-    ScriptNavigation, Source, TimeOrigin, Wanted, WindowEnv, cut, document_title, parser_place,
-    prepare_element, refusal_text, report_text,
+    ScriptNavigation, Source, TimeOrigin, Wanted, WindowEnv, cut, document_title, is_script,
+    parser_place, prepare_element, refusal_text, report_text,
 };
 use crate::loader::Page;
 use crate::storage;
@@ -407,13 +407,15 @@ impl DocumentHost {
             Call::Wrap(node) => {
                 let id = self.node(node)?;
                 self.exposed.insert(id);
-                let name = match self.document.data(id) {
-                    Some(NodeData::Element { tag, .. }) => tag.clone(),
-                    Some(NodeData::Text(_)) => "#text".to_owned(),
-                    _ => "#document".to_owned(),
+                let (name, ns) = match self.document.data(id) {
+                    Some(NodeData::Element { tag, ns, .. }) => {
+                        (tag.clone(), ns.uri().unwrap_or_default().to_owned())
+                    }
+                    Some(NodeData::Text(_)) => ("#text".to_owned(), String::new()),
+                    _ => ("#document".to_owned(), String::new()),
                 };
                 let connected = if self.connected(id) { "connected" } else { "" };
-                let mut answer = vec![name, connected.to_owned()];
+                let mut answer = vec![name, connected.to_owned(), ns];
                 // The attributes that may be event handlers (M26).
                 answer.extend(
                     self.document
@@ -579,6 +581,16 @@ impl DocumentHost {
                 self.made_by_script(element, false);
                 Ok(self.give(Some(element)))
             }
+            Call::CreateElementNs(ns, qualified) => {
+                let ns = Namespace::from_uri(ns.as_deref());
+                let element = self
+                    .document
+                    .create_element_ns(ns, &qualified, Vec::new())
+                    .map_err(refused)?;
+                self.detached.push(element);
+                self.made_by_script(element, false);
+                Ok(self.give(Some(element)))
+            }
             Call::CreateText(data) => {
                 self.work += data.len() as u64 / 64;
                 let text = self.document.create_text(&data).map_err(refused)?;
@@ -626,7 +638,7 @@ impl DocumentHost {
                     .document
                     .subtree(node)
                     .zip(self.document.subtree(copy))
-                    .filter(|&(from, _)| self.document.tag(from) == Some("script"))
+                    .filter(|&(from, _)| is_script(&self.document, from))
                     .collect();
                 for (from, to) in pairs {
                     let started = self.started.contains(&from);
@@ -696,6 +708,24 @@ impl DocumentHost {
                                 .document
                                 .element_name(e)
                                 .is_some_and(|(ns, tag)| *ns != Namespace::Html && tag == name)
+                    })
+                    .map(handle)
+                    .collect();
+                Ok(Answer::Nodes(found))
+            }
+            Call::ElementsByTagNameNs(root, ns, local) => {
+                let root = self.node(root)?;
+                let any_ns = ns.as_deref() == Some("*");
+                let found = self
+                    .elements_under(root)
+                    .into_iter()
+                    .filter(|&e| {
+                        self.document
+                            .element_name(e)
+                            .is_some_and(|(namespace, tag)| {
+                                (any_ns || namespace.uri() == ns.as_deref())
+                                    && (local == "*" || dom::local_part(tag) == local)
+                            })
                     })
                     .map(handle)
                     .collect();
@@ -2128,7 +2158,7 @@ impl DocumentHost {
     /// Notes that `element`, just made by a script, is a `script`: it
     /// runs once connected, unless already started.
     fn made_by_script(&mut self, element: NodeId, started: bool) {
-        if self.document.tag(element) != Some("script") {
+        if !is_script(&self.document, element) {
             return;
         }
         self.made.insert(element);
@@ -2191,7 +2221,7 @@ impl DocumentHost {
         let scripts: Vec<NodeId> = self
             .document
             .subtree(container)
-            .filter(|&node| self.document.tag(node) == Some("script"))
+            .filter(|&node| is_script(&self.document, node))
             .collect();
         self.started.extend(scripts);
         Ok(container)

@@ -28,7 +28,7 @@ use crate::invalidation::SelectorFeatures;
 use crate::keyframes::{Keyframe, Keyframes, keyframes_name};
 use crate::media::{Media, MediaQueryList, parse_media_query_list, split_commas, trim};
 use crate::page::{PageSelector, parse_page_selectors};
-use crate::selector_matching::{SelectorList, parse_selector_list};
+use crate::selector_matching::{Namespaces, SelectorList, parse_selector_list_in};
 
 /// The style rules of a set of sheets, in the order they appear.
 #[derive(Debug, Clone, Default)]
@@ -155,6 +155,11 @@ struct Builder<'f> {
     names: HashMap<(u32, String), u32>,
     path: Vec<u32>,
     features: &'f mut SelectorFeatures,
+    /// The sheet's namespace declarations, and whether a rule that ends
+    /// them has come (CSS Namespaces 3: `@namespace` only after
+    /// `@charset` and `@import`).
+    namespaces: Namespaces,
+    namespaces_closed: bool,
 }
 
 impl RuleSet {
@@ -170,6 +175,8 @@ impl RuleSet {
             names: HashMap::new(),
             path: Vec::new(),
             features,
+            namespaces: Namespaces::default(),
+            namespaces_closed: false,
         };
         for (sheet, stylesheet) in sheets.iter().enumerate() {
             let place = Place {
@@ -177,6 +184,8 @@ impl RuleSet {
                 block: None,
                 layer: UNLAYERED,
             };
+            builder.namespaces = Namespaces::default();
+            builder.namespaces_closed = false;
             builder.walk(&stylesheet.rules, &place);
         }
         builder.set
@@ -384,14 +393,39 @@ fn rule_at<'s>(sheet: &'s css::Stylesheet, path: &[u32]) -> &'s Rule {
 }
 
 impl Builder<'_> {
+    /// Takes an `@namespace` rule's prelude: an optional prefix, then the
+    /// namespace's URL as a `url()` or a string; one that does not parse
+    /// is ignored.
+    fn declare_namespace(&mut self, prelude: &[Token]) {
+        let tokens: Vec<&Token> = prelude
+            .iter()
+            .filter(|t| !matches!(t, Token::Whitespace))
+            .collect();
+        let (prefix, url) = match tokens.as_slice() {
+            [url] => (None, *url),
+            [Token::Ident(prefix), url] => (Some(prefix.clone()), *url),
+            _ => return,
+        };
+        let uri = match url {
+            Token::Url { value, bad: false } | Token::String { value, bad: false } => value,
+            _ => return,
+        };
+        let ns = dom::Namespace::from_uri(Some(uri));
+        match prefix {
+            Some(prefix) => self.namespaces.prefixes.push((prefix, ns)),
+            None => self.namespaces.default = Some(ns),
+        }
+    }
+
     fn walk(&mut self, rules: &[Rule], place: &Place) {
         for (index, rule) in rules.iter().enumerate() {
             self.path.push(index as u32);
             match rule {
                 Rule::Qualified(rule) => {
+                    self.namespaces_closed = true;
                     // A rule whose selectors do not parse is dropped
                     // (css-syntax-3, M4.10).
-                    if let Ok(list) = parse_selector_list(&rule.prelude) {
+                    if let Ok(list) = parse_selector_list_in(&rule.prelude, &self.namespaces) {
                         self.features.add(&list);
                         self.features.add_declarations(&rule.declarations);
                         let start = self.set.paths.len() as u32;
@@ -413,6 +447,17 @@ impl Builder<'_> {
 
     fn at_rule(&mut self, at: &css::AtRule, place: &Place) {
         let name = at.name.to_ascii_lowercase();
+        match name.as_str() {
+            // A sheet's namespaces, before its other rules and at its top.
+            "namespace" => {
+                if !self.namespaces_closed && self.path.len() == 1 && at.block.is_none() {
+                    self.declare_namespace(&at.prelude);
+                }
+                return;
+            }
+            "charset" | "import" => {}
+            _ => self.namespaces_closed = true,
+        }
         let rules = match &at.block {
             Some(Block::Rules(rules)) => Some(rules.as_slice()),
             _ => None,

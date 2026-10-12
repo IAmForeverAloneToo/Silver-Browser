@@ -72,10 +72,11 @@ pub enum Call {
     /// The document node.
     Document,
     /// The bindings make an object for the node, which the host then
-    /// holds until it is released: the node's name, its local name for
-    /// an element, `#text` or `#document`; `connected` or empty; then the
-    /// names of its attributes that start with `on`, which may be event
-    /// handlers (M26), as strings.
+    /// holds until it is released: the node's name, its qualified name
+    /// for an element, `#text` or `#document`; `connected` or empty; an
+    /// element's namespace's URI, or empty (M32); then the names of its
+    /// attributes that start with `on`, which may be event handlers
+    /// (M26), as strings.
     Wrap(Handle),
     /// The nodes scripts hold whose place in the document changed since
     /// this was last asked, each with whether it is now in the document:
@@ -85,7 +86,7 @@ pub enum Call {
     /// The node's `nodeType`: 1 for an element, 3 for text, 9 for the
     /// document.
     Kind(Handle),
-    /// An element's tag name, lowercase.
+    /// An element's qualified name: an HTML element's lowercase.
     Tag(Handle),
     /// The node's parent, or `None`.
     Parent(Handle),
@@ -130,6 +131,10 @@ pub enum Call {
     /// A new element with this local name, which the host checks and
     /// lowercases.
     CreateElement(String),
+    /// A new element of the namespace whose URI is given (none if
+    /// `None`) with this qualified name, which the bindings validated
+    /// (`createElementNS`, M32).
+    CreateElementNs(Option<String>, String),
     /// A new text node.
     CreateText(String),
     /// Inserts `node` under `parent` before `before`, or last: the DOM's
@@ -174,6 +179,10 @@ pub enum Call {
     /// The elements under the node with this tag (`*` for all), in tree
     /// order.
     ElementsByTagName(Handle, String),
+    /// The elements under the node of the namespace (`None` for none,
+    /// `*` for any) and the local name (`*` for any), in tree order
+    /// (`getElementsByTagNameNS`, M32).
+    ElementsByTagNameNs(Handle, Option<String>, String),
     /// The elements under the node with every one of these classes
     /// (white-space separated), in tree order.
     ElementsByClassName(Handle, String),

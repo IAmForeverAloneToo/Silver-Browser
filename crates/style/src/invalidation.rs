@@ -178,7 +178,7 @@ impl SelectorFeatures {
 
     fn add_simple(&mut self, simple: &SimpleSelector, at: At) {
         match simple {
-            SimpleSelector::Type(_) | SimpleSelector::Universal => {}
+            SimpleSelector::Type(_) | SimpleSelector::Universal | SimpleSelector::Namespace(_) => {}
             SimpleSelector::Id(id) => {
                 self.ids.insert(id.clone());
             }
