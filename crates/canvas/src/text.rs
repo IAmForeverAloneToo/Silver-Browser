@@ -237,7 +237,9 @@ fn points(curve: &Curve) -> Vec<(f32, f32)> {
 /// A glyph's outline added to `path` through `m`: a curve that starts
 /// away from where the last one ended begins a contour, each contour
 /// closed.
-fn add_outline(path: &mut Path, curves: &[Curve], m: &Matrix) {
+/// A glyph's outline added to `path` under `m` (an SVG text's too,
+/// M32).
+pub(crate) fn add_outline(path: &mut Path, curves: &[Curve], m: &Matrix) {
     let mut at: Option<(f32, f32)> = None;
     for curve in curves {
         let start = points(curve)[0];

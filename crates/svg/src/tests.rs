@@ -4,13 +4,19 @@
 use canvas::{Canvas, Matrix};
 use dom::Document;
 use style::{CascadeContext, Stylesheets};
+use text::FontCollection;
 
 use crate::draw::draw_within;
 use crate::tree::build_within;
-use crate::{Item, MAX_SVG_ELEMENTS, MAX_SVG_LAYERS, Paint, Tree, build, draw};
+use crate::{Context, Item, MAX_SVG_ELEMENTS, MAX_SVG_LAYERS, Paint, Tree, build, draw};
 
 /// The tree of the first `<svg>` in `markup`, for a viewport `w` by `h`.
 fn tree_of(markup: &str, w: f64, h: f64) -> Tree {
+    tree_with(markup, w, h, None)
+}
+
+/// [`tree_of`], text shaped in `fonts`.
+fn tree_with(markup: &str, w: f64, h: f64, fonts: Option<&FontCollection>) -> Tree {
     let document = Document::from_node(&html::parse_document(markup).expect("never fails"));
     let sheets = Stylesheets::new(Vec::new());
     let context = CascadeContext::default();
@@ -20,7 +26,13 @@ fn tree_of(markup: &str, w: f64, h: f64) -> Tree {
         .subtree(document.root())
         .find(|&n| document.svg_tag(n) == Some("svg"))
         .expect("an svg");
-    build(&document, &styles, Some(&recascade), svg, w, h)
+    let context = Context {
+        document: &document,
+        styles: &styles,
+        recascade: Some(&recascade),
+        fonts,
+    };
+    build(context, svg, w, h)
 }
 
 /// The tree of the first `<svg>` in `markup`, at most `limit` elements
@@ -32,14 +44,13 @@ fn tree_within(markup: &str, limit: usize, max_depth: usize) -> Tree {
         .subtree(document.root())
         .find(|&n| document.svg_tag(n) == Some("svg"))
         .expect("an svg");
-    build_within(
-        &document,
-        &styles,
-        None,
-        svg,
-        (10.0, 10.0),
-        (limit, max_depth),
-    )
+    let context = Context {
+        document: &document,
+        styles: &styles,
+        recascade: None,
+        fonts: None,
+    };
+    build_within(context, svg, (10.0, 10.0), (limit, max_depth))
 }
 
 /// `markup`'s first `<svg>` drawn on a canvas `w` by `h`.
@@ -683,4 +694,131 @@ fn conditions_choose_what_draws() {
     );
     assert_eq!(px(&canvas, 15, 5), [0, 0, 0, 0]);
     assert_eq!(px(&canvas, 25, 5)[3], 255);
+}
+
+/// The bundled test face, as the engine's fonts.
+fn fonts() -> FontCollection {
+    FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0).expect("the test font parses")
+}
+
+/// The text shapes' bounds, `[x, top, advance, height]`, in order.
+fn runs(markup: &str) -> Vec<[f64; 4]> {
+    let fonts = fonts();
+    let tree = tree_with(markup, 200.0, 100.0, Some(&fonts));
+    let mut out = Vec::new();
+    collect_bounds(&tree.root.children, &mut out);
+    out
+}
+
+fn collect_bounds(items: &[Item], out: &mut Vec<[f64; 4]>) {
+    for item in items {
+        match item {
+            Item::Group(g) => collect_bounds(&g.children, out),
+            Item::Shape(s) => out.push(s.bounds),
+        }
+    }
+}
+
+fn close(a: f64, b: f64) -> bool {
+    (a - b).abs() < 0.01
+}
+
+#[test]
+fn text_is_placed_from_its_lists_and_anchored_by_chunk() {
+    let f = fonts();
+    let measure = |text: &str, size: f32| f64::from(f.measure(text, size));
+    // The middle of the run at x.
+    let got = runs("<svg><text x=100 font-size=20 text-anchor=middle>Hello</text></svg>");
+    assert_eq!(got.len(), 1);
+    assert!(
+        close(got[0][0], 100.0 - measure("Hello", 20.0) / 2.0),
+        "{got:?}"
+    );
+    assert!(close(got[0][2], measure("Hello", 20.0)));
+    let got = runs("<svg><text x=100 font-size=20 text-anchor=end>Hello</text></svg>");
+    assert!(close(got[0][0], 100.0 - measure("Hello", 20.0)), "{got:?}");
+    // Each character of a list at its own x, the rest after the last.
+    let got = runs("<svg><text x='10 30 50' font-size=20>abcd</text></svg>");
+    let xs: Vec<f64> = got.iter().map(|b| b[0]).collect();
+    assert_eq!(xs, [10.0, 30.0, 50.0]);
+    assert!(close(got[2][2], measure("cd", 20.0)));
+    // A tspan's dy moves it and what follows.
+    let got = runs("<svg><text y=20>a<tspan dy=5>b</tspan>c</text></svg>");
+    assert_eq!(got.len(), 3);
+    assert!(
+        close(got[1][1], got[0][1] + 5.0) && close(got[2][1], got[1][1]),
+        "{got:?}"
+    );
+    assert!(
+        close(got[1][0], got[0][0] + got[0][2]),
+        "b after a: {got:?}"
+    );
+    // A list longer than its element's characters places them alone;
+    // a dx moves the pen on.
+    let got = runs("<svg><text>a<tspan x='10 20 30' dx=3>b</tspan>c</text></svg>");
+    assert!(close(got[1][0], 13.0), "{got:?}");
+    assert!(close(got[2][0], 13.0 + got[1][2]), "c after b: {got:?}");
+    // A chunk is anchored whole, a tspan's run in it.
+    let got = runs("<svg><text x=100 text-anchor=middle>ab<tspan>cd</tspan></text></svg>");
+    let total = got[0][2] + got[1][2];
+    assert!(close(got[0][0], 100.0 - total / 2.0), "{got:?}");
+}
+
+#[test]
+fn white_space_collapses_unless_kept() {
+    let f = fonts();
+    let measure = |text: &str| f64::from(f.measure(text, 16.0));
+    let got = runs("<svg><text>  a\n     b   </text></svg>");
+    assert_eq!(got.len(), 1);
+    assert!(close(got[0][2], measure("a b")), "{got:?}");
+    let got = runs("<svg><text xml:space=preserve>  a\nb </text></svg>");
+    assert!(close(got[0][2], measure("  a b ")), "{got:?}");
+    // Across elements: one space between, a tspan of none gone.
+    let got =
+        runs("<svg><text>a <tspan> b</tspan><tspan style='display: none'>x</tspan></text></svg>");
+    let total: f64 = got.iter().map(|b| b[2]).sum();
+    assert!(close(total, measure("a b")), "{got:?}");
+}
+
+#[test]
+fn spacing_and_baselines_move_the_glyphs() {
+    let f = fonts();
+    let got = runs("<svg><text letter-spacing=2>ab</text></svg>");
+    assert_eq!(got.len(), 2);
+    assert!(
+        close(got[1][0], f64::from(f.measure("a", 16.0)) + 2.0),
+        "{got:?}"
+    );
+    let auto = runs("<svg><text y=50>x</text></svg>");
+    let ascent = f64::from(f.primary().metrics(16.0).ascent);
+    assert!(close(auto[0][1], 50.0 - ascent), "{auto:?}");
+    let middle = runs("<svg><text y=50 dominant-baseline=middle>x</text></svg>");
+    assert!(
+        close(middle[0][1] - auto[0][1], f64::from(f.x_height(16.0)) / 2.0),
+        "{auto:?} {middle:?}"
+    );
+    // Without fonts, no text.
+    assert!(
+        tree_with("<svg><text>a</text></svg>", 10.0, 10.0, None)
+            .root
+            .children
+            .is_empty()
+    );
+}
+
+#[test]
+fn text_is_filled_and_stroked_as_a_shape_is() {
+    let fonts = fonts();
+    let tree = tree_with(
+        "<svg><text x=2 y=40 font-size=40 fill=blue>H</text></svg>",
+        40.0,
+        50.0,
+        Some(&fonts),
+    );
+    let mut canvas = Canvas::new(40, 50, false);
+    draw(&tree, &mut canvas, &Matrix::IDENTITY);
+    // The H's left stem.
+    let stem = (2..12).map(|x| px(&canvas, x, 30)).find(|p| p[3] == 255);
+    assert_eq!(stem, Some([0, 0, 255, 255]));
+    assert_eq!(px(&canvas, 20, 5), [0, 0, 0, 0]);
 }

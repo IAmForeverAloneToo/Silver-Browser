@@ -10,6 +10,7 @@
 
 mod draw;
 mod syntax;
+mod text;
 mod tree;
 
 #[cfg(test)]
@@ -20,7 +21,7 @@ pub use syntax::{
     Align, AspectRatio, Axis, Length, Unit, ViewBox, Viewport, parse_length, parse_number,
     parse_numbers, parse_points, parse_preserve_aspect_ratio, parse_view_box, view_box_matrix,
 };
-pub use tree::{Clip, Fill, Group, Item, Paint, Shape, Stroke, Tree, build};
+pub use tree::{Clip, Context, Fill, Group, Item, Paint, Shape, Stroke, Tree, build};
 
 /// The most elements a render tree is built from, `<use>`s' instances
 /// counted; past it, what was built is drawn.

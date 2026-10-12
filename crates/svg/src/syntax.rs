@@ -295,6 +295,25 @@ pub fn parse_numbers(text: &str) -> Vec<f64> {
     out
 }
 
+/// A list of lengths separated by commas or white space (a text's `x`
+/// and the rest), up to its first error.
+pub fn parse_lengths(text: &str) -> Vec<Length> {
+    let mut c = Cursor::new(text);
+    let mut out = Vec::new();
+    c.skip_space();
+    while !c.done() {
+        if !out.is_empty() {
+            c.comma_space();
+        }
+        match c.length() {
+            Some(length) => out.push(length),
+            None => break,
+        }
+        c.skip_space();
+    }
+    out
+}
+
 /// A `points` attribute: its numbers in pairs, an odd one left over
 /// dropped.
 pub fn parse_points(text: &str) -> Vec<(f64, f64)> {

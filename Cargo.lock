@@ -2589,6 +2589,7 @@ dependencies = [
  "dom",
  "html",
  "style",
+ "text",
 ]
 
 [[package]]

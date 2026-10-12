@@ -85,6 +85,12 @@ impl Path {
         self.subpaths.is_empty()
     }
 
+    /// A glyph's outline, as `text::glyph_outline` gives it, added under
+    /// `m`, each contour closed (M32: an SVG text's glyphs).
+    pub fn add_outline(&mut self, curves: &[text::Curve], m: &Matrix) {
+        crate::text::add_outline(self, curves, m);
+    }
+
     /// The bounds of the path's geometry, its curves' extremes and not
     /// their control points: `[x, y, width, height]`; `None` for a path
     /// with nothing to bound (M32, an SVG shape's fill box).

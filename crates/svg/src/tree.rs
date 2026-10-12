@@ -20,6 +20,7 @@ use style::computed::{
 use style::svg_transform::parse_transform_list;
 use style::transform::{ReferenceBox, flattened_2d};
 use style::{Recascade, Styles};
+use text::FontCollection;
 
 use crate::syntax::{
     Axis, Length, Unit, Viewport, parse_length, parse_points, parse_preserve_aspect_ratio,
@@ -146,42 +147,46 @@ pub struct Stroke {
     pub non_scaling: bool,
 }
 
-/// The render tree of the `<svg>` element `svg` of `document`, styled by
-/// `styles`, for a viewport `width` by `height` CSS pixels: its
-/// `viewBox` mapped onto the viewport by its `preserveAspectRatio`, a
-/// `viewBox` of no area drawing nothing. A `<use>`'s instance is styled
-/// by `recascade`, its rules matched as its original's and inheriting
-/// from the `<use>` (SVG 2 section 5.5); without one, as its original
-/// is. At most [`MAX_SVG_ELEMENTS`] elements are built; past them, what
-/// was built is drawn.
-pub fn build(
-    document: &Document,
-    styles: &Styles,
-    recascade: Option<&dyn Recascade>,
-    svg: NodeId,
-    width: f64,
-    height: f64,
-) -> Tree {
-    build_within(
-        document,
-        styles,
-        recascade,
-        svg,
-        (width, height),
-        (MAX_SVG_ELEMENTS, MAX_DEPTH),
-    )
+/// What a render tree is built from: a document, its computed styles,
+/// what styles a `<use>`'s instance (its rules matched as its
+/// original's, inheriting from the `<use>`, SVG 2 section 5.5; without
+/// it, as its original is), and the fonts text is shaped in (without
+/// them, no text is drawn).
+#[derive(Clone, Copy)]
+pub struct Context<'a> {
+    /// The document.
+    pub document: &'a Document,
+    /// Its computed styles.
+    pub styles: &'a Styles,
+    /// What styles an instance.
+    pub recascade: Option<&'a dyn Recascade>,
+    /// The engine's fonts.
+    pub fonts: Option<&'a FontCollection>,
+}
+
+/// The render tree of the `<svg>` element `svg` of `context`'s document
+/// for a viewport `width` by `height` CSS pixels: its `viewBox` mapped
+/// onto the viewport by its `preserveAspectRatio`, a `viewBox` of no
+/// area drawing nothing. At most [`MAX_SVG_ELEMENTS`] elements are
+/// built; past them, what was built is drawn.
+pub fn build(context: Context<'_>, svg: NodeId, width: f64, height: f64) -> Tree {
+    build_within(context, svg, (width, height), (MAX_SVG_ELEMENTS, MAX_DEPTH))
 }
 
 /// [`build`], at most `limit` elements built, at most `max_depth` open
 /// at once.
 pub(crate) fn build_within(
-    document: &Document,
-    styles: &Styles,
-    recascade: Option<&dyn Recascade>,
+    context: Context<'_>,
     svg: NodeId,
     (width, height): (f64, f64),
     (limit, max_depth): (usize, usize),
 ) -> Tree {
+    let Context {
+        document,
+        styles,
+        recascade,
+        fonts,
+    } = context;
     let root_font_size = document
         .element_children(document.root())
         .next()
@@ -192,6 +197,7 @@ pub(crate) fn build_within(
         document,
         styles,
         recascade,
+        fonts,
         elements: 1,
         limit,
         max_depth,
@@ -244,10 +250,11 @@ fn translate(x: f64, y: f64) -> Matrix {
     Matrix::new(1.0, 0.0, 0.0, 1.0, x, y)
 }
 
-struct Builder<'a> {
-    document: &'a Document,
+pub(crate) struct Builder<'a> {
+    pub(crate) document: &'a Document,
     styles: &'a Styles,
     recascade: Option<&'a dyn Recascade>,
+    pub(crate) fonts: Option<&'a FontCollection>,
     elements: usize,
     /// The most elements built.
     limit: usize,
@@ -288,7 +295,7 @@ impl<'a> Builder<'a> {
 
     /// `node`'s style: inheriting from `parent` in an instance, else the
     /// cascade's.
-    fn style_of(
+    pub(crate) fn style_of(
         &self,
         node: NodeId,
         parent: Option<&ComputedStyle>,
@@ -303,7 +310,7 @@ impl<'a> Builder<'a> {
     /// 5.8): no `requiredExtensions`, which no extension satisfies, and
     /// a `systemLanguage`, if it has one, of a language the user reads
     /// (English).
-    fn passes(&self, node: NodeId) -> bool {
+    pub(crate) fn passes(&self, node: NodeId) -> bool {
         if self.document.attr(node, "requiredExtensions").is_some() {
             return false;
         }
@@ -391,6 +398,7 @@ impl<'a> Builder<'a> {
             "rect" | "circle" | "ellipse" | "line" | "polyline" | "polygon" | "path" => {
                 self.shape(node, tag, &style, viewport)
             }
+            "text" => self.text(node, style.clone(), viewport, inherit.is_some()),
             _ => None,
         };
         self.depth -= 1;
@@ -547,38 +555,9 @@ impl<'a> Builder<'a> {
         viewport: &Viewport,
     ) -> Option<Item> {
         let (path, bounds) = geometry(self.document, node, tag, style, viewport)?;
-        let svg = style.svg();
         // A line has no inside to fill.
-        let fill = if tag == "line" {
-            None
-        } else {
-            self.paint(&svg.fill, style.color, bounds, viewport)
-                .map(|paint| Fill {
-                    paint,
-                    opacity: f64::from(svg.fill_opacity),
-                    rule: fill_rule(svg.fill_rule),
-                })
-        };
-        let stroke = self.stroke(style, bounds, viewport);
-        if fill.is_none() && stroke.is_none() {
-            return None;
-        }
-        let layers = svg.paint_order.layers();
-        let at = |layer| layers.iter().position(|l| *l == layer);
+        let mut shape = self.painted(node, path, bounds, style, viewport, tag != "line")?;
         let opacity = f64::from(style.effects().opacity);
-        let mut shape = Shape {
-            node: self.host.unwrap_or(node),
-            path,
-            bounds,
-            stroke_first: at(PaintLayer::Stroke) < at(PaintLayer::Fill),
-            opacity: 1.0,
-            anti_alias: !matches!(
-                svg.shape_rendering,
-                ShapeRendering::CrispEdges | ShapeRendering::OptimizeSpeed
-            ),
-            fill,
-            stroke,
-        };
         let transform = transform_of(style, viewport, Some(bounds));
         let overlap = opacity < 1.0 && shape.fill.is_some() && shape.stroke.is_some();
         if transform.is_none() && !overlap {
@@ -592,6 +571,83 @@ impl<'a> Builder<'a> {
             clip: None,
             children: vec![Item::Shape(Box::new(shape))],
         }))
+    }
+
+    /// `path`, of `bounds`, painted as `style` says: `None` when it has
+    /// neither a fill (or may not have one) nor a stroke. Its opacity and
+    /// transform are its caller's.
+    fn painted(
+        &mut self,
+        node: NodeId,
+        path: Path,
+        bounds: [f64; 4],
+        style: &ComputedStyle,
+        viewport: &Viewport,
+        fillable: bool,
+    ) -> Option<Shape> {
+        let svg = style.svg();
+        let fill = if fillable {
+            self.paint(&svg.fill, style.color, bounds, viewport)
+                .map(|paint| Fill {
+                    paint,
+                    opacity: f64::from(svg.fill_opacity),
+                    rule: fill_rule(svg.fill_rule),
+                })
+        } else {
+            None
+        };
+        let stroke = self.stroke(style, bounds, viewport);
+        if fill.is_none() && stroke.is_none() {
+            return None;
+        }
+        let layers = svg.paint_order.layers();
+        let at = |layer| layers.iter().position(|l| *l == layer);
+        Some(Shape {
+            node: self.host.unwrap_or(node),
+            path,
+            bounds,
+            stroke_first: at(PaintLayer::Stroke) < at(PaintLayer::Fill),
+            opacity: 1.0,
+            anti_alias: !matches!(
+                svg.shape_rendering,
+                ShapeRendering::CrispEdges | ShapeRendering::OptimizeSpeed
+            ),
+            fill,
+            stroke,
+        })
+    }
+
+    /// A `<text>`: its runs as shapes in a group of its transform and
+    /// opacity (a `tspan`'s own opacity is not taken, recorded).
+    fn text(
+        &mut self,
+        node: NodeId,
+        style: Cow<'a, ComputedStyle>,
+        viewport: &Viewport,
+        instance: bool,
+    ) -> Option<Item> {
+        let runs = self.text_runs(node, style.clone(), viewport, instance)?;
+        let mut children = Vec::new();
+        let mut extent: Option<[f64; 4]> = None;
+        for run in runs {
+            let [x, y, w, h] = run.bounds;
+            extent = Some(match extent {
+                None => [x, y, x + w, y + h],
+                Some([l, t, r, b]) => [l.min(x), t.min(y), r.max(x + w), b.max(y + h)],
+            });
+            if let Some(shape) =
+                self.painted(run.node, run.path, run.bounds, &run.style, viewport, true)
+            {
+                children.push(Item::Shape(Box::new(shape)));
+            }
+        }
+        if children.is_empty() {
+            return None;
+        }
+        let bounds = extent.map(|[l, t, r, b]| [l, t, r - l, b - t]);
+        let mut group = group(node, &style, viewport, children);
+        group.transform = transform_of(&style, viewport, bounds).unwrap_or(Matrix::IDENTITY);
+        Some(Item::Group(group))
     }
 
     /// A shape's stroke: `None` for no paint or a width not above 0.

@@ -8,6 +8,7 @@ license.workspace = true
 canvas.workspace = true
 dom.workspace = true
 style.workspace = true
+text.workspace = true
 
 [dev-dependencies]
 html.workspace = true
