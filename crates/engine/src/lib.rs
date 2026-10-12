@@ -754,44 +754,23 @@ struct SvgDrawing {
 /// its content box, and that box's size.
 type SvgPoint = (NodeId, (f32, f32), (f32, f32));
 
-/// Lands each outer `<svg>`'s drawing in `items` on whole device pixels
-/// where its groups only translate and scale it, as replaced content is
-/// snapped (M32.4): its raster then drawn a pixel to a pixel, as sharp
-/// at a display's scale as at 1, and alike on either backend, whose
-/// samplings of an image between pixels differ by half of one.
-fn snap_svgs(items: &mut [DisplayItem]) {
-    let mut groups = vec![style::transform::Matrix::IDENTITY];
-    for item in items.iter_mut() {
-        match item {
-            DisplayItem::PushGroup { matrix, .. } => {
-                let outer = groups.last().expect("the viewport's");
-                groups.push(outer.then(matrix));
-            }
-            DisplayItem::PopGroup => {
-                if groups.len() > 1 {
-                    groups.pop();
-                }
-            }
-            DisplayItem::Image {
-                x, y, w, h, image, ..
-            } if paint::svg_node(image.id).is_some() => {
-                let matrix = groups.last().expect("the viewport's");
-                let Some([a, _, _, d, e, f]) = matrix
-                    .to_2d()
-                    .filter(|_| matrix.translates_and_scales_only())
-                else {
-                    continue;
-                };
-                let snap = |v: f32, scale: f32, offset: f32| {
-                    ((v * scale + offset).round() - offset) / scale
-                };
-                let (x0, y0) = (snap(*x, a, e), snap(*y, d, f));
-                let (x1, y1) = (snap(*x + *w, a, e), snap(*y + *h, d, f));
-                (*x, *y, *w, *h) = (x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0));
-            }
-            _ => {}
-        }
-    }
+/// Lands an outer `<svg>`'s drawing, `[x, y, w, h]` under `matrix`, on
+/// whole device pixels where the matrix only translates and scales it,
+/// as replaced content is snapped (M32.4): its raster then drawn a pixel
+/// to a pixel, as sharp at a display's scale as at 1, and alike on
+/// either backend, whose samplings of an image between pixels differ by
+/// half of one.
+fn snap_svg(matrix: &style::transform::Matrix, [x, y, w, h]: [&mut f32; 4]) {
+    let Some([a, _, _, d, e, f]) = matrix
+        .to_2d()
+        .filter(|_| matrix.translates_and_scales_only())
+    else {
+        return;
+    };
+    let snap = |v: f32, scale: f32, offset: f32| ((v * scale + offset).round() - offset) / scale;
+    let (x0, y0) = (snap(*x, a, e), snap(*y, d, f));
+    let (x1, y1) = (snap(*x + *w, a, e), snap(*y + *h, d, f));
+    (*x, *y, *w, *h) = (x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0));
 }
 
 /// Moved on by each drawing of an outer `<svg>`, in any document of any
@@ -3507,7 +3486,6 @@ impl Engine {
     /// matrices, or whose place cannot be told; one elsewhere moves on
     /// unseen.
     fn show_pixels(&mut self, items: &mut [DisplayItem], width: f32, height: f32) {
-        snap_svgs(items);
         let now = self.shown.animations.borrow().time();
         let frame = self.shown.images.next_frame();
         // First the size each image is drawn at and whether in view, so
@@ -3515,8 +3493,11 @@ impl Engine {
         let mut seen = Vec::new();
         // Each image's drawn size, for an `<svg>`'s drawing (M32).
         let mut sizes = Vec::new();
+        // The outer `<svg>`s shown, their drawings landed on whole device
+        // pixels on the way (M32.4).
+        let mut svgs = Vec::new();
         let mut groups = vec![style::transform::Matrix::IDENTITY];
-        for item in items.iter() {
+        for item in items.iter_mut() {
             let (image, rect, tile) = match item {
                 DisplayItem::PushGroup { matrix, .. } => {
                     let outer = groups.last().expect("the viewport's");
@@ -3531,7 +3512,13 @@ impl Engine {
                 }
                 DisplayItem::Image {
                     x, y, w, h, image, ..
-                } => (image, [*x, *y, *w, *h], [*x, *y, *w, *h]),
+                } => {
+                    if let Some(node) = paint::svg_node(image.id) {
+                        snap_svg(groups.last().expect("the viewport's"), [x, y, w, h]);
+                        svgs.push(node);
+                    }
+                    (&*image, [*x, *y, *w, *h], [*x, *y, *w, *h])
+                }
                 DisplayItem::Pattern {
                     x,
                     y,
@@ -3540,7 +3527,7 @@ impl Engine {
                     tile,
                     image,
                     ..
-                } => (image, [*x, *y, *w, *h], *tile),
+                } => (&*image, [*x, *y, *w, *h], *tile),
                 _ => continue,
             };
             let matrix = groups.last().expect("the viewport's");
@@ -3556,14 +3543,9 @@ impl Engine {
             }
         }
         // The drawings of outer `<svg>`s no longer shown are let go.
-        let shown: HashSet<NodeId> = items
-            .iter()
-            .filter_map(|item| match item {
-                DisplayItem::Image { image, .. } => paint::svg_node(image.id),
-                _ => None,
-            })
-            .collect();
-        self.shown.svgs.retain(|node, _| shown.contains(node));
+        if !self.shown.svgs.is_empty() {
+            self.shown.svgs.retain(|node, _| svgs.contains(node));
+        }
         let mut next: Option<f64> = None;
         let mut seen = seen.into_iter();
         let mut sizes = sizes.into_iter();

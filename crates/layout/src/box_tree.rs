@@ -187,8 +187,13 @@ pub struct ControlSize {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Replaced {
     /// An image whose header is read: its number in the engine, which
-    /// the fragments and display items name it by, and its header.
-    Image { id: u64, header: images::Header },
+    /// the fragments and display items name it by, and its header, boxed
+    /// since an SVG image's natural size grew it (M32): every fragment's
+    /// kind is as large as this.
+    Image {
+        id: u64,
+        header: Box<images::Header>,
+    },
     /// A gradient (M23.3): it has no natural size.
     Gradient(Arc<style::computed::Gradient>),
     /// The icon of an image that cannot be shown: 16 by 16, its box's
@@ -980,7 +985,10 @@ impl<'a> Styled<'a> {
     fn shown(&self, image: &style::computed::Image) -> Option<Replaced> {
         match image {
             style::computed::Image::Url { url, .. } => match self.images.url_image(url) {
-                ImageState::Ready { id, header } => Some(Replaced::Image { id, header }),
+                ImageState::Ready { id, header } => Some(Replaced::Image {
+                    id,
+                    header: Box::new(header),
+                }),
                 ImageState::Coming | ImageState::Broken => None,
             },
             style::computed::Image::Gradient(gradient) => {
@@ -1208,7 +1216,10 @@ impl<'a> Styled<'a> {
             None => ImageState::Broken,
         };
         let replaced = match (state, alt) {
-            (ImageState::Ready { id, header }, _) => Some(Replaced::Image { id, header }),
+            (ImageState::Ready { id, header }, _) => Some(Replaced::Image {
+                id,
+                header: Box::new(header),
+            }),
             (ImageState::Coming, _) => Some(Replaced::Empty),
             (ImageState::Broken, Some("")) => Some(Replaced::Empty),
             (ImageState::Broken, Some(_)) => None,
@@ -2507,6 +2518,15 @@ mod tests {
     use super::*;
     use crate::testing::{boxes_of, number};
     use dom::Element;
+
+    #[test]
+    fn a_replaced_kind_stays_small() {
+        // Every fragment's kind is as large as the largest replaced kind:
+        // an image's header inline made each fragment 16 bytes larger and
+        // a page's paint 8% slower at M32's T4.3, so it is boxed. Growing
+        // this is a decision, not an accident.
+        assert_eq!(std::mem::size_of::<Replaced>(), 24);
+    }
 
     /// A box tree and the document it was built from, whose nodes the
     /// tests name by their [`number`].

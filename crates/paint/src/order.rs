@@ -911,14 +911,16 @@ impl<'a> Walk<'a, '_> {
         // An outer `<svg>`'s box holds its drawing alone, which is its
         // content box (M32): its clip clips nothing, and is left out so
         // that the drawing may land on whole device pixels.
-        let svg_only = !f.children.is_empty()
-            && f.children.iter().all(|c| {
-                matches!(
-                    c.kind,
-                    layout::FragmentKind::Replaced(layout::Replaced::Svg { .. })
-                )
-            });
-        let clips = f.clips() && !svg_only;
+        let svg_only = || {
+            !f.children.is_empty()
+                && f.children.iter().all(|c| {
+                    matches!(
+                        c.kind,
+                        layout::FragmentKind::Replaced(layout::Replaced::Svg { .. })
+                    )
+                })
+        };
+        let clips = f.clips() && !svg_only();
         if clips && !self.visible(rect) {
             return;
         }

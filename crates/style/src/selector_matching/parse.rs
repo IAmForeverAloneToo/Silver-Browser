@@ -443,7 +443,7 @@ fn parse_compound(c: &mut Cursor, depth: usize, scope: Scope) -> Option<Compound
                         if simple.is_empty() {
                             simple.push(SimpleSelector::Universal);
                         }
-                        simple.extend(namespace.map(SimpleSelector::Namespace));
+                        constrain(&mut simple, namespace);
                         return Some(Compound {
                             selector: CompoundSelector { simple },
                             specificity: spec,
@@ -460,7 +460,7 @@ fn parse_compound(c: &mut Cursor, depth: usize, scope: Scope) -> Option<Compound
     if simple.is_empty() {
         return None;
     }
-    simple.extend(namespace.map(SimpleSelector::Namespace));
+    constrain(&mut simple, namespace);
     Some(Compound {
         selector: CompoundSelector { simple },
         specificity: spec,
@@ -914,6 +914,21 @@ fn max_specificity(list: &SelectorList) -> Specificity {
         .unwrap_or_default()
 }
 
+/// Puts the compound's `namespace` among its `simple` selectors: right
+/// after its type or universal selector, so that a compound of another
+/// namespace fails before the rest of it is tried (the user agent's
+/// `svg|*:not(svg|svg)` for every HTML element, M32); else last.
+fn constrain(simple: &mut Vec<SimpleSelector>, namespace: Option<dom::Namespace>) {
+    let Some(namespace) = namespace else {
+        return;
+    };
+    let at = match simple.first() {
+        Some(SimpleSelector::Type(_) | SimpleSelector::Universal) => 1,
+        _ => simple.len(),
+    };
+    simple.insert(at, SimpleSelector::Namespace(namespace));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1036,6 +1051,15 @@ mod tests {
         );
         assert_eq!(
             compound(parse_in("svg|*")),
+            [
+                SimpleSelector::Universal,
+                SimpleSelector::Namespace(Namespace::Svg)
+            ]
+        );
+        // Right after the type or universal selector, so that an element
+        // of another namespace fails before the rest is tried.
+        assert_eq!(
+            compound(parse_in("svg|*:not(svg|svg)"))[..2],
             [
                 SimpleSelector::Universal,
                 SimpleSelector::Namespace(Namespace::Svg)

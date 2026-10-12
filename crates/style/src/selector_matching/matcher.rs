@@ -307,10 +307,16 @@ impl<'a> Matcher<'a> {
         match simple {
             // In an HTML document a type selector matches any element's
             // local name in any case, an SVG one's too, as the reference
-            // browser matches `lineargradient` (M32).
-            SimpleSelector::Type(t) => document
-                .local_name(element)
-                .is_some_and(|name| name.eq_ignore_ascii_case(t)),
+            // browser matches `lineargradient` (M32). An HTML element's
+            // name is kept lowercase, as the selector's is: compared as
+            // it is, the cascade's commonest test.
+            SimpleSelector::Type(t) => match document.element_name(element) {
+                Some((dom::Namespace::Html, tag)) if !tag.contains(':') => tag == t,
+                Some(_) => document
+                    .local_name(element)
+                    .is_some_and(|name| name.eq_ignore_ascii_case(t)),
+                None => false,
+            },
             SimpleSelector::Universal => true,
             SimpleSelector::Id(v) => document.attr(element, "id") == Some(v.as_str()),
             // HTML splits `class` on ASCII white space only.

@@ -1798,6 +1798,9 @@ pub(crate) struct ParsedRule<'s> {
     pub(crate) declarations: &'s [css::Declaration],
     pub(crate) layer: u32,
     pub(crate) important_layer: u32,
+    /// Whether every selector's subject is in SVG's namespace (the user
+    /// agent's SVG rules, M32): no other element is tried against it.
+    pub(crate) svg_only: bool,
 }
 
 /// The declarations that apply to an element and to each of its
@@ -1887,9 +1890,10 @@ fn declarations_for<'a>(
 ) -> Matched<'a> {
     let mut order = 0u32;
     let mut out = Matched::default();
+    let svg = document.svg_tag(element).is_some();
     collect_from_sheet(
         matcher,
-        element,
+        (element, svg),
         ua,
         TierBase::UserAgent,
         &mut order,
@@ -1925,7 +1929,7 @@ fn declarations_for<'a>(
     }
     collect_from_sheet(
         matcher,
-        element,
+        (element, svg),
         author,
         TierBase::AuthorSheet,
         &mut order,
@@ -1958,13 +1962,16 @@ fn declarations_for<'a>(
 /// for each target it matches.
 fn collect_from_sheet<'a>(
     matcher: &mut Matcher<'a>,
-    element: NodeId,
+    (element, svg): (NodeId, bool),
     sheet: &[ParsedRule<'a>],
     base: TierBase,
     order: &mut u32,
     out: &mut Matched<'a>,
 ) {
     for rule in sheet {
+        if rule.svg_only && !svg {
+            continue;
+        }
         // A comma-separated list is cascade-equivalent to separate rules
         // sharing one declaration block — each matching branch
         // contributes independently, so the specificity that matters is
@@ -6278,6 +6285,35 @@ mod tests {
         let sheets = [sheet("p { display: inline; }")];
         let s = style_of("<p>x</p>", &sheets, "p");
         assert_eq!(s.display, Display::Inline);
+    }
+
+    #[test]
+    fn rules_of_svgs_subjects_alone_are_marked_and_still_apply_to_svg() {
+        use crate::serialize::computed_value;
+        // M32: a rule whose every selector's subject is in SVG's
+        // namespace is tried against SVG elements alone (T4.3 found the
+        // user agent's SVG rules tried against every element).
+        let author = [sheet(
+            "@namespace svg url(http://www.w3.org/2000/svg);
+             svg|rect, svg|g > svg|circle { stroke-width: 7 }
+             svg|rect, p { color: red }
+             rect { color: blue }
+             svg|*:not(svg|svg) p { color: green }",
+        )];
+        let mut features = SelectorFeatures::default();
+        let set = RuleSet::new(&author, &mut features);
+        let marked: Vec<bool> = set
+            .in_force(&author, &[])
+            .iter()
+            .map(|r| r.svg_only)
+            .collect();
+        assert_eq!(marked, [true, false, false, false]);
+        let html = "<p id=p>x</p><svg><rect id=r></rect><g><circle id=c></circle></g></svg>";
+        let r = style_of(html, &author, "#r");
+        assert_eq!(computed_value(&r, "stroke-width").unwrap(), "7px");
+        let c = style_of(html, &author, "#c");
+        assert_eq!(computed_value(&c, "stroke-width").unwrap(), "7px");
+        assert_eq!(style_of(html, &author, "#p").color, Color::rgb8(255, 0, 0));
     }
 
     #[test]

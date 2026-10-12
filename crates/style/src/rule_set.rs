@@ -28,7 +28,7 @@ use crate::invalidation::SelectorFeatures;
 use crate::keyframes::{Keyframe, Keyframes, keyframes_name};
 use crate::media::{Media, MediaQueryList, parse_media_query_list, split_commas, trim};
 use crate::page::{PageSelector, parse_page_selectors};
-use crate::selector_matching::{Namespaces, SelectorList, parse_selector_list_in};
+use crate::selector_matching::{Namespaces, SelectorList, SimpleSelector, parse_selector_list_in};
 
 /// The style rules of a set of sheets, in the order they appear.
 #[derive(Debug, Clone, Default)]
@@ -224,6 +224,14 @@ impl RuleSet {
                     // Among important declarations the order of the
                     // layers is reversed.
                     important_layer: last - place,
+                    svg_only: !rule.list.0.is_empty()
+                        && rule.list.0.iter().all(|selector| {
+                            selector.compounds.last().is_some_and(|compound| {
+                                compound
+                                    .simple
+                                    .contains(&SimpleSelector::Namespace(dom::Namespace::Svg))
+                            })
+                        }),
                 }
             })
             .collect()
