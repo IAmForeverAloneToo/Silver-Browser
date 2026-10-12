@@ -6073,6 +6073,27 @@ mod tests {
     }
 
     #[test]
+    fn an_svg_a_script_made_compares_with_a_fresh_engine_by_its_place() {
+        // As a canvas's: an outer svg's drawing names its element, which
+        // the two engines number apart (found by dom_api at M32).
+        let mut engine = test_engine();
+        engine.set_scripting(true);
+        engine.load_document("<p>a</p><p>b</p>");
+        differential::run_script(
+            &mut engine,
+            "var s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); \
+             document.body.insertBefore(s, document.body.firstChild);",
+        );
+        engine.frame(200, 100);
+        let mut fresh = test_engine();
+        fresh.set_scripting(true);
+        if let Err(difference) = differential::compare_with_fresh(&mut engine, &mut fresh, 200, 100)
+        {
+            panic!("{difference}");
+        }
+    }
+
+    #[test]
     fn an_image_is_drawn_at_its_tiles_size_on_the_raster_whole_and_unturned() {
         let image = |crop, orientation| paint::ImageRef {
             id: 1,

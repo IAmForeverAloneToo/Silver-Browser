@@ -406,8 +406,9 @@ fn fragment_lines(
                 f.node
             ));
         };
-        // A canvas's bitmap names its element, by its place too: the two
-        // engines number their nodes as they made them (M31).
+        // A canvas's bitmap and an outer svg's drawing name their
+        // element, by its place too: the two engines number their nodes
+        // as they made them (M31, M32).
         let kind = match &f.kind {
             FragmentKind::Replaced(Replaced::Canvas {
                 node,
@@ -415,6 +416,10 @@ fn fragment_lines(
                 height,
             }) => format!(
                 "Replaced(Canvas of node {:?} {width} by {height})",
+                places.get(node)
+            ),
+            FragmentKind::Replaced(Replaced::Svg { node, ratio }) => format!(
+                "Replaced(Svg of node {:?} ratio {ratio:?})",
                 places.get(node)
             ),
             kind => format!("{kind:?}"),
